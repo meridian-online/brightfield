@@ -2933,6 +2933,32 @@ mod tests {
         );
     }
 
+    /// The clicked-card path leaves the document able to re-lay-out.
+    ///
+    /// Driven through `open_start` rather than [`Boot::start`] because they are
+    /// two openers: this one replaces the document in a running window, and it
+    /// is the one a person reaches by clicking a card on the front door.
+    #[test]
+    fn a_start_opened_from_the_door_re_lays_out_into_a_box_it_is_handed() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.open_start(&ctx, crate::starts::DASHBOARD);
+        let doc = app.chart_doc();
+        let declared = (doc.composed.width, doc.composed.height);
+        let half = egui::vec2(declared.0 as f32 / 2.0, declared.1 as f32 / 2.0);
+
+        assert!(
+            app.chart_doc_mut().reflow_to(half),
+            "the start reports no re-layout for a box half its declared size"
+        );
+        let doc = app.chart_doc();
+        assert_ne!(
+            (doc.composed.width, doc.composed.height),
+            declared,
+            "the start held its declared size in a box half that wide"
+        );
+    }
+
     /// The overlay openers are read off the registry, not invented here — if
     /// a binding moves in `brightfield-keys`, the shell follows it.
     #[test]

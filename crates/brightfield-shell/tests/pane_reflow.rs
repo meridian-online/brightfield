@@ -16,9 +16,13 @@
 //! Needs a wgpu adapter, as `banded_bar_ink.rs` and the shell's snapshot suite
 //! already do on the same runner.
 
+use std::time::Duration;
+
+use brightfield_protocol::layout::Flow;
 use brightfield_render::VelloRenderer;
 use brightfield_shell::app::ChartDoc;
 use brightfield_shell::design::Mode;
+use brightfield_shell::legend::band_width;
 use brightfield_shell::pipeline::{compose_spec_str, compose_spec_str_at, LiveDashboard};
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
@@ -205,15 +209,31 @@ fn a_chart_with_no_declared_size_is_composed_into_the_box_it_is_given() {
 // AC3 — the box moves under a running window
 // ---------------------------------------------------------------------------
 
-/// A live chart window at `size`, run for `frames` frames.
-fn run_at(app: &mut MeridianApp, ctx: &egui::Context, size: egui::Vec2, frames: usize) {
+/// One frame of a chart window at `size`, with what that frame asked for next.
+fn frame_at(app: &mut MeridianApp, ctx: &egui::Context, size: egui::Vec2) -> egui::FullOutput {
     let raw = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
         ..Default::default()
     };
+    ctx.run_ui(raw, |ui| app.draw(ui))
+}
+
+/// A live chart window at `size`, run for `frames` frames.
+fn run_at(app: &mut MeridianApp, ctx: &egui::Context, size: egui::Vec2, frames: usize) {
     for _ in 0..frames {
-        let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
+        let _ = frame_at(app, ctx, size);
     }
+}
+
+/// How long the window is content to wait before the next frame — `ZERO` is
+/// "paint again now", which under eframe's paint-on-input loop is the only
+/// thing that brings a frame nobody has typed into.
+fn repaint_delay(out: &egui::FullOutput) -> Duration {
+    out.viewport_output
+        .values()
+        .map(|v| v.repaint_delay)
+        .min()
+        .expect("a frame reports at least its own viewport")
 }
 
 /// The composed size and the pane box the chart pane was handed, this frame.
@@ -272,5 +292,143 @@ fn resizing_the_window_relays_out_the_chart_without_a_restart() {
     assert_eq!(
         again, wide_composed,
         "the same window size composes the same picture, whichever size it came from"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The legend band, and the offer it comes off
+// ---------------------------------------------------------------------------
+
+/// The same scatter with a `fill:` channel, so its scales call for a legend
+/// band and `band_width` is non-zero.
+const LEGEND_640_400: &str = "data:
+  t:
+    - { x: 1, y: 3, g: A }
+    - { x: 2, y: 5, g: B }
+    - { x: 3, y: 2, g: A }
+    - { x: 4, y: 8, g: B }
+    - { x: 5, y: 4, g: A }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: y
+    fill: g
+width: 640
+height: 400
+";
+
+/// A headless window over a live document, settled at `size`.
+fn settled_at(source: &str, size: egui::Vec2) -> (MeridianApp, egui::Context) {
+    let mut live = LiveDashboard::load_str(source, None).expect("loads live");
+    let composed = live.present().expect("first paint");
+    let boot = Boot {
+        live: Some(live),
+        ..Boot::charts(composed)
+    };
+    let mut app = MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light);
+    let ctx = egui::Context::default();
+    run_at(&mut app, &ctx, size, 4);
+    (app, ctx)
+}
+
+/// The offer is floored to whole points, so the raster plus its band can fall
+/// short of the pane's content box by up to the fraction that was floored away.
+const FLOOR_SLACK: f32 = 1.0;
+
+#[test]
+fn a_legend_bearing_chart_and_its_band_together_fill_the_pane() {
+    let composed = compose_spec_str(LEGEND_640_400, None).expect("the fixture composes");
+    assert!(
+        band_width(&composed) > 0.0,
+        "the fixture's scales call for no legend, so this measures nothing"
+    );
+
+    let (app, _ctx) = settled_at(LEGEND_640_400, egui::vec2(1400.0, 900.0));
+    let doc: &ChartDoc = app.chart_doc();
+    let pane = doc
+        .viewport
+        .expect("the chart pane drew, so it recorded its box");
+    let raster = doc.raster_rect.expect("the raster was allocated");
+    let legend = doc.legend_rect.expect("the band was drawn");
+
+    // Read across the pane, left to right: the raster starts at the box's left
+    // edge and the band ends at its right one. Any term counted twice in the
+    // offer shows up here as a dead strip on the right.
+    assert!(
+        (raster.min.x - pane.min.x).abs() <= FLOOR_SLACK,
+        "the raster starts at {} in a content box that starts at {}",
+        raster.min.x,
+        pane.min.x
+    );
+    assert!(
+        pane.max.x - legend.max.x <= FLOOR_SLACK,
+        "the band ends at {} in a content box that ends at {} — the chart was \
+         offered {} fewer points than the pane has",
+        legend.max.x,
+        pane.max.x,
+        pane.max.x - legend.max.x
+    );
+}
+
+// ---------------------------------------------------------------------------
+// AC3 — a shipped start, and the frame the re-layout needs
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_shipped_start_relays_out_when_its_pane_changes_size() {
+    let boot = Boot::start(brightfield_shell::starts::DASHBOARD, Flow::Vertical)
+        .expect("the dashboard start ships");
+    let declared = (boot.composed.width, boot.composed.height);
+    let mut app = MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light);
+    let ctx = egui::Context::default();
+
+    // A start is embedded in the binary, so nothing is watched — the poll that
+    // keeps frames coming for a document opened from a file is not armed here,
+    // and the frames this test drives are the only ones there are.
+    assert!(
+        !app.chart_doc().watch.has_watches(),
+        "a shipped start watches a file, so this measures the watch poll rather \
+         than the resize"
+    );
+
+    let wide = egui::vec2(1400.0, 900.0);
+    let narrow = egui::vec2(900.0, 620.0);
+
+    run_at(&mut app, &ctx, wide, 4);
+    let settled = frame_at(&mut app, &ctx, wide);
+    assert!(
+        repaint_delay(&settled) > Duration::ZERO,
+        "a window at rest is asking to be repainted immediately, so the \
+         resize assertion below cannot tell the two apart"
+    );
+
+    let (wide_composed, wide_pane) = composed_and_pane(&app);
+    assert_ne!(
+        wide_composed, declared,
+        "the start held the size its spec declares in a pane {wide_pane:?}"
+    );
+
+    let resized = frame_at(&mut app, &ctx, narrow);
+    let (narrow_composed, narrow_pane) = composed_and_pane(&app);
+    assert!(
+        narrow_pane.width() < wide_pane.width(),
+        "the narrower window gives the chart pane a narrower box: {} then {}",
+        wide_pane.width(),
+        narrow_pane.width()
+    );
+    assert!(
+        narrow_composed.0 < wide_composed.0 && narrow_composed.1 < wide_composed.1,
+        "the start's composition followed the pane down: {wide_composed:?} then \
+         {narrow_composed:?}"
+    );
+
+    // `ChartDoc::present` rasters at the top of the frame, so the composition
+    // this frame produced is drawn from the previous one's texture. Without
+    // this the window goes quiet holding a stretched picture.
+    assert_eq!(
+        repaint_delay(&resized),
+        Duration::ZERO,
+        "the frame that re-laid the chart out asked for no frame to raster it in"
     );
 }
