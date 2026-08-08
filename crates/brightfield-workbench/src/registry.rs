@@ -11,10 +11,31 @@
 //! reason to add; a pane inserted around it leaves the contract and the
 //! audit's reach in the same move. Worth knowing before leaning on the gate
 //! for a guarantee it cannot give.
+//!
+//! # Two registries, one pattern
+//!
+//! [`ItemSpec`] / [`ItemRegistry`] answer *which panes a view has*. Below them
+//! sits a second instance of the same shape — [`ChartKind`] /
+//! [`ChartKindRegistry`] — answering *which chart a module draws*. They are
+//! not the same registry under two names: an item is a pane and a chart kind
+//! is what one pane can be filled with, and a view has one of the first and
+//! one of the second.
+//!
+//! The reason the second exists is that a caller which has to *choose* a chart
+//! for a column can only do so cheaply if a chart kind is data. So a kind is
+//! an [`Icon`], a description, a list of [`FieldSlot`]s saying what it takes,
+//! a list of [`ModuleControl`]s saying what it hangs on itself, and a function
+//! returning a spec — with no component of its own. [`ChartModule`] is the one
+//! component all of them draw through, and [`audit_chart_kinds`] is the
+//! conformance gate, the way [`audit`] is for items.
+//!
+//! [`ChartModule`]: crate::item::ChartModule
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 
 use crate::item::{Item, ItemId, ItemMap, PaneKey};
+use crate::subject::{Icon, ToolbarEntry, Verb};
 use crate::workspace::ViewKind;
 
 /// Which edge a rail pane docks to.
@@ -391,6 +412,574 @@ pub fn audit<D: ?Sized>(reg: &ItemRegistry<D>, empty_doc: &D) -> Result<(), Stri
             }
             _ => {}
         }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// A chart kind, as data
+// ---------------------------------------------------------------------------
+
+/// What a column holds, as far as choosing a chart for it goes.
+///
+/// Coarser than any engine type on purpose: a chart kind cares whether a
+/// column is a number, a name, a moment or a flag, not whether the number
+/// arrived as a 32-bit or a 64-bit float. Narrowing an engine type down to one
+/// of these is the caller's job, and it is the only place the two vocabularies
+/// meet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FieldType {
+    /// A measured number.
+    Quantitative,
+    /// A name, a label, a member of a set.
+    Categorical,
+    /// A date, a time or an instant.
+    Temporal,
+    /// True or false.
+    Boolean,
+}
+
+/// One column offered to a chart kind.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Field {
+    /// The column's name, as its source spells it.
+    pub name: String,
+    /// What it holds.
+    pub ty: FieldType,
+}
+
+impl Field {
+    /// A field.
+    #[must_use]
+    pub fn new(name: impl Into<String>, ty: FieldType) -> Self {
+        Self {
+            name: name.into(),
+            ty,
+        }
+    }
+}
+
+/// A slot a chart kind needs filled, and what may fill it.
+///
+/// This is the type-constraint half of "a chart kind is data". A kind does not
+/// validate its own inputs inside its builder — it *declares* what it takes,
+/// and [`ChartKind::bind`] does the checking once, for every kind. That is
+/// what makes the builder a plain function rather than a component with an
+/// error path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FieldSlot {
+    /// What the field means to this kind: `"x"`, `"y"`, `"colour"`. Unique
+    /// within a kind — [`audit_chart_kinds`] rejects a repeat, because two
+    /// slots under one role make [`FieldBinding::field`] answer arbitrarily.
+    pub role: &'static str,
+    /// The field types this slot will take. An empty list takes nothing, which
+    /// the audit rejects.
+    pub accepts: &'static [FieldType],
+    /// Whether the kind can be drawn without it.
+    pub required: bool,
+}
+
+impl FieldSlot {
+    /// A slot the kind cannot be drawn without.
+    #[must_use]
+    pub const fn required(role: &'static str, accepts: &'static [FieldType]) -> Self {
+        Self {
+            role,
+            accepts,
+            required: true,
+        }
+    }
+
+    /// A slot the kind draws without when nothing fits it.
+    #[must_use]
+    pub const fn optional(role: &'static str, accepts: &'static [FieldType]) -> Self {
+        Self {
+            role,
+            accepts,
+            required: false,
+        }
+    }
+
+    /// Whether this slot will take `field`.
+    #[must_use]
+    pub fn takes(&self, field: &Field) -> bool {
+        self.accepts.contains(&field.ty)
+    }
+}
+
+/// Which column filled which of a chart kind's slots.
+///
+/// **[`ChartKind::bind`] is the only thing that makes one**, and that is the
+/// load-bearing part: a binding which exists has already satisfied the slots
+/// of the kind that produced it, so [`ChartKind::build`] can be a plain
+/// function with no validation inside it. The alternative — handing the
+/// builder a bag of columns and asking it to check — puts a copy of the
+/// constraint in every kind, which is the per-kind drift a registry exists to
+/// end.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FieldBinding {
+    kind: ChartKindId,
+    bound: Vec<(&'static str, Field)>,
+}
+
+impl FieldBinding {
+    /// Which kind's slots this binding satisfies.
+    #[must_use]
+    pub const fn kind(&self) -> ChartKindId {
+        self.kind
+    }
+
+    /// The field bound to `role`, if one was.
+    #[must_use]
+    pub fn field(&self, role: &str) -> Option<&Field> {
+        self.bound.iter().find(|(r, _)| *r == role).map(|(_, f)| f)
+    }
+
+    /// The name of the column bound to `role`, if one was.
+    #[must_use]
+    pub fn name(&self, role: &str) -> Option<&str> {
+        self.field(role).map(|f| f.name.as_str())
+    }
+
+    /// Every filled role, in slot order.
+    pub fn roles(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.bound.iter().map(|(r, _)| *r)
+    }
+}
+
+/// A control a chart kind hangs on its own module.
+///
+/// A log/linear toggle is the case this exists for: it changes *this module's*
+/// spec and nothing else on the surface around it, so it belongs to the module
+/// rather than to the canvas. It is declared as data beside the icon and the
+/// slots, drawn inside the module's own rect by
+/// [`module_frame`](crate::chrome::module_frame), and performed by the module
+/// — [`ChartModule`](crate::item::ChartModule) answers
+/// [`Handled::Yes`](crate::Handled) for the verb, so it never reaches the
+/// workspace.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModuleControl {
+    /// Stable id, and the key this control's state is held under in
+    /// [`ModuleOptions`].
+    pub id: &'static str,
+    /// The visible label.
+    pub label: String,
+    /// The registered command this control runs.
+    ///
+    /// Checked by [`audit_chart_kinds`] for the reason [`ItemSpec::toggle`] is
+    /// checked by [`audit`]: a control bound to a verb the keyboard registry
+    /// does not have is a control with no keyboard route to it.
+    pub verb: Verb,
+    /// Whether the option starts on.
+    pub on_by_default: bool,
+    /// Hover text. The keystroke is appended by the chrome from
+    /// [`Verb::keys`]; do not spell it here.
+    pub tooltip: Option<String>,
+}
+
+impl ModuleControl {
+    /// A control that starts off.
+    #[must_use]
+    pub fn new(id: &'static str, label: impl Into<String>, verb: Verb) -> Self {
+        Self {
+            id,
+            label: label.into(),
+            verb,
+            on_by_default: false,
+            tooltip: None,
+        }
+    }
+
+    /// Start this control on.
+    #[must_use]
+    pub const fn on_by_default(mut self, on: bool) -> Self {
+        self.on_by_default = on;
+        self
+    }
+
+    /// Give this control hover text.
+    #[must_use]
+    pub fn with_tooltip(mut self, tooltip: impl Into<String>) -> Self {
+        self.tooltip = Some(tooltip.into());
+        self
+    }
+
+    /// This control as the toolbar entry the chrome draws.
+    ///
+    /// A [`ToolbarEntry`] rather than a second control vocabulary, so a
+    /// module's own controls are drawn by the same
+    /// [`toolbar_button`](crate::chrome::toolbar_button) as a pane's — a
+    /// second spelling of the button is how a surface stops feeling like one
+    /// thing.
+    #[must_use]
+    pub fn entry(&self, on: bool) -> ToolbarEntry {
+        let entry = ToolbarEntry::button(self.id, self.label.clone(), self.verb).toggle(on);
+        match &self.tooltip {
+            Some(tip) => ToolbarEntry {
+                tooltip: Some(tip.clone()),
+                ..entry
+            },
+            None => entry,
+        }
+    }
+}
+
+/// The state of one module's own controls.
+///
+/// Keyed by [`ModuleControl::id`], so a kind can read its own switches out of
+/// the spec builder without the module and the kind sharing a struct
+/// definition — which is what would make adding a kind a type change again.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModuleOptions {
+    on: BTreeSet<&'static str>,
+}
+
+impl ModuleOptions {
+    /// Whether the control with this id is on. An id no control declares is
+    /// off, which is the answer that keeps a renamed control from silently
+    /// reading as on.
+    #[must_use]
+    pub fn is_on(&self, id: &str) -> bool {
+        self.on.contains(id)
+    }
+
+    /// Set a control's state.
+    pub fn set(&mut self, id: &'static str, on: bool) {
+        if on {
+            self.on.insert(id);
+        } else {
+            self.on.remove(id);
+        }
+    }
+
+    /// Flip a control's state and report what it became.
+    pub fn toggle(&mut self, id: &'static str) -> bool {
+        let now = !self.is_on(id);
+        self.set(id, now);
+        now
+    }
+}
+
+/// A stable name for a kind of chart.
+///
+/// The string is the compatibility surface, as [`ItemId`]'s is: a saved module
+/// records the kind it draws by this name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ChartKindId(&'static str);
+
+impl ChartKindId {
+    /// A chart-kind id.
+    #[must_use]
+    pub const fn new(name: &'static str) -> Self {
+        Self(name)
+    }
+
+    /// The id's string form.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
+impl std::fmt::Display for ChartKindId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+/// One kind of chart, entirely as data.
+///
+/// `S` is the view's **spec** type — whatever a module hands its host to be
+/// drawn. Generic for the same reason [`ItemSpec`] is generic over its
+/// document: this crate carries no engine, no renderer and no spec language,
+/// and a chart-kind registry that named a concrete spec type would drag one
+/// in. The view that owns the registry names `S` once.
+///
+/// There is no component here and none is written per kind. Adding a kind is a
+/// value of this struct in a list; [`ChartModule`](crate::item::ChartModule)
+/// draws it.
+pub struct ChartKind<S> {
+    /// The kind's id.
+    pub id: ChartKindId,
+    /// The icon a picker shows for it.
+    pub icon: Icon,
+    /// One line saying what it is, for a picker and for a generator's
+    /// reasoning. House style, and [`audit_chart_kinds`] holds it there:
+    /// sentence case, no terminal period — the same rule an
+    /// [`EmptyState`](crate::EmptyState) headline is held to.
+    pub description: &'static str,
+    /// What it takes, and of what type.
+    pub slots: &'static [FieldSlot],
+    /// The controls it hangs on its own module.
+    ///
+    /// A function rather than a `&'static [ModuleControl]` because a
+    /// [`Verb`] is checked against the keyboard registry when it is made, so a
+    /// control cannot be a `const`. Called once per module, at construction.
+    pub controls: fn() -> Vec<ModuleControl>,
+    /// The spec, from the bound columns and the module's own switches.
+    ///
+    /// Total by type: a [`FieldBinding`] only exists once the slots above are
+    /// satisfied, so there is nothing here for a builder to reject.
+    pub build: fn(&FieldBinding, &ModuleOptions) -> S,
+}
+
+impl<S> std::fmt::Debug for ChartKind<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChartKind")
+            .field("id", &self.id)
+            .field("icon", &self.icon)
+            .field("description", &self.description)
+            .field("slots", &self.slots)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<S> ChartKind<S> {
+    /// Bind `fields` to this kind's slots, first fit in slot order.
+    ///
+    /// Greedy and order-sensitive by design: the slots are declared in the
+    /// order the kind wants them filled, and a caller that wants a particular
+    /// column in a particular role hands the fields in that order. A column is
+    /// used at most once.
+    ///
+    /// # Errors
+    ///
+    /// Names the first required slot nothing offered could fill, and what it
+    /// would have taken — so a caller can say why a kind was not applicable
+    /// rather than only that it was not.
+    pub fn bind(&self, fields: &[Field]) -> Result<FieldBinding, String> {
+        let mut used = vec![false; fields.len()];
+        let mut bound = Vec::new();
+        for slot in self.slots {
+            let found = fields
+                .iter()
+                .enumerate()
+                .find(|(i, f)| !used[*i] && slot.takes(f));
+            match found {
+                Some((i, field)) => {
+                    used[i] = true;
+                    bound.push((slot.role, field.clone()));
+                }
+                None if slot.required => {
+                    let mut wanted = String::new();
+                    for (i, ty) in slot.accepts.iter().enumerate() {
+                        let sep = if i == 0 { "" } else { " or " };
+                        let _ = write!(wanted, "{sep}{ty:?}");
+                    }
+                    return Err(format!(
+                        "{}: nothing left to fill slot {:?}, which takes {}",
+                        self.id, slot.role, wanted
+                    ));
+                }
+                None => {}
+            }
+        }
+        Ok(FieldBinding {
+            kind: self.id,
+            bound,
+        })
+    }
+
+    /// Whether these columns can fill this kind's required slots.
+    #[must_use]
+    pub fn accepts(&self, fields: &[Field]) -> bool {
+        self.bind(fields).is_ok()
+    }
+
+    /// This kind's controls in their declared starting state.
+    #[must_use]
+    pub fn options(&self) -> ModuleOptions {
+        let mut options = ModuleOptions::default();
+        for control in (self.controls)() {
+            options.set(control.id, control.on_by_default);
+        }
+        options
+    }
+
+    /// This kind's controls as the toolbar entries the chrome draws, each
+    /// carrying its current state.
+    #[must_use]
+    pub fn toolbar(&self, options: &ModuleOptions) -> Vec<ToolbarEntry> {
+        (self.controls)()
+            .iter()
+            .map(|c| c.entry(options.is_on(c.id)))
+            .collect()
+    }
+
+    /// The spec for one module of this kind.
+    ///
+    /// # Errors
+    ///
+    /// If `binding` was produced by a different kind. That is the one thing
+    /// [`ChartKind::bind`]'s type cannot carry — two kinds' bindings are the
+    /// same Rust type — so it is checked here rather than assumed.
+    pub fn spec(&self, binding: &FieldBinding, options: &ModuleOptions) -> Result<S, String> {
+        if binding.kind != self.id {
+            return Err(format!(
+                "{}: handed a binding made for {}",
+                self.id, binding.kind
+            ));
+        }
+        Ok((self.build)(binding, options))
+    }
+}
+
+/// One view's chart vocabulary.
+///
+/// The list a picker offers and a generator chooses from, and the thing a
+/// saved module resolves its kind id against.
+pub struct ChartKindRegistry<S> {
+    kinds: Vec<ChartKind<S>>,
+}
+
+impl<S> ChartKindRegistry<S> {
+    /// Build a registry.
+    ///
+    /// # Panics
+    ///
+    /// If two kinds share an id. A duplicate id makes [`ChartKindRegistry::find`]
+    /// answer arbitrarily, which surfaces as a module that draws the wrong
+    /// chart — so it fails at construction, which happens at boot and in every
+    /// contract test.
+    #[must_use]
+    pub fn new(kinds: Vec<ChartKind<S>>) -> Self {
+        let mut seen = BTreeSet::new();
+        for kind in &kinds {
+            assert!(seen.insert(kind.id), "duplicate chart kind id {}", kind.id);
+        }
+        Self { kinds }
+    }
+
+    /// Every kind, in declaration order.
+    #[must_use]
+    pub fn kinds(&self) -> &[ChartKind<S>] {
+        &self.kinds
+    }
+
+    /// Every kind's id, in declaration order.
+    #[must_use]
+    pub fn ids(&self) -> Vec<ChartKindId> {
+        self.kinds.iter().map(|k| k.id).collect()
+    }
+
+    /// The kind with this id.
+    #[must_use]
+    pub fn find(&self, id: ChartKindId) -> Option<&ChartKind<S>> {
+        self.kinds.iter().find(|k| k.id == id)
+    }
+
+    /// Every kind these columns can fill, in declaration order.
+    ///
+    /// The choosing half of the registry: a caller with a column and no
+    /// opinion asks this and takes the first answer, and a caller with an
+    /// opinion asks this and picks. Declaration order is therefore a
+    /// preference order, and it is the registry's to state.
+    #[must_use]
+    pub fn applicable(&self, fields: &[Field]) -> Vec<ChartKindId> {
+        self.kinds
+            .iter()
+            .filter(|k| k.accepts(fields))
+            .map(|k| k.id)
+            .collect()
+    }
+}
+
+/// Check every chart kind in `reg` against the contract.
+///
+/// The chart-kind twin of [`audit`], and it exists for the same reason: when a
+/// kind is data rather than a component, nothing about it is checked by the
+/// compiler beyond its types, and the mistakes that remain — a slot that takes
+/// nothing, a control on a verb the keyboard does not have, a description
+/// written in a different voice from every other one — are exactly the ones
+/// that make a picker read as a pile of one-offs.
+///
+/// Each kind must: carry a non-empty icon name; describe itself in the house
+/// style; declare at least one slot and at least one required slot; give every
+/// slot a unique role and at least one accepted type; give every control a
+/// unique id and a registered verb; and **build a spec from its own
+/// declaration** — the audit synthesises one column per required slot, binds
+/// it, and calls the builder with the controls off and again with every
+/// declared control on, so a builder that cannot survive its own constraints
+/// fails here rather than at a user's first click.
+///
+/// # Errors
+///
+/// The reason the first failing kind failed, naming the kind and the rule, so
+/// a caller's assertion can pin *which* rule bit.
+pub fn audit_chart_kinds<S>(reg: &ChartKindRegistry<S>) -> Result<(), String> {
+    for kind in reg.kinds() {
+        let id = kind.id;
+        if id.as_str().is_empty() {
+            return Err("a chart kind with an empty id".to_string());
+        }
+        if kind.icon.as_str().is_empty() {
+            return Err(format!("{id}: no icon"));
+        }
+
+        let description = kind.description;
+        if description.is_empty() {
+            return Err(format!("{id}: no description"));
+        }
+        if description.ends_with('.') {
+            return Err(format!("{id}: a description takes no terminal period"));
+        }
+        if !description.chars().next().is_some_and(char::is_uppercase) {
+            return Err(format!("{id}: a description is sentence case"));
+        }
+
+        if kind.slots.is_empty() {
+            return Err(format!("{id}: takes no fields at all"));
+        }
+        let mut roles = BTreeSet::new();
+        for slot in kind.slots {
+            if slot.accepts.is_empty() {
+                return Err(format!("{id}: slot {:?} accepts nothing", slot.role));
+            }
+            if !roles.insert(slot.role) {
+                return Err(format!("{id}: two slots share the role {:?}", slot.role));
+            }
+        }
+        if !kind.slots.iter().any(|s| s.required) {
+            return Err(format!(
+                "{id}: every slot is optional, so nothing decides whether this \
+                 kind applies to a column"
+            ));
+        }
+
+        let controls = (kind.controls)();
+        let mut control_ids = BTreeSet::new();
+        for control in &controls {
+            if !control.verb.is_registered() {
+                return Err(format!(
+                    "{id}: control {:?} declares unregistered verb {:?}",
+                    control.id,
+                    control.verb.as_str()
+                ));
+            }
+            if !control_ids.insert(control.id) {
+                return Err(format!("{id}: two controls share the id {:?}", control.id));
+            }
+        }
+
+        // The kind against its own declaration: one column per required slot,
+        // of the first type that slot accepts.
+        let fields: Vec<Field> = kind
+            .slots
+            .iter()
+            .filter(|s| s.required)
+            .enumerate()
+            .map(|(i, s)| Field::new(format!("audit_{i}"), s.accepts[0]))
+            .collect();
+        let binding = kind
+            .bind(&fields)
+            .map_err(|e| format!("{id}: cannot bind its own required slots — {e}"))?;
+
+        let mut options = kind.options();
+        kind.spec(&binding, &options)?;
+        for control in &controls {
+            options.set(control.id, !options.is_on(control.id));
+        }
+        kind.spec(&binding, &options)?;
     }
     Ok(())
 }

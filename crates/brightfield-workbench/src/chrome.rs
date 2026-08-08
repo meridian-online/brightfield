@@ -202,6 +202,62 @@ pub fn pane_frame(ui: &mut egui::Ui, subject: &Subject, header: bool, mode: Mode
     child
 }
 
+/// Draw a module's own chrome inside the module's rect, and return the `Ui`
+/// the module's body may draw into.
+///
+/// The pane header band names the pane and belongs to the surface around it.
+/// This is the other thing: the controls a **module** declares, which act on
+/// that module alone — a log/linear toggle rescales the chart it sits on and
+/// nothing else on the canvas — so they are drawn attached to the module,
+/// inside the rect the module was given, below whatever chrome the pane
+/// already has.
+///
+/// This *extends* [`pane_frame`]; it does not fork it. A module is drawn
+/// inside a pane like any other item, so it has already been through
+/// `pane_frame` by the time this runs, and everything here happens within the
+/// content rect that call handed over.
+///
+/// **A module that declares nothing costs nothing.** `entries` empty — or
+/// every entry withheld, which [`Toolbar`] treats the same way — takes zero
+/// height, paints nothing, and returns a `Ui` over the whole rect with the
+/// same clip, so the module draws exactly where an item with no chrome at all
+/// draws. That is not a claim about a code path being similar: it is the same
+/// rect, and `a_module_that_declares_no_chrome_draws_where_a_plain_item_does`
+/// tessellates both and compares the triangles.
+pub fn module_frame(
+    ui: &mut egui::Ui,
+    entries: &[ToolbarEntry],
+    mode: Mode,
+) -> (egui::Ui, ToolbarDrawn) {
+    let outer = ui.max_rect();
+    let mut body = outer;
+    let toolbar = Toolbar::new(entries);
+
+    let drawn = if toolbar.has_something_to_say() {
+        let out = toolbar.show(ui, mode);
+        let sem = semantic(mode.is_dark());
+        let y = ui.cursor().min.y;
+        // A hairline under the strip, the same divider the header band closes
+        // with, so a module's own controls read as belonging to the module
+        // rather than floating above its ink.
+        ui.painter().line_segment(
+            [egui::pos2(outer.left(), y), egui::pos2(outer.right(), y)],
+            egui::Stroke::new(1.0, colour(sem.borders.divider)),
+        );
+        body.min.y = y + spacing::SPACE_2;
+        out
+    } else {
+        ToolbarDrawn::default()
+    };
+
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body).layout(*ui.layout()));
+    // The same reason `pane_frame` shrinks its child's clip: `new_child` clones
+    // the parent's painter, clip rect included, so without this a module could
+    // paint over its own control strip.
+    child.shrink_clip_rect(body);
+    (child, drawn)
+}
+
 /// The pane header: icon, title, dirty marker.
 ///
 /// Private, with exactly one call site. Three hand-written variants of this —

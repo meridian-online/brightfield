@@ -31,9 +31,11 @@
 use std::collections::BTreeMap;
 use std::sync::{PoisonError, RwLock};
 
+use brightfield_keys::BindingContext;
 use serde::{Deserialize, Serialize};
 
-use crate::subject::{EmptyState, Subject, Verb};
+use crate::registry::{ChartKind, ChartKindId, ChartKindRegistry, Field, ModuleOptions};
+use crate::subject::{EmptyState, Icon, Subject, Verb};
 use crate::workspace::ViewKind;
 use crate::Mode;
 
@@ -394,6 +396,246 @@ pub trait Item<D: ?Sized> {
 /// order and therefore stable — a test that walks every pane should not
 /// depend on hash seeding.
 pub type ItemMap<D> = BTreeMap<PaneKey, Box<dyn Item<D>>>;
+
+// ---------------------------------------------------------------------------
+// Modules: one component, many kinds
+// ---------------------------------------------------------------------------
+
+/// A view document that can draw the charts its own registry declares.
+///
+/// The seam between "a chart kind is data" and "something has to rasterise
+/// it". [`ChartKind`] builds a spec and stops; the spec goes back to the
+/// document, which owns the renderer, the GPU handle and everything else this
+/// crate has none of. That is the same division [`ItemCtx`] already makes, and
+/// it is why a chart-kind registry can live in a crate with no wgpu in it.
+pub trait ModuleHost {
+    /// The spec type this view's chart kinds build.
+    ///
+    /// Named once, by the view, and never by this crate — see [`ChartKind`]
+    /// for why the registry is generic over it.
+    type Spec;
+
+    /// This view's chart vocabulary.
+    fn chart_kinds(&self) -> &ChartKindRegistry<Self::Spec>;
+
+    /// Draw one module's spec into `ui`.
+    ///
+    /// `ui` is the module's *body*: the rect left after the module's own
+    /// declared chrome has taken what it needs, which is nothing at all when
+    /// the kind declares no controls.
+    fn draw_module(&mut self, spec: &Self::Spec, ui: &mut egui::Ui);
+}
+
+/// One chart module: a registered [`ChartKind`], the columns bound to it, and
+/// the state of the controls that kind hangs on itself.
+///
+/// **This is the only component a chart kind gets, and adding a kind does not
+/// add another.** A kind is a value in [`ChartKindRegistry`]; the pane that
+/// draws it is this type, unchanged. What varies between two kinds is their
+/// data — icon, description, slots, controls, builder — and nothing else.
+///
+/// It is an [`Item`] like any other, so it inherits the whole pane contract:
+/// the shell draws its header from [`Item::describe`], draws its empty state
+/// *instead of* its body when the columns do not fit the kind, and clips its
+/// draw below the header band.
+///
+/// # What it deliberately does not put in its [`Subject`]
+///
+/// Its kind's [`ModuleControl`](crate::registry::ModuleControl)s. A
+/// `Subject::toolbar` entry is drawn by the surface *around* the pane, and a
+/// module's own controls are the case that must not be: a log/linear toggle
+/// belongs to the module it rescales, not to the canvas the module sits on. So
+/// they are drawn inside the module's own rect by
+/// [`module_frame`](crate::chrome::module_frame), performed here — [`perform`]
+/// answers [`Handled::Yes`] for them, so the verb never reaches the workspace
+/// — and held to the registered-verb rule by
+/// [`audit_chart_kinds`](crate::registry::audit_chart_kinds) rather than by
+/// [`audit`](crate::registry::audit), which only ever sees a subject.
+///
+/// [`perform`]: Item::perform
+#[derive(Clone, Debug)]
+pub struct ChartModule {
+    item: ItemId,
+    kind: ChartKindId,
+    icon: Icon,
+    title: String,
+    key_context: BindingContext,
+    fields: Vec<Field>,
+    options: ModuleOptions,
+}
+
+impl ChartModule {
+    /// A module of `kind`, over `fields`.
+    ///
+    /// Takes the kind by reference rather than by id so the module starts with
+    /// that kind's declared control states rather than with everything off —
+    /// a control whose declared default is *on* would otherwise be off for one
+    /// frame, or forever if nobody noticed.
+    ///
+    /// The icon is copied from the kind here, and the copy is the point: a
+    /// module whose kind this build no longer has still has an icon to draw,
+    /// while the kind stays the only place an icon is *declared*.
+    #[must_use]
+    pub fn new<S>(
+        item: ItemId,
+        title: impl Into<String>,
+        kind: &ChartKind<S>,
+        fields: Vec<Field>,
+    ) -> Self {
+        Self {
+            item,
+            kind: kind.id,
+            icon: kind.icon,
+            title: title.into(),
+            key_context: BindingContext::Workspace,
+            fields,
+            options: kind.options(),
+        }
+    }
+
+    /// Resolve bindings in a different keyboard context.
+    #[must_use]
+    pub const fn in_context(mut self, context: BindingContext) -> Self {
+        self.key_context = context;
+        self
+    }
+
+    /// Which kind this module draws.
+    #[must_use]
+    pub const fn kind(&self) -> ChartKindId {
+        self.kind
+    }
+
+    /// The columns this module was handed.
+    #[must_use]
+    pub fn fields(&self) -> &[Field] {
+        &self.fields
+    }
+
+    /// Hand this module a different set of columns.
+    pub fn set_fields(&mut self, fields: Vec<Field>) {
+        self.fields = fields;
+    }
+
+    /// The state of this module's own controls.
+    #[must_use]
+    pub const fn options(&self) -> &ModuleOptions {
+        &self.options
+    }
+
+    /// The spec this module would hand its host right now, or `None` when its
+    /// kind is not in this build or its columns do not fill that kind's
+    /// required slots.
+    ///
+    /// The same value [`Item::ui`] draws, reachable without a frame — which is
+    /// what lets a migration be checked by comparing specs rather than by
+    /// comparing screenshots.
+    pub fn spec<D: ModuleHost + ?Sized>(&self, doc: &D) -> Option<D::Spec> {
+        let kind = doc.chart_kinds().find(self.kind)?;
+        let binding = kind.bind(&self.fields).ok()?;
+        kind.spec(&binding, &self.options).ok()
+    }
+
+    /// Flip the control this verb belongs to, and report whether one did.
+    fn apply<D: ModuleHost + ?Sized>(&mut self, doc: &D, verb: Verb) -> bool {
+        let Some(kind) = doc.chart_kinds().find(self.kind) else {
+            return false;
+        };
+        let Some(id) = (kind.controls)()
+            .iter()
+            .find(|c| c.verb == verb)
+            .map(|c| c.id)
+        else {
+            return false;
+        };
+        self.options.toggle(id);
+        true
+    }
+}
+
+impl<D: ModuleHost + ?Sized> Item<D> for ChartModule {
+    fn item_id(&self) -> ItemId {
+        self.item
+    }
+
+    /// Empty when there is no chart to draw: the kind is not in this build, or
+    /// the columns do not fill its required slots.
+    ///
+    /// The second case is the ordinary one and the message says which slot and
+    /// what it wanted, because "this module is empty" is not an answer anyone
+    /// can act on — [`ChartKind::bind`]'s error is.
+    fn empty_state(&self, doc: &D) -> Option<EmptyState> {
+        let Some(kind) = doc.chart_kinds().find(self.kind) else {
+            return Some(EmptyState::new(
+                self.icon,
+                "This build has no chart of that kind",
+                format!(
+                    "The module asks for {}, which is not in this build's chart registry.",
+                    self.kind
+                ),
+            ));
+        };
+        match kind.bind(&self.fields) {
+            Ok(_) => None,
+            Err(why) => Some(EmptyState::new(
+                self.icon,
+                "Nothing here to chart yet",
+                format!("{why}. Bind a column that fits and it draws."),
+            )),
+        }
+    }
+
+    fn describe(&self, _doc: &D) -> Subject {
+        Subject::new(self.title.clone(), self.icon, self.key_context)
+    }
+
+    /// The module's own chrome, then the module.
+    ///
+    /// Reached only when [`Item::empty_state`] answered `None`, so the kind is
+    /// present and the binding holds; the early returns below are the release
+    /// behaviour for a host that answers differently on two calls in one frame
+    /// — a blank body rather than a panic.
+    fn ui(&mut self, doc: &mut D, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
+        let Some((entries, spec)) = ({
+            let Some(kind) = doc.chart_kinds().find(self.kind) else {
+                return;
+            };
+            let Ok(binding) = kind.bind(&self.fields) else {
+                return;
+            };
+            let Ok(spec) = kind.spec(&binding, &self.options) else {
+                return;
+            };
+            Some((kind.toolbar(&self.options), spec))
+        }) else {
+            return;
+        };
+
+        let (mut body, drawn) = crate::chrome::module_frame(ui, &entries, cx.mode);
+        let mut flipped = false;
+        for verb in drawn.activated {
+            flipped |= self.apply(&*doc, verb);
+        }
+        if flipped {
+            // The spec above was built from the options as they were when the
+            // row drew. The flip lands on the next frame, which is asked for
+            // here rather than left to whatever else happens to repaint.
+            cx.request_repaint();
+        }
+        doc.draw_module(&spec, &mut body);
+    }
+
+    /// A verb one of this module's own controls declares is **this module's**,
+    /// however it arrived — the control's click and its keystroke are the same
+    /// command, so a keyboard user and a pointer user get the same effect.
+    fn perform(&mut self, doc: &mut D, verb: Verb, cx: &mut ItemCtx<'_>) -> Handled {
+        if self.apply(&*doc, verb) {
+            cx.request_repaint();
+            return Handled::Yes;
+        }
+        Handled::No
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Unit tests
