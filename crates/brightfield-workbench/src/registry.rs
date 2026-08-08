@@ -464,9 +464,9 @@ impl Field {
 /// This is the type-constraint half of "a chart kind is data". A kind does not
 /// validate its own inputs inside its builder — it *declares* what it takes,
 /// and [`ChartKind::bind`] does the checking once, for every kind. That plus
-/// the id check in [`ChartKind::spec`] is what makes the builder a plain
-/// function rather than a component with an error path; see [`Bound`] for how
-/// the two are handed to it as one argument, and for where that stops.
+/// the id and slot checks in [`ChartKind::spec`] is what makes the builder a
+/// plain function rather than a component with an error path; see [`Bound`] for
+/// how the two are handed to it as one argument, and for where that stops.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FieldSlot {
     /// What the field means to this kind: `"x"`, `"y"`, `"colour"`. Unique
@@ -516,8 +516,9 @@ impl FieldSlot {
 /// already satisfied the slots of *the kind that produced it*. Only half,
 /// because that kind need not be the kind about to build from it — two kinds'
 /// bindings are the same Rust type. [`ChartKind::spec`] closes that gap on the
-/// route through it: it checks the id and hands the builder a [`Bound`], which
-/// nothing else makes. [`Bound`] states where that stops.
+/// route through it: it checks the id, re-checks the columns against its own
+/// slots, and hands the builder a [`Bound`], which nothing else makes.
+/// [`Bound`] states where that stops.
 ///
 /// The alternative — handing the builder a bag of columns and asking it to
 /// check — puts a copy of the constraint in every kind, which is the per-kind
@@ -557,9 +558,10 @@ impl FieldBinding {
 /// [`ChartKind::spec`] made it.
 ///
 /// `spec` is the only thing that makes one, and a kind's builder takes one, so
-/// no binding reaches a builder without some kind's id check having run over
-/// it. [`ChartKind::build`] is a `pub` field and a caller can read it; without
-/// a `Bound` there is nothing to call it with.
+/// no binding reaches a builder without some kind's id check and that same
+/// kind's slot check having run over it. [`ChartKind::build`] is a `pub` field
+/// and a caller can read it; without a `Bound` there is nothing to call it
+/// with.
 ///
 /// It derefs to the binding, so a builder written `|binding, _|
 /// binding.name("x")` reads exactly as it would over a [`FieldBinding`]:
@@ -645,8 +647,8 @@ impl FieldBinding {
 /// So the guarantee to write a builder against is *this kind's declaration*,
 /// and delegating to another kind's builder steps outside it.
 /// `crates/brightfield-workbench/tests/chart_kind_bound.rs` holds both sides:
-/// the id check biting from outside the crate, and the forwarded call that it
-/// does not cover.
+/// the id and slot checks biting from outside the crate — including on a kind
+/// that shares this one's id — and the forwarded call that neither covers.
 #[derive(Debug)]
 pub struct Bound<'a>(&'a FieldBinding);
 
@@ -843,9 +845,10 @@ pub struct ChartKind<S> {
     ///
     /// No error path, and that is a property of the argument rather than of
     /// the builder: [`ChartKind::spec`] hands over a [`Bound`] only once the
-    /// binding has satisfied this kind's slots *and* matched this kind's id,
-    /// and it is the only thing that makes one. A builder reached that way has
-    /// nothing to reject.
+    /// binding has matched this kind's id *and* been re-checked against this
+    /// kind's own slots, and it is the only thing that makes one. Both are
+    /// checked; neither is inferred from the other. A builder reached that way
+    /// has nothing to reject.
     ///
     /// Forwarding to another kind's builder is not that way; [`Bound`] says
     /// what a forwarded one carries.
@@ -935,6 +938,45 @@ impl<S> ChartKind<S> {
             .collect()
     }
 
+    /// Check `binding`'s columns against this kind's own slot declaration.
+    ///
+    /// The id check above says which kind *claimed* the binding. It does not
+    /// say that kind declared the slots this one does: [`ChartKindId`] wraps a
+    /// `&'static str`, so two [`ChartKind`] values can carry one id and
+    /// different `slots`. [`ChartKindRegistry::new`] rejects a duplicate id
+    /// within one registry; a kind built outside a registry, or a second
+    /// registry's divergent declaration, is not covered by that. So the fit is
+    /// re-checked here rather than inferred from the id.
+    ///
+    /// A role resolves to the first slot declaring it, which is exact for any
+    /// kind [`audit_chart_kinds`] passes — the audit rejects a repeated role,
+    /// for the same reason [`FieldBinding::field`] answers with the first.
+    fn check_slots(&self, binding: &FieldBinding) -> Result<(), String> {
+        for (role, field) in &binding.bound {
+            let Some(slot) = self.slots.iter().find(|s| s.role == *role) else {
+                return Err(format!(
+                    "{}: handed a binding filling {role:?}, a slot this kind does not declare",
+                    self.id
+                ));
+            };
+            if !slot.takes(field) {
+                return Err(format!(
+                    "{}: handed {:?} in slot {:?}, which takes {:?} and not {:?}",
+                    self.id, field.name, role, slot.accepts, field.ty
+                ));
+            }
+        }
+        for slot in self.slots.iter().filter(|s| s.required) {
+            if binding.field(slot.role).is_none() {
+                return Err(format!(
+                    "{}: handed a binding with nothing in required slot {:?}",
+                    self.id, slot.role
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// The spec for one module of this kind, and the way into
     /// [`ChartKind::build`]: the builder takes a [`Bound`], and `spec` is the
     /// only thing that makes one. *Which* kind's `spec` made the one a builder
@@ -942,9 +984,12 @@ impl<S> ChartKind<S> {
     ///
     /// # Errors
     ///
-    /// If `binding` was produced by a different kind. That is the one thing
-    /// [`ChartKind::bind`]'s type cannot carry — two kinds' bindings are the
-    /// same Rust type — so it is checked here rather than assumed.
+    /// If `binding` was produced by a different kind, or if its columns do not
+    /// fit *this* kind's slots. Neither is something [`ChartKind::bind`]'s type
+    /// can carry — two kinds' bindings are the same Rust type — so both are
+    /// checked here rather than assumed. The second is not implied by the
+    /// first — an id says which kind claimed a binding, not what that kind
+    /// declared — and is done by the private `check_slots`, which says why.
     pub fn spec(&self, binding: &FieldBinding, options: &ModuleOptions) -> Result<S, String> {
         if binding.kind != self.id {
             return Err(format!(
@@ -952,6 +997,7 @@ impl<S> ChartKind<S> {
                 self.id, binding.kind
             ));
         }
+        self.check_slots(binding)?;
         Ok((self.build)(&Bound(binding), options))
     }
 }
@@ -1254,10 +1300,11 @@ mod chart_kind_tests {
 
     /// The type constraints are enforced by [`ChartKind::bind`], once, rather
     /// than by each builder — which is why a builder takes bound columns
-    /// instead of checking raw ones. The id check that keeps those columns
-    /// attached to this kind is in [`ChartKind::spec`], pinned by
-    /// `a_binding_belongs_to_the_kind_that_made_it` below; where the pair stops
-    /// is pinned by `tests/chart_kind_bound.rs`.
+    /// instead of checking raw ones. What keeps those columns attached to this
+    /// kind is in [`ChartKind::spec`] — the id check, pinned by
+    /// `a_binding_belongs_to_the_kind_that_made_it` below, and the slot
+    /// re-check that the id does not imply; both, and where they stop, are
+    /// pinned by `tests/chart_kind_bound.rs`.
     #[test]
     fn a_slot_refuses_a_column_of_the_wrong_type() {
         let kind = bars();
