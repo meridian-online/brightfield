@@ -742,12 +742,9 @@ impl TypeSource for FinetypeBundle {
 #[must_use]
 pub fn bundle_beside(exe: &Path) -> Option<PathBuf> {
     let dir = exe.parent()?;
-    for candidate in [dir.join("finetype"), dir.join("../Resources/finetype")] {
-        if candidate.join(EXTENSION_FILE).is_file() {
-            return Some(candidate);
-        }
-    }
-    None
+    [dir.join("finetype"), dir.join("../Resources/finetype")]
+        .into_iter()
+        .find(|candidate| candidate.join(EXTENSION_FILE).is_file())
 }
 
 #[cfg(test)]

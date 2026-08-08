@@ -2470,7 +2470,7 @@ impl Session {
         let row_count = profile::read_count(&batch, 0);
         let mut out = Vec::with_capacity(columns.len());
         let mut idx = 1usize;
-        for (((col, ty), &g), asked) in columns.iter().zip(gated.iter()).zip(typed.into_iter()) {
+        for (((col, ty), &g), asked) in columns.iter().zip(gated.iter()).zip(typed) {
             let non_null = profile::read_count(&batch, idx);
             idx += 1;
             let distinct = profile::read_count(&batch, idx);
