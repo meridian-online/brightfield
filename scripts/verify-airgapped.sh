@@ -31,6 +31,20 @@
 #      defect this file exists to keep out of the artifact, and it would
 #      otherwise be invisible here — the two positive legs above pass whether
 #      or not it is present.
+#   5. THE SEMANTIC TYPE SOURCE, when the artifact carries one. First the
+#      bundle is read off disk by scripts/check-bundled-extension.sh — shape,
+#      ABI, and a symlink count, because a model copied with `cp -R` instead of
+#      `cp -RL` produces an artifact that works only on the machine that built
+#      it and can never be caught by running it there. Then the half no file
+#      check can see: the rendering run above is required to be SILENT on
+#      "no semantic type source", which is what the application prints when a
+#      configured bundle fails to come up. Coming up includes making the model
+#      classify, so silence from a run that rendered means the extension loaded
+#      and the model ran with the network denied and HOME sealed. It is
+#      asserted by negation because a GUI binary has no headless way to print a
+#      label. An artifact with NO bundle skips this leg — that is a supported
+#      build, see scripts/package.sh — but a bundle that is present and broken
+#      is a failure.
 #
 # The jail: macOS `sandbox-exec` with `(deny network*)`; Linux `unshare -rn`
 # (a network namespace with no interfaces). Both windows open briefly on a
@@ -49,6 +63,7 @@
 # the artifact self-contained, not the artifact-plus-repo.
 set -euo pipefail
 
+HERE=$(cd "$(dirname "$0")" && pwd)
 ARTIFACT="${1:?usage: scripts/verify-airgapped.sh dist/brightfield-<version>-<target>.(tar.gz|dmg)}"
 [ -f "$ARTIFACT" ] || { echo "no such artifact: $ARTIFACT"; exit 1; }
 
@@ -222,34 +237,13 @@ if [ ! -d "$PKG/$FTBUNDLE" ]; then
   echo "== type source: this artifact carries none — the label legs are skipped"
 else
   echo "== type source: ${FTBUNDLE}"
-  for required in finetype.duckdb_extension model/model.safetensors model/config.json \
-                  model/label_map.json model/model2vec/model.safetensors \
-                  model/model2vec/tokenizer.json taxonomy-schemas.json; do
-    [ -f "$PKG/$FTBUNDLE/$required" ] || {
-      echo "   FAILED: the bundle carries no ${required}"; exit 1; }
-  done
-  # Self-containedness. `cp -RL` in scripts/package.sh is what makes a
-  # cache-fetched model portable, and a symlink surviving into the artifact is
-  # the exact failure it prevents: it resolves on the packaging machine and
-  # dangles everywhere else, so it cannot be caught by running the artifact
-  # where it was built.
-  strays=$(find "$PKG/$FTBUNDLE" -type l | wc -l | tr -d ' ')
-  [ "$strays" -eq 0 ] || {
-    echo "   FAILED: ${strays} symlink(s) inside the bundle — it is not self-contained"
-    find "$PKG/$FTBUNDLE" -type l | sed 's/^/     /'
-    exit 1; }
-  # The metadata trailer, read the same way scripts/package.sh and
-  # brightfield_engine::semantic read it: last 512 bytes, field 1 (magic) at
-  # offset 224, ABI at 96, platform at 192.
-  ft_field() {
-    tail -c 512 "$PKG/$FTBUNDLE/finetype.duckdb_extension" \
-      | dd bs=1 skip="$1" count=32 2>/dev/null | tr -d '\0'
-  }
-  [ "$(ft_field 224)" = "4" ] || {
-    echo "   FAILED: the bundled extension carries no DuckDB metadata trailer"; exit 1; }
-  [ "$(ft_field 96)" = "C_STRUCT" ] || {
-    echo "   FAILED: the bundled extension is not a stable-C-API (C_STRUCT) build"; exit 1; }
-  echo "   ok: finetype $(ft_field 128), $(ft_field 96), $(ft_field 192), no symlinks"
+  # One reading of the bundle, shared with scripts/package.sh — including the
+  # symlink count, which is the check that a `cp -R` where `cp -RL` was needed
+  # produces an artifact working ONLY on the machine that built it. No platform
+  # argument: the artifact does not know which target it is, and the packaging
+  # run already decided that against the target it was building for.
+  "${HERE}/check-bundled-extension.sh" "$PKG/$FTBUNDLE" | sed 's/^/   /' || {
+    echo "   FAILED: the artifact carries a type source that would not load"; exit 1; }
   HAS_TYPE_SOURCE=1
 fi
 

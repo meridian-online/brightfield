@@ -207,12 +207,11 @@ fi
 # a degraded one — it is what a contributor's local `scripts/package.sh` run
 # produces — so this is a message, not a failure.
 #
-# The platform check is the one that earns its place. DuckDB refuses a
-# loadable extension whose stamped platform is not its own, and this script's
-# TARGET can differ from the host: cross-packaging the x86_64 artifact on an
-# arm64 machine with an arm64 extension in the bundle would produce a tarball
-# that fails on every machine it was built for and none the packager owns.
-# Reading it here turns that into a red packaging run.
+# What makes a bundle acceptable is scripts/check-bundled-extension.sh, which
+# is also what scripts/verify-airgapped.sh runs over the bundle inside a built
+# artifact — one reading of the metadata trailer, not two that can drift. Its
+# own self-test runs on every pull request; this call and the airgap one happen
+# only on a release.
 # ---------------------------------------------------------------------------
 FINETYPE_BUNDLE="${BRIGHTFIELD_FINETYPE_BUNDLE:-}"
 if [ -z "$FINETYPE_BUNDLE" ]; then
@@ -220,58 +219,21 @@ if [ -z "$FINETYPE_BUNDLE" ]; then
   echo "   the artifact ships without one; columns report no semantic label"
 else
   echo "== type source: ${FINETYPE_BUNDLE}"
-  ft_ext="${FINETYPE_BUNDLE}/finetype.duckdb_extension"
-  ft_model="${FINETYPE_BUNDLE}/model"
-  ft_schemas="${FINETYPE_BUNDLE}/taxonomy-schemas.json"
-  for required in "$ft_ext" "$ft_model/model.safetensors" "$ft_model/config.json" \
-                  "$ft_model/label_map.json" "$ft_schemas"; do
-    [ -e "$required" ] || {
-      echo "package.sh: the FineType bundle carries no ${required#"$FINETYPE_BUNDLE"/}." >&2
-      echo "  A bundle is: finetype.duckdb_extension, model/ (safetensors +" >&2
-      echo "  config.json + label_map.json + model2vec/), taxonomy-schemas.json." >&2
-      exit 1; }
-  done
-
-  # The DuckDB metadata trailer: the last 512 bytes, eight 32-byte NUL-padded
-  # ASCII fields written last-first, then 256 bytes of signature space. Field 1
-  # (the magic, "4") lands at offset 224; the ABI type is at 96 and the
-  # platform at 192. Read the same way `brightfield_engine::semantic::read_stamp`
-  # reads it, so the packaging run and the engine cannot disagree about what
-  # the file says.
-  ft_field() { tail -c 512 "$ft_ext" | dd bs=1 skip="$1" count=32 2>/dev/null | tr -d '\0'; }
-  ft_magic=$(ft_field 224)
-  ft_abi=$(ft_field 96)
-  ft_platform=$(ft_field 192)
-  ft_version=$(ft_field 128)
-  [ "$ft_magic" = "4" ] || {
-    echo "package.sh: ${ft_ext} carries no DuckDB metadata trailer (magic '${ft_magic}')." >&2
-    echo "  An unstamped shared library will not LOAD; stamp it with" >&2
-    echo "  append-duckdb-metadata before bundling it." >&2
-    exit 1; }
-  [ "$ft_abi" = "C_STRUCT" ] || {
-    echo "package.sh: ${ft_ext} declares ABI '${ft_abi}', not C_STRUCT." >&2
-    echo "  Only DuckDB's stable C API survives a DuckDB version bump; an" >&2
-    echo "  unstable-API build is pinned to one exact release and cannot be" >&2
-    echo "  shipped against a bundled DuckDB that moves independently." >&2
-    exit 1; }
+  # The DuckDB platform name for the target being PACKAGED, which is not
+  # necessarily the host's. An unknown target is a hard failure rather than an
+  # unchecked pass: a mapping nobody added is a bundle nobody checked.
   case "$TARGET" in
     aarch64-apple-darwin)      want_platform=osx_arm64 ;;
     x86_64-apple-darwin)       want_platform=osx_amd64 ;;
     aarch64-unknown-linux-gnu) want_platform=linux_arm64 ;;
     x86_64-unknown-linux-gnu)  want_platform=linux_amd64 ;;
-    *)                         want_platform="" ;;
+    *)
+      echo "package.sh: no DuckDB platform name known for target ${TARGET}, so the" >&2
+      echo "  bundled extension cannot be checked against it. Add the mapping." >&2
+      exit 1 ;;
   esac
-  if [ -z "$want_platform" ]; then
-    echo "package.sh: no DuckDB platform name known for target ${TARGET}, so the" >&2
-    echo "  bundled extension cannot be checked against it. Add the mapping." >&2
-    exit 1
-  fi
-  [ "$ft_platform" = "$want_platform" ] || {
-    echo "package.sh: the bundled extension is built for '${ft_platform}' and this" >&2
-    echo "  artifact targets ${TARGET} ('${want_platform}'). DuckDB would refuse" >&2
-    echo "  to load it on every machine this tarball is for." >&2
-    exit 1; }
-  echo "   finetype ${ft_version}, ${ft_abi}, ${ft_platform} — matches ${TARGET}"
+  scripts/check-bundled-extension.sh "$FINETYPE_BUNDLE" "$want_platform" \
+    || { echo "package.sh: refusing to stage a bundle that would not load." >&2; exit 1; }
 fi
 
 echo "== stage: ${STAGE}"

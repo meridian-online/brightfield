@@ -53,6 +53,17 @@ jobs:
       - name: package version-guard self-test
         run: ./scripts/package-version-guard-selftest.sh
 
+      # The bundled-extension guard, for the same reason and by the same
+      # argument. It is called from two places that both run only on a release
+      # — scripts/package.sh staging a FineType bundle, and
+      # scripts/verify-airgapped.sh reading the one inside a built artifact —
+      # so on its own it would be exercised a handful of times a year, always
+      # at the moment it is least welcome to be wrong. The self-test needs no
+      # toolchain, no network and no real extension: its fixtures are a few
+      # hundred bytes of synthesised DuckDB metadata trailer.
+      - name: bundled-extension guard self-test
+        run: ./scripts/check-bundled-extension-selftest.sh
+
       # The formula-asset check is the odd one here: only its self-test can run
       # on a pull request, because the check itself addresses a published
       # release through the tap formula and there is no release on a branch. So
