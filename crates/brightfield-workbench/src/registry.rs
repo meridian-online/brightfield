@@ -463,9 +463,10 @@ impl Field {
 ///
 /// This is the type-constraint half of "a chart kind is data". A kind does not
 /// validate its own inputs inside its builder — it *declares* what it takes,
-/// and [`ChartKind::bind`] does the checking once, for every kind. That is
-/// what makes the builder a plain function rather than a component with an
-/// error path.
+/// and [`ChartKind::bind`] does the checking once, for every kind. That plus
+/// the id check in [`ChartKind::spec`] is what makes the builder a plain
+/// function rather than a component with an error path; see [`Bound`] for how
+/// the two are handed to it as one argument.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FieldSlot {
     /// What the field means to this kind: `"x"`, `"y"`, `"colour"`. Unique
@@ -509,13 +510,16 @@ impl FieldSlot {
 
 /// Which column filled which of a chart kind's slots.
 ///
-/// **[`ChartKind::bind`] is the only thing that makes one**, and that is the
-/// load-bearing part: a binding which exists has already satisfied the slots
-/// of the kind that produced it, so [`ChartKind::build`] can be a plain
-/// function with no validation inside it. The alternative — handing the
-/// builder a bag of columns and asking it to check — puts a copy of the
-/// constraint in every kind, which is the per-kind drift a registry exists to
-/// end.
+/// **[`ChartKind::bind`] is the only thing that makes one**, and that is half
+/// of what lets a builder be a plain function: a binding which exists has
+/// already satisfied the slots of *the kind that produced it*. Only half,
+/// because that kind need not be the kind about to build from it — two kinds'
+/// bindings are the same Rust type. [`ChartKind::spec`] is the other half: it
+/// checks the id and hands the builder a [`Bound`], which nothing else makes.
+///
+/// The alternative — handing the builder a bag of columns and asking it to
+/// check — puts a copy of the constraint in every kind, which is the per-kind
+/// drift a registry exists to end.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FieldBinding {
     kind: ChartKindId,
@@ -544,6 +548,95 @@ impl FieldBinding {
     /// Every filled role, in slot order.
     pub fn roles(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.bound.iter().map(|(r, _)| *r)
+    }
+}
+
+/// A [`FieldBinding`] that has been checked against the kind about to build
+/// from it.
+///
+/// [`ChartKind::spec`] is the only thing that makes one, and a kind's builder
+/// takes one — so the id check is not a courtesy a caller may skip.
+/// [`ChartKind::build`] is a `pub` field and a caller can read it; without a
+/// `Bound` there is nothing to call it with.
+///
+/// It derefs to the binding, so a builder written `|binding, _|
+/// binding.name("x")` reads exactly as it would over a [`FieldBinding`]:
+/// closing the direct route costs a kind no change of shape.
+///
+/// # The route this closes
+///
+/// The checked route builds a spec:
+///
+/// ```
+/// use brightfield_workbench::registry::{
+///     Bound, ChartKind, ChartKindId, Field, FieldSlot, FieldType, ModuleOptions,
+/// };
+/// use brightfield_workbench::Icon;
+///
+/// const BAR_SLOTS: &[FieldSlot] = &[
+///     FieldSlot::required("x", &[FieldType::Categorical]),
+///     FieldSlot::required("y", &[FieldType::Quantitative]),
+/// ];
+/// let bars = ChartKind::<String> {
+///     id: ChartKindId::new("bars"),
+///     icon: Icon("chart-bar"),
+///     description: "Ranks a category by a measure",
+///     slots: BAR_SLOTS,
+///     controls: Vec::new,
+///     build: |binding: &Bound<'_>, _| {
+///         format!("bar {:?} {:?}", binding.name("x"), binding.name("y"))
+///     },
+/// };
+/// let columns = [
+///     Field::new("sector", FieldType::Categorical),
+///     Field::new("revenue", FieldType::Quantitative),
+/// ];
+/// let binding = bars.bind(&columns).unwrap();
+/// assert_eq!(
+///     bars.spec(&binding, &ModuleOptions::default()).unwrap(),
+///     r#"bar Some("sector") Some("revenue")"#
+/// );
+/// ```
+///
+/// The same setup, and the unchecked route does not compile — the builder
+/// wants a `Bound`, and nothing outside this crate can make one. The block
+/// above is that setup, visible and passing, so this one fails for the line
+/// it is here to refuse rather than for a typo above it:
+///
+/// ```compile_fail
+/// # use brightfield_workbench::registry::{
+/// #     Bound, ChartKind, ChartKindId, Field, FieldSlot, FieldType, ModuleOptions,
+/// # };
+/// # use brightfield_workbench::Icon;
+/// # const BAR_SLOTS: &[FieldSlot] = &[
+/// #     FieldSlot::required("x", &[FieldType::Categorical]),
+/// #     FieldSlot::required("y", &[FieldType::Quantitative]),
+/// # ];
+/// # let bars = ChartKind::<String> {
+/// #     id: ChartKindId::new("bars"),
+/// #     icon: Icon("chart-bar"),
+/// #     description: "Ranks a category by a measure",
+/// #     slots: BAR_SLOTS,
+/// #     controls: Vec::new,
+/// #     build: |binding: &Bound<'_>, _| {
+/// #         format!("bar {:?} {:?}", binding.name("x"), binding.name("y"))
+/// #     },
+/// # };
+/// # let columns = [
+/// #     Field::new("sector", FieldType::Categorical),
+/// #     Field::new("revenue", FieldType::Quantitative),
+/// # ];
+/// # let binding = bars.bind(&columns).unwrap();
+/// let _ = (bars.build)(&binding, &ModuleOptions::default());
+/// ```
+#[derive(Debug)]
+pub struct Bound<'a>(&'a FieldBinding);
+
+impl std::ops::Deref for Bound<'_> {
+    type Target = FieldBinding;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
     }
 }
 
@@ -662,8 +755,11 @@ impl ModuleOptions {
 
 /// A stable name for a kind of chart.
 ///
-/// The string is the compatibility surface, as [`ItemId`]'s is: a saved module
-/// records the kind it draws by this name.
+/// The string is what a module holds to name the kind it draws and what
+/// [`ChartKindRegistry::find`] resolves against, so renaming a kind renames it
+/// for every module pointing at one. It is not a serialisation format: it
+/// derives no serde, and [`SavedLayout`](crate::persist::SavedLayout) carries
+/// [`PaneKey`]s rather than modules.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChartKindId(&'static str);
 
@@ -712,15 +808,27 @@ pub struct ChartKind<S> {
     pub slots: &'static [FieldSlot],
     /// The controls it hangs on its own module.
     ///
-    /// A function rather than a `&'static [ModuleControl]` because a
-    /// [`Verb`] is checked against the keyboard registry when it is made, so a
-    /// control cannot be a `const`. Called once per module, at construction.
+    /// A function rather than a `&'static [ModuleControl]` because
+    /// [`ModuleControl::label`] is a `String`, which forecloses a `const`
+    /// array on its own. The [`Verb`] each control carries is checked against
+    /// the keyboard registry when it is made, so the list is built at run time
+    /// on that count too.
+    ///
+    /// Called on every read rather than cached, at four sites: once per module
+    /// at construction by [`ChartKind::options`], **every frame** a module
+    /// draws by [`ChartKind::toolbar`], on **every verb dispatch** by
+    /// [`ChartModule`](crate::item::ChartModule), and once per kind by
+    /// [`audit_chart_kinds`]. Return a list of literals; put nothing here you
+    /// would not pay for per frame.
     pub controls: fn() -> Vec<ModuleControl>,
     /// The spec, from the bound columns and the module's own switches.
     ///
-    /// Total by type: a [`FieldBinding`] only exists once the slots above are
-    /// satisfied, so there is nothing here for a builder to reject.
-    pub build: fn(&FieldBinding, &ModuleOptions) -> S,
+    /// No error path, and that is a property of the argument rather than of
+    /// the builder: a [`Bound`] is a binding that has satisfied this kind's
+    /// slots *and* been checked against this kind's id, and
+    /// [`ChartKind::spec`] is the only thing that makes one. So there is
+    /// nothing here for a builder to reject.
+    pub build: fn(&Bound<'_>, &ModuleOptions) -> S,
 }
 
 impl<S> std::fmt::Debug for ChartKind<S> {
@@ -806,7 +914,9 @@ impl<S> ChartKind<S> {
             .collect()
     }
 
-    /// The spec for one module of this kind.
+    /// The spec for one module of this kind, and the only route to
+    /// [`ChartKind::build`] — the builder takes a [`Bound`], and this is the
+    /// only thing that makes one.
     ///
     /// # Errors
     ///
@@ -820,14 +930,14 @@ impl<S> ChartKind<S> {
                 self.id, binding.kind
             ));
         }
-        Ok((self.build)(binding, options))
+        Ok((self.build)(&Bound(binding), options))
     }
 }
 
 /// One view's chart vocabulary.
 ///
 /// The list a picker offers and a generator chooses from, and the thing a
-/// saved module resolves its kind id against.
+/// module resolves its [`ChartKindId`] against every frame it draws.
 pub struct ChartKindRegistry<S> {
     kinds: Vec<ChartKind<S>>,
 }
@@ -893,8 +1003,9 @@ impl<S> ChartKindRegistry<S> {
 /// written in a different voice from every other one — are exactly the ones
 /// that make a picker read as a pile of one-offs.
 ///
-/// Each kind must: carry a non-empty icon name; describe itself in the house
-/// style; declare at least one slot and at least one required slot; give every
+/// Each kind must: carry a non-empty id and a non-empty icon name; describe
+/// itself in the house style, which starts with describing itself at all;
+/// declare at least one slot and at least one required slot; give every
 /// slot a unique role and at least one accepted type; give every control a
 /// unique id and a registered verb; and **build a spec from its own
 /// declaration** — the audit synthesises one column per required slot, binds
@@ -1119,7 +1230,9 @@ mod chart_kind_tests {
     }
 
     /// The type constraints are enforced by [`ChartKind::bind`], once, rather
-    /// than by each builder — which is why the builder has no error path.
+    /// than by each builder — which is half of why the builder has no error
+    /// path. The other half is the id check in [`ChartKind::spec`], pinned by
+    /// `a_binding_belongs_to_the_kind_that_made_it` below.
     #[test]
     fn a_slot_refuses_a_column_of_the_wrong_type() {
         let kind = bars();
@@ -1236,6 +1349,22 @@ mod chart_kind_tests {
         const ALL_OPTIONAL: &[FieldSlot] = &[FieldSlot::optional("x", &[FieldType::Categorical])];
 
         let cases: Vec<(&str, ChartKind<Spec>, &str)> = vec![
+            (
+                "an empty id",
+                ChartKind {
+                    id: ChartKindId::new(""),
+                    ..bars()
+                },
+                "empty id",
+            ),
+            (
+                "no description at all",
+                ChartKind {
+                    description: "",
+                    ..bars()
+                },
+                "no description",
+            ),
             (
                 "terminal period",
                 ChartKind {

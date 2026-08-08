@@ -738,8 +738,9 @@ mod module_tests {
         FieldSlot::required("y", &[FieldType::Quantitative]),
     ];
 
-    /// The migrated kind: what [`HandWrittenBars`] below does, expressed as
-    /// data. It declares no controls, because the pane it replaces had none.
+    /// The kind under test: what [`HandWrittenBars`] below does, expressed as
+    /// data. It declares no controls, because the stand-in it is compared
+    /// against declares none.
     fn bars() -> ChartKind<Spec> {
         ChartKind {
             id: BARS,
@@ -794,6 +795,12 @@ mod module_tests {
     /// visible in the triangles rather than only in a struct comparison.
     const LOG_INK: egui::Color32 = egui::Color32::from_rgb(13, 11, 7);
 
+    /// The block a bar module's body paints, and the one a dot module paints.
+    /// Named rather than typed at the call site so a geometry assertion can
+    /// state the size it expects.
+    const BAR_INK: egui::Vec2 = egui::vec2(40.0, 12.0);
+    const DOT_INK: egui::Vec2 = egui::vec2(20.0, 12.0);
+
     /// A view document: the chart vocabulary, and the one place a spec is
     /// drawn.
     struct Doc {
@@ -832,22 +839,23 @@ mod module_tests {
                 BODY_INK
             };
             let rect = ui.max_rect();
-            let width = if spec.mark == "bar" { 40.0 } else { 20.0 };
-            ui.painter().rect_filled(
-                egui::Rect::from_min_size(rect.min, egui::vec2(width, 12.0)),
-                0.0,
-                ink,
-            );
+            let size = if spec.mark == "bar" { BAR_INK } else { DOT_INK };
+            ui.painter()
+                .rect_filled(egui::Rect::from_min_size(rect.min, size), 0.0, ink);
         }
     }
 
-    /// The shape a chart pane is written in **without** a registry: one
-    /// component per chart shape, holding its own columns and building its own
-    /// spec inline.
+    /// A chart pane whose shape is a component per chart kind: it holds its
+    /// own columns and builds its own spec inline, and a second kind would be
+    /// a second type beside it.
     ///
-    /// This is the "before" half of the migration, and it is here so that
-    /// "the migrated kind draws unchanged" is a comparison against something
-    /// rather than an assertion about nothing.
+    /// **A stand-in, not something this tree contains.** `brightfield-shell`'s
+    /// `ChartItem` is already one item over a mark-kind enum — a new mark
+    /// there is a new match arm, not a new shell. What a registry moves is
+    /// where a kind is *declared*: an arm inside the component, or a value in
+    /// a list outside it. This is the first of those, written small, so that
+    /// "the kind draws what the component drew" is a comparison against
+    /// something rather than an assertion about nothing.
     struct HandWrittenBars {
         item: ItemId,
         x: String,
@@ -947,6 +955,42 @@ mod module_tests {
         out
     }
 
+    /// Where [`pane_frame`](crate::chrome::pane_frame) hands an item's body
+    /// over inside [`PANE`]: below the header band, and inside the content
+    /// inset on every side.
+    ///
+    /// Derived from the chrome's own published measurements and from nothing
+    /// the tests below draw with. That independence is the point — an
+    /// assertion against this says *where* ink landed, where a pane-to-pane
+    /// comparison can only say that two routines agreed on a place, and both
+    /// panes below paint through the one `Doc::draw_module`.
+    fn body_origin() -> egui::Pos2 {
+        let inset = crate::chrome::pane_content_inset();
+        egui::pos2(
+            PANE.left() + inset,
+            PANE.top() + crate::chrome::header_band_height() + inset,
+        )
+    }
+
+    /// The anti-aliasing inset a vertex position carries. The tessellator
+    /// feathers a filled rect outward with transparent vertices and pulls the
+    /// opaque ones in by half the feather width, so a rect read back out of a
+    /// tessellated frame sits this far inside the rect that was asked for.
+    /// Measured on this egui rather than assumed: at 0.0, `ink_at` reports the
+    /// exact gap it found.
+    const INK_FEATHER: f32 = 0.5;
+
+    /// Whether the ink `found` in a frame is the rect that was `asked` for.
+    ///
+    /// Allows for [`INK_FEATHER`] and for float error in the layout that
+    /// produced it, and for nothing a misplaced paint could hide behind: the
+    /// slack is 0.01pt, against displacements measured in whole points.
+    fn ink_at(found: egui::Rect, asked: egui::Rect) -> bool {
+        let want = asked.shrink(INK_FEATHER);
+        (found.min - want.min).abs().max_elem() < 0.01
+            && (found.max - want.max).abs().max_elem() < 0.01
+    }
+
     /// The bounding rect of every vertex painted in exactly `ink`, or `None`
     /// when nothing in the frame was — a clipped shape contributes no
     /// vertices, so absence is an assertion.
@@ -995,15 +1039,27 @@ mod module_tests {
     }
 
     /// …and drawn through the real pane frame, the registry-driven module puts
-    /// the **same triangles** on the screen as the component it replaces.
+    /// the **same triangles** on the screen as the hand-written stand-in — at
+    /// the place the pane frame hands the body over, not merely at the same
+    /// place as each other.
     ///
-    /// This is the other half, and it is the one that covers the chrome: the
-    /// migrated kind declares no controls, so `module_frame` takes no height
-    /// and paints nothing, and the pane renders exactly as a pane with a
-    /// hand-written item does today. A single pixel of strip, a single point
-    /// of reserved gap, and this goes red.
+    /// Two assertions, and the first is what makes the second worth anything.
+    /// Both panes paint through the one `Doc::draw_module`, so a fault *there*
+    /// moves both bodies together and an equality between them stays green
+    /// through it: shared wrongness is the only way these two panes can differ
+    /// from correct, and it is exactly what comparing them cannot see. So each
+    /// body's ink is pinned to an absolute rect first, built by
+    /// [`body_origin`] from [`PANE`], the header band and the content inset —
+    /// none of which the painting under test contributes to.
+    ///
+    /// The triangle comparison then covers what an absolute rect cannot: the
+    /// chrome around the body. This kind declares no controls, so
+    /// [`module_frame`](crate::chrome::module_frame) takes no height and
+    /// paints nothing, and the pane renders exactly as one holding an item
+    /// with no module chrome at all. A single pixel of strip, a single point
+    /// of reserved gap, and that half goes red.
     #[test]
-    fn the_migrated_kind_draws_the_same_triangles_as_the_component_it_replaces() {
+    fn the_migrated_kind_draws_the_same_triangles_as_the_hand_written_stand_in() {
         let fields = vec![category("sector"), measure("revenue")];
 
         let mut before_doc = Doc::new();
@@ -1023,17 +1079,26 @@ mod module_tests {
         );
         let after_frame = draw_pane(&mut after_doc, &mut after);
 
+        let want = egui::Rect::from_min_size(body_origin(), BAR_INK);
+        for (whose, frame) in [
+            ("the stand-in", &before_frame),
+            ("the registry-driven module", &after_frame),
+        ] {
+            let ink = painted(frame, BODY_INK)
+                .unwrap_or_else(|| panic!("{whose}: no body ink reached the frame at all"));
+            assert!(
+                ink_at(ink, want),
+                "{whose} painted its body at {ink:?}; the pane frame hands the \
+                 body over at {want:?}, less a {INK_FEATHER}pt feather"
+            );
+        }
+
         assert_eq!(before_doc.drawn, after_doc.drawn, "the same spec was drawn");
-        assert!(
-            painted(&after_frame, BODY_INK).is_some(),
-            "the module's body did not reach the frame at all, so the \
-             comparison below would pass on two blank panes"
-        );
         assert_eq!(
             triangles(&before_frame),
             triangles(&after_frame),
             "the registry-driven module drew different triangles from the \
-             component it replaces"
+             hand-written stand-in"
         );
     }
 

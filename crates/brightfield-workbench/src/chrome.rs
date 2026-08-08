@@ -919,6 +919,15 @@ mod tests {
         out
     }
 
+    /// Whether any vertex in the frame was painted in exactly `ink`. A clipped
+    /// shape contributes no vertices at all, so absence is an assertion.
+    fn painted(primitives: &[egui::ClippedPrimitive], ink: egui::Color32) -> bool {
+        primitives.iter().any(|p| match &p.primitive {
+            egui::epaint::Primitive::Mesh(mesh) => mesh.vertices.iter().any(|v| v.color == ink),
+            egui::epaint::Primitive::Callback(_) => false,
+        })
+    }
+
     /// A marker no chrome paints, so its position in the tessellated output is
     /// unambiguous.
     const MARKER: egui::Color32 = egui::Color32::from_rgb(7, 11, 13);
@@ -997,6 +1006,70 @@ mod tests {
             "the module's body starts {}pt below its rect; the strip and its \
              gap come to {expected}pt",
             top_after - top_before
+        );
+    }
+
+    /// The clip half of the strip rule: a module that reaches for
+    /// `ui.painter()` and paints over its own control strip is clipped away.
+    ///
+    /// [`module_frame`] reserves the strip out of the module's rect, but
+    /// `Ui::new_child` clones the parent's painter — clip rect included — so
+    /// `max_rect` alone constrains layout and nothing else. Delete
+    /// `shrink_clip_rect` in [`module_frame`] and this goes red; the same rule
+    /// on [`pane_frame`] is pinned the same way, by
+    /// `a_pane_that_paints_its_own_header_through_its_ui_is_clipped_away` in
+    /// `crates/brightfield-workbench/tests/chrome_rules.rs`.
+    ///
+    /// What it does **not** claim: the clip does not reach `egui::Area` or
+    /// `ctx.layer_painter`, which take a fresh layer from the `Context`.
+    /// Against those the rule is a review rule, as it is for a pane.
+    #[test]
+    fn a_module_that_paints_over_its_own_control_strip_is_clipped_away() {
+        // Two colours nothing else in the frame uses, so presence and absence
+        // are both unambiguous.
+        const STRIP_INTRUDER: egui::Color32 = egui::Color32::from_rgb(255, 0, 255);
+        const HONEST_BODY: egui::Color32 = egui::Color32::from_rgb(0, 255, 0);
+
+        let entries = vec![ToolbarEntry::button("log", "Log", verb())];
+        let ((strip_top, body_top), primitives) = frame_pixels(|ui| {
+            let outer = ui.max_rect();
+            let (body, drawn) = module_frame(ui, &entries, Mode::Light);
+            assert_eq!(drawn.drawn, vec!["log"], "no strip drew, so none to cover");
+            let rect = body.max_rect();
+            // Over the strip the module just drew, through the module's own Ui.
+            body.painter().rect_filled(
+                egui::Rect::from_min_max(
+                    egui::pos2(outer.left() + 4.0, outer.top()),
+                    egui::pos2(outer.left() + 60.0, outer.top() + 4.0),
+                ),
+                0.0,
+                STRIP_INTRUDER,
+            );
+            // …and something the module is entitled to draw, so a frame that
+            // painted nothing — or a clip that swallowed everything — cannot
+            // pass this by accident.
+            body.painter().rect_filled(
+                egui::Rect::from_min_size(rect.min, egui::vec2(30.0, 10.0)),
+                0.0,
+                HONEST_BODY,
+            );
+            (outer.top(), rect.top())
+        });
+
+        assert!(
+            body_top >= strip_top + 4.0,
+            "the body starts {}pt below the module's rect, so the intruder \
+             above is inside the body and this test proves nothing",
+            body_top - strip_top
+        );
+        assert!(
+            painted(&primitives, HONEST_BODY),
+            "the positive control never reached the frame, so the negative \
+             below proves nothing"
+        );
+        assert!(
+            !painted(&primitives, STRIP_INTRUDER),
+            "a module painted over its own control strip through its own Ui"
         );
     }
 
