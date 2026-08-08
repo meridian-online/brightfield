@@ -265,7 +265,7 @@ pub struct LoadOptions {
     /// `None` (the default) leaves every column's
     /// [`ColumnProfile::semantic`] at [`SemanticType::NotAsked`]: nobody
     /// looked, and nothing about the column's meaning is claimed.
-    /// [`TypeSourceSpec::Bundle`] is loaded from its directory alone with no
+    /// [`semantic::TypeSourceSpec::Bundle`] is loaded from its directory alone with no
     /// network at any point — see [`semantic::FinetypeBundle::open`], which
     /// refuses a bundle it cannot prove works rather than reporting every
     /// column as unlabelled.
