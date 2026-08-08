@@ -139,7 +139,7 @@
 
 use brightfield_workbench::ViewKind;
 
-use crate::pipeline::{compose_spec_str, Composed};
+use crate::pipeline::{Composed, LiveDashboard};
 use crate::protocol::{load_protocol_str, ProtocolInputs};
 
 /// The EDGAR ↔ GLEIF crosswalk Protocol — the anchor of the set.
@@ -294,10 +294,24 @@ pub fn for_view(view: ViewKind) -> Option<&'static Start> {
     STARTS.iter().find(|s| s.view == view)
 }
 
+/// A loaded chart start: the first composition, and the session it came off.
+///
+/// The session is carried rather than dropped because
+/// [`ChartDoc::reflow_to`](crate::app::ChartDoc::reflow_to) re-composites
+/// through it. A document opened without one holds the size its spec declares
+/// for the life of the window, whatever box the pane hands it — which is what
+/// `a_shipped_start_relays_out_when_its_pane_changes_size` holds.
+pub struct OpenedChart {
+    /// The live session behind the dashboard, held across frames.
+    pub live: LiveDashboard,
+    /// The composition the load produced, at the spec's own declared size.
+    pub composed: Composed,
+}
+
 /// A loaded start: the document it produced, and therefore the view it fills.
 pub enum Opened {
-    /// A composed dashboard for the charts view.
-    Charts(Box<Composed>),
+    /// A composed dashboard for the charts view, and its live session.
+    Charts(Box<OpenedChart>),
     /// A built asset graph for the protocol view.
     Protocol(Box<ProtocolInputs>),
 }
@@ -374,16 +388,23 @@ const CROSSWALK_MODELS: &[(&str, &str)] = &[
 /// caller raises as a banner rather than swallowing.
 pub fn load(id: &str) -> Result<Opened, String> {
     match id {
-        DASHBOARD => compose_spec_str(DASHBOARD_SPEC, None)
-            .map(|composed| Opened::Charts(Box::new(composed))),
-        DISTRIBUTION => compose_spec_str(DISTRIBUTION_SPEC, None)
-            .map(|composed| Opened::Charts(Box::new(composed))),
-        BREAKDOWN => compose_spec_str(BREAKDOWN_SPEC, None)
-            .map(|composed| Opened::Charts(Box::new(composed))),
-        CROSSWALK_CHART => compose_spec_str(CROSSWALK_CHART_SPEC, None)
-            .map(|composed| Opened::Charts(Box::new(composed))),
+        DASHBOARD => chart(DASHBOARD_SPEC),
+        DISTRIBUTION => chart(DISTRIBUTION_SPEC),
+        BREAKDOWN => chart(BREAKDOWN_SPEC),
+        CROSSWALK_CHART => chart(CROSSWALK_CHART_SPEC),
         CROSSWALK => load_protocol_str(CROSSWALK_MANIFEST, CROSSWALK_MODELS)
             .map(|inputs| Opened::Protocol(Box::new(inputs))),
         other => Err(format!("no shipped starting point named {other:?}")),
     }
+}
+
+/// One chart start, loaded live and composed once — the shape every entry in
+/// [`load`]'s chart arms takes.
+///
+/// The sampling policy is applied by [`LiveDashboard`]'s own constructor, so a
+/// start is decided the same way a file opened from the command line is.
+fn chart(spec: &str) -> Result<Opened, String> {
+    let mut live = LiveDashboard::load_str(spec, None)?;
+    let composed = live.present()?;
+    Ok(Opened::Charts(Box::new(OpenedChart { live, composed })))
 }

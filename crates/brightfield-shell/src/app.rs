@@ -333,10 +333,11 @@ impl ChartDoc {
     ///
     /// This is the **different-document** entry: it drops any live session,
     /// any committed selections, and the composing file's path, because all
-    /// three belong to the spec that is being replaced — the callers are the
-    /// shipped starts, whose fixtures have no file to edit. A re-composite of
-    /// the *same* live document goes through [`ChartDoc::apply_interaction`],
-    /// which keeps them.
+    /// three belong to the spec that is being replaced. A caller holding a
+    /// session for the *incoming* document puts it on afterwards, through
+    /// [`ChartDoc::attach_live`] — `open_start` and `open_data_file` both do.
+    /// A re-composite of the *same* live document goes through
+    /// [`ChartDoc::apply_interaction`], which keeps them.
     pub fn open(&mut self, composed: Composed) {
         self.composed = composed;
         self.live = None;

@@ -515,7 +515,12 @@ impl Boot {
     /// to load.
     pub fn start(id: &str, flow: Flow) -> Result<Self, String> {
         Ok(match crate::starts::load(id)? {
-            crate::starts::Opened::Charts(composed) => Self::charts(*composed),
+            // The session comes with it, so the pane can re-composite into the
+            // box the dock gives it. See [`crate::starts::OpenedChart`].
+            crate::starts::Opened::Charts(chart) => Self {
+                live: Some(chart.live),
+                ..Self::charts(chart.composed)
+            },
             crate::starts::Opened::Protocol(inputs) => Self::protocol(*inputs, flow, None),
         })
     }
@@ -2402,7 +2407,13 @@ impl MeridianApp {
         match opened {
             // A new chart document is a new set of things to say, and a
             // reason to stop saying the last one's.
-            crate::starts::Opened::Charts(composed) => self.open_chart(*composed),
+            // `open_chart` drops whatever session was behind the outgoing
+            // document; this one's goes on straight after, as the file-open
+            // path does at [`MeridianApp::open_data_file`].
+            crate::starts::Opened::Charts(chart) => {
+                self.open_chart(chart.composed);
+                self.charts.doc.attach_live(chart.live);
+            }
             crate::starts::Opened::Protocol(inputs) => self.protocol.doc.open(*inputs),
         }
         self.notifications.dismiss(banner);

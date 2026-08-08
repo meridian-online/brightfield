@@ -644,15 +644,18 @@ impl Item<ChartDoc> for ChartItem {
         // raster below is a re-layout of the chart at the pane's size rather
         // than a fixed picture the window was sized around. The legend band is
         // drawn beside the raster rather than inside it, so it comes off the
-        // offer.
+        // offer — [`legend::band_width`] is the whole of what the band takes,
+        // gap included, and it is the same term `chart_window_size` uses.
         let reserved = legend::band_width(&doc.composed);
-        let gap = if reserved > 0.0 {
-            meridian_design::spacing::CONTROL_GAP
-        } else {
-            0.0
-        };
         let room = ui.available_size();
-        doc.reflow_to(egui::vec2(room.x - reserved - gap, room.y));
+        // A changed composition needs a frame to be rastered in:
+        // [`ChartDoc::present`] runs at the top of `MeridianApp::draw`, before
+        // the dock reaches this pane, so the texture painted below this call is
+        // the previous composition stretched into the new rect. The gesture
+        // paths further down act on the same signal for the same reason.
+        if doc.reflow_to(egui::vec2(room.x - reserved, room.y)) {
+            cx.request_repaint();
+        }
 
         let (w, h) = (doc.composed.width, doc.composed.height);
         let band = legend::band_width(&doc.composed);
