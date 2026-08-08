@@ -372,8 +372,15 @@ impl Engine {
         // relaxation; on such a connection the only extension that can reach
         // `LOAD` is one already on this disk at a path this process names. A
         // type source asked for on an `Auto` session is refused below.
-        let relax_signatures =
-            options.type_source.is_some() && options.network == NetworkPolicy::Disabled;
+        // Asked of the SPEC, not of "a type source exists": a source that loads
+        // nothing native needs no relaxation and is therefore usable on any
+        // session. Only one that says it needs signature checking off pays the
+        // network restriction that comes with it.
+        let wants_unsigned = options
+            .type_source
+            .as_ref()
+            .is_some_and(semantic::TypeSourceSpec::needs_unsigned_extensions);
+        let relax_signatures = wants_unsigned && options.network == NetworkPolicy::Disabled;
         let conn = if relax_signatures {
             duckdb::Config::default()
                 .allow_unsigned_extensions()
@@ -415,7 +422,7 @@ impl Engine {
         let mut type_source: Option<Box<dyn TypeSource>> = None;
         let mut type_source_error: Option<String> = None;
         if let Some(spec) = &options.type_source {
-            let opened = if relax_signatures {
+            let opened = if relax_signatures || !wants_unsigned {
                 spec.open(&conn)
             } else {
                 Err(format!(

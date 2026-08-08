@@ -90,6 +90,63 @@ impl OpenTypeSource for OpenBackwards {
     }
 }
 
+/// The same source, declaring that it would load an unsigned extension.
+struct OpenBackwardsNative;
+
+impl OpenTypeSource for OpenBackwardsNative {
+    fn open(&self, _conn: &Connection) -> Result<Box<dyn TypeSource>, String> {
+        Ok(Box::new(Backwards))
+    }
+    fn needs_unsigned_extensions(&self) -> bool {
+        true
+    }
+}
+
+/// The unsigned-extension restriction follows the DECLARATION, not FineType.
+///
+/// Two specs opening the identical source, differing only in that answer: the
+/// one that says it needs signature checking off is refused on a session that
+/// could still fetch, and the one that does not is not. Without this the
+/// restriction could quietly be a special case for `TypeSourceSpec::Bundle`,
+/// which would leave the next native source to rediscover the hazard.
+#[test]
+fn the_unsigned_extension_restriction_follows_what_a_source_declares() {
+    let load = |spec: TypeSourceSpec| {
+        let parsed = parse_spec(FIXTURE, Format::Yaml).expect("the fixture parses");
+        let analysis = analyse_spec(&parsed.spec).expect("the fixture analyses");
+        let options = LoadOptions {
+            type_source: Some(spec),
+            ..LoadOptions::default() // NetworkPolicy::Auto
+        };
+        let session = Engine::new()
+            .load_spec_with(parsed.spec, analysis, None, &options)
+            .expect("the fixture loads")
+            .session;
+        (
+            session.type_source_name().map(str::to_string),
+            session.type_source_error().map(str::to_string),
+        )
+    };
+
+    let (name, err) = load(TypeSourceSpec::Other(Arc::new(OpenBackwards)));
+    assert_eq!(name.as_deref(), Some("backwards"));
+    assert_eq!(
+        err, None,
+        "a source that loads nothing native was restricted"
+    );
+
+    let (name, err) = load(TypeSourceSpec::Other(Arc::new(OpenBackwardsNative)));
+    assert_eq!(
+        name, None,
+        "a source that needs unsigned extensions was let through"
+    );
+    let err = err.expect("the refusal has to say why");
+    assert!(err.contains("over the network"), "{err}");
+
+    assert!(TypeSourceSpec::Bundle("/nowhere".into()).needs_unsigned_extensions());
+    assert!(!TypeSourceSpec::Other(Arc::new(OpenBackwards)).needs_unsigned_extensions());
+}
+
 #[test]
 fn a_type_source_that_is_not_finetype_reaches_the_column_profile_unchanged() {
     let parsed = parse_spec(FIXTURE, Format::Yaml).expect("the fixture parses");

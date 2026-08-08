@@ -261,6 +261,23 @@ impl TypeSourceSpec {
             TypeSourceSpec::Other(open) => open.open(conn),
         }
     }
+
+    /// Whether opening this source needs signature checking off on the
+    /// connection.
+    ///
+    /// True for [`TypeSourceSpec::Bundle`]: a FineType extension built anywhere
+    /// but DuckDB's own community pipeline carries 256 zero bytes where a
+    /// signature would go, so `LOAD` refuses it otherwise. A
+    /// [`TypeSourceSpec::Other`] answers for itself and says no by default,
+    /// which is why a source that loads nothing native — the common case — is
+    /// usable on any session.
+    #[must_use]
+    pub fn needs_unsigned_extensions(&self) -> bool {
+        match self {
+            TypeSourceSpec::Bundle(_) => true,
+            TypeSourceSpec::Other(open) => open.needs_unsigned_extensions(),
+        }
+    }
 }
 
 /// Something that can bring a [`TypeSource`] up against a live connection.
@@ -275,6 +292,22 @@ pub trait OpenTypeSource: Send + Sync {
     ///
     /// Whatever stopped it, in words that name the source.
     fn open(&self, conn: &Connection) -> Result<Box<dyn TypeSource>, String>;
+
+    /// Whether this source needs DuckDB's extension signature checking turned
+    /// off on the connection it is opened against.
+    ///
+    /// `false` by default, and say so honestly: the flag is not per-extension,
+    /// so a source that asks for it takes signature checking off for
+    /// EVERYTHING that connection loads. A source that asks is only ever
+    /// opened on a session that also cannot acquire extensions over the
+    /// network — see [`LoadOptions::type_source`] — so answering `true` here
+    /// narrows where the source can be used rather than widening what it can
+    /// do.
+    ///
+    /// [`LoadOptions::type_source`]: crate::LoadOptions::type_source
+    fn needs_unsigned_extensions(&self) -> bool {
+        false
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -587,9 +620,9 @@ impl FinetypeBundle {
     /// The validation query for one column: how many of its first
     /// [`Self::CHECK_ROWS`] non-null values fail the schema bound as `?`.
     ///
-    /// Split out from [`FinetypeBundle::count_failures`] so the row cap is
-    /// visible to a test that needs no extension, no model and no bundle. The
-    /// cap only means anything if it reaches the SQL.
+    /// Split out from the private `count_failures` that runs it, so the row
+    /// cap is visible to a test that needs no extension, no model and no
+    /// bundle. The cap only means anything if it reaches the SQL.
     #[must_use]
     pub fn check_sql(view: &str, column: &str) -> String {
         let v = crate::escape_ident(view);
