@@ -39,9 +39,9 @@ use brightfield_engine::coordinator::Interaction;
 use brightfield_engine::SqlPredicate;
 use brightfield_render::channel::LabelForm;
 use brightfield_shell::capture::capture_vello_only;
-use brightfield_shell::pipeline::{live_spec, Composed};
+use brightfield_shell::pipeline::{live_spec, Composed, PlotHandle};
 use brightfield_shell::ranked_bars::{Dashboard, RankedCategoryBars, DEFAULT_LIMIT};
-use brightfield_spec::analysis::ComponentPath;
+use brightfield_spec::analysis::BrushKind;
 use brightfield_sql::ir::ScalarValue;
 use image::RgbaImage;
 
@@ -547,12 +547,42 @@ fn each_bar_carries_its_number_and_carries_none_when_asked_not_to() {
 // AC3 / AC4 — the total behind the subset, and the reach across the spec
 // ---------------------------------------------------------------------------
 
-/// A point selection on one column.
-fn pick(column: &str, value: &str) -> SqlPredicate {
-    SqlPredicate::Point {
-        column: column.to_string(),
-        values: vec![ScalarValue::Text(value.to_string())],
-        meta: None,
+/// The interaction a click on `plot`'s band axis produces, picking `value`.
+///
+/// **Built from the plot's own [`GestureBinding`], never from literals.** The
+/// binding is what the composition resolved out of the module's declared
+/// `select: toggleY / as: $sel`: the selection name, the contributor identity
+/// the coordinator's self-exclusion compares, and the column the band axis
+/// names. A test that spelled those three itself would keep passing with the
+/// producer deleted from the spec — the coordinator takes a contribution to a
+/// selection from whoever hands it one — and the module would then be a chart
+/// no gesture could drive.
+///
+/// The gesture kind is asserted here rather than assumed: a `barX` puts its
+/// categories on y, so the click that picks one is a `PointY`.
+fn click_on_band(plot: &PlotHandle, value: &str) -> Interaction {
+    let gesture = plot
+        .gesture
+        .as_ref()
+        .unwrap_or_else(|| panic!("the module at {} declares no gesture", plot.path));
+    assert_eq!(
+        gesture.kind,
+        BrushKind::PointY,
+        "a module's categories are on its y axis, so the gesture that picks one \
+         is a point selection on y"
+    );
+    let column = gesture
+        .y_column
+        .clone()
+        .expect("the gesture names the band column it picks from");
+    Interaction::Select {
+        name: gesture.selection.clone(),
+        contributor: gesture.contributor.clone(),
+        predicate: SqlPredicate::Point {
+            column,
+            values: vec![ScalarValue::Text(value.to_string())],
+            meta: None,
+        },
     }
 }
 
@@ -589,7 +619,7 @@ fn a_selection_changes_the_ink_inside_the_bars_and_nothing_else() {
     );
     // Plot 0 counts `cat` and is what is measured; plot 1 counts `side` and is
     // where the gesture happens.
-    let gesturing = ComponentPath(resting.plots[1].path.clone());
+    let gesture = click_on_band(&resting.plots[1], "b");
     let frame = Frame::of(&resting, 0);
 
     // At rest nothing is selected, no per-group counts are projected, and every
@@ -613,13 +643,7 @@ fn a_selection_changes_the_ink_inside_the_bars_and_nothing_else() {
          to the tip — these frame rows are faded already: {faded_at_rest:?}"
     );
 
-    let selected = live
-        .apply(Interaction::Select {
-            name: "sel".to_string(),
-            contributor: gesturing,
-            predicate: pick("side", "b"),
-        })
-        .expect("the selection re-composites");
+    let selected = live.apply(gesture).expect("the selection re-composites");
     let after = raster(selected, "ghost-selected");
     let after_bars = bars(&after, &frame);
 
@@ -709,7 +733,7 @@ fn a_selection_on_the_module_reaches_the_other_charts_in_the_spec() {
     let (mut live, resting) =
         live_spec(path.to_str().expect("utf-8 path")).expect("the spec loads live");
     assert_eq!(resting.plots.len(), 2, "the module and its consumer");
-    let module = ComponentPath(resting.plots[0].path.clone());
+    let gesture = click_on_band(&resting.plots[0], "cat-00");
     let detail = Frame::of(&resting, 1);
 
     let before = raster(resting, "crossfilter-resting");
@@ -719,13 +743,7 @@ fn a_selection_on_the_module_reaches_the_other_charts_in_the_spec() {
         "fixture check: the consumer chart draws something at rest"
     );
 
-    let filtered = live
-        .apply(Interaction::Select {
-            name: "sel".to_string(),
-            contributor: module,
-            predicate: pick("cat", "cat-00"),
-        })
-        .expect("the selection re-composites");
+    let filtered = live.apply(gesture).expect("the selection re-composites");
     let after = raster(filtered, "crossfilter-filtered");
     let after_ink = inked(&after, &detail);
 
