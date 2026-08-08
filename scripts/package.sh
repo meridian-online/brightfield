@@ -191,6 +191,89 @@ if [ -n "$audit_rule" ]; then
   echo "   clean: OS libraries only (${audit_lines} entries read)"
 fi
 
+# ---------------------------------------------------------------------------
+# THE SEMANTIC TYPE SOURCE — the FineType extension, its model and its schema
+# catalogue, staged into the artifact so a packaged Brightfield can ask what a
+# column MEANS with no network and no cache.
+#
+# It is not built here. This repository does not build FineType and must not
+# start: the extension is a cdylib from another workspace with its own
+# toolchain pin, and the model is a ~17 MB artifact from a model registry.
+# BRIGHTFIELD_FINETYPE_BUNDLE names a directory somebody else assembled, and
+# everything below is about refusing a bad one rather than making a good one.
+#
+# With the variable unset the artifact ships WITHOUT a type source and the
+# application reports every column as NotAsked. That is a supported build, not
+# a degraded one — it is what a contributor's local `scripts/package.sh` run
+# produces — so this is a message, not a failure.
+#
+# The platform check is the one that earns its place. DuckDB refuses a
+# loadable extension whose stamped platform is not its own, and this script's
+# TARGET can differ from the host: cross-packaging the x86_64 artifact on an
+# arm64 machine with an arm64 extension in the bundle would produce a tarball
+# that fails on every machine it was built for and none the packager owns.
+# Reading it here turns that into a red packaging run.
+# ---------------------------------------------------------------------------
+FINETYPE_BUNDLE="${BRIGHTFIELD_FINETYPE_BUNDLE:-}"
+if [ -z "$FINETYPE_BUNDLE" ]; then
+  echo "== type source: none (BRIGHTFIELD_FINETYPE_BUNDLE unset)"
+  echo "   the artifact ships without one; columns report no semantic label"
+else
+  echo "== type source: ${FINETYPE_BUNDLE}"
+  ft_ext="${FINETYPE_BUNDLE}/finetype.duckdb_extension"
+  ft_model="${FINETYPE_BUNDLE}/model"
+  ft_schemas="${FINETYPE_BUNDLE}/taxonomy-schemas.json"
+  for required in "$ft_ext" "$ft_model/model.safetensors" "$ft_model/config.json" \
+                  "$ft_model/label_map.json" "$ft_schemas"; do
+    [ -e "$required" ] || {
+      echo "package.sh: the FineType bundle carries no ${required#"$FINETYPE_BUNDLE"/}." >&2
+      echo "  A bundle is: finetype.duckdb_extension, model/ (safetensors +" >&2
+      echo "  config.json + label_map.json + model2vec/), taxonomy-schemas.json." >&2
+      exit 1; }
+  done
+
+  # The DuckDB metadata trailer: the last 512 bytes, eight 32-byte NUL-padded
+  # ASCII fields written last-first, then 256 bytes of signature space. Field 1
+  # (the magic, "4") lands at offset 224; the ABI type is at 96 and the
+  # platform at 192. Read the same way `brightfield_engine::semantic::read_stamp`
+  # reads it, so the packaging run and the engine cannot disagree about what
+  # the file says.
+  ft_field() { tail -c 512 "$ft_ext" | dd bs=1 skip="$1" count=32 2>/dev/null | tr -d '\0'; }
+  ft_magic=$(ft_field 224)
+  ft_abi=$(ft_field 96)
+  ft_platform=$(ft_field 192)
+  ft_version=$(ft_field 128)
+  [ "$ft_magic" = "4" ] || {
+    echo "package.sh: ${ft_ext} carries no DuckDB metadata trailer (magic '${ft_magic}')." >&2
+    echo "  An unstamped shared library will not LOAD; stamp it with" >&2
+    echo "  append-duckdb-metadata before bundling it." >&2
+    exit 1; }
+  [ "$ft_abi" = "C_STRUCT" ] || {
+    echo "package.sh: ${ft_ext} declares ABI '${ft_abi}', not C_STRUCT." >&2
+    echo "  Only DuckDB's stable C API survives a DuckDB version bump; an" >&2
+    echo "  unstable-API build is pinned to one exact release and cannot be" >&2
+    echo "  shipped against a bundled DuckDB that moves independently." >&2
+    exit 1; }
+  case "$TARGET" in
+    aarch64-apple-darwin)      want_platform=osx_arm64 ;;
+    x86_64-apple-darwin)       want_platform=osx_amd64 ;;
+    aarch64-unknown-linux-gnu) want_platform=linux_arm64 ;;
+    x86_64-unknown-linux-gnu)  want_platform=linux_amd64 ;;
+    *)                         want_platform="" ;;
+  esac
+  if [ -z "$want_platform" ]; then
+    echo "package.sh: no DuckDB platform name known for target ${TARGET}, so the" >&2
+    echo "  bundled extension cannot be checked against it. Add the mapping." >&2
+    exit 1
+  fi
+  [ "$ft_platform" = "$want_platform" ] || {
+    echo "package.sh: the bundled extension is built for '${ft_platform}' and this" >&2
+    echo "  artifact targets ${TARGET} ('${want_platform}'). DuckDB would refuse" >&2
+    echo "  to load it on every machine this tarball is for." >&2
+    exit 1; }
+  echo "   finetype ${ft_version}, ${ft_abi}, ${ft_platform} — matches ${TARGET}"
+fi
+
 echo "== stage: ${STAGE}"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/examples"
@@ -200,6 +283,10 @@ cp LICENSE "$STAGE/LICENSE"
 cp examples/*.yaml "$STAGE/examples/"
 cp -R examples/protocol "$STAGE/examples/protocol"
 cp -R examples/remote "$STAGE/examples/remote"
+# `cp -RL` dereferences: a model fetched through a content-addressed cache is a
+# tree of symlinks into that cache, and copying the links would produce an
+# artifact that works only on the machine that built it.
+[ -z "$FINETYPE_BUNDLE" ] || cp -RL "$FINETYPE_BUNDLE" "$STAGE/finetype"
 cat > "$STAGE/README.txt" <<EOF
 brightfield ${VERSION} (${TARGET})
 
@@ -273,6 +360,10 @@ case "$TARGET" in
     cp examples/*.yaml "$APP/Contents/Resources/examples/"
     cp -R examples/protocol "$APP/Contents/Resources/examples/protocol"
     cp -R examples/remote "$APP/Contents/Resources/examples/remote"
+    # Resources/, not MacOS/: an app launched from /Applications has no sibling
+    # directory, and `semantic::bundle_beside` looks in both places for exactly
+    # this reason.
+    [ -z "$FINETYPE_BUNDLE" ] || cp -RL "$FINETYPE_BUNDLE" "$APP/Contents/Resources/finetype"
 
     # The system floor is read out of the executable rather than declared, so a
     # toolchain that moves its deployment target moves this with it. An empty

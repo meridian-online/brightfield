@@ -75,14 +75,23 @@ DEADLINE=180
 # Runs the packaged binary inside the jail, from the package directory, with a
 # sealed HOME/config, a screenshot countdown, and the deadline watchdog.
 # $PKG and $EXE are set by the leg that opened the artifact.
+#
+# stderr is TEED rather than swallowed: it stays on the terminal, and a copy
+# lands in $SMOKE_LOG so a leg can assert on what the run said. The type-source
+# leg needs that — "it rendered" is silent about whether the bundled extension
+# and model came up inside the jail, and the application says so on stderr when
+# they did not.
+SMOKE_LOG=""
 smoke() {
   local out="$1"; shift
   local extra_env=()
   while [ "$1" != "--" ]; do extra_env+=("$1"); shift; done
   shift
+  SMOKE_LOG="$TMP/smoke-$(basename "$out").log"
   ( cd "$PKG" && env HOME="$TMP/home" BRIGHTFIELD_CONFIG_DIR="$TMP/config" \
       ${extra_env[@]+"${extra_env[@]}"} \
-      "${JAIL[@]}" "$EXE" "$@" --shot-after 45 --shot-out "$out" ) &
+      "${JAIL[@]}" "$EXE" "$@" --shot-after 45 --shot-out "$out" \
+      2> >(tee "$SMOKE_LOG" >&2) ) &
   local pid=$!
   ( sleep "$DEADLINE" && echo "   DEADLINE (${DEADLINE}s) — killing" && kill -9 "$pid" ) 2>/dev/null &
   local wd=$!
@@ -176,6 +185,7 @@ case "$ARTIFACT" in
     EXE="./brightfield"
     EXAMPLES="examples"
     REMOTE_SPEC="examples/remote/edgar-gleif-crosswalk.yaml"
+    FTBUNDLE="finetype"
     [ -x "$PKG/$EXE" ] || { echo "no executable 'brightfield' in the tarball"; exit 1; }
     ;;
   *.dmg)
@@ -190,6 +200,7 @@ case "$ARTIFACT" in
     EXE="./Brightfield.app/Contents/MacOS/brightfield"
     EXAMPLES="Brightfield.app/Contents/Resources/examples"
     REMOTE_SPEC="Brightfield.app/Contents/Resources/examples/remote/edgar-gleif-crosswalk.yaml"
+    FTBUNDLE="Brightfield.app/Contents/Resources/finetype"
     [ -x "$PKG/$EXE" ] || { echo "no executable inside Brightfield.app on the image"; exit 1; }
     ;;
   *)
@@ -198,9 +209,74 @@ case "$ARTIFACT" in
     ;;
 esac
 
+# The semantic type source, if this artifact carries one. Read off the files
+# before anything is run, because a bundle that is incomplete or full of
+# dangling symlinks would otherwise show up only as a column with no label —
+# which is also what a build packaged deliberately without one looks like.
+#
+# HAS_TYPE_SOURCE is what run 1 below asserts against. It is set to 0 for an
+# artifact with no bundle, which is a supported build (see scripts/package.sh);
+# a bundle that is present and broken is a FAILURE, not an absence.
+HAS_TYPE_SOURCE=0
+if [ ! -d "$PKG/$FTBUNDLE" ]; then
+  echo "== type source: this artifact carries none — the label legs are skipped"
+else
+  echo "== type source: ${FTBUNDLE}"
+  for required in finetype.duckdb_extension model/model.safetensors model/config.json \
+                  model/label_map.json model/model2vec/model.safetensors \
+                  model/model2vec/tokenizer.json taxonomy-schemas.json; do
+    [ -f "$PKG/$FTBUNDLE/$required" ] || {
+      echo "   FAILED: the bundle carries no ${required}"; exit 1; }
+  done
+  # Self-containedness. `cp -RL` in scripts/package.sh is what makes a
+  # cache-fetched model portable, and a symlink surviving into the artifact is
+  # the exact failure it prevents: it resolves on the packaging machine and
+  # dangles everywhere else, so it cannot be caught by running the artifact
+  # where it was built.
+  strays=$(find "$PKG/$FTBUNDLE" -type l | wc -l | tr -d ' ')
+  [ "$strays" -eq 0 ] || {
+    echo "   FAILED: ${strays} symlink(s) inside the bundle — it is not self-contained"
+    find "$PKG/$FTBUNDLE" -type l | sed 's/^/     /'
+    exit 1; }
+  # The metadata trailer, read the same way scripts/package.sh and
+  # brightfield_engine::semantic read it: last 512 bytes, field 1 (magic) at
+  # offset 224, ABI at 96, platform at 192.
+  ft_field() {
+    tail -c 512 "$PKG/$FTBUNDLE/finetype.duckdb_extension" \
+      | dd bs=1 skip="$1" count=32 2>/dev/null | tr -d '\0'
+  }
+  [ "$(ft_field 224)" = "4" ] || {
+    echo "   FAILED: the bundled extension carries no DuckDB metadata trailer"; exit 1; }
+  [ "$(ft_field 96)" = "C_STRUCT" ] || {
+    echo "   FAILED: the bundled extension is not a stable-C-API (C_STRUCT) build"; exit 1; }
+  echo "   ok: finetype $(ft_field 128), $(ft_field 96), $(ft_field 192), no symlinks"
+  HAS_TYPE_SOURCE=1
+fi
+
 echo "== run 1: chart spec, jailed (a window opens briefly)"
 smoke "$TMP/chart.png" -- "$EXAMPLES/bars.yaml"
 is_png "$TMP/chart.png" 20000
+
+# THE AIR-GAPPED HALF OF THE TYPE-SOURCE CLAIM, and the only place it is
+# actually proved. The file checks above say the bytes are present; this says
+# the extension LOADED and its model CLASSIFIED, inside the network-denied jail,
+# with HOME and the config directory pointed at an empty temp tree so no warm
+# cache from this machine can be reached.
+#
+# It works by negation because there is no headless way to read a label out of
+# a GUI binary: the application prints `warning: no semantic type source` and
+# the reason whenever a configured bundle fails to come up, and coming up
+# includes a canary that makes the model classify three email addresses. Silence
+# on that line, from a run that also rendered, is the evidence.
+if [ "$HAS_TYPE_SOURCE" -eq 1 ]; then
+  echo "== run 1b: the type source came up inside the jail"
+  if grep -q 'no semantic type source' "$SMOKE_LOG"; then
+    echo "   FAILED: the bundled type source did not come up with the network denied:"
+    grep 'no semantic type source' "$SMOKE_LOG" | sed 's/^/     /'
+    exit 1
+  fi
+  echo "   ok: no type-source warning from a run that rendered"
+fi
 
 echo "== run 2: Protocol manifest, jailed (a window opens briefly)"
 smoke "$TMP/protocol.png" BRIGHTFIELD_PROTOCOL_OFFLINE=1 -- "$EXAMPLES/protocol/edgar_gleif/arcform.yaml"

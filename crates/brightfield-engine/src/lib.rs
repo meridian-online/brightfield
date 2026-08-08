@@ -276,6 +276,31 @@ pub struct LoadOptions {
     pub type_source: Option<PathBuf>,
 }
 
+impl LoadOptions {
+    /// [`LoadOptions::default`], plus the FineType bundle a packaged build
+    /// carries beside its own executable.
+    ///
+    /// The lookup — [`semantic::bundle_beside`] — is resolved once per process
+    /// and returns `None` for a build packaged without a bundle and for a
+    /// `cargo run` out of `target/`, both of which then behave exactly as
+    /// [`LoadOptions::default`]. This is the only place the application
+    /// decides WHERE its type source lives; everything else takes a directory.
+    #[must_use]
+    pub fn packaged() -> Self {
+        static BUNDLE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+        let dir = BUNDLE.get_or_init(|| {
+            std::env::current_exe()
+                .ok()
+                .as_deref()
+                .and_then(semantic::bundle_beside)
+        });
+        LoadOptions {
+            type_source: dir.clone(),
+            ..LoadOptions::default()
+        }
+    }
+}
+
 /// Factory for creating [`Session`] objects. Stateless.
 pub struct Engine;
 
