@@ -900,6 +900,26 @@ impl Session {
         self.type_source_error.as_deref()
     }
 
+    /// What the linked DuckDB calls its platform and its version, e.g.
+    /// `("osx_arm64", "v1.5.2")`.
+    ///
+    /// Asked of the running library rather than read off a manifest, because
+    /// the manifest states a semver RANGE and the loadable-extension ABI is
+    /// decided by the exact build that ends up linked. This is the pair
+    /// [`semantic::check_abi`] compares a bundled extension against.
+    ///
+    /// # Errors
+    ///
+    /// DuckDB failed to answer about itself, which is not a thing a working
+    /// connection does.
+    pub fn duckdb_platform_and_version(&self) -> Result<(String, String), duckdb::Error> {
+        let platform = self
+            .conn
+            .query_row("SELECT * FROM pragma_platform()", [], |r| r.get(0))?;
+        let version = self.conn.query_row("SELECT version()", [], |r| r.get(0))?;
+        Ok((platform, version))
+    }
+
     /// Current param values — the live param store.
     pub fn current_params(&self) -> &ParamValues {
         &self.param_state
