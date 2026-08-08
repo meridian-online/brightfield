@@ -904,8 +904,10 @@ pub struct BarRenderer {
 /// Padding between an in-bar label and the bar's tip, in logical pixels.
 const BAR_LABEL_PAD: f64 = 6.0;
 
-/// Font size for an in-bar label. One step below [`TEXT_MARK_SIZE`]: the label
-/// annotates a mark rather than being one, and it has to fit inside a band.
+/// Font size for an in-bar label. One step below the private `TEXT_MARK_SIZE`
+/// a `text` mark draws at — named rather than linked, since a doc link does not
+/// get to widen an API: the label annotates a mark rather than being one, and
+/// it has to fit inside a band.
 ///
 /// `pub` because a test that reads a label back off a raster has to draw the
 /// same string at the same size to compare against, and a second copy of this
