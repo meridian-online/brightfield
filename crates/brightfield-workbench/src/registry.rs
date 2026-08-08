@@ -983,3 +983,391 @@ pub fn audit_chart_kinds<S>(reg: &ChartKindRegistry<S>) -> Result<(), String> {
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Unit tests — a chart kind as data, and the audit that keeps it honest
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod chart_kind_tests {
+    use super::*;
+
+    /// A stand-in for a view's spec type. The registry never names one — see
+    /// [`ChartKind`] — so a test has to bring its own, and a comparable struct
+    /// is what makes "these two paths build the same chart" an equality rather
+    /// than a screenshot.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct Spec {
+        mark: &'static str,
+        x: String,
+        y: String,
+        y_scale: &'static str,
+    }
+
+    const BARS: ChartKindId = ChartKindId::new("bars");
+    const POINTS: ChartKindId = ChartKindId::new("points");
+
+    /// The control id and the verb are declared once, here, and read by the
+    /// kind and by the assertions alike — a test that spelled the id a second
+    /// time would pass while the product was broken.
+    const LOG_SCALE: &str = "log-scale";
+
+    fn log_verb() -> Verb {
+        Verb::new("cycle-axis-lock")
+    }
+
+    /// A slot list has to be a `const` item rather than an inline `&[..]`:
+    /// `FieldSlot::required` is a `const fn`, but a call is not promoted to
+    /// `'static` inside a struct literal.
+    const BAR_SLOTS: &[FieldSlot] = &[
+        FieldSlot::required("x", &[FieldType::Categorical]),
+        FieldSlot::required("y", &[FieldType::Quantitative]),
+    ];
+
+    const POINT_SLOTS: &[FieldSlot] = &[
+        FieldSlot::required("x", &[FieldType::Quantitative]),
+        FieldSlot::required("y", &[FieldType::Quantitative]),
+        FieldSlot::optional("colour", &[FieldType::Categorical]),
+    ];
+
+    /// A kind, whole, as data. Nothing here is a type: the icon, the gloss,
+    /// what it takes, what it hangs on itself and how it builds are five
+    /// fields of one value.
+    fn bars() -> ChartKind<Spec> {
+        ChartKind {
+            id: BARS,
+            icon: Icon("chart-bar"),
+            description: "Ranks a category by a measure",
+            slots: BAR_SLOTS,
+            controls: || {
+                vec![ModuleControl::new(LOG_SCALE, "Log", log_verb())
+                    .with_tooltip("Log scale the measure axis")]
+            },
+            build: |binding, options| Spec {
+                mark: "bar",
+                x: binding.name("x").unwrap_or_default().to_string(),
+                y: binding.name("y").unwrap_or_default().to_string(),
+                y_scale: if options.is_on(LOG_SCALE) {
+                    "log"
+                } else {
+                    "linear"
+                },
+            },
+        }
+    }
+
+    /// The second kind. The whole of adding it is this function — no component,
+    /// no trait implementation, no branch anywhere else.
+    fn points() -> ChartKind<Spec> {
+        ChartKind {
+            id: POINTS,
+            icon: Icon("chart-dots"),
+            description: "Shows one measure against another",
+            slots: POINT_SLOTS,
+            controls: Vec::new,
+            build: |binding, _| Spec {
+                mark: "dot",
+                x: binding.name("x").unwrap_or_default().to_string(),
+                y: binding.name("y").unwrap_or_default().to_string(),
+                y_scale: "linear",
+            },
+        }
+    }
+
+    fn registry() -> ChartKindRegistry<Spec> {
+        ChartKindRegistry::new(vec![bars(), points()])
+    }
+
+    fn category(name: &str) -> Field {
+        Field::new(name, FieldType::Categorical)
+    }
+
+    fn measure(name: &str) -> Field {
+        Field::new(name, FieldType::Quantitative)
+    }
+
+    /// A kind carries all four things a picker and a generator need, and the
+    /// fourth is a function rather than a component.
+    #[test]
+    fn a_kind_is_an_icon_a_gloss_a_set_of_constraints_and_a_builder() {
+        let kind = bars();
+        assert_eq!(kind.icon, Icon("chart-bar"));
+        assert_eq!(kind.description, "Ranks a category by a measure");
+        assert_eq!(
+            kind.slots
+                .iter()
+                .map(|s| (s.role, s.accepts, s.required))
+                .collect::<Vec<_>>(),
+            vec![
+                ("x", &[FieldType::Categorical][..], true),
+                ("y", &[FieldType::Quantitative][..], true),
+            ]
+        );
+
+        let fields = vec![category("sector"), measure("revenue")];
+        let binding = kind.bind(&fields).expect("the columns fit the slots");
+        assert_eq!(
+            kind.spec(&binding, &kind.options())
+                .expect("its own binding"),
+            Spec {
+                mark: "bar",
+                x: "sector".to_string(),
+                y: "revenue".to_string(),
+                y_scale: "linear",
+            }
+        );
+    }
+
+    /// The type constraints are enforced by [`ChartKind::bind`], once, rather
+    /// than by each builder — which is why the builder has no error path.
+    #[test]
+    fn a_slot_refuses_a_column_of_the_wrong_type() {
+        let kind = bars();
+        let err = kind
+            .bind(&[measure("revenue"), measure("margin")])
+            .expect_err("no categorical column, so no bars");
+        assert!(err.contains("\"x\""), "the error names the slot: {err}");
+        assert!(err.contains("Categorical"), "and what it wanted: {err}");
+        assert!(kind.bind(&[category("sector")]).is_err(), "y is required");
+    }
+
+    /// An optional slot left empty still binds, and reads back as absent.
+    #[test]
+    fn an_optional_slot_is_optional() {
+        let kind = points();
+        let binding = kind
+            .bind(&[measure("revenue"), measure("margin")])
+            .expect("two measures are enough");
+        assert_eq!(binding.name("x"), Some("revenue"));
+        assert_eq!(binding.name("y"), Some("margin"));
+        assert_eq!(binding.field("colour"), None);
+        assert_eq!(binding.roles().collect::<Vec<_>>(), vec!["x", "y"]);
+    }
+
+    /// The choosing half: hand the registry columns and it says which kinds
+    /// they can fill, in declaration order — which is therefore a preference
+    /// order.
+    #[test]
+    fn the_registry_says_which_kinds_a_set_of_columns_can_fill() {
+        let reg = registry();
+        assert_eq!(reg.ids(), vec![BARS, POINTS]);
+        assert_eq!(
+            reg.applicable(&[category("sector"), measure("revenue")]),
+            vec![BARS]
+        );
+        assert_eq!(
+            reg.applicable(&[measure("revenue"), measure("margin")]),
+            vec![POINTS]
+        );
+        assert_eq!(
+            reg.applicable(&[category("sector")]),
+            Vec::<ChartKindId>::new(),
+            "one category fills neither kind's required slots"
+        );
+    }
+
+    /// A binding is stamped with the kind that made it, so it cannot be handed
+    /// to a different builder — the one thing the type cannot carry, since two
+    /// kinds' bindings are the same Rust type.
+    #[test]
+    fn a_binding_belongs_to_the_kind_that_made_it() {
+        let fields = vec![measure("revenue"), measure("margin")];
+        let binding = points().bind(&fields).expect("two measures");
+        assert_eq!(binding.kind(), POINTS);
+        let err = bars()
+            .spec(&binding, &ModuleOptions::default())
+            .expect_err("bars did not make this binding");
+        assert!(err.contains("points"), "the error names the maker: {err}");
+    }
+
+    /// A module's own controls start where the kind said they start, and
+    /// flipping one changes the spec that kind builds. This is the whole of
+    /// "the toggle belongs to the module": no other kind and no other module
+    /// moved.
+    #[test]
+    fn a_control_the_kind_declares_changes_that_kinds_spec() {
+        let kind = bars();
+        let fields = vec![category("sector"), measure("revenue")];
+        let binding = kind.bind(&fields).expect("the columns fit");
+
+        let mut options = kind.options();
+        assert!(!options.is_on(LOG_SCALE), "declared off");
+        assert_eq!(
+            kind.spec(&binding, &options)
+                .expect("its own binding")
+                .y_scale,
+            "linear"
+        );
+
+        let entries = kind.toolbar(&options);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, LOG_SCALE);
+        assert!(!entries[0].on, "the entry reports the option's state");
+        assert_eq!(entries[0].verb, log_verb());
+
+        assert!(options.toggle(LOG_SCALE));
+        assert_eq!(
+            kind.spec(&binding, &options)
+                .expect("its own binding")
+                .y_scale,
+            "log"
+        );
+        assert!(kind.toolbar(&options)[0].on);
+
+        // The kind with no controls is unmoved by any of it.
+        assert!(points().toolbar(&options).is_empty());
+    }
+
+    /// The conformance gate over a registry that satisfies it.
+    #[test]
+    fn the_audit_passes_a_registry_that_keeps_the_contract() {
+        audit_chart_kinds(&registry()).expect("both kinds keep the contract");
+    }
+
+    /// …and fails each rule it claims to hold, one at a time. A gate nobody
+    /// has watched fail is a gate nobody knows still works.
+    #[test]
+    fn the_audit_fails_each_rule_it_claims_to_hold() {
+        const ACCEPTS_NOTHING: &[FieldSlot] = &[FieldSlot::required("x", &[])];
+        const ROLE_TWICE: &[FieldSlot] = &[
+            FieldSlot::required("x", &[FieldType::Categorical]),
+            FieldSlot::optional("x", &[FieldType::Quantitative]),
+        ];
+        const ALL_OPTIONAL: &[FieldSlot] = &[FieldSlot::optional("x", &[FieldType::Categorical])];
+
+        let cases: Vec<(&str, ChartKind<Spec>, &str)> = vec![
+            (
+                "terminal period",
+                ChartKind {
+                    description: "Ranks a category by a measure.",
+                    ..bars()
+                },
+                "terminal period",
+            ),
+            (
+                "lower case",
+                ChartKind {
+                    description: "ranks a category by a measure",
+                    ..bars()
+                },
+                "sentence case",
+            ),
+            (
+                "no icon",
+                ChartKind {
+                    icon: Icon(""),
+                    ..bars()
+                },
+                "no icon",
+            ),
+            (
+                "a slot that accepts nothing",
+                ChartKind {
+                    slots: ACCEPTS_NOTHING,
+                    ..bars()
+                },
+                "accepts nothing",
+            ),
+            (
+                "two slots under one role",
+                ChartKind {
+                    slots: ROLE_TWICE,
+                    ..bars()
+                },
+                "share the role",
+            ),
+            (
+                "nothing required",
+                ChartKind {
+                    slots: ALL_OPTIONAL,
+                    ..bars()
+                },
+                "every slot is optional",
+            ),
+            (
+                "no slots at all",
+                ChartKind {
+                    slots: &[],
+                    ..bars()
+                },
+                "takes no fields",
+            ),
+            // The unregistered-verb rule is deliberately absent from this
+            // list, for the reason `subject_contract.rs`'s
+            // `the_longname_the_unit_test_smuggles_in_is_genuinely_unregistered`
+            // states about the same rule on a subject's verbs: `Verb`'s field
+            // is private to the `subject` module, so nothing outside it can
+            // build a verb that bypassed `Verb::new`'s debug assertion. The
+            // rule here is the release-mode backstop, identical in shape to
+            // the one `audit` applies to `ItemSpec::toggle`.
+            (
+                "two controls under one id",
+                ChartKind {
+                    controls: || {
+                        vec![
+                            ModuleControl::new("same", "A", Verb::new("cycle-axis-lock")),
+                            ModuleControl::new("same", "B", Verb::new("toggle-presentation")),
+                        ]
+                    },
+                    ..bars()
+                },
+                "share the id",
+            ),
+        ];
+
+        for (name, kind, expected) in cases {
+            let reg = ChartKindRegistry::new(vec![kind]);
+            let err = audit_chart_kinds(&reg).expect_err(&format!("the audit let {name} through"));
+            assert!(
+                err.contains(expected),
+                "{name}: expected an error naming {expected:?}, got {err:?}"
+            );
+        }
+    }
+
+    /// The audit builds each kind from its own declaration, so a builder that
+    /// cannot survive its own constraints fails at the gate rather than at a
+    /// user's first click.
+    #[test]
+    fn the_audit_runs_each_builder_against_the_slots_that_kind_declares() {
+        // A builder that refuses anything but a fully bound binding, and that
+        // records which control states it was called with. Passing the audit
+        // is what proves the synthesised binding is a real one and that both
+        // states of every declared control were exercised — the half a single
+        // call would miss.
+        static SCALES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+        let kind: ChartKind<Spec> = ChartKind {
+            build: |binding, options| {
+                let x = binding.name("x").expect("x was not bound");
+                let y = binding.name("y").expect("y was not bound");
+                let y_scale = if options.is_on(LOG_SCALE) {
+                    "log"
+                } else {
+                    "linear"
+                };
+                SCALES.lock().expect("uncontended").push(y_scale);
+                Spec {
+                    mark: "bar",
+                    x: x.to_string(),
+                    y: y.to_string(),
+                    y_scale,
+                }
+            },
+            ..bars()
+        };
+        audit_chart_kinds(&ChartKindRegistry::new(vec![kind])).expect("the builder survives");
+        assert_eq!(
+            SCALES.lock().expect("uncontended").as_slice(),
+            ["linear", "log"],
+            "the audit called the builder with the control off and then on"
+        );
+    }
+
+    /// Two kinds under one id would make `find` answer arbitrarily, which
+    /// surfaces as a module drawing the wrong chart.
+    #[test]
+    #[should_panic(expected = "duplicate chart kind id")]
+    fn a_registry_refuses_two_kinds_under_one_id() {
+        let _ = ChartKindRegistry::new(vec![bars(), bars()]);
+    }
+}

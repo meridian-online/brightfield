@@ -704,3 +704,568 @@ mod tests {
         assert!(serde_json::from_str::<PaneKey>(unknown).is_err());
     }
 }
+
+// ---------------------------------------------------------------------------
+// Unit tests — the migration, and the chrome a module owns
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod module_tests {
+    use super::*;
+    use crate::registry::{FieldSlot, FieldType, ModuleControl};
+
+    /// A stand-in for a view's spec type — see
+    /// [`ChartKind`](crate::registry::ChartKind) for why the registry never
+    /// names a real one.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct Spec {
+        mark: &'static str,
+        x: String,
+        y: String,
+        y_scale: &'static str,
+    }
+
+    const BARS: ChartKindId = ChartKindId::new("bars");
+    const POINTS: ChartKindId = ChartKindId::new("points");
+    const LOG_SCALE: &str = "log-scale";
+
+    const BAR_SLOTS: &[FieldSlot] = &[
+        FieldSlot::required("x", &[FieldType::Categorical]),
+        FieldSlot::required("y", &[FieldType::Quantitative]),
+    ];
+    const POINT_SLOTS: &[FieldSlot] = &[
+        FieldSlot::required("x", &[FieldType::Quantitative]),
+        FieldSlot::required("y", &[FieldType::Quantitative]),
+    ];
+
+    /// The migrated kind: what [`HandWrittenBars`] below does, expressed as
+    /// data. It declares no controls, because the pane it replaces had none.
+    fn bars() -> ChartKind<Spec> {
+        ChartKind {
+            id: BARS,
+            icon: Icon("chart-bar"),
+            description: "Ranks a category by a measure",
+            slots: BAR_SLOTS,
+            controls: Vec::new,
+            build: |binding, _| Spec {
+                mark: "bar",
+                x: binding.name("x").unwrap_or_default().to_string(),
+                y: binding.name("y").unwrap_or_default().to_string(),
+                y_scale: "linear",
+            },
+        }
+    }
+
+    /// The second kind. Adding it is this function and its entry in the
+    /// registry below — no component, no trait implementation, no branch
+    /// anywhere else. It also carries a control of its own, which is what
+    /// makes "a kind hangs its own chrome" a property of adding a kind rather
+    /// than a feature of one.
+    fn points() -> ChartKind<Spec> {
+        ChartKind {
+            id: POINTS,
+            icon: Icon("chart-dots"),
+            description: "Shows one measure against another",
+            slots: POINT_SLOTS,
+            controls: || {
+                vec![
+                    ModuleControl::new(LOG_SCALE, "Log", Verb::new("cycle-axis-lock"))
+                        .with_tooltip("Log scale the measure axis"),
+                ]
+            },
+            build: |binding, options| Spec {
+                mark: "dot",
+                x: binding.name("x").unwrap_or_default().to_string(),
+                y: binding.name("y").unwrap_or_default().to_string(),
+                y_scale: if options.is_on(LOG_SCALE) {
+                    "log"
+                } else {
+                    "linear"
+                },
+            },
+        }
+    }
+
+    /// The ink a module's body paints. Unique in the frame, so its bounding
+    /// rect is findable in the tessellated output and "did this draw, and
+    /// where" is answerable without a GPU.
+    const BODY_INK: egui::Color32 = egui::Color32::from_rgb(7, 11, 13);
+    /// The ink a log-scaled module's body paints instead, so a spec change is
+    /// visible in the triangles rather than only in a struct comparison.
+    const LOG_INK: egui::Color32 = egui::Color32::from_rgb(13, 11, 7);
+
+    /// A view document: the chart vocabulary, and the one place a spec is
+    /// drawn.
+    struct Doc {
+        kinds: ChartKindRegistry<Spec>,
+        drawn: Vec<Spec>,
+    }
+
+    impl Doc {
+        fn new() -> Self {
+            Self::with_kinds(vec![bars(), points()])
+        }
+
+        fn with_kinds(kinds: Vec<ChartKind<Spec>>) -> Self {
+            Self {
+                kinds: ChartKindRegistry::new(kinds),
+                drawn: Vec::new(),
+            }
+        }
+    }
+
+    impl ModuleHost for Doc {
+        type Spec = Spec;
+
+        fn chart_kinds(&self) -> &ChartKindRegistry<Spec> {
+            &self.kinds
+        }
+
+        /// Paints the spec, so identical triangles mean an identical spec
+        /// drawn into an identical rect — the two things "draws unchanged"
+        /// has to cover.
+        fn draw_module(&mut self, spec: &Spec, ui: &mut egui::Ui) {
+            self.drawn.push(spec.clone());
+            let ink = if spec.y_scale == "log" {
+                LOG_INK
+            } else {
+                BODY_INK
+            };
+            let rect = ui.max_rect();
+            let width = if spec.mark == "bar" { 40.0 } else { 20.0 };
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(rect.min, egui::vec2(width, 12.0)),
+                0.0,
+                ink,
+            );
+        }
+    }
+
+    /// The shape a chart pane is written in **without** a registry: one
+    /// component per chart shape, holding its own columns and building its own
+    /// spec inline.
+    ///
+    /// This is the "before" half of the migration, and it is here so that
+    /// "the migrated kind draws unchanged" is a comparison against something
+    /// rather than an assertion about nothing.
+    struct HandWrittenBars {
+        item: ItemId,
+        x: String,
+        y: String,
+    }
+
+    impl Item<Doc> for HandWrittenBars {
+        fn item_id(&self) -> ItemId {
+            self.item
+        }
+
+        fn empty_state(&self, _doc: &Doc) -> Option<EmptyState> {
+            (self.x.is_empty() || self.y.is_empty()).then(|| {
+                EmptyState::new(
+                    Icon("chart-bar"),
+                    "Nothing here to chart yet",
+                    "Bind a category and a measure and it draws.",
+                )
+            })
+        }
+
+        fn describe(&self, _doc: &Doc) -> Subject {
+            Subject::new(
+                "Revenue by sector",
+                Icon("chart-bar"),
+                BindingContext::Workspace,
+            )
+        }
+
+        fn ui(&mut self, doc: &mut Doc, ui: &mut egui::Ui, _cx: &mut ItemCtx<'_>) {
+            let spec = Spec {
+                mark: "bar",
+                x: self.x.clone(),
+                y: self.y.clone(),
+                y_scale: "linear",
+            };
+            doc.draw_module(&spec, ui);
+        }
+    }
+
+    const PANE: egui::Rect = egui::Rect {
+        min: egui::pos2(0.0, 0.0),
+        max: egui::pos2(400.0, 300.0),
+    };
+
+    fn category(name: &str) -> Field {
+        Field::new(name, FieldType::Categorical)
+    }
+
+    fn measure(name: &str) -> Field {
+        Field::new(name, FieldType::Quantitative)
+    }
+
+    /// Draw one item the way the shell draws a pane — the real
+    /// [`pane_frame`](crate::chrome::pane_frame), the real header rule, the
+    /// real empty-state branch — and hand back the triangles that would reach
+    /// the GPU.
+    fn draw_pane(doc: &mut Doc, item: &mut dyn Item<Doc>) -> Vec<egui::ClippedPrimitive> {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(PANE),
+            ..Default::default()
+        };
+        let mut requests = Vec::new();
+        let full = ctx.run_ui(input, |ui| {
+            let subject = item.subject(doc);
+            let mut body = crate::chrome::pane_frame(ui, &subject, true, Mode::Light);
+            if let Some(empty) = &subject.empty_state {
+                crate::chrome::empty_state(&mut body, empty, Mode::Light);
+            } else {
+                let mut cx = ItemCtx::new(
+                    Mode::Light,
+                    PaneKey::new(ViewKind::Charts, item.item_id()),
+                    egui_tiles::TileId::from_u64(1),
+                    false,
+                    &mut requests,
+                );
+                item.ui(doc, &mut body, &mut cx);
+            }
+        });
+        ctx.tessellate(full.shapes, full.pixels_per_point)
+    }
+
+    /// The triangles of a frame, as comparable text: clip rect, then every
+    /// vertex and index of every mesh, in draw order.
+    fn triangles(primitives: &[egui::ClippedPrimitive]) -> String {
+        let mut out = String::new();
+        for primitive in primitives {
+            out.push_str(&format!("clip {:?}\n", primitive.clip_rect));
+            if let egui::epaint::Primitive::Mesh(mesh) = &primitive.primitive {
+                for vertex in &mesh.vertices {
+                    out.push_str(&format!("  v {:?}\n", vertex));
+                }
+                out.push_str(&format!("  i {:?}\n", mesh.indices));
+            }
+        }
+        out
+    }
+
+    /// The bounding rect of every vertex painted in exactly `ink`, or `None`
+    /// when nothing in the frame was — a clipped shape contributes no
+    /// vertices, so absence is an assertion.
+    fn painted(primitives: &[egui::ClippedPrimitive], ink: egui::Color32) -> Option<egui::Rect> {
+        let mut found: Option<egui::Rect> = None;
+        for primitive in primitives {
+            let egui::epaint::Primitive::Mesh(mesh) = &primitive.primitive else {
+                continue;
+            };
+            for vertex in mesh.vertices.iter().filter(|v| v.color == ink) {
+                let point = egui::Rect::from_min_max(vertex.pos, vertex.pos);
+                found = Some(found.map_or(point, |r| r.union(point)));
+            }
+        }
+        found
+    }
+
+    // -----------------------------------------------------------------------
+    // The migration
+    // -----------------------------------------------------------------------
+
+    /// The migrated kind builds the **same spec** the hand-written component
+    /// built, over the same columns.
+    ///
+    /// A spec is the whole of what reaches the renderer, so an equal spec is
+    /// an equal chart — this is the half of "draws unchanged" that does not
+    /// depend on any drawing at all.
+    #[test]
+    fn the_migrated_kind_builds_the_spec_the_hand_written_component_built() {
+        let doc = Doc::new();
+        let module = ChartModule::new(
+            ItemId::new("module-bars"),
+            "Revenue by sector",
+            &bars(),
+            vec![category("sector"), measure("revenue")],
+        );
+        assert_eq!(
+            module.spec(&doc),
+            Some(Spec {
+                mark: "bar",
+                x: "sector".to_string(),
+                y: "revenue".to_string(),
+                y_scale: "linear",
+            })
+        );
+    }
+
+    /// …and drawn through the real pane frame, the registry-driven module puts
+    /// the **same triangles** on the screen as the component it replaces.
+    ///
+    /// This is the other half, and it is the one that covers the chrome: the
+    /// migrated kind declares no controls, so `module_frame` takes no height
+    /// and paints nothing, and the pane renders exactly as a pane with a
+    /// hand-written item does today. A single pixel of strip, a single point
+    /// of reserved gap, and this goes red.
+    #[test]
+    fn the_migrated_kind_draws_the_same_triangles_as_the_component_it_replaces() {
+        let fields = vec![category("sector"), measure("revenue")];
+
+        let mut before_doc = Doc::new();
+        let mut before = HandWrittenBars {
+            item: ItemId::new("module-bars"),
+            x: "sector".to_string(),
+            y: "revenue".to_string(),
+        };
+        let before_frame = draw_pane(&mut before_doc, &mut before);
+
+        let mut after_doc = Doc::new();
+        let mut after = ChartModule::new(
+            ItemId::new("module-bars"),
+            "Revenue by sector",
+            &bars(),
+            fields,
+        );
+        let after_frame = draw_pane(&mut after_doc, &mut after);
+
+        assert_eq!(before_doc.drawn, after_doc.drawn, "the same spec was drawn");
+        assert!(
+            painted(&after_frame, BODY_INK).is_some(),
+            "the module's body did not reach the frame at all, so the \
+             comparison below would pass on two blank panes"
+        );
+        assert_eq!(
+            triangles(&before_frame),
+            triangles(&after_frame),
+            "the registry-driven module drew different triangles from the \
+             component it replaces"
+        );
+    }
+
+    /// The empty-state branch survives the migration too: a module whose
+    /// columns do not fill its kind's required slots renders the chrome's
+    /// empty state, not a header and silence.
+    #[test]
+    fn a_module_whose_columns_do_not_fit_renders_an_empty_state() {
+        let doc = Doc::new();
+        let module = ChartModule::new(
+            ItemId::new("module-bars"),
+            "Revenue by sector",
+            &bars(),
+            vec![measure("revenue")],
+        );
+        let empty = Item::subject(&module, &doc)
+            .empty_state
+            .expect("one measure does not fill a category slot");
+        assert_eq!(empty.headline, "Nothing here to chart yet");
+        assert!(
+            empty.body.contains("\"x\""),
+            "the body says which slot is unfilled: {}",
+            empty.body
+        );
+        assert_eq!(module.spec(&doc), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // A second kind, and no second component
+    // -----------------------------------------------------------------------
+
+    /// Every kind the registry declares draws through the one component.
+    ///
+    /// Stated over the whole registry rather than over the kind that happened
+    /// to be added, so "adding a kind needs no new component" is a property of
+    /// the set: a kind that needed one would have to appear here as a second
+    /// type, and there is nowhere for it to go.
+    #[test]
+    fn every_registered_kind_draws_through_the_one_component() {
+        let ids = Doc::new().kinds.ids();
+        assert_eq!(ids, vec![BARS, POINTS], "the fixture declares two kinds");
+
+        for id in ids {
+            let mut doc = Doc::new();
+            let kind = doc.kinds.find(id).expect("just enumerated");
+            let fields = match id {
+                BARS => vec![category("sector"), measure("revenue")],
+                _ => vec![measure("revenue"), measure("margin")],
+            };
+            let mut module: ChartModule =
+                ChartModule::new(ItemId::new("module"), "A module", kind, fields);
+            let frame = draw_pane(&mut doc, &mut module);
+            assert_eq!(doc.drawn.len(), 1, "{id}: drew no spec");
+            assert!(
+                painted(&frame, BODY_INK).is_some(),
+                "{id}: the module's body did not reach the frame"
+            );
+        }
+    }
+
+    /// The second kind picks itself out of the registry by its declared type
+    /// constraints, with no caller-side branch on which kind it is.
+    #[test]
+    fn the_registry_chooses_between_the_two_kinds_by_column_type() {
+        let doc = Doc::new();
+        assert_eq!(
+            doc.kinds
+                .applicable(&[category("sector"), measure("revenue")]),
+            vec![BARS]
+        );
+        assert_eq!(
+            doc.kinds
+                .applicable(&[measure("revenue"), measure("margin")]),
+            vec![POINTS]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The chrome a module owns
+    // -----------------------------------------------------------------------
+
+    /// A module's own controls are **not** in its subject, which is what stops
+    /// the surface around the pane from drawing them.
+    #[test]
+    fn a_modules_own_controls_are_not_the_panes_toolbar() {
+        let doc = Doc::new();
+        let kind = points();
+        let module = ChartModule::new(
+            ItemId::new("module-points"),
+            "Margin against revenue",
+            &kind,
+            vec![measure("revenue"), measure("margin")],
+        );
+        assert_eq!(
+            kind.toolbar(module.options())
+                .iter()
+                .map(|e| e.id)
+                .collect::<Vec<_>>(),
+            vec![LOG_SCALE],
+            "the kind declares a control"
+        );
+        assert!(
+            Item::subject(&module, &doc).toolbar.is_empty(),
+            "and the pane's toolbar — the canvas's chrome — stays empty"
+        );
+    }
+
+    /// The declared chrome draws **inside the module**: it takes space out of
+    /// the module's own rect and pushes the module's body down, rather than
+    /// appearing anywhere the pane's own chrome lives.
+    #[test]
+    fn a_declared_control_takes_space_from_the_module_and_not_from_the_pane() {
+        let fields = vec![measure("revenue"), measure("margin")];
+
+        // The same kind with its controls removed. It has to go in a registry
+        // of its own, because a module resolves its kind through the document
+        // at draw time rather than holding the value it was built from — the
+        // whole reason a kind can be changed without touching a module.
+        let bare = ChartKind {
+            controls: Vec::new,
+            ..points()
+        };
+
+        let mut plain_doc = Doc::with_kinds(vec![ChartKind {
+            controls: Vec::new,
+            ..points()
+        }]);
+        let mut plain = ChartModule::new(
+            ItemId::new("module-points"),
+            "Margin against revenue",
+            &bare,
+            fields.clone(),
+        );
+        let plain_frame = draw_pane(&mut plain_doc, &mut plain);
+        let plain_body = painted(&plain_frame, BODY_INK).expect("the plain module drew");
+
+        let mut chromed_doc = Doc::new();
+        let mut chromed = ChartModule::new(
+            ItemId::new("module-points"),
+            "Margin against revenue",
+            &points(),
+            fields,
+        );
+        let chromed_frame = draw_pane(&mut chromed_doc, &mut chromed);
+        let chromed_body = painted(&chromed_frame, BODY_INK).expect("the chromed module drew");
+
+        assert!(
+            chromed_body.top() > plain_body.top(),
+            "the declared control reserved no space in the module: body at {} \
+             either way",
+            plain_body.top()
+        );
+        assert!(
+            chromed_body.top() < PANE.bottom(),
+            "the control strip pushed the module's body off the pane"
+        );
+        assert_eq!(
+            plain_doc.drawn, chromed_doc.drawn,
+            "the two modules drew the same spec, so the shift is the strip and \
+             not a different chart"
+        );
+    }
+
+    /// The control's verb is the module's: it flips that module's option,
+    /// changes that module's spec, and is reported handled so it never reaches
+    /// the workspace.
+    #[test]
+    fn the_control_verb_is_performed_by_the_module_and_stops_there() {
+        let mut doc = Doc::new();
+        let mut module = ChartModule::new(
+            ItemId::new("module-points"),
+            "Margin against revenue",
+            &points(),
+            vec![measure("revenue"), measure("margin")],
+        );
+        assert_eq!(
+            module.spec(&doc).expect("the columns fit").y_scale,
+            "linear"
+        );
+
+        let mut requests = Vec::new();
+        let mut cx = ItemCtx::new(
+            Mode::Light,
+            PaneKey::new(ViewKind::Charts, ItemId::new("module-points")),
+            egui_tiles::TileId::from_u64(1),
+            true,
+            &mut requests,
+        );
+        assert_eq!(
+            module.perform(&mut doc, Verb::new("cycle-axis-lock"), &mut cx),
+            Handled::Yes,
+            "a control's verb belongs to the module that declared it"
+        );
+        assert_eq!(module.spec(&doc).expect("the columns fit").y_scale, "log");
+
+        // A verb no control declares still bubbles.
+        assert_eq!(
+            module.perform(&mut doc, Verb::new("reset-extent"), &mut cx),
+            Handled::No
+        );
+
+        // And the flip reaches the pixels, not only the struct.
+        let frame = draw_pane(&mut doc, &mut module);
+        assert!(
+            painted(&frame, LOG_INK).is_some(),
+            "the module redrew at the old scale"
+        );
+        assert!(painted(&frame, BODY_INK).is_none());
+    }
+
+    /// A module whose kind this build does not have says so, rather than
+    /// drawing a header and silence.
+    #[test]
+    fn a_module_naming_an_absent_kind_says_which_kind_is_missing() {
+        let doc = Doc::new();
+        let stranger = ChartKind::<Spec> {
+            id: ChartKindId::new("sunburst"),
+            ..bars()
+        };
+        let module = ChartModule::new(
+            ItemId::new("module-stranger"),
+            "A stranger",
+            &stranger,
+            vec![category("sector"), measure("revenue")],
+        );
+        let empty = Item::subject(&module, &doc)
+            .empty_state
+            .expect("the registry has no sunburst");
+        assert!(
+            empty.body.contains("sunburst"),
+            "the body names the missing kind: {}",
+            empty.body
+        );
+    }
+}
