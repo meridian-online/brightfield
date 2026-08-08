@@ -25,7 +25,7 @@
 
 use std::path::PathBuf;
 
-use brightfield_engine::semantic::{self, ExtensionStamp};
+use brightfield_engine::semantic::{self, ExtensionStamp, TypeSourceSpec};
 use brightfield_engine::{
     Engine, LoadOptions, NetworkPolicy, ProfileOutcome, SemanticType, Session, ValueCheck,
 };
@@ -74,7 +74,7 @@ fn session_with(bundle: &std::path::Path) -> Session {
     let options = LoadOptions {
         network: NetworkPolicy::Disabled,
         extension_directory: None,
-        type_source: Some(bundle.to_path_buf()),
+        type_source: Some(TypeSourceSpec::Bundle(bundle.to_path_buf())),
     };
     let load = Engine::new()
         .load_spec_with(parsed.spec, analysis, None, &options)

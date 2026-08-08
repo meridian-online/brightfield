@@ -259,21 +259,22 @@ pub struct LoadOptions {
     /// extensions — pointing it at a bundle directory is the packaging
     /// story, pointing it at an empty directory is the hermetic-test one.
     pub extension_directory: Option<PathBuf>,
-    /// A FineType bundle directory — the extension, its model and its schema
-    /// catalogue — to ask what the loaded columns MEAN.
+    /// Where to get an answer to "what does this column MEAN", as opposed to
+    /// "what did DuckDB store it as".
     ///
     /// `None` (the default) leaves every column's
     /// [`ColumnProfile::semantic`] at [`SemanticType::NotAsked`]: nobody
-    /// looked, and nothing about the column's meaning is claimed. `Some` is
-    /// loaded from the directory alone with no network at any point — see
-    /// [`semantic::FinetypeBundle::open`], which refuses a bundle it cannot
-    /// prove works rather than reporting every column as unlabelled.
+    /// looked, and nothing about the column's meaning is claimed.
+    /// [`TypeSourceSpec::Bundle`] is loaded from its directory alone with no
+    /// network at any point — see [`semantic::FinetypeBundle::open`], which
+    /// refuses a bundle it cannot prove works rather than reporting every
+    /// column as unlabelled.
     ///
-    /// A bundle that fails to open is a WARNING on the [`LoadResult`], never a
-    /// failed load: a dashboard renders the same with or without a type
-    /// source, and losing the whole session over an optional one would be
-    /// absurd.
-    pub type_source: Option<PathBuf>,
+    /// A source that fails to open is remembered
+    /// ([`Session::type_source_error`]) and printed, never a failed load: a
+    /// dashboard renders the same with or without a type source, and losing
+    /// the whole session over an optional one would be absurd.
+    pub type_source: Option<semantic::TypeSourceSpec>,
 }
 
 impl LoadOptions {
@@ -295,7 +296,7 @@ impl LoadOptions {
                 .and_then(semantic::bundle_beside)
         });
         LoadOptions {
-            type_source: dir.clone(),
+            type_source: dir.clone().map(semantic::TypeSourceSpec::Bundle),
             ..LoadOptions::default()
         }
     }
@@ -380,9 +381,9 @@ impl Engine {
         // raised: a spec renders identically with or without one.
         let mut type_source: Option<Box<dyn TypeSource>> = None;
         let mut type_source_error: Option<String> = None;
-        if let Some(dir) = &options.type_source {
-            match semantic::FinetypeBundle::open(dir, &conn) {
-                Ok(bundle) => type_source = Some(Box::new(bundle)),
+        if let Some(spec) = &options.type_source {
+            match spec.open(&conn) {
+                Ok(source) => type_source = Some(source),
                 Err(e) => {
                     eprintln!("warning: no semantic type source — {e}");
                     type_source_error = Some(e);

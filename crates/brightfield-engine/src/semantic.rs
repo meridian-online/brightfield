@@ -182,6 +182,68 @@ pub trait TypeSource: Send + Sync {
     ) -> SemanticType;
 }
 
+/// How a session acquires its [`TypeSource`].
+///
+/// A [`TypeSource`] cannot be built before the session exists — it has to load
+/// itself into that session's own DuckDB connection — so what a caller hands
+/// [`LoadOptions`] is this, not a source.
+///
+/// The two variants are the swap point. Nothing downstream of
+/// [`ColumnProfile::semantic`] can tell which one produced a label, which is
+/// what "swappable without touching any caller" has to mean to be worth
+/// anything.
+///
+/// [`LoadOptions`]: crate::LoadOptions
+/// [`ColumnProfile::semantic`]: crate::ColumnProfile::semantic
+#[derive(Clone)]
+pub enum TypeSourceSpec {
+    /// A FineType bundle directory: `finetype.duckdb_extension`, `model/`,
+    /// `taxonomy-schemas.json`. What a packaged build ships.
+    Bundle(PathBuf),
+    /// Any other implementation of the seam.
+    Other(std::sync::Arc<dyn OpenTypeSource>),
+}
+
+impl std::fmt::Debug for TypeSourceSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TypeSourceSpec::Bundle(dir) => f.debug_tuple("Bundle").field(dir).finish(),
+            TypeSourceSpec::Other(_) => f.write_str("Other(..)"),
+        }
+    }
+}
+
+impl TypeSourceSpec {
+    /// Bring the source up against `conn`.
+    ///
+    /// # Errors
+    ///
+    /// Whatever stopped it, in words naming the source. The caller reports
+    /// this and carries on with no type source; it is never fatal to a load.
+    pub fn open(&self, conn: &Connection) -> Result<Box<dyn TypeSource>, String> {
+        match self {
+            TypeSourceSpec::Bundle(dir) => {
+                FinetypeBundle::open(dir, conn).map(|b| Box::new(b) as Box<dyn TypeSource>)
+            }
+            TypeSourceSpec::Other(open) => open.open(conn),
+        }
+    }
+}
+
+/// Something that can bring a [`TypeSource`] up against a live connection.
+///
+/// Implement this beside a [`TypeSource`] to put it behind the seam without
+/// touching the engine.
+pub trait OpenTypeSource: Send + Sync {
+    /// Load whatever this source needs into `conn` and return it ready to
+    /// answer.
+    ///
+    /// # Errors
+    ///
+    /// Whatever stopped it, in words that name the source.
+    fn open(&self, conn: &Connection) -> Result<Box<dyn TypeSource>, String>;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // THE DUCKDB EXTENSION ABI STAMP
 // ═══════════════════════════════════════════════════════════════════════════

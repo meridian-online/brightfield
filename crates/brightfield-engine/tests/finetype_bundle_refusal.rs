@@ -43,7 +43,7 @@ fn load_against(dir: &Path) -> (Option<String>, Option<String>, Vec<SemanticType
     let options = LoadOptions {
         network: NetworkPolicy::Disabled,
         extension_directory: None,
-        type_source: Some(dir.to_path_buf()),
+        type_source: Some(semantic::TypeSourceSpec::Bundle(dir.to_path_buf())),
     };
     let load = Engine::new()
         .load_spec_with(parsed.spec, analysis, None, &options)
