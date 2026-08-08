@@ -660,9 +660,7 @@ impl TypeSource for FinetypeBundle {
         // called `email` is a different question from profiling the same
         // values anonymously.
         let header = column.replace('\'', "''");
-        Ok(format!(
-            "ft_profile(CAST(\"{c}\" AS VARCHAR), '{header}')"
-        ))
+        Ok(format!("ft_profile(CAST(\"{c}\" AS VARCHAR), '{header}')"))
     }
 
     fn read_and_check(
@@ -830,7 +828,10 @@ mod tests {
             abi_type: "C_STRUCT".into(),
         };
         let err = check_abi(&stamp, "osx_arm64", "v1.5.2").expect_err("wrong platform");
-        assert!(err.contains("linux_amd64") && err.contains("osx_arm64"), "{err}");
+        assert!(
+            err.contains("linux_amd64") && err.contains("osx_arm64"),
+            "{err}"
+        );
 
         stamp.platform = "osx_arm64".into();
         stamp.abi_type = "CPP".into();

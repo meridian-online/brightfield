@@ -16,9 +16,7 @@
 use std::sync::Arc;
 
 use brightfield_engine::semantic::{OpenTypeSource, TypeSource, TypeSourceSpec};
-use brightfield_engine::{
-    Engine, LoadOptions, ProfileOutcome, SemanticType, ValueCheck,
-};
+use brightfield_engine::{Engine, LoadOptions, ProfileOutcome, SemanticType, ValueCheck};
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::{parse_spec, Format};
 use duckdb::arrow::array::Array;
@@ -55,7 +53,9 @@ impl TypeSource for Backwards {
         let reversed: String = duckdb_type.chars().rev().collect();
         let literal = reversed.replace('\'', "''");
         let c = column.replace('"', "\"\"");
-        Ok(format!("any_value('{literal}') FILTER (WHERE \"{c}\" IS NOT NULL)"))
+        Ok(format!(
+            "any_value('{literal}') FILTER (WHERE \"{c}\" IS NOT NULL)"
+        ))
     }
 
     fn read_and_check(

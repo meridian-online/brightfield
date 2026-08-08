@@ -141,8 +141,11 @@ fn a_label_arrives_that_a_database_type_could_not_have_produced() {
                 label, &email.type_name,
                 "the semantic label restates the database type"
             );
-            assert!(*confidence > 0.0, "confidence {confidence} is not a number \
-                the classifier produced — a model that failed to load returns 0.0");
+            assert!(
+                *confidence > 0.0,
+                "confidence {confidence} is not a number \
+                the classifier produced — a model that failed to load returns 0.0"
+            );
             assert_eq!(
                 check,
                 &ValueCheck::Checked {
