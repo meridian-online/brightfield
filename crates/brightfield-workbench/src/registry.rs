@@ -935,9 +935,10 @@ impl<S> ChartKind<S> {
             .collect()
     }
 
-    /// The spec for one module of this kind, and the only route to
-    /// [`ChartKind::build`] — the builder takes a [`Bound`], and this is the
-    /// only thing that makes one.
+    /// The spec for one module of this kind, and the way into
+    /// [`ChartKind::build`]: the builder takes a [`Bound`], and `spec` is the
+    /// only thing that makes one. *Which* kind's `spec` made the one a builder
+    /// ends up reading is a further question — see [`Bound`].
     ///
     /// # Errors
     ///
@@ -1252,9 +1253,11 @@ mod chart_kind_tests {
     }
 
     /// The type constraints are enforced by [`ChartKind::bind`], once, rather
-    /// than by each builder — which is half of why the builder has no error
-    /// path. The other half is the id check in [`ChartKind::spec`], pinned by
-    /// `a_binding_belongs_to_the_kind_that_made_it` below.
+    /// than by each builder — which is why a builder takes bound columns
+    /// instead of checking raw ones. The id check that keeps those columns
+    /// attached to this kind is in [`ChartKind::spec`], pinned by
+    /// `a_binding_belongs_to_the_kind_that_made_it` below; where the pair stops
+    /// is pinned by `tests/chart_kind_bound.rs`.
     #[test]
     fn a_slot_refuses_a_column_of_the_wrong_type() {
         let kind = bars();
