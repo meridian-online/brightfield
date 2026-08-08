@@ -4864,6 +4864,157 @@ mod tests {
         );
     }
 
+    // --- the in-bar label ---
+
+    /// **What a label SAYS**, for both forms and both states. This is the
+    /// content pin the raster gate cites: that gate measures where the label is
+    /// drawn and how much of it there is, which cannot tell `6` from `9`.
+    ///
+    /// The `part / whole` form is what makes the label the in-bar reading of
+    /// the geometry rather than a restatement of the axis: it is the same two
+    /// numbers the deemphasised whole and the solid part are drawn from.
+    #[test]
+    fn a_label_reads_the_whole_at_rest_and_part_of_whole_under_a_selection() {
+        let count = |v, s, share| bar_label(LabelForm::Count, v, s, share);
+        assert_eq!(count(1234.0, None, None).as_deref(), Some("1234"));
+        assert_eq!(
+            count(1234.0, Some(567.0), None).as_deref(),
+            Some("567 / 1234")
+        );
+        // A group with nothing selected says so. Zero and "not selected at all"
+        // are different answers, and only the first has a numerator to print.
+        assert_eq!(count(12.0, Some(0.0), None).as_deref(), Some("0 / 12"));
+        // A count is integral; a mean is not, and neither is printed as the
+        // other.
+        assert_eq!(count(12.5, None, None).as_deref(), Some("12.5"));
+
+        let pct = |v, s, share| bar_label(LabelForm::Percent, v, s, share);
+        assert_eq!(pct(25.0, None, Some(100.0)).as_deref(), Some("25%"));
+        assert_eq!(
+            pct(25.0, Some(5.0), Some(100.0)).as_deref(),
+            Some("5% / 25%")
+        );
+        // Both percentages are of the SAME denominator — the values the mark
+        // drew — so the pair reads as a part of a whole on one base rather than
+        // as two unrelated fractions.
+        assert_eq!(
+            pct(50.0, Some(25.0), Some(200.0)).as_deref(),
+            Some("12% / 25%")
+        );
+    }
+
+    /// A percentage of nothing is not printed as `NaN%` or as `0%`: with no
+    /// denominator there is no percentage, and the label is dropped.
+    #[test]
+    fn a_percentage_with_no_denominator_is_not_printed() {
+        assert_eq!(bar_label(LabelForm::Percent, 1.0, None, None), None);
+        assert_eq!(bar_label(LabelForm::Percent, 1.0, None, Some(0.0)), None);
+        // The count form has no denominator to want, so it survives.
+        assert!(bar_label(LabelForm::Count, 1.0, None, None).is_some());
+    }
+
+    /// **A label too long for its bar goes outside it, in the bar's own ink.**
+    ///
+    /// The fallback is what keeps a ranked chart honest: ranking is what makes
+    /// the last bars short, so a label that vanished when it did not fit would
+    /// leave unlabelled exactly the rows a reader most needs a number for.
+    ///
+    /// The extents are literals rather than read off [`BAR_LABEL_PAD`], for the
+    /// reason the sub-pixel selection test gives: a test taking its expectation
+    /// from the constant it checks passes at every value of that constant.
+    #[test]
+    fn a_label_that_does_not_fit_is_drawn_past_the_tip_instead_of_inside_it() {
+        let ink = Color::new([0.0, 0.5, 0.8, 1.0]);
+        // A 200px bar and a 40px label: it fits, so the label is knocked out of
+        // the fill and anchored at the tip end.
+        let inside = place_bar_label(40.0, 100.0, 300.0, ink);
+        assert!(
+            inside.at < 300.0 && inside.at > 260.0,
+            "an inside label sits at the tip, inset: {}",
+            inside.at
+        );
+        assert!(matches!(inside.anchor, TextAnchor::End));
+        assert_ne!(
+            inside.colour.components, ink.components,
+            "a label on the fill is knocked out of it, not drawn in it"
+        );
+
+        // The same label on a 20px bar does not fit, so it goes past the tip in
+        // the bar's own ink — which reads against the plot surface.
+        let outside = place_bar_label(40.0, 100.0, 120.0, ink);
+        assert!(
+            outside.at > 120.0,
+            "an outside label is past the tip: {}",
+            outside.at
+        );
+        assert!(matches!(outside.anchor, TextAnchor::Start));
+        assert_eq!(outside.colour.components, ink.components);
+
+        // A bar growing the other way takes the same treatment mirrored — a
+        // `barY` runs up the frame, where pixel y DECREASES.
+        let down = place_bar_label(40.0, 300.0, 280.0, ink);
+        assert!(
+            down.at < 280.0,
+            "the fallback follows the bar's direction: {}",
+            down.at
+        );
+        assert!(matches!(down.anchor, TextAnchor::End));
+    }
+
+    /// **A bar under a live selection draws twice.**
+    ///
+    /// Two rects per row where an unselected chart draws one: the deemphasised
+    /// whole, and the selected part over it. Counted through the scene's path
+    /// tags, so what is asserted is that the second fill was emitted rather
+    /// than that some code ran.
+    #[test]
+    fn a_bar_carrying_selected_counts_draws_the_part_over_the_whole() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("category", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+            Field::new(SELECTED_COUNT_COLUMN, DataType::Float64, true),
+        ]));
+        let rows = |selected: Vec<Option<f64>>| {
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(StringArray::from(vec!["a", "b"])),
+                    Arc::new(Float64Array::from(vec![10.0, 20.0])),
+                    Arc::new(Float64Array::from(selected)),
+                ],
+            )
+            .unwrap()
+        };
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::Y, "category".to_string());
+        cm.insert(Channel::X, "value".to_string());
+
+        let renderer = BarRenderer { axis: BarAxis::X };
+        let tags = |batch: &RecordBatch| {
+            let scales = infer_scales(batch, &cm, (40.0, 600.0), (450.0, 20.0));
+            let mut scene = Scene::new();
+            renderer.render(&mut scene, batch, &cm, &scales, None);
+            scene.encoding().path_tags.len()
+        };
+
+        // Both groups partly selected: two wholes and two parts.
+        let both = tags(&rows(vec![Some(4.0), Some(9.0)]));
+        // Neither selected: two wholes and no part at all — a zero count is a
+        // group the selection did not reach, and there is nothing to overdraw.
+        let neither = tags(&rows(vec![Some(0.0), Some(0.0)]));
+        assert!(
+            both > neither,
+            "a selected part is a second fill per bar: {both} path tags against \
+             {neither} with nothing selected"
+        );
+        // And a group with no count at all is the same as one with a zero.
+        let null = tags(&rows(vec![None, None]));
+        assert_eq!(
+            null, neither,
+            "a NULL selected count draws no part, exactly as a zero does"
+        );
+    }
+
     #[test]
     fn bar_renderer_with_highlight() {
         let schema = Arc::new(Schema::new(vec![
