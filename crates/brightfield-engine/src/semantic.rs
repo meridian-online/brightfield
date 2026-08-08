@@ -1376,9 +1376,12 @@ mod tests {
                 failed: 0,
             },
         };
+        // Confidences here are arbitrary constructor arguments, not measured
+        // ones — nothing in this test depends on their values, and no figure
+        // in this module claims to be what a model returned.
         let unusable = SemanticType::Unusable {
             label: "identity.person.email".into(),
-            confidence: 0.79,
+            confidence: 0.5,
             checked: 8,
             failed: 7,
             first_failure: None,
