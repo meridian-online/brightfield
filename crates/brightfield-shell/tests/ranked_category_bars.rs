@@ -15,9 +15,13 @@
 //! * **Limited** — the NUMBER of bars, and which ones survive. A cap that kept
 //!   the first `n` categories also draws `n` bars, so the lengths say which
 //!   `n`.
-//! * **Labelled** — knocked-out pixels INSIDE the bar rect. What the label says
-//!   is pinned by the unit tests on the formatter; what this adds is that it is
-//!   drawn, and drawn on the bar rather than beside it.
+//! * **Labelled** — the label is READ BACK off the bar and matched against the
+//!   string it should be. Presence alone is not enough and the gap was real:
+//!   with only a presence reading, `drawn_total := 2 * sum` (every percentage
+//!   halved) and `selected := value` (every bar reading `N / N`) both passed
+//!   the whole workspace. The formatter's unit tests pin what `bar_label`
+//!   returns *in isolation*; nothing pinned the renderer's wiring of the two
+//!   numbers INTO it, which is the half a reader actually sees.
 //! * **Ghosted** — the one that carries the device. A selection must leave every
 //!   bar exactly where and as long as it was, and change only the ink inside
 //!   it. Ink-versus-no-ink proves nothing: a chart that re-queried under the
@@ -33,17 +37,24 @@
 //! on the same runner. Not `#[ignore]`d and behind no feature, for the reason
 //! `crates/brightfield-shell/tests/snapshot.rs` gives.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use brightfield_engine::coordinator::Interaction;
 use brightfield_engine::SqlPredicate;
 use brightfield_render::channel::LabelForm;
+use brightfield_render::mark::BAR_LABEL_SIZE;
+use brightfield_render::text::{draw_text, TextAnchor};
+use brightfield_render::VelloRenderer;
 use brightfield_shell::capture::capture_vello_only;
 use brightfield_shell::pipeline::{live_spec, Composed, PlotHandle};
 use brightfield_shell::ranked_bars::{Dashboard, RankedCategoryBars, DEFAULT_LIMIT};
 use brightfield_spec::analysis::BrushKind;
 use brightfield_sql::ir::ScalarValue;
 use image::RgbaImage;
+use vello::peniko::Color;
+use vello::Scene;
 
 // ---------------------------------------------------------------------------
 // Ink
@@ -240,10 +251,25 @@ fn spec_path(source: &str, name: &str) -> PathBuf {
 /// Render a composition and read its pixels back — the composed Vello scene
 /// and nothing else, the same bytes an export writes.
 fn raster(composed: Composed, name: &str) -> RgbaImage {
+    raster_at(composed, name, 1)
+}
+
+/// How much larger than logical the label readings are taken at.
+///
+/// A label is ten logical pixels tall, which is four or five pixels of actual
+/// stroke — too few for a comparison to tell a `9` from an `8` by more than a
+/// coin toss, and measured as such before this existed: the narrowest genuine
+/// margin at 1× was eight ten-thousandths. Two makes every glyph carry four
+/// times the evidence. It is the same `capture_vello_only` scale a Retina
+/// export uses, so nothing here is a private path.
+const LABEL_SCALE: u32 = 2;
+
+/// Render at `scale` device pixels per logical pixel.
+fn raster_at(composed: Composed, name: &str, scale: u32) -> RgbaImage {
     let dir = std::env::temp_dir().join("bf-ranked-category-bars");
     std::fs::create_dir_all(&dir).expect("scratch dir");
     let png = dir.join(format!("{name}.png"));
-    capture_vello_only(composed, 1.0, &png).expect("export");
+    capture_vello_only(composed, scale as f32, &png).expect("export");
     image::open(&png).expect("open png").to_rgba8()
 }
 
@@ -276,6 +302,16 @@ struct Frame {
 }
 
 impl Frame {
+    /// The same frame in device pixels, for a capture taken at `scale`.
+    fn scaled(self, scale: u32) -> Self {
+        Self {
+            x0: self.x0 * scale,
+            y0: self.y0 * scale,
+            x1: self.x1 * scale,
+            y1: self.y1 * scale,
+        }
+    }
+
     fn of(composed: &Composed, index: usize) -> Self {
         let plot = &composed.plots[index];
         let (x, y) = (plot.rect.x, plot.rect.y);
@@ -496,8 +532,11 @@ fn unfilled_pixels_inside_bars(img: &RgbaImage, frame: &Frame) -> usize {
 /// The control is the whole assertion. Ink inside a bar is not evidence on its
 /// own — a bar with a hole in it for any reason would produce some — so what is
 /// asserted is a DIFFERENCE against the identical chart with one line removed.
-/// What the label SAYS is pinned separately, by the formatter's unit tests;
-/// what this adds is that it is drawn, and drawn on the bar.
+///
+/// This is the PRESENCE half only, and on its own it is not enough: a label
+/// carrying the wrong number is present. What it says is read back and matched
+/// below, in `the_number_in_each_bar_is_the_number_that_bar_stands_for` and
+/// `a_percentage_is_a_percentage_of_what_the_mark_drew`.
 #[test]
 fn each_bar_carries_its_number_and_carries_none_when_asked_not_to() {
     let labelled = module_spec(6, RankedCategoryBars::new("cat"));
@@ -532,6 +571,640 @@ fn each_bar_carries_its_number_and_carries_none_when_asked_not_to() {
         percent > with,
         "`label: percent` prints a longer string than `label: count` — {percent} \
          knocked-out pixels against {with}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Reading a label back off the picture
+// ---------------------------------------------------------------------------
+//
+// The presence reading above cannot tell `0 / 1` from `1 / 1`, and two
+// mutations lived in that gap: `drawn_total := 2 * sum` halves every
+// percentage, and `selected := value` makes every bar read `N / N`. Both left
+// the whole workspace green.
+//
+// So a label is read back and matched against the string it should be. The
+// reference is not a transcription and not a golden — it is the SAME
+// `draw_text` at the SAME `BAR_LABEL_SIZE` in the SAME knockout token over the
+// SAME fill, rendered here through the same `render_to_pixels` the capture path
+// uses. What the comparison decides is which of the strings a bar could
+// honestly have carried it actually did, and the assertion is that the right
+// one wins. That form needs no tuned similarity threshold to mean anything: a
+// wrong number loses to the right one by construction.
+//
+// WHAT IT COMPARES IS COVERAGE, NOT A THRESHOLDED SHAPE. The chart anchors a
+// label against its bar's tip at a fractional pixel and centres it on a band at
+// another; the reference is drawn at an integer origin. A seven-pixel glyph
+// half a pixel out has every stroke smeared across two rows, so thresholding
+// both at half coverage returns a clean glyph on one side and salt-and-pepper
+// on the other — measured, on this fixture, before this comparison replaced it.
+// Anti-aliasing conserves area, so coverage does not care about the phase.
+
+/// A glyph run as a coverage field, cropped to its own extent, smoothed and
+/// normalised to unit total.
+///
+/// Smoothed because that is what makes two renderings half a pixel apart
+/// comparable; normalised because the comparison is of shape and not of how
+/// much of the bar the string happened to cover.
+#[derive(Debug, Clone)]
+struct Ink {
+    w: usize,
+    h: usize,
+    v: Vec<f32>,
+}
+
+/// Coverage below which a pixel is the fill rather than any part of a glyph.
+///
+/// Low on purpose: this decides the CROP, and cropping away a glyph's faint
+/// outer ramp would make the extent depend on the sub-pixel phase, which is the
+/// dependence this whole comparison exists to remove.
+const INK_FLOOR: f32 = 0.12;
+
+impl Ink {
+    /// Crop a coverage grid to the extent of its inked pixels, then smooth and
+    /// normalise it.
+    fn build(w: usize, h: usize, v: &[f32]) -> Self {
+        let set: Vec<(usize, usize)> = (0..h)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .filter(|(x, y)| v[y * w + x] >= INK_FLOOR)
+            .collect();
+        let Some(&(fx, fy)) = set.first() else {
+            return Self {
+                w: 0,
+                h: 0,
+                v: Vec::new(),
+            };
+        };
+        let (mut x0, mut x1, mut y0, mut y1) = (fx, fx, fy, fy);
+        for (x, y) in &set {
+            x0 = x0.min(*x);
+            x1 = x1.max(*x);
+            y0 = y0.min(*y);
+            y1 = y1.max(*y);
+        }
+        // Two pixels of margin all round, so a stroke on the crop edge keeps the
+        // faint ramp a resample needs to land on.
+        const MARGIN: usize = 2;
+        let (cw, ch) = (x1 - x0 + 1 + 2 * MARGIN, y1 - y0 + 1 + 2 * MARGIN);
+        let mut out = vec![0.0_f32; cw * ch];
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                out[(y - y0 + MARGIN) * cw + (x - x0 + MARGIN)] = v[y * w + x];
+            }
+        }
+        let total: f32 = out.iter().sum();
+        if total > 0.0 {
+            for p in &mut out {
+                *p /= total;
+            }
+        }
+        Self {
+            w: cw,
+            h: ch,
+            v: out,
+        }
+    }
+
+    fn at(&self, x: isize, y: isize) -> f32 {
+        if x < 0 || y < 0 || x as usize >= self.w || y as usize >= self.h {
+            return 0.0;
+        }
+        self.v[y as usize * self.w + x as usize]
+    }
+
+    /// The field sampled between pixels, so a reference can be moved by a
+    /// fraction of one.
+    fn sample(&self, x: f32, y: f32) -> f32 {
+        let (x0, y0) = (x.floor(), y.floor());
+        let (fx, fy) = (x - x0, y - y0);
+        let (x0, y0) = (x0 as isize, y0 as isize);
+        let p = |dx: isize, dy: isize| self.at(x0 + dx, y0 + dy);
+        let top = p(0, 0) * (1.0 - fx) + p(1, 0) * fx;
+        let bottom = p(0, 1) * (1.0 - fx) + p(1, 1) * fx;
+        top * (1.0 - fy) + bottom * fy
+    }
+
+    /// The field's centre of mass. Sub-pixel, which is the whole point: it is
+    /// what lets two renderings of one string that landed on different parts of
+    /// the pixel grid be brought into register without a search fine enough to
+    /// cost anything.
+    fn centroid(&self) -> (f32, f32) {
+        let (mut sx, mut sy, mut s) = (0.0_f32, 0.0_f32, 0.0_f32);
+        for y in 0..self.h {
+            for x in 0..self.w {
+                let v = self.v[y * self.w + x];
+                sx += v * x as f32;
+                sy += v * y as f32;
+                s += v;
+            }
+        }
+        if s <= 0.0 {
+            return (0.0, 0.0);
+        }
+        (sx / s, sy / s)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.v.iter().all(|p| *p <= 0.0)
+    }
+}
+
+/// How far apart two coverage fields are: half the L1 distance between them,
+/// with `b` moved onto `a` first.
+///
+/// Both fields sum to one, so the L1 distance runs 0…2 and halving it puts the
+/// answer on 0…1 — nought for identical, one for disjoint.
+///
+/// The registration is by CENTRE OF MASS, refined by a quarter-pixel search
+/// around it. That is what makes the comparison independent of where on the
+/// pixel grid each rendering landed without also making it blind: an earlier
+/// version smoothed both fields until the phase stopped mattering, and smoothed
+/// away enough of the difference between `10%` and `15%` that the runner-up
+/// came within four thousandths of the winner.
+fn distance(a: &Ink, b: &Ink) -> f64 {
+    let (acx, acy) = a.centroid();
+    let (bcx, bcy) = b.centroid();
+    let (base_x, base_y) = (bcx - acx, bcy - acy);
+    const STEPS: i32 = 4;
+    const STEP: f32 = 0.25;
+    let mut best = f64::INFINITY;
+    for sy in -STEPS..=STEPS {
+        for sx in -STEPS..=STEPS {
+            let (ox, oy) = (base_x + sx as f32 * STEP, base_y + sy as f32 * STEP);
+            let mut sum = 0.0_f64;
+            for y in 0..a.h {
+                for x in 0..a.w {
+                    let pa = a.v[y * a.w + x];
+                    let pb = b.sample(x as f32 + ox, y as f32 + oy);
+                    sum += f64::from((pa - pb).abs());
+                }
+            }
+            // Whatever of `b` fell outside `a`'s box is missing from the sum
+            // above; add it, or a reference wider than the reading would score
+            // better the more of it hung off the edge.
+            let covered: f32 = (0..a.h)
+                .flat_map(|y| (0..a.w).map(move |x| (x, y)))
+                .map(|(x, y)| b.sample(x as f32 + ox, y as f32 + oy))
+                .sum();
+            sum += f64::from((1.0 - covered).max(0.0));
+            best = best.min(sum / 2.0);
+        }
+    }
+    best
+}
+
+/// One Vello renderer for every reference glyph run in this file. Standing one
+/// up asks the OS for a GPU adapter, which costs far more than the tiny draws
+/// it is then used for.
+fn reference_renderer() -> &'static Arc<Mutex<VelloRenderer>> {
+    static R: OnceLock<Arc<Mutex<VelloRenderer>>> = OnceLock::new();
+    R.get_or_init(VelloRenderer::new)
+}
+
+/// A design-system token as a Vello colour.
+fn ink(c: meridian_design::colour::Rgba) -> Color {
+    Color::new([c.r, c.g, c.b, c.a])
+}
+
+/// How much of a pixel is label rather than the fill behind it.
+///
+/// The pixel projected onto the segment from the fill to the knockout ink and
+/// clamped — nought where the bar shows through untouched, one at the middle of
+/// a stroke. Asked against the ink ACTUALLY behind the label, which is the
+/// solid mark colour on a bar the selection accounted for and the deemphasised
+/// one on a bar it did not: the two sit at different distances from the
+/// knockout, so reading one against the other's fill rescales every coverage in
+/// the run.
+fn label_coverage(p: [u8; 4], fill: [i32; 3]) -> f32 {
+    let knockout = rgb(meridian_design::chrome::INK_LIGHT.surface);
+    let axis: Vec<f64> = (0..3).map(|c| f64::from(knockout[c] - fill[c])).collect();
+    let len2: f64 = axis.iter().map(|a| a * a).sum();
+    if len2 <= 0.0 {
+        return 0.0;
+    }
+    let dot: f64 = (0..3)
+        .map(|c| f64::from(i32::from(p[c]) - fill[c]) * axis[c])
+        .sum();
+    (dot / len2).clamp(0.0, 1.0) as f32
+}
+
+/// `text` as this renderer draws an in-bar label over `fill`.
+///
+/// Drawn the way the chart draws it rather than approximated: same `draw_text`,
+/// same [`BAR_LABEL_SIZE`], same knockout token, same fill behind it, and the
+/// same `render_to_pixels` the capture path calls. The one thing that differs
+/// is where on the pixel grid it lands, and that is what the smoothing and the
+/// translation search are for.
+fn reference_ink(text: &str, fill: [i32; 3]) -> Ink {
+    const W: u32 = 320;
+    const H: u32 = 48;
+    let mut logical = Scene::new();
+    logical.fill(
+        vello::peniko::Fill::NonZero,
+        vello::kurbo::Affine::IDENTITY,
+        Color::from_rgb8(fill[0] as u8, fill[1] as u8, fill[2] as u8),
+        None,
+        &vello::kurbo::Rect::new(0.0, 0.0, f64::from(W), f64::from(H)),
+    );
+    draw_text(
+        &mut logical,
+        text,
+        16.0,
+        32.0,
+        BAR_LABEL_SIZE,
+        ink(meridian_design::chrome::INK_LIGHT.surface),
+        TextAnchor::Start,
+    );
+    // Scaled by appending under an affine, which is exactly what
+    // `capture_vello_only` does to the chart — so the reference glyph is
+    // enlarged by the same arithmetic as the one it is compared with, rather
+    // than by being asked for at a larger font size.
+    let mut scene = Scene::new();
+    scene.append(
+        &logical,
+        Some(vello::kurbo::Affine::scale(f64::from(LABEL_SCALE))),
+    );
+    let (dw, dh) = (W * LABEL_SCALE, H * LABEL_SCALE);
+    let px = reference_renderer()
+        .lock()
+        .expect("renderer poisoned")
+        .render_to_pixels(&scene, dw, dh);
+    let v: Vec<f32> = px
+        .chunks_exact(4)
+        .map(|p| label_coverage([p[0], p[1], p[2], p[3]], fill))
+        .collect();
+    let mut glyphs = segment_glyphs(dw as usize, dh as usize, &v);
+    assert_eq!(
+        glyphs.len(),
+        1,
+        "the reference for {text:?} segmented into {} glyphs — one character \
+         must produce one, or the two sides of the comparison are not measuring \
+         the same thing",
+        glyphs.len()
+    );
+    glyphs.remove(0)
+}
+
+/// Every character an in-bar label can contain, each over each of the two inks
+/// a bar can be — since a label sits on whichever one its own bar carries.
+///
+/// **One glyph at a time, not one string at a time.** A whole-string comparison
+/// asks a five-character run whether it is `0 / 5` or `5 / 5`, a difference of
+/// one glyph in five, and one degraded reading is enough to tip it: measured on
+/// this fixture, that form read `5 / 5` for a bar standing for `0 / 5` and
+/// `15%` for one standing for `10%`. Segmenting first puts each glyph's whole
+/// mass on its own question.
+///
+/// Built once for the process. Twenty-four small renders, and standing up the
+/// GPU adapter behind them costs more than all of them together.
+fn glyph_references() -> &'static BTreeMap<char, Vec<Ink>> {
+    static REFS: OnceLock<BTreeMap<char, Vec<Ink>>> = OnceLock::new();
+    REFS.get_or_init(|| {
+        "0123456789/%"
+            .chars()
+            .map(|c| {
+                let text = c.to_string();
+                (
+                    c,
+                    vec![
+                        reference_ink(&text, mark_ink()),
+                        reference_ink(&text, faded_ink()),
+                    ],
+                )
+            })
+            .collect()
+    })
+}
+
+/// The label knocked out of `bar`, as a raw `(width, height, coverage)` grid —
+/// uncropped, so the gaps between its glyphs are still in it.
+fn label_field(
+    img: &RgbaImage,
+    frame: &Frame,
+    bar: &Bar,
+    tips: &[Option<u32>],
+) -> (usize, usize, Vec<f32>) {
+    let tip = (bar.first_row..bar.end_row)
+        .filter_map(|r| tips[r])
+        .max()
+        .unwrap_or(frame.x0);
+    let x_lo = frame.x0 + 4;
+    let x_hi = tip.saturating_sub(2);
+    // Only rows the bar covers FULLY. A bar's first and last rows are partial
+    // coverage of the fill over the surface, so every pixel in them is already
+    // part-way to the knockout and the whole row reads as glyph — a horizontal
+    // rule through the field that moves its extent and makes every comparison
+    // meaningless. Asked as "is the pixel just past the baseline one of the two
+    // bar inks", which is true only at full coverage.
+    let solid: Vec<usize> = (bar.first_row..bar.end_row)
+        .filter(|r| is_bar(img.get_pixel(x_lo, frame.y0 + *r as u32).0))
+        .collect();
+    // The middle of the band, where the label is. A bar's own top and bottom
+    // edges are partial coverage of the fill over the surface, so pixels there
+    // are already part-way to the knockout colour and read as glyph — and the
+    // artefact they leave is tall enough to move the extent of whatever is
+    // cropped out of the region, which is how a `3` came back as a
+    // fifty-row smear. Reading the middle excludes them by geometry rather
+    // than by hoping a threshold separates them.
+    let margin = solid.len() / 5;
+    let rows: Vec<usize> = solid
+        .get(margin..solid.len().saturating_sub(margin))
+        .unwrap_or(&[])
+        .to_vec();
+    if x_hi <= x_lo || rows.is_empty() {
+        return (0, 0, Vec::new());
+    }
+    // Which ink stands behind this bar's label — solid where the selection
+    // reached the tip, deemphasised where it did not.
+    //
+    // Taken as the MEDIAN over the whole region rather than sampled at one
+    // point. A glyph covers a small fraction of the area, so the median is the
+    // fill; a single sample near the tip lands in the bar's own edge ramp
+    // whenever the tip falls between pixels, and reading a solid bar against
+    // the faded ink rescales every coverage in the run into noise. That is what
+    // happened to two bars in six the first time this was measured at two
+    // device pixels per logical one.
+    let mut channels: [Vec<u8>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    for r in &rows {
+        let y = frame.y0 + *r as u32;
+        for x in x_lo..x_hi {
+            let p = img.get_pixel(x, y).0;
+            for (c, ch) in channels.iter_mut().enumerate() {
+                ch.push(p[c]);
+            }
+        }
+    }
+    let median: [i32; 3] = std::array::from_fn(|c| {
+        channels[c].sort_unstable();
+        i32::from(channels[c][channels[c].len() / 2])
+    });
+    let d2 = |want: [i32; 3]| -> i32 {
+        (0..3)
+            .map(|c| {
+                let d = median[c] - want[c];
+                d * d
+            })
+            .sum()
+    };
+    let fill = if d2(mark_ink()) <= d2(faded_ink()) {
+        mark_ink()
+    } else {
+        faded_ink()
+    };
+
+    let w = (x_hi - x_lo) as usize;
+    let h = rows.len();
+    let mut v = vec![0.0_f32; w * h];
+    for (ry, r) in rows.iter().enumerate() {
+        let y = frame.y0 + *r as u32;
+        for (rx, x) in (x_lo..x_hi).enumerate() {
+            v[ry * w + rx] = label_coverage(img.get_pixel(x, y).0, fill);
+        }
+    }
+    // A column inked down more than half the band is not a glyph — it is the
+    // bar's own edge, caught by the region when the tip falls between pixels.
+    // A label is a fraction of a band tall by construction, so this is a rule
+    // about what a glyph IS rather than a margin chosen against a size.
+    for x in 0..w {
+        let inked = (0..h).filter(|y| v[y * w + x] >= INK_FLOOR).count();
+        if inked * 2 > h {
+            for y in 0..h {
+                v[y * w + x] = 0.0;
+            }
+        }
+    }
+    (w, h, v)
+}
+
+/// Fraction of a label's tallest column below which a column is the gap
+/// between two glyphs rather than part of one.
+///
+/// Judged on the COLUMN's total coverage and not on whether any single pixel in
+/// it is inked. The gap between two adjacent digits carries the outer ramp of
+/// both, so at ten pixels it is never empty: measured on this fixture, the gaps
+/// run to 0.4 of a pixel's worth of coverage while the thinnest column of a
+/// real glyph is 1.0. A per-pixel test merged `14%` into one blob and read it
+/// as `%%`.
+///
+/// Relative to the run's own peak rather than absolute, so it does not need
+/// re-tuning when the label size or the palette contrast moves.
+const GLYPH_GAP_FRACTION: f32 = 0.15;
+
+/// Split a label's coverage grid into one field per glyph, left to right.
+///
+/// Both sides of the comparison go through this, so a faint edge column trimmed
+/// from a chart glyph is trimmed from its reference too.
+fn segment_glyphs(w: usize, h: usize, v: &[f32]) -> Vec<Ink> {
+    let column: Vec<f32> = (0..w).map(|x| (0..h).map(|y| v[y * w + x]).sum()).collect();
+    let peak = column.iter().copied().fold(0.0_f32, f32::max);
+    if peak <= 0.0 {
+        return Vec::new();
+    }
+    let floor = peak * GLYPH_GAP_FRACTION;
+    let mut out = Vec::new();
+    let mut start = None;
+    for x in 0..=w {
+        let on = x < w && column[x] > floor;
+        match (on, start) {
+            (true, None) => start = Some(x),
+            (false, Some(s)) => {
+                let gw = x - s;
+                let mut cell = vec![0.0_f32; gw * h];
+                for y in 0..h {
+                    cell[y * gw..(y + 1) * gw].copy_from_slice(&v[y * w + s..y * w + x]);
+                }
+                let glyph = Ink::build(gw, h, &cell);
+                if !glyph.is_empty() {
+                    out.push(glyph);
+                }
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The characters the label in `bar` is made of, and the two margins that say
+/// how much the reading was worth: the worst distance any glyph matched at, and
+/// the smallest gap between a glyph's winner and its runner-up.
+fn read_label(
+    img: &RgbaImage,
+    frame: &Frame,
+    bar: &Bar,
+    tips: &[Option<u32>],
+) -> (String, f64, f64) {
+    let (w, h, v) = label_field(img, frame, bar, tips);
+    let glyphs = segment_glyphs(w, h, &v);
+    assert!(
+        !glyphs.is_empty(),
+        "no label was knocked out of the bar at rows {}..{} — either the module \
+         drew none or it was placed outside the bar, and either way there is \
+         nothing here to read",
+        bar.first_row,
+        bar.end_row
+    );
+    let refs = glyph_references();
+    let (mut text, mut worst, mut narrowest) = (String::new(), 0.0_f64, f64::INFINITY);
+    for glyph in &glyphs {
+        let mut scored: Vec<(f64, char)> = refs
+            .iter()
+            .map(|(c, inks)| {
+                let d = inks
+                    .iter()
+                    .map(|m| distance(glyph, m))
+                    .fold(f64::INFINITY, f64::min);
+                (d, *c)
+            })
+            .collect();
+        scored.sort_by(|a, b| a.0.total_cmp(&b.0));
+        text.push(scored[0].1);
+        worst = worst.max(scored[0].0);
+        narrowest = narrowest.min(scored[1].0 - scored[0].0);
+    }
+    (text, worst, narrowest)
+}
+
+/// The dashboard the label readings are taken over.
+///
+/// The same two modules, with the measured one widened so every label fits
+/// INSIDE its bar. At the default width the shortest bar is about forty pixels
+/// and `0 / 1` is about that wide, so the placement rule would put some labels
+/// outside the tip — correct behaviour, and the wrong picture to read a
+/// knockout off. Placement is the sibling reading's subject
+/// (`a_label_that_does_not_fit_is_drawn_past_the_tip_instead_of_inside_it`, a
+/// unit test); this one is about the number.
+fn wide_dashboard(categories: usize, label: Option<LabelForm>) -> String {
+    let mut dash = Dashboard::of_columns(fixture_rows(categories), "t", &["cat", "side"]);
+    dash.modules[0] = RankedCategoryBars::new("cat")
+        .with_label(label)
+        .with_size(720, 320);
+    dash.to_spec()
+}
+
+/// Read every bar's label off a picture, top to bottom.
+fn labels_down_the_frame(img: &RgbaImage, frame: &Frame) -> Vec<(String, f64, f64)> {
+    let tips = row_tips(img, frame);
+    bars(img, frame)
+        .iter()
+        .map(|bar| read_label(img, frame, bar, &tips))
+        .collect()
+}
+
+/// How far a glyph may be from the character it is read as.
+///
+/// Not a similarity threshold in the usual sense — what carries the test is
+/// that the right character beats every other, which needs no constant. This is
+/// the floor underneath it: it stops a reading that matched NOTHING well from
+/// passing merely by being least bad, which is how a harness whose extraction
+/// had broken would otherwise stay green.
+///
+/// The worst glyph over the eighteen labels these tests read matches at 0.244,
+/// and a reading whose extraction had failed came back at 0.58 and 0.74 while
+/// this was being built — so the two populations are far apart and this sits
+/// between them.
+const GLYPH_MATCH_FLOOR: f64 = 0.35;
+
+/// How much the winning character must beat the runner-up by.
+///
+/// A reading that came first by a thousandth is a coin toss dressed as a
+/// measurement, and at one device pixel per logical one the narrowest margin
+/// over these labels was eight ten-thousandths — which is why they are read at
+/// [`LABEL_SCALE`]. There the narrowest is 0.082, so this leaves a factor of
+/// nearly three.
+const GLYPH_MARGIN: f64 = 0.03;
+
+/// Compare labels as CHARACTER SEQUENCES, spaces dropped.
+///
+/// The reading segments on blank columns, so it recovers `0/5` from a label
+/// drawn `0 / 5` — the spacing is the renderer's and is not what these tests
+/// are about. Dropping it on both sides keeps the expectation written the way
+/// the label actually reads.
+fn assert_labels(found: &[(String, f64, f64)], expected: &[&str], case: &str) {
+    let read: Vec<&str> = found.iter().map(|(t, _, _)| t.as_str()).collect();
+    let want: Vec<String> = expected
+        .iter()
+        .map(|e| e.chars().filter(|c| !c.is_whitespace()).collect())
+        .collect();
+    assert_eq!(
+        read, want,
+        "{case}: the numbers printed in the bars, top to bottom, are not the \
+         numbers those bars stand for"
+    );
+    for ((text, worst, narrowest), expect) in found.iter().zip(expected) {
+        assert!(
+            *worst < GLYPH_MATCH_FLOOR,
+            "{case}: {text:?} was read for the label drawn on the bar standing \
+             for {expect:?}, but its worst glyph matched only at distance \
+             {worst:.3} — nothing matched, so the extraction is broken rather \
+             than the label being right"
+        );
+        assert!(
+            *narrowest > GLYPH_MARGIN,
+            "{case}: reading {text:?} for {expect:?}, some glyph beat its \
+             runner-up by only {narrowest:.3} — the reading cannot tell two \
+             characters apart and its answer is a coin toss"
+        );
+    }
+}
+
+/// **AC2's other half: the label says the right thing.**
+///
+/// Six categories worth one to six rows. `side: b` selects every row of the
+/// odd-numbered ones and none of the even, so the six bars stand for
+/// `0/1, 2/2, 0/3, 4/4, 0/5, 6/6` — three fully selected, three not at all, and
+/// no two alike.
+///
+/// That spread is the point. A label wired to print the whole twice reads
+/// `1/1, 2/2, 3/3, …` and differs on three of the six; a label wired to print
+/// the part twice differs on the other three. A fixture where the selection
+/// took a uniform fraction could be passed by either.
+#[test]
+fn the_number_in_each_bar_is_the_number_that_bar_stands_for() {
+    let source = wide_dashboard(6, Some(LabelForm::Count));
+    let path = spec_path(&source, "label-count");
+    let (mut live, resting) =
+        live_spec(path.to_str().expect("utf-8 path")).expect("the spec loads live");
+    let gesture = click_on_band(&resting.plots[1], "b");
+    let frame = Frame::of(&resting, 0).scaled(LABEL_SCALE);
+
+    // At rest there is no selection, so each bar prints its own total and
+    // nothing else. A label that printed a part here would be inventing one.
+    let before = raster_at(resting, "label-count-resting", LABEL_SCALE);
+    assert_labels(
+        &labels_down_the_frame(&before, &frame),
+        &["1", "2", "3", "4", "5", "6"],
+        "at rest",
+    );
+
+    let selected = live.apply(gesture).expect("the selection re-composites");
+    let after = raster_at(selected, "label-count-selected", LABEL_SCALE);
+    assert_labels(
+        &labels_down_the_frame(&after, &frame),
+        &["0 / 1", "2 / 2", "0 / 3", "4 / 4", "0 / 5", "6 / 6"],
+        "under a selection",
+    );
+}
+
+/// **A percentage is a percentage of what the mark drew**, and the denominator
+/// is in the picture rather than only in the formatter.
+///
+/// One to six rows over six categories is twenty-one drawn rows, so the bars
+/// read 5, 10, 14, 19, 24 and 29 per cent. Every one of those is a different
+/// string from what a doubled denominator would give (2, 5, 7, 10, 12, 14), and
+/// the sequences do not overlap position for position — a denominator wrong by
+/// any constant factor lands on a different set of strings.
+#[test]
+fn a_percentage_is_a_percentage_of_what_the_mark_drew() {
+    let source = wide_dashboard(6, Some(LabelForm::Percent));
+    let path = spec_path(&source, "label-percent");
+    let (_, composed) = live_spec(path.to_str().expect("utf-8 path")).expect("the spec loads");
+    let frame = Frame::of(&composed, 0).scaled(LABEL_SCALE);
+    let img = raster_at(composed, "label-percent", LABEL_SCALE);
+    assert_labels(
+        &labels_down_the_frame(&img, &frame),
+        &["5%", "10%", "14%", "19%", "24%", "29%"],
+        "at rest",
     );
 }
 

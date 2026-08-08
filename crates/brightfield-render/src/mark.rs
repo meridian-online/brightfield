@@ -906,7 +906,12 @@ const BAR_LABEL_PAD: f64 = 6.0;
 
 /// Font size for an in-bar label. One step below [`TEXT_MARK_SIZE`]: the label
 /// annotates a mark rather than being one, and it has to fit inside a band.
-const BAR_LABEL_SIZE: f32 = 10.0;
+///
+/// `pub` because a test that reads a label back off a raster has to draw the
+/// same string at the same size to compare against, and a second copy of this
+/// number in the test would be free to drift from this one — which is the
+/// drift that would make such a test go red for a reason that is not a defect.
+pub const BAR_LABEL_SIZE: f32 = 10.0;
 
 /// Format one number for an in-bar label.
 ///
