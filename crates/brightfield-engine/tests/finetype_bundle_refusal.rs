@@ -213,44 +213,69 @@ fn a_bundle_that_does_not_match_its_manifest_is_refused_before_the_extension_loa
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// A type source is refused on a session that may install extensions over the
-/// network, and the conflict is named.
+/// A session with a native type source cannot acquire an extension, and CAN
+/// still autoload one it already has.
 ///
-/// This is the bound on `allow_unsigned_extensions`, asserted rather than
-/// described. Loading a FineType bundle needs signature checking off for the
-/// WHOLE connection — not just for the bundle — so it must not be granted to a
-/// connection that can also fetch an extension from a repository. The refusal
-/// happens before the bundle directory is even looked at, which is why this
-/// test needs no bundle: the argument below is a real path and it is never
-/// read.
+/// Both halves, and the second is not padding — it is a regression test. The
+/// first version of this restriction reused `NetworkPolicy::Disabled` wholesale,
+/// which also switches `autoload_known_extensions` off. Autoload is not a
+/// network control: it is how DuckDB registers an extension it already has, and
+/// the bundled library carries `parquet` statically. Turning it off stopped
+/// Parquet files opening at all, which is a user's first action after choosing
+/// one.
 #[test]
-fn a_type_source_is_refused_on_a_session_that_could_still_fetch() {
-    let dir = std::env::temp_dir();
-    for network in [NetworkPolicy::Auto, NetworkPolicy::default()] {
+fn a_native_type_source_costs_the_session_acquisition_but_not_autoload() {
+    let dir = std::env::temp_dir().join(format!("bf-settings-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    synthetic_bundle(&dir, r#"["identity.person.email"]"#, ONE_LABEL_CATALOGUE);
+
+    let settings = |type_source: Option<semantic::TypeSourceSpec>| {
         let parsed = parse_spec(FIXTURE, Format::Yaml).expect("the fixture parses");
         let analysis = analyse_spec(&parsed.spec).expect("the fixture analyses");
         let options = LoadOptions {
-            network,
-            extension_directory: None,
-            type_source: Some(semantic::TypeSourceSpec::Bundle(dir.clone())),
+            type_source,
+            ..LoadOptions::default() // NetworkPolicy::Auto
         };
-        let load = Engine::new()
+        let session = Engine::new()
             .load_spec_with(parsed.spec, analysis, None, &options)
-            .expect("the conflict must not fail the load");
-        assert_eq!(load.session.type_source_name(), None);
-        let err = load
-            .session
-            .type_source_error()
-            .expect("a refused type source has to say why");
-        assert!(
-            err.contains("over the network") && err.contains("NetworkPolicy::Disabled"),
-            "the refusal does not name the conflict or the fix: {err}"
-        );
-    }
+            .expect("the fixture loads")
+            .session;
+        let get = |k: &str| -> String {
+            session
+                .duckdb_setting(k)
+                .unwrap_or_else(|e| panic!("reading {k}: {e}"))
+        };
+        (
+            get("autoinstall_known_extensions"),
+            get("autoload_known_extensions"),
+            get("custom_extension_repository"),
+        )
+    };
 
-    // And the pairing the application actually uses carries both fields, so it
-    // can never land on the refused side by accident.
-    assert_eq!(LoadOptions::packaged().network, NetworkPolicy::Disabled);
+    // A bundle needs unsigned extensions, so acquisition is off …
+    let (autoinstall, autoload, repo) =
+        settings(Some(semantic::TypeSourceSpec::Bundle(dir.clone())));
+    assert_eq!(
+        autoinstall, "false",
+        "a relaxed session could still install"
+    );
+    assert!(
+        repo.contains("/dev/null/"),
+        "the extension repository still resolves: {repo}"
+    );
+    // … and autoload is NOT, because that is what registers the statically
+    // linked parquet reader.
+    assert_eq!(
+        autoload, "true",
+        "autoload was switched off, which stops a Parquet file opening"
+    );
+
+    // With no type source the session is untouched.
+    let (autoinstall, autoload, _) = settings(None);
+    assert_eq!(autoinstall, "true");
+    assert_eq!(autoload, "true");
+
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A directory that is not a bundle is refused, by name, and the session still

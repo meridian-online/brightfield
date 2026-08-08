@@ -275,38 +275,41 @@ pub struct LoadOptions {
     /// dashboard renders the same with or without a type source, and losing
     /// the whole session over an optional one would be absurd.
     ///
-    /// # It is only honoured under [`NetworkPolicy::Disabled`]
+    /// # What a native source costs the session
     ///
     /// Loading a FineType bundle needs `allow_unsigned_extensions` on the
-    /// connection: a locally built or repo-built extension carries 256 zero
-    /// bytes where a DuckDB signature would go. That flag is not
-    /// bundle-specific — it turns signature checking off for EVERYTHING that
-    /// connection loads, including anything `INSTALL`ed over the network under
-    /// [`NetworkPolicy::Auto`].
+    /// connection: an extension built anywhere but DuckDB's own community
+    /// pipeline carries 256 zero bytes where a signature would go. That flag is
+    /// not bundle-specific — it turns signature checking off for EVERYTHING
+    /// that connection loads.
     ///
-    /// So the two are not allowed to coexist. A `type_source` on an `Auto`
-    /// session is REFUSED, with the conflict named, and the session runs with
-    /// signature checking intact and no type source. The relaxation is
-    /// therefore only ever granted to a connection that cannot acquire an
-    /// extension from anywhere but a path this process chose —
-    /// [`LoadOptions::packaged`] sets both fields together for that reason.
+    /// So a source declaring
+    /// [`semantic::OpenTypeSource::needs_unsigned_extensions`] costs the
+    /// session its ability to ACQUIRE an extension: autoinstall off, and an
+    /// extension repository that cannot resolve. Nothing can then reach `LOAD`
+    /// that was not already on this disk. A spec on such a session whose
+    /// sources need `httpfs`, `spatial` or `ducklake` and does not already have
+    /// them gets the same treatment as under [`NetworkPolicy::Disabled`] — the
+    /// per-source failure it already reports.
+    ///
+    /// A source that loads nothing native — the default — declares `false` and
+    /// costs the session nothing.
     pub type_source: Option<semantic::TypeSourceSpec>,
 }
 
 impl LoadOptions {
-    /// The options a packaged build profiles a data file with: the FineType
-    /// bundle beside its own executable, and no network.
-    ///
-    /// Both fields, together, because they are not separable — see
-    /// [`LoadOptions::type_source`] for why a type source is refused on a
-    /// session that may install extensions over the network.
+    /// [`LoadOptions::default`], plus the FineType bundle a packaged build
+    /// carries beside its own executable.
     ///
     /// The lookup — [`semantic::bundle_beside`] — is resolved once per process
     /// and returns `None` for a build packaged without a bundle and for a
-    /// `cargo run` out of `target/`. `NetworkPolicy::Disabled` costs those
-    /// nothing: this is used on the data-file profiling path, which opens a
-    /// local file (`data_file` refuses a URL by scheme) and so has never needed
-    /// `httpfs`.
+    /// `cargo run` out of `target/`, both of which then behave exactly as
+    /// [`LoadOptions::default`]. This is the only place the application decides
+    /// WHERE its type source lives; everything else takes a directory.
+    ///
+    /// The network policy is left at the default. What a bundle costs the
+    /// session is described on [`LoadOptions::type_source`] and applied by the
+    /// engine, so a caller cannot get it wrong by forgetting a second field.
     #[must_use]
     pub fn packaged() -> Self {
         static BUNDLE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
@@ -317,7 +320,6 @@ impl LoadOptions {
                 .and_then(semantic::bundle_beside)
         });
         LoadOptions {
-            network: NetworkPolicy::Disabled,
             type_source: dir.clone().map(semantic::TypeSourceSpec::Bundle),
             ..LoadOptions::default()
         }
@@ -366,21 +368,17 @@ impl Engine {
         // flag — and with the flag, this connection would equally load an
         // unsigned extension `INSTALL`ed from a repository over the network.
         //
-        // Which is why it is paired with the network policy rather than with
-        // the bundle. Only a session that is BOTH asking for a type source AND
-        // barred from acquiring extensions over the network gets the
-        // relaxation; on such a connection the only extension that can reach
-        // `LOAD` is one already on this disk at a path this process names. A
-        // type source asked for on an `Auto` session is refused below.
+        // So it comes with a restriction, applied below: a connection with
+        // signatures relaxed may not ACQUIRE an extension. Nothing can then
+        // reach `LOAD` that was not already on this disk, and the relaxation
+        // covers only files this process named.
+        //
         // Asked of the SPEC, not of "a type source exists": a source that loads
-        // nothing native needs no relaxation and is therefore usable on any
-        // session. Only one that says it needs signature checking off pays the
-        // network restriction that comes with it.
-        let wants_unsigned = options
+        // nothing native needs no relaxation and pays no restriction.
+        let relax_signatures = options
             .type_source
             .as_ref()
             .is_some_and(semantic::TypeSourceSpec::needs_unsigned_extensions);
-        let relax_signatures = wants_unsigned && options.network == NetworkPolicy::Disabled;
         let conn = if relax_signatures {
             duckdb::Config::default()
                 .allow_unsigned_extensions()
@@ -414,6 +412,28 @@ impl Engine {
             )
             .map_err(|e| EngineError::ConnectionFailed { cause: e })?;
         }
+        if relax_signatures {
+            // The bound on the relaxation above. Signature checking is off for
+            // this connection, so nothing may be ACQUIRED onto it: no
+            // autoinstall, and a repository path through the null device that
+            // cannot resolve, so a code path that still tried would fail
+            // locally rather than reach out.
+            //
+            // `autoload_known_extensions` is deliberately NOT touched, and the
+            // difference matters. Autoload is not a network control: it is how
+            // DuckDB registers an extension it ALREADY has, and the bundled
+            // library carries `parquet` statically. Switching it off here broke
+            // opening a Parquet file — caught by
+            // `brightfield-shell`'s data_file suite, which is where a user's
+            // first action after choosing a file lives. With acquisition off
+            // and the repository unresolvable, autoload can only ever succeed
+            // for something already on this disk.
+            conn.execute_batch(
+                "SET autoinstall_known_extensions=false; \
+                 SET custom_extension_repository='/dev/null/brightfield-no-network';",
+            )
+            .map_err(|e| EngineError::ConnectionFailed { cause: e })?;
+        }
 
         // The type source, if one was configured. It comes up here — after the
         // no-network settings above, so a bundle load can only ever read the
@@ -422,19 +442,7 @@ impl Engine {
         let mut type_source: Option<Box<dyn TypeSource>> = None;
         let mut type_source_error: Option<String> = None;
         if let Some(spec) = &options.type_source {
-            let opened = if relax_signatures || !wants_unsigned {
-                spec.open(&conn)
-            } else {
-                Err(format!(
-                    "a type source was asked for on a session that may install extensions \
-                     over the network ({:?}). Loading the bundle needs signature checking \
-                     off for this whole connection, which must not be granted to one that \
-                     can also fetch — pass NetworkPolicy::Disabled alongside it, as \
-                     LoadOptions::packaged does",
-                    options.network
-                ))
-            };
-            match opened {
+            match spec.open(&conn) {
                 Ok(source) => type_source = Some(source),
                 Err(e) => {
                     eprintln!("warning: no semantic type source — {e}");
@@ -990,6 +998,23 @@ impl Session {
     ///
     /// DuckDB failed to answer about itself, which is not a thing a working
     /// connection does.
+    /// One of DuckDB's own settings, as this connection currently has it.
+    ///
+    /// The engine's extension-acquisition policy is a set of `SET` statements
+    /// and nothing else, so this is how a test asks what a session actually
+    /// ended up with rather than what the code that built it appears to say.
+    ///
+    /// # Errors
+    ///
+    /// DuckDB does not know that setting.
+    pub fn duckdb_setting(&self, name: &str) -> Result<String, duckdb::Error> {
+        self.conn.query_row(
+            "SELECT CAST(current_setting(?) AS VARCHAR)",
+            duckdb::params![name],
+            |r| r.get(0),
+        )
+    }
+
     pub fn duckdb_platform_and_version(&self) -> Result<(String, String), duckdb::Error> {
         let platform = self
             .conn

@@ -298,11 +298,10 @@ pub trait OpenTypeSource: Send + Sync {
     ///
     /// `false` by default, and say so honestly: the flag is not per-extension,
     /// so a source that asks for it takes signature checking off for
-    /// EVERYTHING that connection loads. A source that asks is only ever
-    /// opened on a session that also cannot acquire extensions over the
-    /// network — see [`LoadOptions::type_source`] — so answering `true` here
-    /// narrows where the source can be used rather than widening what it can
-    /// do.
+    /// EVERYTHING that connection loads. Answering `true` therefore costs the
+    /// session its ability to acquire an extension at all — see
+    /// [`LoadOptions::type_source`] — which is what keeps the relaxation
+    /// covering only files this process named.
     ///
     /// [`LoadOptions::type_source`]: crate::LoadOptions::type_source
     fn needs_unsigned_extensions(&self) -> bool {

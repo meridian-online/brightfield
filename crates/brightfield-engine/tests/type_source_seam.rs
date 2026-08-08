@@ -111,7 +111,7 @@ impl OpenTypeSource for OpenBackwardsNative {
 /// which would leave the next native source to rediscover the hazard.
 #[test]
 fn the_unsigned_extension_restriction_follows_what_a_source_declares() {
-    let load = |spec: TypeSourceSpec| {
+    let load = |spec: TypeSourceSpec| -> (Option<String>, Option<String>, String) {
         let parsed = parse_spec(FIXTURE, Format::Yaml).expect("the fixture parses");
         let analysis = analyse_spec(&parsed.spec).expect("the fixture analyses");
         let options = LoadOptions {
@@ -125,23 +125,32 @@ fn the_unsigned_extension_restriction_follows_what_a_source_declares() {
         (
             session.type_source_name().map(str::to_string),
             session.type_source_error().map(str::to_string),
+            session
+                .duckdb_setting("autoinstall_known_extensions")
+                .expect("read the setting"),
         )
     };
 
-    let (name, err) = load(TypeSourceSpec::Other(Arc::new(OpenBackwards)));
+    let (name, err, autoinstall) = load(TypeSourceSpec::Other(Arc::new(OpenBackwards)));
     assert_eq!(name.as_deref(), Some("backwards"));
     assert_eq!(
         err, None,
         "a source that loads nothing native was restricted"
     );
-
-    let (name, err) = load(TypeSourceSpec::Other(Arc::new(OpenBackwardsNative)));
     assert_eq!(
-        name, None,
-        "a source that needs unsigned extensions was let through"
+        autoinstall, "true",
+        "a source that loads nothing native cost the session its acquisition"
     );
-    let err = err.expect("the refusal has to say why");
-    assert!(err.contains("over the network"), "{err}");
+
+    // The one that declares it needs signature checking off opens too — and
+    // pays for it: the session can no longer acquire an extension.
+    let (name, err, autoinstall) = load(TypeSourceSpec::Other(Arc::new(OpenBackwardsNative)));
+    assert_eq!(name.as_deref(), Some("backwards"));
+    assert_eq!(err, None);
+    assert_eq!(
+        autoinstall, "false",
+        "a source that needs signature checking off kept its acquisition"
+    );
 
     assert!(TypeSourceSpec::Bundle("/nowhere".into()).needs_unsigned_extensions());
     assert!(!TypeSourceSpec::Other(Arc::new(OpenBackwards)).needs_unsigned_extensions());
