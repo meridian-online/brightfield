@@ -23,9 +23,7 @@ use brightfield_conformance::LoadDiagnostics;
 use brightfield_engine::coordinator::{Coordinator, Interaction};
 use brightfield_engine::error::EngineError;
 use brightfield_engine::facts::MarkFacts;
-use brightfield_engine::{
-    assemble_batches, DeclinedMark, Engine, LoadOptions, NavigationExtent, Session,
-};
+use brightfield_engine::{assemble_batches, DeclinedMark, Engine, NavigationExtent, Session};
 use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::inset::{resolve_insets_for_marks, DEFAULT_SCALE_INSET};
 use brightfield_render::layout::{ChartLayout, Margins};
@@ -519,7 +517,7 @@ fn compose(
 
     let engine = Engine::new();
     let load = engine
-        .load_spec_with(spec.clone(), analysis, spec_dir, &LoadOptions::packaged())
+        .load_spec(spec.clone(), analysis, spec_dir)
         .map_err(|e| format!("engine error: {e}"))?;
     let mut session = load.session;
     // Resolved BEFORE `execute_all`, which is the whole of the requirement: the

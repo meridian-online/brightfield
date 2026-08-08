@@ -27,14 +27,19 @@
 //!
 //! The classifier is a model. It returns a label and a confidence for any
 //! column you give it, including one whose values it has misread — the fixture
-//! in this crate's tests is a column of eight strings, one of them an email
-//! address, that comes back `identity.person.email` at 0.79 confidence with
-//! seven of the eight failing the label's own pattern. A label nothing checked
-//! is a label that can send a chart down the wrong road silently, so
+//! in this crate's tests is a column of eight strings of which one is an email
+//! address, and it comes back labelled as an email column with most of the
+//! values failing that label's own pattern. A label nothing checked is a label
+//! that can send a chart down the wrong road silently, so
 //! [`SemanticType::Unusable`] exists and is reported separately from
 //! [`SemanticType::Unlabelled`]: "the values contradict this" and "there is
 //! nothing to say" are different answers and a caller must be able to tell them
 //! apart.
+//!
+//! No confidence figure is quoted anywhere in this module's prose. It is a
+//! property of whichever model a bundle happens to carry, this repository
+//! vendors no bundle, and a number no test can assert is a number that goes
+//! quietly wrong.
 //!
 //! The check is deliberately not the classifier's own opinion. It is the
 //! label's declared JSON Schema constraint, run by the extension's
@@ -126,12 +131,28 @@ impl SemanticType {
 }
 
 /// What checking a column's values against its label found.
+///
+/// Three variants because there are three situations, and two of them are ways
+/// of NOT having checked. Collapsing them loses the difference between a
+/// classifier that named a type this bundle has never heard of — which is what
+/// a model and a schema catalogue from different FineType versions looks like,
+/// one column at a time — and a type whose definition simply carries nothing a
+/// value could fail.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValueCheck {
-    /// The label's catalogue entry constrains nothing a value could fail —
-    /// no pattern, no length bound, no enumeration. No value was put through
-    /// a validator. This is NOT a check that passed, and the two are separate
-    /// variants so no caller can read it as one.
+    /// The catalogue holds no entry for this label at all.
+    ///
+    /// The classifier emitted a type the schema catalogue does not describe.
+    /// Per column that is unremarkable; across many columns it is the visible
+    /// edge of a bundle whose model and catalogue disagree, which
+    /// [`FinetypeBundle::open`] refuses in the aggregate.
+    NoEntry,
+    /// The catalogue's entry for this label constrains nothing a value could
+    /// fail — no pattern, no length bound, no enumeration.
+    ///
+    /// Every value reaches the validator through `CAST(… AS VARCHAR)`, so a
+    /// schema of `{"type": "string"}` would pass by construction and report a
+    /// check that tested nothing.
     NoConstraint,
     /// Values went through the label's declared constraint.
     Checked {
@@ -142,6 +163,18 @@ pub enum ValueCheck {
         /// [`SemanticType::Unusable`] instead.
         failed: u64,
     },
+}
+
+impl ValueCheck {
+    /// Whether any value was actually put through a validator.
+    ///
+    /// `false` for both [`ValueCheck::NoEntry`] and [`ValueCheck::NoConstraint`]
+    /// — the two ways of arriving at a label nothing tested. A caller deciding
+    /// how much to trust a label wants this, not a match on one variant.
+    #[must_use]
+    pub fn is_verified(&self) -> bool {
+        matches!(self, ValueCheck::Checked { checked, .. } if *checked > 0)
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -418,9 +451,8 @@ const MODEL_DIR_ENV: &str = "FINETYPE_MODEL_DIR";
 /// connection and proved to work before it is handed out.
 pub struct FinetypeBundle {
     name: String,
-    /// Label → the label's JSON Schema, verbatim, for every label whose schema
-    /// constrains something a value could fail.
-    schemas: HashMap<String, String>,
+    /// What the bundle's schema catalogue says about each label.
+    schemas: SchemaCatalogue,
 }
 
 impl FinetypeBundle {
@@ -475,6 +507,9 @@ impl FinetypeBundle {
             .map_err(|e| at("version()", e.to_string()))?;
         check_abi(&stamp, &platform, &version).map_err(|e| at(EXTENSION_FILE, e))?;
 
+        // BEFORE the LOAD, because after it the code is already running.
+        verify_against_manifest(dir, conn).map_err(|e| at(MANIFEST_FILE, e))?;
+
         let model = dir.join(MODEL_DIR);
         if !model.join("model.safetensors").exists() {
             return Err(at(
@@ -492,6 +527,14 @@ impl FinetypeBundle {
         let text =
             std::fs::read_to_string(&catalogue).map_err(|e| at(SCHEMA_CATALOGUE, e.to_string()))?;
         let schemas = parse_schema_catalogue(&text).map_err(|e| at(SCHEMA_CATALOGUE, e))?;
+
+        // The model and the catalogue are two artefacts, bundled independently,
+        // and nothing so far compares them.
+        let labels = std::fs::read_to_string(model.join(LABEL_MAP_FILE))
+            .map_err(|e| at(LABEL_MAP_FILE, e.to_string()))?;
+        let coverage =
+            catalogue_coverage(&labels, &schemas).map_err(|e| at(LABEL_MAP_FILE, e))?;
+        coverage.accept().map_err(|e| at("coverage", e))?;
 
         let name = conn
             .query_row("SELECT ft_version()", [], |r| r.get::<_, String>(0))
@@ -524,7 +567,33 @@ impl FinetypeBundle {
     /// The label's schema, for labels with something checkable.
     #[must_use]
     pub fn schema_for(&self, label: &str) -> Option<&str> {
-        self.schemas.get(label).map(String::as_str)
+        self.schemas.schema_for(label)
+    }
+
+    /// Whether the bundle's catalogue carries an entry for this label at all.
+    #[must_use]
+    pub fn catalogue_mentions(&self, label: &str) -> bool {
+        self.schemas.mentions(label)
+    }
+
+    /// The validation query for one column: how many of its first
+    /// [`Self::CHECK_ROWS`] non-null values fail the schema bound as `?`.
+    ///
+    /// Split out from [`FinetypeBundle::count_failures`] so the row cap is
+    /// visible to a test that needs no extension, no model and no bundle. The
+    /// cap only means anything if it reaches the SQL.
+    #[must_use]
+    pub fn check_sql(view: &str, column: &str) -> String {
+        let v = crate::escape_ident(view);
+        let c = crate::escape_ident(column);
+        format!(
+            "SELECT CAST(count(*) AS BIGINT), \
+             CAST(count(*) FILTER (WHERE NOT v.valid) AS BIGINT), \
+             min(v.message) FILTER (WHERE NOT v.valid) \
+             FROM (SELECT ft_validate_text(CAST(\"{c}\" AS VARCHAR), ?::VARCHAR) AS v \
+             FROM \"{v}\" WHERE \"{c}\" IS NOT NULL LIMIT {}) s",
+            Self::CHECK_ROWS
+        )
     }
 
     /// Count how many of a column's first [`Self::CHECK_ROWS`] non-null values
@@ -535,16 +604,7 @@ impl FinetypeBundle {
         column: &str,
         schema: &str,
     ) -> Result<(u64, u64, Option<String>), String> {
-        let v = crate::escape_ident(view);
-        let c = crate::escape_ident(column);
-        let sql = format!(
-            "SELECT CAST(count(*) AS BIGINT), \
-             CAST(count(*) FILTER (WHERE NOT v.valid) AS BIGINT), \
-             min(v.message) FILTER (WHERE NOT v.valid) \
-             FROM (SELECT ft_validate_text(CAST(\"{c}\" AS VARCHAR), ?::VARCHAR) AS v \
-             FROM \"{v}\" WHERE \"{c}\" IS NOT NULL LIMIT {}) s",
-            Self::CHECK_ROWS
-        );
+        let sql = Self::check_sql(view, column);
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let batches: Vec<_> = stmt
             .query_arrow(duckdb::params![schema])
@@ -560,6 +620,202 @@ impl FinetypeBundle {
             crate::profile::read_text(&batch, 2),
         ))
     }
+
+    /// Turn a label and a count of failures into the verdict.
+    ///
+    /// Pure, and public within the crate, because this is where
+    /// [`Self::MAX_FAILURE_RATE`] is actually applied — a test can pin the
+    /// threshold's BEHAVIOUR here with no extension, no model and no bundle,
+    /// which is the only way a constant nothing in CI exercises stops drifting.
+    #[must_use]
+    pub fn verdict(
+        label: String,
+        confidence: f64,
+        checked: u64,
+        failed: u64,
+        first_failure: Option<String>,
+    ) -> SemanticType {
+        // `checked == 0` is a column of nothing but NULLs: there is no evidence
+        // either way, so it cannot be a contradiction.
+        #[allow(clippy::cast_precision_loss)]
+        let over = checked > 0 && (failed as f64) > (checked as f64) * Self::MAX_FAILURE_RATE;
+        if over {
+            SemanticType::Unusable {
+                label,
+                confidence,
+                checked,
+                failed,
+                first_failure,
+            }
+        } else {
+            SemanticType::Labelled {
+                label,
+                confidence,
+                check: ValueCheck::Checked { checked, failed },
+            }
+        }
+    }
+}
+
+/// The file `scripts/package.sh` writes recording what it staged.
+///
+/// `<sha256>  <path relative to the bundle>` per line — the format
+/// `shasum -a 256` prints and `shasum -c` reads, so it is checkable by hand.
+pub const MANIFEST_FILE: &str = "bundle-manifest.sha256";
+
+/// The model's label set, inside [`MODEL_DIR`]. A JSON array of every label the
+/// classifier can emit.
+pub const LABEL_MAP_FILE: &str = "label_map.json";
+
+/// Check every file a bundle manifest names against its recorded hash.
+///
+/// Hashing goes through DuckDB — `sha256(read_blob(…))` — rather than a Rust
+/// digest crate, because the connection is already open and it is the same
+/// library that will shortly be asked to `LOAD` the file.
+///
+/// WHAT THIS IS FOR, precisely. A bundle is assembled by one machine, tarred,
+/// and unpacked somewhere else. It catches a truncated unpack, a partial copy,
+/// a stale extension left behind by an earlier build, and a model swapped for a
+/// different version's. It does NOT make loading an unsigned extension safe
+/// against an adversary: the manifest sits in the directory it describes, so
+/// anyone able to replace the extension can rewrite the manifest — and could
+/// equally replace the executable that reads either. The control that bounds
+/// the unsigned-extension relaxation is not this; it is that the relaxation is
+/// granted only to a connection barred from acquiring extensions over the
+/// network (see [`LoadOptions::type_source`]).
+///
+/// A bundle with no manifest passes. That is the locally assembled bundle a
+/// contributor points `BRIGHTFIELD_FINETYPE_BUNDLE` at, which no packaging run
+/// has ever recorded hashes for. What it must not do is pass a manifest whose
+/// hashes disagree, or one naming a file that is gone.
+///
+/// # Errors
+///
+/// A file the manifest names that is missing or has different bytes, or a
+/// manifest that is not in the format above.
+///
+/// [`LoadOptions::type_source`]: crate::LoadOptions::type_source
+pub fn verify_against_manifest(dir: &Path, conn: &Connection) -> Result<(), String> {
+    let manifest = dir.join(MANIFEST_FILE);
+    let Ok(text) = std::fs::read_to_string(&manifest) else {
+        return Ok(());
+    };
+    let mut checked = 0usize;
+    for (n, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (want, rel) = line
+            .split_once("  ")
+            .ok_or_else(|| format!("line {}: expected '<sha256>  <path>', got {line:?}", n + 1))?;
+        if want.len() != 64 || !want.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(format!("line {}: {want:?} is not a sha256", n + 1));
+        }
+        // A manifest path that climbs out of the bundle would have this verify
+        // some other file and report the bundle clean.
+        if rel.contains("..") || rel.starts_with('/') {
+            return Err(format!("line {}: {rel:?} is not inside the bundle", n + 1));
+        }
+        let path = dir.join(rel);
+        let got: String = conn
+            .query_row(
+                "SELECT lower(sha256(content)) FROM read_blob(?)",
+                duckdb::params![path.to_string_lossy().as_ref()],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("{rel}: cannot be read to hash it: {e}"))?;
+        if got != want.to_ascii_lowercase() {
+            return Err(format!(
+                "{rel} is not the file that was packaged (recorded {want}, found {got})"
+            ));
+        }
+        checked += 1;
+    }
+    if checked == 0 {
+        return Err("the manifest names no files, so it verified nothing".to_string());
+    }
+    Ok(())
+}
+
+/// How much of the model's label set the schema catalogue describes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogueCoverage {
+    /// Labels the model can emit.
+    pub model_labels: usize,
+    /// How many of those the catalogue has an entry for.
+    pub described: usize,
+}
+
+impl CatalogueCoverage {
+    /// The share of the model's labels the catalogue can say anything about,
+    /// below which the two artefacts are treated as coming from different
+    /// FineType versions.
+    ///
+    /// Not 100%: a catalogue legitimately omits labels whose definition carries
+    /// nothing checkable, and [`parse_schema_catalogue`] drops those on the way
+    /// in, so perfect coverage is not achievable by construction. Half is well
+    /// under any plausible honest gap and well over what version skew leaves —
+    /// a catalogue from a different taxonomy generation shares only the labels
+    /// that never got renamed.
+    pub const MIN_DESCRIBED: f64 = 0.5;
+
+    /// Whether this coverage is consistent with one FineType version.
+    ///
+    /// # Errors
+    ///
+    /// Names both counts, because "the model and the catalogue disagree" is
+    /// only actionable with the size of the disagreement.
+    pub fn accept(&self) -> Result<(), String> {
+        #[allow(clippy::cast_precision_loss)]
+        let share = if self.model_labels == 0 {
+            0.0
+        } else {
+            self.described as f64 / self.model_labels as f64
+        };
+        if share < Self::MIN_DESCRIBED {
+            return Err(format!(
+                "the schema catalogue describes {} of the model's {} labels — the two were \
+                 built from different FineType versions, and a column typed with a label the \
+                 catalogue has never heard of gets no value check at all",
+                self.described, self.model_labels
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Compare the model's label set against the catalogue's.
+///
+/// # Errors
+///
+/// `label_map.json` is not the JSON array of label strings the model ships.
+pub fn catalogue_coverage(
+    label_map: &str,
+    schemas: &SchemaCatalogue,
+) -> Result<CatalogueCoverage, String> {
+    let parsed: serde_json::Value = serde_json::from_str(label_map).map_err(|e| e.to_string())?;
+    let labels = parsed
+        .as_array()
+        .ok_or_else(|| "expected a JSON array of label strings".to_string())?;
+    let mut model_labels = 0usize;
+    let mut described = 0usize;
+    for label in labels {
+        let Some(label) = label.as_str() else {
+            return Err("expected a JSON array of label strings".to_string());
+        };
+        model_labels += 1;
+        if schemas.mentions(label) {
+            described += 1;
+        }
+    }
+    if model_labels == 0 {
+        return Err("the model declares no labels".to_string());
+    }
+    Ok(CatalogueCoverage {
+        model_labels,
+        described,
+    })
 }
 
 /// Point the FineType extension's model resolution at `dir`, once per process.
@@ -580,19 +836,59 @@ fn point_model_dir_at(dir: &Path) {
     }
 }
 
-/// Index `finetype taxonomy '*' -o json-schema` output by label, keeping only
-/// the entries that constrain something a value could actually fail.
+/// `finetype taxonomy '*' -o json-schema` output, indexed by label.
 ///
-/// A schema of `{"type": "string"}` is dropped: every value reaches the
-/// validator through `CAST(… AS VARCHAR)`, so it would pass by construction and
-/// report a check that tested nothing. What survives is a schema carrying at
-/// least one of the keywords below.
+/// Two sets, because "the catalogue says nothing testable about this label" and
+/// "the catalogue has never heard of this label" are different facts and the
+/// second one is how version skew between the model and the catalogue shows up.
+#[derive(Debug, Clone, Default)]
+pub struct SchemaCatalogue {
+    /// Label → its schema, verbatim, for labels whose schema constrains
+    /// something a value could fail.
+    checkable: HashMap<String, String>,
+    /// Every label the catalogue carries an entry for, checkable or not.
+    mentioned: std::collections::HashSet<String>,
+}
+
+impl SchemaCatalogue {
+    /// The label's schema, for labels with something checkable.
+    #[must_use]
+    pub fn schema_for(&self, label: &str) -> Option<&str> {
+        self.checkable.get(label).map(String::as_str)
+    }
+
+    /// Whether the catalogue carries an entry for this label at all.
+    #[must_use]
+    pub fn mentions(&self, label: &str) -> bool {
+        self.mentioned.contains(label)
+    }
+
+    /// How many labels the catalogue describes.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.mentioned.len()
+    }
+
+    /// Whether the catalogue describes nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.mentioned.is_empty()
+    }
+}
+
+/// Read `finetype taxonomy '*' -o json-schema` output.
+///
+/// An entry whose schema constrains nothing is REMEMBERED but not made
+/// checkable: every value reaches the validator through `CAST(… AS VARCHAR)`,
+/// so a schema of `{"type": "string"}` would pass by construction and report a
+/// check that tested nothing. Only a schema carrying one of the keywords below
+/// can be failed.
 ///
 /// # Errors
 ///
-/// The catalogue is not JSON, or is not the array of schema objects the
-/// `finetype taxonomy` exporter emits.
-pub fn parse_schema_catalogue(text: &str) -> Result<HashMap<String, String>, String> {
+/// The catalogue is not JSON, is not the array of schema objects the
+/// `finetype taxonomy` exporter emits, or carries no checkable entry at all.
+pub fn parse_schema_catalogue(text: &str) -> Result<SchemaCatalogue, String> {
     /// Keywords a VARCHAR value can fail. `type` is absent on purpose.
     const CHECKABLE: [&str; 6] = [
         "pattern",
@@ -607,7 +903,7 @@ pub fn parse_schema_catalogue(text: &str) -> Result<HashMap<String, String>, Str
     let entries = parsed
         .as_array()
         .ok_or_else(|| "expected a JSON array of schema objects".to_string())?;
-    let mut out = HashMap::new();
+    let mut out = SchemaCatalogue::default();
     for entry in entries {
         let Some(obj) = entry.as_object() else {
             continue;
@@ -615,12 +911,12 @@ pub fn parse_schema_catalogue(text: &str) -> Result<HashMap<String, String>, Str
         let Some(label) = obj.get("x-finetype-label").and_then(|v| v.as_str()) else {
             continue;
         };
-        if !CHECKABLE.iter().any(|k| obj.contains_key(*k)) {
-            continue;
+        out.mentioned.insert(label.to_string());
+        if CHECKABLE.iter().any(|k| obj.contains_key(*k)) {
+            out.checkable.insert(label.to_string(), entry.to_string());
         }
-        out.insert(label.to_string(), entry.to_string());
     }
-    if out.is_empty() {
+    if out.checkable.is_empty() {
         return Err("no entry carries both a label and a checkable constraint".to_string());
     }
     Ok(out)
@@ -699,33 +995,26 @@ impl TypeSource for FinetypeBundle {
         if label == "unknown" {
             return SemanticType::Unlabelled;
         }
+        // Two ways to arrive at a label nothing tested, and they are different
+        // facts about the bundle: no entry at all is the model naming a type
+        // this catalogue does not describe; an entry that constrains nothing is
+        // a type whose definition has nothing a VARCHAR could fail.
         let Some(schema) = self.schema_for(&label) else {
+            let check = if self.catalogue_mentions(&label) {
+                ValueCheck::NoConstraint
+            } else {
+                ValueCheck::NoEntry
+            };
             return SemanticType::Labelled {
                 label,
                 confidence,
-                check: ValueCheck::NoConstraint,
+                check,
             };
         };
         match FinetypeBundle::count_failures(conn, view, column, schema) {
             Err(reason) => SemanticType::Unanswered { reason },
             Ok((checked, failed, first_failure)) => {
-                let over = checked > 0
-                    && (failed as f64) > (checked as f64) * FinetypeBundle::MAX_FAILURE_RATE;
-                if over {
-                    SemanticType::Unusable {
-                        label,
-                        confidence,
-                        checked,
-                        failed,
-                        first_failure,
-                    }
-                } else {
-                    SemanticType::Labelled {
-                        label,
-                        confidence,
-                        check: ValueCheck::Checked { checked, failed },
-                    }
-                }
+                FinetypeBundle::verdict(label, confidence, checked, failed, first_failure)
             }
         }
     }
@@ -836,23 +1125,28 @@ mod tests {
         assert!(err.contains("C_STRUCT"), "{err}");
     }
 
+    const CATALOGUE: &str = r#"[
+      {"x-finetype-label": "identity.person.email", "type": "string", "pattern": "^.+@.+$"},
+      {"x-finetype-label": "representation.text.plain_text", "type": "string"},
+      {"x-finetype-label": "geography.address.country_code", "type": "string",
+       "enum": ["GB", "DE"]},
+      {"type": "string", "pattern": "^x$"}
+    ]"#;
+
     #[test]
-    fn catalogue_keeps_constrained_labels_and_drops_bare_ones() {
-        let text = r#"[
-          {"x-finetype-label": "identity.person.email", "type": "string", "pattern": "^.+@.+$"},
-          {"x-finetype-label": "representation.text.plain_text", "type": "string"},
-          {"x-finetype-label": "geography.address.country_code", "type": "string",
-           "enum": ["GB", "DE"]},
-          {"type": "string", "pattern": "^x$"}
-        ]"#;
-        let map = parse_schema_catalogue(text).expect("a well-formed catalogue");
-        assert!(map.contains_key("identity.person.email"));
-        assert!(map.contains_key("geography.address.country_code"));
+    fn catalogue_keeps_constrained_labels_and_remembers_the_bare_ones() {
+        let cat = parse_schema_catalogue(CATALOGUE).expect("a well-formed catalogue");
+        assert!(cat.schema_for("identity.person.email").is_some());
+        assert!(cat.schema_for("geography.address.country_code").is_some());
         assert!(
-            !map.contains_key("representation.text.plain_text"),
+            cat.schema_for("representation.text.plain_text").is_none(),
             "a bare string schema constrains nothing a CAST-to-VARCHAR value could fail"
         );
-        assert_eq!(map.len(), 2, "the label-less entry is not indexable");
+        // …but it is still MENTIONED, and that difference is the whole reason
+        // ValueCheck has two not-checked variants.
+        assert!(cat.mentions("representation.text.plain_text"));
+        assert!(!cat.mentions("finance.banking.iban"));
+        assert_eq!(cat.len(), 3, "the label-less entry is not indexable");
     }
 
     #[test]
@@ -860,6 +1154,166 @@ mod tests {
         assert!(parse_schema_catalogue("not json").is_err());
         assert!(parse_schema_catalogue(r#"{"a": 1}"#).is_err());
         assert!(parse_schema_catalogue("[]").is_err());
+    }
+
+    /// A catalogue and a model from different FineType versions is refused,
+    /// and one from the same version is not.
+    ///
+    /// The failure this closes: nothing else compares the two artefacts, and a
+    /// mismatched pair passes every other check in this module — the extension
+    /// loads, the canary classifies, and columns come back `Labelled` with
+    /// `NoEntry` because the classifier is naming types the catalogue has never
+    /// heard of. Every label would then be unverified while still reading as a
+    /// label.
+    #[test]
+    fn a_catalogue_that_does_not_describe_the_model_is_refused() {
+        let cat = parse_schema_catalogue(CATALOGUE).expect("a well-formed catalogue");
+
+        let agreed = r#"["identity.person.email", "representation.text.plain_text",
+                         "geography.address.country_code", "finance.banking.iban"]"#;
+        let coverage = catalogue_coverage(agreed, &cat).expect("a label map");
+        assert_eq!(coverage.model_labels, 4);
+        assert_eq!(coverage.described, 3);
+        assert_eq!(coverage.accept(), Ok(()));
+
+        let skewed = r#"["a.b.c", "d.e.f", "g.h.i", "identity.person.email"]"#;
+        let coverage = catalogue_coverage(skewed, &cat).expect("a label map");
+        assert_eq!(coverage.described, 1);
+        let err = coverage.accept().expect_err("1 of 4 is version skew");
+        assert!(
+            err.contains("different FineType versions"),
+            "the refusal does not name the cause: {err}"
+        );
+
+        assert!(catalogue_coverage("[]", &cat).is_err());
+        assert!(catalogue_coverage(r#"[1, 2]"#, &cat).is_err());
+        assert!(catalogue_coverage("not json", &cat).is_err());
+    }
+
+    /// The failure tolerance, pinned at its boundary.
+    ///
+    /// Runs with no extension, no model and no bundle, because
+    /// [`FinetypeBundle::MAX_FAILURE_RATE`] is a number this project chose and
+    /// a number nothing exercises is a number that drifts. Widening it to
+    /// anything above a tenth turns the 11-in-100 case green; narrowing it
+    /// below turns the 10-in-100 case red.
+    #[test]
+    fn the_failure_tolerance_decides_labelled_from_unusable_at_its_boundary() {
+        let v = |checked, failed| {
+            FinetypeBundle::verdict("identity.person.email".into(), 0.9, checked, failed, None)
+        };
+        assert!(
+            v(100, 10).is_usable(),
+            "a tenth failing is a data-quality note, not a wrong label"
+        );
+        assert!(!v(100, 11).is_usable(), "past a tenth the label is wrong");
+        assert!(v(100, 0).is_usable());
+        assert!(!v(100, 100).is_usable());
+
+        // A column of nothing but NULLs contradicts nothing.
+        assert_eq!(
+            v(0, 0),
+            SemanticType::Labelled {
+                label: "identity.person.email".into(),
+                confidence: 0.9,
+                check: ValueCheck::Checked {
+                    checked: 0,
+                    failed: 0
+                },
+            }
+        );
+        match v(0, 0) {
+            SemanticType::Labelled { check, .. } => assert!(
+                !check.is_verified(),
+                "nothing was checked, so nothing is verified"
+            ),
+            other => panic!("expected a label, got {other:?}"),
+        }
+    }
+
+    /// The row cap reaches the SQL, and is big enough for the tolerance to mean
+    /// anything.
+    ///
+    /// The second half is the one that catches a cap shrunk to a handful:
+    /// with a cap so small that a single failure already exceeds
+    /// [`FinetypeBundle::MAX_FAILURE_RATE`], the tolerance is off and every
+    /// column with one bad value in its first rows becomes `Unusable`.
+    #[test]
+    fn the_row_cap_reaches_the_query_and_leaves_the_tolerance_expressible() {
+        let sql = FinetypeBundle::check_sql("people", "email");
+        assert!(
+            sql.contains(&format!("LIMIT {}", FinetypeBundle::CHECK_ROWS)),
+            "the cap never reaches the query: {sql}"
+        );
+        assert!(sql.contains("ft_validate_text"));
+        assert!(sql.contains("IS NOT NULL"));
+
+        #[allow(clippy::cast_precision_loss)]
+        let tolerated = FinetypeBundle::CHECK_ROWS as f64 * FinetypeBundle::MAX_FAILURE_RATE;
+        assert!(
+            tolerated >= 1.0,
+            "a cap of {} tolerates {tolerated} failures, so a single bad value in the first \
+             rows makes every column unusable and the tolerance is off",
+            FinetypeBundle::CHECK_ROWS
+        );
+    }
+
+    /// Identifiers reach the query quoted, so a column named with a quote
+    /// cannot end the identifier early.
+    #[test]
+    fn the_check_query_escapes_the_identifiers_it_is_given() {
+        let sql = FinetypeBundle::check_sql("we\"ird", "col\"umn");
+        assert!(sql.contains("\"we\"\"ird\""), "{sql}");
+        assert!(sql.contains("\"col\"\"umn\""), "{sql}");
+    }
+
+    /// A manifest is verified when present, absent is fine, and a file whose
+    /// bytes changed since packaging is refused.
+    #[test]
+    fn a_manifest_catches_a_bundle_whose_bytes_changed_since_packaging() {
+        let conn = Connection::open_in_memory().expect("in-memory duckdb");
+        let dir = std::env::temp_dir().join(format!("bf-manifest-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.bin"), b"the packaged bytes").unwrap();
+
+        // No manifest: a locally assembled bundle, nothing recorded, nothing
+        // to contradict.
+        assert_eq!(verify_against_manifest(&dir, &conn), Ok(()));
+
+        let good: String = conn
+            .query_row(
+                "SELECT lower(sha256(content)) FROM read_blob(?)",
+                duckdb::params![dir.join("a.bin").to_string_lossy().as_ref()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        std::fs::write(dir.join(MANIFEST_FILE), format!("{good}  a.bin\n")).unwrap();
+        assert_eq!(verify_against_manifest(&dir, &conn), Ok(()));
+
+        std::fs::write(dir.join("a.bin"), b"the bytes somebody else put there").unwrap();
+        let err = verify_against_manifest(&dir, &conn).expect_err("the bytes changed");
+        assert!(err.contains("not the file that was packaged"), "{err}");
+
+        // A manifest that verifies nothing is not a pass.
+        std::fs::write(dir.join(MANIFEST_FILE), "# only a comment\n").unwrap();
+        assert!(verify_against_manifest(&dir, &conn).is_err());
+
+        // A path climbing out of the bundle would have this hash some other
+        // file and report the bundle clean.
+        std::fs::write(
+            dir.join(MANIFEST_FILE),
+            format!("{good}  ../elsewhere/a.bin\n"),
+        )
+        .unwrap();
+        let err = verify_against_manifest(&dir, &conn).expect_err("escaping path");
+        assert!(err.contains("not inside the bundle"), "{err}");
+
+        std::fs::write(dir.join(MANIFEST_FILE), "not-a-hash  a.bin\n").unwrap();
+        assert!(verify_against_manifest(&dir, &conn).is_err());
+        std::fs::write(dir.join(MANIFEST_FILE), "nonsense\n").unwrap();
+        assert!(verify_against_manifest(&dir, &conn).is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -274,18 +274,39 @@ pub struct LoadOptions {
     /// ([`Session::type_source_error`]) and printed, never a failed load: a
     /// dashboard renders the same with or without a type source, and losing
     /// the whole session over an optional one would be absurd.
+    ///
+    /// # It is only honoured under [`NetworkPolicy::Disabled`]
+    ///
+    /// Loading a FineType bundle needs `allow_unsigned_extensions` on the
+    /// connection: a locally built or repo-built extension carries 256 zero
+    /// bytes where a DuckDB signature would go. That flag is not
+    /// bundle-specific — it turns signature checking off for EVERYTHING that
+    /// connection loads, including anything `INSTALL`ed over the network under
+    /// [`NetworkPolicy::Auto`].
+    ///
+    /// So the two are not allowed to coexist. A `type_source` on an `Auto`
+    /// session is REFUSED, with the conflict named, and the session runs with
+    /// signature checking intact and no type source. The relaxation is
+    /// therefore only ever granted to a connection that cannot acquire an
+    /// extension from anywhere but a path this process chose —
+    /// [`LoadOptions::packaged`] sets both fields together for that reason.
     pub type_source: Option<semantic::TypeSourceSpec>,
 }
 
 impl LoadOptions {
-    /// [`LoadOptions::default`], plus the FineType bundle a packaged build
-    /// carries beside its own executable.
+    /// The options a packaged build profiles a data file with: the FineType
+    /// bundle beside its own executable, and no network.
+    ///
+    /// Both fields, together, because they are not separable — see
+    /// [`LoadOptions::type_source`] for why a type source is refused on a
+    /// session that may install extensions over the network.
     ///
     /// The lookup — [`semantic::bundle_beside`] — is resolved once per process
     /// and returns `None` for a build packaged without a bundle and for a
-    /// `cargo run` out of `target/`, both of which then behave exactly as
-    /// [`LoadOptions::default`]. This is the only place the application
-    /// decides WHERE its type source lives; everything else takes a directory.
+    /// `cargo run` out of `target/`. `NetworkPolicy::Disabled` costs those
+    /// nothing: this is used on the data-file profiling path, which opens a
+    /// local file (`data_file` refuses a URL by scheme) and so has never needed
+    /// `httpfs`.
     #[must_use]
     pub fn packaged() -> Self {
         static BUNDLE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
@@ -296,6 +317,7 @@ impl LoadOptions {
                 .and_then(semantic::bundle_beside)
         });
         LoadOptions {
+            network: NetworkPolicy::Disabled,
             type_source: dir.clone().map(semantic::TypeSourceSpec::Bundle),
             ..LoadOptions::default()
         }
@@ -334,14 +356,25 @@ impl Engine {
         options: &LoadOptions,
     ) -> Result<LoadResult, EngineError> {
         // `allow_unsigned_extensions` is a DATABASE-creation flag, so the
-        // decision has to be made here, before anything else — and it is made
-        // ONLY for a session that was handed a bundle. A locally built or
-        // repo-built FineType extension carries 256 zero bytes where a DuckDB
-        // signature would go, so without this flag `LOAD` refuses it; with it,
-        // this connection would also load any other unsigned extension it were
-        // asked to. It is asked for exactly one, by absolute path, from a
-        // directory the caller named.
-        let conn = if options.type_source.is_some() {
+        // decision has to be made here, before anything else.
+        //
+        // WHAT IT ACTUALLY DOES, because the narrow-sounding version of this
+        // sentence is wrong: it turns signature checking off for everything
+        // this connection loads, not just for the bundle. A FineType extension
+        // built anywhere but DuckDB's own community pipeline carries 256 zero
+        // bytes where a signature would go, so `LOAD` refuses it without the
+        // flag — and with the flag, this connection would equally load an
+        // unsigned extension `INSTALL`ed from a repository over the network.
+        //
+        // Which is why it is paired with the network policy rather than with
+        // the bundle. Only a session that is BOTH asking for a type source AND
+        // barred from acquiring extensions over the network gets the
+        // relaxation; on such a connection the only extension that can reach
+        // `LOAD` is one already on this disk at a path this process names. A
+        // type source asked for on an `Auto` session is refused below.
+        let relax_signatures =
+            options.type_source.is_some() && options.network == NetworkPolicy::Disabled;
+        let conn = if relax_signatures {
             duckdb::Config::default()
                 .allow_unsigned_extensions()
                 .and_then(Connection::open_in_memory_with_flags)
@@ -382,7 +415,19 @@ impl Engine {
         let mut type_source: Option<Box<dyn TypeSource>> = None;
         let mut type_source_error: Option<String> = None;
         if let Some(spec) = &options.type_source {
-            match spec.open(&conn) {
+            let opened = if relax_signatures {
+                spec.open(&conn)
+            } else {
+                Err(format!(
+                    "a type source was asked for on a session that may install extensions \
+                     over the network ({:?}). Loading the bundle needs signature checking \
+                     off for this whole connection, which must not be granted to one that \
+                     can also fetch — pass NetworkPolicy::Disabled alongside it, as \
+                     LoadOptions::packaged does",
+                    options.network
+                ))
+            };
+            match opened {
                 Ok(source) => type_source = Some(source),
                 Err(e) => {
                     eprintln!("warning: no semantic type source — {e}");

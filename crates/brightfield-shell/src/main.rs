@@ -79,6 +79,9 @@ enum Invocation {
     Version,
     /// `--help`: print usage to stdout and exit 0. No window.
     Help,
+    /// `--check-type-source`: bring up the bundled semantic type source and
+    /// type one column with it, then exit. No window.
+    CheckTypeSource,
 }
 
 /// The `--help` body. Mirrors the module-doc usage line and the flag grammar in
@@ -105,6 +108,10 @@ Options:
   --shot-after <N>                Render N frames, capture the window to
                                   --shot-out, then exit. Exit 0 means the PNG
                                   landed; for unattended smoke tests.
+  --check-type-source             Bring up the bundled semantic type source,
+                                  type one column with it, and exit. Opens no
+                                  window. Exit 0 typed a column, 1 a bundle is
+                                  present and did not work, 2 there is none.
   -h, --help                      Print this help and exit.
   -V, --version                   Print the version and exit.
 
@@ -136,6 +143,7 @@ fn parse_args_from(mut it: impl Iterator<Item = String>) -> Result<Invocation, S
         match a.as_str() {
             "--version" | "-V" => return Ok(Invocation::Version),
             "--help" | "-h" => return Ok(Invocation::Help),
+            "--check-type-source" => return Ok(Invocation::CheckTypeSource),
             "--theme" => {
                 if let Some(v) = it.next() {
                     mode = if v == "dark" { Mode::Dark } else { Mode::Light };
@@ -432,6 +440,141 @@ fn host_from_frame(cc: &eframe::CreationContext<'_>) -> Result<EguiCanvasHost, S
     Ok(EguiCanvasHost::new(device, queue, vello, egui_renderer))
 }
 
+/// `--check-type-source`: prove the bundled semantic type source works, from
+/// inside this binary, with no window.
+///
+/// This exists because the thing worth proving about a packaged Brightfield's
+/// type source cannot be seen from outside it. The bundle's FILES can be read
+/// off disk by `scripts/check-bundled-extension.sh`; what that cannot say is
+/// whether the DuckDB this binary links will load that extension, whether the
+/// model beside it is loadable, and whether the pair can actually put a label
+/// on a column — from wherever the artefact happens to be unpacked, and with
+/// whatever network the caller has denied it.
+///
+/// So `scripts/verify-airgapped.sh` runs THIS inside its jail. Everything the
+/// run needs is in the binary and the bundle: the fixture is four inline rows,
+/// the load is [`brightfield_engine::NetworkPolicy::Disabled`], and the verdict
+/// is an exit code rather than a line of prose somebody has to grep for.
+///
+/// Exit codes are distinct because the three outcomes want different actions:
+///
+/// - `0` — a bundle was found, came up, and typed a column. Its name, the
+///   directory, the label and the value-check result go to stdout.
+/// - `1` — a bundle is present and did not work. The reason goes to stderr.
+///   This is a packaging defect.
+/// - `2` — there is no bundle beside this executable. Not a defect: a build
+///   packaged without one is supported (see `scripts/package.sh`).
+fn check_type_source() -> i32 {
+    use brightfield_engine::semantic::{self, TypeSourceSpec};
+    use brightfield_engine::{
+        Engine, LoadOptions, NetworkPolicy, ProfileOutcome, SemanticType, ValueCheck,
+    };
+    use brightfield_spec::analysis::analyse_spec;
+    use brightfield_spec::{parse_spec, Format};
+
+    // Deliberately values whose meaning a DuckDB type cannot carry: the point
+    // of the check is that something ANSWERED, not that VARCHAR is VARCHAR.
+    const FIXTURE: &str = r#"
+data:
+  probe:
+    - { email: "alice@example.com" }
+    - { email: "bob@example.org" }
+    - { email: "carol@example.net" }
+    - { email: "dan@corp.co.uk" }
+plot:
+  - mark: dot
+    data: { from: probe }
+"#;
+
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("check-type-source: cannot locate this executable: {e}");
+            return 1;
+        }
+    };
+    let Some(bundle) = semantic::bundle_beside(&exe) else {
+        println!("check-type-source: no type source bundled beside {}", exe.display());
+        return 2;
+    };
+
+    let Ok(parsed) = parse_spec(FIXTURE, Format::Yaml) else {
+        eprintln!("check-type-source: the built-in fixture does not parse");
+        return 1;
+    };
+    let Ok(analysis) = analyse_spec(&parsed.spec) else {
+        eprintln!("check-type-source: the built-in fixture does not analyse");
+        return 1;
+    };
+    let options = LoadOptions {
+        network: NetworkPolicy::Disabled,
+        extension_directory: None,
+        type_source: Some(TypeSourceSpec::Bundle(bundle.clone())),
+    };
+    let session = match Engine::new().load_spec_with(parsed.spec, analysis, None, &options) {
+        Ok(load) => load.session,
+        Err(e) => {
+            eprintln!("check-type-source: the fixture would not load: {e}");
+            return 1;
+        }
+    };
+    if let Some(reason) = session.type_source_error() {
+        eprintln!("check-type-source: {bundle:?} did not come up: {reason}");
+        return 1;
+    }
+    let Some(name) = session.type_source_name() else {
+        eprintln!("check-type-source: no type source and no reason given — this is a bug");
+        return 1;
+    };
+    println!("check-type-source: {name} at {}", bundle.display());
+
+    let Some(profile) = session
+        .profile_sources()
+        .into_iter()
+        .find(|p| p.name == "probe")
+    else {
+        eprintln!("check-type-source: the fixture produced no source to profile");
+        return 1;
+    };
+    let ProfileOutcome::Profiled { columns, .. } = profile.outcome else {
+        eprintln!("check-type-source: the fixture's source could not be profiled");
+        return 1;
+    };
+    let Some(column) = columns.into_iter().find(|c| c.name == "email") else {
+        eprintln!("check-type-source: the fixture's column vanished");
+        return 1;
+    };
+
+    // A label is required, and so is a check behind it. `Unlabelled` is exactly
+    // what a bundle whose model did not load produces, and it is the outcome
+    // this whole check exists to refuse.
+    match column.semantic {
+        SemanticType::Labelled { label, check, .. } => {
+            match check {
+                ValueCheck::Checked { checked, failed } => println!(
+                    "check-type-source: {} typed as {label}, {}/{} values satisfy it",
+                    column.type_name,
+                    checked - failed,
+                    checked
+                ),
+                other => {
+                    eprintln!(
+                        "check-type-source: typed as {label}, but nothing checked the values \
+                         ({other:?}) — the schema catalogue does not describe what the model \
+                         emits"
+                    );
+                    return 1;
+                }
+            }
+            0
+        }
+        other => {
+            eprintln!("check-type-source: the bundle put no usable label on the column: {other:?}");
+            1
+        }
+    }
+}
+
 fn main() -> Result<(), String> {
     // Answered before any window work: print to stdout, exit 0, open nothing.
     // Nothing below this match — the layout read, the spec boot, the viewport,
@@ -445,6 +588,7 @@ fn main() -> Result<(), String> {
             println!("{HELP}");
             return Ok(());
         }
+        Invocation::CheckTypeSource => std::process::exit(check_type_source()),
         Invocation::Run(args) => args,
     };
 
@@ -651,6 +795,7 @@ mod tests {
             Ok(Invocation::Run(a)) => a,
             Ok(Invocation::Version) => panic!("expected Run, got Version"),
             Ok(Invocation::Help) => panic!("expected Run, got Help"),
+            Ok(Invocation::CheckTypeSource) => panic!("expected Run, got CheckTypeSource"),
             Err(e) => panic!("expected Run, got Err: {e}"),
         }
     }
@@ -684,6 +829,16 @@ mod tests {
     #[test]
     fn version_flag_short_circuits() {
         assert!(matches!(parse(&["--version"]), Ok(Invocation::Version)));
+        // Short-circuits like --version/--help: nothing else on the line can
+        // turn it back into a window, because it exists to be run unattended.
+        assert!(matches!(
+            parse(&["--check-type-source"]),
+            Ok(Invocation::CheckTypeSource)
+        ));
+        assert!(matches!(
+            parse(&["spec.yaml", "--check-type-source", "--shot-after", "45"]),
+            Ok(Invocation::CheckTypeSource)
+        ));
         assert!(matches!(parse(&["-V"]), Ok(Invocation::Version)));
         // Wins over anything else on the line, and opens no window.
         assert!(matches!(
