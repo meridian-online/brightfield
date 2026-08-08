@@ -111,6 +111,27 @@ ln -s "$TMP/elsewhere.safetensors" "$TMP/linked/model/model.safetensors"
 [ -f "$TMP/linked/model/model.safetensors" ] || { echo "  FAIL fixture: the link does not resolve"; fails=$((fails + 1)); }
 expect_fail "a symlinked model file" "not self-contained" "$TMP/linked"
 
+echo "== a bundle that does not match its own manifest"
+make_bundle "$TMP/manifest"
+( cd "$TMP/manifest" && find . -type f ! -name bundle-manifest.sha256 | sed 's|^\./||' | LC_ALL=C sort \
+    | xargs shasum -a 256 > bundle-manifest.sha256 )
+expect_pass "a bundle matching its manifest" "$TMP/manifest"
+printf 'different bytes entirely' > "$TMP/manifest/model/config.json"
+expect_fail "one file changed after packaging" "does not match its own manifest" "$TMP/manifest"
+
+make_bundle "$TMP/manifest2"
+( cd "$TMP/manifest2" && find . -type f ! -name bundle-manifest.sha256 | sed 's|^\./||' | LC_ALL=C sort \
+    | xargs shasum -a 256 > bundle-manifest.sha256 )
+rm "$TMP/manifest2/taxonomy-schemas.json"
+# The existence check fires first, and that is the right message — but the
+# manifest would have caught it too, which is what makes a partial unpack
+# visible however it is shaped.
+expect_fail "a file the manifest names is gone" "carries no taxonomy-schemas.json" "$TMP/manifest2"
+
+make_bundle "$TMP/manifest3"
+: > "$TMP/manifest3/bundle-manifest.sha256"
+expect_fail "an empty manifest" "names no files" "$TMP/manifest3"
+
 echo "== an extension that would not load"
 make_bundle "$TMP/unstamped"
 head -c 4096 /dev/zero > "$TMP/unstamped/finetype.duckdb_extension"

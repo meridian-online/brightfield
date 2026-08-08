@@ -36,15 +36,13 @@
 #      ABI, and a symlink count, because a model copied with `cp -R` instead of
 #      `cp -RL` produces an artifact that works only on the machine that built
 #      it and can never be caught by running it there. Then the half no file
-#      check can see: the rendering run above is required to be SILENT on
-#      "no semantic type source", which is what the application prints when a
-#      configured bundle fails to come up. Coming up includes making the model
-#      classify, so silence from a run that rendered means the extension loaded
-#      and the model ran with the network denied and HOME sealed. It is
-#      asserted by negation because a GUI binary has no headless way to print a
-#      label. An artifact with NO bundle skips this leg — that is a supported
-#      build, see scripts/package.sh — but a bundle that is present and broken
-#      is a failure.
+#      check can see: the packaged binary is run with `--check-type-source`
+#      inside the same jail, which loads that extension with its own DuckDB,
+#      loads the model beside it, and puts a label on a column — and reports it
+#      as an EXIT CODE. Nothing here is inferred from the absence of a message.
+#      An artifact with NO bundle skips this leg (a supported build, see
+#      scripts/package.sh); a bundle that is present and does not work is a
+#      failure.
 #
 # The jail: macOS `sandbox-exec` with `(deny network*)`; Linux `unshare -rn`
 # (a network namespace with no interfaces). Both windows open briefly on a
@@ -90,23 +88,14 @@ DEADLINE=180
 # Runs the packaged binary inside the jail, from the package directory, with a
 # sealed HOME/config, a screenshot countdown, and the deadline watchdog.
 # $PKG and $EXE are set by the leg that opened the artifact.
-#
-# stderr is TEED rather than swallowed: it stays on the terminal, and a copy
-# lands in $SMOKE_LOG so a leg can assert on what the run said. The type-source
-# leg needs that — "it rendered" is silent about whether the bundled extension
-# and model came up inside the jail, and the application says so on stderr when
-# they did not.
-SMOKE_LOG=""
 smoke() {
   local out="$1"; shift
   local extra_env=()
   while [ "$1" != "--" ]; do extra_env+=("$1"); shift; done
   shift
-  SMOKE_LOG="$TMP/smoke-$(basename "$out").log"
   ( cd "$PKG" && env HOME="$TMP/home" BRIGHTFIELD_CONFIG_DIR="$TMP/config" \
       ${extra_env[@]+"${extra_env[@]}"} \
-      "${JAIL[@]}" "$EXE" "$@" --shot-after 45 --shot-out "$out" \
-      2> >(tee "$SMOKE_LOG" >&2) ) &
+      "${JAIL[@]}" "$EXE" "$@" --shot-after 45 --shot-out "$out" ) &
   local pid=$!
   ( sleep "$DEADLINE" && echo "   DEADLINE (${DEADLINE}s) — killing" && kill -9 "$pid" ) 2>/dev/null &
   local wd=$!
@@ -247,30 +236,42 @@ else
   HAS_TYPE_SOURCE=1
 fi
 
+# THE AIR-GAPPED HALF OF THE TYPE-SOURCE CLAIM. The file checks above say the
+# bytes are present; this says the PACKAGED BINARY can load that extension with
+# its own DuckDB, load the model beside it, and put a label on a column — from
+# wherever the artifact was unpacked, with the network denied and with HOME and
+# the config directory pointed at an empty temp tree so no warm cache on this
+# machine is reachable.
+#
+# It asserts an EXIT CODE from a run that exists to be asserted on, and that is
+# the whole design. The version of this leg that shipped first grepped a
+# rendering run's stderr for a warning and passed on its absence — but the
+# rendering path never configures a type source, so the warning could not
+# appear, and the leg passed for any bundle including a broken one. A check
+# whose failing case cannot be reached is not a check.
+#
+# `--check-type-source` opens no window: it is the one leg here that can be run
+# unattended, and the one that can be made to fail on demand by planting a
+# broken bundle in the artifact.
+if [ "$HAS_TYPE_SOURCE" -eq 1 ]; then
+  echo "== run 0: the packaged binary types a column, jailed (no window)"
+  ts_status=0
+  ( cd "$PKG" && env HOME="$TMP/home" BRIGHTFIELD_CONFIG_DIR="$TMP/config" \
+      "${JAIL[@]}" "$EXE" --check-type-source ) > "$TMP/typesource.log" 2>&1 || ts_status=$?
+  sed 's/^/   /' "$TMP/typesource.log"
+  case "$ts_status" in
+    0) echo "   ok: the bundled extension and model typed a column with no network" ;;
+    2) echo "   FAILED: the binary found no bundle, but ${FTBUNDLE} is in this artifact —"
+       echo "   it is staged somewhere the executable does not look. See scripts/package.sh."
+       exit 1 ;;
+    *) echo "   FAILED: the bundled type source did not come up (exit ${ts_status})"
+       exit 1 ;;
+  esac
+fi
+
 echo "== run 1: chart spec, jailed (a window opens briefly)"
 smoke "$TMP/chart.png" -- "$EXAMPLES/bars.yaml"
 is_png "$TMP/chart.png" 20000
-
-# THE AIR-GAPPED HALF OF THE TYPE-SOURCE CLAIM, and the only place it is
-# actually proved. The file checks above say the bytes are present; this says
-# the extension LOADED and its model CLASSIFIED, inside the network-denied jail,
-# with HOME and the config directory pointed at an empty temp tree so no warm
-# cache from this machine can be reached.
-#
-# It works by negation because there is no headless way to read a label out of
-# a GUI binary: the application prints `warning: no semantic type source` and
-# the reason whenever a configured bundle fails to come up, and coming up
-# includes a canary that makes the model classify three email addresses. Silence
-# on that line, from a run that also rendered, is the evidence.
-if [ "$HAS_TYPE_SOURCE" -eq 1 ]; then
-  echo "== run 1b: the type source came up inside the jail"
-  if grep -q 'no semantic type source' "$SMOKE_LOG"; then
-    echo "   FAILED: the bundled type source did not come up with the network denied:"
-    grep 'no semantic type source' "$SMOKE_LOG" | sed 's/^/     /'
-    exit 1
-  fi
-  echo "   ok: no type-source warning from a run that rendered"
-fi
 
 echo "== run 2: Protocol manifest, jailed (a window opens briefly)"
 smoke "$TMP/protocol.png" BRIGHTFIELD_PROTOCOL_OFFLINE=1 -- "$EXAMPLES/protocol/edgar_gleif/arcform.yaml"

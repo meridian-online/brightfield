@@ -236,6 +236,35 @@ else
     || { echo "package.sh: refusing to stage a bundle that would not load." >&2; exit 1; }
 fi
 
+# stage_finetype DEST — copy the bundle in and record what was copied.
+#
+# `cp -RL` dereferences: a model fetched through a content-addressed cache is a
+# tree of symlinks into that cache, and copying the links produces an artifact
+# that works only on the machine that built it.
+#
+# The manifest is written HERE, over the staged copy, so it records the bytes
+# that actually shipped rather than the bytes that were read. The application
+# checks it before loading the extension; `shasum -c` reads the same file, so a
+# user can check it by hand. What it detects is a bundle that changed after
+# packaging — a truncated unpack, a partial copy, a stale file. It is not a
+# signature: it lives in the directory it describes.
+stage_finetype() {
+  local dest="$1"
+  [ -n "$FINETYPE_BUNDLE" ] || return 0
+  cp -RL "$FINETYPE_BUNDLE" "$dest"
+  rm -f "$dest/bundle-manifest.sha256"
+  # Relative paths, sorted, so the manifest is identical for identical input
+  # and a diff between two packaging runs means something. The manifest EXCLUDES
+  # itself: the shell truncates a redirect target before the pipeline runs, so
+  # an unfiltered find records the hash of an empty file that is about to stop
+  # being empty, and the bundle then never matches its own manifest.
+  ( cd "$dest" && find . -type f ! -name bundle-manifest.sha256 | sed 's|^\./||' | LC_ALL=C sort \
+      | xargs shasum -a 256 > bundle-manifest.sha256 )
+  local n
+  n=$(wc -l < "$dest/bundle-manifest.sha256" | tr -d ' ')
+  echo "   staged ${dest#dist/}: ${n} files, hashes recorded"
+}
+
 echo "== stage: ${STAGE}"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/examples"
@@ -245,10 +274,7 @@ cp LICENSE "$STAGE/LICENSE"
 cp examples/*.yaml "$STAGE/examples/"
 cp -R examples/protocol "$STAGE/examples/protocol"
 cp -R examples/remote "$STAGE/examples/remote"
-# `cp -RL` dereferences: a model fetched through a content-addressed cache is a
-# tree of symlinks into that cache, and copying the links would produce an
-# artifact that works only on the machine that built it.
-[ -z "$FINETYPE_BUNDLE" ] || cp -RL "$FINETYPE_BUNDLE" "$STAGE/finetype"
+stage_finetype "$STAGE/finetype"
 cat > "$STAGE/README.txt" <<EOF
 brightfield ${VERSION} (${TARGET})
 
@@ -340,7 +366,7 @@ case "$TARGET" in
     # Resources/, not MacOS/: an app launched from /Applications has no sibling
     # directory, and `semantic::bundle_beside` looks in both places for exactly
     # this reason.
-    [ -z "$FINETYPE_BUNDLE" ] || cp -RL "$FINETYPE_BUNDLE" "$APP/Contents/Resources/finetype"
+    stage_finetype "$APP/Contents/Resources/finetype"
 
     # The system floor is read out of the executable rather than declared, so a
     # toolchain that moves its deployment target moves this with it. An empty

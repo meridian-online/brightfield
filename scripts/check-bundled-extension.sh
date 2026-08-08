@@ -38,8 +38,15 @@
 #   perfectly on the packaging machine and nowhere else, so no amount of
 #   testing where it was built will show it.
 #
+#   The manifest, when the bundle carries one. scripts/package.sh records a
+#   hash per staged file; a mismatch means the artifact is not carrying the
+#   bytes that were packaged. It is not a signature — it sits in the directory
+#   it describes — and a bundle nobody has packaged has none, so the check is
+#   conditional on its presence and strict once it is there.
+#
 # WHAT IT DOES NOT CHECK: that the model is a model. A file of the right name
-# and the wrong bytes passes here and is caught at runtime by the canary in
+# and the wrong bytes passes here (unless a manifest contradicts it) and is
+# caught at runtime by the canary in
 # `brightfield_engine::semantic::FinetypeBundle::open`, which makes the loaded
 # extension classify three email addresses before the bundle is accepted. It
 # also does not compare the trailer's DuckDB version against the DuckDB this
@@ -97,9 +104,25 @@ platform=$(field 192)
 version=$(field 128)
 duckdb_floor=$(field 160)
 
+# The manifest scripts/package.sh writes over the staged copy. Absent for a
+# locally assembled bundle nobody has packaged, which is why this is
+# conditional; present and disagreeing means the artifact is not carrying the
+# bytes that were packaged, which no other check here can see. The application
+# verifies the same file before it loads the extension.
+manifest="${BUNDLE}/bundle-manifest.sha256"
+manifest_note="no manifest"
+if [ -f "$manifest" ]; then
+  lines=$(grep -c . "$manifest" || true)
+  [ "${lines:-0}" -gt 0 ] || fail "${manifest} names no files, so it verifies nothing"
+  ( cd "$BUNDLE" && shasum -a 256 -c --status bundle-manifest.sha256 ) \
+    || fail "${BUNDLE} does not match its own manifest — the bundle is not the one that \
+was packaged (run 'shasum -a 256 -c bundle-manifest.sha256' in it to see which file)"
+  manifest_note="${lines} files match the manifest"
+fi
+
 if [ -n "$WANT_PLATFORM" ] && [ "$platform" != "$WANT_PLATFORM" ]; then
   fail "${EXT} is built for '${platform}' and this artifact needs '${WANT_PLATFORM}' — \
 DuckDB would refuse to load it on every machine the artifact is for"
 fi
 
-echo "check-bundled-extension: finetype ${version}, ${abi}, ${platform}, DuckDB floor ${duckdb_floor}, no symlinks."
+echo "check-bundled-extension: finetype ${version}, ${abi}, ${platform}, DuckDB floor ${duckdb_floor}, no symlinks, ${manifest_note}."
