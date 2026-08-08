@@ -13,10 +13,26 @@ use brightfield_workbench::registry::{
 use brightfield_workbench::Icon;
 
 /// Bars takes a name on `x`. It is the constraint the forwarded call below
-/// walks past, so it is declared once, here, and read by both tests.
+/// walks past, so it is declared once, here, and read through `bars()` by every
+/// test in the file.
+///
+/// `colour` is **optional** and deliberately so: an optional slot is still a
+/// declaration of what the kind will take, and a check that exempts optional
+/// slots from the type test is a mutation the required-only fixtures cannot
+/// see.
 const BAR_SLOTS: &[FieldSlot] = &[
     FieldSlot::required("x", &[FieldType::Categorical]),
     FieldSlot::required("y", &[FieldType::Quantitative]),
+    FieldSlot::optional("colour", &[FieldType::Categorical]),
+];
+
+/// `bars`' required slots, with `colour` declared to take the type `bars` will
+/// not. Filling it needs a third column, which is why `bars`' own `bind` leaves
+/// it empty above.
+const MEASURE_COLOUR_SLOTS: &[FieldSlot] = &[
+    FieldSlot::required("x", &[FieldType::Categorical]),
+    FieldSlot::required("y", &[FieldType::Quantitative]),
+    FieldSlot::optional("colour", &[FieldType::Quantitative]),
 ];
 
 /// Two measures — what `bars` will not take on `x`.
@@ -51,16 +67,21 @@ fn stale_bars() -> ChartKind<String> {
     }
 }
 
-/// A role `bars` has never declared.
-const COLOUR_ONLY: &[FieldSlot] = &[FieldSlot::required("colour", &[FieldType::Categorical])];
+/// A role `bars` does not declare — not even optionally, which `colour` now is.
+///
+/// It takes a `Categorical` on purpose: `bars`' first slot takes one too, so a
+/// mutant that resolves an unknown role to some *other* slot still finds a slot
+/// that accepts the column. That makes the undeclared-role branch the only
+/// thing that can reject this binding, which is what the test is for.
+const SIZE_ONLY: &[FieldSlot] = &[FieldSlot::required("size", &[FieldType::Categorical])];
 
 /// `bars`' `x` and not its `y`.
 const NAME_ONLY: &[FieldSlot] = &[FieldSlot::required("x", &[FieldType::Categorical])];
 
 /// The same id, declaring a role `bars` has never had.
-fn colour_bars() -> ChartKind<String> {
+fn size_bars() -> ChartKind<String> {
     ChartKind {
-        slots: COLOUR_ONLY,
+        slots: SIZE_ONLY,
         ..bars()
     }
 }
@@ -70,6 +91,15 @@ fn colour_bars() -> ChartKind<String> {
 fn x_only_bars() -> ChartKind<String> {
     ChartKind {
         slots: NAME_ONLY,
+        ..bars()
+    }
+}
+
+/// The same id, agreeing with `bars` on both required slots and disagreeing on
+/// the optional one.
+fn measure_colour_bars() -> ChartKind<String> {
+    ChartKind {
+        slots: MEASURE_COLOUR_SLOTS,
         ..bars()
     }
 }
@@ -162,15 +192,16 @@ fn a_binding_from_a_kind_sharing_this_id_is_checked_against_these_slots() {
 /// makes it wrong, which is why the type loop alone would let it through.
 #[test]
 fn a_binding_sharing_this_id_must_also_match_this_kinds_shape() {
-    let undeclared = colour_bars()
-        .bind(&[category("sector")])
-        .expect("one name fills colour_bars' one slot");
+    let undeclared = size_bars()
+        .bind(&[category("bucket")])
+        .expect("one name fills size_bars' one slot");
     let err = bars()
         .spec(&undeclared, &ModuleOptions::default())
-        .expect_err("bars has no colour slot");
+        .expect_err("bars has no size slot");
     assert!(
-        err.contains("colour"),
-        "the error names the undeclared role: {err}"
+        err.contains("size") && err.contains("does not declare"),
+        "the UNDECLARED-ROLE branch is what rejected it, not a type mismatch \
+         further down: {err}"
     );
 
     let short = x_only_bars()
@@ -181,8 +212,35 @@ fn a_binding_sharing_this_id_must_also_match_this_kinds_shape() {
         .spec(&short, &ModuleOptions::default())
         .expect_err("bars requires a y and this binding has none");
     assert!(
-        err.contains('y'),
-        "the error names the unfilled required slot: {err}"
+        err.contains('y') && err.contains("required slot"),
+        "the UNFILLED-REQUIRED-SLOT branch is what rejected it: {err}"
+    );
+}
+
+/// An **optional** slot is a declaration too, and the type check does not
+/// exempt it.
+///
+/// Every required slot here agrees, so a check that tested only required slots
+/// would pass this binding — and `bars`' builder would read a measure out of a
+/// slot `bars` declares takes a name. The two fixtures differ in exactly one
+/// place, the `colour` slot's `accepts`, so nothing else can be what reddens.
+#[test]
+fn an_optional_slot_is_type_checked_like_any_other() {
+    let binding = measure_colour_bars()
+        .bind(&[category("sector"), measure("revenue"), measure("margin")])
+        .expect("a name and two measures fill all three of its slots");
+    assert_eq!(
+        binding.name("colour"),
+        Some("margin"),
+        "the optional slot really is filled, or this test proves nothing"
+    );
+
+    let err = bars()
+        .spec(&binding, &ModuleOptions::default())
+        .expect_err("bars declares colour Categorical and was handed a measure");
+    assert!(
+        err.contains("margin") && err.contains("colour"),
+        "the error names the column and the optional slot: {err}"
     );
 }
 
