@@ -202,6 +202,62 @@ pub fn pane_frame(ui: &mut egui::Ui, subject: &Subject, header: bool, mode: Mode
     child
 }
 
+/// Draw a module's own chrome inside the module's rect, and return the `Ui`
+/// the module's body may draw into.
+///
+/// The pane header band names the pane and belongs to the surface around it.
+/// This is the other thing: the controls a **module** declares, which act on
+/// that module alone — a log/linear toggle rescales the chart it sits on and
+/// nothing else on the canvas — so they are drawn attached to the module,
+/// inside the rect the module was given, below whatever chrome the pane
+/// already has.
+///
+/// This *extends* [`pane_frame`]; it does not fork it. A module is drawn
+/// inside a pane like any other item, so it has already been through
+/// `pane_frame` by the time this runs, and everything here happens within the
+/// content rect that call handed over.
+///
+/// **A module that declares nothing costs nothing.** `entries` empty — or
+/// every entry withheld, which [`Toolbar`] treats the same way — takes zero
+/// height, paints nothing, and returns a `Ui` over the whole rect with the
+/// same clip, so the module draws exactly where an item with no chrome at all
+/// draws. That is not a claim about a code path being similar: it is the same
+/// rect, and `a_module_that_declares_no_chrome_draws_where_a_plain_item_does`
+/// tessellates both and compares the triangles.
+pub fn module_frame(
+    ui: &mut egui::Ui,
+    entries: &[ToolbarEntry],
+    mode: Mode,
+) -> (egui::Ui, ToolbarDrawn) {
+    let outer = ui.max_rect();
+    let mut body = outer;
+    let toolbar = Toolbar::new(entries);
+
+    let drawn = if toolbar.has_something_to_say() {
+        let out = toolbar.show(ui, mode);
+        let sem = semantic(mode.is_dark());
+        let y = ui.cursor().min.y;
+        // A hairline under the strip, the same divider the header band closes
+        // with, so a module's own controls read as belonging to the module
+        // rather than floating above its ink.
+        ui.painter().line_segment(
+            [egui::pos2(outer.left(), y), egui::pos2(outer.right(), y)],
+            egui::Stroke::new(1.0, colour(sem.borders.divider)),
+        );
+        body.min.y = y + spacing::SPACE_2;
+        out
+    } else {
+        ToolbarDrawn::default()
+    };
+
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body).layout(*ui.layout()));
+    // The same reason `pane_frame` shrinks its child's clip: `new_child` clones
+    // the parent's painter, clip rect included, so without this a module could
+    // paint over its own control strip.
+    child.shrink_clip_rect(body);
+    (child, drawn)
+}
+
 /// The pane header: icon, title, dirty marker.
 ///
 /// Private, with exactly one call site. Three hand-written variants of this —
@@ -732,6 +788,8 @@ fn affordance_button(ui: &mut egui::Ui, next: &Affordance) -> egui::Response {
 
 #[cfg(test)]
 mod tests {
+    use brightfield_keys::BindingContext;
+
     use super::*;
     use crate::subject::ToolbarEntry;
 
@@ -817,6 +875,222 @@ mod tests {
         assert!(
             height > 0.0,
             "an offered control did not bring the row back"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The chrome a module owns
+    // -----------------------------------------------------------------------
+
+    /// Run one frame over a fixed pane and hand back both what the body
+    /// produced and the triangles that would reach the GPU.
+    fn frame_pixels<R>(body: impl FnOnce(&mut egui::Ui) -> R) -> (R, Vec<egui::ClippedPrimitive>) {
+        let ctx = egui::Context::default();
+        let mut out = None;
+        let mut body = Some(body);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_max(
+                egui::pos2(0.0, 0.0),
+                egui::pos2(400.0, 300.0),
+            )),
+            ..Default::default()
+        };
+        let full = ctx.run_ui(input, |ui| {
+            if let Some(body) = body.take() {
+                out = Some(body(ui));
+            }
+        });
+        let primitives = ctx.tessellate(full.shapes, full.pixels_per_point);
+        (out.expect("the frame body always runs"), primitives)
+    }
+
+    /// The triangles of a frame, as comparable text.
+    fn triangles(primitives: &[egui::ClippedPrimitive]) -> String {
+        let mut out = String::new();
+        for primitive in primitives {
+            out.push_str(&format!("clip {:?}\n", primitive.clip_rect));
+            if let egui::epaint::Primitive::Mesh(mesh) = &primitive.primitive {
+                for vertex in &mesh.vertices {
+                    out.push_str(&format!("  v {vertex:?}\n"));
+                }
+                out.push_str(&format!("  i {:?}\n", mesh.indices));
+            }
+        }
+        out
+    }
+
+    /// Whether any vertex in the frame was painted in exactly `ink`. A clipped
+    /// shape contributes no vertices at all, so absence is an assertion.
+    fn painted(primitives: &[egui::ClippedPrimitive], ink: egui::Color32) -> bool {
+        primitives.iter().any(|p| match &p.primitive {
+            egui::epaint::Primitive::Mesh(mesh) => mesh.vertices.iter().any(|v| v.color == ink),
+            egui::epaint::Primitive::Callback(_) => false,
+        })
+    }
+
+    /// A marker no chrome paints, so its position in the tessellated output is
+    /// unambiguous.
+    const MARKER: egui::Color32 = egui::Color32::from_rgb(7, 11, 13);
+
+    fn paint_marker(ui: &egui::Ui) {
+        let rect = ui.max_rect();
+        ui.painter().rect_filled(
+            egui::Rect::from_min_size(rect.min, egui::vec2(30.0, 10.0)),
+            0.0,
+            MARKER,
+        );
+    }
+
+    /// The rule that makes [`module_frame`] an extension of [`pane_frame`]
+    /// rather than a fork of it: a module which declares no chrome draws into
+    /// exactly the rect an item with no module chrome at all draws into.
+    ///
+    /// Asserted on the triangles rather than on the rect, because a rect that
+    /// matched while the clip did not would still move pixels.
+    #[test]
+    fn a_module_that_declares_no_chrome_draws_where_a_plain_item_does() {
+        let (_, plain) = frame_pixels(|ui| {
+            let subject = Subject::new("Rows", Icon("list"), BindingContext::Workspace);
+            let body = pane_frame(ui, &subject, true, Mode::Light);
+            paint_marker(&body);
+        });
+
+        let (drawn, module) = frame_pixels(|ui| {
+            let subject = Subject::new("Rows", Icon("list"), BindingContext::Workspace);
+            let mut body = pane_frame(ui, &subject, true, Mode::Light);
+            let (inner, drawn) = module_frame(&mut body, &[], Mode::Light);
+            paint_marker(&inner);
+            drawn
+        });
+
+        assert_eq!(
+            drawn,
+            ToolbarDrawn::default(),
+            "nothing drawn, nothing armed"
+        );
+        assert!(
+            triangles(&plain).contains(&format!("{MARKER:?}")),
+            "the marker never reached the frame, so the comparison proves nothing"
+        );
+        assert_eq!(
+            triangles(&plain),
+            triangles(&module),
+            "a module with no declared chrome moved the pixels of the pane it \
+             sits in"
+        );
+    }
+
+    /// A declared control takes its row out of the **module's** rect: the
+    /// module's body starts below the strip, by the row the toolbar itself
+    /// measures plus the gap this file reserves.
+    #[test]
+    fn a_declared_control_takes_a_row_out_of_the_modules_own_rect() {
+        let entries = vec![ToolbarEntry::button("log", "Log", verb())];
+        // What the row costs, measured by the toolbar rather than typed here.
+        let (_, row) = height_consumed(|ui| Toolbar::new(&entries).show(ui, Mode::Light));
+        assert!(
+            row > 0.0,
+            "the row drew nothing, so there is nothing to place"
+        );
+
+        let ((top_before, top_after, drawn), _) = frame_pixels(|ui| {
+            let before = ui.max_rect().top();
+            let (body, drawn) = module_frame(ui, &entries, Mode::Light);
+            (before, body.max_rect().top(), drawn)
+        });
+
+        assert_eq!(drawn.drawn, vec!["log"], "the control drew");
+        let expected = row + spacing::SPACE_2;
+        assert!(
+            (top_after - top_before - expected).abs() < 0.01,
+            "the module's body starts {}pt below its rect; the strip and its \
+             gap come to {expected}pt",
+            top_after - top_before
+        );
+    }
+
+    /// The clip half of the strip rule: a module that reaches for
+    /// `ui.painter()` and paints over its own control strip is clipped away.
+    ///
+    /// [`module_frame`] reserves the strip out of the module's rect, but
+    /// `Ui::new_child` clones the parent's painter — clip rect included — so
+    /// `max_rect` alone constrains layout and nothing else. Delete
+    /// `shrink_clip_rect` in [`module_frame`] and this goes red; the same rule
+    /// on [`pane_frame`] is pinned the same way, by
+    /// `a_pane_that_paints_its_own_header_through_its_ui_is_clipped_away` in
+    /// `crates/brightfield-workbench/tests/chrome_rules.rs`.
+    ///
+    /// What it does **not** claim: the clip does not reach `egui::Area` or
+    /// `ctx.layer_painter`, which take a fresh layer from the `Context`.
+    /// Against those the rule is a review rule, as it is for a pane.
+    #[test]
+    fn a_module_that_paints_over_its_own_control_strip_is_clipped_away() {
+        // Two colours nothing else in the frame uses, so presence and absence
+        // are both unambiguous.
+        const STRIP_INTRUDER: egui::Color32 = egui::Color32::from_rgb(255, 0, 255);
+        const HONEST_BODY: egui::Color32 = egui::Color32::from_rgb(0, 255, 0);
+
+        let entries = vec![ToolbarEntry::button("log", "Log", verb())];
+        let ((strip_top, body_top), primitives) = frame_pixels(|ui| {
+            let outer = ui.max_rect();
+            let (body, drawn) = module_frame(ui, &entries, Mode::Light);
+            assert_eq!(drawn.drawn, vec!["log"], "no strip drew, so none to cover");
+            let rect = body.max_rect();
+            // Over the strip the module just drew, through the module's own Ui.
+            body.painter().rect_filled(
+                egui::Rect::from_min_max(
+                    egui::pos2(outer.left() + 4.0, outer.top()),
+                    egui::pos2(outer.left() + 60.0, outer.top() + 4.0),
+                ),
+                0.0,
+                STRIP_INTRUDER,
+            );
+            // …and something the module is entitled to draw, so a frame that
+            // painted nothing — or a clip that swallowed everything — cannot
+            // pass this by accident.
+            body.painter().rect_filled(
+                egui::Rect::from_min_size(rect.min, egui::vec2(30.0, 10.0)),
+                0.0,
+                HONEST_BODY,
+            );
+            (outer.top(), rect.top())
+        });
+
+        assert!(
+            body_top >= strip_top + 4.0,
+            "the body starts {}pt below the module's rect, so the intruder \
+             above is inside the body and this test proves nothing",
+            body_top - strip_top
+        );
+        assert!(
+            painted(&primitives, HONEST_BODY),
+            "the positive control never reached the frame, so the negative \
+             below proves nothing"
+        );
+        assert!(
+            !painted(&primitives, STRIP_INTRUDER),
+            "a module painted over its own control strip through its own Ui"
+        );
+    }
+
+    /// A control the kind withholds does not summon a strip, exactly as a
+    /// withheld pane control does not summon a toolbar row — the existence
+    /// rule reaches the module chrome because the module chrome is built on
+    /// [`Toolbar`] rather than beside it.
+    #[test]
+    fn a_module_whose_controls_are_all_withheld_gets_no_strip() {
+        let entries =
+            vec![ToolbarEntry::button("later", "Log", verb()).at(ToolbarLocation::Hidden)];
+        let ((top_before, top_after, drawn), _) = frame_pixels(|ui| {
+            let before = ui.max_rect().top();
+            let (body, drawn) = module_frame(ui, &entries, Mode::Light);
+            (before, body.max_rect().top(), drawn)
+        });
+        assert_eq!(drawn, ToolbarDrawn::default());
+        assert!(
+            (top_after - top_before).abs() < f32::EPSILON,
+            "a withheld control reserved {}pt",
+            top_after - top_before
         );
     }
 
