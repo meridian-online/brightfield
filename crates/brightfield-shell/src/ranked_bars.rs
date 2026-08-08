@@ -5,8 +5,8 @@
 //! ranking and the row cap are `brightfield-sql`'s `BarLowerer` reading a
 //! lifted `sort:`; the total behind the subset is the per-group selected count
 //! a `highlight` interactor projects, drawn by `brightfield-render`'s
-//! `BarRenderer`; the cross-filter is the crossfilter selection every other
-//! interactive example in `examples/` already drives.
+//! `BarRenderer`; the cross-filter is the crossfilter selection
+//! `examples/point-select-categorical.yaml` drives.
 //!
 //! # The shape, and the one thing it is easy to get wrong
 //!

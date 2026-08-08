@@ -412,11 +412,11 @@ fn assert_ratios(found: &[f64], expected: &[f64], case: &str) {
 
 /// **The module ranks, in pixels.**
 ///
-/// A band scale's first row is at the BOTTOM of the frame — `Layout::y_range`
-/// returns `(bottom, top)` — so a descending ranking reads as bars getting
-/// LONGER down the page. Fourteen categories worth 1…14 rows, capped at the
-/// default ten, leaves the ten longest: 5…14 rows, drawn 5 at the top and 14 at
-/// the bottom.
+/// A band scale's first row is at the BOTTOM of the frame —
+/// `ChartLayout::y_range` returns `(bottom, top)` — so a descending ranking
+/// reads as bars getting LONGER down the page. Fourteen categories worth 1…14
+/// rows, capped at the default ten, leaves the ten longest: 5…14 rows, drawn 5
+/// at the top and 14 at the bottom.
 #[test]
 fn a_module_draws_its_categories_longest_last_and_stops_at_the_default_cap() {
     let source = module_spec(14, RankedCategoryBars::new("cat"));
