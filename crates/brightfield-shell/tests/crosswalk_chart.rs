@@ -755,8 +755,8 @@ fn the_crosswalk_chart_start_opens_over_the_network_drawing_every_row() {
     let opened = starts::load(starts::CROSSWALK_CHART)
         .expect("the crosswalk chart start composes with a connection");
     match opened {
-        starts::Opened::Charts(composed) => assert!(
-            composed.width > 0 && composed.height > 0,
+        starts::Opened::Charts(chart) => assert!(
+            chart.composed.width > 0 && chart.composed.height > 0,
             "the start composed no plots"
         ),
         starts::Opened::Protocol(_) => panic!("the crosswalk CHART composed a protocol document"),

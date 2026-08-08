@@ -235,8 +235,8 @@ fn every_shipped_start_loads_into_a_document_with_something_in_it() {
             opened.view()
         );
         match opened {
-            Opened::Charts(composed) => assert!(
-                composed.width > 0 && composed.height > 0,
+            Opened::Charts(chart) => assert!(
+                chart.composed.width > 0 && chart.composed.height > 0,
                 "{} composed no plots, so the card that opens it resolves \
                  one empty state into another",
                 start.id

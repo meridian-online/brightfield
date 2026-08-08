@@ -515,7 +515,12 @@ impl Boot {
     /// to load.
     pub fn start(id: &str, flow: Flow) -> Result<Self, String> {
         Ok(match crate::starts::load(id)? {
-            crate::starts::Opened::Charts(composed) => Self::charts(*composed),
+            // The session comes with it, so the pane can re-composite into the
+            // box the dock gives it. See [`crate::starts::OpenedChart`].
+            crate::starts::Opened::Charts(chart) => Self {
+                live: Some(chart.live),
+                ..Self::charts(chart.composed)
+            },
             crate::starts::Opened::Protocol(inputs) => Self::protocol(*inputs, flow, None),
         })
     }
@@ -2402,7 +2407,13 @@ impl MeridianApp {
         match opened {
             // A new chart document is a new set of things to say, and a
             // reason to stop saying the last one's.
-            crate::starts::Opened::Charts(composed) => self.open_chart(*composed),
+            // `open_chart` drops whatever session was behind the outgoing
+            // document; this one's goes on straight after, as the file-open
+            // path does at [`MeridianApp::open_data_file`].
+            crate::starts::Opened::Charts(chart) => {
+                self.open_chart(chart.composed);
+                self.charts.doc.attach_live(chart.live);
+            }
             crate::starts::Opened::Protocol(inputs) => self.protocol.doc.open(*inputs),
         }
         self.notifications.dismiss(banner);
@@ -2919,6 +2930,32 @@ mod tests {
             app.notifications().len(),
             1,
             "the unrelated failure banner is not swept up by someone else's success"
+        );
+    }
+
+    /// The clicked-card path leaves the document able to re-lay-out.
+    ///
+    /// Driven through `open_start` rather than [`Boot::start`] because they are
+    /// two openers: this one replaces the document in a running window, and it
+    /// is the one a person reaches by clicking a card on the front door.
+    #[test]
+    fn a_start_opened_from_the_door_re_lays_out_into_a_box_it_is_handed() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.open_start(&ctx, crate::starts::DASHBOARD);
+        let doc = app.chart_doc();
+        let declared = (doc.composed.width, doc.composed.height);
+        let half = egui::vec2(declared.0 as f32 / 2.0, declared.1 as f32 / 2.0);
+
+        assert!(
+            app.chart_doc_mut().reflow_to(half),
+            "the start reports no re-layout for a box half its declared size"
+        );
+        let doc = app.chart_doc();
+        assert_ne!(
+            (doc.composed.width, doc.composed.height),
+            declared,
+            "the start held its declared size in a box half that wide"
         );
     }
 

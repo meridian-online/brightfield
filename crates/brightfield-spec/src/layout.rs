@@ -1,8 +1,16 @@
 //! Layout computation for Mosaic spec composition trees.
 //!
 //! Pure function of the AST — walks [`Component`] trees and produces positioned
-//! [`LayoutNode`] trees with pixel-accurate coordinates using a simple box
-//! model: sequential stacking with fixed sizes, no flex negotiation.
+//! [`LayoutNode`] trees with pixel-accurate coordinates.
+//!
+//! Two sizing regimes, chosen per axis by the viewport handed to
+//! [`compute_layout`]. An axis whose viewport extent is not a positive finite
+//! number is **unconstrained**: every node takes its intrinsic size on that
+//! axis — a plot's declared `width:`/`height:`, or [`DEFAULT_PLOT_WIDTH`] /
+//! [`DEFAULT_PLOT_HEIGHT`]. An axis with a positive extent is **constrained**:
+//! the root fills it, and each container distributes what is left after its
+//! fixed-size children among the ones the private `component_flexes` admits, in
+//! proportion to their intrinsic sizes.
 
 use crate::ast::{
     Component, ConcatNode, Input, Mark, PlotNode, SpaceNode, Spec, SpecValue, ValueOrParamRef,
@@ -163,27 +171,65 @@ pub fn resolve_space_value(value: &SpecValue, base_font_size: f64) -> f64 {
 // compute_layout
 // ---------------------------------------------------------------------------
 
+/// The size a container offers a child, per axis. `None` on an axis leaves
+/// that axis to the child's intrinsic size.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Avail {
+    /// Offered width in pixels, or `None` for unconstrained.
+    pub width: Option<f64>,
+    /// Offered height in pixels, or `None` for unconstrained.
+    pub height: Option<f64>,
+}
+
+impl Avail {
+    /// Nothing offered on either axis — intrinsic sizing throughout.
+    #[must_use]
+    pub fn unconstrained() -> Self {
+        Self::default()
+    }
+
+    /// The offer a `viewport` rect carries.
+    ///
+    /// An extent constrains its axis when it is finite and greater than zero;
+    /// anything else — `0.0`, a negative, a NaN — is unconstrained, which is
+    /// what [`Rect::zero`] means to every caller that measures a spec's own
+    /// intrinsic size.
+    #[must_use]
+    pub fn from_viewport(viewport: Rect) -> Self {
+        Self {
+            width: offered(viewport.width),
+            height: offered(viewport.height),
+        }
+    }
+}
+
+fn offered(extent: f64) -> Option<f64> {
+    (extent.is_finite() && extent > 0.0).then_some(extent)
+}
+
 /// Compute the layout tree for a spec.
 ///
 /// Walks `spec.root` and produces a [`LayoutTree`] with positioned nodes.
 /// If the spec has no root component, returns `None`.
 ///
-/// The `viewport` rect determines the origin for the root node's position
-/// (typically `(0, 0)` with the desired container size).
+/// `viewport.x` / `viewport.y` place the root; `viewport.width` /
+/// `viewport.height` are the size offered to it, read through
+/// [`Avail::from_viewport`].
 #[must_use]
 pub fn compute_layout(spec: &Spec, viewport: Rect) -> LayoutTree {
     spec.root
         .as_ref()
-        .map(|root| layout_component(root, viewport.x, viewport.y))
+        .map(|root| layout_component(root, viewport.x, viewport.y, Avail::from_viewport(viewport)))
 }
 
-/// Recursively lay out a component, placing it at the given (x, y) origin.
-/// Returns a LayoutNode with computed position and intrinsic size.
-fn layout_component(component: &Component, x: f64, y: f64) -> LayoutNode {
+/// Recursively lay out a component at the given `(x, y)` origin, taking `avail`
+/// on each axis it offers and the component's intrinsic size on each it does
+/// not.
+fn layout_component(component: &Component, x: f64, y: f64, avail: Avail) -> LayoutNode {
     match component {
-        Component::Plot(plot) => layout_plot(plot, x, y),
-        Component::HConcat(concat) => layout_hconcat(concat, x, y),
-        Component::VConcat(concat) => layout_vconcat(concat, x, y),
+        Component::Plot(plot) => layout_plot(plot, x, y, avail),
+        Component::HConcat(concat) => layout_hconcat(concat, x, y, avail),
+        Component::VConcat(concat) => layout_vconcat(concat, x, y, avail),
         Component::HSpace(space) => layout_hspace(space, x, y),
         Component::VSpace(space) => layout_vspace(space, x, y),
         Component::Legend(_) => LayoutNode::Legend {
@@ -193,12 +239,118 @@ fn layout_component(component: &Component, x: f64, y: f64) -> LayoutNode {
             rect: Rect::new(x, y, DEFAULT_INPUT_WIDTH, input_widget_height(input)),
         },
         Component::Mark(_) => LayoutNode::Mark {
-            rect: Rect::new(x, y, DEFAULT_PLOT_WIDTH, DEFAULT_PLOT_HEIGHT),
+            rect: Rect::new(
+                x,
+                y,
+                avail.width.unwrap_or(DEFAULT_PLOT_WIDTH),
+                avail.height.unwrap_or(DEFAULT_PLOT_HEIGHT),
+            ),
         },
         Component::Interactor(_) => LayoutNode::Interactor {
             rect: Rect::new(x, y, 0.0, 0.0),
         },
     }
+}
+
+// ---------------------------------------------------------------------------
+// Intrinsic measurement
+// ---------------------------------------------------------------------------
+
+/// The size a component takes when nothing is offered to it — the weight a
+/// constrained container shares its residual out by, and the answer
+/// [`compute_layout`] gives on an unconstrained axis.
+///
+/// A measurement pass rather than a second layout pass: measuring by laying the
+/// subtree out unconstrained and reading its rect would double the recursion at
+/// every level of a concat tree.
+fn intrinsic_size(component: &Component) -> (f64, f64) {
+    match component {
+        Component::Plot(plot) => (plot_width(plot), plot_height(plot)),
+        Component::HConcat(concat) => concat
+            .items
+            .iter()
+            .map(intrinsic_size)
+            .fold((0.0_f64, 0.0_f64), |(w, h), (cw, ch)| (w + cw, h.max(ch))),
+        Component::VConcat(concat) => concat
+            .items
+            .iter()
+            .map(intrinsic_size)
+            .fold((0.0_f64, 0.0_f64), |(w, h), (cw, ch)| (w.max(cw), h + ch)),
+        Component::HSpace(space) => (
+            resolve_space_value(&space.value, DEFAULT_BASE_FONT_SIZE),
+            0.0,
+        ),
+        Component::VSpace(space) => (
+            0.0,
+            resolve_space_value(&space.value, DEFAULT_BASE_FONT_SIZE),
+        ),
+        Component::Legend(_) => (DEFAULT_LEGEND_WIDTH, DEFAULT_LEGEND_HEIGHT),
+        Component::Input(input) => (DEFAULT_INPUT_WIDTH, input_widget_height(input)),
+        Component::Mark(_) => (DEFAULT_PLOT_WIDTH, DEFAULT_PLOT_HEIGHT),
+        Component::Interactor(_) => (0.0, 0.0),
+    }
+}
+
+/// Whether a constrained container gives this component a share of its residual
+/// main-axis size, and stretches it on the cross axis. The match below is the
+/// enumeration; nothing above it restates the arms.
+fn component_flexes(component: &Component) -> bool {
+    match component {
+        Component::Plot(_) | Component::HConcat(_) | Component::VConcat(_) | Component::Mark(_) => {
+            true
+        }
+        Component::HSpace(_)
+        | Component::VSpace(_)
+        | Component::Legend(_)
+        | Component::Input(_)
+        | Component::Interactor(_) => false,
+    }
+}
+
+/// The main-axis size each item of a concat is offered, given `offer` on that
+/// axis and each item's `(intrinsic, flexes)` measurement.
+///
+/// `None` for an item that does not flex, and for every item when the axis is
+/// unconstrained. The flexing items' shares sum to the residual **exactly**:
+/// the last of them absorbs the difference, so a row of tiles covers the box it
+/// was given with no seam left by proportional rounding.
+fn distribute(offer: Option<f64>, items: &[(f64, bool)]) -> Vec<Option<f64>> {
+    let Some(offer) = offer else {
+        return vec![None; items.len()];
+    };
+    let fixed: f64 = items
+        .iter()
+        .filter(|(_, flexes)| !flexes)
+        .map(|(size, _)| *size)
+        .sum();
+    let weight: f64 = items
+        .iter()
+        .filter(|(_, flexes)| *flexes)
+        .map(|(size, _)| *size)
+        .sum();
+    let residual = (offer - fixed).max(0.0);
+    let last_flex = items.iter().rposition(|(_, flexes)| *flexes);
+
+    let mut spent = 0.0_f64;
+    items
+        .iter()
+        .enumerate()
+        .map(|(i, (size, flexes))| {
+            if !flexes {
+                return None;
+            }
+            if Some(i) == last_flex {
+                return Some((residual - spent).max(0.0));
+            }
+            let share = if weight > 0.0 {
+                residual * size / weight
+            } else {
+                0.0
+            };
+            spent += share;
+            Some(share)
+        })
+        .collect()
 }
 
 /// Per-style input widget height. Menu and checkbox
@@ -494,15 +646,20 @@ pub fn resolve_geometry_column(mark: &Mark) -> String {
     }
 }
 
-fn layout_plot(plot: &PlotNode, x: f64, y: f64) -> LayoutNode {
-    let w = plot_width(plot);
-    let h = plot_height(plot);
+fn layout_plot(plot: &PlotNode, x: f64, y: f64, avail: Avail) -> LayoutNode {
+    let w = avail.width.unwrap_or_else(|| plot_width(plot));
+    let h = avail.height.unwrap_or_else(|| plot_height(plot));
     // Plot items (marks, interactors, legends) are positioned within the plot
-    // but for layout purposes they share the plot's footprint.
+    // and share its footprint, so the resolved box is what they are offered —
+    // a bare mark inside a 300x200 plot is 300x200.
+    let inner = Avail {
+        width: Some(w),
+        height: Some(h),
+    };
     let children: Vec<LayoutNode> = plot
         .items
         .iter()
-        .map(|item| layout_component(item, x, y))
+        .map(|item| layout_component(item, x, y, inner))
         .collect();
     LayoutNode::Plot {
         rect: Rect::new(x, y, w, h),
@@ -510,13 +667,28 @@ fn layout_plot(plot: &PlotNode, x: f64, y: f64) -> LayoutNode {
     }
 }
 
-fn layout_hconcat(concat: &ConcatNode, x: f64, y: f64) -> LayoutNode {
+fn layout_hconcat(concat: &ConcatNode, x: f64, y: f64, avail: Avail) -> LayoutNode {
+    let measured: Vec<(f64, bool)> = concat
+        .items
+        .iter()
+        .map(|item| (intrinsic_size(item).0, component_flexes(item)))
+        .collect();
+    let shares = distribute(avail.width, &measured);
+
     let mut children = Vec::with_capacity(concat.items.len());
     let mut cursor_x = x;
     let mut max_height: f64 = 0.0;
 
-    for item in &concat.items {
-        let child = layout_component(item, cursor_x, y);
+    for (item, share) in concat.items.iter().zip(shares) {
+        let child = layout_component(
+            item,
+            cursor_x,
+            y,
+            Avail {
+                width: share,
+                height: component_flexes(item).then_some(avail.height).flatten(),
+            },
+        );
         let r = child.rect();
         cursor_x += r.width;
         max_height = max_height.max(r.height);
@@ -524,18 +696,38 @@ fn layout_hconcat(concat: &ConcatNode, x: f64, y: f64) -> LayoutNode {
     }
 
     LayoutNode::HConcat {
-        rect: Rect::new(x, y, cursor_x - x, max_height),
+        rect: Rect::new(
+            x,
+            y,
+            avail.width.unwrap_or(cursor_x - x),
+            avail.height.unwrap_or(max_height),
+        ),
         children,
     }
 }
 
-fn layout_vconcat(concat: &ConcatNode, x: f64, y: f64) -> LayoutNode {
+fn layout_vconcat(concat: &ConcatNode, x: f64, y: f64, avail: Avail) -> LayoutNode {
+    let measured: Vec<(f64, bool)> = concat
+        .items
+        .iter()
+        .map(|item| (intrinsic_size(item).1, component_flexes(item)))
+        .collect();
+    let shares = distribute(avail.height, &measured);
+
     let mut children = Vec::with_capacity(concat.items.len());
     let mut cursor_y = y;
     let mut max_width: f64 = 0.0;
 
-    for item in &concat.items {
-        let child = layout_component(item, x, cursor_y);
+    for (item, share) in concat.items.iter().zip(shares) {
+        let child = layout_component(
+            item,
+            x,
+            cursor_y,
+            Avail {
+                width: component_flexes(item).then_some(avail.width).flatten(),
+                height: share,
+            },
+        );
         let r = child.rect();
         cursor_y += r.height;
         max_width = max_width.max(r.width);
@@ -543,7 +735,12 @@ fn layout_vconcat(concat: &ConcatNode, x: f64, y: f64) -> LayoutNode {
     }
 
     LayoutNode::VConcat {
-        rect: Rect::new(x, y, max_width, cursor_y - y),
+        rect: Rect::new(
+            x,
+            y,
+            avail.width.unwrap_or(max_width),
+            avail.height.unwrap_or(cursor_y - y),
+        ),
         children,
     }
 }
@@ -880,6 +1077,15 @@ mod tests {
     use crate::parse::{parse_spec, Format};
     use indexmap::IndexMap;
 
+    /// A viewport that offers nothing on either axis: every assertion made
+    /// under it is about the spec's own intrinsic size.
+    const UNCONSTRAINED: Rect = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 0.0,
+        height: 0.0,
+    };
+
     /// A vconcat>hconcat>[plot, input:slider] spec used by the slider tests.
     const SLIDER_SPEC: &str = r#"
 data:
@@ -1130,8 +1336,7 @@ hconcat:
             })),
             ..Default::default()
         };
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let tree = compute_layout(&spec, viewport);
+        let tree = compute_layout(&spec, UNCONSTRAINED);
         let node = tree.expect("should have layout");
         match &node {
             LayoutNode::Plot { rect, .. } => {
@@ -1170,7 +1375,7 @@ hconcat:
             })),
             ..Default::default()
         };
-        let tree = compute_layout(&spec, Rect::new(0.0, 0.0, 1600.0, 600.0)).unwrap();
+        let tree = compute_layout(&spec, UNCONSTRAINED).unwrap();
         if let LayoutNode::HConcat { children, rect, .. } = &tree {
             assert_eq!(children.len(), 2);
             assert_eq!(children[0].rect().x, 0.0);
@@ -1199,7 +1404,7 @@ hconcat:
             })),
             ..Default::default()
         };
-        let tree = compute_layout(&spec, Rect::new(0.0, 0.0, 800.0, 1200.0)).unwrap();
+        let tree = compute_layout(&spec, UNCONSTRAINED).unwrap();
         if let LayoutNode::VConcat { children, rect, .. } = &tree {
             assert_eq!(children.len(), 2);
             assert_eq!(children[0].rect().y, 0.0);
@@ -1231,7 +1436,7 @@ hconcat:
             })),
             ..Default::default()
         };
-        let tree = compute_layout(&spec, Rect::new(0.0, 0.0, 1600.0, 600.0)).unwrap();
+        let tree = compute_layout(&spec, UNCONSTRAINED).unwrap();
         if let LayoutNode::HConcat { children, .. } = &tree {
             assert_eq!(children.len(), 3);
             let plot1_x = children[0].rect().x;
@@ -1266,7 +1471,7 @@ hconcat:
             })),
             ..Default::default()
         };
-        let tree = compute_layout(&spec, Rect::new(0.0, 0.0, 800.0, 1200.0)).unwrap();
+        let tree = compute_layout(&spec, UNCONSTRAINED).unwrap();
         if let LayoutNode::VConcat { children, .. } = &tree {
             assert_eq!(children.len(), 3);
             assert_eq!(children[0].rect().y, 0.0);
@@ -1331,7 +1536,7 @@ hconcat:
             })),
             ..Default::default()
         };
-        let tree = compute_layout(&spec, Rect::new(0.0, 0.0, 1600.0, 1200.0)).unwrap();
+        let tree = compute_layout(&spec, UNCONSTRAINED).unwrap();
         if let LayoutNode::HConcat { children, .. } = &tree {
             // First column (vconcat)
             if let LayoutNode::VConcat {
@@ -1389,7 +1594,7 @@ hconcat:
             })),
             ..Default::default()
         };
-        let tree = compute_layout(&spec, Rect::new(0.0, 0.0, 1600.0, 600.0)).unwrap();
+        let tree = compute_layout(&spec, UNCONSTRAINED).unwrap();
         if let LayoutNode::HConcat { children, .. } = &tree {
             assert_eq!(children.len(), 3);
             // Plot at x=0
@@ -1422,7 +1627,7 @@ hconcat:
             })),
             ..Default::default()
         };
-        let tree = compute_layout(&spec, Rect::new(0.0, 0.0, 800.0, 600.0)).unwrap();
+        let tree = compute_layout(&spec, UNCONSTRAINED).unwrap();
         assert_eq!(tree.rect().width, 500.0);
         assert_eq!(tree.rect().height, 200.0);
     }
@@ -1439,9 +1644,217 @@ hconcat:
             })),
             ..Default::default()
         };
-        let tree = compute_layout(&spec, Rect::new(0.0, 0.0, 800.0, 600.0)).unwrap();
+        let tree = compute_layout(&spec, UNCONSTRAINED).unwrap();
         assert_eq!(tree.rect().width, DEFAULT_PLOT_WIDTH);
         assert_eq!(tree.rect().height, 200.0);
+    }
+
+    // --- constrained layout: the rect the caller hands in wins ---
+
+    fn bare_plot() -> Component {
+        Component::Plot(PlotNode {
+            items: vec![],
+            attributes: IndexMap::new(),
+        })
+    }
+
+    fn sized_plot(width: i64, height: i64) -> Component {
+        let mut attrs = IndexMap::new();
+        attrs.insert("width".to_string(), SpecValue::Integer(width));
+        attrs.insert("height".to_string(), SpecValue::Integer(height));
+        Component::Plot(PlotNode {
+            items: vec![],
+            attributes: attrs,
+        })
+    }
+
+    fn spec_of(root: Component) -> Spec {
+        Spec {
+            root: Some(root),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_constrained_plot_takes_the_offered_box_over_its_declared_size() {
+        let spec = spec_of(sized_plot(500, 200));
+
+        let smaller = compute_layout(&spec, Rect::new(0.0, 0.0, 320.0, 180.0)).unwrap();
+        assert_eq!(*smaller.rect(), Rect::new(0.0, 0.0, 320.0, 180.0));
+
+        let larger = compute_layout(&spec, Rect::new(0.0, 0.0, 900.0, 700.0)).unwrap();
+        assert_eq!(*larger.rect(), Rect::new(0.0, 0.0, 900.0, 700.0));
+    }
+
+    #[test]
+    fn a_plot_with_no_declared_size_takes_the_offered_box() {
+        let spec = spec_of(bare_plot());
+        let tree = compute_layout(&spec, Rect::new(0.0, 0.0, 320.0, 180.0)).unwrap();
+        assert_eq!(*tree.rect(), Rect::new(0.0, 0.0, 320.0, 180.0));
+    }
+
+    #[test]
+    fn each_axis_is_constrained_on_its_own() {
+        let spec = spec_of(sized_plot(500, 200));
+
+        let width_only = compute_layout(&spec, Rect::new(0.0, 0.0, 900.0, 0.0)).unwrap();
+        assert_eq!(width_only.rect().width, 900.0);
+        assert_eq!(width_only.rect().height, 200.0);
+
+        let height_only = compute_layout(&spec, Rect::new(0.0, 0.0, 0.0, 700.0)).unwrap();
+        assert_eq!(height_only.rect().width, 500.0);
+        assert_eq!(height_only.rect().height, 700.0);
+    }
+
+    #[test]
+    fn a_constrained_hconcat_splits_by_intrinsic_weight() {
+        let spec = spec_of(Component::HConcat(ConcatNode {
+            items: vec![sized_plot(300, 200), sized_plot(600, 200)],
+        }));
+
+        // 1:2 at the declared sizes, so 900 splits 300/600 and 450 splits
+        // 150/300.
+        for (offer, left, right) in [(900.0, 300.0, 600.0), (450.0, 150.0, 300.0)] {
+            let tree = compute_layout(&spec, Rect::new(0.0, 0.0, offer, 400.0)).unwrap();
+            let LayoutNode::HConcat { children, rect } = &tree else {
+                panic!("expected HConcat");
+            };
+            assert_eq!(rect.width, offer);
+            assert_eq!(children[0].rect().width, left);
+            assert_eq!(children[1].rect().width, right);
+            // Tiled with no seam: the second starts where the first ends, and
+            // the pair covers the offer exactly.
+            assert_eq!(children[1].rect().x, children[0].rect().width);
+            assert_eq!(
+                children[1].rect().x + children[1].rect().width,
+                offer,
+                "children tile the offered width exactly"
+            );
+            // Stretched on the cross axis rather than left at 200.
+            assert_eq!(children[0].rect().height, 400.0);
+            assert_eq!(children[1].rect().height, 400.0);
+        }
+    }
+
+    #[test]
+    fn a_spacer_keeps_its_gap_out_of_the_residual() {
+        let spec = spec_of(Component::HConcat(ConcatNode {
+            items: vec![
+                bare_plot(),
+                Component::HSpace(SpaceNode {
+                    value: SpecValue::Integer(64),
+                }),
+                bare_plot(),
+            ],
+        }));
+
+        // 1064 - 64 = 1000, halved; and 264 - 64 = 200, halved.
+        for (offer, plot_w) in [(1064.0, 500.0), (264.0, 100.0)] {
+            let tree = compute_layout(&spec, Rect::new(0.0, 0.0, offer, 400.0)).unwrap();
+            let LayoutNode::HConcat { children, .. } = &tree else {
+                panic!("expected HConcat");
+            };
+            assert_eq!(children[0].rect().width, plot_w);
+            assert_eq!(children[1].rect().width, 64.0, "the gap is not shared out");
+            assert_eq!(children[2].rect().width, plot_w);
+            assert_eq!(children[2].rect().x + children[2].rect().width, offer);
+        }
+    }
+
+    #[test]
+    fn an_offer_smaller_than_the_fixed_children_clamps_at_zero() {
+        let spec = spec_of(Component::HConcat(ConcatNode {
+            items: vec![
+                bare_plot(),
+                Component::HSpace(SpaceNode {
+                    value: SpecValue::Integer(64),
+                }),
+                bare_plot(),
+            ],
+        }));
+        let tree = compute_layout(&spec, Rect::new(0.0, 0.0, 40.0, 400.0)).unwrap();
+        let LayoutNode::HConcat { children, .. } = &tree else {
+            panic!("expected HConcat");
+        };
+        assert_eq!(children[0].rect().width, 0.0);
+        assert_eq!(children[2].rect().width, 0.0);
+    }
+
+    #[test]
+    fn a_constrained_vconcat_reserves_its_inputs_height() {
+        let parsed = parse_spec(SLIDER_SPEC, Format::Yaml).expect("parse");
+        // vconcat > hconcat > [plot 300x200, slider 200x32].
+        let tree = compute_layout(&parsed.spec, Rect::new(0.0, 0.0, 800.0, 500.0)).unwrap();
+        let LayoutNode::VConcat { children, .. } = &tree else {
+            panic!("expected VConcat");
+        };
+        let LayoutNode::HConcat { children: row, .. } = &children[0] else {
+            panic!("expected HConcat");
+        };
+        assert_eq!(row[1].rect().width, DEFAULT_INPUT_WIDTH);
+        assert_eq!(row[1].rect().height, DEFAULT_INPUT_HEIGHT);
+        assert_eq!(row[0].rect().width, 800.0 - DEFAULT_INPUT_WIDTH);
+        assert_eq!(row[0].rect().height, 500.0);
+
+        // The joined view the menu resolver and the rail read is placed to
+        // match.
+        let inputs = placed_inputs(&parsed.spec, Rect::new(0.0, 0.0, 800.0, 500.0));
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(
+            inputs[0].rect,
+            Rect::new(800.0 - DEFAULT_INPUT_WIDTH, 0.0, 200.0, 32.0)
+        );
+    }
+
+    #[test]
+    fn a_plots_items_are_offered_the_plots_box() {
+        let spec = spec_of(Component::Plot(PlotNode {
+            items: vec![Component::Mark(Mark {
+                kind: crate::vocab::MarkKind::Dot,
+                status: crate::vocab::ImplStatus::Implemented,
+                data: None,
+                options: IndexMap::new(),
+            })],
+            attributes: IndexMap::new(),
+        }));
+        let tree = compute_layout(&spec, Rect::new(0.0, 0.0, 320.0, 180.0)).unwrap();
+        let LayoutNode::Plot { children, rect } = &tree else {
+            panic!("expected Plot");
+        };
+        assert_eq!(*rect, Rect::new(0.0, 0.0, 320.0, 180.0));
+        assert_eq!(*children[0].rect(), Rect::new(0.0, 0.0, 320.0, 180.0));
+    }
+
+    #[test]
+    fn a_constrained_grid_tiles_the_offered_box() {
+        let spec = spec_of(Component::HConcat(ConcatNode {
+            items: vec![
+                Component::VConcat(ConcatNode {
+                    items: vec![bare_plot(), bare_plot()],
+                }),
+                Component::VConcat(ConcatNode {
+                    items: vec![bare_plot(), bare_plot()],
+                }),
+            ],
+        }));
+        let plots = placed_plots(&spec, Rect::new(0.0, 0.0, 1000.0, 600.0));
+        let rects: Vec<Rect> = plots.iter().map(|p| p.rect).collect();
+        assert_eq!(
+            rects,
+            vec![
+                Rect::new(0.0, 0.0, 500.0, 300.0),
+                Rect::new(0.0, 300.0, 500.0, 300.0),
+                Rect::new(500.0, 0.0, 500.0, 300.0),
+                Rect::new(500.0, 300.0, 500.0, 300.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_origin_still_offsets_a_constrained_root() {
+        let spec = spec_of(sized_plot(500, 200));
+        let tree = compute_layout(&spec, Rect::new(12.0, 34.0, 320.0, 180.0)).unwrap();
+        assert_eq!(*tree.rect(), Rect::new(12.0, 34.0, 320.0, 180.0));
     }
 
     // REVISED: `as:` on a legend is a selection

@@ -78,6 +78,7 @@ use crate::interval_drag::IntervalDrags;
 use crate::navigation::{AxisLock, NavGesture, NavOutcome};
 use crate::pipeline::{Composed, IntervalControl, LiveDashboard};
 use crate::watch::FileWatcher;
+use brightfield_spec::layout::Rect as SpecRect;
 
 // ---------------------------------------------------------------------------
 // ChartDoc — the state every pane in this view shares.
@@ -87,6 +88,14 @@ use crate::watch::FileWatcher;
 /// run, or a re-composite that produced nothing and left the previous picture
 /// standing.
 const ENGINE_REFUSED: &str = "The chart is missing data the engine refused to query";
+
+/// The smallest box [`ChartDoc::reflow_to`] will compose a dashboard into, on
+/// either axis, in logical points.
+///
+/// A plot's margins come off this before any data area is left;
+/// `brightfield_render::layout::Margins::default` is what they are when the
+/// spec declares none.
+pub const MIN_CHART_EXTENT: f32 = 160.0;
 
 /// The headline over a settled navigation whose re-query drew nothing.
 ///
@@ -324,10 +333,11 @@ impl ChartDoc {
     ///
     /// This is the **different-document** entry: it drops any live session,
     /// any committed selections, and the composing file's path, because all
-    /// three belong to the spec that is being replaced — the callers are the
-    /// shipped starts, whose fixtures have no file to edit. A re-composite of
-    /// the *same* live document goes through [`ChartDoc::apply_interaction`],
-    /// which keeps them.
+    /// three belong to the spec that is being replaced. A caller holding a
+    /// session for the *incoming* document puts it on afterwards, through
+    /// [`ChartDoc::attach_live`] — `open_start` and `open_data_file` both do.
+    /// A re-composite of the *same* live document goes through
+    /// [`ChartDoc::apply_interaction`], which keeps them.
     pub fn open(&mut self, composed: Composed) {
         self.composed = composed;
         self.live = None;
@@ -383,6 +393,50 @@ impl ChartDoc {
     #[must_use]
     pub fn is_live(&self) -> bool {
         self.live.is_some()
+    }
+
+    /// Lay the dashboard out into a box of `size` logical points and re-present
+    /// it, returning whether the picture changed.
+    ///
+    /// `false` on a document with no live session, on a box this one is already
+    /// composed into, and on a re-composite the engine refused — the previous
+    /// picture stands in that last case, as it does for a refused gesture.
+    ///
+    /// The offered box is floored to whole points and held at or above
+    /// [`MIN_CHART_EXTENT`] on each axis, so a pane reported at a fractional
+    /// or vanishing size cannot re-query once per frame or ask for a scene
+    /// with no range in it.
+    pub fn reflow_to(&mut self, size: egui::Vec2) -> bool {
+        let box_ = SpecRect::new(
+            0.0,
+            0.0,
+            f64::from(size.x.floor().max(MIN_CHART_EXTENT)),
+            f64::from(size.y.floor().max(MIN_CHART_EXTENT)),
+        );
+        let Some(live) = self.live.as_mut() else {
+            return false;
+        };
+        if !live.set_viewport(box_) {
+            return false;
+        }
+        self.activity.begin(Activity::EngineQuery);
+        let presented = live.present();
+        self.activity.end(Activity::EngineQuery);
+        match presented {
+            Ok(composed) => {
+                self.composed = composed;
+                self.canvas.invalidate();
+                true
+            }
+            Err(e) => {
+                eprintln!("warning: reflow re-composite failed: {e}");
+                self.interaction_fault = Some(ChartFault {
+                    title: ENGINE_REFUSED.to_string(),
+                    detail: e.to_string(),
+                });
+                false
+            }
+        }
     }
 
     /// The live coordinator behind this document, when one is attached — the
