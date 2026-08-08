@@ -596,7 +596,9 @@ impl<D: ModuleHost + ?Sized> Item<D> for ChartModule {
     /// behaviour for a host that answers differently on two calls in one frame
     /// — a blank body rather than a panic.
     fn ui(&mut self, doc: &mut D, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
-        let Some((entries, spec)) = ({
+        // Scoped so the borrow of `*doc` this takes ends before `draw_module`
+        // needs `&mut D`. Everything carried out is owned.
+        let (entries, spec) = {
             let Some(kind) = doc.chart_kinds().find(self.kind) else {
                 return;
             };
@@ -606,9 +608,7 @@ impl<D: ModuleHost + ?Sized> Item<D> for ChartModule {
             let Ok(spec) = kind.spec(&binding, &self.options) else {
                 return;
             };
-            Some((kind.toolbar(&self.options), spec))
-        }) else {
-            return;
+            (kind.toolbar(&self.options), spec)
         };
 
         let (mut body, drawn) = crate::chrome::module_frame(ui, &entries, cx.mode);
