@@ -346,8 +346,18 @@ fn a_bundle_whose_model_will_not_load_is_refused_not_reported_as_unlabelled() {
         dir.join(semantic::SCHEMA_CATALOGUE),
     )
     .unwrap();
-    // Present, so the existence check passes; not a model, so loading it does
-    // not. This is the shape a truncated download or a bad `cp` leaves behind.
+    // Everything else about the bundle is REAL, including the label map — so
+    // the coverage check agrees and every file-level check passes. The one
+    // difference is the weights: present, so the existence check is satisfied,
+    // and not a model, so loading them is not. That is the shape a truncated
+    // download or an interrupted `cp` leaves behind, and it is the only shape
+    // that gets all the way to the canary.
+    std::fs::copy(
+        real.join(semantic::MODEL_DIR)
+            .join(semantic::LABEL_MAP_FILE),
+        dir.join(semantic::MODEL_DIR).join(semantic::LABEL_MAP_FILE),
+    )
+    .unwrap();
     std::fs::write(
         dir.join(semantic::MODEL_DIR).join("model.safetensors"),
         b"not a safetensors file",
