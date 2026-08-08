@@ -466,12 +466,13 @@ impl Field {
 /// and [`ChartKind::bind`] does the checking once, for every kind. That plus
 /// the id check in [`ChartKind::spec`] is what makes the builder a plain
 /// function rather than a component with an error path; see [`Bound`] for how
-/// the two are handed to it as one argument.
+/// the two are handed to it as one argument, and for where that stops.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FieldSlot {
     /// What the field means to this kind: `"x"`, `"y"`, `"colour"`. Unique
-    /// within a kind — [`audit_chart_kinds`] rejects a repeat, because two
-    /// slots under one role make [`FieldBinding::field`] answer arbitrarily.
+    /// within a kind — [`audit_chart_kinds`] rejects a repeat, because
+    /// [`FieldBinding::field`] answers with the first slot under the role and
+    /// leaves the second unreachable.
     pub role: &'static str,
     /// The field types this slot will take. An empty list takes nothing, which
     /// the audit rejects.
@@ -514,8 +515,9 @@ impl FieldSlot {
 /// of what lets a builder be a plain function: a binding which exists has
 /// already satisfied the slots of *the kind that produced it*. Only half,
 /// because that kind need not be the kind about to build from it — two kinds'
-/// bindings are the same Rust type. [`ChartKind::spec`] is the other half: it
-/// checks the id and hands the builder a [`Bound`], which nothing else makes.
+/// bindings are the same Rust type. [`ChartKind::spec`] closes that gap on the
+/// route through it: it checks the id and hands the builder a [`Bound`], which
+/// nothing else makes. [`Bound`] states where that stops.
 ///
 /// The alternative — handing the builder a bag of columns and asking it to
 /// check — puts a copy of the constraint in every kind, which is the per-kind
@@ -551,13 +553,13 @@ impl FieldBinding {
     }
 }
 
-/// A [`FieldBinding`] that has been checked against the kind about to build
-/// from it.
+/// A [`FieldBinding`] that has been checked against the kind whose
+/// [`ChartKind::spec`] made it.
 ///
-/// [`ChartKind::spec`] is the only thing that makes one, and a kind's builder
-/// takes one — so the id check is not a courtesy a caller may skip.
-/// [`ChartKind::build`] is a `pub` field and a caller can read it; without a
-/// `Bound` there is nothing to call it with.
+/// `spec` is the only thing that makes one, and a kind's builder takes one, so
+/// no binding reaches a builder without some kind's id check having run over
+/// it. [`ChartKind::build`] is a `pub` field and a caller can read it; without
+/// a `Bound` there is nothing to call it with.
 ///
 /// It derefs to the binding, so a builder written `|binding, _|
 /// binding.name("x")` reads exactly as it would over a [`FieldBinding`]:
@@ -629,6 +631,22 @@ impl FieldBinding {
 /// # let binding = bars.bind(&columns).unwrap();
 /// let _ = (bars.build)(&binding, &ModuleOptions::default());
 /// ```
+///
+/// # The route it does not close
+///
+/// The kind that made a `Bound` need not be the kind whose builder reads it. A
+/// `build` closure may call another kind's `build`, and what it forwards was
+/// checked against *its own* id and slots, not the receiver's — so a builder
+/// can be reached with a column no slot it declares would take. Neither the
+/// type system nor [`audit_chart_kinds`] tells a forwarded call from a direct
+/// one: a `fn` pointer carries no kind identity, and a closure that forwards is
+/// a different pointer from the one it calls.
+///
+/// So the guarantee to write a builder against is *this kind's declaration*,
+/// and delegating to another kind's builder steps outside it.
+/// `crates/brightfield-workbench/tests/chart_kind_bound.rs` holds both sides:
+/// the id check biting from outside the crate, and the forwarded call that it
+/// does not cover.
 #[derive(Debug)]
 pub struct Bound<'a>(&'a FieldBinding);
 
@@ -824,10 +842,13 @@ pub struct ChartKind<S> {
     /// The spec, from the bound columns and the module's own switches.
     ///
     /// No error path, and that is a property of the argument rather than of
-    /// the builder: a [`Bound`] is a binding that has satisfied this kind's
-    /// slots *and* been checked against this kind's id, and
-    /// [`ChartKind::spec`] is the only thing that makes one. So there is
-    /// nothing here for a builder to reject.
+    /// the builder: [`ChartKind::spec`] hands over a [`Bound`] only once the
+    /// binding has satisfied this kind's slots *and* matched this kind's id,
+    /// and it is the only thing that makes one. A builder reached that way has
+    /// nothing to reject.
+    ///
+    /// Forwarding to another kind's builder is not that way; [`Bound`] says
+    /// what a forwarded one carries.
     pub build: fn(&Bound<'_>, &ModuleOptions) -> S,
 }
 
@@ -947,10 +968,10 @@ impl<S> ChartKindRegistry<S> {
     ///
     /// # Panics
     ///
-    /// If two kinds share an id. A duplicate id makes [`ChartKindRegistry::find`]
-    /// answer arbitrarily, which surfaces as a module that draws the wrong
-    /// chart — so it fails at construction, which happens at boot and in every
-    /// contract test.
+    /// If two kinds share an id. [`ChartKindRegistry::find`] answers with the
+    /// first kind declared under the id, so the second is unreachable and a
+    /// module naming it draws the other one — hence the failure is at
+    /// construction rather than at a draw.
     #[must_use]
     pub fn new(kinds: Vec<ChartKind<S>>) -> Self {
         let mut seen = BTreeSet::new();
@@ -1009,9 +1030,10 @@ impl<S> ChartKindRegistry<S> {
 /// slot a unique role and at least one accepted type; give every control a
 /// unique id and a registered verb; and **build a spec from its own
 /// declaration** — the audit synthesises one column per required slot, binds
-/// it, and calls the builder with the controls off and again with every
-/// declared control on, so a builder that cannot survive its own constraints
-/// fails here rather than at a user's first click.
+/// it, and calls the builder twice, once in the controls' declared starting
+/// state and once with every declared control flipped out of it, so a builder
+/// that cannot survive its own constraints fails here rather than at a user's
+/// first click.
 ///
 /// # Errors
 ///
@@ -1488,12 +1510,49 @@ mod chart_kind_tests {
         assert_eq!(
             SCALES.lock().expect("uncontended").as_slice(),
             ["linear", "log"],
-            "the audit called the builder with the control off and then on"
+            "this kind's control is declared off, so the starting state is off \
+             and the flip is on"
         );
     }
 
-    /// Two kinds under one id would make `find` answer arbitrarily, which
-    /// surfaces as a module drawing the wrong chart.
+    /// The audit's first call is the controls' *declared* starting state, not
+    /// "off". A kind whose control starts on is therefore called on first and
+    /// off second — the reverse of the case above, which is why that one
+    /// cannot pin the order: with a control declared off the two readings
+    /// coincide.
+    #[test]
+    fn the_audit_starts_a_control_where_the_kind_declared_it() {
+        static SCALES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+        let kind: ChartKind<Spec> = ChartKind {
+            controls: || vec![ModuleControl::new(LOG_SCALE, "Log", log_verb()).on_by_default(true)],
+            build: |binding, options| {
+                let y_scale = if options.is_on(LOG_SCALE) {
+                    "log"
+                } else {
+                    "linear"
+                };
+                SCALES.lock().expect("uncontended").push(y_scale);
+                Spec {
+                    mark: "bar",
+                    x: binding.name("x").unwrap_or_default().to_string(),
+                    y: binding.name("y").unwrap_or_default().to_string(),
+                    y_scale,
+                }
+            },
+            ..bars()
+        };
+        assert!(kind.options().is_on(LOG_SCALE), "declared on");
+
+        audit_chart_kinds(&ChartKindRegistry::new(vec![kind])).expect("the builder survives");
+        assert_eq!(
+            SCALES.lock().expect("uncontended").as_slice(),
+            ["log", "linear"],
+            "a control declared on is exercised on first and off second"
+        );
+    }
+
+    /// Two kinds under one id would leave the second unreachable through
+    /// `find`, which surfaces as a module drawing the other one.
     #[test]
     #[should_panic(expected = "duplicate chart kind id")]
     fn a_registry_refuses_two_kinds_under_one_id() {
