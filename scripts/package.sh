@@ -289,6 +289,21 @@ Flags: [SPEC.yaml] [--theme light|dark] [--flow vertical|horizontal]
        [--shot-out PATH] [--shot-after N]
 EOF
 
+# Written only when there is one, so the README never describes a directory the
+# reader cannot find. The claim above — nothing here needs a connection — is
+# what makes this worth spelling out: the classifier is a local model file in
+# the package, not a service.
+if [ -n "$FINETYPE_BUNDLE" ]; then
+  cat >> "$STAGE/README.txt" <<'EOF'
+
+finetype/ holds a semantic type classifier: the model and DuckDB extension that
+let Brightfield say a column holds email addresses rather than just VARCHAR, and
+check the column's values against that before drawing from it. It runs entirely
+inside this package — nothing is downloaded, and deleting the directory only
+costs you the labels.
+EOF
+fi
+
 # The tarball's Mach-O is signed only when a real identity is given. With none,
 # it keeps the ad-hoc signature the linker gave it — which is what ships today,
 # and re-signing it ad-hoc would change the code-signing identifier for no gain.
