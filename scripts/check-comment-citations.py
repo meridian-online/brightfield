@@ -43,6 +43,17 @@ WHAT IS CHECKED (changed comment lines only, `origin/main...HEAD`)
        symbol is in symbol_citations(). And it needs the quantifier and the
        symbol in ONE sentence.
 
+       A sentence, not a line. Rules A, B and C read one line at a time, but a
+       sentence wraps, and reading a line as if the wrap ended it made rule D
+       blind to a claim whose subject sat on the next line — the largest
+       single shape it missed on the corpus it was graded against, measured in
+       the commit that landed the block reader. So D joins the CONTIGUOUS
+       comment lines around each one it is checking and splits that into
+       sentences. Blank comment lines and list markers break the join, because
+       two bullets are two claims and pairing one's quantifier with the next
+       one's symbol is the false positive this rule can least afford. A claim
+       is reported once, at the line its quantifier is on.
+
 WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
     - Only ADDED comment lines in the diff. Pre-existing debt is not blocking;
       this stops new claims, it does not audit old ones. `--all` audits the tree.
@@ -60,31 +71,22 @@ WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
     - It checks that a cited thing EXISTS where claimed. It cannot check what
       the code DOES. "merging under-reports every group but one" was false and
       no citation gate would ever have caught it — that needs a reviewer.
-    - Rule D reads one comment LINE at a time, like the rest of this script, so
-      a claim whose quantifier and symbol land on either side of a wrap is out
-      of reach. Widening to the comment block would raise recall and would also
-      pair words that are sentences apart; the narrow half is the one AC-checked
-      here, and a missed claim costs a reviewer while a reported honest sentence
-      costs the gate.
     - Rule D does not read the test it asks for. A comment that names one is
       past it, whatever the test asserts. It buys a reader a place to look and
-      an author a moment of doubt, not a proof.
-    - Rule D's RECALL is PARTIAL, and was measured that way against the comment
-      lines a review wave in this repo made an author delete — the count is in
-      the commit that landed this paragraph. Two shapes account for most of the
-      residue (the line wrap above is a third), and both are refusals rather
-      than oversights:
-        * the subject is a bare lowercase word the file does not define as an
-          item — a protocol status value quoted in prose, say. There is no
-          route from that word to anything a gate can resolve, and treating
-          every backticked word as a symbol was measured on this tree: it adds
-          sentences about parameters and literal values, which is the shape
-          that gets a gate switched off.
-        * the quantifier and the subject sit in different SENTENCES of one
-          line. Pairing across a sentence boundary is the false positive this
-          rule can least afford, so that shape stays a reviewer's.
-      A sentence rule D misses costs a reviewer a read. A sentence it reports
-      wrongly costs the gate itself.
+      an author a moment of doubt, not a proof. Naming a test anywhere in the
+      surrounding paragraph is enough, which is generous in the direction that
+      reduces what D reports.
+    - Rule D's RECALL is PARTIAL. It was measured against the comment lines a
+      review wave in this repo made an author delete, and the measurement is in
+      the commit that landed the block reader. The residue that measurement
+      leaves is a refusal rather than an oversight: the claim's subject is a
+      bare lowercase word the file it sits in does not define as an item — a
+      protocol status value quoted in prose, say. There is no route from that
+      word to anything a gate can resolve, and treating every backticked word
+      as a symbol was measured on this tree too: it adds sentences about
+      parameters and literal values, which is the shape that gets a gate
+      switched off. A sentence rule D misses costs a reviewer a read. A
+      sentence it reports wrongly costs the gate itself.
 
 ESCAPE HATCH
     A claim about code outside this repo (upstream libraries, a sibling repo)
@@ -104,6 +106,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -121,7 +124,10 @@ ACKNOWLEDGED: dict[str, str] = {
                         "crates/brightfield-shell/src/editor.rs",
 }
 
-DEFN = r"(?:const|static|fn|struct|enum|trait|type|union|mod)\s+{sym}\b|macro_rules!\s+{sym}\b"
+# An item definition. The leading `\b` is load-bearing: without it `retype only`
+# in a doc comment resolves as a definition of `only`, because `type` matches
+# inside `retype`.
+DEFN = r"\b(?:const|static|fn|struct|enum|trait|type|union|mod)\s+{sym}\b|\bmacro_rules!\s+{sym}\b"
 
 COMMENT = re.compile(r"^\s*(?://!|///|//)\s?(.*)$")
 
@@ -198,8 +204,17 @@ TICKED_SPAN = re.compile(r"`[^`]*`")
 
 # One sentence. `;` ends a segment too: two independent clauses joined by a
 # semicolon are two claims, and pairing the quantifier of one with the symbol of
-# the other is the false positive this rule can least afford.
+# the other is the false positive this rule can least afford. A control case in
+# --self-test puts a quantifier on one side of a `;` and a symbol on the other
+# and requires silence, so dropping the `;` from this class reddens the gate
+# rather than quietly widening it.
 SENTENCE_END = re.compile(r"(?<=[.!?;])\s+")
+
+# A comment line that begins a new PARAGRAPH rather than continuing the previous
+# line's sentence: a list item. An empty comment line does the same and is
+# handled in segments(). Rule D joins wrapped lines, and a list is the shape
+# where that join would be wrong — two bullets are two claims.
+SEGMENT_START = re.compile(r"^\s*(?:[-*+]\s|\d+[.)]\s)")
 
 # Does the comment name a test? Deliberately generous — `tests`, `#[test]`,
 # `self-test`, `tested`, `foo_test`, `test_foo` all count, and the test is never
@@ -337,9 +352,11 @@ def symbol_citations(text: str, file_text: str = "") -> list[str]:
         one mark that resolves rather than guesses, and it is what lets a claim
         about a plain lowercase function — "`accept` has already refused
         anything with a control character" — be seen at all. Scoped to the one
-        file on purpose: workspace-wide, `only`, `all`, `row`, `value` and
-        `name` are each some crate's function, and the mark would degenerate
-        into "any backticked word".
+        file on purpose: resolved across the workspace instead, the mark
+        degenerates towards "any backticked word", and the sentences it then
+        adds are about parameters and literal values. The three arms were
+        measured against each other on this tree in the commit that landed
+        this mark.
 
     A lowercase token carrying none of those is left to a reviewer, which is a
     measured miss rather than an oversight — see the module docstring.
@@ -366,32 +383,109 @@ def symbol_citations(text: str, file_text: str = "") -> list[str]:
     return seen
 
 
-def sentences(body: str) -> list[str]:
-    """A comment line's sentences. A line that ends mid-sentence is one of them."""
-    return [s for s in SENTENCE_END.split(body) if s.strip()]
+def sentences(text: str) -> list[tuple[int, int, str]]:
+    """(start, end, sentence) for each sentence of `text`, offsets kept.
+
+    Text that ends mid-sentence yields that fragment as a sentence: a comment
+    is prose someone stopped writing, not a grammar.
+    """
+    spans: list[tuple[int, int, str]] = []
+    pos = 0
+    for m in SENTENCE_END.finditer(text):
+        spans.append((pos, m.start(), text[pos:m.start()]))
+        pos = m.end()
+    spans.append((pos, len(text), text[pos:]))
+    return [s for s in spans if s[2].strip()]
 
 
-def completeness_claims(body: str, file_text: str = "") -> list[tuple[str, str]]:
-    """(quantifier, symbol) for each sentence that asserts one over the other.
+def segments(lines: list[tuple[int, str]]) -> list[list[tuple[int, str]]]:
+    """A comment block's paragraphs. A wrap continues one; a list starts one.
+
+    Rule D reads a sentence, and a sentence wraps across lines. Joining a whole
+    block indiscriminately would also join a bulleted list into one run-on
+    "sentence" and pair one item's quantifier with the next item's symbol, so an
+    empty comment line or a list marker ends the paragraph.
+    """
+    out: list[list[tuple[int, str]]] = []
+    cur: list[tuple[int, str]] = []
+    for lineno, body in lines:
+        if not body.strip():
+            if cur:
+                out.append(cur)
+                cur = []
+            continue
+        if cur and SEGMENT_START.match(body):
+            out.append(cur)
+            cur = []
+        cur.append((lineno, body))
+    if cur:
+        out.append(cur)
+    return out
+
+
+def joined(segment: list[tuple[int, str]]) -> tuple[str, list[tuple[int, int, int]]]:
+    """A paragraph as one string, plus (start, end, lineno) for each line in it.
+
+    The spans are what lets a finding name the line a reader has to open, which
+    is the half of a finding they act on.
+    """
+    parts: list[str] = []
+    spans: list[tuple[int, int, int]] = []
+    pos = 0
+    for lineno, body in segment:
+        text = body.strip()
+        if parts:
+            parts.append(" ")
+            pos += 1
+        spans.append((pos, pos + len(text), lineno))
+        parts.append(text)
+        pos += len(text)
+    return "".join(parts), spans
+
+
+class Claim(NamedTuple):
+    """One completeness claim: where its quantifier is, and what it spans."""
+
+    lineno: int
+    lines: frozenset[int]
+    word: str
+    symbol: str
+
+
+def completeness_claims(lines: list[tuple[int, str]], file_text: str = "") -> list[Claim]:
+    """The claims a run of contiguous comment lines asserts over a named symbol.
 
     `file_text` is the source the comment lives in, for the resolving mark in
-    symbol_citations(). Empty when the comment names a test: the claim then has
-    a place a reader can go, which is the whole of what this rule asks for.
+    symbol_citations().
+
+    A paragraph that names a test is skipped whole: the claim then has a place a
+    reader can go, which is all this rule asks for, and reading the citation as
+    covering the paragraph rather than the sentence errs towards silence.
     """
-    if TEST_CITE.search(body):
-        return []
-    claims: list[tuple[str, str]] = []
-    for sentence in sentences(body):
-        # The quantifier has to be PROSE. A backticked `all` is a column, a
-        # field or a variant this repo happens to have named that, and it
-        # asserts nothing — so the backticked spans come out before the search,
-        # and go back in for the symbol.
-        q = QUANTIFIER.search(TICKED_SPAN.sub(" ", sentence))
-        if not q:
+    claims: list[Claim] = []
+    for segment in segments(lines):
+        text, spans = joined(segment)
+        if TEST_CITE.search(text):
             continue
-        syms = symbol_citations(sentence, file_text)
-        if syms:
-            claims.append((q.group(1), syms[0]))
+        for start, _end, sentence in sentences(text):
+            # The quantifier has to be PROSE. A backticked `all` is a column, a
+            # field or a variant this repo happens to have named that, and it
+            # asserts nothing — so the backticked spans are blanked before the
+            # search, and go back in for the symbol. Blanked to the SAME LENGTH,
+            # because the offset is what names the line in the finding.
+            prose = TICKED_SPAN.sub(lambda m: " " * len(m.group(0)), sentence)
+            q = QUANTIFIER.search(prose)
+            if not q:
+                continue
+            syms = symbol_citations(sentence, file_text)
+            if not syms:
+                continue
+            at = start + q.start()
+            over = frozenset(
+                ln for s, e, ln in spans if s < start + len(sentence) and e > start
+            )
+            where = next((ln for s, e, ln in spans if s <= at <= e), segment[0][0])
+            claims.append(Claim(where, over, q.group(1), syms[0]))
     return claims
 
 
@@ -467,6 +561,49 @@ def all_comment_lines(path: Path) -> list[tuple[int, str]]:
     return hits
 
 
+class Unit(NamedTuple):
+    """One contiguous run of comment lines, and which of them are being checked.
+
+    Rules A, B and C read a line. Rule D reads a sentence, which can wrap, so it
+    needs the neighbours of the line in question even when they are unchanged.
+    `scope` keeps the gate's promise anyway: a claim is reported only if the
+    sentence carrying it touches a line this run is checking.
+    """
+
+    path: Path
+    lines: list[tuple[int, str]]
+    scope: frozenset[int]
+
+
+def comment_blocks(lines: list[tuple[int, str]]) -> list[list[tuple[int, str]]]:
+    """Split comment lines into runs of consecutive line numbers."""
+    out: list[list[tuple[int, str]]] = []
+    cur: list[tuple[int, str]] = []
+    for lineno, body in lines:
+        if cur and lineno != cur[-1][0] + 1:
+            out.append(cur)
+            cur = []
+        cur.append((lineno, body))
+    if cur:
+        out.append(cur)
+    return out
+
+
+def units(path: Path, scope: set[int] | None = None) -> list[Unit]:
+    """The comment blocks of a file, restricted to those `scope` touches.
+
+    `scope=None` means every comment line, which is what `--all` audits.
+    """
+    blocks = comment_blocks(all_comment_lines(path))
+    out = []
+    for block in blocks:
+        here = {n for n, _ in block}
+        keep = here if scope is None else here & scope
+        if keep:
+            out.append(Unit(path, block, frozenset(keep)))
+    return out
+
+
 _FILE_TEXT: dict[Path, str] = {}
 
 
@@ -480,13 +617,15 @@ def file_text(path: Path) -> str:
     return _FILE_TEXT[path]
 
 
-def check(pairs: list[tuple[Path, list[tuple[int, str]]]]) -> list[str]:
+def check(units: list[Unit]) -> list[str]:
     known = crates()
     failures: list[str] = []
-    for path, lines in pairs:
-        rel = path.relative_to(ROOT)
+    for unit in units:
+        path, rel = unit.path, unit.path.relative_to(ROOT)
         source = file_text(path)
-        for lineno, body in lines:
+        for lineno, body in unit.lines:
+            if lineno not in unit.scope:
+                continue
             for crate, symbol in (
                 [(c, s) for c, s in ATTR_POSSESSIVE.findall(body)]
                 + [(c, s) for s, c in ATTR_IN.findall(body)]
@@ -507,11 +646,16 @@ def check(pairs: list[tuple[Path, list[tuple[int, str]]]]) -> list[str]:
                     f"{rel}:{lineno} cites the `{name}` package, which is not a crate "
                     f"here and not in Cargo.lock"
                 )
-            for word, symbol in completeness_claims(body, source):
-                failures.append(
-                    f"{rel}:{lineno} says \"{word}\" of `{symbol}` and names no test — "
-                    f"cite the test that holds it, or drop the quantifier"
-                )
+        for claim in completeness_claims(unit.lines, source):
+            # The sentence has to touch a line this run is checking. Without
+            # this, joining a wrapped sentence would drag an unchanged
+            # neighbour's claim into a diff that never mentioned it.
+            if not claim.lines & unit.scope:
+                continue
+            failures.append(
+                f"{rel}:{claim.lineno} says \"{claim.word}\" of `{claim.symbol}` and "
+                f"names no test — cite the test that holds it, or drop the quantifier"
+            )
     return failures
 
 
@@ -822,19 +966,61 @@ def self_test() -> int:
         (f"the `{camel}` column is named `all` in the source", True,
          "STAYS GREEN: a backticked quantifier is a token, and asserts nothing"),
         (f"[`{camel}`] is read-only from here", True,
-         "STAYS GREEN: a hyphenated quantifier is an adjective, not a claim"),
+         "STAYS GREEN: a leading hyphen makes a quantifier an adjective (read-only)"),
+        (f"[`{camel}`] is rebuilt from the all-null column", True,
+         "STAYS GREEN: a trailing hyphen does too (all-null)"),
+        (f"nothing else writes it; [`{camel}`] is rebuilt before the first frame", True,
+         "STAYS GREEN: `;` ends a claim, so one clause's quantifier does not "
+         "reach the next clause's symbol"),
+        (f"The kinds are listed above. [`{camel}`] is the only thing that makes one",
+         False, "a claim in the SECOND sentence of a line is still a claim",
+         ('"only"', f"`{camel}`")),
+    ]
+
+    # --- the BLOCK fixtures -----------------------------------------------
+    # A sentence wraps. Reading a line as if the wrap ended it was rule D's
+    # largest measured miss, so these carry the claim ACROSS lines — and the
+    # controls are the two shapes where joining would be wrong.
+    cases += [
+        (["nothing else in this module writes", f"[`{camel}`] after the first frame"],
+         False, "a claim wrapped across two lines is one claim",
+         ('"nothing"', f"`{camel}`")),
+        ([f"[`{camel}`] is rebuilt at boot and reads", "nothing else after that"],
+         False, "the finding names the line the QUANTIFIER is on, not the block's first",
+         ('"nothing"', f"`{camel}`"), 1),
+        (["* nothing else writes here", f"* [`{camel}`] is rebuilt at boot"],
+         True, "STAYS GREEN: two list items are two claims, not one wrapped sentence"),
+        (["nothing else writes here", "", f"[`{camel}`] is rebuilt at boot"],
+         True, "STAYS GREEN: a blank comment line ends the paragraph"),
+        ([f"[`{camel}`] is the only thing that makes one.",
+          f"The `{test_stem}` tests hold that."],
+         True, f"STAYS GREEN: the test is named in the next line of the same "
+               f"paragraph ({test_stem})"),
+        ([f"nothing else writes [`{camel}`].", "and that is where it stops"],
+         True, "STAYS GREEN: the claim's sentence touches no line this run checks",
+         (), 0, (1,)),
     ]
 
     # A finding has to say WHERE, or a reader cannot act on it. Asserted on
     # every case that is meant to be reported, not on a sample of them.
     probe_line = 17
-    where = f"{probe.relative_to(ROOT)}:{probe_line} "
 
     bad = 0
     for case in cases:
         body, should_pass, label = case[0], case[1], case[2]
         want = case[3] if len(case) > 3 else ()
-        found = check([(probe, [(probe_line, body)])])
+        # `at` is which fixture line the finding must name; `only` is which
+        # fixture lines this run is checking, defaulting to all of them.
+        at = case[4] if len(case) > 4 else 0
+        only = case[5] if len(case) > 5 else None
+        bodies = [body] if isinstance(body, str) else list(body)
+        lines = [(probe_line + i, b) for i, b in enumerate(bodies)]
+        scope = frozenset(
+            probe_line + i
+            for i in (range(len(bodies)) if only is None else only)
+        )
+        where = f"{probe.relative_to(ROOT)}:{probe_line + at} "
+        found = check([Unit(probe, lines, scope)])
         ok, note = (not found) == should_pass, ""
         if ok and found:
             if not all(m.startswith(where) for m in found):
@@ -858,12 +1044,16 @@ def main() -> int:
     if "--self-test" in args:
         return self_test()
     if "--all" in args:
-        files = sorted(ROOT.glob("crates/**/*.rs"))
-        pairs = [(f, all_comment_lines(f)) for f in files]
+        work = [u for f in sorted(ROOT.glob("crates/**/*.rs")) for u in units(f)]
     else:
-        pairs = [(f, added_comment_lines(f)) for f in changed_files() if f.exists()]
+        work = [
+            u
+            for f in changed_files()
+            if f.exists()
+            for u in units(f, {n for n, _ in added_comment_lines(f)})
+        ]
 
-    failures = check(pairs)
+    failures = check(work)
     if failures:
         print("Comment claims that do not check out:\n")
         for f in failures:
@@ -876,7 +1066,7 @@ def main() -> int:
             "the narrower thing you can hold."
         )
         return 1
-    checked = sum(len(v) for _, v in pairs)
+    checked = len({(u.path, n) for u in work for n in u.scope})
     print(f"Comment claims check out ({checked} comment lines checked).")
     return 0
 
