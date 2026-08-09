@@ -445,7 +445,11 @@ fn host_from_frame(cc: &eframe::CreationContext<'_>) -> Result<EguiCanvasHost, S
 /// the environment it actually got.
 const SEALED_MARKER: &str = "BRIGHTFIELD_TYPE_SOURCE_SEALED";
 
-/// Everything the sealed phase is permitted to see, and nothing else.
+/// What the outer phase puts back after clearing the environment.
+///
+/// Not the whole of what the sealed phase may see: [`SEALED_ENV_SELF_SET`] is
+/// permitted alongside it, and the two together are what the stowaway check
+/// admits.
 ///
 /// An ALLOWLIST, not a list of variables to strip, and that choice is the
 /// point. A denylist is a list of the redirections somebody has thought of: it
@@ -534,7 +538,8 @@ const SEALED_ENV_SELF_SET: &[&str] = &["__CF_USER_TEXT_ENCODING"];
 /// Refusing that one variable would have been the nearest fix and the wrong
 /// shape. So the outer phase re-execs this binary with the environment CLEARED
 /// and only [`SEALED_ENV`] put back, and the inner phase refuses to proceed if
-/// it sees anything else. A re-exec rather than clearing the variables in
+/// it sees anything outside that list and [`SEALED_ENV_SELF_SET`]. A re-exec
+/// rather than clearing the variables in
 /// place, because the dynamic loader reads `DYLD_*` / `LD_*` before `main` runs
 /// and a process cannot un-substitute a library that was already interposed
 /// into it.
@@ -1077,7 +1082,8 @@ mod tests {
         ));
     }
 
-    /// The sealed phase admits what it set and refuses everything else.
+    /// The sealed phase admits what it set, and what the platform writes into
+    /// it after `execve`, and refuses everything else.
     ///
     /// An allowlist, asserted as one: the named intruders below are the
     /// redirections that were actually found or looked for — a model path, a
