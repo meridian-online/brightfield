@@ -152,8 +152,15 @@ PKG_PATTERNS = (PKG_AFTER, PKG_INLINE, PKG_BEFORE, PKG_LABELLED, PKG_LABELLED_BE
 # The quantifiers are the ones this project's prose rule names, plus `none` and
 # the two `-thing` forms that say the same in another word order. Each asserts a
 # completeness somebody has to enumerate, so each needs the enumeration cited.
+#
+# The lookarounds exclude a hyphen, which is the difference between a claim and
+# an adjective: `read-only`, `colour-only`, `all-null` and `never-run` describe a
+# thing rather than asserting anything about how much of it there is. On the
+# tree this landed against, the exclusion drops `--all` from 561 findings to
+# 535.
 QUANTIFIER = re.compile(
-    r"\b(only|always|every|never|nothing|none|all|everything|anything)\b", re.I
+    r"(?<![-\w])(only|always|every|never|nothing|none|all|everything|anything)(?![-\w])",
+    re.I,
 )
 
 # `Foo` / `a_b` / `a::B` / `f()` — a backticked token, plus the `::` path and
@@ -674,6 +681,8 @@ def self_test() -> int:
          f"STAYS GREEN: a lowercase word is a role name here, not a symbol (`{plain}`)"),
         (f"the `{sym}` column is named `all` in the source", True,
          "STAYS GREEN: a backticked quantifier is a token, and asserts nothing"),
+        (f"[`{sym}`] is read-only from here", True,
+         "STAYS GREEN: a hyphenated quantifier is an adjective, not a claim"),
     ]
 
     bad = 0
