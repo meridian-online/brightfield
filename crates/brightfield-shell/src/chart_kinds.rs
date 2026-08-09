@@ -309,11 +309,7 @@ mod tests {
     fn the_registry_ships_these_kinds_in_this_order() {
         assert_eq!(
             registry().ids(),
-            vec![
-                BINNED_HISTOGRAM,
-                COUNT_GRID,
-                crate::ranked_bars::KIND_ID
-            ],
+            vec![BINNED_HISTOGRAM, COUNT_GRID, crate::ranked_bars::KIND_ID],
             "declaration order is the preference order a chooser reads"
         );
     }

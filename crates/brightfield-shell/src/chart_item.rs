@@ -44,8 +44,8 @@ use brightfield_render::scale::Scale;
 use brightfield_spec::analysis::BrushKind;
 use brightfield_spec::vocab::MarkKind;
 use brightfield_sql::ir::ScalarValue;
-use brightfield_workbench::subject::RunState;
 use brightfield_workbench::item::{ChartModule, ModuleHost};
+use brightfield_workbench::subject::RunState;
 use brightfield_workbench::{
     chrome, Affordance, EmptyState, Icon, Item, ItemCtx, ItemId, Subject, ToolbarEntry,
     ToolbarLocation, Verb,

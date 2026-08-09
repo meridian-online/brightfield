@@ -129,7 +129,10 @@ fn measure(name: &str) -> Field {
 
 /// One headless layout pass at the window the shell would ask for, over a
 /// document that carries `authored`. Returns the document's recorded rects.
-fn laid_out(composed: Composed, authored: Option<Authored>) -> (Option<egui::Rect>, Option<egui::Rect>) {
+fn laid_out(
+    composed: Composed,
+    authored: Option<Authored>,
+) -> (Option<egui::Rect>, Option<egui::Rect>) {
     let (w, h) = chart_window_size(&composed);
     let mut app = MeridianApp::headless(Boot::charts(composed), Mode::Light);
     if let Some(authored) = authored {
@@ -261,12 +264,7 @@ fn a_module_asking_for_a_different_picture_is_not_handed_this_one() {
         let kind = chart_kinds::find(authored.kind).expect("shipped");
         let mut doc = ChartDoc::headless(composed);
         doc.set_authored(authored);
-        let mut module = ChartModule::new(
-            brightfield_shell::app::CHART,
-            "Chart",
-            kind,
-            fields,
-        );
+        let mut module = ChartModule::new(brightfield_shell::app::CHART, "Chart", kind, fields);
 
         let ctx = egui::Context::default();
         let mut requests = Vec::new();
