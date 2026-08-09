@@ -732,6 +732,15 @@ impl Item<ChartDoc> for ChartItem {
             let rect = match module_of(doc) {
                 Some(mut module) => {
                     Item::ui(&mut module, doc, ui, cx);
+                    // The module reserved its raster inside the child `Ui`
+                    // `module_frame` hands it, and a child's allocations do not
+                    // move the parent's cursor. Unadvanced, the legend band
+                    // below would be laid out at the raster's own x and sit on
+                    // the data — which is the one thing the band's whole
+                    // geometry exists to prevent.
+                    if let Some(rect) = doc.raster_rect {
+                        ui.advance_cursor_after_rect(rect);
+                    }
                     doc.raster_rect
                 }
                 None => doc.present_raster(ui),
