@@ -242,10 +242,9 @@ fn a_kind_this_build_does_not_have_stops_the_picture() {
 /// nothing rather than putting one chart under another chart's module.
 ///
 /// Unreachable from the running binary today, and that is stated where the
-/// check lives: no shipped kind declares a control and nothing rebinds a
-/// module's columns, so the block a module builds is a function of the document
-/// it was built from. It is a defence against a future edit, so a test is the
-/// only thing that can hold it.
+/// check lives: no shipped kind declares a control, and
+/// `ChartModule::set_fields` has no call site in the workspace. It is a defence
+/// against a future edit, so a test is the only thing that can hold it.
 #[test]
 fn a_module_asking_for_a_different_picture_is_not_handed_this_one() {
     for (whose, fields, want_drawn) in [

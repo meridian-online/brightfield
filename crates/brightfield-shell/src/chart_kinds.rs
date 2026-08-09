@@ -3,12 +3,11 @@
 //!
 //! [`brightfield_workbench::registry::ChartKind`] makes a chart kind a value:
 //! an icon, a gloss, the slots it takes and a builder that turns bound columns
-//! into a spec. Until this module existed every `ChartKindRegistry` in the tree
-//! was constructed inside a `#[cfg(test)]` block, so the mechanism was gated by
-//! tests and hosted by nothing a user could reach. [`registry`] is the one this
-//! process reads: [`crate::data_file`] chooses a first look out of it and emits
-//! that kind's spec, and [`crate::app::ChartDoc`] hands it to the chart pane
-//! through [`brightfield_workbench::item::ModuleHost`].
+//! into a spec. [`registry`] is the instance this **process** reads, as opposed
+//! to one a test stands up: [`crate::data_file`] chooses a first look out of it
+//! and emits that kind's spec, and [`crate::app::ChartDoc`] hands it to the
+//! chart pane through [`brightfield_workbench::item::ModuleHost`]. Both routes
+//! are held by tests that take a kind away and watch the outcome change.
 //!
 //! # What a kind's spec *is* here
 //!
@@ -189,8 +188,8 @@ fn ranked_category_bars() -> ChartKind<String> {
 /// - **order.** Measures first, in the table's own order; then categories,
 ///   fewest distinct values first. [`ChartKind::bind`] is first-fit in slot
 ///   order, so this is what decides *which* column fills a slot once the kind
-///   is chosen. The sort is stable, so ties keep declaration order and the
-///   same file always opens on the same picture.
+///   is chosen. `sort_by_key` is stable, so two categories of equal width keep
+///   the table's own order rather than an arbitrary one.
 ///
 /// A column's [`FieldType`] is decided by whether DuckDB stored it as a type
 /// the bin arithmetic can subtract and take a logarithm of — the private

@@ -1136,10 +1136,13 @@ impl ModuleHost for ChartDoc {
     /// whose module has moved on stays blank until something re-opens it, and
     /// composing here is the follow-on that would fix that.
     ///
-    /// No shipped kind can reach the disagreement today: none declares a
-    /// control, and nothing in the running binary rebinds a module's columns,
-    /// so the block a module builds is a function of the document it was built
-    /// from. It is reachable from a test, which is where it is held.
+    /// No shipped kind can reach the disagreement today, and the two reasons
+    /// are each checkable rather than remembered: no kind declares a control
+    /// (`chart_kinds`'s
+    /// `no_kind_declares_a_control_that_the_pane_would_have_to_remember`), and
+    /// `ChartModule::set_fields` has no call site in the workspace, so a
+    /// module's columns are whatever the document handed it. It is reachable
+    /// from a test, which is where it is held.
     fn draw_module(&mut self, spec: &String, ui: &mut egui::Ui) {
         if self.authored.as_ref().map(|a| a.block.as_str()) != Some(spec.as_str()) {
             return;
