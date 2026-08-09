@@ -27,6 +27,7 @@ use brightfield_shell::design::Mode;
 use brightfield_shell::starts;
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
+use brightfield_workbench::registry::ChartKindId;
 use brightfield_workbench::ViewKind;
 
 /// A directory of this test's own, removed when the test ends.
@@ -366,19 +367,17 @@ fn a_one_category_table_opens_without_a_banner_over_its_picture() {
 /// The chart pane draws a document through that kind's `ChartModule` exactly
 /// when the document carries an `Authored` record; with none it presents
 /// directly. So a route that synthesises a picture *from a chart kind* and does
-/// not record which kind draws that picture around the module rather than
-/// through it, and no picture changes when it happens — which is why the
-/// routes are listed here instead of grepped for.
+/// not record which one draws that picture around the module rather than
+/// through it — and nothing on screen changes when it happens, which is why
+/// the routes are listed here instead of grepped for.
 ///
 /// The routes this build opens a chart document on:
 ///
 /// - `MeridianApp::open_data_file` — a table with no spec. The registry chose
 ///   the picture, so the kind is recorded and it is one this build has.
-/// - `Boot::start` — the shipped starts, opened from spec source bundled in the
-///   binary. Nothing is recorded, and that is the boundary rather than a gap: a
-///   chart kind takes bound columns and returns one picture, so no kind's
-///   builder could have produced a document with its own layout, params and
-///   several plots. `Authored`'s own docs say so.
+/// - `Boot::start` — the shipped starts, `include_str!`-ed spec source. The
+///   registry was never asked, so there is no kind and no binding to record,
+///   and the pane presents these directly.
 /// - `Boot::open` / the spec editor — a spec someone wrote, which is the same
 ///   answer as the starts for the same reason. Covered by the start arm below;
 ///   both reach `ChartDoc::open`, which clears the record.
@@ -414,6 +413,103 @@ fn a_chart_kinds_picture_carries_its_kind_and_a_written_spec_carries_none() {
             app.chart_doc().authored(),
             None,
             "{id}: a spec someone wrote was recorded as a chart kind's picture"
+        );
+    }
+}
+
+/// Two categorical columns and nothing to bin — the shape `count-grid` takes.
+///
+/// A column's `distinct` comes back from `approx_count_distinct` (see
+/// `Session::profile_sources`), so which kind a fixture reaches is decided by an
+/// estimate rather than by counting its rows: a two-valued column in a
+/// five-row file was estimated at one and dropped the fixture to a single
+/// field. Which kind each file below actually reaches is left to the coverage
+/// assertion at the foot of the test rather than asserted per fixture here.
+const CROSSED_CSV: &str = "tier,method\n\
+                           authoritative,sec-registration\n\
+                           authoritative,sec-ncen\n\
+                           candidate,jaro_winkler\n\
+                           candidate,exact_name\n\
+                           authoritative,sec-registration\n\
+                           candidate,jaro_winkler\n";
+
+/// One categorical column — the shape ranked category bars take.
+const ONE_CATEGORY_CSV: &str = "name\nada\ngrace\nbarbara\nkaren\nada\n";
+
+/// **A file a user opened arrives on screen as a picture**, for each kind the
+/// registry ships, drawn through that kind's module.
+///
+/// The gap this closes was measured rather than imagined. Emptying the
+/// `Authored` record's `fields` in `MeridianApp::open_data_file`, or its
+/// `block`, left the whole `brightfield-shell` suite green while the chart pane
+/// went blank for every file opened from the front door — the first stops at
+/// `ChartKind::bind` inside `ChartModule::ui`, the second at
+/// `ChartDoc::draw_module`'s comparison, and both end with no raster, no legend
+/// band and no `empty_state` to explain it. Nothing could see it: the tests in
+/// `tests/chart_module.rs` construct their own `Authored` and never take the
+/// one this route writes, and
+/// `a_chart_kinds_picture_carries_its_kind_and_a_written_spec_carries_none`
+/// above reads that record without drawing from it.
+///
+/// So the assertion is `raster_rect` on a settled window — the observable
+/// `ChartDoc::present_raster` writes, and the one a GPU-free machine has (see
+/// `tests/chart_module.rs`'s header for why a rect rather than pixels). Paired
+/// with the recorded kind being one this build has, it says the picture arrived
+/// by the **module** arm rather than beside it: `module_of` answers `Some` on
+/// exactly that pair, and the pane's other arm is the one it answers `None`
+/// for.
+///
+/// Written over `registry().kinds()` rather than over one fixture, so a kind
+/// added with no file that reaches it reddens here instead of shipping unseen.
+#[test]
+fn every_shipped_kind_draws_its_picture_from_the_open_a_file_route() {
+    let dir = TempDir::new("open-draws-a-picture");
+    let mut drawn: Vec<ChartKindId> = Vec::new();
+
+    for (name, contents) in [
+        ("readings.csv", READINGS_CSV),
+        ("crossed.csv", CROSSED_CSV),
+        ("names.csv", ONE_CATEGORY_CSV),
+    ] {
+        let path = dir.write(name, contents);
+        let mut win = Window::open();
+        win.settle();
+        let ctx = win.ctx.clone();
+        win.app.open_data_file(&ctx, &path.to_string_lossy());
+        win.settle();
+
+        let authored = win.app.chart_doc().authored().cloned().unwrap_or_else(|| {
+            panic!("{name}: opened with no kind recorded, so the pane drew it around the module")
+        });
+        assert!(
+            chart_kinds::find(authored.kind).is_some(),
+            "{name}: opened as {}, which is not in this build's registry, so \
+             the pane has nothing to draw the picture with",
+            authored.kind
+        );
+        let raster = win.app.chart_doc().raster_rect.unwrap_or_else(|| {
+            panic!(
+                "{name}: opened as {} and nothing reached the pane — the \
+                 module drew no raster, so what the user gets is a blank \
+                 chart with no sentence on it",
+                authored.kind
+            )
+        });
+        assert!(
+            raster.width() > 0.0 && raster.height() > 0.0,
+            "{name}: the raster was reserved at {raster:?}, which has no room \
+             for a picture in it"
+        );
+        drawn.push(authored.kind);
+    }
+
+    for kind in chart_kinds::registry().kinds() {
+        assert!(
+            drawn.contains(&kind.id),
+            "{}: no fixture here opens a file that chooses it, so nothing \
+             holds that it draws through the door a user comes in by — the \
+             fixtures above reached {drawn:?}",
+            kind.id
         );
     }
 }

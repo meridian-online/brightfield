@@ -1406,10 +1406,9 @@ impl MeridianApp {
     /// That is not a hypothetical. `open_home` did exactly that: it emptied
     /// the chart document through `ChartDoc::open` and left the outgoing
     /// spec's `Cannot render …` banner standing on the front door, for a
-    /// document nobody had open any more. There are two callers now
-    /// (`open_start` and `open_home`) and both go through here; a third that
-    /// does not is the same bug a third time, so the reviewer's question about
-    /// any new chart-document swap is "does it call this".
+    /// document nobody had open any more. A chart-document swap that reaches
+    /// past this is the same bug again, so the reviewer's question about any
+    /// new one is "does it call this".
     pub fn open_chart(&mut self, composed: Composed) {
         self.charts.doc.open(composed);
         self.say_load_diagnostics();

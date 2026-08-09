@@ -14,6 +14,20 @@
 //! total over [`MarkKind`], and a new mark kind is a new match arm, not a new
 //! shell.
 //!
+//! # Mark kinds and chart kinds are two vocabularies, not one
+//!
+//! They are named alike and they are different lists, so the distinction is
+//! stated here rather than left to be inferred. A [`MarkKind`] is what a plot
+//! draws with — `dot`, `rectY`, `cell` — and it comes off the composition;
+//! `mark_icon` and `gesture_for` are the two functions parameterised by it. A
+//! **chart kind** is an entry in [`crate::chart_kinds::registry`]: an id, an
+//! icon, the column slots it takes, and a builder that turns bound columns
+//! into a whole spec. The two lists are declared apart — a `MarkKind` is a
+//! variant of an enum in `brightfield_spec`, a chart kind's id is a string
+//! literal in [`crate::chart_kinds`] — and neither is derived from the other.
+//! This pane is parameterised by the first and draws a document the second
+//! chose through that kind's `ChartModule`; see `module_of`.
+//!
 //! # One selection treatment
 //!
 //! Everything transient the pointer does to the chart is painted from the
@@ -721,8 +735,9 @@ impl Item<ChartDoc> for ChartItem {
             // module resolves its kind out of the document's registry, builds
             // the spec from the columns bound to it, and hands that spec back
             // to the document — which is where the composer and the canvas
-            // host live. A picture composed from a written spec has no kind
-            // that could claim it (see `Authored`) and presents directly.
+            // host live. A document carrying no `Authored` record has no kind
+            // to build a module from (see `Authored` for which routes record
+            // one) and presents directly.
             //
             // `raster_rect` is cleared first because the module route can draw
             // nothing at all — a kind this build no longer has, columns that

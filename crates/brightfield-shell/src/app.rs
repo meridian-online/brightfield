@@ -132,11 +132,20 @@ pub struct ChartFault {
 /// draws the picture, frame after frame, out of the registry rather than out
 /// of a branch.
 ///
-/// `None` on a document composed from a spec someone **wrote**. That is not an
-/// oversight and it is the boundary worth knowing: a chart kind builds a
-/// picture out of bound columns, and an authored document — layouts,
-/// interactors, parameters, several plots — is not a thing any kind's builder
-/// could have produced, so there is no kind that could honestly claim it.
+/// `None` on a document composed from a spec someone **wrote**, because no
+/// route that opens one asks the registry anything — the source came off disk
+/// or out of the binary, and there is nothing to record. Which routes those
+/// are is enumerated by
+/// `a_chart_kinds_picture_carries_its_kind_and_a_written_spec_carries_none` in
+/// `tests/data_file.rs`, and that is where a new one gets ruled on.
+///
+/// The module route reaches exactly the documents carrying one of these:
+/// `module_of` in [`crate::chart_item`] opens with `doc.authored()?` and the
+/// chart pane presents directly on its `None`. Widening it is not a matter of
+/// hosting the same picture differently — a
+/// [`ChartModule`](brightfield_workbench::item::ChartModule) rebuilds its spec
+/// from a kind and bound columns every frame, and a document nobody bound
+/// columns for has nothing to rebuild it from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Authored {
     /// The kind that chose the picture.
@@ -997,12 +1006,13 @@ impl ChartDoc {
     /// Reserve the raster's rect in `ui` and paint the composited dashboard
     /// into it, returning the rect — `None` when the surface reserved nothing.
     ///
-    /// **The one place the chart's picture reaches the screen**, reached two
-    /// ways: through [`ModuleHost::draw_module`] for a document a chart kind
-    /// authored, and directly for a document composed from a written spec.
-    /// One routine rather than two, so the two documents cannot drift into
-    /// two pictures — what differs between them is which of them a registry
-    /// gets to decide, not how the pixels arrive.
+    /// **The one place the chart's picture reaches the screen**, reached the
+    /// two ways the chart pane's `match module_of(doc)` has arms for: through
+    /// [`ModuleHost::draw_module`] for a document carrying an [`Authored`]
+    /// record, and directly for a document carrying none. One routine rather
+    /// than two, so the two documents cannot drift into two pictures — what
+    /// differs between them is which of them a registry gets to decide, not
+    /// how the pixels arrive.
     ///
     /// With no device behind the document the raster is blank rather than
     /// apologetic — a headless document is a test fixture — but the *layout*
