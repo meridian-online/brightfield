@@ -787,14 +787,17 @@ def self_test() -> int:
     ]
 
     cases += [
-        # Detection, one per mark, each qualifying through that mark alone.
+        # Detection, one per mark, each qualifying through that mark alone and
+        # each carrying the same quantifier — so a mutation of the alternation
+        # reddens the block above and a mutation of a mark reddens one line
+        # here. One mutation, one set of names to read.
         (f"`{camel}` is the only thing that makes one", False,
          f"a capital marks a symbol ({camel})", (f"`{camel}`",)),
-        (f"`{snake}` is re-checked on every path through here", False,
+        (f"`{snake}` is the only thing re-checked on this path", False,
          f"an underscore marks a symbol ({snake})", (f"`{snake}`",)),
-        (f"`{lc_path}` never carries a URL scheme", False,
+        (f"`{lc_path}` is the only route in from here", False,
          f"a `::` marks a symbol ({lc_path})", (f"`{lc_path}`",)),
-        (f"[`{plain}`] refuses anything carrying a URL scheme", False,
+        (f"[`{plain}`] is the only thing that refuses a URL scheme", False,
          f"an intra-doc link marks a symbol even in lowercase ([`{plain}`])",
          (f"`{plain}`",)),
         (f"`{lc_local}` is the only thing that makes one", False,
