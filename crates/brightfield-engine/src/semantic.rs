@@ -1334,8 +1334,6 @@ mod tests {
         assert!(sql.contains("\"col\"\"umn\""), "{sql}");
     }
 
-    /// A manifest is verified when present, absent is fine, and a file whose
-    /// bytes changed since packaging is refused.
     /// The model directory is sealed to the bundle's own, and an inherited
     /// value naming somewhere else is refused.
     ///

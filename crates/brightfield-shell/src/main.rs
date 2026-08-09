@@ -505,7 +505,8 @@ const SEALED_ENV_SELF_SET: &[&str] = &["__CF_USER_TEXT_ENCODING"];
 /// Read this before quoting the result, because the useful reading is narrower
 /// than the obvious one. Exit 0 says:
 ///
-/// - a bundle is present beside this executable and matches its own manifest;
+/// - a bundle is present beside this executable and, if it carries a manifest,
+///   matches it;
 /// - the extension's ABI matches the DuckDB this binary links, and it loaded;
 /// - the environment was sealed to [`SEALED_ENV`] and [`SEALED_ENV_SELF_SET`];
 /// - a column was typed and its values validated against that label.
@@ -564,8 +565,8 @@ fn check_type_source() -> i32 {
     let stowaways = unsealed_variables();
     if !stowaways.is_empty() {
         eprintln!(
-            "check-type-source: refusing to report on an artefact with {} variable(s) this \
-             process did not set: {}. Each one can redirect a file the check reads, so a \
+            "check-type-source: refusing to report on an artefact with {} variable(s) outside \
+             the sealed allowlist: {}. Each one can redirect a file the check reads, so a \
              verdict taken here would be about the machine and not the artefact.",
             stowaways.len(),
             stowaways.join(", ")
@@ -1083,8 +1084,8 @@ mod tests {
         ));
     }
 
-    /// The sealed phase admits what it set, and what the platform writes into
-    /// it after `execve`, and refuses everything else.
+    /// The sealed phase admits what the outer phase put back, and what the
+    /// platform writes into it after `execve`, and refuses everything else.
     ///
     /// An allowlist, asserted as one: the named intruders below are the
     /// redirections that were actually found or looked for — a model path, a
@@ -1093,11 +1094,11 @@ mod tests {
     /// matters is `SOMETHING_INVENTED_TOMORROW`, which nobody enumerated and
     /// which is refused anyway.
     #[test]
-    fn the_sealed_environment_admits_what_it_set_and_what_the_platform_adds() {
+    fn the_sealed_environment_admits_the_allowlist_and_what_the_platform_adds() {
         let permitted = ["PATH", "HOME", "TMPDIR", "LC_ALL", "LANG", SEALED_MARKER];
         assert!(
             unsealed_among(permitted.iter().map(|s| (*s).to_string())).is_empty(),
-            "the sealed phase rejected the environment it builds for itself"
+            "the sealed phase rejected the environment the outer phase builds for it"
         );
         assert!(
             unsealed_among(SEALED_ENV_SELF_SET.iter().map(|s| (*s).to_string())).is_empty(),

@@ -104,7 +104,7 @@ fn a_hostile_environment_and_working_directory_do_not_reach_the_sealed_phase() {
         .collect();
     assert!(
         stowaways.is_empty(),
-        "the sealed phase can see {stowaways:?}, which the outer phase did not set:\n{out}"
+        "the sealed phase can see {stowaways:?}, which are outside the sealed allowlist:\n{out}"
     );
     assert_ne!(code, 1, "the seal could not be established at all:\n{out}");
 
