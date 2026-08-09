@@ -343,8 +343,8 @@ pub fn source_spec(path: &Path) -> String {
 /// Data pane tabulates `SELECT * FROM <the first mark's source>`, so pointing
 /// the mark at a `GROUP BY` view would put twenty summary rows in the grid
 /// where the user is entitled to their file. It holds because every kind in
-/// the registry reads [`SOURCE`]; `every_kind_reads_the_files_own_view` in
-/// `tests/data_file.rs` is what keeps it true of a kind added later.
+/// the registry reads [`SOURCE`]; `every_kind_reads_the_files_own_view` is
+/// what keeps it true of a kind added later.
 #[must_use]
 pub fn spec_for(path: &Path, look: &FirstLook) -> String {
     let mut spec = String::new();

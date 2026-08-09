@@ -18,8 +18,7 @@
 //!
 //! They are named alike and they are different lists, so the distinction is
 //! stated here rather than left to be inferred. A [`MarkKind`] is what a plot
-//! draws with — `dot`, `rectY`, `cell` — and it comes off the composition;
-//! `mark_icon` and `gesture_for` are the two functions parameterised by it. A
+//! draws with — `dot`, `rectY`, `cell` — and it comes off the composition. A
 //! **chart kind** is an entry in [`crate::chart_kinds::registry`]: an id, an
 //! icon, the column slots it takes, and a builder that turns bound columns
 //! into a whole spec. The two lists are declared apart — a `MarkKind` is a
