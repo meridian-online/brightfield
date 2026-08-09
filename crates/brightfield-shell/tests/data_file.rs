@@ -20,9 +20,11 @@
 
 use std::path::{Path, PathBuf};
 
+use brightfield_protocol::layout::Flow;
 use brightfield_shell::chart_kinds;
 use brightfield_shell::data_file;
 use brightfield_shell::design::Mode;
+use brightfield_shell::starts;
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_workbench::ViewKind;
@@ -321,6 +323,99 @@ fn a_table_of_one_category_opens_on_its_ranking() {
         "the ranking aggregates in its own query, so the table behind it is \
          still the file"
     );
+}
+
+/// **A file that opened cleanly says nothing.** The window carries no banner
+/// over a picture it drew from a table the user merely opened.
+///
+/// Asserted at the window rather than on the diagnostics, because the banner is
+/// the artefact: `MeridianApp::say_load_diagnostics` turns a load's advisories
+/// into one `Severity::Warning` reading *"… had no effect"*, and the user has
+/// no spec of their own to go and correct — the spec was synthesised by the
+/// chart kind. The one-category table is the case that reached this: its block
+/// binds `$sel` from a `toggleY` and a `highlight`, and a block that binds a
+/// selection it does not declare earns exactly that advisory.
+#[test]
+fn a_one_category_table_opens_without_a_banner_over_its_picture() {
+    let dir = TempDir::new("one-category-banner");
+    let path = dir.write("names.csv", "name\nada\ngrace\nbarbara\nkaren\nada\n");
+
+    let mut win = Window::open();
+    win.settle();
+    let ctx = win.ctx.clone();
+    win.app.open_data_file(&ctx, &path.to_string_lossy());
+    win.settle();
+
+    let said: Vec<String> = win
+        .app
+        .load_diagnostics()
+        .diagnostics
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(
+        win.app.notifications().len(),
+        0,
+        "the window put a banner over a file that opened cleanly: {said:?}"
+    );
+}
+
+/// **Which chart documents carry the kind that chose their picture** —
+/// enumerated over the routes that open one, rather than swept.
+///
+/// The chart pane draws a document through that kind's `ChartModule` exactly
+/// when the document carries an `Authored` record; with none it presents
+/// directly. So a route that synthesises a picture *from a chart kind* and does
+/// not record which kind draws that picture around the module rather than
+/// through it, and no picture changes when it happens — which is why the
+/// routes are listed here instead of grepped for.
+///
+/// The routes this build opens a chart document on:
+///
+/// - `MeridianApp::open_data_file` — a table with no spec. The registry chose
+///   the picture, so the kind is recorded and it is one this build has.
+/// - `Boot::start` — the shipped starts, opened from spec source bundled in the
+///   binary. Nothing is recorded, and that is the boundary rather than a gap: a
+///   chart kind takes bound columns and returns one picture, so no kind's
+///   builder could have produced a document with its own layout, params and
+///   several plots. `Authored`'s own docs say so.
+/// - `Boot::open` / the spec editor — a spec someone wrote, which is the same
+///   answer as the starts for the same reason. Covered by the start arm below;
+///   both reach `ChartDoc::open`, which clears the record.
+///
+/// `starts::CROSSWALK_CHART` is deliberately not in the list: its spec reads a
+/// source over https, and a test that opens it fails on a train.
+#[test]
+fn a_chart_kinds_picture_carries_its_kind_and_a_written_spec_carries_none() {
+    let dir = TempDir::new("authored-routes");
+    let path = dir.write("readings.csv", READINGS_CSV);
+
+    let mut win = Window::open();
+    win.settle();
+    let ctx = win.ctx.clone();
+    win.app.open_data_file(&ctx, &path.to_string_lossy());
+    win.settle();
+
+    let authored = win.app.chart_doc().authored().cloned().expect(
+        "the open-a-data-file route drew a chart kind's picture and recorded no \
+         kind, so the pane draws it around the module instead of through it",
+    );
+    assert!(
+        chart_kinds::find(authored.kind).is_some(),
+        "the recorded kind {} is not in this build's registry, so the pane has \
+         nothing to draw the picture with",
+        authored.kind
+    );
+
+    for id in [starts::DASHBOARD, starts::DISTRIBUTION, starts::BREAKDOWN] {
+        let boot = Boot::start(id, Flow::Vertical).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let app = MeridianApp::headless(boot, Mode::Light);
+        assert_eq!(
+            app.chart_doc().authored(),
+            None,
+            "{id}: a spec someone wrote was recorded as a chart kind's picture"
+        );
+    }
 }
 
 /// A table no chart kind fits is refused **by name and by reason**, rather than

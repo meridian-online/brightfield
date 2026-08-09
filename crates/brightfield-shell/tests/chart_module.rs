@@ -186,6 +186,85 @@ fn the_pane_draws_a_registry_authored_picture() {
     }
 }
 
+/// **The legend band stays out of the data on the module route too.**
+///
+/// The module reserves its raster inside the child `Ui` that `module_frame`
+/// hands it, and a child's allocations do not move the parent's cursor — so the
+/// band the pane allocates *after* the module has drawn is laid out at the
+/// raster's own x unless the pane advances that cursor itself. Measured under
+/// the deletion of `ui.advance_cursor_after_rect` in `chart_item.rs`: raster
+/// `[[20 76] - [884 800]]`, legend `[[28 76] - [142 800]]` — the band on top of
+/// the cells.
+///
+/// `count-grid` is the fixture because its `fill: { count: }` yields the
+/// sequential fill scale a legend is drawn for; a histogram's block calls for
+/// no band at all, so it could not fail this.
+///
+/// The repo owns this law once already —
+/// `examples_exercise.rs::no_legend_overlaps_data_in_any_example` — but it
+/// drives example specs, and an example spec carries no `Authored`, so nothing
+/// it holds reaches this route.
+#[test]
+fn the_legend_band_stays_out_of_the_data_on_the_module_route() {
+    let (composed, authored) = authored_by(chart_kinds::COUNT_GRID, grid_fields(), GRID_BLOCK);
+    let (raster, legend) = laid_out(composed, Some(authored));
+    let raster = raster.expect("the module drew no raster");
+    let legend = legend.expect(
+        "the fixture's premise is a picture whose scales call for a legend band; \
+         with none reserved this test could not see the overlap it exists for",
+    );
+    assert!(
+        !raster.intersects(legend),
+        "the legend band was laid out on the data: raster {raster:?}, legend \
+         {legend:?}"
+    );
+}
+
+/// **A picture the module did not ask for is not handed to it — through the
+/// pane, not through a module built beside it.**
+///
+/// The sibling of `a_module_asking_for_a_different_picture_is_not_handed_this_one`
+/// below, and the difference is the entry point rather than the claim. That one
+/// constructs a `ChartModule` itself and calls `Item::ui` on it, so it holds
+/// `ChartDoc::draw_module` and says nothing about how the pane reaches it;
+/// replace the pane's `Item::ui(&mut module, …)` with a direct
+/// `doc.present_raster(ui)` and it stays green while the registry stops being
+/// the path the picture travels. This one goes through `MeridianApp::draw`, so
+/// that substitution reddens it: the direct route draws the raster, and the
+/// module route refuses because the block the document holds is not the block
+/// its kind builds from the columns it recorded.
+///
+/// The disagreement is reached here by recording a block a shipped kind does
+/// not build. No shipped kind reaches it from the running binary — that is
+/// stated on `ChartDoc::draw_module` and rests on two checkable facts, no kind
+/// declaring a control and `ChartModule::set_fields` having no call site — so
+/// what it defends is a future edit, and a test is the only thing that can hold
+/// it.
+#[test]
+fn the_pane_draws_nothing_for_a_block_its_kind_did_not_build() {
+    let (composed, mut authored) = authored_by(
+        chart_kinds::BINNED_HISTOGRAM,
+        vec![measure("amount")],
+        HISTOGRAM_BLOCK,
+    );
+    // Same kind, same columns, a different picture: the y channel counts
+    // something else. The kind rebuilds `HISTOGRAM_BLOCK` from `amount` and the
+    // document is holding this instead.
+    authored.block = HISTOGRAM_BLOCK.replace("y: { count: }", "y: { sum: 'amount' }");
+    assert_ne!(
+        authored.block, HISTOGRAM_BLOCK,
+        "the fixture's premise is a block the kind does not build"
+    );
+
+    let (raster, legend) = laid_out(composed, Some(authored));
+    assert_eq!(
+        raster, None,
+        "the document presented a raster under a module that asked for a \
+         different picture"
+    );
+    assert_eq!(legend, None, "and reserved a band beside it");
+}
+
 /// **A kind this build does not have stops the picture**, and the pane says
 /// which kind is missing rather than drawing a header over a blank rect.
 ///

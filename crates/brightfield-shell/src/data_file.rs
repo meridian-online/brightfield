@@ -133,8 +133,9 @@ impl FirstLook {
         &self.fields
     }
 
-    /// The spec block the kind built — the `plot:` or `hconcat:` body of the
-    /// synthesised document, without its `meta:` and `data:` header.
+    /// The spec block the kind built — the body of the synthesised document,
+    /// without its `meta:` and `data:` header. See the spec contract in
+    /// [`crate::chart_kinds`] for what a block may carry.
     #[must_use]
     pub fn block(&self) -> &str {
         &self.block

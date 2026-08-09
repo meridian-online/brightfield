@@ -18,11 +18,19 @@
 //! structured intermediate would be a second spec language to keep in step with
 //! the first.
 //!
-//! Two consequences, and both are contracts a new kind has to keep:
+//! Three consequences, and each is a contract a new kind has to keep:
 //!
-//! - the source is a **complete top-level block** (`plot:` or `hconcat:`), so
-//!   the caller can concatenate it under a `data:` block without knowing which
-//!   kind built it;
+//! - the source is a **self-contained top-level fragment**: the picture's
+//!   `plot:` or `hconcat:` key, plus whatever else that picture's instructions
+//!   need declared beside them at the top level — a `params:` entry for a
+//!   selection its interactors bind, say. So the caller can concatenate it
+//!   under a `data:` block without knowing which kind built it;
+//! - it **loads clean**: the composed document's diagnostics carry nothing
+//!   advisory, because the window raises those as a banner over the picture. A
+//!   block whose interactor binds an undeclared param draws a chart and tells
+//!   the reader, in the same frame, that one of its instructions had no effect.
+//!   `no_kinds_block_asks_for_something_the_load_says_had_no_effect` is what
+//!   says so;
 //! - it reads the source named [`crate::data_file::SOURCE`], because this
 //!   registry's kinds are the ones the shell offers over the **one** table it
 //!   synthesises a document for. A kind wanting a different table takes its
@@ -149,21 +157,38 @@ fn count_grid() -> ChartKind<String> {
     }
 }
 
+/// The crossfilter selection the ranked-bars block drives and reads.
+///
+/// The name is arbitrary and the **declaration** is not:
+/// [`crate::ranked_bars::RankedCategoryBars::plot_yaml`] writes `as: $sel` on a
+/// `toggleY` and `by: $sel` on a `highlight`, and an interactor binding a name
+/// no `params:` entry declares raises
+/// [`brightfield_spec::ParseWarning::InteractorBindingMissing`] — which the
+/// window puts on screen as a *"had no effect"* banner over the picture it has
+/// just drawn. [`crate::ranked_bars::Dashboard::to_spec`] declares the same
+/// entry for the same reason.
+const RANKED_BARS_SELECTION: &str = "sel";
+
 /// [`crate::ranked_bars::chart_kind`] over this registry's source, as a
-/// top-level block.
+/// self-contained top-level fragment.
 ///
 /// The declaration — id, icon, gloss, slot — is that module's, taken whole;
-/// only the builder differs, and only in the two things this registry's spec
+/// only the builder differs, and only in the three things this registry's spec
 /// contract fixes that a placeholder cannot: the table the module counts over,
-/// and the `hconcat:` key that makes one module a document. Rebuilding the
-/// declaration here instead would be a second copy of it, which is what a
-/// registry exists to end.
+/// the `hconcat:` key that makes one module a document, and the `params:` entry
+/// declaring the selection its interactors bind (see
+/// [`RANKED_BARS_SELECTION`]). Rebuilding the declaration here instead would be
+/// a second copy of it, which is what a registry exists to end.
 fn ranked_category_bars() -> ChartKind<String> {
     ChartKind {
         build: |bound, _options| {
             let column = bound.name("category").unwrap_or_default();
             let module = crate::ranked_bars::RankedCategoryBars::new(column);
-            format!("hconcat:\n{}", module.plot_yaml(SOURCE, "sel", 2))
+            let mut out = String::from("params:\n");
+            let _ = writeln!(out, "  {RANKED_BARS_SELECTION}: {{ select: crossfilter }}");
+            let _ = writeln!(out, "hconcat:");
+            out.push_str(&module.plot_yaml(SOURCE, RANKED_BARS_SELECTION, 2));
+            out
         },
         ..crate::ranked_bars::chart_kind()
     }
@@ -341,21 +366,80 @@ mod tests {
     #[test]
     fn every_kind_builds_a_block_that_parses_under_a_data_header() {
         for kind in registry().kinds() {
-            let fields: Vec<Field> = kind
-                .slots
-                .iter()
-                .filter(|s| s.required)
-                .enumerate()
-                .map(|(i, s)| Field::new(format!("c{i}"), s.accepts[0]))
-                .collect();
-            let binding = kind.bind(&fields).expect("its own required slots bind");
-            let block = kind
-                .spec(&binding, &kind.options())
-                .expect("its own builder runs");
-            let source = format!("data:\n  {SOURCE}:\n    file: 'rows.csv'\n{block}");
+            let source = document_of(kind, FILE_HEADER);
             let parsed = parse_spec(&source, Format::Yaml);
             assert!(parsed.is_ok(), "{}: {parsed:?}\n{source}", kind.id);
         }
+    }
+
+    /// **No kind's block asks for something the load then says had no
+    /// effect.** A picture the reader is shown must not arrive under a sentence
+    /// saying part of it did nothing.
+    ///
+    /// Held on the composed document's [`LoadDiagnostics`], because that is the
+    /// object the window turns into a banner: `MeridianApp::say_load_diagnostics`
+    /// raises one `Severity::Warning` over the advisories and one
+    /// `Severity::Error` over the blocking ones, so an advisory a kind's own
+    /// builder earns is a sentence a user reads about a file they merely
+    /// opened, with no spec of theirs to correct.
+    ///
+    /// **Composed, not parsed** — the binding checks that produce these live in
+    /// `analyse_spec`, which `parse_spec` does not run. A version of this test
+    /// written on `parse_spec`'s warnings stayed green on the very block that
+    /// prompted it: the ranked-bars block's `toggleY` and `highlight` bind
+    /// `$sel`, and until the builder declared `sel` under `params:` a
+    /// one-category CSV opened under *"1 instruction … had no effect"*.
+    #[test]
+    fn no_kinds_block_asks_for_something_the_load_says_had_no_effect() {
+        for kind in registry().kinds() {
+            let source = document_of(kind, INLINE_ROWS);
+            let composed = crate::pipeline::compose_spec_str(&source, None)
+                .unwrap_or_else(|e| panic!("{}: {e}\n{source}", kind.id));
+            let found: Vec<String> = composed
+                .diagnostics
+                .advisory()
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            assert!(
+                found.is_empty(),
+                "{}: the block it builds earns an advisory, and the window puts \
+                 every one of these over the picture: {found:?}\n{source}",
+                kind.id
+            );
+        }
+    }
+
+    /// Rows carrying the columns [`document_of`] binds, under the name every
+    /// kind reads. `c0` is numeric so it fills a quantitative slot; both
+    /// columns serve as band axes.
+    const INLINE_ROWS: &str = "\
+data:
+  opened:
+    - { c0: 1, c1: north }
+    - { c0: 4, c1: north }
+    - { c0: 9, c1: south }
+    - { c0: 16, c1: east }
+";
+
+    /// A file-backed `data:` header — enough to parse against, and it opens no
+    /// file because parsing does not read one.
+    const FILE_HEADER: &str = "data:\n  opened:\n    file: 'rows.csv'\n";
+
+    /// The document `kind` builds over its own required slots, under `data`.
+    fn document_of(kind: &ChartKind<String>, data: &str) -> String {
+        let fields: Vec<Field> = kind
+            .slots
+            .iter()
+            .filter(|s| s.required)
+            .enumerate()
+            .map(|(i, s)| Field::new(format!("c{i}"), s.accepts[0]))
+            .collect();
+        let binding = kind.bind(&fields).expect("its own required slots bind");
+        let block = kind
+            .spec(&binding, &kind.options())
+            .expect("its own builder runs");
+        format!("{data}{block}")
     }
 
     /// A measure beats a cross-tabulation, and the field order decides which
