@@ -191,6 +191,80 @@ if [ -n "$audit_rule" ]; then
   echo "   clean: OS libraries only (${audit_lines} entries read)"
 fi
 
+# ---------------------------------------------------------------------------
+# THE SEMANTIC TYPE SOURCE — the FineType extension, its model and its schema
+# catalogue, staged into the artifact so a packaged Brightfield can ask what a
+# column MEANS with no network and no cache.
+#
+# It is not built here. This repository does not build FineType and must not
+# start: the extension is a cdylib from another workspace with its own
+# toolchain pin, and the model is a ~17 MB artifact from a model registry.
+# BRIGHTFIELD_FINETYPE_BUNDLE names a directory somebody else assembled, and
+# everything below is about refusing a bad one rather than making a good one.
+#
+# With the variable unset the artifact ships WITHOUT a type source and the
+# application reports every column as NotAsked. That is a supported build, not
+# a degraded one — it is what a contributor's local `scripts/package.sh` run
+# produces — so this is a message, not a failure.
+#
+# What makes a bundle acceptable is scripts/check-bundled-extension.sh, which
+# is also what scripts/verify-airgapped.sh runs over the bundle inside a built
+# artifact — one reading of the metadata trailer, not two that can drift. Its
+# own self-test runs on every pull request; this call and the airgap one happen
+# only on a release.
+# ---------------------------------------------------------------------------
+FINETYPE_BUNDLE="${BRIGHTFIELD_FINETYPE_BUNDLE:-}"
+if [ -z "$FINETYPE_BUNDLE" ]; then
+  echo "== type source: none (BRIGHTFIELD_FINETYPE_BUNDLE unset)"
+  echo "   the artifact ships without one; columns report no semantic label"
+else
+  echo "== type source: ${FINETYPE_BUNDLE}"
+  # The DuckDB platform name for the target being PACKAGED, which is not
+  # necessarily the host's. An unknown target is a hard failure rather than an
+  # unchecked pass: a mapping nobody added is a bundle nobody checked.
+  case "$TARGET" in
+    aarch64-apple-darwin)      want_platform=osx_arm64 ;;
+    x86_64-apple-darwin)       want_platform=osx_amd64 ;;
+    aarch64-unknown-linux-gnu) want_platform=linux_arm64 ;;
+    x86_64-unknown-linux-gnu)  want_platform=linux_amd64 ;;
+    *)
+      echo "package.sh: no DuckDB platform name known for target ${TARGET}, so the" >&2
+      echo "  bundled extension cannot be checked against it. Add the mapping." >&2
+      exit 1 ;;
+  esac
+  scripts/check-bundled-extension.sh "$FINETYPE_BUNDLE" "$want_platform" \
+    || { echo "package.sh: refusing to stage a bundle that would not load." >&2; exit 1; }
+fi
+
+# stage_finetype DEST — copy the bundle in and record what was copied.
+#
+# `cp -RL` dereferences: a model fetched through a content-addressed cache is a
+# tree of symlinks into that cache, and copying the links produces an artifact
+# that works only on the machine that built it.
+#
+# The manifest is written HERE, over the staged copy, so it records the bytes
+# that actually shipped rather than the bytes that were read. The application
+# checks it before loading the extension; `shasum -c` reads the same file, so a
+# user can check it by hand. What it detects is a bundle that changed after
+# packaging — a truncated unpack, a partial copy, a stale file. It is not a
+# signature: it lives in the directory it describes.
+stage_finetype() {
+  local dest="$1"
+  [ -n "$FINETYPE_BUNDLE" ] || return 0
+  cp -RL "$FINETYPE_BUNDLE" "$dest"
+  rm -f "$dest/bundle-manifest.sha256"
+  # Relative paths, sorted, so the manifest is identical for identical input
+  # and a diff between two packaging runs means something. The manifest EXCLUDES
+  # itself: the shell truncates a redirect target before the pipeline runs, so
+  # an unfiltered find records the hash of an empty file that is about to stop
+  # being empty, and the bundle then never matches its own manifest.
+  ( cd "$dest" && find . -type f ! -name bundle-manifest.sha256 | sed 's|^\./||' | LC_ALL=C sort \
+      | xargs shasum -a 256 > bundle-manifest.sha256 )
+  local n
+  n=$(wc -l < "$dest/bundle-manifest.sha256" | tr -d ' ')
+  echo "   staged ${dest#dist/}: ${n} files, hashes recorded"
+}
+
 echo "== stage: ${STAGE}"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/examples"
@@ -200,6 +274,7 @@ cp LICENSE "$STAGE/LICENSE"
 cp examples/*.yaml "$STAGE/examples/"
 cp -R examples/protocol "$STAGE/examples/protocol"
 cp -R examples/remote "$STAGE/examples/remote"
+stage_finetype "$STAGE/finetype"
 cat > "$STAGE/README.txt" <<EOF
 brightfield ${VERSION} (${TARGET})
 
@@ -240,6 +315,21 @@ Flags: [SPEC.yaml] [--theme light|dark] [--flow vertical|horizontal]
        [--shot-out PATH] [--shot-after N]
 EOF
 
+# Written only when there is one, so the README never describes a directory the
+# reader cannot find. The claim above — nothing here needs a connection — is
+# what makes this worth spelling out: the classifier is a local model file in
+# the package, not a service.
+if [ -n "$FINETYPE_BUNDLE" ]; then
+  cat >> "$STAGE/README.txt" <<'EOF'
+
+finetype/ holds a semantic type classifier: the model and DuckDB extension that
+let Brightfield say a column holds email addresses rather than just VARCHAR, and
+check the column's values against that before drawing from it. It runs entirely
+inside this package — nothing is downloaded, and deleting the directory only
+costs you the labels.
+EOF
+fi
+
 # The tarball's Mach-O is signed only when a real identity is given. With none,
 # it keeps the ad-hoc signature the linker gave it — which is what ships today,
 # and re-signing it ad-hoc would change the code-signing identifier for no gain.
@@ -273,6 +363,10 @@ case "$TARGET" in
     cp examples/*.yaml "$APP/Contents/Resources/examples/"
     cp -R examples/protocol "$APP/Contents/Resources/examples/protocol"
     cp -R examples/remote "$APP/Contents/Resources/examples/remote"
+    # Resources/, not MacOS/: an app launched from /Applications has no sibling
+    # directory, and `semantic::bundle_beside` looks in both places for exactly
+    # this reason.
+    stage_finetype "$APP/Contents/Resources/finetype"
 
     # The system floor is read out of the executable rather than declared, so a
     # toolchain that moves its deployment target moves this with it. An empty

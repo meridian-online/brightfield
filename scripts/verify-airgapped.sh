@@ -31,6 +31,40 @@
 #      defect this file exists to keep out of the artifact, and it would
 #      otherwise be invisible here — the two positive legs above pass whether
 #      or not it is present.
+#   5. THE SEMANTIC TYPE SOURCE, when the artifact carries one. First the
+#      bundle is read off disk by scripts/check-bundled-extension.sh — shape,
+#      ABI, and a symlink count, because a model copied with `cp -R` instead of
+#      `cp -RL` produces an artifact that works only on the machine that built
+#      it and can never be caught by running it there. Then the half no file
+#      check can see: the packaged binary is run with `--check-type-source`
+#      inside the same jail, which loads that extension with its own DuckDB,
+#      loads the model beside it, and puts a label on a column — and reports it
+#      as an EXIT CODE. Nothing here is inferred from the absence of a message.
+#      That flag seals its own environment and working directory before it does
+#      any of it, so the verdict is not about what this machine happened to have
+#      exported; this script does not have to arrange that and could not do it
+#      completely if it tried.
+#
+#      THE LIMITATION, NAMED. The environment is sealed. THE FILESYSTEM IS NOT.
+#      This leg does not establish that the artifact is self-contained, and no
+#      arrangement of it can: an absolute path inside the model's own config
+#      (`config.value_embed_model`) leaves the artifact entirely and is invisible
+#      to every check here, including the manifest, which happily records
+#      whatever the config points at having been resolved elsewhere. A green run
+#      of this leg means the bundle is present and matches its manifest, the
+#      extension's ABI matches the linked DuckDB, the environment was sealed, and
+#      a column typed and validated. It does not mean nothing outside the
+#      artifact was read.
+#
+#      Proving that negative by naming the ways out is an enumeration, and this
+#      one has been wrong three times running — about a code path, an environment
+#      variable, and a working directory. The bounded form is deny-by-default:
+#      extend the jail below, which already denies the network, to deny reads
+#      outside the artifact. That is not built, and until it is, this leg is a
+#      smoke test of the type source rather than a containment proof.
+#      An artifact with NO bundle skips this leg (a supported build, see
+#      scripts/package.sh); a bundle that is present and does not work is a
+#      failure.
 #
 # The jail: macOS `sandbox-exec` with `(deny network*)`; Linux `unshare -rn`
 # (a network namespace with no interfaces). Both windows open briefly on a
@@ -45,10 +79,13 @@
 # assesses a signature, a notarization ticket or the quarantine attribute, and a
 # green run says nothing about them.
 #
-# Everything the test opens ships inside the artifact, so this script proves
-# the artifact self-contained, not the artifact-plus-repo.
+# Every SPEC the test opens ships inside the artifact, so the render legs are
+# about the artifact rather than the artifact-plus-repo. That is a statement
+# about the specs, and it does not extend to the type-source leg: see leg 5,
+# which names precisely what it does and does not establish.
 set -euo pipefail
 
+HERE=$(cd "$(dirname "$0")" && pwd)
 ARTIFACT="${1:?usage: scripts/verify-airgapped.sh dist/brightfield-<version>-<target>.(tar.gz|dmg)}"
 [ -f "$ARTIFACT" ] || { echo "no such artifact: $ARTIFACT"; exit 1; }
 
@@ -176,6 +213,7 @@ case "$ARTIFACT" in
     EXE="./brightfield"
     EXAMPLES="examples"
     REMOTE_SPEC="examples/remote/edgar-gleif-crosswalk.yaml"
+    FTBUNDLE="finetype"
     [ -x "$PKG/$EXE" ] || { echo "no executable 'brightfield' in the tarball"; exit 1; }
     ;;
   *.dmg)
@@ -190,6 +228,7 @@ case "$ARTIFACT" in
     EXE="./Brightfield.app/Contents/MacOS/brightfield"
     EXAMPLES="Brightfield.app/Contents/Resources/examples"
     REMOTE_SPEC="Brightfield.app/Contents/Resources/examples/remote/edgar-gleif-crosswalk.yaml"
+    FTBUNDLE="Brightfield.app/Contents/Resources/finetype"
     [ -x "$PKG/$EXE" ] || { echo "no executable inside Brightfield.app on the image"; exit 1; }
     ;;
   *)
@@ -197,6 +236,74 @@ case "$ARTIFACT" in
     exit 1
     ;;
 esac
+
+# The semantic type source, if this artifact carries one. Read off the files
+# before anything is run, because a bundle that is incomplete or full of
+# dangling symlinks would otherwise show up only as a column with no label —
+# which is also what a build packaged deliberately without one looks like.
+#
+# HAS_TYPE_SOURCE is what run 1 below asserts against. It is set to 0 for an
+# artifact with no bundle, which is a supported build (see scripts/package.sh);
+# a bundle that is present and broken is a FAILURE, not an absence.
+HAS_TYPE_SOURCE=0
+if [ ! -d "$PKG/$FTBUNDLE" ]; then
+  echo "== type source: this artifact carries none — the label legs are skipped"
+else
+  echo "== type source: ${FTBUNDLE}"
+  # One reading of the bundle, shared with scripts/package.sh — including the
+  # symlink count, which is the check that a `cp -R` where `cp -RL` was needed
+  # produces an artifact working ONLY on the machine that built it. No platform
+  # argument: the artifact does not know which target it is, and the packaging
+  # run already decided that against the target it was building for.
+  "${HERE}/check-bundled-extension.sh" "$PKG/$FTBUNDLE" | sed 's/^/   /' || {
+    echo "   FAILED: the artifact carries a type source that would not load"; exit 1; }
+  HAS_TYPE_SOURCE=1
+fi
+
+# THE AIR-GAPPED HALF OF THE TYPE-SOURCE CLAIM. The file checks above say the
+# bytes are present; this says the PACKAGED BINARY can load that extension with
+# its own DuckDB, load the model beside it, and put a label on a column, with
+# the network denied.
+#
+# WHERE THE INPUTS COME FROM IS THE BINARY'S JOB, NOT THIS SCRIPT'S, and that
+# division is the correction of a defect rather than a preference. Redirecting
+# HOME here — which this script does — closes the HuggingFace cache and leaves
+# a larger door open: with FINETYPE_MODEL_DIR exported in whatever environment
+# the script was invoked from, an earlier version of this leg reported success
+# on a bundle whose weights were eighteen bytes of rubbish, because the
+# extension took its model from there. Neither sandbox-exec nor unshare -rn
+# scrubs the environment, and `env HOME=…` without -i does not either.
+#
+# So --check-type-source re-execs itself with the environment CLEARED and only
+# what it needs put back, and refuses to report at all if it sees anything
+# outside that list and the variables the platform writes into the child after
+# execve. This script therefore passes it whatever environment it likes and
+# trusts the EXIT CODE, which is what the flag exists to produce.
+#
+# The version of this leg that shipped first grepped a rendering run's stderr
+# for a warning and passed on its absence — but the rendering path never
+# configures a type source, so the warning could not appear and the leg passed
+# for any bundle at all. A check whose failing case cannot be reached is not a
+# check; so is one whose inputs it cannot account for.
+#
+# `--check-type-source` opens no window: it is the one leg here that can be run
+# unattended, and the one that can be made to fail on demand by planting a
+# broken bundle in the artifact.
+if [ "$HAS_TYPE_SOURCE" -eq 1 ]; then
+  echo "== run 0: the packaged binary types a column, jailed (no window)"
+  ts_status=0
+  ( cd "$PKG" && env HOME="$TMP/home" BRIGHTFIELD_CONFIG_DIR="$TMP/config" \
+      "${JAIL[@]}" "$EXE" --check-type-source ) > "$TMP/typesource.log" 2>&1 || ts_status=$?
+  sed 's/^/   /' "$TMP/typesource.log"
+  case "$ts_status" in
+    0) echo "   ok: the bundled extension and model typed a column with no network" ;;
+    2) echo "   FAILED: the binary found no bundle, but ${FTBUNDLE} is in this artifact —"
+       echo "   it is staged somewhere the executable does not look. See scripts/package.sh."
+       exit 1 ;;
+    *) echo "   FAILED: the bundled type source did not come up (exit ${ts_status})"
+       exit 1 ;;
+  esac
+fi
 
 echo "== run 1: chart spec, jailed (a window opens briefly)"
 smoke "$TMP/chart.png" -- "$EXAMPLES/bars.yaml"

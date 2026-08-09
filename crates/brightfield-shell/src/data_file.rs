@@ -73,7 +73,7 @@
 
 use std::path::{Path, PathBuf};
 
-use brightfield_engine::{ColumnProfile, Engine, ProfileOutcome};
+use brightfield_engine::{ColumnProfile, Engine, LoadOptions, ProfileOutcome};
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::{parse_spec, Format};
 
@@ -496,7 +496,7 @@ fn columns_of(path: &Path) -> Result<Vec<ColumnProfile>, String> {
     let analysis = analyse_spec(&parsed.spec)
         .map_err(|e| format!("{}: analysis error: {e}", path.display()))?;
     let load = Engine::new()
-        .load_spec(parsed.spec, analysis, None)
+        .load_spec_with(parsed.spec, analysis, None, &LoadOptions::packaged())
         .map_err(|e| format!("{}: {e}", path.display()))?;
     let profile = load
         .session
@@ -547,6 +547,7 @@ pub fn pick() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use brightfield_engine::SemanticType;
 
     fn column(name: &str, type_name: &str, distinct: u64) -> ColumnProfile {
         ColumnProfile {
@@ -557,6 +558,7 @@ mod tests {
             distinct,
             min: None,
             max: None,
+            semantic: SemanticType::NotAsked,
         }
     }
 

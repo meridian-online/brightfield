@@ -12,6 +12,7 @@ pub mod error;
 pub mod facts;
 pub mod preagg;
 pub mod profile;
+pub mod semantic;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -21,6 +22,7 @@ pub use brightfield_sql::ir::Predicate as SqlPredicate;
 pub use duckdb::arrow::record_batch::RecordBatch;
 use duckdb::Connection;
 pub use profile::{ColumnProfile, ProfileOutcome, SourceProfile};
+pub use semantic::{SemanticType, TypeSource, ValueCheck};
 
 /// A named, loud failure assembling a query's Arrow chunks into the single
 /// [`RecordBatch`] a mark draws.
@@ -257,6 +259,76 @@ pub struct LoadOptions {
     /// extensions — pointing it at a bundle directory is the packaging
     /// story, pointing it at an empty directory is the hermetic-test one.
     pub extension_directory: Option<PathBuf>,
+    /// Where to get an answer to "what does this column MEAN", as opposed to
+    /// "what did DuckDB store it as".
+    ///
+    /// `None` (the default) leaves every column's
+    /// [`ColumnProfile::semantic`] at [`SemanticType::NotAsked`]: nobody
+    /// looked, and nothing about the column's meaning is claimed.
+    /// [`semantic::TypeSourceSpec::Bundle`] is loaded from its directory alone with no
+    /// network at any point — see [`semantic::FinetypeBundle::open`], which
+    /// refuses a bundle it cannot prove works rather than reporting every
+    /// column as unlabelled.
+    ///
+    /// A source that fails to open is remembered
+    /// ([`Session::type_source_error`]) and printed, never a failed load: a
+    /// dashboard renders the same with or without a type source, and losing
+    /// the whole session over an optional one would be absurd.
+    ///
+    /// # What a native source costs the session
+    ///
+    /// Loading a FineType bundle needs `allow_unsigned_extensions` on the
+    /// connection: an extension built anywhere but DuckDB's own community
+    /// pipeline carries 256 zero bytes where a signature would go. That flag is
+    /// not bundle-specific — it turns signature checking off for EVERYTHING
+    /// that connection loads.
+    ///
+    /// So a source declaring
+    /// [`semantic::OpenTypeSource::needs_unsigned_extensions`] costs the
+    /// session the two acquisition routes this engine can travel: autoinstall
+    /// is off, and the extension repository is a path that cannot resolve, so
+    /// the bare `INSTALL <name>` the engine issues for `httpfs`, `spatial` and
+    /// `ducklake` fails — the per-source failure those already report.
+    ///
+    /// It is a bound on what this engine does, NOT a sandbox. Measured on a
+    /// connection carrying exactly these settings: `INSTALL spatial` fails,
+    /// and `INSTALL spatial FROM core` succeeds and writes the extension to
+    /// disk. An explicit `FROM <repo>` names its own repository and neither
+    /// setting gates it. No code path here issues one; anyone adding a
+    /// `FROM`-qualified `INSTALL` is stepping outside this bound.
+    ///
+    /// A source that loads nothing native — the default — declares `false` and
+    /// costs the session nothing.
+    pub type_source: Option<semantic::TypeSourceSpec>,
+}
+
+impl LoadOptions {
+    /// [`LoadOptions::default`], plus the FineType bundle a packaged build
+    /// carries beside its own executable.
+    ///
+    /// The lookup — [`semantic::bundle_beside`] — is resolved once per process
+    /// and returns `None` for a build packaged without a bundle and for a
+    /// `cargo run` out of `target/`, both of which then behave exactly as
+    /// [`LoadOptions::default`]. This is the only place the application decides
+    /// WHERE its type source lives; everything else takes a directory.
+    ///
+    /// The network policy is left at the default. What a bundle costs the
+    /// session is described on [`LoadOptions::type_source`] and applied by the
+    /// engine, so a caller cannot get it wrong by forgetting a second field.
+    #[must_use]
+    pub fn packaged() -> Self {
+        static BUNDLE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+        let dir = BUNDLE.get_or_init(|| {
+            std::env::current_exe()
+                .ok()
+                .as_deref()
+                .and_then(semantic::bundle_beside)
+        });
+        LoadOptions {
+            type_source: dir.clone().map(semantic::TypeSourceSpec::Bundle),
+            ..LoadOptions::default()
+        }
+    }
 }
 
 /// Factory for creating [`Session`] objects. Stateless.
@@ -290,8 +362,36 @@ impl Engine {
         base_dir: Option<&Path>,
         options: &LoadOptions,
     ) -> Result<LoadResult, EngineError> {
-        let conn =
-            Connection::open_in_memory().map_err(|e| EngineError::ConnectionFailed { cause: e })?;
+        // `allow_unsigned_extensions` is a DATABASE-creation flag, so the
+        // decision has to be made here, before anything else.
+        //
+        // WHAT IT ACTUALLY DOES, because the narrow-sounding version of this
+        // sentence is wrong: it turns signature checking off for everything
+        // this connection loads, not just for the bundle. A FineType extension
+        // built anywhere but DuckDB's own community pipeline carries 256 zero
+        // bytes where a signature would go, so `LOAD` refuses it without the
+        // flag — and with the flag, this connection would equally load an
+        // unsigned extension `INSTALL`ed from a repository over the network.
+        //
+        // So it comes with a restriction, applied below: on a connection with
+        // signatures relaxed, the acquisition routes this engine travels are
+        // shut. See `LoadOptions::type_source` for what that covers and the
+        // measured form of `INSTALL` it does not.
+        //
+        // Asked of the SPEC, not of "a type source exists": a source that loads
+        // nothing native needs no relaxation and pays no restriction.
+        let relax_signatures = options
+            .type_source
+            .as_ref()
+            .is_some_and(semantic::TypeSourceSpec::needs_unsigned_extensions);
+        let conn = if relax_signatures {
+            duckdb::Config::default()
+                .allow_unsigned_extensions()
+                .and_then(Connection::open_in_memory_with_flags)
+        } else {
+            Connection::open_in_memory()
+        }
+        .map_err(|e| EngineError::ConnectionFailed { cause: e })?;
 
         let emit_output =
             emit_sources(&spec, base_dir).map_err(|e| EngineError::EmitFailed { cause: e })?;
@@ -316,6 +416,49 @@ impl Engine {
                  SET custom_extension_repository='/dev/null/brightfield-no-network';",
             )
             .map_err(|e| EngineError::ConnectionFailed { cause: e })?;
+        }
+        if relax_signatures {
+            // The bound on the relaxation above. Signature checking is off for
+            // this connection, so nothing may be ACQUIRED onto it: no
+            // autoinstall, and a repository path through the null device that
+            // cannot resolve, so a code path that still tried would fail
+            // locally rather than reach out.
+            //
+            // `autoload_known_extensions` is deliberately NOT touched, and the
+            // difference matters. Autoload is not a network control: it is how
+            // DuckDB registers an extension it ALREADY has, and the bundled
+            // library carries `parquet` statically. An earlier form of this
+            // restriction switched it off and stopped Parquet files opening at
+            // all. What holds that now is
+            // `a_native_type_source_costs_the_session_acquisition_but_not_autoload`,
+            // which reads the setting off a live session — NOT the data_file
+            // suite, which has no bundle beside its test binary and so never
+            // reaches this branch.
+            //
+            // Autoload resolves through the same repository as autoinstall, so
+            // with both shut it can only succeed for an extension already
+            // present.
+            conn.execute_batch(
+                "SET autoinstall_known_extensions=false; \
+                 SET custom_extension_repository='/dev/null/brightfield-no-network';",
+            )
+            .map_err(|e| EngineError::ConnectionFailed { cause: e })?;
+        }
+
+        // The type source, if one was configured. It comes up here — after the
+        // no-network settings above, so a bundle load can only ever read the
+        // directory it was given — and its failure is remembered rather than
+        // raised: a spec renders identically with or without one.
+        let mut type_source: Option<Box<dyn TypeSource>> = None;
+        let mut type_source_error: Option<String> = None;
+        if let Some(spec) = &options.type_source {
+            match spec.open(&conn) {
+                Ok(source) => type_source = Some(source),
+                Err(e) => {
+                    eprintln!("warning: no semantic type source — {e}");
+                    type_source_error = Some(e);
+                }
+            }
         }
 
         // Load the DuckDB `spatial` extension once at bootstrap, BEFORE the DDL
@@ -544,6 +687,8 @@ impl Engine {
             sample: None,
             nav_extents: HashMap::new(),
             facts_cache: HashMap::new(),
+            type_source,
+            type_source_error,
         };
 
         Ok(LoadResult {
@@ -684,6 +829,15 @@ pub struct Session {
     /// entry rather than adding another, so the LRU cap that bounds a cache
     /// keyed by interpolated SQL has nothing to bound here.
     facts_cache: HashMap<usize, (String, MarkFacts)>,
+    /// The session's semantic type source, if [`LoadOptions::type_source`]
+    /// named a bundle and it came up. `None` leaves every column's
+    /// [`ColumnProfile::semantic`] at [`SemanticType::NotAsked`].
+    type_source: Option<Box<dyn TypeSource>>,
+    /// Why the configured type source did not come up. `Some` here with
+    /// `type_source: None` is the distinction between "a bundle was asked for
+    /// and refused" and "no bundle was asked for" — the two look identical
+    /// from a column profile, and only one of them is a packaging bug.
+    type_source_error: Option<String>,
 }
 
 /// One navigable axis of a navigation extent: the column the gesture moved
@@ -822,6 +976,61 @@ impl Session {
     /// Access DDL warnings from the load phase.
     pub fn ddl_warnings(&self) -> &[ParseWarning] {
         &self.ddl_warnings
+    }
+
+    /// The name of the semantic type source backing this session's column
+    /// meanings, if one came up.
+    #[must_use]
+    pub fn type_source_name(&self) -> Option<&str> {
+        self.type_source.as_deref().map(TypeSource::name)
+    }
+
+    /// Why the configured type source did not come up.
+    ///
+    /// `None` for both "none was configured" and "the one configured works" —
+    /// pair it with [`Session::type_source_name`] to tell those apart. A
+    /// packaged build that reports `Some` here has a broken bundle, which no
+    /// column profile can say on its own.
+    #[must_use]
+    pub fn type_source_error(&self) -> Option<&str> {
+        self.type_source_error.as_deref()
+    }
+
+    /// One of DuckDB's own settings, as this connection currently has it.
+    ///
+    /// The engine's extension-acquisition policy is a set of `SET` statements
+    /// and nothing else, so this is how a test asks what a session actually
+    /// ended up with rather than what the code that built it appears to say.
+    ///
+    /// # Errors
+    ///
+    /// DuckDB does not know that setting.
+    pub fn duckdb_setting(&self, name: &str) -> Result<String, duckdb::Error> {
+        self.conn.query_row(
+            "SELECT CAST(current_setting(?) AS VARCHAR)",
+            duckdb::params![name],
+            |r| r.get(0),
+        )
+    }
+
+    /// What the linked DuckDB calls its platform and its version, e.g.
+    /// `("osx_arm64", "v1.5.2")`.
+    ///
+    /// Asked of the running library rather than read off a manifest, because
+    /// the manifest states a semver RANGE and the loadable-extension ABI is
+    /// decided by the exact build that ends up linked. This is the pair
+    /// [`semantic::check_abi`] compares a bundled extension against.
+    ///
+    /// # Errors
+    ///
+    /// DuckDB failed to answer about itself, which is not a thing a working
+    /// connection does.
+    pub fn duckdb_platform_and_version(&self) -> Result<(String, String), duckdb::Error> {
+        let platform = self
+            .conn
+            .query_row("SELECT * FROM pragma_platform()", [], |r| r.get(0))?;
+        let version = self.conn.query_row("SELECT version()", [], |r| r.get(0))?;
+        Ok((platform, version))
     }
 
     /// Current param values — the live param store.
@@ -2301,8 +2510,13 @@ impl Session {
         columns: &[(String, String)],
     ) -> Result<ProfileOutcome, String> {
         let mut selects: Vec<String> = vec!["CAST(count(*) AS BIGINT)".to_string()];
-        // Per column: whether it contributed min/max cells (drives read back).
+        // Per column: whether it contributed min/max cells, and what the type
+        // source asked for. Both drive the read back below, which walks the
+        // one result row by position.
         let mut gated: Vec<bool> = Vec::with_capacity(columns.len());
+        // `Ok(())` — this column contributed a typing cell to the SELECT.
+        // `Err(reason)` — the type source declined it, or there is none.
+        let mut typed: Vec<Result<(), SemanticType>> = Vec::with_capacity(columns.len());
         for (col, ty) in columns {
             let q = escape_ident(col);
             selects.push(format!("CAST(count(\"{q}\") AS BIGINT)"));
@@ -2313,6 +2527,21 @@ impl Session {
                 selects.push(format!("CAST(max(\"{q}\") AS VARCHAR)"));
             }
             gated.push(g);
+            // The semantic pass rides HERE, in the aggregate that is already
+            // being issued, rather than in a second scan beside it: FineType's
+            // `ft_profile` is a true DuckDB aggregate, so one extra term per
+            // column costs one extra accumulator on the same pass over the
+            // same rows.
+            typed.push(match &self.type_source {
+                None => Err(SemanticType::NotAsked),
+                Some(src) => match src.typing_expr(col, ty) {
+                    Ok(expr) => {
+                        selects.push(expr);
+                        Ok(())
+                    }
+                    Err(reason) => Err(SemanticType::Unanswered { reason }),
+                },
+            });
         }
         let sql = format!(
             "SELECT {} FROM \"{}\"",
@@ -2328,7 +2557,7 @@ impl Session {
         let row_count = profile::read_count(&batch, 0);
         let mut out = Vec::with_capacity(columns.len());
         let mut idx = 1usize;
-        for ((col, ty), &g) in columns.iter().zip(gated.iter()) {
+        for (((col, ty), &g), asked) in columns.iter().zip(gated.iter()).zip(typed) {
             let non_null = profile::read_count(&batch, idx);
             idx += 1;
             let distinct = profile::read_count(&batch, idx);
@@ -2342,6 +2571,15 @@ impl Session {
             } else {
                 (None, None)
             };
+            let semantic = match (asked, &self.type_source) {
+                (Err(answer), _) => answer,
+                (Ok(()), None) => SemanticType::NotAsked,
+                (Ok(()), Some(src)) => {
+                    let cell = batch.column(idx).clone();
+                    idx += 1;
+                    src.read_and_check(&self.conn, name, col, cell.as_ref(), 0)
+                }
+            };
             out.push(ColumnProfile {
                 name: col.clone(),
                 type_name: ty.clone(),
@@ -2350,6 +2588,7 @@ impl Session {
                 distinct,
                 min,
                 max,
+                semantic,
             });
         }
         Ok(ProfileOutcome::Profiled {
@@ -2859,6 +3098,7 @@ plot:
         let options = LoadOptions {
             network: NetworkPolicy::Disabled,
             extension_directory: Some(ext_dir.clone()),
+            type_source: None,
         };
         let mut session = Engine::new()
             .load_spec_with(spec, analysis, None, &options)
@@ -2897,6 +3137,7 @@ plot:
         let options = LoadOptions {
             network: NetworkPolicy::Disabled,
             extension_directory: Some(ext_dir.clone()),
+            type_source: None,
         };
         let err = Engine::new()
             .load_spec_with(spec, analysis, None, &options)
@@ -2958,6 +3199,7 @@ plot:
         let options = LoadOptions {
             network: NetworkPolicy::Disabled,
             extension_directory: Some(ext_dir.clone()),
+            type_source: None,
         };
         let err = Engine::new()
             .load_spec_with(spec, analysis, None, &options)
