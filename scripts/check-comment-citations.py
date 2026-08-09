@@ -36,11 +36,12 @@ WHAT IS CHECKED (changed comment lines only, `origin/main...HEAD`)
        cannot judge the claim — no gate can — so it asks for the citation that
        lets a reader judge it: name the test, or drop the quantifier.
 
-       This one resolves nothing, so its whole design is about not crying
-       wolf. It needs a SYMBOL, not merely a backticked token: `fill`, `bars`
-       and `colour` are backticked all over this repo as channel, kind and role
-       names, and a rule that read those as symbols would report ordinary
-       prose. And it needs the quantifier and the symbol in ONE sentence.
+       It judges no claim, so its whole design is about not crying wolf. It
+       needs a SYMBOL, not merely a backticked token: this repo backticks
+       channel names, role names, kind ids and column values, and a rule that
+       read those as symbols would report ordinary prose. What counts as a
+       symbol is in symbol_citations(). And it needs the quantifier and the
+       symbol in ONE sentence.
 
 WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
     - Only ADDED comment lines in the diff. Pre-existing debt is not blocking;
@@ -68,6 +69,20 @@ WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
     - Rule D does not read the test it asks for. A comment that names one is
       past it, whatever the test asserts. It buys a reader a place to look and
       an author a moment of doubt, not a proof.
+    - Rule D's RECALL was measured against the comment lines a review wave in
+      this repo made an author delete, and it is a minority of them. Two shapes
+      account for the residue, and both are refusals rather than oversights:
+        * the subject is a bare lowercase word the file does not define as an
+          item — a protocol status value quoted in prose, say. There is no
+          route from that word to anything a gate can resolve, and treating
+          every backticked word as a symbol was measured on this tree and
+          reported prose about parameters and literal values at a rate that
+          would get the gate switched off.
+        * the quantifier and the subject sit in different SENTENCES of one
+          line. Pairing across a sentence boundary is the false positive this
+          rule can least afford, so that shape stays a reviewer's.
+      A sentence rule D misses costs a reviewer a read. A sentence it reports
+      wrongly costs the gate itself.
 
 ESCAPE HATCH
     A claim about code outside this repo (upstream libraries, a sibling repo)
@@ -153,11 +168,19 @@ PKG_PATTERNS = (PKG_AFTER, PKG_INLINE, PKG_BEFORE, PKG_LABELLED, PKG_LABELLED_BE
 # the two `-thing` forms that say the same in another word order. Each asserts a
 # completeness somebody has to enumerate, so each needs the enumeration cited.
 #
+# The MEMBERSHIP of this alternation is the rule, and dropping a word from it is
+# silent: the gate stays green and simply stops seeing that claim. So --self-test
+# spells the words out a SECOND time and requires a detection for each. The
+# second spelling is deliberate — a fixture list derived from this one would be
+# deleted by the same edit it exists to catch. These are English words rather
+# than names from this repo, so they travel to a sibling repo as they stand.
+#
+# `re.I` is here because a claim opening a sentence is capitalised; it is pinned
+# by a self-test case whose quantifier is sentence-initial.
+#
 # The lookarounds exclude a hyphen, which is the difference between a claim and
 # an adjective: `read-only`, `colour-only`, `all-null` and `never-run` describe a
-# thing rather than asserting anything about how much of it there is. On the
-# tree this landed against, the exclusion drops `--all` from 561 findings to
-# 535.
+# thing rather than asserting anything about how much of it there is.
 QUANTIFIER = re.compile(
     r"(?<![-\w])(only|always|every|never|nothing|none|all|everything|anything)(?![-\w])",
     re.I,
@@ -294,22 +317,30 @@ def package_citations(body: str) -> list[str]:
     return seen
 
 
-def symbol_citations(text: str) -> list[str]:
+def symbol_citations(text: str, file_text: str = "") -> list[str]:
     """Backticked tokens this repo would call a NAMED SYMBOL, in first-seen order.
 
     A backticked token is not enough. This repo backticks channel names, role
-    names, kind ids and column values — `fill`, `colour`, `bars`, `x` — and
-    reading those as symbols would make rule D report ordinary prose, which is
-    how a gate gets switched off. So a token qualifies on one of four marks a
-    reader also uses:
+    names, kind ids and column values, and reading those as symbols would make
+    rule D report ordinary prose, which is how a gate gets switched off. So a
+    token qualifies on one of these marks, each of which a reader uses too, and
+    each of which --self-test exercises ALONE so that deleting it reddens:
 
       * an intra-doc link, `` [`accept`] `` — the brackets say symbol outright,
         which is why lowercase alone does not disqualify a token
       * a `::` path
       * an `_`, or an uppercase letter — `snake_case` and `CamelCase`/`SCREAMING`
         are Rust item names and are not how English words arrive in a sentence
+      * the FILE the comment lives in defines an item of that name. This is the
+        one mark that resolves rather than guesses, and it is what lets a claim
+        about a plain lowercase function — "`accept` has already refused
+        anything with a control character" — be seen at all. Scoped to the one
+        file on purpose: workspace-wide, `only`, `all`, `row`, `value` and
+        `name` are each some crate's function, and the mark would degenerate
+        into "any backticked word".
 
-    A one-word lowercase token with none of those marks is left to a reviewer.
+    A lowercase token carrying none of those is left to a reviewer, which is a
+    measured miss rather than an oversight — see the module docstring.
     """
     seen: list[str] = []
     for m in SYMBOL_TICKED.finditer(text):
@@ -319,7 +350,14 @@ def symbol_citations(text: str) -> list[str]:
             and text[m.start() - 1] == "["
             and text[m.end():m.end() + 1] == "]"
         )
-        if not (linked or "::" in name or "_" in name or any(c.isupper() for c in name)):
+        marked = (
+            linked
+            or "::" in name
+            or "_" in name
+            or any(c.isupper() for c in name)
+            or (bool(file_text) and re.search(DEFN.format(sym=re.escape(name)), file_text))
+        )
+        if not marked:
             continue
         if name not in seen:
             seen.append(name)
@@ -331,11 +369,12 @@ def sentences(body: str) -> list[str]:
     return [s for s in SENTENCE_END.split(body) if s.strip()]
 
 
-def completeness_claims(body: str) -> list[tuple[str, str]]:
+def completeness_claims(body: str, file_text: str = "") -> list[tuple[str, str]]:
     """(quantifier, symbol) for each sentence that asserts one over the other.
 
-    Empty when the comment names a test: the claim then has a place a reader can
-    go, which is the whole of what this rule asks for.
+    `file_text` is the source the comment lives in, for the resolving mark in
+    symbol_citations(). Empty when the comment names a test: the claim then has
+    a place a reader can go, which is the whole of what this rule asks for.
     """
     if TEST_CITE.search(body):
         return []
@@ -348,7 +387,7 @@ def completeness_claims(body: str) -> list[tuple[str, str]]:
         q = QUANTIFIER.search(TICKED_SPAN.sub(" ", sentence))
         if not q:
             continue
-        syms = symbol_citations(sentence)
+        syms = symbol_citations(sentence, file_text)
         if syms:
             claims.append((q.group(1), syms[0]))
     return claims
@@ -426,11 +465,25 @@ def all_comment_lines(path: Path) -> list[tuple[int, str]]:
     return hits
 
 
+_FILE_TEXT: dict[Path, str] = {}
+
+
+def file_text(path: Path) -> str:
+    """The source a comment lives in, read once. Absent file reads as empty."""
+    if path not in _FILE_TEXT:
+        try:
+            _FILE_TEXT[path] = path.read_text(errors="replace")
+        except OSError:
+            _FILE_TEXT[path] = ""
+    return _FILE_TEXT[path]
+
+
 def check(pairs: list[tuple[Path, list[tuple[int, str]]]]) -> list[str]:
     known = crates()
     failures: list[str] = []
     for path, lines in pairs:
         rel = path.relative_to(ROOT)
+        source = file_text(path)
         for lineno, body in lines:
             for crate, symbol in (
                 [(c, s) for c, s in ATTR_POSSESSIVE.findall(body)]
@@ -452,7 +505,7 @@ def check(pairs: list[tuple[Path, list[tuple[int, str]]]]) -> list[str]:
                     f"{rel}:{lineno} cites the `{name}` package, which is not a crate "
                     f"here and not in Cargo.lock"
                 )
-            for word, symbol in completeness_claims(body):
+            for word, symbol in completeness_claims(body, source):
                 failures.append(
                     f"{rel}:{lineno} says \"{word}\" of `{symbol}` and names no test — "
                     f"cite the test that holds it, or drop the quantifier"
@@ -638,21 +691,74 @@ def self_test() -> int:
     ]
 
     # --- the COMPLETENESS fixtures ----------------------------------------
-    # Rule D resolves nothing, so its fixtures are all about where it stops.
-    # The four rejections are the shapes that were corrected by hand across a
-    # review wave in this repo; the six controls are the sentences beside them
-    # that were correct, and each control is one mutation away from red.
+    # Rule D judges no claim, so its fixtures are about where it stops. The
+    # rejections are shapes a review wave in this repo corrected by hand; the
+    # controls are sentences from beside them that were correct.
     #
-    # `plain` is a lowercase word with no `_` and no capital: the mark that
-    # separates a symbol from a role name in this repo's prose. Derived from a
-    # string literal in the tree rather than named, for the same reason as the
-    # fixtures above.
+    # The material below is derived so that each MARK in symbol_citations()
+    # gets a token qualifying through that mark ALONE. Deleting a mark then
+    # reddens one named case instead of none — which is what a gate whose marks
+    # were unpinned looks like from the outside: green, and blind.
+    def usable(name: str) -> bool:
+        return not TEST_CITE.search(name) and not QUANTIFIER.fullmatch(name)
+
+    # The probe file is a REAL file, because the resolving mark reads the source
+    # the comment sits in. A fixture written against a path that does not exist
+    # cannot reach that mark at all.
+    probe = lc_local = None
+    for c in known:
+        for f in sorted((ROOT / "crates" / c).glob("**/*.rs")):
+            for n in re.findall(r"\bfn ([a-z][a-z0-9]{2,})\b", f.read_text(errors="replace")):
+                if usable(n):
+                    probe, lc_local = f, n
+                    break
+            if probe:
+                break
+        if probe:
+            break
+    if probe is None:
+        print("self-test: no lowercase fn to derive the file-resolved-symbol case from")
+        return 1
+    probe_text = file_text(probe)
+
+    def defined_in_probe(name: str) -> bool:
+        return bool(re.search(DEFN.format(sym=re.escape(name)), probe_text))
+
+    # CamelCase, snake_case and a lowercase `a::b` path — one per lexical mark.
+    # Each is required NOT to be an item of the probe file, or the resolving
+    # mark would hold it up after its own mark was deleted and the mutation
+    # would stay green.
+    camel = snake = None
+    lc_names: list[str] = []
+    for c in known:
+        for f in sorted((ROOT / "crates" / c).glob("**/*.rs")):
+            text = f.read_text(errors="replace")
+            if camel is None:
+                camel = next((n for n in re.findall(r"\b(?:struct|enum|trait) ([A-Z][a-z][A-Za-z0-9]*)\b", text)
+                              if usable(n) and not defined_in_probe(n)), None)
+            if snake is None:
+                snake = next((n for n in re.findall(r"\bfn ([a-z][a-z0-9]*_[a-z0-9_]+)\b", text)
+                              if usable(n) and not defined_in_probe(n)), None)
+            lc_names += [n for n in re.findall(r"\bmod ([a-z][a-z0-9]{2,})\b", text) if usable(n)]
+            if camel and snake and len(lc_names) >= 1:
+                break
+        if camel and snake and lc_names:
+            break
+    if camel is None or snake is None or not lc_names:
+        print("self-test: could not derive a CamelCase, a snake_case and a module name")
+        return 1
+    lc_path = f"{lc_names[0]}::{lc_local}"
+
+    # `plain` is a lowercase word with no `_`, no capital and no definition in
+    # the probe file: the token rule D deliberately does not read as a symbol.
+    # Derived from a string literal in the tree rather than named, for the same
+    # reason as the fixtures above.
     plain = None
     for c in known:
         for f in sorted((ROOT / "crates" / c).glob("**/*.rs")):
-            m = re.search(r'"([a-z][a-z0-9]{2,})"', f.read_text(errors="replace"))
-            if m and not TEST_CITE.search(m.group(1)) and not QUANTIFIER.fullmatch(m.group(1)):
-                plain = m.group(1)
+            plain = next((n for n in re.findall(r'"([a-z][a-z0-9]{2,})"', f.read_text(errors="replace"))
+                          if usable(n) and not defined_in_probe(n) and n != lc_local), None)
+            if plain:
                 break
         if plain:
             break
@@ -660,37 +766,79 @@ def self_test() -> int:
         print("self-test: no plain lowercase literal to derive the not-a-symbol case from")
         return 1
 
+    # One sentence per word of the QUANTIFIER alternation. Spelled out here, not
+    # read from the pattern: a list derived from the thing under test is deleted
+    # by the same edit it exists to catch. The subject is intra-doc-linked so
+    # these cases turn on the quantifier and not on which symbol mark survives.
+    quantified = {
+        "only": f"[`{camel}`] is the only thing that makes one",
+        "always": f"[`{camel}`] is always rebuilt before the first frame",
+        "every": f"[`{camel}`] is re-checked on every path through here",
+        "never": f"[`{camel}`] never carries a URL scheme",
+        "nothing": f"nothing else writes [`{camel}`]",
+        "none": f"of the shapes above, none reaches [`{camel}`]",
+        "all": f"[`{camel}`] covers all of the kinds we ship",
+        "everything": f"everything else falls to [`{camel}`]",
+        "anything": f"[`{camel}`] refuses anything carrying a control character",
+    }
     cases += [
-        (f"[`{sym}`] is the only thing that sets it", False,
-         f"a completeness claim over a symbol, with no test named ({sym})"),
-        (f"nothing else writes `{sym}`", False,
-         "the same claim with the quantifier first"),
-        (f"`{sym}` is re-checked on every path through here", False,
-         "`every`, over a symbol, with nothing named that would notice"),
+        (body, False, f"the quantifier `{word}` is read as a claim", (f'"{word}"',))
+        for word, body in quantified.items()
+    ]
+
+    cases += [
+        # Detection, one per mark, each qualifying through that mark alone.
+        (f"`{camel}` is the only thing that makes one", False,
+         f"a capital marks a symbol ({camel})", (f"`{camel}`",)),
+        (f"`{snake}` is re-checked on every path through here", False,
+         f"an underscore marks a symbol ({snake})", (f"`{snake}`",)),
+        (f"`{lc_path}` never carries a URL scheme", False,
+         f"a `::` marks a symbol ({lc_path})", (f"`{lc_path}`",)),
         (f"[`{plain}`] refuses anything carrying a URL scheme", False,
-         f"an intra-doc link is a symbol even in lowercase ([`{plain}`])"),
-        (f"[`{sym}`] is the only thing that sets it; the `{test_stem}` tests hold that", True,
+         f"an intra-doc link marks a symbol even in lowercase ([`{plain}`])",
+         (f"`{plain}`",)),
+        (f"`{lc_local}` is the only thing that makes one", False,
+         f"a lowercase word this file DEFINES is a symbol ({lc_local} in {probe.name})",
+         (f"`{lc_local}`",)),
+        (f"Nothing else writes [`{camel}`]", False,
+         "a quantifier opening a sentence is capitalised, and still a claim",
+         ('"Nothing"',)),
+        # Controls.
+        (f"[`{camel}`] is the only thing that makes one; the `{test_stem}` tests hold that", True,
          f"STAYS GREEN: a test is named ({test_stem})"),
         ("nothing else can be what reddens", True,
          "STAYS GREEN: a quantifier with no symbol is prose this cannot judge"),
-        (f"[`{sym}`] states where that stops", True,
+        (f"[`{camel}`] states where that stops", True,
          "STAYS GREEN: a symbol with no quantifier claims no completeness"),
-        (f"nothing else makes one. [`{sym}`] states where that stops", True,
+        (f"nothing else makes one. [`{camel}`] states where that stops", True,
          "STAYS GREEN: quantifier and symbol in different sentences"),
         (f"`{plain}` stays the only one of those", True,
-         f"STAYS GREEN: a lowercase word is a role name here, not a symbol (`{plain}`)"),
-        (f"the `{sym}` column is named `all` in the source", True,
+         f"STAYS GREEN: a lowercase word this file does not define stays prose (`{plain}`)"),
+        (f"the `{camel}` column is named `all` in the source", True,
          "STAYS GREEN: a backticked quantifier is a token, and asserts nothing"),
-        (f"[`{sym}`] is read-only from here", True,
+        (f"[`{camel}`] is read-only from here", True,
          "STAYS GREEN: a hyphenated quantifier is an adjective, not a claim"),
     ]
 
+    # A finding has to say WHERE, or a reader cannot act on it. Asserted on
+    # every case that is meant to be reported, not on a sample of them.
+    probe_line = 17
+    where = f"{probe.relative_to(ROOT)}:{probe_line} "
+
     bad = 0
-    for body, should_pass, label in cases:
-        fake = [(ROOT / "crates" / home / "src" / "probe.rs", [(1, body)])]
-        got = not check(fake)
-        ok = got == should_pass
-        print(f"  {'ok  ' if ok else 'MISS'} {label}")
+    for case in cases:
+        body, should_pass, label = case[0], case[1], case[2]
+        want = case[3] if len(case) > 3 else ()
+        found = check([(probe, [(probe_line, body)])])
+        ok, note = (not found) == should_pass, ""
+        if ok and found:
+            if not all(m.startswith(where) for m in found):
+                ok, note = False, f"  [message does not open with {where.strip()}]"
+            else:
+                absent = [w for w in want if not any(w in m for m in found)]
+                if absent:
+                    ok, note = False, f"  [message omits {', '.join(absent)}]"
+        print(f"  {'ok  ' if ok else 'MISS'} {label}{note}")
         if not ok:
             bad += 1
     if bad:
