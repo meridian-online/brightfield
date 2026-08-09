@@ -47,18 +47,37 @@ data:
     - { amount: 25, region: west }
 ";
 
-/// The document a chart kind chose, composed: the block that kind built over
-/// [`ROWS`], and the [`Authored`] record the pane re-makes its module from.
+/// The block `binned-histogram` builds over [`ROWS`]'s `amount`, written out.
 ///
-/// Both halves come out of the registry — the block from the kind's own
-/// builder, the fields from the same list that was bound to it — so a fixture
-/// cannot pin a picture the product would not have produced.
-fn authored_by(kind_id: ChartKindId, fields: Vec<Field>) -> (Composed, Authored) {
-    let kind = chart_kinds::find(kind_id).expect("the kind is in this build");
-    let binding = kind.bind(&fields).expect("the columns fill its slots");
-    let block = kind
-        .spec(&binding, &kind.options())
-        .expect("the kind builds its spec");
+/// **A literal, not a call into the registry**, and that is what makes the
+/// mutation land where it should: a fixture that asked the registry for the
+/// block would fail at its own setup when the kind was removed, which proves
+/// only that the kind is gone. Written out, the document composes either way
+/// and what stops is the *drawing* — which is the claim.
+/// `the_fixture_blocks_are_the_ones_the_kinds_build` is what keeps the literal
+/// from drifting away from the product.
+const HISTOGRAM_BLOCK: &str = "\
+plot:
+  - mark: rectY
+    data: { from: opened }
+    x: { bin: 'amount' }
+    y: { count: }
+";
+
+/// The block `count-grid` builds over [`ROWS`]'s two columns. See
+/// [`HISTOGRAM_BLOCK`] for why it is a literal.
+const GRID_BLOCK: &str = "\
+plot:
+  - mark: cell
+    data: { from: opened }
+    x: 'region'
+    y: 'amount'
+    fill: { count: }
+";
+
+/// The document a chart kind chose, composed: the block over [`ROWS`], and the
+/// [`Authored`] record the pane re-makes its module from.
+fn authored_by(kind_id: ChartKindId, fields: Vec<Field>, block: &str) -> (Composed, Authored) {
     let source = format!("{ROWS}{block}width: 400\nheight: 300\n");
     let composed =
         compose_spec_str(&source, None).unwrap_or_else(|e| panic!("{kind_id}: {e}\n{source}"));
@@ -67,9 +86,41 @@ fn authored_by(kind_id: ChartKindId, fields: Vec<Field>) -> (Composed, Authored)
         Authored {
             kind: kind_id,
             fields,
-            block,
+            block: block.to_string(),
         },
     )
+}
+
+/// The fixtures above are what the kinds actually build — so a picture this
+/// suite pins is one the product would have produced, and a kind whose builder
+/// changes reddens here rather than going unnoticed behind a stale literal.
+#[test]
+fn the_fixture_blocks_are_the_ones_the_kinds_build() {
+    for (kind_id, fields, block) in [
+        (
+            chart_kinds::BINNED_HISTOGRAM,
+            vec![measure("amount")],
+            HISTOGRAM_BLOCK,
+        ),
+        (chart_kinds::COUNT_GRID, grid_fields(), GRID_BLOCK),
+    ] {
+        let kind = chart_kinds::find(kind_id).expect("the kind is in this build");
+        let binding = kind.bind(&fields).expect("the columns fill its slots");
+        assert_eq!(
+            kind.spec(&binding, &kind.options())
+                .expect("the kind builds its spec"),
+            block,
+            "{kind_id}: the fixture no longer matches what the kind builds"
+        );
+    }
+}
+
+/// The grid's two axes, in the order the chooser offers them.
+fn grid_fields() -> Vec<Field> {
+    vec![
+        Field::new("region", FieldType::Categorical),
+        Field::new("amount", FieldType::Categorical),
+    ]
 }
 
 fn measure(name: &str) -> Field {
@@ -109,17 +160,15 @@ fn laid_out(composed: Composed, authored: Option<Authored>) -> (Option<egui::Rec
 /// "the registry is the path" means.
 #[test]
 fn the_pane_draws_a_registry_authored_picture() {
-    for (kind_id, fields) in [
-        (chart_kinds::BINNED_HISTOGRAM, vec![measure("amount")]),
+    for (kind_id, fields, block) in [
         (
-            chart_kinds::COUNT_GRID,
-            vec![
-                Field::new("region", FieldType::Categorical),
-                Field::new("amount", FieldType::Categorical),
-            ],
+            chart_kinds::BINNED_HISTOGRAM,
+            vec![measure("amount")],
+            HISTOGRAM_BLOCK,
         ),
+        (chart_kinds::COUNT_GRID, grid_fields(), GRID_BLOCK),
     ] {
-        let (composed, authored) = authored_by(kind_id, fields);
+        let (composed, authored) = authored_by(kind_id, fields, block);
         let (width, height) = (composed.width, composed.height);
         let (raster, _legend) = laid_out(composed, Some(authored));
         let raster = raster.unwrap_or_else(|| {
@@ -148,7 +197,11 @@ fn a_kind_this_build_does_not_have_stops_the_picture() {
         "the fixture's premise is that this build has no such kind"
     );
 
-    let (composed, mut authored) = authored_by(chart_kinds::BINNED_HISTOGRAM, vec![measure("amount")]);
+    let (composed, mut authored) = authored_by(
+        chart_kinds::BINNED_HISTOGRAM,
+        vec![measure("amount")],
+        HISTOGRAM_BLOCK,
+    );
     authored.kind = stranger;
 
     let (raster, legend) = laid_out(composed, Some(authored.clone()));
@@ -200,8 +253,11 @@ fn a_module_asking_for_a_different_picture_is_not_handed_this_one() {
             false,
         ),
     ] {
-        let (composed, authored) =
-            authored_by(chart_kinds::BINNED_HISTOGRAM, vec![measure("amount")]);
+        let (composed, authored) = authored_by(
+            chart_kinds::BINNED_HISTOGRAM,
+            vec![measure("amount")],
+            HISTOGRAM_BLOCK,
+        );
         let kind = chart_kinds::find(authored.kind).expect("shipped");
         let mut doc = ChartDoc::headless(composed);
         doc.set_authored(authored);
