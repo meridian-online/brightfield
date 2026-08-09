@@ -20,7 +20,8 @@
 
 use std::path::{Path, PathBuf};
 
-use brightfield_shell::data_file::{self, FirstLook};
+use brightfield_shell::chart_kinds;
+use brightfield_shell::data_file;
 use brightfield_shell::design::Mode;
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
@@ -233,13 +234,16 @@ fn the_first_look_over_a_numeric_column_is_its_distribution() {
             })
             .expect("the opened file is the session's source")
     };
+    let look = data_file::first_look(&columns).expect("a numeric column admits a first look");
     assert_eq!(
-        data_file::first_look(&columns),
-        Some(FirstLook::Histogram {
-            column: "reading".to_string()
-        }),
+        look.kind(),
+        chart_kinds::BINNED_HISTOGRAM,
         "a numeric column is a distribution, and a distribution is the most \
          informative thing that can be drawn about a column nobody described"
+    );
+    assert!(
+        look.block().contains("x: { bin: 'reading' }"),
+        "the kind bound the profiled column: {look:?}"
     );
 }
 
