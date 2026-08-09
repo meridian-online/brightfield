@@ -45,14 +45,13 @@ WHAT IS CHECKED (changed comment lines only, `origin/main...HEAD`)
 
        A sentence, not a line. Rules A, B and C read one line at a time, but a
        sentence wraps, and reading a line as if the wrap ended it made rule D
-       blind to a claim whose subject sat on the next line — the largest
-       single shape it missed on the corpus it was graded against, measured in
-       the commit that landed the block reader. So D joins the CONTIGUOUS
-       comment lines around each one it is checking and splits that into
-       sentences. Blank comment lines and list markers break the join, because
-       two bullets are two claims and pairing one's quantifier with the next
-       one's symbol is the false positive this rule can least afford. A claim
-       is reported once, at the line its quantifier is on.
+       blind to a claim whose subject sat on the next line. So D joins the
+       CONTIGUOUS comment lines around each one it is checking and splits that
+       into sentences; the commit that landed the block reader carries what
+       that recovered on the corpus this rule is graded against. Blank comment
+       lines and list markers break the join: two bullets are two claims, and
+       joining them would pair one item's quantifier with the next item's
+       symbol. A claim is reported once, at the line its quantifier is on.
 
 WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
     - Only ADDED comment lines in the diff. Pre-existing debt is not blocking;
@@ -78,15 +77,21 @@ WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
       reduces what D reports.
     - Rule D's RECALL is PARTIAL. It was measured against the comment lines a
       review wave in this repo made an author delete, and the measurement is in
-      the commit that landed the block reader. The residue that measurement
-      leaves is a refusal rather than an oversight: the claim's subject is a
-      bare lowercase word the file it sits in does not define as an item — a
-      protocol status value quoted in prose, say. There is no route from that
-      word to anything a gate can resolve, and treating every backticked word
-      as a symbol was measured on this tree too: it adds sentences about
-      parameters and literal values, which is the shape that gets a gate
-      switched off. A sentence rule D misses costs a reviewer a read. A
-      sentence it reports wrongly costs the gate itself.
+      the commit that landed the block reader. What that measurement leaves
+      behind is refusal rather than oversight, in these shapes, each held by a
+      control case in --self-test:
+        * the sentence carries no backticked token at all. A quantifier with no
+          symbol is prose a citation gate has no way to judge, and reporting it
+          would be reporting English.
+        * its backticked tokens are bare lowercase words the file it sits in
+          does not define as items — a protocol status value quoted in prose,
+          say. There is no route from such a word to anything a gate can
+          resolve, and treating every backticked word as a symbol was measured
+          on this tree: it adds sentences about parameters and literal values,
+          which is the shape that gets a gate switched off.
+        * the paragraph names a test, which is the exemption above.
+      A sentence rule D misses costs a reviewer a read. A sentence it reports
+      wrongly costs the gate itself.
 
 ESCAPE HATCH
     A claim about code outside this repo (upstream libraries, a sibling repo)
@@ -1001,11 +1006,28 @@ def self_test() -> int:
          (), 0, (1,)),
     ]
 
+    # --- the PATTERN guards -----------------------------------------------
+    # A property of a pattern, asserted against text written out here rather
+    # than derived from the tree. The fixtures above reach the resolvers only
+    # through check(), which reads the real crates, so they cannot put a
+    # near-miss in front of one. These are English words and travel to a
+    # sibling repo as they stand, like the QUANTIFIER list above.
+    guards = [
+        (not re.search(DEFN.format(sym="only"), "allows a retype only WITHIN a class"),
+         "DEFN does not read `type` inside `retype` as a definition of `only`"),
+        (bool(re.search(DEFN.format(sym="only"), "pub type only = u8;")),
+         "DEFN still reads a real `type only` as a definition"),
+    ]
+
     # A finding has to say WHERE, or a reader cannot act on it. Asserted on
     # every case that is meant to be reported, not on a sample of them.
     probe_line = 17
 
     bad = 0
+    for held, label in guards:
+        print(f"  {'ok  ' if held else 'MISS'} {label}")
+        if not held:
+            bad += 1
     for case in cases:
         body, should_pass, label = case[0], case[1], case[2]
         want = case[3] if len(case) > 3 else ()
@@ -1033,9 +1055,10 @@ def self_test() -> int:
         if not ok:
             bad += 1
     if bad:
-        print(f"\nself-test FAILED: {bad} of {len(cases)} cases wrong")
+        print(f"\nself-test FAILED: {bad} of {len(cases) + len(guards)} cases wrong")
         return 1
-    print(f"\nself-test passed: {len(cases)} derived cases, detection and control both correct")
+    print(f"\nself-test passed: {len(cases)} derived cases and {len(guards)} pattern "
+          f"guards, detection and control both correct")
     return 0
 
 
