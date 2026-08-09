@@ -28,6 +28,19 @@ WHAT IS CHECKED (changed comment lines only, `origin/main...HEAD`)
        registered below. Attribution (A) needs a backticked SYMBOL to fire, and
        a claim that names a package and a version need carry no symbol at all —
        which is the gap this closes.
+    D  COMPLETENESS — a quantifier that asserts a completeness (only, always,
+       every, never, nothing, none, all, everything, anything) in the same
+       sentence as a named symbol, where the comment names no test. A, B and C
+       ask whether a cited thing is where the comment says it is; D asks
+       whether a claim about ALL of something has anything holding it. It
+       cannot judge the claim — no gate can — so it asks for the citation that
+       lets a reader judge it: name the test, or drop the quantifier.
+
+       This one resolves nothing, so its whole design is about not crying
+       wolf. It needs a SYMBOL, not merely a backticked token: `fill`, `bars`
+       and `colour` are backticked all over this repo as channel, kind and role
+       names, and a rule that read those as symbols would report ordinary
+       prose. And it needs the quantifier and the symbol in ONE sentence.
 
 WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
     - Only ADDED comment lines in the diff. Pre-existing debt is not blocking;
@@ -46,6 +59,15 @@ WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
     - It checks that a cited thing EXISTS where claimed. It cannot check what
       the code DOES. "merging under-reports every group but one" was false and
       no citation gate would ever have caught it — that needs a reviewer.
+    - Rule D reads one comment LINE at a time, like the rest of this script, so
+      a claim whose quantifier and symbol land on either side of a wrap is out
+      of reach. Widening to the comment block would raise recall and would also
+      pair words that are sentences apart; the narrow half is the one AC-checked
+      here, and a missed claim costs a reviewer while a reported honest sentence
+      costs the gate.
+    - Rule D does not read the test it asks for. A comment that names one is
+      past it, whatever the test asserts. It buys a reader a place to look and
+      an author a moment of doubt, not a proof.
 
 ESCAPE HATCH
     A claim about code outside this repo (upstream libraries, a sibling repo)
@@ -86,9 +108,13 @@ DEFN = r"(?:const|static|fn|struct|enum|trait|type|union|mod)\s+{sym}\b|macro_ru
 
 COMMENT = re.compile(r"^\s*(?://!|///|//)\s?(.*)$")
 
+# A Rust item name as a comment writes one. Named once because rules A and D
+# both need it and a second spelling would be a second thing to keep true.
+SYMBOL = r"[A-Za-z_][A-Za-z0-9_]*"
+
 # `brightfield-sql`'s `SYMBOL`   /   `SYMBOL` in `brightfield-sql`
-ATTR_POSSESSIVE = re.compile(r"`([a-z][a-z0-9-]*)`'s\s+`([A-Za-z_][A-Za-z0-9_]*)`")
-ATTR_IN = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*)`\s+in\s+`([a-z][a-z0-9-]*)`")
+ATTR_POSSESSIVE = re.compile(rf"`([a-z][a-z0-9-]*)`'s\s+`({SYMBOL})`")
+ATTR_IN = re.compile(rf"`({SYMBOL})`\s+in\s+`([a-z][a-z0-9-]*)`")
 
 # A backticked repo-relative path, optionally with :LINE
 PATH_REF = re.compile(r"`((?:crates|scripts|examples|vendor|\.github)/[A-Za-z0-9_./-]+?)(?::\d+)?`")
@@ -120,6 +146,35 @@ PKG_LABELLED = re.compile(rf"`({PKG_NAME})`\s+{PKG_NOUN}\b")
 PKG_LABELLED_BEFORE = re.compile(rf"\b{PKG_NOUN}\s+`({PKG_NAME})`")
 
 PKG_PATTERNS = (PKG_AFTER, PKG_INLINE, PKG_BEFORE, PKG_LABELLED, PKG_LABELLED_BEFORE)
+
+# --- rule D ----------------------------------------------------------------
+
+# The quantifiers are the ones this project's prose rule names, plus `none` and
+# the two `-thing` forms that say the same in another word order. Each asserts a
+# completeness somebody has to enumerate, so each needs the enumeration cited.
+QUANTIFIER = re.compile(
+    r"\b(only|always|every|never|nothing|none|all|everything|anything)\b", re.I
+)
+
+# `Foo` / `a_b` / `a::B` / `f()` — a backticked token, plus the `::` path and
+# the `()` call form a comment writes. Which of these counts as a SYMBOL is
+# decided in symbol_citations(), not here.
+SYMBOL_TICKED = re.compile(rf"`({SYMBOL}(?:::{SYMBOL})*)(?:\(\))?`")
+
+# Anything between a pair of backticks — code, not prose.
+TICKED_SPAN = re.compile(r"`[^`]*`")
+
+# One sentence. `;` ends a segment too: two independent clauses joined by a
+# semicolon are two claims, and pairing the quantifier of one with the symbol of
+# the other is the false positive this rule can least afford.
+SENTENCE_END = re.compile(r"(?<=[.!?;])\s+")
+
+# Does the comment name a test? Deliberately generous — `tests`, `#[test]`,
+# `self-test`, `tested`, `foo_test`, `test_foo` all count, and the test is never
+# opened. The gate asks for a place to look; a reviewer decides whether what is
+# there holds the claim. Generous in this direction only reduces what D reports,
+# which is the direction a gate survives being wrong in.
+TEST_CITE = re.compile(r"(?:\b|_)test", re.I)
 
 
 def crates() -> set[str]:
@@ -232,6 +287,66 @@ def package_citations(body: str) -> list[str]:
     return seen
 
 
+def symbol_citations(text: str) -> list[str]:
+    """Backticked tokens this repo would call a NAMED SYMBOL, in first-seen order.
+
+    A backticked token is not enough. This repo backticks channel names, role
+    names, kind ids and column values — `fill`, `colour`, `bars`, `x` — and
+    reading those as symbols would make rule D report ordinary prose, which is
+    how a gate gets switched off. So a token qualifies on one of four marks a
+    reader also uses:
+
+      * an intra-doc link, `` [`accept`] `` — the brackets say symbol outright,
+        which is why lowercase alone does not disqualify a token
+      * a `::` path
+      * an `_`, or an uppercase letter — `snake_case` and `CamelCase`/`SCREAMING`
+        are Rust item names and are not how English words arrive in a sentence
+
+    A one-word lowercase token with none of those marks is left to a reviewer.
+    """
+    seen: list[str] = []
+    for m in SYMBOL_TICKED.finditer(text):
+        name = m.group(1)
+        linked = (
+            m.start() > 0
+            and text[m.start() - 1] == "["
+            and text[m.end():m.end() + 1] == "]"
+        )
+        if not (linked or "::" in name or "_" in name or any(c.isupper() for c in name)):
+            continue
+        if name not in seen:
+            seen.append(name)
+    return seen
+
+
+def sentences(body: str) -> list[str]:
+    """A comment line's sentences. A line that ends mid-sentence is one of them."""
+    return [s for s in SENTENCE_END.split(body) if s.strip()]
+
+
+def completeness_claims(body: str) -> list[tuple[str, str]]:
+    """(quantifier, symbol) for each sentence that asserts one over the other.
+
+    Empty when the comment names a test: the claim then has a place a reader can
+    go, which is the whole of what this rule asks for.
+    """
+    if TEST_CITE.search(body):
+        return []
+    claims: list[tuple[str, str]] = []
+    for sentence in sentences(body):
+        # The quantifier has to be PROSE. A backticked `all` is a column, a
+        # field or a variant this repo happens to have named that, and it
+        # asserts nothing — so the backticked spans come out before the search,
+        # and go back in for the symbol.
+        q = QUANTIFIER.search(TICKED_SPAN.sub(" ", sentence))
+        if not q:
+            continue
+        syms = symbol_citations(sentence)
+        if syms:
+            claims.append((q.group(1), syms[0]))
+    return claims
+
+
 def path_exists(ref: str) -> bool:
     """Repo-relative, or crate-relative — comments write both and mean the same.
 
@@ -329,6 +444,11 @@ def check(pairs: list[tuple[Path, list[tuple[int, str]]]]) -> list[str]:
                 failures.append(
                     f"{rel}:{lineno} cites the `{name}` package, which is not a crate "
                     f"here and not in Cargo.lock"
+                )
+            for word, symbol in completeness_claims(body):
+                failures.append(
+                    f"{rel}:{lineno} says \"{word}\" of `{symbol}` and names no test — "
+                    f"cite the test that holds it, or drop the quantifier"
                 )
     return failures
 
@@ -510,6 +630,52 @@ def self_test() -> int:
          "STAYS GREEN: an address is not a version"),
     ]
 
+    # --- the COMPLETENESS fixtures ----------------------------------------
+    # Rule D resolves nothing, so its fixtures are all about where it stops.
+    # The four rejections are the shapes that were corrected by hand across a
+    # review wave in this repo; the six controls are the sentences beside them
+    # that were correct, and each control is one mutation away from red.
+    #
+    # `plain` is a lowercase word with no `_` and no capital: the mark that
+    # separates a symbol from a role name in this repo's prose. Derived from a
+    # string literal in the tree rather than named, for the same reason as the
+    # fixtures above.
+    plain = None
+    for c in known:
+        for f in sorted((ROOT / "crates" / c).glob("**/*.rs")):
+            m = re.search(r'"([a-z][a-z0-9]{2,})"', f.read_text(errors="replace"))
+            if m and not TEST_CITE.search(m.group(1)) and not QUANTIFIER.fullmatch(m.group(1)):
+                plain = m.group(1)
+                break
+        if plain:
+            break
+    if plain is None:
+        print("self-test: no plain lowercase literal to derive the not-a-symbol case from")
+        return 1
+
+    cases += [
+        (f"[`{sym}`] is the only thing that sets it", False,
+         f"a completeness claim over a symbol, with no test named ({sym})"),
+        (f"nothing else writes `{sym}`", False,
+         "the same claim with the quantifier first"),
+        (f"`{sym}` is re-checked on every path through here", False,
+         "`every`, over a symbol, with nothing named that would notice"),
+        (f"[`{plain}`] refuses anything carrying a URL scheme", False,
+         f"an intra-doc link is a symbol even in lowercase ([`{plain}`])"),
+        (f"[`{sym}`] is the only thing that sets it; the `{test_stem}` tests hold that", True,
+         f"STAYS GREEN: a test is named ({test_stem})"),
+        ("nothing else can be what reddens", True,
+         "STAYS GREEN: a quantifier with no symbol is prose this cannot judge"),
+        (f"[`{sym}`] states where that stops", True,
+         "STAYS GREEN: a symbol with no quantifier claims no completeness"),
+        (f"nothing else makes one. [`{sym}`] states where that stops", True,
+         "STAYS GREEN: quantifier and symbol in different sentences"),
+        (f"`{plain}` stays the only one of those", True,
+         f"STAYS GREEN: a lowercase word is a role name here, not a symbol (`{plain}`)"),
+        (f"the `{sym}` column is named `all` in the source", True,
+         "STAYS GREEN: a backticked quantifier is a token, and asserts nothing"),
+    ]
+
     bad = 0
     for body, should_pass, label in cases:
         fake = [(ROOT / "crates" / home / "src" / "probe.rs", [(1, body)])]
@@ -537,17 +703,19 @@ def main() -> int:
 
     failures = check(pairs)
     if failures:
-        print("Comment citations that do not resolve:\n")
+        print("Comment claims that do not check out:\n")
         for f in failures:
             print(f"  {f}")
         print(
-            "\nEach names a symbol or path that is not where the comment says it is.\n"
-            "Fix the comment, or — if it is about code outside this repo — register\n"
-            "it in ACKNOWLEDGED with the reason."
+            "\nA citation names a symbol, path or package that is not where the comment\n"
+            "says it is: fix the comment, or — if it is about code outside this repo —\n"
+            "register it in ACKNOWLEDGED with the reason. A completeness claim asserts\n"
+            "something about all of a thing with no test named: cite the test, or say\n"
+            "the narrower thing you can hold."
         )
         return 1
     checked = sum(len(v) for _, v in pairs)
-    print(f"Comment citations resolve ({checked} comment lines checked).")
+    print(f"Comment claims check out ({checked} comment lines checked).")
     return 0
 
 
