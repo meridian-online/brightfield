@@ -14,6 +14,19 @@
 //! total over [`MarkKind`], and a new mark kind is a new match arm, not a new
 //! shell.
 //!
+//! # Mark kinds and chart kinds are two vocabularies, not one
+//!
+//! They are named alike and they are different lists, so the distinction is
+//! stated here rather than left to be inferred. A [`MarkKind`] is what a plot
+//! draws with — `dot`, `rectY`, `cell` — and it comes off the composition. A
+//! **chart kind** is an entry in [`crate::chart_kinds::registry`]: an id, an
+//! icon, the column slots it takes, and a builder that turns bound columns
+//! into a whole spec. The two lists are declared apart — a `MarkKind` is a
+//! variant of an enum in `brightfield_spec`, a chart kind's id is a string
+//! literal in [`crate::chart_kinds`] — and neither is derived from the other.
+//! This pane is parameterised by the first and draws a document the second
+//! chose through that kind's `ChartModule`; see `module_of`.
+//!
 //! # One selection treatment
 //!
 //! Everything transient the pointer does to the chart is painted from the
@@ -38,12 +51,13 @@
 use brightfield_engine::coordinator::Interaction;
 use brightfield_engine::SqlPredicate;
 use brightfield_keys::BindingContext;
-use brightfield_render::canvas_host::{ChartSurface, Color, PixelSize, SurfaceCursor};
+use brightfield_render::canvas_host::{Color, OverlayPainter, SurfaceCursor};
 use brightfield_render::channel::Channel;
 use brightfield_render::scale::Scale;
 use brightfield_spec::analysis::BrushKind;
 use brightfield_spec::vocab::MarkKind;
 use brightfield_sql::ir::ScalarValue;
+use brightfield_workbench::item::{ChartModule, ModuleHost};
 use brightfield_workbench::subject::RunState;
 use brightfield_workbench::{
     chrome, Affordance, EmptyState, Icon, Item, ItemCtx, ItemId, Subject, ToolbarEntry,
@@ -53,7 +67,7 @@ use meridian_design::chrome::{OverlayTokens, INK_DARK, INK_LIGHT, OVERLAY_DARK, 
 use meridian_design::semantic::Role;
 
 use crate::app::{ChartDoc, CHART};
-use crate::canvas::{surface_input, EguiChartFrame};
+use crate::canvas::{set_surface_cursor, surface_input, EguiOverlay};
 use crate::design::Mode;
 use crate::legend;
 use crate::navigation::{self, verb::RESET_EXTENT};
@@ -477,6 +491,33 @@ impl ChartItem {
     }
 }
 
+/// The chart module this document's picture is drawn as, or `None` when no
+/// chart kind chose it and none is missing.
+///
+/// **Rebuilt from the document every frame, not held.** A
+/// [`ChartModule`]'s own state is the kind it names, the columns bound to it
+/// and the state of the controls that kind hangs on itself — and every kind
+/// this build ships declares no control, so all three are a function of the
+/// document. `no_kind_declares_a_control_that_the_pane_would_have_to_remember`
+/// in [`crate::chart_kinds`] is what says so, and it is the test that will
+/// redden on the first kind that needs this pane to hold its module across
+/// frames instead.
+///
+/// `None` also when the document's kind is not in this build's registry, which
+/// is a different answer from "no kind chose this picture" and is why
+/// [`Item::empty_state`] says which of the two happened rather than letting the
+/// pane draw a header and silence.
+fn module_of(doc: &ChartDoc) -> Option<ChartModule> {
+    let authored = doc.authored()?;
+    let kind = doc.chart_kinds().find(authored.kind)?;
+    Some(ChartModule::new(
+        CHART,
+        doc.title().to_string(),
+        kind,
+        authored.fields.clone(),
+    ))
+}
+
 /// What the gesture machine leaves for the overlay to draw with.
 struct GestureFrame {
     /// Whether the pointer is over the raster.
@@ -512,7 +553,25 @@ impl Item<ChartDoc> for ChartItem {
     /// ship a button that claims a key it does not have.
     fn empty_state(&self, doc: &ChartDoc) -> Option<EmptyState> {
         if !doc.is_empty() {
-            return None;
+            // A picture a chart kind chose is drawn by that kind's module, so
+            // a build whose registry no longer has the kind has nothing to
+            // draw it with. Saying which kind is missing is the answer the
+            // module itself would give; the pane gives it because a module
+            // cannot be built without the kind it names.
+            let missing = doc
+                .authored()
+                .filter(|a| doc.chart_kinds().find(a.kind).is_none());
+            return missing.map(|authored| {
+                EmptyState::new(
+                    mark_icon(doc.primary_mark()),
+                    "This build has no chart of that kind",
+                    format!(
+                        "The picture was drawn as {}, which is not in this \
+                         build's chart registry.",
+                        authored.kind
+                    ),
+                )
+            });
         }
         let mut empty = EmptyState::new(
             mark_icon(None),
@@ -657,7 +716,7 @@ impl Item<ChartDoc> for ChartItem {
             cx.request_repaint();
         }
 
-        let (w, h) = (doc.composed.width, doc.composed.height);
+        let h = doc.composed.height;
         let band = legend::band_width(&doc.composed);
 
         // The raster and, when any plot calls for one, the legend band beside
@@ -665,48 +724,47 @@ impl Item<ChartDoc> for ChartItem {
         // than by hope.
         let overlay_on = doc.overlay;
         let ctx = ui.ctx().clone();
-        let texture = doc.canvas_texture();
-        let mut raster_rect = None;
+        let textured = doc.canvas_texture().is_some();
         let mut legend_rect = None;
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            let Some(texture) = texture else {
-                // No device behind this document. The raster is blank rather
-                // than apologetic — a headless document is a test fixture —
-                // but the *layout* still happens: the geometry the exercise
-                // tests hold is produced with and without a GPU alike.
-                let (rect, _) = ui.allocate_exact_size(
-                    egui::vec2(w as f32, h as f32),
-                    egui::Sense::click_and_drag(),
-                );
-                raster_rect = Some(rect);
-                // Same gestures, no device. The overlay has nowhere to paint,
-                // which is the only thing a headless document loses.
-                let (repaint, _) = self.drive_gestures(doc, &ctx, rect);
-                if repaint {
-                    cx.request_repaint();
+
+            // **The raster, drawn through the chart-kind registry.** A picture
+            // a chart kind chose is drawn by that kind's `ChartModule`: the
+            // module resolves its kind out of the document's registry, builds
+            // the spec from the columns bound to it, and hands that spec back
+            // to the document — which is where the composer and the canvas
+            // host live. A document carrying no `Authored` record has no kind
+            // to build a module from (see `Authored` for which routes record
+            // one) and presents directly.
+            //
+            // `raster_rect` is cleared first because the module route can draw
+            // nothing at all — a kind this build no longer has, columns that
+            // no longer fit — and a rect left standing from the last frame
+            // would aim this frame's gestures at a raster that is not there.
+            doc.raster_rect = None;
+            let rect = match module_of(doc) {
+                Some(mut module) => {
+                    Item::ui(&mut module, doc, ui, cx);
+                    // The module reserved its raster inside the child `Ui`
+                    // `module_frame` hands it, and a child's allocations do not
+                    // move the parent's cursor. Unadvanced, the legend band
+                    // below would be laid out at the raster's own x and sit on
+                    // the data — which is the one thing the band's whole
+                    // geometry exists to prevent.
+                    if let Some(rect) = doc.raster_rect {
+                        ui.advance_cursor_after_rect(rect);
+                    }
+                    doc.raster_rect
                 }
-                if band > 0.0 {
-                    ui.add_space(meridian_design::spacing::CONTROL_GAP);
-                    let (band_rect, _) = ui.allocate_exact_size(
-                        egui::vec2(legend::block_width(), h as f32),
-                        egui::Sense::hover(),
-                    );
-                    legend_rect = Some(band_rect);
-                }
+                None => doc.present_raster(ui),
+            };
+            let Some(rect) = rect else {
                 return;
             };
 
-            let mut frame = EguiChartFrame::new(ui, texture);
-            frame.present(PixelSize {
-                width: w,
-                height: h,
-            });
-            let Some(rect) = frame.reserved() else {
-                return;
-            };
-            raster_rect = Some(rect);
-
+            // Same gestures with a device and without one. The overlay is the
+            // only thing a headless document loses: it has nowhere to paint.
             let (repaint, gesture) = self.drive_gestures(doc, &ctx, rect);
             if repaint {
                 cx.request_repaint();
@@ -717,31 +775,34 @@ impl Item<ChartDoc> for ChartItem {
             // `drive_gestures` above has already taken a released drag, so the
             // rectangle is gone on the release frame rather than one frame
             // later — see the note at that take.
-            if let Some(drag) = self.drag {
-                let tokens = overlay_tokens(mode);
-                let r = drag_rect(&doc.composed.plots[drag.plot], drag);
-                let painter = frame.overlay();
-                painter.fill_rect(r, Color::from_token(tokens.brush_fill));
-                painter.stroke_rect(r, Color::from_token(tokens.brush_border), 1.0);
-            } else if overlay_on && hovered {
-                // The hover crosshair — the chart's own ink layer, matched to
-                // the raster's palette rather than the chrome's, and bounded by
-                // the plot the pointer is in. See `crosshair_segments`.
-                if let Some(p) = pointer {
-                    if let Some(segments) = crosshair_segments(&doc.composed.plots, p) {
-                        let focus = match mode {
-                            Mode::Light => INK_LIGHT.focus,
-                            Mode::Dark => INK_DARK.focus,
-                        };
-                        let ink = Color::from_token_alpha(focus, 0.9);
-                        let painter = frame.overlay();
-                        for (a, b) in segments {
-                            painter.line(a, b, ink, 1.0);
+            if textured {
+                if let Some(drag) = self.drag {
+                    let tokens = overlay_tokens(mode);
+                    let r = drag_rect(&doc.composed.plots[drag.plot], drag);
+                    let mut painter = EguiOverlay::new(ui, rect);
+                    painter.fill_rect(r, Color::from_token(tokens.brush_fill));
+                    painter.stroke_rect(r, Color::from_token(tokens.brush_border), 1.0);
+                } else if overlay_on && hovered {
+                    // The hover crosshair — the chart's own ink layer, matched
+                    // to the raster's palette rather than the chrome's, and
+                    // bounded by the plot the pointer is in. See
+                    // `crosshair_segments`.
+                    if let Some(p) = pointer {
+                        if let Some(segments) = crosshair_segments(&doc.composed.plots, p) {
+                            let focus = match mode {
+                                Mode::Light => INK_LIGHT.focus,
+                                Mode::Dark => INK_DARK.focus,
+                            };
+                            let ink = Color::from_token_alpha(focus, 0.9);
+                            let mut painter = EguiOverlay::new(ui, rect);
+                            for (a, b) in segments {
+                                painter.line(a, b, ink, 1.0);
+                            }
+                            painter.fill_circle(p, 3.0, ink);
                         }
-                        painter.fill_circle(p, 3.0, ink);
                     }
+                    set_surface_cursor(ui.ctx(), SurfaceCursor::Grab);
                 }
-                frame.set_cursor(Some(SurfaceCursor::Grab));
             }
 
             // The legend band, drawn from the same scales the raster was
@@ -754,10 +815,11 @@ impl Item<ChartDoc> for ChartItem {
                     egui::Sense::hover(),
                 );
                 legend_rect = Some(band_rect);
-                legend::draw_band(ui, band_rect, rect.top(), &doc.composed, mode);
+                if textured {
+                    legend::draw_band(ui, band_rect, rect.top(), &doc.composed, mode);
+                }
             }
         });
-        doc.raster_rect = raster_rect;
         doc.legend_rect = legend_rect;
     }
 }

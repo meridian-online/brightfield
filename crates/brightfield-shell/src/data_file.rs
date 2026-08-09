@@ -76,7 +76,9 @@ use std::path::{Path, PathBuf};
 use brightfield_engine::{ColumnProfile, Engine, LoadOptions, ProfileOutcome};
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::{parse_spec, Format};
+use brightfield_workbench::registry::{ChartKindId, Field};
 
+use crate::chart_kinds;
 use crate::pipeline::{Composed, LiveDashboard};
 
 /// The file extensions this action opens, lowercased and without the dot.
@@ -100,32 +102,44 @@ pub const OPENABLE_EXTENSIONS: &[&str] = &["csv", "tsv", "parquet"];
 /// window is titled from the file name.
 pub const SOURCE: &str = "opened";
 
-/// The widest grid this will offer as a first look: a `distinct × distinct`
-/// cell grid past this on either axis is a wall of cells rather than a picture.
-const GRID_MAX_DISTINCT: u64 = 60;
-
-/// What the synthesised dashboard draws over the opened table.
+/// What the synthesised dashboard draws over the opened table: the chart kind
+/// [`crate::chart_kinds::registry`] chose for it, the columns bound to that
+/// kind, and the spec block that kind built.
 ///
-/// Chosen from the profile rather than fixed, because the two shapes answer
-/// different tables: a numeric column has a distribution worth binning, and a
-/// table of categories has a cross-tabulation instead. Both aggregate **in
-/// SQL**, so what is drawn is the whole table rather than a sample of it, and
-/// both read the file's own view — which is what keeps the Data pane beside the
-/// chart showing the file's rows rather than a rolled-up copy of them.
+/// **Chosen out of the registry rather than by a branch here.** Which shape
+/// answers which table is a property of the kinds — a measure has a
+/// distribution worth binning, a table of names has a cross-tabulation, one
+/// category has a ranking — and each of those is a slot declaration on a
+/// [`brightfield_workbench::registry::ChartKind`]. So this type carries the
+/// *outcome* of asking the registry, and there is no second place where a
+/// table's shape is turned into a picture.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FirstLook {
-    /// A histogram: `rectY` over the bin edges of a numeric column, counted.
-    Histogram {
-        /// The column binned.
-        column: String,
-    },
-    /// A count grid: `cell` over two categorical columns, counted.
-    Grid {
-        /// The horizontal axis.
-        x: String,
-        /// The vertical axis.
-        y: String,
-    },
+pub struct FirstLook {
+    kind: ChartKindId,
+    fields: Vec<Field>,
+    block: String,
+}
+
+impl FirstLook {
+    /// Which chart kind this table opens as.
+    #[must_use]
+    pub const fn kind(&self) -> ChartKindId {
+        self.kind
+    }
+
+    /// The columns bound to that kind, in the order they were offered.
+    #[must_use]
+    pub fn fields(&self) -> &[Field] {
+        &self.fields
+    }
+
+    /// The spec block the kind built — the body of the synthesised document,
+    /// without its `meta:` and `data:` header. See the spec contract in
+    /// [`crate::chart_kinds`] for what a block may carry.
+    #[must_use]
+    pub fn block(&self) -> &str {
+        &self.block
+    }
 }
 
 /// The natural window the synthesised dashboard asks for, in logical points.
@@ -272,91 +286,31 @@ fn url_scheme(chosen: &str) -> Option<&str> {
 // Choosing what to draw
 // ---------------------------------------------------------------------------
 
-/// The first look this table admits, or `None` when it admits neither.
+/// The first look this table admits, or `None` when it admits none.
 ///
-/// The order is a product judgement stated once: a **numeric distribution**
-/// beats a cross-tabulation, because a histogram over the whole table is the
-/// single most informative thing that can be drawn about a column nobody has
-/// described, and it is brushable. The grid is the answer for a table of
-/// categories, which has no distribution to draw.
+/// Three steps and no branch on shape: the columns become fields
+/// ([`crate::chart_kinds::fields_of`], which carries the eligibility rules and
+/// the order they are offered in), the registry says which of its kinds those
+/// fields fill, and the first answer builds its own spec. Declaration order in
+/// the registry is therefore the product judgement about what an undescribed
+/// table opens as, and it is stated there rather than here.
 ///
-/// A column whose name carries a `"` or a control character is skipped on
-/// both paths. The emitted SQL quotes identifiers with `"`, and the spec is
-/// written as YAML, so such a name has no faithful spelling in either — and
-/// silently drawing a *different* column would be worse than drawing none.
+/// `None` when no kind applies — a table with a single unusable column, or
+/// none at all — and when the chosen kind refuses its own binding, which is a
+/// registry fault rather than a property of the table.
 #[must_use]
 pub fn first_look(columns: &[ColumnProfile]) -> Option<FirstLook> {
-    let usable: Vec<&ColumnProfile> = columns
-        .iter()
-        .filter(|c| nameable(&c.name))
-        .filter(|c| c.non_null > 0)
-        .collect();
-
-    // A numeric column with something to distribute. `distinct > 1` because a
-    // constant column bins to a single bar, which is a true picture of nothing;
-    // if every numeric column is constant the grid path gets its turn.
-    if let Some(column) = usable
-        .iter()
-        .find(|c| is_binnable_type(&c.type_name) && c.distinct > 1)
-    {
-        return Some(FirstLook::Histogram {
-            column: column.name.clone(),
-        });
-    }
-
-    // Otherwise a cross-tabulation of the two columns with the fewest distinct
-    // values — the two axes most likely to fit on a screen. The sort is stable,
-    // so ties keep declaration order and the same file always opens on the same
-    // picture.
-    let mut axes: Vec<&ColumnProfile> = usable
-        .into_iter()
-        .filter(|c| c.distinct > 1 && c.distinct <= GRID_MAX_DISTINCT)
-        .collect();
-    axes.sort_by_key(|c| c.distinct);
-    match axes.as_slice() {
-        [x, y, ..] => Some(FirstLook::Grid {
-            x: x.name.clone(),
-            y: y.name.clone(),
-        }),
-        _ => None,
-    }
-}
-
-/// Whether a column name can be written into both the emitted SQL and the
-/// synthesised YAML without changing what it names.
-fn nameable(name: &str) -> bool {
-    !name.is_empty() && !name.contains('"') && !name.chars().any(char::is_control)
-}
-
-/// Whether a DuckDB column type can be **binned** — strictly the numeric
-/// types.
-///
-/// Temporal types are deliberately out, and the exclusion is load-bearing
-/// rather than cautious: the bin scheme is arithmetic (`max - min`, then a
-/// logarithm of the span), and subtracting two DuckDB `DATE`s yields an
-/// `INTERVAL`, which has no logarithm. A date column is still a perfectly good
-/// grid axis, which is where it lands instead.
-fn is_binnable_type(duckdb_type: &str) -> bool {
-    let upper = duckdb_type.trim().to_ascii_uppercase();
-    let base = upper.split('(').next().unwrap_or(&upper).trim();
-    matches!(
-        base,
-        "TINYINT"
-            | "SMALLINT"
-            | "INTEGER"
-            | "BIGINT"
-            | "HUGEINT"
-            | "UTINYINT"
-            | "USMALLINT"
-            | "UINTEGER"
-            | "UBIGINT"
-            | "UHUGEINT"
-            | "FLOAT"
-            | "REAL"
-            | "DOUBLE"
-            | "DECIMAL"
-            | "NUMERIC"
-    )
+    let fields = chart_kinds::fields_of(columns);
+    let registry = chart_kinds::registry();
+    let id = registry.applicable(&fields).into_iter().next()?;
+    let kind = registry.find(id)?;
+    let binding = kind.bind(&fields).ok()?;
+    let block = kind.spec(&binding, &kind.options()).ok()?;
+    Some(FirstLook {
+        kind: id,
+        fields,
+        block,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -376,13 +330,21 @@ pub fn source_spec(path: &Path) -> String {
     )
 }
 
-/// The whole spec: the source, and the first look over it.
+/// The whole spec: the title, the source, and the block the chosen chart kind
+/// built over it.
+///
+/// **The plot is not written here.** It is [`FirstLook::block`], which came out
+/// of a [`brightfield_workbench::registry::ChartKind`]'s builder — so this
+/// function knows the header and the size and nothing at all about what is
+/// drawn, and a kind added to the registry needs no edit to it.
 ///
 /// The plot reads the **file's own view**, not a rolled-up one, and does its
 /// aggregation in the mark's own query. That is not a stylistic choice: the
 /// Data pane tabulates `SELECT * FROM <the first mark's source>`, so pointing
 /// the mark at a `GROUP BY` view would put twenty summary rows in the grid
-/// where the user is entitled to their file.
+/// where the user is entitled to their file. It holds because every kind in
+/// the registry reads [`SOURCE`]; `every_kind_reads_the_files_own_view` is
+/// what keeps it true of a kind added later.
 #[must_use]
 pub fn spec_for(path: &Path, look: &FirstLook) -> String {
     let mut spec = String::new();
@@ -390,23 +352,7 @@ pub fn spec_for(path: &Path, look: &FirstLook) -> String {
     spec.push_str(&yaml_quoted(&file_label(path)));
     spec.push('\n');
     spec.push_str(&source_spec(path));
-    match look {
-        FirstLook::Histogram { column } => {
-            spec.push_str("plot:\n");
-            spec.push_str("  - mark: rectY\n");
-            spec.push_str(&format!("    data: {{ from: {SOURCE} }}\n"));
-            spec.push_str(&format!("    x: {{ bin: {} }}\n", yaml_quoted(column)));
-            spec.push_str("    y: { count: }\n");
-        }
-        FirstLook::Grid { x, y } => {
-            spec.push_str("plot:\n");
-            spec.push_str("  - mark: cell\n");
-            spec.push_str(&format!("    data: {{ from: {SOURCE} }}\n"));
-            spec.push_str(&format!("    x: {}\n", yaml_quoted(x)));
-            spec.push_str(&format!("    y: {}\n", yaml_quoted(y)));
-            spec.push_str("    fill: { count: }\n");
-        }
-    }
+    spec.push_str(look.block());
     spec.push_str(&format!("width: {PLOT_WIDTH}\nheight: {PLOT_HEIGHT}\n"));
     spec
 }
@@ -422,7 +368,8 @@ pub fn spec_for(path: &Path, look: &FirstLook) -> String {
 /// a quoted scalar to a space, so a value holding one would parse back as a
 /// different string. Two guards keep such a value from reaching here, and this
 /// function is correct only because both do — `accept`'s control-character
-/// refusal for a path, and `nameable` for a column name.
+/// refusal for a path, and `chart_kinds::fields_of`'s name check for a column,
+/// which is what stops an unwritable name reaching a chart kind's builder.
 fn yaml_quoted(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
@@ -442,7 +389,9 @@ fn file_label(path: &Path) -> String {
 // ---------------------------------------------------------------------------
 
 /// Open `chosen` as a live table: the session holding the file as a DuckDB
-/// view, and the first composition over it.
+/// view, the first composition over it, and **which chart kind chose that
+/// composition** — the third of those is what lets the chart pane draw the
+/// picture through that kind's module rather than through a branch.
 ///
 /// # Errors
 ///
@@ -450,17 +399,25 @@ fn file_label(path: &Path) -> String {
 /// raises this string as a banner and a banner that says only "could not open"
 /// is a blank frame with a sentence on it. The reasons are: the location was
 /// refused (see `accept`); DuckDB would not read the file, in which case its
-/// own words come through; or the table has neither a numeric column to bin nor
-/// two categorical columns to cross, and so admits no first look.
-pub fn open(chosen: &str) -> Result<(LiveDashboard, Composed), String> {
+/// own words come through; or no chart kind in this build fits the table's
+/// columns, and so it admits no first look.
+pub fn open(chosen: &str) -> Result<(LiveDashboard, Composed, FirstLook), String> {
     let path = accept(chosen)?;
     let columns = columns_of(&path)?;
     let Some(look) = first_look(&columns) else {
+        // What this build's charts *do* take, read off the registry rather
+        // than restated here — a sentence listing the kinds is a second copy
+        // of the list, and the copy is what goes stale when a kind is added.
+        let offered: Vec<&str> = chart_kinds::registry()
+            .kinds()
+            .iter()
+            .map(|kind| kind.description)
+            .collect();
         return Err(format!(
-            "{}: opened, but there is nothing here to draw — this table has no \
-             numeric column to bin and no two columns with few enough distinct \
-             values to cross. It has {}.",
+            "{}: opened, but there is nothing here to draw — none of this \
+             build's charts fits these columns. They take: {}. It has {}.",
             path.display(),
+            offered.join("; "),
             plural_columns(columns.len())
         ));
     };
@@ -470,7 +427,7 @@ pub fn open(chosen: &str) -> Result<(LiveDashboard, Composed), String> {
     let composed = live
         .present()
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok((live, composed))
+    Ok((live, composed, look))
 }
 
 /// `3 columns` / `1 column`.
@@ -711,37 +668,30 @@ mod tests {
     }
 
     /// A numeric column wins, because a distribution is the most informative
-    /// thing that can be drawn about a column nobody has described.
+    /// thing that can be drawn about a column nobody has described. Which is a
+    /// fact about the registry's declaration order, asserted here through the
+    /// door a user comes in by.
     #[test]
     fn a_numeric_column_becomes_the_histogram() {
         let look = first_look(&[
             column("region", "VARCHAR", 4),
             column("amount", "DOUBLE", 900),
-        ]);
-        assert_eq!(
-            look,
-            Some(FirstLook::Histogram {
-                column: "amount".to_string()
-            })
-        );
+        ])
+        .expect("a measure admits a first look");
+        assert_eq!(look.kind(), chart_kinds::BINNED_HISTOGRAM);
+        assert!(look.block().contains("x: { bin: 'amount' }"), "{look:?}");
     }
 
     /// A temporal column is NOT binned — the bin scheme takes a logarithm of
-    /// `max - min`, and the difference of two dates is an interval.
+    /// `max - min`, and the difference of two dates is an interval — so a
+    /// table of a date and a name crosses them instead, narrowest first.
     #[test]
     fn a_date_column_is_an_axis_and_never_a_bin() {
-        assert!(!is_binnable_type("DATE"));
-        assert!(!is_binnable_type("TIMESTAMP WITH TIME ZONE"));
-        assert!(is_binnable_type("DECIMAL(18,3)"));
-        let look = first_look(&[column("day", "DATE", 30), column("region", "VARCHAR", 4)]);
-        assert_eq!(
-            look,
-            Some(FirstLook::Grid {
-                x: "region".to_string(),
-                y: "day".to_string()
-            }),
-            "the two fewest-distinct columns, narrowest first"
-        );
+        let look = first_look(&[column("day", "DATE", 30), column("region", "VARCHAR", 4)])
+            .expect("two categories cross");
+        assert_eq!(look.kind(), chart_kinds::COUNT_GRID);
+        assert!(look.block().contains("x: 'region'"), "{look:?}");
+        assert!(look.block().contains("y: 'day'"), "{look:?}");
     }
 
     /// A constant numeric column bins to one bar, which is a true picture of
@@ -752,14 +702,11 @@ mod tests {
             column("version", "BIGINT", 1),
             column("region", "VARCHAR", 4),
             column("tier", "VARCHAR", 3),
-        ]);
-        assert_eq!(
-            look,
-            Some(FirstLook::Grid {
-                x: "tier".to_string(),
-                y: "region".to_string()
-            })
-        );
+        ])
+        .expect("two categories cross");
+        assert_eq!(look.kind(), chart_kinds::COUNT_GRID);
+        assert!(look.block().contains("x: 'tier'"), "{look:?}");
+        assert!(look.block().contains("y: 'region'"), "{look:?}");
     }
 
     /// A column whose name cannot be written into the emitted SQL is skipped
@@ -770,32 +717,40 @@ mod tests {
         let look = first_look(&[
             column("we\"ird", "DOUBLE", 900),
             column("amount", "DOUBLE", 900),
-        ]);
-        assert_eq!(
-            look,
-            Some(FirstLook::Histogram {
-                column: "amount".to_string()
-            })
-        );
+        ])
+        .expect("the writable measure is still there");
+        assert_eq!(look.kind(), chart_kinds::BINNED_HISTOGRAM);
+        assert!(look.block().contains("x: { bin: 'amount' }"), "{look:?}");
         assert_eq!(first_look(&[column("we\"ird", "DOUBLE", 900)]), None);
     }
 
-    /// A table with nothing to bin and nothing to cross admits no first look,
-    /// and says so rather than composing an empty window.
+    /// One category and nothing else is a **ranking** now, not a refusal: the
+    /// registry carries a kind whose single slot that column fills. A table
+    /// with no usable column at all still admits no first look and says so
+    /// rather than composing an empty window.
     #[test]
-    fn a_table_with_one_categorical_column_admits_no_first_look() {
-        assert_eq!(first_look(&[column("name", "VARCHAR", 900)]), None);
+    fn a_table_with_one_categorical_column_opens_on_its_ranking() {
+        let look = first_look(&[column("name", "VARCHAR", 9)]).expect("one category ranks");
+        assert_eq!(look.kind(), crate::ranked_bars::KIND_ID);
         assert_eq!(first_look(&[]), None);
+        // …and a category too wide to read is offered to nothing.
+        assert_eq!(first_look(&[column("name", "VARCHAR", 900)]), None);
     }
 
     /// An all-null column is not an axis: it profiles as present and holds
     /// nothing, and a grid axis over it would be a single empty band.
     #[test]
     fn an_all_null_column_is_not_an_axis() {
-        let mut empty = column("spare", "VARCHAR", 0);
+        let mut empty = column("spare", "VARCHAR", 4);
         empty.non_null = 0;
         empty.nulls = 100;
-        assert_eq!(first_look(&[empty, column("name", "VARCHAR", 900)]), None);
+        let look = first_look(&[empty, column("name", "VARCHAR", 9)])
+            .expect("the one usable category ranks");
+        assert_eq!(
+            look.fields().len(),
+            1,
+            "the all-null column was offered to the kind: {look:?}"
+        );
     }
 
     /// The synthesised spec quotes both the path and the column, and a quote
@@ -804,12 +759,8 @@ mod tests {
     #[test]
     fn an_apostrophe_survives_into_the_spec() {
         let path = PathBuf::from("/Users/hugh/Hugh's data.csv");
-        let spec = spec_for(
-            &path,
-            &FirstLook::Histogram {
-                column: "it's".to_string(),
-            },
-        );
+        let look = first_look(&[column("it's", "DOUBLE", 900)]).expect("a measure binds");
+        let spec = spec_for(&path, &look);
         assert!(
             spec.contains("file: '/Users/hugh/Hugh''s data.csv'"),
             "{spec}"
@@ -829,32 +780,49 @@ mod tests {
         );
     }
 
-    /// Both first looks parse, name the file's own view as their source, and
-    /// aggregate in the mark rather than in a rolled-up view — which is what
-    /// keeps the Data pane showing the file's rows.
+    /// **Every kind the registry ships** parses under this module's header and
+    /// names the file's own view as its source — not the two that happened to
+    /// exist when this was written.
+    ///
+    /// Stated over the registry rather than over a list of shapes because that
+    /// is the only form of the claim a kind added later has to satisfy: the
+    /// Data pane tabulates `SELECT * FROM <the first mark's source>`, so a kind
+    /// pointing its mark at a rolled-up view would put summary rows in the grid
+    /// where the user is entitled to their file, and no assertion written
+    /// against `rectY` and `cell` would notice.
     #[test]
-    fn both_first_looks_parse_and_read_the_files_own_view() {
+    fn every_kind_reads_the_files_own_view() {
         let path = PathBuf::from("/tmp/t.parquet");
-        for look in [
-            FirstLook::Histogram {
-                column: "amount".to_string(),
-            },
-            FirstLook::Grid {
-                x: "tier".to_string(),
-                y: "method".to_string(),
-            },
-        ] {
+        for kind in chart_kinds::registry().kinds() {
+            let fields: Vec<Field> = kind
+                .slots
+                .iter()
+                .filter(|slot| slot.required)
+                .enumerate()
+                .map(|(i, slot)| Field::new(format!("c{i}"), slot.accepts[0]))
+                .collect();
+            let binding = kind.bind(&fields).expect("a kind binds its own slots");
+            let look = FirstLook {
+                kind: kind.id,
+                fields,
+                block: kind
+                    .spec(&binding, &kind.options())
+                    .expect("a kind builds from its own binding"),
+            };
             let spec = spec_for(&path, &look);
             let parsed = parse_spec(&spec, Format::Yaml)
-                .unwrap_or_else(|e| panic!("{look:?} does not parse: {e}\n{spec}"));
+                .unwrap_or_else(|e| panic!("{}: does not parse: {e}\n{spec}", kind.id));
             let marks = brightfield_sql::collect_marks(&parsed.spec);
-            assert_eq!(marks.len(), 1, "{look:?} declares exactly one mark");
-            let from = format!("{:?}", marks[0].data);
-            assert!(
-                from.contains(SOURCE),
-                "{look:?}'s mark must read the file's own view, not a \
-                 rolled-up one: {from}"
-            );
+            assert!(!marks.is_empty(), "{}: declares no mark", kind.id);
+            for mark in marks {
+                let from = format!("{:?}", mark.data);
+                assert!(
+                    from.contains(SOURCE),
+                    "{}: a mark must read the file's own view, not a rolled-up \
+                     one: {from}",
+                    kind.id
+                );
+            }
         }
     }
 }

@@ -1406,10 +1406,9 @@ impl MeridianApp {
     /// That is not a hypothetical. `open_home` did exactly that: it emptied
     /// the chart document through `ChartDoc::open` and left the outgoing
     /// spec's `Cannot render …` banner standing on the front door, for a
-    /// document nobody had open any more. There are two callers now
-    /// (`open_start` and `open_home`) and both go through here; a third that
-    /// does not is the same bug a third time, so the reviewer's question about
-    /// any new chart-document swap is "does it call this".
+    /// document nobody had open any more. A chart-document swap that reaches
+    /// past this is the same bug again, so the reviewer's question about any
+    /// new one is "does it call this".
     pub fn open_chart(&mut self, composed: Composed) {
         self.charts.doc.open(composed);
         self.say_load_diagnostics();
@@ -2452,7 +2451,7 @@ impl MeridianApp {
     /// list, which is its own piece of work.
     pub fn open_data_file(&mut self, ctx: &egui::Context, chosen: &str) {
         let banner = NotificationId::new("open-data-file");
-        let (live, composed) = match crate::data_file::open(chosen) {
+        let (live, composed, look) = match crate::data_file::open(chosen) {
             Ok(opened) => opened,
             Err(e) => {
                 eprintln!("could not open {chosen}: {e}");
@@ -2466,6 +2465,15 @@ impl MeridianApp {
         };
         self.open_chart(composed);
         self.charts.doc.attach_live(live);
+        // Which chart kind chose this picture, recorded for the same reason
+        // the session is: `open_chart` is the different-document entry and
+        // clears what belonged to the outgoing spec. The chart pane draws the
+        // picture through this kind's module.
+        self.charts.doc.set_authored(crate::app::Authored {
+            kind: look.kind(),
+            fields: look.fields().to_vec(),
+            block: look.block().to_string(),
+        });
         self.notifications.dismiss(banner);
         self.ws_mut().set_active(ViewKind::Charts);
         self.toasts.push(Toast::new(

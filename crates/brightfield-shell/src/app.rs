@@ -59,11 +59,12 @@ use std::collections::BTreeSet;
 use brightfield_engine::coordinator::{Coordinator, Interaction};
 use brightfield_engine::{AxisExtent, NavigationExtent};
 use brightfield_keys::BindingContext;
-use brightfield_render::canvas_host::{Color, PixelSize};
+use brightfield_render::canvas_host::{ChartSurface, Color, PixelSize};
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_spec::ast::SpecValue;
 use brightfield_spec::vocab::MarkKind;
-use brightfield_workbench::registry::{DockSide, Slot};
+use brightfield_workbench::item::ModuleHost;
+use brightfield_workbench::registry::{ChartKindId, ChartKindRegistry, DockSide, Field, Slot};
 use brightfield_workbench::{
     chrome, Activity, ActivityLog, EmptyState, Icon, Item, ItemCtx, ItemId, ItemRegistry, ItemSpec,
     PaneKey, Subject, Verb, ViewKind,
@@ -71,8 +72,9 @@ use brightfield_workbench::{
 
 use meridian_design::{semantic, spacing};
 
-use crate::canvas::{CanvasSlot, EguiCanvasHost};
+use crate::canvas::{CanvasSlot, EguiCanvasHost, EguiChartFrame};
 use crate::chart_item::ChartItem;
+use crate::chart_kinds;
 use crate::design::Mode;
 use crate::interval_drag::IntervalDrags;
 use crate::navigation::{AxisLock, NavGesture, NavOutcome};
@@ -118,6 +120,40 @@ pub struct ChartFault {
     /// The supporting line: the engine's own words where they help, the
     /// gesture's where they help more.
     pub detail: String,
+}
+
+/// How a document's picture was chosen, when a **chart kind** chose it.
+///
+/// A table opened with no spec is drawn by asking
+/// [`crate::chart_kinds::registry`] which of its kinds the table's columns
+/// fill; what comes back is a kind, the columns bound to it, and the spec
+/// block that kind built. Holding those three is what lets the chart pane
+/// re-make the [`ChartModule`](brightfield_workbench::item::ChartModule) that
+/// draws the picture, frame after frame, out of the registry rather than out
+/// of a branch.
+///
+/// `None` on a document composed from a spec someone **wrote**, because no
+/// route that opens one asks the registry anything — the source came off disk
+/// or out of the binary, and there is nothing to record. Which routes those
+/// are is enumerated by
+/// `a_chart_kinds_picture_carries_its_kind_and_a_written_spec_carries_none` in
+/// `tests/data_file.rs`, and that is where a new one gets ruled on.
+///
+/// The module route reaches exactly the documents carrying one of these:
+/// `module_of` in [`crate::chart_item`] opens with `doc.authored()?` and the
+/// chart pane presents directly on its `None`. Widening it is not a matter of
+/// hosting the same picture differently — a
+/// [`ChartModule`](brightfield_workbench::item::ChartModule) rebuilds its spec
+/// from a kind and bound columns every frame, and a document nobody bound
+/// columns for has nothing to rebuild it from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Authored {
+    /// The kind that chose the picture.
+    pub kind: ChartKindId,
+    /// The columns bound to that kind, in the order they were offered.
+    pub fields: Vec<Field>,
+    /// The spec block that kind built — what this document was composed from.
+    pub block: String,
 }
 
 /// The chart view's **document**: the composited dashboard, the canvas it
@@ -172,6 +208,10 @@ pub struct ChartDoc {
     /// a layout nothing derived it from stops landing the first time a row
     /// height moves without anything going red.
     pub interval_slider_rects: Vec<(String, egui::Rect)>,
+    /// How this document's picture was chosen, when a chart kind chose it —
+    /// see [`Authored`]. Written by the open-a-data-file path, cleared by
+    /// [`ChartDoc::open`] with the rest of the outgoing document's state.
+    authored: Option<Authored>,
     /// The spec file this dashboard was composed from, when a named file
     /// composed it — what the spec editor opens beside the live chart.
     /// `None` for the shipped starts and the in-memory composes of the test
@@ -271,6 +311,7 @@ impl ChartDoc {
             raster_rect: None,
             legend_rect: None,
             interval_slider_rects: Vec::new(),
+            authored: None,
             spec_path: None,
             activity: ActivityLog::new(),
             watch: FileWatcher::new(),
@@ -297,6 +338,7 @@ impl ChartDoc {
             raster_rect: None,
             legend_rect: None,
             interval_slider_rects: Vec::new(),
+            authored: None,
             spec_path: None,
             activity: ActivityLog::new(),
             watch: FileWatcher::new(),
@@ -353,6 +395,7 @@ impl ChartDoc {
         self.nav.clear();
         self.nav_notice = None;
         self.nav_plot = 0;
+        self.authored = None;
         self.spec_path = None;
         // The watch list described the replaced document's files, and any
         // in-flight marks belonged to its session — both go with it.
@@ -944,6 +987,60 @@ impl ChartDoc {
             .copied()
     }
 
+    /// How this document's picture was chosen, when a chart kind chose it.
+    #[must_use]
+    pub const fn authored(&self) -> Option<&Authored> {
+        self.authored.as_ref()
+    }
+
+    /// Record that a chart kind chose this document's picture.
+    ///
+    /// Called by the open-a-data-file path after [`ChartDoc::open`] has taken
+    /// the composed dashboard, for the reason [`ChartDoc::attach_live`] is
+    /// called there: `open` is the different-document entry and clears
+    /// everything that belonged to the outgoing spec, this included.
+    pub fn set_authored(&mut self, authored: Authored) {
+        self.authored = Some(authored);
+    }
+
+    /// Reserve the raster's rect in `ui` and paint the composited dashboard
+    /// into it, returning the rect — `None` when the surface reserved nothing.
+    ///
+    /// **The one place the chart's picture reaches the screen**, reached the
+    /// two ways the chart pane's `match module_of(doc)` has arms for: through
+    /// [`ModuleHost::draw_module`] for a document carrying an [`Authored`]
+    /// record, and directly for a document carrying none. One routine rather
+    /// than two, so the two documents cannot drift into two pictures — what
+    /// differs between them is which of them a registry gets to decide, not
+    /// how the pixels arrive.
+    ///
+    /// With no device behind the document the raster is blank rather than
+    /// apologetic — a headless document is a test fixture — but the *layout*
+    /// still happens: the geometry the exercise tests hold is produced with
+    /// and without a GPU alike.
+    pub fn present_raster(&mut self, ui: &mut egui::Ui) -> Option<egui::Rect> {
+        let (w, h) = (self.composed.width, self.composed.height);
+        let rect = match self.canvas_texture() {
+            Some(texture) => {
+                let mut frame = EguiChartFrame::new(ui, texture);
+                frame.present(PixelSize {
+                    width: w,
+                    height: h,
+                });
+                frame.reserved()
+            }
+            None => {
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::vec2(w as f32, h as f32),
+                    egui::Sense::click_and_drag(),
+                );
+                Some(rect)
+            }
+        };
+        self.raster_rect = rect;
+        rect
+    }
+
     /// The presented texture, if a device is behind this document and a frame
     /// has rastered. The chart pane's read — the canvas slot itself stays
     /// private to this module.
@@ -1016,6 +1113,51 @@ impl ChartDoc {
         );
         let id = host.present_keyed(CHART_PANE, &scaled, dev, base);
         self.canvas.record(key, id);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The document as a chart-module host.
+// ---------------------------------------------------------------------------
+
+/// The chart document hosts the shell's chart kinds.
+///
+/// This is the seam [`brightfield_workbench`] draws between "a chart kind is
+/// data" and "something has to rasterise it": a kind builds a spec and stops,
+/// and the spec comes back to the document, which owns the composer, the canvas
+/// host and the GPU handle that crate has none of.
+impl ModuleHost for ChartDoc {
+    /// Spec **source** — see [`crate::chart_kinds`] for why a chart kind in
+    /// this shell builds a document rather than a structured intermediate.
+    type Spec = String;
+
+    fn chart_kinds(&self) -> &ChartKindRegistry<String> {
+        chart_kinds::registry()
+    }
+
+    /// Present the picture this module's spec asked for.
+    ///
+    /// **What this checks, and what it does not.** The spec a module hands over
+    /// is rebuilt from its kind and its columns every frame; the picture on
+    /// screen was composed once, from the block in [`Authored`]. Presenting a
+    /// raster composed from a *different* block would put one chart under
+    /// another chart's module, so a disagreement draws nothing rather than
+    /// something wrong. It does not compose the incoming spec — a document
+    /// whose module has moved on stays blank until something re-opens it, and
+    /// composing here is the follow-on that would fix that.
+    ///
+    /// No shipped kind can reach the disagreement today, and the two reasons
+    /// are each checkable rather than remembered: no kind declares a control
+    /// (`chart_kinds`'s
+    /// `no_kind_declares_a_control_that_the_pane_would_have_to_remember`), and
+    /// `ChartModule::set_fields` has no call site in the workspace, so a
+    /// module's columns are whatever the document handed it. It is reachable
+    /// from a test, which is where it is held.
+    fn draw_module(&mut self, spec: &String, ui: &mut egui::Ui) {
+        if self.authored.as_ref().map(|a| a.block.as_str()) != Some(spec.as_str()) {
+            return;
+        }
+        self.present_raster(ui);
     }
 }
 

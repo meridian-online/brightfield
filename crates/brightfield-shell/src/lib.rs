@@ -17,6 +17,9 @@
 //!   `brightfield-workbench` shell contract.
 //! - [`chart_item`] — the chart pane: one `Item`, parameterised by mark kind,
 //!   binding brush/click gestures to the engine's coordinator seam.
+//! - [`chart_kinds`] — the shell's chart vocabulary as data: the one
+//!   `ChartKindRegistry` this process reads, which is what a table opened with
+//!   no spec is drawn out of.
 //! - [`ranked_bars`] — the ranked category bars module and the dashboard that
 //!   gives one to every categorical column: a chart kind as data, and the
 //!   spec its builder emits.
@@ -57,6 +60,7 @@ pub mod app;
 pub mod canvas;
 pub mod capture;
 pub mod chart_item;
+pub mod chart_kinds;
 pub mod data_file;
 pub mod data_grid;
 pub mod devtools;
