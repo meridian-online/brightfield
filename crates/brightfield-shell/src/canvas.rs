@@ -444,9 +444,13 @@ impl<'u> EguiChartFrame<'u> {
         self.rect.map_or(egui::Vec2::ZERO, |r| r.min.to_vec2())
     }
 
-    fn pt(&self, p: Point) -> egui::Pos2 {
-        let o = self.origin();
-        egui::pos2(p.x as f32 + o.x, p.y as f32 + o.y)
+    /// This frame's overlay, as the shared painter every shape goes through.
+    fn painter(&mut self) -> EguiOverlay<'_> {
+        let origin = self.origin();
+        EguiOverlay {
+            ui: self.ui,
+            origin,
+        }
     }
 }
 
@@ -477,27 +481,82 @@ impl ChartSurface for EguiChartFrame<'_> {
     fn set_cursor(&mut self, cursor: Option<SurfaceCursor>) {
         self.cursor = cursor;
         if let Some(c) = cursor {
-            self.ui.ctx().set_cursor_icon(surface_cursor_to_egui(c));
+            set_surface_cursor(self.ui.ctx(), c);
         }
     }
 }
 
 impl OverlayPainter for EguiChartFrame<'_> {
     fn fill_rect(&mut self, r: SurfaceRect, c: Color) {
-        let o = self.origin();
-        let rect = egui::Rect::from_min_size(
-            egui::pos2(r.x as f32 + o.x, r.y as f32 + o.y),
+        self.painter().fill_rect(r, c);
+    }
+
+    fn stroke_rect(&mut self, r: SurfaceRect, c: Color, w: f32) {
+        self.painter().stroke_rect(r, c, w);
+    }
+
+    fn fill_circle(&mut self, center: Point, radius: f64, c: Color) {
+        self.painter().fill_circle(center, radius, c);
+    }
+
+    fn line(&mut self, a: Point, b: Point, c: Color, w: f32) {
+        self.painter().line(a, b, c, w);
+    }
+
+    fn text(&mut self, at: Point, s: &str, c: Color, size: f32) {
+        self.painter().text(at, s, c, size);
+    }
+}
+
+/// The transient-overlay half of [`EguiChartFrame`], over a rect somebody else
+/// reserved.
+///
+/// The chart pane draws its raster through
+/// [`ModuleHost::draw_module`](brightfield_workbench::item::ModuleHost::draw_module),
+/// which owns the frame for the length of the present and drops it — so the
+/// brush rectangle and the hover crosshair, which are painted afterwards by the
+/// pane, need an [`OverlayPainter`] that borrows nothing but the `Ui` and the
+/// rect the raster landed in. [`EguiChartFrame`]'s own overlay methods delegate
+/// here, so there is one implementation of each shape rather than two that can
+/// drift.
+///
+/// Coordinates are **raster-local logical pixels**, as they are on the frame:
+/// the origin is `rect.min`, so a caller that has plot-local points already
+/// need not know where on screen the raster ended up.
+pub struct EguiOverlay<'u> {
+    ui: &'u mut egui::Ui,
+    origin: egui::Vec2,
+}
+
+impl<'u> EguiOverlay<'u> {
+    /// An overlay painter over `rect` (window-space logical pixels).
+    pub fn new(ui: &'u mut egui::Ui, rect: egui::Rect) -> Self {
+        Self {
+            ui,
+            origin: rect.min.to_vec2(),
+        }
+    }
+
+    fn pt(&self, p: Point) -> egui::Pos2 {
+        egui::pos2(p.x as f32 + self.origin.x, p.y as f32 + self.origin.y)
+    }
+
+    fn rect(&self, r: SurfaceRect) -> egui::Rect {
+        egui::Rect::from_min_size(
+            egui::pos2(r.x as f32 + self.origin.x, r.y as f32 + self.origin.y),
             egui::vec2(r.width as f32, r.height as f32),
-        );
+        )
+    }
+}
+
+impl OverlayPainter for EguiOverlay<'_> {
+    fn fill_rect(&mut self, r: SurfaceRect, c: Color) {
+        let rect = self.rect(r);
         self.ui.painter().rect_filled(rect, 0.0, to_color32(c));
     }
 
     fn stroke_rect(&mut self, r: SurfaceRect, c: Color, w: f32) {
-        let o = self.origin();
-        let rect = egui::Rect::from_min_size(
-            egui::pos2(r.x as f32 + o.x, r.y as f32 + o.y),
-            egui::vec2(r.width as f32, r.height as f32),
-        );
+        let rect = self.rect(r);
         self.ui.painter().rect_stroke(
             rect,
             0.0,
@@ -507,27 +566,35 @@ impl OverlayPainter for EguiChartFrame<'_> {
     }
 
     fn fill_circle(&mut self, center: Point, radius: f64, c: Color) {
+        let at = self.pt(center);
         self.ui
             .painter()
-            .circle_filled(self.pt(center), radius as f32, to_color32(c));
+            .circle_filled(at, radius as f32, to_color32(c));
     }
 
     fn line(&mut self, a: Point, b: Point, c: Color, w: f32) {
-        self.ui.painter().line_segment(
-            [self.pt(a), self.pt(b)],
-            egui::Stroke::new(w, to_color32(c)),
-        );
+        let (a, b) = (self.pt(a), self.pt(b));
+        self.ui
+            .painter()
+            .line_segment([a, b], egui::Stroke::new(w, to_color32(c)));
     }
 
     fn text(&mut self, at: Point, s: &str, c: Color, size: f32) {
+        let at = self.pt(at);
         self.ui.painter().text(
-            self.pt(at),
+            at,
             egui::Align2::LEFT_TOP,
             s,
             egui::FontId::proportional(size),
             to_color32(c),
         );
     }
+}
+
+/// Ask egui for a framework-free surface cursor. The one place the mapping is
+/// applied, so the pane and the frame set the same glyph for the same request.
+pub fn set_surface_cursor(ctx: &egui::Context, cursor: SurfaceCursor) {
+    ctx.set_cursor_icon(surface_cursor_to_egui(cursor));
 }
 
 /// Map egui pointer state over `rect` into the framework-free [`SurfaceInput`]

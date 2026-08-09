@@ -2452,7 +2452,7 @@ impl MeridianApp {
     /// list, which is its own piece of work.
     pub fn open_data_file(&mut self, ctx: &egui::Context, chosen: &str) {
         let banner = NotificationId::new("open-data-file");
-        let (live, composed) = match crate::data_file::open(chosen) {
+        let (live, composed, look) = match crate::data_file::open(chosen) {
             Ok(opened) => opened,
             Err(e) => {
                 eprintln!("could not open {chosen}: {e}");
@@ -2466,6 +2466,15 @@ impl MeridianApp {
         };
         self.open_chart(composed);
         self.charts.doc.attach_live(live);
+        // Which chart kind chose this picture, recorded for the same reason
+        // the session is: `open_chart` is the different-document entry and
+        // clears what belonged to the outgoing spec. The chart pane draws the
+        // picture through this kind's module.
+        self.charts.doc.set_authored(crate::app::Authored {
+            kind: look.kind(),
+            fields: look.fields().to_vec(),
+            block: look.block().to_string(),
+        });
         self.notifications.dismiss(banner);
         self.ws_mut().set_active(ViewKind::Charts);
         self.toasts.push(Toast::new(

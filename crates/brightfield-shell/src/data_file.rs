@@ -388,7 +388,9 @@ fn file_label(path: &Path) -> String {
 // ---------------------------------------------------------------------------
 
 /// Open `chosen` as a live table: the session holding the file as a DuckDB
-/// view, and the first composition over it.
+/// view, the first composition over it, and **which chart kind chose that
+/// composition** — the third of those is what lets the chart pane draw the
+/// picture through that kind's module rather than through a branch.
 ///
 /// # Errors
 ///
@@ -398,7 +400,7 @@ fn file_label(path: &Path) -> String {
 /// refused (see `accept`); DuckDB would not read the file, in which case its
 /// own words come through; or the table has neither a numeric column to bin nor
 /// two categorical columns to cross, and so admits no first look.
-pub fn open(chosen: &str) -> Result<(LiveDashboard, Composed), String> {
+pub fn open(chosen: &str) -> Result<(LiveDashboard, Composed, FirstLook), String> {
     let path = accept(chosen)?;
     let columns = columns_of(&path)?;
     let Some(look) = first_look(&columns) else {
@@ -416,7 +418,7 @@ pub fn open(chosen: &str) -> Result<(LiveDashboard, Composed), String> {
     let composed = live
         .present()
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok((live, composed))
+    Ok((live, composed, look))
 }
 
 /// `3 columns` / `1 column`.

@@ -142,7 +142,7 @@ fn a_chosen_csv_becomes_a_table_the_session_can_be_queried_for() {
     let dir = TempDir::new("csv-table");
     let path = dir.write("readings.csv", READINGS_CSV);
 
-    let (mut live, composed) =
+    let (mut live, composed, _look) =
         data_file::open(&path.to_string_lossy()).expect("an ordinary CSV opens");
 
     assert!(
@@ -186,7 +186,7 @@ fn a_chosen_parquet_opens_on_the_same_path() {
 
     write_parquet(&csv, &parquet);
 
-    let (mut live, _composed) =
+    let (mut live, _composed, _look) =
         data_file::open(&parquet.to_string_lossy()).expect("a Parquet opens");
     assert_eq!(
         live.coordinator()
@@ -222,7 +222,7 @@ fn the_first_look_over_a_numeric_column_is_its_distribution() {
 
     let columns = {
         // Same two-step the open makes: profile, then choose.
-        let (mut live, _) = data_file::open(&path.to_string_lossy()).expect("opens");
+        let (mut live, _, _) = data_file::open(&path.to_string_lossy()).expect("opens");
         live.coordinator()
             .session()
             .profile_sources()
@@ -269,7 +269,7 @@ fn a_table_with_no_numeric_column_opens_on_a_count_grid() {
          candidate,jaro_winkler\n",
     );
 
-    let (mut live, composed) =
+    let (mut live, composed, _look) =
         data_file::open(&path.to_string_lossy()).expect("a table of two categorical columns opens");
     assert!(
         composed.width > 0 && composed.height > 0,
@@ -344,7 +344,7 @@ fn assert_opens_the_chosen_file_or_refuses(chosen: &Path, chosen_rows: u64, deco
                 "…and has to carry a reason as well as a name: {refusal}"
             );
         }
-        Ok((mut live, _composed)) => {
+        Ok((mut live, _composed, _look)) => {
             let rows = live
                 .coordinator()
                 .session()
