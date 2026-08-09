@@ -36,7 +36,7 @@ WHAT IS CHECKED (changed comment lines only, `origin/main...HEAD`)
        cannot judge the claim — no gate can — so it asks for the citation that
        lets a reader judge it: name the test, or drop the quantifier.
 
-       It judges no claim, so its whole design is about not crying wolf. It
+       Judging nothing, its whole design is about not crying wolf. It
        needs a SYMBOL, not merely a backticked token: this repo backticks
        channel names, role names, kind ids and column values, and a rule that
        read those as symbols would report ordinary prose. What counts as a
@@ -69,15 +69,17 @@ WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
     - Rule D does not read the test it asks for. A comment that names one is
       past it, whatever the test asserts. It buys a reader a place to look and
       an author a moment of doubt, not a proof.
-    - Rule D's RECALL was measured against the comment lines a review wave in
-      this repo made an author delete, and it is a minority of them. Two shapes
-      account for the residue, and both are refusals rather than oversights:
+    - Rule D's RECALL is PARTIAL, and was measured that way against the comment
+      lines a review wave in this repo made an author delete — the count is in
+      the commit that landed this paragraph. Two shapes account for most of the
+      residue (the line wrap above is a third), and both are refusals rather
+      than oversights:
         * the subject is a bare lowercase word the file does not define as an
           item — a protocol status value quoted in prose, say. There is no
           route from that word to anything a gate can resolve, and treating
-          every backticked word as a symbol was measured on this tree and
-          reported prose about parameters and literal values at a rate that
-          would get the gate switched off.
+          every backticked word as a symbol was measured on this tree: it adds
+          sentences about parameters and literal values, which is the shape
+          that gets a gate switched off.
         * the quantifier and the subject sit in different SENTENCES of one
           line. Pairing across a sentence boundary is the false positive this
           rule can least afford, so that shape stays a reviewer's.
