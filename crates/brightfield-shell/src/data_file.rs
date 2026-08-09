@@ -398,17 +398,25 @@ fn file_label(path: &Path) -> String {
 /// raises this string as a banner and a banner that says only "could not open"
 /// is a blank frame with a sentence on it. The reasons are: the location was
 /// refused (see `accept`); DuckDB would not read the file, in which case its
-/// own words come through; or the table has neither a numeric column to bin nor
-/// two categorical columns to cross, and so admits no first look.
+/// own words come through; or no chart kind in this build fits the table's
+/// columns, and so it admits no first look.
 pub fn open(chosen: &str) -> Result<(LiveDashboard, Composed, FirstLook), String> {
     let path = accept(chosen)?;
     let columns = columns_of(&path)?;
     let Some(look) = first_look(&columns) else {
+        // What this build's charts *do* take, read off the registry rather
+        // than restated here — a sentence listing the kinds is a second copy
+        // of the list, and the copy is what goes stale when a kind is added.
+        let offered: Vec<&str> = chart_kinds::registry()
+            .kinds()
+            .iter()
+            .map(|kind| kind.description)
+            .collect();
         return Err(format!(
-            "{}: opened, but there is nothing here to draw — this table has no \
-             numeric column to bin and no two columns with few enough distinct \
-             values to cross. It has {}.",
+            "{}: opened, but there is nothing here to draw — none of this \
+             build's charts fits these columns. They take: {}. It has {}.",
             path.display(),
+            offered.join("; "),
             plural_columns(columns.len())
         ));
     };

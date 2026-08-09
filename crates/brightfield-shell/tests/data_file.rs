@@ -291,26 +291,68 @@ fn a_table_with_no_numeric_column_opens_on_a_count_grid() {
     );
 }
 
-/// A table that admits neither first look is refused **by name and by
-/// reason**, rather than composing an empty window.
+/// A table of one free-text column **is** a picture now: the registry carries a
+/// kind whose single slot a category fills, so the column that used to be
+/// refused opens on its ranking.
 ///
-/// A single column of free text has no distribution to bin and nothing to
-/// cross, and the honest answer is a sentence — the composition path returns
-/// `Err` when no mark renders, so the alternative is not a blank chart, it is
-/// an unexplained one. Reopening this shape as a table with no picture is
-/// residual scope, and the message says what is missing so the gap is legible
-/// rather than mysterious.
+/// Asserted through `open`, so what is pinned is what a person gets — a live
+/// session over their file with something drawn on it — rather than which
+/// branch chose it.
+#[test]
+fn a_table_of_one_category_opens_on_its_ranking() {
+    let dir = TempDir::new("one-category");
+    let path = dir.write("names.csv", "name\nada\ngrace\nbarbara\nkaren\nada\n");
+
+    let (mut live, composed, look) =
+        data_file::open(&path.to_string_lossy()).expect("one category is a ranking, not a refusal");
+    assert_eq!(look.kind(), brightfield_shell::ranked_bars::KIND_ID);
+    assert!(
+        !composed.plots.is_empty(),
+        "the ranking composed no plot at all"
+    );
+    // …and the Data pane beside it still holds the file's own rows, which is
+    // the property every kind in the registry is held to.
+    assert_eq!(
+        live.coordinator()
+            .session()
+            .step_rows_count(0)
+            .expect("the step counts"),
+        5,
+        "the ranking aggregates in its own query, so the table behind it is \
+         still the file"
+    );
+}
+
+/// A table no chart kind fits is refused **by name and by reason**, rather than
+/// composing an empty window.
+///
+/// One column of identifiers: too many distinct values to read as an axis, and
+/// nothing numeric to bin. The composition path returns `Err` when no mark
+/// renders, so the alternative to a sentence is not a blank chart, it is an
+/// unexplained one. Reopening this shape as a table with no picture is residual
+/// scope, and the message says what the build's charts *do* take — read off the
+/// registry, so the sentence cannot describe a set this build does not have.
 #[test]
 fn a_table_with_nothing_to_draw_says_what_it_is_missing() {
     let dir = TempDir::new("nothing-to-draw");
-    let path = dir.write("names.csv", "name\nada\ngrace\nbarbara\nkaren\n");
+    let mut csv = String::from("id\n");
+    for i in 0..200 {
+        csv.push_str(&format!("row-{i}\n"));
+    }
+    let path = dir.write("identifiers.csv", &csv);
 
     let refusal = data_file::open(&path.to_string_lossy())
         .err()
-        .expect("one free-text column admits no first look");
-    assert!(refusal.contains("names.csv"), "{refusal}");
-    assert!(refusal.contains("numeric"), "{refusal}");
+        .expect("200 distinct identifiers fill no chart kind's slot");
+    assert!(refusal.contains("identifiers.csv"), "{refusal}");
     assert!(refusal.contains("1 column"), "{refusal}");
+    for kind in chart_kinds::registry().kinds() {
+        assert!(
+            refusal.contains(kind.description),
+            "the refusal must say what {} takes: {refusal}",
+            kind.id
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
