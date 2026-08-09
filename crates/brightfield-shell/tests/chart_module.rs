@@ -191,10 +191,10 @@ fn the_pane_draws_a_registry_authored_picture() {
 /// The module reserves its raster inside the child `Ui` that `module_frame`
 /// hands it, and a child's allocations do not move the parent's cursor — so the
 /// band the pane allocates *after* the module has drawn is laid out at the
-/// raster's own x unless the pane advances that cursor itself. Measured under
-/// the deletion of `ui.advance_cursor_after_rect` in `chart_item.rs`: raster
-/// `[[20 76] - [884 800]]`, legend `[[28 76] - [142 800]]` — the band on top of
-/// the cells.
+/// raster's own x unless the pane advances that cursor itself. Delete
+/// `ui.advance_cursor_after_rect` from the module arm in `chart_item.rs` and
+/// this test prints the two rects it then measures, with the band inside the
+/// cells.
 ///
 /// `count-grid` is the fixture because its `fill: { count: }` yields the
 /// sequential fill scale a legend is drawn for; a histogram's block calls for
