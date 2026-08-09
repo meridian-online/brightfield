@@ -184,8 +184,8 @@ fn ranked_category_bars() -> ChartKind<String> {
 ///   emitted SQL and the synthesised YAML unchanged, when it has a non-null
 ///   value, and when it has more than one distinct value — a constant column
 ///   bins to a single bar and crosses to a single row, which is a true picture
-///   of nothing. A category is offered only up to [`GRID_MAX_DISTINCT`]
-///   distinct values.
+///   of nothing. A category is offered only up to the private
+///   `GRID_MAX_DISTINCT` ceiling above.
 /// - **order.** Measures first, in the table's own order; then categories,
 ///   fewest distinct values first. [`ChartKind::bind`] is first-fit in slot
 ///   order, so this is what decides *which* column fills a slot once the kind
@@ -193,9 +193,9 @@ fn ranked_category_bars() -> ChartKind<String> {
 ///   same file always opens on the same picture.
 ///
 /// A column's [`FieldType`] is decided by whether DuckDB stored it as a type
-/// the bin arithmetic can subtract and take a logarithm of — see
-/// [`is_binnable_type`]. Everything else is a category, dates included: a date
-/// is a perfectly good grid axis and has no logarithm.
+/// the bin arithmetic can subtract and take a logarithm of — the private
+/// `is_binnable_type` below. Everything else is a category, dates included: a
+/// date is a perfectly good grid axis and has no logarithm.
 #[must_use]
 pub fn fields_of(columns: &[ColumnProfile]) -> Vec<Field> {
     let usable = || {
