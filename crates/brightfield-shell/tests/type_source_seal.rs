@@ -45,8 +45,7 @@ fn run(hostile_cwd: &std::path::Path, extra: &[(&str, &str)]) -> (i32, String) {
 /// Reads the seal line rather than the exit code, and that is deliberate:
 /// removing `.env_clear()` alone turns the exit code from 2 into 1 (the
 /// stowaway refusal fires), but removing the refusal as well turns it back to
-/// 2 while the child now runs wide open. Only the reported `HOME` and cwd
-/// separate a sealed run from an unsealed one in both cases.
+/// 2 while the child now runs wide open.
 #[test]
 fn a_hostile_environment_and_working_directory_do_not_reach_the_sealed_phase() {
     let hostile_cwd = std::env::temp_dir().join(format!(

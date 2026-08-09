@@ -502,7 +502,7 @@ const SEALED_ENV_SELF_SET: &[&str] = &["__CF_USER_TEXT_ENCODING"];
 ///
 /// - a bundle is present beside this executable and matches its own manifest;
 /// - the extension's ABI matches the DuckDB this binary links, and it loaded;
-/// - the environment was sealed to [`SEALED_ENV`] and nothing else was present;
+/// - the environment was sealed to [`SEALED_ENV`] and [`SEALED_ENV_SELF_SET`];
 /// - a column was typed and its values validated against that label.
 ///
 /// **It does not say the artefact is self-contained, and cannot.** The
@@ -650,8 +650,8 @@ fn reexec_sealed() -> i32 {
 /// The check itself, in a process whose environment has been verified minimal.
 ///
 /// It opens by reporting the seal it is running under — the working directory,
-/// `HOME`, and how many variables it can see. That line is not decoration: it
-/// is the only way the seal is observable from outside the process, and
+/// `HOME`, and the variables it can see, by name. That line is not decoration:
+/// it is how the seal is observable from outside the process, and
 /// `crates/brightfield-shell/tests/type_source_seal.rs` reads it to prove that
 /// a hostile `HOME` and working directory did not reach here. A seal nothing
 /// can observe is a seal nothing can test.
