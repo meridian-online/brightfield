@@ -485,15 +485,42 @@ const SEALED_ENV: &[&str] = &["PATH", "HOME", "TMPDIR", "LC_ALL", "LANG", SEALED
 /// than pass quietly, which is the direction to fail in.
 const SEALED_ENV_SELF_SET: &[&str] = &["__CF_USER_TEXT_ENCODING"];
 
-/// `--check-type-source`: prove the bundled semantic type source works, from
-/// inside this binary, with no window and with nothing but the bundle.
+/// `--check-type-source`: run the bundled semantic type source and report what
+/// happened, from inside this binary, with no window.
 ///
-/// This exists because the thing worth proving about a packaged Brightfield's
+/// This exists because the thing worth checking about a packaged Brightfield's
 /// type source cannot be seen from outside it. The bundle's FILES can be read
 /// off disk by `scripts/check-bundled-extension.sh`; what that cannot say is
 /// whether the DuckDB this binary links will load that extension, whether the
 /// model beside it is loadable, and whether the pair can actually put a label
 /// on a column.
+///
+/// # What a zero exit does and does not establish
+///
+/// Read this before quoting the result, because the useful reading is narrower
+/// than the obvious one. Exit 0 says:
+///
+/// - a bundle is present beside this executable and matches its own manifest;
+/// - the extension's ABI matches the DuckDB this binary links, and it loaded;
+/// - the environment was sealed to [`SEALED_ENV`] and nothing else was present;
+/// - a column was typed and its values validated against that label.
+///
+/// **It does not say the artefact is self-contained, and cannot.** The
+/// environment is sealed; THE FILESYSTEM IS NOT. Two routes out of the bundle
+/// are known and neither is visible here: `config.value_embed_model` in the
+/// model's own config is resolved as a path and an absolute one leaves the
+/// artefact entirely, and FineType's Model2Vec loader falls back to a
+/// cwd-relative `models/model2vec`. The working directory is sealed below,
+/// which closes the second; the first is inside FineType's path resolution and
+/// nothing in this repository can see it.
+///
+/// That is a limitation of the approach, not an omission. Proving "no file
+/// outside the artefact was read" by naming the ways out is an enumeration, and
+/// an enumeration is only ever as good as its last revision — this one has been
+/// wrong about a code path, an environment variable and a working directory in
+/// turn. The bounded form is deny-by-default: a jail that refuses reads outside
+/// the artefact, the way `scripts/verify-airgapped.sh` already refuses the
+/// network. That is not built.
 ///
 /// # Why it runs twice
 ///
@@ -590,6 +617,13 @@ fn reexec_sealed() -> i32 {
 
     let status = std::process::Command::new(&exe)
         .arg("--check-type-source")
+        // The child inherits the caller's working directory unless told
+        // otherwise, and a relative path is an input like any other: FineType's
+        // Model2Vec loader falls back to a cwd-relative `models/model2vec`, so
+        // running the check from a directory that happens to contain one lets
+        // a bundle with its encoder deleted pass. Measured: from a neutral
+        // directory that bundle exits 1, from such a directory it exited 0.
+        .current_dir(&sealed_root)
         .env_clear()
         .env(SEALED_MARKER, "1")
         .env("PATH", "/usr/bin:/bin")
@@ -614,6 +648,13 @@ fn reexec_sealed() -> i32 {
 }
 
 /// The check itself, in a process whose environment has been verified minimal.
+///
+/// It opens by reporting the seal it is running under — the working directory,
+/// `HOME`, and how many variables it can see. That line is not decoration: it
+/// is the only way the seal is observable from outside the process, and
+/// `crates/brightfield-shell/tests/type_source_seal.rs` reads it to prove that
+/// a hostile `HOME` and working directory did not reach here. A seal nothing
+/// can observe is a seal nothing can test.
 fn sealed_check_type_source() -> i32 {
     use brightfield_engine::semantic::{self, TypeSourceSpec};
     use brightfield_engine::{
@@ -635,6 +676,22 @@ plot:
   - mark: dot
     data: { from: probe }
 "#;
+
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("?"));
+    let home = std::env::var("HOME").unwrap_or_else(|_| "?".to_string());
+    // The NAMES, not just a count. A count cannot distinguish a sealed run from
+    // one carrying a stowaway of the same size, and the list is short by
+    // construction — if it ever is not, that is the thing worth seeing.
+    let mut names: Vec<String> = std::env::vars_os()
+        .map(|(k, _)| k.to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    println!(
+        "check-type-source: sealed — env [{}], cwd {}, HOME {}",
+        names.join(" "),
+        cwd.display(),
+        home
+    );
 
     let exe = match std::env::current_exe() {
         Ok(p) => p,
@@ -659,13 +716,13 @@ plot:
         eprintln!("check-type-source: the built-in fixture does not analyse");
         return 1;
     };
-    // An empty directory of this run's own, and the second half of "nothing but
-    // the bundle". `LOAD` takes the bundled extension by absolute path so it
-    // could not be redirected here — but DuckDB's extension directory defaults
-    // to `~/.duckdb`, and a machine with FineType already installed has one
-    // sitting in it. Pointing this at an empty directory means an extension
-    // resolved by NAME has nowhere to come from, so a warm cache cannot stand
-    // in for the artefact.
+    // An empty directory of this run's own. `LOAD` takes the bundled extension
+    // by absolute path so it could not be redirected here — but DuckDB's
+    // extension directory defaults to `~/.duckdb`, and a machine with FineType
+    // already installed has one sitting in it. Pointing this at an empty
+    // directory means an extension resolved by NAME has nowhere to come from,
+    // so a warm cache cannot stand in for the artefact. One route closed, not
+    // the filesystem — see this function's caller for what that leaves open.
     let ext_dir = std::env::temp_dir().join("brightfield-type-source-extensions");
     if let Err(e) = std::fs::create_dir_all(&ext_dir) {
         eprintln!("check-type-source: cannot make an empty extension directory: {e}");
@@ -994,8 +1051,22 @@ mod tests {
     #[test]
     fn version_flag_short_circuits() {
         assert!(matches!(parse(&["--version"]), Ok(Invocation::Version)));
-        // Short-circuits like --version/--help: nothing else on the line can
-        // turn it back into a window, because it exists to be run unattended.
+        assert!(matches!(parse(&["-V"]), Ok(Invocation::Version)));
+        // Wins over anything else on the line, and opens no window.
+        assert!(matches!(
+            parse(&["examples/bars.yaml", "--version"]),
+            Ok(Invocation::Version)
+        ));
+    }
+
+    /// `--check-type-source` short-circuits like `--version` and `--help`.
+    ///
+    /// Nothing else on the line can turn it back into a window: it exists to be
+    /// run unattended by `scripts/verify-airgapped.sh`, and a flag that
+    /// sometimes opened a window would hang that script on a build machine
+    /// rather than fail it.
+    #[test]
+    fn check_type_source_flag_short_circuits() {
         assert!(matches!(
             parse(&["--check-type-source"]),
             Ok(Invocation::CheckTypeSource)
@@ -1049,12 +1120,6 @@ mod tests {
                 "{intruder} was admitted to the sealed environment"
             );
         }
-        assert!(matches!(parse(&["-V"]), Ok(Invocation::Version)));
-        // Wins over anything else on the line, and opens no window.
-        assert!(matches!(
-            parse(&["examples/bars.yaml", "--version"]),
-            Ok(Invocation::Version)
-        ));
     }
 
     #[test]

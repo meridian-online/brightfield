@@ -40,10 +40,28 @@
 #      inside the same jail, which loads that extension with its own DuckDB,
 #      loads the model beside it, and puts a label on a column — and reports it
 #      as an EXIT CODE. Nothing here is inferred from the absence of a message.
-#      That flag seals its own environment before it does any of it, so the
-#      verdict is about the artifact rather than about what this machine
-#      happened to have exported; this script does not have to arrange that and
-#      could not do it completely if it tried.
+#      That flag seals its own environment and working directory before it does
+#      any of it, so the verdict is not about what this machine happened to have
+#      exported; this script does not have to arrange that and could not do it
+#      completely if it tried.
+#
+#      THE LIMITATION, NAMED. The environment is sealed. THE FILESYSTEM IS NOT.
+#      This leg does not establish that the artifact is self-contained, and no
+#      arrangement of it can: an absolute path inside the model's own config
+#      (`config.value_embed_model`) leaves the artifact entirely and is invisible
+#      to every check here, including the manifest, which happily records
+#      whatever the config points at having been resolved elsewhere. A green run
+#      of this leg means the bundle is present and matches its manifest, the
+#      extension's ABI matches the linked DuckDB, the environment was sealed, and
+#      a column typed and validated. It does not mean nothing outside the
+#      artifact was read.
+#
+#      Proving that negative by naming the ways out is an enumeration, and this
+#      one has been wrong three times running — about a code path, an environment
+#      variable, and a working directory. The bounded form is deny-by-default:
+#      extend the jail below, which already denies the network, to deny reads
+#      outside the artifact. That is not built, and until it is, this leg is a
+#      smoke test of the type source rather than a containment proof.
 #      An artifact with NO bundle skips this leg (a supported build, see
 #      scripts/package.sh); a bundle that is present and does not work is a
 #      failure.
@@ -61,8 +79,10 @@
 # assesses a signature, a notarization ticket or the quarantine attribute, and a
 # green run says nothing about them.
 #
-# Everything the test opens ships inside the artifact, so this script proves
-# the artifact self-contained, not the artifact-plus-repo.
+# Every SPEC the test opens ships inside the artifact, so the render legs are
+# about the artifact rather than the artifact-plus-repo. That is a statement
+# about the specs, and it does not extend to the type-source leg: see leg 5,
+# which names precisely what it does and does not establish.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)

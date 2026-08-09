@@ -44,6 +44,26 @@
 #   it describes — and a bundle nobody has packaged has none, so the check is
 #   conditional on its presence and strict once it is there.
 #
+# WHAT IT DOES NOT CHECK, AND SHOULD: the extension's own load commands. This
+# reads the metadata trailer and the file tree; it never asks what the shared
+# library needs in order to load. An extension linking a non-system dylib — a
+# vendored OpenSSL, a Homebrew libomp — would pass every check here and fail to
+# open on a machine that does not have it, which is the same shape of failure as
+# the symlink case above and is caught by none of the same checks.
+#
+# Measured on the extension this branch bundles, so the gap is recorded rather
+# than asserted: its five LC_LOAD_DYLIB entries are all system paths
+# (Security, SystemConfiguration, CoreFoundation, libiconv, libSystem), so that
+# artifact is portable. What it does carry is an LC_ID_DYLIB of
+# `<builder>/finetype/target/release/deps/libfinetype.dylib` — the file's own
+# install name, not a dependency it loads, so it does not stop the extension
+# opening anywhere. It does put an absolute path from the build machine inside a
+# public release artifact.
+#
+# Adding the check is a separate piece of work: it needs an OS allowlist per
+# target, which scripts/package.sh already maintains for the executable and
+# which would have to be shared rather than duplicated.
+#
 # WHAT IT DOES NOT CHECK: that the model is a model. A file of the right name
 # and the wrong bytes passes here (unless a manifest contradicts it) and is
 # caught at runtime by the canary in
