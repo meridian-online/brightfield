@@ -473,8 +473,8 @@ const SEALED_MARKER: &str = "BRIGHTFIELD_TYPE_SOURCE_SEALED";
 /// - `LC_ALL`, `LANG` — pinned to `C` so a locale cannot move a comparison.
 const SEALED_ENV: &[&str] = &["PATH", "HOME", "TMPDIR", "LC_ALL", "LANG", SEALED_MARKER];
 
-/// Variables the child writes into ITSELF after `execve`, which no caller can
-/// supply and no allowlist can therefore exclude.
+/// Variables the child writes into ITSELF after `execve`, which the clear
+/// cannot remove and the outer phase does not set.
 ///
 /// One entry, and it is here on a measurement rather than a hunch.
 /// `__CF_USER_TEXT_ENCODING` appears in this binary's sealed child because it
@@ -482,8 +482,9 @@ const SEALED_ENV: &[&str] = &["PATH", "HOME", "TMPDIR", "LC_ALL", "LANG", SEALED
 /// environment at initialisation. A bare Rust binary spawning a child with
 /// `env_clear` shows an environment of exactly what it set — including when the
 /// grandparent exported `__CF_USER_TEXT_ENCODING=HOSTILE`, which does not
-/// survive the clear. So a value seen here was written after the environment
-/// was sealed, by the process being sealed.
+/// survive the clear. So on a child this binary re-exec'd, the clear removed
+/// whatever the caller exported and this value arrived afterwards — which is
+/// why the allowlist has to name it rather than exclude it.
 ///
 /// Anything ELSE a future dependency injects will fail this check loudly rather
 /// than pass quietly, which is the direction to fail in.
@@ -1092,7 +1093,7 @@ mod tests {
     /// matters is `SOMETHING_INVENTED_TOMORROW`, which nobody enumerated and
     /// which is refused anyway.
     #[test]
-    fn the_sealed_environment_admits_only_what_it_set() {
+    fn the_sealed_environment_admits_what_it_set_and_what_the_platform_adds() {
         let permitted = ["PATH", "HOME", "TMPDIR", "LC_ALL", "LANG", SEALED_MARKER];
         assert!(
             unsealed_among(permitted.iter().map(|s| (*s).to_string())).is_empty(),

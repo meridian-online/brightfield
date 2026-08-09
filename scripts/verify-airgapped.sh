@@ -275,8 +275,9 @@ fi
 # scrubs the environment, and `env HOME=…` without -i does not either.
 #
 # So --check-type-source re-execs itself with the environment CLEARED and only
-# what it needs put back, and refuses to report at all if it sees anything it
-# did not set. This script therefore passes it whatever environment it likes and
+# what it needs put back, and refuses to report at all if it sees anything
+# outside that list and the variables the platform writes into the child after
+# execve. This script therefore passes it whatever environment it likes and
 # trusts the EXIT CODE, which is what the flag exists to produce.
 #
 # The version of this leg that shipped first grepped a rendering run's stderr
