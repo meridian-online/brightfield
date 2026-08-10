@@ -54,8 +54,12 @@ WHAT IS CHECKED (changed comment lines only, `origin/main...HEAD`)
        symbol. A claim is reported once, at the line its quantifier is on.
 
 WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
-    - Only ADDED comment lines in the diff. Pre-existing debt is not blocking;
-      this stops new claims, it does not audit old ones. `--all` audits the tree.
+    - Findings land on ADDED comment lines in the diff. Rule D reads the
+      unchanged neighbours of one, because a sentence wraps, but it reports at
+      the line its quantifier is on and admits the claim only when the diff
+      added THAT line — so a reword under an old quantifier is not a finding.
+      Pre-existing debt is not blocking; this stops new claims, it does not
+      audit old ones. `--all` audits the tree.
     - Only `.rs` files, and only `//`, `///`, `//!` lines.
     - Bare `a::b` Rust paths are deliberately NOT resolved. Precision matters
       more than recall here — a gate that cries wolf gets disabled, and this
@@ -90,6 +94,12 @@ WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
           on this tree: it adds sentences about parameters and literal values,
           which is the shape that gets a gate switched off.
         * the paragraph names a test, which is the exemption above.
+        * the diff adds the SYMBOL half of a wrapped claim and leaves the
+          quantifier where it already was. Reported at the quantifier's line
+          and admitted on it, that claim is old debt by this gate's reckoning
+          even though the author has just widened it. The cost is asymmetric:
+          this shape costs a reviewer a read, and the reading that would catch
+          it blocks every reword under every old quantifier in the tree.
       A sentence rule D misses costs a reviewer a read. A sentence it reports
       wrongly costs the gate itself.
 
@@ -571,8 +581,9 @@ class Unit(NamedTuple):
 
     Rules A, B and C read a line. Rule D reads a sentence, which can wrap, so it
     needs the neighbours of the line in question even when they are unchanged.
-    `scope` keeps the gate's promise anyway: a claim is reported only if the
-    sentence carrying it touches a line this run is checking.
+    Reading them is not checking them: every rule here reports at a line in
+    `scope`, D at the line its quantifier is on, so an unchanged neighbour can
+    complete a sentence but cannot be the reason one is reported.
     """
 
     path: Path
@@ -652,10 +663,13 @@ def check(units: list[Unit]) -> list[str]:
                     f"here and not in Cargo.lock"
                 )
         for claim in completeness_claims(unit.lines, source):
-            # The sentence has to touch a line this run is checking. Without
-            # this, joining a wrapped sentence would drag an unchanged
-            # neighbour's claim into a diff that never mentioned it.
-            if not claim.lines & unit.scope:
+            # The QUANTIFIER's own line has to be one this run is checking —
+            # the same test the three rules above apply to the line they read,
+            # and it is the line the finding names. Admitting on any line the
+            # sentence spans reports an old claim on a diff that only reworded
+            # the prose under it, which is blocking on debt the author did not
+            # write. Held by the wrapped-quantifier pair in --self-test.
+            if claim.lineno not in unit.scope:
                 continue
             failures.append(
                 f"{rel}:{claim.lineno} says \"{claim.word}\" of `{claim.symbol}` and "
@@ -1004,6 +1018,20 @@ def self_test() -> int:
         ([f"nothing else writes [`{camel}`].", "and that is where it stops"],
          True, "STAYS GREEN: the claim's sentence touches no line this run checks",
          (), 0, (1,)),
+        # The pair that pins WHICH line admits a wrapped claim. The control
+        # above cannot: its first line ends in a full stop, so the sentence
+        # never reaches the line in scope and both readings agree. Here the
+        # sentence wraps and the two disagree — reading the whole span reports a
+        # claim at line 0 on a run checking only line 1, which is the gate
+        # blocking on a quantifier the diff never added.
+        (["nothing else in this module writes", f"[`{camel}`] after the first frame"],
+         True, "STAYS GREEN: the wrap reaches this line, but the QUANTIFIER is "
+               "on one this run does not check",
+         (), 0, (1,)),
+        (["nothing else in this module writes", f"[`{camel}`] after the first frame"],
+         False, "the quantifier's own line is checked, so the claim is reported "
+                "even though its symbol sits on a line that is not",
+         ('"nothing"', f"`{camel}`"), 0, (0,)),
     ]
 
     # --- the PATTERN guards -----------------------------------------------
@@ -1042,10 +1070,18 @@ def self_test() -> int:
             for i in (range(len(bodies)) if only is None else only)
         )
         where = f"{probe.relative_to(ROOT)}:{probe_line + at} "
+        in_scope = {f"{probe.relative_to(ROOT)}:{n} " for n in scope}
         found = check([Unit(probe, lines, scope)])
         ok, note = (not found) == should_pass, ""
         if ok and found:
-            if not all(m.startswith(where) for m in found):
+            # A finding names a line this run is checking — asserted on every
+            # reported case, because a rule that reads an unchanged neighbour
+            # for context can report at it by accident, and that is the gate
+            # blocking on a line the diff never added.
+            astray = [m for m in found if not any(m.startswith(p) for p in in_scope)]
+            if astray:
+                ok, note = False, "  [message names a line outside this run's scope]"
+            elif not all(m.startswith(where) for m in found):
                 ok, note = False, f"  [message does not open with {where.strip()}]"
             else:
                 absent = [w for w in want if not any(w in m for m in found)]
