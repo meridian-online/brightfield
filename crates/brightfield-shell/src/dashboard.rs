@@ -69,16 +69,16 @@
 //!
 //! # Why the tile forms live here and not on the kinds
 //!
-//! A [`ChartKind`](brightfield_workbench::registry::ChartKind)'s builder emits
-//! a **self-contained top-level document fragment** over one table — that is
-//! the contract [`crate::chart_kinds`] states, and it is what the chart pane's
-//! module route rebuilds. A tile is a different thing: an entry in a concat
-//! list, at an indent, sharing one declared selection with its siblings. The
-//! two forms coincide for a dashboard of one tile and not otherwise.
+//! A [`ChartKind`]'s builder emits a **self-contained top-level document
+//! fragment** over one table — that is the contract [`crate::chart_kinds`]
+//! states, and it is what the chart pane's module route rebuilds. A tile is a
+//! different thing: an entry in a concat list, at an indent, sharing one
+//! declared selection with its siblings. The two forms coincide for a dashboard
+//! of one tile and not otherwise.
 //!
 //! [`crate::ranked_bars::RankedCategoryBars::plot_yaml`] is the tile form of
 //! its kind and is used here verbatim. The other kinds have no such method, so
-//! their tile form is [`tile_form`] below — keyed by kind id, and
+//! their tile form is the private `tile_form` below — keyed by kind id, and
 //! `every_kind_one_column_can_fill_has_a_tile_form` is what stops a kind added
 //! later from being silently skipped.
 
