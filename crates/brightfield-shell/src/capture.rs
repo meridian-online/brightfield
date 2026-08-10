@@ -180,14 +180,16 @@ fn new_egui_renderer(device: &wgpu::Device, format: wgpu::TextureFormat) -> Shar
 /// it defers to the start of the next pass, and when that pass begins egui
 /// **replaces the caller's `screen_rect`** with the previous pass's content
 /// rect divided by the zoom ratio (`Context::begin_pass`, the "bit hacky, but
-/// is required to avoid jitter" branch). Before any pass has run, the previous
-/// content rect is `InputState`'s 10000×10000 default, so the first frame of a
-/// capture at scale 2 laid the whole window out at 5000×5000 logical points.
-/// The dashboard reflowed into that box, the next frame rastered the reflowed
-/// size onto a texture some tens of megapixels across, vello returned a blank
-/// frame at its buffer ceiling, and the PNG came out with an empty chart pane
-/// at exit 0 — at every scale except exactly 1.0, where the setter is a no-op
-/// and nothing was ever clobbered.
+/// is required to avoid jitter" branch). Before any pass has run there is no
+/// previous content rect to divide, only `InputState`'s default. Measured, at
+/// scale 2 on `examples/bars.yaml`: the first frame laid the whole window out
+/// at 5000×5000 logical points, the dashboard reflowed into that box (composed
+/// 640×480 → 3962×4904), and the next frame rastered the reflowed size onto a
+/// 7924×9808 texture. A vello raster of that size comes back **uniform** — one
+/// distinct colour over 7680×5760, at exit 0, measured through `--vello-only`
+/// — so the PNG carried an empty chart pane and reported success. At exactly
+/// 1.0 the setter is a no-op, nothing was ever clobbered, and the capture drew;
+/// that is the whole of "every scale except 1.0".
 ///
 /// `native_pixels_per_point` is plain input: egui multiplies it by the zoom
 /// factor (left at 1.0) to get `pixels_per_point`, from the very first pass,
