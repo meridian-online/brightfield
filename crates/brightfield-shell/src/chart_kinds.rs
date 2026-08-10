@@ -367,7 +367,8 @@ fn ranked_category_bars() -> ChartKind<String> {
 ///
 /// - the types the bin arithmetic can subtract and take a logarithm of are
 ///   measures — the private `is_binnable_type` below;
-/// - `DATE` is [`FieldType::Temporal`], drawn by [`counts_over_time`];
+/// - `DATE` is [`FieldType::Temporal`], drawn by the kind registered under
+///   [`COUNTS_OVER_TIME`];
 /// - the **other** temporal types are offered to nothing, and that is the one
 ///   rule here written from a measurement rather than from an argument. See
 ///   `only_the_temporal_type_that_draws_is_offered`: a `TIMESTAMP` bound to a

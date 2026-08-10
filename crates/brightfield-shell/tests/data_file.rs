@@ -540,6 +540,27 @@ const ONE_CATEGORY_CSV: &str = "name\nada\ngrace\nbarbara\nkaren\nada\n";
 /// One numeric column — one tile, and that tile is the binned histogram.
 const ONE_MEASURE_CSV: &str = "reading\n12\n18\n31\n44\n7\n25\n52\n63\n";
 
+/// One dated column holding a **day per row for three months** — the shape
+/// `counts-over-time` takes, and the shape that used to reach no kind at all.
+///
+/// Ninety distinct days is past the category ceiling `chart_kinds` applies, and
+/// that ceiling was applied to every non-binnable column — so this file, opened
+/// from the front door, came back as a sentence about the column it had left
+/// out. It is a fixture rather than a literal because ninety lines of CSV in a
+/// constant is ninety lines nobody reads; January, February and March of a
+/// non-leap year are 31 + 28 + 31 days, which is the ninety.
+///
+/// The first day is written twice so the counts are not uniformly one.
+fn ninety_days_csv() -> String {
+    let mut out = String::from("day\n2026-01-01\n");
+    for (month, days) in [(1, 31), (2, 28), (3, 31)] {
+        for day in 1..=days {
+            out.push_str(&format!("2026-{month:02}-{day:02}\n"));
+        }
+    }
+    out
+}
+
 /// **A file a user opened arrives on screen as a picture**, and each kind a
 /// single column can fill is drawn through its own module.
 ///
@@ -564,12 +585,14 @@ const ONE_MEASURE_CSV: &str = "reading\n12\n18\n31\n44\n7\n25\n52\n63\n";
 fn every_kind_a_column_can_fill_draws_its_picture_from_the_open_a_file_route() {
     let dir = TempDir::new("open-draws-a-picture");
     let mut through_a_module: Vec<ChartKindId> = Vec::new();
+    let ninety_days = ninety_days_csv();
 
     for (name, contents) in [
         // One tile each: the document IS that kind's picture, so the pane hosts
         // it through the kind's module.
         ("one-measure.csv", ONE_MEASURE_CSV),
         ("names.csv", ONE_CATEGORY_CSV),
+        ("ninety-days.csv", ninety_days.as_str()),
         // Several tiles: one picture no single kind built, presented directly.
         ("readings.csv", READINGS_CSV),
         ("crossed.csv", CROSSED_CSV),
