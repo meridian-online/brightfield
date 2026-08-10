@@ -92,6 +92,15 @@ const HARBOUR_CSV: &str = "station,reading,depth,survey\n\
 /// below cannot disagree about what "every column" means.
 const HARBOUR_COLUMNS: usize = 4;
 
+/// One categorical column — one tile, and therefore a document whose picture
+/// **one** chart kind chose.
+///
+/// The parity test needs this shape and not only [`HARBOUR_CSV`]: a dashboard
+/// of several tiles records no `Authored` kind, so over that fixture alone the
+/// two routes agree on `None` and the field the assembly was unified for is not
+/// compared at all.
+const ONE_CATEGORY_CSV: &str = "name\nada\ngrace\nbarbara\nkaren\nada\n";
+
 /// A window under test, with one `egui::Context` for its whole life and one
 /// screen rect — the arrangement `data_file.rs` and `front_door.rs` use, and
 /// the arrangement both routes below are driven through so that nothing about
@@ -498,13 +507,61 @@ fn the_door_promises_what_the_generator_draws() {
 /// an opened file started out unable to reproduce it — the chart pane would
 /// have hosted one of them through the chart kind's module and presented the
 /// other directly, over the same file.
+///
+/// **Two fixtures, and the second is the one that earns the claim.** With the
+/// four-column table alone this test passed with the boot route's `Authored`
+/// wiring deleted — measured, by deleting it — because a dashboard of several
+/// tiles records no kind, so both routes answered `None` and the comparison was
+/// vacuous for exactly the field the refactor was about. A one-column table
+/// records a kind, and that is the case this holds.
 #[test]
 fn the_two_routes_into_a_data_file_produce_one_document() {
-    let dir = TempDir::new("parity");
-    let csv = dir.write("harbour.csv", HARBOUR_CSV);
-    let named = csv.to_string_lossy().into_owned();
+    // Several tiles: no single kind built the picture, so `authored` is `None`
+    // on both sides and what is held is the dashboard, its placement and its
+    // scene.
+    let many = agree_on("harbour.csv", HARBOUR_CSV);
+    assert!(
+        many.plots > 1 && many.n_paths > 0,
+        "both routes produced an empty document, so the parity says nothing: {many:?}"
+    );
+    assert_eq!(
+        many.authored, None,
+        "a dashboard of several tiles was recorded as one chart kind's picture"
+    );
 
-    let mut scripted = Window::over(Boot::open(&named, Flow::Vertical, None).expect("it opens"));
+    // One tile: that tile's picture IS the document's picture, so a kind is
+    // recorded — and this is the arm that reddens when a route stops recording
+    // it. Without it the `authored` comparison above is `None == None`.
+    let one = agree_on("names.csv", ONE_CATEGORY_CSV);
+    assert_eq!(
+        one.plots, 1,
+        "the one-tile fixture stopped being one tile, so the authored \
+         comparison it exists for is vacuous again: {one:?}"
+    );
+    assert!(
+        one.authored.is_some(),
+        "a one-tile dashboard recorded no chart kind through EITHER route, so \
+         the equality between them holds for the wrong reason: {one:?}"
+    );
+}
+
+/// Open `csv` both ways, hold every field of the two documents equal, and hand
+/// back the one they agreed on for the caller to make claims about.
+///
+/// The scripted route is [`Boot::open`] into a fresh window. The picker's route
+/// is an empty window plus [`MeridianApp::open_data_file`] — the seam on this
+/// side of the single line that calls rfd, with the dialog's only contribution
+/// (a path) supplied directly. Both settle through identical frames at an
+/// identical screen rect, so nothing about the *frame* can account for a
+/// difference between them.
+fn agree_on(name: &str, csv: &str) -> Document {
+    let dir = TempDir::new("parity");
+    let path = dir.write(name, csv);
+    let named = path.to_string_lossy().into_owned();
+
+    let mut scripted = Window::over(
+        Boot::open(&named, Flow::Vertical, None).unwrap_or_else(|e| panic!("{name}: {e}")),
+    );
     scripted.settle();
 
     let mut picked = Window::over(Boot::empty());
@@ -518,51 +575,47 @@ fn the_two_routes_into_a_data_file_produce_one_document() {
     assert_eq!(
         a.active,
         ViewKind::Charts,
-        "the scripted route left the window on some other view"
+        "{name}: the scripted route left the window on some other view"
     );
     assert_eq!(
         a.title, b.title,
-        "the two routes titled the window differently"
+        "{name}: the two routes titled the window differently"
     );
     assert_eq!(
         a.size, b.size,
-        "the two routes composed different dashboards"
+        "{name}: the two routes composed different dashboards"
     );
     assert_eq!(
         a.plots, b.plots,
-        "the two routes drew a different number of plots"
+        "{name}: the two routes drew a different number of plots"
     );
     assert_eq!(
         a.plot_rects, b.plot_rects,
-        "the two routes placed the plots differently"
+        "{name}: the two routes placed the plots differently"
     );
     assert_eq!(
         a.authored, b.authored,
-        "the two routes recorded the picture's authorship differently"
+        "{name}: the two routes recorded the picture's authorship differently"
     );
     assert_eq!(
         a.spec, b.spec,
-        "the two routes composed from different spec bytes"
+        "{name}: the two routes composed from different spec bytes"
     );
     assert_eq!(
         (a.n_paths, a.path_tags),
         (b.n_paths, b.path_tags),
-        "the two routes encoded a different number of paths"
+        "{name}: the two routes encoded a different number of paths"
     );
     assert!(
         a.path_data == b.path_data && a.draw_data == b.draw_data,
-        "the two entry points encoded different scenes for one file — the \
-         picture a script produces is not the picture the picker produces"
+        "{name}: the two entry points encoded different scenes for one file — \
+         the picture a script produces is not the picture the picker produces"
     );
     // The whole comparison in one line, so a field added to `Document` is
     // covered without a matching assertion having to be remembered.
-    assert_eq!(a, b, "the two routes left different documents behind");
-
-    // …and the document is not the empty one, which would make every equality
-    // above true for the wrong reason.
-    assert!(
-        a.plots > 1 && a.n_paths > 0,
-        "both routes produced an empty document, so the parity above says \
-         nothing: {a:?}"
+    assert_eq!(
+        a, b,
+        "{name}: the two routes left different documents behind"
     );
+    a
 }
