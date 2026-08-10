@@ -669,7 +669,7 @@ const GHOST_INK: meridian_design::colour::Rgba = meridian_design::scales::GRAY_L
 ///
 /// Two `rectY` layers over one table and one `x: { bin: }` / `y: { count: }`
 /// transform. The first reads [`SOURCE`] straight and never narrows — the ghost,
-/// drawn in [`GHOST_INK`]; the second reads it through `filterBy:` the shared
+/// drawn in the private `GHOST_INK`; the second reads it through `filterBy:` the shared
 /// selection and lands on top in the default mark ink. They share the plot's
 /// scales, so the count axis is fixed by the total and a brushed tile reads as a
 /// fraction of the bars behind it. One filtered layer draws a perfectly good
