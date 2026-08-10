@@ -98,7 +98,7 @@ use std::process::ExitCode;
 
 use brightfield_protocol::layout::Flow;
 use brightfield_shell::capture::{
-    capture_component, capture_png, capture_vello_only, parse_script,
+    capture_component, capture_png, capture_vello_only, parse_script, DEFAULT_SCALE,
 };
 use brightfield_shell::design::Mode;
 use brightfield_shell::window::Boot;
@@ -228,7 +228,7 @@ fn parse_args() -> Result<Args, String> {
     let mut spec: Option<String> = None;
     let mut gallery: Option<String> = None;
     let mut out: Option<PathBuf> = None;
-    let mut scale = 2.0_f32;
+    let mut scale = DEFAULT_SCALE;
     let mut mode = Mode::Light;
     let mut script = None;
     let mut size = None;

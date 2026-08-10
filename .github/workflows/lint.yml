@@ -123,8 +123,10 @@ jobs:
       # about the same claim written as prose — "`brightfield-sql`'s
       # `AGGREGATE_COUNT_COL`", which lives in brightfield-render and was
       # asserted wrongly twice in two days, both times one grep from refutation.
-      # This checks those, on added comment lines only, so it stops new claims
-      # rather than auditing old ones.
+      # This checks those, and reports at added comment lines, so it stops new
+      # claims rather than auditing old ones. Its completeness rule reads the
+      # unchanged neighbours of an added line — a sentence wraps — but reports
+      # at the line the quantifier is on, so a reword beside old debt is green.
       # The script refuses to report success when it cannot resolve a merge base,
       # so a shallow checkout reddens here rather than passing over an unread
       # diff. This unshallows instead of relying on that.

@@ -21,6 +21,18 @@ use crate::protocol::host_on_device;
 use crate::window::{Boot, MeridianApp};
 use brightfield_workbench::ViewKind;
 
+/// The device pixel ratio a capture runs at when nobody names one — what
+/// `brightfield-shot` uses without `--scale`, and a HiDPI screen's ratio.
+///
+/// Declared beside the capture rather than inside the binary's argument parser
+/// so a test can hold the capture path **at the setting the shipped default
+/// actually uses**. It was a `2.0` literal in `brightfield-shot`'s parser and a
+/// `1.0` literal in the test, and the gap between the two hid a capture defect
+/// that bit at every scale except exactly 1.0: the test issued its certificate
+/// at the one value where the bug did not fire. A shared constant is what makes
+/// moving the default move the guard with it.
+pub const DEFAULT_SCALE: f32 = 2.0;
+
 /// Create a headless (surface-less) wgpu device on the default adapter.
 ///
 /// Asks for [`device_limits`] — the adapter's real limits — so a capture and
@@ -114,7 +126,6 @@ pub fn capture_png_at(
     let mut app = MeridianApp::new(boot, chart_host, protocol_host, mode);
 
     let ctx = egui::Context::default();
-    ctx.set_pixels_per_point(scale);
     let screen = egui::vec2(win_w, win_h);
 
     let full = run_ui_frames(
@@ -123,6 +134,7 @@ pub fn capture_png_at(
         &device,
         &queue,
         screen,
+        scale,
         script,
         |ui| {
             app.draw(ui);
@@ -159,16 +171,55 @@ fn new_egui_renderer(device: &wgpu::Device, format: wgpu::TextureFormat) -> Shar
     Arc::new(egui::mutex::RwLock::new(r))
 }
 
+/// One capture frame's input: the window's logical rect, this frame's events,
+/// and `scale` as the viewport's **`native_pixels_per_point`**.
+///
+/// The scale is carried here, on the input, rather than through
+/// [`egui::Context::set_pixels_per_point`] — and that is a correctness
+/// requirement, not a preference. `set_pixels_per_point` is a *zoom* control:
+/// it defers to the start of the next pass, and when that pass begins egui
+/// **replaces the caller's `screen_rect`** with the previous pass's content
+/// rect divided by the zoom ratio (`Context::begin_pass`, the "bit hacky, but
+/// is required to avoid jitter" branch). Before any pass has run there is no
+/// previous content rect to divide, only `InputState`'s default. Measured, at
+/// scale 2 on `examples/bars.yaml`: the first frame laid the whole window out
+/// at 5000×5000 logical points, the dashboard reflowed into that box (composed
+/// 640×480 → 3962×4904), and the next frame rastered the reflowed size onto a
+/// 7924×9808 texture. A vello raster of that size comes back **uniform** — one
+/// distinct colour over 7680×5760, at exit 0, measured through `--vello-only`
+/// — so the PNG carried an empty chart pane and reported success. At exactly
+/// 1.0 the setter is a no-op, nothing was ever clobbered, and the capture drew;
+/// that is the whole of "every scale except 1.0".
+///
+/// `native_pixels_per_point` is plain input: egui multiplies it by the zoom
+/// factor (left at 1.0) to get `pixels_per_point`, from the very first pass,
+/// and never rewrites `screen_rect` over it. It is also what a HiDPI capture
+/// means — the same field `egui-winit` fills from the window's scale factor —
+/// so the capture and the live window now reach `pixels_per_point` the same
+/// way.
+fn frame_input(screen: egui::Vec2, scale: f32, events: Vec<egui::Event>) -> egui::RawInput {
+    let mut raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen)),
+        events,
+        ..Default::default()
+    };
+    let id = raw.viewport_id;
+    raw.viewports.entry(id).or_default().native_pixels_per_point = Some(scale);
+    raw
+}
+
 /// Drive the window's draw through a warm-up frame (fonts atlas + layout
 /// settle), the scripted frames (one per entry), and a final settle frame that
 /// becomes the captured image — keeping the renderer's texture atlas current each
 /// frame. Returns the last frame's [`egui::FullOutput`].
+#[allow(clippy::too_many_arguments)]
 fn run_ui_frames(
     ctx: &egui::Context,
     egui_renderer: &SharedEguiRenderer,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     screen: egui::Vec2,
+    scale: f32,
     script: Vec<Vec<egui::Event>>,
     mut draw: impl FnMut(&mut egui::Ui),
 ) -> egui::FullOutput {
@@ -179,12 +230,7 @@ fn run_ui_frames(
 
     let mut full: Option<egui::FullOutput> = None;
     for events in frames {
-        let raw = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen)),
-            events,
-            ..Default::default()
-        };
-        let out = ctx.run_ui(raw, |ui| draw(ui));
+        let out = ctx.run_ui(frame_input(screen, scale, events), |ui| draw(ui));
         {
             let mut r = egui_renderer.write();
             for (id, delta) in &out.textures_delta.set {
@@ -335,7 +381,6 @@ pub fn bench_frames(
     let mut app = MeridianApp::new(boot, chart_host, protocol_host, mode);
 
     let ctx = egui::Context::default();
-    ctx.set_pixels_per_point(scale);
     let screen = egui::vec2(win_w, win_h);
 
     let size_px = [
@@ -377,11 +422,7 @@ pub fn bench_frames(
         let started = std::time::Instant::now();
         on_frame(&mut app, i);
 
-        let raw = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen)),
-            ..Default::default()
-        };
-        let out = ctx.run_ui(raw, |ui| app.draw(ui));
+        let out = ctx.run_ui(frame_input(screen, scale, Vec::new()), |ui| app.draw(ui));
         {
             let mut r = egui_renderer.write();
             for (id, delta) in &out.textures_delta.set {
@@ -482,7 +523,6 @@ pub fn capture_component(
     let egui_renderer = new_egui_renderer(&device, target_format);
 
     let ctx = egui::Context::default();
-    ctx.set_pixels_per_point(scale);
     let screen = egui::vec2(win_w, win_h);
 
     let full = run_ui_frames(
@@ -491,6 +531,7 @@ pub fn capture_component(
         &device,
         &queue,
         screen,
+        scale,
         Vec::new(),
         |ui| {
             crate::gallery::solo(ui, mode, component.as_mut());
