@@ -20,15 +20,20 @@
 //! Read off the raster through `capture_vello_only`, which is the composed
 //! Vello scene and nothing else — the same bytes an export writes.
 //!
-//! # Two documents, one device
+//! # Three documents, one device
 //!
-//! The first half of this file holds `examples/rect-bin-count-ghost.yaml`, the
-//! device authored by hand. The second half holds the same device as the
-//! **product** emits it: the block `binned-histogram` builds in
-//! `brightfield_shell::chart_kinds`, which is the picture every numeric column
-//! of an opened file becomes. They are asserted separately on purpose — the
-//! example says the engine can draw this, and only the registry half says the
-//! shell asks it to.
+//! The first part of this file holds `examples/rect-bin-count-ghost.yaml`, the
+//! device authored by hand. The second holds the same device as the **product**
+//! emits it: the block `binned-histogram` builds in
+//! `brightfield_shell::chart_kinds`, which is the picture a table with a measure
+//! opens as. They are asserted separately on purpose — the example says the
+//! engine can draw this, and only the registry half says the shell asks for it.
+//!
+//! The third is `a_single_filtered_layer_redraws_the_whole_chart`: the shape the
+//! registry emitted before, written out as a fixture and read the same way. It
+//! is what makes the registry reading a measurement — the same assertion over
+//! the same rows and the same predicate passes on the two-layer form and fails
+//! on the one-layer one.
 
 use brightfield_engine::coordinator::Interaction;
 use brightfield_engine::SqlPredicate;
@@ -319,25 +324,30 @@ fn a_two_layer_spec_draws_the_filtered_subset_over_the_unfiltered_total() {
 /// The measure the tile below is drawn over.
 const MEASURE: &str = "v";
 
-/// The `binned-histogram` block the registry builds, over rows declared under
-/// the name every kind in that registry reads.
+/// A `data:` block of a hundred distinct measure values with row counts that
+/// vary, declared under the name every kind in the registry reads.
 ///
-/// The block is **asked of the registry** rather than written out here, and that
-/// is the whole point of this half of the file: what has to redden is the
-/// product's emitter ceasing to ask for the device, not a fixture drifting from
-/// it.
-///
-/// A hundred distinct values with row counts that vary. Varying counts are load
-/// bearing — bins of equal height would let a bar top that moved land back on a
-/// neighbour's, and the per-column comparison below would pass on a picture that
-/// had changed.
-fn registry_document() -> String {
+/// The varying counts are load bearing: bins of equal height would let a bar top
+/// that moved land back on a neighbour's, and the per-column comparisons below
+/// would pass on a picture that had changed.
+fn fixture_rows() -> String {
     let mut out = format!("data:\n  {}:\n", data_file::SOURCE);
     for v in 0..100u32 {
         for _ in 0..=(v % 7) {
             let _ = writeln!(out, "    - {{ {MEASURE}: {v} }}");
         }
     }
+    out
+}
+
+/// The `binned-histogram` block the registry builds, over [`fixture_rows`].
+///
+/// The block is **asked of the registry** rather than written out here, and that
+/// is the whole point of this half of the file: what has to redden is the
+/// product's emitter ceasing to ask for the device, not a fixture drifting from
+/// it.
+fn registry_document() -> String {
+    let mut out = fixture_rows();
     let kind = chart_kinds::find(chart_kinds::BINNED_HISTOGRAM)
         .expect("this build ships a binned-histogram kind");
     let fields = vec![Field::new(MEASURE, FieldType::Quantitative)];
@@ -638,9 +648,12 @@ fn the_registrys_numeric_tile_holds_the_total_behind_a_brushed_subset() {
     );
 
     // **The denominator held.** Column by column, the top of the two layers
-    // together is where the unfiltered bar stood before the selection. A ghost
-    // that re-queried under the filter, or a count axis that re-anchored to the
-    // subset, moves it.
+    // together is where the unfiltered bar stood before the selection — which is
+    // the count axis and the pixel mapping not having moved, because an axis
+    // re-anchored to the subset moves every column at once.
+    // `a_single_filtered_layer_redraws_the_whole_chart` is the same reading over
+    // the shape this tile replaced, and it is what makes this one a measurement
+    // rather than a formality.
     //
     // Read in the direction that matters, for the reason the example's half of
     // this file states: a column that LOST its bar is the denominator going
@@ -673,14 +686,77 @@ fn the_registrys_numeric_tile_holds_the_total_behind_a_brushed_subset() {
         "the selected picture must keep the unfiltered total's bar tops — \
          these columns moved: {moved:?}"
     );
+}
 
-    // And the count axis itself: the tallest bar in the frame is at the same
-    // height, which is the anchor an axis rescaled to the subset would move.
-    let highest = |tops: &[Option<u32>]| tops.iter().flatten().copied().min();
-    assert_eq!(
-        highest(&after_tops),
-        highest(&total_tops),
-        "the tallest bar changed height, so the count axis rescaled to the \
-         subset instead of staying at the total"
+/// **The shape the tile replaced, measured the same way — so the reading above
+/// is a contrast and not a formality.**
+///
+/// One `rectY` narrowed by the selection and nothing behind it: what
+/// `binned-histogram` emitted before the ghost layer. Under the same kind of
+/// selection, most of the frame's bar tops move. Both the bin edges and the
+/// count axis are recomputed from the rows that survived, so the picture is not
+/// the same chart with shorter bars — it is a different chart at a different
+/// scale, and a reader has nothing left on the page to judge the fraction
+/// against.
+///
+/// The layer is written out here rather than asked of the registry, and it has
+/// to be: the registry no longer builds this, which is the point. A fixture is
+/// the only way to keep the comparison alive.
+///
+/// This is also the answer to *"could that reading pass on anything?"* — it
+/// passes on the two-layer form and fails on the one-layer form, over the same
+/// rows, the same predicate and the same measurement.
+#[test]
+fn a_single_filtered_layer_redraws_the_whole_chart() {
+    let source = format!(
+        "{rows}params:\n  sel: {{ select: crossfilter }}\nplot:\n  \
+         - mark: rectY\n    data: {{ from: {src}, filterBy: $sel }}\n    \
+         x: {{ bin: '{MEASURE}' }}\n    y: {{ count: }}\n  \
+         - select: intervalX\n    as: $sel\n",
+        rows = fixture_rows(),
+        src = data_file::SOURCE,
+    );
+    let mut live = LiveDashboard::load_str(&source, None)
+        .unwrap_or_else(|e| panic!("the one-layer fixture must load: {e}\n{source}"));
+    let resting = live
+        .present()
+        .unwrap_or_else(|e| panic!("the one-layer fixture must compose: {e}\n{source}"));
+    let frame = Frame::of(&resting, 0);
+    let before = raster(resting, "one-layer-resting.png");
+    // No ghost ink in this document, so the only bars are the mark's own.
+    let before_tops = bar_tops(&before, &frame, subset_ink());
+
+    let filtered = live
+        .apply(Interaction::Select {
+            name: "sel".to_string(),
+            contributor: ComponentPath("root/plot[99]".to_string()),
+            predicate: SqlPredicate::Interval {
+                column: MEASURE.to_string(),
+                lo: ScalarValue::Float(0.0),
+                hi: ScalarValue::Float(40.0),
+                meta: None,
+            },
+        })
+        .expect("the same contribution re-composites");
+    let after = raster(filtered, "one-layer-filtered.png");
+    let after_tops = bar_tops(&after, &frame, subset_ink());
+
+    let disturbed = before_tops
+        .iter()
+        .zip(after_tops.iter())
+        .filter(|(before, after)| match (before, after) {
+            (Some(b), Some(a)) => b.abs_diff(*a) > 1,
+            (Some(_), None) => true,
+            _ => false,
+        })
+        .count();
+    assert!(
+        disturbed * 2 > before_tops.len(),
+        "the one-layer form was expected to redraw most of the frame under a \
+         selection, and only {disturbed} of {} columns moved — if this shape has \
+         stopped rescaling, the reading in \
+         `the_registrys_numeric_tile_holds_the_total_behind_a_brushed_subset` no \
+         longer distinguishes the two and needs a different measurement",
+        before_tops.len()
     );
 }
