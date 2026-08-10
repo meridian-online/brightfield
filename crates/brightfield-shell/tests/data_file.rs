@@ -155,6 +155,24 @@ impl Window {
         self.run(vec![vec![button_at(end, false)]]);
         self.settle();
     }
+
+    /// A press and a release on one pixel of plot `index` — which an interval
+    /// binding reads as *retract this plot's contribution*.
+    ///
+    /// Two frames, and not [`click_at`]'s one. `click_at` is for an egui widget,
+    /// which resolves a press and a release inside the same frame; the chart's
+    /// gesture machine is edge-triggered on the button state at the END of a
+    /// frame, so a press and a release in one frame leaves that state unchanged
+    /// and no gesture ever begins.
+    fn click(&mut self, index: usize, fraction: f64) {
+        let pos = self.at(index, fraction);
+        self.run(vec![vec![
+            egui::Event::PointerMoved(pos),
+            button_at(pos, true),
+        ]]);
+        self.run(vec![vec![button_at(pos, false)]]);
+        self.settle();
+    }
 }
 
 /// A primary-button press or release at `pos`.
@@ -908,9 +926,7 @@ fn a_pointer_sweep_on_one_tile_filters_the_others() {
 
     // A press and release on one pixel is the other half of the same branch:
     // the crossfilter convention retracts this plot's contribution.
-    let middle = win.at(0, 0.5);
-    win.run(vec![click_at(middle)]);
-    win.settle();
+    win.click(0, 0.5);
     assert!(
         win.app.chart_doc().selection_sql().is_none(),
         "a click on an interval binding did not retract the contribution: {:?}",
