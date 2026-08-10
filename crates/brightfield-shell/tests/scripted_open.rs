@@ -373,8 +373,20 @@ fn a_sample_rate_over_a_data_file_is_refused_by_name() {
 /// generator's tile choices change is its own piece of work, and pinning one
 /// here would redden on every deliberate change to the chooser while this test
 /// is about reachability.
+///
+/// **And the assertion is about the raster, not about the window.** A first
+/// version of this counted distinct colours over the whole image and passed on
+/// a capture whose chart pane was entirely blank: a window's chrome — a top
+/// bar, a tab strip, two pane borders and a checkbox — carries dozens of
+/// colours on its own, so "the PNG is not uniform" is satisfied by a window
+/// that drew no chart at all. Measured, on a real blank capture. The image is
+/// cropped to the box the chart pane actually gave the raster, read off a
+/// GPU-free layout pass at the same window size, and the ink is looked for
+/// there.
 #[test]
 fn the_generated_dashboard_writes_itself_to_a_png_with_nobody_present() {
+    const SCALE: f32 = 1.0;
+
     let dir = TempDir::new("capture");
     let csv = dir.write("harbour.csv", HARBOUR_CSV);
     let named = csv.to_string_lossy().into_owned();
@@ -382,9 +394,22 @@ fn the_generated_dashboard_writes_itself_to_a_png_with_nobody_present() {
     let boot = Boot::open(&named, Flow::Vertical, None).expect("the file opens");
     let (want_w, want_h) = boot.window_size(ViewKind::Charts);
 
+    // Where the raster lands, from a device-free frame at the same window size.
+    // `MeridianApp::headless` lays out identically to the one `capture_png`
+    // builds — every rect around the canvas is a pure function of the loaded
+    // document — so this is the box the capture drew the chart into.
+    let mut laid_out = Window::over(Boot::open(&named, Flow::Vertical, None).expect("it opens"));
+    laid_out.screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(want_w, want_h));
+    laid_out.settle();
+    let raster = laid_out
+        .app
+        .chart_doc()
+        .raster_rect
+        .expect("a settled frame presented the raster");
+
     let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("scripted-open.png");
     let _ = std::fs::remove_file(&out);
-    let (w, h) = capture_png(boot, Mode::Light, 1.0, &out, Vec::new())
+    let (w, h) = capture_png(boot, Mode::Light, SCALE, &out, Vec::new())
         .unwrap_or_else(|e| panic!("capture the generated dashboard: {e}"));
 
     assert!(out.is_file(), "no PNG at {}", out.display());
@@ -397,21 +422,43 @@ fn the_generated_dashboard_writes_itself_to_a_png_with_nobody_present() {
     let image = image::open(&out)
         .unwrap_or_else(|e| panic!("read back {}: {e}", out.display()))
         .to_rgba8();
+    let (x0, y0) = ((raster.min.x * SCALE) as u32, (raster.min.y * SCALE) as u32);
+    let (x1, y1) = ((raster.max.x * SCALE) as u32, (raster.max.y * SCALE) as u32);
+    assert!(
+        x1 > x0 && y1 > y0 && x1 <= w && y1 <= h,
+        "the raster box {raster:?} is not inside the {w}x{h} capture"
+    );
+
     let mut seen: Vec<[u8; 4]> = Vec::new();
-    for px in image.pixels() {
-        if !seen.contains(&px.0) {
-            seen.push(px.0);
-            if seen.len() >= 16 {
-                break;
+    let mut coloured = 0usize;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let px = image.get_pixel(x, y).0;
+            if !seen.contains(&px) {
+                seen.push(px);
+            }
+            // The chrome is greys and near-whites; a mark is drawn in the
+            // design system's series ink. A channel spread this wide is
+            // therefore ink rather than furniture, and a blank pane has none.
+            let (lo, hi) = (px[0].min(px[1]).min(px[2]), px[0].max(px[1]).max(px[2]));
+            if hi - lo > 60 {
+                coloured += 1;
             }
         }
     }
     assert!(
-        seen.len() >= 16,
-        "the capture holds {} distinct colour(s) — a window that came up blank \
-         or flat-filled writes a PNG and exits 0 just as a drawn one does, so \
-         the file landing is not on its own evidence that anything was drawn",
+        seen.len() >= 32,
+        "the chart raster holds {} distinct colour(s) — the window came up with \
+         a blank chart pane, which writes a PNG and exits 0 exactly as a drawn \
+         one does",
         seen.len()
+    );
+    assert!(
+        coloured > 1000,
+        "the chart raster holds {coloured} pixel(s) of saturated ink over \
+         {}x{} — the marks the generator chose are not in the picture",
+        x1 - x0,
+        y1 - y0
     );
 }
 
