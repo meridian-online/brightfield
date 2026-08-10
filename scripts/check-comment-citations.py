@@ -668,7 +668,7 @@ def check(units: list[Unit]) -> list[str]:
             # and it is the line the finding names. Admitting on any line the
             # sentence spans reports an old claim on a diff that only reworded
             # the prose under it, which is blocking on debt the author did not
-            # write. Held by the wrapped-quantifier pair in --self-test.
+            # write. Held by the wrapped-quantifier pairs in --self-test.
             if claim.lineno not in unit.scope:
                 continue
             failures.append(
@@ -1032,6 +1032,17 @@ def self_test() -> int:
          False, "the quantifier's own line is checked, so the claim is reported "
                 "even though its symbol sits on a line that is not",
          ('"nothing"', f"`{camel}`"), 0, (0,)),
+        # The same pair mirrored, quantifier on the wrap's SECOND line. Admitting
+        # on the sentence's first line reads identically to the quantifier's own
+        # on the pair above, and inverts on this one.
+        ([f"[`{camel}`] is rebuilt at boot and reads", "nothing else after that"],
+         False, "the quantifier is checked wherever in the wrap it falls, not "
+                "only where the sentence starts",
+         ('"nothing"', f"`{camel}`"), 1, (1,)),
+        ([f"[`{camel}`] is rebuilt at boot and reads", "nothing else after that"],
+         True, "STAYS GREEN: the wrap starts on this line, but the QUANTIFIER is "
+               "on one this run does not check",
+         (), 0, (0,)),
     ]
 
     # --- the PATTERN guards -----------------------------------------------
