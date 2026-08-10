@@ -18,6 +18,12 @@
 //! the engine's windowed row seam, so a Parquet larger than memory opens as
 //! readily as a small CSV.
 //!
+//! **What is drawn on it is [`crate::dashboard`]'s decision, not this
+//! module's**: a tile per column, each chosen from what that column means. This
+//! module owns the route — what may be opened, how the schema is read, and
+//! where the generated spec is written for the reader — and holds no opinion
+//! about pictures.
+//!
 //! # Why the schema is read before the spec is written
 //!
 //! A spec has to name columns, and nobody knows the columns of a file they have
@@ -26,7 +32,7 @@
 //! what makes `profile_sources` able to answer what the columns are and what
 //! they hold; and once over the spec that first answer lets it write. The cost
 //! is a profile pass over the table before the first picture, and it buys a
-//! first look chosen from the data rather than guessed at.
+//! dashboard chosen from the data rather than guessed at.
 //!
 //! # Why a URL is refused
 //!
@@ -76,9 +82,8 @@ use std::path::{Path, PathBuf};
 use brightfield_engine::{ColumnProfile, Engine, LoadOptions, ProfileOutcome};
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::{parse_spec, Format};
-use brightfield_workbench::registry::{ChartKindId, Field};
 
-use crate::chart_kinds;
+use crate::dashboard::Dashboard;
 use crate::pipeline::{Composed, LiveDashboard};
 
 /// The file extensions this action opens, lowercased and without the dot.
@@ -102,52 +107,26 @@ pub const OPENABLE_EXTENSIONS: &[&str] = &["csv", "tsv", "parquet"];
 /// window is titled from the file name.
 pub const SOURCE: &str = "opened";
 
-/// What the synthesised dashboard draws over the opened table: the chart kind
-/// [`crate::chart_kinds::registry`] chose for it, the columns bound to that
-/// kind, and the spec block that kind built.
+/// Everything opening a file produced: the live session over it, the first
+/// composition, the dashboard that was chosen for it, and where the generated
+/// spec was written for the reader.
 ///
-/// **Chosen out of the registry rather than by a branch here.** Which shape
-/// answers which table is a property of the kinds — a measure has a
-/// distribution worth binning, a table of names has a cross-tabulation, one
-/// category has a ranking — and each of those is a slot declaration on a
-/// [`brightfield_workbench::registry::ChartKind`]. So this type carries the
-/// *outcome* of asking the registry, and there is no second place where a
-/// table's shape is turned into a picture.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FirstLook {
-    kind: ChartKindId,
-    fields: Vec<Field>,
-    block: String,
+/// A struct rather than a tuple because the fourth thing is optional and the
+/// third is what a caller asks questions of — which tiles, which columns were
+/// left out, and why.
+pub struct OpenedFile {
+    /// The session holding the file as a DuckDB view.
+    pub live: LiveDashboard,
+    /// The first composition over it.
+    pub composed: Composed,
+    /// The dashboard [`crate::dashboard::Dashboard::of`] chose: a tile per
+    /// column, and the columns it declined.
+    pub dashboard: Dashboard,
+    /// Where the generated spec was written so the editor pane can open it —
+    /// `None` when the scratch write failed, which is not a reason to refuse a
+    /// file that opened.
+    pub spec_file: Option<PathBuf>,
 }
-
-impl FirstLook {
-    /// Which chart kind this table opens as.
-    #[must_use]
-    pub const fn kind(&self) -> ChartKindId {
-        self.kind
-    }
-
-    /// The columns bound to that kind, in the order they were offered.
-    #[must_use]
-    pub fn fields(&self) -> &[Field] {
-        &self.fields
-    }
-
-    /// The spec block the kind built — the body of the synthesised document,
-    /// without its `meta:` and `data:` header. See the spec contract in
-    /// [`crate::chart_kinds`] for what a block may carry.
-    #[must_use]
-    pub fn block(&self) -> &str {
-        &self.block
-    }
-}
-
-/// The natural window the synthesised dashboard asks for, in logical points.
-/// Wide enough for a 25-bin histogram's labels without being a window that
-/// fills a laptop panel on a first open.
-const PLOT_WIDTH: u32 = 720;
-/// The synthesised plot's height. See `PLOT_WIDTH`.
-const PLOT_HEIGHT: u32 = 460;
 
 // ---------------------------------------------------------------------------
 // What may be opened
@@ -283,37 +262,6 @@ fn url_scheme(chosen: &str) -> Option<&str> {
 }
 
 // ---------------------------------------------------------------------------
-// Choosing what to draw
-// ---------------------------------------------------------------------------
-
-/// The first look this table admits, or `None` when it admits none.
-///
-/// Three steps and no branch on shape: the columns become fields
-/// ([`crate::chart_kinds::fields_of`], which carries the eligibility rules and
-/// the order they are offered in), the registry says which of its kinds those
-/// fields fill, and the first answer builds its own spec. Declaration order in
-/// the registry is therefore the product judgement about what an undescribed
-/// table opens as, and it is stated there rather than here.
-///
-/// `None` when no kind applies — a table with a single unusable column, or
-/// none at all — and when the chosen kind refuses its own binding, which is a
-/// registry fault rather than a property of the table.
-#[must_use]
-pub fn first_look(columns: &[ColumnProfile]) -> Option<FirstLook> {
-    let fields = chart_kinds::fields_of(columns);
-    let registry = chart_kinds::registry();
-    let id = registry.applicable(&fields).into_iter().next()?;
-    let kind = registry.find(id)?;
-    let binding = kind.bind(&fields).ok()?;
-    let block = kind.spec(&binding, &kind.options()).ok()?;
-    Some(FirstLook {
-        kind: id,
-        fields,
-        block,
-    })
-}
-
-// ---------------------------------------------------------------------------
 // The synthesised spec
 // ---------------------------------------------------------------------------
 
@@ -328,33 +276,6 @@ pub fn source_spec(path: &Path) -> String {
         "data:\n  {SOURCE}:\n    file: {}\n",
         yaml_quoted(&path.to_string_lossy())
     )
-}
-
-/// The whole spec: the title, the source, and the block the chosen chart kind
-/// built over it.
-///
-/// **The plot is not written here.** It is [`FirstLook::block`], which came out
-/// of a [`brightfield_workbench::registry::ChartKind`]'s builder — so this
-/// function knows the header and the size and nothing at all about what is
-/// drawn, and a kind added to the registry needs no edit to it.
-///
-/// The plot reads the **file's own view**, not a rolled-up one, and does its
-/// aggregation in the mark's own query. That is not a stylistic choice: the
-/// Data pane tabulates `SELECT * FROM <the first mark's source>`, so pointing
-/// the mark at a `GROUP BY` view would put twenty summary rows in the grid
-/// where the user is entitled to their file. It holds because every kind in
-/// the registry reads [`SOURCE`]; `every_kind_reads_the_files_own_view` is
-/// what keeps it true of a kind added later.
-#[must_use]
-pub fn spec_for(path: &Path, look: &FirstLook) -> String {
-    let mut spec = String::new();
-    spec.push_str("meta:\n  title: ");
-    spec.push_str(&yaml_quoted(&file_label(path)));
-    spec.push('\n');
-    spec.push_str(&source_spec(path));
-    spec.push_str(look.block());
-    spec.push_str(&format!("width: {PLOT_WIDTH}\nheight: {PLOT_HEIGHT}\n"));
-    spec
 }
 
 /// `value` as a YAML single-quoted scalar.
@@ -377,7 +298,7 @@ fn yaml_quoted(value: &str) -> String {
 /// What the window is titled for an opened file: its file name, which is what
 /// the person who picked it was looking at — not the absolute path they never
 /// typed.
-fn file_label(path: &Path) -> String {
+pub(crate) fn file_label(path: &Path) -> String {
     path.file_name().map_or_else(
         || path.to_string_lossy().into_owned(),
         |n| n.to_string_lossy().into_owned(),
@@ -389,9 +310,13 @@ fn file_label(path: &Path) -> String {
 // ---------------------------------------------------------------------------
 
 /// Open `chosen` as a live table: the session holding the file as a DuckDB
-/// view, the first composition over it, and **which chart kind chose that
-/// composition** — the third of those is what lets the chart pane draw the
-/// picture through that kind's module rather than through a branch.
+/// view, the first composition over it, **the dashboard that was chosen for
+/// it** — a tile per column — and the file the generated spec was written to.
+///
+/// The dashboard is [`crate::dashboard::Dashboard::of`]'s, which is where the
+/// per-column choice and the layout live. This function's own job is the two
+/// loads either side of it: the root-less one that answers what the columns
+/// are, and the real one over the spec that answer let it write.
 ///
 /// # Errors
 ///
@@ -399,44 +324,71 @@ fn file_label(path: &Path) -> String {
 /// raises this string as a banner and a banner that says only "could not open"
 /// is a blank frame with a sentence on it. The reasons are: the location was
 /// refused (see `accept`); DuckDB would not read the file, in which case its
-/// own words come through; or no chart kind in this build fits the table's
-/// columns, and so it admits no first look.
-pub fn open(chosen: &str) -> Result<(LiveDashboard, Composed, FirstLook), String> {
+/// own words come through; or no column in the table admits a tile — and then
+/// the sentence names each column and why, because "nothing to draw" about a
+/// file the user can see the contents of is not an answer.
+pub fn open(chosen: &str) -> Result<OpenedFile, String> {
     let path = accept(chosen)?;
     let columns = columns_of(&path)?;
-    let Some(look) = first_look(&columns) else {
-        // What this build's charts *do* take, read off the registry rather
-        // than restated here — a sentence listing the kinds is a second copy
-        // of the list, and the copy is what goes stale when a kind is added.
-        let offered: Vec<&str> = chart_kinds::registry()
-            .kinds()
+    let dashboard = Dashboard::of(&path, &columns);
+    if dashboard.tiles().is_empty() {
+        let left: Vec<String> = dashboard
+            .omitted()
             .iter()
-            .map(|kind| kind.description)
+            .map(|o| format!("{}: {}", o.column, o.because))
             .collect();
         return Err(format!(
-            "{}: opened, but there is nothing here to draw — none of this \
-             build's charts fits these columns. They take: {}. It has {}.",
+            "{}: opened, but there is nothing here to draw — no column in it \
+             admits a picture this build can make. {}",
             path.display(),
-            offered.join("; "),
-            plural_columns(columns.len())
+            if left.is_empty() {
+                "It declares no columns at all.".to_string()
+            } else {
+                left.join("; ")
+            }
         ));
-    };
-    let spec = spec_for(&path, &look);
+    }
+    let spec = dashboard.to_spec();
     let mut live =
         LiveDashboard::load_str(&spec, None).map_err(|e| format!("{}: {e}", path.display()))?;
     let composed = live
         .present()
         .map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok((live, composed, look))
+    let spec_file = write_spec_file(&path, &spec);
+    Ok(OpenedFile {
+        live,
+        composed,
+        dashboard,
+        spec_file,
+    })
 }
 
-/// `3 columns` / `1 column`.
-fn plural_columns(n: usize) -> String {
-    if n == 1 {
-        "1 column".to_string()
-    } else {
-        format!("{n} columns")
-    }
+/// The directory generated specs are written to, per process.
+///
+/// The temp directory rather than beside the data file: opening a file to look
+/// at it must not write into the folder it came from. Per process rather than a
+/// fixed name, so two runs cannot edit each other's copy and nothing inherits a
+/// directory another user created.
+fn spec_scratch_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("brightfield-generated-{}", std::process::id()))
+}
+
+/// Write `spec` where the editor pane can open it, and hand back the path.
+///
+/// **The bytes are the bytes that composed the picture**, not a re-rendering of
+/// them — which is what makes the file evidence rather than documentation: a
+/// reader comparing the chart to the spec is comparing it to what ran.
+///
+/// `None` on any failure. A scratch write that did not land is a spec the reader
+/// cannot open; it is not a reason to refuse a file that opened, so the caller
+/// carries on without one.
+fn write_spec_file(data: &Path, spec: &str) -> Option<PathBuf> {
+    let dir = spec_scratch_dir();
+    std::fs::create_dir_all(&dir).ok()?;
+    let stem = data.file_stem().unwrap_or(data.as_os_str());
+    let path = dir.join(stem).with_extension("yaml");
+    std::fs::write(&path, spec).ok()?;
+    Some(path)
 }
 
 /// The profiled columns of `path`, read through a root-less spec.
@@ -504,20 +456,7 @@ pub fn pick() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use brightfield_engine::SemanticType;
-
-    fn column(name: &str, type_name: &str, distinct: u64) -> ColumnProfile {
-        ColumnProfile {
-            name: name.to_string(),
-            type_name: type_name.to_string(),
-            non_null: 100,
-            nulls: 0,
-            distinct,
-            min: None,
-            max: None,
-            semantic: SemanticType::NotAsked,
-        }
-    }
+    use brightfield_workbench::registry::Field;
 
     /// Every URL form a path box realistically receives is refused, and the
     /// refusal says the word — what this defends is that the box opens a file
@@ -667,119 +606,6 @@ mod tests {
         }
     }
 
-    /// A numeric column wins, because a distribution is the most informative
-    /// thing that can be drawn about a column nobody has described. Which is a
-    /// fact about the registry's declaration order, asserted here through the
-    /// door a user comes in by.
-    #[test]
-    fn a_numeric_column_becomes_the_histogram() {
-        let look = first_look(&[
-            column("region", "VARCHAR", 4),
-            column("amount", "DOUBLE", 900),
-        ])
-        .expect("a measure admits a first look");
-        assert_eq!(look.kind(), chart_kinds::BINNED_HISTOGRAM);
-        assert!(look.block().contains("x: { bin: 'amount' }"), "{look:?}");
-    }
-
-    /// A temporal column is NOT binned — the bin scheme takes a logarithm of
-    /// `max - min`, and the difference of two dates is an interval — so a
-    /// table of a date and a name crosses them instead, narrowest first.
-    #[test]
-    fn a_date_column_is_an_axis_and_never_a_bin() {
-        let look = first_look(&[column("day", "DATE", 30), column("region", "VARCHAR", 4)])
-            .expect("two categories cross");
-        assert_eq!(look.kind(), chart_kinds::COUNT_GRID);
-        assert!(look.block().contains("x: 'region'"), "{look:?}");
-        assert!(look.block().contains("y: 'day'"), "{look:?}");
-    }
-
-    /// A constant numeric column bins to one bar, which is a true picture of
-    /// nothing — so the grid gets its turn instead.
-    #[test]
-    fn a_constant_numeric_column_does_not_take_the_histogram() {
-        let look = first_look(&[
-            column("version", "BIGINT", 1),
-            column("region", "VARCHAR", 4),
-            column("tier", "VARCHAR", 3),
-        ])
-        .expect("two categories cross");
-        assert_eq!(look.kind(), chart_kinds::COUNT_GRID);
-        assert!(look.block().contains("x: 'tier'"), "{look:?}");
-        assert!(look.block().contains("y: 'region'"), "{look:?}");
-    }
-
-    /// A column whose name cannot be written into the emitted SQL is skipped
-    /// rather than mis-quoted — drawing a different column would be worse than
-    /// drawing none.
-    #[test]
-    fn a_column_named_with_a_quote_is_never_chosen() {
-        let look = first_look(&[
-            column("we\"ird", "DOUBLE", 900),
-            column("amount", "DOUBLE", 900),
-        ])
-        .expect("the writable measure is still there");
-        assert_eq!(look.kind(), chart_kinds::BINNED_HISTOGRAM);
-        assert!(look.block().contains("x: { bin: 'amount' }"), "{look:?}");
-        assert_eq!(first_look(&[column("we\"ird", "DOUBLE", 900)]), None);
-    }
-
-    /// One category and nothing else is a **ranking** now, not a refusal: the
-    /// registry carries a kind whose single slot that column fills. A table
-    /// with no usable column at all still admits no first look and says so
-    /// rather than composing an empty window.
-    #[test]
-    fn a_table_with_one_categorical_column_opens_on_its_ranking() {
-        let look = first_look(&[column("name", "VARCHAR", 9)]).expect("one category ranks");
-        assert_eq!(look.kind(), crate::ranked_bars::KIND_ID);
-        assert_eq!(first_look(&[]), None);
-        // …and a category too wide to read is offered to nothing.
-        assert_eq!(first_look(&[column("name", "VARCHAR", 900)]), None);
-    }
-
-    /// An all-null column is not an axis: it profiles as present and holds
-    /// nothing, and a grid axis over it would be a single empty band.
-    #[test]
-    fn an_all_null_column_is_not_an_axis() {
-        let mut empty = column("spare", "VARCHAR", 4);
-        empty.non_null = 0;
-        empty.nulls = 100;
-        let look = first_look(&[empty, column("name", "VARCHAR", 9)])
-            .expect("the one usable category ranks");
-        assert_eq!(
-            look.fields().len(),
-            1,
-            "the all-null column was offered to the kind: {look:?}"
-        );
-    }
-
-    /// The synthesised spec quotes both the path and the column, and a quote
-    /// in either is doubled rather than dropped — the shape a macOS file name
-    /// routinely takes.
-    #[test]
-    fn an_apostrophe_survives_into_the_spec() {
-        let path = PathBuf::from("/Users/hugh/Hugh's data.csv");
-        let look = first_look(&[column("it's", "DOUBLE", 900)]).expect("a measure binds");
-        let spec = spec_for(&path, &look);
-        assert!(
-            spec.contains("file: '/Users/hugh/Hugh''s data.csv'"),
-            "{spec}"
-        );
-        assert!(spec.contains("bin: 'it''s'"), "{spec}");
-        // …and it round-trips through the parser to the bytes it started as.
-        let parsed = parse_spec(&spec, Format::Yaml).expect("the synthesised spec parses");
-        let source = parsed
-            .spec
-            .data
-            .get(SOURCE)
-            .expect("the source is declared under the fixed key");
-        assert_eq!(
-            source.kind,
-            brightfield_spec::ast::DataSourceKind::File("/Users/hugh/Hugh's data.csv".to_string()),
-            "the doubled quote is a YAML escape, not part of the path"
-        );
-    }
-
     /// **Every kind the registry ships** parses under this module's header and
     /// names the file's own view as its source — not the two that happened to
     /// exist when this was written.
@@ -793,7 +619,7 @@ mod tests {
     #[test]
     fn every_kind_reads_the_files_own_view() {
         let path = PathBuf::from("/tmp/t.parquet");
-        for kind in chart_kinds::registry().kinds() {
+        for kind in crate::chart_kinds::registry().kinds() {
             let fields: Vec<Field> = kind
                 .slots
                 .iter()
@@ -802,14 +628,10 @@ mod tests {
                 .map(|(i, slot)| Field::new(format!("c{i}"), slot.accepts[0]))
                 .collect();
             let binding = kind.bind(&fields).expect("a kind binds its own slots");
-            let look = FirstLook {
-                kind: kind.id,
-                fields,
-                block: kind
-                    .spec(&binding, &kind.options())
-                    .expect("a kind builds from its own binding"),
-            };
-            let spec = spec_for(&path, &look);
+            let block = kind
+                .spec(&binding, &kind.options())
+                .expect("a kind builds from its own binding");
+            let spec = format!("{}{block}", source_spec(&path));
             let parsed = parse_spec(&spec, Format::Yaml)
                 .unwrap_or_else(|e| panic!("{}: does not parse: {e}\n{spec}", kind.id));
             let marks = brightfield_sql::collect_marks(&parsed.spec);
@@ -824,5 +646,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// **The spec the reader opens is the spec that ran**, byte for byte.
+    ///
+    /// The whole of what makes a generated dashboard inspectable rather than
+    /// opaque is that the file is a copy of the source the picture was composed
+    /// from. A writer that re-rendered the spec — reordered a key, dropped the
+    /// comments that say why each tile is the tile it is — would produce a
+    /// document that reads plausibly and is not evidence of anything.
+    #[test]
+    fn the_written_spec_is_the_source_that_composed_the_picture() {
+        let data = PathBuf::from("/tmp/bf-written-spec/readings.csv");
+        let spec = "meta:\n  title: 'readings.csv'\n# why this tile\nplot: []\n";
+        let written = write_spec_file(&data, spec).expect("the scratch write lands");
+        assert_eq!(
+            std::fs::read_to_string(&written).expect("the file reads back"),
+            spec
+        );
+        assert_eq!(
+            written.extension().and_then(|e| e.to_str()),
+            Some("yaml"),
+            "the editor opens it as a spec, so it has to be named like one: {}",
+            written.display()
+        );
+        assert!(
+            written.starts_with(std::env::temp_dir()),
+            "a file opened to be looked at must not write beside itself: {}",
+            written.display()
+        );
+        std::fs::remove_file(&written).ok();
     }
 }

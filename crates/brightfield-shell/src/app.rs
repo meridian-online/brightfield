@@ -122,20 +122,21 @@ pub struct ChartFault {
     pub detail: String,
 }
 
-/// How a document's picture was chosen, when a **chart kind** chose it.
+/// How a document's picture was chosen, when **one chart kind** chose the whole
+/// of it.
 ///
-/// A table opened with no spec is drawn by asking
-/// [`crate::chart_kinds::registry`] which of its kinds the table's columns
-/// fill; what comes back is a kind, the columns bound to it, and the spec
-/// block that kind built. Holding those three is what lets the chart pane
-/// re-make the [`ChartModule`](brightfield_workbench::item::ChartModule) that
-/// draws the picture, frame after frame, out of the registry rather than out
-/// of a branch.
+/// A table opened with no spec gets a tile per column out of
+/// [`crate::dashboard`], each tile a kind the registry chose for that column.
+/// Where the walk produced exactly **one** tile, that tile's picture is the
+/// document's picture: this record carries the kind, the column bound to it and
+/// the block that kind builds, which is what lets the chart pane re-make the
+/// [`ChartModule`](brightfield_workbench::item::ChartModule) that draws it,
+/// frame after frame, out of the registry rather than out of a branch.
 ///
-/// `None` on a document composed from a spec someone **wrote**, because no
-/// route that opens one asks the registry anything — the source came off disk
-/// or out of the binary, and there is nothing to record. Which routes those
-/// are is enumerated by
+/// `None` in the two cases where no single kind built the picture: a dashboard
+/// of several tiles, and a document composed from a spec someone **wrote** —
+/// for a written spec because no route that opens one asks the registry
+/// anything. Which routes those are is enumerated by
 /// `a_chart_kinds_picture_carries_its_kind_and_a_written_spec_carries_none` in
 /// `tests/data_file.rs`, and that is where a new one gets ruled on.
 ///
@@ -152,7 +153,11 @@ pub struct Authored {
     pub kind: ChartKindId,
     /// The columns bound to that kind, in the order they were offered.
     pub fields: Vec<Field>,
-    /// The spec block that kind built — what this document was composed from.
+    /// The spec block that kind built for those columns — the picture this
+    /// document draws, in the kind's own standalone form. It is what
+    /// [`ChartModule`](brightfield_workbench::item::ChartModule) rebuilds every
+    /// frame and what [`ChartDoc::draw_module`] compares against, so it is the
+    /// kind's block rather than the document's whole source.
     pub block: String,
 }
 

@@ -2451,7 +2451,7 @@ impl MeridianApp {
     /// list, which is its own piece of work.
     pub fn open_data_file(&mut self, ctx: &egui::Context, chosen: &str) {
         let banner = NotificationId::new("open-data-file");
-        let (live, composed, look) = match crate::data_file::open(chosen) {
+        let opened = match crate::data_file::open(chosen) {
             Ok(opened) => opened,
             Err(e) => {
                 eprintln!("could not open {chosen}: {e}");
@@ -2463,17 +2463,34 @@ impl MeridianApp {
                 return;
             }
         };
+        let crate::data_file::OpenedFile {
+            live,
+            composed,
+            dashboard,
+            spec_file,
+        } = opened;
         self.open_chart(composed);
         self.charts.doc.attach_live(live);
+        // The generated spec, where the editor pane opens it — the same field a
+        // dashboard composed from a file someone wrote carries, so the pane
+        // needs no arm of its own for a dashboard nobody wrote. Set after
+        // `open_chart`, which is the different-document entry and clears what
+        // belonged to the outgoing spec.
+        self.charts.doc.spec_path = spec_file;
+        self.charts.doc.wire_watch();
         // Which chart kind chose this picture, recorded for the same reason
-        // the session is: `open_chart` is the different-document entry and
-        // clears what belonged to the outgoing spec. The chart pane draws the
-        // picture through this kind's module.
-        self.charts.doc.set_authored(crate::app::Authored {
-            kind: look.kind(),
-            fields: look.fields().to_vec(),
-            block: look.block().to_string(),
-        });
+        // the session is. Only for a dashboard of ONE tile: that is the case
+        // where a tile's picture is the document's picture, so the chart pane
+        // can host it through that kind's module. A dashboard of several tiles
+        // is one picture no single kind built — the pane presents it directly,
+        // by the same arm a spec someone wrote takes.
+        if let Some(tile) = dashboard.sole_tile() {
+            self.charts.doc.set_authored(crate::app::Authored {
+                kind: tile.kind(),
+                fields: vec![tile.field().clone()],
+                block: tile.block().to_string(),
+            });
+        }
         self.notifications.dismiss(banner);
         self.ws_mut().set_active(ViewKind::Charts);
         self.toasts.push(Toast::new(
