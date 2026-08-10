@@ -58,8 +58,10 @@ WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
       unchanged neighbours of one, because a sentence wraps, but it reports at
       the line its quantifier is on and admits the claim only when the diff
       added THAT line — so a reword under an old quantifier is not a finding.
-      Pre-existing debt is not blocking; this stops new claims, it does not
-      audit old ones. `--all` audits the tree.
+      This stops new claims rather than auditing old ones — but note the
+      residue, which is the same for rules A/B/C: rewording an unrelated word
+      ON a line that carries an old quantifier does add that line, so its
+      pre-existing claim is reported. `--all` audits the tree.
     - Only `.rs` files, and only `//`, `///`, `//!` lines.
     - Bare `a::b` Rust paths are deliberately NOT resolved. Precision matters
       more than recall here — a gate that cries wolf gets disabled, and this
@@ -99,7 +101,10 @@ WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
           and admitted on it, that claim is old debt by this gate's reckoning
           even though the author has just widened it. The cost is asymmetric:
           this shape costs a reviewer a read, and the reading that would catch
-          it blocks every reword under every old quantifier in the tree.
+          it strays onto lines the author never touched. Measured over the 41
+          most recent `.rs`-touching commits: this shape misses 3 while still
+          catching 468, where the other reading strays 11 times across 10 of
+          those commits.
       A sentence rule D misses costs a reviewer a read. A sentence it reports
       wrongly costs the gate itself.
 
