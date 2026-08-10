@@ -20,13 +20,19 @@
 
 use std::path::{Path, PathBuf};
 
+use brightfield_engine::coordinator::Interaction;
+use brightfield_engine::SqlPredicate;
 use brightfield_protocol::layout::Flow;
 use brightfield_shell::chart_kinds;
+use brightfield_shell::dashboard;
 use brightfield_shell::data_file;
 use brightfield_shell::design::Mode;
+use brightfield_shell::editor::{EditorPane, SaveReport};
 use brightfield_shell::starts;
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
+use brightfield_spec::analysis::ComponentPath;
+use brightfield_sql::ir::ScalarValue;
 use brightfield_workbench::registry::ChartKindId;
 use brightfield_workbench::ViewKind;
 
@@ -145,8 +151,9 @@ fn a_chosen_csv_becomes_a_table_the_session_can_be_queried_for() {
     let dir = TempDir::new("csv-table");
     let path = dir.write("readings.csv", READINGS_CSV);
 
-    let (mut live, composed, _look) =
-        data_file::open(&path.to_string_lossy()).expect("an ordinary CSV opens");
+    let data_file::OpenedFile {
+        mut live, composed, ..
+    } = data_file::open(&path.to_string_lossy()).expect("an ordinary CSV opens");
 
     assert!(
         composed.width > 0 && composed.height > 0,
@@ -189,7 +196,7 @@ fn a_chosen_parquet_opens_on_the_same_path() {
 
     write_parquet(&csv, &parquet);
 
-    let (mut live, _composed, _look) =
+    let data_file::OpenedFile { mut live, .. } =
         data_file::open(&parquet.to_string_lossy()).expect("a Parquet opens");
     assert_eq!(
         live.coordinator()
@@ -215,52 +222,61 @@ fn write_parquet(csv: &Path, parquet: &Path) {
     assert!(parquet.is_file(), "the Parquet was written");
 }
 
-/// The first look is chosen from the table's own profile, and a numeric column
-/// wins — asserted through `open`, so a change that stopped profiling and
-/// hard-coded a picture reddens here rather than passing the unit test.
+/// **A table opens as an analysis: one tile per column.**
+///
+/// The whole card in one assertion, through the door a user comes in by. Two
+/// columns in the file, two plots in the composition, and each plot is of one of
+/// them — a numeric column binned, a categorical one ranked. The version of this
+/// route that shipped before drew *one* picture over whichever columns the first
+/// applicable kind's slots swallowed, and said nothing about the rest.
 #[test]
-fn the_first_look_over_a_numeric_column_is_its_distribution() {
-    let dir = TempDir::new("first-look");
+fn a_table_opens_as_a_tile_per_column() {
+    let dir = TempDir::new("tile-per-column");
     let path = dir.write("readings.csv", READINGS_CSV);
 
-    let columns = {
-        // Same two-step the open makes: profile, then choose.
-        let (mut live, _, _) = data_file::open(&path.to_string_lossy()).expect("opens");
-        live.coordinator()
-            .session()
-            .profile_sources()
-            .into_iter()
-            .find(|p| p.name == data_file::SOURCE)
-            .map(|p| match p.outcome {
-                brightfield_engine::ProfileOutcome::Profiled { columns, .. } => columns,
-                other => panic!("the opened file did not profile: {other:?}"),
-            })
-            .expect("the opened file is the session's source")
-    };
-    let look = data_file::first_look(&columns).expect("a numeric column admits a first look");
+    let data_file::OpenedFile {
+        composed,
+        dashboard,
+        ..
+    } = data_file::open(&path.to_string_lossy()).expect("an ordinary CSV opens");
+
+    let chosen: Vec<(&str, String)> = dashboard
+        .tiles()
+        .iter()
+        .map(|t| (t.column(), t.kind().to_string()))
+        .collect();
     assert_eq!(
-        look.kind(),
-        chart_kinds::BINNED_HISTOGRAM,
-        "a numeric column is a distribution, and a distribution is the most \
-         informative thing that can be drawn about a column nobody described"
+        chosen,
+        vec![
+            ("region", "ranked-category-bars".to_string()),
+            ("reading", "binned-histogram".to_string()),
+        ],
+        "each column gets the picture its own type admits, in the file's order"
+    );
+    assert!(dashboard.omitted().is_empty(), "{:?}", dashboard.omitted());
+    assert_eq!(
+        composed.plots.len(),
+        dashboard.tiles().len(),
+        "every tile has to reach the composition as a plot of its own"
     );
     assert!(
-        look.block().contains("x: { bin: 'reading' }"),
-        "the kind bound the profiled column: {look:?}"
+        composed.mark_faults.is_empty(),
+        "the engine refused a tile's own mark: {:?}",
+        composed.mark_faults
     );
+    assert!(composed.width > 0 && composed.height > 0);
 }
 
-/// A table with no numeric column opens on the OTHER first look — the count
-/// grid — and it too reads the file's own view, so the Data pane still holds
-/// every row.
+/// A table of **two categorical columns** is two rankings, and neither is the
+/// count grid: `count-grid` declares two required categorical slots, so no
+/// single column can fill it and no per-column tile is ever one.
 ///
-/// This is here because the grid is the branch a unit test cannot vouch for:
-/// `cell` with a self-aggregating `fill: {count:}` is a different lowerer from
-/// the histogram's, and a spec that merely parses proves nothing about whether
-/// DuckDB will run it or the renderer will place it.
+/// The consequence is recorded here rather than left to be rediscovered: the
+/// open-a-data-file route no longer draws that kind at all. It keeps its
+/// registry entry and its unit tests.
 #[test]
-fn a_table_with_no_numeric_column_opens_on_a_count_grid() {
-    let dir = TempDir::new("grid");
+fn a_table_of_two_categories_is_two_rankings_and_not_a_grid() {
+    let dir = TempDir::new("two-categories");
     let path = dir.write(
         "links.csv",
         "tier,method\n\
@@ -272,15 +288,19 @@ fn a_table_with_no_numeric_column_opens_on_a_count_grid() {
          candidate,jaro_winkler\n",
     );
 
-    let (mut live, composed, _look) =
-        data_file::open(&path.to_string_lossy()).expect("a table of two categorical columns opens");
-    assert!(
-        composed.width > 0 && composed.height > 0,
-        "the grid has to land on a drawn result"
-    );
+    let data_file::OpenedFile {
+        mut live,
+        composed,
+        dashboard,
+        ..
+    } = data_file::open(&path.to_string_lossy()).expect("a table of two categorical columns opens");
+    assert_eq!(dashboard.tiles().len(), 2, "{dashboard:?}");
+    for tile in dashboard.tiles() {
+        assert_eq!(tile.kind(), brightfield_shell::ranked_bars::KIND_ID);
+    }
     assert!(
         composed.mark_faults.is_empty(),
-        "the engine refused the grid's own mark: {:?}",
+        "the engine refused a tile's own mark: {:?}",
         composed.mark_faults
     );
     assert_eq!(
@@ -289,8 +309,8 @@ fn a_table_with_no_numeric_column_opens_on_a_count_grid() {
             .step_rows_count(0)
             .expect("the step counts"),
         6,
-        "the grid aggregates in its own query, so the table behind it is still \
-         the file"
+        "a tile aggregates in its own query, so the table behind it is still the \
+         file"
     );
 }
 
@@ -306,9 +326,14 @@ fn a_table_of_one_category_opens_on_its_ranking() {
     let dir = TempDir::new("one-category");
     let path = dir.write("names.csv", "name\nada\ngrace\nbarbara\nkaren\nada\n");
 
-    let (mut live, composed, look) =
-        data_file::open(&path.to_string_lossy()).expect("one category is a ranking, not a refusal");
-    assert_eq!(look.kind(), brightfield_shell::ranked_bars::KIND_ID);
+    let data_file::OpenedFile {
+        mut live,
+        composed,
+        dashboard,
+        ..
+    } = data_file::open(&path.to_string_lossy()).expect("one category is a ranking, not a refusal");
+    let tile = dashboard.sole_tile().expect("one column is one tile");
+    assert_eq!(tile.kind(), brightfield_shell::ranked_bars::KIND_ID);
     assert!(
         !composed.plots.is_empty(),
         "the ranking composed no plot at all"
@@ -373,8 +398,13 @@ fn a_one_category_table_opens_without_a_banner_over_its_picture() {
 ///
 /// The routes this build opens a chart document on:
 ///
-/// - `MeridianApp::open_data_file` — a table with no spec. The registry chose
-///   the picture, so the kind is recorded and it is one this build has.
+/// - `MeridianApp::open_data_file` over a table with **one** tile. That tile's
+///   picture is the document's picture, so the kind is recorded and it is one
+///   this build has.
+/// - `MeridianApp::open_data_file` over a table with several. The dashboard is
+///   one picture no single kind built — there is no one kind to record and no
+///   one binding — so the pane presents it directly, by the arm a written spec
+///   takes.
 /// - `Boot::start` — the shipped starts, `include_str!`-ed spec source. The
 ///   registry was never asked, so there is no kind and no binding to record,
 ///   and the pane presents these directly.
@@ -387,23 +417,34 @@ fn a_one_category_table_opens_without_a_banner_over_its_picture() {
 #[test]
 fn a_chart_kinds_picture_carries_its_kind_and_a_written_spec_carries_none() {
     let dir = TempDir::new("authored-routes");
-    let path = dir.write("readings.csv", READINGS_CSV);
+    let one_tile = dir.write("names.csv", ONE_CATEGORY_CSV);
+    let many_tiles = dir.write("readings.csv", READINGS_CSV);
 
     let mut win = Window::open();
     win.settle();
     let ctx = win.ctx.clone();
-    win.app.open_data_file(&ctx, &path.to_string_lossy());
+    win.app.open_data_file(&ctx, &one_tile.to_string_lossy());
     win.settle();
 
     let authored = win.app.chart_doc().authored().cloned().expect(
-        "the open-a-data-file route drew a chart kind's picture and recorded no \
-         kind, so the pane draws it around the module instead of through it",
+        "a one-tile dashboard IS one chart kind's picture and recorded no kind, \
+         so the pane draws it around the module instead of through it",
     );
     assert!(
         chart_kinds::find(authored.kind).is_some(),
         "the recorded kind {} is not in this build's registry, so the pane has \
          nothing to draw the picture with",
         authored.kind
+    );
+
+    // Several tiles: no single kind built the picture, so nothing claims one.
+    win.app.open_data_file(&ctx, &many_tiles.to_string_lossy());
+    win.settle();
+    assert_eq!(
+        win.app.chart_doc().authored(),
+        None,
+        "a dashboard of several tiles was recorded as one chart kind's picture, \
+         which would put a two-plot raster under a one-plot module"
     );
 
     for id in [starts::DASHBOARD, starts::DISTRIBUTION, starts::BREAKDOWN] {
@@ -436,8 +477,11 @@ const CROSSED_CSV: &str = "tier,method\n\
 /// One categorical column — the shape ranked category bars take.
 const ONE_CATEGORY_CSV: &str = "name\nada\ngrace\nbarbara\nkaren\nada\n";
 
-/// **A file a user opened arrives on screen as a picture**, for each kind the
-/// registry ships, drawn through that kind's module.
+/// One numeric column — one tile, and that tile is the binned histogram.
+const ONE_MEASURE_CSV: &str = "reading\n12\n18\n31\n44\n7\n25\n52\n63\n";
+
+/// **A file a user opened arrives on screen as a picture**, and each kind a
+/// single column can fill is drawn through its own module.
 ///
 /// The gap this closes was measured rather than imagined. Emptying the
 /// `Authored` record's `fields` in `MeridianApp::open_data_file`, or its
@@ -445,31 +489,30 @@ const ONE_CATEGORY_CSV: &str = "name\nada\ngrace\nbarbara\nkaren\nada\n";
 /// went blank for every file opened from the front door — the first stops at
 /// `ChartKind::bind` inside `ChartModule::ui`, the second at
 /// `ChartDoc::draw_module`'s comparison, and both end with no raster, no legend
-/// band and no `empty_state` to explain it. Nothing could see it: the tests in
-/// `tests/chart_module.rs` construct their own `Authored` and never take the
-/// one this route writes, and
-/// `a_chart_kinds_picture_carries_its_kind_and_a_written_spec_carries_none`
-/// above reads that record without drawing from it.
+/// band and no `empty_state` to explain it.
 ///
 /// So the assertion is `raster_rect` on a settled window — the observable
 /// `ChartDoc::present_raster` writes, and the one a GPU-free machine has (see
-/// `tests/chart_module.rs`'s header for why a rect rather than pixels). Paired
-/// with the recorded kind being one this build has, it says the picture arrived
-/// by the **module** arm rather than beside it: `module_of` answers `Some` on
-/// exactly that pair, and the pane's other arm is the one it answers `None`
-/// for.
+/// `tests/chart_module.rs`'s header for why a rect rather than pixels).
 ///
-/// Written over `registry().kinds()` rather than over one fixture, so a kind
-/// added with no file that reaches it reddens here instead of shipping unseen.
+/// **Written over the kinds a lone column can fill**, which is the set a
+/// per-column dashboard can choose from and therefore the only set this route
+/// can reach. A kind needing two columns — `count-grid` today, a scatter later —
+/// is reachable by no fixture here and the partition below says so rather than
+/// letting the absence read as an oversight.
 #[test]
-fn every_shipped_kind_draws_its_picture_from_the_open_a_file_route() {
+fn every_kind_a_column_can_fill_draws_its_picture_from_the_open_a_file_route() {
     let dir = TempDir::new("open-draws-a-picture");
-    let mut drawn: Vec<ChartKindId> = Vec::new();
+    let mut through_a_module: Vec<ChartKindId> = Vec::new();
 
     for (name, contents) in [
+        // One tile each: the document IS that kind's picture, so the pane hosts
+        // it through the kind's module.
+        ("one-measure.csv", ONE_MEASURE_CSV),
+        ("names.csv", ONE_CATEGORY_CSV),
+        // Several tiles: one picture no single kind built, presented directly.
         ("readings.csv", READINGS_CSV),
         ("crossed.csv", CROSSED_CSV),
-        ("names.csv", ONE_CATEGORY_CSV),
     ] {
         let path = dir.write(name, contents);
         let mut win = Window::open();
@@ -478,21 +521,10 @@ fn every_shipped_kind_draws_its_picture_from_the_open_a_file_route() {
         win.app.open_data_file(&ctx, &path.to_string_lossy());
         win.settle();
 
-        let authored = win.app.chart_doc().authored().cloned().unwrap_or_else(|| {
-            panic!("{name}: opened with no kind recorded, so the pane drew it around the module")
-        });
-        assert!(
-            chart_kinds::find(authored.kind).is_some(),
-            "{name}: opened as {}, which is not in this build's registry, so \
-             the pane has nothing to draw the picture with",
-            authored.kind
-        );
         let raster = win.app.chart_doc().raster_rect.unwrap_or_else(|| {
             panic!(
-                "{name}: opened as {} and nothing reached the pane — the \
-                 module drew no raster, so what the user gets is a blank \
-                 chart with no sentence on it",
-                authored.kind
+                "{name}: opened and nothing reached the pane — what the user \
+                 gets is a blank chart with no sentence on it"
             )
         });
         assert!(
@@ -500,18 +532,287 @@ fn every_shipped_kind_draws_its_picture_from_the_open_a_file_route() {
             "{name}: the raster was reserved at {raster:?}, which has no room \
              for a picture in it"
         );
-        drawn.push(authored.kind);
+        if let Some(authored) = win.app.chart_doc().authored() {
+            assert!(
+                chart_kinds::find(authored.kind).is_some(),
+                "{name}: opened as {}, which is not in this build's registry, \
+                 so the pane has nothing to draw the picture with",
+                authored.kind
+            );
+            through_a_module.push(authored.kind);
+        }
     }
 
-    for kind in chart_kinds::registry().kinds() {
+    for kind in dashboard::single_column_kinds() {
         assert!(
-            drawn.contains(&kind.id),
-            "{}: no fixture here opens a file that chooses it, so nothing \
-             holds that it draws through the door a user comes in by — the \
-             fixtures above reached {drawn:?}",
+            through_a_module.contains(&kind.id),
+            "{}: one column fills this kind, so a one-column file opens as its \
+             picture and is drawn through its module — but no fixture here \
+             reaches it. The fixtures above reached {through_a_module:?}",
             kind.id
         );
     }
+
+    // The partition, stated: a kind whose required slots one column cannot fill
+    // is drawn by nothing on this route, because a per-column dashboard can
+    // never choose it. `count-grid` is that kind today.
+    let tileable: Vec<ChartKindId> = dashboard::single_column_kinds()
+        .iter()
+        .map(|k| k.id)
+        .collect();
+    for kind in chart_kinds::registry().kinds() {
+        if tileable.contains(&kind.id) {
+            continue;
+        }
+        assert!(
+            kind.slots.iter().filter(|s| s.required).count() != 1,
+            "{}: one column fills this kind's required slot, so it belongs in \
+             the tileable set and a fixture above should reach it",
+            kind.id
+        );
+        assert!(
+            !through_a_module.contains(&kind.id),
+            "{}: this route drew a kind no single column can fill",
+            kind.id
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A brush on any tile reaches every other tile
+// ---------------------------------------------------------------------------
+
+/// Two measures, so both tiles are histograms and both narrow — the shape that
+/// lets a cross-filter be read as a row count rather than as pixels.
+const TWO_MEASURES_CSV: &str = "temp,power\n\
+                                1,4\n2,12\n3,7\n4,16\n5,9\n6,21\n\
+                                7,13\n8,18\n9,24\n10,11\n11,27\n12,19\n\
+                                13,33\n14,22\n15,38\n16,26\n17,41\n18,29\n";
+
+/// **A brush on one tile filters every other tile, and not itself.**
+///
+/// Read off the engine rather than off the picture: after the drag, the row set
+/// each tile's query materialises is what a re-render would draw, so the
+/// arithmetic is the assertion. The brushed tile keeps its own full row set —
+/// that is `select: crossfilter`, where each consumer drops its *own* clause, and
+/// it is what stops a brush from erasing the very bars the hand is on.
+#[test]
+fn a_brush_on_one_tile_filters_the_others_and_not_itself() {
+    let dir = TempDir::new("crossfilter");
+    let path = dir.write("pairs.csv", TWO_MEASURES_CSV);
+
+    let data_file::OpenedFile {
+        mut live,
+        composed,
+        dashboard,
+        ..
+    } = data_file::open(&path.to_string_lossy()).expect("two measures open");
+    assert_eq!(dashboard.tiles().len(), 2, "{dashboard:?}");
+    assert_eq!(composed.plots.len(), 2);
+
+    let rows = |live: &mut brightfield_shell::pipeline::LiveDashboard, i: usize| -> u64 {
+        live.coordinator()
+            .session()
+            .step_rows_count(i)
+            .expect("the step counts")
+    };
+    let before = (rows(&mut live, 0), rows(&mut live, 1));
+    assert_eq!(before, (18, 18), "at rest both tiles hold the whole file");
+
+    // Drag an x-range on the FIRST tile — `temp` between 1 and 9 inclusive is
+    // nine of the eighteen rows.
+    let brushed = ComponentPath(composed.plots[0].path.clone());
+    live.apply(Interaction::Select {
+        name: brightfield_shell::dashboard::SELECTION.to_string(),
+        contributor: brushed,
+        predicate: SqlPredicate::Interval {
+            column: "temp".to_string(),
+            lo: ScalarValue::Float(1.0),
+            hi: ScalarValue::Float(9.0),
+            meta: None,
+        },
+    })
+    .expect("the brush re-composites");
+
+    let after = (rows(&mut live, 0), rows(&mut live, 1));
+    assert_eq!(
+        after.1, 9,
+        "the OTHER tile has to narrow to the rows the drag kept — a tile that \
+         does not is a dashboard of unconnected charts"
+    );
+    assert_eq!(
+        after.0, 18,
+        "…and the brushed tile keeps its own rows, because a crossfilter \
+         consumer drops its own clause"
+    );
+}
+
+/// **A brush reaches a tile of another kind too**, in the form that kind
+/// consumes a selection in.
+///
+/// A ranked-bars module deliberately does *not* filter its own mark — see
+/// `ranked_bars`'s header for what that would cost — so its row count is the
+/// wrong place to look. The predicate lands inside its conditional `SUM`
+/// instead, and the executed SQL is where that is observable.
+#[test]
+fn a_brush_reaches_a_tile_that_consumes_by_highlighting() {
+    let dir = TempDir::new("crossfilter-mixed");
+    let path = dir.write("readings.csv", READINGS_CSV);
+
+    let data_file::OpenedFile {
+        mut live,
+        composed,
+        dashboard,
+        ..
+    } = data_file::open(&path.to_string_lossy()).expect("a mixed table opens");
+    let ranked = dashboard
+        .tiles()
+        .iter()
+        .position(|t| t.kind() == brightfield_shell::ranked_bars::KIND_ID)
+        .expect("the categorical column is a ranking");
+    let measure = dashboard
+        .tiles()
+        .iter()
+        .position(|t| t.kind() == chart_kinds::BINNED_HISTOGRAM)
+        .expect("the numeric column is a histogram");
+
+    live.coordinator().session_mut().clear_executed_sql();
+    live.apply(Interaction::Select {
+        name: brightfield_shell::dashboard::SELECTION.to_string(),
+        contributor: ComponentPath(composed.plots[measure].path.clone()),
+        predicate: SqlPredicate::Interval {
+            column: "reading".to_string(),
+            lo: ScalarValue::Float(10.0),
+            hi: ScalarValue::Float(30.0),
+            meta: None,
+        },
+    })
+    .expect("the brush re-composites");
+
+    let ranked_column = dashboard.tiles()[ranked].column();
+    let reached: Vec<String> = live
+        .coordinator()
+        .session()
+        .executed_sql()
+        .into_iter()
+        .filter(|sql| sql.contains(ranked_column) && sql.contains("reading"))
+        .collect();
+    assert!(
+        !reached.is_empty(),
+        "the brush on the measure never reached the ranking's query, so the \
+         two tiles are not cross-filtered. Executed: {:?}",
+        live.coordinator().session().executed_sql()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The generated dashboard is a spec, not internal state
+// ---------------------------------------------------------------------------
+
+/// **The dashboard nobody authored is a spec file the reader can open, read and
+/// edit** — in the same pane, through the same field, as a dashboard composed
+/// from a spec someone wrote.
+///
+/// Three things are asserted, and the first is the one that makes the other two
+/// worth anything: the bytes on disk are the bytes that composed the picture. A
+/// writer that re-serialised the spec would produce a plausible document that is
+/// evidence of nothing.
+#[test]
+fn the_generated_dashboard_is_a_spec_the_reader_can_open_and_edit() {
+    let dir = TempDir::new("spec-is-visible");
+    let path = dir.write("readings.csv", READINGS_CSV);
+
+    let mut win = Window::open();
+    win.settle();
+    let ctx = win.ctx.clone();
+    win.app.open_data_file(&ctx, &path.to_string_lossy());
+    win.settle();
+
+    let spec_path = win.app.chart_doc().spec_path.clone().expect(
+        "the document has to carry the spec it was composed from, or the \
+                 editor pane has nothing to open and the dashboard is opaque",
+    );
+    let on_disk = std::fs::read_to_string(&spec_path).expect("the spec file reads");
+
+    // 1. It is the source that ran.
+    let data_file::OpenedFile { dashboard, .. } =
+        data_file::open(&path.to_string_lossy()).expect("re-opens");
+    assert_eq!(
+        on_disk,
+        dashboard.to_spec(),
+        "the file the reader opens is not the source the picture was composed \
+         from"
+    );
+
+    // 2. It composes to the picture on screen — same tiles, same plots.
+    let recomposed = brightfield_shell::pipeline::compose_spec_str(&on_disk, None)
+        .expect("the written spec composes on its own");
+    assert_eq!(
+        recomposed.plots.len(),
+        win.app.chart_doc().composed.plots.len(),
+        "the spec the reader can edit draws a different dashboard from the one \
+         they are looking at"
+    );
+
+    // 3. The pane the shell hosts opens it, shows it, and can write it back.
+    let mut pane = EditorPane::new();
+    pane.open_file(&spec_path);
+    assert_eq!(pane.buffer(), Some(on_disk.as_str()));
+    assert!(
+        !pane.can_save(),
+        "nothing has been typed yet, so there is nothing to write"
+    );
+    if let Some(buffer) = pane.buffer_mut() {
+        *buffer = buffer.replace("height: 300", "height: 220");
+    }
+    pane.note_buffer_edited();
+    assert!(pane.can_save(), "an edited buffer has something to write");
+    assert!(
+        matches!(pane.save_now(), SaveReport::Written),
+        "the reader's edit did not reach the file"
+    );
+    let edited = std::fs::read_to_string(&spec_path).expect("the edited spec reads");
+    assert!(edited.contains("height: 220"), "{edited}");
+    assert!(
+        brightfield_shell::pipeline::compose_spec_str(&edited, None).is_ok(),
+        "the edited spec no longer composes:\n{edited}"
+    );
+}
+
+/// The spec carries **why each tile is the tile it is**, and what was left out —
+/// so the rule is checkable by a reader holding the artefact.
+#[test]
+fn the_generated_spec_states_the_rule_it_was_generated_by() {
+    let dir = TempDir::new("spec-states-the-rule");
+    let path = dir.write(
+        "mixed.csv",
+        "region,reading,version\n\
+         north,12,1\n\
+         north,18,1\n\
+         south,31,1\n\
+         south,44,1\n\
+         east,7,1\n\
+         east,25,1\n\
+         west,52,1\n\
+         west,63,1\n",
+    );
+
+    let data_file::OpenedFile { spec_file, .. } =
+        data_file::open(&path.to_string_lossy()).expect("the file opens");
+    let source =
+        std::fs::read_to_string(spec_file.expect("a spec file")).expect("the spec file reads");
+
+    assert!(
+        source.contains(
+            "# reading: no semantic label, and DuckDB stored it as BIGINT → binned-histogram"
+        ),
+        "{source}"
+    );
+    assert!(source.contains("region: no semantic label"), "{source}");
+    assert!(
+        source.contains("version: one distinct value"),
+        "a column left out has to say so in the spec the reader opens:\n{source}"
+    );
 }
 
 /// A table no chart kind fits is refused **by name and by reason**, rather than
@@ -521,8 +822,12 @@ fn every_shipped_kind_draws_its_picture_from_the_open_a_file_route() {
 /// nothing numeric to bin. The composition path returns `Err` when no mark
 /// renders, so the alternative to a sentence is not a blank chart, it is an
 /// unexplained one. Reopening this shape as a table with no picture is residual
-/// scope, and the message says what the build's charts *do* take — read off the
-/// registry, so the sentence cannot describe a set this build does not have.
+/// scope.
+///
+/// **The sentence names the column and its reason**, which is a better answer
+/// than the list of what the build's charts take that it replaces: a reader
+/// looking at a file whose contents they can see is owed *why this column*, not
+/// a catalogue of shapes.
 #[test]
 fn a_table_with_nothing_to_draw_says_what_it_is_missing() {
     let dir = TempDir::new("nothing-to-draw");
@@ -536,14 +841,14 @@ fn a_table_with_nothing_to_draw_says_what_it_is_missing() {
         .err()
         .expect("200 distinct identifiers fill no chart kind's slot");
     assert!(refusal.contains("identifiers.csv"), "{refusal}");
-    assert!(refusal.contains("1 column"), "{refusal}");
-    for kind in chart_kinds::registry().kinds() {
-        assert!(
-            refusal.contains(kind.description),
-            "the refusal must say what {} takes: {refusal}",
-            kind.id
-        );
-    }
+    assert!(
+        refusal.contains("id:"),
+        "the refusal has to name the column it could not draw: {refusal}"
+    );
+    assert!(
+        refusal.contains("no chart in this build fits it"),
+        "…and why: {refusal}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -577,7 +882,7 @@ fn assert_opens_the_chosen_file_or_refuses(chosen: &Path, chosen_rows: u64, deco
                 "…and has to carry a reason as well as a name: {refusal}"
             );
         }
-        Ok((mut live, _composed, _look)) => {
+        Ok(data_file::OpenedFile { mut live, .. }) => {
             let rows = live
                 .coordinator()
                 .session()
