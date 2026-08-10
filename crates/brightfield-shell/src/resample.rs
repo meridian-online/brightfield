@@ -5,7 +5,7 @@
 //! [`crate::chart_kinds::COUNTS_OVER_TIME`] draws it straight. A `TIMESTAMP`
 //! arrives with none, and bound to a band axis it puts **0** pixels of mark ink
 //! on the page: `brightfield-render`'s `positional_axis_class` reads it as
-//! continuous, so the band scale a bar stands on is never built. The
+//! continuous, and a bar has no band to stand on. The
 //! measurement is `a_timestamp_band_puts_no_ink_on_the_page` in
 //! [`crate::chart_kinds`], beside the `VARCHAR` control that tells a broken
 //! harness from a real zero.
