@@ -224,7 +224,7 @@ fn write_parquet(csv: &Path, parquet: &Path) {
 
 /// **A table opens as an analysis: one tile per column.**
 ///
-/// The whole card in one assertion, through the door a user comes in by. Two
+/// The whole claim in one assertion, through the door a user comes in by. Two
 /// columns in the file, two plots in the composition, and each plot is of one of
 /// them — a numeric column binned, a categorical one ranked. The version of this
 /// route that shipped before drew *one* picture over whichever columns the first

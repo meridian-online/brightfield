@@ -756,7 +756,7 @@ mod tests {
         Dashboard::of(Path::new("/tmp/readings.csv"), columns)
     }
 
-    /// **A tile per column** — the property the whole card turns on, over a
+    /// **A tile per column** — the property this module exists for, over a
     /// table whose columns are of three different shapes.
     #[test]
     fn every_usable_column_gets_its_own_tile() {
