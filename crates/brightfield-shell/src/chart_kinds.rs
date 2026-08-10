@@ -97,12 +97,12 @@ const GHOST_INK: meridian_design::colour::Rgba = meridian_design::scales::GRAY_L
 
 /// The crossfilter selection this registry's blocks drive and read.
 ///
-/// **One name for every kind**, and that is the point of putting it here rather
-/// than in each builder: two blocks composed into one document cross-filter
-/// each other only while they name the same selection. Two private names would
-/// compose into a dashboard whose tiles each filtered nothing but themselves —
-/// and self-exclusion means that is a dashboard where brushing does nothing at
-/// all.
+/// **One name for the kinds that declare one**, and that is the point of putting
+/// it here rather than in each builder: two blocks composed into one document
+/// cross-filter each other only while they name the same selection. Two private
+/// names would compose into a dashboard whose tiles each filtered nothing but
+/// themselves — and self-exclusion means that is a dashboard where brushing does
+/// nothing at all.
 ///
 /// The name is arbitrary and the **declaration** is not: a block writing `as:
 /// $sel` on an interactor has to declare `sel` under `params:`, because an
@@ -170,8 +170,7 @@ pub fn find(id: ChartKindId) -> Option<&'static ChartKind<String>> {
 /// inside a single unfiltered bar (`examples/rect-bin-count-part-of-whole.yaml`).
 /// It is not interchangeable with this one: it deemphasises non-matching rows
 /// within one layer, so the ghost and the subset cannot be read as two
-/// separately-scaled quantities and a bin the selection empties keeps no
-/// standing bar of its own.
+/// separately-scaled quantities.
 ///
 /// # Why the plot also brushes
 ///
