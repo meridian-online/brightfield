@@ -75,6 +75,44 @@ const GRID_MAX_DISTINCT: u64 = 60;
 /// first-look chooser needs, as data rather than as a branch.
 const HISTOGRAM_SLOTS: &[FieldSlot] = &[FieldSlot::required("x", &[FieldType::Quantitative])];
 
+/// The ink the ghost layer is drawn in — the warm-gray border step of the
+/// design system's generated gray scale,
+/// [`meridian_design::scales::GRAY_LIGHT`].
+///
+/// A token rather than a hex constant, so a palette regeneration moves the
+/// ghost with the rest of the chart's ink instead of leaving it behind. The
+/// emitter spells it out with [`meridian_design::colour::Rgba::hex`], which
+/// round-trips the scale's own 8-bit channels exactly — so the colour reaching
+/// the canvas is the token's, not an approximation of it.
+///
+/// **This step rather than a lighter one**, and a pixel test is what decides
+/// it: the reading in `crates/brightfield-shell/tests/ghosted_histogram.rs`
+/// tells ghost ink from chart chrome by per-channel distance, and the plot
+/// frame's own baseline is drawn from a step of this same scale. A ghost close
+/// enough to that step to sit inside the tolerance would turn the reading into
+/// a reading of the gridlines, so
+/// `the_registrys_ghost_ink_is_not_the_charts_own_chrome` holds the separation
+/// rather than this comment asserting it.
+const GHOST_INK: meridian_design::colour::Rgba = meridian_design::scales::GRAY_LIGHT[7];
+
+/// The crossfilter selection this registry's blocks drive and read.
+///
+/// **One name for every kind**, and that is the point of putting it here rather
+/// than in each builder: two blocks composed into one document cross-filter
+/// each other only while they name the same selection. Two private names would
+/// compose into a dashboard whose tiles each filtered nothing but themselves —
+/// and self-exclusion means that is a dashboard where brushing does nothing at
+/// all.
+///
+/// The name is arbitrary and the **declaration** is not: a block writing `as:
+/// $sel` on an interactor has to declare `sel` under `params:`, because an
+/// interactor binding a name no `params:` entry declares raises
+/// [`brightfield_spec::ParseWarning::InteractorBindingMissing`] — which the
+/// window puts on screen as a *"had no effect"* banner over the picture it has
+/// just drawn. [`crate::ranked_bars::Dashboard::to_spec`] declares the same
+/// entry for the same reason.
+const SELECTION: &str = "sel";
+
 /// The two axes a count grid crosses. Both required: one category is a bar
 /// chart, not a grid.
 const GRID_SLOTS: &[FieldSlot] = &[
@@ -107,26 +145,83 @@ pub fn find(id: ChartKindId) -> Option<&'static ChartKind<String>> {
     registry().find(id)
 }
 
-/// A numeric column's distribution.
+/// A numeric column's distribution, **ghosted**: the unfiltered total behind
+/// the filtered subset.
 ///
-/// `rectY` over the column's bin edges with `y: { count: }` — the lift
+/// Two `rectY` layers over one table and one `x: { bin: }` / `y: { count: }`
+/// transform — the lift
 /// [`brightfield_spec::vocab::MarkKind::bins_positionally`] recognises, so the
-/// aggregation happens in SQL and the picture is of the whole table rather
-/// than of a sample of it.
+/// aggregation happens in SQL and the picture is of the whole table rather than
+/// of a sample of it. The first layer reads [`SOURCE`] straight and never
+/// narrows; the second reads it through `filterBy:` the crossfilter selection
+/// and lands on top in the default mark ink.
+///
+/// # Why two layers rather than one filtered one
+///
+/// Both layers share the plot's scales, so the count axis and the pixel mapping
+/// are fixed by the total. A brushed tile therefore reads as a fraction of the
+/// bars behind it. One filtered layer draws a perfectly good histogram after a
+/// brush — right bars, right counts, rescaled axis — and gives the reader no
+/// way to see what fraction of the data it is; it reads as a chart that redrew
+/// itself. `examples/rect-bin-count-ghost.yaml` is the same device authored by
+/// hand, and its header comment is the long form of this paragraph.
+///
+/// The alternative device is `select: highlight`, which draws the selected part
+/// inside a single unfiltered bar (`examples/rect-bin-count-part-of-whole.yaml`).
+/// It is not interchangeable with this one: it deemphasises non-matching rows
+/// within one layer, so the ghost and the subset cannot be read as two
+/// separately-scaled quantities and a bin the selection empties keeps no
+/// standing bar of its own.
+///
+/// # Why the plot also brushes
+///
+/// `select: intervalX` makes the tile a contributor to [`SELECTION`] and not
+/// only a subscriber to it. A sweep resolves to an interval over the binned
+/// column: `x: { bin: col }` draws on an axis in `col`'s own units, so a pixel
+/// range on it inverts to a `col` range. `brightfield-spec`'s
+/// `positional_column` is what reads that column out of the bin transform, and
+/// `tests/ghosted_histogram.rs` drives a pointer sweep through the whole path
+/// to the committed clause.
+///
+/// Without the interactor nothing in the document this kind composes can write
+/// [`SELECTION`], so the second layer's `filterBy:` never narrows, the two
+/// layers stay identical and the ghost is decoration.
+///
+/// A sweep here does not move this tile's own bars, and that is the design
+/// rather than a dead control. Crossfilter self-exclusion drops a plot's own
+/// clause from its own query, so the tile keeps its whole distribution while
+/// whatever else subscribes to [`SELECTION`] narrows.
 fn binned_histogram() -> ChartKind<String> {
     ChartKind {
         id: BINNED_HISTOGRAM,
         icon: Icon("chart-bar"),
-        description: "Bins a measure and counts the rows in each bin",
+        description:
+            "Bins a measure and counts the rows in each bin, the total behind the selection",
         slots: HISTOGRAM_SLOTS,
         controls: Vec::new,
         build: |bound, _options| {
-            let column = bound.name("x").unwrap_or_default();
-            let mut out = String::from("plot:\n");
+            let column = yaml_quoted(bound.name("x").unwrap_or_default());
+            let mut out = String::from("params:\n");
+            let _ = writeln!(out, "  {SELECTION}: {{ select: crossfilter }}");
+            out.push_str("plot:\n");
+            // The ghost, first so the subset covers it: the whole table, with
+            // no `filterBy:` to narrow it.
             let _ = writeln!(out, "  - mark: rectY");
             let _ = writeln!(out, "    data: {{ from: {SOURCE} }}");
-            let _ = writeln!(out, "    x: {{ bin: {} }}", yaml_quoted(column));
+            let _ = writeln!(out, "    x: {{ bin: {column} }}");
             let _ = writeln!(out, "    y: {{ count: }}");
+            let _ = writeln!(out, "    fill: \"{}\"", GHOST_INK.hex());
+            // The subset: the same transform, through the selection, in the
+            // mark ink a layer binding no colour channel takes.
+            let _ = writeln!(out, "  - mark: rectY");
+            let _ = writeln!(
+                out,
+                "    data: {{ from: {SOURCE}, filterBy: ${SELECTION} }}"
+            );
+            let _ = writeln!(out, "    x: {{ bin: {column} }}");
+            let _ = writeln!(out, "    y: {{ count: }}");
+            let _ = writeln!(out, "  - select: intervalX");
+            let _ = writeln!(out, "    as: ${SELECTION}");
             out
         },
     }
@@ -157,18 +252,6 @@ fn count_grid() -> ChartKind<String> {
     }
 }
 
-/// The crossfilter selection the ranked-bars block drives and reads.
-///
-/// The name is arbitrary and the **declaration** is not:
-/// [`crate::ranked_bars::RankedCategoryBars::plot_yaml`] writes `as: $sel` on a
-/// `toggleY` and `by: $sel` on a `highlight`, and an interactor binding a name
-/// no `params:` entry declares raises
-/// [`brightfield_spec::ParseWarning::InteractorBindingMissing`] — which the
-/// window puts on screen as a *"had no effect"* banner over the picture it has
-/// just drawn. [`crate::ranked_bars::Dashboard::to_spec`] declares the same
-/// entry for the same reason.
-const RANKED_BARS_SELECTION: &str = "sel";
-
 /// [`crate::ranked_bars::chart_kind`] over this registry's source, as a
 /// self-contained top-level fragment.
 ///
@@ -177,7 +260,7 @@ const RANKED_BARS_SELECTION: &str = "sel";
 /// contract fixes that a placeholder cannot: the table the module counts over,
 /// the `hconcat:` key that makes one module a document, and the `params:` entry
 /// declaring the selection its interactors bind (see
-/// [`RANKED_BARS_SELECTION`]). Rebuilding the declaration here instead would be
+/// [`SELECTION`]). Rebuilding the declaration here instead would be
 /// a second copy of it, which is what a registry exists to end.
 fn ranked_category_bars() -> ChartKind<String> {
     ChartKind {
@@ -185,9 +268,9 @@ fn ranked_category_bars() -> ChartKind<String> {
             let column = bound.name("category").unwrap_or_default();
             let module = crate::ranked_bars::RankedCategoryBars::new(column);
             let mut out = String::from("params:\n");
-            let _ = writeln!(out, "  {RANKED_BARS_SELECTION}: {{ select: crossfilter }}");
+            let _ = writeln!(out, "  {SELECTION}: {{ select: crossfilter }}");
             let _ = writeln!(out, "hconcat:");
-            out.push_str(&module.plot_yaml(SOURCE, RANKED_BARS_SELECTION, 2));
+            out.push_str(&module.plot_yaml(SOURCE, SELECTION, 2));
             out
         },
         ..crate::ranked_bars::chart_kind()
