@@ -512,8 +512,9 @@ fn is_temporal_type(duckdb_type: &str) -> bool {
 /// TIME ZONE`, which is the fold. The first alone leaves the fold unheld.
 ///
 /// **The trim is held as a behaviour, not per call site.** Deleting either
-/// `.trim()` below on its own leaves the suite green; only deleting both
-/// reddens `a_columns_field_type_follows_what_can_be_binned`, on ` integer `.
+/// `.trim()` below on its own leaves
+/// `a_columns_field_type_follows_what_can_be_binned` green — measured, one at a
+/// time — and deleting both reddens it, on ` integer `.
 /// The outer one is subsumed — the inner runs after the split and strips the
 /// same ends, so removing it changes this function's answer on no input at all
 /// and no test could hold it. The inner one is not subsumed: it is what a type
