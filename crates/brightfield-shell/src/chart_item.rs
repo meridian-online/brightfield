@@ -1002,7 +1002,12 @@ fn axis_interval(column: &str, scale: &Scale, p0: f64, p1: f64) -> Option<SqlPre
 /// its column verbatim, and the names reaching here are file column names and
 /// [`crate::resample`]'s bucket columns — which always carry spaces
 /// (`observed by hour`), so the unquoted form was a parser error that took
-/// every OTHER tile's query down with it.
+/// every OTHER tile's query down with it. The spaces are the ` by ` a bucket
+/// name is built around, pinned by the test
+/// `a_derived_name_steps_aside_for_a_column_that_owns_it`, and the gesture that
+/// takes the whole page down without the quoting is
+/// `a_click_on_a_timestamp_tile_leaves_its_sibling_tiles_on_the_page` in
+/// `tests/data_file.rs`.
 fn point_predicate(
     binding: &GestureBinding,
     plot: &PlotHandle,

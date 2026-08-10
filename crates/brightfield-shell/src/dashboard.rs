@@ -65,11 +65,13 @@
 //! ceiling is applied where it was argued for: to categories.
 //!
 //! A `TIMESTAMP` takes the same kind by a longer road, because it has no band
-//! to stand on and a `barY` bound to one draws nothing. [`crate::resample`]
-//! chooses the calendar step its own span asks for, [`Dashboard::to_spec`]
-//! declares a bucket column at that step beside the file's own, and the tile is
-//! drawn over that. The step is written into the tile's comment, so the reader
-//! holding the spec can see it was counted by the day rather than the hour.
+//! to stand on and a `barY` bound to one draws nothing — the test that measures
+//! that is `a_timestamp_band_puts_no_ink_on_the_page`, in
+//! [`crate::chart_kinds`]. [`crate::resample`] chooses the calendar step its
+//! own span asks for, [`Dashboard::to_spec`] declares a bucket column at that
+//! step beside the file's own, and the tile is drawn over that. The step is
+//! written into the tile's comment, so the reader holding the spec can see it
+//! was counted by the day rather than the hour.
 //!
 //! # One selection, every tile
 //!
@@ -440,7 +442,9 @@ impl Dashboard {
     /// The whole dashboard as spec source: the header comment, the title, the
     /// shared selection, the data block — the file, and the bucket column of
     /// every tile that had to be resampled — and the tiles laid out in rows of
-    /// [`TILES_PER_ROW`].
+    /// [`TILES_PER_ROW`]. The tests are
+    /// `every_tile_reads_the_one_table_however_many_columns_are_derived` over
+    /// the derived half and `the_tiles_are_laid_out_in_rows` over the layout.
     ///
     /// **This is the artefact, not a rendering of one.** The picture is
     /// composed from these exact bytes, so a reader who opens the spec is
@@ -731,7 +735,10 @@ enum TileForm {
 ///
 /// Written over [`Tile::drawn_column`] rather than [`Tile::column`], which are
 /// the same name for every tile a resample did not touch. A timestamp's marks
-/// name its bucket column, because that is the one with a band.
+/// name its bucket column, because that is the one with a band — the test that
+/// reads the two apart is `a_timestamp_past_the_grid_ceiling_gets_a_tile`, and
+/// `the_dates_tile_counts_in_time_order_and_drops_no_date` is the date beside
+/// it, whose mark names the file's own column.
 fn tile_yaml(tile: &Tile, indent: usize) -> String {
     match tile_form(tile.kind) {
         Some(TileForm::Histogram) => histogram_tile(tile.drawn_column(), indent),

@@ -547,7 +547,9 @@ const ONE_MEASURE_CSV: &str = "reading\n12\n18\n31\n44\n7\n25\n52\n63\n";
 /// Ninety distinct days is past the category ceiling `chart_kinds` applies, and
 /// that ceiling was applied to every non-binnable column — so this file, opened
 /// from the front door, came back as a sentence about the column it had left
-/// out. It is a fixture rather than a literal because ninety lines of CSV in a
+/// out. The test that opens it is
+/// [`every_kind_a_column_can_fill_draws_its_picture_from_the_open_a_file_route`].
+/// It is a fixture rather than a literal because ninety lines of CSV in a
 /// constant is ninety lines nobody reads; January, February and March of a
 /// non-leap year are 31 + 28 + 31 days, which is the ninety.
 ///
@@ -564,7 +566,7 @@ fn ninety_days_csv() -> String {
 
 /// One column of **instants**, ninety of them an hour apart — a `TIMESTAMP` in
 /// DuckDB rather than a `DATE`, which is the type this route used to have no
-/// answer for at all.
+/// answer for.
 ///
 /// Ninety readings put the column past the ceiling `chart_kinds` applies to a
 /// category, and the times of day put it past what a `DATE` can spell: three
@@ -646,7 +648,9 @@ fn three_columns_csv() -> String {
 /// **Clicking a bar on a timestamp tile leaves the other tiles on the page.**
 ///
 /// The bucket column [`brightfield_shell::resample`] derives is named after the
-/// step it counts at, so its name always carries spaces — `observed by hour`.
+/// step it counts at, so its name always carries spaces — `observed by hour`,
+/// the ` by ` shape the unit test
+/// `a_derived_name_steps_aside_for_a_column_that_owns_it` pins.
 /// A `toggleX` click publishes that name into the shared selection, every other
 /// tile's query interpolates it into a `WHERE`, and unquoted it is not a column
 /// reference but a syntax error at `by`. The tiles that could not parse it

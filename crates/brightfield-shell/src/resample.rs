@@ -5,10 +5,9 @@
 //! [`crate::chart_kinds::COUNTS_OVER_TIME`] draws it straight. A `TIMESTAMP`
 //! arrives with none, and bound to a band axis it puts **0** pixels of mark ink
 //! on the page: `brightfield-render`'s `positional_axis_class` reads it as
-//! continuous, and a bar has no band to stand on. The
-//! measurement is `a_timestamp_band_puts_no_ink_on_the_page` in
-//! [`crate::chart_kinds`], beside the `VARCHAR` control that tells a broken
-//! harness from a real zero.
+//! continuous, and a bar has no band to stand on. The measurement is the test
+//! `a_timestamp_band_puts_no_ink_on_the_page` in [`crate::chart_kinds`], beside
+//! the `VARCHAR` control that tells a broken harness from a real zero.
 //!
 //! So the column a tile draws for a timestamp is not the timestamp. It is a
 //! **bucket** column derived beside it — one `strftime` over the instant — and
@@ -23,7 +22,11 @@
 //! `strftime` spells every step of the ladder below, and its output is
 //! fixed-width and zero-padded, so ascending on the text is ascending in time:
 //! that is the ordering `brightfield-sql`'s `BarLowerer` gives a band
-//! aggregation with no `sort:` lifted.
+//! aggregation with no `sort:` lifted. The test that walks the ladder is
+//! `each_steps_format_extends_the_one_above_it`, and the one that reads the
+//! absent `sort:` off an emitted dashboard is
+//! `the_timestamps_tile_is_the_dates_tile_over_the_bucket_column` in
+//! [`crate::dashboard`].
 //!
 //! The bucket column is therefore the same picture a `DATE` already gets rather
 //! than a second device. `brightfield-render`'s `column_as_string` keys a band
@@ -50,7 +53,10 @@ use crate::dashboard::TILE_WIDTH;
 /// is a choice of **resolution**, which is a different thing from a cap on a
 /// series: [`crate::dashboard::time_bars_tile`] writes no `limit:` and a
 /// finished picture keeps every bucket it has. A `DATE` needs no such choice
-/// because its source already made one.
+/// because its source already made one. The test that reads the missing
+/// `limit:` off the emitted source is
+/// `the_dates_tile_counts_in_time_order_and_drops_no_date` in
+/// [`crate::dashboard`].
 const MAX_BUCKETS: i128 = TILE_WIDTH as i128;
 
 /// A calendar step a timestamp column is counted at.
@@ -76,7 +82,9 @@ pub enum Step {
 ///
 /// Declaration order is the search order, and the search takes the first
 /// entry that fits — so a coarser step is reached only by the finer ones
-/// failing [`MAX_BUCKETS`].
+/// failing [`MAX_BUCKETS`]. The test is
+/// `a_spans_step_is_the_finest_a_tile_can_show_apart`, which asks a span at
+/// each rung.
 const LADDER: [Step; 7] = [
     Step::Microsecond,
     Step::Second,
@@ -127,9 +135,11 @@ impl Step {
     /// The step's length in microseconds.
     ///
     /// A month and a year are **nominal** — 30 days and 365 days — because the
-    /// only question asked of this number is how many buckets a span holds, and
-    /// that answer is compared against the private `MAX_BUCKETS` rather than
-    /// reported.
+    /// question the shell asks of this number is how many buckets a span holds,
+    /// and that answer is compared against the private `MAX_BUCKETS` rather
+    /// than reported. The two readers are [`Step::buckets`], held by
+    /// `a_spans_step_is_the_finest_a_tile_can_show_apart`, and the ordering
+    /// assertion inside `each_steps_format_extends_the_one_above_it`.
     #[must_use]
     pub const fn micros(self) -> i128 {
         match self {
@@ -155,7 +165,8 @@ impl Step {
 /// `DATE` is out because it is drawn as it stands. `TIME` is out because it
 /// carries no calendar date, so `strftime`'s formats have nothing to spell —
 /// a `TIME` column keeps the omission `chart_kinds::fields_of` gives it, with
-/// the reason written into the spec.
+/// the reason written into the spec. `the_resampled_types_are_the_timestamps`
+/// is the test that names both exclusions.
 #[must_use]
 pub fn is_resampled_type(duckdb_type: &str) -> bool {
     matches!(
@@ -280,7 +291,8 @@ fn micros_since_epoch(rendered: &str) -> Option<i128> {
     Some(micros)
 }
 
-/// The leading digits of `s`, as a number. `None` when it starts with none.
+/// The leading digits of `s`, as a number. `None` when it starts with a byte
+/// that is not a digit.
 fn digits(s: &str) -> Option<i128> {
     let taken = digits_str(s);
     if taken.is_empty() {

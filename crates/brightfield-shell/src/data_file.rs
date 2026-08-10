@@ -280,7 +280,10 @@ pub fn source_spec(path: &Path) -> String {
 ///
 /// A second name rather than a second `data:` block on the same one: a source
 /// entry is one view, and [`SOURCE`] has to stay the name every tile reads or
-/// the tiles would not share a table to cross-filter over.
+/// the tiles would not share a table to cross-filter over. The test over the
+/// kinds is `every_kind_reads_the_files_own_view` below, and the one over the
+/// tiles is `every_tile_reads_the_one_table_however_many_columns_are_derived`
+/// in [`crate::dashboard`].
 pub const ROWS: &str = "opened_rows";
 
 /// The root-less spec that declares `path` as a source, with `derived` extra
@@ -288,7 +291,9 @@ pub const ROWS: &str = "opened_rows";
 ///
 /// With nothing to derive this is [`source_spec`] exactly — one entry, the file
 /// under [`SOURCE`] — and that is the shape a table of measures, categories and
-/// dates opens as.
+/// dates opens as, which the test
+/// `a_table_with_nothing_to_derive_declares_the_file_and_nothing_else` in
+/// [`crate::dashboard`] reads off the emitted source.
 ///
 /// With something to derive, the file is read under [`ROWS`] and [`SOURCE`]
 /// becomes a `SELECT *` over it carrying the extra projections. Two views

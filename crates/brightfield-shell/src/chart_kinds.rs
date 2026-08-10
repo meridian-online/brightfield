@@ -133,8 +133,11 @@ const GRID_SLOTS: &[FieldSlot] = &[
 ];
 
 /// The one column a time series counts along. A single required slot, so
-/// [`ChartKind::accepts`] answers yes for a dated column and no for everything
-/// else.
+/// [`ChartKind::accepts`] answers yes for a dated column and no for a category
+/// — the tests are `a_table_of_names_crosses_its_two_narrowest_categories`,
+/// where a date is the first look a table of names admits, and
+/// `one_category_opens_on_ranked_bars`, whose exact list of applicable kinds
+/// this one is absent from.
 const TIME_SLOTS: &[FieldSlot] = &[FieldSlot::required("t", &[FieldType::Temporal])];
 
 /// The shell's chart kinds, in preference order.
@@ -265,10 +268,11 @@ fn binned_histogram() -> ChartKind<String> {
 /// and pointing [`ranked_category_bars`] at the same column. That kind writes
 /// `sort: { y: -x, limit: 10 }`, so a year of daily readings would arrive as the
 /// ten busiest days in descending order of count — every one of them true, and
-/// the shape of the series gone. Writing no `sort:` at all is what asks
+/// the shape of the series gone. Writing no `sort:` is what asks
 /// `brightfield-sql`'s `BarLowerer` for its band ordering instead, and that
 /// ordering is ascending on the band column: chronological, for a column of
-/// dates.
+/// dates. `the_dates_tile_counts_in_time_order_and_drops_no_date` in
+/// [`crate::dashboard`] is the test over the two absences.
 fn counts_over_time() -> ChartKind<String> {
     ChartKind {
         id: COUNTS_OVER_TIME,
@@ -467,7 +471,9 @@ fn is_binnable_type(duckdb_type: &str) -> bool {
 ///
 /// `DATE` reaches `brightfield-render` as an Arrow `Date32`, which that crate
 /// collects into a band scale one category per day. Every other temporal type
-/// is [`is_temporal_type`]'s business and gets no field at all.
+/// is [`is_temporal_type`]'s business and gets no field at all — the test
+/// `a_time_no_chart_here_draws_is_not_offered_a_band` names the spellings this
+/// build refuses.
 fn is_date_type(duckdb_type: &str) -> bool {
     type_base(duckdb_type) == "DATE"
 }
@@ -498,12 +504,21 @@ fn is_temporal_type(duckdb_type: &str) -> bool {
 /// upper-cased, trimmed, without a width or precision, and with the spelled-out
 /// time-zone suffix folded onto the short one DuckDB also accepts.
 ///
-/// One function rather than a copy of the same calls per predicate, and two
-/// tests between them cover the four reductions.
+/// One function rather than a copy of the same calls per predicate. Two tests
+/// between them hold the case, the width and the fold:
 /// `a_columns_field_type_follows_what_can_be_binned` asks for `DECIMAL(10,2)`
-/// and for ` integer `, which is the case, the trim and the width;
+/// and for ` integer `, which is the case and the width;
 /// `a_time_no_chart_here_draws_is_not_offered_a_band` asks for `TIMESTAMP WITH
 /// TIME ZONE`, which is the fold. The first alone leaves the fold unheld.
+///
+/// **The trim is held as a behaviour, not per call site.** Deleting either
+/// `.trim()` below on its own leaves the suite green; only deleting both
+/// reddens `a_columns_field_type_follows_what_can_be_binned`, on ` integer `.
+/// The outer one is subsumed — the inner runs after the split and strips the
+/// same ends, so removing it changes this function's answer on no input at all
+/// and no test could hold it. The inner one is not subsumed: it is what a type
+/// written `DECIMAL (10,2)`, with a space before the paren, would need, and
+/// nothing here asks for one.
 pub(crate) fn type_base(duckdb_type: &str) -> String {
     let upper = duckdb_type.trim().to_ascii_uppercase();
     upper
@@ -812,7 +827,9 @@ data:
     /// Ninety days is three months of readings, which is the shape that used to
     /// be refused: `GRID_MAX_DISTINCT` was applied to every non-binnable
     /// column, so a date crossed it at two months and the generator recorded an
-    /// omission. The ceiling bounds a grid's axes, and this column is not one.
+    /// omission. The ceiling bounds a grid's axes, and this column is not one —
+    /// `the_grid_ceiling_still_refuses_a_wide_pair_of_categories` is the test
+    /// below that keeps it where it was argued for.
     #[test]
     fn a_daily_series_past_the_grid_ceiling_is_offered_a_picture() {
         let daily = column("day", "DATE", 90);
@@ -869,7 +886,7 @@ data:
     /// **The measurement [`fields_of`]'s temporal split rests on**: of the
     /// types DuckDB hands back for a column of dates, a `DATE` and a text
     /// spelling both put mark ink on the page as a band, and a `TIMESTAMP` puts
-    /// none.
+    /// no ink.
     ///
     /// This is a renderer fact and it is asserted here because it is the reason
     /// the split exists at all — a rule written from an argument would have
