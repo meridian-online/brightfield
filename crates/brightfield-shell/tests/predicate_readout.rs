@@ -309,7 +309,7 @@ fn the_predicate_shown_is_the_predicate_executed() {
         "the readout names the selection the spec declares: {line}"
     );
     assert!(
-        clause.contains("temp >=") && clause.contains("temp <="),
+        clause.contains("\"temp\" >=") && clause.contains("\"temp\" <="),
         "an intervalX brush reads back as bounds on the x column: {clause}"
     );
 
@@ -1131,7 +1131,7 @@ fn an_aggregating_bars_readout_is_the_clause_it_grouped_under() {
     // 1. The rail.
     let line = readout(&doc).expect("a held selection is shown");
     assert_eq!(
-        line, "$pick = (\"quarter\" = 'Q1')",
+        line, "$pick = (quarter = 'Q1')",
         "the readout over an aggregating bar is not the clause the store holds"
     );
     let clause = clause_of(&line);
@@ -1181,7 +1181,7 @@ fn an_aggregating_bars_readout_is_the_clause_it_grouped_under() {
     });
     assert_eq!(
         readout(&doc).as_deref(),
-        Some("$pick = (\"quarter\" = 'Q2')"),
+        Some("$pick = (quarter = 'Q2')"),
         "the readout did not follow the second selection"
     );
     assert_eq!(
