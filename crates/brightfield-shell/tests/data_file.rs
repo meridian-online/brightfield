@@ -27,8 +27,8 @@ use brightfield_shell::chart_kinds;
 use brightfield_shell::dashboard;
 use brightfield_shell::data_file;
 use brightfield_shell::design::Mode;
-use brightfield_shell::resample::Step;
 use brightfield_shell::editor::{EditorPane, SaveReport};
+use brightfield_shell::resample::Step;
 use brightfield_shell::starts;
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
@@ -601,7 +601,10 @@ fn a_column_of_instants_opens_as_a_tile_and_not_as_an_omission() {
         "a column of instants was left out: {:?}",
         opened.dashboard.omitted()
     );
-    let tile = opened.dashboard.sole_tile().expect("one column is one tile");
+    let tile = opened
+        .dashboard
+        .sole_tile()
+        .expect("one column is one tile");
     assert_eq!(tile.column(), "observed", "the tile is of the column");
     assert_eq!(tile.kind(), chart_kinds::COUNTS_OVER_TIME);
     assert_eq!(

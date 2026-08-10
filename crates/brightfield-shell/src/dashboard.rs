@@ -1261,7 +1261,12 @@ mod tests {
     #[test]
     fn every_tile_reads_the_one_table_however_many_columns_are_derived() {
         let source = of(&[
-            stamped("observed", "2026-01-01 00:00:00", "2026-04-01 00:00:00", 900),
+            stamped(
+                "observed",
+                "2026-01-01 00:00:00",
+                "2026-04-01 00:00:00",
+                900,
+            ),
             stamped("settled", "2026-01-01 00:00:00", "2030-01-01 00:00:00", 900),
             column("amount", "DOUBLE", 900),
             column("region", "VARCHAR", 4),
@@ -1279,8 +1284,7 @@ mod tests {
         // Two timestamps, two bucket columns, each at the step its own span
         // asked for — and both in the one projection list.
         assert!(
-            source.contains("AS \"observed by day\"")
-                && source.contains("AS \"settled by month\""),
+            source.contains("AS \"observed by day\"") && source.contains("AS \"settled by month\""),
             "{source}"
         );
         assert_eq!(source.matches("SELECT *,").count(), 1, "{source}");
@@ -1453,7 +1457,12 @@ mod tests {
             labelled("id", "VARCHAR", 900, "representation.identifier.uuid"),
             // A resampled column is named by the table's spelling here, not by
             // the bucket column's: the ledger accounts for the file's columns.
-            stamped("observed", "2026-01-01 00:00:00", "2026-04-01 00:00:00", 900),
+            stamped(
+                "observed",
+                "2026-01-01 00:00:00",
+                "2026-04-01 00:00:00",
+                900,
+            ),
         ];
         let dash = of(&columns);
         assert_eq!(dash.tiles().len() + dash.omitted().len(), columns.len());
@@ -1481,7 +1490,12 @@ mod tests {
             column("region", "VARCHAR", 4),
             column("day", "DATE", 30),
             column("tier", "VARCHAR", 3),
-            stamped("observed", "2026-01-01 00:00:00", "2026-04-01 00:00:00", 900),
+            stamped(
+                "observed",
+                "2026-01-01 00:00:00",
+                "2026-04-01 00:00:00",
+                900,
+            ),
         ]);
         let source = dash.to_spec();
         let parsed = parse_spec(&source, Format::Yaml)

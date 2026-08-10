@@ -160,12 +160,7 @@ impl Step {
 pub fn is_resampled_type(duckdb_type: &str) -> bool {
     matches!(
         type_base(duckdb_type).as_str(),
-        "DATETIME"
-            | "TIMESTAMP"
-            | "TIMESTAMPTZ"
-            | "TIMESTAMP_S"
-            | "TIMESTAMP_MS"
-            | "TIMESTAMP_NS"
+        "DATETIME" | "TIMESTAMP" | "TIMESTAMPTZ" | "TIMESTAMP_S" | "TIMESTAMP_MS" | "TIMESTAMP_NS"
     )
 }
 
@@ -214,7 +209,7 @@ pub fn derived_name(column: &str, step: Step, taken: &[String]) -> String {
     let base = format!("{column} by {}", step.label());
     let mut name = base.clone();
     let mut n = 1;
-    while taken.iter().any(|t| *t == name) {
+    while taken.contains(&name) {
         n += 1;
         name = format!("{base} {n}");
     }
@@ -282,7 +277,10 @@ fn micros_since_epoch(rendered: &str) -> Option<i128> {
         // The fraction is padded and then cut to microseconds, so `.5` is half
         // a second and a nanosecond column's ninth digit is dropped rather
         // than read as a thousand seconds.
-        let fraction: String = format!("{:0<6}", digits_str(fraction)).chars().take(6).collect();
+        let fraction: String = format!("{:0<6}", digits_str(fraction))
+            .chars()
+            .take(6)
+            .collect();
         let fraction = digits(&fraction)?;
         micros += (hours * 3_600 + minutes * 60 + whole) * US_PER_SECOND + fraction;
     }
@@ -344,7 +342,11 @@ mod tests {
     fn a_spans_step_is_the_finest_a_tile_can_show_apart() {
         let cases: [(&str, &str, Step); 8] = [
             // Under a second: no coarser step has two buckets to draw.
-            ("2020-01-01 00:00:00", "2020-01-01 00:00:00.5", Step::Microsecond),
+            (
+                "2020-01-01 00:00:00",
+                "2020-01-01 00:00:00.5",
+                Step::Microsecond,
+            ),
             // Five minutes is 301 seconds, which fits; six minutes is 361.
             ("2020-01-01 00:00:00", "2020-01-01 00:05:00", Step::Second),
             ("2020-01-01 00:00:00", "2020-01-01 00:06:00", Step::Minute),
@@ -420,7 +422,10 @@ mod tests {
         assert_eq!(micros_since_epoch("1970-01-01 00:00:00.5"), Some(500_000));
         // A zoned column renders its offset onto the last field. Both ends of
         // a span carry it, so it is read past rather than failed on.
-        assert_eq!(micros_since_epoch("1970-01-01 00:00:02+01"), Some(2_000_000));
+        assert_eq!(
+            micros_since_epoch("1970-01-01 00:00:02+01"),
+            Some(2_000_000)
+        );
         assert_eq!(micros_since_epoch("not a timestamp"), None);
     }
 
