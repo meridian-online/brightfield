@@ -34,7 +34,7 @@
 use std::path::PathBuf;
 
 use brightfield_protocol::layout::Flow;
-use brightfield_shell::capture::capture_png;
+use brightfield_shell::capture::{capture_png, DEFAULT_SCALE};
 use brightfield_shell::data_file;
 use brightfield_shell::design::Mode;
 use brightfield_shell::startup::default_layout;
@@ -361,12 +361,28 @@ fn a_sample_rate_over_a_data_file_is_refused_by_name() {
 // ---------------------------------------------------------------------------
 
 /// The generated dashboard is written to a PNG by a process with no window, no
-/// dialog and no person in front of it.
+/// dialog and no person in front of it — **at the scale the shipped command
+/// uses**, and at 1.0 beside it.
 ///
 /// This is what the route is *for*. The boot handed to the capture tier is the
 /// same value `main` hands `eframe::run_native` and the same value
-/// `brightfield-shot --spec` hands `capture_png`, so an image landing here is
-/// the image `brightfield-shot --spec harbour.csv --out shot.png` writes.
+/// `brightfield-shot --spec` hands `capture_png`; every other argument of that
+/// command is at its default here too — [`Mode::Light`] is `--theme`'s,
+/// [`Flow::Vertical`] is `--flow`'s, an empty script is `--script`'s absence,
+/// and [`DEFAULT_SCALE`] is `--scale`'s. So the image this test reads at
+/// `DEFAULT_SCALE` is the image `brightfield-shot --spec harbour.csv --out
+/// shot.png` writes.
+///
+/// **Both scales, because the scale is where this hid.** The capture used to
+/// take its device ratio through `Context::set_pixels_per_point`, which is a
+/// zoom control: applying it discarded the caller's `screen_rect` for one
+/// frame, the dashboard reflowed into the substituted 5000×5000 box, and the
+/// following frame rastered that reflowed size onto a texture large enough for
+/// vello to return a blank frame — a PNG with an empty chart pane, at exit 0,
+/// at every scale except exactly 1.0, where the setter was a no-op. A guard
+/// pinned at 1.0 was a certificate issued at the one setting the defect spared.
+/// 1.0 stays in the loop because it is the value the committed baselines in
+/// `front_door.rs` and `surfaces.rs` are captured at.
 ///
 /// **Not a baseline.** What is asserted is that a picture arrived and that it
 /// is a picture of something — the committed golden that reddens when the
@@ -385,8 +401,18 @@ fn a_sample_rate_over_a_data_file_is_refused_by_name() {
 /// there.
 #[test]
 fn the_generated_dashboard_writes_itself_to_a_png_with_nobody_present() {
-    const SCALE: f32 = 1.0;
+    for scale in [1.0, DEFAULT_SCALE] {
+        photographs_itself_at(scale);
+    }
+}
 
+/// One scale's worth of
+/// [`the_generated_dashboard_writes_itself_to_a_png_with_nobody_present`].
+///
+/// Every threshold below is scale-free by construction: the window and the
+/// raster box are asserted in device pixels derived from `scale`, and the ink
+/// floor is a count that can only grow with it.
+fn photographs_itself_at(scale: f32) {
     let dir = TempDir::new("capture");
     let csv = dir.write("harbour.csv", HARBOUR_CSV);
     let named = csv.to_string_lossy().into_owned();
@@ -397,7 +423,8 @@ fn the_generated_dashboard_writes_itself_to_a_png_with_nobody_present() {
     // Where the raster lands, from a device-free frame at the same window size.
     // `MeridianApp::headless` lays out identically to the one `capture_png`
     // builds — every rect around the canvas is a pure function of the loaded
-    // document — so this is the box the capture drew the chart into.
+    // document — so this is the box the capture drew the chart into. Logical
+    // points, as the layout is: the crop below takes it into device pixels.
     let mut laid_out = Window::over(Boot::open(&named, Flow::Vertical, None).expect("it opens"));
     laid_out.screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(want_w, want_h));
     laid_out.settle();
@@ -407,26 +434,29 @@ fn the_generated_dashboard_writes_itself_to_a_png_with_nobody_present() {
         .raster_rect
         .expect("a settled frame presented the raster");
 
-    let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("scripted-open.png");
+    let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("scripted-open-{scale}.png"));
     let _ = std::fs::remove_file(&out);
-    let (w, h) = capture_png(boot, Mode::Light, SCALE, &out, Vec::new())
-        .unwrap_or_else(|e| panic!("capture the generated dashboard: {e}"));
+    let (w, h) = capture_png(boot, Mode::Light, scale, &out, Vec::new())
+        .unwrap_or_else(|e| panic!("capture the generated dashboard at {scale}x: {e}"));
 
     assert!(out.is_file(), "no PNG at {}", out.display());
     assert_eq!(
         (w, h),
-        (want_w.round() as u32, want_h.round() as u32),
-        "the capture is not the window the dashboard asked for"
+        (
+            (want_w * scale).round() as u32,
+            (want_h * scale).round() as u32
+        ),
+        "the {scale}x capture is not the window the dashboard asked for"
     );
 
     let image = image::open(&out)
         .unwrap_or_else(|e| panic!("read back {}: {e}", out.display()))
         .to_rgba8();
-    let (x0, y0) = ((raster.min.x * SCALE) as u32, (raster.min.y * SCALE) as u32);
-    let (x1, y1) = ((raster.max.x * SCALE) as u32, (raster.max.y * SCALE) as u32);
+    let (x0, y0) = ((raster.min.x * scale) as u32, (raster.min.y * scale) as u32);
+    let (x1, y1) = ((raster.max.x * scale) as u32, (raster.max.y * scale) as u32);
     assert!(
         x1 > x0 && y1 > y0 && x1 <= w && y1 <= h,
-        "the raster box {raster:?} is not inside the {w}x{h} capture"
+        "the raster box {raster:?} is not inside the {w}x{h} capture at {scale}x"
     );
 
     let mut seen: Vec<[u8; 4]> = Vec::new();
@@ -448,14 +478,14 @@ fn the_generated_dashboard_writes_itself_to_a_png_with_nobody_present() {
     }
     assert!(
         seen.len() >= 32,
-        "the chart raster holds {} distinct colour(s) — the window came up with \
-         a blank chart pane, which writes a PNG and exits 0 exactly as a drawn \
-         one does",
+        "the {scale}x chart raster holds {} distinct colour(s) — the window came \
+         up with a blank chart pane, which writes a PNG and exits 0 exactly as a \
+         drawn one does",
         seen.len()
     );
     assert!(
         coloured > 1000,
-        "the chart raster holds {coloured} pixel(s) of saturated ink over \
+        "the {scale}x chart raster holds {coloured} pixel(s) of saturated ink over \
          {}x{} — the marks the generator chose are not in the picture",
         x1 - x0,
         y1 - y0
