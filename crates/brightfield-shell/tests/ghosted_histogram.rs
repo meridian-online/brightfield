@@ -1078,8 +1078,12 @@ fn a_drag_on_the_numeric_tile_commits_the_interval_the_reader_swept() {
     // a bound cannot be right by clamping to an end of the domain.
     drag(&mut app, &ctx, 0.25, 0.60);
     let (column, lo, hi) = held_interval(&app, "a released sweep across the tile");
+    // The clause spells its column as a SQL identifier; the constant is the
+    // name. Which column it is is the claim, so the quotes come off here rather
+    // than in `held_interval`, which reads the store as the store holds it.
     assert_eq!(
-        column, MEASURE,
+        column.trim_matches('"'),
+        MEASURE,
         "the committed clause constrains {column} rather than the column the \
          tile bins — the interval binding is not reading the bin transform"
     );
