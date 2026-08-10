@@ -1580,8 +1580,8 @@ impl BrushKind {
 /// SQL column expressions that a brush's coordinates compare against.
 ///
 /// A channel bound to a column name gives that name; a channel carrying a
-/// positional **bin** transform gives the column being binned. See
-/// [`positional_column`] for why those two and nothing else.
+/// positional **bin** transform gives the column being binned. The private
+/// `positional_column` in this module states why those two and nothing else.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChannelColumns {
     /// Column expression for the x channel (the first child mark's `x:` slot).
