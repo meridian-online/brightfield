@@ -589,13 +589,21 @@ const TWO_MEASURES_CSV: &str = "temp,power\n\
                                 7,13\n8,18\n9,24\n10,11\n11,27\n12,19\n\
                                 13,33\n14,22\n15,38\n16,26\n17,41\n18,29\n";
 
-/// **A brush on one tile filters every other tile, and not itself.**
+/// **A brush on one tile filters every other tile, and not itself — and no
+/// tile's denominator moves.**
 ///
 /// Read off the engine rather than off the picture: after the drag, the row set
-/// each tile's query materialises is what a re-render would draw, so the
-/// arithmetic is the assertion. The brushed tile keeps its own full row set —
-/// that is `select: crossfilter`, where each consumer drops its *own* clause, and
-/// it is what stops a brush from erasing the very bars the hand is on.
+/// each layer's query materialises is what a re-render would draw, so the
+/// arithmetic is the assertion. Each histogram tile is two layers, and all three
+/// facts are visible in their four row counts:
+///
+/// - the other tile's **subset** narrows to the rows the drag kept;
+/// - the brushed tile's subset does not, because `select: crossfilter` drops a
+///   consumer's own clause — which is what stops a brush from erasing the very
+///   bars the hand is on;
+/// - and **neither ghost moves**, because a ghost that re-queried under the
+///   filter would take the denominator off the page while still drawing a
+///   plausible chart.
 #[test]
 fn a_brush_on_one_tile_filters_the_others_and_not_itself() {
     let dir = TempDir::new("crossfilter");
@@ -610,14 +618,22 @@ fn a_brush_on_one_tile_filters_the_others_and_not_itself() {
     assert_eq!(dashboard.tiles().len(), 2, "{dashboard:?}");
     assert_eq!(composed.plots.len(), 2);
 
+    // Two layers per tile, in emission order: tile 0's ghost and subset, then
+    // tile 1's.
+    let (ghost_0, subset_0, ghost_1, subset_1) = (0, 1, 2, 3);
     let rows = |live: &mut brightfield_shell::pipeline::LiveDashboard, i: usize| -> u64 {
         live.coordinator()
             .session()
             .step_rows_count(i)
             .expect("the step counts")
     };
-    let before = (rows(&mut live, 0), rows(&mut live, 1));
-    assert_eq!(before, (18, 18), "at rest both tiles hold the whole file");
+    for layer in [ghost_0, subset_0, ghost_1, subset_1] {
+        assert_eq!(
+            rows(&mut live, layer),
+            18,
+            "at rest every layer holds the whole file"
+        );
+    }
 
     // Drag an x-range on the FIRST tile — `temp` between 1 and 9 inclusive is
     // nine of the eighteen rows.
@@ -634,17 +650,26 @@ fn a_brush_on_one_tile_filters_the_others_and_not_itself() {
     })
     .expect("the brush re-composites");
 
-    let after = (rows(&mut live, 0), rows(&mut live, 1));
     assert_eq!(
-        after.1, 9,
+        rows(&mut live, subset_1),
+        9,
         "the OTHER tile has to narrow to the rows the drag kept — a tile that \
          does not is a dashboard of unconnected charts"
     );
     assert_eq!(
-        after.0, 18,
+        rows(&mut live, subset_0),
+        18,
         "…and the brushed tile keeps its own rows, because a crossfilter \
          consumer drops its own clause"
     );
+    for ghost in [ghost_0, ghost_1] {
+        assert_eq!(
+            rows(&mut live, ghost),
+            18,
+            "a ghost layer must never narrow, or the subset has nothing to be a \
+             fraction of"
+        );
+    }
 }
 
 /// **A brush reaches a tile of another kind too**, in the form that kind

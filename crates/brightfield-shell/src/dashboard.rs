@@ -650,24 +650,64 @@ fn tile_yaml(tile: &Tile, indent: usize) -> String {
     }
 }
 
-/// A measure's distribution, brushable.
+/// The ink the ghost layer is drawn in — the warm-grey border step of the
+/// design system's generated grey scale,
+/// [`meridian_design::scales::GRAY_LIGHT`].
 ///
-/// `xDomain: Fixed` is not decoration: under a crossfilter the bin edges would
-/// otherwise be re-derived from whatever the *other* tiles left, so the bars
-/// would move sideways under the pointer and two frames of the same column
-/// would not be comparable. It pins the frame of reference the reader is
-/// measuring against, which is the same job the ghost layer does on the count
-/// axis.
-fn histogram_tile(column: &str, indent: usize) -> String {
+/// A token rather than a hex constant, so a palette regeneration moves the ghost
+/// with the rest of the chart's ink instead of leaving it behind. Spelled out
+/// with [`meridian_design::colour::Rgba::hex`], which round-trips the scale's own
+/// 8-bit channels exactly.
+///
+/// **Read from the scale rather than copied from the histogram kind**, which
+/// reads the same step for the same device — see [`histogram_tile`] for why
+/// there are two emitters of one device and what closes that.
+const GHOST_INK: meridian_design::colour::Rgba = meridian_design::scales::GRAY_LIGHT[7];
+
+/// A measure's distribution, brushable, with **the unfiltered total kept behind
+/// the filtered subset**.
+///
+/// Two `rectY` layers over one table and one `x: { bin: }` / `y: { count: }`
+/// transform. The first reads [`SOURCE`] straight and never narrows — the ghost,
+/// drawn in [`GHOST_INK`]; the second reads it through `filterBy:` the shared
+/// selection and lands on top in the default mark ink. They share the plot's
+/// scales, so the count axis is fixed by the total and a brushed tile reads as a
+/// fraction of the bars behind it. One filtered layer draws a perfectly good
+/// histogram after a brush and gives the reader no way to see what fraction of
+/// the data it is; `examples/rect-bin-count-ghost.yaml` is the same device
+/// authored by hand.
+///
+/// `xDomain: Fixed` does the same job one axis over: without it the bin edges
+/// would be re-derived from whatever the *other* tiles left, so the bars would
+/// move sideways under the pointer and two frames of one column would not be
+/// comparable.
+///
+/// **Public, and that is the seam.** This device is emitted in two places — here
+/// as a tile, and by the `binned-histogram` kind as a standalone document — and
+/// prose is all that holds them in step. Publishing the tile form is what lets
+/// that end in one call rather than a third copy: a kind's builder can wrap this
+/// body under its own `params:` header. Until it does, a change to the device
+/// has to be made twice, and this comment is where a reader finds that out.
+#[must_use]
+pub fn histogram_tile(column: &str, indent: usize) -> String {
     let pad = " ".repeat(indent);
     let col = yaml_string(column);
+    let table = yaml_string(SOURCE);
     let mut out = String::new();
     let _ = writeln!(out, "{pad}- plot:");
+    // The ghost, first so the subset covers it: the whole table, with no
+    // `filterBy:` to narrow it.
+    let _ = writeln!(out, "{pad}  - mark: rectY");
+    let _ = writeln!(out, "{pad}    data: {{ from: {table} }}");
+    let _ = writeln!(out, "{pad}    x: {{ bin: {col} }}");
+    let _ = writeln!(out, "{pad}    y: {{ count: }}");
+    let _ = writeln!(out, "{pad}    fill: \"{}\"", GHOST_INK.hex());
+    // The subset: the same transform, through the selection, in the mark ink a
+    // layer binding no colour channel takes.
     let _ = writeln!(out, "{pad}  - mark: rectY");
     let _ = writeln!(
         out,
-        "{pad}    data: {{ from: {}, filterBy: ${SELECTION} }}",
-        yaml_string(SOURCE)
+        "{pad}    data: {{ from: {table}, filterBy: ${SELECTION} }}"
     );
     let _ = writeln!(out, "{pad}    x: {{ bin: {col} }}");
     let _ = writeln!(out, "{pad}    y: {{ count: }}");
@@ -1074,11 +1114,47 @@ mod tests {
         assert!(source.contains(&format!("by: ${SELECTION}")), "{source}");
     }
 
-    /// The bin domain is pinned, so a filtered histogram is measured against
-    /// the frame it had before the brush.
+    /// **The denominator stays on the page, and the frame of reference with
+    /// it.** A histogram tile is two layers: a ghost that never narrows and a
+    /// subset read through the selection, over a pinned bin domain.
+    ///
+    /// Asserted on the emitted source because that is where the mistake is
+    /// made — a `filterBy:` on the ghost, or a missing `xDomain`, both draw a
+    /// perfectly good chart that has quietly rescaled itself. The raster
+    /// arithmetic for the same device is
+    /// `a_two_layer_spec_draws_the_filtered_subset_over_the_unfiltered_total`
+    /// in `tests/ghosted_histogram.rs`.
     #[test]
-    fn a_histogram_tile_pins_its_bin_domain() {
+    fn a_histogram_tile_keeps_the_total_behind_the_subset() {
         let source = of(&[column("amount", "DOUBLE", 900)]).to_spec();
+        assert_eq!(
+            source.matches("mark: rectY").count(),
+            2,
+            "one layer cannot show a subset AS a fraction of a total:\n{source}"
+        );
+        assert_eq!(
+            source.matches("filterBy:").count(),
+            1,
+            "exactly one of the two layers narrows — the ghost is the whole \
+             table or it is not a denominator:\n{source}"
+        );
+        // The ghost is the FIRST layer, so the subset is drawn over it.
+        let ghost = source
+            .find("mark: rectY")
+            .expect("a layer to look at in the source above");
+        let filtered = source.find("filterBy:").expect("the subset layer");
+        assert!(ghost < filtered, "the subset must be drawn last:\n{source}");
+        // Its ink is the design system's, not a literal — a palette
+        // regeneration has to move it.
+        assert!(
+            source.contains(&format!("fill: \"{}\"", GHOST_INK.hex())),
+            "{source}"
+        );
+        assert_eq!(
+            GHOST_INK,
+            meridian_design::scales::GRAY_LIGHT[7],
+            "the ghost's ink is a scale step, so it cannot be typed by hand"
+        );
         assert!(source.contains("xDomain: Fixed"), "{source}");
     }
 
