@@ -19,13 +19,25 @@
 //!
 //! Read off the raster through `capture_vello_only`, which is the composed
 //! Vello scene and nothing else — the same bytes an export writes.
+//!
+//! # Two documents, one device
+//!
+//! The first half of this file holds `examples/rect-bin-count-ghost.yaml`, the
+//! device authored by hand. The second half holds the same device as the
+//! **product** emits it: the block `binned-histogram` builds in
+//! `brightfield_shell::chart_kinds`, which is the picture every numeric column
+//! of an opened file becomes. They are asserted separately on purpose — the
+//! example says the engine can draw this, and only the registry half says the
+//! shell asks it to.
 
 use brightfield_engine::coordinator::Interaction;
 use brightfield_engine::SqlPredicate;
 use brightfield_shell::capture::capture_vello_only;
-use brightfield_shell::pipeline::{live_spec, Composed};
+use brightfield_shell::chart_kinds;
+use brightfield_shell::pipeline::{live_spec, Composed, LiveDashboard};
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_sql::ir::ScalarValue;
+use brightfield_workbench::registry::{Field, FieldType};
 
 use image::RgbaImage;
 use std::path::PathBuf;
@@ -137,13 +149,17 @@ impl Frame {
 ///
 /// `None` for a column with no bar. Both layers baseline on the same axis, so
 /// the higher of the two tops is the taller bar's, which is the total's.
-fn bar_tops(img: &RgbaImage, frame: &Frame) -> Vec<Option<u32>> {
+///
+/// `ghost` is the pale ink of whichever document is being read: the example
+/// binds a literal, the registry's emitter resolves a token, and the reading is
+/// the same either way.
+fn bar_tops(img: &RgbaImage, frame: &Frame, ghost: [i32; 3]) -> Vec<Option<u32>> {
     let subset = subset_ink();
     (frame.x0..frame.x1)
         .map(|x| {
             (frame.y0..frame.y1).find(|&y| {
                 let p = img.get_pixel(x, y).0;
-                matches(p, GHOST) || matches(p, subset)
+                matches(p, ghost) || matches(p, subset)
             })
         })
         .collect()
@@ -179,7 +195,7 @@ fn a_two_layer_spec_draws_the_filtered_subset_over_the_unfiltered_total() {
          covered — {} columns show it instead",
         ghost_at_rest.len()
     );
-    let total_tops = bar_tops(&before, &frame);
+    let total_tops = bar_tops(&before, &frame, GHOST);
     assert!(
         total_tops.iter().filter(|t| t.is_some()).count() > 40,
         "fixture check: the resting histogram has bars to measure"
@@ -231,7 +247,7 @@ fn a_two_layer_spec_draws_the_filtered_subset_over_the_unfiltered_total() {
     // gained one is a bar edge landing on the pixel grid differently between
     // two renders, which the inter-bar gaps do and which says nothing about
     // either layer's height.
-    let after_tops = bar_tops(&after, &frame);
+    let after_tops = bar_tops(&after, &frame, GHOST);
     assert_eq!(
         after_tops.len(),
         total_tops.len(),
