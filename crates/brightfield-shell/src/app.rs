@@ -1143,13 +1143,17 @@ impl ModuleHost for ChartDoc {
     /// Present the picture this module's spec asked for.
     ///
     /// **What this checks, and what it does not.** The spec a module hands over
-    /// is rebuilt from its kind and its columns every frame; the picture on
-    /// screen was composed once, from the block in [`Authored`]. Presenting a
-    /// raster composed from a *different* block would put one chart under
-    /// another chart's module, so a disagreement draws nothing rather than
-    /// something wrong. It does not compose the incoming spec — a document
-    /// whose module has moved on stays blank until something re-opens it, and
-    /// composing here is the follow-on that would fix that.
+    /// is rebuilt from its kind and its columns every frame, and the block in
+    /// [`Authored`] is what the kind built when the document was opened — so an
+    /// equal pair means the module still names the picture on screen, over the
+    /// same columns. It is not the source the raster was composed from: that is
+    /// the whole generated dashboard, and the tile form of a kind is not its
+    /// standalone form (`dashboard`'s header says why). Presenting under a
+    /// module whose spec has changed would put one chart under another chart's
+    /// module, so a disagreement draws nothing rather than something wrong. It
+    /// does not compose the incoming spec — a document whose module has moved on
+    /// stays blank until something re-opens it, and composing here is the
+    /// follow-on that would fix that.
     ///
     /// No shipped kind can reach the disagreement today, and the two reasons
     /// are each checkable rather than remembered: no kind declares a control

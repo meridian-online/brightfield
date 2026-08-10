@@ -118,18 +118,60 @@ impl Window {
     fn settle(&mut self) {
         self.run(vec![Vec::new(), Vec::new()]);
     }
+
+    /// A pointer position at `fraction` across plot `index`'s **data area**,
+    /// halfway down it, in the window coordinates the raster was presented at.
+    ///
+    /// The data area rather than the plot rect: the margins carry the axis and
+    /// its labels, and a pixel out there inverts through the x scale to a value
+    /// off the end of the domain — so a sweep measured over the rect would commit
+    /// bounds the column never reaches.
+    fn at(&self, index: usize, fraction: f64) -> egui::Pos2 {
+        let doc = self.app.chart_doc();
+        let raster = doc
+            .raster_rect
+            .expect("a settled frame presented the raster");
+        let plot = &doc.composed.plots[index];
+        let l = &plot.layout;
+        let x = plot.rect.x + l.plot_x_start() + (l.plot_x_end() - l.plot_x_start()) * fraction;
+        let y = plot.rect.y + (l.plot_y_start() + l.plot_y_end()) / 2.0;
+        egui::pos2(raster.min.x + x as f32, raster.min.y + y as f32)
+    }
+
+    /// Press at `from`, move to `to`, release — the frames a real sweep across
+    /// plot `index` occupies.
+    ///
+    /// Three frames and not one: the gesture machine is edge-triggered on the
+    /// button, so a press and a release in the same frame is a click, and the
+    /// move between them is what makes this a sweep.
+    fn sweep(&mut self, index: usize, from: f64, to: f64) {
+        let start = self.at(index, from);
+        self.run(vec![vec![
+            egui::Event::PointerMoved(start),
+            button_at(start, true),
+        ]]);
+        let end = self.at(index, to);
+        self.run(vec![vec![egui::Event::PointerMoved(end)]]);
+        self.run(vec![vec![button_at(end, false)]]);
+        self.settle();
+    }
+}
+
+/// A primary-button press or release at `pos`.
+fn button_at(pos: egui::Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    }
 }
 
 /// One frame's worth of a pointer move and a primary click at `pos`.
 fn click_at(pos: egui::Pos2) -> Vec<egui::Event> {
     let mut events = vec![egui::Event::PointerMoved(pos)];
     for pressed in [true, false] {
-        events.push(egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        });
+        events.push(button_at(pos, pressed));
     }
     events
 }
@@ -604,6 +646,11 @@ const TWO_MEASURES_CSV: &str = "temp,power\n\
 /// - and **neither ghost moves**, because a ghost that re-queried under the
 ///   filter would take the denominator off the page while still drawing a
 ///   plausible chart.
+///
+/// The predicate is handed to the document here, so this reaches everything
+/// downstream of a selection and nothing upstream of one. Whether a hand on the
+/// tile can *produce* that predicate is
+/// `a_pointer_sweep_on_one_tile_filters_the_others` below.
 #[test]
 fn a_brush_on_one_tile_filters_the_others_and_not_itself() {
     let dir = TempDir::new("crossfilter");
@@ -670,6 +717,210 @@ fn a_brush_on_one_tile_filters_the_others_and_not_itself() {
              fraction of"
         );
     }
+}
+
+/// How many data rows [`TWO_MEASURES_CSV`] holds — counted off the fixture so
+/// the assertions below carry no second copy of it.
+fn fixture_total() -> u64 {
+    TWO_MEASURES_CSV
+        .lines()
+        .skip(1)
+        .filter(|l| !l.trim().is_empty())
+        .count() as u64
+}
+
+/// How many of the fixture's rows `column` keeps between `lo` and `hi`
+/// inclusive, read straight out of the CSV text.
+///
+/// The independent oracle the sweep test compares the engine against: the bounds
+/// come from the gesture, the count comes from the file, and DuckDB is in
+/// neither. A count taken from a second query would only show the engine
+/// agreeing with itself.
+fn rows_kept(column: &str, lo: f64, hi: f64) -> u64 {
+    let mut lines = TWO_MEASURES_CSV.lines();
+    let header: Vec<&str> = lines
+        .next()
+        .expect("the fixture has a header")
+        .split(',')
+        .collect();
+    let at = header.iter().position(|h| *h == column).unwrap_or_else(|| {
+        panic!(
+            "the committed clause names {column}, which is no column of the fixture ({header:?})"
+        )
+    });
+    lines
+        .filter(|l| !l.trim().is_empty())
+        .filter(|l| {
+            let cell = l.split(',').nth(at).expect("the row has that column");
+            let v: f64 = cell.parse().expect("a numeric cell");
+            v >= lo && v <= hi
+        })
+        .count() as u64
+}
+
+/// Every `Interval` clause in a predicate tree, as `(column, lo, hi)`.
+///
+/// Walked rather than matched at the root because how many contributors a
+/// selection's clause wraps, and in what, is `compile_selection`'s business
+/// rather than this test's.
+fn intervals(predicate: &SqlPredicate) -> Vec<(String, f64, f64)> {
+    match predicate {
+        SqlPredicate::Interval { column, lo, hi, .. } => match (lo, hi) {
+            (ScalarValue::Float(lo), ScalarValue::Float(hi)) => vec![(column.clone(), *lo, *hi)],
+            _ => Vec::new(),
+        },
+        SqlPredicate::And(parts) | SqlPredicate::Or(parts) => {
+            parts.iter().flat_map(intervals).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The one interval clause the window's selections are holding, or a panic
+/// naming what they held instead.
+fn held_interval(win: &Window) -> (String, f64, f64) {
+    let held = win
+        .app
+        .chart_doc()
+        .live_dashboard()
+        .expect("an opened data file has a live session")
+        .selection_clauses();
+    let found: Vec<(String, f64, f64)> = held.iter().flat_map(|(_, p)| intervals(p)).collect();
+    match found.as_slice() {
+        [one] => one.clone(),
+        other => panic!(
+            "a released sweep was expected to commit exactly one interval clause; \
+             the document holds {other:?} (selections: {:?})",
+            win.app.chart_doc().selection_sql()
+        ),
+    }
+}
+
+/// The rows the live session now returns for the step at `index`.
+///
+/// Read off the engine rather than off the document's record of what it asked
+/// for, for the reason `ChartDoc::live_coordinator` is public: a gate that
+/// asserted this from a field the code under test writes would be asserting
+/// against itself.
+fn step_rows(win: &mut Window, index: usize) -> u64 {
+    win.app
+        .chart_doc_mut()
+        .live_coordinator()
+        .expect("an opened data file has a live session")
+        .session()
+        .step_rows_count(index)
+        .expect("the step counts")
+}
+
+/// **A pointer sweep on one tile — down, moved, up — filters every other
+/// tile.**
+///
+/// The sibling above hands `Interaction::Select` to the document with a
+/// predicate the test wrote. That proves every tile *consumes* a selection and
+/// cannot prove one of them can *make* one. This drives the path a hand takes
+/// instead: a CSV opened through `MeridianApp::open_data_file`, pointer events
+/// through `ctx.run_ui`, and the chart pane's `drive_gestures` →
+/// `resolve_gesture` → `interval_predicate` to a committed clause.
+///
+/// That path was dead on a binned tile until the interval binding learned to
+/// read the column out of a bin transform, and no test in this file reddened
+/// while it was: `x: {bin: temp}` named no column the binding could see, so it
+/// bailed before dispatching anything and a reader got a brush rectangle that
+/// painted and resolved to nothing.
+///
+/// **The engine is not asked to confirm its own arithmetic.** The bounds come
+/// from the gesture; the row count they should keep is counted out of the CSV
+/// text by `rows_kept`; the number compared against it is what the other tile's
+/// query materialised.
+#[test]
+fn a_pointer_sweep_on_one_tile_filters_the_others() {
+    let dir = TempDir::new("sweep-crossfilter");
+    let path = dir.write("pairs.csv", TWO_MEASURES_CSV);
+    let total = fixture_total();
+
+    let mut win = Window::open();
+    win.settle();
+    let ctx = win.ctx.clone();
+    win.app.open_data_file(&ctx, &path.to_string_lossy());
+    win.settle();
+
+    assert_eq!(
+        win.app.chart_doc().composed.plots.len(),
+        2,
+        "two measures have to open as two tiles, or the sweep below is on some \
+         other picture"
+    );
+
+    // Two layers per tile, in emission order: tile 0's ghost and subset, then
+    // tile 1's.
+    let (ghost_0, subset_0, ghost_1, subset_1) = (0, 1, 2, 3);
+    for layer in [ghost_0, subset_0, ghost_1, subset_1] {
+        assert_eq!(
+            step_rows(&mut win, layer),
+            total,
+            "at rest every layer holds the whole file"
+        );
+    }
+    assert!(
+        win.app.chart_doc().selection_sql().is_none(),
+        "a tile nobody has swept is already holding {:?}",
+        win.app.chart_doc().selection_sql()
+    );
+
+    // The sweep, across the middle of the first tile's data area. Middling
+    // fractions on purpose: far enough inside the axis that a bound cannot be
+    // right by clamping to an end of the domain.
+    win.sweep(0, 0.2, 0.7);
+
+    let (column, lo, hi) = held_interval(&win);
+    assert!(
+        lo < hi,
+        "the sweep committed the degenerate interval [{lo}, {hi}] over {column}"
+    );
+    let kept = rows_kept(&column, lo, hi);
+    assert!(
+        kept > 0 && kept < total,
+        "the sweep committed {column} in [{lo}, {hi}], which keeps {kept} of the \
+         fixture's {total} rows — bounds keeping all of them or none of them \
+         cannot tell a working cross-filter from a broken one"
+    );
+
+    assert_eq!(
+        step_rows(&mut win, subset_1),
+        kept,
+        "the OTHER tile has to narrow to the rows the sweep kept: {column} in \
+         [{lo}, {hi}] is {kept} of the fixture's rows"
+    );
+    assert_eq!(
+        step_rows(&mut win, subset_0),
+        total,
+        "…and the swept tile keeps its own rows, because a crossfilter consumer \
+         drops its own clause"
+    );
+    for ghost in [ghost_0, ghost_1] {
+        assert_eq!(
+            step_rows(&mut win, ghost),
+            total,
+            "a ghost layer must never narrow, or the subset has nothing to be a \
+             fraction of"
+        );
+    }
+
+    // A press and release on one pixel is the other half of the same branch:
+    // the crossfilter convention retracts this plot's contribution.
+    let middle = win.at(0, 0.5);
+    win.run(vec![click_at(middle)]);
+    win.settle();
+    assert!(
+        win.app.chart_doc().selection_sql().is_none(),
+        "a click on an interval binding did not retract the contribution: {:?}",
+        win.app.chart_doc().selection_sql()
+    );
+    assert_eq!(
+        step_rows(&mut win, subset_1),
+        total,
+        "the retracted sweep left the other tile narrowed"
+    );
 }
 
 /// **A brush reaches a tile of another kind too**, in the form that kind
@@ -829,11 +1080,11 @@ fn the_generated_spec_states_the_rule_it_was_generated_by() {
 
     assert!(
         source.contains(
-            "# reading: no semantic label, and DuckDB stored it as BIGINT → binned-histogram"
+            "# reading: no trusted label, and DuckDB stored it as BIGINT → binned-histogram"
         ),
         "{source}"
     );
-    assert!(source.contains("region: no semantic label"), "{source}");
+    assert!(source.contains("region: no trusted label"), "{source}");
     assert!(
         source.contains("version: one distinct value"),
         "a column left out has to say so in the spec the reader opens:\n{source}"

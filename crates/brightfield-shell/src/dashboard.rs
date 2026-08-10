@@ -73,8 +73,7 @@
 //! fragment** over one table — that is the contract [`crate::chart_kinds`]
 //! states, and it is what the chart pane's module route rebuilds. A tile is a
 //! different thing: an entry in a concat list, at an indent, sharing one
-//! declared selection with its siblings. The two forms coincide for a dashboard
-//! of one tile and not otherwise.
+//! declared selection with its siblings.
 //!
 //! [`crate::ranked_bars::RankedCategoryBars::plot_yaml`] is the tile form of
 //! its kind and is used here verbatim. The other kinds have no such method, so
@@ -142,11 +141,7 @@ pub enum ColumnRole {
 /// rule for.
 ///
 /// Read on the label's **namespace and family** — its first two dotted
-/// segments — with the leaves that disagree with their family written out. That
-/// is deliberate: the classifier's taxonomy is versioned outside this
-/// repository and gains leaves, so a rule keyed on families degrades to
-/// `None` (and therefore to the storage type) on a leaf nobody here has heard
-/// of, rather than to a wrong picture.
+/// segments — with the leaves that disagree with their family written out.
 ///
 /// The families, and why each falls where it does:
 ///
@@ -730,8 +725,9 @@ pub fn histogram_tile(column: &str, indent: usize) -> String {
 /// **This is where AC-level "the rule is stated somewhere a reader can check
 /// it" is discharged in the artefact.** A reader with the spec in front of them
 /// can see that `amount` was binned because a label called it a currency
-/// amount, and that `region` was ranked because nothing labelled it and DuckDB
-/// stored it as text.
+/// amount, and that `region` was ranked because no trusted label came back and
+/// DuckDB stored it as text. The four states that count as no trusted label are
+/// [`role_of`]'s.
 fn tile_comment(tile: &Tile) -> String {
     let because = match tile.chosen_by() {
         ChosenBy::Meaning { label, role } => {
@@ -745,7 +741,7 @@ fn tile_comment(tile: &Tile) -> String {
             )
         }
         ChosenBy::Storage { type_name } => {
-            format!("no semantic label, and DuckDB stored it as {type_name}")
+            format!("no trusted label, and DuckDB stored it as {type_name}")
         }
     };
     format!("{}: {because} → {}", tile.column(), tile.kind())
@@ -1174,7 +1170,7 @@ mod tests {
             "{source}"
         );
         assert!(
-            source.contains("# region: no semantic label, and DuckDB stored it as VARCHAR → ranked-category-bars"),
+            source.contains("# region: no trusted label, and DuckDB stored it as VARCHAR → ranked-category-bars"),
             "{source}"
         );
         assert!(
