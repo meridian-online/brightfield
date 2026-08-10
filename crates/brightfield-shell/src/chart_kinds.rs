@@ -186,7 +186,8 @@ fn binned_histogram() -> ChartKind<String> {
     ChartKind {
         id: BINNED_HISTOGRAM,
         icon: Icon("chart-bar"),
-        description: "Bins a measure and counts the rows in each bin, the total behind the selection",
+        description:
+            "Bins a measure and counts the rows in each bin, the total behind the selection",
         slots: HISTOGRAM_SLOTS,
         controls: Vec::new,
         build: |bound, _options| {
@@ -204,7 +205,10 @@ fn binned_histogram() -> ChartKind<String> {
             // The subset: the same transform, through the selection, in the
             // mark ink a layer binding no colour channel takes.
             let _ = writeln!(out, "  - mark: rectY");
-            let _ = writeln!(out, "    data: {{ from: {SOURCE}, filterBy: ${SELECTION} }}");
+            let _ = writeln!(
+                out,
+                "    data: {{ from: {SOURCE}, filterBy: ${SELECTION} }}"
+            );
             let _ = writeln!(out, "    x: {{ bin: {column} }}");
             let _ = writeln!(out, "    y: {{ count: }}");
             let _ = writeln!(out, "  - select: intervalX");

@@ -370,7 +370,11 @@ fn registry_spec() -> Spec {
 
 /// The one plot the block declares.
 fn the_plot(spec: &Spec) -> &PlotNode {
-    match spec.root.as_ref().expect("the block declares a root component") {
+    match spec
+        .root
+        .as_ref()
+        .expect("the block declares a root component")
+    {
         Component::Plot(plot) => plot,
         other => panic!("the block is a single plot, and this is not one: {other:?}"),
     }
@@ -491,7 +495,9 @@ fn the_registrys_numeric_tile_declares_a_ghost_behind_a_filtered_subset() {
     }
 
     let source_of = |layer: &Mark| match layer.data.as_ref() {
-        Some(MarkData::From { source, filter_by, .. }) => (source.clone(), filter_by.clone()),
+        Some(MarkData::From {
+            source, filter_by, ..
+        }) => (source.clone(), filter_by.clone()),
         other => panic!("a layer reads {other:?} rather than the shell's one table"),
     };
     let (ghost_source, ghost_filter) = source_of(layers[0]);
