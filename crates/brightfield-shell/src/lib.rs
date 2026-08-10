@@ -32,8 +32,11 @@
 //!   dragged, and the UI-thread coalescing that keeps a sustained drag from
 //!   executing values it has already superseded.
 //! - [`data_file`] — opening a CSV or a Parquet the user chose: the refusal of
-//!   anything that is not a local file, the first look chosen from the table's
-//!   own profile, and the synthesised spec that hands the file to the engine.
+//!   anything that is not a local file, the schema read that precedes the spec,
+//!   and the synthesised spec that hands the file to the engine.
+//! - [`dashboard`] — the dashboard a table with no spec opens as: one tile per
+//!   column, each chosen from what that column *means* rather than from what
+//!   DuckDB stored it as, laid out, and emitted as a spec the reader can open.
 //! - [`data_grid`] — the Data pane: the chart's peer, a DuckDB-backed grid
 //!   reading the SAME step materialisation through the engine's windowed
 //!   rows seam — and the one Meridian table chrome the Steps sheet renders
@@ -61,6 +64,7 @@ pub mod canvas;
 pub mod capture;
 pub mod chart_item;
 pub mod chart_kinds;
+pub mod dashboard;
 pub mod data_file;
 pub mod data_grid;
 pub mod devtools;
