@@ -1019,14 +1019,20 @@ fn fixture_total() -> u64 {
 /// come from the gesture, the count comes from the file, and DuckDB is in
 /// neither. A count taken from a second query would only show the engine
 /// agreeing with itself.
+///
+/// `column` arrives as the clause spells it, which is a SQL identifier
+/// (`"temp"`); a CSV header carries the name (`temp`). The quotes come off here,
+/// where the two meet, rather than in `intervals` — what that walk hands back is
+/// what the store holds.
 fn rows_kept(column: &str, lo: f64, hi: f64) -> u64 {
+    let named = column.trim_matches('"');
     let mut lines = TWO_MEASURES_CSV.lines();
     let header: Vec<&str> = lines
         .next()
         .expect("the fixture has a header")
         .split(',')
         .collect();
-    let at = header.iter().position(|h| *h == column).unwrap_or_else(|| {
+    let at = header.iter().position(|h| *h == named).unwrap_or_else(|| {
         panic!(
             "the committed clause names {column}, which is no column of the fixture ({header:?})"
         )
