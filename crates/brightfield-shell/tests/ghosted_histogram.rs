@@ -29,16 +29,27 @@
 //! opens as. They are asserted separately on purpose — the example says the
 //! engine can draw this, and only the registry half says the shell asks for it.
 //!
-//! The third is `a_single_filtered_layer_redraws_the_whole_chart`: the shape the
-//! registry emitted before, written out as a fixture and read the same way. It
-//! is what makes the registry reading a measurement — the same assertion over
+//! The third is `a_single_filtered_layer_redraws_the_whole_chart`: one filtered
+//! layer and nothing behind it, written out as a fixture and read the same way.
+//! It is what makes the registry reading a measurement — the same assertion over
 //! the same rows and the same predicate passes on the two-layer form and fails
 //! on the one-layer one.
+//!
+//! The fourth is `a_drag_on_the_numeric_tile_commits_the_interval_the_reader_swept`,
+//! and it is a different tier: no pixels, a real CSV opened through
+//! `MeridianApp::open_data_file`, and a real pointer sweep on the raster. The
+//! three readings above take the predicate as given, so none of them can tell a
+//! working brush from a selection handed to the document — which is what let
+//! this tile ship an `intervalX` interactor that could not produce one.
 
 use brightfield_engine::coordinator::Interaction;
 use brightfield_engine::SqlPredicate;
+use brightfield_shell::app::{chart_registry, CHART};
 use brightfield_shell::capture::capture_vello_only;
+use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::{live_spec, Composed, LiveDashboard};
+use brightfield_shell::startup::default_layout;
+use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_shell::{chart_kinds, data_file};
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_spec::ast::{AggregateFunc, MarkData};
@@ -49,10 +60,11 @@ use brightfield_spec::{
 };
 use brightfield_sql::ir::ScalarValue;
 use brightfield_workbench::registry::{Field, FieldType};
+use brightfield_workbench::subject::ToolbarLocation;
 
 use image::RgbaImage;
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The ghost layer's ink — the pale constant `examples/rect-bin-count-ghost.yaml`
 /// binds to its unfiltered layer.
@@ -694,20 +706,19 @@ fn the_registrys_numeric_tile_holds_the_total_behind_a_brushed_subset() {
     );
 }
 
-/// **The shape the tile replaced, measured the same way — so the reading above
-/// is a contrast and not a formality.**
+/// **The one-layer form, measured the same way — so the reading above is a
+/// contrast and not a formality.**
 ///
-/// One `rectY` narrowed by the selection and nothing behind it: what
-/// `binned-histogram` emitted before the ghost layer. Under the same kind of
-/// selection, most of the frame's bar tops move. Both the bin edges and the
-/// count axis are recomputed from the rows that survived, so the picture is not
-/// the same chart with shorter bars — it is a different chart at a different
+/// One `rectY` narrowed by the selection and nothing behind it. Under the same
+/// kind of selection, most of the frame's bar tops move. Both the bin edges and
+/// the count axis are recomputed from the rows that survived, so the picture is
+/// not the same chart with shorter bars — it is a different chart at a different
 /// scale, and a reader has nothing left on the page to judge the fraction
 /// against.
 ///
-/// The layer is written out here rather than asked of the registry, and it has
-/// to be: the registry no longer builds this, which is the point. A fixture is
-/// the only way to keep the comparison alive.
+/// The layer is written out here rather than asked of the registry because no
+/// kind in the registry builds it. A fixture is the only way to keep the
+/// comparison alive.
 ///
 /// This is also the answer to *"could that reading pass on anything?"* — it
 /// passes on the two-layer form and fails on the one-layer form, over the same
@@ -764,5 +775,366 @@ fn a_single_filtered_layer_redraws_the_whole_chart() {
          `the_registrys_numeric_tile_holds_the_total_behind_a_brushed_subset` no \
          longer distinguishes the two and needs a different measurement",
         before_tops.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The tile's own brush, driven as a pointer sweep
+// ---------------------------------------------------------------------------
+
+/// A directory of this test's own, removed when the test ends.
+///
+/// The same arrangement `tests/data_file.rs` uses, and for its reason: what is
+/// under test is DuckDB reading a file the user chose off a real filesystem, and
+/// a committed fixture path would resolve from the repo root and nowhere else.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new(name: &str) -> Self {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        let dir = std::env::temp_dir().join(format!(
+            "bf-ghosted-histogram-{name}-{}-{nanos}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp directory for the fixture");
+        Self(dir)
+    }
+
+    fn write(&self, name: &str, contents: &str) -> PathBuf {
+        let path = self.0.join(name);
+        std::fs::write(&path, contents).expect("the fixture writes");
+        path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The lowest and highest value in [`measure_csv`] — what a clause over
+/// [`MEASURE`] can legitimately name, and the interval every bound below must
+/// land inside.
+const MEASURE_RANGE: (f64, f64) = (0.0, 99.0);
+
+/// A CSV of one numeric column: the same hundred values [`fixture_rows`] holds,
+/// as a file for the front door to open.
+///
+/// One column and no other, so `first_look` has one field to bind and
+/// `binned-histogram` is the kind it reaches — the tile under test rather than a
+/// neighbour of it, which the test asserts rather than assumes.
+fn measure_csv() -> String {
+    let mut out = format!("{MEASURE}\n");
+    for v in 0..100u32 {
+        for _ in 0..=(v % 7) {
+            let _ = writeln!(out, "{v}");
+        }
+    }
+    out
+}
+
+/// The window this file's gestures are made in.
+fn screen() -> egui::Rect {
+    egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0))
+}
+
+fn gesture_frame(app: &mut MeridianApp, ctx: &egui::Context, events: Vec<egui::Event>) {
+    let raw = egui::RawInput {
+        screen_rect: Some(screen()),
+        events,
+        ..Default::default()
+    };
+    let _ = ctx.run_ui(raw, |ui| app.draw(ui));
+}
+
+/// A window that has opened `path` through the control the front door's
+/// *Open a data file* reaches, with a frame drawn and the raster presented.
+fn opened_window(path: &Path, ctx: &egui::Context) -> MeridianApp {
+    let mut app = MeridianApp::headless_with_layout(Boot::empty(), default_layout(), Mode::Light);
+    gesture_frame(&mut app, ctx, Vec::new());
+    app.open_data_file(ctx, &path.to_string_lossy());
+    gesture_frame(&mut app, ctx, Vec::new());
+    gesture_frame(&mut app, ctx, Vec::new());
+    app
+}
+
+/// A pointer position at `fraction` across the one plot's **data area**,
+/// halfway down it.
+///
+/// The data area rather than the whole plot rect: the margins carry the axis and
+/// its labels, and a pixel out there inverts through the x scale to a value off
+/// the end of the domain. A sweep measured over the rect would therefore commit
+/// bounds the column never reaches, and [`MEASURE_RANGE`] below would be
+/// asserting against the margin width instead of against the data.
+fn at(app: &MeridianApp, fraction: f64) -> egui::Pos2 {
+    let doc = app.chart_doc();
+    let raster = doc
+        .raster_rect
+        .expect("a settled frame presented the raster");
+    let plot = &doc.composed.plots[0];
+    let l = &plot.layout;
+    let x = plot.rect.x + l.plot_x_start() + (l.plot_x_end() - l.plot_x_start()) * fraction;
+    let y = plot.rect.y + (l.plot_y_start() + l.plot_y_end()) / 2.0;
+    egui::pos2(raster.min.x + x as f32, raster.min.y + y as f32)
+}
+
+fn button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    }
+}
+
+/// Press at `from`, move to `to`, release — the frames a real drag occupies.
+///
+/// Three frames and not one. The gesture machine is edge-triggered on the
+/// button, so a press and a release in the same frame is a click; the move
+/// between them is what makes this a sweep.
+fn drag(app: &mut MeridianApp, ctx: &egui::Context, from: f64, to: f64) {
+    let start = at(app, from);
+    gesture_frame(
+        app,
+        ctx,
+        vec![egui::Event::PointerMoved(start), button(start, true)],
+    );
+    let end = at(app, to);
+    gesture_frame(app, ctx, vec![egui::Event::PointerMoved(end)]);
+    gesture_frame(app, ctx, vec![button(end, false)]);
+    gesture_frame(app, ctx, Vec::new());
+}
+
+/// A press and release on one pixel — which an interval binding reads as
+/// *retract this plot's contribution*.
+fn click(app: &mut MeridianApp, ctx: &egui::Context, fraction: f64) {
+    let pos = at(app, fraction);
+    gesture_frame(
+        app,
+        ctx,
+        vec![egui::Event::PointerMoved(pos), button(pos, true)],
+    );
+    gesture_frame(app, ctx, vec![button(pos, false)]);
+    gesture_frame(app, ctx, Vec::new());
+}
+
+/// Every `Interval` clause in a predicate tree, as `(column, lo, hi)`.
+///
+/// Walked rather than matched at the root because a selection's clause is
+/// assembled by `compile_selection` — how many contributors it wraps, and in
+/// what, is that function's business and not what this test is about.
+fn intervals(predicate: &SqlPredicate) -> Vec<(String, f64, f64)> {
+    match predicate {
+        SqlPredicate::Interval { column, lo, hi, .. } => match (lo, hi) {
+            (ScalarValue::Float(lo), ScalarValue::Float(hi)) => {
+                vec![(column.clone(), *lo, *hi)]
+            }
+            _ => Vec::new(),
+        },
+        SqlPredicate::And(parts) | SqlPredicate::Or(parts) => {
+            parts.iter().flat_map(intervals).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The one interval the document's selections are holding, or a panic naming
+/// what they held instead.
+fn held_interval(app: &MeridianApp, whose: &str) -> (String, f64, f64) {
+    let held = app
+        .chart_doc()
+        .live_dashboard()
+        .expect("the opened document has a live session")
+        .selection_clauses();
+    let found: Vec<(String, f64, f64)> = held.iter().flat_map(|(_, p)| intervals(p)).collect();
+    match found.as_slice() {
+        [one] => one.clone(),
+        other => panic!(
+            "{whose} was expected to hold exactly one interval clause; the \
+             document holds {other:?} (selections: {:?})",
+            app.chart_doc().selection_sql()
+        ),
+    }
+}
+
+/// Whether the chart pane's `clear-selection` control is shown, and whether it
+/// can act — read off the pane's declared [`Subject`], which is the same list
+/// the chrome draws.
+///
+/// [`Subject`]: brightfield_workbench::Subject
+fn clear_selection_control(app: &MeridianApp) -> (ToolbarLocation, bool) {
+    let subject = chart_registry()
+        .specs()
+        .iter()
+        .find(|spec| spec.id == CHART)
+        .map(|spec| (spec.make)().subject(app.chart_doc()))
+        .expect("the chart pane is in the registry");
+    let entry = subject
+        .toolbar
+        .iter()
+        .find(|e| e.verb.as_str() == "clear-selection")
+        .expect("the chart pane declares a clear-selection control");
+    (entry.location, entry.enabled)
+}
+
+/// The x scale's domain on the tile — what the axis is showing, asked of the
+/// scale the plot was drawn against.
+fn x_domain(app: &MeridianApp) -> (f64, f64) {
+    let scale = app.chart_doc().composed.plots[0]
+        .scales
+        .get(brightfield_render::channel::Channel::X)
+        .expect("the binned x axis has a scale");
+    match scale {
+        brightfield_render::scale::Scale::Linear {
+            domain_min,
+            domain_max,
+            ..
+        } => (*domain_min, *domain_max),
+        other => panic!("a binned measure's x axis is not linear: {other:?}"),
+    }
+}
+
+/// **A drag on the tile commits the interval the reader swept, over the column
+/// the tile bins.**
+///
+/// The one test in this file that drives the product's own gesture path, and the
+/// reason it exists: every other reading here — and every brush test in this
+/// crate — hands `Interaction::Select` to the document with a predicate the test
+/// wrote. That proves the picture responds to a selection. It cannot prove the
+/// tile can *make* one, and this tile shipped an `intervalX` interactor that
+/// could not: the interval binding read its column from string-valued channels
+/// only, `x: { bin: v }` is not one, and `resolve_gesture` bailed before any
+/// `Interaction` was dispatched. Nothing reddened. What a reader got was a brush
+/// rectangle that painted and resolved to nothing, and a *Clear selection*
+/// control that was shown and permanently disabled.
+///
+/// So the entry point is the one a reader has: a numeric CSV opened through
+/// `MeridianApp::open_data_file`, and pointer events on the presented raster.
+/// Four things are asserted, and the middle two are what make it a measurement
+/// rather than a liveness check:
+///
+/// - **At rest nothing is held** and the control is shown-but-disabled, so a
+///   harness that found a selection everywhere would say so here.
+/// - **A sweep commits an interval naming the binned column**, with bounds
+///   inside the column's own range. A derivation that handed back a pixel, a bin
+///   ordinal or a count would land outside [`MEASURE_RANGE`].
+/// - **The bounds are the sweep's.** A second, narrower sweep inside the first
+///   commits bounds inside the first pair, and each bound lands where the x
+///   scale's own domain says that fraction of the axis is. A constant, or a
+///   whole-domain clause, fails both.
+/// - **A click retracts it**, which is the crossfilter convention and the other
+///   half of the same code path.
+#[test]
+fn a_drag_on_the_numeric_tile_commits_the_interval_the_reader_swept() {
+    let dir = TempDir::new("numeric-tile-drag");
+    let path = dir.write("measure.csv", &measure_csv());
+    let ctx = egui::Context::default();
+    let mut app = opened_window(&path, &ctx);
+
+    // Fixture check: this really is the ghosted tile, chosen by the registry
+    // for a numeric file rather than written out here.
+    let authored = app
+        .chart_doc()
+        .authored()
+        .expect("an opened data file records the kind that drew it");
+    assert_eq!(
+        authored.kind,
+        chart_kinds::BINNED_HISTOGRAM,
+        "a one-measure CSV opened as some other kind, so the rest of this test \
+         is about the wrong picture"
+    );
+
+    // The floor, and the reported symptom. Nothing is held; the control is on
+    // the toolbar because the tile declares a gesture, and it cannot act
+    // because there is nothing to clear.
+    assert!(
+        app.chart_doc().selection_sql().is_none(),
+        "a tile nobody has brushed is holding {:?}",
+        app.chart_doc().selection_sql()
+    );
+    assert_eq!(
+        clear_selection_control(&app),
+        (ToolbarLocation::Leading, false),
+        "at rest the tile's clear-selection control is shown and inert"
+    );
+
+    let (d0, d1) = x_domain(&app);
+    assert!(
+        d1 > d0,
+        "the x axis has no width, so no sweep on it could mean anything: \
+         ({d0}, {d1})"
+    );
+    // Where a fraction of the data area lands in the column's units, from the
+    // domain the axis is showing. A tolerance of a fiftieth of the domain
+    // absorbs the pixel the pointer is rounded to and nothing wider.
+    let expect_at = |fraction: f64| d0 + (d1 - d0) * fraction;
+    let slack = (d1 - d0) / 50.0;
+
+    // The sweep. Middling fractions on purpose: far enough inside the axis that
+    // a bound cannot be right by clamping to an end of the domain.
+    drag(&mut app, &ctx, 0.25, 0.60);
+    let (column, lo, hi) = held_interval(&app, "a released sweep across the tile");
+    assert_eq!(
+        column, MEASURE,
+        "the committed clause constrains {column} rather than the column the \
+         tile bins — the interval binding is not reading the bin transform"
+    );
+    assert!(
+        lo >= MEASURE_RANGE.0 && hi <= MEASURE_RANGE.1 && lo < hi,
+        "the sweep committed [{lo}, {hi}], which is not an interval of \
+         {MEASURE}'s own values ({:?}) — a bound derived from pixels, bin \
+         ordinals or counts lands here",
+        MEASURE_RANGE
+    );
+    assert!(
+        (lo - expect_at(0.25)).abs() < slack && (hi - expect_at(0.60)).abs() < slack,
+        "a sweep from 0.25 to 0.60 of the axis committed [{lo}, {hi}]; the \
+         domain on screen is ({d0}, {d1}), so those fractions are \
+         [{}, {}]",
+        expect_at(0.25),
+        expect_at(0.60)
+    );
+    assert_eq!(
+        clear_selection_control(&app),
+        (ToolbarLocation::Leading, true),
+        "the committed brush left the clear-selection control unable to act"
+    );
+
+    // The bounds are the sweep's, not a constant. A narrower sweep strictly
+    // inside the first commits a strictly narrower interval.
+    drag(&mut app, &ctx, 0.35, 0.50);
+    let (_, inner_lo, inner_hi) = held_interval(&app, "a second, narrower sweep");
+    assert!(
+        inner_lo > lo && inner_hi < hi,
+        "the narrower sweep committed [{inner_lo}, {inner_hi}], which is not \
+         inside the first sweep's [{lo}, {hi}] — the clause is not coming from \
+         the pixels"
+    );
+    assert!(
+        (inner_lo - expect_at(0.35)).abs() < slack && (inner_hi - expect_at(0.50)).abs() < slack,
+        "a sweep from 0.35 to 0.50 of the axis committed [{inner_lo}, \
+         {inner_hi}] rather than [{}, {}]",
+        expect_at(0.35),
+        expect_at(0.50)
+    );
+
+    // A click with no sweep retracts this plot's contribution — the other half
+    // of the same `resolve_gesture` branch.
+    click(&mut app, &ctx, 0.5);
+    assert!(
+        app.chart_doc().selection_sql().is_none(),
+        "a click on an interval binding did not retract the contribution: \
+         {:?}",
+        app.chart_doc().selection_sql()
+    );
+    assert_eq!(
+        clear_selection_control(&app),
+        (ToolbarLocation::Leading, false),
+        "the retracted selection left the clear-selection control claiming it \
+         can act"
     );
 }

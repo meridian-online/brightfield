@@ -176,12 +176,21 @@ pub fn find(id: ChartKindId) -> Option<&'static ChartKind<String>> {
 /// # Why the plot also brushes
 ///
 /// `select: intervalX` makes the tile a contributor to [`SELECTION`] and not
-/// only a subscriber to it. Without it a table of nothing but measures composes
-/// a dashboard in which no tile can start a selection, and the ghost layer is
-/// then decoration that never separates from the subset. Crossfilter
-/// self-exclusion is what keeps that honest: a plot's own clause is dropped
-/// from its own query, so a tile brushed by the reader keeps showing its whole
-/// distribution while its siblings narrow.
+/// only a subscriber to it. A sweep resolves to an interval over the binned
+/// column: `x: { bin: col }` draws on an axis in `col`'s own units, so a pixel
+/// range on it inverts to a `col` range. `brightfield-spec`'s
+/// `positional_column` is what reads that column out of the bin transform, and
+/// `tests/ghosted_histogram.rs` drives a pointer sweep through the whole path
+/// to the committed clause.
+///
+/// Without the interactor nothing in the document this kind composes can write
+/// [`SELECTION`], so the second layer's `filterBy:` never narrows, the two
+/// layers stay identical and the ghost is decoration.
+///
+/// A sweep here does not move this tile's own bars, and that is the design
+/// rather than a dead control. Crossfilter self-exclusion drops a plot's own
+/// clause from its own query, so the tile keeps its whole distribution while
+/// whatever else subscribes to [`SELECTION`] narrows.
 fn binned_histogram() -> ChartKind<String> {
     ChartKind {
         id: BINNED_HISTOGRAM,

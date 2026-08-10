@@ -1578,6 +1578,10 @@ impl BrushKind {
 
 /// Mirror of `brightfield_ui::brush::ChannelColumns`. The plot-resolved x/y
 /// SQL column expressions that a brush's coordinates compare against.
+///
+/// A channel bound to a column name gives that name; a channel carrying a
+/// positional **bin** transform gives the column being binned. See
+/// [`positional_column`] for why those two and nothing else.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChannelColumns {
     /// Column expression for the x channel (the first child mark's `x:` slot).
@@ -1687,19 +1691,50 @@ fn collect_brushable_bindings(
 
 /// Inspect the first `Mark` child of a plot's items list and pull its `x:`
 /// and `y:` channel options. Skips non-mark items (interactors, legends).
-/// Returns empty `ChannelColumns` if no mark or no string-valued channels.
+/// Returns empty `ChannelColumns` when there is no mark, or when neither
+/// positional channel resolves to a column (see [`positional_column`]).
 fn first_mark_channels(items: &[Component]) -> ChannelColumns {
     for item in items {
         if let Component::Mark(m) = item {
             return ChannelColumns {
-                x: option_string(m, "x"),
-                y: option_string(m, "y"),
+                x: positional_column(m, "x"),
+                y: positional_column(m, "y"),
             };
         }
     }
     ChannelColumns::default()
 }
 
+/// The data column a **positional** channel's pixels invert to: the column
+/// named on the channel, or — when the channel carries a positional bin
+/// transform — the column being binned.
+///
+/// The bin arm is what makes a histogram brushable. A `rectY` with
+/// `x: {bin: power}` draws on an axis whose units are `power`'s own, because
+/// bin edges are values of `power`; so a pixel interval on that axis inverts
+/// to a `power` interval and `power >= lo AND power <= hi` is the clause the
+/// sweep means. `brightfield_render::channel::ChannelMap::from_mark` binds the
+/// bare positional channel to the same column for the same reason.
+///
+/// **`Aggregate` is deliberately not here.** `x: {sum: gold}` over a band `y:`
+/// draws an axis in units of `SUM(gold)` *per group*, so inverting a pixel
+/// there yields a group total and comparing it against the row-level `gold`
+/// would filter rows against a number no row holds. A bin's axis carries
+/// row-level values; an aggregate's does not.
+///
+/// A literal, a `$param` reference and an expression yield nothing: none of
+/// them is a column a `WHERE` can constrain.
+fn positional_column(mark: &Mark, key: &str) -> Option<String> {
+    match mark.options.get(key)? {
+        ValueOrParamRef::Value(SpecValue::String(s)) => Some(s.clone()),
+        ValueOrParamRef::Value(SpecValue::Bin { column, .. }) => Some(column.clone()),
+        _ => None,
+    }
+}
+
+/// The column named on a channel, for the channels where a name is the only
+/// form that means one — the colour channels, which take either a column or a
+/// literal colour.
 fn option_string(mark: &Mark, key: &str) -> Option<String> {
     match mark.options.get(key)? {
         ValueOrParamRef::Value(SpecValue::String(s)) => Some(s.clone()),
