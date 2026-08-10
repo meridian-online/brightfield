@@ -8,7 +8,15 @@
 //! fire a `ViewportCommand::Screenshot` and write a PNG of the live window for
 //! on-device sign-off.
 //!
-//! Naming a spec is optional. With none, the window opens on nothing — which
+//! The positional argument is a **file**, not only a spec: a `.csv`, `.tsv` or
+//! `.parquet` opens as the dashboard `brightfield-shell` generates for it — a
+//! tile per column — through the same route the front door's picker reaches.
+//! `window::Boot::open` classifies the three kinds and says which loader gets
+//! the path. That is what makes the generated dashboard scriptable: it is
+//! reachable without a person clicking a native modal, so it composes with
+//! `--shot-after` below and can be photographed with nobody present.
+//!
+//! Naming a file is optional. With none, the window opens on nothing — which
 //! is a real surface rather than a blank one: every pane of both views answers
 //! an empty document with an empty state, and the two panes that something
 //! shipped in the binary can fill offer it as a button. What stood here
@@ -19,14 +27,14 @@
 //! `--shot-after N` is the same screenshot, fired by a countdown instead of a
 //! finger: render N frames, capture the live window to `--shot-out`, close.
 //! It exists so a *packaged* binary can prove "starts, renders, opens the
-//! spec" unattended — the air-gapped smoke test runs exactly this under a
+//! file" unattended — the air-gapped smoke test runs exactly this under a
 //! network-denying sandbox and trusts the exit code, which is only 0 once the
 //! PNG is actually on disk.
 //!
 //! `--version` prints the crate version and `--help` prints usage; both answer
-//! on stdout and exit 0 *before* any window, layout read or spec boot happens.
+//! on stdout and exit 0 *before* any window, layout read or file boot happens.
 //!
-//! Usage: `brightfield-shell [SPEC.yaml] [--theme light|dark] [--shot-out PATH]
+//! Usage: `brightfield-shell [FILE] [--theme light|dark] [--shot-out PATH]
 //!         [--shot-after N] [--force-sample N] [--flow vertical|horizontal]
 //!         [--help] [--version]`
 
@@ -44,6 +52,13 @@ use brightfield_shell::window::{fit_window_to_display, DisplayFit, MeridianApp};
 use brightfield_workbench::persist::SAVE_DEBOUNCE_MS;
 
 struct Args {
+    /// The file named on the command line, whichever of the three kinds it is.
+    ///
+    /// Still called `spec` because that is what reads it — `Boot::open` is
+    /// where a path is classified, and a data file is one of the answers it
+    /// gives. Deciding here instead would put the classification in front of
+    /// the loader that owns it, and the picker's route would then be reaching
+    /// through a different door from the command line's.
     spec: Option<String>,
     mode: Mode,
     shot_out: PathBuf,
@@ -89,11 +104,13 @@ enum Invocation {
 const HELP: &str = "\
 brightfield — the Meridian live chart and Protocol window.
 
-Usage: brightfield [SPEC.yaml] [OPTIONS]
+Usage: brightfield [FILE] [OPTIONS]
 
 Arguments:
-  [SPEC.yaml]                     A chart spec or Protocol manifest to open.
-                                  With none, opens on the bundled gallery.
+  [FILE]                          A chart spec, a Protocol manifest, or a data
+                                  file (.csv, .tsv, .parquet) to open as the
+                                  dashboard generated for it. With none, opens
+                                  on the bundled gallery.
 
 Options:
   --theme <light|dark>            Colour mode (default: light).
@@ -104,7 +121,9 @@ Options:
   --force-sample <N>              Draw one row in N (a power of two) through the
                                   pushed-down sampling clause, with the notice
                                   in the plot's own ink. Refuses a plot with a
-                                  band axis or a sequential ramp.
+                                  band axis or a sequential ramp, and refuses a
+                                  data file, whose dashboard has no authored
+                                  plot to push the rate into.
   --shot-after <N>                Render N frames, capture the window to
                                   --shot-out, then exit. Exit 0 means the PNG
                                   landed; for unattended smoke tests.
@@ -1041,6 +1060,54 @@ mod tests {
         let a = run_args(&["examples/bars.yaml", "--shot-after", "30"]);
         assert_eq!(a.spec.as_deref(), Some("examples/bars.yaml"));
         assert_eq!(a.shot_after, Some(30));
+    }
+
+    /// A data file and a countdown are one invocation — the whole point of
+    /// routing a path to the generator rather than to a dialog.
+    ///
+    /// Asserted through `names_a_data_file` rather than against the string, so
+    /// this fails if the classifier ever stops recognising the extension this
+    /// line names: what has to hold is that the same argument the countdown is
+    /// carried alongside is one the boot will open as data, and a `.csv`
+    /// nothing routes is exactly the state this replaced.
+    #[test]
+    fn a_data_file_and_a_countdown_are_one_invocation() {
+        let a = run_args(&[
+            "harbour-readings.csv",
+            "--shot-after",
+            "45",
+            "--shot-out",
+            "out.png",
+        ]);
+        let named = a.spec.as_deref().expect("the path is the positional");
+        assert!(
+            brightfield_shell::window::names_a_data_file(named),
+            "{named} has to reach the data-file loader, not the spec parser"
+        );
+        assert_eq!(
+            a.shot_after,
+            Some(45),
+            "the countdown has to survive alongside it — an unattended capture \
+             of a generated dashboard is the whole reason this route exists"
+        );
+        assert_eq!(a.shot_out, PathBuf::from("out.png"));
+    }
+
+    /// `--help` names every extension this build opens, read off the list that
+    /// decides it rather than off a memory of what was written here.
+    ///
+    /// The help text is unchecked prose — `cargo doc` never reads this file,
+    /// and no gate compares usage to behaviour — so the one claim in it that
+    /// can be pinned is pinned. Widening `OPENABLE_EXTENSIONS` without saying
+    /// so here reddens.
+    #[test]
+    fn the_help_names_every_extension_this_build_opens() {
+        for ext in brightfield_shell::data_file::OPENABLE_EXTENSIONS {
+            assert!(
+                HELP.contains(&format!(".{ext}")),
+                "--help has to name .{ext} as openable: {HELP}"
+            );
+        }
     }
 
     #[test]

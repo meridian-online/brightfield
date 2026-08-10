@@ -129,6 +129,27 @@ pub const DOCK_INSET: f32 = spacing::SPACE_4;
 /// refactor.
 pub const TAGLINE: &str = "Watch insight assemble.";
 
+/// What the Start zone promises an opened data file becomes.
+///
+/// Every clause is a claim about behaviour, not a description of a screen: the
+/// two formats are what [`crate::data_file::OPENABLE_EXTENSIONS`] lists, the
+/// table is the Data pane reading the file's own rows, and *a chart for every
+/// column it can draw one for* is [`crate::dashboard::Dashboard::of`]'s walk —
+/// a tile per column, plus the columns it declines and why.
+///
+/// It read *a first look drawn from it* until the generator shipped. That was
+/// true of the single chart this route used to draw and understates a
+/// dashboard of one tile per column, on the one screen that describes the
+/// feature to a stranger. `the_door_promises_what_the_generator_draws` in
+/// `tests/scripted_open.rs` runs the generator over a real table and holds
+/// this sentence to what came back, so a build whose generator stopped
+/// drawing a tile per column reddens rather than going on promising one.
+///
+/// Changing these words is a copy decision, not a refactor — as [`TAGLINE`].
+pub const OPEN_FILE_PROMISE: &str = "A CSV or a Parquet on this machine. It opens as a table you \
+                                     can read and a chart for every column it can draw one for — \
+                                     nothing is uploaded and nothing is fetched.";
+
 /// The front door's content column, in logical points: four gallery cards and
 /// the three gaps between them, so the Explore row is what sets the measure
 /// and everything above it aligns to the gallery.
@@ -410,6 +431,32 @@ pub fn fit_window_to_display(ctx: &egui::Context, natural: (f32, f32)) -> Displa
 // Boot — which document the spec describes, and which view opens on it.
 // ---------------------------------------------------------------------------
 
+/// Whether `chosen` names a file this build opens as **data** rather than
+/// reads as a document.
+///
+/// By extension alone, and deliberately: this decides which of two loaders
+/// gets the path, and it has to decide before either has touched the file.
+/// Everything that could make a plausible-looking path unopenable — a URL
+/// scheme, glob syntax in the name, a control character, a file that is not
+/// there — is [`crate::data_file::accept`]'s to refuse, with a sentence naming
+/// what it refused. A classifier that pre-empted any of those would hand a
+/// `.csv` to the spec parser and get *unknown spec format* back, which is the
+/// answer this route exists to stop giving.
+///
+/// The set is [`crate::data_file::OPENABLE_EXTENSIONS`], lowercased the way
+/// `accept` lowercases it, so the two cannot disagree about what is openable —
+/// `the_classifier_and_the_opener_agree_on_what_is_data` in
+/// `tests/scripted_open.rs` walks the list and holds them to it.
+#[must_use]
+pub fn names_a_data_file(chosen: &str) -> bool {
+    std::path::Path::new(chosen)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| {
+            crate::data_file::OPENABLE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str())
+        })
+}
+
 /// What a window opens with: both documents' contents, and which view is drawn
 /// first.
 ///
@@ -443,6 +490,18 @@ pub struct Boot {
     /// composed it — what the spec editor opens. `None` for the shipped
     /// starts (embedded fixtures, no file to edit) and for [`Boot::empty`].
     pub spec_path: Option<std::path::PathBuf>,
+    /// How this document's picture was chosen, when one chart kind chose the
+    /// whole of it — see [`crate::app::Authored`].
+    ///
+    /// Set by [`Boot::data_file`] and by nothing else: a chart kind chooses a
+    /// picture only on the route that opens a table with no spec, and only
+    /// where the walk produced a single tile. It rides on the boot rather than
+    /// being re-derived by each constructor because the *other* route into an
+    /// opened file — [`MeridianApp::open_data_file`], reached from the front
+    /// door's picker — builds its document from a `Boot` too. One record, one
+    /// place it is made, so the two entry points cannot hand the chart pane
+    /// different documents for one file.
+    pub authored: Option<crate::app::Authored>,
     /// The protocol view's graph and steps.
     pub protocol: ProtocolInputs,
     /// The protocol view's reading axis.
@@ -461,6 +520,7 @@ impl Boot {
             composed,
             live: None,
             spec_path: None,
+            authored: None,
             protocol: ProtocolInputs::empty(),
             flow: Flow::Vertical,
             focus: None,
@@ -475,6 +535,7 @@ impl Boot {
             composed: Composed::empty(),
             live: None,
             spec_path: None,
+            authored: None,
             protocol: inputs,
             flow,
             focus,
@@ -501,6 +562,7 @@ impl Boot {
             composed: Composed::empty(),
             live: None,
             spec_path: None,
+            authored: None,
             protocol: ProtocolInputs::empty(),
             flow: Flow::Vertical,
             focus: None,
@@ -579,18 +641,78 @@ impl Boot {
             && self.protocol.graph_full.nodes.is_empty()
     }
 
+    /// Open the data file at `chosen` as the dashboard generated for it.
+    ///
+    /// **The scripted twin of the front door's picker.** Both routes call
+    /// [`crate::data_file::open`] and both hand the result to
+    /// [`Boot::of_opened_file`]; the only difference between them is where the
+    /// path came from — a command line, or an operating-system modal. That is
+    /// what makes the generated dashboard something a script, a capture or a
+    /// demo can reach, rather than something only a finger can.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`crate::data_file::open`] refuses: a URL rather than a local
+    /// path, an extension this build does not read, a path the reader would
+    /// resolve as a glob, a file DuckDB will not read, or a table no column of
+    /// which admits a picture. Each carries the path and the reason.
+    pub fn data_file(chosen: &str) -> Result<Self, String> {
+        Ok(Self::of_opened_file(crate::data_file::open(chosen)?))
+    }
+
+    /// What an opened data file becomes, for **both** routes that open one.
+    ///
+    /// The document, the session behind it, the generated spec the editor pane
+    /// opens, and the [`crate::app::Authored`] record — assembled once, here.
+    /// [`MeridianApp::open_data_file`] takes the same `Boot` into a window that
+    /// already exists; [`MeridianApp::with_layout`] takes it into a window
+    /// being built. Two callers, one assembly, so the two entry points cannot
+    /// drift into two documents for one file — which
+    /// `the_two_routes_into_a_data_file_produce_one_document` in
+    /// `tests/scripted_open.rs` holds by comparing what each leaves behind.
+    fn of_opened_file(opened: crate::data_file::OpenedFile) -> Self {
+        let crate::data_file::OpenedFile {
+            live,
+            composed,
+            dashboard,
+            spec_file,
+        } = opened;
+        // Only for a dashboard of ONE tile: that is the case where a tile's
+        // picture is the document's picture, so the chart pane can host it
+        // through that kind's module. A dashboard of several tiles is one
+        // picture no single kind built — see [`crate::app::Authored`].
+        let authored = dashboard.sole_tile().map(|tile| crate::app::Authored {
+            kind: tile.kind(),
+            fields: vec![tile.field().clone()],
+            block: tile.block().to_string(),
+        });
+        Self {
+            live: Some(live),
+            spec_path: spec_file,
+            authored,
+            ..Self::charts(composed)
+        }
+    }
+
     /// Read `spec` and load whichever document it describes.
     ///
-    /// **The one place a spec is classified.** It used to be two — the live
-    /// binary and the shot binary each sniffed the file and each branched into
-    /// its own shell — and the two branches then had to agree about an
-    /// environment gate, a window size and a summary line that neither shared.
+    /// **The one place a document named on the command line is classified.** It
+    /// used to be two — the live binary and the shot binary each sniffed the
+    /// file and each branched into its own shell — and the two branches then
+    /// had to agree about an environment gate, a window size and a summary line
+    /// that neither shared.
+    ///
+    /// Three kinds now, not two: a chart spec, a Protocol manifest, and a
+    /// **data file**, which is decided first and by extension alone — see
+    /// [`names_a_data_file`]. It has to come first because the other two are
+    /// classified by reading the file as text, and a Parquet is not text.
     ///
     /// # Errors
     /// A message if the file cannot be read, if it is a run-less protocol
     /// manifest and this process has not opted in — see
     /// [`crate::protocol::run_less_manifest_refusal`], which states that rule
-    /// once for both callers — or if the pipeline rejects it.
+    /// once for both callers — or if the pipeline rejects it. A data file
+    /// refuses through [`Boot::data_file`].
     pub fn open(spec: &str, flow: Flow, focus: Option<String>) -> Result<Self, String> {
         Self::open_sampled(spec, flow, focus, None)
     }
@@ -601,15 +723,31 @@ impl Boot {
     /// bytes. `Some(rate)` opens the same document drawing one row in
     /// `rate.modulus()`, with the notice in the plot's own ink.
     ///
+    /// A **data file** is refused a rate rather than quietly opened without
+    /// one. The rate is pushed into a plot's own query, and a generated
+    /// dashboard has no authored plot to push it into — so honouring the flag
+    /// is not possible here and ignoring it would draw the complete table under
+    /// a command line that asked for a sample of it.
+    ///
     /// # Errors
     ///
-    /// As [`Boot::open`].
+    /// As [`Boot::open`], plus a data file named alongside a sample rate.
     pub fn open_sampled(
         spec: &str,
         flow: Flow,
         focus: Option<String>,
         sample: Option<SampleRate>,
     ) -> Result<Self, String> {
+        if names_a_data_file(spec) {
+            if sample.is_some() {
+                return Err(format!(
+                    "{spec}: a sample rate is pushed into a plot's own query, and the dashboard \
+                     generated for a data file has no authored plot to push it into. Open it \
+                     without the flag."
+                ));
+            }
+            return Self::data_file(spec);
+        }
         let text = std::fs::read_to_string(spec).map_err(|e| format!("read {spec}: {e}"))?;
         if brightfield_protocol::is_protocol_manifest(&text) {
             if !crate::protocol::offline_optin() {
@@ -1116,6 +1254,9 @@ impl MeridianApp {
         }
         doc.spec_path = boot.spec_path;
         doc.wire_watch();
+        if let Some(authored) = boot.authored {
+            doc.set_authored(authored);
+        }
         let model = ProtocolModel::new(boot.protocol, boot.flow);
         Self::assemble(
             boot.view,
@@ -1156,6 +1297,9 @@ impl MeridianApp {
         }
         doc.spec_path = boot.spec_path;
         doc.wire_watch();
+        if let Some(authored) = boot.authored {
+            doc.set_authored(authored);
+        }
         let model = ProtocolModel::new(boot.protocol, boot.flow);
         Self::assemble(
             boot.view,
@@ -2426,9 +2570,38 @@ impl MeridianApp {
         ctx.request_repaint();
     }
 
+    /// Take the charts half of `boot` into a window that already exists.
+    ///
+    /// The counterpart of what [`MeridianApp::with_layout`] does while building
+    /// one, in the same order and with the same fields — a boot is a document
+    /// plus what travels with it, and which of the two constructors receives it
+    /// is not the document's business. Keeping the sequence in one place is
+    /// what stops a field being added to a boot and wired into only the
+    /// constructor whose test happened to be written.
+    ///
+    /// [`MeridianApp::open_chart`] leads, because it is the different-document
+    /// entry: it clears the session, the spec path, the authored record and
+    /// everything else that belonged to the outgoing document, so each of them
+    /// has to be put back **after** it rather than before.
+    fn adopt_chart_boot(&mut self, boot: Boot) {
+        self.open_chart(boot.composed);
+        if let Some(live) = boot.live {
+            self.charts.doc.attach_live(live);
+        }
+        // Where the editor pane opens the document — for a generated dashboard,
+        // the scratch file holding the bytes that composed it. The same field a
+        // dashboard composed from a spec someone wrote carries, so the pane
+        // needs no arm of its own for a dashboard nobody wrote.
+        self.charts.doc.spec_path = boot.spec_path;
+        self.charts.doc.wire_watch();
+        if let Some(authored) = boot.authored {
+            self.charts.doc.set_authored(authored);
+        }
+    }
+
     /// Open the data file at `chosen` into the charts view: the file as a live
-    /// DuckDB view, a first look drawn over it, and the Data pane beside the
-    /// chart reading the file's own rows back.
+    /// DuckDB view, the dashboard generated over it, and the Data pane beside
+    /// the chart reading the file's own rows back.
     ///
     /// **Public, and taking a string rather than a dialog result.** The dialog
     /// is one line in [`crate::data_file`] and a headless test may not open
@@ -2451,8 +2624,8 @@ impl MeridianApp {
     /// list, which is its own piece of work.
     pub fn open_data_file(&mut self, ctx: &egui::Context, chosen: &str) {
         let banner = NotificationId::new("open-data-file");
-        let opened = match crate::data_file::open(chosen) {
-            Ok(opened) => opened,
+        let boot = match crate::data_file::open(chosen) {
+            Ok(opened) => Boot::of_opened_file(opened),
             Err(e) => {
                 eprintln!("could not open {chosen}: {e}");
                 self.notifications.raise(
@@ -2463,34 +2636,7 @@ impl MeridianApp {
                 return;
             }
         };
-        let crate::data_file::OpenedFile {
-            live,
-            composed,
-            dashboard,
-            spec_file,
-        } = opened;
-        self.open_chart(composed);
-        self.charts.doc.attach_live(live);
-        // The generated spec, where the editor pane opens it — the same field a
-        // dashboard composed from a file someone wrote carries, so the pane
-        // needs no arm of its own for a dashboard nobody wrote. Set after
-        // `open_chart`, which is the different-document entry and clears what
-        // belonged to the outgoing spec.
-        self.charts.doc.spec_path = spec_file;
-        self.charts.doc.wire_watch();
-        // Which chart kind chose this picture, recorded for the same reason
-        // the session is. Only for a dashboard of ONE tile: that is the case
-        // where a tile's picture is the document's picture, so the chart pane
-        // can host it through that kind's module. A dashboard of several tiles
-        // is one picture no single kind built — the pane presents it directly,
-        // by the same arm a spec someone wrote takes.
-        if let Some(tile) = dashboard.sole_tile() {
-            self.charts.doc.set_authored(crate::app::Authored {
-                kind: tile.kind(),
-                fields: vec![tile.field().clone()],
-                block: tile.block().to_string(),
-            });
-        }
+        self.adopt_chart_boot(boot);
         self.notifications.dismiss(banner);
         self.ws_mut().set_active(ViewKind::Charts);
         self.toasts.push(Toast::new(
@@ -2580,12 +2726,13 @@ impl MeridianApp {
                         // the Continue button — resolves to a start compiled
                         // into the executable, which is a fine first click and
                         // a poor second one: the product's own promise is that
-                        // you open a file and the picture is already there, and
-                        // until this control existed the only way to do that
-                        // was to name a spec on the command line. It is
-                        // deliberately NOT a `Request::Open`, because that
-                        // carries a `&'static str` start id and a file the user
-                        // chose is neither static nor a start.
+                        // you open a file and the picture is already there.
+                        // This control is the pointing route to that promise
+                        // and `names_a_data_file` is the typed one; both end in
+                        // `data_file::open` and neither is the other's
+                        // shorthand. It is deliberately NOT a `Request::Open`,
+                        // because that carries a `&'static str` start id and a
+                        // file the user chose is neither static nor a start.
                         door_zone_heading(ui, "Start", sem);
                         let open =
                             ui.button(egui::RichText::new("Open a data file…").font(ui_font()));
@@ -2595,13 +2742,9 @@ impl MeridianApp {
                         }
                         ui.add_space(spacing::SPACE_2);
                         ui.label(
-                            egui::RichText::new(
-                                "A CSV or a Parquet on this machine. It opens as \
-                                 a table you can read and a first look drawn from \
-                                 it — nothing is uploaded and nothing is fetched.",
-                            )
-                            .font(ui_font())
-                            .color(chrome::colour(sem.text.secondary)),
+                            egui::RichText::new(OPEN_FILE_PROMISE)
+                                .font(ui_font())
+                                .color(chrome::colour(sem.text.secondary)),
                         );
                         ui.add_space(spacing::CONTROL_GAP);
                         let help_label = match help_key {
