@@ -434,8 +434,9 @@ fn columns_of(path: &Path) -> Result<Vec<ColumnProfile>, String> {
 ///
 /// The one call in this crate that opens a window nobody laid out, and the one
 /// thing here no headless test drives — everything a test needs to know about
-/// opening a file is decided by `accept`, `first_look` and `open`, none of
-/// which needs a dialog. The dialog's own job is to return a path.
+/// opening a file is decided by `accept`, `open` and the dashboard `open`
+/// chooses, none of which needs a dialog. The dialog's own job is to return a
+/// path.
 ///
 /// Filtered to the extensions `accept` will take, so the common refusal never
 /// has to be shown: a picker that offers a `.txt` and then declines it is a
