@@ -578,9 +578,33 @@ fn column_as_f64(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<f64>>
     }
 }
 
+/// One column's values as the strings a band scale, a colour scale or a text
+/// mark reads them by.
+///
+/// **`Date32` answers here as well as `Utf8`**, in the ISO spelling
+/// `Scale::Band` collects its categories in. A `DATE` reaches this crate as
+/// `Date32` and every band a mark draws is keyed by string, so without this arm
+/// a date column bound to a band axis returned `None` here, the band scale was
+/// never built, and the mark returned before laying down a single fill — a
+/// plot with axes, gridlines and **no bars**, at exit 0. That is the failure
+/// `tests/bar_orientation.rs` was written for, arriving by a different door.
 fn column_as_string(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<String>>> {
     let idx = batch.schema().index_of(col_name).ok()?;
     let col = batch.column(idx);
+    if let DataType::Date32 = col.data_type() {
+        let arr = col.as_any().downcast_ref::<arrow::array::Date32Array>()?;
+        return Some(
+            (0..arr.len())
+                .map(|i| {
+                    if arr.is_null(i) {
+                        None
+                    } else {
+                        arr.value_as_date(i).map(|d| d.to_string())
+                    }
+                })
+                .collect(),
+        );
+    }
     if !matches!(col.data_type(), DataType::Utf8) {
         return None;
     }

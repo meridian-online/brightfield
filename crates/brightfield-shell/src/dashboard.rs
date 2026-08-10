@@ -57,6 +57,13 @@
 //! free-text column too wide to read as a category lands, by way of
 //! [`crate::chart_kinds::fields_of`]'s own ceiling.
 //!
+//! **A dated column is not one of them.** That ceiling bounds the axes of a
+//! two-axis grid, and applying it to a lone column refused a tile to any date
+//! past two months of daily readings — the commonest column in a data file,
+//! told there was no chart in this build that fits it. A `DATE` now takes
+//! [`crate::chart_kinds::COUNTS_OVER_TIME`] at any width, and the ceiling is
+//! applied where it was argued for: to categories.
+//!
 //! # One selection, every tile
 //!
 //! Every tile drives and reads one `select: crossfilter` param named
@@ -155,10 +162,10 @@ pub enum ColumnRole {
 ///   code — except a latitude and a longitude, which are measures, and the
 ///   packed coordinate encodings (geohash, MGRS, WKT), which identify a place
 ///   rather than describing one.
-/// - **`datetime`** is categorical: a date is a perfectly good band axis, and
-///   the bin arithmetic cannot take a logarithm of an interval. A timestamp
-///   wide enough to be unreadable as a category is dropped by the cardinality
-///   ceiling rather than by a rule here.
+/// - **`datetime`** is categorical: a period is a member of a set, and the bin
+///   arithmetic cannot take a logarithm of an interval. Where the column is
+///   *stored* as a date, `field_as` keeps the temporal field its type offers
+///   instead, so the set's order survives — see that function.
 /// - **`representation`** is where the numbers live: `numeric` and a file size
 ///   are measures; booleans, ordinals, file extensions and mime types are
 ///   categories; an identifier, a colour literal, a chemical or biological
@@ -544,6 +551,17 @@ fn field_as(column: &ColumnProfile, role: ColumnRole) -> Option<Field> {
         // `Neither` never reaches here: `tile_for` refuses the column first.
         ColumnRole::Neither => return None,
     };
+    // A column DuckDB stored as a date keeps the temporal field its own type
+    // offers, whatever the label says it is for. `datetime.*` labels answer
+    // `Category` — a period IS a member of a set — but the set is ordered, and
+    // restating the column as text to honour that answer would put it back
+    // under the category ceiling and take its time order away. The label is
+    // still what refuses the column outright: a date labelled an identifier
+    // never reaches here.
+    let own = field_of(column);
+    if own.as_ref().is_some_and(|f| f.ty == FieldType::Temporal) {
+        return own;
+    }
     let restated = ColumnProfile {
         type_name: match wanted {
             FieldType::Quantitative => "DOUBLE".to_string(),
@@ -614,6 +632,8 @@ fn kind_for(field: &Field) -> Option<&'static ChartKind<String>> {
 fn tile_form(kind: ChartKindId) -> Option<TileForm> {
     if kind == chart_kinds::BINNED_HISTOGRAM {
         Some(TileForm::Histogram)
+    } else if kind == chart_kinds::COUNTS_OVER_TIME {
+        Some(TileForm::TimeBars)
     } else if kind == crate::ranked_bars::KIND_ID {
         Some(TileForm::RankedBars)
     } else {
@@ -626,6 +646,8 @@ fn tile_form(kind: ChartKindId) -> Option<TileForm> {
 enum TileForm {
     /// A binned count, brushed with an `intervalX`.
     Histogram,
+    /// A count per date in time order, clicked with a `toggleX`.
+    TimeBars,
     /// [`RankedCategoryBars`], whose own emitter writes it.
     RankedBars,
 }
@@ -634,6 +656,7 @@ enum TileForm {
 fn tile_yaml(tile: &Tile, indent: usize) -> String {
     match tile_form(tile.kind) {
         Some(TileForm::Histogram) => histogram_tile(tile.column(), indent),
+        Some(TileForm::TimeBars) => time_bars_tile(tile.column(), indent),
         Some(TileForm::RankedBars) => RankedCategoryBars::new(tile.column())
             .with_size(TILE_WIDTH, TILE_HEIGHT)
             .plot_yaml(SOURCE, SELECTION, indent),
@@ -713,6 +736,62 @@ pub fn histogram_tile(column: &str, indent: usize) -> String {
     // level deeper and they read as more options on the last interactor, which
     // is a spec that parses and does something else.
     let _ = writeln!(out, "{pad}  xDomain: Fixed");
+    let _ = writeln!(out, "{pad}  xLabel: {col}");
+    let _ = writeln!(out, "{pad}  width: {TILE_WIDTH}");
+    let _ = writeln!(out, "{pad}  height: {TILE_HEIGHT}");
+    out
+}
+
+/// A dated column's rows **counted per date, in time order**, with the
+/// unfiltered total kept behind the selected part.
+///
+/// One `barY` over a band of dates: `x:` names the column and `y: { count: }`
+/// aggregates it, which is the pair
+/// [`brightfield_spec::vocab::MarkKind::band_aggregate_axes`] lifts into one
+/// `GROUP BY` and one `COUNT(*)`.
+///
+/// # The two things it deliberately does not write
+///
+/// **No `sort:`.** `brightfield-sql`'s `BarLowerer` orders a band aggregation
+/// by its band column when no sort is lifted, so the omission is the
+/// instruction: ascending on a column of dates is chronological. A
+/// [`RankedCategoryBars`] over the same column would write `sort: { y: -x,
+/// limit: 10 }` and hand back the ten busiest dates in descending order of
+/// count — each bar true, the series gone.
+///
+/// **No `limit:`.** A cap is a legibility control over categories nobody can
+/// rank; dropping the quiet days out of a time series leaves a picture that
+/// reads as continuous and is not. A long series draws thin bars, and a thin
+/// bar is still where that day was.
+///
+/// # The selection
+///
+/// `toggleX` publishes the clicked date into the shared selection and
+/// `highlight` reads it back — the same part-of-whole device
+/// [`crate::ranked_bars`] documents, in the other orientation, so the dates and
+/// their positions are computed from the unfiltered table and no date can drop
+/// off the axis by being selected against. There is deliberately no `filterBy:`
+/// on the mark; that module's header says what one would cost.
+#[must_use]
+pub fn time_bars_tile(column: &str, indent: usize) -> String {
+    let pad = " ".repeat(indent);
+    let col = yaml_string(column);
+    let table = yaml_string(SOURCE);
+    let mut out = String::new();
+    let _ = writeln!(out, "{pad}- plot:");
+    let _ = writeln!(out, "{pad}  - mark: barY");
+    let _ = writeln!(out, "{pad}    data: {{ from: {table} }}");
+    let _ = writeln!(out, "{pad}    x: {col}");
+    let _ = writeln!(out, "{pad}    y: {{ count: }}");
+    // The producer: a click on a date's band publishes it into the selection.
+    let _ = writeln!(out, "{pad}  - select: toggleX");
+    let _ = writeln!(out, "{pad}    as: ${SELECTION}");
+    // The consumer: the predicate lands inside the conditional SUM.
+    let _ = writeln!(out, "{pad}  - select: highlight");
+    let _ = writeln!(out, "{pad}    by: ${SELECTION}");
+    // Plot attributes are siblings of `plot:`, so they sit at its indent — one
+    // level deeper and they read as more options on the last interactor, which
+    // is a spec that parses and does something else.
     let _ = writeln!(out, "{pad}  xLabel: {col}");
     let _ = writeln!(out, "{pad}  width: {TILE_WIDTH}");
     let _ = writeln!(out, "{pad}  height: {TILE_HEIGHT}");
@@ -891,6 +970,98 @@ mod tests {
         // …and without the label the same column is a measure.
         let bare = of(&[column("year", "BIGINT", 12)]);
         assert_eq!(bare.tiles()[0].kind(), chart_kinds::BINNED_HISTOGRAM);
+    }
+
+    /// **A daily series over more than two months gets a tile.**
+    ///
+    /// The case this rule was written for, end to end: ninety days is past the
+    /// category ceiling, and the ceiling used to be applied to every
+    /// non-binnable column — so the commonest column in a data file was handed
+    /// back with *"no chart in this build fits it"*. It is now a tile, and the
+    /// kind is the one that follows from the column holding dates.
+    #[test]
+    fn a_daily_series_over_more_than_two_months_gets_a_tile() {
+        let dash = of(&[column("day", "DATE", 90)]);
+        assert!(
+            dash.omitted().is_empty(),
+            "the date was left out: {:?}",
+            dash.omitted()
+        );
+        let tile = dash.sole_tile().expect("one usable column is one tile");
+        assert_eq!(tile.column(), "day");
+        assert_eq!(tile.kind(), chart_kinds::COUNTS_OVER_TIME);
+        assert_eq!(tile.field().ty, FieldType::Temporal);
+        // The device follows from the column being dated, not from its width:
+        // a decade of days answers the same as a fortnight.
+        for width in [14, 3_650] {
+            assert_eq!(
+                of(&[column("day", "DATE", width)]).tiles()[0].kind(),
+                chart_kinds::COUNTS_OVER_TIME,
+                "{width} distinct days"
+            );
+        }
+    }
+
+    /// **The tile the date gets is a count per date in time order, uncapped**,
+    /// and the spec says which rule chose it.
+    ///
+    /// The two absences are the device: a `sort:` would rank the dates by count
+    /// and a `limit:` would drop the quiet ones, and either turns a series into
+    /// a leaderboard. Asserted on the emitted source, because that is the
+    /// artefact and it is where the mistake would be made.
+    #[test]
+    fn the_dates_tile_counts_in_time_order_and_drops_no_date() {
+        let source = of(&[column("day", "DATE", 90)]).to_spec();
+        assert!(source.contains("mark: barY"), "{source}");
+        assert!(source.contains("x: \"day\""), "{source}");
+        assert!(source.contains("y: { count: }"), "{source}");
+        assert!(
+            !source.contains("sort:"),
+            "a sort would rank the dates by count and lose the series:\n{source}"
+        );
+        assert!(
+            !source.contains("limit:"),
+            "a limit would drop the quiet dates out of a series that reads as \
+             continuous:\n{source}"
+        );
+        // It drives and reads the one shared selection, like every other tile.
+        assert!(source.contains("select: toggleX"), "{source}");
+        assert!(source.contains(&format!("by: ${SELECTION}")), "{source}");
+        assert!(
+            !source.contains("filterBy:"),
+            "the selection reaches a band aggregation through `highlight`, \
+             inside the conditional sum:\n{source}"
+        );
+        // And the reader holding the spec can see why this tile is this tile.
+        assert!(
+            source.contains(
+                "# day: no trusted label, and DuckDB stored it as DATE → counts-over-time"
+            ),
+            "{source}"
+        );
+    }
+
+    /// **A stored date keeps its time order even when a label calls it a
+    /// category.** `datetime.*` answers [`ColumnRole::Category`], and restating
+    /// the column as text to honour that would put a year of days back under
+    /// the category ceiling — which is the omission this rule exists to end.
+    #[test]
+    fn a_dated_column_labelled_a_category_is_still_drawn_in_time_order() {
+        let dash = of(&[labelled("day", "DATE", 365, "datetime.date.iso")]);
+        assert!(dash.omitted().is_empty(), "{:?}", dash.omitted());
+        let tile = dash.sole_tile().expect("a tile");
+        assert_eq!(tile.kind(), chart_kinds::COUNTS_OVER_TIME);
+        assert!(matches!(
+            tile.chosen_by(),
+            ChosenBy::Meaning {
+                role: ColumnRole::Category,
+                ..
+            }
+        ));
+        // The label still gets to refuse the column outright — being stored as
+        // a date does not make an identifier drawable.
+        let refused = of(&[labelled("issued", "DATE", 900, "identity.government.ssn")]);
+        assert!(refused.tiles().is_empty(), "{refused:?}");
     }
 
     /// A measure the storage cannot bin keeps the answer its type gives: the
