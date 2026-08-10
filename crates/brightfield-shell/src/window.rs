@@ -645,7 +645,7 @@ impl Boot {
     ///
     /// **The scripted twin of the front door's picker.** Both routes call
     /// [`crate::data_file::open`] and both hand the result to
-    /// [`Boot::of_opened_file`]; the only difference between them is where the
+    /// the private `Boot::of_opened_file`; the only difference is where the
     /// path came from — a command line, or an operating-system modal. That is
     /// what makes the generated dashboard something a script, a capture or a
     /// demo can reach, rather than something only a finger can.
