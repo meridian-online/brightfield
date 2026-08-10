@@ -623,6 +623,186 @@ fn a_column_of_instants_opens_as_a_tile_and_not_as_an_omission() {
     assert!(!opened.composed.plots.is_empty(), "nothing was composed");
 }
 
+/// Three columns — instants, a category and a measure — so the dashboard is
+/// three tiles and a clause one tile publishes can be counted in the tiles it
+/// takes away.
+///
+/// The instants span ninety hours, which is the same shape [`ninety_hours_csv`]
+/// opens: counted by the hour, so the bucket column is `observed by hour`.
+fn three_columns_csv() -> String {
+    const REGIONS: [&str; 3] = ["north", "south", "east"];
+    let mut out = String::from("observed,region,reading\n");
+    for hour in 0..90 {
+        let day = 1 + hour / 24;
+        out.push_str(&format!(
+            "2026-01-{day:02} {:02}:00:00,{},{hour}\n",
+            hour % 24,
+            REGIONS[hour % REGIONS.len()],
+        ));
+    }
+    out
+}
+
+/// **Clicking a bar on a timestamp tile leaves the other tiles on the page.**
+///
+/// The bucket column [`brightfield_shell::resample`] derives is named after the
+/// step it counts at, so its name always carries spaces — `observed by hour`.
+/// A `toggleX` click publishes that name into the shared selection, every other
+/// tile's query interpolates it into a `WHERE`, and unquoted it is not a column
+/// reference but a syntax error at `by`. The tiles that could not parse it
+/// drew nothing, so the gesture that is supposed to connect three pictures
+/// deleted two of them.
+///
+/// Three arms, and the two controls are what keep the first honest:
+///
+/// - **the gesture**, which is the only arm that produces the published name
+///   rather than restating it;
+/// - **the same column hand-quoted**, applied through the same seam — the SQL
+///   layer was never the defect and this says so;
+/// - **an ordinary column**, clicked the same way, because a fix that quoted
+///   the spaced name and broke every unspaced one would pass the first arm.
+#[test]
+fn a_click_on_a_timestamp_tile_leaves_its_sibling_tiles_on_the_page() {
+    let dir = TempDir::new("timestamp-click");
+    let path = dir.write("three.csv", &three_columns_csv());
+
+    // Fixture check, and the tile order the two clicks below index into.
+    let opened = data_file::open(&path.to_string_lossy()).expect("the file opens");
+    let chosen: Vec<&str> = opened
+        .dashboard
+        .tiles()
+        .iter()
+        .map(dashboard::Tile::column)
+        .collect();
+    assert_eq!(chosen, vec!["observed", "region", "reading"]);
+    assert_eq!(
+        opened.dashboard.tiles()[0].drawn_column(),
+        "observed by hour"
+    );
+    assert_eq!(opened.composed.plots.len(), 3);
+    drop(opened);
+
+    // --- Arm 1: the gesture -------------------------------------------------
+    let mut win = Window::open();
+    win.settle();
+    let ctx = win.ctx.clone();
+    win.app.open_data_file(&ctx, &path.to_string_lossy());
+    win.settle();
+    assert_eq!(win.app.chart_doc().composed.plots.len(), 3);
+
+    win.click(0, 0.5);
+
+    let held = win
+        .app
+        .chart_doc()
+        .selection_sql()
+        .expect("a click on a bar commits a clause — with none, nothing below is evidence");
+    assert!(
+        held.contains("\"observed by hour\""),
+        "the published clause does not name the bucket column as an \
+         identifier, so every tile reading it is parsing `by` as SQL: {held}"
+    );
+    assert_eq!(
+        win.app.chart_doc().composed.plots.len(),
+        3,
+        "clicking one tile took the other two off the page: {held}"
+    );
+
+    // --- Arm 2: the same column, hand-quoted, through the same seam ---------
+    let data_file::OpenedFile {
+        mut live, composed, ..
+    } = data_file::open(&path.to_string_lossy()).expect("the file opens");
+    let after = live
+        .apply(Interaction::Select {
+            name: brightfield_shell::dashboard::SELECTION.to_string(),
+            contributor: ComponentPath(composed.plots[0].path.clone()),
+            predicate: SqlPredicate::Point {
+                column: "\"observed by hour\"".to_string(),
+                values: vec![ScalarValue::Text("2026-01-02 05".to_string())],
+                meta: None,
+            },
+        })
+        .expect("a quoted clause over the bucket column re-composites");
+    assert_eq!(
+        after.plots.len(),
+        3,
+        "a hand-quoted clause over the same column loses a tile, so the defect \
+         is not the one this test names"
+    );
+
+    // --- Arm 3: the control, an ordinary column -----------------------------
+    let mut win = Window::open();
+    win.settle();
+    let ctx = win.ctx.clone();
+    win.app.open_data_file(&ctx, &path.to_string_lossy());
+    win.settle();
+
+    win.click(1, 0.5);
+
+    let held = win
+        .app
+        .chart_doc()
+        .selection_sql()
+        .expect("a click on a category bar commits a clause");
+    assert!(held.contains("region"), "{held}");
+    assert_eq!(
+        win.app.chart_doc().composed.plots.len(),
+        3,
+        "a column whose name needs no quoting lost a tile: {held}"
+    );
+}
+
+/// **The same defect reaches a column the file itself named with a space**, and
+/// no amount of renaming the bucket column would have closed it.
+///
+/// `sales region` is a legal column name in a CSV, in Parquet and in DuckDB.
+/// Before the clause carried an identifier, opening this file drew two tiles
+/// and clicking a bar on either left one — which is the same failure as the
+/// timestamp tile's, arriving through a name the user chose rather than one
+/// this build derived.
+#[test]
+fn a_click_on_a_tile_of_a_column_the_file_named_with_a_space_keeps_its_sibling() {
+    let dir = TempDir::new("spaced-column");
+    let path = dir.write(
+        "sales.csv",
+        "sales region,amount\n\
+         north,12\n\
+         north,18\n\
+         south,31\n\
+         south,44\n\
+         east,7\n\
+         east,25\n",
+    );
+
+    let mut win = Window::open();
+    win.settle();
+    let ctx = win.ctx.clone();
+    win.app.open_data_file(&ctx, &path.to_string_lossy());
+    win.settle();
+    assert_eq!(
+        win.app.chart_doc().composed.plots.len(),
+        2,
+        "fixture check: a category and a measure are two tiles"
+    );
+
+    win.click(0, 0.5);
+
+    let held = win
+        .app
+        .chart_doc()
+        .selection_sql()
+        .expect("a click on a bar commits a clause");
+    assert!(
+        held.contains("\"sales region\""),
+        "the published clause does not name the column as an identifier: {held}"
+    );
+    assert_eq!(
+        win.app.chart_doc().composed.plots.len(),
+        2,
+        "the measure's tile went off the page when its sibling was clicked: {held}"
+    );
+}
+
 /// **A file a user opened arrives on screen as a picture**, and each kind a
 /// single column can fill is drawn through its own module.
 ///

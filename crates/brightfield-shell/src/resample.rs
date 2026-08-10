@@ -201,9 +201,7 @@ pub fn step_for(column: &ColumnProfile) -> Step {
 /// the table.
 ///
 /// `taken` is every column the table has, so the derived name cannot collide
-/// with one of them — a `SELECT *` beside a projection of the same name is a
-/// view DuckDB refuses to create, and the dashboard would have gone from a
-/// tile to no chart at all.
+/// with one of them.
 #[must_use]
 pub fn derived_name(column: &str, step: Step, taken: &[String]) -> String {
     let base = format!("{column} by {}", step.label());
@@ -225,15 +223,10 @@ pub fn derived_name(column: &str, step: Step, taken: &[String]) -> String {
 pub fn projection(column: &str, derived: &str, step: Step) -> String {
     format!(
         "strftime(CAST({} AS TIMESTAMP), '{}') AS {}",
-        sql_ident(column),
+        crate::sql_ident::quote(column),
         step.format(),
-        sql_ident(derived)
+        crate::sql_ident::quote(derived)
     )
-}
-
-/// `name` as a quoted SQL identifier.
-fn sql_ident(name: &str) -> String {
-    format!("\"{}\"", name.replace('"', "\"\""))
 }
 
 /// The column's span in microseconds, from the `min` and `max` the profile

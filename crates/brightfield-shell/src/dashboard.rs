@@ -1302,9 +1302,9 @@ mod tests {
         assert!(!source.contains("opened_rows"), "{source}");
     }
 
-    /// The bucket column takes a name the table does not already carry — a
-    /// `SELECT *` beside a projection of the same name is a view DuckDB refuses
-    /// to create, which would cost the dashboard every tile rather than one.
+    /// The bucket column takes a name the table does not already carry, so the
+    /// tile's mark binds the projection rather than the file's own column of
+    /// that name.
     #[test]
     fn a_bucket_column_steps_aside_for_a_column_that_already_has_its_name() {
         let dash = of(&[

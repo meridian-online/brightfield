@@ -946,7 +946,7 @@ fn interval_predicate(
 ) -> Option<SqlPredicate> {
     let mut clauses = Vec::new();
     if matches!(binding.kind, BrushKind::IntervalX | BrushKind::IntervalXY) {
-        let column = binding.x_column.clone()?;
+        let column = binding.x_column.as_deref()?;
         let scale = plot.scales.get(Channel::X)?;
         clauses.push(axis_interval(
             column,
@@ -956,7 +956,7 @@ fn interval_predicate(
         )?);
     }
     if matches!(binding.kind, BrushKind::IntervalY | BrushKind::IntervalXY) {
-        let column = binding.y_column.clone()?;
+        let column = binding.y_column.as_deref()?;
         let scale = plot.scales.get(Channel::Y)?;
         clauses.push(axis_interval(
             column,
@@ -974,7 +974,13 @@ fn interval_predicate(
 
 /// One axis's structured interval: two plot-local pixels inverted through the
 /// displayed scale, ordered into inclusive `[lo, hi]` bounds.
-fn axis_interval(column: String, scale: &Scale, p0: f64, p1: f64) -> Option<SqlPredicate> {
+///
+/// The clause names the column as a SQL **identifier** rather than by the
+/// spelling the binding carries — see [`crate::sql_ident`], and
+/// `point_predicate` below for the failure that made it matter. Both clause
+/// producers on this path quote, because a file column named with a space is as
+/// legal in an interval as in a point.
+fn axis_interval(column: &str, scale: &Scale, p0: f64, p1: f64) -> Option<SqlPredicate> {
     let (v0, v1) = (scale.inverse_f64(p0)?, scale.inverse_f64(p1)?);
     let (lo, hi) = min_max(v0, v1);
     let bound = |v: f64| match scale {
@@ -982,7 +988,7 @@ fn axis_interval(column: String, scale: &Scale, p0: f64, p1: f64) -> Option<SqlP
         _ => ScalarValue::Float(v),
     };
     Some(SqlPredicate::Interval {
-        column,
+        column: crate::sql_ident::quote(column),
         lo: bound(lo),
         hi: bound(hi),
         meta: None,
@@ -991,6 +997,12 @@ fn axis_interval(column: String, scale: &Scale, p0: f64, p1: f64) -> Option<SqlP
 
 /// The structured point clause a click at `p` (raster-local) means: the
 /// category whose band slot contains the pointer, on the binding's axis.
+///
+/// The column is written as a SQL identifier. A [`SqlPredicate::Point`] renders
+/// its column verbatim, and the names reaching here are file column names and
+/// [`crate::resample`]'s bucket columns — which always carry spaces
+/// (`observed by hour`), so the unquoted form was a parser error that took
+/// every OTHER tile's query down with it.
 fn point_predicate(
     binding: &GestureBinding,
     plot: &PlotHandle,
@@ -1002,7 +1014,7 @@ fn point_predicate(
     };
     let category = band_category(plot.scales.get(channel)?, pixel)?;
     Some(SqlPredicate::Point {
-        column,
+        column: crate::sql_ident::quote(&column),
         values: vec![ScalarValue::Text(category)],
         meta: None,
     })
@@ -1094,11 +1106,14 @@ mod tests {
         let SqlPredicate::Interval { column, lo, hi, .. } = &predicate else {
             panic!("expected the structured Interval variant, got {predicate:?}");
         };
-        assert_eq!(column, "x");
+        assert_eq!(
+            column, "\"x\"",
+            "the clause names the column as an identifier"
+        );
         assert_eq!(*lo, ScalarValue::Float(2.0));
         assert_eq!(*hi, ScalarValue::Float(8.0));
         // The structured clause renders byte-identically to the string form.
-        assert_eq!(predicate.to_string(), "(x >= 2 AND x <= 8)");
+        assert_eq!(predicate.to_string(), "(\"x\" >= 2 AND \"x\" <= 8)");
     }
 
     /// A reversed drag still yields ordered inclusive bounds.
@@ -1145,7 +1160,7 @@ mod tests {
         let SqlPredicate::Interval { column, lo, hi, .. } = &clauses[1] else {
             panic!("y clause is structured");
         };
-        assert_eq!(column, "y");
+        assert_eq!(column, "\"y\"");
         // Pixels 10 and 90 on a flipped 100→0 range are domain 45 and 5.
         let (ScalarValue::Float(lo), ScalarValue::Float(hi)) = (lo, hi) else {
             panic!("linear bounds are floats");
@@ -1175,12 +1190,12 @@ mod tests {
         assert_eq!(
             predicate,
             SqlPredicate::Point {
-                column: "x".to_string(),
+                column: "\"x\"".to_string(),
                 values: vec![ScalarValue::Text("South".to_string())],
                 meta: None,
             }
         );
-        assert_eq!(predicate.to_string(), "x = 'South'");
+        assert_eq!(predicate.to_string(), "\"x\" = 'South'");
     }
 
     /// A click outside every band resolves to nothing rather than to the

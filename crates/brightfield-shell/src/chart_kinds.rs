@@ -498,9 +498,12 @@ fn is_temporal_type(duckdb_type: &str) -> bool {
 /// upper-cased, trimmed, without a width or precision, and with the spelled-out
 /// time-zone suffix folded onto the short one DuckDB also accepts.
 ///
-/// One function rather than a copy of the same calls per predicate.
-/// `a_columns_field_type_follows_what_can_be_binned` is what reddens when one
-/// of them stops reducing: it asks for `DECIMAL(10,2)`.
+/// One function rather than a copy of the same calls per predicate, and two
+/// tests between them cover the four reductions.
+/// `a_columns_field_type_follows_what_can_be_binned` asks for `DECIMAL(10,2)`
+/// and for ` integer `, which is the case, the trim and the width;
+/// `a_time_no_chart_here_draws_is_not_offered_a_band` asks for `TIMESTAMP WITH
+/// TIME ZONE`, which is the fold. The first alone leaves the fold unheld.
 pub(crate) fn type_base(duckdb_type: &str) -> String {
     let upper = duckdb_type.trim().to_ascii_uppercase();
     upper
@@ -784,7 +787,7 @@ data:
     /// **The temporal types this build cannot draw are offered to nothing** —
     /// not handed to a band axis they would put no ink on.
     ///
-    /// The list is the exclusion, and `only_the_temporal_type_that_draws_is_offered`
+    /// The list is the exclusion, and `a_timestamp_band_puts_no_ink_on_the_page`
     /// below is the measurement it rests on.
     #[test]
     fn a_time_no_chart_here_draws_is_not_offered_a_band() {

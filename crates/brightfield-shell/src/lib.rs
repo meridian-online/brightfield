@@ -80,6 +80,7 @@ pub mod pipeline;
 pub mod protocol;
 pub mod ranked_bars;
 pub mod resample;
+mod sql_ident;
 pub mod starts;
 pub mod startup;
 pub mod watch;

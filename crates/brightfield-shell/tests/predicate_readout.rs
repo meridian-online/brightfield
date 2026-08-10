@@ -244,15 +244,22 @@ fn mark_rows(doc: &mut ChartDoc, mark: usize) -> usize {
 /// The point is that nothing here goes near a selection. If the readout has
 /// been rewritten on its way to the rail — rounded, re-spaced, re-parenthesised,
 /// re-quoted — this is a second, independent engine run that says so in rows.
+///
+/// The clause goes in as a **single-quoted** YAML scalar. A clause names its
+/// column as a SQL identifier, so it carries double quotes of its own, and the
+/// only escape a single-quoted YAML scalar has is a doubled `'` — no
+/// backslashes, nothing else interpreted — which is what lets the clause reach
+/// DuckDB byte for byte. The one thing that form cannot carry is a line break,
+/// which is asserted rather than assumed.
 fn rows_selected_by(fixture: &Path, clause: &str, selection: &str, mark: usize) -> usize {
     assert!(
-        !clause.contains('"'),
-        "the probe spec quotes the clause: {clause}"
+        !clause.contains('\n'),
+        "a YAML single-quoted scalar cannot carry the clause's line break: {clause}"
     );
     let source = std::fs::read_to_string(fixture).expect("read the fixture");
     let probed = source.replace(
         &format!("filterBy: ${selection}"),
-        &format!("filter: \"{clause}\""),
+        &format!("filter: '{}'", clause.replace('\'', "''")),
     );
     assert_ne!(probed, source, "the probe spec substituted nothing");
     let mut live = LiveDashboard::load_str(&probed, None).expect("the probe spec loads");
@@ -771,8 +778,9 @@ fn the_readout_is_leading_and_dismissed_by_the_verb_that_retracts_it() {
 /// **A category click reads back as its own equality, quotes and all.** The
 /// gesture the interval brush is not: `toggleX` over a band scale resolves the
 /// clicked category and dispatches a [`SqlPredicate::Point`], which renders a
-/// single value as a bare `region = 'North'` — a QUOTED string literal, which
-/// is the part an interval brush's bare numbers never exercised.
+/// single value as `"region" = 'North'` — a quoted identifier against a QUOTED
+/// string literal, which is the part an interval brush's bare numbers never
+/// exercised.
 ///
 /// The same two identities as the interval case, because they are the ones
 /// that matter: the shown clause is a verbatim substring of the consumer's
@@ -797,7 +805,7 @@ fn a_category_click_reads_back_as_the_clicked_values_own_equality() {
 
     let line = readout(app.chart_doc()).expect("a committed click is shown");
     assert_eq!(
-        line, "$pick = (region = 'North')",
+        line, "$pick = (\"region\" = 'North')",
         "the readout is not the clicked category's own equality"
     );
     let clause = clause_of(&line);
@@ -815,7 +823,7 @@ fn a_category_click_reads_back_as_the_clicked_values_own_equality() {
         .contributor_predicate("pick", &contributor)
         .expect("the clicked plot contributed to $pick")
         .to_string();
-    assert_eq!(held, "region = 'North'");
+    assert_eq!(held, "\"region\" = 'North'");
     assert_eq!(line, format!("$pick = ({held})"));
 
     let spec = spec_of(&path);
@@ -846,7 +854,7 @@ fn a_category_click_reads_back_as_the_clicked_values_own_equality() {
     click_x(&mut app, &ctx, 0, 0.85);
     assert_eq!(
         readout(app.chart_doc()).as_deref(),
-        Some("$pick = (region = 'East')"),
+        Some("$pick = (\"region\" = 'East')"),
         "the readout did not follow the second click"
     );
 }
@@ -965,7 +973,7 @@ fn a_point_gesture_can_never_hold_an_empty_clause() {
         }
         assert_eq!(
             readout(app.chart_doc()).as_deref(),
-            Some(format!("$pick = (region = '{region}')").as_str())
+            Some(format!("$pick = (\"region\" = '{region}')").as_str())
         );
     }
 
@@ -974,7 +982,7 @@ fn a_point_gesture_can_never_hold_an_empty_clause() {
     click_x(&mut app, &ctx, 0, 0.99);
     assert_eq!(
         readout(app.chart_doc()).as_deref(),
-        Some("$pick = (region = 'East')"),
+        Some("$pick = (\"region\" = 'East')"),
         "a click that resolved no category disturbed the held selection"
     );
 }
@@ -1123,7 +1131,7 @@ fn an_aggregating_bars_readout_is_the_clause_it_grouped_under() {
     // 1. The rail.
     let line = readout(&doc).expect("a held selection is shown");
     assert_eq!(
-        line, "$pick = (quarter = 'Q1')",
+        line, "$pick = (\"quarter\" = 'Q1')",
         "the readout over an aggregating bar is not the clause the store holds"
     );
     let clause = clause_of(&line);
@@ -1173,7 +1181,7 @@ fn an_aggregating_bars_readout_is_the_clause_it_grouped_under() {
     });
     assert_eq!(
         readout(&doc).as_deref(),
-        Some("$pick = (quarter = 'Q2')"),
+        Some("$pick = (\"quarter\" = 'Q2')"),
         "the readout did not follow the second selection"
     );
     assert_eq!(
