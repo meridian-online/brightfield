@@ -71,12 +71,13 @@ pub const COUNT_GRID: ChartKindId = ChartKindId::new("count-grid");
 /// "too many categories to read" is a cardinality. So it is applied by
 /// [`fields_of`], which is where the column profiles are.
 ///
-/// **It is a property of a two-axis grid, and it is applied to nothing else.**
-/// The number bounds `distinct × distinct`; a lone column is not a grid axis,
-/// and a year of daily readings is not a wall of cells but the ordinary shape
-/// of a time series. Applying it to every non-binnable column is what refused a
-/// date its picture — see [`counts_over_time`], which takes its column at any
-/// width.
+/// The number was argued for over `distinct × distinct`, and [`fields_of`]
+/// applies it to the **categories** — which includes the one-axis
+/// [`crate::ranked_bars`], whose bars are as unreadable past it as a grid's
+/// cells are. A lone temporal column is not a category and does not meet it:
+/// a year of daily readings is not a wall of cells but the ordinary shape of a
+/// time series, and applying the ceiling to it is what refused a date its
+/// picture. See [`counts_over_time`], which takes its column at any width.
 const GRID_MAX_DISTINCT: u64 = 60;
 
 /// The one column a histogram bins.
@@ -352,7 +353,8 @@ fn ranked_category_bars() -> ChartKind<String> {
 ///   bins to a single bar and crosses to a single row, which is a true picture
 ///   of nothing. A category is offered only up to the private
 ///   `GRID_MAX_DISTINCT` ceiling above; **a date is offered at any width**,
-///   because that ceiling bounds a grid's axes and a date column is not one.
+///   because a date is not a category and the ceiling is a bound on how many
+///   categories a reader can tell apart.
 /// - **order.** Measures first, in the table's own order; then dates, in the
 ///   table's own order; then categories, fewest distinct values first.
 ///   [`ChartKind::bind`] is first-fit in slot order, so this is what decides
@@ -369,14 +371,16 @@ fn ranked_category_bars() -> ChartKind<String> {
 ///   measures — the private `is_binnable_type` below;
 /// - `DATE` is [`FieldType::Temporal`], drawn by the kind registered under
 ///   [`COUNTS_OVER_TIME`];
-/// - the **other** temporal types are offered to nothing, and that is the one
-///   rule here written from a measurement rather than from an argument. See
-///   `only_the_temporal_type_that_draws_is_offered`: a `TIMESTAMP` bound to a
-///   band axis puts **no** mark ink on the page, because
+/// - the **other** temporal types are offered nothing *of their own*, and that
+///   is the one rule here written from a measurement rather than from an
+///   argument. See `a_timestamp_band_puts_no_ink_on_the_page`: a `TIMESTAMP`
+///   bound to a band axis puts **no** mark ink on the page, because
 ///   `brightfield-render`'s `positional_axis_class` reads it as continuous and
-///   a bar has no band to stand on. Offering it would produce a tile with axes
-///   and no bars, and this module's caller is explicit that a tile drawn badly
-///   is worse than a tile not drawn;
+///   a bar has no band to stand on. The column such a table draws is a
+///   different one — the bucket column [`crate::resample`] derives beside it,
+///   offered as a temporal field by [`crate::dashboard`]. This function maps
+///   the columns a table **has**; declaring a new one belongs to whoever writes
+///   the `data:` block, which is the dashboard;
 /// - everything else is a category.
 #[must_use]
 pub fn fields_of(columns: &[ColumnProfile]) -> Vec<Field> {
@@ -420,7 +424,12 @@ pub fn fields_of(columns: &[ColumnProfile]) -> Vec<Field> {
 /// YAML, so a name carrying a `"` or a control character has no faithful
 /// spelling in either — and silently drawing a *different* column would be
 /// worse than drawing none.
-fn nameable(name: &str) -> bool {
+///
+/// Reachable from [`crate::dashboard`] because the bucket column it derives for
+/// a timestamp is not in any profile, so it is offered as a field without
+/// passing through [`fields_of`] — and the rule it still has to keep is this
+/// one.
+pub(crate) fn nameable(name: &str) -> bool {
     !name.is_empty() && !name.contains('"') && !name.chars().any(char::is_control)
 }
 
@@ -489,10 +498,10 @@ fn is_temporal_type(duckdb_type: &str) -> bool {
 /// upper-cased, trimmed, without a width or precision, and with the spelled-out
 /// time-zone suffix folded onto the short one DuckDB also accepts.
 ///
-/// One function rather than three copies of the same calls, because a predicate
-/// that forgot the `split('(')` would answer `false` for `DECIMAL(10,2)` and
-/// nothing would say so.
-fn type_base(duckdb_type: &str) -> String {
+/// One function rather than a copy of the same calls per predicate.
+/// `a_columns_field_type_follows_what_can_be_binned` is what reddens when one
+/// of them stops reducing: it asks for `DECIMAL(10,2)`.
+pub(crate) fn type_base(duckdb_type: &str) -> String {
     let upper = duckdb_type.trim().to_ascii_uppercase();
     upper
         .split('(')
@@ -854,34 +863,40 @@ data:
         assert!(!registry().applicable(&mixed).contains(&COUNT_GRID));
     }
 
-    /// **The measurement `is_date_type` rests on**: of the temporal types
-    /// DuckDB hands back, a `DATE` puts mark ink on the page as a band and a
-    /// `TIMESTAMP` puts none.
+    /// **The measurement [`fields_of`]'s temporal split rests on**: of the
+    /// types DuckDB hands back for a column of dates, a `DATE` and a text
+    /// spelling both put mark ink on the page as a band, and a `TIMESTAMP` puts
+    /// none.
     ///
     /// This is a renderer fact and it is asserted here because it is the reason
-    /// [`fields_of`] splits the temporal types at all — a rule written from an
-    /// argument would have offered both and shipped a tile with axes and no
-    /// bars, which is exactly the failure `tests/bar_orientation.rs` exists
-    /// for. The `VARCHAR` control is what tells a broken harness from a real
-    /// zero: if it ever reads 0 the measurement is meaningless, not damning.
+    /// the split exists at all — a rule written from an argument would have
+    /// offered the raw timestamp and shipped a tile with axes and no bars,
+    /// which is exactly the failure `tests/bar_orientation.rs` exists for.
     ///
-    /// **When a timestamp learns to draw, this test reddens** — and the fix is
-    /// to widen `is_date_type`, which is the coupling worth having visible.
+    /// The `VARCHAR` reading is doing two jobs. It tells a broken harness from
+    /// a real zero — if it ever reads 0 the measurement is meaningless rather
+    /// than damning — and it is the reading [`crate::resample`] stands on: the
+    /// bucket column that module derives is `strftime` text, so this is the ink
+    /// a resampled timestamp draws. It is compared against the `DATE` reading
+    /// rather than to a number, because the two spellings are the same bands
+    /// and a figure in a comment goes stale in silence.
     #[test]
-    fn only_the_temporal_type_that_draws_is_offered() {
-        let control = band_mark_ink("VARCHAR");
+    fn a_timestamp_band_puts_no_ink_on_the_page() {
+        let text = band_mark_ink("VARCHAR");
         assert!(
-            control > 1_000,
+            text > 1_000,
             "the harness draws nothing at all, so nothing below is evidence"
         );
-        assert!(
-            band_mark_ink("DATE") > 1_000,
-            "a DATE band draws no bars, and `fields_of` offers it one"
+        assert_eq!(
+            band_mark_ink("DATE"),
+            text,
+            "a DATE band and the same dates as text are the same bands"
         );
         assert_eq!(
             band_mark_ink("TIMESTAMP"),
             0,
-            "a TIMESTAMP band draws bars now, so it should be offered a field"
+            "a TIMESTAMP band draws bars now, so `fields_of` can offer it a \
+             field and `resample` has nothing left to do"
         );
     }
 

@@ -272,9 +272,44 @@ fn url_scheme(chosen: &str) -> Option<&str> {
 /// metadata rather than the table. This is what the schema is read through.
 #[must_use]
 pub fn source_spec(path: &Path) -> String {
+    source_spec_deriving(path, &[])
+}
+
+/// The `data:` key the rows are read into when a column has to be **derived**
+/// beside them, and therefore the name of the first of the two views.
+///
+/// A second name rather than a second `data:` block on the same one: a source
+/// entry is one view, and [`SOURCE`] has to stay the name every tile reads or
+/// the tiles would not share a table to cross-filter over.
+pub const ROWS: &str = "opened_rows";
+
+/// The root-less spec that declares `path` as a source, with `derived` extra
+/// columns projected beside its own.
+///
+/// With nothing to derive this is [`source_spec`] exactly — one entry, the file
+/// under [`SOURCE`] — and that is the shape a table of measures, categories and
+/// dates opens as.
+///
+/// With something to derive, the file is read under [`ROWS`] and [`SOURCE`]
+/// becomes a `SELECT *` over it carrying the extra projections. Two views
+/// rather than one because the `file:` entry is what dispatches on the
+/// extension, and writing the `read_csv`/`read_parquet` call here would be a
+/// second copy of `emit_file` in `brightfield-sql`.
+///
+/// **Every tile still reads one table**, which is the property the crossfilter
+/// rests on: a clause published by one tile is applied to every other, so a
+/// tile drawing a column its siblings' table lacks would take their queries
+/// down with it.
+#[must_use]
+pub fn source_spec_deriving(path: &Path, derived: &[String]) -> String {
+    let file = yaml_quoted(&path.to_string_lossy());
+    if derived.is_empty() {
+        return format!("data:\n  {SOURCE}:\n    file: {file}\n");
+    }
+    let sql = format!("SELECT *, {} FROM \"{ROWS}\"", derived.join(", "));
     format!(
-        "data:\n  {SOURCE}:\n    file: {}\n",
-        yaml_quoted(&path.to_string_lossy())
+        "data:\n  {ROWS}:\n    file: {file}\n  {SOURCE}: {}\n",
+        yaml_quoted(&sql)
     )
 }
 

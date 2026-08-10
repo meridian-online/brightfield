@@ -57,12 +57,19 @@
 //! free-text column too wide to read as a category lands, by way of
 //! [`crate::chart_kinds::fields_of`]'s own ceiling.
 //!
-//! **A dated column is not one of them.** That ceiling bounds the axes of a
-//! two-axis grid, and applying it to a lone column refused a tile to any date
-//! past two months of daily readings — the commonest column in a data file,
-//! told there was no chart in this build that fits it. A `DATE` now takes
-//! [`crate::chart_kinds::COUNTS_OVER_TIME`] at any width, and the ceiling is
-//! applied where it was argued for: to categories.
+//! **A temporal column is not one of them.** That ceiling bounds how many
+//! categories a reader can tell apart, and applying it to a lone column refused
+//! a tile to any date past two months of daily readings — the commonest column
+//! in a data file, told there was no chart in this build that fits it. A `DATE`
+//! now takes [`crate::chart_kinds::COUNTS_OVER_TIME`] at any width, and the
+//! ceiling is applied where it was argued for: to categories.
+//!
+//! A `TIMESTAMP` takes the same kind by a longer road, because it has no band
+//! to stand on and a `barY` bound to one draws nothing. [`crate::resample`]
+//! chooses the calendar step its own span asks for, [`Dashboard::to_spec`]
+//! declares a bucket column at that step beside the file's own, and the tile is
+//! drawn over that. The step is written into the tile's comment, so the reader
+//! holding the spec can see it was counted by the day rather than the hour.
 //!
 //! # One selection, every tile
 //!
@@ -95,8 +102,9 @@ use brightfield_engine::{ColumnProfile, SemanticType};
 use brightfield_workbench::registry::{ChartKind, ChartKindId, Field, FieldType};
 
 use crate::chart_kinds;
-use crate::data_file::{file_label, source_spec, SOURCE};
+use crate::data_file::{file_label, source_spec_deriving, SOURCE};
 use crate::ranked_bars::RankedCategoryBars;
+use crate::resample::{self, Step};
 
 /// One tile's width in logical points.
 ///
@@ -262,9 +270,11 @@ pub enum ChosenBy {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tile {
     kind: ChartKindId,
+    column: String,
     field: Field,
     block: String,
     chosen_by: ChosenBy,
+    resampled: Option<Step>,
 }
 
 impl Tile {
@@ -274,16 +284,34 @@ impl Tile {
         self.kind
     }
 
-    /// The column this tile is of, and what the chooser decided it holds.
+    /// The **drawn** column, and what the chooser decided it holds.
+    ///
+    /// The same column as [`Self::column`] except where [`Self::resampled`]
+    /// answers: a timestamp is drawn through the bucket column derived beside
+    /// it, so the field names that one and this tile is still *of* the
+    /// timestamp.
     #[must_use]
     pub const fn field(&self) -> &Field {
         &self.field
     }
 
-    /// The column's name.
+    /// The table's own column this tile is of.
     #[must_use]
     pub fn column(&self) -> &str {
+        &self.column
+    }
+
+    /// The column the tile's marks name — [`Self::field`]'s.
+    #[must_use]
+    pub fn drawn_column(&self) -> &str {
         &self.field.name
+    }
+
+    /// The calendar step this tile counts at, for a column that had to be
+    /// resampled to have a band at all. `None` for a column drawn as it stands.
+    #[must_use]
+    pub const fn resampled(&self) -> Option<Step> {
+        self.resampled
     }
 
     /// What decided this tile's field type.
@@ -367,8 +395,9 @@ impl Dashboard {
     pub fn of(path: &Path, columns: &[ColumnProfile]) -> Self {
         let mut tiles = Vec::new();
         let mut omitted = Vec::new();
+        let taken: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
         for column in columns {
-            match tile_for(column) {
+            match tile_for(column, &taken) {
                 Ok(tile) => tiles.push(tile),
                 Err(because) => omitted.push(Omitted {
                     column: column.name.clone(),
@@ -409,8 +438,9 @@ impl Dashboard {
     }
 
     /// The whole dashboard as spec source: the header comment, the title, the
-    /// shared selection, the file as the one data source, and the tiles laid
-    /// out in rows of [`TILES_PER_ROW`].
+    /// shared selection, the data block — the file, and the bucket column of
+    /// every tile that had to be resampled — and the tiles laid out in rows of
+    /// [`TILES_PER_ROW`].
     ///
     /// **This is the artefact, not a rendering of one.** The picture is
     /// composed from these exact bytes, so a reader who opens the spec is
@@ -424,7 +454,7 @@ impl Dashboard {
         let _ = writeln!(out, "  title: {}", yaml_string(&file_label(&self.path)));
         let _ = writeln!(out, "params:");
         let _ = writeln!(out, "  {SELECTION}: {{ select: crossfilter }}");
-        out.push_str(&source_spec(&self.path));
+        out.push_str(&source_spec_deriving(&self.path, &self.derived_columns()));
         let _ = writeln!(out, "vconcat:");
         for row in self.tiles.chunks(TILES_PER_ROW) {
             let _ = writeln!(out, "  - hconcat:");
@@ -434,6 +464,22 @@ impl Dashboard {
             }
         }
         out
+    }
+
+    /// The SQL projections the data block declares beside the file's own
+    /// columns: one bucket column per resampled tile, in tile order.
+    ///
+    /// Empty for a dashboard whose columns all draw as they stand, which is
+    /// what keeps the data block a single `file:` entry for a table carrying no
+    /// timestamp.
+    fn derived_columns(&self) -> Vec<String> {
+        self.tiles
+            .iter()
+            .filter_map(|tile| {
+                tile.resampled
+                    .map(|step| resample::projection(&tile.column, tile.drawn_column(), step))
+            })
+            .collect()
     }
 
     /// The comment block above the spec: what chose this dashboard, and what it
@@ -480,13 +526,19 @@ impl Dashboard {
 /// The semantic label then gets to overrule the field's type, or to refuse the
 /// column outright. Finally the registry is asked which of the kinds a lone
 /// column can fill takes that field, and the first one builds.
-fn tile_for(column: &ColumnProfile) -> Result<Tile, Omission> {
+fn tile_for(column: &ColumnProfile, taken: &[String]) -> Result<Tile, Omission> {
     if column.non_null == 0 {
         return Err(Omission::NoValues);
     }
     if column.distinct <= 1 {
         return Err(Omission::OneValue);
     }
+    // The bucket column, when this is a timestamp. It outranks both doors
+    // below, for the reason `field_as` keeps a stored date temporal: the label
+    // still gets to refuse the column outright, and a label that answers
+    // "category" does not take a column's time order away.
+    let bucket = bucket_field(column, taken);
+    let offered = |own: Option<Field>| bucket.clone().map(|(f, _)| f).or(own);
     let (field, chosen_by) = match role_of(&column.semantic) {
         Some((label, ColumnRole::Neither)) => {
             return Err(Omission::Identifies {
@@ -494,14 +546,14 @@ fn tile_for(column: &ColumnProfile) -> Result<Tile, Omission> {
             })
         }
         Some((label, role)) => (
-            field_as(column, role).ok_or(Omission::NoPicture)?,
+            offered(field_as(column, role)).ok_or(Omission::NoPicture)?,
             ChosenBy::Meaning {
                 label: label.to_string(),
                 role,
             },
         ),
         None => (
-            field_of(column).ok_or(Omission::NoPicture)?,
+            offered(field_of(column)).ok_or(Omission::NoPicture)?,
             ChosenBy::Storage {
                 type_name: column.type_name.clone(),
             },
@@ -514,10 +566,33 @@ fn tile_for(column: &ColumnProfile) -> Result<Tile, Omission> {
         .ok_or(Omission::NoPicture)?;
     Ok(Tile {
         kind: kind.id,
+        column: column.name.clone(),
         field,
         block,
         chosen_by,
+        resampled: bucket.map(|(_, step)| step),
     })
+}
+
+/// The temporal field a timestamp column is drawn through, and the step it is
+/// counted at — or `None` for a column that draws as it stands.
+///
+/// The field names a column the table does not have: [`crate::resample`]
+/// derives it, and [`Dashboard::to_spec`] declares it beside the file. That is
+/// why the field is built here rather than asked of
+/// [`chart_kinds::fields_of`], which maps the columns a profile carries — and
+/// why the one eligibility rule a derived name can still break, `nameable`, is
+/// asked for explicitly.
+///
+/// `taken` is the table's own column names, so the derived one cannot collide
+/// with a column the file already has.
+fn bucket_field(column: &ColumnProfile, taken: &[String]) -> Option<(Field, Step)> {
+    if !resample::is_resampled_type(&column.type_name) || !chart_kinds::nameable(&column.name) {
+        return None;
+    }
+    let step = resample::step_for(column);
+    let name = resample::derived_name(&column.name, step, taken);
+    Some((Field::new(name, FieldType::Temporal), step))
 }
 
 /// The field `column` offers on its DuckDB type alone.
@@ -653,11 +728,15 @@ enum TileForm {
 }
 
 /// `tile` as one entry of a concat list, indented by `indent` spaces.
+///
+/// Written over [`Tile::drawn_column`] rather than [`Tile::column`], which are
+/// the same name for every tile a resample did not touch. A timestamp's marks
+/// name its bucket column, because that is the one with a band.
 fn tile_yaml(tile: &Tile, indent: usize) -> String {
     match tile_form(tile.kind) {
-        Some(TileForm::Histogram) => histogram_tile(tile.column(), indent),
-        Some(TileForm::TimeBars) => time_bars_tile(tile.column(), indent),
-        Some(TileForm::RankedBars) => RankedCategoryBars::new(tile.column())
+        Some(TileForm::Histogram) => histogram_tile(tile.drawn_column(), indent),
+        Some(TileForm::TimeBars) => time_bars_tile(tile.drawn_column(), indent),
+        Some(TileForm::RankedBars) => RankedCategoryBars::new(tile.drawn_column())
             .with_size(TILE_WIDTH, TILE_HEIGHT)
             .plot_yaml(SOURCE, SELECTION, indent),
         // Unreachable: a tile's kind came from `single_column_kinds`, which
@@ -823,7 +902,15 @@ fn tile_comment(tile: &Tile) -> String {
             format!("no trusted label, and DuckDB stored it as {type_name}")
         }
     };
-    format!("{}: {because} → {}", tile.column(), tile.kind())
+    // The step a resampled column is counted at is part of what the reader has
+    // to be able to check: it is the difference between a count per day and a
+    // count per year over the same instants, and it was chosen from the span
+    // rather than written by anyone.
+    let at = match tile.resampled() {
+        Some(step) => format!(", counted by the {}", step.label()),
+        None => String::new(),
+    };
+    format!("{}: {because} → {}{at}", tile.column(), tile.kind())
 }
 
 /// A YAML scalar that cannot be read as anything but a string.
