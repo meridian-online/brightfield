@@ -56,12 +56,27 @@ data:
 /// and what stops is the *drawing* — which is the claim.
 /// `the_fixture_blocks_are_the_ones_the_kinds_build` is what keeps the literal
 /// from drifting away from the product.
+///
+/// The ghost layer's colour is spelled out here for the same reason the rest of
+/// the block is, and it makes a palette regeneration reach this line: the
+/// emitter resolves it from a design token, so moving the token moves what the
+/// kind builds, and a fixture claiming to be what the kind builds has to follow.
+/// That is the drift the test above exists to report.
 const HISTOGRAM_BLOCK: &str = "\
+params:
+  sel: { select: crossfilter }
 plot:
   - mark: rectY
     data: { from: opened }
     x: { bin: 'amount' }
     y: { count: }
+    fill: \"#b7b3ae\"
+  - mark: rectY
+    data: { from: opened, filterBy: $sel }
+    x: { bin: 'amount' }
+    y: { count: }
+  - select: intervalX
+    as: $sel
 ";
 
 /// The block `count-grid` builds over [`ROWS`]'s two columns. See
