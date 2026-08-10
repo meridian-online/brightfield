@@ -954,6 +954,17 @@ mod tests {
         }
     }
 
+    /// A timestamp column spanning `min` to `max`, rendered the way
+    /// `Session::profile_sources` renders a temporal minimum and maximum:
+    /// `CAST(… AS VARCHAR)`.
+    fn stamped(name: &str, min: &str, max: &str, distinct: u64) -> ColumnProfile {
+        ColumnProfile {
+            min: Some(min.to_string()),
+            max: Some(max.to_string()),
+            ..column(name, "TIMESTAMP", distinct)
+        }
+    }
+
     fn of(columns: &[ColumnProfile]) -> Dashboard {
         Dashboard::of(Path::new("/tmp/readings.csv"), columns)
     }
@@ -1151,6 +1162,173 @@ mod tests {
         assert!(refused.tiles().is_empty(), "{refused:?}");
     }
 
+    /// **A timestamp past the ceiling gets a tile too**, which is the half of
+    /// this rule that was excluded rather than solved: a `TIMESTAMP` reaches no
+    /// kind of its own, so the column that draws is the bucket one
+    /// [`crate::resample`] derives, and the tile is still *of* the timestamp.
+    #[test]
+    fn a_timestamp_past_the_grid_ceiling_gets_a_tile() {
+        let dash = of(&[stamped(
+            "observed",
+            "2026-01-01 00:00:00",
+            "2026-04-01 00:00:00",
+            9_000,
+        )]);
+        assert!(
+            dash.omitted().is_empty(),
+            "the timestamp was left out: {:?}",
+            dash.omitted()
+        );
+        let tile = dash.sole_tile().expect("one usable column is one tile");
+        assert_eq!(tile.column(), "observed", "the tile is of the column");
+        assert_eq!(tile.drawn_column(), "observed by day");
+        assert_eq!(tile.kind(), chart_kinds::COUNTS_OVER_TIME);
+        assert_eq!(tile.field().ty, FieldType::Temporal);
+        assert_eq!(tile.resampled(), Some(Step::Day));
+        // The device follows from the column being temporal, and the step from
+        // its span — neither from how many distinct instants it holds.
+        for distinct in [61, 9_000, 4_000_000] {
+            let one = of(&[stamped(
+                "observed",
+                "2026-01-01 00:00:00",
+                "2026-04-01 00:00:00",
+                distinct,
+            )]);
+            let tile = one.sole_tile().expect("a tile");
+            assert_eq!(tile.kind(), chart_kinds::COUNTS_OVER_TIME, "{distinct}");
+            assert_eq!(tile.resampled(), Some(Step::Day), "{distinct}");
+        }
+    }
+
+    /// **The timestamp's tile is the date's tile, over the bucket column** —
+    /// the same two absences, the same interactors, and a `data:` block that
+    /// declares where the bucket column comes from.
+    #[test]
+    fn the_timestamps_tile_is_the_dates_tile_over_the_bucket_column() {
+        let source = of(&[stamped(
+            "observed",
+            "2026-01-01 00:00:00",
+            "2026-04-01 00:00:00",
+            9_000,
+        )])
+        .to_spec();
+        assert!(source.contains("mark: barY"), "{source}");
+        assert!(source.contains("x: \"observed by day\""), "{source}");
+        assert!(source.contains("y: { count: }"), "{source}");
+        assert!(
+            !source.contains("sort:") && !source.contains("limit:"),
+            "a sort would rank the days by count and a limit would drop the \
+             quiet ones:\n{source}"
+        );
+        assert!(source.contains("select: toggleX"), "{source}");
+        assert!(source.contains(&format!("by: ${SELECTION}")), "{source}");
+        // The bucket column, declared: one strftime over the instant, projected
+        // beside the file's own columns.
+        assert!(
+            source.contains(
+                "SELECT *, strftime(CAST(\"observed\" AS TIMESTAMP), \
+                 ''%Y-%m-%d'') AS \"observed by day\" FROM \"opened_rows\""
+            ),
+            "{source}"
+        );
+        // And the reader holding the spec is told the step it was counted at,
+        // because a count per day and a count per year are different pictures
+        // of the same instants.
+        assert!(
+            source.contains(
+                "# observed: no trusted label, and DuckDB stored it as \
+                 TIMESTAMP → counts-over-time, counted by the day"
+            ),
+            "{source}"
+        );
+        let parsed = parse_spec(&source, Format::Yaml)
+            .unwrap_or_else(|e| panic!("the generated spec does not parse: {e}\n{source}"));
+        assert!(
+            parsed.warnings.is_empty(),
+            "the generated spec warns: {:?}\n{source}",
+            parsed.warnings
+        );
+    }
+
+    /// **Every tile reads one table, however many columns the dashboard
+    /// derived.**
+    ///
+    /// This is what the crossfilter rests on. A clause published by one tile is
+    /// applied to every other, so a tile reading a table its siblings' lacks a
+    /// column of would take their queries down with it — and the bucket column
+    /// exists in exactly one place, which is why the file is read under a
+    /// second name rather than the tiles being pointed at a second table.
+    #[test]
+    fn every_tile_reads_the_one_table_however_many_columns_are_derived() {
+        let source = of(&[
+            stamped("observed", "2026-01-01 00:00:00", "2026-04-01 00:00:00", 900),
+            stamped("settled", "2026-01-01 00:00:00", "2030-01-01 00:00:00", 900),
+            column("amount", "DOUBLE", 900),
+            column("region", "VARCHAR", 4),
+        ])
+        .to_spec();
+        let one = format!("from: {}", yaml_string(SOURCE));
+        let reads = source.match_indices("from: ").count();
+        assert!(reads > 0, "no mark reads anything:\n{source}");
+        assert_eq!(
+            source.matches(one.as_str()).count(),
+            reads,
+            "a tile reading anything but the one table breaks the \
+             crossfilter:\n{source}"
+        );
+        // Two timestamps, two bucket columns, each at the step its own span
+        // asked for — and both in the one projection list.
+        assert!(
+            source.contains("AS \"observed by day\"")
+                && source.contains("AS \"settled by month\""),
+            "{source}"
+        );
+        assert_eq!(source.matches("SELECT *,").count(), 1, "{source}");
+    }
+
+    /// A table with nothing to derive declares the file and nothing else, which
+    /// is the shape every dashboard of measures, categories and dates keeps.
+    #[test]
+    fn a_table_with_nothing_to_derive_declares_the_file_and_nothing_else() {
+        let source = of(&[column("amount", "DOUBLE", 900), column("day", "DATE", 90)]).to_spec();
+        assert!(
+            source.contains("data:\n  opened:\n    file: '/tmp/readings.csv'\n"),
+            "{source}"
+        );
+        assert!(!source.contains("opened_rows"), "{source}");
+    }
+
+    /// The bucket column takes a name the table does not already carry — a
+    /// `SELECT *` beside a projection of the same name is a view DuckDB refuses
+    /// to create, which would cost the dashboard every tile rather than one.
+    #[test]
+    fn a_bucket_column_steps_aside_for_a_column_that_already_has_its_name() {
+        let dash = of(&[
+            stamped("t", "2026-01-01 00:00:00", "2026-04-01 00:00:00", 900),
+            column("t by day", "VARCHAR", 4),
+        ]);
+        assert_eq!(dash.tiles()[0].drawn_column(), "t by day 2");
+        let source = dash.to_spec();
+        assert!(source.contains("AS \"t by day 2\""), "{source}");
+    }
+
+    /// A label still decides what a timestamp is *for*, and still cannot take
+    /// its time order away — the rule `a_dated_column_labelled_a_category…`
+    /// holds for a stored date, reaching a timestamp through the bucket column.
+    #[test]
+    fn a_timestamp_labelled_a_category_is_still_counted_in_time_order() {
+        let mut profile = stamped("seen", "2026-01-01 00:00:00", "2026-04-01 00:00:00", 900);
+        profile.semantic = labelled("seen", "TIMESTAMP", 900, "datetime.timestamp.iso").semantic;
+        let dash = of(&[profile.clone()]);
+        let tile = dash.sole_tile().expect("a tile");
+        assert_eq!(tile.kind(), chart_kinds::COUNTS_OVER_TIME);
+        assert_eq!(tile.resampled(), Some(Step::Day));
+        // And a label that refuses the column outright still refuses it.
+        profile.semantic = labelled("seen", "TIMESTAMP", 900, "technology.internet.url").semantic;
+        let refused = of(&[profile]);
+        assert!(refused.tiles().is_empty(), "{refused:?}");
+    }
+
     /// A measure the storage cannot bin keeps the answer its type gives: the
     /// bin scheme is arithmetic and a `VARCHAR` has none, so `'$1,200.00'` is
     /// ranked rather than binned.
@@ -1273,6 +1451,9 @@ mod tests {
             column("version", "BIGINT", 1),
             column("region", "VARCHAR", 4),
             labelled("id", "VARCHAR", 900, "representation.identifier.uuid"),
+            // A resampled column is named by the table's spelling here, not by
+            // the bucket column's: the ledger accounts for the file's columns.
+            stamped("observed", "2026-01-01 00:00:00", "2026-04-01 00:00:00", 900),
         ];
         let dash = of(&columns);
         assert_eq!(dash.tiles().len() + dash.omitted().len(), columns.len());
@@ -1300,6 +1481,7 @@ mod tests {
             column("region", "VARCHAR", 4),
             column("day", "DATE", 30),
             column("tier", "VARCHAR", 3),
+            stamped("observed", "2026-01-01 00:00:00", "2026-04-01 00:00:00", 900),
         ]);
         let source = dash.to_spec();
         let parsed = parse_spec(&source, Format::Yaml)
@@ -1516,5 +1698,80 @@ mod tests {
         ])
         .sole_tile()
         .is_none());
+    }
+
+    /// **A timestamp's tile draws bars, counted in pixels** — and the same bars
+    /// the dates draw.
+    ///
+    /// The reason this is a raster reading and not a structural one is the
+    /// whole card: a `TIMESTAMP` bound to a band axis produced a spec that
+    /// parsed, lowered, executed and exited 0 with **no** bars on it. Every
+    /// check short of the pixels passed on it.
+    ///
+    /// The comparison is against a `DATE` column over the same six days rather
+    /// than against a number. Both dashboards draw six bands of the same
+    /// counts, so the mark ink is the same ink — and a figure written into this
+    /// comment would go stale the first time a bar's corner radius moved.
+    #[test]
+    fn a_resampled_timestamp_draws_the_bars_a_date_draws() {
+        let dir = std::env::temp_dir().join(format!("bf-dashboard-ink-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory to write the fixtures into");
+        let days = [
+            "2020-01-01",
+            "2020-01-01",
+            "2020-01-02",
+            "2020-01-03",
+            "2020-01-03",
+            "2020-01-06",
+        ];
+        let dates = dashboard_mark_ink(&dir, "DATE", &days.map(str::to_string));
+        assert!(
+            dates > 1_000,
+            "the harness draws nothing at all, so nothing below is evidence"
+        );
+        let instants = days.map(|d| format!("{d} 00:00:00"));
+        let stamps = dashboard_mark_ink(&dir, "TIMESTAMP", &instants);
+        assert_eq!(
+            stamps, dates,
+            "a resampled timestamp draws bars a date does not, or none at all"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pixels of default mark ink in the dashboard a one-column table of
+    /// `values` opens as, with the column cast to `type_name`.
+    ///
+    /// Written out as a CSV and read back by the engine, so what is measured is
+    /// the artefact [`Dashboard::to_spec`] emits — its `data:` block included,
+    /// which is where the bucket column is declared and therefore where a
+    /// resampled tile would fail to find its band.
+    fn dashboard_mark_ink(dir: &Path, type_name: &str, values: &[String]) -> u64 {
+        let csv = dir.join(format!("{type_name}.csv"));
+        std::fs::write(&csv, format!("t\n{}\n", values.join("\n"))).expect("write the fixture");
+        let profile = ColumnProfile {
+            name: "t".to_string(),
+            type_name: type_name.to_string(),
+            non_null: values.len() as u64,
+            nulls: 0,
+            distinct: values.len() as u64,
+            min: values.first().cloned(),
+            max: values.last().cloned(),
+            semantic: SemanticType::NotAsked,
+        };
+        let source = Dashboard::of(&csv, std::slice::from_ref(&profile)).to_spec();
+        let composed = crate::pipeline::compose_spec_str(&source, None)
+            .unwrap_or_else(|e| panic!("{type_name}: {e}\n{source}"));
+        let png = dir.join(format!("{type_name}.png"));
+        crate::capture::capture_vello_only(composed, 1.0, &png).expect("export");
+        let want = meridian_design::viz::MARK_DEFAULT_LIGHT;
+        let want = [
+            (want.r * 255.0).round() as i32,
+            (want.g * 255.0).round() as i32,
+            (want.b * 255.0).round() as i32,
+        ];
+        let img = image::open(&png).expect("open png").to_rgba8();
+        img.pixels()
+            .filter(|p| (0..3).all(|c| (i32::from(p.0[c]) - want[c]).abs() <= 20))
+            .count() as u64
     }
 }

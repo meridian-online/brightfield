@@ -27,6 +27,7 @@ use brightfield_shell::chart_kinds;
 use brightfield_shell::dashboard;
 use brightfield_shell::data_file;
 use brightfield_shell::design::Mode;
+use brightfield_shell::resample::Step;
 use brightfield_shell::editor::{EditorPane, SaveReport};
 use brightfield_shell::starts;
 use brightfield_shell::startup::default_layout;
@@ -559,6 +560,64 @@ fn ninety_days_csv() -> String {
         }
     }
     out
+}
+
+/// One column of **instants**, ninety of them an hour apart — a `TIMESTAMP` in
+/// DuckDB rather than a `DATE`, which is the type this route used to have no
+/// answer for at all.
+///
+/// Ninety readings put the column past the ceiling `chart_kinds` applies to a
+/// category, and the times of day put it past what a `DATE` can spell: three
+/// days and change is counted by the hour, and there is no cast that turns an
+/// instant into an hour-shaped calendar value.
+fn ninety_hours_csv() -> String {
+    let mut out = String::from("observed\n");
+    for hour in 0..90 {
+        let day = 1 + hour / 24;
+        out.push_str(&format!("2026-01-{day:02} {:02}:00:00\n", hour % 24));
+    }
+    out
+}
+
+/// **A column of instants opens as a picture, through the profile DuckDB
+/// actually returns.**
+///
+/// The unit tests around `Dashboard::of` hand it a `ColumnProfile` they wrote,
+/// so what they cannot show is that a CSV of instants comes back typed
+/// `TIMESTAMP` and carrying the `min`/`max` the step is chosen from. This opens
+/// the file the way the front door does and reads the answer off the dashboard.
+///
+/// The claim is the card's: **no omission**. Before this, the column arrived in
+/// `Dashboard::omitted` reading *"no chart in this build fits it"* — a true
+/// sentence about a file whose one column a reader can see is a series.
+#[test]
+fn a_column_of_instants_opens_as_a_tile_and_not_as_an_omission() {
+    let dir = TempDir::new("instants");
+    let path = dir.write("instants.csv", &ninety_hours_csv());
+
+    let opened = data_file::open(&path.to_string_lossy()).expect("the file opens");
+    assert!(
+        opened.dashboard.omitted().is_empty(),
+        "a column of instants was left out: {:?}",
+        opened.dashboard.omitted()
+    );
+    let tile = opened.dashboard.sole_tile().expect("one column is one tile");
+    assert_eq!(tile.column(), "observed", "the tile is of the column");
+    assert_eq!(tile.kind(), chart_kinds::COUNTS_OVER_TIME);
+    assert_eq!(
+        tile.resampled(),
+        Some(Step::Hour),
+        "three days of hourly readings are counted by the hour"
+    );
+    assert_eq!(tile.drawn_column(), "observed by hour");
+    // And the picture is a picture: the composition carries the plot, over the
+    // one table every tile reads.
+    let spec = opened.dashboard.to_spec();
+    assert!(
+        spec.contains("strftime(CAST(\"observed\" AS TIMESTAMP)"),
+        "{spec}"
+    );
+    assert!(!opened.composed.plots.is_empty(), "nothing was composed");
 }
 
 /// **A file a user opened arrives on screen as a picture**, and each kind a
