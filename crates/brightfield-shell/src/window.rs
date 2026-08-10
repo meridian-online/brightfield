@@ -132,10 +132,16 @@ pub const TAGLINE: &str = "Watch insight assemble.";
 /// What the Start zone promises an opened data file becomes.
 ///
 /// Every clause is a claim about behaviour, not a description of a screen: the
-/// two formats are what [`crate::data_file::OPENABLE_EXTENSIONS`] lists, the
 /// table is the Data pane reading the file's own rows, and *a chart for every
 /// column it can draw one for* is [`crate::dashboard::Dashboard::of`]'s walk —
 /// a tile per column, plus the columns it declines and why.
+///
+/// **The format names are copy, and nothing pins them to the list.** What this
+/// build opens is [`crate::data_file::OPENABLE_EXTENSIONS`], and `--help` is
+/// held to every spelling on it by
+/// `the_help_names_every_extension_this_build_opens` — this sentence is not.
+/// Whether the door should name each spelling or keep the format names a
+/// reader recognises is the copy decision below, not a defect to close here.
 ///
 /// It read *a first look drawn from it* until the generator shipped. That was
 /// true of the single chart this route used to draw and understates a

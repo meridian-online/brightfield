@@ -12,9 +12,15 @@
 //! `.parquet` opens as the dashboard `brightfield-shell` generates for it — a
 //! tile per column — through the same route the front door's picker reaches.
 //! `window::Boot::open` classifies the three kinds and says which loader gets
-//! the path. That is what makes the generated dashboard scriptable: it is
-//! reachable without a person clicking a native modal, so it composes with
-//! `--shot-after` below and can be photographed with nobody present.
+//! the path. That is what makes the generated dashboard scriptable: no native
+//! modal stands between a path and a picture, so the `Boot` this window opens
+//! is the one `brightfield-shot --spec <file>` photographs with nobody present
+//! — `the_generated_dashboard_writes_itself_to_a_png_with_nobody_present` in
+//! `tests/scripted_open.rs` holds that capture at the shot's own default
+//! scale. `--shot-after` below takes the same positional, but what runs
+//! unattended today is `--shot-after` over a *spec*: the release workflow's
+//! air-gapped check renders `examples/bars.yaml` and a protocol manifest under
+//! it, and nothing exercises it over a data file.
 //!
 //! Naming a file is optional. With none, the window opens on nothing — which
 //! is a real surface rather than a blank one: every pane of both views answers
