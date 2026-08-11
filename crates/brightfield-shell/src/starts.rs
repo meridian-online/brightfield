@@ -204,6 +204,19 @@ pub struct Start {
     /// hermetic pass asserts how many it skipped, so the exemption cannot
     /// swallow the whole set.
     pub remote: bool,
+    /// The chart spec this start opens — the bytes [`load`] composes — and
+    /// `None` for a start that opens a Protocol manifest instead.
+    ///
+    /// **The single declaration.** [`load`] dispatches on this field rather
+    /// than on a second table of `include_str!`s keyed by id, so the spec a
+    /// check reads and the spec a click opens cannot be different bytes.
+    ///
+    /// Public because what a start *declares* is decidable without composing
+    /// it, and for [`CROSSWALK_CHART`] that is the only way it is decidable at
+    /// all: composing that one fetches. The selection producers a start ships
+    /// with, and the claims its own header comment makes about them, are read
+    /// off these bytes by `crates/brightfield-shell/tests/start_interaction.rs`.
+    pub spec: Option<&'static str>,
 }
 
 /// What a [`Start::run_less`] start's label has to contain.
@@ -220,10 +233,12 @@ pub const REMOTE_MARK: &str = "over the network";
 /// them — the crosswalk anchors, so it comes first.
 ///
 /// The one declaration: the empty states and the front door read their
-/// affordances' labels and ids from here, [`load`] dispatches on the same ids,
-/// and the boot path resolves the recorded id through the same list. A start
-/// added here without a loader arm fails [`load`] loudly rather than becoming
-/// a button that does nothing.
+/// affordances' labels and ids from here, [`load`] composes the
+/// [`Start::spec`] carried on the entry, and the boot path resolves the
+/// recorded id through the same list. A start added here with neither a
+/// `spec:` nor a manifest arm in [`load`] fails there loudly rather than
+/// becoming a dead button — `every_shipped_start_loads_into_a_document_with_something_in_it`
+/// is the test that reaches that refusal.
 pub const STARTS: &[Start] = &[
     Start {
         id: CROSSWALK,
@@ -234,6 +249,8 @@ pub const STARTS: &[Start] = &[
         thumbnail: include_bytes!("../assets/starts/edgar-gleif-crosswalk.png"),
         run_less: true,
         remote: false,
+        // A Protocol manifest, not a chart spec — see `load`.
+        spec: None,
     },
     Start {
         id: DASHBOARD,
@@ -244,6 +261,7 @@ pub const STARTS: &[Start] = &[
         thumbnail: include_bytes!("../assets/starts/signals-dashboard.png"),
         run_less: false,
         remote: false,
+        spec: Some(DASHBOARD_SPEC),
     },
     Start {
         id: DISTRIBUTION,
@@ -254,6 +272,7 @@ pub const STARTS: &[Start] = &[
         thumbnail: include_bytes!("../assets/starts/reading-distribution.png"),
         run_less: false,
         remote: false,
+        spec: Some(DISTRIBUTION_SPEC),
     },
     Start {
         id: BREAKDOWN,
@@ -263,6 +282,7 @@ pub const STARTS: &[Start] = &[
         thumbnail: include_bytes!("../assets/starts/activity-breakdown.png"),
         run_less: false,
         remote: false,
+        spec: Some(BREAKDOWN_SPEC),
     },
     // Last on purpose. `for_view` hands an empty pane the FIRST start for its
     // view, and an empty state whose one button can fail for want of a
@@ -277,6 +297,7 @@ pub const STARTS: &[Start] = &[
         thumbnail: include_bytes!("../assets/starts/edgar-gleif-crosswalk-chart.png"),
         run_less: false,
         remote: true,
+        spec: Some(CROSSWALK_CHART_SPEC),
     },
 ];
 
@@ -387,14 +408,24 @@ const CROSSWALK_MODELS: &[(&str, &str)] = &[
 /// answer: a structured engine error naming the network and the URL, which the
 /// caller raises as a banner rather than swallowing.
 pub fn load(id: &str) -> Result<Opened, String> {
+    let Some(start) = find(id) else {
+        return Err(format!("no shipped starting point named {id:?}"));
+    };
+    // The chart arm reads the start's own [`Start::spec`] rather than a second
+    // table keyed by id, so the bytes a check reads off the entry are the bytes
+    // the click composes. The manifest arm stays keyed by id: a chart start
+    // added with no `spec:` must fail loudly here, not silently open the
+    // crosswalk's lineage graph.
+    if let Some(spec) = start.spec {
+        return chart(spec);
+    }
     match id {
-        DASHBOARD => chart(DASHBOARD_SPEC),
-        DISTRIBUTION => chart(DISTRIBUTION_SPEC),
-        BREAKDOWN => chart(BREAKDOWN_SPEC),
-        CROSSWALK_CHART => chart(CROSSWALK_CHART_SPEC),
         CROSSWALK => load_protocol_str(CROSSWALK_MANIFEST, CROSSWALK_MODELS)
             .map(|inputs| Opened::Protocol(Box::new(inputs))),
-        other => Err(format!("no shipped starting point named {other:?}")),
+        other => Err(format!(
+            "the shipped starting point {other:?} declares neither a chart spec \
+             nor a manifest loader"
+        )),
     }
 }
 
