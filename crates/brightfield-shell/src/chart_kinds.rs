@@ -57,15 +57,27 @@ use crate::data_file::SOURCE;
 
 /// A numeric column's distribution: `rectY` over its bin edges, counted.
 pub const BINNED_HISTOGRAM: ChartKindId = ChartKindId::new("binned-histogram");
+/// A dated column's rows counted per day, in time order: `barY` over a band of
+/// days.
+pub const COUNTS_OVER_TIME: ChartKindId = ChartKindId::new("counts-over-time");
 /// Two categories crossed and counted: `cell` over a pair of band axes.
 pub const COUNT_GRID: ChartKindId = ChartKindId::new("count-grid");
 
-/// The widest axis this registry will cross: a `distinct × distinct` grid past
-/// this on either side is a wall of cells rather than a picture.
+/// The widest **category** axis this registry will cross: a `distinct ×
+/// distinct` grid past this on either side is a wall of cells rather than a
+/// picture.
 ///
 /// A property of the **field list**, not of a slot — a slot declares types, and
 /// "too many categories to read" is a cardinality. So it is applied by
 /// [`fields_of`], which is where the column profiles are.
+///
+/// The number was argued for over `distinct × distinct`, and [`fields_of`]
+/// applies it to the **categories** — which includes the one-axis
+/// [`crate::ranked_bars`], whose bars are as unreadable past it as a grid's
+/// cells are. A lone temporal column is not a category and does not meet it:
+/// a year of daily readings is not a wall of cells but the ordinary shape of a
+/// time series, and applying the ceiling to it is what refused a date its
+/// picture. See [`counts_over_time`], which takes its column at any width.
 const GRID_MAX_DISTINCT: u64 = 60;
 
 /// The one column a histogram bins.
@@ -120,6 +132,14 @@ const GRID_SLOTS: &[FieldSlot] = &[
     FieldSlot::required("y", &[FieldType::Categorical]),
 ];
 
+/// The one column a time series counts along. A single required slot, so
+/// [`ChartKind::accepts`] answers yes for a dated column and no for a category
+/// — the tests are `a_table_of_names_crosses_its_two_narrowest_categories`,
+/// where a date is the first look a table of names admits, and
+/// `one_category_opens_on_ranked_bars`, whose exact list of applicable kinds
+/// this one is absent from.
+const TIME_SLOTS: &[FieldSlot] = &[FieldSlot::required("t", &[FieldType::Temporal])];
+
 /// The shell's chart kinds, in preference order.
 ///
 /// Built once per process. A `OnceLock` rather than a `const`: a
@@ -133,6 +153,7 @@ pub fn registry() -> &'static ChartKindRegistry<String> {
     KINDS.get_or_init(|| {
         ChartKindRegistry::new(vec![
             binned_histogram(),
+            counts_over_time(),
             count_grid(),
             ranked_category_bars(),
         ])
@@ -226,6 +247,50 @@ fn binned_histogram() -> ChartKind<String> {
     }
 }
 
+/// A dated column's rows counted per day, **in time order**.
+///
+/// [`crate::dashboard::time_bars_tile`] over this registry's source, as a
+/// self-contained top-level fragment — the same arrangement
+/// [`ranked_category_bars`] uses, and for the same reason: the device is
+/// emitted by one function, so the tile a dashboard lays out and the block this
+/// kind builds cannot describe two different pictures.
+///
+/// # Why this device and not a histogram
+///
+/// A date is not binnable here — `is_binnable_type` says why, and the reason is
+/// arithmetic rather than taste. So the picture a dated column gets is a count
+/// per day over a **band** of days, which is what
+/// [`brightfield_spec::vocab::MarkKind::band_aggregate_axes`] computes for a
+/// `barY`: one `GROUP BY` on the column, one `COUNT(*)`, ordered by the column
+/// itself.
+///
+/// **In time order, and uncapped**, which is the whole difference between this
+/// and pointing [`ranked_category_bars`] at the same column. That kind writes
+/// `sort: { y: -x, limit: 10 }`, so a year of daily readings would arrive as the
+/// ten busiest days in descending order of count — every one of them true, and
+/// the shape of the series gone. Writing no `sort:` is what asks
+/// `brightfield-sql`'s `BarLowerer` for its band ordering instead, and that
+/// ordering is ascending on the band column: chronological, for a column of
+/// dates. `the_dates_tile_counts_in_time_order_and_drops_no_date` in
+/// [`crate::dashboard`] is the test over the two absences.
+fn counts_over_time() -> ChartKind<String> {
+    ChartKind {
+        id: COUNTS_OVER_TIME,
+        icon: Icon("chart-bar"),
+        description: "Counts the rows on each date, in time order, the total behind the selection",
+        slots: TIME_SLOTS,
+        controls: Vec::new,
+        build: |bound, _options| {
+            let column = bound.name("t").unwrap_or_default();
+            let mut out = String::from("params:\n");
+            let _ = writeln!(out, "  {SELECTION}: {{ select: crossfilter }}");
+            let _ = writeln!(out, "hconcat:");
+            out.push_str(&crate::dashboard::time_bars_tile(column, 2));
+            out
+        },
+    }
+}
+
 /// Two categories crossed and counted.
 ///
 /// The answer for a table with no distribution to draw: `cell` over two band
@@ -291,17 +356,36 @@ fn ranked_category_bars() -> ChartKind<String> {
 ///   value, and when it has more than one distinct value — a constant column
 ///   bins to a single bar and crosses to a single row, which is a true picture
 ///   of nothing. A category is offered only up to the private
-///   `GRID_MAX_DISTINCT` ceiling above.
-/// - **order.** Measures first, in the table's own order; then categories,
-///   fewest distinct values first. [`ChartKind::bind`] is first-fit in slot
-///   order, so this is what decides *which* column fills a slot once the kind
-///   is chosen. `sort_by_key` is stable, so two categories of equal width keep
-///   the table's own order rather than an arbitrary one.
+///   `GRID_MAX_DISTINCT` ceiling above; **a date is offered at any width**,
+///   because a date is not a category and the ceiling is a bound on how many
+///   categories a reader can tell apart.
+/// - **order.** Measures first, in the table's own order; then dates, in the
+///   table's own order; then categories, fewest distinct values first.
+///   [`ChartKind::bind`] is first-fit in slot order, so this is what decides
+///   *which* column fills a slot once the kind is chosen. `sort_by_key` is
+///   stable, so two categories of equal width keep the table's own order rather
+///   than an arbitrary one.
 ///
-/// A column's [`FieldType`] is decided by whether DuckDB stored it as a type
-/// the bin arithmetic can subtract and take a logarithm of — the private
-/// `is_binnable_type` below. Everything else is a category, dates included: a
-/// date is a perfectly good grid axis and has no logarithm.
+/// # What decides a column's [`FieldType`]
+///
+/// The DuckDB type, and in every case the question asked of it is *what can
+/// this build draw*:
+///
+/// - the types the bin arithmetic can subtract and take a logarithm of are
+///   measures — the private `is_binnable_type` below;
+/// - `DATE` is [`FieldType::Temporal`], drawn by the kind registered under
+///   [`COUNTS_OVER_TIME`];
+/// - the **other** temporal types are offered nothing *of their own*, and that
+///   is the one rule here written from a measurement rather than from an
+///   argument. See `a_timestamp_band_puts_no_ink_on_the_page`: a `TIMESTAMP`
+///   bound to a band axis puts **no** mark ink on the page, because
+///   `brightfield-render`'s `positional_axis_class` reads it as continuous and
+///   a bar has no band to stand on. The column such a table draws is a
+///   different one — the bucket column [`crate::resample`] derives beside it,
+///   offered as a temporal field by [`crate::dashboard`]. This function maps
+///   the columns a table **has**; declaring a new one belongs to whoever writes
+///   the `data:` block, which is the dashboard;
+/// - everything else is a category.
 #[must_use]
 pub fn fields_of(columns: &[ColumnProfile]) -> Vec<Field> {
     let usable = || {
@@ -316,8 +400,15 @@ pub fn fields_of(columns: &[ColumnProfile]) -> Vec<Field> {
         .map(|c| Field::new(&c.name, FieldType::Quantitative))
         .collect();
 
+    fields.extend(
+        usable()
+            .filter(|c| is_date_type(&c.type_name))
+            .map(|c| Field::new(&c.name, FieldType::Temporal)),
+    );
+
     let mut categories: Vec<&ColumnProfile> = usable()
         .filter(|c| !is_binnable_type(&c.type_name))
+        .filter(|c| !is_temporal_type(&c.type_name))
         .filter(|c| c.distinct <= GRID_MAX_DISTINCT)
         .collect();
     categories.sort_by_key(|c| c.distinct);
@@ -337,7 +428,12 @@ pub fn fields_of(columns: &[ColumnProfile]) -> Vec<Field> {
 /// YAML, so a name carrying a `"` or a control character has no faithful
 /// spelling in either — and silently drawing a *different* column would be
 /// worse than drawing none.
-fn nameable(name: &str) -> bool {
+///
+/// Reachable from [`crate::dashboard`] because the bucket column it derives for
+/// a timestamp is not in any profile, so it is offered as a field without
+/// passing through [`fields_of`] — and the rule it still has to keep is this
+/// one.
+pub(crate) fn nameable(name: &str) -> bool {
     !name.is_empty() && !name.contains('"') && !name.chars().any(char::is_control)
 }
 
@@ -349,10 +445,9 @@ fn nameable(name: &str) -> bool {
 /// logarithm of the span), and subtracting two DuckDB `DATE`s yields an
 /// `INTERVAL`, which has no logarithm.
 fn is_binnable_type(duckdb_type: &str) -> bool {
-    let upper = duckdb_type.trim().to_ascii_uppercase();
-    let base = upper.split('(').next().unwrap_or(&upper).trim();
+    let base = type_base(duckdb_type);
     matches!(
-        base,
+        base.as_str(),
         "TINYINT"
             | "SMALLINT"
             | "INTEGER"
@@ -369,6 +464,70 @@ fn is_binnable_type(duckdb_type: &str) -> bool {
             | "DECIMAL"
             | "NUMERIC"
     )
+}
+
+/// Whether a DuckDB column type is a **calendar date** — the one temporal type
+/// this build draws a picture over.
+///
+/// `DATE` reaches `brightfield-render` as an Arrow `Date32`, which that crate
+/// collects into a band scale one category per day. Every other temporal type
+/// is [`is_temporal_type`]'s business and gets no field at all — the test
+/// `a_time_no_chart_here_draws_is_not_offered_a_band` names the spellings this
+/// build refuses.
+fn is_date_type(duckdb_type: &str) -> bool {
+    type_base(duckdb_type) == "DATE"
+}
+
+/// Whether a DuckDB column type holds a **moment or a period in time**, date
+/// included.
+///
+/// Read by [`fields_of`] to keep the temporal types it cannot draw out of the
+/// category list, where they would otherwise be offered a band axis they put no
+/// ink on. `DATETIME` is DuckDB's own alias for `TIMESTAMP`, and the
+/// suffixed forms are its other precisions.
+fn is_temporal_type(duckdb_type: &str) -> bool {
+    matches!(
+        type_base(duckdb_type).as_str(),
+        "DATE"
+            | "TIME"
+            | "TIMETZ"
+            | "DATETIME"
+            | "TIMESTAMP"
+            | "TIMESTAMPTZ"
+            | "TIMESTAMP_S"
+            | "TIMESTAMP_MS"
+            | "TIMESTAMP_NS"
+    )
+}
+
+/// A DuckDB type name reduced to the name the predicates above match on:
+/// upper-cased, trimmed, without a width or precision, and with the spelled-out
+/// time-zone suffix folded onto the short one DuckDB also accepts.
+///
+/// One function rather than a copy of the same calls per predicate. Two tests
+/// between them hold the case, the width and the fold:
+/// `a_columns_field_type_follows_what_can_be_binned` asks for `DECIMAL(10,2)`
+/// and for ` integer `, which is the case and the width;
+/// `a_time_no_chart_here_draws_is_not_offered_a_band` asks for `TIMESTAMP WITH
+/// TIME ZONE`, which is the fold. The first alone leaves the fold unheld.
+///
+/// **The trim is held as a behaviour, not per call site.** Deleting either
+/// `.trim()` below on its own leaves
+/// `a_columns_field_type_follows_what_can_be_binned` green — measured, one at a
+/// time — and deleting both reddens it, on ` integer `.
+/// The outer one is subsumed — the inner runs after the split and strips the
+/// same ends, so removing it changes this function's answer on no input at all
+/// and no test could hold it. The inner one is not subsumed: it is what a type
+/// written `DECIMAL (10,2)`, with a space before the paren, would need, and
+/// nothing here asks for one.
+pub(crate) fn type_base(duckdb_type: &str) -> String {
+    let upper = duckdb_type.trim().to_ascii_uppercase();
+    upper
+        .split('(')
+        .next()
+        .unwrap_or(&upper)
+        .trim()
+        .replace(" WITH TIME ZONE", "TZ")
 }
 
 /// `value` as a YAML single-quoted scalar.
@@ -415,7 +574,12 @@ mod tests {
     fn the_registry_ships_these_kinds_in_this_order() {
         assert_eq!(
             registry().ids(),
-            vec![BINNED_HISTOGRAM, COUNT_GRID, crate::ranked_bars::KIND_ID],
+            vec![
+                BINNED_HISTOGRAM,
+                COUNTS_OVER_TIME,
+                COUNT_GRID,
+                crate::ranked_bars::KIND_ID
+            ],
             "declaration order is the preference order a chooser reads"
         );
     }
@@ -545,6 +709,10 @@ data:
 
     /// A table of names with no distribution crosses its two narrowest
     /// categories — narrowest first, which is what the field order carries.
+    ///
+    /// The `day` column is here to be **left out of the grid**: it is a date,
+    /// so it takes a temporal field and a picture of its own rather than a band
+    /// on somebody else's axis.
     #[test]
     fn a_table_of_names_crosses_its_two_narrowest_categories() {
         let fields = fields_of(&[
@@ -554,14 +722,16 @@ data:
         ]);
         assert_eq!(
             registry().applicable(&fields).first().copied(),
-            Some(COUNT_GRID)
+            Some(COUNTS_OVER_TIME),
+            "a dated column is the first look this table admits"
         );
+        assert!(registry().applicable(&fields).contains(&COUNT_GRID));
         let kind = find(COUNT_GRID).expect("shipped");
         let block = kind
             .spec(&kind.bind(&fields).expect("binds"), &kind.options())
             .expect("builds");
         assert!(block.contains("x: 'region'"), "{block}");
-        assert!(block.contains("y: 'day'"), "{block}");
+        assert!(block.contains("y: 'city'"), "{block}");
     }
 
     /// One category and nothing else is the ranked bars' case — a table that
@@ -601,8 +771,8 @@ data:
         );
     }
 
-    /// A numeric type is a measure and a temporal one is a category — the
-    /// split the bin arithmetic forces, stated over the types themselves.
+    /// A numeric type is a measure, a date is temporal and everything else is a
+    /// category — stated over the types themselves.
     #[test]
     fn a_columns_field_type_follows_what_can_be_binned() {
         for numeric in ["BIGINT", "DOUBLE", "DECIMAL(10,2)", " integer "] {
@@ -614,12 +784,170 @@ data:
                 "{numeric}"
             );
         }
-        for other in ["VARCHAR", "DATE", "TIMESTAMP", "BOOLEAN"] {
+        for dated in ["DATE", " date "] {
+            assert_eq!(
+                fields_of(&[column("v", dated, 9)]).first().map(|f| f.ty),
+                Some(FieldType::Temporal),
+                "{dated}"
+            );
+        }
+        for other in ["VARCHAR", "BOOLEAN"] {
             assert_eq!(
                 fields_of(&[column("v", other, 9)]).first().map(|f| f.ty),
                 Some(FieldType::Categorical),
                 "{other}"
             );
         }
+    }
+
+    /// **The temporal types this build cannot draw are offered to nothing** —
+    /// not handed to a band axis they would put no ink on.
+    ///
+    /// The list is the exclusion, and `a_timestamp_band_puts_no_ink_on_the_page`
+    /// below is the measurement it rests on.
+    #[test]
+    fn a_time_no_chart_here_draws_is_not_offered_a_band() {
+        for undrawable in [
+            "TIME",
+            "TIMETZ",
+            "TIMESTAMP",
+            "TIMESTAMPTZ",
+            "TIMESTAMP WITH TIME ZONE",
+            "TIMESTAMP_NS",
+            "DATETIME",
+        ] {
+            assert!(
+                fields_of(&[column("t", undrawable, 9)]).is_empty(),
+                "{undrawable} was offered a field, and nothing here draws one"
+            );
+        }
+    }
+
+    /// **A daily series past the grid ceiling gets a field and a kind.**
+    ///
+    /// Ninety days is three months of readings, which is the shape that used to
+    /// be refused: `GRID_MAX_DISTINCT` was applied to every non-binnable
+    /// column, so a date crossed it at two months and the generator recorded an
+    /// omission. The ceiling bounds a grid's axes, and this column is not one —
+    /// `the_grid_ceiling_still_refuses_a_wide_pair_of_categories` is the test
+    /// below that keeps it where it was argued for.
+    #[test]
+    fn a_daily_series_past_the_grid_ceiling_is_offered_a_picture() {
+        let daily = column("day", "DATE", 90);
+        assert!(daily.distinct > GRID_MAX_DISTINCT, "the case, or it is not");
+        let fields = fields_of(std::slice::from_ref(&daily));
+        assert_eq!(
+            fields,
+            vec![Field::new("day", FieldType::Temporal)],
+            "a date is offered at any width"
+        );
+        assert_eq!(
+            registry().applicable(&fields),
+            vec![COUNTS_OVER_TIME],
+            "and exactly one kind draws it"
+        );
+        // The device follows from the column being a date, not from how many
+        // days it holds: the same kind answers for a week and for a decade.
+        for width in [2, GRID_MAX_DISTINCT, 3_650] {
+            assert_eq!(
+                registry().applicable(&fields_of(&[column("day", "DATE", width)])),
+                vec![COUNTS_OVER_TIME],
+                "{width} distinct days"
+            );
+        }
+    }
+
+    /// **The ceiling still refuses a wide category, and the grid with it.** The
+    /// number was argued for over `distinct × distinct`, and that argument is
+    /// untouched: two categories past it cross into a wall of cells, so neither
+    /// is offered and `count-grid` has nothing to bind.
+    #[test]
+    fn the_grid_ceiling_still_refuses_a_wide_pair_of_categories() {
+        let wide = [
+            column("city", "VARCHAR", GRID_MAX_DISTINCT + 1),
+            column("street", "VARCHAR", 4_000),
+        ];
+        assert!(
+            fields_of(&wide).is_empty(),
+            "a category past the ceiling is offered to nothing"
+        );
+        assert!(
+            registry().applicable(&fields_of(&wide)).is_empty(),
+            "so no kind — the count grid least of all — has an axis to stand on"
+        );
+        // …and one wide category beside one narrow one still cannot cross.
+        let mixed = fields_of(&[
+            column("city", "VARCHAR", GRID_MAX_DISTINCT + 1),
+            column("region", "VARCHAR", 4),
+        ]);
+        assert_eq!(mixed, vec![Field::new("region", FieldType::Categorical)]);
+        assert!(!registry().applicable(&mixed).contains(&COUNT_GRID));
+    }
+
+    /// **The measurement [`fields_of`]'s temporal split rests on**: of the
+    /// types DuckDB hands back for a column of dates, a `DATE` and a text
+    /// spelling both put mark ink on the page as a band, and a `TIMESTAMP` puts
+    /// no ink.
+    ///
+    /// This is a renderer fact and it is asserted here because it is the reason
+    /// the split exists at all — a rule written from an argument would have
+    /// offered the raw timestamp and shipped a tile with axes and no bars,
+    /// which is exactly the failure `tests/bar_orientation.rs` exists for.
+    ///
+    /// The `VARCHAR` reading is doing two jobs. It tells a broken harness from
+    /// a real zero — if it ever reads 0 the measurement is meaningless rather
+    /// than damning — and it is the reading [`crate::resample`] stands on: the
+    /// bucket column that module derives is `strftime` text, so this is the ink
+    /// a resampled timestamp draws. It is compared against the `DATE` reading
+    /// rather than to a number, because the two spellings are the same bands
+    /// and a figure in a comment goes stale in silence.
+    #[test]
+    fn a_timestamp_band_puts_no_ink_on_the_page() {
+        let text = band_mark_ink("VARCHAR");
+        assert!(
+            text > 1_000,
+            "the harness draws nothing at all, so nothing below is evidence"
+        );
+        assert_eq!(
+            band_mark_ink("DATE"),
+            text,
+            "a DATE band and the same dates as text are the same bands"
+        );
+        assert_eq!(
+            band_mark_ink("TIMESTAMP"),
+            0,
+            "a TIMESTAMP band draws bars now, so `fields_of` can offer it a \
+             field and `resample` has nothing left to do"
+        );
+    }
+
+    /// Pixels of default mark ink in a counting `barY` whose band is one column
+    /// of six dates, cast to `cast`.
+    ///
+    /// Counted as pixels rather than scene ops for the reason
+    /// `tests/bar_orientation.rs` gives at length: geometry that never reached
+    /// a pixel satisfies every structural check there is.
+    fn band_mark_ink(cast: &str) -> u64 {
+        let source = format!(
+            "data:\n  {SOURCE}: \"SELECT CAST(d AS {cast}) AS d FROM (VALUES \
+             ('2020-01-01'),('2020-01-01'),('2020-01-02'),('2020-01-03'),\
+             ('2020-01-03'),('2020-01-04')) AS v(d)\"\nhconcat:\n\
+             {}",
+            crate::dashboard::time_bars_tile("d", 2)
+        );
+        let composed = crate::pipeline::compose_spec_str(&source, None)
+            .unwrap_or_else(|e| panic!("{cast}: {e}\n{source}"));
+        let png = std::env::temp_dir().join(format!("bf-band-ink-{cast}.png"));
+        crate::capture::capture_vello_only(composed, 1.0, &png).expect("export");
+        let want = meridian_design::viz::MARK_DEFAULT_LIGHT;
+        let want = [
+            (want.r * 255.0).round() as i32,
+            (want.g * 255.0).round() as i32,
+            (want.b * 255.0).round() as i32,
+        ];
+        let img = image::open(&png).expect("open png").to_rgba8();
+        img.pixels()
+            .filter(|p| (0..3).all(|c| (i32::from(p.0[c]) - want[c]).abs() <= 20))
+            .count() as u64
     }
 }

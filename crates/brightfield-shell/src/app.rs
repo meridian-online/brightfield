@@ -520,7 +520,7 @@ impl ChartDoc {
     }
 
     /// **The SQL the gestures on this chart are currently holding**, as one
-    /// line — `$brush = (temp >= 8.6 AND temp <= 15.2)`, several selections
+    /// line — `$brush = ("temp" >= 8.6 AND "temp" <= 15.2)`, several selections
     /// joined by ` · `. `None` when nothing is held, which is what makes a
     /// cleared selection clear the readout rather than leave `WHERE TRUE`
     /// standing.

@@ -1058,15 +1058,23 @@ fn gather_selected(predicate: &Predicate, plot: &PlotHandle, held: &mut Committe
 ///
 /// Matched against the plot's OWN channel columns rather than the gesture
 /// binding's, so a clause a plot did not draw an axis for gets no band.
+///
+/// On the column's NAME rather than on its spelling. A clause carries the
+/// column as a SQL identifier (`"observed by hour"`) because that is what a
+/// WHERE has to say; a plot handle carries the name the mark was bound to
+/// (`observed by hour`). Comparing the two strings directly matched neither the
+/// gesture's own clause nor a hand-written one — [`crate::sql_ident`] is the
+/// one place that knows they are the same column.
 fn channel_slot<'a>(
     plot: &PlotHandle,
     column: &str,
     held: &'a mut CommittedSelection,
 ) -> Option<&'a mut Option<Selected>> {
-    if plot.x_column.as_deref() == Some(column) && held.x.is_none() {
+    let name = crate::sql_ident::name_of(column);
+    if plot.x_column.as_deref() == Some(name.as_ref()) && held.x.is_none() {
         return Some(&mut held.x);
     }
-    if plot.y_column.as_deref() == Some(column) && held.y.is_none() {
+    if plot.y_column.as_deref() == Some(name.as_ref()) && held.y.is_none() {
         return Some(&mut held.y);
     }
     None

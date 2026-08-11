@@ -28,6 +28,7 @@ use brightfield_shell::dashboard;
 use brightfield_shell::data_file;
 use brightfield_shell::design::Mode;
 use brightfield_shell::editor::{EditorPane, SaveReport};
+use brightfield_shell::resample::Step;
 use brightfield_shell::starts;
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
@@ -540,6 +541,272 @@ const ONE_CATEGORY_CSV: &str = "name\nada\ngrace\nbarbara\nkaren\nada\n";
 /// One numeric column — one tile, and that tile is the binned histogram.
 const ONE_MEASURE_CSV: &str = "reading\n12\n18\n31\n44\n7\n25\n52\n63\n";
 
+/// One dated column holding a **day per row for three months** — the shape
+/// `counts-over-time` takes, and the shape that used to reach no kind at all.
+///
+/// Ninety distinct days is past the category ceiling `chart_kinds` applies, and
+/// that ceiling was applied to every non-binnable column — so this file, opened
+/// from the front door, came back as a sentence about the column it had left
+/// out. The test that opens it is
+/// [`every_kind_a_column_can_fill_draws_its_picture_from_the_open_a_file_route`].
+/// It is a fixture rather than a literal because ninety lines of CSV in a
+/// constant is ninety lines nobody reads; January, February and March of a
+/// non-leap year are 31 + 28 + 31 days, which is the ninety.
+///
+/// The first day is written twice so the counts are not uniformly one.
+fn ninety_days_csv() -> String {
+    let mut out = String::from("day\n2026-01-01\n");
+    for (month, days) in [(1, 31), (2, 28), (3, 31)] {
+        for day in 1..=days {
+            out.push_str(&format!("2026-{month:02}-{day:02}\n"));
+        }
+    }
+    out
+}
+
+/// One column of **instants**, ninety of them an hour apart — a `TIMESTAMP` in
+/// DuckDB rather than a `DATE`, which is the type this route used to have no
+/// answer for.
+///
+/// Ninety readings put the column past the ceiling `chart_kinds` applies to a
+/// category, and the times of day put it past what a `DATE` can spell: three
+/// days and change is counted by the hour, and there is no cast that turns an
+/// instant into an hour-shaped calendar value.
+fn ninety_hours_csv() -> String {
+    let mut out = String::from("observed\n");
+    for hour in 0..90 {
+        let day = 1 + hour / 24;
+        out.push_str(&format!("2026-01-{day:02} {:02}:00:00\n", hour % 24));
+    }
+    out
+}
+
+/// **A column of instants opens as a picture, through the profile DuckDB
+/// actually returns.**
+///
+/// The unit tests around `Dashboard::of` hand it a `ColumnProfile` they wrote,
+/// so what they cannot show is that a CSV of instants comes back typed
+/// `TIMESTAMP` and carrying the `min`/`max` the step is chosen from. This opens
+/// the file the way the front door does and reads the answer off the dashboard.
+///
+/// The claim is the card's: **no omission**. Before this, the column arrived in
+/// `Dashboard::omitted` reading *"no chart in this build fits it"* — a true
+/// sentence about a file whose one column a reader can see is a series.
+#[test]
+fn a_column_of_instants_opens_as_a_tile_and_not_as_an_omission() {
+    let dir = TempDir::new("instants");
+    let path = dir.write("instants.csv", &ninety_hours_csv());
+
+    let opened = data_file::open(&path.to_string_lossy()).expect("the file opens");
+    assert!(
+        opened.dashboard.omitted().is_empty(),
+        "a column of instants was left out: {:?}",
+        opened.dashboard.omitted()
+    );
+    let tile = opened
+        .dashboard
+        .sole_tile()
+        .expect("one column is one tile");
+    assert_eq!(tile.column(), "observed", "the tile is of the column");
+    assert_eq!(tile.kind(), chart_kinds::COUNTS_OVER_TIME);
+    assert_eq!(
+        tile.resampled(),
+        Some(Step::Hour),
+        "three days of hourly readings are counted by the hour"
+    );
+    assert_eq!(tile.drawn_column(), "observed by hour");
+    // And the picture is a picture: the composition carries the plot, over the
+    // one table every tile reads.
+    let spec = opened.dashboard.to_spec();
+    assert!(
+        spec.contains("strftime(CAST(\"observed\" AS TIMESTAMP)"),
+        "{spec}"
+    );
+    assert!(!opened.composed.plots.is_empty(), "nothing was composed");
+}
+
+/// Three columns — instants, a category and a measure — so the dashboard is
+/// three tiles and a clause one tile publishes can be counted in the tiles it
+/// takes away.
+///
+/// The instants span ninety hours, which is the same shape [`ninety_hours_csv`]
+/// opens: counted by the hour, so the bucket column is `observed by hour`.
+fn three_columns_csv() -> String {
+    const REGIONS: [&str; 3] = ["north", "south", "east"];
+    let mut out = String::from("observed,region,reading\n");
+    for hour in 0..90 {
+        let day = 1 + hour / 24;
+        out.push_str(&format!(
+            "2026-01-{day:02} {:02}:00:00,{},{hour}\n",
+            hour % 24,
+            REGIONS[hour % REGIONS.len()],
+        ));
+    }
+    out
+}
+
+/// **Clicking a bar on a timestamp tile leaves the other tiles on the page.**
+///
+/// The bucket column [`brightfield_shell::resample`] derives is named after the
+/// step it counts at, so its name always carries spaces — `observed by hour`,
+/// the ` by ` shape the unit test
+/// `a_derived_name_steps_aside_for_a_column_that_owns_it` pins.
+/// A `toggleX` click publishes that name into the shared selection, every other
+/// tile's query interpolates it into a `WHERE`, and unquoted it is not a column
+/// reference but a syntax error at `by`. The tiles that could not parse it
+/// drew nothing, so the gesture that is supposed to connect three pictures
+/// deleted two of them.
+///
+/// Three arms, and the two controls are what keep the first honest:
+///
+/// - **the gesture**, which is the only arm that produces the published name
+///   rather than restating it;
+/// - **the same column hand-quoted**, applied through the same seam — the SQL
+///   layer was never the defect and this says so;
+/// - **an ordinary column**, clicked the same way, because a fix that quoted
+///   the spaced name and broke every unspaced one would pass the first arm.
+#[test]
+fn a_click_on_a_timestamp_tile_leaves_its_sibling_tiles_on_the_page() {
+    let dir = TempDir::new("timestamp-click");
+    let path = dir.write("three.csv", &three_columns_csv());
+
+    // Fixture check, and the tile order the two clicks below index into.
+    let opened = data_file::open(&path.to_string_lossy()).expect("the file opens");
+    let chosen: Vec<&str> = opened
+        .dashboard
+        .tiles()
+        .iter()
+        .map(dashboard::Tile::column)
+        .collect();
+    assert_eq!(chosen, vec!["observed", "region", "reading"]);
+    assert_eq!(
+        opened.dashboard.tiles()[0].drawn_column(),
+        "observed by hour"
+    );
+    assert_eq!(opened.composed.plots.len(), 3);
+    drop(opened);
+
+    // --- Arm 1: the gesture -------------------------------------------------
+    let mut win = Window::open();
+    win.settle();
+    let ctx = win.ctx.clone();
+    win.app.open_data_file(&ctx, &path.to_string_lossy());
+    win.settle();
+    assert_eq!(win.app.chart_doc().composed.plots.len(), 3);
+
+    win.click(0, 0.5);
+
+    let held = win
+        .app
+        .chart_doc()
+        .selection_sql()
+        .expect("a click on a bar commits a clause — with none, nothing below is evidence");
+    assert!(
+        held.contains("\"observed by hour\""),
+        "the published clause does not name the bucket column as an \
+         identifier, so every tile reading it is parsing `by` as SQL: {held}"
+    );
+    assert_eq!(
+        win.app.chart_doc().composed.plots.len(),
+        3,
+        "clicking one tile took the other two off the page: {held}"
+    );
+
+    // --- Arm 2: the same column, hand-quoted, through the same seam ---------
+    let data_file::OpenedFile {
+        mut live, composed, ..
+    } = data_file::open(&path.to_string_lossy()).expect("the file opens");
+    let after = live
+        .apply(Interaction::Select {
+            name: brightfield_shell::dashboard::SELECTION.to_string(),
+            contributor: ComponentPath(composed.plots[0].path.clone()),
+            predicate: SqlPredicate::Point {
+                column: "\"observed by hour\"".to_string(),
+                values: vec![ScalarValue::Text("2026-01-02 05".to_string())],
+                meta: None,
+            },
+        })
+        .expect("a quoted clause over the bucket column re-composites");
+    assert_eq!(
+        after.plots.len(),
+        3,
+        "a hand-quoted clause over the same column loses a tile, so the defect \
+         is not the one this test names"
+    );
+
+    // --- Arm 3: the control, an ordinary column -----------------------------
+    let mut win = Window::open();
+    win.settle();
+    let ctx = win.ctx.clone();
+    win.app.open_data_file(&ctx, &path.to_string_lossy());
+    win.settle();
+
+    win.click(1, 0.5);
+
+    let held = win
+        .app
+        .chart_doc()
+        .selection_sql()
+        .expect("a click on a category bar commits a clause");
+    assert!(held.contains("region"), "{held}");
+    assert_eq!(
+        win.app.chart_doc().composed.plots.len(),
+        3,
+        "a column whose name needs no quoting lost a tile: {held}"
+    );
+}
+
+/// **The same defect reaches a column the file itself named with a space**, and
+/// no amount of renaming the bucket column would have closed it.
+///
+/// `sales region` is a legal column name in a CSV, in Parquet and in DuckDB.
+/// Before the clause carried an identifier, opening this file drew two tiles
+/// and clicking a bar on either left one — which is the same failure as the
+/// timestamp tile's, arriving through a name the user chose rather than one
+/// this build derived.
+#[test]
+fn a_click_on_a_tile_of_a_column_the_file_named_with_a_space_keeps_its_sibling() {
+    let dir = TempDir::new("spaced-column");
+    let path = dir.write(
+        "sales.csv",
+        "sales region,amount\n\
+         north,12\n\
+         north,18\n\
+         south,31\n\
+         south,44\n\
+         east,7\n\
+         east,25\n",
+    );
+
+    let mut win = Window::open();
+    win.settle();
+    let ctx = win.ctx.clone();
+    win.app.open_data_file(&ctx, &path.to_string_lossy());
+    win.settle();
+    assert_eq!(
+        win.app.chart_doc().composed.plots.len(),
+        2,
+        "fixture check: a category and a measure are two tiles"
+    );
+
+    win.click(0, 0.5);
+
+    let held = win
+        .app
+        .chart_doc()
+        .selection_sql()
+        .expect("a click on a bar commits a clause");
+    assert!(
+        held.contains("\"sales region\""),
+        "the published clause does not name the column as an identifier: {held}"
+    );
+    assert_eq!(
+        win.app.chart_doc().composed.plots.len(),
+        2,
+        "the measure's tile went off the page when its sibling was clicked: {held}"
+    );
+}
+
 /// **A file a user opened arrives on screen as a picture**, and each kind a
 /// single column can fill is drawn through its own module.
 ///
@@ -564,12 +831,14 @@ const ONE_MEASURE_CSV: &str = "reading\n12\n18\n31\n44\n7\n25\n52\n63\n";
 fn every_kind_a_column_can_fill_draws_its_picture_from_the_open_a_file_route() {
     let dir = TempDir::new("open-draws-a-picture");
     let mut through_a_module: Vec<ChartKindId> = Vec::new();
+    let ninety_days = ninety_days_csv();
 
     for (name, contents) in [
         // One tile each: the document IS that kind's picture, so the pane hosts
         // it through the kind's module.
         ("one-measure.csv", ONE_MEASURE_CSV),
         ("names.csv", ONE_CATEGORY_CSV),
+        ("ninety-days.csv", ninety_days.as_str()),
         // Several tiles: one picture no single kind built, presented directly.
         ("readings.csv", READINGS_CSV),
         ("crossed.csv", CROSSED_CSV),
@@ -754,14 +1023,20 @@ fn fixture_total() -> u64 {
 /// come from the gesture, the count comes from the file, and DuckDB is in
 /// neither. A count taken from a second query would only show the engine
 /// agreeing with itself.
+///
+/// `column` arrives as the clause spells it, which is a SQL identifier
+/// (`"temp"`); a CSV header carries the name (`temp`). The quotes come off here,
+/// where the two meet, rather than in `intervals` — what that walk hands back is
+/// what the store holds.
 fn rows_kept(column: &str, lo: f64, hi: f64) -> u64 {
+    let named = column.trim_matches('"');
     let mut lines = TWO_MEASURES_CSV.lines();
     let header: Vec<&str> = lines
         .next()
         .expect("the fixture has a header")
         .split(',')
         .collect();
-    let at = header.iter().position(|h| *h == column).unwrap_or_else(|| {
+    let at = header.iter().position(|h| *h == named).unwrap_or_else(|| {
         panic!(
             "the committed clause names {column}, which is no column of the fixture ({header:?})"
         )

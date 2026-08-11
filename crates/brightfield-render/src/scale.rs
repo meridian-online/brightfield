@@ -1186,7 +1186,10 @@ pub fn positional_axis_class(
                 continue;
             };
             match batch.column(idx).data_type() {
-                DataType::Utf8 => saw_band = true,
+                // `Date32` bands rather than running continuous: see the
+                // `Date32` arm of `infer_column_scale` for why a day is a
+                // category and a timestamp is not.
+                DataType::Utf8 | DataType::Date32 => saw_band = true,
                 DataType::Float64
                 | DataType::Int64
                 | DataType::Int32
@@ -1306,6 +1309,36 @@ fn infer_column_scale(
                 domain_max: max as f64,
                 range_start,
                 range_end,
+            })
+        }
+        // A day is a discrete thing to count rows in, so a `DATE` column takes
+        // a band and NOT the `Scale::Time` a timestamp takes. Each day is one
+        // category, named by its ISO spelling, in first-seen row order — the
+        // same rule the `Utf8` arm below follows, so a query ordered by the
+        // date column draws its days left to right in time order.
+        //
+        // A value with no calendar date behind it is skipped rather than
+        // failing the whole scale: one unrepresentable row would otherwise
+        // leave the plot with no band scale at all, which is a blank picture
+        // instead of a picture missing a bar.
+        DataType::Date32 => {
+            let arr = col.as_any().downcast_ref::<arrow::array::Date32Array>()?;
+            let mut categories: Vec<String> = Vec::new();
+            for i in 0..arr.len() {
+                if arr.is_null(i) {
+                    continue;
+                }
+                if let Some(day) = arr.value_as_date(i).map(|d| d.to_string()) {
+                    if !categories.contains(&day) {
+                        categories.push(day);
+                    }
+                }
+            }
+            Some(Scale::Band {
+                categories,
+                range_start,
+                range_end,
+                padding: 0.1,
             })
         }
         DataType::Utf8 => {
