@@ -38,10 +38,14 @@
 //!   start off the shipped bytes and holds that set equal to [`DRIVEN`], so a
 //!   start added with a `select:` nobody drives fails here instead of shipping.
 //! - **[`what_a_shipped_starts_prose_claims_resolves`]** reads the comment
-//!   lines of each shipped spec and decides the claims that can be decided:
+//!   blocks of each shipped spec and decides the claims that can be decided:
 //!   the paths they cite, the `$name`s they name, the `data.<name>`s they
 //!   reference, the start ids they mention and the tests they cite. The header
-//!   sentence that was false above was of exactly this family.
+//!   sentence that was false above was of exactly this family. Every one of
+//!   those rules admits a claim by shape and context and judges it by whether
+//!   it resolves — never both by the same question, which is how a rule ends
+//!   up unable to fire. [`the_prose_rules_separate_the_shipped_corpus`] is
+//!   what prices the over-reach that choice buys.
 //!
 //! # Why one of the fixtures is not the shipped bytes verbatim
 //!
@@ -71,6 +75,7 @@ use brightfield_spec::ast::Spec;
 use brightfield_spec::parse::{parse_spec, Format};
 use brightfield_sql::collect_plot_groups;
 use brightfield_sql::ir::ScalarValue;
+use brightfield_workbench::ViewKind;
 
 // ---------------------------------------------------------------------------
 // The fixtures: the shipped bytes, and the one substitution
@@ -778,38 +783,108 @@ enum Claim {
     Source(String),
     /// A backticked token equal to a shipped start's id.
     StartId(String),
-    /// A backticked token of four or more snake_case segments, read as the
-    /// name of a test the prose is citing.
+    /// A backticked token of [`TEST_NAME_SEGMENTS`] or more snake_case
+    /// segments, read as the name of a test the prose is citing.
     Test(String),
 }
 
-/// The claims in `spec_text`'s comment lines that this file can decide.
+/// The phrase a comment block uses when it is naming a shipped starting point.
 ///
-/// Comment lines rather than the leading header block alone: a claim two
-/// thirds of the way down a spec is a claim, and the extraction is the same.
+/// **Context, because shape alone does not separate, and resolution would not
+/// be a check.** Classifying a token as a start id by asking whether it
+/// resolves makes the assertion that follows unreachable: only tokens that
+/// already resolve ever reach it, so a broken id is silently reclassified into
+/// nothing and the gate stays green. Shape alone over-reaches the other way —
+/// the crosswalk's prose backticks `sec-ncen` and `sec-registration`, resolver
+/// method values cut exactly like an id and resolving to nothing.
+///
+/// So the claim is admitted by the block it sits in and judged by whether it
+/// resolves, which are two different questions.
+/// [`the_prose_rules_separate_the_shipped_corpus`] measures both halves of
+/// that separation on the shipped specs.
+const NAMES_A_START: &str = "starting point";
+
+/// How many snake_case segments make a backticked token a cited test name.
+///
+/// The value sits in a gap the shipped corpus leaves rather than in one this
+/// comment asserts — [`the_prose_rules_separate_the_shipped_corpus`] measures
+/// the widest non-test token and the narrowest cited test on the real specs
+/// and fails if this stops falling between them.
+const TEST_NAME_SEGMENTS: usize = 4;
+
+/// One contiguous run of comment lines, joined — the unit a claim's context is
+/// read from.
+///
+/// A blank comment line or any non-comment line ends a block, which is how
+/// this repo's own comment-citation gate splits Rust prose and for the same
+/// reason: two paragraphs are two claims, and joining them pairs one
+/// paragraph's marker with the next paragraph's token.
+fn comment_blocks(spec_text: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut current: Vec<&str> = Vec::new();
+    for line in spec_text.lines() {
+        match line.trim_start().strip_prefix('#') {
+            Some(body) if !body.trim().is_empty() => current.push(body),
+            _ if current.is_empty() => {}
+            _ => {
+                blocks.push(current.join(" "));
+                current.clear();
+            }
+        }
+    }
+    if !current.is_empty() {
+        blocks.push(current.join(" "));
+    }
+    blocks
+}
+
+/// Whether `token` is cut like a shipped start id: lowercase words joined by
+/// hyphens, nothing else in it.
+fn is_id_shaped(token: &str) -> bool {
+    token.contains('-')
+        && !token.starts_with('-')
+        && !token.ends_with('-')
+        && token
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// Whether `token` is cut like a Rust test name, and long enough to be one
+/// rather than a column.
+fn is_test_shaped(token: &str) -> bool {
+    token.split('_').count() >= TEST_NAME_SEGMENTS
+        && token
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// The claims in `spec_text`'s comment blocks that this file can decide.
+///
+/// Comment blocks rather than the leading header alone: a claim two thirds of
+/// the way down a spec is a claim, and the extraction is the same.
 ///
 /// The shape rules are drawn where they are because of what the shipped corpus
-/// actually contains, and each is narrow in the direction that reports
-/// nothing rather than reporting prose:
+/// actually contains, and each is narrow in the direction that reports nothing
+/// rather than reporting prose:
 ///
 /// - A backticked token with a `/` and no scheme is a path. `https://` carries
 ///   a scheme and is skipped; so is anything with whitespace in it.
 /// - A `::` path is out of scope, exactly as it is for the comment-citation
 ///   gate over this repo's Rust: resolving one means teaching this modules,
 ///   re-exports and glob imports.
-/// - Four snake_case segments is the line between a test name and a column
-///   name. The longest backticked column name in this corpus is three
-///   (`match_text_chars`); the tests these files cite are sentences.
-///   `every_shipped_starts_prose_makes_at_least_one_claim_of_each_kind` is
-///   what keeps a rule that stopped matching from reading as a clean tree.
+/// - A start id is [`is_id_shaped`] inside a [`NAMES_A_START`] block; a cited
+///   test is [`is_test_shaped`]. Neither rule asks whether the token resolves,
+///   because that is the question the assertions exist to ask.
+///
+/// [`every_shipped_starts_prose_makes_at_least_one_claim_of_each_kind`] keeps
+/// a rule that stopped matching from reading as a clean tree, and
+/// [`the_prose_rules_separate_the_shipped_corpus`] keeps the two shape rules
+/// from reaching each other's tokens.
 fn claims_in(spec_text: &str) -> Vec<Claim> {
     let mut out = Vec::new();
-    for line in spec_text.lines() {
-        let trimmed = line.trim_start();
-        let Some(comment) = trimmed.strip_prefix('#') else {
-            continue;
-        };
-        for token in backticked(comment) {
+    for block in comment_blocks(spec_text) {
+        let names_a_start = block.contains(NAMES_A_START);
+        for token in backticked(&block) {
             if token.contains("://") || token.contains(char::is_whitespace) {
                 continue;
             }
@@ -817,18 +892,13 @@ fn claims_in(spec_text: &str) -> Vec<Claim> {
                 out.push(Claim::Source(name.to_string()));
             } else if token.contains('/') {
                 out.push(Claim::Path(token.to_string()));
-            } else if starts::find(&token).is_some() {
+            } else if names_a_start && is_id_shaped(&token) {
                 out.push(Claim::StartId(token.to_string()));
-            } else if !token.contains("::")
-                && token.split('_').count() >= 4
-                && token
-                    .chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-            {
+            } else if !token.contains("::") && is_test_shaped(&token) {
                 out.push(Claim::Test(token.to_string()));
             }
         }
-        let mut rest = comment;
+        let mut rest = block.as_str();
         while let Some(at) = rest.find('$') {
             rest = &rest[at + 1..];
             let name: String = rest
@@ -910,6 +980,12 @@ fn collect_test_names(dir: &Path, out: &mut BTreeSet<String>) {
 /// does not declare, a `data.<name>` that is not a source, a start id no build
 /// ships, a test that has been renamed away.
 ///
+/// **Each of those is admitted by one question and judged by another.** A
+/// claim classified by whether it resolves can only ever be a claim that
+/// resolves, and the assertion under it is then unreachable — which is the
+/// defect this whole file exists to remove, so it would be a poor thing to
+/// reproduce here. [`claims_in`] admits on shape and block context alone.
+///
 /// The narrowness is the point. A rule that argued about prose would be turned
 /// off inside a month.
 #[test]
@@ -990,24 +1066,144 @@ fn every_shipped_starts_prose_makes_at_least_one_claim_of_each_kind() {
     }
 }
 
-/// A start's `spec:` is the bytes its click composes.
+/// **The two shape rules separate the shipped corpus, and the numbers that say
+/// so are measured rather than written down.**
 ///
-/// `producers_of` and `claims_in` both read the field rather than the loader,
-/// so a field that named some other text would let this whole file pass over a
-/// spec the product does not open. Held by loading each start that opens
-/// without a network and comparing the composition against one built from the
-/// field directly.
+/// Both rules in [`claims_in`] admit a claim by shape and context, never by
+/// whether it resolves — that is what makes the assertions in
+/// [`what_a_shipped_starts_prose_claims_resolves`] reachable. The cost of that
+/// choice is over-reach, and this is where it is priced:
+///
+/// - **The start-id rule.** An id-shaped token OUTSIDE a [`NAMES_A_START`]
+///   block has to resolve to no shipped start, and this test walks the
+///   shipped specs looking for one that does: such a token would be a claim
+///   the context rule hides from the gate. There also has to be at least one
+///   token in that position, or the context half of the rule is free and
+///   unmeasured.
+/// - **The test-name rule.** [`TEST_NAME_SEGMENTS`] has to fall between the
+///   widest snake_case token the corpus uses for something else and the
+///   narrowest one it uses to cite a test. Both populations have to be
+///   non-empty, or the gap is between nothing and nothing.
+#[test]
+fn the_prose_rules_separate_the_shipped_corpus() {
+    let tests = test_names();
+    let mut loose_ids: Vec<String> = Vec::new();
+    let mut cited_test_widths: Vec<usize> = Vec::new();
+    let mut other_snake_widths: Vec<(String, usize)> = Vec::new();
+
+    for text in starts::STARTS.iter().filter_map(|s| s.spec) {
+        for block in comment_blocks(text) {
+            let names_a_start = block.contains(NAMES_A_START);
+            for token in backticked(&block) {
+                if token.contains("://") || token.contains(char::is_whitespace) {
+                    continue;
+                }
+                if !names_a_start && is_id_shaped(&token) {
+                    loose_ids.push(token.clone());
+                }
+                if token.contains("::") || token.contains('/') || token.contains('.') {
+                    continue;
+                }
+                let snake = token
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+                if !snake {
+                    continue;
+                }
+                let width = token.split('_').count();
+                if tests.contains(&token) {
+                    cited_test_widths.push(width);
+                } else {
+                    other_snake_widths.push((token.clone(), width));
+                }
+            }
+        }
+    }
+
+    assert!(
+        !loose_ids.is_empty(),
+        "no id-shaped token in the shipped prose sits outside a {NAMES_A_START:?}          block, so that half of the start-id rule is carrying nothing and this          corpus cannot show it is needed"
+    );
+    let resolving: Vec<&String> = loose_ids
+        .iter()
+        .filter(|t| starts::find(t).is_some())
+        .collect();
+    assert!(
+        resolving.is_empty(),
+        "{resolving:?} name shipped starts from outside a {NAMES_A_START:?}          block, so the context rule is hiding claims the gate should decide"
+    );
+
+    let widest_other = other_snake_widths.iter().map(|(_, w)| *w).max();
+    let narrowest_test = cited_test_widths.iter().copied().min();
+    assert!(
+        widest_other.is_some() && narrowest_test.is_some(),
+        "the corpus yields cited tests {cited_test_widths:?} and other          snake_case tokens {other_snake_widths:?}; a threshold between an          empty population and anything is not a threshold"
+    );
+    assert!(
+        widest_other.unwrap_or(0) < TEST_NAME_SEGMENTS,
+        "the widest non-test snake_case token in the shipped prose is          {other_snake_widths:?}, which reaches the {TEST_NAME_SEGMENTS}-segment          floor and would be read as a cited test"
+    );
+    assert!(
+        narrowest_test.unwrap_or(usize::MAX) >= TEST_NAME_SEGMENTS,
+        "the narrowest cited test in the shipped prose is {cited_test_widths:?}          segments, under the {TEST_NAME_SEGMENTS}-segment floor, so the gate          reads it as prose and stops deciding it"
+    );
+}
+
+/// A start's `spec:` is the bytes its click composes, and a start that opens a
+/// chart has one.
+///
+/// **Two claims, and the second is the load-bearing one.** `producers_of` and
+/// `claims_in` both read the field, so a chart start carrying `spec: None`
+/// slips past the checks in this test file — its producers unreported by the
+/// enumeration, its prose unread — while `load` opens it from a second table
+/// keyed by id. That is the arrangement every chart start in this module
+/// had before the field existed, so it is one revert away rather than
+/// hypothetical, and `front_door.rs` does not close it: what reddens there is
+/// gallery size, a missing thumbnail and the door's snapshots, all of which an
+/// author fixes as part of adding a start, after which the undriven producer
+/// ships.
+///
+/// So the view a start declares and the presence of the field are pinned
+/// equal, for every start including the fetched one, before anything else is
+/// asked. The composition comparison below is the first claim, and it can only
+/// be made for the starts that open without a network.
 #[test]
 fn the_spec_a_start_carries_is_the_spec_its_click_opens() {
+    for start in starts::STARTS {
+        assert_eq!(
+            start.view == ViewKind::Charts,
+            start.spec.is_some(),
+            "{}: it is offered for the {:?} view, and it {}. A chart start \
+             with no `spec:` opens from bytes nothing in this file reads — no \
+             producer of its is enumerated and no claim of its prose is \
+             decided.",
+            start.id,
+            start.view,
+            if start.spec.is_some() {
+                "carries a chart spec"
+            } else {
+                "carries none"
+            }
+        );
+    }
+
     for start in starts::STARTS.iter().filter(|s| !s.remote) {
-        let Some(text) = start.spec else { continue };
         let opened = starts::load(start.id).unwrap_or_else(|e| panic!("{}: {e}", start.id));
         let starts::Opened::Charts(chart) = opened else {
-            panic!(
+            assert!(
+                start.spec.is_none(),
                 "{}: carries a chart spec but loads a protocol document",
                 start.id
-            )
+            );
+            continue;
         };
+        let text = start.spec.unwrap_or_else(|| {
+            panic!(
+                "{}: `load` opened a chart for it from bytes the entry does \
+                 not carry",
+                start.id
+            )
+        });
         let mut direct = LiveDashboard::load_str(text, None)
             .unwrap_or_else(|e| panic!("{}: the carried spec does not load: {e}", start.id));
         let composed = direct

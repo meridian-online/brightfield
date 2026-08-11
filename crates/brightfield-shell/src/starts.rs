@@ -207,9 +207,15 @@ pub struct Start {
     /// The chart spec this start opens — the bytes [`load`] composes — and
     /// `None` for a start that opens a Protocol manifest instead.
     ///
-    /// **The single declaration.** [`load`] dispatches on this field rather
-    /// than on a second table of `include_str!`s keyed by id, so the spec a
-    /// check reads and the spec a click opens cannot be different bytes.
+    /// **The single declaration.** [`load`] composes this field rather than
+    /// dispatching to a second table of `include_str!`s keyed by id, so a
+    /// check reading it here reads what a click opens. The field alone does
+    /// not make that true — [`load`] still carries a by-id arm for the
+    /// manifest start, and an arm added beside it could open a chart from
+    /// other bytes. `the_spec_a_start_carries_is_the_spec_its_click_opens` is
+    /// what holds the two together: it pins this field's presence to the
+    /// declared [`Start::view`], and compares what [`load`] composes against
+    /// this text for every start that opens without a network.
     ///
     /// Public because what a start *declares* is decidable without composing
     /// it, and for [`CROSSWALK_CHART`] that is the only way it is decidable at
