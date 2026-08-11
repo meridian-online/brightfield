@@ -781,7 +781,9 @@ enum Claim {
     Param(String),
     /// A `data.<name>` reference.
     Source(String),
-    /// A backticked token equal to a shipped start's id.
+    /// A backticked id-shaped token from a block that says it names a
+    /// starting point. Whether it resolves is the question the gate asks,
+    /// not the one that admits it here — see [`NAMES_A_START`].
     StartId(String),
     /// A backticked token of [`TEST_NAME_SEGMENTS`] or more snake_case
     /// segments, read as the name of a test the prose is citing.
@@ -1066,6 +1068,76 @@ fn every_shipped_starts_prose_makes_at_least_one_claim_of_each_kind() {
     }
 }
 
+/// **[`claims_in`] admits claims it cannot resolve — asked of `claims_in`
+/// itself, on prose written here for the purpose.**
+///
+/// The pin under the whole design. Both shape rules exist so that a claim is
+/// admitted by one question and judged by another; a rule that admits only
+/// what already resolves produces an assertion nothing can reach, and the
+/// gate reads green over broken prose. That is not hypothetical — it is what
+/// the start-id rule did before this commit, when its classifier was
+/// `starts::find(&token).is_some()` and its assertion was the same predicate.
+///
+/// [`the_prose_rules_separate_the_shipped_corpus`] cannot catch a return to
+/// that: it walks the corpus with the shape rules written out inline, so
+/// `claims_in` could be reverted underneath it and both would still agree
+/// about the shipped specs, where every start id does resolve. Only a token
+/// that resolves to nothing tells the two apart, and the shipped corpus
+/// contains none by construction. So the fixtures are synthetic and
+/// `claims_in` is the thing called.
+///
+/// The negative half matters as much: an id-shaped token in an UNMARKED block
+/// must not be admitted, or the context rule has stopped narrowing anything
+/// and `sec-ncen` becomes a claim about a start that does not exist.
+#[test]
+fn claims_in_admits_a_start_id_and_a_test_name_that_resolve_to_nothing() {
+    const ABSENT_START: &str = "no-such-start-shipped";
+    const ABSENT_TEST: &str = "no_such_test_is_written_here";
+    assert!(
+        starts::find(ABSENT_START).is_none(),
+        "the fixture id {ABSENT_START} is a shipped start, so admitting it \
+         proves nothing about a claim that resolves to nothing"
+    );
+    assert!(
+        !test_names().contains(ABSENT_TEST),
+        "the fixture name {ABSENT_TEST} is a real test, so admitting it \
+         proves nothing"
+    );
+
+    let marked = format!("# Bundled as the `{ABSENT_START}` {NAMES_A_START}, one click away.\n");
+    assert!(
+        claims_in(&marked).contains(&Claim::StartId(ABSENT_START.to_string())),
+        "claims_in did not admit {ABSENT_START} as a start-id claim from a \
+         {NAMES_A_START:?} block. Admitting only ids that resolve is what \
+         makes the assertion in what_a_shipped_starts_prose_claims_resolves \
+         unreachable, and a broken id then reads as clean prose. It found \
+         {:?}",
+        claims_in(&marked)
+    );
+
+    let cited = format!("# The `{ABSENT_TEST}` pins the choice.\n");
+    assert!(
+        claims_in(&cited).contains(&Claim::Test(ABSENT_TEST.to_string())),
+        "claims_in did not admit {ABSENT_TEST} as a cited test, so the same \
+         unreachable-assertion defect has appeared on the other rule. It \
+         found {:?}",
+        claims_in(&cited)
+    );
+
+    let unmarked = format!("# The `{ABSENT_START}` shows the same shape.\n");
+    let admitted: Vec<Claim> = claims_in(&unmarked)
+        .into_iter()
+        .filter(|c| matches!(c, Claim::StartId(_)))
+        .collect();
+    assert!(
+        admitted.is_empty(),
+        "claims_in admitted {admitted:?} from a block that never says it \
+         names a starting point, so the context half of the rule has stopped \
+         narrowing and every hyphen-cut data value in the corpus is now a \
+         claim about a start"
+    );
+}
+
 /// **The two shape rules separate the shipped corpus, and the numbers that say
 /// so are measured rather than written down.**
 ///
@@ -1122,7 +1194,9 @@ fn the_prose_rules_separate_the_shipped_corpus() {
 
     assert!(
         !loose_ids.is_empty(),
-        "no id-shaped token in the shipped prose sits outside a {NAMES_A_START:?}          block, so that half of the start-id rule is carrying nothing and this          corpus cannot show it is needed"
+        "no id-shaped token in the shipped prose sits outside a \
+         {NAMES_A_START:?} block, so that half of the start-id rule is \
+         carrying nothing and this corpus cannot show it is needed"
     );
     let resolving: Vec<&String> = loose_ids
         .iter()
@@ -1130,22 +1204,31 @@ fn the_prose_rules_separate_the_shipped_corpus() {
         .collect();
     assert!(
         resolving.is_empty(),
-        "{resolving:?} name shipped starts from outside a {NAMES_A_START:?}          block, so the context rule is hiding claims the gate should decide"
+        "{resolving:?} name shipped starts from outside a \
+         {NAMES_A_START:?} block, so the context rule is hiding claims the \
+         gate should decide"
     );
 
     let widest_other = other_snake_widths.iter().map(|(_, w)| *w).max();
     let narrowest_test = cited_test_widths.iter().copied().min();
     assert!(
         widest_other.is_some() && narrowest_test.is_some(),
-        "the corpus yields cited tests {cited_test_widths:?} and other          snake_case tokens {other_snake_widths:?}; a threshold between an          empty population and anything is not a threshold"
+        "the corpus yields cited tests {cited_test_widths:?} and other \
+         snake_case tokens {other_snake_widths:?}; a threshold between an \
+         empty population and a populated one is not a threshold"
     );
     assert!(
         widest_other.unwrap_or(0) < TEST_NAME_SEGMENTS,
-        "the widest non-test snake_case token in the shipped prose is          {other_snake_widths:?}, which reaches the {TEST_NAME_SEGMENTS}-segment          floor and would be read as a cited test"
+        "the widest non-test snake_case token in the shipped prose is \
+         {other_snake_widths:?}, which reaches the \
+         {TEST_NAME_SEGMENTS}-segment floor and would be read as a cited test"
     );
     assert!(
         narrowest_test.unwrap_or(usize::MAX) >= TEST_NAME_SEGMENTS,
-        "the narrowest cited test in the shipped prose is {cited_test_widths:?}          segments, under the {TEST_NAME_SEGMENTS}-segment floor, so the gate          reads it as prose and stops deciding it"
+        "the narrowest cited test in the shipped prose is \
+         {cited_test_widths:?} segments, under the \
+         {TEST_NAME_SEGMENTS}-segment floor, so the gate reads it as prose \
+         and stops deciding it"
     );
 }
 
@@ -1167,6 +1250,18 @@ fn the_prose_rules_separate_the_shipped_corpus() {
 /// equal, for every start including the fetched one, before anything else is
 /// asked. The composition comparison below is the first claim, and it can only
 /// be made for the starts that open without a network.
+///
+/// # The shape this file alone does not reach
+///
+/// One arrangement still carries an undriven producer past everything in this
+/// file: a start declaring `view: ViewKind::Protocol` and `remote: true` with
+/// no `spec:`, whose `load` arm opens a chart anyway. The pin above is
+/// satisfied by the false view, and the composition loop below skips it for
+/// being remote. It takes two untrue declarations to build, and the suite
+/// catches it elsewhere — `front_door.rs`'s gallery-size, thumbnail and door
+/// snapshot gates and `crosswalk_chart.rs`'s connection gate all redden on it.
+/// It is written down here because a reader of this file should not conclude
+/// that this file is the whole guard.
 #[test]
 fn the_spec_a_start_carries_is_the_spec_its_click_opens() {
     for start in starts::STARTS {
