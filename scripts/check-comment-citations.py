@@ -12,7 +12,7 @@ WHY THIS EXISTS
     universal claim that was also false. Both were one grep from being refuted.
     The grep is cheap; performing it is what did not happen. So it happens here.
 
-WHAT IS CHECKED (changed comment lines only, `origin/main...HEAD`)
+WHAT IS CHECKED (changed comment lines only, `origin/main...HEAD`, read at HEAD)
     A  ATTRIBUTION — "`<crate>`'s `<SYMBOL>`" or "`<SYMBOL>` in `<crate>`"
        asserts that a symbol is DEFINED in a named crate. Verified by looking
        for an actual definition (`const`/`static`/`fn`/`struct`/`enum`/`trait`/
@@ -80,7 +80,10 @@ WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
       past it, whatever the test asserts. It buys a reader a place to look and
       an author a moment of doubt, not a proof. Naming a test anywhere in the
       surrounding paragraph is enough, which is generous in the direction that
-      reduces what D reports.
+      reduces what D reports. A name counts two ways: the word `test` in the
+      prose, or a token that resolves to a `#[test]` function in this tree. The
+      rule asks for the test to be NAMED, so a name that resolves is the
+      citation — a word that happens to sit near it is the weaker of the two.
     - Rule D's RECALL is PARTIAL. It was measured against the comment lines a
       review wave in this repo made an author delete, and the measurement is in
       the commit that landed the block reader. What that measurement leaves
@@ -107,6 +110,11 @@ WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
           those commits.
       A sentence rule D misses costs a reviewer a read. A sentence it reports
       wrongly costs the gate itself.
+    - A diff run reads its content at the SAME commit its diff came from, so an
+      uncommitted edit moves neither the lines it checks nor the numbers it
+      reports. The resolvers are the exception and read the working tree: crate
+      sources, Cargo.lock and the test functions rule D exempts on are the code
+      the author has now, which is the code a citation should resolve against.
 
 ESCAPE HATCH
     A claim about code outside this repo (upstream libraries, a sibling repo)
@@ -125,6 +133,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import NamedTuple
 
@@ -236,17 +245,72 @@ SENTENCE_END = re.compile(r"(?<=[.!?;])\s+")
 # where that join would be wrong — two bullets are two claims.
 SEGMENT_START = re.compile(r"^\s*(?:[-*+]\s|\d+[.)]\s)")
 
-# Does the comment name a test? Deliberately generous — `tests`, `#[test]`,
-# `self-test`, `tested`, `foo_test`, `test_foo` all count, and the test is never
-# opened. The gate asks for a place to look; a reviewer decides whether what is
-# there holds the claim. Generous in this direction only reduces what D reports,
-# which is the direction a gate survives being wrong in.
-TEST_CITE = re.compile(r"(?:\b|_)test", re.I)
+# The WORD, one of the two ways a paragraph names a test. Deliberately generous
+# — `tests`, `#[test]`, `self-test`, `tested`, `foo_test`, `test_foo` all count,
+# and the test is never opened. The gate asks for a place to look; a reviewer
+# decides whether what is there holds the claim. Generous in this direction only
+# reduces what D reports, which is the direction a gate survives being wrong in.
+TEST_WORD = re.compile(r"(?:\b|_)test", re.I)
+
+# A test attribute: `#[test]`, `#[tokio::test]`, `#[test(...)]`. NOT `#[cfg(test)]`
+# — that marks a module of test-only code, and the helpers inside it are not
+# tests a comment can cite as its measurement.
+TEST_ATTR = r"#\[(?:[A-Za-z_][A-Za-z0-9_]*::)*test(?:\([^\]]*\))?\]"
+
+# The function such an attribute introduces, across any further attributes
+# (`#[ignore = "…"]`, `#[should_panic(…)]`) sitting between the two.
+TEST_FN_DEFN = re.compile(
+    rf"{TEST_ATTR}\s*(?:#\[[^\]]*\]\s*)*(?:pub\s+)?(?:async\s+)?fn\s+({SYMBOL})"
+)
+
+# Any identifier-shaped token, backticked or bare. What rule D resolves against
+# the test functions below — this repo writes a cited test name in backticks,
+# but a bare one is the same citation. Resolving rather than pattern-matching is
+# what stops an ordinary word from standing in for a test.
+IDENT = re.compile(SYMBOL)
 
 
 def crates() -> set[str]:
     d = ROOT / "crates"
     return {p.name for p in d.iterdir() if p.is_dir()} if d.is_dir() else set()
+
+
+_TEST_FNS: set[str] | None = None
+
+
+def test_functions() -> set[str]:
+    """Every `#[test]` function name in the tree, read once.
+
+    The enumeration rule D resolves a cited name against. Whole-tree, unlike the
+    file-scoped mark in symbol_citations(): a test is cited from the module it
+    measures, which is rarely the file it lives in.
+    """
+    global _TEST_FNS
+    if _TEST_FNS is None:
+        found: set[str] = set()
+        for f in sorted(ROOT.glob("crates/**/*.rs")):
+            if "target" in f.parts:
+                continue
+            try:
+                found |= set(TEST_FN_DEFN.findall(f.read_text(errors="replace")))
+            except OSError:
+                pass
+        _TEST_FNS = found
+    return _TEST_FNS
+
+
+def cites_test(text: str) -> bool:
+    """Does this paragraph point a reader at a test?
+
+    Two ways. The word `test`, which is prose about a test; or a token that
+    resolves to a test function this tree defines, which is the test named. The
+    second is what rule D asks for in words, and requiring the first instead
+    rejected the citation the rule wants — a paragraph whose only reference to
+    its measurement is that measurement's own function name.
+    """
+    return bool(TEST_WORD.search(text)) or any(
+        name in test_functions() for name in IDENT.findall(text)
+    )
 
 
 _CRATE_TEXT: dict[str, str] = {}
@@ -485,7 +549,7 @@ def completeness_claims(lines: list[tuple[int, str]], file_text: str = "") -> li
     claims: list[Claim] = []
     for segment in segments(lines):
         text, spans = joined(segment)
-        if TEST_CITE.search(text):
+        if cites_test(text):
             continue
         for start, _end, sentence in sentences(text):
             # The quantifier has to be PROSE. A backticked `all` is a column, a
@@ -520,8 +584,13 @@ def path_exists(ref: str) -> bool:
     return any((c / ref).exists() for c in (ROOT / "crates").iterdir() if c.is_dir())
 
 
-def changed_files() -> list[Path]:
-    """Files this branch touched, or a LOUD failure.
+def diff_revisions(repo: Path) -> tuple[str, str]:
+    """The two commits a diff run reads: the merge base, and the tip. Or a LOUD failure.
+
+    Resolved to hashes, once, because every other read in the run has to name
+    the SAME pair — which files changed, which lines were added, and the file
+    content those numbers index into. A line number means nothing except against
+    one revision of a file.
 
     The one thing this gate must never do is pass vacuously. A shallow CI
     checkout has no merge base with origin/main, `git diff` then yields nothing,
@@ -529,10 +598,14 @@ def changed_files() -> list[Path]:
     precisely how a checker becomes decorative. So an unresolvable base is an
     error, not an empty list.
     """
-    subprocess.run(["git", "-C", str(ROOT), "fetch", "-q", "--no-tags", "origin", "main"],
+    subprocess.run(["git", "-C", str(repo), "fetch", "-q", "--no-tags", "origin", "main"],
                    capture_output=True)
     base = subprocess.run(
-        ["git", "-C", str(ROOT), "merge-base", "origin/main", "HEAD"],
+        ["git", "-C", str(repo), "merge-base", "origin/main", "HEAD"],
+        capture_output=True, text=True,
+    )
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
         capture_output=True, text=True,
     )
     if base.returncode != 0 or not (base.stdout or "").strip():
@@ -541,19 +614,74 @@ def changed_files() -> list[Path]:
             "report success over a diff it could not read. In CI this means the\n"
             "checkout is too shallow; set `fetch-depth: 0`."
         )
+    if head.returncode != 0 or not (head.stdout or "").strip():
+        sys.exit(
+            "check-comment-citations: HEAD does not resolve to a commit, so there is\n"
+            "no revision to read the diff's content at."
+        )
+    return base.stdout.strip(), head.stdout.strip()
+
+
+class Source(NamedTuple):
+    """Where a run reads file content — the same place its diff came from.
+
+    A diff names lines by NUMBER, and a number only means something against one
+    revision of the file. Taking the changed lines from `git diff` and the
+    bodies from the working tree desynchronises the moment an edit is
+    uncommitted: everything below the first inserted line is off by as many
+    lines as were inserted, and the gate reports findings at lines the author
+    never touched while missing the ones they did. So a run carries one Source
+    and both halves read through it.
+
+    `rev=None` is the working tree, which is what `--all` audits.
+    """
+
+    repo: Path
+    rev: str | None = None
+
+    def text(self, path: Path) -> str:
+        """The file as this Source has it, read once. Absent reads as empty."""
+        key = (self.repo, self.rev, path)
+        if key not in _SOURCE_TEXT:
+            _SOURCE_TEXT[key] = self._read(path)
+        return _SOURCE_TEXT[key]
+
+    def _read(self, path: Path) -> str:
+        if self.rev is None:
+            try:
+                return path.read_text(errors="replace")
+            except OSError:
+                return ""
+        rel = path.relative_to(self.repo).as_posix()
+        out = subprocess.run(
+            ["git", "-C", str(self.repo), "show", f"{self.rev}:{rel}"],
+            capture_output=True,
+        )
+        if out.returncode != 0:
+            return ""
+        return out.stdout.decode(errors="replace")
+
+
+_SOURCE_TEXT: dict[tuple[Path, str | None, Path], str] = {}
+
+WORKTREE = Source(ROOT)
+
+
+def changed_files(repo: Path, base: str, head: str) -> list[Path]:
+    """The `.rs` files the diff between these two commits touched."""
     out = subprocess.run(
-        ["git", "-C", str(ROOT), "diff", "--name-only", "--diff-filter=d", "origin/main...HEAD"],
+        ["git", "-C", str(repo), "diff", "--name-only", "--diff-filter=d", base, head],
         capture_output=True,
         text=True,
     )
-    return [ROOT / f for f in (out.stdout or "").split() if f.endswith(".rs")]
+    return [repo / f for f in (out.stdout or "").split() if f.endswith(".rs")]
 
 
-def added_comment_lines(path: Path) -> list[tuple[int, str]]:
-    """(line-number, comment-body) for lines this branch ADDED."""
-    rel = path.relative_to(ROOT)
+def added_comment_lines(path: Path, repo: Path, base: str, head: str) -> list[tuple[int, str]]:
+    """(line-number, comment-body) for lines this diff ADDED, numbered at `head`."""
+    rel = path.relative_to(repo)
     out = subprocess.run(
-        ["git", "-C", str(ROOT), "diff", "-U0", "origin/main...HEAD", "--", str(rel)],
+        ["git", "-C", str(repo), "diff", "-U0", base, head, "--", str(rel)],
         capture_output=True,
         text=True,
     )
@@ -572,9 +700,9 @@ def added_comment_lines(path: Path) -> list[tuple[int, str]]:
     return hits
 
 
-def all_comment_lines(path: Path) -> list[tuple[int, str]]:
+def all_comment_lines(path: Path, source: Source) -> list[tuple[int, str]]:
     hits = []
-    for i, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+    for i, line in enumerate(source.text(path).splitlines(), 1):
         m = COMMENT.match(line)
         if m:
             hits.append((i, m.group(1)))
@@ -589,11 +717,16 @@ class Unit(NamedTuple):
     Reading them is not checking them: every rule here reports at a line in
     `scope`, D at the line its quantifier is on, so an unchanged neighbour can
     complete a sentence but cannot be the reason one is reported.
+
+    `source` is where the bodies came from, and it stays with the unit: check()
+    reads the surrounding file through it for the resolving mark, and names the
+    finding relative to its repo.
     """
 
     path: Path
     lines: list[tuple[int, str]]
     scope: frozenset[int]
+    source: Source = WORKTREE
 
 
 def comment_blocks(lines: list[tuple[int, str]]) -> list[list[tuple[int, str]]]:
@@ -610,40 +743,42 @@ def comment_blocks(lines: list[tuple[int, str]]) -> list[list[tuple[int, str]]]:
     return out
 
 
-def units(path: Path, scope: set[int] | None = None) -> list[Unit]:
-    """The comment blocks of a file, restricted to those `scope` touches.
+def units(path: Path, source: Source, scope: set[int] | None = None) -> list[Unit]:
+    """The comment blocks of a file as `source` has it, restricted to `scope`.
 
     `scope=None` means every comment line, which is what `--all` audits.
     """
-    blocks = comment_blocks(all_comment_lines(path))
+    blocks = comment_blocks(all_comment_lines(path, source))
     out = []
     for block in blocks:
         here = {n for n, _ in block}
         keep = here if scope is None else here & scope
         if keep:
-            out.append(Unit(path, block, frozenset(keep)))
+            out.append(Unit(path, block, frozenset(keep), source))
     return out
 
 
-_FILE_TEXT: dict[Path, str] = {}
+def diff_units(repo: Path) -> list[Unit]:
+    """The comment blocks this branch's diff touched, read at the tip it diffs to.
 
-
-def file_text(path: Path) -> str:
-    """The source a comment lives in, read once. Absent file reads as empty."""
-    if path not in _FILE_TEXT:
-        try:
-            _FILE_TEXT[path] = path.read_text(errors="replace")
-        except OSError:
-            _FILE_TEXT[path] = ""
-    return _FILE_TEXT[path]
+    The one place the diff and the content are paired. Both come from
+    `diff_revisions`, so neither can be taken from somewhere the other was not.
+    """
+    base, head = diff_revisions(repo)
+    source = Source(repo, head)
+    return [
+        u
+        for f in changed_files(repo, base, head)
+        for u in units(f, source, {n for n, _ in added_comment_lines(f, repo, base, head)})
+    ]
 
 
 def check(units: list[Unit]) -> list[str]:
     known = crates()
     failures: list[str] = []
     for unit in units:
-        path, rel = unit.path, unit.path.relative_to(ROOT)
-        source = file_text(path)
+        path, rel = unit.path, unit.path.relative_to(unit.source.repo)
+        source = unit.source.text(path)
         for lineno, body in unit.lines:
             if lineno not in unit.scope:
                 continue
@@ -681,6 +816,89 @@ def check(units: list[Unit]) -> list[str]:
                 f"names no test — cite the test that holds it, or drop the quantifier"
             )
     return failures
+
+
+def revision_guards() -> list[tuple[bool, str]]:
+    """Gate a repo whose working tree has DRIFTED from HEAD, and check where it reports.
+
+    Built here rather than derived from this checkout, because the shape needs
+    an uncommitted edit and this gate does not get to dirty the tree it is
+    checking. Two commits and one unstaged insertion:
+
+        origin/main    two lines of code, no comments
+        HEAD           adds a comment that claims nothing, and below it a
+                       comment that claims something
+        working tree   inserts one more comment ABOVE both, so the committed
+                       text below it sits one line lower than the diff says
+
+    Read the diff at HEAD and the content from disk and the two halves read
+    different files under one name: the claim the branch added is missed, and
+    the line number the diff reported lands on the uncommitted insertion
+    instead — a finding at a line the author never wrote. Read both at HEAD and
+    the insertion is invisible, which is what these two assert.
+    """
+    claim = "// every path through here re-checks [`Widget`]"
+    head_lines = [
+        "fn a() {}",
+        "fn b() {}",
+        "// [`Widget`] is rebuilt at boot",
+        "fn c() {}",
+        "",
+        claim,
+        "fn d() {}",
+    ]
+    drift = "// nothing else writes [`Widget`] here"
+    disk_lines = head_lines[:2] + [drift] + head_lines[2:]
+    at = head_lines.index(claim) + 1
+    moved = disk_lines.index(drift) + 1
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp).resolve()
+
+        def git(*args: str) -> None:
+            subprocess.run(
+                [
+                    "git", "-C", str(repo),
+                    "-c", "user.name=citation gate",
+                    "-c", "user.email=gate@invalid",
+                    "-c", "commit.gpgsign=false",
+                    "-c", f"core.hooksPath={repo / 'absent-hooks'}",
+                    *args,
+                ],
+                capture_output=True,
+                check=True,
+            )
+
+        rel = "src/a.rs"
+        rs = repo / rel
+        rs.parent.mkdir(parents=True)
+        git("init", "-q")
+        rs.write_text("\n".join(head_lines[:2]) + "\n")
+        git("add", rel)
+        git("commit", "-qm", "base")
+        base = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True
+        ).stdout.strip()
+        git("update-ref", "refs/remotes/origin/main", base)
+        rs.write_text("\n".join(head_lines) + "\n")
+        git("add", rel)
+        git("commit", "-qm", "head")
+        rs.write_text("\n".join(disk_lines) + "\n")
+
+        found = check(diff_units(repo))
+
+    return [
+        (
+            any(m.startswith(f"{rel}:{at} ") for m in found),
+            f"an uncommitted insertion does not move a finding: the claim the diff "
+            f"added is reported at its committed line ({rel}:{at})",
+        ),
+        (
+            len(found) == 1 and not any(m.startswith(f"{rel}:{moved} ") for m in found),
+            f"and nothing is reported at {rel}:{moved}, where reading the content "
+            f"from disk would have put a claim the diff never added",
+        ),
+    ]
 
 
 def self_test() -> int:
@@ -869,8 +1087,12 @@ def self_test() -> int:
     # gets a token qualifying through that mark ALONE. Deleting a mark then
     # reddens one named case instead of none — which is what a gate whose marks
     # were unpinned looks like from the outside: green, and blind.
+    # A fixture name must not be one rule D would read as a citation, or the
+    # case it is meant to redden exempts itself. `cites_test`, not the word
+    # pattern alone: a derived `fn` name can BE a test function, and then the
+    # paragraph built from it goes green for a reason the label does not say.
     def usable(name: str) -> bool:
-        return not TEST_CITE.search(name) and not QUANTIFIER.fullmatch(name)
+        return not cites_test(name) and not QUANTIFIER.fullmatch(name)
 
     # The probe file is a REAL file, because the resolving mark reads the source
     # the comment sits in. A fixture written against a path that does not exist
@@ -889,7 +1111,7 @@ def self_test() -> int:
     if probe is None:
         print("self-test: no lowercase fn to derive the file-resolved-symbol case from")
         return 1
-    probe_text = file_text(probe)
+    probe_text = WORKTREE.text(probe)
 
     def defined_in_probe(name: str) -> bool:
         return bool(re.search(DEFN.format(sym=re.escape(name)), probe_text))
@@ -1001,6 +1223,32 @@ def self_test() -> int:
          ('"only"', f"`{camel}`")),
     ]
 
+    # --- the NAMED-TEST fixtures ------------------------------------------
+    # Rule D asks an author to NAME the test. These pin that the name is what
+    # satisfies it: the fixture is a real test function of this tree, cited in a
+    # paragraph carrying no other reference to a test, and the negative is a
+    # real function that is not one — so a rule that merely accepted anything
+    # snake_case would redden here rather than pass quietly.
+    named_test = next(
+        (n for n in sorted(test_functions()) if not TEST_WORD.search(n)),
+        None,
+    )
+    if named_test is None:
+        print("self-test: no test function whose own name lacks the word `test`, so the "
+              "named-test case cannot be told apart from the word case")
+        return 1
+
+    cases += [
+        (f"[`{camel}`] is the only thing that makes one; `{named_test}` holds that", True,
+         f"STAYS GREEN: a test named by its function, no word `test` anywhere "
+         f"({named_test})"),
+        (f"[`{camel}`] is the only thing that makes one; held by {named_test}", True,
+         "STAYS GREEN: the same citation without the backticks"),
+        (f"[`{camel}`] is the only thing that makes one; `{snake}` holds that", False,
+         f"a function that is NOT a test does not stand in for one ({snake})",
+         ('"only"', f"`{camel}`")),
+    ]
+
     # --- the BLOCK fixtures -----------------------------------------------
     # A sentence wraps. Reading a line as if the wrap ended it was rule D's
     # largest measured miss, so these carry the claim ACROSS lines — and the
@@ -1061,7 +1309,7 @@ def self_test() -> int:
          "DEFN does not read `type` inside `retype` as a definition of `only`"),
         (bool(re.search(DEFN.format(sym="only"), "pub type only = u8;")),
          "DEFN still reads a real `type only` as a definition"),
-    ]
+    ] + revision_guards()
 
     # A finding has to say WHERE, or a reader cannot act on it. Asserted on
     # every case that is meant to be reported, not on a sample of them.
@@ -1109,7 +1357,7 @@ def self_test() -> int:
     if bad:
         print(f"\nself-test FAILED: {bad} of {len(cases) + len(guards)} cases wrong")
         return 1
-    print(f"\nself-test passed: {len(cases)} derived cases and {len(guards)} pattern "
+    print(f"\nself-test passed: {len(cases)} derived cases and {len(guards)} written "
           f"guards, detection and control both correct")
     return 0
 
@@ -1119,14 +1367,9 @@ def main() -> int:
     if "--self-test" in args:
         return self_test()
     if "--all" in args:
-        work = [u for f in sorted(ROOT.glob("crates/**/*.rs")) for u in units(f)]
+        work = [u for f in sorted(ROOT.glob("crates/**/*.rs")) for u in units(f, WORKTREE)]
     else:
-        work = [
-            u
-            for f in changed_files()
-            if f.exists()
-            for u in units(f, {n for n, _ in added_comment_lines(f)})
-        ]
+        work = diff_units(ROOT)
 
     failures = check(work)
     if failures:
