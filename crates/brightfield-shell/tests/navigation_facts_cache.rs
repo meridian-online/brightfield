@@ -29,8 +29,16 @@ use brightfield_shell::pipeline::LiveDashboard;
 /// The row count is taken from the ceiling constant rather than written out,
 /// so moving the ceiling moves this fixture with it instead of leaving a test
 /// exercising a path the product no longer takes.
+///
+/// **Double the ceiling, not one past it.** The settled gesture below pans in
+/// to `spread <= 60` — about 60% of this column's own domain — and a settled
+/// navigation re-derives the sample rate for the row count INSIDE that
+/// narrower window. One row past the ceiling drops under it once cut to 60%,
+/// and this fixture is about the cache staying quiet DURING a sustained pan,
+/// not about the rate the settle picks — so the margin keeps both ends of the
+/// gesture on the SAME modulus.
 fn sampling_scatter() -> String {
-    let rows = MEASURED_INKED_MAX + 1;
+    let rows = MEASURED_INKED_MAX * 2;
     format!(
         "data:
   points:
@@ -52,8 +60,11 @@ height: 480
 
 /// The same shape with a CATEGORICAL y, so the band-order statement the
 /// sampling policy's merge added to this path is in the repaint too.
+///
+/// Same margin as [`sampling_scatter`], and for the same reason: the settled
+/// pan below must not cross under the ceiling partway through the gesture.
 fn sampling_categorical_scatter() -> String {
-    let rows = MEASURED_INKED_MAX + 1;
+    let rows = MEASURED_INKED_MAX * 2;
     format!(
         "data:
   points:
