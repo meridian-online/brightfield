@@ -208,8 +208,7 @@ fn assert_choices(dash: &Dashboard) {
 fn each_column_of_the_table_gets_the_tile_its_type_earns() {
     let path = fixture();
     let chosen = path.to_str().expect("utf-8 fixture path");
-    let opened =
-        data_file::open(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let opened = data_file::open(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
     assert_choices(&opened.dashboard);
 }
 
@@ -260,8 +259,7 @@ fn the_generated_dashboard_light_baseline() {
     // The structural guard, ahead of the photograph, for the reason in this
     // file's header: `UPDATE_SNAPSHOTS=1` writes whatever `image_snapshot` is
     // handed.
-    let opened =
-        data_file::open(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let opened = data_file::open(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
     assert_choices(&opened.dashboard);
     assert_eq!(
         opened.composed.plots.len(),
