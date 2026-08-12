@@ -26,7 +26,9 @@
 //! **data file**. The two were already reconciled: `Boot::open_sampled`
 //! classifies a path naming a data file first and hands it to
 //! [`Boot::data_file`], so `brightfield-shot --spec table.csv --out out.png`
-//! renders this same picture through this same code today. What is photographed
+//! renders this same picture through this same code today — the classification
+//! step being what `a_path_on_the_command_line_opens_as_the_generated_dashboard`
+//! holds, in `tests/scripted_open.rs`. What is photographed
 //! here is that boot, run through [`brightfield_shell::capture::capture_png`] —
 //! the crate's own headless path, which is what the shot binary runs and what
 //! the live window runs — with the resulting image handed to
