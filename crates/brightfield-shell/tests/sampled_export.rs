@@ -1344,9 +1344,10 @@ height: {H}
 #[test]
 fn a_navigation_that_narrows_under_the_ceiling_draws_complete_with_no_notice() {
     use brightfield_engine::{AxisExtent, NavigationExtent};
+    use brightfield_render::sample_policy::MEASURED_INKED_MAX;
 
-    let full_rows = 40 * 104_600u64; // 40x MEASURED_INKED_MAX — needs a sample at open.
-    let narrow_rows = 104_600u64 / 2; // half MEASURED_INKED_MAX — draws complete.
+    let full_rows = 40 * MEASURED_INKED_MAX; // needs a sample at open.
+    let narrow_rows = MEASURED_INKED_MAX / 2; // draws complete.
 
     let dir = std::env::temp_dir().join(format!("bf-nav-complete-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
