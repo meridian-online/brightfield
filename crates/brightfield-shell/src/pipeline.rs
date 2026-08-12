@@ -825,11 +825,11 @@ impl LiveDashboard {
         // The ceiling policy is asked again HERE, after the extent has landed
         // on the session but before the re-query it governs: a settled
         // navigation is the gesture that changes what is inside the frame,
-        // and `sample_policy::sample_exponent` — the smallest modulus that
-        // brings the plot back under the ceiling — depends on nothing else.
-        // Every other interaction (`Select`, `ClearSelect`, `SetParam`)
-        // changes which rows pass, not how many are in the frame to begin
-        // with, so those are deliberately left off this path.
+        // and that count is what `sample_policy::sample_exponent` — the
+        // smallest modulus that brings the plot back under the ceiling — is a
+        // function of. `Select`, `ClearSelect` and `SetParam` change which
+        // rows pass, not how many are in the frame to begin with, so those
+        // are deliberately left off this path.
         //
         // Skipped once `sample_is_automatic` is false: an explicit rate
         // (`--force-sample`, or a caller's own `set_sample`) outranks the

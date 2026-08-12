@@ -1380,7 +1380,11 @@ fn a_navigation_that_narrows_under_the_ceiling_draws_complete_with_no_notice() {
 
     let png = dir.join("after-navigate.png");
     let (w, h) = (after.width, after.height);
-    assert_eq!((w, h), (W, H), "fixture check: the canvas size must be what the helpers expect");
+    assert_eq!(
+        (w, h),
+        (W, H),
+        "fixture check: the canvas size must be what the helpers expect"
+    );
     capture_vello_only(after, 1.0, &png).expect("capture after the navigation");
     assert_eq!(
         attention_fill_in_band(&png),

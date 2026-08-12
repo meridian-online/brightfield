@@ -654,8 +654,8 @@ fn a_settled_navigation_repicks_the_modulus_for_the_narrowed_extent() {
     let (full_dir, full_spec) = fixture("navigate-full", &indexed_scatter(full_rows));
     let (narrow_dir, narrow_spec) = fixture("navigate-fresh", &indexed_scatter(narrow_rows));
 
-    let (mut dash, first) = live_spec_sampled(full_spec.to_str().expect("utf-8 path"), None)
-        .expect("live, unflagged");
+    let (mut dash, first) =
+        live_spec_sampled(full_spec.to_str().expect("utf-8 path"), None).expect("live, unflagged");
     let open_rate = dash
         .coordinator()
         .session()
@@ -700,7 +700,8 @@ fn a_settled_navigation_repicks_the_modulus_for_the_narrowed_extent() {
         .expect("fixture check: a fresh open of this row count must need a sample too");
 
     assert_eq!(
-        narrowed_rate, fresh_rate,
+        narrowed_rate,
+        fresh_rate,
         "a navigation gesture that narrowed the extent to {narrow_rows} rows chose 1-in-{} \
          while a fresh open of the identical {narrow_rows}-row table chose 1-in-{} — the \
          settled re-query must ask `sample_exponent` again for the row count now inside the \
@@ -802,7 +803,8 @@ fn zooming_out_after_in_returns_the_rate_the_plot_opened_with() {
         .sample()
         .expect("fixture check: the round trip must land back on a sampled extent");
     assert_eq!(
-        final_rate, opened_rate,
+        final_rate,
+        opened_rate,
         "a zoom in then its reciprocal zoom out chose 1-in-{} where the plot opened at \
          1-in-{} — the round trip left it stuck at the finer, zoomed-in rate instead of \
          re-coarsening back to the rate the plot opened with",
@@ -823,10 +825,10 @@ fn zooming_out_after_in_returns_the_rate_the_plot_opened_with() {
 
 /// **AC4: zooming in densifies; it does not reshuffle.**
 ///
-/// The nesting property [`TEN_MILLION`]'s own `description` states: "every
-/// point drawn here is also drawn at every coarser rate." The mechanism is a
-/// hash predicate on the row's own bytes (`hash(_s) % modulus = 0`, see
-/// `render.rs`), which nests for any two power-of-two moduli independently of
+/// [`TEN_MILLION`]'s own `description` states the nesting claim this proves: a
+/// point drawn at a coarser rate is drawn at a finer one too. The mechanism is
+/// a hash predicate on the row's own bytes (`hash(_s) % modulus = 0`, see
+/// `render.rs`), which nests for two power-of-two moduli independently of
 /// which extent the query happens to be scoped to — so the claim has to keep
 /// holding across a rate CHANGE a navigation triggers, not only across one
 /// made by hand with `--force-sample`.
@@ -844,17 +846,21 @@ fn zooming_in_keeps_every_row_the_coarser_rate_drew() {
     use brightfield_spec::analysis::ComponentPath;
     use std::collections::HashSet;
 
-    fn drawn_row_identities(dash: &mut brightfield_shell::pipeline::LiveDashboard) -> HashSet<(u64, u64)> {
+    fn drawn_row_identities(
+        dash: &mut brightfield_shell::pipeline::LiveDashboard,
+    ) -> HashSet<(u64, u64)> {
         let batches = dash.coordinator().chart_rows(0).expect("chart rows");
         let mut set = HashSet::new();
         for batch in &batches {
             let spread_idx = batch.schema().index_of("spread").expect("spread column");
             let depth_idx = batch.schema().index_of("depth").expect("depth column");
-            let spread = batch.column(spread_idx)
+            let spread = batch
+                .column(spread_idx)
                 .as_any()
                 .downcast_ref::<Float64Array>()
                 .expect("f64 spread");
-            let depth = batch.column(depth_idx)
+            let depth = batch
+                .column(depth_idx)
                 .as_any()
                 .downcast_ref::<Float64Array>()
                 .expect("f64 depth");
@@ -916,7 +922,8 @@ fn zooming_in_keeps_every_row_the_coarser_rate_drew() {
 
     let missing = coarse_rows.difference(&fine_rows).count();
     assert_eq!(
-        missing, 0,
+        missing,
+        0,
         "{missing} of {} rows the coarser 1-in-{} rate drew over the navigated extent are \
          absent from the finer 1-in-{} rate's drawing of the SAME extent — the picture \
          reshuffled instead of densifying when navigation changed the rate",
