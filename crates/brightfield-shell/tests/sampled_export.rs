@@ -1310,3 +1310,87 @@ fn an_unsampled_aggregating_plot_carries_no_sampling_notice() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A row-level dot scatter whose x column is `0..rows` — unique per row, so a
+/// navigation extent that names an interval on x selects an EXACT, predictable
+/// row count.
+fn indexed_scatter(rows: u64) -> String {
+    format!(
+        "data:
+  points:
+    query: |
+      SELECT CAST(i AS DOUBLE) AS gx, CAST(i AS DOUBLE) AS gy
+      FROM range({rows}) AS t(i)
+plot:
+  - mark: dot
+    data: {{ from: points }}
+    x: gx
+    y: gy
+width: {W}
+height: {H}
+"
+    )
+}
+
+/// **AC2: a navigation that narrows under the ceiling draws complete, with no
+/// notice.**
+///
+/// A settled navigation now re-asks the sampling policy for the row count
+/// inside its (possibly narrower) extent. When that count no longer needs a
+/// sample, the plot has to draw COMPLETE and carry no notice — through the
+/// same chart-only raster export path [`the_sampling_notice_is_in_the_chart_only_export`]
+/// asserts the opposite of, so a re-derivation that fires but leaves a stale
+/// notice band drawn cannot pass this.
+#[test]
+fn a_navigation_that_narrows_under_the_ceiling_draws_complete_with_no_notice() {
+    use brightfield_engine::{AxisExtent, NavigationExtent};
+
+    let full_rows = 40 * 104_600u64; // 40x MEASURED_INKED_MAX — needs a sample at open.
+    let narrow_rows = 104_600u64 / 2; // half MEASURED_INKED_MAX — draws complete.
+
+    let dir = std::env::temp_dir().join(format!("bf-nav-complete-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let spec_path = dir.join("indexed.yaml");
+    std::fs::write(&spec_path, indexed_scatter(full_rows)).expect("write spec");
+    let path = spec_path.to_str().unwrap();
+
+    let (mut dash, first) = live_spec_sampled(path, None).expect("live, unflagged");
+    assert!(
+        first.plots[0].sample.is_some(),
+        "fixture check: the full table must need a sample at open"
+    );
+
+    let plot_path = first.plots[0].path.clone();
+    let after = dash
+        .apply(Interaction::Navigate {
+            plot: ComponentPath(plot_path),
+            extent: NavigationExtent {
+                x: Some(AxisExtent::new("gx", 0.0, (narrow_rows - 1) as f64)),
+                y: None,
+            },
+        })
+        .expect("the navigation re-composites");
+
+    assert!(
+        after.plots[0].sample.is_none(),
+        "narrowing the extent to {narrow_rows} rows — at or below the ceiling — must render \
+         COMPLETE, with no sampling fact. Got {:?}",
+        after.plots[0].sample
+    );
+
+    let png = dir.join("after-navigate.png");
+    let (w, h) = (after.width, after.height);
+    assert_eq!((w, h), (W, H), "fixture check: the canvas size must be what the helpers expect");
+    capture_vello_only(after, 1.0, &png).expect("capture after the navigation");
+    assert_eq!(
+        attention_fill_in_band(&png),
+        0,
+        "a plot that rendered COMPLETE after a navigation narrowed it under the ceiling must \
+         carry no sampling notice — the attention fill is the one visible sign a reader gets \
+         that they are looking at fewer rows than the frame holds, and a re-derivation that \
+         picked `None` but left a stale band drawn is exactly the invisible degradation this \
+         notice exists to prevent"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

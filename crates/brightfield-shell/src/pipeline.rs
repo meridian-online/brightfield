@@ -597,6 +597,18 @@ pub struct LiveDashboard {
     /// so the capture tiers and the boot paint are unchanged by the existence
     /// of this field.
     viewport: Rect,
+    /// Whether the session's current sample rate is [`automatic_sample`]'s
+    /// answer, rather than one a caller named through [`LiveDashboard::set_sample`]
+    /// (which is how `--force-sample` reaches here — see [`live_spec_sampled`]).
+    ///
+    /// The ceiling policy is a function of the row count INSIDE the current
+    /// extent, so a settled navigation — the one interaction that changes what
+    /// is inside the extent — re-derives it. But `an_explicit_rate_outranks_the_policy`
+    /// holds in both directions: a rate someone named must not be quietly
+    /// refined, or coarsened, the next time the reader zooms. This flag is how
+    /// [`LiveDashboard::apply`] tells "the policy chose this, re-ask it" from
+    /// "a caller chose this, leave it alone".
+    sample_is_automatic: bool,
 }
 
 /// What each plot's axes are drawn at, keyed by plot node path.
@@ -642,6 +654,7 @@ impl LiveDashboard {
             view_extents: ViewExtents::new(),
             pins: PlotPins::new(),
             viewport: Rect::zero(),
+            sample_is_automatic: false,
         }))
     }
 
@@ -658,6 +671,7 @@ impl LiveDashboard {
     fn sampled_by_policy(mut dash: Self) -> Self {
         let rate = automatic_sample(dash.coordinator.session());
         dash.coordinator.session_mut().set_sample(rate);
+        dash.sample_is_automatic = true;
         dash
     }
 
@@ -684,6 +698,7 @@ impl LiveDashboard {
             view_extents: ViewExtents::new(),
             pins: PlotPins::new(),
             viewport: Rect::zero(),
+            sample_is_automatic: false,
         }))
     }
 
@@ -785,6 +800,7 @@ impl LiveDashboard {
         //
         // The QUERY store is written speculatively and rolled back below if the
         // extent turns out to draw nothing: see the note on that arm.
+        let navigated = matches!(interaction, Interaction::Navigate { .. });
         let rollback = match &interaction {
             Interaction::Navigate { plot, extent } => {
                 let key = plot.0.clone();
@@ -794,12 +810,42 @@ impl LiveDashboard {
                     .navigation_extent(&key)
                     .cloned()
                     .unwrap_or_default();
+                // The automatic rate is a function of the row count inside
+                // THIS extent, so it is speculative in exactly the same way
+                // the query store's write below is, and for the same reason:
+                // an extent that turns out to draw nothing must not leave a
+                // rate chosen for it in force.
+                let previous_sample = self.coordinator.session().sample();
                 self.set_view_extent(&key, view_extent_of(extent));
-                Some((key, previous))
+                Some((key, previous, previous_sample))
             }
             _ => None,
         };
         self.coordinator.apply(interaction);
+        // The ceiling policy is asked again HERE, after the extent has landed
+        // on the session but before the re-query it governs: a settled
+        // navigation is the gesture that changes what is inside the frame,
+        // and `sample_policy::sample_exponent` — the smallest modulus that
+        // brings the plot back under the ceiling — depends on nothing else.
+        // Every other interaction (`Select`, `ClearSelect`, `SetParam`)
+        // changes which rows pass, not how many are in the frame to begin
+        // with, so those are deliberately left off this path.
+        //
+        // Skipped once `sample_is_automatic` is false: an explicit rate
+        // (`--force-sample`, or a caller's own `set_sample`) outranks the
+        // policy in both directions, so a zoom must not quietly refine OR
+        // coarsen a rate someone named.
+        //
+        // Writing through the session directly (not `Self::set_sample`) is
+        // deliberate: that setter is the caller's declaration that they are
+        // choosing the rate, and going through it here would flip
+        // `sample_is_automatic` to false on the very re-derivation meant to
+        // keep it true — the next zoom would then find the flag off and stop
+        // re-asking, which is the one-way ratchet AC3 exists to rule out.
+        if navigated && self.sample_is_automatic {
+            let rate = automatic_sample(self.coordinator.session());
+            self.coordinator.session_mut().set_sample(rate);
+        }
         let composed = self.present();
 
         // A gesture onto empty space composes nothing ("no marks rendered
@@ -808,7 +854,8 @@ impl LiveDashboard {
         // would claim the drawn rows are scoped to a range that returned none
         // of them, and every later re-query — a brush, a slider, a full
         // `execute_all` — would re-emit at a range the reader never saw a
-        // picture of.
+        // picture of. The sample rate follows it for the same reason: it was
+        // derived from the same rejected extent.
         //
         // The RENDER store is deliberately NOT rolled back. The axes did move,
         // on this step and on every step of the gesture before it; the frame on
@@ -818,10 +865,11 @@ impl LiveDashboard {
         // true of the half it governs: the render store says where the axes
         // are, the query store says what the rows are. They re-converge on the
         // next settle that draws, or on a reset.
-        if let (Err(_), Some((key, previous))) = (&composed, rollback) {
+        if let (Err(_), Some((key, previous, previous_sample))) = (&composed, rollback) {
             self.coordinator
                 .session_mut()
                 .set_navigation_extent(&key, previous);
+            self.coordinator.session_mut().set_sample(previous_sample);
         }
         composed
     }
@@ -866,7 +914,14 @@ impl LiveDashboard {
     /// Set the pushed-down sample rate every later query carries — including
     /// every re-query a brush, a click or a slider triggers, which is the
     /// point of holding it on the session rather than on the call.
+    ///
+    /// A settled navigation is the one exception: it re-asks the policy for
+    /// the row count inside its (possibly narrower, possibly wider) extent
+    /// rather than carrying this rate forward unchanged — see [`Self::apply`].
+    /// Calling this method is what turns that re-asking OFF: from here on the
+    /// rate is the caller's, in both directions, until this is called again.
     pub fn set_sample(&mut self, sample: Option<SampleRate>) {
+        self.sample_is_automatic = false;
         self.coordinator.session_mut().set_sample(sample);
     }
 

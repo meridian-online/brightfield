@@ -601,3 +601,327 @@ fn a_sampled_band_axis_lays_its_categories_out_where_the_complete_one_does() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// -----------------------------------------------------------------------
+// A settled navigation re-asks the policy
+// -----------------------------------------------------------------------
+//
+// The mechanism above answers "what rate does N rows need"; these answer
+// "what rate does the plot actually run at once a gesture has changed how
+// many rows are inside its frame." Before this, the answer was frozen at
+// open — `sample_policy::sample_exponent` was correct and tested, and the
+// settled navigation re-query never called it a second time.
+
+/// A row-level dot scatter whose x column is `0..rows` — unique per row, so a
+/// navigation extent that names an interval on x selects an EXACT,
+/// predictable row count rather than an estimate a reader would have to trust.
+fn indexed_scatter(rows: u64) -> String {
+    format!(
+        "data:
+  points:
+    query: |
+      SELECT CAST(i AS DOUBLE) AS gx, CAST(i AS DOUBLE) AS gy
+      FROM range({rows}) AS t(i)
+plot:
+  - mark: dot
+    data: {{ from: points }}
+    x: gx
+    y: gy
+width: {W}
+height: {H}
+"
+    )
+}
+
+/// **AC1: a settled navigation re-picks the modulus for the narrowed extent.**
+///
+/// Measured before this closed: a navigated 3,892,783-row extent drew 30,265
+/// (1/128 — the rate the FULL 10,000,000-row table needed). A fresh open of a
+/// 3,899,983-row extent drew 60,858 (1/64). Reproduced deterministically here:
+/// the modulus a settled navigation lands on must equal the modulus a fresh
+/// open of the identical row count lands on, on a case where that differs
+/// from the open-time modulus by more than one step — so the two agreeing is
+/// not available by coincidence.
+#[test]
+fn a_settled_navigation_repicks_the_modulus_for_the_narrowed_extent() {
+    use brightfield_engine::coordinator::Interaction;
+    use brightfield_engine::{AxisExtent, NavigationExtent};
+    use brightfield_spec::analysis::ComponentPath;
+
+    let full_rows = MEASURED_INKED_MAX * 40;
+    let narrow_rows = MEASURED_INKED_MAX * 3;
+
+    let (full_dir, full_spec) = fixture("navigate-full", &indexed_scatter(full_rows));
+    let (narrow_dir, narrow_spec) = fixture("navigate-fresh", &indexed_scatter(narrow_rows));
+
+    let (mut dash, first) = live_spec_sampled(full_spec.to_str().expect("utf-8 path"), None)
+        .expect("live, unflagged");
+    let open_rate = dash
+        .coordinator()
+        .session()
+        .sample()
+        .expect("fixture check: the full table must need a sample at open");
+    assert_eq!(
+        open_rate.exponent(),
+        sample_exponent(full_rows).expect("fixture check: needs a sample"),
+        "fixture check: the open-time rate must be the policy's answer for the full table"
+    );
+
+    let plot_path = first.plots[0].path.clone();
+    let navigated = dash
+        .apply(Interaction::Navigate {
+            plot: ComponentPath(plot_path),
+            extent: NavigationExtent {
+                x: Some(AxisExtent::new("gx", 0.0, (narrow_rows - 1) as f64)),
+                y: None,
+            },
+        })
+        .expect("the navigation re-composites");
+
+    let narrowed_rate = dash
+        .coordinator()
+        .session()
+        .sample()
+        .expect("fixture check: the narrowed extent must still need a sample");
+    assert_ne!(
+        narrowed_rate.exponent(),
+        open_rate.exponent(),
+        "fixture check: the narrowed extent's rate must differ from the open-time rate by \
+         at least one step, or this case proves nothing about a re-pick happening"
+    );
+
+    let (mut fresh_dash, _fresh_first) =
+        live_spec_sampled(narrow_spec.to_str().expect("utf-8 path"), None)
+            .expect("live, unflagged, a fresh open of the identical row count");
+    let fresh_rate = fresh_dash
+        .coordinator()
+        .session()
+        .sample()
+        .expect("fixture check: a fresh open of this row count must need a sample too");
+
+    assert_eq!(
+        narrowed_rate, fresh_rate,
+        "a navigation gesture that narrowed the extent to {narrow_rows} rows chose 1-in-{} \
+         while a fresh open of the identical {narrow_rows}-row table chose 1-in-{} — the \
+         settled re-query must ask `sample_exponent` again for the row count now inside the \
+         frame, not keep the modulus chosen for the whole table",
+        narrowed_rate.modulus(),
+        fresh_rate.modulus()
+    );
+
+    // And the plot's own sampling fact agrees with what the session chose —
+    // the picture drawn is the picture the modulus says it is.
+    let fact = navigated.plots[0]
+        .sample
+        .expect("the narrowed plot must still carry a sampling fact");
+    assert_eq!(
+        fact.of, narrow_rows,
+        "`of` is the row count measured INSIDE the navigated extent"
+    );
+
+    let _ = std::fs::remove_dir_all(&full_dir);
+    let _ = std::fs::remove_dir_all(&narrow_dir);
+}
+
+/// **AC3: zooming out re-coarsens by the same rule.**
+///
+/// A repair that only ever narrows the modulus to match whatever is currently
+/// in view — but never widens it back out — is a one-way ratchet: the picture
+/// gets finer forever and never returns to the rate the plot opened with.
+/// Proven on the exact in-then-out pair `navigation::zoom`'s reciprocal step
+/// produces, reading off the DISPLAYED scales at each step exactly as a real
+/// gesture does (`navigation::pan`'s own doc: "the scales a plot was last
+/// drawn with already carry whatever extent is in force").
+#[test]
+fn zooming_out_after_in_returns_the_rate_the_plot_opened_with() {
+    use brightfield_engine::coordinator::Interaction;
+    use brightfield_engine::{AxisExtent, NavigationExtent};
+    use brightfield_shell::navigation::{self, AxisLock};
+    use brightfield_spec::analysis::ComponentPath;
+
+    let rows = 1_000_000u64;
+    let (dir, spec) = fixture("zoom-round-trip", &indexed_scatter(rows));
+    let path = spec.to_str().expect("utf-8 path");
+
+    let (mut dash, first) = live_spec_sampled(path, None).expect("live, unflagged");
+    let opened_rate = dash
+        .coordinator()
+        .session()
+        .sample()
+        .expect("fixture check: the full table must need a sample at open");
+
+    let plot_path = first.plots[0].path.clone();
+    let scales_full = first.plots[0].scales.clone();
+
+    // In: a quarter of the frame, about its own centre (a keyboard zoom names
+    // no cursor).
+    let zoom_in = navigation::zoom(&scales_full, AxisLock::XOnly, None, 4.0);
+    let (lo, hi) = zoom_in.extent.x.expect("x zoomed in");
+    let narrowed = dash
+        .apply(Interaction::Navigate {
+            plot: ComponentPath(plot_path.clone()),
+            extent: NavigationExtent {
+                x: Some(AxisExtent::new("gx", lo, hi)),
+                y: None,
+            },
+        })
+        .expect("zoom in re-composites");
+
+    let narrowed_rate = dash
+        .coordinator()
+        .session()
+        .sample()
+        .expect("fixture check: the zoomed-in extent must still need a sample");
+    assert!(
+        narrowed_rate < opened_rate,
+        "fixture check: zooming in to a quarter of the rows must land on a FINER (smaller \
+         modulus) rate than the full table's, or the round trip below proves nothing about \
+         re-coarsening — opened at 1-in-{}, zoomed to 1-in-{}",
+        opened_rate.modulus(),
+        narrowed_rate.modulus()
+    );
+
+    // Out: the reciprocal step, read off the scales the FIRST zoom actually
+    // left on the plot — not a remembered launch domain.
+    let scales_narrowed = narrowed.plots[0].scales.clone();
+    let zoom_out = navigation::zoom(&scales_narrowed, AxisLock::XOnly, None, 0.25);
+    let (lo2, hi2) = zoom_out.extent.x.expect("x zoomed out");
+    let widened = dash
+        .apply(Interaction::Navigate {
+            plot: ComponentPath(plot_path),
+            extent: NavigationExtent {
+                x: Some(AxisExtent::new("gx", lo2, hi2)),
+                y: None,
+            },
+        })
+        .expect("zoom out re-composites");
+
+    let final_rate = dash
+        .coordinator()
+        .session()
+        .sample()
+        .expect("fixture check: the round trip must land back on a sampled extent");
+    assert_eq!(
+        final_rate, opened_rate,
+        "a zoom in then its reciprocal zoom out chose 1-in-{} where the plot opened at \
+         1-in-{} — the round trip left it stuck at the finer, zoomed-in rate instead of \
+         re-coarsening back to the rate the plot opened with",
+        final_rate.modulus(),
+        opened_rate.modulus()
+    );
+
+    let fact = widened.plots[0]
+        .sample
+        .expect("the widened plot must still carry a sampling fact");
+    assert_eq!(
+        fact.of, rows,
+        "the round trip must land back on the full, un-navigated row count"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **AC4: zooming in densifies; it does not reshuffle.**
+///
+/// The nesting property [`TEN_MILLION`]'s own `description` states: "every
+/// point drawn here is also drawn at every coarser rate." The mechanism is a
+/// hash predicate on the row's own bytes (`hash(_s) % modulus = 0`, see
+/// `render.rs`), which nests for any two power-of-two moduli independently of
+/// which extent the query happens to be scoped to — so the claim has to keep
+/// holding across a rate CHANGE a navigation triggers, not only across one
+/// made by hand with `--force-sample`.
+///
+/// The coarser rate's drawn rows, over the SAME navigated extent, are the
+/// control this test compares against: forcing the pre-zoom rate back on and
+/// re-querying through the identical machinery, rather than reconstructing the
+/// predicate by hand and risking a second, independently-wrong copy of it.
+#[test]
+fn zooming_in_keeps_every_row_the_coarser_rate_drew() {
+    use arrow::array::Float64Array;
+    use brightfield_engine::coordinator::Interaction;
+    use brightfield_engine::{AxisExtent, NavigationExtent};
+    use brightfield_shell::navigation::{self, AxisLock};
+    use brightfield_spec::analysis::ComponentPath;
+    use std::collections::HashSet;
+
+    fn drawn_row_identities(dash: &mut brightfield_shell::pipeline::LiveDashboard) -> HashSet<(u64, u64)> {
+        let batches = dash.coordinator().chart_rows(0).expect("chart rows");
+        let mut set = HashSet::new();
+        for batch in &batches {
+            let spread_idx = batch.schema().index_of("spread").expect("spread column");
+            let depth_idx = batch.schema().index_of("depth").expect("depth column");
+            let spread = batch.column(spread_idx)
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .expect("f64 spread");
+            let depth = batch.column(depth_idx)
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .expect("f64 depth");
+            for i in 0..batch.num_rows() {
+                set.insert((spread.value(i).to_bits(), depth.value(i).to_bits()));
+            }
+        }
+        set
+    }
+
+    let (mut dash, first) = live_spec_sampled(TEN_MILLION, None).expect("live, unflagged");
+    let coarse_rate = dash
+        .coordinator()
+        .session()
+        .sample()
+        .expect("fixture check: the committed ten-million-row example must sample itself");
+
+    let plot_path = first.plots[0].path.clone();
+    let scales_full = first.plots[0].scales.clone();
+    let zoom_in = navigation::zoom(&scales_full, AxisLock::XOnly, None, 4.0);
+    let (lo, hi) = zoom_in.extent.x.expect("x zoomed in");
+
+    dash.apply(Interaction::Navigate {
+        plot: ComponentPath(plot_path),
+        extent: NavigationExtent {
+            x: Some(AxisExtent::new("spread", lo, hi)),
+            y: None,
+        },
+    })
+    .expect("zoom in re-composites");
+
+    let fine_rate = dash
+        .coordinator()
+        .session()
+        .sample()
+        .expect("fixture check: the zoomed-in extent must still need a sample");
+    assert!(
+        fine_rate < coarse_rate,
+        "fixture check: zooming in to a quarter of the rows must pick a FINER rate, or this \
+         test cannot show nesting — opened at 1-in-{}, zoomed to 1-in-{}",
+        coarse_rate.modulus(),
+        fine_rate.modulus()
+    );
+
+    let fine_rows = drawn_row_identities(&mut dash);
+    assert!(
+        !fine_rows.is_empty(),
+        "fixture check: the finer, zoomed-in rate must still draw something"
+    );
+
+    // The control: force the coarser (pre-zoom) rate back on, over the SAME
+    // navigated extent.
+    dash.set_sample(Some(coarse_rate));
+    let coarse_rows = drawn_row_identities(&mut dash);
+    assert!(
+        !coarse_rows.is_empty(),
+        "fixture check: the coarser rate must still draw something over the narrowed extent"
+    );
+
+    let missing = coarse_rows.difference(&fine_rows).count();
+    assert_eq!(
+        missing, 0,
+        "{missing} of {} rows the coarser 1-in-{} rate drew over the navigated extent are \
+         absent from the finer 1-in-{} rate's drawing of the SAME extent — the picture \
+         reshuffled instead of densifying when navigation changed the rate",
+        coarse_rows.len(),
+        coarse_rate.modulus(),
+        fine_rate.modulus()
+    );
+}
