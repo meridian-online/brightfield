@@ -280,8 +280,8 @@ fn the_generated_dashboard_light_baseline() {
         .unwrap_or_else(|e| panic!("capture dashboard_light: {e}"));
     assert!(w > 0 && h > 0, "dashboard_light: empty capture");
 
-    // PNG is lossless, so reading the capture back is pixel-exact; the file is
-    // only how `capture_png` hands its result over.
+    // PNG is lossless, so reading the capture back is pixel-exact; the file on
+    // disk is the way `capture_png` hands its result over.
     let image = image::open(&out)
         .unwrap_or_else(|e| panic!("read capture {}: {e}", out.display()))
         .to_rgba8();
