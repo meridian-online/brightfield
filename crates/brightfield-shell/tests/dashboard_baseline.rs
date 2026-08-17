@@ -249,10 +249,10 @@ fn the_preference_between_applicable_kinds_is_the_registrys_declaration_order() 
 /// asked for separately, because a `Boot` carries the composed document rather
 /// than the walk that produced it.
 ///
-/// Light only, deliberately. The choices are mode-independent — they are read
-/// off column types, not off ink — so a dark twin would cost a second GPU
-/// capture to re-photograph the same decision. Covered here: the composed
-/// picture in light. Not covered: this dashboard in dark.
+/// The tile CHOICES are mode-independent — they are read off column types, not
+/// off ink — so [`assert_choices`] runs here and the dark twin below inherits
+/// its verdict rather than restating it. What the pair holds that neither half
+/// can alone is that the ink moves and nothing else does.
 #[test]
 fn the_generated_dashboard_light_baseline() {
     let path = fixture();
@@ -288,4 +288,73 @@ fn the_generated_dashboard_light_baseline() {
         .unwrap_or_else(|e| panic!("read capture {}: {e}", out.display()))
         .to_rgba8();
     egui_kittest::image_snapshot(&image, "dashboard_light");
+}
+
+/// Device-pixel count of exactly `token` in `image`.
+///
+/// Exact, not perceptual: an interior pixel of a filled rect is the fill
+/// colour, and the two surface tokens under test differ by far more than any
+/// rounding in the Rgba8Unorm round-trip. A tolerance here would let the defect
+/// through under the name of robustness.
+fn pixels_of(image: &image::RgbaImage, token: meridian_design::colour::Rgba) -> usize {
+    let want = [
+        (token.r * 255.0).round() as u8,
+        (token.g * 255.0).round() as u8,
+        (token.b * 255.0).round() as u8,
+    ];
+    image
+        .pixels()
+        .filter(|p| p.0[0] == want[0] && p.0[1] == want[1] && p.0[2] == want[2])
+        .count()
+}
+
+/// **The same generated dashboard in dark** — and, held in the same test, the
+/// claim the picture is here to make: **not one pixel of it is the light chart
+/// surface.**
+///
+/// The image half is the baseline; the pixel half is what makes a red baseline
+/// legible. A dark window whose chart pane is a white slab differs from this
+/// golden in tens of thousands of pixels and a reviewer reading a perceptual
+/// diff cannot tell that from a font bump — so the surface count is asserted by
+/// name, ahead of the photograph, for the reason [`assert_choices`] runs ahead
+/// of it.
+///
+/// This dashboard reaches dark through a path the light twin does not exercise:
+/// [`Boot::data_file`] composes before anything knows the mode, and
+/// `ChartDoc::set_mode` re-presents through the live session it left behind on
+/// the first frame that names one. So this is also the regression test for that
+/// seam — remove it and the capture goes back to photographing a light
+/// composition inside a dark window.
+#[test]
+fn the_generated_dashboard_dark_baseline() {
+    let path = fixture();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+
+    std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let out = scratch("dashboard_dark");
+    let (w, h) = capture_png(boot, Mode::Dark, SCALE, &out, Vec::new())
+        .unwrap_or_else(|e| panic!("capture dashboard_dark: {e}"));
+    assert!(w > 0 && h > 0, "dashboard_dark: empty capture");
+
+    let image = image::open(&out)
+        .unwrap_or_else(|e| panic!("read capture {}: {e}", out.display()))
+        .to_rgba8();
+
+    let light = pixels_of(&image, meridian_design::chrome::INK_LIGHT.surface);
+    assert_eq!(
+        light, 0,
+        "{light} pixels of this dark dashboard are the LIGHT chart surface \
+         (#fcfcfb). That colour has one source — the plot background — so this \
+         window is drawing a white slab exactly where the analyst is reading."
+    );
+    let dark = pixels_of(&image, meridian_design::chrome::INK_DARK.surface);
+    assert!(
+        dark > 0,
+        "no pixel of this dark dashboard is the dark chart surface (#161413), \
+         so the plot background is neither of the two colours it can be and \
+         the assertion above is passing for the wrong reason"
+    );
+
+    egui_kittest::image_snapshot(&image, "dashboard_dark");
 }

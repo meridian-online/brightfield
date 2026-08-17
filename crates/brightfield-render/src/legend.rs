@@ -8,21 +8,17 @@ use peniko::{Color, Fill};
 use vello::Scene;
 
 use crate::axis::format_number;
-use crate::ink::{ink, ink_with_alpha};
+use crate::ink::ChartInk;
 use crate::layout::ChartLayout;
 use crate::scale::Scale;
-use crate::text::{draw_text, measure_width, TextAnchor, LABEL_COLOUR, LABEL_SIZE};
+use crate::text::{draw_text, measure_width, TextAnchor, LABEL_SIZE};
 
-/// Legend panel background — the Meridian chart surface at the historical
-/// 0.85 alpha, translucent for legibility over marks/grid.
-const PANEL_BACKGROUND: Color = ink_with_alpha(meridian_design::chrome::INK_LIGHT.surface, 0.85);
-
-/// Legend panel border — Meridian warm gray step 4 (border-weight hairline).
-const PANEL_BORDER: Color = ink(meridian_design::scales::GRAY_LIGHT[3]);
-
-/// Border around the sequential legend's gradient bar, so a light-anchored
-/// ramp reads against the panel — Meridian baseline ink.
-const BAR_BORDER: Color = ink(meridian_design::chrome::INK_LIGHT.baseline);
+/// The legend panel's translucency — the historical 0.85, kept so the panel
+/// stays legible over marks and grid.
+///
+/// The alpha stays here, with its reasoning; the surface it tints is the mode's
+/// and lives on [`ChartInk::legend_panel`].
+pub(crate) const PANEL_ALPHA: f32 = 0.85;
 
 /// Swatch size in pixels.
 const SWATCH_SIZE: f64 = 12.0;
@@ -137,13 +133,18 @@ pub fn sequential_legend_size(scale: &Scale) -> Option<(f64, f64)> {
 /// area's top-right corner (the right margin is too narrow to hold the legend,
 /// and an inside panel reads as intentional). This is the plot's *inline*
 /// legend; a standalone `legend:` node uses [`render_colour_legend_at`].
-pub fn render_colour_legend(scene: &mut Scene, layout: &ChartLayout, colour_scale: &Scale) {
+pub fn render_colour_legend(
+    scene: &mut Scene,
+    layout: &ChartLayout,
+    colour_scale: &Scale,
+    ink: ChartInk,
+) {
     let Some((box_width, _)) = colour_legend_size(colour_scale) else {
         return;
     };
     let box_x = layout.plot_x_end() - box_width - LEGEND_INSET;
     let box_y = layout.plot_y_start() + LEGEND_INSET;
-    render_colour_legend_at(scene, box_x, box_y, colour_scale);
+    render_colour_legend_at(scene, box_x, box_y, colour_scale, ink);
 }
 
 /// Render a colour legend at `(box_x, box_y)`, dispatching on the scale kind: a
@@ -154,8 +155,22 @@ pub fn render_colour_legend(scene: &mut Scene, layout: &ChartLayout, colour_scal
 /// the swatch/bar choice lives in one place. Delegates to
 /// [`render_colour_legend_at_selected`] with no active selection, so its output
 /// is byte-identical to the pre-selected-state renderer.
-pub fn render_colour_legend_at(scene: &mut Scene, box_x: f64, box_y: f64, colour_scale: &Scale) {
-    render_colour_legend_at_selected(scene, box_x, box_y, colour_scale, &BTreeSet::new(), None);
+pub fn render_colour_legend_at(
+    scene: &mut Scene,
+    box_x: f64,
+    box_y: f64,
+    colour_scale: &Scale,
+    ink: ChartInk,
+) {
+    render_colour_legend_at_selected(
+        scene,
+        box_x,
+        box_y,
+        colour_scale,
+        &BTreeSet::new(),
+        None,
+        ink,
+    );
 }
 
 /// Alpha multiplier applied to every legend entry that is NOT the selected one,
@@ -198,12 +213,15 @@ pub fn render_colour_legend_at_selected(
     colour_scale: &Scale,
     selected: &BTreeSet<usize>,
     hovered: Option<usize>,
+    ink: ChartInk,
 ) {
     match colour_scale {
         Scale::Colour { .. } => {
-            render_swatch_legend_at(scene, box_x, box_y, colour_scale, selected, hovered)
+            render_swatch_legend_at(scene, box_x, box_y, colour_scale, selected, hovered, ink)
         }
-        Scale::Sequential { .. } => render_sequential_legend_at(scene, box_x, box_y, colour_scale),
+        Scale::Sequential { .. } => {
+            render_sequential_legend_at(scene, box_x, box_y, colour_scale, ink)
+        }
         _ => {}
     }
 }
@@ -221,6 +239,7 @@ fn render_swatch_legend_at(
     colour_scale: &Scale,
     selected: &BTreeSet<usize>,
     hovered: Option<usize>,
+    ink: ChartInk,
 ) {
     let (categories, palette) = match colour_scale {
         Scale::Colour {
@@ -243,14 +262,14 @@ fn render_swatch_legend_at(
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        PANEL_BACKGROUND,
+        ink.legend_panel,
         None,
         &panel,
     );
     scene.stroke(
         &kurbo::Stroke::new(0.5),
         Affine::IDENTITY,
-        PANEL_BORDER,
+        ink.legend_border,
         None,
         &panel,
     );
@@ -277,11 +296,11 @@ fn render_swatch_legend_at(
             Color::new(*colour)
         };
         let label_colour = if hot {
-            hover_emphasis(LABEL_COLOUR)
+            hover_emphasis(ink.label)
         } else if dim {
-            LABEL_COLOUR.multiply_alpha(UNSELECTED_ENTRY_ALPHA)
+            ink.label.multiply_alpha(UNSELECTED_ENTRY_ALPHA)
         } else {
-            LABEL_COLOUR
+            ink.label
         };
 
         // Colour swatch.
@@ -312,7 +331,13 @@ fn render_swatch_legend_at(
 /// top — drawn as `BAR_SAMPLES` stacked sampled quads (no gradient-brush
 /// dependency), with min / mid / max numeric tick labels beside it read from the
 /// scale's domain extent. No-op for any non-Sequential scale.
-pub fn render_sequential_legend_at(scene: &mut Scene, box_x: f64, box_y: f64, scale: &Scale) {
+pub fn render_sequential_legend_at(
+    scene: &mut Scene,
+    box_x: f64,
+    box_y: f64,
+    scale: &Scale,
+    ink: ChartInk,
+) {
     let (dmin, dmax) = match scale {
         Scale::Sequential {
             domain_min,
@@ -330,14 +355,14 @@ pub fn render_sequential_legend_at(scene: &mut Scene, box_x: f64, box_y: f64, sc
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        PANEL_BACKGROUND,
+        ink.legend_panel,
         None,
         &panel,
     );
     scene.stroke(
         &kurbo::Stroke::new(0.5),
         Affine::IDENTITY,
-        PANEL_BORDER,
+        ink.legend_border,
         None,
         &panel,
     );
@@ -367,7 +392,7 @@ pub fn render_sequential_legend_at(scene: &mut Scene, box_x: f64, box_y: f64, sc
     scene.stroke(
         &kurbo::Stroke::new(0.5),
         Affine::IDENTITY,
-        BAR_BORDER,
+        ink.legend_bar_border,
         None,
         &bar,
     );
@@ -382,7 +407,7 @@ pub fn render_sequential_legend_at(scene: &mut Scene, box_x: f64, box_y: f64, sc
             label_x,
             bar_top + frac * BAR_HEIGHT + baseline_nudge,
             LABEL_SIZE,
-            LABEL_COLOUR,
+            ink.label,
             TextAnchor::Start,
         );
     }
@@ -413,7 +438,7 @@ mod tests {
         };
 
         let mut scene = Scene::new();
-        render_colour_legend(&mut scene, &layout, &colour_scale);
+        render_colour_legend(&mut scene, &layout, &colour_scale, ChartInk::LIGHT);
 
         let encoding = scene.encoding();
         assert!(
@@ -433,7 +458,7 @@ mod tests {
         };
 
         let mut scene = Scene::new();
-        render_colour_legend(&mut scene, &layout, &linear_scale);
+        render_colour_legend(&mut scene, &layout, &linear_scale, ChartInk::LIGHT);
 
         let encoding = scene.encoding();
         assert_eq!(
@@ -459,7 +484,7 @@ mod tests {
     #[test]
     fn standalone_legend_at_origin_draws_content() {
         let mut scene = Scene::new();
-        render_colour_legend_at(&mut scene, 640.0, 40.0, &colour_scale_3());
+        render_colour_legend_at(&mut scene, 640.0, 40.0, &colour_scale_3(), ChartInk::LIGHT);
         assert!(
             !scene.encoding().path_tags.is_empty(),
             "positioned legend should draw swatches + panel at its origin"
@@ -475,7 +500,7 @@ mod tests {
             range_start: 0.0,
             range_end: 1.0,
         };
-        render_colour_legend_at(&mut scene, 10.0, 10.0, &linear);
+        render_colour_legend_at(&mut scene, 10.0, 10.0, &linear, ChartInk::LIGHT);
         assert_eq!(
             scene.encoding().path_tags.len(),
             0,
@@ -515,7 +540,7 @@ mod tests {
     fn sequential_legend_draws_bar_and_dispatches() {
         // The bar (sampled quads + border) produces scene content.
         let mut scene = Scene::new();
-        render_sequential_legend_at(&mut scene, 40.0, 40.0, &sequential_scale());
+        render_sequential_legend_at(&mut scene, 40.0, 40.0, &sequential_scale(), ChartInk::LIGHT);
         assert!(
             !scene.encoding().path_tags.is_empty(),
             "gradient bar should draw sampled quads at its origin"
@@ -529,7 +554,7 @@ mod tests {
             range_start: 0.0,
             range_end: 1.0,
         };
-        render_sequential_legend_at(&mut scene2, 10.0, 10.0, &linear);
+        render_sequential_legend_at(&mut scene2, 10.0, 10.0, &linear, ChartInk::LIGHT);
         assert_eq!(
             scene2.encoding().path_tags.len(),
             0,
@@ -555,7 +580,13 @@ mod tests {
 
         // The shared entry point routes a Sequential to the bar (draws content).
         let mut scene3 = Scene::new();
-        render_colour_legend_at(&mut scene3, 40.0, 40.0, &sequential_scale());
+        render_colour_legend_at(
+            &mut scene3,
+            40.0,
+            40.0,
+            &sequential_scale(),
+            ChartInk::LIGHT,
+        );
         assert!(
             !scene3.encoding().path_tags.is_empty(),
             "dispatch draws the bar"
@@ -620,10 +651,26 @@ mod tests {
         let scale = colour_scale_3(); // "a", "bb", "ccc"
 
         let mut none = Scene::new();
-        render_colour_legend_at_selected(&mut none, 40.0, 40.0, &scale, &BTreeSet::new(), None);
+        render_colour_legend_at_selected(
+            &mut none,
+            40.0,
+            40.0,
+            &scale,
+            &BTreeSet::new(),
+            None,
+            ChartInk::LIGHT,
+        );
         let mut selected = Scene::new();
         let sel_set = BTreeSet::from([1usize]);
-        render_colour_legend_at_selected(&mut selected, 40.0, 40.0, &scale, &sel_set, None);
+        render_colour_legend_at_selected(
+            &mut selected,
+            40.0,
+            40.0,
+            &scale,
+            &sel_set,
+            None,
+            ChartInk::LIGHT,
+        );
         // --- Non-delegating oracle (F5) ---
         // `render_colour_legend_at`'s `None` path merely forwards here, so
         // comparing the two would be circular and prove nothing. Instead compute
@@ -650,11 +697,13 @@ mod tests {
             );
         }
         assert!(
-            none_data.contains(&pack(LABEL_COLOUR)),
+            none_data.contains(&pack(ChartInk::LIGHT.label)),
             "None draws labels at full strength"
         );
         assert!(
-            !none_data.contains(&pack(LABEL_COLOUR.multiply_alpha(UNSELECTED_ENTRY_ALPHA))),
+            !none_data.contains(&pack(
+                ChartInk::LIGHT.label.multiply_alpha(UNSELECTED_ENTRY_ALPHA)
+            )),
             "None never encodes a dimmed label"
         );
 
@@ -674,7 +723,9 @@ mod tests {
             );
         }
         assert!(
-            sel_data.contains(&pack(LABEL_COLOUR.multiply_alpha(UNSELECTED_ENTRY_ALPHA))),
+            sel_data.contains(&pack(
+                ChartInk::LIGHT.label.multiply_alpha(UNSELECTED_ENTRY_ALPHA)
+            )),
             "non-selected labels dim to {UNSELECTED_ENTRY_ALPHA}"
         );
 
@@ -699,7 +750,15 @@ mod tests {
         // encodes a NEW emphasis colour — in neither the full-strength nor the
         // 0.35-dim sets — and changes colour only, not geometry.
         let mut hover = Scene::new();
-        render_colour_legend_at_selected(&mut hover, 40.0, 40.0, &scale, &BTreeSet::new(), Some(0));
+        render_colour_legend_at_selected(
+            &mut hover,
+            40.0,
+            40.0,
+            &scale,
+            &BTreeSet::new(),
+            Some(0),
+            ChartInk::LIGHT,
+        );
         let hover_data = &hover.encoding().draw_data;
         let emphasis0 = pack(hover_emphasis(Color::new(palette[0])));
         assert!(
@@ -732,6 +791,7 @@ mod tests {
             &sequential_scale(),
             &BTreeSet::new(),
             None,
+            ChartInk::LIGHT,
         );
         let mut seq_sel = Scene::new();
         render_colour_legend_at_selected(
@@ -741,6 +801,7 @@ mod tests {
             &sequential_scale(),
             &BTreeSet::from([0usize]),
             None,
+            ChartInk::LIGHT,
         );
         assert_eq!(
             seq_none.encoding().draw_data,

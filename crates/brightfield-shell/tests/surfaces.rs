@@ -78,7 +78,7 @@ use std::path::PathBuf;
 use brightfield_protocol::layout::Flow;
 use brightfield_shell::capture::capture_png;
 use brightfield_shell::design::Mode;
-use brightfield_shell::pipeline::compose_spec;
+use brightfield_shell::pipeline::compose_spec_in_mode;
 use brightfield_shell::protocol::load_protocol_offline;
 use brightfield_shell::window::{chart_window_size, Boot, MeridianApp};
 use brightfield_workbench::ViewKind;
@@ -120,7 +120,12 @@ fn shell_capture(mode: Mode, name: &str, script: Vec<Vec<egui::Event>>) -> image
     // owns the same class of process env the offline gate does.
     std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
     let spec = fixture("examples/dashboard.yaml");
-    let composed = compose_spec(spec.to_str().expect("utf-8 fixture path"))
+    // Composed IN the mode being photographed. `Boot::charts` is the one-shot
+    // boot — it carries no session — so `ChartDoc::set_mode` has no live
+    // dashboard here to re-present through, and a light composition
+    // photographed under a dark window is exactly the white slab this baseline
+    // pair exists to hold.
+    let composed = compose_spec_in_mode(spec.to_str().expect("utf-8 fixture path"), mode)
         .unwrap_or_else(|e| panic!("compose {}: {e}", spec.display()));
     let out = scratch(name);
     let (w, h) = capture_png(Boot::charts(composed), mode, SCALE, &out, script)
@@ -255,7 +260,7 @@ fn chart_layout(mode: Mode) -> (egui::Rect, egui::Rect) {
 /// before the one it photographs, so every rect read back off it is settled.
 fn settled_chart_app(mode: Mode) -> MeridianApp {
     let spec = fixture("examples/dashboard.yaml");
-    let composed = compose_spec(spec.to_str().expect("utf-8 fixture path"))
+    let composed = compose_spec_in_mode(spec.to_str().expect("utf-8 fixture path"), mode)
         .unwrap_or_else(|e| panic!("compose {}: {e}", spec.display()));
     let (w, h) = chart_window_size(&composed);
     let mut app = MeridianApp::headless(Boot::charts(composed), mode);

@@ -25,6 +25,7 @@ use brightfield_engine::error::EngineError;
 use brightfield_engine::facts::MarkFacts;
 use brightfield_engine::{assemble_batches, DeclinedMark, Engine, NavigationExtent, Session};
 use brightfield_render::channel::{Channel, ChannelMap};
+use brightfield_render::ink::ChartInk;
 use brightfield_render::inset::{resolve_insets_for_marks, DEFAULT_SCALE_INSET};
 use brightfield_render::layout::{ChartLayout, Margins};
 use brightfield_render::mark::{default_renderers, find_renderer, MarkRenderer};
@@ -52,6 +53,8 @@ use brightfield_sql::lower::{compile_selection, NO_SELF_EXCLUDE};
 use brightfield_sql::{collect_marks, collect_plot_groups};
 use brightfield_workbench::subject::RunState;
 use vello::Scene;
+
+use crate::design::Mode;
 
 /// One placed plot of the composed dashboard, carried beside the scene so the
 /// shell can act on the chart rather than merely picture it: the margin
@@ -293,6 +296,24 @@ pub struct Composed {
     /// a diagnostic that arrives separately from the picture it is about
     /// arrives at the wrong time.
     pub mark_faults: Vec<MarkFault>,
+    /// **The mode this picture's ink was resolved in.** The colours in
+    /// [`Self::scene`] — the chart surface, the grid, the axes, the marks, the
+    /// legend — came from this mode's tokens, and the scene is a finished
+    /// raster-ready object that cannot be re-inked in place.
+    /// `no_light_paint_reaches_the_dark_canvas` in `brightfield-render`'s
+    /// `tests/dark_canvas.rs` is what holds the enumeration.
+    ///
+    /// It rides on the composition because a surface that draws the scene knows
+    /// which mode the WINDOW is in and, without this, has no way to tell
+    /// whether the picture it is about to paint agrees. That is the whole of
+    /// the defect: the chart raster's cache key already carried `dark`, so a
+    /// theme switch re-rastered — the same light scene, onto a differently
+    /// toned base.
+    ///
+    /// [`crate::app::ChartDoc::set_mode`] is the reader: it re-presents through
+    /// the live session when this disagrees with the mode in force, and the
+    /// crate-private `ChartDoc::present` calls it before it rasters.
+    pub mode: Mode,
 }
 
 /// One mark the engine would not run, and what it said.
@@ -335,6 +356,7 @@ impl Composed {
             diagnostics: LoadDiagnostics::default(),
             run_state: None,
             mark_faults: Vec::new(),
+            mode: Mode::Light,
         }
     }
 
@@ -384,6 +406,29 @@ pub fn compose_spec(spec_path: &str) -> Result<Composed, String> {
     compose_spec_sampled(spec_path, None)
 }
 
+/// [`compose_spec`] with the ink resolved for `mode`.
+///
+/// The one-shot composition is the path with no session behind it — the capture
+/// tiers and the pixel baselines — so it is the path that cannot be re-inked
+/// later. A caller here says which mode it is photographing and gets that
+/// picture; [`compose_spec`] is this at [`Mode::Light`], which is what the light
+/// baselines are recorded against.
+///
+/// # Errors
+///
+/// As [`compose_spec`].
+pub fn compose_spec_in_mode(spec_path: &str, mode: Mode) -> Result<Composed, String> {
+    let parsed = parse_spec_path(spec_path).map_err(|e| format!("parse error: {e}"))?;
+    compose(
+        parsed,
+        Some(source_name(spec_path)),
+        Path::new(spec_path).parent(),
+        None,
+        Rect::zero(),
+        mode,
+    )
+}
+
 /// [`compose_spec`] at an explicit pushed-down sample rate.
 ///
 /// `None` is [`compose_spec`] exactly. `Some(rate)` makes every row-level mark
@@ -407,6 +452,7 @@ pub fn compose_spec_sampled(
         Path::new(spec_path).parent(),
         sample,
         Rect::zero(),
+        Mode::Light,
     )
 }
 
@@ -485,7 +531,7 @@ pub fn compose_spec_str_at(
     viewport: Rect,
 ) -> Result<Composed, String> {
     let parsed = parse_spec(source, Format::Yaml).map_err(|e| format!("parse error: {e}"))?;
-    compose(parsed, None, base_dir, None, viewport)
+    compose(parsed, None, base_dir, None, viewport, Mode::Light)
 }
 
 /// The name a diagnostic cites for a spec loaded from a path: its file name,
@@ -504,12 +550,14 @@ fn source_name(spec_path: &str) -> String {
 /// dropped at each call site to satisfy it, and all four of them did. A
 /// function that cannot be called without the warnings is the only version of
 /// this that stays fixed.
+#[allow(clippy::too_many_arguments)]
 fn compose(
     parsed: ParseOutput,
     source: Option<String>,
     spec_dir: Option<&Path>,
     sample: Option<SampleRate>,
     viewport: Rect,
+    mode: Mode,
 ) -> Result<Composed, String> {
     let spec = parsed.spec;
     let analysis = analyse_spec(&spec).map_err(|e| format!("analysis error: {e}"))?;
@@ -539,6 +587,7 @@ fn compose(
         &beyond,
         &mut PlotPins::new(),
         viewport,
+        mode,
     )?
     .with_diagnostics(diagnostics))
 }
@@ -609,6 +658,17 @@ pub struct LiveDashboard {
     /// [`LiveDashboard::apply`] tells "the policy chose this, re-ask it" from
     /// "a caller chose this, leave it alone".
     sample_is_automatic: bool,
+    /// **The mode a composition off this dashboard is inked in.**
+    ///
+    /// [`Mode::Light`] until a surface says otherwise through
+    /// [`LiveDashboard::set_mode`], which is what keeps a caller that has not
+    /// been taught the mode drawing exactly what it drew before.
+    ///
+    /// It lives here rather than being handed to [`LiveDashboard::present`] per
+    /// call for the reason [`Self::viewport`] does: a re-present after a gesture
+    /// has to carry it too, and a parameter the gesture path could forget is a
+    /// dashboard that reverts to light on the first brush.
+    mode: Mode,
 }
 
 /// What each plot's axes are drawn at, keyed by plot node path.
@@ -655,6 +715,7 @@ impl LiveDashboard {
             pins: PlotPins::new(),
             viewport: Rect::zero(),
             sample_is_automatic: false,
+            mode: Mode::Light,
         }))
     }
 
@@ -699,6 +760,7 @@ impl LiveDashboard {
             pins: PlotPins::new(),
             viewport: Rect::zero(),
             sample_is_automatic: false,
+            mode: Mode::Light,
         }))
     }
 
@@ -722,6 +784,32 @@ impl LiveDashboard {
     #[must_use]
     pub fn viewport(&self) -> Rect {
         self.viewport
+    }
+
+    /// The mode the next composite will be inked in.
+    #[must_use]
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    /// Tell this dashboard which mode it is being drawn in, and say whether
+    /// that is news — the [`LiveDashboard::set_viewport`] shape, for the same
+    /// reason: a surface reports the mode once a frame and must not re-query
+    /// once a frame.
+    ///
+    /// The re-query is unavoidable when it IS news. A composed scene is a
+    /// finished list of drawing commands with their brushes already resolved;
+    /// there is no in-place re-ink, so a new mode means a new composition, and
+    /// a new composition means the batches it draws. No code path switches mode
+    /// mid-process today — the window takes a mode at boot and
+    /// `crate::app::CanvasKey`'s own note records the same — so in practice this
+    /// fires at most once, on the first frame of a dark boot.
+    pub fn set_mode(&mut self, mode: Mode) -> bool {
+        if self.mode == mode {
+            return false;
+        }
+        self.mode = mode;
+        true
     }
 
     /// Offer this dashboard a box to compose into, and say whether that is
@@ -770,6 +858,7 @@ impl LiveDashboard {
             &beyond,
             &mut self.pins,
             self.viewport,
+            self.mode,
         )?
         .with_diagnostics(self.diagnostics.clone());
         ink_committed_selections(&mut composed, self.coordinator.session());
@@ -1267,6 +1356,7 @@ fn marks_beyond_frame(session: &Session, spec: &Spec, marks: usize) -> Vec<bool>
 /// captures it back afterwards. A caller with nowhere to keep the store passes
 /// a fresh one — a composition that is never repeated cannot observe a pin, so
 /// the one-shot path is unaffected by construction.
+#[allow(clippy::too_many_arguments)]
 fn compose_from_results(
     spec: &Spec,
     results: Vec<Result<Vec<RecordBatch>, EngineError>>,
@@ -1275,7 +1365,12 @@ fn compose_from_results(
     beyond_frame: &[bool],
     pins: &mut PlotPins,
     viewport: Rect,
+    mode: Mode,
 ) -> Result<Composed, String> {
+    // One canvas for the whole composition, resolved once here: every plot's
+    // scene and the page they are placed on take the same answer, so a plot
+    // cannot end up a different mode from the dashboard behind it.
+    let ink = ChartInk::for_mode(mode.is_dark());
     let marks = collect_marks(spec);
     let mut batches: Vec<Option<RecordBatch>> = Vec::with_capacity(marks.len());
     let mut channel_maps: Vec<ChannelMap> = Vec::with_capacity(marks.len());
@@ -1463,7 +1558,7 @@ fn compose_from_results(
         // source of truth, and no in-plot swatch block a margin copy could
         // drift from or that could sit on top of the marks.
         let (scene, scales) =
-            build_multi_mark_scene_pinned(&refs, false, &titles, &plot_domains, &plot_pins);
+            build_multi_mark_scene_pinned(&refs, false, &titles, &plot_domains, &plot_pins, ink);
         drop(refs);
         drop(chart_data);
 
@@ -1563,7 +1658,7 @@ fn compose_from_results(
         .ceil() as u32;
 
     let refs2: Vec<(f64, f64, &Scene)> = placements.iter().map(|(x, y, s)| (*x, *y, s)).collect();
-    let scene = compose_dashboard(f64::from(width), f64::from(height), &refs2);
+    let scene = compose_dashboard(f64::from(width), f64::from(height), &refs2, ink);
 
     let title = spec.meta.as_ref().and_then(|m| m.title.clone());
     Ok(Composed {
@@ -1585,6 +1680,7 @@ fn compose_from_results(
         // from the run's contract.
         run_state: None,
         mark_faults,
+        mode,
     })
 }
 
@@ -1911,6 +2007,7 @@ plot:
             &[],
             &mut PlotPins::new(),
             Rect::zero(),
+            Mode::Light,
         )
         .expect("compose full");
 
@@ -1926,6 +2023,7 @@ plot:
             &[],
             &mut PlotPins::new(),
             Rect::zero(),
+            Mode::Light,
         )
         .expect("compose first");
 
@@ -1948,6 +2046,7 @@ plot:
             &[],
             &mut PlotPins::new(),
             Rect::zero(),
+            Mode::Light,
         )
         .expect("compose single");
         assert_eq!(
@@ -2005,6 +2104,7 @@ plot:
             &[],
             &mut PlotPins::new(),
             Rect::zero(),
+            Mode::Light,
         )
         .err()
         .expect("must fail loudly");

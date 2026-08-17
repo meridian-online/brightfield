@@ -4,15 +4,12 @@
 //! Vec<Tick>`. The scene builder draws ticks as lines and labels as text.
 
 use kurbo::{Affine, Line, Point};
-use peniko::Color;
 use vello::Scene;
 
-use crate::ink::ink;
+use crate::ink::ChartInk;
 use crate::layout::ChartLayout;
 use crate::scale::Scale;
-use crate::text::{
-    draw_text, draw_text_rotated, TextAnchor, LABEL_COLOUR, LABEL_SIZE, TITLE_COLOUR, TITLE_SIZE,
-};
+use crate::text::{draw_text, draw_text_rotated, TextAnchor, LABEL_SIZE, TITLE_SIZE};
 
 /// A computed tick mark with its position and label.
 #[derive(Debug, Clone)]
@@ -25,13 +22,10 @@ pub struct Tick {
     pub position: f64,
 }
 
-/// Default tick colour — Meridian baseline ink. Recessive axes: the domain
-/// line and ticks sit back while the data ink carries the chart; tick-label
-/// TEXT stays legible via the darker muted ink (text.rs `LABEL_COLOUR`).
-const TICK_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.baseline);
-
-/// Axis line colour — same recessive baseline ink as the ticks.
-const AXIS_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.baseline);
+// The tick and axis inks are [`ChartInk::tick`] and [`ChartInk::axis`] — the
+// mode's baseline ink. Recessive axes: the domain line and ticks sit back while
+// the data ink carries the chart; tick-label TEXT stays legible via the muted
+// ink ([`ChartInk::label`]), which is a step closer to the primary.
 
 /// Tick mark length in pixels.
 const TICK_LENGTH: f64 = 5.0;
@@ -60,14 +54,14 @@ pub(crate) fn plot_title_baseline(layout: &ChartLayout) -> f64 {
 /// Render a per-plot title above the frame, left-aligned at the frame's left
 /// edge (Observable Plot parity). Called only when the plot declares a title
 /// (so the top margin has grown to make room).
-pub fn render_plot_title(scene: &mut Scene, layout: &ChartLayout, title: &str) {
+pub fn render_plot_title(scene: &mut Scene, layout: &ChartLayout, title: &str, ink: ChartInk) {
     draw_text(
         scene,
         title,
         layout.plot_x_start(),
         plot_title_baseline(layout),
         TITLE_SIZE,
-        TITLE_COLOUR,
+        ink.title,
         TextAnchor::Start,
     );
 }
@@ -236,7 +230,13 @@ pub(crate) fn format_number(value: f64) -> String {
 
 /// Render the x-axis into the scene. `title`, when `Some`, is drawn centred
 /// below the tick-label band (the bottom margin has grown to make room).
-pub fn render_x_axis(scene: &mut Scene, layout: &ChartLayout, ticks: &[Tick], title: Option<&str>) {
+pub fn render_x_axis(
+    scene: &mut Scene,
+    layout: &ChartLayout,
+    ticks: &[Tick],
+    title: Option<&str>,
+    ink: ChartInk,
+) {
     let y = layout.plot_y_end();
     let stroke = kurbo::Stroke::new(1.0);
 
@@ -245,7 +245,7 @@ pub fn render_x_axis(scene: &mut Scene, layout: &ChartLayout, ticks: &[Tick], ti
         Point::new(layout.plot_x_start(), y),
         Point::new(layout.plot_x_end(), y),
     );
-    scene.stroke(&stroke, Affine::IDENTITY, AXIS_COLOUR, None, &axis_line);
+    scene.stroke(&stroke, Affine::IDENTITY, ink.axis, None, &axis_line);
 
     // Tick marks.
     for tick in ticks {
@@ -253,7 +253,7 @@ pub fn render_x_axis(scene: &mut Scene, layout: &ChartLayout, ticks: &[Tick], ti
             Point::new(tick.position, y),
             Point::new(tick.position, y + TICK_LENGTH),
         );
-        scene.stroke(&stroke, Affine::IDENTITY, TICK_COLOUR, None, &tick_line);
+        scene.stroke(&stroke, Affine::IDENTITY, ink.tick, None, &tick_line);
 
         // Tick label, centred under the tick mark.
         draw_text(
@@ -262,7 +262,7 @@ pub fn render_x_axis(scene: &mut Scene, layout: &ChartLayout, ticks: &[Tick], ti
             tick.position,
             y + TICK_LENGTH + f64::from(LABEL_SIZE),
             LABEL_SIZE,
-            LABEL_COLOUR,
+            ink.label,
             TextAnchor::Middle,
         );
     }
@@ -275,7 +275,7 @@ pub fn render_x_axis(scene: &mut Scene, layout: &ChartLayout, ticks: &[Tick], ti
             (layout.plot_x_start() + layout.plot_x_end()) / 2.0,
             x_title_baseline(layout),
             TITLE_SIZE,
-            TITLE_COLOUR,
+            ink.title,
             TextAnchor::Middle,
         );
     }
@@ -283,7 +283,13 @@ pub fn render_x_axis(scene: &mut Scene, layout: &ChartLayout, ticks: &[Tick], ti
 
 /// Render the y-axis into the scene. `title`, when `Some`, is drawn rotated a
 /// quarter-turn up the (grown) left margin, left of the tick labels.
-pub fn render_y_axis(scene: &mut Scene, layout: &ChartLayout, ticks: &[Tick], title: Option<&str>) {
+pub fn render_y_axis(
+    scene: &mut Scene,
+    layout: &ChartLayout,
+    ticks: &[Tick],
+    title: Option<&str>,
+    ink: ChartInk,
+) {
     let x = layout.plot_x_start();
     let stroke = kurbo::Stroke::new(1.0);
 
@@ -292,7 +298,7 @@ pub fn render_y_axis(scene: &mut Scene, layout: &ChartLayout, ticks: &[Tick], ti
         Point::new(x, layout.plot_y_start()),
         Point::new(x, layout.plot_y_end()),
     );
-    scene.stroke(&stroke, Affine::IDENTITY, AXIS_COLOUR, None, &axis_line);
+    scene.stroke(&stroke, Affine::IDENTITY, ink.axis, None, &axis_line);
 
     // Tick marks and labels.
     for tick in ticks {
@@ -300,7 +306,7 @@ pub fn render_y_axis(scene: &mut Scene, layout: &ChartLayout, ticks: &[Tick], ti
             Point::new(x - TICK_LENGTH, tick.position),
             Point::new(x, tick.position),
         );
-        scene.stroke(&stroke, Affine::IDENTITY, TICK_COLOUR, None, &tick_line);
+        scene.stroke(&stroke, Affine::IDENTITY, ink.tick, None, &tick_line);
 
         // Label, right-aligned in the left margin and vertically centred on the tick.
         draw_text(
@@ -309,7 +315,7 @@ pub fn render_y_axis(scene: &mut Scene, layout: &ChartLayout, ticks: &[Tick], ti
             x - TICK_LENGTH - 3.0,
             tick.position + f64::from(LABEL_SIZE) / 3.0,
             LABEL_SIZE,
-            LABEL_COLOUR,
+            ink.label,
             TextAnchor::End,
         );
     }
@@ -322,7 +328,7 @@ pub fn render_y_axis(scene: &mut Scene, layout: &ChartLayout, ticks: &[Tick], ti
             Y_TITLE_X,
             (layout.plot_y_start() + layout.plot_y_end()) / 2.0,
             TITLE_SIZE,
-            TITLE_COLOUR,
+            ink.title,
             TextAnchor::Middle,
         );
     }
@@ -430,21 +436,33 @@ mod tests {
         let ticks = compute_ticks(&scale, 5);
 
         let mut y_titled = Scene::new();
-        render_y_axis(&mut y_titled, &layout, &ticks, Some("Travelers"));
+        render_y_axis(
+            &mut y_titled,
+            &layout,
+            &ticks,
+            Some("Travelers"),
+            ChartInk::LIGHT,
+        );
         assert!(
             scene_has_quarter_turn(&y_titled),
             "render_y_axis must rotate its title (bottom-to-top)"
         );
 
         let mut y_plain = Scene::new();
-        render_y_axis(&mut y_plain, &layout, &ticks, None);
+        render_y_axis(&mut y_plain, &layout, &ticks, None, ChartInk::LIGHT);
         assert!(
             !scene_has_quarter_turn(&y_plain),
             "no rotation without a y-title"
         );
 
         let mut x_titled = Scene::new();
-        render_x_axis(&mut x_titled, &layout, &ticks, Some("weight"));
+        render_x_axis(
+            &mut x_titled,
+            &layout,
+            &ticks,
+            Some("weight"),
+            ChartInk::LIGHT,
+        );
         assert!(
             !scene_has_quarter_turn(&x_titled),
             "the x-axis title is horizontal, not rotated"
@@ -479,9 +497,15 @@ mod tests {
 
         // Drawing WITH a title adds ink over drawing without.
         let mut with_t = Scene::new();
-        render_x_axis(&mut with_t, &layout, &ticks, Some("Arrival Delay"));
+        render_x_axis(
+            &mut with_t,
+            &layout,
+            &ticks,
+            Some("Arrival Delay"),
+            ChartInk::LIGHT,
+        );
         let mut no_t = Scene::new();
-        render_x_axis(&mut no_t, &layout, &ticks, None);
+        render_x_axis(&mut no_t, &layout, &ticks, None, ChartInk::LIGHT);
         assert!(
             with_t.encoding().draw_tags.len() > no_t.encoding().draw_tags.len(),
             "an x-axis title adds ink"
@@ -507,9 +531,9 @@ mod tests {
         );
 
         let mut yt = Scene::new();
-        render_y_axis(&mut yt, &layout, &ticks, Some("Travelers"));
+        render_y_axis(&mut yt, &layout, &ticks, Some("Travelers"), ChartInk::LIGHT);
         let mut yn = Scene::new();
-        render_y_axis(&mut yn, &layout, &ticks, None);
+        render_y_axis(&mut yn, &layout, &ticks, None, ChartInk::LIGHT);
         assert!(
             yt.encoding().draw_tags.len() > yn.encoding().draw_tags.len(),
             "a y-axis title adds ink"
@@ -528,7 +552,7 @@ mod tests {
         let ticks = compute_ticks(&scale, 5);
 
         let mut scene = Scene::new();
-        render_x_axis(&mut scene, &layout, &ticks, None);
+        render_x_axis(&mut scene, &layout, &ticks, None, ChartInk::LIGHT);
 
         let encoding = scene.encoding();
         assert!(
@@ -549,7 +573,7 @@ mod tests {
         let ticks = compute_ticks(&scale, 5);
 
         let mut scene = Scene::new();
-        render_y_axis(&mut scene, &layout, &ticks, None);
+        render_y_axis(&mut scene, &layout, &ticks, None, ChartInk::LIGHT);
 
         let encoding = scene.encoding();
         assert!(
