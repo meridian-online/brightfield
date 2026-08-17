@@ -623,6 +623,20 @@ pub const fn status_rail_height() -> f32 {
 /// arithmetic of every view, and re-baseline every pixel test. Floating, it
 /// costs nothing until a line exists, exactly as the notification layers do.
 ///
+/// `.fade_in(false)`: `egui::Area` fades a *newly-visible* layer in over
+/// `Style::animation_time` by default (120 ms here — `meridian_design`'s
+/// theme sets it below egui's stock 200 ms, see `theme.rs`), which is right
+/// for a toast or a modal announcing itself but wrong for a status line
+/// reporting a fact that was already true the frame before: a fact does not
+/// need to announce its own arrival. Without this, two headless captures of
+/// the identical idle state, differing only in how many frames ran before
+/// each one photographed it, show the rail at two different opacities —
+/// which is real: `RawInput::time` is `None` in every capture path in this
+/// workspace, so egui advances its clock by `predicted_dt` each frame either
+/// way, and a two-frame capture and a four-frame capture land at different
+/// points on the same 120 ms curve. Disabling the fade removes the curve
+/// rather than out-waiting it.
+///
 /// Drawn *here* rather than by the shell because this file is where every
 /// pixel of workbench chrome is painted — a shell hand-placing an
 /// `egui::Area` around the rail would be the first line of a second drawing
@@ -640,6 +654,7 @@ pub fn status_rail_overlay(
     egui::Area::new(egui::Id::new("workbench-status-rail"))
         .anchor(egui::Align2::LEFT_BOTTOM, egui::Vec2::ZERO)
         .order(egui::Order::Foreground)
+        .fade_in(false)
         .show(ctx, |ui| {
             let (rect, _) = ui.allocate_exact_size(
                 egui::vec2(screen.width(), status_rail_height()),
