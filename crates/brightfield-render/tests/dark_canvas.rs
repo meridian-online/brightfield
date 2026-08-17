@@ -1,9 +1,9 @@
 //! **No light paint reaches a dark chart.**
 //!
 //! The failure this exists for has one shape, and `paints()` below enumerates
-//! nineteen of the twenty scalar paints plus two of the eight Harbour slots —
-//! `legend_bar_border` is not among them, so reverting that one field alone
-//! reddens nothing here. The shape: a module
+//! nineteen of the twenty scalar paints plus two of the eight Harbour slots.
+//! `legend_bar_border` is the scalar it omits, so this sweep is not the guard
+//! for that field. The shape: a module
 //! that resolves its ink from a `const` bound to a `*_LIGHT` token draws that
 //! ink whatever mode the window is in, and everything around it goes dark while
 //! it does not. On the chart surface that is a white slab exactly the size of
