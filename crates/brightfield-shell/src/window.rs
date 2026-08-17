@@ -2072,9 +2072,9 @@ impl MeridianApp {
     /// Open an overlay if its registry-declared key was pressed this frame.
     ///
     /// The palette opens on both views, but the candidate list differs: on
-    /// the protocol view every verb [`Altitude::Protocol`] offers genuinely
-    /// dispatches through the model, so the raw registry scope IS the
-    /// candidate list. On the chart view most `Altitude::View` verbs have no
+    /// the protocol view, `Altitude::Protocol`'s raw registry scope already
+    /// dispatches through the model, so the raw scope IS the candidate list.
+    /// On the chart view most `Altitude::View` verbs have no
     /// handler in this shell yet — the editing bridge that would let
     /// `add-mark`, `set-channel` and the rest apply a `ChartEdit` is not
     /// landed — so [`Self::open_chart_palette`] restricts the list to

@@ -52,10 +52,10 @@ use meridian_egui::{PickerDelegate, PickerHint, PickerOutcome, PickerRow};
 /// The verb longnames the chart view's palette lists — exactly what
 /// `MeridianApp::apply`'s `ViewKind::Charts` arm dispatches (`clear-selection`,
 /// the navigation family), plus `open-home`, which that method handles before
-/// the per-view match runs at all so it applies on every view. (`apply` is
-/// private, so this names it as plain code rather than as a doc link — a
-/// link would only resolve under `--document-private-items` and break the
-/// public build, and doc links do not get to widen an API.)
+/// the per-view match runs, so it takes effect no matter which view is
+/// active. (`apply` is private, so this names it as plain code rather than
+/// as a doc link — a link would resolve under `--document-private-items` but
+/// not the public build, and doc links do not get to widen an API.)
 ///
 /// `Altitude::View` in the registry is deliberately broader than this: it
 /// also names verbs the chart view's editing bridge will wire later
@@ -65,7 +65,7 @@ use meridian_egui::{PickerDelegate, PickerHint, PickerOutcome, PickerRow};
 /// `cycle-colour-scheme`, ...) — see `window.rs:2074`'s reasoning. Listing
 /// the raw altitude scope on the chart view would put rows in the palette
 /// that confirm and silently do nothing; this curated list is what keeps
-/// that from happening. `overlay_wiring.rs`'s dispatchability sweep walks
+/// that from happening. `overlay_wiring.rs`'s dispatchability test walks
 /// [`chart_palette_candidates`] (the SAME list the palette actually shows,
 /// not a hand-copied mirror of it) and proves every one of these longnames
 /// changes real state when confirmed.

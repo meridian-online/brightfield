@@ -53,9 +53,9 @@ impl Window {
     }
 
     /// The chart view over `fixture` (a name under `examples/`), with a real
-    /// DuckDB session behind it — what the dispatchability sweep needs:
+    /// DuckDB session behind it — what the dispatchability test needs:
     /// `pan_view` / `zoom_view` / `clear_selection` are engine queries, not
-    /// field writes, and only a live session can prove one ran.
+    /// field writes, and a live session is what lets one prove a query ran.
     fn live_chart(fixture: &str) -> Self {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../examples")
@@ -273,7 +273,7 @@ fn mark_rows(doc: &mut ChartDoc, mark: usize) -> usize {
 
 /// The addressed plot's x/y span — `(x_max - x_min, y_max - y_min)`. Pan
 /// moves the frame without changing this; zoom does not. Reading it (rather
-/// than only checking [`ChartDoc::navigated`]) is what tells a pan verb
+/// than checking just [`ChartDoc::navigated`]) is what tells a pan verb
 /// apart from a verb that accidentally zoomed instead.
 fn domain_span(doc: &ChartDoc) -> (f64, f64) {
     use brightfield_render::channel::Channel;

@@ -940,8 +940,8 @@ impl Component for FeedbackLayersDemo {
 /// The evidence label [`PickerDemo`] shows once the query has narrowed the
 /// corpus — proof the composite responds to the keyboard, not just decorates
 /// (the confirm/dispatch half is proven separately, per verb, by
-/// `overlay_wiring.rs`'s dispatchability sweep — this specimen only has to
-/// show the picker is the live thing, not re-litigate what a confirm does).
+/// `overlay_wiring.rs`'s dispatchability tests — this specimen exists to show
+/// the picker is the live thing, not to re-litigate what a confirm does).
 const PICKER_EVIDENCE: &str = "the query narrowed the corpus";
 
 /// The picker — drawn inline rather than behind `ModalLayer`, over the SAME
