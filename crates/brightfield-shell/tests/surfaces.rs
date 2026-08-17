@@ -417,6 +417,46 @@ fn shell_dark_surface() {
     shell_surface(Mode::Dark, "shell_dark");
 }
 
+/// The command palette, **open**, over the chart view — AC5's baseline: the
+/// gate this card removed (`view == ViewKind::Protocol`) used to make this
+/// picture impossible to reach at all. One scripted `space`, then the
+/// settle frame, then capture.
+///
+/// The guard runs *before* the snapshot, for the reason
+/// [`protocol_steps_light_surface`] gives: under `UPDATE_SNAPSHOTS=1` a
+/// snapshot call writes whatever it is handed, so a guard behind it would
+/// author a golden of the closed shell and only complain afterwards. The
+/// reference is the plain `shell_light`/`shell_dark` baseline above — same
+/// window, same size, differing only by whether `space` opened the overlay.
+fn shell_palette_open_surface(mode: Mode, name: &str, baseline: &str) {
+    let opened = shell_capture(mode, name, vec![press(egui::Key::Space, false)]);
+    let closed = image::open(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/snapshots")
+            .join(format!("{baseline}.png")),
+    )
+    .unwrap_or_else(|e| panic!("read baseline {baseline}: {e}"))
+    .to_rgba8();
+    assert_ne!(
+        opened.as_raw(),
+        closed.as_raw(),
+        "{name} is pixel-identical to {baseline} — space did not open the chart \
+         palette, so this baseline photographs the closed shell and would pass \
+         forever"
+    );
+    egui_kittest::image_snapshot(&opened, name);
+}
+
+#[test]
+fn shell_palette_open_light_surface() {
+    shell_palette_open_surface(Mode::Light, "shell_palette_open_light", "shell_light");
+}
+
+#[test]
+fn shell_palette_open_dark_surface() {
+    shell_palette_open_surface(Mode::Dark, "shell_palette_open_dark", "shell_dark");
+}
+
 #[test]
 fn protocol_light_surface() {
     protocol_surface(Mode::Light, "protocol_light", Vec::new());

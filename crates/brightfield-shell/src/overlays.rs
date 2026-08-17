@@ -49,6 +49,39 @@ use meridian_egui::{PickerDelegate, PickerHint, PickerOutcome, PickerRow};
 // CommandPalette
 // ---------------------------------------------------------------------------
 
+/// The verb longnames the chart view's palette lists — exactly what
+/// `MeridianApp::apply`'s `ViewKind::Charts` arm dispatches (`clear-selection`,
+/// the navigation family), plus `open-home`, which that method handles before
+/// the per-view match runs, so it takes effect no matter which view is
+/// active. (`apply` is private, so this names it as plain code rather than
+/// as a doc link — a link would resolve under `--document-private-items` but
+/// not the public build, and doc links do not get to widen an API.)
+///
+/// `Altitude::View` in the registry is deliberately broader than this: it
+/// also names verbs the chart view's editing bridge will wire later
+/// (`add-mark`, `set-channel`, `undo`, ...) and meta verbs this shell handles
+/// elsewhere rather than through `MeridianApp::apply`
+/// (`open-help`, `toggle-focus`, `reload-spec`, `toggle-presentation`,
+/// `cycle-colour-scheme`, ...) — see `window.rs:2074`'s reasoning. Listing
+/// the raw altitude scope on the chart view would put rows in the palette
+/// that confirm and silently do nothing; this curated list is what keeps
+/// that from happening. `overlay_wiring.rs`'s dispatchability test walks
+/// [`chart_palette_candidates`] (the SAME list the palette actually shows,
+/// not a hand-copied mirror of it) and proves every one of these longnames
+/// changes real state when confirmed.
+pub const CHART_PALETTE_VERBS: &[&str] = &[
+    "clear-selection",
+    "open-home",
+    crate::navigation::verb::PAN_LEFT,
+    crate::navigation::verb::PAN_RIGHT,
+    crate::navigation::verb::PAN_UP,
+    crate::navigation::verb::PAN_DOWN,
+    crate::navigation::verb::ZOOM_IN,
+    crate::navigation::verb::ZOOM_OUT,
+    crate::navigation::verb::CYCLE_AXIS_LOCK,
+    crate::navigation::verb::RESET_EXTENT,
+];
+
 /// The command palette: every verb applicable at one altitude, fuzzy-matched
 /// over longname + help, ranked by score (non-empty query) or frequency then
 /// per-session recency (empty query). Reserved verbs are included, flagged,
@@ -78,6 +111,27 @@ impl CommandPalette {
         }
     }
 
+    /// A palette over `altitude`, restricted to registry entries whose
+    /// longname is also in `allow` — the shell's declaration of which
+    /// registry entries it can actually dispatch there, layered over the
+    /// registry's own (broader, forward-looking) altitude scope. See
+    /// [`CHART_PALETTE_VERBS`] for why the chart view needs this and
+    /// [`CommandPalette::new`] does not.
+    #[must_use]
+    pub fn new_restricted(altitude: Altitude, recency: RecencyCounter, allow: &[&str]) -> Self {
+        Self {
+            reg: registry()
+                .into_iter()
+                .filter(|v| allow.contains(&v.longname))
+                .collect(),
+            altitude,
+            recency,
+            matches: Vec::new(),
+            hint: None,
+            picked: None,
+        }
+    }
+
     /// The verb the user confirmed, surrendered once. The host dispatches it
     /// and records it into its recency counter.
     pub fn take_picked(&mut self) -> Option<&'static str> {
@@ -90,6 +144,22 @@ impl CommandPalette {
     pub fn candidate(&self, index: usize) -> Option<&PaletteCandidate> {
         self.matches.get(index)
     }
+}
+
+/// The chart palette's candidate longnames under an empty query, in the
+/// order the palette shows them — a test hook so a dispatchability sweep
+/// walks the SAME list the palette actually lists, not a hand-copied mirror
+/// of [`CHART_PALETTE_VERBS`]. A verb added to that list without a matching
+/// arm in the sweep is a gap the sweep itself refuses to pass over in
+/// silence — see `overlay_wiring.rs`.
+#[must_use]
+pub fn chart_palette_candidates() -> Vec<&'static str> {
+    let mut p =
+        CommandPalette::new_restricted(Altitude::View, RecencyCounter::new(), CHART_PALETTE_VERBS);
+    p.update_query("");
+    (0..p.match_count())
+        .map(|i| p.candidate(i).unwrap().longname)
+        .collect()
 }
 
 impl PickerDelegate for CommandPalette {
@@ -647,6 +717,49 @@ mod tests {
         assert!(
             matches!(p.hint(), Some(PickerHint::Error(_))),
             "refusal is narrated, not silent"
+        );
+    }
+
+    #[test]
+    fn the_chart_palette_lists_only_the_allowed_verbs() {
+        let names = chart_palette_candidates();
+        assert!(!names.is_empty(), "the chart palette lists nothing");
+        for name in &names {
+            assert!(
+                CHART_PALETTE_VERBS.contains(name),
+                "{name} is listed on the chart palette but not in CHART_PALETTE_VERBS"
+            );
+        }
+        // A verb genuinely applicable at `Altitude::View` but NOT wired to
+        // `MeridianApp::apply`'s Charts arm — exactly the silent-no-op risk
+        // `CHART_PALETTE_VERBS` exists to keep off this list.
+        assert!(
+            !names.contains(&"open-help"),
+            "open-help is View-scoped but not restricted-allowed — it must not \
+             leak onto the chart palette: {names:?}"
+        );
+        assert!(
+            !names.contains(&"change-mark-type"),
+            "change-mark-type awaits the editing bridge — it must not leak \
+             onto the chart palette: {names:?}"
+        );
+    }
+
+    #[test]
+    fn new_restricted_excludes_a_view_scoped_verb_outside_the_allow_list() {
+        let mut p = CommandPalette::new_restricted(
+            Altitude::View,
+            RecencyCounter::new(),
+            &["clear-selection"],
+        );
+        p.update_query("");
+        let names: Vec<&str> = (0..p.match_count())
+            .map(|i| p.candidate(i).unwrap().longname)
+            .collect();
+        assert_eq!(
+            names,
+            vec!["clear-selection"],
+            "new_restricted let through a verb outside its allow list: {names:?}"
         );
     }
 
