@@ -11,7 +11,16 @@
 //! paints the chart canvas lays down, each read off the light or the dark
 //! token, resolved once per plot and carried to the modules that draw with
 //! them. It is the [`crate::asset_scene::AssetInk`] idea applied to the data
-//! canvas — no colour on a drawing path is settled before the mode is asked.
+//! canvas.
+//!
+//! **Two raw literals on drawing paths are not yet routed through it**, and
+//! both are reachable from a spec because their renderers are registered in
+//! `default_renderers()`: `mark.rs`'s `HEXGRID_STROKE` and `GEO_STROKE_COLOUR`.
+//! Neither is bound to a `*_LIGHT` token, so neither appears in the grep that
+//! guards the rest; a stroke-only basemap therefore sits near 1.1:1 against the
+//! dark chart surface. Routing them means choosing a colour rather than
+//! resolving an existing pair, which is a design decision rather than a
+//! threading one.
 
 use meridian_design::colour::Rgba;
 use peniko::Color;
@@ -297,10 +306,10 @@ mod tests {
     ///
     /// Field by field, and deliberately not as a whole-struct `assert_ne!`: one
     /// field left on its light token would still make the struct differ, and
-    /// the defect this card fixes is exactly one field left behind. The three
-    /// pairs that are byte-identical across the published scales are named and
-    /// excluded rather than silently passing — there are none in this palette
-    /// today, so the list is empty and the assertion is total.
+    /// the defect this card fixes is exactly one field left behind. Any pair
+    /// byte-identical across the published scales would be named and excluded
+    /// rather than silently passing; there are none in this palette today, so
+    /// the list is empty and the assertion is total.
     #[test]
     fn dark_moves_every_paint_off_its_light_value() {
         let l = ChartInk::for_mode(false);
