@@ -1,16 +1,16 @@
 //! The inspector against the shell contract, without a GPU.
 //!
-//! The sibling of `chart_contract.rs`'s state-only style: everything here is
-//! driven through `MeridianApp::draw` and `MeridianApp::inspector_selection`,
-//! neither of which needs a device — `Workspace::focus` and `Subject` are both
-//! plain data. The pixel tier (`surfaces.rs`) covers what this cannot: what
-//! the panel *looks* like.
+//! The sibling of `chart_contract.rs`'s state-only style: this file is driven
+//! through `MeridianApp::draw` and `MeridianApp::inspector_selection`, neither
+//! of which needs a device — `Workspace::focus` and `Subject` are both plain
+//! data. The pixel tier (`surfaces.rs`) covers what this cannot: what the
+//! panel *looks* like.
 //!
-//! One `egui::Context` per test, created once and threaded through every
+//! One `egui::Context` per test, created once and threaded through each
 //! frame — the same shape `interval_slider.rs`'s `frame` helper uses, and for
-//! the same reason: a fresh `Context::default()` per frame would forget
-//! `fonts_installed`'s own `egui::Context` and skip installing fonts on the
-//! second one, which is a false economy this file does not need.
+//! the same reason: a fresh `Context::default()` per frame would leave
+//! `fonts_installed` pointing at the old context and skip installing fonts on
+//! the new one, which is a false economy this file does not need.
 //!
 //! AC4's revert-and-witness is recorded in the card, not duplicated as a
 //! standing test: pinning "the registry still constructs `ControlsPane`" here
@@ -76,9 +76,9 @@ fn selecting_a_different_pane_changes_what_the_inspector_shows() {
         app.focus_pane(PaneKey::new(ViewKind::Charts, CHART)),
         "the chart pane is in the default arrangement"
     );
-    // Focus lands in `MeridianApp::apply`, only reached at the end of the
-    // frame the request was raised in — but `focus_pane` sets it directly,
-    // so the very next frame's `inspector_selection` read already sees it.
+    // Focus lands in `MeridianApp::apply`, reached at the end of the frame
+    // the request was raised in — but `focus_pane` sets it directly, so the
+    // very next frame's `inspector_selection` read already sees it.
     frame(&mut app, &ctx);
     let chart = app
         .inspector_selection()
@@ -146,12 +146,12 @@ fn focusing_the_inspector_itself_leaves_the_last_real_selection_standing() {
     );
 }
 
-/// AC5: the checkbox draws — with area to click — whether or not anything is
+/// AC5: the checkbox draws — with area to click — whether or not a pane is
 /// selected, because the whole-pane empty state this pane declares is gated
 /// on `doc.is_empty()`, not on selection. Proven at the document level,
 /// without a GPU, so the pixel-tier `the_overlay_toggle_still_reaches_the_
 /// chart_pane` (in `surfaces.rs`) is proving the seam still reaches the
-/// canvas, not proving the checkbox exists at all.
+/// canvas, not proving the checkbox is there to click.
 #[test]
 fn the_hover_overlay_checkbox_draws_whether_or_not_anything_is_selected() {
     let (app, _ctx) = settled();
@@ -172,9 +172,9 @@ fn the_hover_overlay_checkbox_draws_whether_or_not_anything_is_selected() {
 }
 
 /// AC2's whole-pane gate, over the pane that actually ships rather than over
-/// the registry's dormant `ControlsPane`: no dashboard open at all means the
-/// shell draws the empty state instead of calling `ui`, and a real dashboard
-/// means it does not.
+/// the registry's dormant `ControlsPane`: no dashboard open means the shell
+/// draws the empty state instead of calling `ui`, and a real dashboard means
+/// it does not.
 #[test]
 fn the_inspector_is_empty_only_when_the_document_is() {
     let pane = InspectorPane::new(Selection::default());

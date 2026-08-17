@@ -1380,8 +1380,8 @@ impl MeridianApp {
         }
 
         // The registry still builds a `ControlsPane` at `CONTROLS` — that
-        // declaration lives in `app.rs` and stays untouched, so every
-        // registry-level assertion in `chart_contract.rs` keeps passing. What
+        // declaration lives in `app.rs` and stays untouched, so the
+        // registry-level assertions in `chart_contract.rs` keep passing. What
         // actually draws is swapped here, one map entry, right after
         // construction: an `InspectorPane` sharing a `Selection` cell with
         // the `ChartView` it sits in. See `crate::inspector`'s module docs.
@@ -1666,10 +1666,9 @@ impl MeridianApp {
         self.ws_mut().set_focus(key)
     }
 
-    /// Drop the charts view's focus record, as if every pane in it had just
-    /// closed. The other half of [`Self::focus_pane`] — proving the
-    /// inspector reverts to "nothing selected" rather than holding a stale
-    /// one.
+    /// Drop the charts view's focus record, as if its focused pane had just
+    /// closed. The other half of [`Self::focus_pane`] — proving the inspector
+    /// reverts to its empty-selection state rather than holding a stale one.
     pub fn clear_chart_focus(&mut self) {
         self.ws_mut().clear_focus(ViewKind::Charts);
     }

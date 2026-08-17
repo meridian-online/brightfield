@@ -7,12 +7,12 @@
 //! `app.rs`'s `chart_registry_with`, and `app.rs` is a concurrent lane's file
 //! this sprint (the chart canvas taking the mode the shell is in). So the
 //! swap happens one level up, in `window.rs::MeridianApp::assemble`: the
-//! registry still constructs a `ControlsPane` — nothing there changed, and
+//! registry goes on constructing that same `ControlsPane`, unedited, and
 //! `chart_contract.rs`'s assertions about it keep passing unmodified — and the
 //! window overwrites that one map entry with an [`InspectorPane`] before the
 //! first frame draws. Slot geometry (the rail's side, its share, its toggle
 //! verb) stays the registry's, because those come from `ItemSpec`, not from
-//! the boxed `Item`; only *what fills the slot* changed.
+//! the boxed `Item` — what changed is what fills the slot.
 //!
 //! # Why "what is focused" arrives through a shared cell rather than through
 //! `ItemCtx`
@@ -22,12 +22,12 @@
 //! pane (see `brightfield_workbench::item`'s module docs on the aliasing
 //! decision this crate is built on). The window already computes "the focused
 //! pane's `Subject`" once a frame, for the status rail
-//! (`window::MeridianApp::status_rail_ui`); this pane reads the *same* value
-//! through a [`Selection`] handle the window writes into immediately before
-//! the dock draws, so the inspector can never disagree with the rail about
-//! what is focused. Focusing the inspector's own pane (clicking the checkbox,
-//! say) leaves the last real selection standing rather than blanking it —
-//! see [`Selection::set`]'s caller in `window.rs` for the guard.
+//! (`window::MeridianApp::status_rail_ui`); this pane reads that same
+//! computed value through a [`Selection`] handle the window writes into
+//! immediately before the dock draws, rather than recomputing its own answer.
+//! Focusing the inspector's own pane (clicking the checkbox, say) leaves the
+//! last real selection standing rather than blanking it — see
+//! [`Selection::set`]'s caller in `window.rs` for the guard.
 //!
 //! # What still lives here from `ControlsPane`
 //!
@@ -52,10 +52,10 @@ use crate::design::Mode;
 const ICON_INSPECTOR: Icon = Icon("sliders");
 
 /// What "nothing selected" says. Distinct from [`InspectorPane::empty_state`]'s
-/// own text below: that one answers "no dashboard is open at all" (the whole
-/// pane is empty, so the shell never calls `ui`); this one answers "a
-/// dashboard is open, but nothing in it has been clicked on yet" — drawn
-/// *inside* `ui`, alongside the hover-overlay checkbox, which must stay
+/// own text below: that one answers "no dashboard is open" (the pane is
+/// empty, so the shell skips calling `ui` for the frame); this one answers "a
+/// dashboard is open, but no pane in it has been clicked on yet" — drawn
+/// *inside* `ui`, alongside the hover-overlay checkbox, which has to stay
 /// reachable either way (AC5).
 const NOTHING_SELECTED_HEADLINE: &str = "Nothing selected";
 const NOTHING_SELECTED_BODY: &str = "Click a pane — the chart, the data grid, \
@@ -75,8 +75,8 @@ const NOTHING_SELECTED_BODY: &str = "Click a pane — the chart, the data grid, 
 /// `ChartDoc` is declared in `app.rs`, out of this lane's reach. Two clones
 /// exist for the app's life — one on `MeridianApp`'s `ChartView`, one moved
 /// into the boxed `InspectorPane` at construction — both aliasing the same
-/// cell, read and written on the same thread within one frame, never across
-/// one.
+/// cell, read and written on the same thread, within the one frame that set
+/// it.
 #[derive(Clone, Default)]
 pub struct Selection(Rc<RefCell<Option<Subject>>>);
 
@@ -106,9 +106,9 @@ impl Selection {
 ///
 /// Shared between [`InspectorPane::ui`] (fed the workspace's real focused-pane
 /// subject) and the gallery's specimen in `gallery.rs` (fed a standing
-/// example), so the demo can never draw something the shipping panel would
-/// not: the gallery's whole argument is that it "cannot disagree with the app
-/// about what a primitive looks like, because it is the app."
+/// example), so a change to the demo's drawing is a change to the shipping
+/// panel's too: the gallery's whole argument is that it "cannot disagree with
+/// the app about what a primitive looks like, because it is the app."
 ///
 /// Returns the verbs any drawn toolbar button activated this frame — the
 /// caller's to act on ([`ItemCtx::request`] in the shipping pane; the gallery
@@ -163,11 +163,11 @@ impl Item<ChartDoc> for InspectorPane {
     }
 
     /// Empty under the same condition the pane it replaces used: no dashboard
-    /// open at all. "Nothing selected within an open dashboard" is a
-    /// *narrower* case, drawn inside [`Self::ui`] instead of here — an
-    /// `Item::empty_state` answer of `Some` skips `ui` entirely, and the
-    /// hover-overlay checkbox has to stay reachable whether or not anything
-    /// has been clicked on yet (AC5).
+    /// open. "Nothing selected within an open dashboard" is a *narrower* case,
+    /// drawn inside [`Self::ui`] instead of here — an `Item::empty_state`
+    /// answer of `Some` skips the call to `ui` for the frame, and the
+    /// hover-overlay checkbox has to stay reachable whether or not the user
+    /// has clicked on a pane yet (AC5).
     fn empty_state(&self, doc: &ChartDoc) -> Option<EmptyState> {
         doc.is_empty().then(|| {
             EmptyState::new(
@@ -191,8 +191,8 @@ impl Item<ChartDoc> for InspectorPane {
         }
         ui.add_space(spacing::SECTION_GAP);
 
-        // Everything below is `ControlsPane::ui`, ported verbatim — see the
-        // module docs for why it has to stay exactly this code.
+        // The rest of this method is `ControlsPane::ui`, ported verbatim —
+        // see the module docs for why it has to stay exactly this code.
 
         // The legend that used to sit above these controls is gone for good:
         // a hardcoded "Series A/B/C" swatch block duplicated the chart's own
@@ -204,9 +204,9 @@ impl Item<ChartDoc> for InspectorPane {
         // spec with a slider-backed scalar param gets one slider **per
         // declared param**, labelled with the param's name, spanning the
         // widget's own range, and wired through the coordinator seam — a drag
-        // is an `Interaction::SetParam`, a pushed value and a re-query, never
-        // a Rust-side filter. A spec with no declared params draws no slider at
-        // all — just the crosshair toggle below.
+        // is an `Interaction::SetParam`, a pushed value and a re-query rather
+        // than a Rust-side filter. A spec with no declared params draws no
+        // slider — just the crosshair toggle below.
         let params = doc.composed.params.clone();
         if doc.is_live() && !params.is_empty() {
             for control in params {
