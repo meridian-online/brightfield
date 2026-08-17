@@ -53,20 +53,21 @@
 //!    of it with no opt-in;
 //! 5. carry **two goldens**, light and dark, at the `kittest.toml` floor.
 
-use brightfield_keys::BindingContext;
+use brightfield_keys::{Altitude, BindingContext, RecencyCounter};
 use brightfield_workbench::registry::Slot;
 use brightfield_workbench::{
     EmptyState, Icon as ItemIcon, Item, ItemCtx, ItemId, ItemSpec, Subject, Verb,
 };
 use meridian_design::semantic::{semantic, Role};
 use meridian_egui::{
-    align, icons, key_chip, list_row, query_line, tooltip_for_action, widgets, ListRow, MeridianUi,
-    ModalChrome, ModalLayer, Notification, NotificationId, NotificationLayer, RowHeight, Severity,
-    Toast, ToastLayer, PROMPT_GLYPH,
+    align, icons, key_chip, list_row, query_line, tooltip_for_action, widgets, ListRow,
+    MeridianUi, ModalChrome, ModalLayer, Notification, NotificationId, NotificationLayer, Picker,
+    RowHeight, Severity, Toast, ToastLayer, PROMPT_GLYPH,
 };
 
 use crate::app::ChartDoc;
 use crate::design::{to_color32, Mode};
+use crate::overlays::CommandPalette;
 
 // ---------------------------------------------------------------------------
 // The dev flag
@@ -345,7 +346,7 @@ pub fn catalog() -> Vec<Box<dyn Component>> {
         Box::new(IconSetDemo),
         Box::new(ModalChromeDemo::default()),
         Box::new(FeedbackLayersDemo::default()),
-        Box::new(PickerNote),
+        Box::new(PickerDemo::default()),
     ]
 }
 
@@ -936,41 +937,59 @@ impl Component for FeedbackLayersDemo {
     }
 }
 
-/// The picker — a Draft note: the composite ships live as the command
-/// palette, help sheet and jump overlays; an inline gallery delegate is
-/// pending.
-struct PickerNote;
+/// The evidence label [`PickerDemo`] shows once the query has narrowed the
+/// corpus — proof the composite responds to the keyboard, not just decorates
+/// (the confirm/dispatch half is proven separately, per verb, by
+/// `overlay_wiring.rs`'s dispatchability sweep — this specimen only has to
+/// show the picker is the live thing, not re-litigate what a confirm does).
+const PICKER_EVIDENCE: &str = "the query narrowed the corpus";
 
-impl Component for PickerNote {
+/// The picker — drawn inline rather than behind `ModalLayer`, over the SAME
+/// [`CommandPalette`] delegate `window.rs` opens on `space`: `query_line` and
+/// `list_row` are gated above on their own; this is the composite that
+/// stacks them.
+struct PickerDemo {
+    picker: Picker<CommandPalette>,
+}
+
+impl Default for PickerDemo {
+    fn default() -> Self {
+        Self {
+            picker: Picker::new(CommandPalette::new(Altitude::Protocol, RecencyCounter::new())),
+        }
+    }
+}
+
+impl Component for PickerDemo {
     fn info(&self) -> ComponentInfo {
         ComponentInfo {
             id: "picker",
             name: "Picker",
-            status: ComponentStatus::Draft,
+            status: ComponentStatus::Live,
             probe: Probe {
                 role: ProbeRole::Label,
-                label: "One Picker, N delegates",
+                label: PROMPT_GLYPH,
             },
             height: GateHeight::Intrinsic(
-                "the picker composes query line and list rows, each gated on \
-                 its own; an inline gallery delegate is pending",
+                "the picker stacks a query line over its list rows, each \
+                 already gated on its own (`query-line`, `list-row`); the \
+                 composite's height is the row count times the row rung, so \
+                 there is no single rung for the whole stack",
             ),
-            actuation: None,
-            solo_size: (380.0, 120.0),
+            actuation: Some(Actuation {
+                focus: FocusTarget::Role(ProbeRole::TextInput),
+                input: ActuationInput::Text("steps"),
+                evidence: PICKER_EVIDENCE,
+            }),
+            solo_size: (380.0, 260.0),
         }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) {
-        ui.label("One Picker, N delegates");
-        let dark = ui.visuals().dark_mode;
-        let muted = to_color32(semantic(dark).text.muted);
-        ui.label(
-            egui::RichText::new(
-                "Live in the command palette, keyboard help and jump \
-                 overlays; its query line and list rows are gated above.",
-            )
-            .color(muted),
-        );
+        self.picker.show(ui);
+        if !self.picker.query().is_empty() {
+            ui.label(PICKER_EVIDENCE);
+        }
     }
 }
 
