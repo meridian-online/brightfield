@@ -88,8 +88,10 @@ pub struct ChartInk {
     /// Axis, plot and legend titles — the primary ink, darker (lighter, in
     /// dark) than the tick labels so a title reads as a heading.
     pub title: Color,
-    /// Legend panel background: the chart surface at [`crate::legend::PANEL_ALPHA`],
-    /// translucent so marks under it stay legible.
+    /// Legend panel background: the chart surface at the private
+    /// `legend::PANEL_ALPHA`, translucent so marks under it stay legible.
+    /// Named rather than linked because that constant is `pub(crate)`, and a
+    /// doc link does not get to widen an API.
     pub legend_panel: Color,
     /// Legend panel border — the mode's gray step 4, a border-weight hairline.
     pub legend_border: Color,
@@ -102,8 +104,9 @@ pub struct ChartInk {
     /// deliberately below the series chroma floor, so a NULL can never
     /// impersonate a scheme colour.
     pub null: Color,
-    /// The wash over a committed selection's region, at
-    /// [`crate::selection::WASH_ALPHA`].
+    /// The wash over a committed selection's region, at the private
+    /// `selection::WASH_ALPHA` — named rather than linked, as
+    /// [`Self::legend_panel`] records.
     pub selection_wash: Color,
     /// The rule down each constrained edge of a committed selection — the same
     /// focus ink at full strength.

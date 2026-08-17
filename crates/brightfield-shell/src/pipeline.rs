@@ -310,8 +310,9 @@ pub struct Composed {
     /// theme switch re-rastered — the same light scene, onto a differently
     /// toned base.
     ///
-    /// [`crate::app::ChartDoc::present`] is the reader: it re-presents through
-    /// the live session when this disagrees with the mode in force.
+    /// [`crate::app::ChartDoc::set_mode`] is the reader: it re-presents through
+    /// the live session when this disagrees with the mode in force, and the
+    /// crate-private `ChartDoc::present` calls it before it rasters.
     pub mode: Mode,
 }
 
