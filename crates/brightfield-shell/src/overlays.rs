@@ -50,15 +50,17 @@ use meridian_egui::{PickerDelegate, PickerHint, PickerOutcome, PickerRow};
 // ---------------------------------------------------------------------------
 
 /// The verb longnames the chart view's palette lists — exactly what
-/// [`crate::window::MeridianApp::apply`]'s `ViewKind::Charts` arm dispatches
-/// (`clear-selection`, the navigation family), plus `open-home`, which that
-/// method handles before the per-view match runs at all so it applies on
-/// every view.
+/// `MeridianApp::apply`'s `ViewKind::Charts` arm dispatches (`clear-selection`,
+/// the navigation family), plus `open-home`, which that method handles before
+/// the per-view match runs at all so it applies on every view. (`apply` is
+/// private, so this names it as plain code rather than as a doc link — a
+/// link would only resolve under `--document-private-items` and break the
+/// public build, and doc links do not get to widen an API.)
 ///
 /// `Altitude::View` in the registry is deliberately broader than this: it
 /// also names verbs the chart view's editing bridge will wire later
 /// (`add-mark`, `set-channel`, `undo`, ...) and meta verbs this shell handles
-/// elsewhere rather than through [`crate::window::MeridianApp::apply`]
+/// elsewhere rather than through `MeridianApp::apply`
 /// (`open-help`, `toggle-focus`, `reload-spec`, `toggle-presentation`,
 /// `cycle-colour-scheme`, ...) — see `window.rs:2074`'s reasoning. Listing
 /// the raw altitude scope on the chart view would put rows in the palette
