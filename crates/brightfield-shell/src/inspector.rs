@@ -163,7 +163,7 @@ impl Item<ChartDoc> for InspectorPane {
     }
 
     /// Empty under the same condition the pane it replaces used: no dashboard
-    /// open. "Nothing selected within an open dashboard" is a *narrower* case,
+    /// open. An open dashboard with an empty selection is a *narrower* case,
     /// drawn inside [`Self::ui`] instead of here — an `Item::empty_state`
     /// answer of `Some` skips the call to `ui` for the frame, and the
     /// hover-overlay checkbox has to stay reachable whether or not the user

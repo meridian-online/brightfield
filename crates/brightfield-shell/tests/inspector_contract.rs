@@ -54,8 +54,9 @@ fn settled() -> (MeridianApp, egui::Context) {
     (app, ctx)
 }
 
-/// AC2: with nothing selected, the inspector reports `None` — not a stale
-/// answer from some earlier boot, because there is no earlier boot.
+/// AC2: before the user has clicked on a pane, the inspector reports `None`
+/// — not a stale answer from some earlier boot, because there is no earlier
+/// boot.
 #[test]
 fn nothing_is_selected_before_any_pane_has_been_focused() {
     let (app, _ctx) = settled();
