@@ -57,7 +57,7 @@ use brightfield_keys::{Altitude, BindingContext, RecencyCounter};
 use brightfield_workbench::registry::Slot;
 use brightfield_workbench::{
     chrome, EmptyState, HideAffordance, Icon as ItemIcon, Item, ItemCtx, ItemId, ItemSpec,
-    StatusEntry, StatusSide, Subject, Tone, Verb,
+    StatusEntry, StatusSide, Subject, ToolbarEntry, Tone, Verb,
 };
 use meridian_design::semantic::{semantic, Role};
 use meridian_egui::{
@@ -341,6 +341,7 @@ pub fn catalog() -> Vec<Box<dyn Component>> {
         Box::new(StatusPillDemo),
         Box::new(StatusRailDemo),
         Box::new(PaneHeaderDemo),
+        Box::new(InspectorDemo),
         Box::new(KeyChipDemo),
         Box::new(QueryLineDemo::default()),
         Box::new(FocusRingDemo::default()),
@@ -663,6 +664,52 @@ impl Component for PaneHeaderDemo {
         band.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), HEADER_BAND)
         });
+    }
+}
+
+/// `crate::inspector::render_selection` — the chart view's rail body: a
+/// selected pane's title and its toolbar, drawn through the same function the
+/// shipping inspector calls, over a standing specimen `Subject` rather than a
+/// real focused pane.
+struct InspectorDemo;
+
+impl Component for InspectorDemo {
+    fn info(&self) -> ComponentInfo {
+        ComponentInfo {
+            id: "inspector",
+            name: "Inspector",
+            status: ComponentStatus::Live,
+            probe: Probe {
+                role: ProbeRole::Label,
+                label: "Chart",
+            },
+            height: GateHeight::Intrinsic(
+                "the inspector's body is content-driven — a title and a \
+                 collapsing toolbar row, sized by what the selected pane \
+                 declares — so there is no fixed rung to measure",
+            ),
+            actuation: None,
+            solo_size: (300.0, 160.0),
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        let mode = if ui.visuals().dark_mode {
+            Mode::Dark
+        } else {
+            Mode::Light
+        };
+        let subject = Subject::new("Chart", ItemIcon("sliders"), BindingContext::Workspace)
+            .with_toolbar(ToolbarEntry::button(
+                "clear-selection",
+                "Clear selection",
+                Verb::new("clear-selection"),
+            ));
+        // The specimen's toolbar click is not wired to anything live — the
+        // gallery has no document to clear a selection on — but the same
+        // function draws it, so the gallery cannot show a control the
+        // shipping pane would render differently.
+        let _ = crate::inspector::render_selection(ui, Some(&subject), mode);
     }
 }
 

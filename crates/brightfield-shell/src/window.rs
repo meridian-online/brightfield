@@ -73,9 +73,10 @@ use meridian_egui::{
 
 use meridian_design::{radius, semantic, spacing};
 
-use crate::app::{chart_registry, ChartDoc, ChartFault, CHART, CONTROLS_SHARE};
+use crate::app::{chart_registry, ChartDoc, ChartFault, CHART, CONTROLS, CONTROLS_SHARE};
 use crate::canvas::EguiCanvasHost;
 use crate::design::{self, Mode};
+use crate::inspector::{InspectorPane, Selection};
 use crate::overlays::{CommandPalette, HelpSheet, JumpTarget, JumpToNode};
 use crate::pipeline::Composed;
 use crate::protocol::{
@@ -1073,6 +1074,12 @@ fn navigation_verb(doc: &mut crate::app::ChartDoc, longname: &str) -> bool {
 struct ChartView {
     doc: ChartDoc,
     items: ItemMap<ChartDoc>,
+    /// What the inspector rail says is selected — written by [`MeridianApp::draw`]
+    /// from [`Workspace::focus`] right before the dock draws, read by the
+    /// [`InspectorPane`] boxed inside `items` at the [`CONTROLS`] key. See
+    /// `crate::inspector`'s module docs for why this is not a field on
+    /// [`ChartDoc`].
+    inspector_selection: Selection,
 }
 
 /// The protocol view's half: its document and its live items.
@@ -1372,11 +1379,25 @@ impl MeridianApp {
             protocol_doc.model.set_show_sheet(show);
         }
 
+        // The registry still builds a `ControlsPane` at `CONTROLS` — that
+        // declaration lives in `app.rs` and stays untouched, so every
+        // registry-level assertion in `chart_contract.rs` keeps passing. What
+        // actually draws is swapped here, one map entry, right after
+        // construction: an `InspectorPane` sharing a `Selection` cell with
+        // the `ChartView` it sits in. See `crate::inspector`'s module docs.
+        let inspector_selection = Selection::default();
+        let mut chart_items = charts.instantiate();
+        chart_items.insert(
+            charts.pane_key(CONTROLS),
+            Box::new(InspectorPane::new(inspector_selection.clone())),
+        );
+
         let mut app = Self {
             layout,
             charts: ChartView {
                 doc: chart_doc,
-                items: charts.instantiate(),
+                items: chart_items,
+                inspector_selection,
             },
             protocol: ProtocolView {
                 doc: protocol_doc,
@@ -1622,6 +1643,35 @@ impl MeridianApp {
     #[must_use]
     pub fn overlay_checkbox(&self) -> Option<egui::Rect> {
         self.charts.doc.overlay_checkbox
+    }
+
+    /// What the inspector currently says is selected — the focused pane's
+    /// [`Subject`], recomputed each frame from [`Workspace::focus`]
+    /// immediately before the dock draws. `None` before anything in the
+    /// charts view has been focused, or once focus is cleared — never a
+    /// stale previous answer. A test hook, for the reason
+    /// [`Self::overlay_checkbox`] is one: proving the inspector tracks
+    /// selection should not have to pay for a pixel capture per pane.
+    #[must_use]
+    pub fn inspector_selection(&self) -> Option<Subject> {
+        self.charts.inspector_selection.get()
+    }
+
+    /// Move focus to `key`, in its own view — the same effect the
+    /// click-anywhere-in-a-pane rule in `PaneChrome::pane_ui` has, without
+    /// simulating a pointer event. Returns whether the move was accepted
+    /// (see [`Workspace::set_focus`]). A test hook, for the reason
+    /// [`Self::inspector_selection`] is one.
+    pub fn focus_pane(&mut self, key: PaneKey) -> bool {
+        self.ws_mut().set_focus(key)
+    }
+
+    /// Drop the charts view's focus record, as if every pane in it had just
+    /// closed. The other half of [`Self::focus_pane`] — proving the
+    /// inspector reverts to "nothing selected" rather than holding a stale
+    /// one.
+    pub fn clear_chart_focus(&mut self) {
+        self.ws_mut().clear_focus(ViewKind::Charts);
     }
 
     /// The content box the DAG canvas pane was handed by the last frame this
@@ -1953,6 +2003,26 @@ impl MeridianApp {
         // arithmetic reads.
         let tabbed = self.ws().tabbed_tiles(view);
         let focused = self.ws().focus();
+        // The inspector's own read of "what is selected" — the same value
+        // `status_rail_ui` reads for the rail's status lines, computed here
+        // rather than there because the inspector needs it *before* the dock
+        // draws, not after. Skipped when focus has landed on the inspector's
+        // own pane (clicking its checkbox, say): that would otherwise blank
+        // the panel it is itself part of the moment someone touches it.
+        if view == ViewKind::Charts {
+            match focused {
+                Some(key) if key.item != CONTROLS => {
+                    let subject = self
+                        .charts
+                        .items
+                        .get(&key)
+                        .map(|item| item.describe(&self.charts.doc));
+                    self.charts.inspector_selection.set(subject);
+                }
+                Some(_) => {}
+                None => self.charts.inspector_selection.set(None),
+            }
+        }
         let mut requests: Vec<Request> = Vec::new();
         let dock_frame = egui::Frame::new()
             .inner_margin(DOCK_INSET)

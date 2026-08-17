@@ -49,6 +49,10 @@
 //! - [`gallery`] — the dev-flagged in-app design gallery: the `Component`
 //!   catalog of shared primitives, rendered as a pane under the live theme,
 //!   with the per-primitive conformance gate declared as data.
+//! - [`inspector`] — the chart view's right-hand rail: what pane is selected
+//!   and what can be done with it, plus the live document controls (param
+//!   sliders, interval sliders, the hover-overlay checkbox) the pane it
+//!   replaces used to be the whole of.
 //! - [`overlays`] — the picker delegates: the domain halves of the command
 //!   palette, help sheet, jump lists and argument prompt, over the
 //!   framework-free corpora in `brightfield-keys` / `brightfield-model`.
@@ -72,6 +76,7 @@ pub mod data_grid;
 pub mod devtools;
 pub mod editor;
 pub mod gallery;
+pub mod inspector;
 pub mod interval_drag;
 pub mod legend;
 pub mod navigation;
