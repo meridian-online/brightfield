@@ -2071,13 +2071,18 @@ impl MeridianApp {
 
     /// Open an overlay if its registry-declared key was pressed this frame.
     ///
-    /// The palette and the node jump open on the **protocol** view only: the
-    /// palette's candidate list is altitude-scoped and every verb it offers
-    /// at [`Altitude::Protocol`] genuinely dispatches through the model,
-    /// while at the chart altitudes most verbs have no handler in this shell
-    /// yet — a palette of rows that silently no-op would be worse than none.
-    /// Both go live on the chart view with its editing bridge. The help
-    /// sheet is read-only and opens anywhere.
+    /// The palette opens on both views, but the candidate list differs: on
+    /// the protocol view, `Altitude::Protocol`'s raw registry scope already
+    /// dispatches through the model, so the raw scope IS the candidate list.
+    /// On the chart view most `Altitude::View` verbs have no
+    /// handler in this shell yet — the editing bridge that would let
+    /// `add-mark`, `set-channel` and the rest apply a `ChartEdit` is not
+    /// landed — so [`Self::open_chart_palette`] restricts the list to
+    /// [`CHART_PALETTE_VERBS`](crate::overlays::CHART_PALETTE_VERBS): exactly
+    /// what [`Self::apply`]'s `Charts` arm dispatches. A palette of rows that
+    /// silently no-op would be worse than none. The node jump stays
+    /// protocol-only — it has no chart equivalent yet — and the help sheet is
+    /// read-only and opens anywhere.
     fn overlay_open_keys(&mut self, ctx: &egui::Context, view: ViewKind) {
         if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
             return;
@@ -2085,6 +2090,8 @@ impl MeridianApp {
         let pressed = |token: Option<&'static str>| token.is_some_and(|t| consume_token(ctx, t));
         if view == ViewKind::Protocol && pressed(self.overlay_keys.palette) {
             self.open_palette(Altitude::Protocol);
+        } else if view == ViewKind::Charts && pressed(self.overlay_keys.palette) {
+            self.open_chart_palette();
         } else if view == ViewKind::Protocol && pressed(self.overlay_keys.jump) {
             self.open_jump();
         } else if pressed(self.overlay_keys.help) {
@@ -2135,6 +2142,20 @@ impl MeridianApp {
             altitude,
             self.recency.clone(),
         ))));
+    }
+
+    /// Open the command palette at the chart altitude, restricted to
+    /// [`crate::overlays::CHART_PALETTE_VERBS`] — see [`Self::overlay_open_keys`]
+    /// for why the chart view cannot simply reuse [`Self::open_palette`] with
+    /// [`Altitude::View`].
+    fn open_chart_palette(&mut self) {
+        self.overlay = Some(Overlay::Palette(Picker::new(
+            CommandPalette::new_restricted(
+                Altitude::View,
+                self.recency.clone(),
+                crate::overlays::CHART_PALETTE_VERBS,
+            ),
+        )));
     }
 
     /// Open the node jump over the outline — the graph in view, in its
