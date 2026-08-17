@@ -121,9 +121,10 @@ fn shell_capture(mode: Mode, name: &str, script: Vec<Vec<egui::Event>>) -> image
     std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
     let spec = fixture("examples/dashboard.yaml");
     // Composed IN the mode being photographed. `Boot::charts` is the one-shot
-    // boot — it carries no session — so `ChartDoc::set_mode` has nothing here to
-    // re-present through, and a light composition photographed under a dark
-    // window is exactly the white slab this baseline pair exists to hold.
+    // boot — it carries no session — so `ChartDoc::set_mode` has no live
+    // dashboard here to re-present through, and a light composition
+    // photographed under a dark window is exactly the white slab this baseline
+    // pair exists to hold.
     let composed = compose_spec_in_mode(spec.to_str().expect("utf-8 fixture path"), mode)
         .unwrap_or_else(|e| panic!("compose {}: {e}", spec.display()));
     let out = scratch(name);
