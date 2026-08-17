@@ -10,10 +10,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # RUSTUP_TOOLCHAIN neutralises rust-toolchain.toml for both steps below.
+      # cargo-deny reads Cargo.toml/Cargo.lock and never invokes rustc, so it
+      # needs no particular toolchain — but its own entrypoint runs `rustup
+      # show` unconditionally (a documented workaround for rustup 1.28
+      # breaking rust-toolchain.toml support), which resolves this repo's
+      # `rust-toolchain.toml` (1.95.0) inside the action's own musl container,
+      # which does not carry that exact version, and fetches it fresh on
+      # every run. The action's own `rust-version` input does not fix this:
+      # its entrypoint only feeds it to `rustup default`, which rust-toolchain
+      # override files still outrank, so the fetch would still happen — read
+      # https://github.com/EmbarkStudios/cargo-deny-action/blob/main/entrypoint.sh
+      # before reaching for that input again. RUSTUP_TOOLCHAIN is the one
+      # override rustup ranks above a toolchain FILE (though still below
+      # nothing — it is rustup's top precedence), so it is set on each of the
+      # two steps' own `env:` below rather than once at the job level, since a
+      # job-level `env:` would also (harmlessly, but confusingly) apply to the
+      # `actions/checkout@v4` step above, which never touches rustup at all.
+      #
       # Two checks, two steps, so a red run names its gate directly.
       # Licenses: every dependency must carry a permissive licence from the
       # deny.toml allow-list (MIT binaries).
       - uses: EmbarkStudios/cargo-deny-action@v2
+        env:
+          RUSTUP_TOOLCHAIN: stable
         with:
           command: check licenses
       # Advisories: the RUSTSEC feed over the graph we actually ship. Gated
@@ -23,5 +43,7 @@ jobs:
       # in deny.toml [advisories] with a written reason; no bare ignores.
       - uses: EmbarkStudios/cargo-deny-action@v2
         if: always()
+        env:
+          RUSTUP_TOOLCHAIN: stable
         with:
           command: check advisories

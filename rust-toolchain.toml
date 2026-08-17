@@ -1,0 +1,21 @@
+# The exact toolchain the local loop and CI both use — see test.yml's
+# `dtolnay/rust-toolchain@1.95.0` step (and lint.yml's, and
+# nightly-network.yml's, and release.yml's) for the CI half of this pin.
+#
+# Before this file existed, the pin lived only in two places that never touch
+# the tree: a rustup *directory override* on the machine that first cut this
+# repo (rustup toolchain link/override, recorded in ~/.rustup, not in git),
+# and the `dtolnay/rust-toolchain@1.95.0` step in each workflow. A `git clone`
+# or a `git worktree add` made any other way inherits neither, so `cargo
+# build` resolves to whatever rustup's *default* toolchain happens to be and
+# fails against `rust-version = "1.95"` in the workspace Cargo.toml with
+# `requires rustc 1.95`. This file closes that gap: rustup reads it before
+# falling back to a directory override or the default toolchain, so a bare
+# `cargo` in ANY checkout of this repo resolves 1.95.0 with no override
+# needed.
+#
+# `rust-version = "1.95"` (Cargo.toml) stays a *floor* — the oldest toolchain
+# allowed to compile the workspace. This is the exact patch release, same
+# distinction test.yml's own comment draws for the CI pin.
+[toolchain]
+channel = "1.95.0"
