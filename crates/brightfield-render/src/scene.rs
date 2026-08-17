@@ -1122,12 +1122,12 @@ pub fn render_radio(
 /// a Maritime check glyph when checked, plus a label (the bound param's
 /// name — widget `label:` rendering is its own polish item).
 ///
-/// It takes no width. The box is a fixed 14px square inset from `x` and the
-/// label runs from its right edge, so the reserved rect's width was never read
-/// — it sat here as `_width` for symmetry with the sibling widgets. Adding the
-/// canvas took the signature to eight parameters and `clippy::too_many_arguments`
-/// reported it; dropping the argument the body ignores is the answer that
-/// removes something rather than silencing something.
+/// It takes no width. The box is a fixed-size square inset from `x` and the
+/// label runs from its right edge, so the body ignored the reserved rect's
+/// width; the parameter sat here as `_width` for symmetry with the sibling
+/// widgets. Adding the canvas took the signature to eight parameters and
+/// `clippy::too_many_arguments` reported it, so the argument the body ignored
+/// went instead of the lint.
 pub fn render_checkbox(
     scene: &mut Scene,
     x: f64,
