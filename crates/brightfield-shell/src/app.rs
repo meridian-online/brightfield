@@ -1128,11 +1128,14 @@ impl ChartDoc {
     /// app's dump path uses) — otherwise the logical-sized scene would fill only
     /// the top-left corner of the larger texture.
     ///
-    /// The mode reaches the SCENE here, through [`Self::set_mode`], and not only
-    /// the base tone under it. That ordering is the fix: the key below has
-    /// carried `dark` since the theme work landed, so a dark window already
-    /// re-rastered — over a scene whose every colour was still the light token,
-    /// which is what put a white slab where the chart is.
+    /// The mode reaches the SCENE here, through [`Self::set_mode`], rather than
+    /// reaching the base tone under it and stopping. That ordering is the fix:
+    /// the key below has carried `dark` since the theme work landed, so a dark
+    /// window already re-rastered — over a scene whose colours were still
+    /// resolved from light tokens, which is what put a white slab where the
+    /// chart is. `the_generated_dashboard_dark_baseline` in
+    /// `tests/dashboard_baseline.rs` holds it: remove this line and it counts
+    /// 210639 light-surface pixels in a dark window.
     pub(crate) fn present(&mut self, ppp: f32, mode: Mode) {
         self.set_mode(mode);
         let dev = PixelSize {

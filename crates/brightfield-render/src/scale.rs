@@ -318,13 +318,15 @@ pub struct ViewExtent {
 ///
 /// The palette rides here rather than beside here because a scale is precisely
 /// the thing that maps data to ink: a categorical [`Scale::Colour`] stores the
-/// mode's eight Harbour slots, and every mark renderer already takes a
-/// `&ScaleSet` — so the marks reach [`ChartInk::mark_default`] and
+/// mode's eight Harbour slots, and [`crate::mark::MarkRenderer::render`] already
+/// takes a `&ScaleSet` — so the marks reach [`ChartInk::mark_default`] and
 /// [`ChartInk::null`] through an argument they were already given, and no mark
 /// signature moved to make it possible.
 ///
-/// [`ScaleSet::new`] is light, so a caller that has not been taught the mode
-/// keeps drawing what this renderer has always drawn.
+/// [`ScaleSet::new`] is light, which is the mode this renderer drew before it
+/// could be told one; `no_light_paint_reaches_the_dark_canvas` in
+/// `tests/dark_canvas.rs` holds the other direction, that a set built
+/// [`ScaleSet::in_ink`] on the dark canvas lays down no light paint.
 #[derive(Debug, Clone, Default)]
 pub struct ScaleSet {
     scales: HashMap<Channel, Scale>,
@@ -948,8 +950,8 @@ pub fn infer_scales(
     infer_scales_in(batch, channel_map, x_range, y_range, ChartInk::LIGHT)
 }
 
-/// Infer scales from a `RecordBatch` and `ChannelMap`, resolving every colour
-/// scale against `ink`'s canvas.
+/// Infer scales from a `RecordBatch` and `ChannelMap`, resolving a colour scale
+/// against `ink`'s canvas rather than against a compile-time palette.
 pub fn infer_scales_in(
     batch: &RecordBatch,
     channel_map: &ChannelMap,
@@ -999,8 +1001,8 @@ pub fn infer_scales_multi(
     infer_scales_multi_in(entries, x_range, y_range, ChartInk::LIGHT)
 }
 
-/// [`infer_scales_multi`] on `ink`'s canvas — every colour scale takes that
-/// mode's Harbour slots.
+/// [`infer_scales_multi`] on `ink`'s canvas — a colour scale takes that mode's
+/// Harbour slots.
 pub fn infer_scales_multi_in(
     entries: &[(&RecordBatch, &ChannelMap)],
     x_range: (f64, f64),

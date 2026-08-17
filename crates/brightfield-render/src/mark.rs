@@ -650,9 +650,10 @@ fn fill_value_is_null(batch: &RecordBatch, fill_col: &str, row: usize) -> bool {
 /// A `fill` bound to a colour CONSTANT (`fill: steelblue`, `fill: '#ccc'`) is
 /// that colour for every row, and is checked first because it is not a column
 /// and there is nothing per-row to look up. A bound fill whose value is
-/// genuinely NULL at this row renders [`ChartInk::null`] — never [`ChartInk::mark_default`],
-/// which would impersonate a data value; every OTHER fallthrough (no fill
-/// channel, no colour scale, unmapped category) keeps the default mark colour.
+/// genuinely NULL at this row renders [`ChartInk::null`] rather than
+/// [`ChartInk::mark_default`], which would impersonate a data value; the other
+/// fallthroughs (no fill channel, no colour scale, unmapped category) keep the
+/// default mark colour.
 fn resolve_colour(
     scales: &ScaleSet,
     channel_map: &ChannelMap,

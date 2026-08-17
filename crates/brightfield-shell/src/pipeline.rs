@@ -296,10 +296,12 @@ pub struct Composed {
     /// a diagnostic that arrives separately from the picture it is about
     /// arrives at the wrong time.
     pub mark_faults: Vec<MarkFault>,
-    /// **The mode this picture's ink was resolved in.** Every colour in
+    /// **The mode this picture's ink was resolved in.** The colours in
     /// [`Self::scene`] — the chart surface, the grid, the axes, the marks, the
     /// legend — came from this mode's tokens, and the scene is a finished
     /// raster-ready object that cannot be re-inked in place.
+    /// `no_light_paint_reaches_the_dark_canvas` in `brightfield-render`'s
+    /// `tests/dark_canvas.rs` is what holds the enumeration.
     ///
     /// It rides on the composition because a surface that draws the scene knows
     /// which mode the WINDOW is in and, without this, has no way to tell
@@ -655,16 +657,16 @@ pub struct LiveDashboard {
     /// [`LiveDashboard::apply`] tells "the policy chose this, re-ask it" from
     /// "a caller chose this, leave it alone".
     sample_is_automatic: bool,
-    /// **The mode every composition off this dashboard is inked in.**
+    /// **The mode a composition off this dashboard is inked in.**
     ///
     /// [`Mode::Light`] until a surface says otherwise through
     /// [`LiveDashboard::set_mode`], which is what keeps a caller that has not
     /// been taught the mode drawing exactly what it drew before.
     ///
     /// It lives here rather than being handed to [`LiveDashboard::present`] per
-    /// call for the reason [`Self::viewport`] does: every re-present after
-    /// every gesture has to carry it, and a parameter each of them could
-    /// forget is a dashboard that reverts to light on the first brush.
+    /// call for the reason [`Self::viewport`] does: a re-present after a gesture
+    /// has to carry it too, and a parameter the gesture path could forget is a
+    /// dashboard that reverts to light on the first brush.
     mode: Mode,
 }
 
@@ -791,15 +793,16 @@ impl LiveDashboard {
 
     /// Tell this dashboard which mode it is being drawn in, and say whether
     /// that is news — the [`LiveDashboard::set_viewport`] shape, for the same
-    /// reason: a surface that reports the mode every frame must not re-query
-    /// every frame.
+    /// reason: a surface reports the mode once a frame and must not re-query
+    /// once a frame.
     ///
     /// The re-query is unavoidable when it IS news. A composed scene is a
     /// finished list of drawing commands with their brushes already resolved;
     /// there is no in-place re-ink, so a new mode means a new composition, and
-    /// a new composition means the batches it draws. Nothing switches mode
-    /// mid-process today — the window takes a mode at boot — so in practice
-    /// this fires at most once, on the first frame of a dark boot.
+    /// a new composition means the batches it draws. No code path switches mode
+    /// mid-process today — the window takes a mode at boot and
+    /// `crate::app::CanvasKey`'s own note records the same — so in practice this
+    /// fires at most once, on the first frame of a dark boot.
     pub fn set_mode(&mut self, mode: Mode) -> bool {
         if self.mode == mode {
             return false;

@@ -50,9 +50,9 @@ pub const fn components<const N: usize>(src: [Rgba; N]) -> [[f32; 4]; N] {
 ///
 /// The canvas used to hold twenty-one module-level `const Color`s read straight
 /// off `chrome::INK_LIGHT`, `scales::GRAY_LIGHT` and the `viz` `*_LIGHT`
-/// palettes, which is why the plot stayed a white slab inside a dark window:
-/// nothing on a drawing path could see the mode. This struct is that same list,
-/// resolved through the light or dark token as [`Self::for_mode`] is asked.
+/// palettes, which is why the plot stayed a white slab inside a dark window: a
+/// drawing path had no mode to ask. This struct is that same list, resolved
+/// through the light or dark token as [`Self::for_mode`] is asked.
 ///
 /// In light mode every field resolves to the byte-identical value its `const`
 /// predecessor held — `light_resolves_to_the_retired_consts` pins that field by
@@ -200,9 +200,11 @@ impl ChartInk {
 }
 
 impl Default for ChartInk {
-    /// Light. A [`crate::scale::ScaleSet`] nobody told the mode draws the mode
-    /// this renderer has always drawn, so a caller that has not been taught the
-    /// mode yet is unchanged rather than broken.
+    /// Light — the mode this renderer drew before it could be told one, so a
+    /// [`crate::scale::ScaleSet`] nobody has taught is unchanged rather than
+    /// broken. `the_light_canvas_draws_every_light_paint` in
+    /// `tests/dark_canvas.rs` holds that this default is what the light scenes
+    /// draw.
     fn default() -> Self {
         Self::LIGHT
     }
