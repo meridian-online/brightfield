@@ -41,11 +41,14 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use brightfield_keys::BindingContext;
-use brightfield_workbench::{chrome, EmptyState, Icon, Item, ItemCtx, ItemId, Subject, Verb};
+use brightfield_workbench::{
+    chrome, EmptyState, Icon, Item, ItemCtx, ItemId, Subject, ToolbarEntry, Verb,
+};
 use meridian_design::{semantic, spacing};
 
 use crate::app::{ChartDoc, CONTROLS};
 use crate::design::Mode;
+use crate::overlays::CHART_PALETTE_VERBS;
 
 /// The rail's icon — unchanged from the pane it replaces, so the Meridian
 /// icon set landing later is one change, not two.
@@ -101,6 +104,30 @@ impl Selection {
 // The shared body — what the shipping pane and the gallery specimen both draw
 // ---------------------------------------------------------------------------
 
+/// The subset of `entries` this rail may draw: every entry whose verb the
+/// Charts view's `MeridianApp::apply` actually dispatches, per
+/// [`CHART_PALETTE_VERBS`] — the same enumeration the chart command palette
+/// (`overlays.rs`) is restricted to, so the two surfaces cannot disagree
+/// about what is live at this altitude.
+///
+/// This is the pane's whole answer to "what can be done with it": before
+/// this rail existed nothing rendered a pane's declared toolbar at all (a
+/// pane's own header band paints only its icon, title and dirty marker), so
+/// a declared-but-undispatchable entry — `editor.rs`'s `save`, say — was
+/// inert everywhere. Drawing it here without filtering would make it look
+/// live for the first time while still doing nothing, which is worse than
+/// the checkbox this rail replaced. So an entry not on the allow list is
+/// dropped rather than shown disabled — see `tests/inspector_contract.rs`'s
+/// `every_declared_toolbar_verb_either_dispatches_or_is_filtered_out` for the
+/// sweep that keeps this from silently widening.
+fn dispatchable(entries: &[ToolbarEntry]) -> Vec<ToolbarEntry> {
+    entries
+        .iter()
+        .filter(|entry| CHART_PALETTE_VERBS.contains(&entry.verb.as_str()))
+        .cloned()
+        .collect()
+}
+
 /// Draw what is selected — `subject`'s title and toolbar — or, when nothing
 /// is, the empty state naming what selecting something would show.
 ///
@@ -118,7 +145,8 @@ pub fn render_selection(ui: &mut egui::Ui, subject: Option<&Subject>, mode: Mode
         Some(subject) => {
             ui.label(egui::RichText::new(&subject.title).strong());
             chrome::breadcrumb(ui, &subject.breadcrumb, mode);
-            let toolbar = chrome::Toolbar::new(&subject.toolbar);
+            let entries = dispatchable(&subject.toolbar);
+            let toolbar = chrome::Toolbar::new(&entries);
             if toolbar.has_something_to_say() {
                 ui.add_space(spacing::CONTROL_GAP);
             }
@@ -271,5 +299,53 @@ impl Item<ChartDoc> for InspectorPane {
                 .color(chrome::colour(sem.text.muted)),
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A dispatchable verb (drawn on the real chart pane's toolbar) and one
+    /// that is not (the editor's `save-spec`, which has no arm in
+    /// `MeridianApp::apply`'s Charts branch).
+    fn sample_entries() -> (ToolbarEntry, ToolbarEntry) {
+        (
+            ToolbarEntry::button(
+                "clear-selection",
+                "Clear selection",
+                Verb::new("clear-selection"),
+            ),
+            ToolbarEntry::button("save-spec", "Save", Verb::new("save-spec")),
+        )
+    }
+
+    /// The filter's whole job: keep the verb the Charts view can run, drop
+    /// the one it cannot — never the reverse, and never both or neither.
+    #[test]
+    fn dispatchable_keeps_only_verbs_the_charts_view_can_run() {
+        let (keep, drop) = sample_entries();
+        let filtered = dispatchable(&[keep.clone(), drop]);
+        assert_eq!(
+            filtered,
+            vec![keep],
+            "dispatchable() let an undispatchable verb through, or dropped a \
+             real one — either way the inspector would draw a button that \
+             lies about what it does"
+        );
+    }
+
+    /// The order in `CHART_PALETTE_VERBS` is not `dispatchable`'s promise —
+    /// only membership is. Declaration order survives the filter.
+    #[test]
+    fn dispatchable_preserves_declaration_order() {
+        let (keep, _drop) = sample_entries();
+        let reset = ToolbarEntry::button("reset-extent", "Reset view", Verb::new("reset-extent"));
+        let filtered = dispatchable(&[reset.clone(), keep.clone()]);
+        assert_eq!(filtered, vec![reset, keep]);
     }
 }

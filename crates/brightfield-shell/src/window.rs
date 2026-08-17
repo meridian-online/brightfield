@@ -63,8 +63,8 @@ use brightfield_workbench::behavior::{TAB_BAR_HEIGHT, TILE_GAP};
 use brightfield_workbench::workspace::{tabs_holding, tile_of};
 use brightfield_workbench::{
     chrome, Activity, ActivityIndicator, DirtyTracker, HideAffordance, ItemMap, PaneChrome,
-    PaneKey, Request, SavedLayout, StatusEntry, StatusSide, Subject, Tone, Verb, ViewKind,
-    WindowGeometry, Workspace,
+    PaneKey, Request, SavedLayout, StatusEntry, StatusSide, Subject, ToolbarEntry, Tone, Verb,
+    ViewKind, WindowGeometry, Workspace,
 };
 use meridian_egui::{
     ModalChrome, ModalLayer, Notification, NotificationId, NotificationLayer, Picker, PickerEvent,
@@ -1685,6 +1685,22 @@ impl MeridianApp {
             .items
             .get(&key)
             .map(|item| item.describe(&self.charts.doc).title)
+    }
+
+    /// The toolbar `key`'s live item declares right now — the other half of
+    /// [`Self::chart_pane_title`], and for the same reason: a pane's
+    /// declared toolbar (e.g. the editor's `save-spec`, once a file is open)
+    /// only exists after `describe` has run against a document that has
+    /// actually drawn a frame, so a test that wants it has to ask the live
+    /// app rather than `chart_registry()`'s freshly constructed, never-drawn
+    /// items.
+    #[must_use]
+    pub fn chart_pane_toolbar(&self, key: PaneKey) -> Vec<ToolbarEntry> {
+        self.charts
+            .items
+            .get(&key)
+            .map(|item| item.describe(&self.charts.doc).toolbar)
+            .unwrap_or_default()
     }
 
     /// The content box the DAG canvas pane was handed by the last frame this

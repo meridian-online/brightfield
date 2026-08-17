@@ -22,6 +22,7 @@ use brightfield_shell::app::{ChartDoc, CHART, CONTROLS};
 use brightfield_shell::design::Mode;
 use brightfield_shell::editor::EDITOR;
 use brightfield_shell::inspector::{InspectorPane, Selection};
+use brightfield_shell::overlays::CHART_PALETTE_VERBS;
 use brightfield_shell::pipeline::compose_spec;
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_workbench::{Item, PaneKey, ViewKind};
@@ -209,5 +210,108 @@ fn the_inspector_is_empty_only_when_the_document_is() {
         "a real dashboard is open, so the shipping pane must draw its body — \
          an inverted predicate here would blank the whole rail, checkbox \
          included"
+    );
+}
+
+/// Each chart-view pane's toolbar over the shipped fixture, straight from
+/// `chart_registry()`'s freshly constructed, never-drawn items. That is fine
+/// here specifically: `chart_item.rs`'s toolbar comes from `Self::
+/// toolbar_entries(doc)`, a pure function of the document, and neither
+/// `data_grid.rs` nor the registry's own `ControlsPane` declares a toolbar
+/// at all — the one pane this shortcut does NOT hold for is the editor,
+/// which needs [`editor_toolbar_verbs`] below instead.
+fn registry_toolbar_verbs(doc: &ChartDoc) -> Vec<&'static str> {
+    brightfield_shell::app::chart_registry()
+        .specs()
+        .iter()
+        .flat_map(|spec| (spec.make)().subject(doc).toolbar)
+        .map(|entry| entry.verb.as_str())
+        .collect()
+}
+
+/// The editor's toolbar needs a file actually open — `describe` reads `self.
+/// file`, which only `ui`'s first call populates, from `doc.spec_path` (see
+/// `editor.rs::ui`). A fresh, undrawn `EditorPane` declares an empty
+/// toolbar, which is the gap that made an earlier version of this sweep pass
+/// under the same mutation its doc comment claimed would redden it: walking
+/// `chart_registry().specs()` alone leaves `save-spec` out of the set being
+/// matched, so removing its arm changed nothing observable.
+fn editor_toolbar_verbs(doc: &mut ChartDoc) -> Vec<&'static str> {
+    let mut pane = brightfield_shell::editor::EditorPane::new();
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(480.0, 320.0),
+        )),
+        ..Default::default()
+    };
+    let mut requests = Vec::new();
+    let _ = ctx.run_ui(raw, |ui| {
+        let mut icx = brightfield_workbench::ItemCtx::new(
+            Mode::Light,
+            PaneKey::new(ViewKind::Charts, EDITOR),
+            egui_tiles::TileId::from_u64(1),
+            true,
+            &mut requests,
+        );
+        pane.ui(doc, ui, &mut icx);
+    });
+    pane.describe(doc)
+        .toolbar
+        .into_iter()
+        .map(|entry| entry.verb.as_str())
+        .collect()
+}
+
+/// The defect this lane would otherwise have shipped: before this pane
+/// existed, a chart-view pane's declared toolbar was not drawn anywhere —
+/// the header band paints icon, title and dirty marker and stops there (see
+/// `chrome::pane_frame`) — so a declared-but-undispatchable verb was inert
+/// wherever it sat. This sweep requires a verdict, from
+/// [`registry_toolbar_verbs`] and [`editor_toolbar_verbs`] combined:
+/// dispatches, so the inspector may draw it, or does not, so it must stay
+/// filtered. An unrecognised verb panics rather than passing over unproven,
+/// the same shape `overlay_wiring.rs::every_chart_palette_candidate_
+/// actually_dispatches` uses for the command palette.
+///
+/// Proof this sweep can fail: dropping the `"save-spec"` arm below (so it
+/// falls to the `other => panic!` case) reddens this test with "save-spec is
+/// declared on a chart-view pane's toolbar with no verdict in this sweep".
+#[test]
+fn every_declared_toolbar_verb_either_dispatches_or_is_filtered_out() {
+    let mut doc =
+        ChartDoc::headless(compose_spec(DASHBOARD).expect("compose examples/dashboard.yaml"));
+    doc.spec_path = Some(DASHBOARD.into());
+
+    let mut verbs = registry_toolbar_verbs(&doc);
+    verbs.extend(editor_toolbar_verbs(&mut doc));
+
+    for verb in &verbs {
+        let dispatches = CHART_PALETTE_VERBS.contains(verb);
+        match *verb {
+            "clear-selection" | "reset-extent" => assert!(
+                dispatches,
+                "{verb} is expected to dispatch at the chart altitude — \
+                 CHART_PALETTE_VERBS moved and inspector::dispatchable's \
+                 verdict for it needs re-checking"
+            ),
+            "save-spec" => assert!(
+                !dispatches,
+                "save-spec now dispatches at the chart altitude — \
+                 inspector::dispatchable can stop excluding it"
+            ),
+            other => panic!(
+                "{other} is declared on a chart-view pane's toolbar with no \
+                 verdict in this sweep — decide whether the inspector may \
+                 draw it (it dispatches: add a case here) or must keep \
+                 dropping it, and extend this match"
+            ),
+        }
+    }
+    assert!(
+        verbs.contains(&"save-spec"),
+        "the editor's toolbar declared no save-spec entry — the file did \
+         not open, which would make this sweep vacuous for it: saw {verbs:?}"
     );
 }
