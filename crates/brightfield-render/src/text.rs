@@ -15,21 +15,15 @@ use skrifa::metrics::GlyphMetrics;
 use skrifa::prelude::*;
 use vello::{Glyph, Scene};
 
-use crate::ink::ink;
-
 /// Bundled UI font: Inter Regular (SIL Open Font License 1.1, licence bundled
 /// in the `meridian-design` crate alongside the bytes).
 static FONT_DATA: &[u8] = meridian_design::fonts::INTER_REGULAR;
 
-/// Default label text colour — Meridian muted ink (tick labels, legend text).
-pub const LABEL_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.ink_muted);
-
 /// Default label size in pixels.
+///
+/// The sizes stay here as `const`s and the colours did not: a type size is the
+/// same number in both modes (ADR 0003 sets one type scale), and an ink is not.
 pub const LABEL_SIZE: f32 = 11.0;
-
-/// Axis / plot title colour — Meridian primary ink, darker than tick labels so
-/// a title reads as a heading, not another tick label.
-pub const TITLE_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.ink_primary);
 
 /// Axis / plot title size in pixels (a touch larger than tick labels).
 pub const TITLE_SIZE: f32 = 12.0;
@@ -190,6 +184,7 @@ pub fn draw_text_rotated(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ink::ChartInk;
 
     #[test]
     fn rotated_text_reads_bottom_to_top() {
@@ -216,7 +211,7 @@ mod tests {
             10.0,
             100.0,
             TITLE_SIZE,
-            TITLE_COLOUR,
+            ChartInk::LIGHT.title,
             TextAnchor::Middle,
         );
         assert!(
@@ -230,7 +225,7 @@ mod tests {
             0.0,
             0.0,
             TITLE_SIZE,
-            TITLE_COLOUR,
+            ChartInk::LIGHT.title,
             TextAnchor::Start,
         );
         assert_eq!(
@@ -275,7 +270,7 @@ mod tests {
             100.0,
             100.0,
             LABEL_SIZE,
-            LABEL_COLOUR,
+            ChartInk::LIGHT.label,
             TextAnchor::Middle,
         );
         // Glyph runs encode as draw tags in the scene.
@@ -292,7 +287,7 @@ mod tests {
             0.0,
             0.0,
             LABEL_SIZE,
-            LABEL_COLOUR,
+            ChartInk::LIGHT.label,
             TextAnchor::Start,
         );
         assert_eq!(

@@ -13,6 +13,7 @@ use peniko::{Color, Fill};
 use vello::Scene;
 
 use crate::channel::{Channel, ChannelMap, LabelForm};
+use crate::ink::ChartInk;
 use crate::kde::{kde_1d_weighted, kde_2d, silverman_1d_weighted, silverman_2d_per_axis};
 use crate::scale::{
     apply_colour_override, merge_linear_scale, ColourOverride, Scale, ScaleSet, SequentialScheme,
@@ -396,18 +397,18 @@ pub trait MarkRenderer {
 /// Default dot radius in pixels.
 const DOT_RADIUS: f64 = 4.0;
 
-/// Default mark colour — Meridian Harbour slot 1 blue (`#0083c4`). Replaces
-/// the former Tableau10 blue `#4e79a7` (which an old comment mislabelled CSS
-/// steelblue; CSS steelblue is `#4682b4` — neither survives here).
-const DEFAULT_COLOUR: Color = crate::ink::ink(meridian_design::viz::MARK_DEFAULT_LIGHT);
-
-/// NULL ink — the fill for a row whose bound fill VALUE is genuinely NULL: a
-/// warm gray deliberately below the series chroma floor, so a NULL can never
-/// impersonate a scheme colour (it used to fall through to [`DEFAULT_COLOUR`]
-/// at full opacity and read as a HIGH value on light-anchored schemes).
-/// Reserved for genuine NULLs — every other fallthrough (no fill channel, no
-/// colour scale, unmapped category) keeps [`DEFAULT_COLOUR`].
-const NULL_INK: Color = crate::ink::ink(meridian_design::viz::NULL_INK_LIGHT);
+// The default mark colour — Meridian Harbour slot 1 blue, replacing the former
+// Tableau10 blue `#4e79a7` (which an old comment mislabelled CSS steelblue; CSS
+// steelblue is `#4682b4` — neither survives here) — is
+// [`ChartInk::mark_default`], and the NULL ink is [`ChartInk::null`]. Both are
+// read off the scale set a renderer is already handed, so a mark draws the mode
+// the plot is in without a single `MarkRenderer` signature moving.
+//
+// NULL ink is a warm gray deliberately below the series chroma floor, so a NULL
+// can never impersonate a scheme colour (it used to fall through to the default
+// at full opacity and read as a HIGH value on light-anchored schemes). Reserved
+// for genuine NULLs — every other fallthrough (no fill channel, no colour
+// scale, unmapped category) keeps the default mark colour.
 
 /// Default line stroke width.
 const LINE_STROKE_WIDTH: f64 = 2.0;
@@ -649,7 +650,7 @@ fn fill_value_is_null(batch: &RecordBatch, fill_col: &str, row: usize) -> bool {
 /// A `fill` bound to a colour CONSTANT (`fill: steelblue`, `fill: '#ccc'`) is
 /// that colour for every row, and is checked first because it is not a column
 /// and there is nothing per-row to look up. A bound fill whose value is
-/// genuinely NULL at this row renders [`NULL_INK`] — never [`DEFAULT_COLOUR`],
+/// genuinely NULL at this row renders [`ChartInk::null`] — never [`ChartInk::mark_default`],
 /// which would impersonate a data value; every OTHER fallthrough (no fill
 /// channel, no colour scale, unmapped category) keeps the default mark colour.
 fn resolve_colour(
@@ -658,6 +659,7 @@ fn resolve_colour(
     batch: &RecordBatch,
     row: usize,
 ) -> Color {
+    let ink = scales.ink();
     if let Some(constant) = channel_map.colour(Channel::Fill) {
         return constant;
     }
@@ -672,18 +674,18 @@ fn resolve_colour(
             }
         }
         if fill_value_is_null(batch, fill_col, row) {
-            return NULL_INK;
+            return ink.null;
         }
     }
-    DEFAULT_COLOUR
+    ink.mark_default
 }
 
 /// The constant ink a mark's spec named, if it named one — `stroke` first, then
-/// `fill`, then [`DEFAULT_COLOUR`].
+/// `fill`, then [`ChartInk::mark_default`].
 ///
 /// This is the *whole* colour story for the marks that draw one shape in one
 /// colour and have no per-row colour path at all: line, rule, contour, the 1-D
-/// density band. Each of those hard-coded [`DEFAULT_COLOUR`] before, which is
+/// density band. Each of those hard-coded [`ChartInk::mark_default`] before, which is
 /// correct only for a spec that names no colour — and silently wrong for one
 /// that does.
 ///
@@ -692,11 +694,11 @@ fn resolve_colour(
 /// Column-bound colour channels are deliberately NOT consulted here: mapping a
 /// column to a stroke is a per-row question, these renderers emit one path, and
 /// answering it from row 0 would be a guess wearing the clothes of a scale.
-fn constant_ink(channel_map: &ChannelMap) -> Color {
+fn constant_ink(channel_map: &ChannelMap, ink: ChartInk) -> Color {
     channel_map
         .colour(Channel::Stroke)
         .or_else(|| channel_map.colour(Channel::Fill))
-        .unwrap_or(DEFAULT_COLOUR)
+        .unwrap_or(ink.mark_default)
 }
 
 /// Apply a highlight's deemphasis to a resolved colour.
@@ -1278,7 +1280,7 @@ impl MarkRenderer for LineRenderer {
         }
 
         // Draw connected line segments.
-        let colour = constant_ink(channel_map);
+        let colour = constant_ink(channel_map, scales.ink());
         let stroke = kurbo::Stroke::new(LINE_STROKE_WIDTH);
         for window in points.windows(2) {
             let line = Line::new(
@@ -1715,7 +1717,7 @@ impl MarkRenderer for RuleRenderer {
         };
 
         let stroke = kurbo::Stroke::new(LINE_STROKE_WIDTH);
-        let colour = constant_ink(channel_map);
+        let colour = constant_ink(channel_map, scales.ink());
         for p in positions {
             let line = match self.axis {
                 RuleAxis::X => Line::new((p, span0), (p, span1)),
@@ -1976,7 +1978,7 @@ impl MarkRenderer for Density1DRenderer {
         }
         path.close_path();
 
-        let colour = constant_ink(channel_map);
+        let colour = constant_ink(channel_map, scales.ink());
         scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &path);
     }
 
@@ -2238,7 +2240,7 @@ impl MarkRenderer for Density2DRenderer {
                 }
                 let px = x_scale.map_f64(grid.x_centres[c]);
                 let py = y_scale.map_f64(grid.y_centres[r]);
-                let [cr, cg, cb, _ca] = DEFAULT_COLOUR.components;
+                let [cr, cg, cb, _ca] = scales.ink().mark_default.components;
                 let colour = Color::new([cr, cg, cb, normalised as f32]);
                 let circle = Circle::new((px, py), radius);
                 scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &circle);
@@ -2369,7 +2371,7 @@ impl MarkRenderer for RasterRenderer {
             Some(scale @ Scale::Sequential { .. }) => Some(scale),
             _ => None,
         };
-        let [cr, cg, cb, _] = DEFAULT_COLOUR.components;
+        let [cr, cg, cb, _] = scales.ink().mark_default.components;
         for i in 0..batch.num_rows() {
             let (Some(cx), Some(cy), Some(count)) = (x_vals[i], y_vals[i], count_vals[i]) else {
                 continue;
@@ -2542,7 +2544,7 @@ impl MarkRenderer for HeatmapRenderer {
             Some(scale @ Scale::Sequential { .. }) => Some(scale),
             _ => None,
         };
-        let [cr, cg, cb, _] = DEFAULT_COLOUR.components;
+        let [cr, cg, cb, _] = scales.ink().mark_default.components;
         let (rows, cols) = (grid.rows(), grid.cols());
         for r in 0..rows {
             for c in 0..cols {
@@ -2721,7 +2723,7 @@ impl MarkRenderer for CellRenderer {
                 // A ramp-backed numeric fill whose value is NULL at this row is
                 // genuinely NULL — render NULL ink, never a colour a scheme
                 // value could produce (the NULL-reads-as-high bug).
-                (Some(_), None) if fill_vals.is_some() => NULL_INK,
+                (Some(_), None) if fill_vals.is_some() => scales.ink().null,
                 _ => resolve_colour(scales, channel_map, batch, i),
             };
             let cell = kurbo::Rect::new(cx - bw / 2.0, cy - bh / 2.0, cx + bw / 2.0, cy + bh / 2.0);
@@ -2839,7 +2841,7 @@ impl MarkRenderer for ContourRenderer {
             self.thresholds.unwrap_or(DEFAULT_CONTOUR_LEVELS),
         );
         let stroke = kurbo::Stroke::new(LINE_STROKE_WIDTH);
-        let colour = constant_ink(channel_map);
+        let colour = constant_ink(channel_map, scales.ink());
         for level in levels {
             let lines = crate::contour::contour_polylines(
                 &grid.density,
@@ -2959,7 +2961,7 @@ impl MarkRenderer for HexbinRenderer {
             Some(scale @ Scale::Sequential { .. }) => Some(scale),
             _ => None,
         };
-        let [cr, cg, cb, _] = DEFAULT_COLOUR.components;
+        let [cr, cg, cb, _] = scales.ink().mark_default.components;
 
         for i in 0..batch.num_rows() {
             let (Some(cx), Some(cy), Some(dx), Some(dy)) =
@@ -3015,8 +3017,8 @@ impl MarkRenderer for HexbinRenderer {
                 // genuinely NULL — NULL ink, never the default colour (which
                 // reads as a data value). Other fallthroughs (no fill channel,
                 // an all-zero fill) keep the default.
-                (_, None) if fill_vals.is_some() => NULL_INK,
-                _ => DEFAULT_COLOUR,
+                (_, None) if fill_vals.is_some() => scales.ink().null,
+                _ => scales.ink().mark_default,
             };
             scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &path);
         }
@@ -4044,7 +4046,7 @@ impl MarkRenderer for GeoRenderer {
                     // A choropleth feature whose metric is NULL renders NULL
                     // ink — a warm gray no ramp value produces — instead of
                     // impersonating a high value (the NULL-reads-as-high bug).
-                    (Some(_), None) if fill_vals.is_some() => NULL_INK,
+                    (Some(_), None) if fill_vals.is_some() => scales.ink().null,
                     _ => resolve_colour(scales, channel_map, batch, row),
                 };
                 scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &path);
@@ -5764,7 +5766,7 @@ mod tests {
         no_fill.insert(Channel::Y, scales.get(Channel::Y).unwrap().clone());
         let mut scene2 = Scene::new();
         RasterRenderer::default().render(&mut scene2, &batch, &cm, &no_fill, None);
-        let [cr, cg, cb, _] = DEFAULT_COLOUR.components;
+        let [cr, cg, cb, _] = ChartInk::LIGHT.mark_default.components;
         let alpha_low = (1.0_f64 / 100.0).clamp(0.0, 1.0).max(RASTER_MIN_T) as f32;
         let fallback: std::collections::HashSet<u32> =
             scene2.encoding().draw_data.iter().copied().collect();
@@ -6789,7 +6791,7 @@ mod tests {
         no_fill.insert(Channel::Y, scales.get(Channel::Y).unwrap().clone());
         let mut scene2 = Scene::new();
         renderer.render(&mut scene2, &batch, &cm, &no_fill, None);
-        let [cr, cg, cb, _] = DEFAULT_COLOUR.components;
+        let [cr, cg, cb, _] = ChartInk::LIGHT.mark_default.components;
         let fallback_expected: std::collections::HashSet<u32> = grid
             .density
             .iter()
@@ -8087,7 +8089,7 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // design phase 4 PR B — NULL ink: a genuinely-NULL fill value renders the
-    // reserved warm-gray NULL_INK, never a scheme colour and never the default
+    // reserved warm-gray ChartInk::LIGHT.null, never a scheme colour and never the default
     // mark colour (the NULL-reads-as-high bug, booked as the
     // NULL-numeric-fill chore).
     // -----------------------------------------------------------------------
@@ -8130,7 +8132,10 @@ mod tests {
             scene.encoding().draw_data.iter().copied().collect();
         assert_eq!(
             drawn,
-            std::collections::HashSet::from([packed(ramp_at_10), packed(NULL_INK.components),]),
+            std::collections::HashSet::from([
+                packed(ramp_at_10),
+                packed(ChartInk::LIGHT.null.components),
+            ]),
             "the valued cell samples the ramp; the NULL cell renders NULL ink"
         );
         assert!(
@@ -8138,7 +8143,7 @@ mod tests {
             "the NULL cell no longer paints the old steelblue default"
         );
         assert!(
-            !drawn.contains(&packed(DEFAULT_COLOUR.components)),
+            !drawn.contains(&packed(ChartInk::LIGHT.mark_default.components)),
             "the NULL cell does not read as the default mark colour either"
         );
     }
@@ -8176,7 +8181,10 @@ mod tests {
             scene.encoding().draw_data.iter().copied().collect();
         assert_eq!(
             drawn,
-            std::collections::HashSet::from([packed(slot1), packed(NULL_INK.components)]),
+            std::collections::HashSet::from([
+                packed(slot1),
+                packed(ChartInk::LIGHT.null.components)
+            ]),
             "the categorised dot takes its palette slot; the NULL-category dot renders NULL ink"
         );
     }
@@ -8216,11 +8224,11 @@ mod tests {
         let drawn: std::collections::HashSet<u32> =
             scene.encoding().draw_data.iter().copied().collect();
         assert!(
-            drawn.contains(&packed(NULL_INK.components)),
+            drawn.contains(&packed(ChartInk::LIGHT.null.components)),
             "the NULL-metric hex renders NULL ink"
         );
         assert!(
-            !drawn.contains(&packed(DEFAULT_COLOUR.components))
+            !drawn.contains(&packed(ChartInk::LIGHT.mark_default.components))
                 && !drawn.contains(&packed(OLD_STEELBLUE)),
             "the NULL-metric hex renders neither the default mark colour nor old steelblue"
         );
@@ -8252,7 +8260,7 @@ mod tests {
             scene.encoding().draw_data.iter().copied().collect();
         assert_eq!(
             drawn,
-            std::collections::HashSet::from([packed(DEFAULT_COLOUR.components)]),
+            std::collections::HashSet::from([packed(ChartInk::LIGHT.mark_default.components)]),
             "no fill channel → the (Harbour slot 1) default mark colour, not NULL ink"
         );
     }

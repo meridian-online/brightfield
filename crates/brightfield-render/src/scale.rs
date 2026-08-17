@@ -12,6 +12,7 @@ use arrow::record_batch::RecordBatch;
 use brightfield_spec::layout::FixedDomains;
 
 use crate::channel::{Channel, ChannelMap};
+use crate::ink::ChartInk;
 
 /// Put a colour scale's category list into the order that fixes each category's
 /// palette slot: ascending by the category's own text.
@@ -312,16 +313,43 @@ pub struct ViewExtent {
     pub y: Option<(f64, f64)>,
 }
 
-/// Collection of inferred scales for a chart, keyed by channel.
+/// Collection of inferred scales for a chart, keyed by channel, plus the canvas
+/// palette they were resolved against.
+///
+/// The palette rides here rather than beside here because a scale is precisely
+/// the thing that maps data to ink: a categorical [`Scale::Colour`] stores the
+/// mode's eight Harbour slots, and every mark renderer already takes a
+/// `&ScaleSet` — so the marks reach [`ChartInk::mark_default`] and
+/// [`ChartInk::null`] through an argument they were already given, and no mark
+/// signature moved to make it possible.
+///
+/// [`ScaleSet::new`] is light, so a caller that has not been taught the mode
+/// keeps drawing what this renderer has always drawn.
 #[derive(Debug, Clone, Default)]
 pub struct ScaleSet {
     scales: HashMap<Channel, Scale>,
+    ink: ChartInk,
 }
 
 impl ScaleSet {
-    /// Create an empty scale set.
+    /// Create an empty scale set on the light canvas.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Create an empty scale set on `ink`'s canvas.
+    #[must_use]
+    pub fn in_ink(ink: ChartInk) -> Self {
+        Self {
+            scales: HashMap::new(),
+            ink,
+        }
+    }
+
+    /// The canvas palette this set's scales were resolved against.
+    #[must_use]
+    pub fn ink(&self) -> ChartInk {
+        self.ink
     }
 
     /// Insert a scale for a channel.
@@ -359,7 +387,9 @@ impl ScaleSet {
 ///   appear.
 #[must_use]
 pub fn anchor_scales(launch: &ScaleSet, fresh: ScaleSet) -> ScaleSet {
-    let mut anchored = ScaleSet::new();
+    // The launch set's canvas, not the fresh one's: the anchor exists so the
+    // frame of reference holds still, and the mode is part of that frame.
+    let mut anchored = ScaleSet::in_ink(launch.ink());
     for &ch in Channel::all() {
         let scale = match (launch.get(ch), fresh.get(ch)) {
             (Some(l), Some(f)) => anchor_scale(l, f),
@@ -803,14 +833,13 @@ const TURBO_STOPS: &[[f32; 4]] = &[
 const MERIDIAN_STOPS: &[[f32; 4]] =
     &crate::ink::components(meridian_design::viz::SEQUENTIAL_MERIDIAN);
 
-/// Default colour palette — the Meridian "Harbour" categorical order (blue,
-/// gold, teal, red, violet, orange, plum, green), replacing Observable Plot's
-/// categorical10. The ORDER is the colourblind-safety mechanism (chosen for
-/// maximum adjacent CVD distance) and is therefore data, never cosmetic —
-/// eight slots; `map_colour` cycles by index beyond them (see deviations.yaml
-/// DEV-0004).
-const CATEGORICAL_PALETTE: &[[f32; 4]] =
-    &crate::ink::components(meridian_design::viz::CATEGORICAL_LIGHT);
+// The default colour palette — the Meridian "Harbour" categorical order (blue,
+// gold, teal, red, violet, orange, plum, green), replacing Observable Plot's
+// categorical10 — is [`ChartInk::categorical`], one table per mode. The ORDER is
+// the colourblind-safety mechanism (chosen for maximum adjacent CVD distance
+// jointly across BOTH modes) and is therefore data, never cosmetic — eight
+// slots either side; `map_colour` cycles by index beyond them (see
+// deviations.yaml DEV-0004).
 
 /// Infer scales from a RecordBatch and ChannelMap.
 ///
@@ -909,13 +938,26 @@ pub fn merge_linear_scale(
     );
 }
 
+/// [`infer_scales_in`] on the light canvas.
 pub fn infer_scales(
     batch: &RecordBatch,
     channel_map: &ChannelMap,
     x_range: (f64, f64),
     y_range: (f64, f64),
 ) -> ScaleSet {
-    let mut set = ScaleSet::new();
+    infer_scales_in(batch, channel_map, x_range, y_range, ChartInk::LIGHT)
+}
+
+/// Infer scales from a `RecordBatch` and `ChannelMap`, resolving every colour
+/// scale against `ink`'s canvas.
+pub fn infer_scales_in(
+    batch: &RecordBatch,
+    channel_map: &ChannelMap,
+    x_range: (f64, f64),
+    y_range: (f64, f64),
+    ink: ChartInk,
+) -> ScaleSet {
+    let mut set = ScaleSet::in_ink(ink);
 
     for (channel, col_name) in channel_map.iter() {
         let col_idx = match batch.schema().index_of(col_name) {
@@ -929,7 +971,7 @@ pub fn infer_scales(
             _ => (0.0, 0.0),
         };
 
-        let scale = infer_column_scale(col.as_ref(), range_start, range_end, *channel);
+        let scale = infer_column_scale(col.as_ref(), range_start, range_end, *channel, ink);
         if let Some(s) = scale {
             set.insert(*channel, s);
         }
@@ -954,6 +996,17 @@ pub fn infer_scales_multi(
     x_range: (f64, f64),
     y_range: (f64, f64),
 ) -> ScaleSet {
+    infer_scales_multi_in(entries, x_range, y_range, ChartInk::LIGHT)
+}
+
+/// [`infer_scales_multi`] on `ink`'s canvas — every colour scale takes that
+/// mode's Harbour slots.
+pub fn infer_scales_multi_in(
+    entries: &[(&RecordBatch, &ChannelMap)],
+    x_range: (f64, f64),
+    y_range: (f64, f64),
+    ink: ChartInk,
+) -> ScaleSet {
     // Collect all channels across all entries.
     let mut all_channels: Vec<Channel> = Vec::new();
     for (_, cm) in entries {
@@ -964,7 +1017,7 @@ pub fn infer_scales_multi(
         }
     }
 
-    let mut set = ScaleSet::new();
+    let mut set = ScaleSet::in_ink(ink);
 
     for channel in &all_channels {
         let (range_start, range_end) = match channel {
@@ -982,7 +1035,8 @@ pub fn infer_scales_multi(
                     Err(_) => continue,
                 };
                 let col = batch.column(col_idx);
-                if let Some(s) = infer_column_scale(col.as_ref(), range_start, range_end, *channel)
+                if let Some(s) =
+                    infer_column_scale(col.as_ref(), range_start, range_end, *channel, ink)
                 {
                     scales_for_channel.push(s);
                 }
@@ -1213,6 +1267,7 @@ fn infer_column_scale(
     range_start: f64,
     range_end: f64,
     channel: Channel,
+    ink: ChartInk,
 ) -> Option<Scale> {
     match col.data_type() {
         DataType::Float64 => {
@@ -1355,7 +1410,7 @@ fn infer_column_scale(
             if matches!(channel, Channel::Fill | Channel::Stroke) {
                 order_categories(&mut categories);
                 Some(Scale::Colour {
-                    palette: CATEGORICAL_PALETTE.to_vec(),
+                    palette: ink.categorical.to_vec(),
                     categories,
                 })
             } else {
@@ -2015,8 +2070,17 @@ mod tests {
     #[test]
     fn dsb_categorical_palette_is_harbour() {
         let src = meridian_design::viz::CATEGORICAL_LIGHT;
-        assert_eq!(CATEGORICAL_PALETTE.len(), src.len(), "8 Harbour slots");
-        for (i, (slot, token)) in CATEGORICAL_PALETTE.iter().zip(src.iter()).enumerate() {
+        assert_eq!(
+            ChartInk::LIGHT.categorical.len(),
+            src.len(),
+            "8 Harbour slots"
+        );
+        for (i, (slot, token)) in ChartInk::LIGHT
+            .categorical
+            .iter()
+            .zip(src.iter())
+            .enumerate()
+        {
             assert_eq!(
                 *slot,
                 [token.r, token.g, token.b, token.a],
@@ -2026,11 +2090,11 @@ mod tests {
         // A 9th category cycles back to slot 1 (index % len).
         let scale = Scale::Colour {
             categories: (0..9).map(|i| format!("c{i}")).collect(),
-            palette: CATEGORICAL_PALETTE.to_vec(),
+            palette: ChartInk::LIGHT.categorical.to_vec(),
         };
         assert_eq!(
             scale.map_colour("c8"),
-            Some(CATEGORICAL_PALETTE[0]),
+            Some(ChartInk::LIGHT.categorical[0]),
             "9th category wraps to slot 1"
         );
     }
@@ -2065,7 +2129,7 @@ mod tests {
             Channel::Fill,
             Scale::Colour {
                 categories: vec!["b".into(), "a".into()],
-                palette: CATEGORICAL_PALETTE.to_vec(),
+                palette: ChartInk::LIGHT.categorical.to_vec(),
             },
         );
         let c1 = [0x11 as f32 / 255.0; 3];
@@ -2282,7 +2346,7 @@ mod tests {
             Channel::Fill,
             Scale::Colour {
                 categories: vec!["a".into(), "b".into(), "c".into()],
-                palette: CATEGORICAL_PALETTE.to_vec(),
+                palette: ChartInk::LIGHT.categorical.to_vec(),
             },
         );
         let mut fcat = ScaleSet::new();
@@ -2290,7 +2354,7 @@ mod tests {
             Channel::Fill,
             Scale::Colour {
                 categories: vec!["c".into()],
-                palette: CATEGORICAL_PALETTE.to_vec(),
+                palette: ChartInk::LIGHT.categorical.to_vec(),
             },
         );
         match anchor_scales(&lcat, fcat).get(Channel::Fill) {
@@ -2535,7 +2599,7 @@ mod tests {
     fn colour_scales_offer_no_positional_pin() {
         assert!(PinnedDomain::of(&Scale::Colour {
             categories: vec!["a".into()],
-            palette: CATEGORICAL_PALETTE.to_vec(),
+            palette: ChartInk::LIGHT.categorical.to_vec(),
         })
         .is_none());
         assert!(PinnedDomain::of(&Scale::Sequential {
@@ -2677,7 +2741,7 @@ mod tests {
     fn colour_inference_orders_categories_and_band_inference_does_not() {
         let col = StringArray::from(vec!["zulu", "alpha", "zulu", "mike"]);
 
-        let fill = infer_column_scale(&col, 0.0, 0.0, Channel::Fill)
+        let fill = infer_column_scale(&col, 0.0, 0.0, Channel::Fill, ChartInk::LIGHT)
             .expect("a string column gives the fill channel a colour scale");
         match &fill {
             Scale::Colour { categories, .. } => assert_eq!(
@@ -2688,7 +2752,7 @@ mod tests {
             other => panic!("expected a colour scale, got {other:?}"),
         }
 
-        let x = infer_column_scale(&col, 0.0, 100.0, Channel::X)
+        let x = infer_column_scale(&col, 0.0, 100.0, Channel::X, ChartInk::LIGHT)
             .expect("a string column gives a positional channel a band scale");
         match &x {
             Scale::Band { categories, .. } => assert_eq!(
@@ -2709,10 +2773,17 @@ mod tests {
             0.0,
             0.0,
             Channel::Fill,
+            ChartInk::LIGHT,
         )
         .expect("colour scale");
-        let right = infer_column_scale(&StringArray::from(vec!["mike"]), 0.0, 0.0, Channel::Fill)
-            .expect("colour scale");
+        let right = infer_column_scale(
+            &StringArray::from(vec!["mike"]),
+            0.0,
+            0.0,
+            Channel::Fill,
+            ChartInk::LIGHT,
+        )
+        .expect("colour scale");
 
         match union_scales(&[left, right], 0.0, 0.0).expect("a union of colour scales") {
             Scale::Colour { categories, .. } => assert_eq!(

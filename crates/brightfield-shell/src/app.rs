@@ -1079,6 +1079,46 @@ impl ChartDoc {
         }
     }
 
+    /// Draw this document's picture in `mode`, re-composing it if it was drawn
+    /// in the other one — and say whether the picture changed.
+    ///
+    /// A composed scene is a finished list of drawing commands whose brushes
+    /// are already resolved, so there is no in-place re-ink: a mode the picture
+    /// does not agree with means composing again. That is only possible with a
+    /// live session behind the document; a one-shot composition (the capture
+    /// tiers, the shipped starts) keeps the mode it was composed at, which is
+    /// why the compose entry points take one.
+    ///
+    /// `false` when the picture already agrees, when there is no session, and
+    /// when the engine refused the re-composite — the previous picture stands
+    /// in that last case, as it does for a refused gesture and a refused
+    /// reflow.
+    pub fn set_mode(&mut self, mode: Mode) -> bool {
+        if self.composed.mode == mode {
+            return false;
+        }
+        let Some(live) = self.live.as_mut() else {
+            return false;
+        };
+        if !live.set_mode(mode) {
+            return false;
+        }
+        self.activity.begin(Activity::EngineQuery);
+        let presented = live.present();
+        self.activity.end(Activity::EngineQuery);
+        match presented {
+            Ok(composed) => {
+                self.composed = composed;
+                self.canvas.invalidate();
+                true
+            }
+            Err(e) => {
+                eprintln!("warning: re-composite for the {mode:?} theme failed: {e}");
+                false
+            }
+        }
+    }
+
     /// Rasterise the Vello dashboard onto a shared-device texture at the current
     /// HiDPI scale and register it for zero-copy egui sampling — only when
     /// [`CanvasKey`] actually changed.
@@ -1087,7 +1127,14 @@ impl ChartDoc {
     /// onto the device-resolution texture (the same scale-the-scene step the
     /// app's dump path uses) — otherwise the logical-sized scene would fill only
     /// the top-left corner of the larger texture.
+    ///
+    /// The mode reaches the SCENE here, through [`Self::set_mode`], and not only
+    /// the base tone under it. That ordering is the fix: the key below has
+    /// carried `dark` since the theme work landed, so a dark window already
+    /// re-rastered — over a scene whose every colour was still the light token,
+    /// which is what put a white slab where the chart is.
     pub(crate) fn present(&mut self, ppp: f32, mode: Mode) {
+        self.set_mode(mode);
         let dev = PixelSize {
             width: ((self.composed.width as f32) * ppp).round().max(1.0) as u32,
             height: ((self.composed.height as f32) * ppp).round().max(1.0) as u32,

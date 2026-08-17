@@ -3,40 +3,34 @@
 
 use arrow::record_batch::RecordBatch;
 use kurbo::{Affine, BezPath, Circle, Rect, RoundedRect, Stroke};
-use peniko::{Color, Fill};
+use peniko::Fill;
 use vello::Scene;
 
 use crate::axis::{compute_ticks, render_plot_title, render_x_axis, render_y_axis};
 use crate::channel::{Channel, ChannelMap};
 use crate::grid::{render_x_grid, render_y_grid};
-use crate::ink::ink;
+use crate::ink::ChartInk;
 use crate::layout::ChartLayout;
 use crate::legend::render_colour_legend;
 use crate::mark::{HighlightState, MarkRenderer};
 use crate::sample_notice::{render_sample_notice, SampleFact};
 use crate::scale::{
-    apply_pinned_domains, infer_scales, infer_scales_multi, order_categories, PinnedDomains, Scale,
-    ScaleSet, ViewExtent,
+    apply_pinned_domains, infer_scales_in, infer_scales_multi_in, order_categories, PinnedDomains,
+    Scale, ScaleSet, ViewExtent,
 };
 use crate::title::ResolvedTitles;
 
-/// Opaque chart background — the Meridian warm chart surface. Drawn first so
-/// grid, marks, axes and legend composite on top. Without it the scene renders
-/// onto transparency, which a PNG export shows as a black/checkerboard backdrop
-/// and which makes a working chart look broken.
-const BACKGROUND_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.surface);
-
-/// Fill the full chart area with [`BACKGROUND_COLOUR`]. Must be the first
-/// geometry added to the scene so everything else draws on top.
-fn render_background(scene: &mut Scene, layout: &ChartLayout) {
+/// Fill the full chart area with the mode's chart surface
+/// ([`ChartInk::background`]). Must be the first geometry added to the scene so
+/// grid, marks, axes and legend composite on top.
+///
+/// Without it the scene renders onto transparency, which a PNG export shows as
+/// a black/checkerboard backdrop and which makes a working chart look broken.
+/// It used to be a `const` bound to `chrome::INK_LIGHT.surface`, which is why a
+/// dark window held a white slab exactly the size of the chart.
+fn render_background(scene: &mut Scene, layout: &ChartLayout, ink: ChartInk) {
     let rect = Rect::new(0.0, 0.0, layout.width, layout.height);
-    scene.fill(
-        Fill::NonZero,
-        Affine::IDENTITY,
-        BACKGROUND_COLOUR,
-        None,
-        &rect,
-    );
+    scene.fill(Fill::NonZero, Affine::IDENTITY, ink.background, None, &rect);
 }
 
 /// Input data for building a chart scene.
@@ -173,15 +167,23 @@ fn extend_domain_to_zero(scale: &Scale) -> Scale {
     }
 }
 
-pub fn build_chart_scene(data: &ChartData<'_>) -> (Scene, ScaleSet) {
+/// Build a chart scene from one mark, on `ink`'s canvas.
+///
+/// The ink is a parameter of the PLOT rather than a field of [`ChartData`], and
+/// that is deliberate: a `ChartData` is one mark layer, several of them share
+/// one plot, and a per-layer mode is a state in which two marks in the same
+/// frame could disagree about which mode they are in. There is exactly one
+/// answer per plot, so it is passed once per plot.
+pub fn build_chart_scene(data: &ChartData<'_>, ink: ChartInk) -> (Scene, ScaleSet) {
     let mut scene = Scene::new();
-    render_background(&mut scene, &data.layout);
+    render_background(&mut scene, &data.layout, ink);
 
-    let mut scales = infer_scales(
+    let mut scales = infer_scales_in(
         data.batch,
         data.channel_map,
         data.layout.x_range(),
         data.layout.y_range(),
+        ink,
     );
 
     // Let the mark contribute positional scales generic column inference can't
@@ -227,11 +229,11 @@ pub fn build_chart_scene(data: &ChartData<'_>) -> (Scene, ScaleSet) {
     if !suppress_frame {
         if let Some(x_scale) = scales.get(Channel::X) {
             let x_ticks = compute_ticks(x_scale, 5);
-            render_x_grid(&mut scene, &data.layout, &x_ticks);
+            render_x_grid(&mut scene, &data.layout, &x_ticks, ink);
         }
         if let Some(y_scale) = scales.get(Channel::Y) {
             let y_ticks = compute_ticks(y_scale, 5);
-            render_y_grid(&mut scene, &data.layout, &y_ticks);
+            render_y_grid(&mut scene, &data.layout, &y_ticks, ink);
         }
     }
 
@@ -246,17 +248,17 @@ pub fn build_chart_scene(data: &ChartData<'_>) -> (Scene, ScaleSet) {
     if !suppress_frame {
         if let Some(x_scale) = scales.get(Channel::X) {
             let x_ticks = compute_ticks(x_scale, 5);
-            render_x_axis(&mut scene, &data.layout, &x_ticks, None);
+            render_x_axis(&mut scene, &data.layout, &x_ticks, None, ink);
         }
         if let Some(y_scale) = scales.get(Channel::Y) {
             let y_ticks = compute_ticks(y_scale, 5);
-            render_y_axis(&mut scene, &data.layout, &y_ticks, None);
+            render_y_axis(&mut scene, &data.layout, &y_ticks, None, ink);
         }
     }
 
     // Colour legend.
     if let Some(fill_scale) = scales.get(Channel::Fill) {
-        render_colour_legend(&mut scene, &data.layout, fill_scale);
+        render_colour_legend(&mut scene, &data.layout, fill_scale, ink);
     }
 
     (scene, scales)
@@ -281,6 +283,7 @@ pub fn build_multi_mark_scene(
         draw_inline_legend,
         titles,
         &UnsampledDomains::default(),
+        ChartInk::LIGHT,
     )
 }
 
@@ -492,6 +495,7 @@ pub fn build_multi_mark_scene_with_domains(
     draw_inline_legend: bool,
     titles: &ResolvedTitles,
     domains: &UnsampledDomains,
+    ink: ChartInk,
 ) -> (Scene, ScaleSet) {
     build_multi_mark_scene_pinned(
         entries,
@@ -499,6 +503,7 @@ pub fn build_multi_mark_scene_with_domains(
         titles,
         domains,
         &PinnedDomains::default(),
+        ink,
     )
 }
 
@@ -522,11 +527,12 @@ pub fn build_multi_mark_scene_pinned(
     titles: &ResolvedTitles,
     domains: &UnsampledDomains,
     pins: &PinnedDomains,
+    ink: ChartInk,
 ) -> (Scene, ScaleSet) {
     if entries.is_empty() {
-        return (Scene::new(), ScaleSet::new());
+        return (Scene::new(), ScaleSet::in_ink(ink));
     }
-    let mut scales = infer_multi_mark_scales(entries);
+    let mut scales = infer_multi_mark_scales(entries, ink);
     apply_unsampled_domains(
         &mut scales,
         &domains_yielding_to_navigation(domains, entries[0]),
@@ -758,14 +764,14 @@ pub fn unrestorable_under_sampling(
 /// can re-infer FRESH scales from the current batches and fold them against the
 /// launch set via [`crate::scale::anchor_scales`]. Callers guarantee `entries`
 /// is non-empty.
-fn infer_multi_mark_scales(entries: &[&ChartData<'_>]) -> ScaleSet {
+fn infer_multi_mark_scales(entries: &[&ChartData<'_>], ink: ChartInk) -> ScaleSet {
     let layout = &entries[0].layout;
 
     // Collect (batch, channel_map) pairs for multi-scale inference.
     let pairs: Vec<(&RecordBatch, &ChannelMap)> =
         entries.iter().map(|d| (d.batch, d.channel_map)).collect();
 
-    let mut scales = infer_scales_multi(&pairs, layout.x_range(), layout.y_range());
+    let mut scales = infer_scales_multi_in(&pairs, layout.x_range(), layout.y_range(), ink);
 
     // Let each mark contribute positional scales generic column inference can't
     // supply (regression's x/y extents, 1D-density's perpendicular axis).
@@ -827,8 +833,11 @@ fn draw_multi_mark_scene(
     scales: &ScaleSet,
 ) -> Scene {
     let layout = &entries[0].layout;
+    // One canvas per plot, read off the scale set the marks will draw against —
+    // so the frame's chrome and the ink inside it cannot disagree about the mode.
+    let ink = scales.ink();
     let mut scene = Scene::new();
-    render_background(&mut scene, layout);
+    render_background(&mut scene, layout, ink);
 
     // A frame-suppressing mark (geo — it projects its own coordinate space and
     // reads as a map) drops the grid + axes for the whole plot (geo).
@@ -838,11 +847,11 @@ fn draw_multi_mark_scene(
     if !suppress_frame {
         if let Some(x_scale) = scales.get(Channel::X) {
             let x_ticks = compute_ticks(x_scale, 5);
-            render_x_grid(&mut scene, layout, &x_ticks);
+            render_x_grid(&mut scene, layout, &x_ticks, ink);
         }
         if let Some(y_scale) = scales.get(Channel::Y) {
             let y_ticks = compute_ticks(y_scale, 5);
-            render_y_grid(&mut scene, layout, &y_ticks);
+            render_y_grid(&mut scene, layout, &y_ticks, ink);
         }
     }
 
@@ -859,23 +868,23 @@ fn draw_multi_mark_scene(
     if !suppress_frame {
         if let Some(x_scale) = scales.get(Channel::X) {
             let x_ticks = compute_ticks(x_scale, 5);
-            render_x_axis(&mut scene, layout, &x_ticks, titles.x.as_deref());
+            render_x_axis(&mut scene, layout, &x_ticks, titles.x.as_deref(), ink);
         }
         if let Some(y_scale) = scales.get(Channel::Y) {
             let y_ticks = compute_ticks(y_scale, 5);
-            render_y_axis(&mut scene, layout, &y_ticks, titles.y.as_deref());
+            render_y_axis(&mut scene, layout, &y_ticks, titles.y.as_deref(), ink);
         }
     }
 
     // Per-plot title, above the frame (the top margin has grown to make room).
     if let Some(plot_title) = titles.plot.as_deref() {
-        render_plot_title(&mut scene, layout, plot_title);
+        render_plot_title(&mut scene, layout, plot_title, ink);
     }
 
     // Colour legend — unless a standalone `legend:` node has relocated it.
     if draw_inline_legend {
         if let Some(fill_scale) = scales.get(Channel::Fill) {
-            render_colour_legend(&mut scene, layout, fill_scale);
+            render_colour_legend(&mut scene, layout, fill_scale, ink);
         }
     }
 
@@ -912,7 +921,7 @@ pub fn build_multi_mark_scene_anchored(
     if entries.is_empty() {
         return (Scene::new(), launch.clone());
     }
-    let fresh = infer_multi_mark_scales(entries);
+    let fresh = infer_multi_mark_scales(entries, launch.ink());
     let anchored = crate::scale::anchor_scales(launch, fresh);
     let scene = draw_multi_mark_scene(entries, draw_inline_legend, titles, &anchored);
     (scene, anchored)
@@ -929,21 +938,24 @@ pub fn build_multi_mark_scene_anchored(
 /// The live window hosts one element per plot (so each keeps independent
 /// interaction); this single-composite path is used for the headless/PNG render
 /// and shares the same per-plot scenes.
-pub fn compose_dashboard(width: f64, height: f64, plots: &[(f64, f64, &Scene)]) -> Scene {
+pub fn compose_dashboard(
+    width: f64,
+    height: f64,
+    plots: &[(f64, f64, &Scene)],
+    ink: ChartInk,
+) -> Scene {
     let mut scene = Scene::new();
-    render_background(&mut scene, &ChartLayout::new(width, height));
+    render_background(&mut scene, &ChartLayout::new(width, height), ink);
     for (origin_x, origin_y, plot_scene) in plots {
         scene.append(plot_scene, Some(Affine::translate((*origin_x, *origin_y))));
     }
     scene
 }
 
-/// Slider widget colours + geometry. These were once one half of a twin pair
-/// with the retired gpui shell's slider element; with that twin deleted, this
-/// is the single authority. Sourced from Meridian tokens: track = warm gray
-/// step 5, thumb = Maritime focus ink.
-const SLIDER_TRACK_COLOUR: Color = ink(meridian_design::scales::GRAY_LIGHT[4]);
-const SLIDER_THUMB_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.focus);
+/// Slider widget geometry. These were once one half of a twin pair with the
+/// retired gpui shell's slider element; with that twin deleted, this is the
+/// single authority. Its two inks are [`ChartInk::slider_track`] (the mode's
+/// warm gray step 5) and [`ChartInk::slider_thumb`] (the focus ink).
 const SLIDER_THUMB_RADIUS: f64 = 7.0;
 const SLIDER_TRACK_THICKNESS: f64 = 4.0;
 
@@ -952,7 +964,15 @@ const SLIDER_TRACK_THICKNESS: f64 = 4.0;
 /// the track. `frac` is the value's normalised position (`(value-min)/(max-min)`),
 /// matching the live element's `thumb_fraction`. Used by the headless PNG dump to
 /// preview the resting widget.
-pub fn render_slider(scene: &mut Scene, x: f64, y: f64, width: f64, height: f64, frac: f64) {
+pub fn render_slider(
+    scene: &mut Scene,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    frac: f64,
+    ink: ChartInk,
+) {
     let inset = SLIDER_THUMB_RADIUS;
     let track_left = x + inset;
     let track_w = (width - inset * 2.0).max(0.0);
@@ -968,7 +988,7 @@ pub fn render_slider(scene: &mut Scene, x: f64, y: f64, width: f64, height: f64,
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        SLIDER_TRACK_COLOUR,
+        ink.slider_track,
         None,
         &track,
     );
@@ -978,23 +998,18 @@ pub fn render_slider(scene: &mut Scene, x: f64, y: f64, width: f64, height: f64,
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        SLIDER_THUMB_COLOUR,
+        ink.slider_thumb,
         None,
         &thumb,
     );
 }
 
-/// Menu-family widget ink + geometry. Like the SLIDER_* set above, these were
-/// once one half of a twin pair with the retired gpui shell's menu element;
-/// with that twin deleted, this is the single authority. Sourced from Meridian
-/// tokens: fill = chart surface, border = warm gray step 5 (the slider-track
-/// gray), label = primary ink, affordance (chevron / ring outline) = muted
-/// ink, active (selected dot / check) = Maritime focus ink.
-const WIDGET_FILL_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.surface);
-const WIDGET_BORDER_COLOUR: Color = ink(meridian_design::scales::GRAY_LIGHT[4]);
-const WIDGET_LABEL_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.ink_primary);
-const WIDGET_AFFORDANCE_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.ink_muted);
-const WIDGET_ACTIVE_COLOUR: Color = ink(meridian_design::chrome::INK_LIGHT.focus);
+// Menu-family widget geometry. Like the SLIDER_* set above, these were once one
+// half of a twin pair with the retired gpui shell's menu element; with that twin
+// deleted, this is the single authority. Its five inks are the ChartInk
+// `widget_*` fields: fill = chart surface, border = warm gray step 5 (the
+// slider-track gray), label = primary ink, affordance (chevron / ring outline) =
+// muted ink, active (selected dot / check) = Maritime focus ink.
 /// Widget label text size (px).
 const WIDGET_TEXT_SIZE: f32 = 12.0;
 /// Vertical offset from a row's centre to the label baseline at
@@ -1005,19 +1020,21 @@ const WIDGET_BASELINE_NUDGE: f64 = 4.0;
 /// current value's label and a downward chevron affordance. Used by the
 /// headless PNG dump to preview the closed menu exactly as the window hosts
 /// it (the render_slider convention).
-pub fn render_menu(scene: &mut Scene, x: f64, y: f64, width: f64, height: f64, label: &str) {
+pub fn render_menu(
+    scene: &mut Scene,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    label: &str,
+    ink: ChartInk,
+) {
     let bx = RoundedRect::new(x + 0.5, y + 0.5, x + width - 0.5, y + height - 0.5, 4.0);
-    scene.fill(
-        Fill::NonZero,
-        Affine::IDENTITY,
-        WIDGET_FILL_COLOUR,
-        None,
-        &bx,
-    );
+    scene.fill(Fill::NonZero, Affine::IDENTITY, ink.widget_fill, None, &bx);
     scene.stroke(
         &Stroke::new(1.0),
         Affine::IDENTITY,
-        WIDGET_BORDER_COLOUR,
+        ink.widget_border,
         None,
         &bx,
     );
@@ -1028,7 +1045,7 @@ pub fn render_menu(scene: &mut Scene, x: f64, y: f64, width: f64, height: f64, l
         x + 10.0,
         cy + WIDGET_BASELINE_NUDGE,
         WIDGET_TEXT_SIZE,
-        WIDGET_LABEL_COLOUR,
+        ink.widget_label,
         crate::text::TextAnchor::Start,
     );
     // Chevron: a small downward triangle at the right edge.
@@ -1041,7 +1058,7 @@ pub fn render_menu(scene: &mut Scene, x: f64, y: f64, width: f64, height: f64, l
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        WIDGET_AFFORDANCE_COLOUR,
+        ink.widget_affordance,
         None,
         &chevron,
     );
@@ -1059,6 +1076,7 @@ pub fn render_radio(
     _width: f64,
     labels: &[String],
     selected: Option<usize>,
+    ink: ChartInk,
 ) {
     use brightfield_spec::layout::{RADIO_CHROME_PAD, RADIO_ROW_HEIGHT};
     for (i, label) in labels.iter().enumerate() {
@@ -1067,14 +1085,14 @@ pub fn render_radio(
         scene.fill(
             Fill::NonZero,
             Affine::IDENTITY,
-            WIDGET_FILL_COLOUR,
+            ink.widget_fill,
             None,
             &ring,
         );
         scene.stroke(
             &Stroke::new(1.0),
             Affine::IDENTITY,
-            WIDGET_AFFORDANCE_COLOUR,
+            ink.widget_affordance,
             None,
             &ring,
         );
@@ -1083,7 +1101,7 @@ pub fn render_radio(
             scene.fill(
                 Fill::NonZero,
                 Affine::IDENTITY,
-                WIDGET_ACTIVE_COLOUR,
+                ink.widget_active,
                 None,
                 &dot,
             );
@@ -1094,7 +1112,7 @@ pub fn render_radio(
             x + 24.0,
             cy + WIDGET_BASELINE_NUDGE,
             WIDGET_TEXT_SIZE,
-            WIDGET_LABEL_COLOUR,
+            ink.widget_label,
             crate::text::TextAnchor::Start,
         );
     }
@@ -1111,21 +1129,16 @@ pub fn render_checkbox(
     height: f64,
     checked: bool,
     label: &str,
+    ink: ChartInk,
 ) {
     let cy = y + height / 2.0;
     let (bx0, by0) = (x + 4.0, cy - 7.0);
     let bx = RoundedRect::new(bx0, by0, bx0 + 14.0, by0 + 14.0, 3.0);
-    scene.fill(
-        Fill::NonZero,
-        Affine::IDENTITY,
-        WIDGET_FILL_COLOUR,
-        None,
-        &bx,
-    );
+    scene.fill(Fill::NonZero, Affine::IDENTITY, ink.widget_fill, None, &bx);
     scene.stroke(
         &Stroke::new(1.0),
         Affine::IDENTITY,
-        WIDGET_BORDER_COLOUR,
+        ink.widget_border,
         None,
         &bx,
     );
@@ -1137,7 +1150,7 @@ pub fn render_checkbox(
         scene.stroke(
             &Stroke::new(2.0),
             Affine::IDENTITY,
-            WIDGET_ACTIVE_COLOUR,
+            ink.widget_active,
             None,
             &check,
         );
@@ -1148,7 +1161,7 @@ pub fn render_checkbox(
         bx0 + 22.0,
         cy + WIDGET_BASELINE_NUDGE,
         WIDGET_TEXT_SIZE,
-        WIDGET_LABEL_COLOUR,
+        ink.widget_label,
         crate::text::TextAnchor::Start,
     );
 }
@@ -1165,7 +1178,7 @@ mod tests {
     #[test]
     fn render_slider_draws_track_and_thumb() {
         let mut scene = Scene::new();
-        render_slider(&mut scene, 0.0, 400.0, 200.0, 32.0, 0.5);
+        render_slider(&mut scene, 0.0, 400.0, 200.0, 32.0, 0.5, ChartInk::LIGHT);
         assert_eq!(
             crate::mark::count_scene_paths(&scene),
             2,
@@ -1178,7 +1191,7 @@ mod tests {
     #[test]
     fn render_menu_draws_box_chevron_and_label() {
         let mut scene = Scene::new();
-        render_menu(&mut scene, 0.0, 400.0, 200.0, 32.0, "east");
+        render_menu(&mut scene, 0.0, 400.0, 200.0, 32.0, "east", ChartInk::LIGHT);
         assert_eq!(
             crate::mark::count_scene_paths(&scene),
             3,
@@ -1201,7 +1214,15 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         let mut scene = Scene::new();
-        render_radio(&mut scene, 0.0, 400.0, 200.0, &labels, Some(1));
+        render_radio(
+            &mut scene,
+            0.0,
+            400.0,
+            200.0,
+            &labels,
+            Some(1),
+            ChartInk::LIGHT,
+        );
         assert_eq!(
             crate::mark::count_scene_paths(&scene),
             3 * 2 + 1,
@@ -1215,7 +1236,15 @@ mod tests {
 
         // No selection → no dot.
         let mut unselected = Scene::new();
-        render_radio(&mut unselected, 0.0, 400.0, 200.0, &labels, None);
+        render_radio(
+            &mut unselected,
+            0.0,
+            400.0,
+            200.0,
+            &labels,
+            None,
+            ChartInk::LIGHT,
+        );
         assert_eq!(crate::mark::count_scene_paths(&unselected), 3 * 2);
     }
 
@@ -1224,9 +1253,27 @@ mod tests {
     #[test]
     fn render_checkbox_check_glyph_tracks_checked_state() {
         let mut checked = Scene::new();
-        render_checkbox(&mut checked, 0.0, 400.0, 200.0, 32.0, true, "flag");
+        render_checkbox(
+            &mut checked,
+            0.0,
+            400.0,
+            200.0,
+            32.0,
+            true,
+            "flag",
+            ChartInk::LIGHT,
+        );
         let mut unchecked = Scene::new();
-        render_checkbox(&mut unchecked, 0.0, 400.0, 200.0, 32.0, false, "flag");
+        render_checkbox(
+            &mut unchecked,
+            0.0,
+            400.0,
+            200.0,
+            32.0,
+            false,
+            "flag",
+            ChartInk::LIGHT,
+        );
         assert_eq!(
             crate::mark::count_scene_paths(&checked),
             3,
@@ -1312,6 +1359,7 @@ mod tests {
                 y: Some((-5.0, 80.0)),
                 ..UnsampledDomains::default()
             },
+            ChartInk::LIGHT,
         );
         assert_eq!(
             domain(&restored, Channel::X),
@@ -1487,15 +1535,20 @@ mod tests {
         let (s0, _) = build_multi_mark_scene(&[&d0], true, &ResolvedTitles::default());
         let (s1, _) = build_multi_mark_scene(&[&d1], true, &ResolvedTitles::default());
 
-        let two = compose_dashboard(600.0, 200.0, &[(0.0, 0.0, &s0), (300.0, 0.0, &s1)]);
-        let one = compose_dashboard(600.0, 200.0, &[(0.0, 0.0, &s0)]);
+        let two = compose_dashboard(
+            600.0,
+            200.0,
+            &[(0.0, 0.0, &s0), (300.0, 0.0, &s1)],
+            ChartInk::LIGHT,
+        );
+        let one = compose_dashboard(600.0, 200.0, &[(0.0, 0.0, &s0)], ChartInk::LIGHT);
         assert!(
             two.encoding().path_tags.len() > one.encoding().path_tags.len(),
             "two composed plots produce more geometry than one"
         );
 
         // An empty dashboard still paints its background.
-        let empty = compose_dashboard(600.0, 200.0, &[]);
+        let empty = compose_dashboard(600.0, 200.0, &[], ChartInk::LIGHT);
         assert!(
             !empty.encoding().path_tags.is_empty(),
             "dashboard background fills even with no plots"
@@ -1538,7 +1591,7 @@ mod tests {
             beyond_frame: false,
         };
 
-        let (scene, scales) = build_chart_scene(&data);
+        let (scene, scales) = build_chart_scene(&data, ChartInk::LIGHT);
 
         // Scene should be non-empty.
         let encoding = scene.encoding();
@@ -1589,7 +1642,7 @@ mod tests {
             beyond_frame: false,
         };
 
-        let (scene, _scales) = build_chart_scene(&data);
+        let (scene, _scales) = build_chart_scene(&data, ChartInk::LIGHT);
 
         let encoding = scene.encoding();
         assert!(
@@ -1627,7 +1680,7 @@ mod tests {
             sample: None,
             beyond_frame: false,
         };
-        let (_scene, scales) = build_chart_scene(&data);
+        let (_scene, scales) = build_chart_scene(&data, ChartInk::LIGHT);
         let y = scales.get(Channel::Y).unwrap();
         assert!(
             (y.domain_min().unwrap() - 0.0).abs() < f64::EPSILON,
@@ -1670,7 +1723,7 @@ mod tests {
             sample: None,
             beyond_frame: false,
         };
-        let (_scene, scales) = build_chart_scene(&data);
+        let (_scene, scales) = build_chart_scene(&data, ChartInk::LIGHT);
         let x = scales.get(Channel::X).unwrap();
         assert!(
             (x.domain_min().unwrap() - 0.0).abs() < f64::EPSILON,
@@ -1708,7 +1761,7 @@ mod tests {
             sample: None,
             beyond_frame: false,
         };
-        let (_scene, scales) = build_chart_scene(&data);
+        let (_scene, scales) = build_chart_scene(&data, ChartInk::LIGHT);
         let y = scales.get(Channel::Y).unwrap();
         assert!(
             (y.domain_min().unwrap() - 10.0).abs() < f64::EPSILON,
@@ -1755,7 +1808,7 @@ mod tests {
             beyond_frame: false,
         };
 
-        let (scene, _scales) = build_chart_scene(&data);
+        let (scene, _scales) = build_chart_scene(&data, ChartInk::LIGHT);
 
         let encoding = scene.encoding();
         assert!(
@@ -1797,7 +1850,7 @@ mod tests {
             sample: None,
             beyond_frame: false,
         };
-        let (_scene, scales_full) = build_chart_scene(&data_full);
+        let (_scene, scales_full) = build_chart_scene(&data_full, ChartInk::LIGHT);
         let x_full = scales_full.get(Channel::X).unwrap();
         assert!((x_full.domain_min().unwrap() - 1.0).abs() < f64::EPSILON);
         assert!((x_full.domain_max().unwrap() - 5.0).abs() < f64::EPSILON);
@@ -1817,7 +1870,7 @@ mod tests {
             sample: None,
             beyond_frame: false,
         };
-        let (_scene, scales_zoomed) = build_chart_scene(&data_zoomed);
+        let (_scene, scales_zoomed) = build_chart_scene(&data_zoomed, ChartInk::LIGHT);
         let x_zoomed = scales_zoomed.get(Channel::X).unwrap();
         assert!((x_zoomed.domain_min().unwrap() - 2.0).abs() < f64::EPSILON);
         assert!((x_zoomed.domain_max().unwrap() - 4.0).abs() < f64::EPSILON);
@@ -2019,7 +2072,7 @@ mod tests {
             sample: None,
             beyond_frame: false,
         };
-        let (scene, _scales) = build_chart_scene(&data);
+        let (scene, _scales) = build_chart_scene(&data, ChartInk::LIGHT);
         let encoding = scene.encoding();
         assert!(
             !encoding.path_tags.is_empty(),
@@ -2037,7 +2090,7 @@ mod tests {
             sample: None,
             beyond_frame: false,
         };
-        let (scene2, _) = build_chart_scene(&data_no_hl);
+        let (scene2, _) = build_chart_scene(&data_no_hl, ChartInk::LIGHT);
         let encoding2 = scene2.encoding();
         assert!(
             !encoding2.path_tags.is_empty(),

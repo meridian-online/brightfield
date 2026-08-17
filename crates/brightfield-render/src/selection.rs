@@ -41,11 +41,10 @@
 //! are a property of the plot rather than of the selection.
 
 use kurbo::{Affine, Line, Rect, Stroke};
-use peniko::{Color, Fill};
+use peniko::Fill;
 use vello::Scene;
 
 use crate::channel::Channel;
-use crate::ink::{ink, ink_with_alpha};
 use crate::layout::ChartLayout;
 use crate::scale::{Scale, ScaleSet};
 
@@ -53,13 +52,10 @@ use crate::scale::{Scale, ScaleSet};
 ///
 /// Low enough that marks inside the band keep their own colour — the band
 /// reports a filter and must not restate the data's palette.
-const WASH_ALPHA: f32 = 0.14;
-
-/// The wash's ink.
-const WASH: Color = ink_with_alpha(meridian_design::chrome::INK_LIGHT.focus, WASH_ALPHA);
-
-/// The bound rules' ink.
-const BOUND: Color = ink(meridian_design::chrome::INK_LIGHT.focus);
+///
+/// The alpha stays here, with its reasoning; the ink it is applied to is the
+/// mode's focus token and lives on [`crate::ink::ChartInk::selection_wash`].
+pub(crate) const WASH_ALPHA: f32 = 0.14;
 
 /// The bound rules' width in pixels.
 ///
@@ -171,20 +167,29 @@ pub fn render_committed_selection(
     let clip = Rect::new(px0, py0, px1, py1);
     scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &clip);
     let stroke = Stroke::new(BOUND_WIDTH);
+    // The plot's own focus ink, for the mode the scale set was resolved in —
+    // the same question `chrome::tone_colour` asks for `Tone::Accent`.
+    let ink = scales.ink();
     for &(x0, x1) in &xs {
         for &(y0, y1) in &ys {
             let band = Rect::new(x0, y0, x1, y1);
-            scene.fill(Fill::NonZero, Affine::IDENTITY, WASH, None, &band);
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                ink.selection_wash,
+                None,
+                &band,
+            );
             if selection.x.is_some() {
                 for x in [x0, x1] {
                     let rule = Line::new((x, y0), (x, y1));
-                    scene.stroke(&stroke, Affine::IDENTITY, BOUND, None, &rule);
+                    scene.stroke(&stroke, Affine::IDENTITY, ink.selection_bound, None, &rule);
                 }
             }
             if selection.y.is_some() {
                 for y in [y0, y1] {
                     let rule = Line::new((x0, y), (x1, y));
-                    scene.stroke(&stroke, Affine::IDENTITY, BOUND, None, &rule);
+                    scene.stroke(&stroke, Affine::IDENTITY, ink.selection_bound, None, &rule);
                 }
             }
         }
