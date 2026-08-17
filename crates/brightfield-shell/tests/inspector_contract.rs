@@ -12,11 +12,11 @@
 //! `fonts_installed` pointing at the old context and skip installing fonts on
 //! the new one, which is a false economy this file does not need.
 //!
-//! AC4's revert-and-witness is recorded in the card, not duplicated as a
-//! standing test: pinning "the registry still constructs `ControlsPane`" here
-//! would just restate `chart_contract.rs`'s existing
-//! `each_pane_names_itself_once_and_binds_in_its_own_context`, which already
-//! reddens the moment that changes.
+//! `the_controls_rail_is_drawn_by_the_inspector_pane` is AC4's own standing
+//! witness: `chart_contract.rs`'s assertions about the registry's
+//! `ControlsPane` do not move when `window.rs::assemble`'s swap is reverted —
+//! they read `chart_registry()` directly, never the live app — so this file
+//! carries the one test that does.
 
 use brightfield_shell::app::{ChartDoc, CHART, CONTROLS};
 use brightfield_shell::design::Mode;
@@ -52,6 +52,24 @@ fn settled() -> (MeridianApp, egui::Context) {
     frame(&mut app, &ctx);
     frame(&mut app, &ctx);
     (app, ctx)
+}
+
+/// AC4's own witness: the `CONTROLS` slot in the *live* app is drawn by
+/// `InspectorPane`, not the registry's dormant `ControlsPane` — the two
+/// declare different titles ("Inspector" vs "Controls"), and this is the one
+/// test in the suite that asks the running window which one is actually
+/// there rather than asking the registry what it declares.
+#[test]
+fn the_controls_rail_is_drawn_by_the_inspector_pane() {
+    let (app, _ctx) = settled();
+    let title = app
+        .chart_pane_title(PaneKey::new(ViewKind::Charts, CONTROLS))
+        .expect("the rail is in the default arrangement");
+    assert_eq!(
+        title, "Inspector",
+        "the CONTROLS slot is drawn by ControlsPane, not InspectorPane — the \
+         swap in window.rs::assemble did not happen"
+    );
 }
 
 /// AC2: before the user has clicked on a pane, the inspector reports `None`

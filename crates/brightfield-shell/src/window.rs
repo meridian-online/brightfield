@@ -1673,6 +1673,20 @@ impl MeridianApp {
         self.ws_mut().clear_focus(ViewKind::Charts);
     }
 
+    /// What the item actually occupying `key` in the *live* item map declares
+    /// about itself — as opposed to `chart_registry()`'s declared shape,
+    /// which `chart_contract.rs` already covers and which `assemble` swaps
+    /// one entry away from at boot. A test hook: this is how a test tells
+    /// `InspectorPane` from the registry's dormant `ControlsPane` without a
+    /// pixel capture — their titles differ ("Inspector" vs "Controls").
+    #[must_use]
+    pub fn chart_pane_title(&self, key: PaneKey) -> Option<String> {
+        self.charts
+            .items
+            .get(&key)
+            .map(|item| item.describe(&self.charts.doc).title)
+    }
+
     /// The content box the DAG canvas pane was handed by the last frame this
     /// window drew, or `None` if it has not drawn one.
     #[must_use]
