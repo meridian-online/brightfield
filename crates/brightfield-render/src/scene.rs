@@ -1121,11 +1121,17 @@ pub fn render_radio(
 /// Draw a resting `style: checkbox` widget: a rounded box with
 /// a Maritime check glyph when checked, plus a label (the bound param's
 /// name — widget `label:` rendering is its own polish item).
+///
+/// It takes no width. The box is a fixed 14px square inset from `x` and the
+/// label runs from its right edge, so the reserved rect's width was never read
+/// — it sat here as `_width` for symmetry with the sibling widgets. Adding the
+/// canvas took the signature to eight parameters and `clippy::too_many_arguments`
+/// reported it; dropping the argument the body ignores is the answer that
+/// removes something rather than silencing something.
 pub fn render_checkbox(
     scene: &mut Scene,
     x: f64,
     y: f64,
-    _width: f64,
     height: f64,
     checked: bool,
     label: &str,
@@ -1257,7 +1263,6 @@ mod tests {
             &mut checked,
             0.0,
             400.0,
-            200.0,
             32.0,
             true,
             "flag",
@@ -1268,7 +1273,6 @@ mod tests {
             &mut unchecked,
             0.0,
             400.0,
-            200.0,
             32.0,
             false,
             "flag",

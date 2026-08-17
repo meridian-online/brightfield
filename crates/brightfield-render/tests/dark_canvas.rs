@@ -198,7 +198,7 @@ fn widget_scene(ink: ChartInk) -> Scene {
         Some(0),
         ink,
     );
-    render_checkbox(&mut scene, 0.0, 140.0, 200.0, 28.0, true, "on", ink);
+    render_checkbox(&mut scene, 0.0, 140.0, 28.0, true, "on", ink);
     scene
 }
 
