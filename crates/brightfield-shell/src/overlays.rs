@@ -152,7 +152,8 @@ impl CommandPalette {
 /// silence — see `overlay_wiring.rs`.
 #[must_use]
 pub fn chart_palette_candidates() -> Vec<&'static str> {
-    let mut p = CommandPalette::new_restricted(Altitude::View, RecencyCounter::new(), CHART_PALETTE_VERBS);
+    let mut p =
+        CommandPalette::new_restricted(Altitude::View, RecencyCounter::new(), CHART_PALETTE_VERBS);
     p.update_query("");
     (0..p.match_count())
         .map(|i| p.candidate(i).unwrap().longname)

@@ -353,7 +353,10 @@ fn every_chart_palette_candidate_actually_dispatches() {
             }
             "pan-left" | "pan-right" | "pan-up" | "pan-down" => {
                 let mut win = Window::live_chart("scatter.yaml");
-                assert!(!win.app.chart_doc().navigated(), "fixture starts unnavigated");
+                assert!(
+                    !win.app.chart_doc().navigated(),
+                    "fixture starts unnavigated"
+                );
                 let before = domain_span(win.app.chart_doc());
                 confirm_chart_verb(&mut win, longname);
                 assert!(
@@ -379,7 +382,10 @@ fn every_chart_palette_candidate_actually_dispatches() {
             }
             "zoom-out" => {
                 let mut win = Window::live_chart("scatter.yaml");
-                assert!(win.app.chart_doc_mut().zoom_view(2.0), "priming a zoom to zoom back out of");
+                assert!(
+                    win.app.chart_doc_mut().zoom_view(2.0),
+                    "priming a zoom to zoom back out of"
+                );
                 let zoomed = mark_rows(win.app.chart_doc_mut(), 0);
                 confirm_chart_verb(&mut win, longname);
                 let after = mark_rows(win.app.chart_doc_mut(), 0);
@@ -400,7 +406,10 @@ fn every_chart_palette_candidate_actually_dispatches() {
             }
             "reset-extent" => {
                 let mut win = Window::live_chart("scatter.yaml");
-                assert!(win.app.chart_doc_mut().zoom_view(2.0), "priming a zoom to reset");
+                assert!(
+                    win.app.chart_doc_mut().zoom_view(2.0),
+                    "priming a zoom to reset"
+                );
                 assert!(win.app.chart_doc().navigated());
                 confirm_chart_verb(&mut win, longname);
                 assert!(

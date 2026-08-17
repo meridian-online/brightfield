@@ -2149,11 +2149,13 @@ impl MeridianApp {
     /// for why the chart view cannot simply reuse [`Self::open_palette`] with
     /// [`Altitude::View`].
     fn open_chart_palette(&mut self) {
-        self.overlay = Some(Overlay::Palette(Picker::new(CommandPalette::new_restricted(
-            Altitude::View,
-            self.recency.clone(),
-            crate::overlays::CHART_PALETTE_VERBS,
-        ))));
+        self.overlay = Some(Overlay::Palette(Picker::new(
+            CommandPalette::new_restricted(
+                Altitude::View,
+                self.recency.clone(),
+                crate::overlays::CHART_PALETTE_VERBS,
+            ),
+        )));
     }
 
     /// Open the node jump over the outline — the graph in view, in its

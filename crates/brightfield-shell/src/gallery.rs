@@ -60,9 +60,9 @@ use brightfield_workbench::{
 };
 use meridian_design::semantic::{semantic, Role};
 use meridian_egui::{
-    align, icons, key_chip, list_row, query_line, tooltip_for_action, widgets, ListRow,
-    MeridianUi, ModalChrome, ModalLayer, Notification, NotificationId, NotificationLayer, Picker,
-    RowHeight, Severity, Toast, ToastLayer, PROMPT_GLYPH,
+    align, icons, key_chip, list_row, query_line, tooltip_for_action, widgets, ListRow, MeridianUi,
+    ModalChrome, ModalLayer, Notification, NotificationId, NotificationLayer, Picker, RowHeight,
+    Severity, Toast, ToastLayer, PROMPT_GLYPH,
 };
 
 use crate::app::ChartDoc;
@@ -955,7 +955,10 @@ struct PickerDemo {
 impl Default for PickerDemo {
     fn default() -> Self {
         Self {
-            picker: Picker::new(CommandPalette::new(Altitude::Protocol, RecencyCounter::new())),
+            picker: Picker::new(CommandPalette::new(
+                Altitude::Protocol,
+                RecencyCounter::new(),
+            )),
         }
     }
 }
