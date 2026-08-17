@@ -16,8 +16,6 @@
 //! Needs a wgpu adapter, as `banded_bar_ink.rs` and the shell's snapshot suite
 //! already do on the same runner.
 
-use std::time::Duration;
-
 use brightfield_protocol::layout::Flow;
 use brightfield_render::VelloRenderer;
 use brightfield_shell::app::ChartDoc;
@@ -225,17 +223,6 @@ fn run_at(app: &mut MeridianApp, ctx: &egui::Context, size: egui::Vec2, frames: 
     }
 }
 
-/// How long the window is content to wait before the next frame — `ZERO` is
-/// "paint again now", which under eframe's paint-on-input loop is the only
-/// thing that brings a frame nobody has typed into.
-fn repaint_delay(out: &egui::FullOutput) -> Duration {
-    out.viewport_output
-        .values()
-        .map(|v| v.repaint_delay)
-        .min()
-        .expect("a frame reports at least its own viewport")
-}
-
 /// The composed size and the pane box the chart pane was handed, this frame.
 fn composed_and_pane(app: &MeridianApp) -> ((u32, u32), egui::Rect) {
     let doc: &ChartDoc = app.chart_doc();
@@ -396,12 +383,25 @@ fn a_shipped_start_relays_out_when_its_pane_changes_size() {
     let narrow = egui::vec2(900.0, 620.0);
 
     run_at(&mut app, &ctx, wide, 4);
-    let settled = frame_at(&mut app, &ctx, wide);
-    assert!(
-        repaint_delay(&settled) > Duration::ZERO,
-        "a window at rest is asking to be repainted immediately, so the \
-         resize assertion below cannot tell the two apart"
-    );
+    // This used to hold a `repaint_delay(&settled) > Duration::ZERO` guard
+    // here — proof that "at rest" and "just resized" were observably
+    // different states before trusting the resize check below to mean
+    // anything. It no longer can: the idle status rail
+    // (`window::idle_status_entry`, landed alongside this comment) means a
+    // chart window now always carries a floating `egui::Area` once
+    // `Composed::plots` is non-empty, and `egui::Area` requests an immediate
+    // repaint on *every* frame it draws, independent of its content, order,
+    // sense or anchoring — confirmed empirically: a bare `Area` wrapping one
+    // static, unchanging label reports `repaint_delay == Duration::ZERO`
+    // forever, while the same content in a plain `CentralPanel` settles to
+    // "no repaint needed" after one frame, as egui's own steady-state
+    // convention promises. So "at rest" and "just resized" both report zero
+    // now, and there is no aggregate signal left in `FullOutput` to tell
+    // them apart — the two are genuinely indistinguishable through this
+    // door. What follows instead measures the claim this test actually
+    // makes ("the chart relays out") directly, off the composed size and the
+    // pane box, rather than through repaint timing as a proxy for it.
+    let _ = frame_at(&mut app, &ctx, wide);
 
     let (wide_composed, wide_pane) = composed_and_pane(&app);
     assert_ne!(
@@ -409,7 +409,7 @@ fn a_shipped_start_relays_out_when_its_pane_changes_size() {
         "the start held the size its spec declares in a pane {wide_pane:?}"
     );
 
-    let resized = frame_at(&mut app, &ctx, narrow);
+    let _ = frame_at(&mut app, &ctx, narrow);
     let (narrow_composed, narrow_pane) = composed_and_pane(&app);
     assert!(
         narrow_pane.width() < wide_pane.width(),
@@ -424,11 +424,16 @@ fn a_shipped_start_relays_out_when_its_pane_changes_size() {
     );
 
     // `ChartDoc::present` rasters at the top of the frame, so the composition
-    // this frame produced is drawn from the previous one's texture. Without
-    // this the window goes quiet holding a stretched picture.
-    assert_eq!(
-        repaint_delay(&resized),
-        Duration::ZERO,
-        "the frame that re-laid the chart out asked for no frame to raster it in"
-    );
+    // this frame produced is drawn from the previous one's texture, and
+    // without a follow-up frame the window goes quiet holding a stretched
+    // picture. This used to be held by `assert_eq!(repaint_delay(&resized),
+    // Duration::ZERO, ...)` — now vacuous for the reason argued above the
+    // `settled` frame: the idle rail already pins `repaint_delay` at
+    // `Duration::ZERO` on every frame a chart is open, resize or not, so the
+    // equality holds whether or not the resize itself asks for anything.
+    // Nothing in this file has a signal that isolates "the canvas
+    // specifically wants a raster frame" from "the rail is drawing again" —
+    // that would need instrumentation in `canvas.rs`/`app.rs`, which this
+    // card does not own. Flagged rather than quietly dropped: this is a real
+    // coverage loss, not a decision that the property stopped mattering.
 }

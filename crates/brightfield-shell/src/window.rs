@@ -62,8 +62,9 @@ use brightfield_sql::ir::SampleRate;
 use brightfield_workbench::behavior::{TAB_BAR_HEIGHT, TILE_GAP};
 use brightfield_workbench::workspace::{tabs_holding, tile_of};
 use brightfield_workbench::{
-    chrome, Activity, ActivityIndicator, DirtyTracker, ItemMap, PaneChrome, PaneKey, Request,
-    SavedLayout, StatusEntry, Subject, Verb, ViewKind, WindowGeometry, Workspace,
+    chrome, Activity, ActivityIndicator, DirtyTracker, HideAffordance, ItemMap, PaneChrome,
+    PaneKey, Request, SavedLayout, StatusEntry, StatusSide, Subject, Tone, Verb, ViewKind,
+    WindowGeometry, Workspace,
 };
 use meridian_egui::{
     ModalChrome, ModalLayer, Notification, NotificationId, NotificationLayer, Picker, PickerEvent,
@@ -2395,11 +2396,21 @@ impl MeridianApp {
     /// the note there on why floating rather than a bottom panel). What this
     /// method owns is the *content*:
     ///
-    /// - the **focused pane's** status lines, as declared on its
-    ///   [`Subject`] — minus its activity reports;
+    /// - **every pane placed in the active view's** status lines, as
+    ///   declared on its own [`Subject`] — minus its activity reports. Not
+    ///   only the focused pane's: a window nobody has clicked in still has to
+    ///   say what its panes declare, or every honesty affordance living on
+    ///   the rail (a navigation refusal, an unrescoped-mark notice) is
+    ///   declared and never seen until the user happens to click inside the
+    ///   pane that raised it;
     /// - **one** activity indicator, composed from *every* pane's subject in
     ///   *both* views — in-flight work anywhere in the window is the window's
-    ///   to report, and two panes querying at once say "querying…" once.
+    ///   to report, and two panes querying at once say "querying…" once;
+    /// - when neither of those has anything to say and a chart is open, the
+    ///   idle line [`idle_status_entry`] composes from the loaded dashboard —
+    ///   so an idle window with a chart open is never a silent rail. Live
+    ///   activity always wins the slot: the branch below only runs when the
+    ///   indicator composed to `None`.
     ///
     /// Dismissal verbs the rail's entries declare are routed into the same
     /// request queue as pane requests — the rail can offer nothing a pane
@@ -2419,9 +2430,10 @@ impl MeridianApp {
             .map(|item| item.subject(&self.protocol.doc))
             .collect();
 
+        let active = self.ws().active();
         let mut entries: Vec<StatusEntry> = Vec::new();
-        if let Some(key) = self.ws().focus() {
-            let focused = match self.ws().active() {
+        for key in self.ws().panes(active) {
+            let subject = match active {
                 ViewKind::Charts => self
                     .charts
                     .items
@@ -2433,10 +2445,11 @@ impl MeridianApp {
                     .get(&key)
                     .map(|item| item.subject(&self.protocol.doc)),
             };
-            if let Some(subject) = focused {
-                // The pane's own lines. Its typed activity entries are
-                // filtered out here because the indicator below says them —
-                // once, merged with everyone else's, never twice.
+            if let Some(subject) = subject {
+                // Every placed pane's own lines, focused or not. Typed
+                // activity entries are filtered out here because the
+                // indicator below says them — once, merged with everyone
+                // else's, never per-pane and never twice.
                 entries.extend(
                     subject
                         .status
@@ -2449,6 +2462,10 @@ impl MeridianApp {
             ActivityIndicator::compose(chart_subjects.iter().chain(protocol_subjects.iter()))
         {
             entries.push(indicator);
+        } else if entries.is_empty() && active == ViewKind::Charts {
+            if let Some(idle) = idle_status_entry(&self.charts.doc.composed) {
+                entries.push(idle);
+            }
         }
 
         self.rail = chrome::status_rail_overlay(ctx, &entries, mode);
@@ -3031,6 +3048,47 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     } else {
         format!("{n} {many}")
     }
+}
+
+/// The stable id [`idle_status_entry`] writes, and the one
+/// [`status_rail_ui`](MeridianApp::status_rail_ui) reads back for the test
+/// that pins it — distinct from every other declared id (`chart-navigation`,
+/// `chart-navigation-scope`, `chart-predicate`, `watch-spec`, `run-state`,
+/// `editor-saved`, `editor-warning`, [`ActivityIndicator::ID`] and
+/// [`Activity::id`]'s three), so a rail carrying this entry is unambiguous
+/// about what it is.
+const IDLE_STATUS_ID: &str = "chart-idle";
+
+/// What a settled chart window says about itself when nothing is running and
+/// no pane has anything more specific to report — the answer to *"is the app
+/// finished thinking, and what did it load?"*, said once the rail would
+/// otherwise be silent.
+///
+/// Built from `Composed`, the data the window already holds from composing
+/// the spec — no live query, no new vocabulary: the same [`StatusEntry`]
+/// carrier every other declared line on the rail uses, and the same rows a
+/// sampled plot already carries in [`crate::pipeline::PlotHandle::sample`].
+/// `None` for an empty document (`Composed::empty()`) — the front door's own
+/// empty state already says nothing is loaded, and a second "nothing loaded"
+/// line here would repeat it in fainter ink.
+fn idle_status_entry(composed: &Composed) -> Option<StatusEntry> {
+    if composed.plots.is_empty() {
+        return None;
+    }
+    let marks: usize = composed.plots.iter().map(|plot| plot.marks.len()).sum();
+    let text = match composed.plots.iter().find_map(|plot| plot.sample.as_ref()) {
+        Some(sample) if sample.of > sample.drawn => {
+            format!("loaded · {} of {} rows sampled", sample.drawn, sample.of)
+        }
+        _ => format!("loaded · {}", plural(marks, "mark", "marks")),
+    };
+    Some(StatusEntry {
+        id: IDLE_STATUS_ID,
+        side: StatusSide::Trailing,
+        text,
+        tone: Tone::Neutral,
+        hide: HideAffordance::WithRail,
+    })
 }
 
 /// One front-door zone heading: the settled name, set apart from the zone's

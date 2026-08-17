@@ -183,6 +183,15 @@ impl Region {
             y1: r.max.y.floor() as u32,
         }
     }
+
+    /// Clip this region's lower edge to stay above `y` (in capture pixels,
+    /// from the top) — for excluding a floating overlay's own band from a
+    /// check that has no business seeing it. A no-op when the region is
+    /// already entirely above `y`.
+    fn above(mut self, y: f32) -> Self {
+        self.y1 = self.y1.min(y.max(0.0).floor() as u32);
+        self
+    }
 }
 
 /// How two captures differ over one [`Region`] — a summary a human can read.
@@ -794,13 +803,26 @@ fn the_crosshair_is_bounded_by_the_plot_under_the_pointer() {
         "this test reads one plot against another, so the fixture has to place \
          two — examples/dashboard.yaml is an hconcat of a scatter and a bar chart"
     );
+
+    let idle = shell_capture(Mode::Light, "crosshair_idle", Vec::new());
+
     // Clear of each plot's own boundary, so a segment stopping exactly on the
     // shared edge cannot redden the neighbour through one antialiased pixel,
     // while the rest of the neighbour — including the row the raster-wide line
-    // would have crossed — stays inside the region.
-    let inside: Vec<Region> = plots.iter().map(|r| Region::inside(*r, 2.0)).collect();
-
-    let idle = shell_capture(Mode::Light, "crosshair_idle", Vec::new());
+    // would have crossed — stays inside the region. Also clear of the status
+    // rail's own band at the window's bottom edge: plot 0 sits close enough to
+    // the window's bottom that the rail's floated band — drawn whenever the
+    // window is idle, since the card this test predates — overlaps the last
+    // dozen points of it. That band is expected content this test has no
+    // stake in, not crosshair residue, and it is exactly the kind of
+    // newly-drawn flat fill a temporal-dithered raster paints with a
+    // one-frame-to-the-next jitter too small to see and too real to ignore in
+    // a byte-exact compare.
+    let rail_top = idle.height() as f32 - brightfield_workbench::chrome::status_rail_height();
+    let inside: Vec<Region> = plots
+        .iter()
+        .map(|r| Region::inside(*r, 2.0).above(rail_top - 2.0))
+        .collect();
 
     for (hovered, other) in [(0usize, 1usize), (1, 0)] {
         let at = plots[hovered].center();
