@@ -216,10 +216,10 @@ fn the_inspector_is_empty_only_when_the_document_is() {
 /// Each chart-view pane's toolbar over the shipped fixture, straight from
 /// `chart_registry()`'s freshly constructed, never-drawn items. That is fine
 /// here specifically: `chart_item.rs`'s toolbar comes from `Self::
-/// toolbar_entries(doc)`, a pure function of the document, and neither
-/// `data_grid.rs` nor the registry's own `ControlsPane` declares a toolbar
-/// at all — the one pane this shortcut does NOT hold for is the editor,
-/// which needs [`editor_toolbar_verbs`] below instead.
+/// toolbar_entries(doc)`, a pure function of the document, `data_grid.rs`
+/// declares an empty one, and so does the registry's own `ControlsPane` —
+/// the one pane this shortcut does not hold for is the editor, which needs
+/// [`editor_toolbar_verbs`] below instead.
 fn registry_toolbar_verbs(doc: &ChartDoc) -> Vec<&'static str> {
     brightfield_shell::app::chart_registry()
         .specs()
@@ -230,12 +230,13 @@ fn registry_toolbar_verbs(doc: &ChartDoc) -> Vec<&'static str> {
 }
 
 /// The editor's toolbar needs a file actually open — `describe` reads `self.
-/// file`, which only `ui`'s first call populates, from `doc.spec_path` (see
-/// `editor.rs::ui`). A fresh, undrawn `EditorPane` declares an empty
-/// toolbar, which is the gap that made an earlier version of this sweep pass
-/// under the same mutation its doc comment claimed would redden it: walking
-/// `chart_registry().specs()` alone leaves `save-spec` out of the set being
-/// matched, so removing its arm changed nothing observable.
+/// file`, a field `ui`'s first call populates from `doc.spec_path` (see
+/// `editor.rs::ui`), untouched afterwards. A fresh, undrawn `EditorPane`
+/// declares an empty toolbar, which is the gap that let an earlier version
+/// of this sweep pass under the same mutation its doc comment claimed would
+/// redden it: walking `chart_registry().specs()` alone leaves `save-spec`
+/// out of the set being matched, so removing its arm left the test's
+/// outcome unchanged.
 fn editor_toolbar_verbs(doc: &mut ChartDoc) -> Vec<&'static str> {
     let mut pane = brightfield_shell::editor::EditorPane::new();
     let ctx = egui::Context::default();

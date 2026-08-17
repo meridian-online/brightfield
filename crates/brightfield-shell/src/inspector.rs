@@ -104,22 +104,23 @@ impl Selection {
 // The shared body — what the shipping pane and the gallery specimen both draw
 // ---------------------------------------------------------------------------
 
-/// The subset of `entries` this rail may draw: every entry whose verb the
-/// Charts view's `MeridianApp::apply` actually dispatches, per
+/// The subset of `entries` this rail may draw: an entry passes when its verb
+/// is one `MeridianApp::apply`'s Charts arm dispatches, per
 /// [`CHART_PALETTE_VERBS`] — the same enumeration the chart command palette
-/// (`overlays.rs`) is restricted to, so the two surfaces cannot disagree
-/// about what is live at this altitude.
+/// (`overlays.rs`) is restricted to, so the two surfaces read one answer for
+/// what is live at this altitude rather than two that could drift apart.
 ///
 /// This is the pane's whole answer to "what can be done with it": before
-/// this rail existed nothing rendered a pane's declared toolbar at all (a
-/// pane's own header band paints only its icon, title and dirty marker), so
-/// a declared-but-undispatchable entry — `editor.rs`'s `save`, say — was
-/// inert everywhere. Drawing it here without filtering would make it look
-/// live for the first time while still doing nothing, which is worse than
-/// the checkbox this rail replaced. So an entry not on the allow list is
-/// dropped rather than shown disabled — see `tests/inspector_contract.rs`'s
-/// `every_declared_toolbar_verb_either_dispatches_or_is_filtered_out` for the
-/// sweep that keeps this from silently widening.
+/// this rail existed a pane's declared toolbar was not rendered anywhere (a
+/// pane's own header band paints icon, title and dirty marker and stops
+/// there), so a declared-but-undispatchable entry — `editor.rs`'s
+/// `save-spec`, say — sat inert wherever it was. Drawing it here without
+/// filtering would make it look live for the first time while still doing
+/// nothing, which is worse than the checkbox this rail replaced. So an entry
+/// not on the allow list is dropped rather than shown disabled — see
+/// `tests/inspector_contract.rs`'s `every_declared_toolbar_verb_either_
+/// dispatches_or_is_filtered_out` for the sweep that keeps this from
+/// widening in silence.
 fn dispatchable(entries: &[ToolbarEntry]) -> Vec<ToolbarEntry> {
     entries
         .iter()
@@ -339,8 +340,9 @@ mod tests {
         );
     }
 
-    /// The order in `CHART_PALETTE_VERBS` is not `dispatchable`'s promise —
-    /// only membership is. Declaration order survives the filter.
+    /// `dispatchable`'s promise is membership in `CHART_PALETTE_VERBS`, not
+    /// the order that list happens to declare them in — the input's own
+    /// declaration order survives the filter instead.
     #[test]
     fn dispatchable_preserves_declaration_order() {
         let (keep, _drop) = sample_entries();
