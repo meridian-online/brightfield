@@ -84,10 +84,10 @@ fn seated_layout() -> brightfield_workbench::persist::SavedLayout {
     layout
 }
 
-/// The share `a_rearranged_dock_survives_the_file_and_reaches_the_frame` drags
-/// the protocol view's outline rail out to, against the `0.24` its registry
-/// declares. Far enough out that the canvas pane's laid-out width cannot be
-/// mistaken for the declared one.
+/// The share `a_saved_share_cannot_move_a_declared_rail` puts in the layout
+/// file for the protocol view's outline rail, against the `0.24` its registry
+/// declares. Far enough out that a canvas pane laid out from it could not be
+/// mistaken for one laid out from the declared extent.
 ///
 /// This test used to drag the *chart* view's controls rail. That rail no
 /// longer lays the dock out at all: its pane now draws as a real
@@ -599,30 +599,34 @@ fn what_the_window_opens_on_prefers_the_command_line_then_what_was_open() {
     assert!(stale.is_empty());
 }
 
-/// An arrangement the user actually made reaches the drawn frame.
+/// A saved tile share does not move a rail the arrangement declares, and the
+/// restored tree still survives the boot.
 ///
-/// The headline claim of the whole layout wiring, and the one nothing else in
-/// this repo could see: every other test hands the shell `default_layout()`,
-/// so `assemble` could throw the restored trees away and rebuild both views
-/// from their registries and the suite would stay green. It was checked —
-/// replacing `layout.workspace` with a fresh `Workspace::new` over the two
-/// `default_tree()`s, preserving `active`, leaves every test in this crate
-/// passing. Only the *contents* of the trees were ever unasserted; the active
-/// view, the window size and `opened` were all covered.
+/// **This test's claim is inverted from what it used to make, deliberately.**
+/// It used to assert that a rail widened in the layout file reached the drawn
+/// frame, because the rails were tiles of the dock and their widths were the
+/// tree's shares. They are not any more: each rail is a `Panel` at the extent
+/// `brightfield_workbench::arrangement` declares, so the shares in a saved
+/// file no longer lay anything out — and a test that went on asserting they
+/// did would be asserting a mechanism that had been removed.
 ///
-/// So this one saves a genuinely rearranged tree — the protocol view's
-/// outline rail widened from its declared 0.24 to 0.6 — through a real file,
-/// and asks the drawn frame about it rather than asking the data structure.
-/// The two windows below differ in nothing but their saved layout and are
-/// drawn on the same screen, so a canvas pane that comes back the same width
-/// is a canvas pane laid out from a tree the restore did not produce.
+/// What is worth holding is the other direction, and it is a guard rather
+/// than a nicety: a layout file is a file on disk that any process may write,
+/// and a share of `0.6` for the outline rail must not be able to squash the
+/// canvas. The declared extent wins. Wiring shares back into the draw path —
+/// which is the change this is the tripwire for — fails the first assertion.
+///
+/// The half that survives unchanged is the one about `assemble`: the restored
+/// tree is carried, not thrown away and rebuilt from the registries. That is
+/// asked of `app.layout()` rather than of the frame, because the frame no
+/// longer reads a share.
 ///
 /// Watched redden, one mutation: rebuilding `layout.workspace` from the two
 /// registries' `default_tree()`s at the top of `MeridianApp::assemble`,
-/// carrying `active` across, fails here at "the restored arrangement never
-/// reached the frame".
+/// carrying `active` across, fails at "drawing reset the rail to its declared
+/// share".
 #[test]
-fn a_rearranged_dock_survives_the_file_and_reaches_the_frame() {
+fn a_saved_share_cannot_move_a_declared_rail() {
     let scratch = Scratch::new("rearranged");
     let path = scratch.file();
     let ctx = egui::Context::default();
@@ -672,11 +676,20 @@ fn a_rearranged_dock_survives_the_file_and_reaches_the_frame() {
         .expect("the canvas pane was laid out")
         .width();
     assert!(
-        widened < declared - 100.0,
-        "the restored arrangement never reached the frame — the canvas pane \
-         is {widened} wide against {declared} for the declared default, and \
-         a rail widened from 0.24 to {WIDENED_RAIL} of the dock cannot leave \
-         it the same"
+        (widened - declared).abs() < 1e-3,
+        "a saved share of {WIDENED_RAIL} moved the canvas from {declared} to \
+         {widened} — the rails are laid out from the declared arrangement, so \
+         a number in a file on disk must not be able to squash one"
+    );
+    let navigator = app
+        .region_rect(brightfield_workbench::arrangement::NAVIGATOR_RAIL)
+        .expect("the navigator rail drew");
+    assert!(
+        (navigator.width() - brightfield_workbench::arrangement::NAVIGATOR_RAIL_WIDTH).abs() < 1e-3,
+        "the navigator rail drew {}pt wide against the declared {}pt, with a \
+         {WIDENED_RAIL} share sitting in the layout file",
+        navigator.width(),
+        brightfield_workbench::arrangement::NAVIGATOR_RAIL_WIDTH
     );
 
     // And the frame did not quietly put the declared share back.

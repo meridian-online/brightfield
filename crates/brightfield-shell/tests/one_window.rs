@@ -334,12 +334,11 @@ const ULTRAWIDE: (f32, f32) = (3440.0, 1440.0);
 /// of `the_window_a_small_display_grants_leaves_the_canvas_short` below,
 /// which lays its frame out at the **granted** size instead.
 ///
-/// Watched redden, two mutations. Dropping the `TAB_BAR_HEIGHT` term from
-/// `protocol_window_size_for` — the centre tab strip the canvas sits under —
-/// leaves the canvas pane 24 points short and fails the fit by that much.
-/// Reverting `Boot::window_size` to `boot_layout` fails at *"the boot sized the
-/// window differently"*, `(1948, 842)` against `(1948, 910)` — 68 points down
-/// of guaranteed scroll, which is what measuring the envelope removed.
+/// Watched redden, two mutations. Dropping the ledger rail's term from
+/// `chrome_budget` — the rail the canvas sits above — leaves the canvas pane
+/// 180 points short and fails the fit by that much. Reverting
+/// `Boot::window_size` to `boot_layout` fails at *"the boot sized the window
+/// differently"*, which is what measuring the envelope removed.
 #[test]
 fn the_protocol_window_it_asks_for_fits_the_states_it_is_sized_for() {
     let inputs = edgar();
@@ -653,11 +652,27 @@ fn the_window_a_small_display_grants_leaves_the_canvas_short() {
          the canvas — the canvas is one share of the dock between two rails, so \
          its loss must be positive and no larger than the window's"
     );
+    // Down, the same claim in the same shape. It used to be an unconditional
+    // "the canvas still covers the graph downwards, because the panel is taller
+    // than the window": that premise died when the arrangement gained its
+    // ledger rail and its locator band and the window grew past the panel's
+    // 982 points. Asserting a bound rather than restoring the premise is the
+    // honest reading — the degradation is named and measured, exactly as it is
+    // across.
+    let clamped_down = natural.1 - granted.1;
+    let lost_down = asked.height() - given.height();
     assert!(
-        given.height() >= env_h,
-        "the laptop panel is taller than this window, so nothing was clamped \
-         down — but the canvas came up {:.2}pt short down anyway",
-        env_h - given.height()
+        lost_down >= 0.0 && lost_down <= clamped_down,
+        "the clamp took {clamped_down:.0}pt off the window's height and \
+         {lost_down:.2}pt off the canvas's — the canvas's loss must be positive \
+         and no larger than the window's"
+    );
+    assert!(
+        given.height() + clamped_down >= env_h,
+        "the laptop panel clamped {clamped_down:.0}pt off this window's height \
+         and the canvas came up {:.2}pt short down — more than the clamp \
+         explains, so some of the height budget is unaccounted for",
+        env_h - given.height() - clamped_down
     );
 }
 

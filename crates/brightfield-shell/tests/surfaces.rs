@@ -636,11 +636,17 @@ fn the_chart_survives_a_round_trip_through_the_grid() {
     let (grid_seg, chart_seg) = canvas_toggle_segments(Mode::Light);
 
     let stayed = shell_capture(Mode::Light, "toggle_stayed", Vec::new());
+    // A settle frame before each click, for the reason
+    // `the_overlay_toggle_still_reaches_the_chart_pane` records: egui hit-tests
+    // a click against the previous frame's widget rects, and the frame before
+    // the script is drawn without the font atlas.
     let returned = shell_capture(
         Mode::Light,
         "toggle_returned",
         vec![
+            Vec::new(),
             click_at(grid_seg.center().x, grid_seg.center().y),
+            Vec::new(),
             click_at(chart_seg.center().x, chart_seg.center().y),
         ],
     );
@@ -653,7 +659,10 @@ fn the_chart_survives_a_round_trip_through_the_grid() {
     let switched = shell_capture(
         Mode::Light,
         "toggle_switched",
-        vec![click_at(grid_seg.center().x, grid_seg.center().y)],
+        vec![
+            Vec::new(),
+            click_at(grid_seg.center().x, grid_seg.center().y),
+        ],
     );
     assert!(
         region_diff(&stayed, &switched, inside_chart).is_some(),
@@ -728,10 +737,20 @@ fn the_overlay_toggle_still_reaches_the_chart_pane() {
         "overlay_on",
         vec![move_to(over_chart.x, over_chart.y)],
     );
+    // A settle frame before the click, and it is load-bearing rather than
+    // padding. `capture::run_ui_frames` runs one frame before the script, and
+    // egui resolves "which widget is under the pointer" against the *previous*
+    // frame's widget rects — so a click on the script's first frame is hit-
+    // tested against a layout drawn before the font atlas was installed. The
+    // aim comes from `chart_layout`, which is settled; measured on this window
+    // the two answers differ by six points vertically, and the aim landed
+    // exactly on the unsettled rect's bottom edge and was given to the pane
+    // underneath.
     let toggled_off = shell_capture(
         Mode::Light,
         "overlay_off",
         vec![
+            Vec::new(),
             click_at(checkbox.center().x, checkbox.center().y),
             move_to(over_chart.x, over_chart.y),
         ],

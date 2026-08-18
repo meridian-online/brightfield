@@ -60,7 +60,6 @@ use brightfield_keys::{Altitude, RecencyCounter};
 use brightfield_protocol::layout::{Flow, Layout};
 use brightfield_sql::ir::SampleRate;
 use brightfield_workbench::arrangement::{self, Occupant, Projection, Region, RegionId};
-use brightfield_workbench::behavior::{TAB_BAR_HEIGHT, TILE_GAP};
 use brightfield_workbench::workspace::{tabs_holding, tile_of};
 use brightfield_workbench::{
     chrome, Activity, ActivityIndicator, DirtyTracker, HideAffordance, ItemId, ItemMap, PaneChrome,
@@ -84,8 +83,7 @@ use crate::overlays::{CommandPalette, HelpSheet, JumpTarget, JumpToNode};
 use crate::pipeline::Composed;
 use crate::protocol::{
     hint_ui, load_protocol_offline, protocol_registry, ui_font, ProtocolDoc, ProtocolInputs,
-    ProtocolModel, CANVAS as PROTOCOL_CANVAS, INSPECTOR as PROTOCOL_INSPECTOR, INSPECTOR_SHARE,
-    OUTLINE, OUTLINE_SHARE, STEPS,
+    ProtocolModel, CANVAS as PROTOCOL_CANVAS, INSPECTOR as PROTOCOL_INSPECTOR, OUTLINE, STEPS,
 };
 
 // ---------------------------------------------------------------------------
@@ -126,18 +124,16 @@ pub const DOCK_INSET: f32 = spacing::SPACE_4;
 
 /// The inspector rail's default width, outer — including its own frame.
 ///
-/// A declared pixel extent, not the proportional share this replaces: a
-/// column drawn proportionally inside the dock (the rail this replaces,
-/// `CONTROLS_SHARE` in `app.rs`) has no extent in points — merely a fraction
-/// of whatever the window happens to be — and a fraction is not something a
-/// later lane can lay a fixed sibling region out against. This is that
-/// extent, read by both [`chart_window_size`] and the panel
-/// [`MeridianApp::draw`] shows.
-pub const INSPECTOR_RAIL_WIDTH: f32 = 280.0;
+/// One spelling of the number that lives in
+/// [`brightfield_workbench::arrangement`], re-exported here because callers
+/// outside this crate were reading it from this path before the arrangement
+/// existed. The draw path does **not** read this: it reads the region.
+pub const INSPECTOR_RAIL_WIDTH: f32 = arrangement::INSPECTOR_RAIL_WIDTH;
 
 /// The inspector rail's minimum width, outer — the point past which
-/// `Panel::resizable` refuses to narrow it further.
-pub const INSPECTOR_RAIL_MIN_WIDTH: f32 = 200.0;
+/// `Panel::resizable` refuses to narrow it further. As
+/// [`INSPECTOR_RAIL_WIDTH`], one spelling of the arrangement's number.
+pub const INSPECTOR_RAIL_MIN_WIDTH: f32 = arrangement::INSPECTOR_RAIL_MIN_WIDTH;
 
 // ---------------------------------------------------------------------------
 // The front door's own measures.
@@ -240,21 +236,52 @@ const CARD_HEIGHT: f32 = 220.0;
 #[must_use]
 pub fn chart_window_size(composed: &Composed) -> (f32, f32) {
     let inset = chrome::pane_content_inset();
+    // Every band and rail the window lays out before the canvas gets what is
+    // left, read out of the arrangement rather than restated here.
+    let (across, down) = chrome_budget(false);
 
     // The legend band is a term, not a bite: a dashboard whose scales call
     // for a margin legend gets the band's width beside the raster, and one
     // that calls for none contributes zero — read from the component that
     // draws it, like every other term here.
-    let tile_w = composed.width as f32 + crate::legend::band_width(composed) + 2.0 * inset;
-    let w = (tile_w + 2.0 * DOCK_INSET + INSPECTOR_RAIL_WIDTH).ceil();
+    let pane_w = composed.width as f32 + crate::legend::band_width(composed) + 2.0 * inset;
+    let w = (pane_w + across).ceil();
 
-    let tile_h = composed.height as f32
-        + chart_toolbar_band(composed)
-        + 2.0 * inset
-        + chrome::header_band_height();
-    let h = (tile_h + 2.0 * DOCK_INSET + BAR_HEIGHT).ceil();
+    let pane_h = composed.height as f32 + chart_toolbar_band(composed) + 2.0 * inset;
+    let h = (pane_h + down).ceil();
 
     (w, h)
+}
+
+/// What the window's own regions take out of each axis before the canvas gets
+/// what is left, in logical points: `(across, down)`.
+///
+/// Read out of [`brightfield_workbench::arrangement`], which is what makes the
+/// window the shell *asks* for follow the window it *draws*. Before the
+/// arrangement existed these were literals here and literals again in the draw
+/// path, and the pair that got out of step clipped the bottom seventeen rows
+/// of the chart. `the_window_it_asks_for_fits_the_raster_it_presents` lays a
+/// real frame out at this size and reads the box the canvas pane was handed.
+///
+/// `hint` is whether this window draws the key-hint band — the surface with a
+/// bare-key grammar does, and the one without it does not, so it is a term of
+/// the caller rather than of the arrangement.
+///
+/// The canvas's head band is [`chrome::rail_selector_height`] because that is
+/// the split the canvas is drawn with: one measure, read from the function
+/// that performs the split rather than restated as a second number.
+fn chrome_budget(hint: bool) -> (f32, f32) {
+    let plan = arrangement::default_arrangement();
+    let across = rail_default(plan.expect_region(arrangement::NAVIGATOR_RAIL))
+        + rail_default(plan.expect_region(arrangement::INSPECTOR_RAIL));
+    let mut down = band_extent(plan.expect_region(arrangement::TITLE_BAND))
+        + band_extent(plan.expect_region(arrangement::LOCATOR_BAND))
+        + rail_default(plan.expect_region(arrangement::LEDGER_RAIL))
+        + chrome::rail_selector_height();
+    if hint {
+        down += band_extent(plan.expect_region(arrangement::HINT_BAND));
+    }
+    (across, down)
 }
 
 /// The height the chart pane's toolbar row consumes above the raster, in
@@ -285,16 +312,14 @@ pub fn chart_toolbar_band(composed: &Composed) -> f32 {
 /// outwards from the DAG exactly as [`chart_window_size`] is read outwards from
 /// the dashboard.
 ///
-/// The two differences from the chart's are both properties of this view's
-/// declared shape rather than adjustments:
+/// One difference from the chart's, and it is a property of this surface
+/// rather than an adjustment: the graph has a bare-key grammar and the chart
+/// projections do not, so this window gives up the hint band as well — which
+/// is the `hint` term [`chrome_budget`] takes.
 ///
-/// - the canvas sits between **two** rails, so two [`TILE_GAP`]s come out of the
-///   dock's width and the centre share is what both rails leave;
-/// - the canvas is a centre *tab*, so its header band is suppressed — the strip
-///   already names it — and the strip's [`TAB_BAR_HEIGHT`] takes that band's
-///   place in the vertical budget;
-/// - this view draws a key-hint bar under the dock as well as the top bar over
-///   it, so the window gives up two [`BAR_HEIGHT`]s rather than one.
+/// Every other term is shared, because both windows are laid out by the same
+/// arrangement: the bands and rails come out of the axes first and the canvas
+/// takes what is left.
 ///
 /// What this replaces was a different kind of number altogether: `l.height +
 /// 130.0`, floored at `1100.0` across and clamped to `680.0..=1600.0` down.
@@ -336,14 +361,13 @@ pub fn protocol_window_size(layout: &Layout) -> (f32, f32) {
 /// are named and argued.
 #[must_use]
 pub fn protocol_window_size_for(dag_w: f32, dag_h: f32) -> (f32, f32) {
-    let centre = 1.0 - OUTLINE_SHARE - INSPECTOR_SHARE;
     let inset = chrome::pane_content_inset();
+    // `true`: this window draws the key-hint band, because the graph is the
+    // surface with a bare-key grammar.
+    let (across, down) = chrome_budget(true);
 
-    let tile_w = dag_w + 2.0 * inset;
-    let w = (tile_w / centre + 2.0 * TILE_GAP + 2.0 * DOCK_INSET).ceil();
-
-    let tile_h = dag_h + 2.0 * inset + TAB_BAR_HEIGHT;
-    let h = (tile_h + 2.0 * DOCK_INSET + 2.0 * BAR_HEIGHT).ceil();
+    let w = (dag_w + 2.0 * inset + across).ceil();
+    let h = (dag_h + 2.0 * inset + down).ceil();
 
     (w, h)
 }

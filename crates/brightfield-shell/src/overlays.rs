@@ -697,10 +697,14 @@ mod tests {
 
     #[test]
     fn a_reserved_verb_is_flagged_and_refuses_to_run() {
+        // The inspector rail's toggle rather than the outline rail's: the
+        // outline rail's toggle is bound and performed now that the navigator
+        // rail is a region of the window, so it is no longer an example of
+        // this. The claim is unchanged and the bucket is the same one.
         let mut p = palette_at(Altitude::Protocol);
-        p.update_query("outline");
+        p.update_query("inspector");
         let i = (0..p.match_count())
-            .find(|&i| p.candidate(i).unwrap().longname == "toggle-outline-rail")
+            .find(|&i| p.candidate(i).unwrap().longname == "toggle-inspector-rail")
             .expect("the reserved rail toggle is shown, not hidden");
         let row = p.row(i);
         assert!(
@@ -712,7 +716,7 @@ mod tests {
             row.detail
         );
         assert!(row.keystroke.is_none(), "reserved verbs show no key");
-        assert_eq!(p.confirm(Some(i), "outline"), PickerOutcome::KeepOpen);
+        assert_eq!(p.confirm(Some(i), "inspector"), PickerOutcome::KeepOpen);
         assert!(p.take_picked().is_none());
         assert!(
             matches!(p.hint(), Some(PickerHint::Error(_))),
