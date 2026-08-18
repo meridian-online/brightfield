@@ -125,7 +125,7 @@ pub const DOCK_INSET: f32 = spacing::SPACE_4;
 /// [[brightfields-layout-regions-are-bands-rails-a-canvas-and-overlays]]
 /// names this `280 default · 200 minimum`, taken at dispatch rather than left
 /// to this lane: a column drawn proportionally inside the dock (the rail this
-/// replaces, `CONTROLS_SHARE` in `app.rs`) has no extent in points, only a
+/// replaces, `CONTROLS_SHARE` in `app.rs`) has no extent in points — merely a
 /// fraction of whatever the window happens to be — and a fraction is not
 /// something a later lane can lay a fixed sibling region out against. This is
 /// that extent, read by both [`chart_window_size`] and the panel
@@ -1381,9 +1381,9 @@ impl MeridianApp {
         // it with an invisible sibling.
         //
         // On the raw `layout`, before `DirtyTracker::new` below starts
-        // comparing: a launch that never touches this pane must write
-        // nothing, for the same reason `steps_tab_is_active`'s seeding a few
-        // lines down reads the document rather than the tree.
+        // comparing: a launch that leaves this pane untouched must write
+        // it back unchanged, for the same reason `steps_tab_is_active`'s
+        // seeding a few lines down reads the document rather than the tree.
         if let Some(controls_tile) = layout.workspace.tile_of(charts.pane_key(CONTROLS)) {
             layout
                 .workspace
@@ -2076,8 +2076,8 @@ impl MeridianApp {
         let focused = self.ws().focus();
         // The hidden tile `Self::assemble` left in place for CONTROLS — found
         // fresh each frame (a layout reload or a drag cannot leave this
-        // holding a stale id) rather than cached on `Self`, the way every
-        // other tile lookup here already works.
+        // holding a stale id) rather than cached on `Self`, the way the
+        // other tile lookups here already work.
         let inspector_tile = self.ws().tile_of(PaneKey::new(ViewKind::Charts, CONTROLS));
         // The inspector's own read of "what is selected" — the same value
         // `status_rail_ui` reads for the rail's status lines, computed here
@@ -2134,9 +2134,9 @@ impl MeridianApp {
             // made for this tile were it still visible there — same header,
             // same empty state, same focus-follows-click — so drawing it
             // outside the dock changes *where* the chrome comes from and not
-            // what it draws. `inspector_tile` is `None` only for a document
-            // whose `chart_registry()` dropped `CONTROLS` entirely, which
-            // never happens on a shipping build.
+            // what it draws. `inspector_tile` is `None` for a document whose
+            // `chart_registry()` dropped `CONTROLS` entirely — not something
+            // a shipping build does.
             if view == ViewKind::Charts {
                 if let Some(tile) = inspector_tile {
                     let mut inspector_key = PaneKey::new(ViewKind::Charts, CONTROLS);
@@ -2155,9 +2155,9 @@ impl MeridianApp {
                             // regardless of `default_size`. Measured: without
                             // this line the rail's reported rect is 200pt
                             // wide (exactly `INSPECTOR_RAIL_MIN_WIDTH`) by the
-                            // second frame, never the declared 280 — a quiet
+                            // second frame, not the declared 280 — a quiet
                             // inspector (a checkbox and a couple of short
-                            // labels) never asks for more.
+                            // labels) does not ask for more.
                             //
                             // Watched redden: without this line,
                             // `the_overlay_toggle_still_reaches_the_chart_pane`
