@@ -255,31 +255,60 @@ fn a_window_publishes_both_registries_and_nothing_else() {
     }
 }
 
-/// The window built from a boot opens on the view the boot named, and **only
-/// that view is laid out**.
+/// One document's panes are laid out per frame, and the documents decide
+/// which.
 ///
-/// Both documents are loaded and both dock trees exist, so the cheap mistake
-/// would be to run both trees every frame and show one — which costs a full
-/// second layout pass and a second raster, and makes "which view is active" a
-/// question about visibility rather than about work. The second assertion is
-/// what rules that out: the chart pane records the box it was handed inside its
-/// own `ui`, so a `None` there means nobody called it.
+/// Both dock trees exist, so the cheap mistake would be to run both every
+/// frame and show one — a full second layout pass and a second raster, and
+/// "which document is on the canvas" becomes a question about visibility
+/// rather than about work. The viewport readbacks rule that out: a pane
+/// records the box it was handed inside its own `ui`, so a `None` means nobody
+/// called it.
 ///
-/// It says nothing about switching. That is
-/// `the_top_bar_switcher_switches_the_view_the_dock_draws`, below.
+/// Two windows, because the rule has two halves and each is the other's
+/// control:
+///
+/// - a protocol with no chart puts its graph on the canvas. Its chart pane is
+///   empty, and `PaneChrome` draws an empty state *instead of* the item, so
+///   `chart_viewport()` would be `None` here whatever the layout did — which
+///   is why that half is not asserted on this window.
+/// - a window holding both draws the chart's projection, and the boot's own
+///   `view` opinion does not change that. The protocol is readable in three
+///   rails of this arrangement while the canvas holds the chart, and the chart
+///   has the canvas and nothing else. This window's DAG pane has a graph in
+///   it, so its `None` is a layout answer rather than an empty state.
+///
+/// Watched redden, two mutations: `(_, true) => ViewKind::Charts` in
+/// `MeridianApp::draw` back to `(false, true)` with `_ => view` fails the
+/// second window at *"the chart pane never drew"*; deleting the
+/// `graph_on_canvas` branch so the canvas always draws the projection fails
+/// the first at *"the DAG canvas pane never drew"*.
 #[test]
-fn the_window_opens_on_the_view_the_boot_named_and_lays_out_only_that_view() {
-    let mut win = Window::open(both(ViewKind::Protocol), Mode::Light);
-    assert_eq!(win.app.active(), ViewKind::Protocol);
+fn one_documents_panes_are_laid_out_per_frame_and_the_documents_decide_which() {
+    let mut win = Window::open(Boot::protocol(edgar(), Flow::Vertical, None), Mode::Light);
     win.settle();
     assert!(
         win.app.canvas_viewport().is_some(),
-        "the DAG canvas pane never drew"
+        "the DAG canvas pane never drew on a window with no chart in it, so \
+         the graph has nowhere left to be drawn at canvas size"
+    );
+
+    let mut win = Window::open(both(ViewKind::Protocol), Mode::Light);
+    win.settle();
+    assert_eq!(
+        win.app.active(),
+        ViewKind::Charts,
+        "a window holding both documents gave the canvas to the graph, which \
+         is a state no control on this window undoes"
     );
     assert!(
-        win.app.chart_viewport().is_none(),
-        "the chart pane drew while the protocol view was active — both views \
-         are laid out every frame, which is not what one window means"
+        win.app.chart_viewport().is_some(),
+        "the chart pane never drew over a window holding both documents"
+    );
+    assert!(
+        win.app.canvas_viewport().is_none(),
+        "the DAG canvas pane drew while the chart held the canvas — both \
+         trees are laid out every frame, which is not what one window means"
     );
 }
 
@@ -817,7 +846,7 @@ fn the_protocol_grammar_does_not_reach_the_dag_from_the_charts_view() {
 }
 
 // ---------------------------------------------------------------------------
-// The switcher
+// The navigator toggle, and what the title band does not do
 // ---------------------------------------------------------------------------
 /// The navigator rail's toggle reaches the protocol spine and comes back.
 ///
