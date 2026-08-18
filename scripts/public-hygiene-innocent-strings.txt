@@ -69,3 +69,10 @@ Prose that mentions the vocabulary without an identifier
     The milestone slipped a week.
     See the decision record for the rationale.
     The task list is in the tracker.
+
+TOML array-of-table headers, not vault wikilinks
+-------------------------------------------------
+    [[bin]]
+    [[test]]
+    [[bench]]
+    [[example]]

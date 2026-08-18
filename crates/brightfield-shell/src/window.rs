@@ -54,7 +54,7 @@
 use std::collections::BTreeSet;
 
 use egui::containers::{CentralPanel, Panel};
-use egui_tiles::{Container, Tile};
+use egui_tiles::{Behavior, Container, Tile};
 
 use brightfield_keys::{Altitude, RecencyCounter};
 use brightfield_protocol::layout::{Flow, Layout};
@@ -63,8 +63,8 @@ use brightfield_workbench::behavior::{TAB_BAR_HEIGHT, TILE_GAP};
 use brightfield_workbench::workspace::{tabs_holding, tile_of};
 use brightfield_workbench::{
     chrome, Activity, ActivityIndicator, DirtyTracker, HideAffordance, ItemMap, PaneChrome,
-    PaneKey, Request, SavedLayout, StatusEntry, StatusSide, Subject, Tone, Verb, ViewKind,
-    WindowGeometry, Workspace,
+    PaneKey, Request, SavedLayout, StatusEntry, StatusSide, Subject, Tone, ToolbarEntry, Verb,
+    ViewKind, WindowGeometry, Workspace,
 };
 use meridian_egui::{
     ModalChrome, ModalLayer, Notification, NotificationId, NotificationLayer, Picker, PickerEvent,
@@ -73,9 +73,10 @@ use meridian_egui::{
 
 use meridian_design::{radius, semantic, spacing};
 
-use crate::app::{chart_registry, ChartDoc, ChartFault, CHART, CONTROLS_SHARE};
+use crate::app::{chart_registry, ChartDoc, ChartFault, CHART, CONTROLS};
 use crate::canvas::EguiCanvasHost;
 use crate::design::{self, Mode};
+use crate::inspector::{InspectorPane, Selection};
 use crate::overlays::{CommandPalette, HelpSheet, JumpTarget, JumpToNode};
 use crate::pipeline::Composed;
 use crate::protocol::{
@@ -118,6 +119,21 @@ pub const BAR_HEIGHT: f32 = spacing::ROW_GRID + 2.0 * spacing::SPACE_2;
 /// a term the window arithmetic has to subtract cannot be a number that lives
 /// only inside egui.
 pub const DOCK_INSET: f32 = spacing::SPACE_4;
+
+/// The inspector rail's default width, outer — including its own frame.
+///
+/// A declared pixel extent, not the proportional share this replaces: a
+/// column drawn proportionally inside the dock (the rail this replaces,
+/// `CONTROLS_SHARE` in `app.rs`) has no extent in points — merely a fraction
+/// of whatever the window happens to be — and a fraction is not something a
+/// later lane can lay a fixed sibling region out against. This is that
+/// extent, read by both [`chart_window_size`] and the panel
+/// [`MeridianApp::draw`] shows.
+pub const INSPECTOR_RAIL_WIDTH: f32 = 280.0;
+
+/// The inspector rail's minimum width, outer — the point past which
+/// `Panel::resizable` refuses to narrow it further.
+pub const INSPECTOR_RAIL_MIN_WIDTH: f32 = 200.0;
 
 // ---------------------------------------------------------------------------
 // The front door's own measures.
@@ -184,9 +200,11 @@ const CARD_HEIGHT: f32 = 220.0;
 /// - the pane's content box is its tile inset by
 ///   [`chrome::pane_content_inset`] on all four sides, and, vertically, below a
 ///   [`chrome::header_band_height`] header band;
-/// - the chart's tile is `1 - CONTROLS_SHARE` of the dock's width, after the
-///   [`TILE_GAP`] between it and the rail is taken out;
-/// - the dock is the window inset by [`DOCK_INSET`], below the top bar.
+/// - the chart's tile is the whole of the dock — the inspector no longer
+///   shares the dock's width with it, it is a [`Panel::right`](egui::containers::Panel::right)
+///   beside the dock, at its own declared [`INSPECTOR_RAIL_WIDTH`];
+/// - the dock is the window inset by [`DOCK_INSET`], below the top bar, less
+///   the rail's width.
 ///
 /// The charts view draws no hint bar, so the window gives up one
 /// [`BAR_HEIGHT`] rather than two. That is held to rather than remembered:
@@ -217,7 +235,6 @@ const CARD_HEIGHT: f32 = 220.0;
 /// once caught clipping the bottom seventeen rows of its own chart.
 #[must_use]
 pub fn chart_window_size(composed: &Composed) -> (f32, f32) {
-    let centre = 1.0 - CONTROLS_SHARE;
     let inset = chrome::pane_content_inset();
 
     // The legend band is a term, not a bite: a dashboard whose scales call
@@ -225,7 +242,7 @@ pub fn chart_window_size(composed: &Composed) -> (f32, f32) {
     // that calls for none contributes zero — read from the component that
     // draws it, like every other term here.
     let tile_w = composed.width as f32 + crate::legend::band_width(composed) + 2.0 * inset;
-    let w = (tile_w / centre + TILE_GAP + 2.0 * DOCK_INSET).ceil();
+    let w = (tile_w + 2.0 * DOCK_INSET + INSPECTOR_RAIL_WIDTH).ceil();
 
     let tile_h = composed.height as f32
         + chart_toolbar_band(composed)
@@ -1073,6 +1090,12 @@ fn navigation_verb(doc: &mut crate::app::ChartDoc, longname: &str) -> bool {
 struct ChartView {
     doc: ChartDoc,
     items: ItemMap<ChartDoc>,
+    /// What the inspector rail says is selected — written by [`MeridianApp::draw`]
+    /// from [`Workspace::focus`] right before the dock draws, read by the
+    /// [`InspectorPane`] boxed inside `items` at the [`CONTROLS`] key. See
+    /// `crate::inspector`'s module docs for why this is not a field on
+    /// [`ChartDoc`].
+    inspector_selection: Selection,
 }
 
 /// The protocol view's half: its document and its live items.
@@ -1321,7 +1344,7 @@ impl MeridianApp {
     fn assemble(
         view: Option<ViewKind>,
         focus: Option<String>,
-        layout: SavedLayout,
+        mut layout: SavedLayout,
         chart_doc: ChartDoc,
         mut protocol_doc: ProtocolDoc,
         mode: Mode,
@@ -1342,6 +1365,31 @@ impl MeridianApp {
 
         let charts = chart_registry();
         let protocol = protocol_registry();
+
+        // The registry still lays CONTROLS out as a rail of the dock's own
+        // `Slot::Rail` — that declaration stays app.rs's, untouched, so
+        // `chart_contract.rs`'s registry-level assertions about it keep
+        // passing (see `crate::inspector`'s module docs). What draws there
+        // now is a genuine `Panel::right` (`Self::draw`), sized from
+        // `INSPECTOR_RAIL_WIDTH` rather than from the dock's proportional
+        // share — so the tile the tree still carries for it is hidden here
+        // rather than removed: `egui_tiles::Tiles::set_visible` keeps its
+        // place in the persisted tree (a saved arrangement still deserialises
+        // against it) while excluding it from `Linear::layout`, so the centre
+        // tile takes the whole of what the dock is given instead of sharing
+        // it with an invisible sibling.
+        //
+        // On the raw `layout`, before `DirtyTracker::new` below starts
+        // comparing: a launch that leaves this pane untouched must write
+        // it back unchanged, for the same reason `steps_tab_is_active`'s
+        // seeding a few lines down reads the document rather than the tree.
+        if let Some(controls_tile) = layout.workspace.tile_of(charts.pane_key(CONTROLS)) {
+            layout
+                .workspace
+                .tree_mut(ViewKind::Charts)
+                .tiles
+                .set_visible(controls_tile, false);
+        }
 
         let mut layout = DirtyTracker::new(layout);
         // Something that asked for a view wins; a boot with no opinion keeps
@@ -1372,11 +1420,25 @@ impl MeridianApp {
             protocol_doc.model.set_show_sheet(show);
         }
 
+        // The registry still builds a `ControlsPane` at `CONTROLS` — that
+        // declaration lives in `app.rs` and stays untouched, so the
+        // registry-level assertions in `chart_contract.rs` keep passing. What
+        // actually draws is swapped here, one map entry, right after
+        // construction: an `InspectorPane` sharing a `Selection` cell with
+        // the `ChartView` it sits in. See `crate::inspector`'s module docs.
+        let inspector_selection = Selection::default();
+        let mut chart_items = charts.instantiate();
+        chart_items.insert(
+            charts.pane_key(CONTROLS),
+            Box::new(InspectorPane::new(inspector_selection.clone())),
+        );
+
         let mut app = Self {
             layout,
             charts: ChartView {
                 doc: chart_doc,
-                items: charts.instantiate(),
+                items: chart_items,
+                inspector_selection,
             },
             protocol: ProtocolView {
                 doc: protocol_doc,
@@ -1622,6 +1684,64 @@ impl MeridianApp {
     #[must_use]
     pub fn overlay_checkbox(&self) -> Option<egui::Rect> {
         self.charts.doc.overlay_checkbox
+    }
+
+    /// What the inspector currently says is selected — the focused pane's
+    /// [`Subject`], recomputed each frame from [`Workspace::focus`]
+    /// immediately before the dock draws. `None` before anything in the
+    /// charts view has been focused, or once focus is cleared — never a
+    /// stale previous answer. A test hook, for the reason
+    /// [`Self::overlay_checkbox`] is one: proving the inspector tracks
+    /// selection should not have to pay for a pixel capture per pane.
+    #[must_use]
+    pub fn inspector_selection(&self) -> Option<Subject> {
+        self.charts.inspector_selection.get()
+    }
+
+    /// Move focus to `key`, in its own view — the same effect the
+    /// click-anywhere-in-a-pane rule in `PaneChrome::pane_ui` has, without
+    /// simulating a pointer event. Returns whether the move was accepted
+    /// (see [`Workspace::set_focus`]). A test hook, for the reason
+    /// [`Self::inspector_selection`] is one.
+    pub fn focus_pane(&mut self, key: PaneKey) -> bool {
+        self.ws_mut().set_focus(key)
+    }
+
+    /// Drop the charts view's focus record, as if its focused pane had just
+    /// closed. The other half of [`Self::focus_pane`] — proving the inspector
+    /// reverts to its empty-selection state rather than holding a stale one.
+    pub fn clear_chart_focus(&mut self) {
+        self.ws_mut().clear_focus(ViewKind::Charts);
+    }
+
+    /// What the item actually occupying `key` in the *live* item map declares
+    /// about itself — as opposed to `chart_registry()`'s declared shape,
+    /// which `chart_contract.rs` already covers and which `assemble` swaps
+    /// one entry away from at boot. A test hook: this is how a test tells
+    /// `InspectorPane` from the registry's dormant `ControlsPane` without a
+    /// pixel capture — their titles differ ("Inspector" vs "Controls").
+    #[must_use]
+    pub fn chart_pane_title(&self, key: PaneKey) -> Option<String> {
+        self.charts
+            .items
+            .get(&key)
+            .map(|item| item.describe(&self.charts.doc).title)
+    }
+
+    /// The toolbar `key`'s live item declares right now — the other half of
+    /// [`Self::chart_pane_title`], and for the same reason: a pane's
+    /// declared toolbar (e.g. the editor's `save-spec`, once a file is open)
+    /// only exists after `describe` has run against a document that has
+    /// actually drawn a frame, so a test that wants it has to ask the live
+    /// app rather than `chart_registry()`'s freshly constructed, never-drawn
+    /// items.
+    #[must_use]
+    pub fn chart_pane_toolbar(&self, key: PaneKey) -> Vec<ToolbarEntry> {
+        self.charts
+            .items
+            .get(&key)
+            .map(|item| item.describe(&self.charts.doc).toolbar)
+            .unwrap_or_default()
     }
 
     /// The content box the DAG canvas pane was handed by the last frame this
@@ -1953,6 +2073,31 @@ impl MeridianApp {
         // arithmetic reads.
         let tabbed = self.ws().tabbed_tiles(view);
         let focused = self.ws().focus();
+        // The hidden tile `Self::assemble` left in place for CONTROLS — found
+        // fresh each frame (a layout reload or a drag cannot leave this
+        // holding a stale id) rather than cached on `Self`, the way the
+        // other tile lookups here already work.
+        let inspector_tile = self.ws().tile_of(PaneKey::new(ViewKind::Charts, CONTROLS));
+        // The inspector's own read of "what is selected" — the same value
+        // `status_rail_ui` reads for the rail's status lines, computed here
+        // rather than there because the inspector needs it *before* the dock
+        // draws, not after. Skipped when focus has landed on the inspector's
+        // own pane (clicking its checkbox, say): that would otherwise blank
+        // the panel it is itself part of the moment someone touches it.
+        if view == ViewKind::Charts {
+            match focused {
+                Some(key) if key.item != CONTROLS => {
+                    let subject = self
+                        .charts
+                        .items
+                        .get(&key)
+                        .map(|item| item.describe(&self.charts.doc));
+                    self.charts.inspector_selection.set(subject);
+                }
+                Some(_) => {}
+                None => self.charts.inspector_selection.set(None),
+            }
+        }
         let mut requests: Vec<Request> = Vec::new();
         let dock_frame = egui::Frame::new()
             .inner_margin(DOCK_INSET)
@@ -1981,6 +2126,59 @@ impl MeridianApp {
                 &mut self.protocol,
                 &mut self.affordances,
             );
+            // The inspector rail — a real `Panel::right`, added *before* the
+            // dock so the dock's `CentralPanel` (which must come last; see
+            // its own doc comment) is handed whatever width is left. It
+            // reuses `PaneChrome::pane_ui`, the same call the dock would have
+            // made for this tile were it still visible there — same header,
+            // same empty state, same focus-follows-click — so drawing it
+            // outside the dock changes *where* the chrome comes from and not
+            // what it draws. `inspector_tile` is `None` for a document whose
+            // `chart_registry()` dropped `CONTROLS` entirely — not something
+            // a shipping build does.
+            if view == ViewKind::Charts {
+                if let Some(tile) = inspector_tile {
+                    let mut inspector_key = PaneKey::new(ViewKind::Charts, CONTROLS);
+                    Panel::right("bf-inspector-rail")
+                        .default_size(INSPECTOR_RAIL_WIDTH)
+                        .min_size(INSPECTOR_RAIL_MIN_WIDTH)
+                        .resizable(true)
+                        .frame(dock_frame)
+                        .show(ui, |ui| {
+                            // `Panel::resizable`'s own doc: a resizable panel
+                            // whose content does not claim the available
+                            // space shrinks to content instead of holding its
+                            // declared size — egui reports the content's own
+                            // used width back as the panel's rect, and
+                            // *persists* that narrower number for next frame,
+                            // regardless of `default_size`. Measured: without
+                            // this line the rail's reported rect is 200pt
+                            // wide (exactly `INSPECTOR_RAIL_MIN_WIDTH`) by the
+                            // second frame, not the declared 280 — a quiet
+                            // inspector (a checkbox and a couple of short
+                            // labels) does not ask for more.
+                            //
+                            // Watched redden: without this line,
+                            // `the_overlay_toggle_still_reaches_the_chart_pane`
+                            // fails — the checkbox itself draws at the rect
+                            // the test predicts, but by the frame the test's
+                            // scripted click lands the panel has already
+                            // shrunk to that narrower width and the click,
+                            // aimed at the wider prediction, misses.
+                            ui.set_min_width(ui.available_width());
+                            let mut behavior = PaneChrome::new(
+                                &mut charts.doc,
+                                &mut charts.items,
+                                mode,
+                                focused,
+                                &tabbed,
+                                &mut requests,
+                                affordances,
+                            );
+                            let _ = behavior.pane_ui(ui, tile, &mut inspector_key);
+                        });
+                }
+            }
             CentralPanel::default().frame(dock_frame).show(ui, |ui| {
                 // The two arms are the whole cost of keeping the documents
                 // apart.
