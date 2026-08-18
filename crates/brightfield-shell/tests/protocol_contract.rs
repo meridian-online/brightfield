@@ -136,7 +136,7 @@ fn each_pane_names_itself_once_and_binds_in_the_protocol_context() {
         .collect();
     assert_eq!(names[&OUTLINE], "Outline");
     assert_eq!(names[&CANVAS], "Canvas");
-    assert_eq!(names[&INSPECTOR], "Inspector");
+    assert_eq!(names[&INSPECTOR], "Operator");
     assert_eq!(names[&STEPS], "Steps");
 }
 

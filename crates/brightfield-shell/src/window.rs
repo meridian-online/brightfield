@@ -1872,6 +1872,25 @@ impl MeridianApp {
         items.iter().map(|item| self.pane_title_of(*item)).collect()
     }
 
+    /// Where the document on the canvas came from, for the locator band's
+    /// right-hand note — the spec file's **name**, or `None` for a document
+    /// with no file behind it (a shipped start, an opened data file, an empty
+    /// window).
+    ///
+    /// The name rather than the path, and it is not a shortening for taste: a
+    /// path is where this machine keeps the file, so a window drawn on two
+    /// machines would say two different things and every pixel baseline that
+    /// photographs this band would be a baseline of one developer's home
+    /// directory. The file name is the part the reader wrote.
+    fn document_source(&self) -> Option<String> {
+        self.charts
+            .doc
+            .spec_path
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+    }
+
     /// The breadcrumb the locator band draws: where the subject sits, most
     /// general first.
     ///
@@ -2309,10 +2328,11 @@ impl MeridianApp {
 
             let locator = plan.expect_region(arrangement::LOCATOR_BAND);
             let crumbs = self.crumb_line();
+            let source = self.document_source();
             let drawn = Panel::top("bf-locator-band")
                 .resizable(false)
                 .exact_size(band_extent(locator))
-                .show(ui, |ui| locator_band_ui(ui, &crumbs, mode));
+                .show(ui, |ui| locator_band_ui(ui, &crumbs, source.as_deref(), mode));
             self.regions.push((locator.id, drawn.response.rect));
 
             // The key-hint band belongs to a key grammar, so it is drawn where
@@ -2353,11 +2373,14 @@ impl MeridianApp {
             let navigator_labels = self.pane_titles(navigator_panes);
             let inspector_labels = self.pane_titles(inspector_panes);
             let projection_labels: Vec<&str> = projections.iter().map(|p| p.label).collect();
-            let canvas_name = if graph_on_canvas {
-                self.pane_title_of(graph)
-            } else {
-                self.pane_title_of(projections[projection].item)
-            };
+            // What the canvas is showing, which is the leaf of the locator
+            // rather than the pane's own kind: the toggle beside it already
+            // says "Grid" and "Chart", so a head band repeating the pane's
+            // title would name the reading twice and the subject not at all.
+            let canvas_name = crumbs
+                .last()
+                .cloned()
+                .unwrap_or_else(|| self.pane_title_of(graph));
 
             let mut regions = std::mem::take(&mut self.regions);
             let mut canvas_toggle: Vec<egui::Rect> = Vec::new();
@@ -3899,10 +3922,25 @@ fn canvas_head(
     drawn
 }
 
-/// The locator band: where the subject sits, said as a breadcrumb.
-fn locator_band_ui(ui: &egui::Ui, crumbs: &[String], mode: Mode) {
+/// The locator band: where the subject sits, said as a breadcrumb, and where
+/// the document came from at its right.
+///
+/// The right-hand note is what stops this band repeating the title band on a
+/// window whose subject has no trail below it: a chart has no drill state, so
+/// its crumb line is one entry, and the file it was composed from is the thing
+/// a locator can say that the title cannot.
+fn locator_band_ui(ui: &egui::Ui, crumbs: &[String], source: Option<&str>, mode: Mode) {
     let sem = semantic(mode.is_dark());
     let rect = ui.max_rect();
+    if let Some(source) = source {
+        ui.painter().text(
+            egui::pos2(rect.right() - spacing::SPACE_4, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            source,
+            egui::FontId::monospace(meridian_design::typography::UI_SIZE - 1.0),
+            chrome::colour(sem.text.muted),
+        );
+    }
     let mut x = rect.left() + spacing::SPACE_4;
     for (i, crumb) in crumbs.iter().enumerate() {
         if i > 0 {
