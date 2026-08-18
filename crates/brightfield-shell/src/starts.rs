@@ -16,7 +16,7 @@
 //!   wrong: a start works from any working directory and cannot be broken by
 //!   moving the checkout. Each start ships **two** thumbnails, one per
 //!   [`Mode`], and [`Start::thumbnail_for`] picks between the two compiled-in
-//!   byte slices — never a file path, so the property holds for the pair the
+//!   byte slices, not a file path, so the property holds for the pair the
 //!   same way it held for the one. What ships is the *spec*, which is not the
 //!   same as what the spec reads — see [`Start::remote`] below, and the
 //!   narrowing it forced on the sentence that used to end this bullet. (Note

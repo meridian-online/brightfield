@@ -3160,10 +3160,11 @@ impl MeridianApp {
     /// honest degradation here, not a reason to take the door down.
     ///
     /// Picks each start's thumbnail for `self.mode` — see
-    /// [`crate::starts::Start::thumbnail_for`] — rather than always the light
-    /// one. Safe to do once, here: `self.mode` is set at construction and
-    /// never reassigned for the life of a [`MeridianApp`], so there is no
-    /// later mode change this cache could go stale against.
+    /// [`crate::starts::Start::thumbnail_for`] — rather than the light one
+    /// unconditionally. Safe to do once, here: `self.mode` is set at
+    /// construction and stays fixed for the rest of a [`MeridianApp`]'s life
+    /// (this file has no assignment to `self.mode` after that), so there is
+    /// no later mode change this cache could go stale against.
     fn ensure_door_thumbs(&mut self, ctx: &egui::Context) {
         if !self.door_thumbs.is_empty() {
             return;

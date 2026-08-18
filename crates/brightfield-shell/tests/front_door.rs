@@ -948,7 +948,7 @@ fn every_remote_start_still_renders_and_its_dark_thumbnail_is_current() {
 
 /// Render each start at the window it asks for, thumbnail it, and diff against
 /// the committed PNG for `mode` — `{id}.png` for [`Mode::Light`], `{id}-dark.png`
-/// for [`Mode::Dark`], so the two halves of the set never collide on a name.
+/// for [`Mode::Dark`], so the two halves of the set stay apart by name.
 /// Returns how many were held, so a caller filtering the set can refuse to
 /// pass over an empty one.
 fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) -> usize {
@@ -993,18 +993,18 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) -> usize {
 /// Samples one point 14×14 logical points in from each card's own top-left
 /// corner — inside the card's `SPACE_2` padding and inside the fitted 16:10
 /// thumbnail (the card's image area and the 480×300 asset share that aspect
-/// ratio exactly, so nothing here can land in transparent letterbox). Four of
-/// the five land on `INK_DARK.surface` (0x16,0x14,0x13) exactly; the fifth,
-/// `reading-distribution`, lands a few points off it on that chart's own
-/// gridline — still nowhere near light. What every sample must not be within
-/// [`TOLERANCE`] of is `INK_LIGHT.surface` (0xfc,0xfc,0xfb), the near-white
-/// tone a stale thumbnail would still be carrying.
+/// ratio exactly, so the sample point stays clear of transparent letterbox).
+/// Four of the five land on `INK_DARK.surface` (0x16,0x14,0x13) exactly; the
+/// fifth, `reading-distribution`, lands a few points off it on that chart's
+/// own gridline — still nowhere near light. Each sample is held to
+/// [`TOLERANCE`] of `INK_LIGHT.surface` (0xfc,0xfc,0xfb), the near-white tone
+/// a stale thumbnail would still be carrying.
 ///
 /// Watched redden, one mutation: pointing `ensure_door_thumbs` at
 /// `start.thumbnail` (the light slice) instead of
-/// `start.thumbnail_for(self.mode)` and regenerating the baseline — every one
-/// of the five assertions below fails, each reporting a sampled value in the
-/// (0xfb..0xfd) range, adjacent to `INK_LIGHT.surface`.
+/// `start.thumbnail_for(self.mode)` and regenerating the baseline — the loop
+/// below panics at `activity-breakdown`, sampling (251,250,249), 1-2 units
+/// off `INK_LIGHT.surface` per channel.
 const TOLERANCE: i32 = 20;
 
 #[test]
