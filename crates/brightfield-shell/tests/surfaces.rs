@@ -605,8 +605,9 @@ fn protocol_cte_dark_surface() {
 /// and saying so is better than a doc comment claiming a guard this cannot give.
 ///
 /// Watched redden, one mutation: dropping `picks.projection` on the floor in
-/// `MeridianApp::draw` — the toggle draws and records but nothing acts on it —
-/// fails at *"clicking Grid changed nothing inside the canvas"*.
+/// `MeridianApp::draw`, so the toggle draws and records a click that no longer
+/// moves the canvas. It fails at *"clicking Grid changed nothing inside the
+/// canvas"*.
 #[test]
 fn the_canvas_toggle_switches_the_canvas_and_switches_back() {
     let (chart, _) = chart_layout(Mode::Light);
