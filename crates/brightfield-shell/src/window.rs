@@ -4156,8 +4156,8 @@ mod tests {
     /// chart, and the only exit was Home, which discards both documents.
     ///
     /// Asserted off a drawn frame rather than off `active()`: the branch that
-    /// puts the graph on the canvas draws no toggle at all, so two segments
-    /// coming back are the screen saying which document it gave the canvas to.
+    /// puts the graph on the canvas draws no toggle, so two segments coming
+    /// back are the screen saying which document it gave the canvas to.
     /// Then one of them is clicked, because a canvas that draws the chart and
     /// answers no pointer is the same dead end with a picture of the way out.
     #[test]
