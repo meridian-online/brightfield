@@ -4155,12 +4155,11 @@ mod tests {
     /// re-settling after each, found no control that returns the canvas to the
     /// chart, and the only exit was Home, which discards both documents.
     ///
-    /// Asserted off a drawn frame rather than off `active()`: the canvas
-    /// toggle is drawn only where the canvas holds the chart's projections, so
-    /// its two segments coming back are the screen saying which document it
-    /// gave the canvas to. Then one of them is clicked, because a canvas that
-    /// draws the chart and answers no pointer is the same dead end with a
-    /// picture of the way out.
+    /// Asserted off a drawn frame rather than off `active()`: the branch that
+    /// puts the graph on the canvas draws no toggle at all, so two segments
+    /// coming back are the screen saying which document it gave the canvas to.
+    /// Then one of them is clicked, because a canvas that draws the chart and
+    /// answers no pointer is the same dead end with a picture of the way out.
     #[test]
     fn a_protocol_opened_over_a_chart_leaves_the_chart_on_the_canvas() {
         let mut app = app();
