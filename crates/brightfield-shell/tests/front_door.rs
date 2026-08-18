@@ -369,7 +369,7 @@ fn the_way_in_declares_no_verb_and_therefore_no_keystroke() {
 }
 
 /// Every start's embedded thumbnail is byte-for-byte the committed file, and
-/// each decodes to the gallery card's own 16:10.
+/// each decodes to the gallery card's own 16:10 — for **both** [`Mode`]s.
 ///
 /// The binary ships `include_bytes!` and the regeneration gate at the bottom
 /// of this file holds the *file* against the bundled spec — this is the strut
@@ -380,25 +380,38 @@ fn the_way_in_declares_no_verb_and_therefore_no_keystroke() {
 fn every_shipped_thumbnail_is_the_committed_file() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/starts");
     for start in starts::STARTS {
-        let path = dir.join(format!("{}.png", start.id));
-        let committed = std::fs::read(&path)
-            .unwrap_or_else(|e| panic!("{} has no committed thumbnail: {e}", start.id));
-        assert_eq!(
-            committed,
-            start.thumbnail,
-            "{}'s embedded thumbnail is not the committed {} — rebuild, or \
-             fix the include path",
-            start.id,
-            path.display()
-        );
-        let decoded = image::load_from_memory(start.thumbnail)
-            .unwrap_or_else(|e| panic!("{}'s thumbnail does not decode: {e}", start.id));
-        assert_eq!(
-            (decoded.width(), decoded.height()),
-            (480, 300),
-            "{}'s thumbnail is not the gallery card's 480×300",
-            start.id
-        );
+        for (mode, suffix, embedded) in [
+            (Mode::Light, "", start.thumbnail),
+            (Mode::Dark, "-dark", start.thumbnail_dark),
+        ] {
+            let path = dir.join(format!("{}{suffix}.png", start.id));
+            let committed = std::fs::read(&path).unwrap_or_else(|e| {
+                panic!("{} has no committed {mode:?} thumbnail: {e}", start.id)
+            });
+            assert_eq!(
+                committed,
+                embedded,
+                "{}'s embedded {mode:?} thumbnail is not the committed {} — \
+                 rebuild, or fix the include path",
+                start.id,
+                path.display()
+            );
+            let decoded = image::load_from_memory(embedded).unwrap_or_else(|e| {
+                panic!("{}'s {mode:?} thumbnail does not decode: {e}", start.id)
+            });
+            assert_eq!(
+                (decoded.width(), decoded.height()),
+                (480, 300),
+                "{}'s {mode:?} thumbnail is not the gallery card's 480×300",
+                start.id
+            );
+            assert_eq!(
+                start.thumbnail_for(mode),
+                embedded,
+                "{}'s thumbnail_for({mode:?}) did not select the {mode:?} slice",
+                start.id
+            );
+        }
     }
 }
 
@@ -860,10 +873,34 @@ fn every_shipped_start_still_renders_and_its_thumbnail_is_current() {
             .iter()
             .filter(|s| !s.remote)
             .collect::<Vec<_>>(),
+        Mode::Light,
     );
     assert!(
         drawn >= 3,
         "only {drawn} thumbnail(s) were held against their specs — the \
+         `remote` exemption has taken over the gate"
+    );
+}
+
+/// The same gate, over the dark thumbnails: [`Start::thumbnail_dark`] is a
+/// second, independently rendered PNG per start, not the light one recoloured
+/// at draw time, so it needs its own render-and-diff pass held against the
+/// same specs — over [`capture::capture_png_at`]'s dark path rather than a
+/// palette swap.
+///
+/// [`Start::thumbnail_dark`]: starts::Start::thumbnail_dark
+#[test]
+fn every_shipped_start_still_renders_and_its_dark_thumbnail_is_current() {
+    let drawn = render_thumbnails(
+        &starts::STARTS
+            .iter()
+            .filter(|s| !s.remote)
+            .collect::<Vec<_>>(),
+        Mode::Dark,
+    );
+    assert!(
+        drawn >= 3,
+        "only {drawn} dark thumbnail(s) were held against their specs — the \
          `remote` exemption has taken over the gate"
     );
 }
@@ -881,6 +918,26 @@ fn every_remote_start_still_renders_and_its_thumbnail_is_current() {
             .iter()
             .filter(|s| s.remote)
             .collect::<Vec<_>>(),
+        Mode::Light,
+    );
+    assert!(
+        drawn > 0,
+        "no shipped start needs a network any more — delete this test and the \
+         `remote` exemption in its sibling with it"
+    );
+}
+
+/// The dark half of the network-gated gate above — same starts, same
+/// [`UPDATE_SNAPSHOTS`] workflow, [`Mode::Dark`] instead.
+#[test]
+#[ignore = "network: renders a start whose spec fetches over https"]
+fn every_remote_start_still_renders_and_its_dark_thumbnail_is_current() {
+    let drawn = render_thumbnails(
+        &starts::STARTS
+            .iter()
+            .filter(|s| s.remote)
+            .collect::<Vec<_>>(),
+        Mode::Dark,
     );
     assert!(
         drawn > 0,
@@ -890,9 +947,11 @@ fn every_remote_start_still_renders_and_its_thumbnail_is_current() {
 }
 
 /// Render each start at the window it asks for, thumbnail it, and diff against
-/// the committed PNG. Returns how many were held, so a caller filtering the
-/// set can refuse to pass over an empty one.
-fn render_thumbnails(starts: &[&'static starts::Start]) -> usize {
+/// the committed PNG for `mode` — `{id}.png` for [`Mode::Light`], `{id}-dark.png`
+/// for [`Mode::Dark`], so the two halves of the set never collide on a name.
+/// Returns how many were held, so a caller filtering the set can refuse to
+/// pass over an empty one.
+fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) -> usize {
     // Hermetic capture: keep `BRIGHTFIELD_DEVTOOLS` from baking the top-bar
     // renderer string into a regenerated thumbnail (see `door_surface`).
     std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
@@ -905,18 +964,22 @@ fn render_thumbnails(starts: &[&'static starts::Start]) -> usize {
         // The window the start itself asks for — its content's own natural
         // size, the same answer the live click gives.
         let size = boot.window_size(boot.view_or(ViewKind::Charts));
-        let out = scratch(&format!("thumb-{}", start.id));
-        let (w, h) = capture_png_at(boot, Mode::Light, 1.0, size, &out, Vec::new())
+        let out = scratch(&format!("thumb-{}-{mode:?}", start.id));
+        let (w, h) = capture_png_at(boot, mode, 1.0, size, &out, Vec::new())
             .unwrap_or_else(|e| panic!("{} no longer renders: {e}", start.id));
         assert!(w > 0 && h > 0, "{}: empty capture", start.id);
         let thumb = thumbnail(&read_rgba(&out), 480, 300);
-        if let Err(e) = egui_kittest::try_image_snapshot_options(&thumb, start.id, &options) {
+        let name = match mode {
+            Mode::Light => start.id.to_string(),
+            Mode::Dark => format!("{}-dark", start.id),
+        };
+        if let Err(e) = egui_kittest::try_image_snapshot_options(&thumb, name, &options) {
             failures.push(format!("{}: {e}", start.id));
         }
     }
     assert!(
         failures.is_empty(),
-        "thumbnails have drifted from what their specs render:\n{}",
+        "{mode:?} thumbnails have drifted from what their specs render:\n{}",
         failures.join("\n")
     );
     starts.len()
