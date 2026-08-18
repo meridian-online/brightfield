@@ -178,8 +178,7 @@ pub struct Start {
     /// drawn on its gallery card. Committed under `assets/starts/` and held
     /// against the bundled spec by a regeneration test — never rendered live
     /// at startup. Read through [`Start::thumbnail_for`] rather than
-    /// directly, so a caller cannot draw this and forget its dark
-    /// counterpart.
+    /// directly.
     pub thumbnail: &'static [u8],
     /// The same picture in [`Mode::Dark`] — a second, independently
     /// pre-rendered PNG, not the light one recoloured at draw time. Held

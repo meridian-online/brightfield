@@ -985,27 +985,64 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) -> usize {
     starts.len()
 }
 
-/// No card's thumbnail interior is the light chart surface, in the committed
-/// dark baseline — the defect this card exists to fix
-/// (`crates/brightfield-shell/tests/snapshots/front_door_dark.png` used to
-/// draw its chrome correctly dark and then show five light cards).
+/// No pixel in any of the five cards' **image area** is within [`TOLERANCE`]
+/// of `INK_LIGHT.surface`, in the committed dark baseline — the defect this
+/// card exists to fix (`front_door_dark.png` used to draw its chrome
+/// correctly dark and then show five light cards).
 ///
-/// Samples one point 14×14 logical points in from each card's own top-left
-/// corner — inside the card's `SPACE_2` padding and inside the fitted 16:10
-/// thumbnail (the card's image area and the 480×300 asset share that aspect
-/// ratio exactly, so the sample point stays clear of transparent letterbox).
-/// Four of the five land on `INK_DARK.surface` (0x16,0x14,0x13) exactly; the
-/// fifth, `reading-distribution`, lands a few points off it on that chart's
-/// own gridline — still nowhere near light. Each sample is held to
-/// [`TOLERANCE`] of `INK_LIGHT.surface` (0xfc,0xfc,0xfb), the near-white tone
-/// a stale thumbnail would still be carrying.
+/// Scans every pixel of each card's image sub-rect — `card.min + (SPACE_2,
+/// SPACE_2)`, sized `card.width() - 2*SPACE_2` by `CARD_IMAGE_HEIGHT` — not
+/// one sampled point. A single point is not enough: `capture::thumbnail`
+/// (`src/capture.rs:606`) letterboxes a capture that is not exactly 16:10
+/// with **transparent** padding, and `door_card` composites that padding
+/// over the card's own fill (`sem.surfaces.raised`), not over the
+/// thumbnail's ink (`capture.rs:600`, `window.rs:2881-2884`) — so a point
+/// chosen inside that band reads the card's fill and never touches shipped
+/// thumbnail content at all. `edgar-gleif-crosswalk-dark.png`,
+/// `signals-dashboard-dark.png` and `edgar-gleif-crosswalk-chart-dark.png`
+/// each carry a letterbox band tall enough to swallow a single point sampled
+/// a few pixels below the image's top edge; a full-area scan cannot miss the
+/// same way, wherever that band happens to fall.
+///
+/// `SPACE_2` is [`meridian_design::spacing::SPACE_2`] — the same shared
+/// design token `door_card`'s own `img_rect` is built from
+/// (`window.rs:2882`), read here rather than duplicated. `card.width()` comes
+/// from the rect [`front_door_card_rect`] already returns, so the only
+/// number duplicated from `window.rs` is `CARD_IMAGE_HEIGHT` (130.0) itself,
+/// which has no public accessor to read instead; scanning a shade short of
+/// the true image height costs a thin strip of the card's own fill at the
+/// bottom (still not light), and scanning a shade past it stops short of
+/// where the card's label text starts (`SPACE_4` further down), so an
+/// approximate value here cannot turn a real defect invisible.
+///
+/// Measured on the real committed baseline: 0 of 27,040 pixels per card
+/// (208 × 130) are within [`TOLERANCE`] of `INK_LIGHT.surface`, on all five
+/// cards. Measured under the mutation below (every card drawn from its
+/// light slice, in `starts::STARTS` order): 68.2% / 39.6% / 67.7% / 68.1% /
+/// 49.4% of each card's pixels are — the margin either side of
+/// [`TOLERANCE`] is not a close call.
+///
+/// [`front_door_card_rect`]: brightfield_shell::window::MeridianApp::front_door_card_rect
 ///
 /// Watched redden, one mutation: pointing `ensure_door_thumbs` at
 /// `start.thumbnail` (the light slice) instead of
-/// `start.thumbnail_for(self.mode)` and regenerating the baseline — the loop
-/// below panics at `activity-breakdown`, sampling (251,250,249), 1-2 units
-/// off `INK_LIGHT.surface` per channel.
+/// `start.thumbnail_for(self.mode)` and regenerating the baseline — every
+/// card is now wrong, and the loop panics at `edgar-gleif-crosswalk`, the
+/// FIRST entry in `starts::STARTS`, because the scan finds a bad pixel
+/// wherever one falls rather than only where one sampled point happened to
+/// land.
 const TOLERANCE: i32 = 20;
+
+/// The image sub-rect `door_card` draws each thumbnail into — see the test
+/// above for why this, and not the whole card, is what gets scanned.
+fn card_image_rect(card: egui::Rect) -> egui::Rect {
+    const CARD_IMAGE_HEIGHT: f32 = 130.0;
+    let pad = meridian_design::spacing::SPACE_2;
+    egui::Rect::from_min_size(
+        card.min + egui::vec2(pad, pad),
+        egui::vec2(card.width() - 2.0 * pad, CARD_IMAGE_HEIGHT),
+    )
+}
 
 #[test]
 fn no_front_door_card_shows_the_light_surface_family_in_the_dark_baseline() {
@@ -1030,19 +1067,36 @@ fn no_front_door_card_shows_the_light_surface_family_in_the_dark_baseline() {
             .app
             .front_door_card_rect(start.id)
             .unwrap_or_else(|| panic!("the door drew no card for {}", start.id));
-        let x = (card.min.x + 14.0).round() as u32;
-        let y = (card.min.y + 14.0).round() as u32;
-        let px = img.get_pixel(x, y);
-        let sampled = [i32::from(px[0]), i32::from(px[1]), i32::from(px[2])];
-        let within_tolerance = sampled
-            .iter()
-            .zip(light_rgb)
-            .all(|(&channel, light)| (channel - light).abs() <= TOLERANCE);
-        assert!(
-            !within_tolerance,
-            "{}'s card at ({x}, {y}) sampled {sampled:?} — within {TOLERANCE} \
-             of INK_LIGHT.surface {light_rgb:?}, so the dark front door is \
-             still showing a light thumbnail",
+        let image = card_image_rect(card);
+        let x0 = image.min.x.round() as u32;
+        let y0 = image.min.y.round() as u32;
+        let x1 = image.max.x.round() as u32;
+        let y1 = image.max.y.round() as u32;
+
+        let mut near_light = 0u32;
+        let mut scanned = 0u32;
+        let mut first_bad = None;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let px = img.get_pixel(x, y);
+                let sampled = [i32::from(px[0]), i32::from(px[1]), i32::from(px[2])];
+                scanned += 1;
+                let within = sampled
+                    .iter()
+                    .zip(light_rgb)
+                    .all(|(&channel, light)| (channel - light).abs() <= TOLERANCE);
+                if within {
+                    near_light += 1;
+                    first_bad.get_or_insert((x, y, sampled));
+                }
+            }
+        }
+        assert_eq!(
+            near_light, 0,
+            "{}'s card has {near_light} of {scanned} image pixels within \
+             {TOLERANCE} of INK_LIGHT.surface {light_rgb:?} — first at \
+             {first_bad:?} — so the dark front door is still showing (at \
+             least partly) a light thumbnail",
             start.id
         );
     }
