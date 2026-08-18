@@ -990,15 +990,15 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) -> usize {
 /// card exists to fix (`front_door_dark.png` used to draw its chrome
 /// correctly dark and then show five light cards).
 ///
-/// Scans every pixel of each card's image sub-rect — `card.min + (SPACE_2,
+/// Scans each card's image sub-rect pixel by pixel — `card.min + (SPACE_2,
 /// SPACE_2)`, sized `card.width() - 2*SPACE_2` by `CARD_IMAGE_HEIGHT` — not
 /// one sampled point. A single point is not enough: `capture::thumbnail`
 /// (`src/capture.rs:606`) letterboxes a capture that is not exactly 16:10
 /// with **transparent** padding, and `door_card` composites that padding
 /// over the card's own fill (`sem.surfaces.raised`), not over the
 /// thumbnail's ink (`capture.rs:600`, `window.rs:2881-2884`) — so a point
-/// chosen inside that band reads the card's fill and never touches shipped
-/// thumbnail content at all. `edgar-gleif-crosswalk-dark.png`,
+/// chosen inside that band reads the card's fill instead of shipped
+/// thumbnail content. `edgar-gleif-crosswalk-dark.png`,
 /// `signals-dashboard-dark.png` and `edgar-gleif-crosswalk-chart-dark.png`
 /// each carry a letterbox band tall enough to swallow a single point sampled
 /// a few pixels below the image's top edge; a full-area scan cannot miss the
@@ -1007,8 +1007,8 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) -> usize {
 /// `SPACE_2` is [`meridian_design::spacing::SPACE_2`] — the same shared
 /// design token `door_card`'s own `img_rect` is built from
 /// (`window.rs:2882`), read here rather than duplicated. `card.width()` comes
-/// from the rect [`front_door_card_rect`] already returns, so the only
-/// number duplicated from `window.rs` is `CARD_IMAGE_HEIGHT` (130.0) itself,
+/// from the rect [`front_door_card_rect`] already returns, leaving
+/// `CARD_IMAGE_HEIGHT` (130.0) as the one number duplicated from `window.rs`,
 /// which has no public accessor to read instead; scanning a shade short of
 /// the true image height costs a thin strip of the card's own fill at the
 /// bottom (still not light), and scanning a shade past it stops short of
@@ -1016,21 +1016,21 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) -> usize {
 /// approximate value here cannot turn a real defect invisible.
 ///
 /// Measured on the real committed baseline: 0 of 27,040 pixels per card
-/// (208 × 130) are within [`TOLERANCE`] of `INK_LIGHT.surface`, on all five
-/// cards. Measured under the mutation below (every card drawn from its
-/// light slice, in `starts::STARTS` order): 68.2% / 39.6% / 67.7% / 68.1% /
-/// 49.4% of each card's pixels are — the margin either side of
+/// (208 × 130) are within [`TOLERANCE`] of `INK_LIGHT.surface`, on each of
+/// the five cards. Measured under the mutation below (each card drawn from
+/// its light slice, in `starts::STARTS` order): 68.2% / 39.6% / 67.7% /
+/// 68.1% / 49.4% of each card's pixels are — the margin either side of
 /// [`TOLERANCE`] is not a close call.
 ///
 /// [`front_door_card_rect`]: brightfield_shell::window::MeridianApp::front_door_card_rect
 ///
 /// Watched redden, one mutation: pointing `ensure_door_thumbs` at
 /// `start.thumbnail` (the light slice) instead of
-/// `start.thumbnail_for(self.mode)` and regenerating the baseline — every
+/// `start.thumbnail_for(self.mode)` and regenerating the baseline — each
 /// card is now wrong, and the loop panics at `edgar-gleif-crosswalk`, the
 /// FIRST entry in `starts::STARTS`, because the scan finds a bad pixel
-/// wherever one falls rather than only where one sampled point happened to
-/// land.
+/// wherever one falls rather than where one particular sampled point
+/// happened to land.
 const TOLERANCE: i32 = 20;
 
 /// The image sub-rect `door_card` draws each thumbnail into — see the test
