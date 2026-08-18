@@ -984,3 +984,66 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) -> usize {
     );
     starts.len()
 }
+
+/// No card's thumbnail interior is the light chart surface, in the committed
+/// dark baseline — the defect this card exists to fix
+/// (`crates/brightfield-shell/tests/snapshots/front_door_dark.png` used to
+/// draw its chrome correctly dark and then show five light cards).
+///
+/// Samples one point 14×14 logical points in from each card's own top-left
+/// corner — inside the card's `SPACE_2` padding and inside the fitted 16:10
+/// thumbnail (the card's image area and the 480×300 asset share that aspect
+/// ratio exactly, so nothing here can land in transparent letterbox). Four of
+/// the five land on `INK_DARK.surface` (0x16,0x14,0x13) exactly; the fifth,
+/// `reading-distribution`, lands a few points off it on that chart's own
+/// gridline — still nowhere near light. What every sample must not be within
+/// [`TOLERANCE`] of is `INK_LIGHT.surface` (0xfc,0xfc,0xfb), the near-white
+/// tone a stale thumbnail would still be carrying.
+///
+/// Watched redden, one mutation: pointing `ensure_door_thumbs` at
+/// `start.thumbnail` (the light slice) instead of
+/// `start.thumbnail_for(self.mode)` and regenerating the baseline — every one
+/// of the five assertions below fails, each reporting a sampled value in the
+/// (0xfb..0xfd) range, adjacent to `INK_LIGHT.surface`.
+const TOLERANCE: i32 = 20;
+
+#[test]
+fn no_front_door_card_shows_the_light_surface_family_in_the_dark_baseline() {
+    let mut win = Window::open(Boot::empty());
+    win.settle();
+
+    let baseline =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots/front_door_dark.png");
+    let img = image::open(&baseline)
+        .unwrap_or_else(|e| panic!("read {}: {e}", baseline.display()))
+        .to_rgba8();
+
+    let s = meridian_design::chrome::INK_LIGHT.surface;
+    let light_rgb = [
+        (s.r * 255.0).round() as i32,
+        (s.g * 255.0).round() as i32,
+        (s.b * 255.0).round() as i32,
+    ];
+
+    for start in starts::STARTS {
+        let card = win
+            .app
+            .front_door_card_rect(start.id)
+            .unwrap_or_else(|| panic!("the door drew no card for {}", start.id));
+        let x = (card.min.x + 14.0).round() as u32;
+        let y = (card.min.y + 14.0).round() as u32;
+        let px = img.get_pixel(x, y);
+        let sampled = [i32::from(px[0]), i32::from(px[1]), i32::from(px[2])];
+        let within_tolerance = sampled
+            .iter()
+            .zip(light_rgb)
+            .all(|(&channel, light)| (channel - light).abs() <= TOLERANCE);
+        assert!(
+            !within_tolerance,
+            "{}'s card at ({x}, {y}) sampled {sampled:?} — within {TOLERANCE} \
+             of INK_LIGHT.surface {light_rgb:?}, so the dark front door is \
+             still showing a light thumbnail",
+            start.id
+        );
+    }
+}
