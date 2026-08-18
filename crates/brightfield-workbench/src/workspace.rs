@@ -52,17 +52,11 @@ pub enum ViewKind {
 }
 
 impl ViewKind {
-    /// Every view, in the order the view switcher offers them.
+    /// Every view. Nothing on screen offers this list — the window draws one
+    /// arrangement over both documents — so the order is the order
+    /// [`Workspace::new`] seeds its trees in, and `ALL[0]` is what a workspace
+    /// built with no opinion opens on.
     pub const ALL: [ViewKind; 2] = [ViewKind::Charts, ViewKind::Protocol];
-
-    /// The view's name, as the switcher and the window title spell it.
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            ViewKind::Charts => "Charts",
-            ViewKind::Protocol => "Protocol",
-        }
-    }
 }
 
 /// One window's arrangement: which view is active, a tile tree per view, and
@@ -110,9 +104,9 @@ impl Workspace {
     ///
     /// # Panics
     ///
-    /// If any [`ViewKind`] has no tree. A view with no tree is a switcher
-    /// entry that opens a blank window — a structural mistake worth failing
-    /// at boot rather than discovering by clicking on it.
+    /// If any [`ViewKind`] has no tree. A view with no tree is a document the
+    /// window has nowhere to draw — a structural mistake worth failing at boot
+    /// rather than discovering by opening one.
     #[must_use]
     pub fn new(trees: BTreeMap<ViewKind, Tree<PaneKey>>) -> Self {
         for view in ViewKind::ALL {

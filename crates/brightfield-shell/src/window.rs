@@ -2201,15 +2201,30 @@ impl MeridianApp {
         // mode of the window.
         let door = self.front_door_is_live();
 
-        // Which document the canvas draws — content decides it, and only when
-        // the answer is forced. A window holding one document has no choice to
-        // make: a protocol with no chart puts its graph on the canvas, and a
-        // chart with no protocol puts the chart there. A window holding both
-        // keeps whichever it was left on, because in this arrangement the
-        // graph is the navigator rail's spine and the canvas belongs to the
-        // step — there is no control that moves the canvas between them, and
-        // inventing one here would be the peer switcher again under a new
-        // name.
+        // Which document the canvas draws — content decides it, and content
+        // alone. A chart on the canvas whenever there is a chart; the graph
+        // only where there is no chart for the canvas to hold.
+        //
+        // The asymmetry is the arrangement's, not a preference: the protocol
+        // has three regions of its own — the spine in the navigator rail, the
+        // steps in the ledger rail, an operator in the inspector rail — and it
+        // is readable in all three while the canvas belongs to the chart. The
+        // chart has the canvas and nothing else, so a window that gives the
+        // canvas away has put the chart nowhere.
+        //
+        // Deriving it rather than latching it is what closes a dead end. This
+        // read `_ => view` for a window holding both documents, which made the
+        // canvas a function of the order the two were opened in: open a chart
+        // start and then a protocol start and the canvas went to the graph and
+        // stayed there. There is no control that moves the canvas between the
+        // two — the graph at canvas size is a different arrangement, reached
+        // by a toggle a build supporting it would declare, and inventing one
+        // here would be the peer switcher again under a new name — so a state
+        // reached by history was a state with no way out of it. Every exit was
+        // Home, which empties both documents.
+        //
+        // `a_protocol_opened_over_a_chart_leaves_the_chart_on_the_canvas` is
+        // the pin, and it drives the two opens a person drives.
         let view = if door {
             view
         } else {
@@ -2217,8 +2232,10 @@ impl MeridianApp {
             let has_chart = !self.charts.doc.is_empty();
             match (has_graph, has_chart) {
                 (true, false) => ViewKind::Protocol,
-                (false, true) => ViewKind::Charts,
-                _ => view,
+                (_, true) => ViewKind::Charts,
+                // Neither document has anything in it: nothing to decide, and
+                // the window is one frame away from the front door anyway.
+                (false, false) => view,
             }
         };
         if !door && self.ws().active() != view {
@@ -2352,9 +2369,10 @@ impl MeridianApp {
                 self.regions.push((hint.id, drawn.response.rect));
             }
 
-            // The canvas belongs to the graph while the protocol itself is
-            // the subject, and to the step's projections once one of them has
-            // something to draw — the answer settled above.
+            // The canvas holds the step's projections, and stands the graph
+            // there while there is no chart to hold — the empty state of the
+            // canvas rather than a second thing it can be showing. Settled
+            // above, from the documents and from nothing else.
             let graph_on_canvas = view == ViewKind::Protocol;
             let ledger = plan.expect_region(arrangement::LEDGER_RAIL);
             let navigator = plan.expect_region(arrangement::NAVIGATOR_RAIL);
@@ -4123,6 +4141,93 @@ mod tests {
             (doc.composed.width, doc.composed.height),
             declared,
             "the start held its declared size in a box half that wide"
+        );
+    }
+
+    /// A protocol opened over a chart leaves the chart on the canvas.
+    ///
+    /// The two opens a person drives, in the order that used to trap them:
+    /// `open_start` records the view its start fills, its `Opened::Protocol`
+    /// arm leaves the chart document alone, and the frame then read
+    /// `_ => view` for a window holding both — so the canvas went to the graph
+    /// and stayed there. Nothing on the window moves it back. Measured before
+    /// this test existed: a 12-point grid of clicks over the whole window,
+    /// re-settling after each, found no control that returns the canvas to the
+    /// chart, and the only exit was Home, which discards both documents.
+    ///
+    /// Asserted off a drawn frame rather than off `active()`: the canvas
+    /// toggle is drawn only where the canvas holds the chart's projections, so
+    /// its two segments coming back are the screen saying which document it
+    /// gave the canvas to. Then one of them is clicked, because a canvas that
+    /// draws the chart and answers no pointer is the same dead end with a
+    /// picture of the way out.
+    #[test]
+    fn a_protocol_opened_over_a_chart_leaves_the_chart_on_the_canvas() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.open_start(&ctx, crate::starts::DASHBOARD);
+        app.open_start(&ctx, crate::starts::CROSSWALK);
+        assert!(
+            !app.chart_doc().is_empty(),
+            "opening the protocol emptied the chart document, so this window \
+             never reached the state under test"
+        );
+        assert!(
+            app.protocol_doc().model.has_assets(),
+            "the protocol start built no assets, so this window never reached \
+             the state under test"
+        );
+
+        let (w, h) = chart_window_size(&app.chart_doc().composed);
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(w, h),
+            )),
+            ..Default::default()
+        };
+        // Three frames, for the reason `tests/arrangement.rs` gives: a
+        // resizable panel's reported size is read back on the frame after.
+        for _ in 0..3 {
+            let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
+        }
+
+        let segments = app.canvas_toggle_segments().to_vec();
+        assert_eq!(
+            segments.len(),
+            2,
+            "the canvas drew {} toggle segments over a window holding both \
+             documents. The toggle draws where the canvas holds the chart, so \
+             none means the graph took the canvas — and there is no control \
+             that gives it back",
+            segments.len()
+        );
+
+        // The window opens on the chart, which is the second projection; the
+        // grid is the first. Clicking it is the click a person makes.
+        let opened_on = app.projection();
+        assert_eq!(opened_on, 1, "the window did not open on the chart");
+        let grid = segments[0].center();
+        let mut events = vec![egui::Event::PointerMoved(grid)];
+        for pressed in [true, false] {
+            events.push(egui::Event::PointerButton {
+                pos: grid,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            });
+        }
+        let clicked = egui::RawInput {
+            events,
+            ..raw.clone()
+        };
+        let _ = ctx.run_ui(clicked, |ui| app.draw(ui));
+        assert_eq!(
+            app.projection(),
+            0,
+            "clicking the grid segment at {grid:?} left the canvas on \
+             projection {opened_on}, so the toggle drew over a canvas that \
+             does not answer it"
         );
     }
 

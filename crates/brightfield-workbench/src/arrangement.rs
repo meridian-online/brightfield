@@ -43,8 +43,17 @@
 //! # More than one arrangement, at the cost of a declaration
 //!
 //! [`spine_left`] is the arrangement the window ships with. A second one is a
-//! second `static` here and a second name — it is deliberately not a second
-//! draw path, and the shell reads whichever it is handed.
+//! second `static` here and a second name, and deliberately not a second draw
+//! path: the shell's draw path reads regions by id, so an arrangement that
+//! declares the same ids in different places is drawn by the code that is
+//! already there.
+//!
+//! It is not, on its own, a second arrangement on screen. Both of the shell's
+//! readers — its draw path and the arithmetic that sizes the window before a
+//! frame exists — call [`default_arrangement`], which takes no argument and
+//! answers [`spine_left`]. Reaching a second one is that function growing a
+//! parameter and those two call sites being given something to pass it; until
+//! then a `static` added here is declared and unread.
 
 use crate::chrome;
 use crate::item::ItemId;
@@ -257,8 +266,11 @@ pub enum Occupant {
         /// third on screen — which is what
         /// `the_canvas_toggle_offers_two_projections_and_no_more` refuses.
         projections: &'static [Projection],
-        /// The asset graph, drawn at canvas size when no step's projection is
-        /// the subject.
+        /// The asset graph, which stands at canvas size while there is no
+        /// chart for the canvas to hold — the canvas's empty state rather
+        /// than a second thing it can be showing. A window holding both
+        /// documents draws the projection: the protocol is readable in three
+        /// regions of this arrangement and the chart has only this one.
         graph: ItemId,
     },
 }
