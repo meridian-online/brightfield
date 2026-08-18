@@ -22,9 +22,9 @@
 //! learning nothing slowly.
 
 use brightfield_protocol::layout::Flow;
-use brightfield_shell::app::{CHART, CONTROLS};
+use brightfield_shell::app::CHART;
 use brightfield_shell::design::Mode;
-use brightfield_shell::protocol::{CANVAS, STEPS};
+use brightfield_shell::protocol::{CANVAS, OUTLINE, STEPS};
 use brightfield_shell::startup::{default_layout, kept_window_geometry, opening_boot};
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_workbench::persist::{self, LoadOutcome, LAYOUT_FILE, SAVE_DEBOUNCE_MS};
@@ -85,39 +85,47 @@ fn seated_layout() -> brightfield_workbench::persist::SavedLayout {
 }
 
 /// The share `a_rearranged_dock_survives_the_file_and_reaches_the_frame` drags
-/// the chart view's controls rail out to, against the `0.2` its registry
-/// declares. Far enough out that the chart pane's laid-out width cannot be
+/// the protocol view's outline rail out to, against the `0.24` its registry
+/// declares. Far enough out that the canvas pane's laid-out width cannot be
 /// mistaken for the declared one.
+///
+/// This test used to drag the *chart* view's controls rail. That rail no
+/// longer lays the dock out at all: its pane now draws as a real
+/// `Panel::right` beside the dock, at a declared pixel width, so widening
+/// its old tile share has nothing left to reach. The outline rail is
+/// architecturally the same thing this one used to be — a `Slot::Rail` a
+/// user resizes by dragging — so it stands in for the general claim this
+/// test makes, which was never about the chart view specifically.
 const WIDENED_RAIL: f32 = 0.6;
 
-/// The share the chart view's controls rail holds in `layout`.
+/// The share the protocol view's outline rail holds in `layout`.
 fn rail_share(layout: &brightfield_workbench::persist::SavedLayout) -> f32 {
     let rail = layout
         .workspace
-        .tile_of(PaneKey::new(ViewKind::Charts, CONTROLS))
-        .expect("the chart view has a controls rail");
-    let tree = layout.workspace.tree(ViewKind::Charts);
-    let root = tree.root().expect("the chart view has a root");
+        .tile_of(PaneKey::new(ViewKind::Protocol, OUTLINE))
+        .expect("the protocol view has an outline rail");
+    let tree = layout.workspace.tree(ViewKind::Protocol);
+    let root = tree.root().expect("the protocol view has a root");
     match tree.tiles.get(root) {
         Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin))) => lin.shares[rail],
-        _ => panic!("the chart view's root is a linear container"),
+        _ => panic!("the protocol view's root is a linear container"),
     }
 }
 
-/// Widen the chart view's controls rail — the arrangement a user makes by
+/// Widen the protocol view's outline rail — the arrangement a user makes by
 /// dragging one splitter, and the smallest change that is unmistakably theirs.
 fn set_rail_share(layout: &mut brightfield_workbench::persist::SavedLayout, share: f32) {
     let rail = layout
         .workspace
-        .tile_of(PaneKey::new(ViewKind::Charts, CONTROLS))
-        .expect("the chart view has a controls rail");
-    let tree = layout.workspace.tree_mut(ViewKind::Charts);
-    let root = tree.root().expect("the chart view has a root");
+        .tile_of(PaneKey::new(ViewKind::Protocol, OUTLINE))
+        .expect("the protocol view has an outline rail");
+    let tree = layout.workspace.tree_mut(ViewKind::Protocol);
+    let root = tree.root().expect("the protocol view has a root");
     match tree.tiles.get_mut(root) {
         Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin))) => {
             lin.shares.set_share(rail, share);
         }
-        _ => panic!("the chart view's root is a linear container"),
+        _ => panic!("the protocol view's root is a linear container"),
     }
 }
 
@@ -603,12 +611,12 @@ fn what_the_window_opens_on_prefers_the_command_line_then_what_was_open() {
 /// passing. Only the *contents* of the trees were ever unasserted; the active
 /// view, the window size and `opened` were all covered.
 ///
-/// So this one saves a genuinely rearranged tree — the chart view's controls
-/// rail widened from its declared 0.2 to 0.6 — through a real file, and asks
-/// the drawn frame about it rather than asking the data structure. The two
-/// windows below differ in nothing but their saved layout and are drawn on the
-/// same screen, so a chart pane that comes back the same width is a chart pane
-/// laid out from a tree the restore did not produce.
+/// So this one saves a genuinely rearranged tree — the protocol view's
+/// outline rail widened from its declared 0.24 to 0.6 — through a real file,
+/// and asks the drawn frame about it rather than asking the data structure.
+/// The two windows below differ in nothing but their saved layout and are
+/// drawn on the same screen, so a canvas pane that comes back the same width
+/// is a canvas pane laid out from a tree the restore did not produce.
 ///
 /// Watched redden, one mutation: rebuilding `layout.workspace` from the two
 /// registries' `default_tree()`s at the top of `MeridianApp::assemble`,
@@ -626,6 +634,7 @@ fn a_rearranged_dock_survives_the_file_and_reaches_the_frame() {
     let _ = brightfield_shell::startup::boot_layout(None);
 
     let mut arranged = seated_layout();
+    arranged.workspace.set_active(ViewKind::Protocol);
     assert!(
         (rail_share(&arranged) - WIDENED_RAIL).abs() > 0.1,
         "the fixture's rail already has the share this test widens it to, so \
@@ -642,31 +651,33 @@ fn a_rearranged_dock_survives_the_file_and_reaches_the_frame() {
         rail_share(&restored)
     );
 
-    // Over a real dashboard, because an empty chart pane draws an empty state
-    // instead of a canvas and records no content box — there would be no
+    // Over a real crosswalk, because an empty canvas pane draws an empty
+    // state instead of a DAG and records no content box — there would be no
     // laid-out rect to ask about.
-    let dashboard =
-        || Boot::start(brightfield_shell::starts::DASHBOARD, Flow::Vertical).expect("it loads");
-    let mut app = MeridianApp::headless_with_layout(dashboard(), restored, Mode::Light);
+    let crosswalk =
+        || Boot::start(brightfield_shell::starts::CROSSWALK, Flow::Vertical).expect("it loads");
+    let mut app = MeridianApp::headless_with_layout(crosswalk(), restored, Mode::Light);
     settle(&mut app, &ctx, 2);
 
-    let mut plain = MeridianApp::headless_with_layout(dashboard(), seated_layout(), Mode::Light);
+    let mut seated = seated_layout();
+    seated.workspace.set_active(ViewKind::Protocol);
+    let mut plain = MeridianApp::headless_with_layout(crosswalk(), seated, Mode::Light);
     settle(&mut plain, &ctx, 2);
 
     let widened = app
-        .chart_viewport()
-        .expect("the chart pane was laid out")
+        .canvas_viewport()
+        .expect("the canvas pane was laid out")
         .width();
     let declared = plain
-        .chart_viewport()
-        .expect("the chart pane was laid out")
+        .canvas_viewport()
+        .expect("the canvas pane was laid out")
         .width();
     assert!(
         widened < declared - 100.0,
-        "the restored arrangement never reached the frame — the chart pane is \
-         {widened} wide against {declared} for the declared default, and a \
-         rail widened from 0.2 to {WIDENED_RAIL} of the dock cannot leave it \
-         the same"
+        "the restored arrangement never reached the frame — the canvas pane \
+         is {widened} wide against {declared} for the declared default, and \
+         a rail widened from 0.24 to {WIDENED_RAIL} of the dock cannot leave \
+         it the same"
     );
 
     // And the frame did not quietly put the declared share back.
@@ -675,8 +686,8 @@ fn a_rearranged_dock_survives_the_file_and_reaches_the_frame() {
         "drawing reset the rail to its declared share"
     );
     assert_eq!(
-        app.layout().workspace.panes(ViewKind::Charts),
-        plain.layout().workspace.panes(ViewKind::Charts),
+        app.layout().workspace.panes(ViewKind::Protocol),
+        plain.layout().workspace.panes(ViewKind::Protocol),
         "the rearranged layout lost or gained a pane"
     );
 }

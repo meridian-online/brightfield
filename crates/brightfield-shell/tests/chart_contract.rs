@@ -21,8 +21,8 @@ use brightfield_shell::editor::EDITOR;
 use brightfield_shell::pipeline::{compose_spec, Composed};
 use brightfield_shell::window::{
     chart_toolbar_band, chart_window_size, Boot, MeridianApp, BAR_HEIGHT, DOCK_INSET,
+    INSPECTOR_RAIL_WIDTH,
 };
-use brightfield_workbench::behavior::TILE_GAP;
 use brightfield_workbench::registry::{DockSide, Slot};
 use brightfield_workbench::subject::{RunState, ToolbarLocation};
 use brightfield_workbench::{audit, chrome, ItemId, PaneKey, Subject, ViewKind};
@@ -51,23 +51,6 @@ fn subjects(doc: &ChartDoc) -> BTreeMap<ItemId, Subject> {
         .iter()
         .map(|spec| (spec.id, (spec.make)().subject(doc)))
         .collect()
-}
-
-/// The controls rail's declared share, read out of the registry.
-fn controls_share() -> f32 {
-    let registry = chart_registry();
-    let spec = registry
-        .specs()
-        .iter()
-        .find(|s| s.id == CONTROLS)
-        .expect("the controls rail is in the registry");
-    match spec.slot {
-        Slot::Rail { side, share } => {
-            assert_eq!(side, DockSide::Right, "the controls rail docks right");
-            share
-        }
-        other => panic!("the controls rail is not a rail: {other:?}"),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -308,16 +291,19 @@ fn the_default_dock_is_a_tabbed_chart_and_editor_with_a_controls_rail() {
     );
 }
 
-/// The window the shell asks for is sized from the *same* share the dock lays
-/// the rail out with, and the chart pane's content box it produces fits the
-/// dashboard — **in both axes**.
+/// The window the shell asks for is sized from the inspector rail's declared
+/// width, and the chart pane's content box it produces fits the dashboard —
+/// **in both axes**.
 ///
 /// This is the test for the deletion that mattered most here. Three numbers used
 /// to describe one layout — a side panel pinned at 180 logical points, a
 /// `window_size` that budgeted 214 for it, and a `main.rs` that budgeted 200 —
 /// and no test could see that they disagreed, because each was correct on its
-/// own terms. Now the share is the single declaration and this walks the
-/// arithmetic that depends on it.
+/// own terms. First the dock's own `CONTROLS_SHARE` became that single
+/// declaration; now the inspector draws outside the dock, as a real
+/// `Panel::right`, and [`INSPECTOR_RAIL_WIDTH`] is the declaration this walks
+/// instead — a term in points rather than a fraction of whatever the window
+/// happens to be, which is the whole point of the rail this replaced.
 ///
 /// It walked the *width* only, and said in its own doc that it walked "the
 /// arithmetic". The height line was `h > composed.height`, which one point of
@@ -328,19 +314,19 @@ fn the_default_dock_is_a_tabbed_chart_and_editor_with_a_controls_rail() {
 /// walked the same way now: outward from the raster through every component
 /// that consumes space, with the leftover slack named and bounded.
 #[test]
-fn the_window_is_sized_from_the_rail_share_it_lays_out() {
+fn the_window_is_sized_from_the_inspector_rails_declared_width() {
     let composed = compose_spec(DASHBOARD).expect("compose examples/dashboard.yaml");
     let (w, h) = chart_window_size(&composed);
-    let centre = 1.0 - controls_share();
     let inset = chrome::pane_content_inset();
 
-    // Across: the window insets to the dock, the dock gives up the gap between
-    // the two tiles, the chart takes `centre` of what is left, and the pane
-    // frame insets it again on both sides. The content box holds the raster
-    // AND the legend margin band beside it — dashboard.yaml's scatter maps
-    // fill, so its band is real here, and a `band_width` nobody budgeted
-    // would come straight out of the raster's pixels.
-    let content_w = (w - 2.0 * DOCK_INSET - TILE_GAP) * centre - 2.0 * inset;
+    // Across: the window insets to the dock, the inspector rail takes its
+    // own declared width beside it, and the pane frame insets what is left
+    // again on both sides — one tile now, not two sharing a proportion, so
+    // there is no gap term to take out first. The content box holds the
+    // raster AND the legend margin band beside it — dashboard.yaml's scatter
+    // maps fill, so its band is real here, and a `band_width` nobody
+    // budgeted would come straight out of the raster's pixels.
+    let content_w = w - 2.0 * DOCK_INSET - INSPECTOR_RAIL_WIDTH - 2.0 * inset;
     let need_w = composed.width as f32 + brightfield_shell::legend::band_width(&composed);
     assert!(
         brightfield_shell::legend::band_width(&composed) > 0.0,
