@@ -57,7 +57,7 @@ use brightfield_keys::{Altitude, BindingContext, RecencyCounter};
 use brightfield_workbench::registry::Slot;
 use brightfield_workbench::{
     chrome, EmptyState, HideAffordance, Icon as ItemIcon, Item, ItemCtx, ItemId, ItemSpec,
-    StatusEntry, StatusSide, Subject, ToolbarEntry, Tone, Verb,
+    StatusEntry, StatusSide, Subject, Tone, ToolbarEntry, Verb,
 };
 use meridian_design::semantic::{semantic, Role};
 use meridian_egui::{

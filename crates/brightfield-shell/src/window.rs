@@ -63,7 +63,7 @@ use brightfield_workbench::behavior::{TAB_BAR_HEIGHT, TILE_GAP};
 use brightfield_workbench::workspace::{tabs_holding, tile_of};
 use brightfield_workbench::{
     chrome, Activity, ActivityIndicator, DirtyTracker, HideAffordance, ItemMap, PaneChrome,
-    PaneKey, Request, SavedLayout, StatusEntry, StatusSide, Subject, ToolbarEntry, Tone, Verb,
+    PaneKey, Request, SavedLayout, StatusEntry, StatusSide, Subject, Tone, ToolbarEntry, Verb,
     ViewKind, WindowGeometry, Workspace,
 };
 use meridian_egui::{
