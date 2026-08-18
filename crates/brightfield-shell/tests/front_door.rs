@@ -102,13 +102,16 @@ impl Window {
         self.run(vec![click_at(target.center()), Vec::new()]);
     }
 
-    /// Reach the other view the way a person does: the top bar's switcher.
+    /// Put the other document on the canvas.
+    ///
+    /// Through `show_on_canvas`, because there is no control that does it: the
+    /// protocol is the navigator rail rather than a peer view, and the pair of
+    /// `selectable_label`s that used to switch between them is gone. The door
+    /// is what this test is about, and the door belongs to the window rather
+    /// than to either document.
     fn switch_to(&mut self, view: ViewKind) {
-        let target = self
-            .app
-            .switcher_rect(view)
-            .expect("the top bar drew a switcher control");
-        self.run(vec![click_at(target.center()), Vec::new()]);
+        self.app.show_on_canvas(view);
+        self.run(vec![Vec::new()]);
         assert_eq!(self.app.active(), view);
     }
 }
@@ -463,14 +466,14 @@ fn an_empty_launch_opens_the_front_door_with_every_start_on_it() {
         "the Start zone offers nothing to do"
     );
 
-    // The same door on the other view: the door belongs to the window, not
-    // to a view, so the switcher changes the active view and nothing else.
+    // The same door with the other document on the canvas: the door belongs
+    // to the window, not to a document, so this changes nothing it draws.
     win.switch_to(ViewKind::Protocol);
     win.settle();
     for start in starts::STARTS {
         assert!(
             win.app.front_door_card_rect(start.id).is_some(),
-            "switching views lost {}'s card",
+            "moving the canvas to the other document lost {}'s card",
             start.id
         );
     }

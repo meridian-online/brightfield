@@ -275,13 +275,12 @@ fn frames_nobody_rearranged_write_nothing() {
          layout file for the rest of the session"
     );
 
-    // The protocol view. Switching views *is* a change, so it is written first
-    // and the quiet claim is made about the frames after it. What this cannot
-    // see is `set_active_tab` — see the note above, and the Steps-tab test.
-    let target = app
-        .switcher_rect(ViewKind::Protocol)
-        .expect("the top bar drew a switcher control");
-    run(&mut app, &ctx, vec![click_at(target.center()), Vec::new()]);
+    // The protocol on the canvas. Moving the canvas to the other document *is*
+    // a change, so it is written first and the quiet claim is made about the
+    // frames after it. What this cannot see is `set_active_tab` — see the note
+    // above, and the Steps-tab test.
+    app.show_on_canvas(ViewKind::Protocol);
+    run(&mut app, &ctx, vec![Vec::new()]);
     assert_eq!(app.active(), ViewKind::Protocol);
     app.flush_layout(&path)
         .expect("switching views is a change worth keeping")

@@ -1685,10 +1685,39 @@ impl MeridianApp {
         self.layout.workspace_mut()
     }
 
-    /// The view currently drawn.
+    /// Which document the canvas is drawing.
     #[must_use]
     pub fn active(&self) -> ViewKind {
         self.ws().active()
+    }
+
+    /// The pane the window's chrome is reading from, if any.
+    ///
+    /// Focus is recorded per document — a document you come back to should not
+    /// have moved your cursor — so this is the record of whichever document
+    /// the canvas is drawing, falling back to the other. Read back by the
+    /// tests that press the navigator rail's toggle, which is the one verb
+    /// that moves focus across that line.
+    #[must_use]
+    pub fn focused_pane(&self) -> Option<PaneKey> {
+        let active = self.ws().active();
+        self.ws()
+            .focus_in(active)
+            .or_else(|| self.ws().focus_in(other_view(active)))
+    }
+
+    /// Put `view`'s document on the canvas.
+    ///
+    /// **A test hook, and named as one.** A window holding one document
+    /// decides this from content on every frame, so this changes nothing
+    /// there — [`MeridianApp::draw`] re-derives it. It bites on a window
+    /// holding a protocol *and* a chart, which is the one case content cannot
+    /// settle, and where this arrangement offers no control: the graph is the
+    /// navigator rail's spine and the canvas belongs to the step. A suite that
+    /// has to photograph both canvases in one process reaches this rather than
+    /// a control nobody can click.
+    pub fn show_on_canvas(&mut self, view: ViewKind) {
+        self.ws_mut().set_active(view);
     }
 
     /// The window title: the active view's subject.
@@ -2129,6 +2158,30 @@ impl MeridianApp {
         // mode of the window.
         let door = self.front_door_is_live();
 
+        // Which document the canvas draws — content decides it, and only when
+        // the answer is forced. A window holding one document has no choice to
+        // make: a protocol with no chart puts its graph on the canvas, and a
+        // chart with no protocol puts the chart there. A window holding both
+        // keeps whichever it was left on, because in this arrangement the
+        // graph is the navigator rail's spine and the canvas belongs to the
+        // step — there is no control that moves the canvas between them, and
+        // inventing one here would be the peer switcher again under a new
+        // name.
+        let view = if door {
+            view
+        } else {
+            let has_graph = self.protocol.doc.model.has_assets();
+            let has_chart = !self.charts.doc.is_empty();
+            match (has_graph, has_chart) {
+                (true, false) => ViewKind::Protocol,
+                (false, true) => ViewKind::Charts,
+                _ => view,
+            }
+        };
+        if !door && self.ws().active() != view {
+            self.ws_mut().set_active(view);
+        }
+
         // The protocol grammar is bare-key — `h j k l y t Enter Esc ⌫ shift-S`
         // with no modifier to disambiguate it — so it is fed only while its own
         // view is drawn. Gating on the active view rather than on the focused
@@ -2253,9 +2306,9 @@ impl MeridianApp {
                 self.regions.push((hint.id, drawn.response.rect));
             }
 
-            // The canvas belongs to the graph while the protocol itself is the
-            // subject, and to the step's projections once one of them has
-            // something to draw.
+            // The canvas belongs to the graph while the protocol itself is
+            // the subject, and to the step's projections once one of them has
+            // something to draw — the answer settled above.
             let graph_on_canvas = view == ViewKind::Protocol;
             let ledger = plan.expect_region(arrangement::LEDGER_RAIL);
             let navigator = plan.expect_region(arrangement::NAVIGATOR_RAIL);
@@ -2604,11 +2657,17 @@ impl MeridianApp {
                 self.ws_mut().set_focus(key);
             }
         } else {
-            let active = self.ws().active();
-            self.focus_return = self
-                .ws()
-                .focus_in(active)
-                .or_else(|| self.ws().focus_in(other_view(active)));
+            let back = self.focused_pane();
+            self.focus_return = back;
+            // The document being left gives its record up. `Workspace` keeps
+            // focus per document so that coming back to one does not move your
+            // cursor, and that reasoning held while one document was drawn at a
+            // time. Both are drawn in one frame now, so two live records would
+            // mean two panes wearing the focus ring — the toggle is the one
+            // verb that crosses that line, and it carries the tidy-up.
+            if let Some(back) = back {
+                self.ws_mut().clear_focus(back.view);
+            }
             self.ws_mut().set_focus(rail);
         }
         ctx.request_repaint();

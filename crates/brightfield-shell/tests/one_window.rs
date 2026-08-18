@@ -804,67 +804,117 @@ fn the_protocol_grammar_does_not_reach_the_dag_from_the_charts_view() {
 // ---------------------------------------------------------------------------
 // The switcher
 // ---------------------------------------------------------------------------
-
-/// The top bar's switcher actually switches — clicked where it drew itself, at
-/// the window's natural size **and at a window narrow enough to have broken
-/// it**.
+/// The navigator rail's toggle reaches the protocol spine and comes back.
 ///
-/// This is the increment's user-facing claim, and it is the one that is easiest
-/// to assert and never check: `Workspace::set_active` can be called from a test
-/// all day without there being any way for a person to reach it. So the click
-/// is aimed at the rect the bar recorded on the previous frame rather than at a
-/// coordinate typed here, and the assertion is that the *dock* followed — the
-/// chart pane records a content box only on a frame the charts view drew.
+/// AC1's round trip, and the reason the verb is a dock toggle rather than a
+/// view switch: one keystroke reaches the spine, the same keystroke returns
+/// focus to the work, and the cursor is never left parked in a rail. A window
+/// that treated the second press as a second move would leave focus on the
+/// outline and fail the last assertion.
 ///
-/// The narrow case is not decoration. Aiming at the recorded rect is not enough
-/// on its own: the bar's right-to-left group draws from the window's right edge
-/// leftwards, so on a narrow window it lands over a switcher that is still
-/// exactly where it says it is, and egui hands the click to the label on top.
-/// The switcher went on drawing and stopped switching under about 376 logical
-/// points of window width, with a green suite — this test at its old single
-/// width could not fail that way, because the protocol boot only ever ran it at
-/// 1978.
+/// The keystroke comes off `brightfield_keys::registry()` rather than being
+/// typed here, because the shell wires the binding the registry declares and
+/// invents none — a test that typed `cmd-b` would go on pressing a key the
+/// registry had stopped naming.
 ///
-/// Watched redden, one mutation: dropping the `available_width` gate in
-/// `MeridianApp::top_bar` so the right-hand group always draws fails the 240pt
-/// case with *"the switcher is chrome that does nothing"* and leaves the 1978pt
-/// case green.
+/// Watched redden, one mutation: dropping the `focus_return` restore in
+/// `MeridianApp::toggle_navigator_focus` (setting the rail's key on both
+/// presses) leaves the first three assertions green and fails the last with
+/// focus still on the outline rail.
 #[test]
-fn the_top_bar_switcher_switches_the_view_the_dock_draws() {
-    let natural = both(ViewKind::Protocol).window_size(ViewKind::Protocol);
-    for size in [egui::vec2(natural.0, natural.1), egui::vec2(240.0, 400.0)] {
-        let mut win = Window::open_at(both(ViewKind::Protocol), Mode::Light, size);
-        win.settle();
-        assert_eq!(win.app.active(), ViewKind::Protocol);
-        assert!(
-            win.app.chart_viewport().is_none(),
-            "at {size:?} the chart pane drew before the view was switched to it"
-        );
+fn pressing_the_navigator_toggle_twice_returns_focus() {
+    let mut win = Window::open(both(ViewKind::Charts), Mode::Light);
+    win.settle();
 
-        let target = win
-            .app
-            .switcher_rect(ViewKind::Charts)
-            .expect("the top bar drew a switcher control for the charts view");
-        assert!(
-            win.screen.contains_rect(target),
-            "at {size:?} the charts control drew at {target:?}, outside the \
-             window — nothing could click it"
-        );
-        win.run(vec![click_at(target.center()), Vec::new()]);
+    let started = PaneKey::new(ViewKind::Charts, brightfield_shell::app::CHART);
+    assert!(
+        win.app.focus_pane(started),
+        "the chart pane is placed, so focus can be put on it"
+    );
+    win.settle();
 
-        assert_eq!(
-            win.app.active(),
-            ViewKind::Charts,
-            "at {size:?}, clicking the charts control at {target:?} left the \
-             window on the protocol view — the switcher is chrome that does \
-             nothing"
-        );
-        assert!(
-            win.app.chart_viewport().is_some(),
-            "at {size:?} the window says it is on the charts view but the \
-             chart pane never drew"
-        );
+    let rail = PaneKey::new(ViewKind::Protocol, brightfield_shell::protocol::OUTLINE);
+    win.run(vec![navigator_toggle(), Vec::new()]);
+    assert_eq!(
+        win.app.focused_pane(),
+        Some(rail),
+        "the toggle did not reach the navigator rail"
+    );
+
+    win.run(vec![navigator_toggle(), Vec::new()]);
+    assert_eq!(
+        win.app.focused_pane(),
+        Some(started),
+        "the second press did not return focus to where it started — the \
+         toggle is a one-way trip, not a round trip"
+    );
+}
+
+/// The increment-7 view switcher is gone, not restyled.
+///
+/// Asserted through what a person can reach rather than by reading the source:
+/// the two `selectable_label`s were the only controls in the title band that
+/// carried a view's name, and the band no longer records a rect for either.
+/// The window's regions are what it records now, and the navigator rail is
+/// among them — the protocol is a dock, not a peer.
+#[test]
+fn the_title_band_offers_no_view_switcher() {
+    use brightfield_workbench::arrangement;
+
+    let mut win = Window::open(both(ViewKind::Charts), Mode::Light);
+    win.settle();
+
+    let drawn: Vec<&str> = win
+        .app
+        .drawn_regions()
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .collect();
+    assert!(
+        drawn.contains(&arrangement::NAVIGATOR_RAIL.as_str()),
+        "the window drew {drawn:?} and no navigator rail, so the protocol has \
+         nowhere to be a dock"
+    );
+    assert!(
+        win.app.region_rect(arrangement::TITLE_BAND).is_some(),
+        "the title band did not draw"
+    );
+    // Every region the arrangement declares is a region of the window, and
+    // none of them is a view: a switcher would have to be one of these to be
+    // reachable, and the arrangement declares no such region.
+    for (id, _) in win.app.drawn_regions() {
+        assert_ne!(id.as_str(), "charts-view");
+        assert_ne!(id.as_str(), "protocol-view");
     }
+}
+
+/// One frame's worth of the registry's `toggle-outline-rail` keystroke.
+fn navigator_toggle() -> Vec<egui::Event> {
+    let token = brightfield_keys::registry()
+        .iter()
+        .find(|v| v.longname == brightfield_shell::window::NAVIGATOR_TOGGLE)
+        .and_then(brightfield_keys::VerbEntry::primary_key)
+        .expect("the registry binds the navigator rail's toggle");
+    assert_eq!(
+        token, "cmd-b",
+        "the registry moved the navigator toggle to {token}; this test's event \
+         spelling has to move with it"
+    );
+    let modifiers = egui::Modifiers {
+        command: true,
+        mac_cmd: cfg!(target_os = "macos"),
+        ..Default::default()
+    };
+    [true, false]
+        .into_iter()
+        .map(|pressed| egui::Event::Key {
+            key: egui::Key::B,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers,
+        })
+        .collect()
 }
 
 /// The top bar's Home button actually returns to the front door — clicked
