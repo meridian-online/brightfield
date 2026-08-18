@@ -106,7 +106,8 @@ pub struct PaneChrome<'a, D: ?Sized> {
     /// re-entering the tile tree from inside its own draw.
     requests: &'a mut Vec<Request>,
     /// Where each pane that drew an empty state put its resolving button, in
-    /// window-space logical points. Overwritten every frame by the shell.
+    /// window-space logical points. Appended to, and cleared by the shell once
+    /// per frame — see [`PaneChrome::new`].
     ///
     /// A measurement rather than a request, so it does not ride the request
     /// queue. It has to come out through the behaviour because the empty state
@@ -118,7 +119,16 @@ pub struct PaneChrome<'a, D: ?Sized> {
 }
 
 impl<'a, D: ?Sized> PaneChrome<'a, D> {
-    /// Build the behaviour for one view's frame.
+    /// Build the behaviour for one region's draw.
+    ///
+    /// **`affordances` is not cleared here**, and the shell clears it once per
+    /// frame instead. One window lays several regions out in one frame — a
+    /// navigator rail, a canvas, an inspector rail — and each needs its own
+    /// borrow of its own document, so each builds its own `PaneChrome`.
+    /// Clearing on construction meant the last region built wiped what the
+    /// earlier ones had recorded, and `affordance_rect` then answered `None`
+    /// for a button that was on screen. Held by
+    /// `two_pane_chromes_in_one_frame_both_record_their_affordances`.
     pub fn new(
         doc: &'a mut D,
         items: &'a mut ItemMap<D>,
@@ -128,7 +138,6 @@ impl<'a, D: ?Sized> PaneChrome<'a, D> {
         requests: &'a mut Vec<Request>,
         affordances: &'a mut Vec<(PaneKey, egui::Rect)>,
     ) -> Self {
-        affordances.clear();
         Self {
             doc,
             items,

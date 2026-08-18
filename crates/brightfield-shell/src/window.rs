@@ -59,10 +59,10 @@ use egui_tiles::{Behavior, Container, Tile};
 use brightfield_keys::{Altitude, RecencyCounter};
 use brightfield_protocol::layout::{Flow, Layout};
 use brightfield_sql::ir::SampleRate;
-use brightfield_workbench::behavior::{TAB_BAR_HEIGHT, TILE_GAP};
+use brightfield_workbench::arrangement::{self, Occupant, Projection, Region, RegionId};
 use brightfield_workbench::workspace::{tabs_holding, tile_of};
 use brightfield_workbench::{
-    chrome, Activity, ActivityIndicator, DirtyTracker, HideAffordance, ItemMap, PaneChrome,
+    chrome, Activity, ActivityIndicator, DirtyTracker, HideAffordance, ItemId, ItemMap, PaneChrome,
     PaneKey, Request, SavedLayout, StatusEntry, StatusSide, Subject, Tone, ToolbarEntry, Verb,
     ViewKind, WindowGeometry, Workspace,
 };
@@ -75,13 +75,15 @@ use meridian_design::{radius, semantic, spacing};
 
 use crate::app::{chart_registry, ChartDoc, ChartFault, CHART, CONTROLS};
 use crate::canvas::EguiCanvasHost;
+use crate::data_grid::DATA;
 use crate::design::{self, Mode};
+use crate::editor::EDITOR;
 use crate::inspector::{InspectorPane, Selection};
 use crate::overlays::{CommandPalette, HelpSheet, JumpTarget, JumpToNode};
 use crate::pipeline::Composed;
 use crate::protocol::{
     hint_ui, load_protocol_offline, protocol_registry, ui_font, ProtocolDoc, ProtocolInputs,
-    ProtocolModel, CANVAS, INSPECTOR_SHARE, OUTLINE_SHARE, STEPS,
+    ProtocolModel, CANVAS as PROTOCOL_CANVAS, INSPECTOR as PROTOCOL_INSPECTOR, OUTLINE, STEPS,
 };
 
 // ---------------------------------------------------------------------------
@@ -122,18 +124,16 @@ pub const DOCK_INSET: f32 = spacing::SPACE_4;
 
 /// The inspector rail's default width, outer — including its own frame.
 ///
-/// A declared pixel extent, not the proportional share this replaces: a
-/// column drawn proportionally inside the dock (the rail this replaces,
-/// `CONTROLS_SHARE` in `app.rs`) has no extent in points — merely a fraction
-/// of whatever the window happens to be — and a fraction is not something a
-/// later lane can lay a fixed sibling region out against. This is that
-/// extent, read by both [`chart_window_size`] and the panel
-/// [`MeridianApp::draw`] shows.
-pub const INSPECTOR_RAIL_WIDTH: f32 = 280.0;
+/// One spelling of the number that lives in
+/// [`brightfield_workbench::arrangement`], re-exported here because callers
+/// outside this crate were reading it from this path before the arrangement
+/// existed. The draw path does **not** read this: it reads the region.
+pub const INSPECTOR_RAIL_WIDTH: f32 = arrangement::INSPECTOR_RAIL_WIDTH;
 
 /// The inspector rail's minimum width, outer — the point past which
-/// `Panel::resizable` refuses to narrow it further.
-pub const INSPECTOR_RAIL_MIN_WIDTH: f32 = 200.0;
+/// `Panel::resizable` refuses to narrow it further. As
+/// [`INSPECTOR_RAIL_WIDTH`], one spelling of the arrangement's number.
+pub const INSPECTOR_RAIL_MIN_WIDTH: f32 = arrangement::INSPECTOR_RAIL_MIN_WIDTH;
 
 // ---------------------------------------------------------------------------
 // The front door's own measures.
@@ -236,21 +236,52 @@ const CARD_HEIGHT: f32 = 220.0;
 #[must_use]
 pub fn chart_window_size(composed: &Composed) -> (f32, f32) {
     let inset = chrome::pane_content_inset();
+    // Every band and rail the window lays out before the canvas gets what is
+    // left, read out of the arrangement rather than restated here.
+    let (across, down) = chrome_budget(false);
 
     // The legend band is a term, not a bite: a dashboard whose scales call
     // for a margin legend gets the band's width beside the raster, and one
     // that calls for none contributes zero — read from the component that
     // draws it, like every other term here.
-    let tile_w = composed.width as f32 + crate::legend::band_width(composed) + 2.0 * inset;
-    let w = (tile_w + 2.0 * DOCK_INSET + INSPECTOR_RAIL_WIDTH).ceil();
+    let pane_w = composed.width as f32 + crate::legend::band_width(composed) + 2.0 * inset;
+    let w = (pane_w + across).ceil();
 
-    let tile_h = composed.height as f32
-        + chart_toolbar_band(composed)
-        + 2.0 * inset
-        + chrome::header_band_height();
-    let h = (tile_h + 2.0 * DOCK_INSET + BAR_HEIGHT).ceil();
+    let pane_h = composed.height as f32 + chart_toolbar_band(composed) + 2.0 * inset;
+    let h = (pane_h + down).ceil();
 
     (w, h)
+}
+
+/// What the window's own regions take out of each axis before the canvas gets
+/// what is left, in logical points: `(across, down)`.
+///
+/// Read out of [`brightfield_workbench::arrangement`], which is what makes the
+/// window the shell *asks* for follow the window it *draws*. Before the
+/// arrangement existed these were literals here and literals again in the draw
+/// path, and the pair that got out of step clipped the bottom seventeen rows
+/// of the chart. `the_window_it_asks_for_fits_the_raster_it_presents` lays a
+/// real frame out at this size and reads the box the canvas pane was handed.
+///
+/// `hint` is whether this window draws the key-hint band — the surface with a
+/// bare-key grammar does, and the one without it does not, so it is a term of
+/// the caller rather than of the arrangement.
+///
+/// The canvas's head band is [`chrome::rail_selector_height`] because that is
+/// the split the canvas is drawn with: one measure, read from the function
+/// that performs the split rather than restated as a second number.
+fn chrome_budget(hint: bool) -> (f32, f32) {
+    let plan = arrangement::default_arrangement();
+    let across = rail_default(plan.expect_region(arrangement::NAVIGATOR_RAIL))
+        + rail_default(plan.expect_region(arrangement::INSPECTOR_RAIL));
+    let mut down = band_extent(plan.expect_region(arrangement::TITLE_BAND))
+        + band_extent(plan.expect_region(arrangement::LOCATOR_BAND))
+        + rail_default(plan.expect_region(arrangement::LEDGER_RAIL))
+        + chrome::rail_selector_height();
+    if hint {
+        down += band_extent(plan.expect_region(arrangement::HINT_BAND));
+    }
+    (across, down)
 }
 
 /// The height the chart pane's toolbar row consumes above the raster, in
@@ -281,16 +312,14 @@ pub fn chart_toolbar_band(composed: &Composed) -> f32 {
 /// outwards from the DAG exactly as [`chart_window_size`] is read outwards from
 /// the dashboard.
 ///
-/// The two differences from the chart's are both properties of this view's
-/// declared shape rather than adjustments:
+/// One difference from the chart's, and it is a property of this surface
+/// rather than an adjustment: the graph has a bare-key grammar and the chart
+/// projections do not, so this window gives up the hint band as well — which
+/// is the `hint` term `chrome_budget` takes.
 ///
-/// - the canvas sits between **two** rails, so two [`TILE_GAP`]s come out of the
-///   dock's width and the centre share is what both rails leave;
-/// - the canvas is a centre *tab*, so its header band is suppressed — the strip
-///   already names it — and the strip's [`TAB_BAR_HEIGHT`] takes that band's
-///   place in the vertical budget;
-/// - this view draws a key-hint bar under the dock as well as the top bar over
-///   it, so the window gives up two [`BAR_HEIGHT`]s rather than one.
+/// Every other term is shared, because both windows are laid out by the same
+/// arrangement: the bands and rails come out of the axes first and the canvas
+/// takes what is left.
 ///
 /// What this replaces was a different kind of number altogether: `l.height +
 /// 130.0`, floored at `1100.0` across and clamped to `680.0..=1600.0` down.
@@ -332,14 +361,13 @@ pub fn protocol_window_size(layout: &Layout) -> (f32, f32) {
 /// are named and argued.
 #[must_use]
 pub fn protocol_window_size_for(dag_w: f32, dag_h: f32) -> (f32, f32) {
-    let centre = 1.0 - OUTLINE_SHARE - INSPECTOR_SHARE;
     let inset = chrome::pane_content_inset();
+    // `true`: this window draws the key-hint band, because the graph is the
+    // surface with a bare-key grammar.
+    let (across, down) = chrome_budget(true);
 
-    let tile_w = dag_w + 2.0 * inset;
-    let w = (tile_w / centre + 2.0 * TILE_GAP + 2.0 * DOCK_INSET).ceil();
-
-    let tile_h = dag_h + 2.0 * inset + TAB_BAR_HEIGHT;
-    let h = (tile_h + 2.0 * DOCK_INSET + 2.0 * BAR_HEIGHT).ceil();
+    let w = (dag_w + 2.0 * inset + across).ceil();
+    let h = (dag_h + 2.0 * inset + down).ceil();
 
     (w, h)
 }
@@ -939,18 +967,26 @@ impl Boot {
 /// that could ask.
 #[derive(Default)]
 struct TopBar {
-    /// The view the switcher was clicked to.
-    switch: Option<ViewKind>,
-    /// Whether the protocol view's flow toggle was pressed.
+    /// Whether the flow toggle was pressed.
     toggle_flow: bool,
     /// Whether the Home button was pressed — the return to the front door.
     home: bool,
-    /// Each switcher control's rect — see [`MeridianApp::switcher`].
-    switcher: Vec<(ViewKind, egui::Rect)>,
-    /// The Home button's rect, when the bar drew one — see
+    /// The Home button's rect, when the band drew one — see
     /// [`MeridianApp::home_rect`]. `None` on the front door, which draws no
     /// Home button because it is already home.
     home_rect: Option<egui::Rect>,
+}
+
+/// What one frame's region controls were asked for: the canvas toggle and the
+/// two rails' selector strips, answered after their closures have returned.
+#[derive(Default)]
+struct RegionPicks {
+    /// The projection the canvas toggle was clicked to.
+    projection: Option<usize>,
+    /// The pane the ledger rail's strip was clicked to.
+    ledger: Option<usize>,
+    /// The pane the inspector rail's strip was clicked to.
+    inspector: Option<usize>,
 }
 
 /// Which grammar overlay is open over the workspace, holding the live
@@ -1024,6 +1060,7 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         "cmd-shift-h" => {
             ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::H))
         }
+        "cmd-b" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::B)),
         // The navigation family. Bare keys, and mapped here for the same
         // reason the overlay openers are: the shell may not invent a binding,
         // so the token comes off the registry and only its egui spelling lives
@@ -1119,22 +1156,38 @@ pub struct MeridianApp {
     protocol: ProtocolView,
     mode: Mode,
     fonts_installed: bool,
-    /// Where the top bar's view switcher drew each view's control, in
-    /// window-space logical points — empty until a frame has been laid out.
+    /// Where each region of the arrangement was drawn in the last frame this
+    /// window drew, in window-space logical points — empty until a frame has
+    /// been laid out, and holding only the regions that drew.
     ///
-    /// Recorded for the reason `ChartDoc::overlay_checkbox` is: the test that
-    /// proves a user can actually reach the other view has to *click* this
-    /// control, and a coordinate typed against a layout nothing derived it from
-    /// lands today and goes on being green while clicking empty bar the first
-    /// time a label or a padding moves.
-    switcher: Vec<(ViewKind, egui::Rect)>,
+    /// Recorded for the reason `ChartDoc::overlay_checkbox` is: the assertion
+    /// that a rail is the width it declares has to read the rect the rail was
+    /// *drawn* at, and a test comparing the declared constant with itself is
+    /// green whatever the window does. Read back through
+    /// [`MeridianApp::region_rect`].
+    regions: Vec<(RegionId, egui::Rect)>,
+    /// Which of the canvas's projections is showing — an index into the
+    /// arrangement's declared projections.
+    projection: usize,
+    /// Which of the ledger rail's panes is showing.
+    ledger_panel: usize,
+    /// Which of the inspector rail's panes is showing.
+    inspector_panel: usize,
+    /// Where each segment of the canvas toggle was drawn, in window-space
+    /// logical points — the hook a test aims a click at, and counts to find a
+    /// third projection. Empty on a frame that drew no toggle.
+    canvas_toggle: Vec<egui::Rect>,
+    /// Where focus was before the navigator rail's toggle took it, so pressing
+    /// that toggle again puts it back. `None` when the rail does not hold
+    /// focus — see [`MeridianApp::toggle_navigator_focus`].
+    focus_return: Option<PaneKey>,
     /// Where the top bar drew the Home button in the last frame this window
     /// drew, in window-space logical points — recorded for the reason
-    /// [`Self::switcher`] is, and read back through [`MeridianApp::home_rect`].
+    /// [`Self::regions`] is, and read back through [`MeridianApp::home_rect`].
     /// `None` on a frame the bar drew no Home button (the front door).
     home_button: Option<egui::Rect>,
     /// Where each empty pane drew the button that resolves it, in window-space
-    /// logical points — recorded for exactly the reason [`Self::switcher`] is,
+    /// logical points — recorded for exactly the reason [`Self::regions`] is,
     /// and read back through [`MeridianApp::affordance_rect`].
     ///
     /// On a frame the front door drew instead of the dock, the door records
@@ -1194,6 +1247,10 @@ pub struct MeridianApp {
     /// dispatch, not an overlay opener, and that struct's contents are pinned
     /// by `the_overlay_keys_come_from_the_registry`.
     home_binding: Option<&'static str>,
+    /// The `toggle-outline-rail` keystroke token, read off the registry at
+    /// boot — same rule as [`Self::home_binding`]: the shell wires whichever
+    /// binding the registry declares, and does not invent one of its own.
+    navigator_binding: Option<&'static str>,
     /// The navigation family's keystroke tokens paired with their verb
     /// longnames, read off the registry at boot — same rule as
     /// [`Self::home_binding`]: the shell wires the binding the registry
@@ -1229,7 +1286,7 @@ pub struct MeridianApp {
     /// Transient, self-expiring toasts — confirmations, not conditions.
     toasts: ToastLayer,
     /// What the status rail drew last frame — the ids in draw order and any
-    /// dismissals — recorded for the reason [`Self::switcher`] is: a headless
+    /// dismissals — recorded for the reason [`Self::regions`] is: a headless
     /// test that asks "did the rail say it?" reads this rather than a second
     /// copy of the composing logic. Empty on a frame the rail drew nothing,
     /// which is most frames — the rail is quiet when there is nothing to say.
@@ -1446,7 +1503,18 @@ impl MeridianApp {
             },
             mode,
             fonts_installed: false,
-            switcher: Vec::new(),
+            regions: Vec::new(),
+            // The chart's drawn reading, not its tabular one: a window that
+            // opens on a grid of numbers has buried the picture it exists to
+            // present. The index is into the arrangement's declared
+            // projections, which name the grid first and the chart second.
+            projection: 1,
+            ledger_panel: 0,
+            // The inspector rail opens on the pane belonging to whichever
+            // document the boot had something to say about.
+            inspector_panel: usize::from(view != Some(ViewKind::Protocol)),
+            canvas_toggle: Vec::new(),
+            focus_return: None,
             home_button: None,
             affordances: Vec::new(),
             door_thumbs: Vec::new(),
@@ -1461,6 +1529,10 @@ impl MeridianApp {
             home_binding: brightfield_keys::registry()
                 .iter()
                 .find(|v| v.longname == "open-home")
+                .and_then(brightfield_keys::VerbEntry::primary_key),
+            navigator_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == NAVIGATOR_TOGGLE)
                 .and_then(brightfield_keys::VerbEntry::primary_key),
             nav_bindings: navigation_bindings(),
             recency: RecencyCounter::new(),
@@ -1637,10 +1709,38 @@ impl MeridianApp {
         self.layout.workspace_mut()
     }
 
-    /// The view currently drawn.
+    /// Which document the canvas is drawing.
     #[must_use]
     pub fn active(&self) -> ViewKind {
         self.ws().active()
+    }
+
+    /// The pane the window's chrome is reading from, if any.
+    ///
+    /// Focus is recorded per document — a document you come back to should not
+    /// have moved your cursor — so this is the record of whichever document
+    /// the canvas is drawing, falling back to the other. Read back by the
+    /// tests that press the navigator rail's toggle, which is the one verb
+    /// that moves focus across that line.
+    #[must_use]
+    pub fn focused_pane(&self) -> Option<PaneKey> {
+        let active = self.ws().active();
+        self.ws()
+            .focus_in(active)
+            .or_else(|| self.ws().focus_in(other_view(active)))
+    }
+
+    /// Put `view`'s document on the canvas.
+    ///
+    /// **A test hook, and named as one.** [`MeridianApp::draw`] re-derives the
+    /// canvas from the documents on each frame it draws, so on a window with
+    /// something in it this holds until the next one. Where it does hold is
+    /// the front door: those frames leave the recorded view where they found
+    /// it, and a suite proving the door belongs to the window rather than to
+    /// either document has to move the canvas under it somehow, the
+    /// arrangement offering no control that does.
+    pub fn show_on_canvas(&mut self, view: ViewKind) {
+        self.ws_mut().set_active(view);
     }
 
     /// The window title: the active view's subject.
@@ -1744,6 +1844,67 @@ impl MeridianApp {
             .unwrap_or_default()
     }
 
+    /// One pane's own [`Subject`] title, whichever document owns it.
+    ///
+    /// The words a region's selector strip offers its panes under come from
+    /// here rather than from a second table beside the arrangement, for the
+    /// reason [`chrome::pane_frame`] takes its header from the subject: a
+    /// strip and a pane header saying different things about one pane is the
+    /// drift the workbench exists to end.
+    fn pane_title_of(&self, item: ItemId) -> String {
+        if let Some(pane) = self
+            .protocol
+            .items
+            .get(&PaneKey::new(ViewKind::Protocol, item))
+        {
+            return pane.subject(&self.protocol.doc).title;
+        }
+        if let Some(pane) = self.charts.items.get(&PaneKey::new(ViewKind::Charts, item)) {
+            return pane.subject(&self.charts.doc).title;
+        }
+        item.to_string()
+    }
+
+    /// [`Self::pane_title_of`] over a region's declared panes, in declaration
+    /// order.
+    fn pane_titles(&self, items: &[ItemId]) -> Vec<String> {
+        items.iter().map(|item| self.pane_title_of(*item)).collect()
+    }
+
+    /// Where the document on the canvas came from, for the locator band's
+    /// right-hand note — the spec file's **name**, or `None` for a document
+    /// with no file behind it (a shipped start, an opened data file, an empty
+    /// window).
+    ///
+    /// The name rather than the path, and it is not a shortening for taste: a
+    /// path is where this machine keeps the file, so a window drawn on two
+    /// machines would say two different things and every pixel baseline that
+    /// photographs this band would be a baseline of one developer's home
+    /// directory. The file name is the part the reader wrote.
+    fn document_source(&self) -> Option<String> {
+        self.charts
+            .doc
+            .spec_path
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+    }
+
+    /// The breadcrumb the locator band draws: where the subject sits, most
+    /// general first.
+    ///
+    /// The protocol's own drill trail when the graph is the subject, and the
+    /// window's title otherwise — a chart has no drill state, and a locator
+    /// band that went blank on the surface a stranger meets first would be a
+    /// row of empty chrome.
+    fn crumb_line(&self) -> Vec<String> {
+        let mut crumbs = vec![self.title()];
+        if self.ws().active() == ViewKind::Protocol {
+            crumbs.extend(self.protocol.doc.model.breadcrumb());
+        }
+        crumbs
+    }
+
     /// The content box the DAG canvas pane was handed by the last frame this
     /// window drew, or `None` if it has not drawn one.
     #[must_use]
@@ -1751,20 +1912,50 @@ impl MeridianApp {
         self.protocol.doc.viewport
     }
 
-    /// The rect the top bar's switcher control for `view` occupied in the last
-    /// frame this window drew.
+    /// The rect region `id` was drawn at in the last frame this window drew,
+    /// or `None` on a frame it did not draw.
+    ///
+    /// The *drawn* rect, which is the whole point: a resizable panel reports
+    /// its content's extent rather than its declared one unless the content
+    /// claims the space, and it persists the narrower number across frames.
+    /// A test comparing a declared constant with itself cannot see that, and
+    /// `the_drawn_regions_match_the_declared_arrangement` reads this instead.
     #[must_use]
-    pub fn switcher_rect(&self, view: ViewKind) -> Option<egui::Rect> {
-        self.switcher
+    pub fn region_rect(&self, id: RegionId) -> Option<egui::Rect> {
+        self.regions
             .iter()
-            .find(|(v, _)| *v == view)
-            .map(|(_, r)| *r)
+            .find(|(r, _)| *r == id)
+            .map(|(_, rect)| *rect)
+    }
+
+    /// Every region the last frame drew, in draw order.
+    #[must_use]
+    pub fn drawn_regions(&self) -> &[(RegionId, egui::Rect)] {
+        &self.regions
+    }
+
+    /// Where the canvas toggle drew each of its segments in the last frame,
+    /// left to right — empty on a frame that drew no toggle.
+    ///
+    /// The hook a test aims a click at, and the one it counts to find a third
+    /// projection: the toggle is built from the arrangement's declared
+    /// projections, so this is that list as it reached the screen.
+    #[must_use]
+    pub fn canvas_toggle_segments(&self) -> &[egui::Rect] {
+        &self.canvas_toggle
+    }
+
+    /// Which of the canvas's projections is showing — an index into the
+    /// declared projections.
+    #[must_use]
+    pub const fn projection(&self) -> usize {
+        self.projection
     }
 
     /// The rect the top bar's Home button occupied in the last frame this
     /// window drew, or `None` on a frame it drew none — the front door draws
     /// no Home button, because it is already home. Recorded and read back for
-    /// the reason [`MeridianApp::switcher_rect`] is: the test that proves Home
+    /// the reason [`MeridianApp::region_rect`] is: the test that proves Home
     /// is reachable has to click it where it was actually laid out.
     #[must_use]
     pub fn home_rect(&self) -> Option<egui::Rect> {
@@ -1991,6 +2182,8 @@ impl MeridianApp {
         // it is deliberately not an overlay-opener (so the registry cross-ref
         // that pins those three stays pinned).
         self.home_key(&ctx);
+        // The navigator rail's round-trip focus toggle, on the same gate.
+        self.navigator_key(&ctx);
         // The frame verbs, on the same gate and only over the chart view: they
         // are bare keys, so an overlay or a text field must own the keyboard
         // first.
@@ -2006,6 +2199,47 @@ impl MeridianApp {
         // so the door is a state of the window's content plane rather than a
         // mode of the window.
         let door = self.front_door_is_live();
+
+        // Which document the canvas draws — content decides it, and content
+        // alone. A chart on the canvas whenever there is a chart; the graph
+        // only where there is no chart for the canvas to hold.
+        //
+        // The asymmetry is the arrangement's, not a preference: the protocol
+        // has three regions of its own — the spine in the navigator rail, the
+        // steps in the ledger rail, an operator in the inspector rail — and it
+        // is readable in all three while the canvas belongs to the chart. The
+        // chart has the canvas and nothing else, so a window that gives the
+        // canvas away has put the chart nowhere.
+        //
+        // Deriving it rather than latching it is what closes a dead end. This
+        // read `_ => view` for a window holding both documents, which made the
+        // canvas a function of the order the two were opened in: open a chart
+        // start and then a protocol start and the canvas went to the graph and
+        // stayed there. There is no control that moves the canvas between the
+        // two — the graph at canvas size is a different arrangement, reached
+        // by a toggle a build supporting it would declare, and inventing one
+        // here would be the peer switcher again under a new name — so a state
+        // reached by history was a state with no way out of it. Every exit was
+        // Home, which empties both documents.
+        //
+        // `a_protocol_opened_over_a_chart_leaves_the_chart_on_the_canvas` is
+        // the pin, and it drives the two opens a person drives.
+        let view = if door {
+            view
+        } else {
+            let has_graph = self.protocol.doc.model.has_assets();
+            let has_chart = !self.charts.doc.is_empty();
+            match (has_graph, has_chart) {
+                (true, false) => ViewKind::Protocol,
+                (_, true) => ViewKind::Charts,
+                // Neither document has anything in it: nothing to decide, and
+                // the window is one frame away from the front door anyway.
+                (false, false) => view,
+            }
+        };
+        if !door && self.ws().active() != view {
+            self.ws_mut().set_active(view);
+        }
 
         // The protocol grammar is bare-key — `h j k l y t Enter Esc ⌫ shift-S`
         // with no modifier to disambiguate it — so it is fed only while its own
@@ -2040,52 +2274,62 @@ impl MeridianApp {
             ViewKind::Protocol => self.protocol.doc.present(ctx.pixels_per_point(), mode),
         }
 
+        // The window's arrangement, read once and read from nowhere else.
+        // Every extent below comes out of it rather than out of a literal in
+        // this draw path — see `brightfield_workbench::arrangement`, and
+        // `the_drawn_regions_match_the_declared_arrangement`, which lays a real
+        // frame out and compares each region's drawn rect with what is
+        // declared there.
+        let plan = arrangement::default_arrangement();
+        self.regions.clear();
+        // Cleared once per frame rather than per `PaneChrome`: several regions
+        // build one each, and clearing on construction meant the last one wiped
+        // what the earlier ones recorded.
+        self.affordances.clear();
+
         let mut bar = TopBar::default();
-        Panel::top("bf-top-bar")
+        let title = plan.expect_region(arrangement::TITLE_BAND);
+        let drawn = Panel::top("bf-title-band")
             .resizable(false)
-            .exact_size(BAR_HEIGHT)
-            .show(ui, |ui| bar = self.top_bar(ui));
-        self.switcher = std::mem::take(&mut bar.switcher);
+            .exact_size(band_extent(title))
+            .show(ui, |ui| bar = self.title_band(ui));
+        self.regions.push((title.id, drawn.response.rect));
         self.home_button = bar.home_rect;
 
-        // The key-hint bar belongs to the protocol grammar, so it is drawn on
-        // the view that has one. The charts view has no key grammar at all, and
-        // `chart_window_size` has no term for a hint bar —
-        // `the_window_it_asks_for_fits_the_raster_it_presents` is the assertion
-        // that keeps it honest about that: it lays a real frame out at the size
-        // that function asks for and reads the box the chart pane was handed, so
-        // a hint bar appearing on this view would take BAR_HEIGHT out of that
-        // box and redden.
-        // And not on the front door: a row of grammar hints for a DAG that is
-        // not on screen would be the window instructing rather than inviting.
-        if view == ViewKind::Protocol && !door {
-            let model = &self.protocol.doc.model;
-            Panel::bottom("bf-hint-bar")
-                .resizable(false)
-                .exact_size(BAR_HEIGHT)
-                .show(ui, |ui| hint_ui(ui, model, mode));
-        }
+        let mut requests: Vec<Request> = Vec::new();
+        let dock_frame = egui::Frame::new()
+            .inner_margin(DOCK_INSET)
+            .fill(ui.visuals().panel_fill);
+        let rail_frame = egui::Frame::new().fill(ui.visuals().panel_fill);
 
-        // The dock fills the rest. Every pane's chrome comes from its subject,
-        // through the one `egui_tiles::Behavior` in the product. The frame is
-        // `Frame::central_panel`'s, restated with `DOCK_INSET` in place of
-        // egui's internal `8` — same pixels, one declaration the window
-        // arithmetic reads.
-        let tabbed = self.ws().tabbed_tiles(view);
-        let focused = self.ws().focus();
-        // The hidden tile `Self::assemble` left in place for CONTROLS — found
-        // fresh each frame (a layout reload or a drag cannot leave this
-        // holding a stale id) rather than cached on `Self`, the way the
-        // other tile lookups here already work.
-        let inspector_tile = self.ws().tile_of(PaneKey::new(ViewKind::Charts, CONTROLS));
-        // The inspector's own read of "what is selected" — the same value
-        // `status_rail_ui` reads for the rail's status lines, computed here
-        // rather than there because the inspector needs it *before* the dock
-        // draws, not after. Skipped when focus has landed on the inspector's
-        // own pane (clicking its checkbox, say): that would otherwise blank
-        // the panel it is itself part of the moment someone touches it.
-        if view == ViewKind::Charts {
-            match focused {
+        if door {
+            // The front door, instead of every region below the title band: a
+            // window of empty instruments is the surface the research warned
+            // against, and each of its regions would be inviting the same
+            // first action from a different corner. What a card click *does*
+            // is the same `Request::Open` an empty pane's button raises — the
+            // door is a different arrangement of the same way in, not a second
+            // route.
+            CentralPanel::default().frame(dock_frame).show(ui, |ui| {
+                self.front_door_ui(ui, &mut requests);
+            });
+        } else {
+            // Content somewhere, so the regions — and no stale door geometry: a
+            // test that asks where a card was after the door has gone must
+            // hear "nowhere", exactly as `affordances` answers for panes.
+            self.door_cards.clear();
+            self.door_continue = None;
+            self.door_help = None;
+            self.door_open_file = None;
+
+            // The inspector's own read of "what is selected" — the same value
+            // `status_rail_ui` reads for the rail's status lines, computed here
+            // rather than there because the inspector needs it *before* its
+            // rail draws, not after. Skipped when focus has landed on the
+            // inspector's own pane (clicking its checkbox, say): that would
+            // otherwise blank the panel it is itself part of the moment
+            // someone touches it.
+            match self.ws().focus_in(ViewKind::Charts) {
                 Some(key) if key.item != CONTROLS => {
                     let subject = self
                         .charts
@@ -2097,118 +2341,288 @@ impl MeridianApp {
                 Some(_) => {}
                 None => self.charts.inspector_selection.set(None),
             }
-        }
-        let mut requests: Vec<Request> = Vec::new();
-        let dock_frame = egui::Frame::new()
-            .inner_margin(DOCK_INSET)
-            .fill(ui.visuals().panel_fill);
-        if door {
-            // The front door, instead of the dock: a dock of empty
-            // instruments is the surface the research warned against, and
-            // every one of its panes would be inviting the same first action
-            // from a different corner. What a card click *does* is the same
-            // `Request::Open` an empty pane's button raises — the door is a
-            // different arrangement of the same way in, not a second route.
-            CentralPanel::default().frame(dock_frame).show(ui, |ui| {
-                self.front_door_ui(ui, &mut requests);
-            });
-        } else {
-            // Content somewhere, so the dock — and no stale door geometry: a
-            // test that asks where a card was after the door has gone must
-            // hear "nowhere", exactly as `affordances` answers for panes.
-            self.door_cards.clear();
-            self.door_continue = None;
-            self.door_help = None;
-            self.door_open_file = None;
+
+            let locator = plan.expect_region(arrangement::LOCATOR_BAND);
+            let crumbs = self.crumb_line();
+            let source = self.document_source();
+            let drawn = Panel::top("bf-locator-band")
+                .resizable(false)
+                .exact_size(band_extent(locator))
+                .show(ui, |ui| {
+                    locator_band_ui(ui, &crumbs, source.as_deref(), mode)
+                });
+            self.regions.push((locator.id, drawn.response.rect));
+
+            // The key-hint band belongs to a key grammar, so it is drawn where
+            // there is one. The chart projections have no bare-key grammar, and
+            // `chart_window_size` has no term for this band —
+            // `the_window_it_asks_for_fits_the_raster_it_presents` is the
+            // assertion that keeps it honest about that.
+            if view == ViewKind::Protocol {
+                let hint = plan.expect_region(arrangement::HINT_BAND);
+                let model = &self.protocol.doc.model;
+                let drawn = Panel::bottom("bf-hint-band")
+                    .resizable(false)
+                    .exact_size(band_extent(hint))
+                    .show(ui, |ui| hint_ui(ui, model, mode));
+                self.regions.push((hint.id, drawn.response.rect));
+            }
+
+            // The canvas holds the step's projections, and stands the graph
+            // there while there is no chart to hold — the empty state of the
+            // canvas rather than a second thing it can be showing. Settled
+            // above, from the documents and from nothing else.
+            let graph_on_canvas = view == ViewKind::Protocol;
+            let ledger = plan.expect_region(arrangement::LEDGER_RAIL);
+            let navigator = plan.expect_region(arrangement::NAVIGATOR_RAIL);
+            let inspector = plan.expect_region(arrangement::INSPECTOR_RAIL);
+            let canvas = plan.expect_region(arrangement::CANVAS);
+            let ledger_panes = region_panes(ledger);
+            let navigator_panes = region_panes(navigator);
+            let inspector_panes = region_panes(inspector);
+            let (projections, graph) = canvas_occupants(canvas);
+
+            let projection = self.projection.min(projections.len() - 1);
+            let ledger_panel = self.ledger_panel.min(ledger_panes.len() - 1);
+            let inspector_panel = self.inspector_panel.min(inspector_panes.len() - 1);
+
+            // Each strip's words are the panes' own `Subject` titles, read
+            // before the closures below take their borrows of the documents.
+            let ledger_labels = self.pane_titles(ledger_panes);
+            let navigator_labels = self.pane_titles(navigator_panes);
+            let inspector_labels = self.pane_titles(inspector_panes);
+            let projection_labels: Vec<&str> = projections.iter().map(|p| p.label).collect();
+            // What the canvas is showing, which is the leaf of the locator
+            // rather than the pane's own kind: the toggle beside it already
+            // says "Grid" and "Chart", so a head band repeating the pane's
+            // title would name the reading twice and the subject not at all.
+            let canvas_name = crumbs
+                .last()
+                .cloned()
+                .unwrap_or_else(|| self.pane_title_of(graph));
+
+            let mut regions = std::mem::take(&mut self.regions);
+            let mut canvas_toggle: Vec<egui::Rect> = Vec::new();
+            let mut picks = RegionPicks::default();
             let (ws, charts, protocol, affordances) = (
                 self.layout.workspace_mut(),
                 &mut self.charts,
                 &mut self.protocol,
                 &mut self.affordances,
             );
-            // The inspector rail — a real `Panel::right`, added *before* the
-            // dock so the dock's `CentralPanel` (which must come last; see
-            // its own doc comment) is handed whatever width is left. It
-            // reuses `PaneChrome::pane_ui`, the same call the dock would have
-            // made for this tile were it still visible there — same header,
-            // same empty state, same focus-follows-click — so drawing it
-            // outside the dock changes *where* the chrome comes from and not
-            // what it draws. `inspector_tile` is `None` for a document whose
-            // `chart_registry()` dropped `CONTROLS` entirely — not something
-            // a shipping build does.
-            if view == ViewKind::Charts {
-                if let Some(tile) = inspector_tile {
-                    let mut inspector_key = PaneKey::new(ViewKind::Charts, CONTROLS);
-                    Panel::right("bf-inspector-rail")
-                        .default_size(INSPECTOR_RAIL_WIDTH)
-                        .min_size(INSPECTOR_RAIL_MIN_WIDTH)
-                        .resizable(true)
-                        .frame(dock_frame)
-                        .show(ui, |ui| {
-                            // `Panel::resizable`'s own doc: a resizable panel
-                            // whose content does not claim the available
-                            // space shrinks to content instead of holding its
-                            // declared size — egui reports the content's own
-                            // used width back as the panel's rect, and
-                            // *persists* that narrower number for next frame,
-                            // regardless of `default_size`. Measured: without
-                            // this line the rail's reported rect is 200pt
-                            // wide (exactly `INSPECTOR_RAIL_MIN_WIDTH`) by the
-                            // second frame, not the declared 280 — a quiet
-                            // inspector (a checkbox and a couple of short
-                            // labels) does not ask for more.
-                            //
-                            // Watched redden: without this line,
-                            // `the_overlay_toggle_still_reaches_the_chart_pane`
-                            // fails — the checkbox itself draws at the rect
-                            // the test predicts, but by the frame the test's
-                            // scripted click lands the panel has already
-                            // shrunk to that narrower width and the click,
-                            // aimed at the wider prediction, misses.
-                            ui.set_min_width(ui.available_width());
-                            let mut behavior = PaneChrome::new(
-                                &mut charts.doc,
-                                &mut charts.items,
-                                mode,
-                                focused,
-                                &tabbed,
-                                &mut requests,
-                                affordances,
-                            );
-                            let _ = behavior.pane_ui(ui, tile, &mut inspector_key);
-                        });
+            // A region draws its occupant under its own strip, so the pane's
+            // header band is suppressed the same way a tab strip suppresses
+            // it — `PaneChrome::pane_ui` takes that as its `tabbed` set.
+            let mut headed: std::collections::HashSet<egui_tiles::TileId> =
+                std::collections::HashSet::new();
+            for (kind, item) in [
+                (ViewKind::Protocol, OUTLINE),
+                (ViewKind::Protocol, PROTOCOL_INSPECTOR),
+                (ViewKind::Protocol, STEPS),
+                (ViewKind::Protocol, PROTOCOL_CANVAS),
+                (ViewKind::Charts, CONTROLS),
+                (ViewKind::Charts, EDITOR),
+                (ViewKind::Charts, CHART),
+                (ViewKind::Charts, DATA),
+            ] {
+                if let Some(tile) = ws.tile_of(PaneKey::new(kind, item)) {
+                    headed.insert(tile);
                 }
             }
-            CentralPanel::default().frame(dock_frame).show(ui, |ui| {
-                // The two arms are the whole cost of keeping the documents
-                // apart.
-                match view {
-                    ViewKind::Charts => {
-                        let mut behavior = PaneChrome::new(
-                            &mut charts.doc,
-                            &mut charts.items,
+            let chart_focus = ws.focus_in(ViewKind::Charts);
+            let protocol_focus = ws.focus_in(ViewKind::Protocol);
+
+            // ---- the ledger rail, before the side rails so it spans the
+            // window's width and they stop above it.
+            let drawn = Panel::bottom("bf-ledger-rail")
+                .default_size(rail_default(ledger))
+                .min_size(rail_min(ledger))
+                .resizable(true)
+                .frame(rail_frame)
+                .show(ui, |ui| {
+                    // `Panel::resizable`'s own doc: a resizable panel whose
+                    // content does not claim the available space shrinks to
+                    // content instead of holding its declared size, and egui
+                    // *persists* the narrower number for next frame. This is
+                    // the claim, on the axis this rail is resizable along.
+                    ui.set_min_height(ui.available_height());
+                    ui.set_min_width(ui.available_width());
+                    let (strip, body) = chrome::rail_split(ui.max_rect());
+                    picks.ledger = chrome::rail_selector(
+                        ui,
+                        strip,
+                        &pane_labels(&ledger_labels),
+                        ledger_panel,
+                        mode,
+                    );
+                    let item = ledger_panes[ledger_panel];
+                    if item == STEPS {
+                        draw_protocol_pane(
+                            ui,
+                            body,
+                            protocol,
+                            ws,
+                            item,
                             mode,
-                            focused,
-                            &tabbed,
+                            protocol_focus,
+                            &headed,
                             &mut requests,
                             affordances,
                         );
-                        ws.tree_mut(view).ui(&mut behavior, ui);
-                    }
-                    ViewKind::Protocol => {
-                        let mut behavior = PaneChrome::new(
-                            &mut protocol.doc,
-                            &mut protocol.items,
+                    } else {
+                        draw_chart_pane(
+                            ui,
+                            body,
+                            charts,
+                            ws,
+                            item,
                             mode,
-                            focused,
-                            &tabbed,
+                            chart_focus,
+                            &headed,
                             &mut requests,
                             affordances,
                         );
-                        ws.tree_mut(view).ui(&mut behavior, ui);
                     }
+                });
+            regions.push((ledger.id, drawn.response.rect));
+
+            // ---- the navigator rail: the protocol, as an ordered spine.
+            let drawn = Panel::left("bf-navigator-rail")
+                .default_size(rail_default(navigator))
+                .min_size(rail_min(navigator))
+                .resizable(true)
+                .frame(rail_frame)
+                .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    let (strip, body) = chrome::rail_split(ui.max_rect());
+                    chrome::rail_selector(ui, strip, &pane_labels(&navigator_labels), 0, mode);
+                    draw_protocol_pane(
+                        ui,
+                        body,
+                        protocol,
+                        ws,
+                        navigator_panes[0],
+                        mode,
+                        protocol_focus,
+                        &headed,
+                        &mut requests,
+                        affordances,
+                    );
+                });
+            regions.push((navigator.id, drawn.response.rect));
+
+            // ---- the inspector rail: what the selection is, from whichever
+            // document owns the selection.
+            let drawn = Panel::right("bf-inspector-rail")
+                .default_size(rail_default(inspector))
+                .min_size(rail_min(inspector))
+                .resizable(true)
+                .frame(rail_frame)
+                .show(ui, |ui| {
+                    // Measured before this line existed: the rail's reported
+                    // rect was 200pt wide — its declared floor — by the second
+                    // frame rather than the declared 280, because a quiet
+                    // inspector does not ask for more. Watched redden without
+                    // it: `the_overlay_toggle_still_reaches_the_chart_pane`
+                    // fails, the scripted click aimed at the wider prediction
+                    // landing outside the shrunken panel.
+                    ui.set_min_width(ui.available_width());
+                    let (strip, body) = chrome::rail_split(ui.max_rect());
+                    picks.inspector = chrome::rail_selector(
+                        ui,
+                        strip,
+                        &pane_labels(&inspector_labels),
+                        inspector_panel,
+                        mode,
+                    );
+                    let item = inspector_panes[inspector_panel];
+                    if item == PROTOCOL_INSPECTOR {
+                        draw_protocol_pane(
+                            ui,
+                            body,
+                            protocol,
+                            ws,
+                            item,
+                            mode,
+                            protocol_focus,
+                            &headed,
+                            &mut requests,
+                            affordances,
+                        );
+                    } else {
+                        draw_chart_pane(
+                            ui,
+                            body,
+                            charts,
+                            ws,
+                            item,
+                            mode,
+                            chart_focus,
+                            &headed,
+                            &mut requests,
+                            affordances,
+                        );
+                    }
+                });
+            regions.push((inspector.id, drawn.response.rect));
+
+            // ---- the canvas: the remainder, and it comes last because a
+            // `CentralPanel` takes what the panels before it left.
+            let drawn = CentralPanel::default().frame(rail_frame).show(ui, |ui| {
+                let (head, body) = chrome::rail_split(ui.max_rect());
+                if graph_on_canvas {
+                    canvas_head(ui, head, &canvas_name, None, mode);
+                    draw_protocol_pane(
+                        ui,
+                        body,
+                        protocol,
+                        ws,
+                        graph,
+                        mode,
+                        protocol_focus,
+                        &headed,
+                        &mut requests,
+                        affordances,
+                    );
+                } else {
+                    let toggle = canvas_head(
+                        ui,
+                        head,
+                        &canvas_name,
+                        Some((&projection_labels, projection)),
+                        mode,
+                    );
+                    if let Some(toggle) = toggle {
+                        canvas_toggle = toggle.segments;
+                        picks.projection = toggle.picked;
+                    }
+                    draw_chart_pane(
+                        ui,
+                        body,
+                        charts,
+                        ws,
+                        projections[projection].item,
+                        mode,
+                        chart_focus,
+                        &headed,
+                        &mut requests,
+                        affordances,
+                    );
                 }
             });
+            regions.push((canvas.id, drawn.response.rect));
+
+            self.regions = regions;
+            self.canvas_toggle = canvas_toggle;
+            if let Some(next) = picks.projection {
+                self.projection = next;
+            }
+            if let Some(next) = picks.ledger {
+                self.ledger_panel = next;
+            }
+            if let Some(next) = picks.inspector {
+                self.inspector_panel = next;
+            }
         }
 
         self.status_rail_ui(&ctx, &mut requests);
@@ -2243,11 +2657,6 @@ impl MeridianApp {
         if bar.home {
             self.open_home(&ctx);
         }
-        if let Some(next) = bar.switch {
-            self.ws_mut().set_active(next);
-            ctx.request_repaint();
-        }
-
         // After the panes have drawn, because the controls rail dispatches a
         // slider's queued value inside its own draw — so this frame's gesture
         // is answered in this frame's banner, not the next one's.
@@ -2315,6 +2724,60 @@ impl MeridianApp {
         if self.home_binding.is_some_and(|t| consume_token(ctx, t)) {
             self.open_home(ctx);
         }
+    }
+
+    /// Move focus to the navigator rail, or put it back, if the registry's
+    /// `toggle-outline-rail` keystroke is down this frame.
+    ///
+    /// Gated exactly as [`Self::home_key`] is: no overlay open, no widget
+    /// holding the keyboard.
+    fn navigator_key(&mut self, ctx: &egui::Context) {
+        if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        if self
+            .navigator_binding
+            .is_some_and(|t| consume_token(ctx, t))
+        {
+            self.toggle_navigator_focus(ctx);
+        }
+    }
+
+    /// The navigator rail's round trip: the same verb reaches the protocol
+    /// spine and returns focus to where it came from.
+    ///
+    /// The round trip is the whole of the semantics, and it is what a dock
+    /// toggle has that a view switch does not: a glance at the protocol costs
+    /// one key each way and never leaves the cursor parked in a rail. Held by
+    /// `pressing_the_navigator_toggle_twice_returns_focus`, which breaks if
+    /// the second press is treated as a second move rather than as a return.
+    ///
+    /// "Where it came from" includes **nowhere**: a window nobody has clicked
+    /// in has no focused pane, and putting focus back there is a state the
+    /// window can be in rather than a missing answer.
+    fn toggle_navigator_focus(&mut self, ctx: &egui::Context) {
+        let rail = PaneKey::new(ViewKind::Protocol, OUTLINE);
+        if self.ws().focus_in(ViewKind::Protocol) == Some(rail) {
+            let back = self.focus_return.take();
+            self.ws_mut().clear_focus(ViewKind::Protocol);
+            if let Some(key) = back {
+                self.ws_mut().set_focus(key);
+            }
+        } else {
+            let back = self.focused_pane();
+            self.focus_return = back;
+            // The document being left gives its record up. `Workspace` keeps
+            // focus per document so that coming back to one does not move your
+            // cursor, and that reasoning held while one document was drawn at a
+            // time. Both are drawn in one frame now, so two live records would
+            // mean two panes wearing the focus ring — the toggle is the one
+            // verb that crosses that line, and it carries the tidy-up.
+            if let Some(back) = back {
+                self.ws_mut().clear_focus(back.view);
+            }
+            self.ws_mut().set_focus(rail);
+        }
+        ctx.request_repaint();
     }
 
     /// Perform whichever navigation verb's key is down this frame.
@@ -2433,7 +2896,7 @@ impl MeridianApp {
     }
 
     /// Which overlay is open, named — a test hook, like
-    /// [`MeridianApp::switcher_rect`].
+    /// [`MeridianApp::region_rect`].
     #[must_use]
     pub fn open_overlay(&self) -> Option<&'static str> {
         self.overlay.as_ref().map(|o| match o {
@@ -2468,46 +2931,36 @@ impl MeridianApp {
         &self.toasts
     }
 
-    /// The one top bar: the view switcher, the active view's subject, and what
+    /// The title band: the way back to the front door, the subject, and what
     /// this is being rendered by.
     ///
-    /// Returns what the bar's controls were asked to do rather than doing it:
-    /// this runs inside the top panel's closure, and switching views mid-frame
-    /// would leave the dock below drawing a tree the bar above has already
-    /// stopped describing.
+    /// Returns what the band's controls were asked to do rather than doing it:
+    /// this runs inside the band's own panel closure, and acting on a control
+    /// mid-frame would leave the regions below drawing a state the band above
+    /// has already stopped describing.
     ///
-    /// The switcher is a pair of plain `selectable_label`s rather than a
-    /// `Subject` toolbar entry. A toolbar entry carries a [`Verb`], every verb
-    /// is checked against the `brightfield-keys` registry, and there is no
-    /// registered verb for switching views — inventing one is a keyboard-grammar
-    /// decision, not a consequence of putting two views in one window.
+    /// **No view switcher.** The pair of plain `selectable_label`s this band
+    /// carried modelled the protocol as a peer of the chart, and the protocol
+    /// is the container the chart sits inside — it is the navigator rail, and
+    /// its toggle is `toggle-outline-rail` off the keyboard registry rather
+    /// than a control invented here.
     ///
     /// **The right-hand group is dropped rather than allowed to spill.** A
     /// right-to-left layout draws from the window's right edge leftwards and
     /// does not stop at the cursor the left-hand content left behind, so on a
-    /// narrow window the renderer line lands *on top of* the switcher. egui
-    /// gives a click to the last widget drawn over a point, so the switcher goes
-    /// on drawing, goes on recording a rect, and stops switching — and with no
-    /// keyboard verb for switching views, that leaves the other view with no
-    /// reachable affordance at all. Measured before this gate went in, sweeping
-    /// the protocol view's window width from 240 to 700 logical points: every
-    /// width from 376 up switched, and all but two of the sampled widths below
-    /// it did not. [`right_group_width`] asks what the group needs before any of
-    /// it is drawn, and
-    /// `the_top_bar_switcher_switches_the_view_the_dock_draws` clicks the
-    /// switcher at a window narrow enough to have failed.
+    /// narrow window the renderer line lands on top of the Home button. egui
+    /// gives a click to the last widget drawn over a point, so Home would go
+    /// on drawing, go on recording a rect, and stop working.
+    /// [`right_group_width`] asks what the group needs before any of it is
+    /// drawn.
     ///
     /// [`Verb`]: brightfield_workbench::Verb
-    fn top_bar(&mut self, ui: &mut egui::Ui) -> TopBar {
+    fn title_band(&mut self, ui: &mut egui::Ui) -> TopBar {
         let sem = semantic(self.mode.is_dark());
         let active = self.ws().active();
-        // Read everything the bar says before drawing it, so the closure below
-        // borrows no more of `self` than the switcher state it writes.
+        // Read everything the band says before drawing it, so the closure
+        // below borrows no more of `self` than the state it writes.
         let title = self.title();
-        let crumbs = match active {
-            ViewKind::Charts => Vec::new(),
-            ViewKind::Protocol => self.protocol.doc.model.breadcrumb(),
-        };
         let flow = self.protocol.doc.model.flow();
         let theme = match self.mode {
             Mode::Light => "light",
@@ -2522,13 +2975,11 @@ impl MeridianApp {
 
         let mut bar = TopBar::default();
         ui.horizontal_centered(|ui| {
-            for view in ViewKind::ALL {
-                let control = ui.selectable_label(view == active, view.label());
-                bar.switcher.push((view, control.rect));
-                if control.clicked() && view != active {
-                    bar.switch = Some(view);
-                }
-            }
+            ui.label(
+                egui::RichText::new("Meridian")
+                    .font(ui_font())
+                    .color(chrome::colour(sem.text.secondary)),
+            );
             if !door {
                 let home = ui.button(egui::RichText::new("Home").font(ui_font()));
                 bar.home_rect = Some(home.rect);
@@ -2537,18 +2988,6 @@ impl MeridianApp {
                 }
             }
             ui.label(egui::RichText::new(title).color(chrome::colour(sem.text.primary)));
-            for crumb in crumbs {
-                ui.label(
-                    egui::RichText::new("»")
-                        .font(ui_font())
-                        .color(chrome::colour(sem.text.muted)),
-                );
-                ui.label(
-                    egui::RichText::new(crumb)
-                        .font(ui_font())
-                        .color(chrome::colour(sem.text.secondary)),
-                );
-            }
             // The renderer line is a developer diagnostic — a stranger's first
             // launch should not read "egui · Vello · wgpu 29". It appears only
             // under the devtools flag; the flow toggle is a real affordance and
@@ -2703,6 +3142,14 @@ impl MeridianApp {
                 // the verb would reach neither handler.
                 Request::Verb(verb) if verb.as_str() == "open-home" => {
                     self.open_home(ctx);
+                }
+                // The navigator rail's toggle spans both documents for the
+                // same reason open-home does — it is the window's verb, not
+                // one view's — so it is intercepted here rather than inside
+                // the per-view match, which would send it to a model that
+                // silently no-ops an unknown verb.
+                Request::Verb(verb) if verb.as_str() == NAVIGATOR_TOGGLE => {
+                    self.toggle_navigator_focus(ctx);
                 }
                 Request::Verb(verb) => match view {
                     ViewKind::Charts => {
@@ -3144,7 +3591,7 @@ impl MeridianApp {
         if fills_its_view {
             let pane = match start.view {
                 ViewKind::Charts => PaneKey::new(ViewKind::Charts, CHART),
-                ViewKind::Protocol => PaneKey::new(ViewKind::Protocol, CANVAS),
+                ViewKind::Protocol => PaneKey::new(ViewKind::Protocol, PROTOCOL_CANVAS),
             };
             self.affordances.push((pane, rect));
         }
@@ -3195,7 +3642,7 @@ impl MeridianApp {
     fn set_active_tab(&mut self) {
         let show_sheet = self.protocol.doc.model.show_sheet();
         let tree = self.ws_mut().tree_mut(ViewKind::Protocol);
-        let Some(canvas) = tile_of(tree, PaneKey::new(ViewKind::Protocol, CANVAS)) else {
+        let Some(canvas) = tile_of(tree, PaneKey::new(ViewKind::Protocol, PROTOCOL_CANVAS)) else {
             return;
         };
         let Some(steps) = tile_of(tree, PaneKey::new(ViewKind::Protocol, STEPS)) else {
@@ -3315,6 +3762,279 @@ fn door_zone_heading(ui: &mut egui::Ui, name: &str, sem: &semantic::Semantic) {
     );
     ui.add_space(spacing::SPACE_2);
 }
+/// The verb that reaches the navigator rail and returns from it.
+///
+/// The registry's longname, said once here rather than spelled at each of the
+/// three sites that need it — the boot lookup, the request intercept and the
+/// test that presses it.
+pub const NAVIGATOR_TOGGLE: &str = "toggle-outline-rail";
+
+/// The other view of the two — where focus goes looking when the active view
+/// has none.
+const fn other_view(view: ViewKind) -> ViewKind {
+    match view {
+        ViewKind::Charts => ViewKind::Protocol,
+        ViewKind::Protocol => ViewKind::Charts,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Reading the arrangement
+// ---------------------------------------------------------------------------
+
+/// The extent a band was declared at.
+///
+/// # Panics
+///
+/// If the region is not a band. A region the draw path lays out as a fixed
+/// band while the arrangement calls it something else is a structural mistake,
+/// and honouring it silently is how the two answers drift apart.
+fn band_extent(region: &Region) -> f32 {
+    match region.extent {
+        arrangement::Extent::Band(size) => size,
+        other => panic!("{} is drawn as a band but declared {other:?}", region.id),
+    }
+}
+
+/// What a rail opens at.
+///
+/// # Panics
+///
+/// If the region is not a rail — as [`band_extent`].
+fn rail_default(region: &Region) -> f32 {
+    match region.extent {
+        arrangement::Extent::Rail { default, .. } => default,
+        other => panic!("{} is drawn as a rail but declared {other:?}", region.id),
+    }
+}
+
+/// What a rail refuses to narrow past.
+///
+/// # Panics
+///
+/// If the region is not a rail — as [`band_extent`].
+fn rail_min(region: &Region) -> f32 {
+    match region.extent {
+        arrangement::Extent::Rail { min, .. } => min,
+        other => panic!("{} is drawn as a rail but declared {other:?}", region.id),
+    }
+}
+
+/// The panes a rail was declared to hold.
+///
+/// # Panics
+///
+/// If the region holds something other than panes — as [`band_extent`].
+fn region_panes(region: &Region) -> &'static [ItemId] {
+    match region.occupant {
+        Occupant::Panes(panes) => panes,
+        other => panic!("{} is drawn as a rail but declared {other:?}", region.id),
+    }
+}
+
+/// The canvas's declared projections and the graph behind them.
+///
+/// # Panics
+///
+/// If the region is not the canvas — as [`band_extent`].
+fn canvas_occupants(region: &Region) -> (&'static [Projection], ItemId) {
+    match region.occupant {
+        Occupant::Canvas { projections, graph } => (projections, graph),
+        other => panic!(
+            "{} is drawn as the canvas but declared {other:?}",
+            region.id
+        ),
+    }
+}
+
+/// The words a rail's selector strip offers its panes under — each pane's own
+/// [`Subject`] title, so the strip and the pane cannot say different things
+/// about the same pane.
+fn pane_labels(labels: &[String]) -> Vec<&str> {
+    labels.iter().map(String::as_str).collect()
+}
+
+// ---------------------------------------------------------------------------
+// Drawing a region's occupant
+// ---------------------------------------------------------------------------
+
+/// Draw one pane of the protocol document into `body`, through the same
+/// [`PaneChrome`] a dock would have used.
+///
+/// A no-op for a pane this build's tree does not carry: the tile is what
+/// `pane_ui` addresses its focus and its item context by, and a pane with no
+/// tile has no address.
+#[allow(clippy::too_many_arguments)]
+fn draw_protocol_pane(
+    ui: &mut egui::Ui,
+    body: egui::Rect,
+    protocol: &mut ProtocolView,
+    ws: &Workspace,
+    item: ItemId,
+    mode: Mode,
+    focused: Option<PaneKey>,
+    headed: &std::collections::HashSet<egui_tiles::TileId>,
+    requests: &mut Vec<Request>,
+    affordances: &mut Vec<(PaneKey, egui::Rect)>,
+) {
+    let mut key = PaneKey::new(ViewKind::Protocol, item);
+    let Some(tile) = ws.tile_of(key) else {
+        return;
+    };
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(body)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    child.shrink_clip_rect(body);
+    let mut behavior = PaneChrome::new(
+        &mut protocol.doc,
+        &mut protocol.items,
+        mode,
+        focused,
+        headed,
+        requests,
+        affordances,
+    );
+    let _ = behavior.pane_ui(&mut child, tile, &mut key);
+}
+
+/// [`draw_protocol_pane`] over the chart document.
+#[allow(clippy::too_many_arguments)]
+fn draw_chart_pane(
+    ui: &mut egui::Ui,
+    body: egui::Rect,
+    charts: &mut ChartView,
+    ws: &Workspace,
+    item: ItemId,
+    mode: Mode,
+    focused: Option<PaneKey>,
+    headed: &std::collections::HashSet<egui_tiles::TileId>,
+    requests: &mut Vec<Request>,
+    affordances: &mut Vec<(PaneKey, egui::Rect)>,
+) {
+    let mut key = PaneKey::new(ViewKind::Charts, item);
+    let Some(tile) = ws.tile_of(key) else {
+        return;
+    };
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(body)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    child.shrink_clip_rect(body);
+    let mut behavior = PaneChrome::new(
+        &mut charts.doc,
+        &mut charts.items,
+        mode,
+        focused,
+        headed,
+        requests,
+        affordances,
+    );
+    let _ = behavior.pane_ui(&mut child, tile, &mut key);
+}
+
+/// The canvas's head band: what is on the canvas at its left, the one toggle
+/// between the step's projections after it, and a rule under the lot.
+///
+/// `toggle` is `None` on a canvas showing the graph, which has no second
+/// reading to offer — the toggle is drawn where there is something to toggle
+/// rather than drawn disabled, because a control that cannot act is a control
+/// a reader has to work out the state of.
+fn canvas_head(
+    ui: &mut egui::Ui,
+    head: egui::Rect,
+    name: &str,
+    toggle: Option<(&[&str], usize)>,
+    mode: Mode,
+) -> Option<chrome::ToggleDrawn> {
+    let sem = semantic(mode.is_dark());
+    ui.painter()
+        .rect_filled(head, radius::NONE, chrome::colour(sem.surfaces.header));
+    let galley =
+        ui.painter()
+            .layout_no_wrap(name.to_owned(), ui_font(), chrome::colour(sem.text.primary));
+    let name_width = galley.size().x;
+    ui.painter().galley(
+        egui::pos2(
+            head.left() + spacing::SPACE_4,
+            head.center().y - galley.size().y / 2.0,
+        ),
+        galley,
+        chrome::colour(sem.text.primary),
+    );
+    let drawn = toggle.map(|(labels, active)| {
+        chrome::projection_toggle(
+            ui,
+            egui::pos2(
+                head.left() + spacing::SPACE_4 + name_width + spacing::SPACE_6,
+                head.center().y,
+            ),
+            labels,
+            active,
+            mode,
+        )
+    });
+    ui.painter().line_segment(
+        [head.left_bottom(), head.right_bottom()],
+        egui::Stroke::new(1.0, chrome::colour(sem.borders.subtle)),
+    );
+    drawn
+}
+
+/// The locator band: where the subject sits, said as a breadcrumb, and where
+/// the document came from at its right.
+///
+/// The right-hand note is what stops this band repeating the title band on a
+/// window whose subject has no trail below it: a chart has no drill state, so
+/// its crumb line is one entry, and the file it was composed from is the thing
+/// a locator can say that the title cannot.
+fn locator_band_ui(ui: &egui::Ui, crumbs: &[String], source: Option<&str>, mode: Mode) {
+    let sem = semantic(mode.is_dark());
+    let rect = ui.max_rect();
+    if let Some(source) = source {
+        ui.painter().text(
+            egui::pos2(rect.right() - spacing::SPACE_4, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            source,
+            egui::FontId::monospace(meridian_design::typography::UI_SIZE - 1.0),
+            chrome::colour(sem.text.muted),
+        );
+    }
+    let mut x = rect.left() + spacing::SPACE_4;
+    for (i, crumb) in crumbs.iter().enumerate() {
+        if i > 0 {
+            let sep = ui.painter().layout_no_wrap(
+                "\u{203a}".to_owned(),
+                ui_font(),
+                chrome::colour(sem.text.muted),
+            );
+            let width = sep.size().x;
+            ui.painter().galley(
+                egui::pos2(x, rect.center().y - sep.size().y / 2.0),
+                sep,
+                chrome::colour(sem.text.muted),
+            );
+            x += width + spacing::SPACE_3;
+        }
+        let ink = if i + 1 == crumbs.len() {
+            sem.text.primary
+        } else {
+            sem.text.secondary
+        };
+        let galley = ui
+            .painter()
+            .layout_no_wrap(crumb.clone(), ui_font(), chrome::colour(ink));
+        let width = galley.size().x;
+        ui.painter().galley(
+            egui::pos2(x, rect.center().y - galley.size().y / 2.0),
+            galley,
+            chrome::colour(ink),
+        );
+        x += width + spacing::SPACE_3;
+    }
+}
 
 /// How wide the top bar's right-hand group would be if it drew: the renderer
 /// line when developer diagnostics are on, and the flow toggle when the
@@ -3324,7 +4044,7 @@ fn door_zone_heading(ui: &mut egui::Ui, name: &str, sem: &semantic::Semantic) {
 /// Asked *before* the group is drawn, which is the whole point — a
 /// right-to-left layout that does not fit overlaps what is already on the bar
 /// instead of shrinking, and the thing already on the bar is the only way to
-/// reach the other view. See [`MeridianApp::top_bar`].
+/// reach the other view. See [`MeridianApp::title_band`].
 ///
 /// The one leading item spacing is included because egui inserts it when it
 /// places the group, and `available_width` is measured before it exists.
@@ -3420,6 +4140,92 @@ mod tests {
             (doc.composed.width, doc.composed.height),
             declared,
             "the start held its declared size in a box half that wide"
+        );
+    }
+
+    /// A protocol opened over a chart leaves the chart on the canvas.
+    ///
+    /// The two opens a person drives, in the order that used to trap them:
+    /// `open_start` records the view its start fills, its `Opened::Protocol`
+    /// arm leaves the chart document alone, and the frame then read
+    /// `_ => view` for a window holding both — so the canvas went to the graph
+    /// and stayed there. Nothing on the window moves it back. Measured before
+    /// this test existed: a 12-point grid of clicks over the whole window,
+    /// re-settling after each, found no control that returns the canvas to the
+    /// chart, and the only exit was Home, which discards both documents.
+    ///
+    /// Asserted off a drawn frame rather than off `active()`: the branch that
+    /// puts the graph on the canvas draws no toggle, so two segments coming
+    /// back are the screen saying which document it gave the canvas to.
+    /// Then one of them is clicked, because a canvas that draws the chart and
+    /// answers no pointer is the same dead end with a picture of the way out.
+    #[test]
+    fn a_protocol_opened_over_a_chart_leaves_the_chart_on_the_canvas() {
+        let mut app = app();
+        let ctx = egui::Context::default();
+        app.open_start(&ctx, crate::starts::DASHBOARD);
+        app.open_start(&ctx, crate::starts::CROSSWALK);
+        assert!(
+            !app.chart_doc().is_empty(),
+            "opening the protocol emptied the chart document, so this window \
+             never reached the state under test"
+        );
+        assert!(
+            app.protocol_doc().model.has_assets(),
+            "the protocol start built no assets, so this window never reached \
+             the state under test"
+        );
+
+        let (w, h) = chart_window_size(&app.chart_doc().composed);
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(w, h),
+            )),
+            ..Default::default()
+        };
+        // Three frames, for the reason `tests/arrangement.rs` gives: a
+        // resizable panel's reported size is read back on the frame after.
+        for _ in 0..3 {
+            let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
+        }
+
+        let segments = app.canvas_toggle_segments().to_vec();
+        assert_eq!(
+            segments.len(),
+            2,
+            "the canvas drew {} toggle segments over a window holding both \
+             documents. The toggle draws where the canvas holds the chart, so \
+             none means the graph took the canvas — and there is no control \
+             that gives it back",
+            segments.len()
+        );
+
+        // The window opens on the chart, which is the second projection; the
+        // grid is the first. Clicking it is the click a person makes.
+        let opened_on = app.projection();
+        assert_eq!(opened_on, 1, "the window did not open on the chart");
+        let grid = segments[0].center();
+        let mut events = vec![egui::Event::PointerMoved(grid)];
+        for pressed in [true, false] {
+            events.push(egui::Event::PointerButton {
+                pos: grid,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            });
+        }
+        let clicked = egui::RawInput {
+            events,
+            ..raw.clone()
+        };
+        let _ = ctx.run_ui(clicked, |ui| app.draw(ui));
+        assert_eq!(
+            app.projection(),
+            0,
+            "clicking the grid segment at {grid:?} left the canvas on \
+             projection {opened_on}, so the toggle drew over a canvas that \
+             does not answer it"
         );
     }
 

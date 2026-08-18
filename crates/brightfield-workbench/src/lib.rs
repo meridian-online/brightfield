@@ -60,6 +60,8 @@
 //! - [`activity`] — [`Activity`], the in-flight-work vocabulary beside the
 //!   run-state one, and [`ActivityIndicator`], the one rail entry it
 //!   composes to. No egui types.
+//! - [`arrangement`] — [`Arrangement`], [`Region`], [`Extent`]: which regions
+//!   the window lays out, what fills each and how much of its axis it takes.
 //! - [`item`] — [`Item`], [`ItemId`], [`PaneKey`], [`ItemCtx`].
 //! - [`registry`] — [`Slot`], [`ItemSpec`], [`ItemRegistry`]: the only route
 //!   from an item to a pane, and therefore the thing the contract tests gate;
@@ -73,6 +75,7 @@
 //! - [`chrome`] — the one drawing file.
 
 pub mod activity;
+pub mod arrangement;
 pub mod behavior;
 pub mod chrome;
 pub mod item;
@@ -83,6 +86,7 @@ pub mod subject;
 pub mod workspace;
 
 pub use activity::{Activity, ActivityIndicator, ActivityLog, HONESTY_LINE_MS};
+pub use arrangement::{Arrangement, Edge, Extent, Occupant, Projection, Region, RegionId};
 pub use behavior::PaneChrome;
 pub use item::{Handled, Item, ItemCtx, ItemId, ItemMap, PaneKey, Request};
 pub use persist::{DirtyTracker, LoadOutcome, SavedLayout, WindowGeometry};

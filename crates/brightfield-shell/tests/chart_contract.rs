@@ -19,10 +19,8 @@ use brightfield_shell::app::{chart_registry, ChartDoc, CHART, CONTROLS};
 use brightfield_shell::design::Mode;
 use brightfield_shell::editor::EDITOR;
 use brightfield_shell::pipeline::{compose_spec, Composed};
-use brightfield_shell::window::{
-    chart_toolbar_band, chart_window_size, Boot, MeridianApp, BAR_HEIGHT, DOCK_INSET,
-    INSPECTOR_RAIL_WIDTH,
-};
+use brightfield_shell::window::{chart_toolbar_band, chart_window_size, Boot, MeridianApp};
+use brightfield_workbench::arrangement;
 use brightfield_workbench::registry::{DockSide, Slot};
 use brightfield_workbench::subject::{RunState, ToolbarLocation};
 use brightfield_workbench::{audit, chrome, ItemId, PaneKey, Subject, ViewKind};
@@ -319,14 +317,14 @@ fn the_window_is_sized_from_the_inspector_rails_declared_width() {
     let (w, h) = chart_window_size(&composed);
     let inset = chrome::pane_content_inset();
 
-    // Across: the window insets to the dock, the inspector rail takes its
-    // own declared width beside it, and the pane frame insets what is left
-    // again on both sides — one tile now, not two sharing a proportion, so
-    // there is no gap term to take out first. The content box holds the
-    // raster AND the legend margin band beside it — dashboard.yaml's scatter
-    // maps fill, so its band is real here, and a `band_width` nobody
-    // budgeted would come straight out of the raster's pixels.
-    let content_w = w - 2.0 * DOCK_INSET - INSPECTOR_RAIL_WIDTH - 2.0 * inset;
+    // Across: the navigator rail and the inspector rail take their own
+    // declared widths off the window, and the pane frame insets what is left
+    // again on both sides. The content box holds the raster AND the legend
+    // margin band beside it — dashboard.yaml's scatter maps fill, so its band
+    // is real here, and a `band_width` nobody budgeted would come straight out
+    // of the raster's pixels.
+    let content_w =
+        w - arrangement::NAVIGATOR_RAIL_WIDTH - arrangement::INSPECTOR_RAIL_WIDTH - 2.0 * inset;
     let need_w = composed.width as f32 + brightfield_shell::legend::band_width(&composed);
     assert!(
         brightfield_shell::legend::band_width(&composed) > 0.0,
@@ -338,12 +336,20 @@ fn the_window_is_sized_from_the_inspector_rails_declared_width() {
          {need_w:.0}pt raster+legend — something will be clipped"
     );
 
-    // Down: the window gives up its one band — the charts view draws no hint
-    // bar — insets to the dock, and the pane frame takes its header band and
-    // its padding above and below. The toolbar band is a term too, and for
-    // this gesture-less dashboard it must be exactly zero — quiet means no
-    // row, and no row means no budget.
-    let content_h = h - BAR_HEIGHT - 2.0 * DOCK_INSET - chrome::header_band_height() - 2.0 * inset;
+    // Down: the title band, the locator band and the ledger rail come off the
+    // window; the canvas keeps its own head band, which is the strip a rail is
+    // split at; and the pane frame takes its padding above and below. No hint
+    // band — the chart projections have no bare-key grammar, so a hint band
+    // appearing on this window would take its height out of the box read back
+    // by `the_window_it_asks_for_fits_the_raster_it_presents`. The toolbar band
+    // is a term too, and for this gesture-less dashboard it must be exactly
+    // zero — quiet means no row, and no row means no budget.
+    let content_h = h
+        - arrangement::TITLE_BAND_HEIGHT
+        - arrangement::LOCATOR_BAND_HEIGHT
+        - arrangement::LEDGER_RAIL_HEIGHT
+        - chrome::rail_selector_height()
+        - 2.0 * inset;
     assert_eq!(
         chart_toolbar_band(&composed),
         0.0,

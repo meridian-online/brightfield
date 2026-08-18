@@ -81,7 +81,6 @@ use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::compose_spec_in_mode;
 use brightfield_shell::protocol::load_protocol_offline;
 use brightfield_shell::window::{chart_window_size, Boot, MeridianApp};
-use brightfield_workbench::ViewKind;
 
 /// Device pixels per logical point for this tier. See the module note.
 const SCALE: f32 = 1.0;
@@ -356,38 +355,6 @@ fn protocol_surface(mode: Mode, name: &str, script: Vec<Vec<egui::Event>>) {
     egui_kittest::image_snapshot(&img, name);
 }
 
-/// The rects the protocol view's layout produces at the window size it asks
-/// for: the DAG canvas pane's content box, and the top bar's switcher control
-/// for each view.
-///
-/// The headless twin of [`chart_layout`], derived for the same reason: the
-/// round-trip test below has to click the *switcher*, and a coordinate typed
-/// against a bar nothing derived it from would go on clicking empty bar the
-/// first time a label or a padding moved.
-fn protocol_layout(mode: Mode) -> (egui::Rect, egui::Rect, egui::Rect) {
-    let boot = protocol_boot();
-    let (w, h) = boot.window_size(ViewKind::Protocol);
-    let mut app = MeridianApp::headless(boot, mode);
-    let ctx = egui::Context::default();
-    let raw = egui::RawInput {
-        screen_rect: Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(w, h),
-        )),
-        ..Default::default()
-    };
-    for _ in 0..2 {
-        let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
-    }
-    (
-        app.canvas_viewport().expect("the DAG canvas pane drew"),
-        app.switcher_rect(ViewKind::Charts)
-            .expect("the top bar drew a charts switcher control"),
-        app.switcher_rect(ViewKind::Protocol)
-            .expect("the top bar drew a protocol switcher control"),
-    )
-}
-
 /// One frame of a keypress, the same event pair `capture::parse_script`
 /// synthesises for a `{"key":"…","shift":…}` script line.
 fn press(key: egui::Key, shift: bool) -> Vec<egui::Event> {
@@ -611,72 +578,102 @@ fn protocol_cte_light_surface() {
 fn protocol_cte_dark_surface() {
     cte_surface(Mode::Dark, "protocol_cte_dark");
 }
-
-/// The DAG is still there after the user has been to the other view and back.
+/// The canvas toggle switches the canvas, and coming back lands on the same
+/// picture — asked in pixels, where the layout cannot answer.
 ///
-/// One window means one canvas host per document and two documents alive at
-/// once, and the rule that keeps them alive is a single line: `MeridianApp` has
-/// to name **every pane of every view** to the hosts every frame, not just the
-/// panes the drawn view laid out. `EguiCanvasHost::end_frame` frees any slot
-/// that neither presented this frame nor appears in the set it is handed, and
-/// `present` returns early on an unchanged key — so naming only the drawn
-/// view's panes frees the other view's texture while leaving the pane holding
-/// its id, and the DAG comes back as an empty box the instant the user
-/// switches to it. Nothing about that is visible without a device: the layout,
-/// the rects, the scroll offsets and every accesskit node are identical either
-/// way. It is a pixel question, so it is asked in pixels.
+/// The pixel half of the one toggle. `the_canvas_toggle_offers_two_projections_and_no_more`
+/// counts the segments and reads the labels; nothing there says that pressing
+/// one changes what the canvas shows. This does: three captures of the same
+/// window, compared over a rectangle strictly inside the chart raster.
 ///
-/// Two captures of the same window, compared over a rectangle strictly inside
-/// the DAG canvas: one that never leaves the protocol view, one that clicks
-/// through to the charts view and back. The pointer ends on the top bar in
-/// both readings that matter, so nothing inside the canvas is hovered.
+/// - never touched: the chart.
+/// - Grid clicked: must differ, and the assertion says so before anything
+///   else is read — otherwise a click that missed and a toggle that does
+///   nothing produce the same result and the message would have to guess.
+/// - Grid then Chart: must be identical to the first. A toggle that switched
+///   but could not switch back, or a canvas that came back re-laid-out, fails
+///   here.
 ///
-/// Watched redden, one mutation: sweeping both documents with the *drawn*
-/// view's pane set (`self.charts.doc.sweep(&live); self.protocol.doc.sweep(&live)`)
-/// leaves every other test in the workspace green and fails here with the whole
-/// canvas differing.
+/// **What this deliberately does not claim.** The test it replaces held
+/// `MeridianApp::sweep` — that naming only the drawn view's panes frees the
+/// other document's texture — by clicking the peer switcher and back. That
+/// switcher is gone, and the two documents are no longer swapped by any
+/// control, so there is no pointer route left to drive that round trip; the
+/// mutation it named (sweeping with the drawn pane's key alone) leaves this
+/// green, because both of these projections belong to the same document and it
+/// re-presents on the frame it returns to. That gate is lost rather than moved,
+/// and saying so is better than a doc comment claiming a guard this cannot give.
+///
+/// Watched redden, one mutation: dropping `picks.projection` on the floor in
+/// `MeridianApp::draw`, so the toggle draws and records a click that no longer
+/// moves the canvas. It fails at *"clicking Grid changed nothing inside the
+/// canvas"*.
 #[test]
-fn the_dag_survives_a_round_trip_through_the_charts_view() {
-    let (canvas, to_charts, to_protocol) = protocol_layout(Mode::Light);
-    // Strictly inside the raster, clear of the pane frame and the tab strip.
-    let inside_dag = Region::inside(canvas, 20.0);
+fn the_canvas_toggle_switches_the_canvas_and_switches_back() {
+    let (chart, _) = chart_layout(Mode::Light);
+    // Strictly inside the raster, clear of the pane frame and the head band.
+    let inside_chart = Region::inside(chart, 20.0);
+    let (grid_seg, chart_seg) = canvas_toggle_segments(Mode::Light);
 
-    let stayed = protocol_capture(Mode::Light, "roundtrip_stayed", Vec::new());
-    let returned = protocol_capture(
+    let stayed = shell_capture(Mode::Light, "toggle_stayed", Vec::new());
+    // A settle frame before each click, for the reason
+    // `the_overlay_toggle_still_reaches_the_chart_pane` records: egui hit-tests
+    // a click against the previous frame's widget rects, and the frame before
+    // the script is drawn without the font atlas.
+    let returned = shell_capture(
         Mode::Light,
-        "roundtrip_returned",
+        "toggle_returned",
         vec![
-            click_at(to_charts.center().x, to_charts.center().y),
-            click_at(to_protocol.center().x, to_protocol.center().y),
+            Vec::new(),
+            click_at(grid_seg.center().x, grid_seg.center().y),
+            Vec::new(),
+            click_at(chart_seg.center().x, chart_seg.center().y),
         ],
     );
 
-    // Guard the guard: if either click missed, the second capture never left
-    // the protocol view and the assertion below would pass for the wrong
-    // reason. The charts view is a different window entirely — a chart pane and
-    // a controls rail where the outline rail and the DAG are — so a capture
-    // taken with only the first click is bound to differ over this rectangle,
-    // and does not if the click missed the switcher.
-    let switched = protocol_capture(
+    // Guard the guard: if either click missed, the second capture stayed on
+    // the chart and the assertion below would pass for the wrong reason. The
+    // grid is a table of numbers where the raster is, so a capture taken with
+    // only the first click is bound to differ over this rectangle — and does
+    // not if the click missed the toggle.
+    let switched = shell_capture(
         Mode::Light,
-        "roundtrip_switched",
-        vec![click_at(to_charts.center().x, to_charts.center().y)],
+        "toggle_switched",
+        vec![
+            Vec::new(),
+            click_at(grid_seg.center().x, grid_seg.center().y),
+        ],
     );
     assert!(
-        region_diff(&stayed, &switched, inside_dag).is_some(),
-        "clicking the charts control at {:?} changed nothing inside the DAG \
-         canvas — the click did not land on the switcher, so this test proves \
-         nothing about the round trip",
-        to_charts.center(),
+        region_diff(&stayed, &switched, inside_chart).is_some(),
+        "clicking Grid at {:?} changed nothing inside the canvas — the click \
+         did not land on the toggle, so this test proves nothing about the \
+         round trip",
+        grid_seg.center(),
     );
 
     assert_eq!(
-        region_diff(&stayed, &returned, inside_dag),
+        region_diff(&stayed, &returned, inside_chart),
         None,
-        "the DAG canvas differs after a round trip through the charts view \
-         (and the trip did happen — see above), so the protocol document's \
-         texture did not survive the frames its view was not drawn"
+        "the chart raster differs after a round trip through the grid (and the \
+         trip did happen — see above), so the chart document's texture did not \
+         survive the frames its projection was not drawn"
     );
+}
+
+/// Where the canvas toggle drew its two segments, off a settled headless
+/// layout pass — derived for the reason [`chart_layout`] is, and asserted to be
+/// exactly two, which is AC2's count.
+fn canvas_toggle_segments(mode: Mode) -> (egui::Rect, egui::Rect) {
+    let app = settled_chart_app(mode);
+    let segments = app.canvas_toggle_segments();
+    assert_eq!(
+        segments.len(),
+        2,
+        "the canvas toggle drew {} segments; it offers a grid and a chart",
+        segments.len()
+    );
+    (segments[0], segments[1])
 }
 
 /// The overlay toggle still reaches the canvas across the dock.
@@ -720,10 +717,20 @@ fn the_overlay_toggle_still_reaches_the_chart_pane() {
         "overlay_on",
         vec![move_to(over_chart.x, over_chart.y)],
     );
+    // A settle frame before the click, and it is load-bearing rather than
+    // padding. `capture::run_ui_frames` runs one frame before the script, and
+    // egui resolves "which widget is under the pointer" against the *previous*
+    // frame's widget rects — so a click on the script's first frame is hit-
+    // tested against a layout drawn before the font atlas was installed. The
+    // aim comes from `chart_layout`, which is settled; measured on this window
+    // the two answers differ by six points vertically, and the aim landed
+    // exactly on the unsettled rect's bottom edge and was given to the pane
+    // underneath.
     let toggled_off = shell_capture(
         Mode::Light,
         "overlay_off",
         vec![
+            Vec::new(),
             click_at(checkbox.center().x, checkbox.center().y),
             move_to(over_chart.x, over_chart.y),
         ],

@@ -255,32 +255,57 @@ fn a_window_publishes_both_registries_and_nothing_else() {
     }
 }
 
-/// The window built from a boot opens on the view the boot named, and **only
-/// that view is laid out**.
+/// One document's panes are laid out per frame, and the documents decide
+/// which.
 ///
-/// Both documents are loaded and both dock trees exist, so the cheap mistake
-/// would be to run both trees every frame and show one — which costs a full
-/// second layout pass and a second raster, and makes "which view is active" a
-/// question about visibility rather than about work. The second assertion is
-/// what rules that out: the chart pane records the box it was handed inside its
-/// own `ui`, so a `None` there means nobody called it.
+/// Both dock trees exist, so the cheap mistake would be to run both every
+/// frame and show one — a full second layout pass and a second raster, and
+/// "which document is on the canvas" becomes a question about visibility
+/// rather than about work. The viewport readbacks rule that out: a pane
+/// records the box it was handed inside its own `ui`, so a `None` means nobody
+/// called it.
 ///
-/// It says nothing about switching. That is
-/// `the_top_bar_switcher_switches_the_view_the_dock_draws`, below.
+/// Two windows, because the rule has two halves and each is the other's
+/// control:
+///
+/// - a protocol with no chart puts its graph on the canvas. Its chart pane is
+///   empty, and `PaneChrome` draws an empty state *instead of* the item, so
+///   `chart_viewport()` would be `None` here whatever the layout did — which
+///   is why that half is not asserted on this window.
+/// - a window holding both draws the chart's projection, and the boot's own
+///   `view` opinion does not change that. The protocol is readable in three
+///   rails of this arrangement while the canvas holds the chart, and the chart
+///   has the canvas and nothing else. This window's DAG pane has a graph in
+///   it, so its `None` is a layout answer rather than an empty state.
+///
+/// Watched redden, two mutations. `(_, true) => ViewKind::Charts` in
+/// `MeridianApp::draw` put back to `(false, true)` with `_ => view` fails the
+/// second window, at the chart pane's assertion. Pinning `graph_on_canvas` to
+/// `false`, so the canvas draws the projection whatever the documents hold,
+/// fails the first window, at the DAG pane's.
 #[test]
-fn the_window_opens_on_the_view_the_boot_named_and_lays_out_only_that_view() {
-    let mut win = Window::open(both(ViewKind::Protocol), Mode::Light);
-    assert_eq!(win.app.active(), ViewKind::Protocol);
+fn one_documents_panes_are_laid_out_per_frame_and_the_documents_decide_which() {
+    let mut win = Window::open(Boot::protocol(edgar(), Flow::Vertical, None), Mode::Light);
     win.settle();
     assert!(
         win.app.canvas_viewport().is_some(),
-        "the DAG canvas pane never drew"
+        "the DAG canvas pane never drew on a window with no chart in it, so \
+         the graph has nowhere left to be drawn at canvas size"
+    );
+
+    let mut win = Window::open(both(ViewKind::Protocol), Mode::Light);
+    win.settle();
+    assert!(
+        win.app.chart_viewport().is_some(),
+        "the chart pane never drew over a window holding both documents, so \
+         the graph took the canvas — a state no control on this window undoes"
     );
     assert!(
-        win.app.chart_viewport().is_none(),
-        "the chart pane drew while the protocol view was active — both views \
-         are laid out every frame, which is not what one window means"
+        win.app.canvas_viewport().is_none(),
+        "the DAG canvas pane drew while the chart held the canvas — both \
+         trees are laid out every frame, which is not what one window means"
     );
+    assert_eq!(win.app.active(), ViewKind::Charts);
 }
 
 // ---------------------------------------------------------------------------
@@ -334,12 +359,11 @@ const ULTRAWIDE: (f32, f32) = (3440.0, 1440.0);
 /// of `the_window_a_small_display_grants_leaves_the_canvas_short` below,
 /// which lays its frame out at the **granted** size instead.
 ///
-/// Watched redden, two mutations. Dropping the `TAB_BAR_HEIGHT` term from
-/// `protocol_window_size_for` — the centre tab strip the canvas sits under —
-/// leaves the canvas pane 24 points short and fails the fit by that much.
-/// Reverting `Boot::window_size` to `boot_layout` fails at *"the boot sized the
-/// window differently"*, `(1948, 842)` against `(1948, 910)` — 68 points down
-/// of guaranteed scroll, which is what measuring the envelope removed.
+/// Watched redden, two mutations. Dropping the ledger rail's term from
+/// `chrome_budget` — the rail the canvas sits above — leaves the canvas pane
+/// 180 points short and fails the fit by that much. Reverting
+/// `Boot::window_size` to `boot_layout` fails at *"the boot sized the window
+/// differently"*, which is what measuring the envelope removed.
 #[test]
 fn the_protocol_window_it_asks_for_fits_the_states_it_is_sized_for() {
     let inputs = edgar();
@@ -653,11 +677,27 @@ fn the_window_a_small_display_grants_leaves_the_canvas_short() {
          the canvas — the canvas is one share of the dock between two rails, so \
          its loss must be positive and no larger than the window's"
     );
+    // Down, the same claim in the same shape. It used to be an unconditional
+    // "the canvas still covers the graph downwards, because the panel is taller
+    // than the window": that premise died when the arrangement gained its
+    // ledger rail and its locator band and the window grew past the panel's
+    // 982 points. Asserting a bound rather than restoring the premise is the
+    // honest reading — the degradation is named and measured, exactly as it is
+    // across.
+    let clamped_down = natural.1 - granted.1;
+    let lost_down = asked.height() - given.height();
     assert!(
-        given.height() >= env_h,
-        "the laptop panel is taller than this window, so nothing was clamped \
-         down — but the canvas came up {:.2}pt short down anyway",
-        env_h - given.height()
+        lost_down >= 0.0 && lost_down <= clamped_down,
+        "the clamp took {clamped_down:.0}pt off the window's height and \
+         {lost_down:.2}pt off the canvas's — the canvas's loss must be positive \
+         and no larger than the window's"
+    );
+    assert!(
+        given.height() + clamped_down >= env_h,
+        "the laptop panel clamped {clamped_down:.0}pt off this window's height \
+         and the canvas came up {:.2}pt short down — more than the clamp \
+         explains, so some of the height budget is unaccounted for",
+        env_h - given.height() - clamped_down
     );
 }
 
@@ -802,69 +842,157 @@ fn the_protocol_grammar_does_not_reach_the_dag_from_the_charts_view() {
 }
 
 // ---------------------------------------------------------------------------
-// The switcher
+// The navigator toggle, and what the title band does not do
 // ---------------------------------------------------------------------------
-
-/// The top bar's switcher actually switches — clicked where it drew itself, at
-/// the window's natural size **and at a window narrow enough to have broken
-/// it**.
+/// The navigator rail's toggle reaches the protocol spine and comes back.
 ///
-/// This is the increment's user-facing claim, and it is the one that is easiest
-/// to assert and never check: `Workspace::set_active` can be called from a test
-/// all day without there being any way for a person to reach it. So the click
-/// is aimed at the rect the bar recorded on the previous frame rather than at a
-/// coordinate typed here, and the assertion is that the *dock* followed — the
-/// chart pane records a content box only on a frame the charts view drew.
+/// AC1's round trip, and the reason the verb is a dock toggle rather than a
+/// view switch: one keystroke reaches the spine, the same keystroke returns
+/// focus to the work, and the cursor is never left parked in a rail. A window
+/// that treated the second press as a second move would leave focus on the
+/// outline and fail the last assertion.
 ///
-/// The narrow case is not decoration. Aiming at the recorded rect is not enough
-/// on its own: the bar's right-to-left group draws from the window's right edge
-/// leftwards, so on a narrow window it lands over a switcher that is still
-/// exactly where it says it is, and egui hands the click to the label on top.
-/// The switcher went on drawing and stopped switching under about 376 logical
-/// points of window width, with a green suite — this test at its old single
-/// width could not fail that way, because the protocol boot only ever ran it at
-/// 1978.
+/// The keystroke comes off `brightfield_keys::registry()` rather than being
+/// typed here, because the shell wires the binding the registry declares and
+/// invents none — a test that typed `cmd-b` would go on pressing a key the
+/// registry had stopped naming.
 ///
-/// Watched redden, one mutation: dropping the `available_width` gate in
-/// `MeridianApp::top_bar` so the right-hand group always draws fails the 240pt
-/// case with *"the switcher is chrome that does nothing"* and leaves the 1978pt
-/// case green.
+/// Watched redden, one mutation: dropping the `focus_return` restore in
+/// `MeridianApp::toggle_navigator_focus` (setting the rail's key on both
+/// presses) leaves the first three assertions green and fails the last with
+/// focus still on the outline rail.
 #[test]
-fn the_top_bar_switcher_switches_the_view_the_dock_draws() {
-    let natural = both(ViewKind::Protocol).window_size(ViewKind::Protocol);
-    for size in [egui::vec2(natural.0, natural.1), egui::vec2(240.0, 400.0)] {
-        let mut win = Window::open_at(both(ViewKind::Protocol), Mode::Light, size);
-        win.settle();
-        assert_eq!(win.app.active(), ViewKind::Protocol);
-        assert!(
-            win.app.chart_viewport().is_none(),
-            "at {size:?} the chart pane drew before the view was switched to it"
-        );
+fn pressing_the_navigator_toggle_twice_returns_focus() {
+    let mut win = Window::open(both(ViewKind::Charts), Mode::Light);
+    win.settle();
 
-        let target = win
-            .app
-            .switcher_rect(ViewKind::Charts)
-            .expect("the top bar drew a switcher control for the charts view");
-        assert!(
-            win.screen.contains_rect(target),
-            "at {size:?} the charts control drew at {target:?}, outside the \
-             window — nothing could click it"
-        );
-        win.run(vec![click_at(target.center()), Vec::new()]);
+    let started = PaneKey::new(ViewKind::Charts, brightfield_shell::app::CHART);
+    assert!(
+        win.app.focus_pane(started),
+        "the chart pane is placed, so focus can be put on it"
+    );
+    win.settle();
 
+    let rail = PaneKey::new(ViewKind::Protocol, brightfield_shell::protocol::OUTLINE);
+    win.run(vec![navigator_toggle(), Vec::new()]);
+    assert_eq!(
+        win.app.focused_pane(),
+        Some(rail),
+        "the toggle did not reach the navigator rail"
+    );
+
+    win.run(vec![navigator_toggle(), Vec::new()]);
+    assert_eq!(
+        win.app.focused_pane(),
+        Some(started),
+        "the second press did not return focus to where it started — the \
+         toggle is a one-way trip, not a round trip"
+    );
+}
+
+/// The increment-7 view switcher is gone, not restyled.
+///
+/// Asserted through what a person can reach rather than by reading the source:
+/// the two `selectable_label`s were controls in the title band, so a pointer
+/// swept across that band used to be able to change which document the canvas
+/// draws. Nothing there does that now — the protocol is the navigator rail,
+/// and reaching it is `toggle-outline-rail`.
+///
+/// The sweep is every four points across the band's width rather than one
+/// aimed click, because a switcher put back anywhere in the band is the thing
+/// this refuses, not a switcher put back where the old one was.
+///
+/// Watched redden, one mutation: restoring the pair of `selectable_label`s at
+/// the head of `MeridianApp::title_band` fails at the first click that lands
+/// on one.
+#[test]
+fn no_control_in_the_title_band_changes_which_document_the_canvas_draws() {
+    use brightfield_workbench::arrangement;
+
+    let mut win = Window::open(both(ViewKind::Charts), Mode::Light);
+    win.settle();
+    let before = win.app.active();
+    let band = win
+        .app
+        .region_rect(arrangement::TITLE_BAND)
+        .expect("the title band drew");
+    assert!(
+        band.width() > 200.0,
+        "the title band drew {}pt wide, so this sweep covers almost none of it",
+        band.width()
+    );
+
+    // Home is skipped, and it is the one control the band is supposed to
+    // carry: it returns to the front door, which empties both documents, and
+    // every click after it would then be landing on a door rather than on the
+    // band this test is about.
+    let home = win.app.home_rect().expect("the band drew a Home button");
+    assert!(
+        win.app.region_rect(arrangement::NAVIGATOR_RAIL).is_some(),
+        "the navigator rail did not draw, so the protocol has nowhere to be a \
+         dock and the sweep below proves nothing"
+    );
+    let mut x = band.left() + 2.0;
+    while x < band.right() - 2.0 {
+        // Expanded by HOME_CLEARANCE: egui snaps a click that misses every
+        // widget to the nearest one within its aim radius, and a click 3.5
+        // points clear of the Home button was measured still going to it.
+        if home
+            .expand(HOME_CLEARANCE)
+            .contains(egui::pos2(x, band.center().y))
+        {
+            x += 4.0;
+            continue;
+        }
+        win.run(vec![click_at(egui::pos2(x, band.center().y)), Vec::new()]);
         assert_eq!(
             win.app.active(),
-            ViewKind::Charts,
-            "at {size:?}, clicking the charts control at {target:?} left the \
-             window on the protocol view — the switcher is chrome that does \
-             nothing"
+            before,
+            "a click at x={x} in the title band moved the canvas to the other \
+             document — the peer switcher is back"
         );
-        assert!(
-            win.app.chart_viewport().is_some(),
-            "at {size:?} the window says it is on the charts view but the \
-             chart pane never drew"
-        );
+        x += 4.0;
     }
+}
+
+/// How far the sweep in
+/// `no_control_in_the_title_band_changes_which_document_the_canvas_draws`
+/// stays clear of the Home button, in logical points.
+///
+/// egui gives a click that lands on nothing to the nearest widget within its
+/// aim radius, so "outside the rect" is not far enough: measured on this band,
+/// a click 3.5 points clear of the button was still given to it. Wide enough
+/// that the snap cannot reach, narrow enough that the sweep still covers the
+/// rest of a 1386-point band.
+const HOME_CLEARANCE: f32 = 20.0;
+
+/// One frame's worth of the registry's `toggle-outline-rail` keystroke.
+fn navigator_toggle() -> Vec<egui::Event> {
+    let token = brightfield_keys::registry()
+        .iter()
+        .find(|v| v.longname == brightfield_shell::window::NAVIGATOR_TOGGLE)
+        .and_then(brightfield_keys::VerbEntry::primary_key)
+        .expect("the registry binds the navigator rail's toggle");
+    assert_eq!(
+        token, "cmd-b",
+        "the registry moved the navigator toggle to {token}; this test's event \
+         spelling has to move with it"
+    );
+    let modifiers = egui::Modifiers {
+        command: true,
+        mac_cmd: cfg!(target_os = "macos"),
+        ..Default::default()
+    };
+    [true, false]
+        .into_iter()
+        .map(|pressed| egui::Event::Key {
+            key: egui::Key::B,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers,
+        })
+        .collect()
 }
 
 /// The top bar's Home button actually returns to the front door — clicked

@@ -1848,7 +1848,11 @@ impl Item<ProtocolDoc> for InspectorPane {
     }
 
     fn describe(&self, _doc: &ProtocolDoc) -> Subject {
-        Subject::new("Inspector", ICON_INSPECTOR, BindingContext::Protocol)
+        // "Operator", not "Inspector": this pane and the chart document's
+        // inspector share the window's inspector rail, and a selector strip
+        // offering "Inspector" twice names neither. What this one shows is the
+        // selected operator — its address, what produced it, its status.
+        Subject::new("Operator", ICON_INSPECTOR, BindingContext::Protocol)
     }
 
     fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
