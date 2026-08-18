@@ -278,11 +278,11 @@ fn a_window_publishes_both_registries_and_nothing_else() {
 ///   has the canvas and nothing else. This window's DAG pane has a graph in
 ///   it, so its `None` is a layout answer rather than an empty state.
 ///
-/// Watched redden, two mutations: `(_, true) => ViewKind::Charts` in
-/// `MeridianApp::draw` back to `(false, true)` with `_ => view` fails the
-/// second window at *"the chart pane never drew"*; deleting the
-/// `graph_on_canvas` branch so the canvas always draws the projection fails
-/// the first at *"the DAG canvas pane never drew"*.
+/// Watched redden, two mutations. `(_, true) => ViewKind::Charts` in
+/// `MeridianApp::draw` put back to `(false, true)` with `_ => view` fails the
+/// second window, at the chart pane's assertion. Pinning `graph_on_canvas` to
+/// `false`, so the canvas draws the projection whatever the documents hold,
+/// fails the first window, at the DAG pane's.
 #[test]
 fn one_documents_panes_are_laid_out_per_frame_and_the_documents_decide_which() {
     let mut win = Window::open(Boot::protocol(edgar(), Flow::Vertical, None), Mode::Light);
