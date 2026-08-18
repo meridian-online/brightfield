@@ -98,6 +98,11 @@ impl Item<Doc> for Rail {
                 "Nothing selected",
                 "Pick a row to see what it is made of",
             )
+            // A way in, so this fixture can answer the question
+            // `two_pane_chromes_in_one_frame_both_record_their_affordances`
+            // asks: an empty state with no affordance records no rect, and a
+            // record that is never made cannot be shown to survive.
+            .with_next(brightfield_workbench::Affordance::new("Pick a row", toggle()))
         })
     }
     fn describe(&self, _doc: &Doc) -> Subject {
@@ -743,4 +748,90 @@ fn drawing_the_tree_does_not_by_itself_dirty_the_layout() {
     let mut tracker = DirtyTracker::new(SavedLayout::new(workspace()));
     tracker.workspace_mut().set_active(ViewKind::Protocol);
     assert!(tracker.is_dirty(), "the active view is not tracked");
+}
+
+/// Two regions of one window, drawn in one frame through two `PaneChrome`s,
+/// both keep the record of where their empty panes put a way in.
+///
+/// The shell draws a navigator rail, an inspector rail, a ledger rail and a
+/// canvas in one frame, each against its own document, so each builds its own
+/// `PaneChrome`. `PaneChrome::new` used to clear the affordance record on
+/// construction: the last one built wiped what the earlier ones had recorded,
+/// and `affordance_rect` then answered `None` for a button on screen. The
+/// clear belongs to the frame, so the shell does it once.
+///
+/// The order is the point. The rail is drawn first and is the one that
+/// records; the canvas is drawn second, records nothing, and must not take the
+/// rail's record with it.
+#[test]
+fn two_pane_chromes_in_one_frame_both_record_their_affordances() {
+    use egui_tiles::Behavior as _;
+
+    let ws = workspace();
+    let mut doc = Doc {
+        rows: Vec::new(),
+        ..Doc::default()
+    };
+    let mut items = registry(ViewKind::Charts).instantiate();
+    let tabbed = ws.tabbed_tiles(ViewKind::Charts);
+    let rail_key = key(ViewKind::Charts, RAIL);
+    let canvas_key = key(ViewKind::Charts, CANVAS);
+    let rail_tile = ws.tile_of(rail_key).expect("the rail has a tile");
+    let canvas_tile = ws.tile_of(canvas_key).expect("the canvas has a tile");
+
+    let mut requests = Vec::new();
+    let mut affordances = Vec::new();
+    let ctx = egui::Context::default();
+    let mut once = Some(());
+    let _ = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(SCREEN),
+            ..Default::default()
+        },
+        |ui| {
+            if once.take().is_none() {
+                return;
+            }
+            let left = egui::Rect::from_min_size(SCREEN.min, egui::vec2(240.0, SCREEN.height()));
+            let right = egui::Rect::from_min_max(
+                egui::pos2(SCREEN.min.x + 240.0, SCREEN.min.y),
+                SCREEN.max,
+            );
+            {
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(left));
+                let mut behavior = PaneChrome::new(
+                    &mut doc,
+                    &mut items,
+                    Mode::Light,
+                    None,
+                    &tabbed,
+                    &mut requests,
+                    &mut affordances,
+                );
+                let mut pane = rail_key;
+                let _ = behavior.pane_ui(&mut child, rail_tile, &mut pane);
+            }
+            {
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(right));
+                let mut behavior = PaneChrome::new(
+                    &mut doc,
+                    &mut items,
+                    Mode::Light,
+                    None,
+                    &tabbed,
+                    &mut requests,
+                    &mut affordances,
+                );
+                let mut pane = canvas_key;
+                let _ = behavior.pane_ui(&mut child, canvas_tile, &mut pane);
+            }
+        },
+    );
+
+    let recorded: Vec<PaneKey> = affordances.iter().map(|(k, _)| *k).collect();
+    assert!(
+        recorded.contains(&rail_key),
+        "the rail drew a way in and the behaviour built after it wiped the \
+         record: {recorded:?}"
+    );
 }

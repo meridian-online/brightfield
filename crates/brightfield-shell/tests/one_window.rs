@@ -868,40 +868,75 @@ fn pressing_the_navigator_toggle_twice_returns_focus() {
 /// The increment-7 view switcher is gone, not restyled.
 ///
 /// Asserted through what a person can reach rather than by reading the source:
-/// the two `selectable_label`s were the only controls in the title band that
-/// carried a view's name, and the band no longer records a rect for either.
-/// The window's regions are what it records now, and the navigator rail is
-/// among them — the protocol is a dock, not a peer.
+/// the two `selectable_label`s were controls in the title band, so a pointer
+/// swept across that band used to be able to change which document the canvas
+/// draws. Nothing there does that now — the protocol is the navigator rail,
+/// and reaching it is `toggle-outline-rail`.
+///
+/// The sweep is every four points across the band's width rather than one
+/// aimed click, because a switcher put back anywhere in the band is the thing
+/// this refuses, not a switcher put back where the old one was.
+///
+/// Watched redden, one mutation: restoring the pair of `selectable_label`s at
+/// the head of `MeridianApp::title_band` fails at the first click that lands
+/// on one.
 #[test]
-fn the_title_band_offers_no_view_switcher() {
+fn no_control_in_the_title_band_changes_which_document_the_canvas_draws() {
     use brightfield_workbench::arrangement;
 
     let mut win = Window::open(both(ViewKind::Charts), Mode::Light);
     win.settle();
-
-    let drawn: Vec<&str> = win
+    let before = win.app.active();
+    let band = win
         .app
-        .drawn_regions()
-        .iter()
-        .map(|(id, _)| id.as_str())
-        .collect();
+        .region_rect(arrangement::TITLE_BAND)
+        .expect("the title band drew");
     assert!(
-        drawn.contains(&arrangement::NAVIGATOR_RAIL.as_str()),
-        "the window drew {drawn:?} and no navigator rail, so the protocol has \
-         nowhere to be a dock"
+        band.width() > 200.0,
+        "the title band drew {}pt wide, so this sweep covers almost none of it",
+        band.width()
     );
+
+    // Home is skipped, and it is the one control the band is supposed to
+    // carry: it returns to the front door, which empties both documents, and
+    // every click after it would then be landing on a door rather than on the
+    // band this test is about.
+    let home = win.app.home_rect().expect("the band drew a Home button");
     assert!(
-        win.app.region_rect(arrangement::TITLE_BAND).is_some(),
-        "the title band did not draw"
+        win.app.region_rect(arrangement::NAVIGATOR_RAIL).is_some(),
+        "the navigator rail did not draw, so the protocol has nowhere to be a \
+         dock and the sweep below proves nothing"
     );
-    // Every region the arrangement declares is a region of the window, and
-    // none of them is a view: a switcher would have to be one of these to be
-    // reachable, and the arrangement declares no such region.
-    for (id, _) in win.app.drawn_regions() {
-        assert_ne!(id.as_str(), "charts-view");
-        assert_ne!(id.as_str(), "protocol-view");
+    let mut x = band.left() + 2.0;
+    while x < band.right() - 2.0 {
+        // Expanded by egui's own `interact_radius`, which snaps a click that
+        // lands on nothing to the nearest widget within it — measured: a click
+        // 3.5 points clear of the Home button was still given to it.
+        if home.expand(HOME_CLEARANCE).contains(egui::pos2(x, band.center().y)) {
+            x += 4.0;
+            continue;
+        }
+        win.run(vec![click_at(egui::pos2(x, band.center().y)), Vec::new()]);
+        assert_eq!(
+            win.app.active(),
+            before,
+            "a click at x={x} in the title band moved the canvas to the other \
+             document — the peer switcher is back"
+        );
+        x += 4.0;
     }
 }
+
+/// How far the sweep in
+/// `no_control_in_the_title_band_changes_which_document_the_canvas_draws`
+/// stays clear of the Home button, in logical points.
+///
+/// egui gives a click that lands on nothing to the nearest widget within its
+/// aim radius, so "outside the rect" is not far enough: measured on this band,
+/// a click 3.5 points clear of the button was still given to it. Wide enough
+/// that the snap cannot reach, narrow enough that the sweep still covers the
+/// rest of a 1386-point band.
+const HOME_CLEARANCE: f32 = 20.0;
 
 /// One frame's worth of the registry's `toggle-outline-rail` keystroke.
 fn navigator_toggle() -> Vec<egui::Event> {

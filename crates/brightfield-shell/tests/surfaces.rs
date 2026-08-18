@@ -604,32 +604,37 @@ fn protocol_cte_light_surface() {
 fn protocol_cte_dark_surface() {
     cte_surface(Mode::Dark, "protocol_cte_dark");
 }
-/// The chart's texture survives a round trip through the grid.
+/// The canvas toggle switches the canvas, and coming back lands on the same
+/// picture — asked in pixels, where the layout cannot answer.
 ///
-/// `MeridianApp::sweep` names every pane of both documents on every frame, so
-/// a canvas that spent frames showing the grid still holds the chart's
-/// texture slot when the toggle comes back to it. `EguiCanvasHost::end_frame`
-/// frees any slot that neither presented this frame nor appears in the set it
-/// is handed, and `present` returns early on an unchanged key — so naming
-/// only the pane that drew would free the chart's texture and bring it back as
-/// an empty box the instant the toggle returned to it. Nothing about that is
-/// visible without a device: the layout, the rects, the scroll offsets and
-/// every accesskit node are identical either way. It is a pixel question, so
-/// it is asked in pixels.
+/// The pixel half of the one toggle. `the_canvas_toggle_offers_two_projections_and_no_more`
+/// counts the segments and reads the labels; nothing there says that pressing
+/// one changes what the canvas shows. This does: three captures of the same
+/// window, compared over a rectangle strictly inside the chart raster.
 ///
-/// It is also the pixel half of AC2 — the toggle is clicked where it drew
-/// itself, twice, and the window has to come back to where it started.
+/// - never touched: the chart.
+/// - Grid clicked: must differ, and the assertion says so before anything
+///   else is read — otherwise a click that missed and a toggle that does
+///   nothing produce the same result and the message would have to guess.
+/// - Grid then Chart: must be identical to the first. A toggle that switched
+///   but could not switch back, or a canvas that came back re-laid-out, fails
+///   here.
 ///
-/// Two captures of the same window, compared over a rectangle strictly inside
-/// the chart raster: one that never touches the toggle, one that clicks Grid
-/// and then Chart.
+/// **What this deliberately does not claim.** The test it replaces held
+/// `MeridianApp::sweep` — that naming only the drawn view's panes frees the
+/// other document's texture — by clicking the peer switcher and back. That
+/// switcher is gone, and the two documents are no longer swapped by any
+/// control, so there is no pointer route left to drive that round trip; the
+/// mutation it named (sweeping with the drawn pane's key alone) leaves this
+/// green, because both of these projections belong to the same document and it
+/// re-presents on the frame it returns to. That gate is lost rather than moved,
+/// and saying so is better than a doc comment claiming a guard this cannot give.
 ///
-/// Watched redden, one mutation: sweeping both documents with only the drawn
-/// pane's key (`self.charts.doc.sweep(&BTreeSet::from([drawn]))`) leaves every
-/// other test in this file green and fails here with the whole raster
-/// differing.
+/// Watched redden, one mutation: dropping `picks.projection` on the floor in
+/// `MeridianApp::draw` — the toggle draws and records but nothing acts on it —
+/// fails at *"clicking Grid changed nothing inside the canvas"*.
 #[test]
-fn the_chart_survives_a_round_trip_through_the_grid() {
+fn the_canvas_toggle_switches_the_canvas_and_switches_back() {
     let (chart, _) = chart_layout(Mode::Light);
     // Strictly inside the raster, clear of the pane frame and the head band.
     let inside_chart = Region::inside(chart, 20.0);

@@ -128,8 +128,7 @@ impl<'a, D: ?Sized> PaneChrome<'a, D> {
     /// Clearing on construction meant the last region built wiped what the
     /// earlier ones had recorded, and `affordance_rect` then answered `None`
     /// for a button that was on screen. Held by
-    /// `a_rail_and_the_canvas_both_record_their_affordances` in the shell's
-    /// `tests/arrangement.rs`.
+    /// `two_pane_chromes_in_one_frame_both_record_their_affordances`.
     pub fn new(
         doc: &'a mut D,
         items: &'a mut ItemMap<D>,
