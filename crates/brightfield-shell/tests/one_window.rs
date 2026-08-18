@@ -909,10 +909,13 @@ fn no_control_in_the_title_band_changes_which_document_the_canvas_draws() {
     );
     let mut x = band.left() + 2.0;
     while x < band.right() - 2.0 {
-        // Expanded by egui's own `interact_radius`, which snaps a click that
-        // lands on nothing to the nearest widget within it — measured: a click
-        // 3.5 points clear of the Home button was still given to it.
-        if home.expand(HOME_CLEARANCE).contains(egui::pos2(x, band.center().y)) {
+        // Expanded by HOME_CLEARANCE: egui snaps a click that misses every
+        // widget to the nearest one within its aim radius, and a click 3.5
+        // points clear of the Home button was measured still going to it.
+        if home
+            .expand(HOME_CLEARANCE)
+            .contains(egui::pos2(x, band.center().y))
+        {
             x += 4.0;
             continue;
         }

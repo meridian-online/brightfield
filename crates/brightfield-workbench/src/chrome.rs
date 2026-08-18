@@ -256,15 +256,21 @@ pub fn rail_selector(
     let mut x = rect.left() + pad;
     let mut picked = None;
     for (i, name) in names.iter().enumerate() {
-        let galley =
-            ui.painter()
-                .layout_no_wrap((*name).to_owned(), font.clone(), egui::Color32::PLACEHOLDER);
+        let galley = ui.painter().layout_no_wrap(
+            (*name).to_owned(),
+            font.clone(),
+            egui::Color32::PLACEHOLDER,
+        );
         let width = galley.size().x;
         let hit = egui::Rect::from_min_max(
             egui::pos2(x - spacing::SPACE_1, rect.top()),
             egui::pos2(x + width + spacing::SPACE_1, rect.bottom()),
         );
-        let response = ui.interact(hit, ui.id().with(("rail-selector", rect.left_top().x as i32, i)), egui::Sense::click());
+        let response = ui.interact(
+            hit,
+            ui.id().with(("rail-selector", rect.left_top().x as i32, i)),
+            egui::Sense::click(),
+        );
         if response.clicked() {
             picked = Some(i);
         }
@@ -344,8 +350,11 @@ pub fn projection_toggle(
         egui::vec2(total, height),
     );
 
-    ui.painter()
-        .rect_filled(outer, radius::CONTROL, colour(sem.tabs.segmented_background));
+    ui.painter().rect_filled(
+        outer,
+        radius::CONTROL,
+        colour(sem.tabs.segmented_background),
+    );
     ui.painter().rect_stroke(
         outer,
         radius::CONTROL,
@@ -360,7 +369,8 @@ pub fn projection_toggle(
     };
     let mut x = outer.left();
     for (i, name) in names.iter().enumerate() {
-        let seg = egui::Rect::from_min_size(egui::pos2(x, outer.top()), egui::vec2(widths[i], height));
+        let seg =
+            egui::Rect::from_min_size(egui::pos2(x, outer.top()), egui::vec2(widths[i], height));
         x += widths[i];
         let response = ui.interact(
             seg,

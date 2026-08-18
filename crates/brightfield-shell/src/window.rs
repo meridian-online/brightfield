@@ -74,10 +74,10 @@ use meridian_egui::{
 use meridian_design::{radius, semantic, spacing};
 
 use crate::app::{chart_registry, ChartDoc, ChartFault, CHART, CONTROLS};
-use crate::data_grid::DATA;
-use crate::editor::EDITOR;
 use crate::canvas::EguiCanvasHost;
+use crate::data_grid::DATA;
 use crate::design::{self, Mode};
+use crate::editor::EDITOR;
 use crate::inspector::{InspectorPane, Selection};
 use crate::overlays::{CommandPalette, HelpSheet, JumpTarget, JumpToNode};
 use crate::pipeline::Composed;
@@ -315,7 +315,7 @@ pub fn chart_toolbar_band(composed: &Composed) -> f32 {
 /// One difference from the chart's, and it is a property of this surface
 /// rather than an adjustment: the graph has a bare-key grammar and the chart
 /// projections do not, so this window gives up the hint band as well — which
-/// is the `hint` term [`chrome_budget`] takes.
+/// is the `hint` term `chrome_budget` takes.
 ///
 /// Every other term is shared, because both windows are laid out by the same
 /// arrangement: the bands and rails come out of the axes first and the canvas
@@ -1183,11 +1183,11 @@ pub struct MeridianApp {
     focus_return: Option<PaneKey>,
     /// Where the top bar drew the Home button in the last frame this window
     /// drew, in window-space logical points — recorded for the reason
-    /// [`Self::switcher`] is, and read back through [`MeridianApp::home_rect`].
+    /// [`Self::regions`] is, and read back through [`MeridianApp::home_rect`].
     /// `None` on a frame the bar drew no Home button (the front door).
     home_button: Option<egui::Rect>,
     /// Where each empty pane drew the button that resolves it, in window-space
-    /// logical points — recorded for exactly the reason [`Self::switcher`] is,
+    /// logical points — recorded for exactly the reason [`Self::regions`] is,
     /// and read back through [`MeridianApp::affordance_rect`].
     ///
     /// On a frame the front door drew instead of the dock, the door records
@@ -1248,8 +1248,8 @@ pub struct MeridianApp {
     /// by `the_overlay_keys_come_from_the_registry`.
     home_binding: Option<&'static str>,
     /// The `toggle-outline-rail` keystroke token, read off the registry at
-    /// boot — same rule as [`Self::home_binding`]: the shell wires the binding
-    /// the registry declares and invents none.
+    /// boot — same rule as [`Self::home_binding`]: the shell wires whichever
+    /// binding the registry declares, and does not invent one of its own.
     navigator_binding: Option<&'static str>,
     /// The navigation family's keystroke tokens paired with their verb
     /// longnames, read off the registry at boot — same rule as
@@ -1286,7 +1286,7 @@ pub struct MeridianApp {
     /// Transient, self-expiring toasts — confirmations, not conditions.
     toasts: ToastLayer,
     /// What the status rail drew last frame — the ids in draw order and any
-    /// dismissals — recorded for the reason [`Self::switcher`] is: a headless
+    /// dismissals — recorded for the reason [`Self::regions`] is: a headless
     /// test that asks "did the rail say it?" reads this rather than a second
     /// copy of the composing logic. Empty on a frame the rail drew nothing,
     /// which is most frames — the rail is quiet when there is nothing to say.
@@ -1956,7 +1956,7 @@ impl MeridianApp {
     /// The rect the top bar's Home button occupied in the last frame this
     /// window drew, or `None` on a frame it drew none — the front door draws
     /// no Home button, because it is already home. Recorded and read back for
-    /// the reason [`MeridianApp::switcher_rect`] is: the test that proves Home
+    /// the reason [`MeridianApp::region_rect`] is: the test that proves Home
     /// is reachable has to click it where it was actually laid out.
     #[must_use]
     pub fn home_rect(&self) -> Option<egui::Rect> {
@@ -2332,7 +2332,9 @@ impl MeridianApp {
             let drawn = Panel::top("bf-locator-band")
                 .resizable(false)
                 .exact_size(band_extent(locator))
-                .show(ui, |ui| locator_band_ui(ui, &crumbs, source.as_deref(), mode));
+                .show(ui, |ui| {
+                    locator_band_ui(ui, &crumbs, source.as_deref(), mode)
+                });
             self.regions.push((locator.id, drawn.response.rect));
 
             // The key-hint band belongs to a key grammar, so it is drawn where
@@ -2439,13 +2441,29 @@ impl MeridianApp {
                     let item = ledger_panes[ledger_panel];
                     if item == STEPS {
                         draw_protocol_pane(
-                            ui, body, protocol, ws, item, mode, protocol_focus, &headed,
-                            &mut requests, affordances,
+                            ui,
+                            body,
+                            protocol,
+                            ws,
+                            item,
+                            mode,
+                            protocol_focus,
+                            &headed,
+                            &mut requests,
+                            affordances,
                         );
                     } else {
                         draw_chart_pane(
-                            ui, body, charts, ws, item, mode, chart_focus, &headed,
-                            &mut requests, affordances,
+                            ui,
+                            body,
+                            charts,
+                            ws,
+                            item,
+                            mode,
+                            chart_focus,
+                            &headed,
+                            &mut requests,
+                            affordances,
                         );
                     }
                 });
@@ -2503,48 +2521,24 @@ impl MeridianApp {
                     let item = inspector_panes[inspector_panel];
                     if item == PROTOCOL_INSPECTOR {
                         draw_protocol_pane(
-                            ui, body, protocol, ws, item, mode, protocol_focus, &headed,
-                            &mut requests, affordances,
-                        );
-                    } else {
-                        draw_chart_pane(
-                            ui, body, charts, ws, item, mode, chart_focus, &headed,
-                            &mut requests, affordances,
-                        );
-                    }
-                });
-            regions.push((inspector.id, drawn.response.rect));
-
-            // ---- the canvas: the remainder, and it comes last because a
-            // `CentralPanel` takes what the panels before it left.
-            let drawn = CentralPanel::default()
-                .frame(rail_frame)
-                .show(ui, |ui| {
-                    let (head, body) = chrome::rail_split(ui.max_rect());
-                    if graph_on_canvas {
-                        canvas_head(ui, head, &canvas_name, None, mode);
-                        draw_protocol_pane(
-                            ui, body, protocol, ws, graph, mode, protocol_focus, &headed,
-                            &mut requests, affordances,
-                        );
-                    } else {
-                        let toggle = canvas_head(
                             ui,
-                            head,
-                            &canvas_name,
-                            Some((&projection_labels, projection)),
+                            body,
+                            protocol,
+                            ws,
+                            item,
                             mode,
+                            protocol_focus,
+                            &headed,
+                            &mut requests,
+                            affordances,
                         );
-                        if let Some(toggle) = toggle {
-                            canvas_toggle = toggle.segments;
-                            picks.projection = toggle.picked;
-                        }
+                    } else {
                         draw_chart_pane(
                             ui,
                             body,
                             charts,
                             ws,
-                            projections[projection].item,
+                            item,
                             mode,
                             chart_focus,
                             &headed,
@@ -2553,6 +2547,52 @@ impl MeridianApp {
                         );
                     }
                 });
+            regions.push((inspector.id, drawn.response.rect));
+
+            // ---- the canvas: the remainder, and it comes last because a
+            // `CentralPanel` takes what the panels before it left.
+            let drawn = CentralPanel::default().frame(rail_frame).show(ui, |ui| {
+                let (head, body) = chrome::rail_split(ui.max_rect());
+                if graph_on_canvas {
+                    canvas_head(ui, head, &canvas_name, None, mode);
+                    draw_protocol_pane(
+                        ui,
+                        body,
+                        protocol,
+                        ws,
+                        graph,
+                        mode,
+                        protocol_focus,
+                        &headed,
+                        &mut requests,
+                        affordances,
+                    );
+                } else {
+                    let toggle = canvas_head(
+                        ui,
+                        head,
+                        &canvas_name,
+                        Some((&projection_labels, projection)),
+                        mode,
+                    );
+                    if let Some(toggle) = toggle {
+                        canvas_toggle = toggle.segments;
+                        picks.projection = toggle.picked;
+                    }
+                    draw_chart_pane(
+                        ui,
+                        body,
+                        charts,
+                        ws,
+                        projections[projection].item,
+                        mode,
+                        chart_focus,
+                        &headed,
+                        &mut requests,
+                        affordances,
+                    );
+                }
+            });
             regions.push((canvas.id, drawn.response.rect));
 
             self.regions = regions;
@@ -2678,7 +2718,10 @@ impl MeridianApp {
         if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
             return;
         }
-        if self.navigator_binding.is_some_and(|t| consume_token(ctx, t)) {
+        if self
+            .navigator_binding
+            .is_some_and(|t| consume_token(ctx, t))
+        {
             self.toggle_navigator_focus(ctx);
         }
     }
@@ -2836,7 +2879,7 @@ impl MeridianApp {
     }
 
     /// Which overlay is open, named — a test hook, like
-    /// [`MeridianApp::switcher_rect`].
+    /// [`MeridianApp::region_rect`].
     #[must_use]
     pub fn open_overlay(&self) -> Option<&'static str> {
         self.overlay.as_ref().map(|o| match o {
@@ -3780,7 +3823,10 @@ fn region_panes(region: &Region) -> &'static [ItemId] {
 fn canvas_occupants(region: &Region) -> (&'static [Projection], ItemId) {
     match region.occupant {
         Occupant::Canvas { projections, graph } => (projections, graph),
-        other => panic!("{} is drawn as the canvas but declared {other:?}", region.id),
+        other => panic!(
+            "{} is drawn as the canvas but declared {other:?}",
+            region.id
+        ),
     }
 }
 
@@ -3889,11 +3935,9 @@ fn canvas_head(
     let sem = semantic(mode.is_dark());
     ui.painter()
         .rect_filled(head, radius::NONE, chrome::colour(sem.surfaces.header));
-    let galley = ui.painter().layout_no_wrap(
-        name.to_owned(),
-        ui_font(),
-        chrome::colour(sem.text.primary),
-    );
+    let galley =
+        ui.painter()
+            .layout_no_wrap(name.to_owned(), ui_font(), chrome::colour(sem.text.primary));
     let name_width = galley.size().x;
     ui.painter().galley(
         egui::pos2(
@@ -3962,9 +4006,9 @@ fn locator_band_ui(ui: &egui::Ui, crumbs: &[String], source: Option<&str>, mode:
         } else {
             sem.text.secondary
         };
-        let galley =
-            ui.painter()
-                .layout_no_wrap(crumb.clone(), ui_font(), chrome::colour(ink));
+        let galley = ui
+            .painter()
+            .layout_no_wrap(crumb.clone(), ui_font(), chrome::colour(ink));
         let width = galley.size().x;
         ui.painter().galley(
             egui::pos2(x, rect.center().y - galley.size().y / 2.0),
@@ -3975,7 +4019,6 @@ fn locator_band_ui(ui: &egui::Ui, crumbs: &[String], source: Option<&str>, mode:
     }
 }
 
-
 /// How wide the top bar's right-hand group would be if it drew: the renderer
 /// line when developer diagnostics are on, and the flow toggle when the
 /// protocol view supplies one. Either or both may be absent — an absent item
@@ -3984,7 +4027,7 @@ fn locator_band_ui(ui: &egui::Ui, crumbs: &[String], source: Option<&str>, mode:
 /// Asked *before* the group is drawn, which is the whole point — a
 /// right-to-left layout that does not fit overlaps what is already on the bar
 /// instead of shrinking, and the thing already on the bar is the only way to
-/// reach the other view. See [`MeridianApp::top_bar`].
+/// reach the other view. See [`MeridianApp::title_band`].
 ///
 /// The one leading item spacing is included because egui inserts it when it
 /// places the group, and `available_width` is measured before it exists.

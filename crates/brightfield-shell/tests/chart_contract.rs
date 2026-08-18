@@ -19,10 +19,7 @@ use brightfield_shell::app::{chart_registry, ChartDoc, CHART, CONTROLS};
 use brightfield_shell::design::Mode;
 use brightfield_shell::editor::EDITOR;
 use brightfield_shell::pipeline::{compose_spec, Composed};
-use brightfield_shell::window::{
-    chart_toolbar_band, chart_window_size, Boot, MeridianApp, BAR_HEIGHT, DOCK_INSET,
-    INSPECTOR_RAIL_WIDTH,
-};
+use brightfield_shell::window::{chart_toolbar_band, chart_window_size, Boot, MeridianApp};
 use brightfield_workbench::arrangement;
 use brightfield_workbench::registry::{DockSide, Slot};
 use brightfield_workbench::subject::{RunState, ToolbarLocation};

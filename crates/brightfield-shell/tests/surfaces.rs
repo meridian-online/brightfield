@@ -81,7 +81,6 @@ use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::compose_spec_in_mode;
 use brightfield_shell::protocol::load_protocol_offline;
 use brightfield_shell::window::{chart_window_size, Boot, MeridianApp};
-use brightfield_workbench::ViewKind;
 
 /// Device pixels per logical point for this tier. See the module note.
 const SCALE: f32 = 1.0;
@@ -354,31 +353,6 @@ fn capture_boot(
 fn protocol_surface(mode: Mode, name: &str, script: Vec<Vec<egui::Event>>) {
     let img = protocol_capture(mode, name, script);
     egui_kittest::image_snapshot(&img, name);
-}
-
-/// The DAG canvas pane's content box at the window size the protocol boot asks
-/// for.
-///
-/// The headless twin of [`chart_layout`], derived for the same reason: the
-/// round-trip test below compares a rectangle strictly inside the canvas, and a
-/// coordinate typed against a layout nothing derived it from would go on
-/// comparing the wrong pixels the first time a rail's width moved.
-fn protocol_layout(mode: Mode) -> egui::Rect {
-    let boot = protocol_boot();
-    let (w, h) = boot.window_size(ViewKind::Protocol);
-    let mut app = MeridianApp::headless(boot, mode);
-    let ctx = egui::Context::default();
-    let raw = egui::RawInput {
-        screen_rect: Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(w, h),
-        )),
-        ..Default::default()
-    };
-    for _ in 0..2 {
-        let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
-    }
-    app.canvas_viewport().expect("the DAG canvas pane drew")
 }
 
 /// One frame of a keypress, the same event pair `capture::parse_script`
@@ -656,7 +630,7 @@ fn the_canvas_toggle_switches_the_canvas_and_switches_back() {
         ],
     );
 
-    // Guard the guard: if either click missed, the second capture never left
+    // Guard the guard: if either click missed, the second capture stayed on
     // the chart and the assertion below would pass for the wrong reason. The
     // grid is a table of numbers where the raster is, so a capture taken with
     // only the first click is bound to differ over this rectangle — and does

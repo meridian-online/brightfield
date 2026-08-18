@@ -9,7 +9,7 @@
 //! is the drift [`crate::registry`] was written to end for panes; this ends it
 //! for the regions those panes sit in. The rule is the one
 //! `protocol_registry()` already follows in the shell: one declaration, read by
-//! whatever needs it, and nothing else allowed to hold a copy.
+//! whatever needs it, with no second copy held elsewhere.
 //!
 //! `the_drawn_regions_match_the_declared_arrangement` in the shell's
 //! `tests/arrangement.rs` is what makes that true rather than aspirational: it
@@ -35,9 +35,10 @@
 //!   readable rather than merely tight.
 //! - [`Extent::Remainder`] is the canvas: whatever the bands and rails leave.
 //!
-//! [`Extent::Overlay`] is the fourth and takes no space at all — see its own
-//! docs, and [`crate::chrome::status_rail_overlay`], which is the one region
-//! drawn that way.
+//! [`Extent::Overlay`] is the fourth, and it floats rather than taking room
+//! from a sibling — see its own docs, and
+//! [`crate::chrome::status_rail_overlay`], which draws the status band that
+//! way. `the_overlay_region_takes_no_space_and_the_rest_do` holds the split.
 //!
 //! # More than one arrangement, at the cost of a declaration
 //!
@@ -60,8 +61,8 @@ use crate::item::ItemId;
 /// [`chrome::status_rail_height`] uses for the rail's band. Declared rather
 /// than measured for the reason the module docs give: the window is sized
 /// before a frame exists, so a content-sized band has no height to read.
-pub const TITLE_BAND_HEIGHT: f32 = meridian_design::spacing::ROW_GRID
-    + 2.0 * meridian_design::spacing::SPACE_2;
+pub const TITLE_BAND_HEIGHT: f32 =
+    meridian_design::spacing::ROW_GRID + 2.0 * meridian_design::spacing::SPACE_2;
 
 /// The locator band's height in logical points: the breadcrumb, and what the
 /// document on disk is doing.
@@ -69,11 +70,11 @@ pub const TITLE_BAND_HEIGHT: f32 = meridian_design::spacing::ROW_GRID
 /// The dense rung with the same padding, not the grid rung: this band carries
 /// a line of text and no pointer target, so the rung that exists to clear the
 /// pointer-target floor buys nothing here. The frame this arrangement was
-/// drawn from asked for 30, which is not a rung on `meridian_design`'s ladder
-/// at all; 28 is the nearest one below it, and picking a rung is the rule the
-/// ladder exists to impose.
-pub const LOCATOR_BAND_HEIGHT: f32 = meridian_design::spacing::ROW_DENSE
-    + 2.0 * meridian_design::spacing::SPACE_2;
+/// drawn from asked for 30. The design system's ladder does not carry 30;
+/// 28 is the nearest rung below it, and picking a rung is the rule the ladder
+/// exists to impose.
+pub const LOCATOR_BAND_HEIGHT: f32 =
+    meridian_design::spacing::ROW_DENSE + 2.0 * meridian_design::spacing::SPACE_2;
 
 /// The hint band's height in logical points: the key grammar of the surface
 /// that has one.
@@ -474,7 +475,7 @@ pub const fn default_arrangement() -> &'static Arrangement {
 /// - a region id declared twice, which would make [`Arrangement::region`]
 ///   answer with whichever came first;
 /// - an occupant naming an [`ItemId`] the process does not know, which is how
-///   a renamed pane would leave a region drawing nothing;
+///   a renamed pane would leave a region with an empty body;
 /// - a rail whose floor is above what it opens at, which `Panel::min_size`
 ///   would silently resolve by ignoring the default;
 /// - a non-positive band or rail extent;

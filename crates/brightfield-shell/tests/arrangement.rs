@@ -95,9 +95,9 @@ fn drawn_extent(id: arrangement::RegionId, rect: egui::Rect) -> f32 {
 /// that proves the draw path is following the list.
 ///
 /// Regions that take no space are excluded **by the declaration**, not by a
-/// name written here: `Extent::Overlay` is the status rail, which floats and
-/// takes nothing from its siblings, and `Extent::Remainder` is the canvas,
-/// whose extent is whatever is left.
+/// name written here. `Extent::Overlay` is the status rail, which floats over
+/// the window's edge rather than taking room from a sibling, and
+/// `Extent::Remainder` is the canvas, whose extent is whatever is left.
 #[test]
 fn the_drawn_regions_match_the_declared_arrangement() {
     let app = settled();
@@ -140,8 +140,9 @@ fn the_drawn_regions_match_the_declared_arrangement() {
 /// is what proves the draw path is following the list rather than agreeing
 /// with it by coincidence.
 ///
-/// The floor is asked of a window narrow enough to force it: `Panel::min_size`
-/// is what refuses, and a rail drawn on a roomy window never reaches it.
+/// The floor is a separate question, asked on a window narrow enough to force
+/// it — see `each_rail_refuses_to_narrow_past_its_declared_floor`, since a rail
+/// on a roomy window stays at its default and the floor goes untested.
 #[test]
 fn each_rail_draws_at_its_declared_extent() {
     let app = settled();

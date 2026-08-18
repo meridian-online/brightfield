@@ -102,7 +102,10 @@ impl Item<Doc> for Rail {
             // `two_pane_chromes_in_one_frame_both_record_their_affordances`
             // asks: an empty state with no affordance records no rect, and a
             // record that is never made cannot be shown to survive.
-            .with_next(brightfield_workbench::Affordance::new("Pick a row", toggle()))
+            .with_next(brightfield_workbench::Affordance::new(
+                "Pick a row",
+                toggle(),
+            ))
         })
     }
     fn describe(&self, _doc: &Doc) -> Subject {
