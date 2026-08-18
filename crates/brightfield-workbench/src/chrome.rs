@@ -629,8 +629,8 @@ pub const fn status_rail_height() -> f32 {
 /// for a toast or a modal announcing itself but wrong for a status line
 /// reporting a fact that was already true the frame before: a fact does not
 /// need to announce its own arrival. Without this, two headless captures of
-/// the identical idle state, differing only in how many frames ran before
-/// each one photographed it, show the rail at two different opacities —
+/// the identical idle state, captured after a different number of settled
+/// frames, show the rail at two different opacities —
 /// which is real: `RawInput::time` is `None` in every capture path in this
 /// workspace, so egui advances its clock by `predicted_dt` each frame either
 /// way, and a two-frame capture and a four-frame capture land at different

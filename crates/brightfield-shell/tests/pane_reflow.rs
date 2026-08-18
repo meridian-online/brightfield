@@ -404,7 +404,7 @@ fn a_shipped_start_relays_out_when_its_pane_changes_size() {
     // layer in by default, and this app's `run_at(.., 4)` budget (4 frames,
     // under a real clock advancing by `predicted_dt` each one since no
     // capture path in this workspace sets `RawInput::time`) landed inside
-    // that fade, not past it. The fade was never load-bearing for the rail —
+    // that fade, not past it. The fade was not load-bearing for the rail —
     // a status line reporting a fact does not need to announce its own
     // arrival — so `chrome::status_rail_overlay` now opts out with
     // `.fade_in(false)`, and the window settles by the second frame exactly

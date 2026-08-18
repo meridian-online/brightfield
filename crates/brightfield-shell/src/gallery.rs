@@ -570,7 +570,7 @@ impl Component for StatusPillDemo {
 
 /// The idle line's text, standing in for what `window::idle_status_entry`
 /// composes from a real dashboard — fixed here because the demo has no
-/// `ChartDoc` behind it, only the same `StatusEntry` carrier.
+/// `ChartDoc` behind it, just the same `StatusEntry` carrier.
 const STATUS_RAIL_IDLE_PROBE: &str = "loaded · 2 marks";
 
 /// `status_rail` / `status_rail_overlay` — the bottom-edge band a pane's
@@ -591,7 +591,7 @@ impl Component for StatusRailDemo {
             },
             // `chrome::status_rail_height()` is `ROW_GRID + 2·SPACE_2` — a
             // composite of two ladder values, not a single named rung, so
-            // there is nothing on this list to measure against.
+            // this list has no rung to measure it against.
             height: GateHeight::Intrinsic(
                 "the rail's band is ROW_GRID + 2·SPACE_2, a composite the \
                  named-rung ladder has no single entry for",

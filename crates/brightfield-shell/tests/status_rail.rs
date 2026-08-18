@@ -270,8 +270,8 @@ fn an_idle_chart_window_names_what_it_loaded() {
 // ---------------------------------------------------------------------------
 
 /// AC6: a status entry declared by a pane is drawn without the user first
-/// clicking inside that pane — `focus_chart_pane` is never called here, only
-/// `settle`, and the watcher's own notice still reaches the rail.
+/// clicking inside that pane — this test never calls `focus_chart_pane`,
+/// only `settle`, and the watcher's own notice still reaches the rail.
 ///
 /// AC7: this checks `app.rail().drawn`, populated by
 /// `chrome::status_rail`'s real draw pass through `egui::Context::run_ui`
