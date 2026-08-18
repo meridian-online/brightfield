@@ -631,8 +631,8 @@ pub const fn status_rail_height() -> f32 {
 /// need to announce its own arrival. Without this, two headless captures of
 /// the identical idle state, captured after a different number of settled
 /// frames, show the rail at two different opacities —
-/// which is real: `RawInput::time` is `None` in every capture path in this
-/// workspace, so egui advances its clock by `predicted_dt` each frame either
+/// which is real: `RawInput::time` is `None` across this workspace's
+/// capture paths, so egui advances its clock by `predicted_dt` each frame either
 /// way, and a two-frame capture and a four-frame capture land at different
 /// points on the same 120 ms curve. Disabling the fade removes the curve
 /// rather than out-waiting it.
