@@ -369,7 +369,7 @@ fn the_way_in_declares_no_verb_and_therefore_no_keystroke() {
 }
 
 /// Every start's embedded thumbnail is byte-for-byte the committed file, and
-/// each decodes to the gallery card's own 16:10.
+/// each decodes to the gallery card's own 16:10 — for **both** [`Mode`]s.
 ///
 /// The binary ships `include_bytes!` and the regeneration gate at the bottom
 /// of this file holds the *file* against the bundled spec — this is the strut
@@ -380,25 +380,38 @@ fn the_way_in_declares_no_verb_and_therefore_no_keystroke() {
 fn every_shipped_thumbnail_is_the_committed_file() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/starts");
     for start in starts::STARTS {
-        let path = dir.join(format!("{}.png", start.id));
-        let committed = std::fs::read(&path)
-            .unwrap_or_else(|e| panic!("{} has no committed thumbnail: {e}", start.id));
-        assert_eq!(
-            committed,
-            start.thumbnail,
-            "{}'s embedded thumbnail is not the committed {} — rebuild, or \
-             fix the include path",
-            start.id,
-            path.display()
-        );
-        let decoded = image::load_from_memory(start.thumbnail)
-            .unwrap_or_else(|e| panic!("{}'s thumbnail does not decode: {e}", start.id));
-        assert_eq!(
-            (decoded.width(), decoded.height()),
-            (480, 300),
-            "{}'s thumbnail is not the gallery card's 480×300",
-            start.id
-        );
+        for (mode, suffix, embedded) in [
+            (Mode::Light, "", start.thumbnail),
+            (Mode::Dark, "-dark", start.thumbnail_dark),
+        ] {
+            let path = dir.join(format!("{}{suffix}.png", start.id));
+            let committed = std::fs::read(&path).unwrap_or_else(|e| {
+                panic!("{} has no committed {mode:?} thumbnail: {e}", start.id)
+            });
+            assert_eq!(
+                committed,
+                embedded,
+                "{}'s embedded {mode:?} thumbnail is not the committed {} — \
+                 rebuild, or fix the include path",
+                start.id,
+                path.display()
+            );
+            let decoded = image::load_from_memory(embedded).unwrap_or_else(|e| {
+                panic!("{}'s {mode:?} thumbnail does not decode: {e}", start.id)
+            });
+            assert_eq!(
+                (decoded.width(), decoded.height()),
+                (480, 300),
+                "{}'s {mode:?} thumbnail is not the gallery card's 480×300",
+                start.id
+            );
+            assert_eq!(
+                start.thumbnail_for(mode),
+                embedded,
+                "{}'s thumbnail_for({mode:?}) did not select the {mode:?} slice",
+                start.id
+            );
+        }
     }
 }
 
@@ -860,10 +873,34 @@ fn every_shipped_start_still_renders_and_its_thumbnail_is_current() {
             .iter()
             .filter(|s| !s.remote)
             .collect::<Vec<_>>(),
+        Mode::Light,
     );
     assert!(
         drawn >= 3,
         "only {drawn} thumbnail(s) were held against their specs — the \
+         `remote` exemption has taken over the gate"
+    );
+}
+
+/// The same gate, over the dark thumbnails: [`Start::thumbnail_dark`] is a
+/// second, independently rendered PNG per start, not the light one recoloured
+/// at draw time, so it needs its own render-and-diff pass held against the
+/// same specs — over [`capture::capture_png_at`]'s dark path rather than a
+/// palette swap.
+///
+/// [`Start::thumbnail_dark`]: starts::Start::thumbnail_dark
+#[test]
+fn every_shipped_start_still_renders_and_its_dark_thumbnail_is_current() {
+    let drawn = render_thumbnails(
+        &starts::STARTS
+            .iter()
+            .filter(|s| !s.remote)
+            .collect::<Vec<_>>(),
+        Mode::Dark,
+    );
+    assert!(
+        drawn >= 3,
+        "only {drawn} dark thumbnail(s) were held against their specs — the \
          `remote` exemption has taken over the gate"
     );
 }
@@ -881,6 +918,26 @@ fn every_remote_start_still_renders_and_its_thumbnail_is_current() {
             .iter()
             .filter(|s| s.remote)
             .collect::<Vec<_>>(),
+        Mode::Light,
+    );
+    assert!(
+        drawn > 0,
+        "no shipped start needs a network any more — delete this test and the \
+         `remote` exemption in its sibling with it"
+    );
+}
+
+/// The dark half of the network-gated gate above — same starts, same
+/// [`UPDATE_SNAPSHOTS`] workflow, [`Mode::Dark`] instead.
+#[test]
+#[ignore = "network: renders a start whose spec fetches over https"]
+fn every_remote_start_still_renders_and_its_dark_thumbnail_is_current() {
+    let drawn = render_thumbnails(
+        &starts::STARTS
+            .iter()
+            .filter(|s| s.remote)
+            .collect::<Vec<_>>(),
+        Mode::Dark,
     );
     assert!(
         drawn > 0,
@@ -890,9 +947,11 @@ fn every_remote_start_still_renders_and_its_thumbnail_is_current() {
 }
 
 /// Render each start at the window it asks for, thumbnail it, and diff against
-/// the committed PNG. Returns how many were held, so a caller filtering the
-/// set can refuse to pass over an empty one.
-fn render_thumbnails(starts: &[&'static starts::Start]) -> usize {
+/// the committed PNG for `mode` — `{id}.png` for [`Mode::Light`], `{id}-dark.png`
+/// for [`Mode::Dark`], so the two halves of the set stay apart by name.
+/// Returns how many were held, so a caller filtering the set can refuse to
+/// pass over an empty one.
+fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) -> usize {
     // Hermetic capture: keep `BRIGHTFIELD_DEVTOOLS` from baking the top-bar
     // renderer string into a regenerated thumbnail (see `door_surface`).
     std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
@@ -905,19 +964,140 @@ fn render_thumbnails(starts: &[&'static starts::Start]) -> usize {
         // The window the start itself asks for — its content's own natural
         // size, the same answer the live click gives.
         let size = boot.window_size(boot.view_or(ViewKind::Charts));
-        let out = scratch(&format!("thumb-{}", start.id));
-        let (w, h) = capture_png_at(boot, Mode::Light, 1.0, size, &out, Vec::new())
+        let out = scratch(&format!("thumb-{}-{mode:?}", start.id));
+        let (w, h) = capture_png_at(boot, mode, 1.0, size, &out, Vec::new())
             .unwrap_or_else(|e| panic!("{} no longer renders: {e}", start.id));
         assert!(w > 0 && h > 0, "{}: empty capture", start.id);
         let thumb = thumbnail(&read_rgba(&out), 480, 300);
-        if let Err(e) = egui_kittest::try_image_snapshot_options(&thumb, start.id, &options) {
+        let name = match mode {
+            Mode::Light => start.id.to_string(),
+            Mode::Dark => format!("{}-dark", start.id),
+        };
+        if let Err(e) = egui_kittest::try_image_snapshot_options(&thumb, name, &options) {
             failures.push(format!("{}: {e}", start.id));
         }
     }
     assert!(
         failures.is_empty(),
-        "thumbnails have drifted from what their specs render:\n{}",
+        "{mode:?} thumbnails have drifted from what their specs render:\n{}",
         failures.join("\n")
     );
     starts.len()
+}
+
+/// No pixel in any of the five cards' **image area** is within [`TOLERANCE`]
+/// of `INK_LIGHT.surface`, in the committed dark baseline — the defect this
+/// card exists to fix (`front_door_dark.png` used to draw its chrome
+/// correctly dark and then show five light cards).
+///
+/// Scans each card's image sub-rect pixel by pixel — `card.min + (SPACE_2,
+/// SPACE_2)`, sized `card.width() - 2*SPACE_2` by `CARD_IMAGE_HEIGHT` — not
+/// one sampled point. A single point is not enough: `capture::thumbnail`
+/// (`src/capture.rs:606`) letterboxes a capture that is not exactly 16:10
+/// with **transparent** padding, and `door_card` composites that padding
+/// over the card's own fill (`sem.surfaces.raised`), not over the
+/// thumbnail's ink (`capture.rs:600`, `window.rs:2881-2884`) — so a point
+/// chosen inside that band reads the card's fill instead of shipped
+/// thumbnail content. `edgar-gleif-crosswalk-dark.png`,
+/// `signals-dashboard-dark.png` and `edgar-gleif-crosswalk-chart-dark.png`
+/// each carry a letterbox band tall enough to swallow a single point sampled
+/// a few pixels below the image's top edge; a full-area scan cannot miss the
+/// same way, wherever that band happens to fall.
+///
+/// `SPACE_2` is [`meridian_design::spacing::SPACE_2`] — the same shared
+/// design token `door_card`'s own `img_rect` is built from
+/// (`window.rs:2882`), read here rather than duplicated. `card.width()` comes
+/// from the rect [`front_door_card_rect`] already returns, leaving
+/// `CARD_IMAGE_HEIGHT` (130.0) as the one number duplicated from `window.rs`,
+/// which has no public accessor to read instead; scanning a shade short of
+/// the true image height costs a thin strip of the card's own fill at the
+/// bottom (still not light), and scanning a shade past it stops short of
+/// where the card's label text starts (`SPACE_4` further down), so an
+/// approximate value here cannot turn a real defect invisible.
+///
+/// Measured on the real committed baseline: 0 of 27,040 pixels per card
+/// (208 × 130) are within [`TOLERANCE`] of `INK_LIGHT.surface`, on each of
+/// the five cards. Measured under the mutation below (each card drawn from
+/// its light slice, in `starts::STARTS` order): 68.2% / 39.6% / 67.7% /
+/// 68.1% / 49.4% of each card's pixels are — the margin either side of
+/// [`TOLERANCE`] is not a close call.
+///
+/// [`front_door_card_rect`]: brightfield_shell::window::MeridianApp::front_door_card_rect
+///
+/// Watched redden, one mutation: pointing `ensure_door_thumbs` at
+/// `start.thumbnail` (the light slice) instead of
+/// `start.thumbnail_for(self.mode)` and regenerating the baseline — each
+/// card is now wrong, and the loop panics at `edgar-gleif-crosswalk`, the
+/// FIRST entry in `starts::STARTS`, because the scan finds a bad pixel
+/// wherever one falls rather than where one particular sampled point
+/// happened to land.
+const TOLERANCE: i32 = 20;
+
+/// The image sub-rect `door_card` draws each thumbnail into — see the test
+/// above for why this, and not the whole card, is what gets scanned.
+fn card_image_rect(card: egui::Rect) -> egui::Rect {
+    const CARD_IMAGE_HEIGHT: f32 = 130.0;
+    let pad = meridian_design::spacing::SPACE_2;
+    egui::Rect::from_min_size(
+        card.min + egui::vec2(pad, pad),
+        egui::vec2(card.width() - 2.0 * pad, CARD_IMAGE_HEIGHT),
+    )
+}
+
+#[test]
+fn no_front_door_card_shows_the_light_surface_family_in_the_dark_baseline() {
+    let mut win = Window::open(Boot::empty());
+    win.settle();
+
+    let baseline =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots/front_door_dark.png");
+    let img = image::open(&baseline)
+        .unwrap_or_else(|e| panic!("read {}: {e}", baseline.display()))
+        .to_rgba8();
+
+    let s = meridian_design::chrome::INK_LIGHT.surface;
+    let light_rgb = [
+        (s.r * 255.0).round() as i32,
+        (s.g * 255.0).round() as i32,
+        (s.b * 255.0).round() as i32,
+    ];
+
+    for start in starts::STARTS {
+        let card = win
+            .app
+            .front_door_card_rect(start.id)
+            .unwrap_or_else(|| panic!("the door drew no card for {}", start.id));
+        let image = card_image_rect(card);
+        let x0 = image.min.x.round() as u32;
+        let y0 = image.min.y.round() as u32;
+        let x1 = image.max.x.round() as u32;
+        let y1 = image.max.y.round() as u32;
+
+        let mut near_light = 0u32;
+        let mut scanned = 0u32;
+        let mut first_bad = None;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let px = img.get_pixel(x, y);
+                let sampled = [i32::from(px[0]), i32::from(px[1]), i32::from(px[2])];
+                scanned += 1;
+                let within = sampled
+                    .iter()
+                    .zip(light_rgb)
+                    .all(|(&channel, light)| (channel - light).abs() <= TOLERANCE);
+                if within {
+                    near_light += 1;
+                    first_bad.get_or_insert((x, y, sampled));
+                }
+            }
+        }
+        assert_eq!(
+            near_light, 0,
+            "{}'s card has {near_light} of {scanned} image pixels within \
+             {TOLERANCE} of INK_LIGHT.surface {light_rgb:?} — first at \
+             {first_bad:?} — so the dark front door is still showing (at \
+             least partly) a light thumbnail",
+            start.id
+        );
+    }
 }

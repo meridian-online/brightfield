@@ -3158,12 +3158,23 @@ impl MeridianApp {
     /// Bytes that will not decode are a build defect the thumbnail
     /// regeneration test exists to catch — a card without its picture is the
     /// honest degradation here, not a reason to take the door down.
+    ///
+    /// Picks each start's thumbnail for `self.mode` — see
+    /// [`crate::starts::Start::thumbnail_for`] — rather than the light one
+    /// unconditionally. Safe to do once, here: `mode` is a private field
+    /// [`MeridianApp::assemble`] writes once, from a `Mode` its four public
+    /// constructors all take as a parameter and none reassign afterwards;
+    /// this file declares no submodule but `mod tests`; and the workspace's
+    /// one `.mode = …` assignment outside test code is
+    /// [`LiveDashboard::set_mode`](crate::pipeline::LiveDashboard::set_mode),
+    /// on a different struct entirely. So there is no later mode change this
+    /// cache could go stale against.
     fn ensure_door_thumbs(&mut self, ctx: &egui::Context) {
         if !self.door_thumbs.is_empty() {
             return;
         }
         for start in crate::starts::STARTS {
-            let Ok(decoded) = image::load_from_memory(start.thumbnail) else {
+            let Ok(decoded) = image::load_from_memory(start.thumbnail_for(self.mode)) else {
                 debug_assert!(false, "{}'s shipped thumbnail is not decodable", start.id);
                 continue;
             };
