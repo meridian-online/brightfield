@@ -215,6 +215,12 @@ fn activity_reaches_the_rail_as_the_one_indicator() {
         "the pane's own activity entry is folded into the indicator, not \
          drawn beside it"
     );
+    assert!(
+        !drawn.contains(&IDLE_STATUS_ID),
+        "AC2: live activity takes precedence over the idle line — the two \
+         must never draw for the same subject at once; the rail drew \
+         {drawn:?}"
+    );
 
     // A second kind joins the same entry rather than adding one.
     w.app.chart_doc_mut().activity.begin(Activity::FileWatch);
@@ -230,8 +236,10 @@ fn activity_reaches_the_rail_as_the_one_indicator() {
     );
 
     // Work resolves, the rail falls back to the idle line — quiet of
-    // activity, never quiet outright: AC2's "takes precedence", proved in
-    // both directions in one test.
+    // activity, never quiet outright. AC2's "takes precedence" is now
+    // proved in both directions in this one test: live activity excludes
+    // the idle line (asserted above), and resolved activity restores it
+    // (asserted below).
     w.app.chart_doc_mut().activity.end(Activity::EngineQuery);
     w.app.chart_doc_mut().activity.end(Activity::FileWatch);
     w.settle();

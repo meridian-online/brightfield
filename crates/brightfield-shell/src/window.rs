@@ -3057,11 +3057,8 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 
 /// The stable id [`idle_status_entry`] writes, and the one
 /// [`status_rail_ui`](MeridianApp::status_rail_ui) reads back for the test
-/// that pins it — distinct from every other declared id (`chart-navigation`,
-/// `chart-navigation-scope`, `chart-predicate`, `watch-spec`, `run-state`,
-/// `editor-saved`, `editor-warning`, [`ActivityIndicator::ID`] and
-/// [`Activity::id`]'s three), so a rail carrying this entry is unambiguous
-/// about what it is.
+/// that pins it — distinct from the rail's other declared ids, so a rail
+/// carrying this entry is unambiguous about what it is.
 const IDLE_STATUS_ID: &str = "chart-idle";
 
 /// What a settled chart window says about itself when nothing is running and
