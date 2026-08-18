@@ -202,6 +202,208 @@ pub fn pane_frame(ui: &mut egui::Ui, subject: &Subject, header: bool, mode: Mode
     child
 }
 
+// ---------------------------------------------------------------------------
+// The region controls: a rail's selector strip, and the canvas's one toggle
+// ---------------------------------------------------------------------------
+
+/// The height of a rail's selector strip, in logical points.
+///
+/// The grid rung, because the names in it are pointer targets. It is a split
+/// of the rail's rect rather than something painted inside the rail's body:
+/// the strip is what survives when the rail collapses, and a decoration
+/// inside the body would collapse with it.
+#[must_use]
+pub const fn rail_selector_height() -> f32 {
+    spacing::ROW_GRID
+}
+
+/// A rail's rect, split into the strip at its head and the body under it.
+#[must_use]
+pub fn rail_split(rect: egui::Rect) -> (egui::Rect, egui::Rect) {
+    let cut = (rect.top() + rail_selector_height()).min(rect.bottom());
+    (
+        egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), cut)),
+        egui::Rect::from_min_max(egui::pos2(rect.left(), cut), rect.max),
+    )
+}
+
+/// The strip that says which of a rail's panes is showing, and returns the
+/// index of the name that was clicked this frame.
+///
+/// Drawn as names with a rule under the live one — the shape a reader already
+/// reads as "one of these", and deliberately not the shape
+/// [`projection_toggle`] takes. The two controls address different things (a
+/// rail's panes are alternatives; the canvas's projections are two readings of
+/// one thing) and drawing them alike is what made the window read as two rows
+/// of identical tabs.
+pub fn rail_selector(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    names: &[&str],
+    active: usize,
+    mode: Mode,
+) -> Option<usize> {
+    let sem = semantic(mode.is_dark());
+    ui.painter()
+        .rect_filled(rect, radius::NONE, colour(sem.tabs.bar_background));
+    ui.painter().line_segment(
+        [rect.left_bottom(), rect.right_bottom()],
+        egui::Stroke::new(1.0, colour(sem.borders.subtle)),
+    );
+
+    let font = ui_font();
+    let pad = spacing::SPACE_4;
+    let mut x = rect.left() + pad;
+    let mut picked = None;
+    for (i, name) in names.iter().enumerate() {
+        let galley =
+            ui.painter()
+                .layout_no_wrap((*name).to_owned(), font.clone(), egui::Color32::PLACEHOLDER);
+        let width = galley.size().x;
+        let hit = egui::Rect::from_min_max(
+            egui::pos2(x - spacing::SPACE_1, rect.top()),
+            egui::pos2(x + width + spacing::SPACE_1, rect.bottom()),
+        );
+        let response = ui.interact(hit, ui.id().with(("rail-selector", rect.left_top().x as i32, i)), egui::Sense::click());
+        if response.clicked() {
+            picked = Some(i);
+        }
+        let ink = if i == active {
+            sem.tabs.active_foreground
+        } else if response.hovered() {
+            sem.text.secondary
+        } else {
+            sem.tabs.foreground
+        };
+        ui.painter().galley(
+            egui::pos2(x, rect.center().y - galley.size().y / 2.0),
+            galley,
+            colour(ink),
+        );
+        if i == active {
+            ui.painter().line_segment(
+                [
+                    egui::pos2(x, rect.bottom() - 1.5),
+                    egui::pos2(x + width, rect.bottom() - 1.5),
+                ],
+                egui::Stroke::new(1.5, colour(sem.borders.focus)),
+            );
+        }
+        x += width + spacing::SPACE_5;
+    }
+    picked
+}
+
+/// What one frame of a [`projection_toggle`] drew, and what it was asked for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ToggleDrawn {
+    /// The control's outer rect.
+    pub rect: egui::Rect,
+    /// One rect per entry, in the order they were named — what a test aims a
+    /// click at, and what it counts to find a third entry.
+    pub segments: Vec<egui::Rect>,
+    /// The entry the pointer picked this frame.
+    pub picked: Option<usize>,
+}
+
+/// The canvas's one toggle between the projections of a step.
+///
+/// A segmented control: a bordered capsule with the live half filled, drawn
+/// left-aligned at `at`. It is the one control on the window with this shape,
+/// which is the point — a tab strip and a rail's selector strip both say
+/// "pick one of these panes", while this says "the same thing, read two ways".
+///
+/// `sem.borders.control` is the border rather than the hairline because the
+/// design system names a segmented group as the case that token exists for: a
+/// boundary a user must find in order to know the control is there.
+pub fn projection_toggle(
+    ui: &mut egui::Ui,
+    at: egui::Pos2,
+    names: &[&str],
+    active: usize,
+    mode: Mode,
+) -> ToggleDrawn {
+    let sem = semantic(mode.is_dark());
+    let font = ui_font();
+    let height = control::HEIGHT_SM;
+    let pad = spacing::SPACE_5;
+
+    let widths: Vec<f32> = names
+        .iter()
+        .map(|name| {
+            ui.painter()
+                .layout_no_wrap((*name).to_owned(), font.clone(), egui::Color32::PLACEHOLDER)
+                .size()
+                .x
+                + 2.0 * pad
+        })
+        .collect();
+    let total: f32 = widths.iter().sum();
+    let outer = egui::Rect::from_min_size(
+        egui::pos2(at.x, at.y - height / 2.0),
+        egui::vec2(total, height),
+    );
+
+    ui.painter()
+        .rect_filled(outer, radius::CONTROL, colour(sem.tabs.segmented_background));
+    ui.painter().rect_stroke(
+        outer,
+        radius::CONTROL,
+        egui::Stroke::new(1.0, colour(sem.borders.control)),
+        egui::StrokeKind::Inside,
+    );
+
+    let mut drawn = ToggleDrawn {
+        rect: outer,
+        segments: Vec::with_capacity(names.len()),
+        picked: None,
+    };
+    let mut x = outer.left();
+    for (i, name) in names.iter().enumerate() {
+        let seg = egui::Rect::from_min_size(egui::pos2(x, outer.top()), egui::vec2(widths[i], height));
+        x += widths[i];
+        let response = ui.interact(
+            seg,
+            ui.id().with(("projection-toggle", i)),
+            egui::Sense::click(),
+        );
+        if response.clicked() {
+            drawn.picked = Some(i);
+        }
+        if i == active {
+            ui.painter().rect_filled(
+                seg.shrink(2.0),
+                radius::CHIP,
+                colour(sem.tabs.active_background),
+            );
+        } else if i > 0 {
+            ui.painter().line_segment(
+                [
+                    egui::pos2(seg.left(), seg.top() + spacing::SPACE_2),
+                    egui::pos2(seg.left(), seg.bottom() - spacing::SPACE_2),
+                ],
+                egui::Stroke::new(1.0, colour(sem.borders.subtle)),
+            );
+        }
+        let ink = if i == active {
+            sem.tabs.active_foreground
+        } else if response.hovered() {
+            sem.text.secondary
+        } else {
+            sem.tabs.foreground
+        };
+        ui.painter().text(
+            seg.center(),
+            egui::Align2::CENTER_CENTER,
+            *name,
+            font.clone(),
+            colour(ink),
+        );
+        drawn.segments.push(seg);
+    }
+    drawn
+}
+
 /// Draw a module's own chrome inside the module's rect, and return the `Ui`
 /// the module's body may draw into.
 ///

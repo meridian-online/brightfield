@@ -667,16 +667,22 @@ pub fn registry() -> Vec<VerbEntry> {
         //      what you look at, never the data, so it is never logged. They
         //      take the general `reserved` bucket's shape but not its helper,
         //      which builds Data-tier entries. ----
+        // The navigator rail's toggle, and the one pane toggle that is BOUND.
+        // The protocol is the container the work sits inside rather than a
+        // peer surface, so reaching it is a dock focus toggle with a round
+        // trip — press once for the spine, press again for the work — and it
+        // is a mnemonic binding rather than a positional numeric because the
+        // surfaces it addresses are not a bounded set of peers.
         VerbEntry {
             longname: "toggle-outline-rail",
             tier: CommandTier::View,
-            binding_specs: Vec::new(),
-            scope_applicability: vec![Protocol],
-            drives: D::Reserved,
-            status: VerbStatus::Reserved,
-            reserved_reason: Some(ReservedReason::NeedsWorkspaceShell),
-            help: "Show or hide the protocol outline rail",
-            scores: None,
+            binding_specs: vec![global("cmd-b")],
+            scope_applicability: vec![Dashboard, View, Protocol],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Move focus to the protocol spine, or back where it came from",
+            scores: Some(Scores { frequency: 4, mnemonic: 2, convention: 5, motor_note: "cmd-b = the left dock (Zed workspace::ToggleLeftDock, VS Code toggleSidebarVisibility); round-trip focus, never a numeric" }),
         },
         VerbEntry {
             longname: "toggle-inspector-rail",
@@ -926,14 +932,15 @@ mod tests {
             .map(|v| v.longname)
             .collect();
         needs_shell.sort_unstable();
+        // `toggle-outline-rail` left this bucket when the navigator rail
+        // landed: it is bound, performed and scored. The rest stay reserved.
         assert_eq!(
             needs_shell,
             [
                 "toggle-controls-rail",
                 "toggle-data-grid",
                 "toggle-gallery",
-                "toggle-inspector-rail",
-                "toggle-outline-rail"
+                "toggle-inspector-rail"
             ]
         );
         // Every reserved verb is unbound and unscored; every bound verb is scored.
