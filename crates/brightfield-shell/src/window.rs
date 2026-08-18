@@ -1732,14 +1732,13 @@ impl MeridianApp {
 
     /// Put `view`'s document on the canvas.
     ///
-    /// **A test hook, and named as one.** A window holding one document
-    /// decides this from content on every frame, so this changes nothing
-    /// there — [`MeridianApp::draw`] re-derives it. It bites on a window
-    /// holding a protocol *and* a chart, which is the one case content cannot
-    /// settle, and where this arrangement offers no control: the graph is the
-    /// navigator rail's spine and the canvas belongs to the step. A suite that
-    /// has to photograph both canvases in one process reaches this rather than
-    /// a control nobody can click.
+    /// **A test hook, and named as one.** [`MeridianApp::draw`] re-derives the
+    /// canvas from the documents on each frame it draws, so on a window with
+    /// something in it this holds until the next one. Where it does hold is
+    /// the front door: those frames leave the recorded view where they found
+    /// it, and a suite proving the door belongs to the window rather than to
+    /// either document has to move the canvas under it somehow, the
+    /// arrangement offering no control that does.
     pub fn show_on_canvas(&mut self, view: ViewKind) {
         self.ws_mut().set_active(view);
     }
