@@ -295,21 +295,17 @@ fn one_documents_panes_are_laid_out_per_frame_and_the_documents_decide_which() {
 
     let mut win = Window::open(both(ViewKind::Protocol), Mode::Light);
     win.settle();
-    assert_eq!(
-        win.app.active(),
-        ViewKind::Charts,
-        "a window holding both documents gave the canvas to the graph, which \
-         is a state no control on this window undoes"
-    );
     assert!(
         win.app.chart_viewport().is_some(),
-        "the chart pane never drew over a window holding both documents"
+        "the chart pane never drew over a window holding both documents, so \
+         the graph took the canvas — a state no control on this window undoes"
     );
     assert!(
         win.app.canvas_viewport().is_none(),
         "the DAG canvas pane drew while the chart held the canvas — both \
          trees are laid out every frame, which is not what one window means"
     );
+    assert_eq!(win.app.active(), ViewKind::Charts);
 }
 
 // ---------------------------------------------------------------------------
