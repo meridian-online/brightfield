@@ -110,17 +110,14 @@ impl Selection {
 /// (`overlays.rs`) is restricted to, so the two surfaces read one answer for
 /// what is live at this altitude rather than two that could drift apart.
 ///
-/// This is the pane's whole answer to "what can be done with it": before
-/// this rail existed a pane's declared toolbar was not rendered anywhere (a
-/// pane's own header band paints icon, title and dirty marker and stops
-/// there), so a declared-but-undispatchable entry — `editor.rs`'s
-/// `save-spec`, say — sat inert wherever it was. Drawing it here without
-/// filtering would make it look live for the first time while still doing
-/// nothing, which is worse than the checkbox this rail replaced. So an entry
-/// not on the allow list is dropped rather than shown disabled — see
-/// `tests/inspector_contract.rs`'s `every_declared_toolbar_verb_either_
-/// dispatches_or_is_filtered_out` for the sweep that keeps this from
-/// widening in silence.
+/// This is the pane's whole answer to "what can be done with it": a
+/// declared-but-undispatchable entry — `editor.rs`'s `save-spec`, say, which
+/// `MeridianApp::apply`'s Charts arm has no case for — would look live while
+/// doing nothing if drawn here unfiltered, which is worse than the checkbox
+/// this rail replaced. So an entry not on the allow list is dropped rather
+/// than shown disabled — see `tests/inspector_contract.rs`'s
+/// `every_declared_toolbar_verb_either_dispatches_or_is_filtered_out` for the
+/// sweep that keeps this from widening in silence.
 fn dispatchable(entries: &[ToolbarEntry]) -> Vec<ToolbarEntry> {
     entries
         .iter()

@@ -89,6 +89,17 @@
 # * Card ids. Three or four digits required; the workflow vocabulary word "card"
 #   and the literal UI cards in the renderer carry no number and are left alone.
 #
+# * Vault wikilinks. Doubled square brackets around a kebab-case note slug —
+#   Obsidian's own link syntax, spelled that way here rather than as a literal
+#   example so this comment does not trip the rule it documents. The private
+#   planning vault is full of them, and one reached this repo's rustdoc
+#   verbatim (a note title inside doubled brackets); this rule is what would
+#   have caught it. Guard: at least one internal hyphen, required so the
+#   pattern discriminates a multi-word kebab-case slug from TOML's own
+#   array-of-table headers — single words, no hyphen, and this workspace's
+#   own `Cargo.toml` files carry them for real (`[[bin]]`, `[[test]]`,
+#   `[[bench]]`, `[[example]]`; `git grep -c '^\[\[bin\]\]'` finds them).
+#
 # If a pattern flags something legitimate, FIX THE PATTERN and add the innocent
 # string to the fixture. The allowlist is for genuine content that must stay,
 # not for papering over a bad regex.
@@ -141,6 +152,7 @@ RULES=(
 	'planning-card-id|(?i)(?<![A-Za-z0-9])cards?[ _-]#?[0-9]{3,4}(?![0-9])'
 	'spec-ac-id|(?i)[a-z]{2,6}[-_]ac[-_]?[0-9]+[a-z]?(?![0-9])'
 	'spec-ac-id|(?i)(?<![A-Za-z0-9])ac[-_][0-9]+[a-z]?(?![0-9])'
+	'vault-wikilink|(?i)\[\[[a-z0-9]+(?:-[a-z0-9]+)+\]\]'
 )
 
 # ---------------------------------------------------------------------------

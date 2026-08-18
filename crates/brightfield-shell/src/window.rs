@@ -122,13 +122,12 @@ pub const DOCK_INSET: f32 = spacing::SPACE_4;
 
 /// The inspector rail's default width, outer — including its own frame.
 ///
-/// [[brightfields-layout-regions-are-bands-rails-a-canvas-and-overlays]]
-/// names this `280 default · 200 minimum`, taken at dispatch rather than left
-/// to this lane: a column drawn proportionally inside the dock (the rail this
-/// replaces, `CONTROLS_SHARE` in `app.rs`) has no extent in points — merely a
-/// fraction of whatever the window happens to be — and a fraction is not
-/// something a later lane can lay a fixed sibling region out against. This is
-/// that extent, read by both [`chart_window_size`] and the panel
+/// A declared pixel extent, not the proportional share this replaces: a
+/// column drawn proportionally inside the dock (the rail this replaces,
+/// `CONTROLS_SHARE` in `app.rs`) has no extent in points — merely a fraction
+/// of whatever the window happens to be — and a fraction is not something a
+/// later lane can lay a fixed sibling region out against. This is that
+/// extent, read by both [`chart_window_size`] and the panel
 /// [`MeridianApp::draw`] shows.
 pub const INSPECTOR_RAIL_WIDTH: f32 = 280.0;
 

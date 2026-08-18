@@ -265,16 +265,15 @@ fn editor_toolbar_verbs(doc: &mut ChartDoc) -> Vec<&'static str> {
         .collect()
 }
 
-/// The defect this lane would otherwise have shipped: before this pane
-/// existed, a chart-view pane's declared toolbar was not drawn anywhere —
-/// the header band paints icon, title and dirty marker and stops there (see
-/// `chrome::pane_frame`) — so a declared-but-undispatchable verb was inert
-/// wherever it sat. This sweep requires a verdict, from
-/// [`registry_toolbar_verbs`] and [`editor_toolbar_verbs`] combined:
-/// dispatches, so the inspector may draw it, or does not, so it must stay
-/// filtered. An unrecognised verb panics rather than passing over unproven,
-/// the same shape `overlay_wiring.rs::every_chart_palette_candidate_
-/// actually_dispatches` uses for the command palette.
+/// The defect this lane would otherwise have shipped: a
+/// declared-but-undispatchable verb — one `MeridianApp::apply`'s Charts arm
+/// has no case for — would look live if this rail drew it unfiltered. This
+/// sweep requires a verdict, from [`registry_toolbar_verbs`] and
+/// [`editor_toolbar_verbs`] combined: dispatches, so the inspector may draw
+/// it, or does not, so it must stay filtered. An unrecognised verb panics
+/// rather than passing over unproven, the same shape
+/// `overlay_wiring.rs::every_chart_palette_candidate_actually_dispatches`
+/// uses for the command palette.
 ///
 /// Proof this sweep can fail: dropping the `"save-spec"` arm below (so it
 /// falls to the `other => panic!` case) reddens this test with "save-spec is

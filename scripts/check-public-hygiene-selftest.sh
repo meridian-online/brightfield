@@ -108,6 +108,24 @@ check_violation "spec AC id, prefixed"      spec-ac-id              "$(printf 'c
 # not exempted, so the gate must see them.
 check_violation "spec AC id in a fn name"   spec-ac-id              "$(printf 'fn %s_%s%s_logs_the_command() {}' clg ac 09)"
 check_violation "spec AC id in a literal"   spec-ac-id              "$(printf 'let dir = "bf-%s-%s%s-1234";' clg ac 09)"
+check_violation "vault wikilink"            vault-wikilink          "$(printf 'documented at %s%s-%s%s.' '[[' region taxonomy ']]')"
+
+# ---------------------------------------------------------------------------
+# 1b. The vault-wikilink rule discriminates from TOML array-of-table headers —
+#     the trap this shape sits next to: [[bin]] et al. are single words, a vault
+#     slug is multi-word kebab-case, and the rule's only guard is the hyphen.
+# ---------------------------------------------------------------------------
+echo "vault wikilink does not fire on TOML array-of-table headers:"
+d="$(new_repo)"
+printf '[[bin]]\n[[test]]\n[[bench]]\n[[example]]\n' >"$d/subject.txt"
+out="$(run_gate "$d")"
+rc=$?
+if [[ $rc -eq 0 ]]; then
+	ok "[[bin]], [[test]], [[bench]], [[example]] produce no violations"
+else
+	bad "a TOML array-of-table header tripped vault-wikilink (exit $rc)"
+	printf '%s\n' "$out" | sed 's/^/        /'
+fi
 
 # ---------------------------------------------------------------------------
 # 2. The innocent-strings fixture stays silent.
