@@ -110,8 +110,12 @@ impl Window {
     }
 }
 
+/// The idle rail entry's id — `window::IDLE_STATUS_ID`, not exported, so this
+/// is the same literal-id convention `"watch-spec"` already uses below.
+const IDLE_STATUS_ID: &str = "chart-idle";
+
 /// A booted window over the dashboard spec at `path`, chart pane focused,
-/// rail settled quiet.
+/// rail settled to the idle line and nothing louder.
 fn dashboard_window(path: &std::path::Path) -> Window {
     let composed = compose_spec(path.to_str().expect("utf-8 temp path")).expect("compose");
     let mut boot = Boot::charts(composed);
@@ -119,9 +123,11 @@ fn dashboard_window(path: &std::path::Path) -> Window {
     let mut w = Window::open(boot);
     w.settle();
     w.focus_chart_pane();
-    assert!(
-        w.app.rail().drawn.is_empty(),
-        "at rest the rail draws nothing — quiet is the default"
+    assert_eq!(
+        w.app.rail().drawn,
+        vec![IDLE_STATUS_ID],
+        "at rest the rail says only what is loaded — quiet of everything \
+         louder is still the default"
     );
     w
 }
@@ -209,6 +215,12 @@ fn activity_reaches_the_rail_as_the_one_indicator() {
         "the pane's own activity entry is folded into the indicator, not \
          drawn beside it"
     );
+    assert!(
+        !drawn.contains(&IDLE_STATUS_ID),
+        "AC2: live activity takes precedence over the idle line — the two \
+         must never draw for the same subject at once; the rail drew \
+         {drawn:?}"
+    );
 
     // A second kind joins the same entry rather than adding one.
     w.app.chart_doc_mut().activity.begin(Activity::FileWatch);
@@ -223,13 +235,76 @@ fn activity_reaches_the_rail_as_the_one_indicator() {
         "two kinds of work, one indicator; the rail drew {drawn:?}"
     );
 
-    // Work resolves, the rail falls quiet — no idle cue survives it.
+    // Work resolves, the rail falls back to the idle line — quiet of
+    // activity, never quiet outright. AC2's "takes precedence" is now
+    // proved in both directions in this one test: live activity excludes
+    // the idle line (asserted above), and resolved activity restores it
+    // (asserted below).
     w.app.chart_doc_mut().activity.end(Activity::EngineQuery);
     w.app.chart_doc_mut().activity.end(Activity::FileWatch);
     w.settle();
+    assert_eq!(
+        w.app.rail().drawn,
+        vec![IDLE_STATUS_ID],
+        "resolved work leaves only the idle line on the rail"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The idle line
+// ---------------------------------------------------------------------------
+
+/// AC1: an idle window with a chart open still has a rail to read. No
+/// activity, no watcher notice, no navigation refusal — the only thing
+/// standing between "nothing running" and an empty rail is the idle line.
+///
+/// This is the test AC4 asks the builder to break on purpose: short-circuit
+/// `idle_status_entry` back to always returning `None` (its pre-fix
+/// behaviour) and this reddens — see the PR body for the pasted failure.
+#[test]
+fn an_idle_chart_window_names_what_it_loaded() {
+    let path = temp_dashboard("idle-load");
+    let w = dashboard_window(&path);
     assert!(
-        w.app.rail().drawn.is_empty(),
-        "resolved work leaves nothing on the rail"
+        w.app.rail().drawn.contains(&IDLE_STATUS_ID),
+        "an idle window with a chart open should say what it loaded; it drew \
+         {:?}",
+        w.app.rail().drawn
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Focus scoping — AC6 and AC7
+// ---------------------------------------------------------------------------
+
+/// AC6: a status entry declared by a pane is drawn without the user first
+/// clicking inside that pane — this test never calls `focus_chart_pane`,
+/// only `settle`, and the watcher's own notice still reaches the rail.
+///
+/// AC7: this checks `app.rail().drawn`, populated by
+/// `chrome::status_rail`'s real draw pass through `egui::Context::run_ui`
+/// (see the module doc) — not `ChartItem::new().subject(doc).status`, which
+/// only proves the entry was *declared*. A window that collected entries from
+/// the focused pane only would leave `drawn` without `"watch-spec"` here,
+/// because nothing in this test ever focuses a pane.
+#[test]
+fn a_panes_notice_reaches_the_rail_before_anything_is_focused() {
+    let path = temp_dashboard("unfocused-notice");
+    let composed = compose_spec(path.to_str().expect("utf-8 temp path")).expect("compose");
+    let mut boot = Boot::charts(composed);
+    boot.spec_path = Some(path.to_path_buf());
+    let mut w = Window::open(boot);
+    w.settle(); // no click anywhere — nothing holds focus
+
+    touch_past(&path, 100);
+    std::thread::sleep(WATCH_POLL + Duration::from_millis(20));
+    w.run(vec![Vec::new()]);
+
+    assert!(
+        w.app.rail().drawn.contains(&"watch-spec"),
+        "a pane's own notice reaches the rail even though nothing has been \
+         clicked; it drew {:?}",
+        w.app.rail().drawn
     );
 }
 

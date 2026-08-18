@@ -56,7 +56,8 @@
 use brightfield_keys::{Altitude, BindingContext, RecencyCounter};
 use brightfield_workbench::registry::Slot;
 use brightfield_workbench::{
-    EmptyState, Icon as ItemIcon, Item, ItemCtx, ItemId, ItemSpec, Subject, Verb,
+    chrome, EmptyState, HideAffordance, Icon as ItemIcon, Item, ItemCtx, ItemId, ItemSpec,
+    StatusEntry, StatusSide, Subject, Tone, Verb,
 };
 use meridian_design::semantic::{semantic, Role};
 use meridian_egui::{
@@ -338,6 +339,7 @@ pub fn catalog() -> Vec<Box<dyn Component>> {
     vec![
         Box::new(ListRowDemo::default()),
         Box::new(StatusPillDemo),
+        Box::new(StatusRailDemo),
         Box::new(PaneHeaderDemo),
         Box::new(KeyChipDemo),
         Box::new(QueryLineDemo::default()),
@@ -563,6 +565,65 @@ impl Component for StatusPillDemo {
             ui.add_space(gap);
             widgets::status_pill(ui, &icons::ALERT_TRIANGLE, "failing", Role::Danger);
         });
+    }
+}
+
+/// The idle line's text, standing in for what `window::idle_status_entry`
+/// composes from a real dashboard — fixed here because the demo has no
+/// `ChartDoc` behind it, just the same `StatusEntry` carrier.
+const STATUS_RAIL_IDLE_PROBE: &str = "loaded · 2 marks";
+
+/// `status_rail` / `status_rail_overlay` — the bottom-edge band a pane's
+/// `Subject.status` composes into: leading facts at the left (a held
+/// selection), standing state at the right (the idle line, an activity
+/// report). Live on the shipping window — see `window::status_rail_ui`.
+struct StatusRailDemo;
+
+impl Component for StatusRailDemo {
+    fn info(&self) -> ComponentInfo {
+        ComponentInfo {
+            id: "status-rail",
+            name: "Status rail",
+            status: ComponentStatus::Live,
+            probe: Probe {
+                role: ProbeRole::Label,
+                label: STATUS_RAIL_IDLE_PROBE,
+            },
+            // `chrome::status_rail_height()` is `ROW_GRID + 2·SPACE_2` — a
+            // composite of two ladder values, not a single named rung, so
+            // this list has no rung to measure it against.
+            height: GateHeight::Intrinsic(
+                "the rail's band is ROW_GRID + 2·SPACE_2, a composite the \
+                 named-rung ladder has no single entry for",
+            ),
+            actuation: None,
+            solo_size: (460.0, 96.0),
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        let mode = if ui.visuals().dark_mode {
+            Mode::Dark
+        } else {
+            Mode::Light
+        };
+        let entries = [
+            StatusEntry {
+                id: "gallery-status-rail-predicate",
+                side: StatusSide::Leading,
+                text: "$brush = \"x\" BETWEEN 52 AND 88".to_string(),
+                tone: Tone::Neutral,
+                hide: HideAffordance::WithRail,
+            },
+            StatusEntry {
+                id: "gallery-status-rail-idle",
+                side: StatusSide::Trailing,
+                text: STATUS_RAIL_IDLE_PROBE.to_string(),
+                tone: Tone::Neutral,
+                hide: HideAffordance::WithRail,
+            },
+        ];
+        chrome::status_rail(ui, &entries, mode);
     }
 }
 

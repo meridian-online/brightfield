@@ -225,6 +225,16 @@ fn run_at(app: &mut MeridianApp, ctx: &egui::Context, size: egui::Vec2, frames: 
     }
 }
 
+/// The composed size and the pane box the chart pane was handed, this frame.
+fn composed_and_pane(app: &MeridianApp) -> ((u32, u32), egui::Rect) {
+    let doc: &ChartDoc = app.chart_doc();
+    (
+        (doc.composed.width, doc.composed.height),
+        app.chart_viewport()
+            .expect("the chart pane drew, so it recorded its box"),
+    )
+}
+
 /// How long the window is content to wait before the next frame — `ZERO` is
 /// "paint again now", which under eframe's paint-on-input loop is the only
 /// thing that brings a frame nobody has typed into.
@@ -234,16 +244,6 @@ fn repaint_delay(out: &egui::FullOutput) -> Duration {
         .map(|v| v.repaint_delay)
         .min()
         .expect("a frame reports at least its own viewport")
-}
-
-/// The composed size and the pane box the chart pane was handed, this frame.
-fn composed_and_pane(app: &MeridianApp) -> ((u32, u32), egui::Rect) {
-    let doc: &ChartDoc = app.chart_doc();
-    (
-        (doc.composed.width, doc.composed.height),
-        app.chart_viewport()
-            .expect("the chart pane drew, so it recorded its box"),
-    )
 }
 
 #[test]
@@ -396,6 +396,20 @@ fn a_shipped_start_relays_out_when_its_pane_changes_size() {
     let narrow = egui::vec2(900.0, 620.0);
 
     run_at(&mut app, &ctx, wide, 4);
+    // Proof that "at rest" and "just resized" are observably different states
+    // before trusting the resize check below to mean anything. This briefly
+    // read `Duration::ZERO` here too once the idle status rail
+    // (`window::idle_status_entry`) started keeping a chart window's
+    // `egui::Area` drawn while otherwise idle — `Area` fades a newly-visible
+    // layer in by default, and this app's `run_at(.., 4)` budget (4 frames,
+    // under a real clock advancing by `predicted_dt` each one since no
+    // capture path in this workspace sets `RawInput::time`) landed inside
+    // that fade, not past it. The fade was not load-bearing for the rail —
+    // a status line reporting a fact does not need to announce its own
+    // arrival — so `chrome::status_rail_overlay` now opts out with
+    // `.fade_in(false)`, and the window settles by the second frame exactly
+    // as it did before this card, restoring this assertion rather than
+    // deleting it.
     let settled = frame_at(&mut app, &ctx, wide);
     assert!(
         repaint_delay(&settled) > Duration::ZERO,
