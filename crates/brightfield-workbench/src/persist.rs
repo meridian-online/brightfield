@@ -201,11 +201,11 @@ pub struct SavedLayout {
     /// upgrade. `a_layout_from_before_recents_existed_still_loads` strips the
     /// field from a saved file and holds that.
     ///
-    /// One thing to know before adding a variant to
-    /// [`RunState`](crate::RunState): a layout file naming a state this build
-    /// does not have fails to *parse*, and that discards the whole envelope,
-    /// not just the recent. Growing that enum is a [`LAYOUT_VERSION`] question
-    /// even though the enum lives nowhere near this file.
+    /// One thing to know before adding a variant to [`RunState`] — a layout
+    /// file naming a state this build does not have fails to *parse*, and that
+    /// discards the whole envelope, not just the recent. Growing that enum is a
+    /// [`LAYOUT_VERSION`] question even though the enum lives nowhere near this
+    /// file.
     #[serde(default)]
     pub recents: Vec<Recent>,
 }
@@ -216,9 +216,9 @@ pub struct SavedLayout {
 /// Everything the row needs is *recorded*, not derived at draw time, and that
 /// is the point: drawing the door must not load five documents to find out
 /// what they say. The name is what the window was titled by while it was
-/// open, and the run state is what the run contract said then — a surface
-/// reads recorded run state and never computes it, which is
-/// [`RunState`](crate::RunState)'s own rule.
+/// open, and the run state is what the run contract said then, which is what
+/// [`RunState`]'s own doc asks of a surface: read the recorded value rather
+/// than deriving one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Recent {
     /// The shipped starting point this was opened from — the same id
@@ -279,8 +279,10 @@ impl SavedLayout {
     /// are overwritten with what was just seen, because the older pair is by
     /// construction the more stale of the two.
     ///
-    /// Trimmed to [`RECENTS_KEPT`] from the tail, so the entry dropped is
-    /// always the least recently opened one.
+    /// Trimmed to [`RECENTS_KEPT`] from the tail, so the entry dropped is the
+    /// least recently opened one —
+    /// `the_recents_list_is_capped_and_most_recent_first` holds the length and
+    /// which entry went.
     pub fn remember(&mut self, id: &str, name: &str, run: RunState, opened_at: u64) {
         self.recents.retain(|r| r.id != id);
         self.recents.insert(

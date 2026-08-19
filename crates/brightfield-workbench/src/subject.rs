@@ -348,10 +348,9 @@ pub struct StatusEntry {
 /// **It is serialised**, because the layout file records the state each recent
 /// Protocol was last seen in — see
 /// [`Recent::run`](crate::persist::Recent::run) — and the front door draws
-/// that beside the name without reopening the document. Serde is the only
-/// non-plain-data thing in this module and it stays that way: a `Serialize`
-/// derive is still comparable, printable data, which is what the module head
-/// is protecting.
+/// that beside the name without reopening the document. A `Serialize` derive
+/// is still comparable, printable data, which is what the module head is
+/// protecting.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]

@@ -242,9 +242,9 @@ pub const PROTOCOLS_EMPTY_BODY: &str =
 /// point: a card has to say what the thing becomes when you take it, and a row
 /// already *is* the thing. The promise the two sections share is not a
 /// sentence printed twice but the route — both raise the same
-/// [`Request::Open`] into the same [`MeridianApp::open_start`], which is what
-/// `either_route_to_the_same_subject_leaves_the_same_window` holds, over every
-/// shipped start rather than over one.
+/// [`Request::Open`] into the same private `MeridianApp::open_start`, which is
+/// what `either_route_to_the_same_subject_leaves_the_same_window` holds, over
+/// every shipped start rather than over one.
 pub const DOOR_ENTRY_PROMISE: &str = "opens on a rendered result";
 
 /// One Protocols row's height, in logical points — the preview row of the
@@ -264,7 +264,7 @@ const PROTOCOL_ROW_NAME_WIDTH: f32 = 260.0;
 /// One row the front door's Protocols section drew, with the text it drew.
 ///
 /// Read back through [`MeridianApp::front_door_rows`]. It carries the
-/// *rendered* strings rather than the [`Recent`](brightfield_workbench::Recent)
+/// *rendered* strings rather than the [`Recent`]
 /// behind them, because the claim worth pinning is what the analyst reads: a
 /// row built from the right record and labelled from the wrong field is a
 /// defect this type can see and the record cannot.
@@ -275,8 +275,8 @@ pub struct DoorRow {
     pub id: String,
     /// The Protocol's name, as drawn.
     pub name: String,
-    /// Its run state, as drawn — [`RunState::label`]'s words, never this
-    /// module's own.
+    /// Its run state, as drawn — [`RunState::label`]'s words rather than a
+    /// second vocabulary coined here.
     ///
     /// [`RunState::label`]: brightfield_workbench::RunState::label
     pub state: String,
@@ -3394,8 +3394,8 @@ impl MeridianApp {
     ///
     /// A chart document reads [`RunState::NeverRun`]: its tables are
     /// materialised by the engine as it composes and no run contract is
-    /// written, so there is genuinely no run to report, and reporting one
-    /// would be the shell computing what only the engine may. A protocol
+    /// written, so there is no run to report, and reporting one would be the
+    /// shell computing what the engine is the thing that computes. A protocol
     /// document folds what its contract recorded, in
     /// [`ProtocolModel::recorded_run_state`].
     fn recorded_run_state(&self, view: ViewKind) -> RunState {
@@ -3544,12 +3544,14 @@ impl MeridianApp {
     /// outcompetes the door, and the door comes back only when the window is
     /// emptied.
     ///
-    /// **The empty half is the one that matters.** Protocols is empty on
-    /// every first launch, which is the case decision-75 exists to prevent
-    /// going blank, so the section is drawn *present and speaking* rather
-    /// than omitted — [`PROTOCOLS_EMPTY_TITLE`] and
-    /// [`PROTOCOLS_EMPTY_BODY`]. A section that appears only once it has
-    /// content teaches a stranger nothing about what the product saves.
+    /// **The empty half is the one that matters.** A first launch has no
+    /// recents, which is the blank state decision-75 exists to prevent, so
+    /// the section is drawn *present and speaking* rather than omitted —
+    /// [`PROTOCOLS_EMPTY_TITLE`] and [`PROTOCOLS_EMPTY_BODY`]. A section that
+    /// appears once it has content and not before teaches a stranger nothing
+    /// about what the product saves.
+    /// `a_first_run_populates_datasets_and_states_what_protocols_will_hold`
+    /// is what holds the heading and both sentences on a first-run frame.
     ///
     /// Everything a click does here goes out through `requests` as the same
     /// [`Request::Open`] an empty pane's button raises, into the same
@@ -3684,9 +3686,9 @@ impl MeridianApp {
 
     /// The Datasets section: the curated starts, as a wrapping row of cards.
     ///
-    /// Every card carries [`DOOR_ENTRY_PROMISE`] under its summary — the same
-    /// sentence the Protocols section states — so the two sections make one
-    /// promise rather than two.
+    /// A card carries [`DOOR_ENTRY_PROMISE`] under its summary, which
+    /// `a_first_run_populates_datasets_and_states_what_protocols_will_hold`
+    /// reads back off a rendered first-run frame.
     fn datasets_section(
         &mut self,
         ui: &mut egui::Ui,
@@ -3812,8 +3814,9 @@ impl MeridianApp {
                 chrome::colour(sem.text.primary),
             );
             // The run state in the reader's own comparison face, and in
-            // `RunState`'s own words — a surface labels recorded run state and
-            // never coins a second vocabulary for it.
+            // `RunState::label`'s words rather than a second vocabulary coined
+            // here — `a_door_with_recents_lists_every_one_of_them_most_recent_first`
+            // compares this string against the enum's own label.
             let tone = chrome::tone_colour(recent.run.tone(), self.mode);
             let state_galley =
                 painter.layout(state.clone(), mono_font(), tone, PROTOCOL_ROW_NAME_WIDTH);
@@ -3846,8 +3849,10 @@ impl MeridianApp {
         if response.clicked() {
             // Leaked into the request queue as a `&'static str`, which is what
             // `Request::Open` carries: the id came off a shipped start (the
-            // filter in `front_door_ui` dropped every recent that did not), so
-            // this resolves to the same static the card beside it raises.
+            // filter in `front_door_ui` drops a recent that does not resolve),
+            // so this raises the same static the card beside it raises —
+            // `either_route_to_the_same_subject_leaves_the_same_window` walks
+            // the shipped set and compares the two windows.
             if let Some(start) = crate::starts::find(&recent.id) {
                 requests.push(Request::Open(start.id));
             }

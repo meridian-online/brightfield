@@ -496,8 +496,9 @@ fn a_layout_from_before_this_field_existed_still_loads() {
 /// it bites.
 ///
 /// Watched redden, one mutation: removing `#[serde(default)]` from
-/// `SavedLayout::recents` fails here with `Corrupt` — every layout file on
-/// every machine discarded by an upgrade that added a front-door section.
+/// `SavedLayout::recents` fails here with `Corrupt` — which is a layout file
+/// discarded by an upgrade that added a front-door section, on whatever
+/// machine it is sitting on.
 #[test]
 fn a_layout_from_before_recents_existed_still_loads() {
     let scratch = Scratch::new("upgrade-recents");

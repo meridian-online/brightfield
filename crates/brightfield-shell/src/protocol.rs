@@ -734,12 +734,13 @@ impl ProtocolModel {
     /// The one run state this whole Protocol is in, folded from the statuses
     /// the run contract recorded — what the front door draws beside its name.
     ///
-    /// **Ingested, never computed.** Every value folded here came off the
-    /// emitted contract; nothing is fingerprinted and no freshness is
-    /// re-derived, which is [`RunState`]'s own standing rule. A manifest
-    /// loaded with no run behind it records nothing, so it folds to
-    /// [`RunState::NeverRun`] — that enum's safe direction, and the state the
-    /// crosswalk's own button already discloses as `(no run)`.
+    /// **Ingested rather than computed.** The values folded here come off the
+    /// emitted contract, through `self.statuses`; this fold fingerprints
+    /// nothing and re-derives no freshness, which is what [`RunState`]'s own
+    /// doc asks of a surface. A manifest loaded with no run behind it has an
+    /// empty `statuses` map, so it folds to [`RunState::NeverRun`] — that
+    /// enum's safe direction, and the state the crosswalk's own button
+    /// already discloses as `(no run)`.
     ///
     /// A failure anywhere wins over a success anywhere: one step that did not
     /// produce its data is the fact worth carrying to a surface that has room

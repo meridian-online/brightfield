@@ -135,8 +135,8 @@ pub fn capture_png_at(
 /// property that makes the pair of baselines comparable — a difference between
 /// them is a difference the recents made.
 ///
-/// Like [`MeridianApp::with_layout`], the layout is a parameter and is never
-/// read from disk here: a capture that read the developer's real
+/// Like [`MeridianApp::with_layout`], the layout is a parameter rather than
+/// something this function reads: a capture that read the developer's real
 /// `workspace-layout.json` would photograph their session.
 ///
 /// # Errors

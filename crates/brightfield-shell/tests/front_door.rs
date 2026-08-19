@@ -156,9 +156,8 @@ impl Window {
     }
 }
 
-/// Every galley in `shape`, flattened — `Shape::Vec` and `Shape::Callback`
-/// nest, so a walk that only reads the top level misses whatever a widget put
-/// inside a group.
+/// The galleys in `shape`, flattened. `Shape::Vec` nests, so a walk that reads
+/// the top level and stops misses whatever a widget put inside a group.
 fn collect_text(shape: &egui::epaint::Shape, into: &mut Vec<String>) {
     match shape {
         egui::epaint::Shape::Text(t) => into.push(t.galley.text().to_string()),
@@ -869,8 +868,8 @@ fn the_door_heads_two_sections_and_says_neither_of_the_names_it_replaced() {
 ///
 /// Watched redden, one mutation: returning early from `protocols_section`
 /// before `door_section_heading` when `recents.is_empty()` — the shape of
-/// "draw the section only once it has content" — fails here at "the Protocols
-/// heading is absent on a first run".
+/// "draw the section once it has content and not before" — fails here at "the
+/// Protocols heading is absent on a first run".
 ///
 /// The on-screen assertion below was watched fail on real code rather than on
 /// a mutation: with `DOOR_COLUMN_WIDTH` written as four cards, the fifth start
@@ -954,10 +953,11 @@ fn a_first_run_populates_datasets_and_states_what_protocols_will_hold() {
 /// screen whose whole job is to put you back in them.
 ///
 /// The run states are three different ones on purpose. Two of them are states
-/// this build's own starts cannot reach — nothing here writes `Fresh` without
-/// a run contract — so seeding them is what proves the row *draws what was
-/// recorded* rather than a constant that happens to be right for the only
-/// value the shell can currently produce.
+/// this build's own starts cannot reach, because `open_start` records what
+/// `ProtocolModel::recorded_run_state` folds and a shipped start carries no
+/// run contract for it to fold. Seeding them is what proves the row *draws
+/// what was recorded* rather than a constant that happens to be right for
+/// `RunState::NeverRun`.
 ///
 /// Watched redden, two mutations. Having `door_row` label every row
 /// `RunState::NeverRun.label()` instead of `recent.run.label()` fails at
@@ -1037,9 +1037,10 @@ fn a_door_with_recents_lists_every_one_of_them_most_recent_first() {
 /// diverges for one document kind and not the other is exactly the divergence
 /// that would survive a single-case test.
 ///
-/// The remote start is included: `Boot`ing it would fetch, but nothing here
-/// boots it — each half of the comparison is the same click on the same
-/// window, and a start that fails to load fails identically on both sides.
+/// The remote start is skipped, for the reason its siblings in this file skip
+/// it: taking its card composes its spec, and that spec reads an `https://`
+/// source, which would put a fetch of someone else's server inside a hermetic
+/// suite.
 ///
 /// Watched redden, one mutation: having `door_row` push
 /// `Request::Focus(PaneKey::new(ViewKind::Protocol, PROTOCOL_CANVAS))` after
@@ -1108,8 +1109,8 @@ fn either_route_to_the_same_subject_leaves_the_same_window() {
 /// that is empty forever.
 ///
 /// Watched redden, one mutation: dropping the `remember` call from
-/// `open_start` — leaving only the `opened` line that was already there —
-/// fails here at "opening a start recorded nothing for the door to list".
+/// `open_start`, which leaves the `opened` line that was already there, fails
+/// here at "opening a start recorded nothing for the door to list".
 #[test]
 fn opening_a_start_remembers_it_and_keeps_what_was_remembered_before() {
     let mut win = Window::open(Boot::empty());
@@ -1164,7 +1165,7 @@ fn opening_a_start_remembers_it_and_keeps_what_was_remembered_before() {
 ///
 /// Watched redden, one mutation: having `open_home` clear `layout.recents`
 /// (the `open_start`-symmetric thing to do) fails here at "the door forgot the
-/// session — the Protocols section has nothing to reopen".
+/// session", with an empty row list against `["edgar-gleif-crosswalk"]`.
 #[test]
 fn going_home_returns_to_the_door_but_keeps_the_session() {
     let mut layout = default_layout();
