@@ -110,7 +110,8 @@ impl Workspace {
         &mut self.tree
     }
 
-    /// The panes `other` holds that this workspace does not.
+    /// The panes `other` holds that this workspace does not, counted rather
+    /// than merely looked up.
     ///
     /// The repair check a load needs and a constructor cannot give: `Workspace`
     /// derives `Deserialize`, so [`Workspace::new`] does not run on a file, and a
@@ -123,13 +124,43 @@ impl Workspace {
     /// [`crate::ItemId::known`], which is a superset: an id may be published so
     /// a saved layout naming it still loads while the pane itself is behind a
     /// flag and absent from the default tree.
+    ///
+    /// # Why the match is consumed
+    ///
+    /// A tile in `other` that finds its counterpart here takes it out of the
+    /// running, so a donor placing one [`PaneKey`] twice needs two tiles here
+    /// and not one. Asking `contains` instead reads a second tile as covered
+    /// by the first, and the file loads as restored with a pane silently
+    /// absent — see
+    /// `crates/brightfield-workbench/tests/cross_registry_ids.rs`, which is
+    /// also where the arrangement that reaches that state comes from.
+    ///
+    /// Everywhere ids are unique this is the same answer as `contains`, by
+    /// construction rather than by measurement: each key appears once in each
+    /// list, so there is never a second match to consume. The two readings can
+    /// only part where a donor repeats a key, and the one place a repeat can
+    /// enter a default arrangement is
+    /// [`window_tree`](crate::window_tree) — the sole caller of
+    /// `egui_tiles::Tiles::insert_pane` in this workspace — being handed two
+    /// placements with one id, which is a declaration mistake a registry
+    /// cannot make on its own.
+    ///
+    /// The scan is linear per key rather than a merge over the two sorted
+    /// lists. A window's panes are counted in single figures, and the
+    /// straightforward reading is worth more here than the asymptote.
     #[must_use]
     pub fn panes_missing_from(&self, other: &Self) -> Vec<PaneKey> {
-        let mine = self.panes();
+        let mut mine = self.panes();
         other
             .panes()
             .into_iter()
-            .filter(|key| !mine.contains(key))
+            .filter(|key| match mine.iter().position(|k| k == key) {
+                Some(i) => {
+                    mine.remove(i);
+                    false
+                }
+                None => true,
+            })
             .collect()
     }
 

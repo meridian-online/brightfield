@@ -11,12 +11,12 @@
 //! **Where the property is asserted is not here.** Only a caller that knows
 //! which registries a window builds can compare them, so the shell asserts it
 //! over its own two in `crates/brightfield-shell/tests/one_window.rs`
-//! (`no_item_id_is_declared_by_both_of_the_windows_registries`, and the
+//! (`no_item_id_is_declared_by_two_of_the_windows_registries`, and the
 //! vocabulary-arithmetic in
 //! `a_window_publishes_both_registries_and_nothing_else`). This file is the
-//! other half of the same question: what the tree and the layout file do when
-//! that property is broken, so the cost is written down rather than argued
-//! about.
+//! other half of the same question: what the tree does when that property is
+//! broken, and what the layout file is required to do about it — the tile
+//! count is a measurement, and the load is a rule the last test holds.
 //!
 //! # Why the id space belongs to the tree and not to the registry pair
 //!
@@ -39,7 +39,7 @@
 //! vocabulary here starts empty and the publish below is the only one.
 
 use brightfield_keys::BindingContext;
-use brightfield_workbench::persist::{self, LoadOutcome, SavedLayout};
+use brightfield_workbench::persist::{self, LoadOutcome, SavedLayout, WindowGeometry, LAYOUT_FILE};
 use brightfield_workbench::{
     window_tree, DockSide, EmptyState, Icon, Item, ItemCtx, ItemId, ItemRegistry, ItemSpec,
     PaneKey, Slot, Subject, Workspace,
@@ -154,6 +154,35 @@ fn count_of(panes: &[PaneKey], key: PaneKey) -> usize {
     panes.iter().filter(|k| **k == key).count()
 }
 
+/// A directory of this test's own to write a layout file into, removed on
+/// drop. The load below goes through a real file rather than through
+/// `persist::from_json` so that "boots on it" covers the read as well as the
+/// parse.
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!(
+            "brightfield-workbench-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        Self(dir)
+    }
+    fn file(&self) -> std::path::PathBuf {
+        self.0.join(LAYOUT_FILE)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The registry's own rule, and where it stops
 // ---------------------------------------------------------------------------
@@ -240,36 +269,44 @@ fn two_registries_that_share_an_id_put_two_tiles_at_one_address() {
 // The layout file, against a default arrangement that places one id twice
 // ---------------------------------------------------------------------------
 
-/// A saved layout naming an id two panes now claim is restored as written,
-/// and the window comes up with one tile where two panes are declared.
+/// A saved layout naming an id two panes now claim is discarded, and the
+/// window opens on the default arrangement with both panes placed.
 ///
-/// The upgrade shape, end to end. The file was written by a build where one
-/// document declared the id; it is read by a build where both do. It parses,
-/// because the id is published and a pane key is just that id. Then
-/// `persist::from_json` asks whether the file is short of any pane the
-/// default arrangement places — and it asks by membership, so one tile named
-/// `claimed-by-both` satisfies a default that places two. The load reports
-/// [`LoadOutcome::Restored`], and the pane belonging to whichever document
-/// loses the race in `tile_of` is not on screen, with no reason recorded for
-/// it.
+/// The upgrade shape, end to end, through a real file. It was written by a
+/// build where one document declared the id and is read by a build where both
+/// do. It parses, because the id is published and a pane key is just that id.
+/// Then `persist::from_json` asks whether the file is short of any pane the
+/// default arrangement places, and — because [`Workspace::panes_missing_from`]
+/// consumes each match rather than asking `contains` — one tile named
+/// `claimed-by-both` does not cover a default that places two. The file is
+/// short a pane, so it goes the way any other short file goes:
+/// [`LoadOutcome::Incomplete`], and the default arrangement in its place.
 ///
-/// **This test records the outcome, it does not endorse it.** The
-/// arrangement a reader would want is the one an incomplete file already
-/// gets: [`LoadOutcome::Incomplete`], the default arrangement, both panes
-/// placed. Getting it means comparing the two pane lists as multisets rather
-/// than by membership, in `Workspace::panes_missing_from` — a change to a
-/// file outside this one. A build that makes it must invert the two
-/// assertions flagged below; they are here so that it is a visible decision
-/// rather than a silent one.
+/// The outcome enum is the smaller half of that claim and is asserted
+/// alongside the larger one: the workspace the caller is handed is compared
+/// against the default itself, and against the file it came from, so
+/// "discarded in favour of the default" is a statement about the arrangement
+/// the window ends up with rather than about a label. Which is the difference
+/// that matters — an [`LoadOutcome::Incomplete`] that reported honestly and
+/// handed back the file anyway would leave a pane undrawn just the same.
 ///
-/// Would catch: `panes_missing_from` becoming multiset-aware (the outcome
-/// turns `Incomplete`), and the completeness check being dropped from
-/// `from_json` altogether (the restored pane count stops being the file's).
+/// The window geometry is asserted to survive, because the discard is scoped
+/// to the arrangement: the size and position the analyst left are not what was
+/// wrong with the file, and resizing their window over a pane they never saw
+/// would be a change they did not ask for. The shell's half of that rule is
+/// its `kept_window_geometry`.
+///
+/// Would catch: `panes_missing_from` going back to a membership test (the
+/// outcome turns `Restored` and the file's own short arrangement comes back);
+/// the completeness check being dropped from `from_json`; and `from_json`
+/// replacing more than the arrangement.
 #[test]
-fn a_saved_layout_naming_an_id_two_panes_claim_is_restored_short_a_pane() {
+fn a_saved_layout_naming_an_id_two_panes_claim_is_discarded_for_the_default() {
     let key = PaneKey::new(SHARED);
+    let scratch = Scratch::new("cross-registry");
+    let path = scratch.file();
 
-    // As boot does: every registry publishes before any file is read.
+    // As boot does: each registry publishes before any file is read.
     ItemId::publish(Box::leak(
         vec![ALPHA_CANVAS, BETA_CANVAS, SHARED].into_boxed_slice(),
     ));
@@ -281,50 +318,73 @@ fn a_saved_layout_naming_an_id_two_panes_claim_is_restored_short_a_pane() {
         );
     }
 
-    // The file the previous build wrote: one tile at the shared id.
-    let written = SavedLayout::new(window_of(&alpha(), &beta_before()));
+    // The file the previous build wrote: one tile at the shared id, and a
+    // window geometry the analyst chose.
+    let mut written = SavedLayout::new(window_of(&alpha(), &beta_before()));
+    written.window = WindowGeometry {
+        size: [1440.0, 900.0],
+        position: Some([12.0, 34.0]),
+    };
     assert_eq!(
         count_of(&written.workspace.panes(), key),
         1,
         "the saved file already carries the duplicate, so the load below is \
          not the upgrade case it claims to be"
     );
-    let json = written.to_json().expect("a layout serialises");
+    written.save(&path).expect("the layout writes");
 
-    // This build's default arrangement: two.
+    // This build's default arrangement places the shared id twice, which is
+    // the shortfall the file has to be measured against.
     assert_eq!(
         count_of(&defaults_after().workspace.panes(), key),
         2,
         "the default arrangement does not place the shared id twice, so there \
          is no shortfall for the load to miss"
     );
+    assert_ne!(
+        written.workspace,
+        defaults_after().workspace,
+        "the file and the default are the same arrangement, so nothing below \
+         can tell which one came back"
+    );
 
-    let (loaded, outcome) = persist::from_json(Some(&json), defaults_after);
+    let (loaded, outcome) = persist::load(&path, defaults_after);
 
-    // The line to invert when `panes_missing_from` compares multisets: the
-    // wanted outcome is `Incomplete`, and the wanted arrangement is the
-    // default one.
     assert_eq!(
         outcome,
-        LoadOutcome::Restored,
-        "the load path grew a defence against an id two panes claim — good; \
-         this assertion and the two below pin the old behaviour and are the \
-         ones to invert. Reported: {}",
+        LoadOutcome::Incomplete,
+        "a file short a pane the window declares was reported as {}",
         outcome.reason()
     );
+    assert!(
+        !outcome.restored(),
+        "an arrangement the analyst did not make was reported as a restored one"
+    );
 
-    // The consequence, on the workspace the caller is handed: the default
-    // places the pane twice and the restored window holds it once, so one
-    // document's pane is not drawn and no [`LoadOutcome`] says why.
+    // The arrangement the window ends up with — the half of the claim the
+    // enum does not carry.
     assert_eq!(
-        count_of(&loaded.workspace.panes(), key),
-        1,
-        "the restored window does not carry what the file it came from did"
+        loaded.workspace,
+        defaults_after().workspace,
+        "the load reported Incomplete and did not put the default arrangement \
+         in place, so a pane is still undrawn"
+    );
+    assert_ne!(
+        loaded.workspace, written.workspace,
+        "the file's own arrangement came back, which is the pane loss this \
+         load exists to prevent"
     );
     assert_eq!(
-        loaded.workspace.panes().len() + 1,
-        defaults_after().workspace.panes().len(),
-        "the restored window is short exactly the second tile, and the load \
-         reported success"
+        count_of(&loaded.workspace.panes(), key),
+        2,
+        "the window opened with one tile at an id two documents declare, so \
+         one of them draws nowhere"
+    );
+
+    // The arrangement, and only the arrangement: what the analyst chose about
+    // the window itself was not what was wrong with this file.
+    assert_eq!(
+        loaded.window, written.window,
+        "a pane the file predates also resized the window the analyst left"
     );
 }
