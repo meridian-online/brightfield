@@ -269,8 +269,9 @@ pub enum Occupant {
         /// The asset graph, which stands at canvas size while there is no
         /// chart for the canvas to hold — the canvas's empty state rather
         /// than a second thing it can be showing. A window holding both
-        /// documents draws the projection: the protocol is readable in three
-        /// regions of this arrangement and the chart has only this one.
+        /// documents draws the projection: the protocol is readable, without
+        /// a click, in two of its three regions — the inspector rail opens on
+        /// the chart's own controls there — and the chart has only this one.
         graph: ItemId,
     },
 }

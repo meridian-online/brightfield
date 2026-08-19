@@ -2206,10 +2206,14 @@ impl MeridianApp {
         //
         // The asymmetry is the arrangement's, not a preference: the protocol
         // has three regions of its own — the spine in the navigator rail, the
-        // steps in the ledger rail, an operator in the inspector rail — and it
-        // is readable in all three while the canvas belongs to the chart. The
-        // chart has the canvas and nothing else, so a window that gives the
-        // canvas away has put the chart nowhere.
+        // steps in the ledger rail, an operator in the inspector rail — but
+        // only the first two are readable without a click while the canvas
+        // belongs to the chart: the inspector rail opens on the chart's own
+        // controls on a chart-led boot (`inspector_panel:
+        // usize::from(view != Some(ViewKind::Protocol))`), so the operator
+        // pane is one click away rather than already showing. The chart has
+        // the canvas and nothing else, so a window that gives the canvas away
+        // has put the chart nowhere.
         //
         // Deriving it rather than latching it is what closes a dead end. This
         // read `_ => view` for a window holding both documents, which made the
@@ -2223,7 +2227,10 @@ impl MeridianApp {
         // Home, which empties both documents.
         //
         // `a_protocol_opened_over_a_chart_leaves_the_chart_on_the_canvas` is
-        // the pin, and it drives the two opens a person drives.
+        // the pin. It reaches this state through two direct `open_start`
+        // calls, not through the UI — `Boot::open` takes exactly one spec,
+        // and no shipped control opens a second document into a window that
+        // already holds one.
         let view = if door {
             view
         } else {
@@ -3197,12 +3204,23 @@ impl MeridianApp {
     /// banners come down with it. Calling `ChartDoc::open` here instead left
     /// a `Cannot render …` banner raised on the front door, about a document
     /// that was no longer open.
+    ///
+    /// `active()` is reset to `ViewKind::ALL[0]`, the same "no opinion"
+    /// default [`Workspace::new`] boots with. Emptying the two documents
+    /// above does not read it: `open_chart` and `ProtocolDoc::open` each act
+    /// on their own document directly. `title_band` does read it, though, to
+    /// decide whether to draw the protocol's flow toggle — so leaving it
+    /// unset left that toggle drawing for the `ProtocolModel` this call just
+    /// emptied, and a click on it dispatched `toggle_flow` to a document with
+    /// no assets left. Held by
+    /// `going_home_from_a_protocol_leaves_no_protocol_control_behind`.
     fn open_home(&mut self, ctx: &egui::Context) {
         if self.front_door_is_live() {
             return;
         }
         self.open_chart(Composed::empty());
         self.protocol.doc.open(ProtocolInputs::empty());
+        self.ws_mut().set_active(ViewKind::ALL[0]);
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
         ctx.request_repaint();
     }
@@ -4145,14 +4163,19 @@ mod tests {
 
     /// A protocol opened over a chart leaves the chart on the canvas.
     ///
-    /// The two opens a person drives, in the order that used to trap them:
-    /// `open_start` records the view its start fills, its `Opened::Protocol`
-    /// arm leaves the chart document alone, and the frame then read
-    /// `_ => view` for a window holding both — so the canvas went to the graph
-    /// and stayed there. Nothing on the window moves it back. Measured before
-    /// this test existed: a 12-point grid of clicks over the whole window,
-    /// re-settling after each, found no control that returns the canvas to the
-    /// chart, and the only exit was Home, which discards both documents.
+    /// Reached by two direct `open_start` calls, not by two clicks: no
+    /// shipped control opens a second document into a window already holding
+    /// one — `Boot::open` takes exactly one spec, and every `Request::Open` a
+    /// person can raise is gated behind the receiving document being empty
+    /// first. This pins the order that used to trap the code handling that
+    /// state regardless: `open_start` records the view its start fills, its
+    /// `Opened::Protocol` arm leaves the chart document alone, and the frame
+    /// then read `_ => view` for a window holding both — so the canvas went
+    /// to the graph and stayed there. Nothing on the window moves it back.
+    /// Measured before this test existed: a 12-point grid of clicks over the
+    /// whole window, re-settling after each, found no control that returns
+    /// the canvas to the chart, and the only exit was Home, which discards
+    /// both documents.
     ///
     /// Asserted off a drawn frame rather than off `active()`: the branch that
     /// puts the graph on the canvas draws no toggle, so two segments coming

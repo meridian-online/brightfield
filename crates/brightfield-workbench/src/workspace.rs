@@ -54,8 +54,7 @@ pub enum ViewKind {
 impl ViewKind {
     /// The views a workspace holds a tile tree for. The window draws one
     /// arrangement over both documents rather than offering this list as a
-    /// choice, so the order here is the order [`Workspace::new`] seeds its
-    /// trees in, and `ALL[0]` is what a workspace built with no opinion opens
+    /// choice, and `ALL[0]` is what a workspace built with no opinion opens
     /// on.
     pub const ALL: [ViewKind; 2] = [ViewKind::Charts, ViewKind::Protocol];
 }
