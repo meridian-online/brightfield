@@ -1274,8 +1274,8 @@ const ICON_CONTROLS: Icon = Icon("sliders");
 /// default arrangement ([`window_tree`](brightfield_workbench::window_tree)),
 /// the live item map ([`ItemRegistry::instantiate`]) and the published id
 /// vocabulary ([`ItemRegistry::publish_ids`], via [`publish_item_ids`]) are
-/// all derived from this list, so a pane cannot be added to one and forgotten
-/// in another.
+/// derived from this list, so a pane cannot be added to one and forgotten in
+/// another.
 #[must_use]
 pub fn chart_registry() -> ItemRegistry<ChartDoc> {
     chart_registry_with(crate::gallery::enabled())

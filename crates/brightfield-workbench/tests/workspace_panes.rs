@@ -263,8 +263,8 @@ fn a_pane_in_the_layout_file_is_named_by_its_item_and_nothing_else() {
 ///
 /// Would catch: a `Workspace` that kept a second tree behind an accessor, or
 /// a `window_tree` that dropped a placement it did not recognise — both of
-/// which leave a region drawing nothing, which looks exactly like a pane that
-/// has nothing to say.
+/// which leave a region drawing no pane, and read exactly like a pane with no
+/// content.
 #[test]
 fn the_window_holds_one_tree_over_every_pane_it_declares() {
     let ws = workspace();
@@ -310,8 +310,8 @@ fn focus_is_one_record_and_a_pane_that_is_not_there_cannot_take_it() {
 ///
 /// Would catch: `panes_missing_from` comparing the wrong way round, or
 /// answering against its own panes — either of which reports a short file as
-/// complete, and `persist::from_json` then restores an arrangement with a
-/// region that draws nothing and says nothing about why.
+/// complete, and `persist::from_json` then restores an arrangement with an
+/// empty region and no message saying why.
 #[test]
 fn a_workspace_short_a_pane_says_which_one() {
     let full = workspace();

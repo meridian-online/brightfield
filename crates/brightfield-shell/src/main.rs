@@ -862,15 +862,16 @@ fn main() -> Result<(), String> {
         args.force_sample,
     )?;
 
-    // The size, the title and the summary line are all answered for whatever
+    // The size, the title and the summary line are each answered for whatever
     // the canvas will hold, which the boot derives from the documents it
     // loaded rather than from anything recorded — see
     // `window::graph_takes_the_canvas`. It used to be resolved here against
     // the saved layout's active view, with a default in the resolution, and
     // the default titled a restored crosswalk "Brightfield" and logged
     // "composed 0x0 dashboard" over a 34-node graph. Since `run_native` takes
-    // the title once and only the front door's own click ever sends a
-    // `ViewportCommand::Title`, that name stayed wrong for the session.
+    // the title once, and the runtime `ViewportCommand::Title`s (opening a
+    // start, going home) are not reached by a restore, that name stayed wrong
+    // for the session.
     eprintln!("{}", boot.describe());
 
     // A window size the user chose is authoritative. Otherwise the boot's own

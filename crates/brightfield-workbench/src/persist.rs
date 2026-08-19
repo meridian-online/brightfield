@@ -10,7 +10,7 @@
 //! settled on and had no reason to revisit.
 //!
 //! One failure mode is **not** on that list, and it is the quiet one.
-//! [`Workspace`] derives `Deserialize`, so a load never runs `Workspace::new`,
+//! [`Workspace`] derives `Deserialize`, so a load does not run `Workspace::new`,
 //! and a tile tree saved by a build with fewer panes parses perfectly well: a
 //! window whose arrangement declares a pane the file has no tile for draws
 //! that region **empty**, silently, for as long as the file survives. So
@@ -413,8 +413,8 @@ impl LoadOutcome {
 /// Parse a layout from JSON text, falling back to `default` on any problem.
 ///
 /// `default` is a closure rather than a value so the two early returns above
-/// the parse — no text at all, and text that is not JSON — cost nothing to
-/// build an arrangement they may not reach. A load that gets as far as a
+/// the parse — absent text, and text that is not JSON — do not build an
+/// arrangement they may not reach. A load that gets as far as a
 /// parsed envelope **does** build it, because the completeness check below
 /// has nothing to compare against otherwise; see the module docs.
 ///
@@ -423,14 +423,13 @@ impl LoadOutcome {
 /// while every version shares a shape: the day one does not, the parse fails
 /// first and reports [`LoadOutcome::Corrupt`], which is the wrong answer and
 /// the wrong log line for a file that is merely from another build. Reading
-/// the field first is what makes [`LoadOutcome::VersionMismatch`] mean
-/// anything — and [`LAYOUT_VERSION`] 2 is exactly such a day.
+/// the field first is what gives [`LoadOutcome::VersionMismatch`] its meaning
+/// — and [`LAYOUT_VERSION`] 2 is exactly such a day.
 ///
 /// `default` is also the yardstick for [`LoadOutcome::Incomplete`]: a file
 /// whose tree lacks a pane the default arrangement places has its
-/// **arrangement** replaced by `default`'s rather than being restored with a
-/// region that would draw nothing. Everything else in the file stands — see
-/// the module docs.
+/// **arrangement** replaced by `default`'s rather than being restored with an
+/// empty region. The rest of the file stands — see the module docs.
 #[must_use]
 pub fn from_json(
     raw: Option<&str>,
@@ -471,8 +470,10 @@ pub fn from_json(
 
 /// Read the layout from `path`, falling back to `default`.
 ///
-/// Every registry must have published its ids *before* this runs, or a
-/// perfectly good file is read as [`LoadOutcome::Corrupt`].
+/// Each registry must have published its ids *before* this runs, or a
+/// perfectly good file is read as [`LoadOutcome::Corrupt`] —
+/// `a_boot_publishes_before_it_reads_and_the_window_opens_where_it_was_left`
+/// in the shell's `tests/startup.rs` is what holds the ordering.
 #[must_use]
 pub fn load(path: &Path, default: impl FnOnce() -> SavedLayout) -> (SavedLayout, LoadOutcome) {
     match std::fs::read_to_string(path) {

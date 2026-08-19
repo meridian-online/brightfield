@@ -642,7 +642,7 @@ pub fn names_a_data_file(chosen: &str) -> bool {
 /// The window's one derived answer to *which document the canvas belongs to*,
 /// and the reason it is a free function taking two bools rather than a method:
 /// two callers need it at different moments and must not be able to disagree.
-/// [`MeridianApp::draw`] asks it every frame from the live documents, and
+/// [`MeridianApp::draw`] asks it once per frame from the live documents, and
 /// [`Boot::window_size`] asks it before a window exists, from documents that
 /// have been loaded and not yet handed over. When those two disagreed, the
 /// window was sized for one surface and drew the other.
@@ -741,10 +741,11 @@ impl Boot {
     /// dashboard nobody asked for and from anywhere else exited with a read
     /// error before a window existed. Neither is a first run of a product.
     ///
-    /// Every pane answers an empty document with a real empty
-    /// state — that is the workbench contract, and
-    /// [`audit`](brightfield_workbench::audit) is what makes it true rather
-    /// than remembered — so this is not a blank window. It is the front door,
+    /// A pane answers an empty document with a real empty state — that is the
+    /// workbench contract, held by `every_chart_pane_passes_the_contract_audit`
+    /// and `every_protocol_pane_passes_the_contract_audit` through
+    /// [`audit`](brightfield_workbench::audit) rather than remembered — so this
+    /// is not a blank window. It is the front door,
     /// and the panes that can be filled by something the binary ships offer it
     /// (see [`crate::starts`]).
     #[must_use]
@@ -1019,10 +1020,10 @@ impl Boot {
     /// because both read [`graph_takes_the_canvas`] over the same documents.
     /// It matters more here than it looks: `main` hands this string to
     /// `eframe::run_native`, which is where the OS window's title comes from,
-    /// and the only things that send a `ViewportCommand::Title` afterwards are
-    /// opening a start (`open_start`) and going home (`open_home`) — both
-    /// private, both re-titling from the documents they just changed. A title
-    /// that is wrong at this call stays wrong until one of those runs.
+    /// and a `ViewportCommand::Title` is sent afterwards by opening a start
+    /// (`open_start`) and by going home (`open_home`) — both private, both
+    /// re-titling from the documents they just changed. A title that is wrong
+    /// at this call stays wrong until one of those runs.
     #[must_use]
     pub fn title(&self) -> String {
         if self.graph_on_canvas() {
@@ -1525,7 +1526,7 @@ impl MeridianApp {
     ) -> Self {
         // Both registries' vocabularies, published before any layout file
         // could be read. Idempotent, and both are needed whichever document
-        // the boot filled: the window's one tree carries every pane of both,
+        // the boot filled: the window's one tree carries the panes of both,
         // so a `PaneKey` naming a pane of the empty one has to deserialise
         // too, or a saved layout loads as corrupt. `startup` publishes them
         // again ahead of the read that happens before this window exists;
@@ -1827,7 +1828,7 @@ impl MeridianApp {
     /// Whether the canvas is drawing the asset graph rather than a chart
     /// projection — [`graph_takes_the_canvas`] over this window's documents.
     ///
-    /// Recomputed on every call rather than latched, which is what makes it
+    /// Recomputed on each call rather than latched, which is what makes it
     /// the same answer [`MeridianApp::draw`] uses and the same answer
     /// [`Boot::graph_on_canvas`] gave before the window existed.
     #[must_use]
@@ -2345,8 +2346,8 @@ impl MeridianApp {
         // with no modifier to disambiguate it — so it is fed only while the
         // graph is the thing on the canvas. Gating on that rather than on the
         // focused pane's `Subject::key_context` is deliberate: the grammar
-        // drives the *document's* model, not one pane's, and every pane
-        // reading that document declares the same context anyway. A per-pane
+        // drives the *document's* model, not one pane's, and the panes
+        // reading that document declare the same context anyway. A per-pane
         // gate would be a second answer to a question the canvas already
         // answers.
         //
@@ -3335,13 +3336,13 @@ impl MeridianApp {
     /// run state of the row it leaves behind is the run state of that
     /// Protocol: whatever the run contract behind this window recorded, folded
     /// by [`ProtocolModel::recorded_run_state`]. Reading it off the start
-    /// instead answered [`RunState::NeverRun`] for anything that opened a
-    /// chart — including a chart opened into a window whose protocol *had*
+    /// instead answered [`RunState::NeverRun`] whenever a chart start opened
+    /// it — including a chart opened into a window whose protocol *had*
     /// run, where the row then contradicted the window it came from.
     ///
     /// A window with no protocol behind it folds to
     /// [`RunState::NeverRun`] anyway, which is the honest answer for a
-    /// Protocol nothing has run: a chart's tables are materialised by the
+    /// Protocol that has not been run: a chart's tables are materialised by the
     /// engine as it composes and no run contract is written, so there is no
     /// run to report, and reporting one would be the shell computing what the
     /// engine is the thing that computes.
@@ -3931,8 +3932,8 @@ impl MeridianApp {
         }
 
         self.door_cards.push((start.id, rect));
-        // The card is recorded under the pane it fills only when it is the one
-        // that pane's own empty state would offer — `for_pane` hands an empty
+        // The card is recorded under the pane it fills when it is the one that
+        // pane's own empty state would offer — `for_pane` hands an empty
         // pane the FIRST start that fills it, so a second start for the same
         // pane is on the gallery and not on that button.
         if crate::starts::for_pane(start.fills).map(|s| s.id) == Some(start.id) {

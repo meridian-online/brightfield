@@ -6,12 +6,12 @@
 //! window draws one declared arrangement ([`crate::arrangement`]) whose
 //! regions are filled by panes of several documents at once — the spine in
 //! the navigator rail, the chart on the canvas, the step list in the ledger
-//! rail — all in the same frame. A pane therefore belongs to the window, not
+//! rail — in the same frame. A pane therefore belongs to the window, not
 //! to a document, and its address ([`PaneKey`]) says so.
 //!
 //! What that buys: a second arrangement is a second `static` in
 //! [`crate::arrangement`] read by the draw path that is already there, rather
-//! than a document threaded through every region; and the layout file names
+//! than a document threaded through each region; and the layout file names
 //! no concept the product does not have.
 //!
 //! The documents themselves have **not** merged and are not meant to.
@@ -85,7 +85,7 @@ impl Workspace {
     /// put a pane — a structural mistake worth failing at boot rather than
     /// discovering on the first frame.
     ///
-    /// The neighbouring question — *is every pane the window draws actually in
+    /// The neighbouring question — *is each pane the window draws actually in
     /// here* — is [`crate::persist::from_json`]'s and not this constructor's,
     /// because it is a question about a **file**: `Workspace` derives
     /// `Deserialize`, so a load never runs this at all. See
@@ -113,10 +113,10 @@ impl Workspace {
     /// The panes `other` holds that this workspace does not.
     ///
     /// The repair check a load needs and a constructor cannot give: `Workspace`
-    /// derives `Deserialize`, so [`Workspace::new`] never runs on a file, and a
+    /// derives `Deserialize`, so [`Workspace::new`] does not run on a file, and a
     /// tree saved by a build with fewer panes parses perfectly well. A region
-    /// whose declared pane has no tile draws nothing at all and says nothing
-    /// about why, so [`crate::persist::from_json`] asks this against the default
+    /// whose declared pane has no tile is drawn empty, with no message saying
+    /// why, so [`crate::persist::from_json`] asks this against the default
     /// arrangement and discards a file that comes up short.
     ///
     /// Answered against a donor workspace rather than against

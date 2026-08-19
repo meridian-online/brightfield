@@ -887,7 +887,7 @@ fn a_restored_steps_tab_survives_the_first_frame() {
 ///
 /// The trap this pins: the boot has to answer for the document the canvas
 /// takes, and a restored crosswalk's chart document is `Composed::empty()`.
-/// Anything that answers for the chart regardless titles a restored 34-node
+/// An answer given for the chart regardless titles a restored 34-node
 /// crosswalk "Brightfield" and logs "composed 0x0 dashboard" for it, which is
 /// what a `Boot` carrying a defaultable view opinion used to do.
 ///

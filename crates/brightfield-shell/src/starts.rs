@@ -377,7 +377,7 @@ pub struct OpenedChart {
 /// A loaded start: the document it produced.
 ///
 /// The window holds both documents whichever one a start filled, so this says
-/// which of the two to replace and nothing about what the window then *is* —
+/// which of the two to replace, and does not say what the window then *is* —
 /// that is [`MeridianApp`](crate::window::MeridianApp)'s to derive from the
 /// documents it ends up holding.
 pub enum Opened {

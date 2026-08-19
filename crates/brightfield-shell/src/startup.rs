@@ -142,7 +142,7 @@ pub const fn kept_window_geometry(outcome: LoadOutcome) -> bool {
 /// A start used to name the view it filled, and a *restored* start had to be
 /// stripped of that opinion so the layout file's own recorded view could
 /// stand. Both halves are gone: the window has one arrangement, and what the
-/// canvas holds is derived from the documents on every frame — see
+/// canvas holds is derived from the documents, frame by frame — see
 /// [`graph_takes_the_canvas`](crate::window::graph_takes_the_canvas). So a
 /// boot carries documents and nothing else, and this function's whole job is
 /// deciding **which** documents.

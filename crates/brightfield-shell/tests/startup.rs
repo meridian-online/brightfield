@@ -126,7 +126,7 @@ fn a_boot_publishes_before_it_reads_and_the_window_opens_where_it_was_left() {
         );
     }
 
-    // ---- 4. A launch that named nothing restores the remembered document —
+    // ---- 4. A launch with no spec on the command line restores the
     //         through `opening_boot`, which is what `main` calls, and not
     //         through a hand-built `Boot::empty()`.
     let boot = opening_boot(None, restored.opened.as_deref(), Flow::Vertical, None)

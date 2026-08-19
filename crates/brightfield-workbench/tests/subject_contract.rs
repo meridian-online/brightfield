@@ -447,7 +447,7 @@ fn tile_pane(tile: &egui_tiles::Tile<PaneKey>) -> Option<&PaneKey> {
 /// second document's main surface has to land in the strip rather than
 /// displace the first or be dropped.
 ///
-/// Would catch: a `window_tree` that took only the first centre — which
+/// Would catch: a `window_tree` that took just the first centre — which
 /// compiles, draws the first document perfectly, and leaves the second's
 /// canvas pane with no tile at all, so its region draws nothing.
 #[test]

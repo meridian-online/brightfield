@@ -100,7 +100,7 @@ fn share_of(layout: &SavedLayout) -> f32 {
     }
 }
 
-/// The same tile tree with every pane written the way [`LAYOUT_VERSION`] 1
+/// The same tile tree with each pane written the way [`LAYOUT_VERSION`] 1
 /// wrote one: an object carrying the view the pane belonged to alongside its
 /// item, rather than the item's own name.
 ///
@@ -318,8 +318,8 @@ fn the_layout_file_survives_a_restart_and_every_way_it_can_be_broken() {
     //
     // Version 1 wrote a *map of one tree per view* and a pane as
     // `{"view": …, "item": …}`. This build writes one tree and a pane as the
-    // item's own name. The two shapes do not parse as each other, so the only
-    // thing between an upgrading user and `Corrupt` — "the saved layout did
+    // item's own name. The two shapes do not parse as each other, so what
+    // stands between an upgrading user and `Corrupt` — "the saved layout did
     // not parse", which sends whoever reads the log looking for a disk fault
     // — is [`LAYOUT_VERSION`] having been bumped.
     //

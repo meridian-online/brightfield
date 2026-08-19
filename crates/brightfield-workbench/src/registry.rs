@@ -167,7 +167,7 @@ impl<D: ?Sized> ItemRegistry<D> {
     /// and the ids here are computed, so the slice has to be leaked. The early
     /// return holds that to at most one leak per registry per process: a
     /// second call over an already-published vocabulary allocates the `Vec`,
-    /// finds every id known, and drops it.
+    /// finds each id already known, and drops it.
     pub fn publish_ids(&self) {
         let ids = self.ids();
         if ids.iter().all(|id| ItemId::known().contains(id)) {
@@ -178,8 +178,10 @@ impl<D: ?Sized> ItemRegistry<D> {
 
     /// The pane key for an item.
     ///
-    /// A pane's address is its item id and nothing else — see [`PaneKey`] —
-    /// so this is a rename rather than a lookup. Kept as a method because the
+    /// A pane's address is its item id, and no more than that — see
+    /// [`PaneKey`], and
+    /// `a_pane_in_the_layout_file_is_named_by_its_item_and_nothing_else` for
+    /// the on-disk half — so this is a rename rather than a lookup. Kept as a method because the
     /// call sites read as *this registry's pane for this item*, and because a
     /// build that gave a key a second field would want them all to go through
     /// one place again.
@@ -217,7 +219,7 @@ impl<D: ?Sized> ItemRegistry<D> {
     }
 }
 
-/// Every id in `specs`, for a panic message that has to name the registry it
+/// The ids in `specs`, for a panic message that has to name the registry it
 /// is complaining about and has no other name to use.
 fn ids_of<D: ?Sized>(specs: &[ItemSpec<D>]) -> Vec<ItemId> {
     specs.iter().map(|spec| spec.id).collect()
@@ -254,7 +256,7 @@ const TREE_ID: &str = "brightfield-window";
 ///
 /// # Panics
 ///
-/// If `placements` declares no [`Slot::Centre`] at all. A window with no main
+/// If `placements` declares no [`Slot::Centre`]. A window with no main
 /// surface has nowhere to put the thing it exists to show.
 #[must_use]
 pub fn window_tree(placements: &[(ItemId, Slot)]) -> egui_tiles::Tree<PaneKey> {
