@@ -235,12 +235,16 @@ pub const PROTOCOLS_EMPTY_TITLE: &str = "Nothing here yet.";
 pub const PROTOCOLS_EMPTY_BODY: &str =
     "Opening a Dataset above puts it here — a Protocol is what an analysis is saved as.";
 
-/// The promise every entry on the door carries, in both sections: what the
-/// click lands on.
+/// What a Datasets card promises its click lands on — decision-75 §9's own
+/// sentence, at the card's foot.
 ///
-/// Decision-75 §9's own sentence, and one constant rather than two so the two
-/// sections cannot drift into promising different things — which is the half
-/// of AC4 that is about words rather than about where focus ends up.
+/// It is on the cards and not on the Protocols rows, and the asymmetry is the
+/// point: a card has to say what the thing becomes when you take it, and a row
+/// already *is* the thing. The promise the two sections share is not a
+/// sentence printed twice but the route — both raise the same
+/// [`Request::Open`] into the same [`MeridianApp::open_start`], which is what
+/// `either_route_to_the_same_subject_leaves_the_same_window` holds, over every
+/// shipped start rather than over one.
 pub const DOOR_ENTRY_PROMISE: &str = "opens on a rendered result";
 
 /// One Protocols row's height, in logical points — the preview row of the
@@ -3729,12 +3733,6 @@ impl MeridianApp {
         for recent in recents {
             self.door_row(ui, width, recent, now, sem, requests);
         }
-        ui.add_space(spacing::SPACE_2);
-        ui.label(
-            egui::RichText::new(DOOR_ENTRY_PROMISE)
-                .font(mono_font())
-                .color(chrome::colour(sem.text.muted)),
-        );
     }
 
     /// One section heading: the noun, what it says about itself beside it, and
