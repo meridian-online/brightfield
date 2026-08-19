@@ -110,7 +110,8 @@ impl Workspace {
         &mut self.tree
     }
 
-    /// The panes `other` holds that this workspace does not.
+    /// The panes `other` holds that this workspace does not, counted rather
+    /// than merely looked up.
     ///
     /// The repair check a load needs and a constructor cannot give: `Workspace`
     /// derives `Deserialize`, so [`Workspace::new`] does not run on a file, and a
@@ -123,13 +124,44 @@ impl Workspace {
     /// [`crate::ItemId::known`], which is a superset: an id may be published so
     /// a saved layout naming it still loads while the pane itself is behind a
     /// flag and absent from the default tree.
+    ///
+    /// # Why the match is consumed
+    ///
+    /// A tile in `other` that finds its counterpart here takes it out of the
+    /// running, so a donor placing one [`PaneKey`] twice needs two tiles here
+    /// and not one. Asking `contains` instead reads a second tile as covered
+    /// by the first, and the file loads as restored with a pane silently
+    /// absent — see
+    /// `crates/brightfield-workbench/tests/cross_registry_ids.rs`, which is
+    /// also where the arrangement that reaches that state comes from.
+    ///
+    /// Where ids are unique this is the same answer as `contains`, by
+    /// construction rather than by measurement: each key appears once in each
+    /// list, so a second match to consume does not arise. The two readings
+    /// part where a donor repeats a key, which is what
+    /// `two_registries_that_share_an_id_put_two_tiles_at_one_address` builds
+    /// deliberately — two placements carrying one id, through
+    /// [`window_tree`](crate::window_tree). A repeat has to arrive that way:
+    /// grepping `insert_pane` across this workspace finds `window_tree` and
+    /// no second call site, and [`crate::ItemRegistry::new`] refuses one spec
+    /// list that repeats an id, which leaves the cross-registry case.
+    ///
+    /// The scan is linear per key rather than a merge over the two sorted
+    /// lists. A window's panes are counted in single figures, and the
+    /// straightforward reading is worth more here than the asymptote.
     #[must_use]
     pub fn panes_missing_from(&self, other: &Self) -> Vec<PaneKey> {
-        let mine = self.panes();
+        let mut mine = self.panes();
         other
             .panes()
             .into_iter()
-            .filter(|key| !mine.contains(key))
+            .filter(|key| match mine.iter().position(|k| k == key) {
+                Some(i) => {
+                    mine.remove(i);
+                    false
+                }
+                None => true,
+            })
             .collect()
     }
 

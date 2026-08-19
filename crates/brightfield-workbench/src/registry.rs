@@ -254,6 +254,34 @@ const TREE_ID: &str = "brightfield-window";
 /// the strip's active tab, for the reason the single-centre case had one — a
 /// window whose first sight is a secondary tab is disorienting.
 ///
+/// # The ids across `placements` have to be unique, and this does not check it
+///
+/// [`ItemRegistry::new`] refuses the same id twice inside one spec list. A
+/// window is built from a registry per *document* and this function takes
+/// their placements together, so the id space that has to be unique is the
+/// window's, and no constructor is handed the whole of it. Two documents
+/// declaring one id reach the loop below twice with the same [`PaneKey`],
+/// which is two tiles at one address.
+///
+/// That uniqueness belongs to this tree rather than to the registries is a
+/// reading of where the ids are consumed. A [`PaneKey`] is an address:
+/// [`crate::Workspace::tile_of`] resolves one to a single tile and has no way
+/// to report a second, [`crate::Workspace::panes`] says in its own docs that
+/// tile order is not a stable thing to rely on, and the layout file records a
+/// pane as the bare id string. Each of those is downstream of the one tree. A
+/// registry on its own is already consistent, and there is no *pair* for a
+/// check to hang off either: the shell concatenates placements, and a third
+/// document would be a third `extend`.
+///
+/// It is asserted rather than enforced here because enforcing it would fire
+/// at boot, and a window that refuses to open is a worse answer to a
+/// declaration mistake than a contract test that reddens in CI.
+/// `no_item_id_is_declared_by_two_of_the_windows_registries`, in
+/// `crates/brightfield-shell/tests/one_window.rs`, is that test — it lives
+/// there because only a caller that knows which registries a window builds
+/// can compare them. What a duplicate costs if one ever gets past it is
+/// measured in `crates/brightfield-workbench/tests/cross_registry_ids.rs`.
+///
 /// # Panics
 ///
 /// If `placements` declares no [`Slot::Centre`]. A window with no main
