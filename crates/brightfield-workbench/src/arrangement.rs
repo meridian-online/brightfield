@@ -40,6 +40,38 @@
 //! [`crate::chrome::status_rail_overlay`], which draws the status band that
 //! way. `the_overlay_region_takes_no_space_and_the_rest_do` holds the split.
 //!
+//! # Collapsing is a second question, so it is a second field
+//!
+//! [`Collapse`] says whether the user may take a region's axis back, and how
+//! much of that axis stays behind when they do. It sits beside [`Extent`] on
+//! [`Region`] rather than becoming a fifth case of it, and the two questions
+//! really are independent: a rail that collapses still opens at its default,
+//! still refuses to narrow past its floor, and is still resizable, so what
+//! [`Extent`] answers is unchanged when a region gains a collapsed state.
+//!
+//! A fifth variant would change the answer for the four readers that match on
+//! [`Extent`] today — `band_extent`, `rail_default` and `rail_min` in the
+//! shell's draw path, and [`audit_arrangement`] here. The first three panic on
+//! an extent they do not recognise, so a collapsible rail spelled as its own
+//! variant would stop being a rail to the draw path, to the arithmetic that
+//! sizes the window and to the audit at the same moment, and each of them
+//! would need a second spelling of "rail". Two spellings of one measure is the
+//! drift this module exists to end.
+//!
+//! What stays behind is declared per region rather than taken from one
+//! constant, and the shipped arrangement uses two different measures for it.
+//! A side rail collapses along its *width*, so [`chrome::rail_selector_height`]
+//! of width leaves a stub with room for the control that reopens it and none
+//! for a name. The ledger collapses along its *height*, where the same measure
+//! leaves its selector strip whole — names drawn and live — and then has to
+//! clear the [`Extent::Overlay`] band the status rail floats in, because that
+//! layer is anchored to the window's bottom edge and this rail is the
+//! bottom-most panel on the surface with no hint band. A control under it
+//! cannot be clicked; the declaration is what says how far to get out of its
+//! way. `the_collapsed_ledger_keeps_its_selector_strip_and_reopens_from_it` and
+//! `the_navigator_rail_collapses_from_its_strip_and_reopens` are the two ends
+//! of that, drawn.
+//!
 //! # More than one arrangement, at the cost of a declaration
 //!
 //! [`spine_left`] is the arrangement the window ships with. A second one is a
@@ -248,6 +280,42 @@ impl Extent {
     }
 }
 
+/// Whether the user may take a region's axis back, and what stays on screen
+/// when they do.
+///
+/// A different question from [`Extent`], which is why it is a different field
+/// on [`Region`] — the module docs argue that at length, and
+/// `the_shipped_arrangement_lets_a_rail_collapse_and_a_band_not` is where the
+/// shipped answer is pinned.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Collapse {
+    /// The region stays at its [`Extent`], and the draw path puts no control
+    /// on it that would take its axis away.
+    Fixed,
+    /// The user may collapse the region to this many logical points of its own
+    /// axis: what the window goes on drawing there, and what the arithmetic
+    /// that sizes the window subtracts while it is collapsed.
+    To(f32),
+}
+
+impl Collapse {
+    /// Whether the user may collapse this region.
+    #[must_use]
+    pub const fn is_collapsible(self) -> bool {
+        matches!(self, Self::To(_))
+    }
+
+    /// The extent the region takes while it is collapsed, or `None` for a
+    /// region that does not collapse.
+    #[must_use]
+    pub const fn extent(self) -> Option<f32> {
+        match self {
+            Self::To(size) => Some(size),
+            Self::Fixed => None,
+        }
+    }
+}
+
 /// What fills a region.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Occupant {
@@ -306,6 +374,8 @@ pub struct Region {
     pub extent: Extent,
     /// What fills it.
     pub occupant: Occupant,
+    /// Whether the user may take its axis back, and what stays when they do.
+    pub collapse: Collapse,
 }
 
 impl Region {
@@ -319,6 +389,12 @@ impl Region {
     #[must_use]
     pub const fn min_extent(&self) -> Option<f32> {
         self.extent.min_extent()
+    }
+
+    /// What this region takes while collapsed — [`Collapse::extent`].
+    #[must_use]
+    pub const fn collapsed_extent(&self) -> Option<f32> {
+        self.collapse.extent()
     }
 }
 
@@ -392,8 +468,13 @@ static PROJECTIONS: &[Projection] = &[
 ///
 /// The protocol is the navigator rail, as an ordered spine of operators with
 /// their run state; the canvas belongs to the step's projection at full size;
-/// the inspector is the right rail; the ledger rail collapses to its own
-/// selector strip.
+/// the inspector is the right rail; the ledger is the bottom rail.
+///
+/// All three rails open, and each declares a [`Collapse`] the user can take
+/// them down to — the ledger onto its own selector strip, the two side rails
+/// onto a stub of the same measure. The bands and the canvas do not collapse:
+/// `the_shipped_arrangement_lets_a_rail_collapse_and_a_band_not` counts which
+/// is which off this list.
 static SPINE_LEFT: Arrangement = Arrangement {
     name: "spine left",
     regions: &[
@@ -402,24 +483,28 @@ static SPINE_LEFT: Arrangement = Arrangement {
             edge: Edge::Top,
             extent: Extent::Band(TITLE_BAND_HEIGHT),
             occupant: Occupant::Chrome("app identity, the way home, and the subject"),
+            collapse: Collapse::Fixed,
         },
         Region {
             id: LOCATOR_BAND,
             edge: Edge::Top,
             extent: Extent::Band(LOCATOR_BAND_HEIGHT),
             occupant: Occupant::Chrome("the breadcrumb"),
+            collapse: Collapse::Fixed,
         },
         Region {
             id: STATUS_BAND,
             edge: Edge::Bottom,
             extent: Extent::Overlay(chrome::status_rail_height()),
             occupant: Occupant::Chrome("what the window is doing"),
+            collapse: Collapse::Fixed,
         },
         Region {
             id: HINT_BAND,
             edge: Edge::Bottom,
             extent: Extent::Band(HINT_BAND_HEIGHT),
             occupant: Occupant::Chrome("the key grammar of the surface that has one"),
+            collapse: Collapse::Fixed,
         },
         Region {
             id: LEDGER_RAIL,
@@ -429,6 +514,18 @@ static SPINE_LEFT: Arrangement = Arrangement {
                 min: LEDGER_RAIL_MIN_HEIGHT,
             },
             occupant: Occupant::Panes(LEDGER_PANES),
+            // The strip, plus the band the status rail floats in. The two side
+            // rails collapse to the strip measure alone; this one cannot,
+            // because `STATUS_BAND` above is an `Extent::Overlay` anchored to
+            // the window's bottom edge and this rail is the bottom-most panel
+            // on the surface that draws no hint band. Collapsed to the strip
+            // measure alone, the whole strip lands under that layer: measured
+            // on a 1386 by 588 window, the rail drew at y 564..588 and
+            // `Context::layer_id_at` answered the status rail's own layer at
+            // every name in it, so the one control left to reopen from could
+            // not be clicked. `the_collapsed_ledger_keeps_its_selector_strip_and_reopens_from_it`
+            // is that click.
+            collapse: Collapse::To(chrome::rail_selector_height() + chrome::status_rail_height()),
         },
         Region {
             id: NAVIGATOR_RAIL,
@@ -438,6 +535,7 @@ static SPINE_LEFT: Arrangement = Arrangement {
                 min: NAVIGATOR_RAIL_MIN_WIDTH,
             },
             occupant: Occupant::Panes(NAVIGATOR_PANES),
+            collapse: Collapse::To(chrome::rail_selector_height()),
         },
         Region {
             id: INSPECTOR_RAIL,
@@ -447,6 +545,7 @@ static SPINE_LEFT: Arrangement = Arrangement {
                 min: INSPECTOR_RAIL_MIN_WIDTH,
             },
             occupant: Occupant::Panes(INSPECTOR_PANES),
+            collapse: Collapse::To(chrome::rail_selector_height()),
         },
         Region {
             id: CANVAS,
@@ -456,6 +555,7 @@ static SPINE_LEFT: Arrangement = Arrangement {
                 projections: PROJECTIONS,
                 graph: ItemId::new("protocol-canvas"),
             },
+            collapse: Collapse::Fixed,
         },
     ],
 };
@@ -492,6 +592,11 @@ pub const fn default_arrangement() -> &'static Arrangement {
 /// - a rail whose floor is above what it opens at, which `Panel::min_size`
 ///   would silently resolve by ignoring the default;
 /// - a non-positive band or rail extent;
+/// - a collapsed extent that is not below what its region opens at, which
+///   would leave the collapse gesture drawn and giving no room back;
+/// - a collapsed extent on a region that is not a rail, since the control that
+///   collapses one is drawn in a rail's own strip and nothing would read the
+///   declaration;
 /// - a count of [`Extent::Remainder`] regions other than one.
 ///
 /// # Errors
@@ -527,6 +632,27 @@ pub fn audit_arrangement(arrangement: &Arrangement) -> Result<(), String> {
                 }
             }
             Extent::Remainder => remainders += 1,
+        }
+
+        if let Some(collapsed) = region.collapse.extent() {
+            if !collapsed.is_finite() || collapsed <= 0.0 {
+                findings.push(format!(
+                    "{id}: collapsed extent {collapsed} is not positive"
+                ));
+            }
+            if let Extent::Rail { default, .. } = region.extent {
+                if collapsed >= default {
+                    findings.push(format!(
+                        "{id}: collapsed extent {collapsed} is not below the {default} it opens \
+                         at, so collapsing it gives no room back"
+                    ));
+                }
+            } else {
+                findings.push(format!(
+                    "{id}: declares a collapsed extent and is not a rail; the control that \
+                     collapses a region is drawn in a rail's own strip"
+                ));
+            }
         }
 
         let occupants: Vec<ItemId> = match region.occupant {
@@ -610,6 +736,93 @@ mod tests {
             projections.len(),
             2,
             "the canvas toggle offers a grid and a chart: {projections:?}"
+        );
+    }
+
+    /// One region, spelled out, for the audit's own negative cases below.
+    const fn region(id: RegionId, edge: Edge, extent: Extent, collapse: Collapse) -> Region {
+        Region {
+            id,
+            edge,
+            extent,
+            // An empty pane list rather than `Occupant::Chrome`: the audit
+            // checks occupants against the item vocabulary, which a workbench
+            // unit test has no registry to publish into, and `Chrome` would
+            // itself trip the not-a-rail finding one of these tests is asking
+            // about.
+            occupant: Occupant::Panes(&[]),
+            collapse,
+        }
+    }
+
+    /// The canvas a case below needs, so `audit_arrangement` is answering the
+    /// question that case asks rather than the missing-remainder one.
+    static ONE_CANVAS: Region = region(CANVAS, Edge::Centre, Extent::Remainder, Collapse::Fixed);
+
+    #[test]
+    fn the_shipped_arrangement_lets_a_rail_collapse_and_a_band_not() {
+        // Collapsibility follows resizability across this list rather than
+        // being enumerated by name here: a rail the user can drag is a rail
+        // the user can put away, and a band carries one row of chrome with
+        // nothing to give back.
+        for region in default_arrangement().regions {
+            assert_eq!(
+                region.collapse.is_collapsible(),
+                region.extent.is_resizable(),
+                "{}: declared {:?} against extent {:?}",
+                region.id,
+                region.collapse,
+                region.extent
+            );
+        }
+    }
+
+    #[test]
+    fn the_audit_refuses_a_collapsed_extent_that_gives_no_room_back() {
+        static REGIONS: &[Region] = &[
+            region(
+                LEDGER_RAIL,
+                Edge::Bottom,
+                Extent::Rail {
+                    default: LEDGER_RAIL_HEIGHT,
+                    min: LEDGER_RAIL_MIN_HEIGHT,
+                },
+                Collapse::To(LEDGER_RAIL_HEIGHT),
+            ),
+            ONE_CANVAS,
+        ];
+        static ARRANGEMENT: Arrangement = Arrangement {
+            name: "collapses to what it already is",
+            regions: REGIONS,
+        };
+        let findings = audit_arrangement(&ARRANGEMENT)
+            .expect_err("a rail that collapses to its own default gives no room back");
+        assert!(
+            findings.contains("gives no room back"),
+            "the audit said: {findings}"
+        );
+    }
+
+    #[test]
+    fn the_audit_refuses_a_collapsed_extent_on_something_that_is_not_a_rail() {
+        static REGIONS: &[Region] = &[
+            region(
+                TITLE_BAND,
+                Edge::Top,
+                Extent::Band(TITLE_BAND_HEIGHT),
+                Collapse::To(chrome::rail_selector_height()),
+            ),
+            ONE_CANVAS,
+        ];
+        static ARRANGEMENT: Arrangement = Arrangement {
+            name: "a band that thinks it collapses",
+            regions: REGIONS,
+        };
+        let findings = audit_arrangement(&ARRANGEMENT)
+            .expect_err("a band declaring a collapsed extent declares something nothing reads");
+        assert!(
+            findings.contains("is not a rail"),
+            "the audit said: {findings}"
         );
     }
 

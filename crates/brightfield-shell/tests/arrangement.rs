@@ -70,6 +70,111 @@ fn settled() -> MeridianApp {
     app
 }
 
+/// A window that keeps its own `egui::Context` for its whole life, because a
+/// click is resolved against the widget id a *previous* frame registered.
+///
+/// [`settled`] drops its context when it returns, which is enough to read a
+/// rect off and not enough to press a control. An assertion below that
+/// involves a pointer goes through this instead.
+struct Live {
+    app: MeridianApp,
+    ctx: egui::Context,
+    screen: egui::Rect,
+}
+
+impl Live {
+    /// A window over both documents, at the size its boot asks for.
+    fn open() -> Self {
+        let boot = both();
+        let (w, h) = boot.window_size();
+        Self {
+            app: MeridianApp::headless(boot, Mode::Light),
+            ctx: egui::Context::default(),
+            screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h)),
+        }
+    }
+
+    /// One frame per entry, feeding that entry's events.
+    fn run(&mut self, frames: Vec<Vec<egui::Event>>) {
+        for events in frames {
+            let raw = egui::RawInput {
+                screen_rect: Some(self.screen),
+                events,
+                ..Default::default()
+            };
+            let _ = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
+        }
+    }
+
+    /// Three frames with no events — one more than the layout needs, for the
+    /// reason [`settled`] runs three.
+    fn settle(&mut self) {
+        self.run(vec![Vec::new(), Vec::new(), Vec::new()]);
+    }
+
+    /// The extent region `id` was drawn at, on the axis its edge runs across.
+    fn extent(&self, id: arrangement::RegionId) -> f32 {
+        let rect = self
+            .app
+            .region_rect(id)
+            .unwrap_or_else(|| panic!("{id} did not draw"));
+        drawn_extent(id, rect)
+    }
+
+    /// Click the collapse control of rail `id` where the last frame drew it.
+    fn click_collapse(&mut self, id: arrangement::RegionId) {
+        let rect = self
+            .app
+            .rail_collapse_rect(id)
+            .unwrap_or_else(|| panic!("{id} drew no collapse control to click"));
+        self.run(vec![click_at(rect.center()), Vec::new(), Vec::new()]);
+    }
+
+    /// Drag rail `id`'s resize edge until the rail is `want` points across.
+    ///
+    /// Aimed at the panel's own resize handle, which egui puts on the edge
+    /// away from the window side the panel is attached to and senses as a
+    /// drag. Five frames because the press, the move and the release are each
+    /// a frame, and egui reads the handle's response from the frame before.
+    fn drag_edge_to(&mut self, id: arrangement::RegionId, want: f32) {
+        let rect = self
+            .app
+            .region_rect(id)
+            .unwrap_or_else(|| panic!("{id} did not draw"));
+        let grab = egui::pos2(rect.right(), rect.center().y);
+        let to = egui::pos2(rect.left() + want, rect.center().y);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        self.run(vec![
+            vec![egui::Event::PointerMoved(grab)],
+            vec![egui::Event::PointerMoved(grab), button(grab, true)],
+            vec![egui::Event::PointerMoved(to)],
+            vec![egui::Event::PointerMoved(to)],
+            vec![egui::Event::PointerMoved(to), button(to, false)],
+            Vec::new(),
+            Vec::new(),
+        ]);
+    }
+}
+
+/// One frame's worth of a pointer move and a primary click at `pos`.
+fn click_at(pos: egui::Pos2) -> Vec<egui::Event> {
+    let mut events = vec![egui::Event::PointerMoved(pos)];
+    for pressed in [true, false] {
+        events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        });
+    }
+    events
+}
+
 /// The extent a region takes on the axis its edge runs across.
 fn drawn_extent(id: arrangement::RegionId, rect: egui::Rect) -> f32 {
     let region = arrangement::default_arrangement().expect_region(id);
@@ -304,5 +409,215 @@ fn no_numeric_binding_addresses_a_surface() {
         "a digit is bound to a verb that moves focus: {navigating_digits:?}. \
          A digit may act on content — `0` resets the chart's extent — and may \
          not address a surface"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Collapsing a rail
+// ---------------------------------------------------------------------------
+
+/// AC1. The navigator rail goes away from its own strip and comes back, and
+/// the extent it goes to is the one the arrangement declares.
+///
+/// The comparison is against `Region::collapsed_extent`, not against a number
+/// typed here: a collapsibility literal in the shell that the arrangement
+/// cannot see is the drift the arrangement module was written to end, and a
+/// test holding its own copy of the measure would pass through exactly that.
+/// The number itself is spelled out once, in
+/// `each_rail_collapses_to_the_strip_measure`, so changing the declaration
+/// reddens that and nothing else.
+#[test]
+fn the_navigator_rail_collapses_from_its_strip_and_reopens() {
+    let navigator = arrangement::default_arrangement().expect_region(arrangement::NAVIGATOR_RAIL);
+    let declared = navigator
+        .default_extent()
+        .expect("the navigator rail opens at a declared width");
+    let collapsed = navigator
+        .collapsed_extent()
+        .expect("the arrangement declares the navigator rail collapsible");
+
+    let mut win = Live::open();
+    win.settle();
+    let open = win.extent(arrangement::NAVIGATOR_RAIL);
+    assert!(
+        (open - declared).abs() < 1e-3,
+        "the navigator rail opened at {open}pt against the {declared}pt declared"
+    );
+
+    win.click_collapse(arrangement::NAVIGATOR_RAIL);
+    let drawn = win.extent(arrangement::NAVIGATOR_RAIL);
+    assert!(
+        (drawn - collapsed).abs() < 1e-3,
+        "the collapsed navigator rail drew at {drawn}pt against the {collapsed}pt \
+         the arrangement declares it collapses to"
+    );
+
+    win.click_collapse(arrangement::NAVIGATOR_RAIL);
+    let reopened = win.extent(arrangement::NAVIGATOR_RAIL);
+    assert!(
+        (reopened - open).abs() < 1e-3,
+        "the navigator rail reopened at {reopened}pt rather than the {open}pt it was at"
+    );
+}
+
+/// AC1's numbers, in the one place they are spelled, measured off the drawn
+/// rect.
+///
+/// The other end of the pair `the_navigator_rail_collapses_from_its_strip_and_reopens`
+/// is one end of — that one compares the screen with the declaration, this one
+/// says what the declaration is. All three rails, in one window, so a rail
+/// declared collapsible and never wired into the draw path fails here.
+///
+/// The two side rails collapse to 24pt, the height of a selector strip, taken
+/// on their own axis as a width. The ledger is 56pt and deliberately not 24:
+/// it is the bottom-most panel on this surface, the status rail floats in a
+/// 32pt band anchored to the window's bottom edge, and a strip inside that
+/// band is a control nobody can click. The arrangement declares the clearance;
+/// this is the number it comes to.
+#[test]
+fn each_rail_collapses_to_the_measure_it_declares() {
+    let mut win = Live::open();
+    win.settle();
+    for (id, want) in [
+        (arrangement::NAVIGATOR_RAIL, 24.0_f32),
+        (arrangement::INSPECTOR_RAIL, 24.0),
+        (arrangement::LEDGER_RAIL, 56.0),
+    ] {
+        win.click_collapse(id);
+        let drawn = win.extent(id);
+        assert!(
+            (drawn - want).abs() < 1e-3,
+            "the collapsed {id} drew at {drawn}pt, not the {want}pt it declares"
+        );
+    }
+}
+
+/// AC3. The room a collapsed rail gives up arrives at the canvas, measured
+/// from the drawn rect at both ends.
+///
+/// The claim is arithmetic rather than "the canvas got wider": a rail that
+/// hid without giving its room back, or one that gave back part of it, both
+/// widen the canvas.
+#[test]
+fn a_collapsed_rail_gives_its_room_back_to_the_canvas() {
+    let mut win = Live::open();
+    win.settle();
+    let before = win
+        .app
+        .region_rect(arrangement::CANVAS)
+        .expect("the canvas drew");
+    let given_up = win.extent(arrangement::NAVIGATOR_RAIL)
+        - arrangement::default_arrangement()
+            .expect_region(arrangement::NAVIGATOR_RAIL)
+            .collapsed_extent()
+            .expect("the arrangement declares the navigator rail collapsible");
+
+    win.click_collapse(arrangement::NAVIGATOR_RAIL);
+    let after = win
+        .app
+        .region_rect(arrangement::CANVAS)
+        .expect("the canvas drew");
+
+    let gained = after.width() - before.width();
+    assert!(
+        (gained - given_up).abs() < 1e-3,
+        "the navigator rail gave up {given_up}pt and the canvas gained {gained}pt"
+    );
+}
+
+/// AC2. The ledger rail collapses onto its own selector strip, and the strip
+/// is still drawn, still carries both pane names, and is still what reopens
+/// the rail.
+///
+/// The failure this refuses is the one that makes the gesture a trap:
+/// collapsing leaves nothing that can be clicked to get back. Asserted by
+/// clicking a name rather than by reading one — the rect comes back off the
+/// frame, so a strip that drew nothing has no rect to aim at, and a strip that
+/// drew somewhere unreachable swallows the click.
+///
+/// The second half of that is not hypothetical and is what this test found. A
+/// ledger collapsed to the selector strip's own height sat in the band the
+/// status rail floats in — `Context::layer_id_at` answered
+/// `workbench-status-rail` at every name — so the strip was drawn, was
+/// readable in the rect record, and could not be clicked. The arrangement now
+/// declares the clearance, and this click is what holds it.
+#[test]
+fn the_collapsed_ledger_keeps_its_selector_strip_and_reopens_from_it() {
+    let ledger = arrangement::default_arrangement().expect_region(arrangement::LEDGER_RAIL);
+    let collapsed = ledger
+        .collapsed_extent()
+        .expect("the arrangement declares the ledger rail collapsible");
+    let Occupant::Panes(panes) = ledger.occupant else {
+        panic!("the ledger rail is occupied by panes");
+    };
+
+    let mut win = Live::open();
+    win.settle();
+    let open = win.extent(arrangement::LEDGER_RAIL);
+
+    win.click_collapse(arrangement::LEDGER_RAIL);
+    let drawn = win.extent(arrangement::LEDGER_RAIL);
+    assert!(
+        (drawn - collapsed).abs() < 1e-3,
+        "the collapsed ledger rail drew at {drawn}pt against the {collapsed}pt declared"
+    );
+
+    let names: Vec<Option<egui::Rect>> = (0..panes.len())
+        .map(|i| win.app.rail_name_rect(arrangement::LEDGER_RAIL, i))
+        .collect();
+    assert!(
+        names.iter().all(Option::is_some),
+        "the collapsed ledger rail drew {names:?} for its {} pane names, so the \
+         strip went down with the body",
+        panes.len()
+    );
+
+    let last = names
+        .last()
+        .copied()
+        .flatten()
+        .expect("the ledger rail declares at least one pane");
+    win.run(vec![click_at(last.center()), Vec::new(), Vec::new()]);
+    let reopened = win.extent(arrangement::LEDGER_RAIL);
+    assert!(
+        (reopened - open).abs() < 1e-3,
+        "clicking a name in the collapsed ledger's strip left it at {reopened}pt \
+         rather than reopening it to {open}pt"
+    );
+}
+
+/// AC4. A rail dragged wider, collapsed and reopened comes back at the width
+/// it was dragged to rather than at its declared default.
+///
+/// The drag is real — a press on the panel's resize handle, a move and a
+/// release — because there is no other way to put a rail at an extent nobody
+/// declared, and a test that skipped it would be asserting that a default
+/// equals itself. The assertion after the drag is what keeps that honest: a
+/// drag that silently did nothing fails there rather than passing here.
+#[test]
+fn a_rail_reopens_at_the_extent_it_was_dragged_to() {
+    let declared = arrangement::default_arrangement()
+        .expect_region(arrangement::NAVIGATOR_RAIL)
+        .default_extent()
+        .expect("the navigator rail opens at a declared width");
+
+    let mut win = Live::open();
+    win.settle();
+    let want = declared + 60.0;
+    win.drag_edge_to(arrangement::NAVIGATOR_RAIL, want);
+    let dragged = win.extent(arrangement::NAVIGATOR_RAIL);
+    assert!(
+        (dragged - want).abs() < 1e-3,
+        "the drag left the navigator rail at {dragged}pt, not the {want}pt it was \
+         dragged to — nothing below this would be testing a restore"
+    );
+
+    win.click_collapse(arrangement::NAVIGATOR_RAIL);
+    win.click_collapse(arrangement::NAVIGATOR_RAIL);
+    let reopened = win.extent(arrangement::NAVIGATOR_RAIL);
+    assert!(
+        (reopened - dragged).abs() < 1e-3,
+        "the navigator rail reopened at {reopened}pt rather than the {dragged}pt it \
+         was dragged to; {declared}pt is the declared default it must not fall back to"
     );
 }
