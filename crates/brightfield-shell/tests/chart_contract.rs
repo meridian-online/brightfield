@@ -13,15 +13,15 @@
 //! The pixel tier (`surfaces.rs`) still covers what this cannot: what the shell
 //! *looks* like.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use brightfield_shell::app::{chart_registry, ChartDoc, CHART, CONTROLS};
+use brightfield_shell::app::{chart_registry, chart_registry_with, ChartDoc, CHART, CONTROLS};
 use brightfield_shell::design::Mode;
 use brightfield_shell::editor::EDITOR;
 use brightfield_shell::pipeline::{compose_spec, Composed};
 use brightfield_shell::window::{chart_toolbar_band, chart_window_size, Boot, MeridianApp};
 use brightfield_workbench::arrangement;
-use brightfield_workbench::registry::{DockSide, Slot};
+use brightfield_workbench::registry::{DockSide, ItemRegistry, Slot};
 use brightfield_workbench::subject::{RunState, ToolbarLocation};
 use brightfield_workbench::{audit, chrome, ItemId, PaneKey, Subject};
 
@@ -227,6 +227,134 @@ fn an_annotated_preview_rails_its_run_state() {
     assert_eq!(chart.status.len(), 1, "one standing run-state entry");
     assert_eq!(chart.status[0].id, "run-state");
     assert_eq!(chart.status[0].text, RunState::StaleUpstream.label());
+}
+
+/// The fixture the two tests below need: the real dashboard, annotated with
+/// materialised run output.
+///
+/// `Composed::with_run_state` has no caller in production — no run's record
+/// is ingested yet — so this state is `None` on a live document, and the
+/// panes' run-state branches cannot be reached from a booted window. That is
+/// precisely why they need driving here.
+fn run_annotated() -> ChartDoc {
+    let composed = compose_spec(DASHBOARD)
+        .expect("compose examples/dashboard.yaml")
+        .with_run_state(RunState::StaleUpstream);
+    ChartDoc::headless(composed)
+}
+
+/// Every pane of `registry`, keyed by item id.
+fn subjects_of(registry: &ItemRegistry<ChartDoc>, doc: &ChartDoc) -> BTreeMap<ItemId, Subject> {
+    registry
+        .specs()
+        .iter()
+        .map(|spec| (spec.id, (spec.make)().subject(doc)))
+        .collect()
+}
+
+/// No two panes of the Charts view declare a status entry under the same id.
+///
+/// The window collects the status lines of each *placed* pane, not the
+/// focused one's, and `chrome::status_rail` draws each entry it is handed — so
+/// two panes declaring one id put the same line on the rail twice. Driven over
+/// both arrangements the registry can produce, because the dev gallery adds a
+/// pane that declares rail entries of its own.
+///
+/// `rail_entry_ids.rs` is the durable half of this pair: it reads the
+/// declarations in `crates/*/src` rather than the entries one fixture happens
+/// to raise, so it sees a pane this test has never been given, and a branch
+/// this document does not reach.
+#[test]
+fn the_charts_view_declares_no_duplicate_status_id() {
+    let doc = run_annotated();
+    for gallery in [false, true] {
+        let declared: Vec<(ItemId, &'static str)> =
+            subjects_of(&chart_registry_with(gallery), &doc)
+                .into_iter()
+                .flat_map(|(id, subject)| {
+                    subject
+                        .status
+                        .into_iter()
+                        .map(move |entry| (id, entry.id))
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+        assert!(
+            declared.iter().any(|(_, id)| *id == RunState::RAIL_ID),
+            "the fixture raised no run-state line, so this proves nothing \
+             (gallery: {gallery})"
+        );
+
+        let mut seen = BTreeSet::new();
+        let repeated: Vec<String> = declared
+            .iter()
+            .filter(|(_, id)| !seen.insert(*id))
+            .map(|(pane, id)| format!("{pane} declares `{id}` a second time"))
+            .collect();
+        assert!(
+            repeated.is_empty(),
+            "two panes of the Charts view declare one status id (gallery: \
+             {gallery}): {}\n    all declarations: {declared:?}",
+            repeated.join("; ")
+        );
+    }
+}
+
+/// Whichever pane declares the run state, it is one the user cannot close.
+///
+/// The run state belongs to the document, not to a pane: both the chart and
+/// the grid read `doc.composed.run_state` and both draw `run_state_pill` in
+/// their body. Exactly one of them may put it on the rail, and the choice is
+/// not arbitrary — a rail line owned by a closable pane leaves with that pane,
+/// and an honesty label that disappears when an unrelated tab is closed reads
+/// as "nothing to report" rather than as "not shown".
+///
+/// So this asserts the *rule* rather than today's answer: one declarer, and
+/// its spec is the centre slot with no toggle verb. `ItemSpec::toggle`
+/// reserves `None` for `Slot::Centre`, and `ItemRegistry::new` rejects a view
+/// that does not have exactly one of those — so the two halves together say
+/// the line cannot be closed away.
+#[test]
+fn the_pane_that_owns_the_run_state_line_cannot_be_closed() {
+    let doc = run_annotated();
+    for gallery in [false, true] {
+        let registry = chart_registry_with(gallery);
+        let declaring: Vec<ItemId> = subjects_of(&registry, &doc)
+            .into_iter()
+            .filter(|(_, subject)| {
+                subject
+                    .status
+                    .iter()
+                    .any(|entry| entry.id == RunState::RAIL_ID)
+            })
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(
+            declaring.len(),
+            1,
+            "the run-state line has {} owners in the Charts view (gallery: \
+             {gallery}): {declaring:?}",
+            declaring.len()
+        );
+
+        let owner = declaring[0];
+        let spec = registry
+            .specs()
+            .iter()
+            .find(|spec| spec.id == owner)
+            .expect("the id came off this registry");
+        assert!(
+            matches!(spec.slot, Slot::Centre),
+            "{owner} owns the run-state line from {:?}, not the centre slot",
+            spec.slot
+        );
+        assert!(
+            spec.toggle.is_none(),
+            "{owner} owns the run-state line and `{}` closes it, taking the \
+             line off the rail while the chart goes on drawing the run's rows",
+            spec.toggle.expect("just checked").as_str()
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

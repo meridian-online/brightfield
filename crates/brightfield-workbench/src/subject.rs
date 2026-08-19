@@ -301,6 +301,14 @@ pub struct StatusEntry {
     /// entries sharing an id draw twice
     /// (`tests/chrome_rules.rs::two_entries_sharing_an_id_both_draw`).
     ///
+    /// Which is why two places in the workspace may not declare the same id,
+    /// and why that is a check rather than a convention:
+    /// `brightfield-shell/tests/rail_entry_ids.rs` reads the id handed to
+    /// each `StatusEntry` construction and each [`RunState::status_entry`]
+    /// call in `crates/*/src`, and reddens on a repeat. It reports an id it
+    /// cannot follow rather than skipping it, so a new spelling fails loudly
+    /// instead of going unread.
+    ///
     /// In production it is read by [`crate::activity::Activity::of_entry`],
     /// which matches it against the ids in [`crate::activity::Activity::ALL`]
     /// — that is how the window tells a pane's own activity report from its
@@ -376,6 +384,23 @@ pub enum RunState {
 }
 
 impl RunState {
+    /// The status-rail id a surface reports a run state under.
+    ///
+    /// A named constant rather than a literal at each call site, because the
+    /// rail does not dedup by id: it draws each entry it is handed, so a run
+    /// state declared by two panes of one view draws twice. Both panes of the
+    /// Charts view did declare it, and the chart pane is now the one that
+    /// does — `brightfield_shell::chart_item` carries the argument for which
+    /// pane owns the line, and `brightfield-shell/tests/rail_entry_ids.rs`
+    /// reddens if a second declaration of this id appears anywhere in the
+    /// workspace.
+    ///
+    /// [`RunState::status_entry`] keeps its `id` parameter: a surface that
+    /// one day rails a run state per step needs one id per step, and that is
+    /// the shell's judgement to make rather than this constructor's. The
+    /// constant is what a surface railing *the* run state passes.
+    pub const RAIL_ID: &'static str = "run-state";
+
     /// Every state, for a test that walks the vocabulary.
     pub const ALL: [RunState; 5] = [
         RunState::NeverRun,
@@ -451,6 +476,11 @@ impl RunState {
     /// sits right), cleared with the rail. The words and tone come from
     /// [`RunState::label`] and [`RunState::tone`], so every surface that rails
     /// a run-state says it the same way.
+    ///
+    /// `id` is [`RunState::RAIL_ID`] for a surface railing the run state of
+    /// the thing it is showing, which is what production passes. Two callers
+    /// passing the same id put the same line on the rail twice; see that
+    /// constant.
     #[must_use]
     pub fn status_entry(self, id: &'static str) -> StatusEntry {
         StatusEntry {

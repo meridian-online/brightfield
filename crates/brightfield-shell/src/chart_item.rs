@@ -598,7 +598,29 @@ impl Item<ChartDoc> for ChartItem {
             // The one vocabulary, spelled by its own type — the same entry a
             // protocol surface rails, so a stale preview here and a stale
             // step there say it identically.
-            subject = subject.with_status(state.status_entry("run-state"));
+            //
+            // **This pane owns the line, and the data grid does not**, though
+            // both draw the same document's materialised output and both draw
+            // `run_state_pill` in their own body. The rail collects the status
+            // lines of each placed pane, so a document-level fact declared by
+            // two panes of one view is drawn twice; one of them has to own it.
+            //
+            // It is this one because the chart is `Slot::Centre` with no
+            // toggle verb, while the grid is a `Slot::CentreTab` the
+            // `toggle-data-grid` verb closes. `ItemRegistry::new` rejects a
+            // view that does not have exactly one `Slot::Centre`, so the
+            // centre pane is in the tree whatever else is; `ItemSpec::toggle`
+            // records why that is the slot allowed to carry no verb. The test
+            // `chart_contract.rs::the_pane_that_owns_the_run_state_line_cannot_be_closed`
+            // holds both halves. Had the grid owned the line, closing the Data tab would
+            // take the honesty label off the rail while the chart went on
+            // drawing rows from the same run — a label the user can dismiss by
+            // closing an unrelated tab is worse than one that was never there,
+            // because its absence reads as "nothing to report".
+            //
+            // The same reasoning already put the document's activity and
+            // watcher entries here, below.
+            subject = subject.with_status(state.status_entry(RunState::RAIL_ID));
         }
         // The document's in-flight work and file notices, reported here
         // because this pane is the view's presenting surface: activity in
