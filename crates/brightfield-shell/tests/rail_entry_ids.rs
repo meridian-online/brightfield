@@ -790,9 +790,11 @@ fn no_two_places_declare_the_same_status_rail_id() {
         );
     }
 
-    // And the attribution still tells the two apart. If `holder` stopped
-    // resolving, every site would look like neither and the carrier rule
-    // would pass by asking nothing — the failure this whole round was about.
+    // And the attribution still tells the two apart. A site whose `holder`
+    // did not resolve looks like neither a pane nor a carrier, so the rule
+    // would pass while asking no question — the failure this round was
+    // about. The three assertions below are what a `holder` that returns
+    // `None` reddens.
     let held: Vec<&Holder> = all.iter().filter_map(|s| s.holder.as_ref()).collect();
     assert_eq!(
         held.len(),
