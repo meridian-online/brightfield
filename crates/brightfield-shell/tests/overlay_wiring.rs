@@ -23,7 +23,6 @@ use brightfield_shell::starts;
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_spec::analysis::ComponentPath;
-use brightfield_workbench::ViewKind;
 
 /// A window under test — see `front_door.rs` for why the context lives as
 /// long as the window.
@@ -48,11 +47,14 @@ impl Window {
         let boot = Boot::start(starts::CROSSWALK, Flow::Vertical).expect("the crosswalk ships");
         let mut win = Self::open(boot);
         win.settle();
-        assert_eq!(win.app.active(), ViewKind::Protocol);
+        assert!(
+            win.app.graph_on_canvas(),
+            "the crosswalk did not put its graph on the canvas"
+        );
         win
     }
 
-    /// The chart view over `fixture` (a name under `examples/`), with a real
+    /// A chart over `fixture` (a name under `examples/`), with a real
     /// DuckDB session behind it — what the dispatchability test needs:
     /// `pan_view` / `zoom_view` / `clear_selection` are engine queries, not
     /// field writes, and a live session is what lets one prove a query ran.
@@ -67,7 +69,10 @@ impl Window {
         boot.spec_path = Some(path);
         let mut win = Self::open(boot);
         win.settle();
-        assert_eq!(win.app.active(), ViewKind::Charts);
+        assert!(
+            !win.app.graph_on_canvas(),
+            "the fixture did not put its chart on the canvas"
+        );
         win
     }
 
@@ -144,17 +149,17 @@ fn question_mark_opens_the_help_sheet_on_both_views() {
     assert_eq!(win.app.open_overlay(), None);
 }
 
-/// **AC1 + AC6.** `space` opens the palette on the chart view too — the
-/// gate that used to read `view == ViewKind::Protocol` for the palette key
-/// now also fires on `ViewKind::Charts` — and escape closes it exactly as it
-/// does on the protocol view. The candidate list it opens with is restricted
-/// to [`CHART_PALETTE_VERBS`]; that restriction is proven dispatchable, verb
-/// by verb, in [`every_chart_palette_candidate_actually_dispatches`] below.
+/// **AC1 + AC6.** `space` opens the palette over a chart too — the gate that
+/// used to fire only where the graph held the canvas now fires either way —
+/// and escape closes it exactly as it does over the graph. The candidate list
+/// it opens with is restricted to [`CHART_PALETTE_VERBS`]; that restriction
+/// is proven dispatchable, verb by verb, in
+/// [`every_chart_palette_candidate_actually_dispatches`] below.
 #[test]
-fn space_opens_the_palette_on_the_chart_view_too() {
+fn space_opens_the_palette_over_a_chart_too() {
     let mut win = Window::open(Boot::empty());
     win.settle();
-    assert_eq!(win.app.active(), ViewKind::Charts);
+    assert!(!win.app.graph_on_canvas());
     assert_eq!(win.app.open_overlay(), None);
 
     win.key(egui::Key::Space);

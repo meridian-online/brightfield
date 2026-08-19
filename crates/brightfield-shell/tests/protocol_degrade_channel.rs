@@ -35,7 +35,6 @@ use std::process::Command;
 use brightfield_protocol::layout::Flow;
 use brightfield_shell::protocol::load_protocol_offline;
 use brightfield_shell::window::Boot;
-use brightfield_workbench::ViewKind;
 
 /// Three steps, one of them a `sql:` model — the smallest shape that can
 /// degrade. Deliberately the same manifest
@@ -164,7 +163,7 @@ fn report_and_summary(dir: &Path) -> (Vec<String>, String) {
     let inputs = load_protocol_offline(spec.to_str().expect("utf-8 fixture path"))
         .expect("the fixture manifest loads");
     let report = inputs.degrade_report();
-    let summary = Boot::protocol(inputs, Flow::Vertical, None).describe(ViewKind::Protocol);
+    let summary = Boot::protocol(inputs, Flow::Vertical, None).describe();
     (report, summary)
 }
 

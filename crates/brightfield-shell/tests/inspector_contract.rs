@@ -25,7 +25,7 @@ use brightfield_shell::inspector::{InspectorPane, Selection};
 use brightfield_shell::overlays::CHART_PALETTE_VERBS;
 use brightfield_shell::pipeline::compose_spec;
 use brightfield_shell::window::{Boot, MeridianApp};
-use brightfield_workbench::{Item, PaneKey, ViewKind};
+use brightfield_workbench::{Item, PaneKey};
 
 const DASHBOARD: &str = "../../examples/dashboard.yaml";
 
@@ -64,7 +64,7 @@ fn settled() -> (MeridianApp, egui::Context) {
 fn the_controls_rail_is_drawn_by_the_inspector_pane() {
     let (app, _ctx) = settled();
     let title = app
-        .chart_pane_title(PaneKey::new(ViewKind::Charts, CONTROLS))
+        .chart_pane_title(PaneKey::new(CONTROLS))
         .expect("the rail is in the default arrangement");
     assert_eq!(
         title, "Inspector",
@@ -93,7 +93,7 @@ fn selecting_a_different_pane_changes_what_the_inspector_shows() {
     let (mut app, ctx) = settled();
 
     assert!(
-        app.focus_pane(PaneKey::new(ViewKind::Charts, CHART)),
+        app.focus_pane(PaneKey::new(CHART)),
         "the chart pane is in the default arrangement"
     );
     // Focus lands in `MeridianApp::apply`, reached at the end of the frame
@@ -106,7 +106,7 @@ fn selecting_a_different_pane_changes_what_the_inspector_shows() {
     assert_eq!(chart.title, "Chart");
 
     assert!(
-        app.focus_pane(PaneKey::new(ViewKind::Charts, EDITOR)),
+        app.focus_pane(PaneKey::new(EDITOR)),
         "the editor pane is in the default arrangement"
     );
     frame(&mut app, &ctx);
@@ -126,11 +126,11 @@ fn selecting_a_different_pane_changes_what_the_inspector_shows() {
 #[test]
 fn clearing_focus_drops_the_selection_rather_than_holding_it_stale() {
     let (mut app, ctx) = settled();
-    app.focus_pane(PaneKey::new(ViewKind::Charts, CHART));
+    app.focus_pane(PaneKey::new(CHART));
     frame(&mut app, &ctx);
     assert!(app.inspector_selection().is_some(), "the chart is selected");
 
-    app.clear_chart_focus();
+    app.clear_focus();
     frame(&mut app, &ctx);
     assert_eq!(
         app.inspector_selection(),
@@ -147,14 +147,14 @@ fn clearing_focus_drops_the_selection_rather_than_holding_it_stale() {
 #[test]
 fn focusing_the_inspector_itself_leaves_the_last_real_selection_standing() {
     let (mut app, ctx) = settled();
-    app.focus_pane(PaneKey::new(ViewKind::Charts, EDITOR));
+    app.focus_pane(PaneKey::new(EDITOR));
     frame(&mut app, &ctx);
     let editor = app
         .inspector_selection()
         .expect("the editor pane is focused");
 
     assert!(
-        app.focus_pane(PaneKey::new(ViewKind::Charts, CONTROLS)),
+        app.focus_pane(PaneKey::new(CONTROLS)),
         "the rail itself is a pane in the arrangement"
     );
     frame(&mut app, &ctx);
@@ -251,7 +251,7 @@ fn editor_toolbar_verbs(doc: &mut ChartDoc) -> Vec<&'static str> {
     let _ = ctx.run_ui(raw, |ui| {
         let mut icx = brightfield_workbench::ItemCtx::new(
             Mode::Light,
-            PaneKey::new(ViewKind::Charts, EDITOR),
+            PaneKey::new(EDITOR),
             egui_tiles::TileId::from_u64(1),
             true,
             &mut requests,

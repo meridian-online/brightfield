@@ -75,7 +75,6 @@ use brightfield_spec::ast::Spec;
 use brightfield_spec::parse::{parse_spec, Format};
 use brightfield_sql::collect_plot_groups;
 use brightfield_sql::ir::ScalarValue;
-use brightfield_workbench::ViewKind;
 
 // ---------------------------------------------------------------------------
 // The fixtures: the shipped bytes, and the one substitution
@@ -1254,9 +1253,10 @@ fn the_prose_rules_separate_the_shipped_corpus() {
 /// # The shape this file alone does not reach
 ///
 /// One arrangement still carries an undriven producer past everything in this
-/// file: a start declaring `view: ViewKind::Protocol` and `remote: true` with
-/// no `spec:`, whose `load` arm opens a chart anyway. The pin above is
-/// satisfied by the false view, and the composition loop below skips it for
+/// file: a start declaring the protocol canvas as the pane it fills and
+/// `remote: true` with no `spec:`, whose `load` arm opens a chart anyway. The
+/// pin above is satisfied by the false pane, and the composition loop below
+/// skips it for
 /// being remote. It takes two untrue declarations to build, and the suite
 /// catches it elsewhere — `front_door.rs`'s gallery-size, thumbnail and door
 /// snapshot gates and `crosswalk_chart.rs`'s connection gate all redden on it.
@@ -1266,14 +1266,14 @@ fn the_prose_rules_separate_the_shipped_corpus() {
 fn the_spec_a_start_carries_is_the_spec_its_click_opens() {
     for start in starts::STARTS {
         assert_eq!(
-            start.view == ViewKind::Charts,
+            start.fills == brightfield_shell::app::CHART,
             start.spec.is_some(),
-            "{}: it is offered for the {:?} view, and it {}. A chart start \
+            "{}: it fills the {} pane, and it {}. A chart start \
              with no `spec:` opens from bytes nothing in this file reads — no \
              producer of its is enumerated and no claim of its prose is \
              decided.",
             start.id,
-            start.view,
+            start.fills,
             if start.spec.is_some() {
                 "carries a chart spec"
             } else {

@@ -39,7 +39,6 @@ use brightfield_shell::data_file;
 use brightfield_shell::design::Mode;
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{names_a_data_file, Boot, MeridianApp, OPEN_FILE_PROMISE};
-use brightfield_workbench::ViewKind;
 
 /// A directory of this test's own, removed when the test ends.
 struct TempDir(PathBuf);
@@ -143,7 +142,7 @@ impl Window {
 #[derive(PartialEq, Eq, Debug)]
 struct Document {
     title: String,
-    active: ViewKind,
+    graph_on_canvas: bool,
     size: (u32, u32),
     plots: usize,
     /// Each plot's placed rect, rounded to whole logical points — the geometry
@@ -170,7 +169,7 @@ impl Document {
         let encoding = doc.composed.scene.encoding();
         Self {
             title: win.app.title(),
-            active: win.app.active(),
+            graph_on_canvas: win.app.graph_on_canvas(),
             size: (doc.composed.width, doc.composed.height),
             plots: doc.composed.plots.len(),
             plot_rects: doc
@@ -220,11 +219,10 @@ fn a_path_on_the_command_line_opens_as_the_generated_dashboard() {
     let boot = Boot::open(&named, Flow::Vertical, None)
         .unwrap_or_else(|e| panic!("a data file named on the command line has to open: {e}"));
 
-    assert_eq!(
-        boot.view,
-        Some(ViewKind::Charts),
-        "a file opened from the command line has an opinion about which view \
-         to show, exactly as a chart spec does"
+    assert!(
+        !boot.graph_on_canvas(),
+        "a file opened from the command line puts its chart on the canvas, \
+         exactly as a chart spec does"
     );
     assert!(
         !boot.is_empty(),
@@ -242,7 +240,7 @@ fn a_path_on_the_command_line_opens_as_the_generated_dashboard() {
          than opaque, and the editor pane opens it off this field"
     );
     assert_eq!(
-        boot.title(ViewKind::Charts),
+        boot.title(),
         "harbour.csv",
         "the window is titled for the file the person named"
     );
@@ -418,7 +416,7 @@ fn photographs_itself_at(scale: f32) {
     let named = csv.to_string_lossy().into_owned();
 
     let boot = Boot::open(&named, Flow::Vertical, None).expect("the file opens");
-    let (want_w, want_h) = boot.window_size(ViewKind::Charts);
+    let (want_w, want_h) = boot.window_size();
 
     // Where the raster lands, from a device-free frame at the same window size.
     // `MeridianApp::headless` lays out identically to the one `capture_png`
@@ -649,10 +647,9 @@ fn agree_on(name: &str, csv: &str) -> Document {
     let a = Document::of(&scripted);
     let b = Document::of(&picked);
 
-    assert_eq!(
-        a.active,
-        ViewKind::Charts,
-        "{name}: the scripted route left the window on some other view"
+    assert!(
+        !a.graph_on_canvas,
+        "{name}: the scripted route left the graph on the canvas"
     );
     assert_eq!(
         a.title, b.title,

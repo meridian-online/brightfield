@@ -66,7 +66,6 @@ use brightfield_spec::ast::Spec;
 use brightfield_spec::parse::{parse_spec, Format};
 use brightfield_sql::emit::{collect_marks, emit_query_sampled};
 use brightfield_sql::ir::{Predicate, SampleRate, ScalarValue, SelectionPredicate};
-use brightfield_workbench::ViewKind;
 
 /// The published crosswalk's row count, read live on 2026-08-06.
 ///
@@ -562,11 +561,11 @@ fn the_crosswalk_chart_is_a_start_that_opens_on_a_rendered_chart() {
     let start = starts::find(starts::CROSSWALK_CHART)
         .expect("the crosswalk chart is a shipped starting point");
     assert_eq!(
-        start.view,
-        ViewKind::Charts,
-        "the crosswalk chart is offered for the {:?} view, so the click lands \
+        start.fills,
+        brightfield_shell::app::CHART,
+        "the crosswalk chart is offered for the {} pane, so the click lands \
          on a lineage canvas rather than on a drawn chart",
-        start.view
+        start.fills
     );
     assert!(
         !start.run_less,

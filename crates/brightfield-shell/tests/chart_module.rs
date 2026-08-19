@@ -372,10 +372,7 @@ fn a_module_asking_for_a_different_picture_is_not_handed_this_one() {
             |ui| {
                 let mut cx = brightfield_workbench::ItemCtx::new(
                     Mode::Light,
-                    brightfield_workbench::PaneKey::new(
-                        brightfield_workbench::ViewKind::Charts,
-                        brightfield_shell::app::CHART,
-                    ),
+                    brightfield_workbench::PaneKey::new(brightfield_shell::app::CHART),
                     egui_tiles::TileId::from_u64(1),
                     false,
                     &mut requests,

@@ -35,7 +35,7 @@ use brightfield_shell::starts;
 use brightfield_shell::startup::{boot_layout, default_layout, opening_boot};
 use brightfield_shell::window::MeridianApp;
 use brightfield_workbench::persist::LAYOUT_FILE;
-use brightfield_workbench::{ItemId, LoadOutcome, ViewKind};
+use brightfield_workbench::{ItemId, LoadOutcome};
 
 /// A scratch directory that removes itself, so a failing run cannot poison the
 /// next one with a file it left behind.
@@ -83,13 +83,8 @@ fn a_boot_publishes_before_it_reads_and_the_window_opens_where_it_was_left() {
     );
 
     let mut saved = default_layout();
-    saved.workspace.set_active(ViewKind::Protocol);
     saved.window.size = [903.0, 617.0];
     saved.window.position = Some([41.0, 62.0]);
-    // The remembered start deliberately belongs to the view the window was
-    // *not* left on. Pairing them — `opened` on the same view as `active` —
-    // makes step 4 below unable to see the bug it is there for, because the
-    // two rules give the same answer.
     saved.opened = Some(starts::DASHBOARD.to_string());
     std::fs::write(&path, saved.to_json().expect("a layout serialises")).expect("writes");
 
@@ -114,12 +109,11 @@ fn a_boot_publishes_before_it_reads_and_the_window_opens_where_it_was_left() {
     );
     assert_eq!(restored.window.size, [903.0, 617.0]);
     assert_eq!(restored.window.position, Some([41.0, 62.0]));
-    assert_eq!(restored.workspace.active(), ViewKind::Protocol);
     assert_eq!(restored.opened.as_deref(), Some(starts::DASHBOARD));
 
-    // ---- 3. And it published *both* views, not only the one the layout is
-    //         active on. The tree of the view that is not active sits in the
-    //         same file and deserialises in the same pass.
+    // ---- 3. And it published *both* registries, not only the one whose
+    //         document the launch is about. The window's one tree carries
+    //         every pane of both, and they all deserialise in the same pass.
     let known = ItemId::known();
     for id in chart_registry()
         .ids()
@@ -132,35 +126,40 @@ fn a_boot_publishes_before_it_reads_and_the_window_opens_where_it_was_left() {
         );
     }
 
-    // ---- 4. A launch that named nothing takes the restored active view —
+    // ---- 4. A launch that named nothing restores the remembered document —
     //         through `opening_boot`, which is what `main` calls, and not
-    //         through a hand-built `Boot::empty()`. The distinction is the
-    //         whole test: the file remembers a *charts* start and was left on
-    //         the *protocol* view, so a restore that let the start choose the
-    //         view lands on Charts and the persisted active view is dead.
+    //         through a hand-built `Boot::empty()`.
     let boot = opening_boot(None, restored.opened.as_deref(), Flow::Vertical, None)
         .expect("a launch that named nothing cannot fail");
-    assert_eq!(
-        boot.view, None,
-        "a restored start claimed a view, which overrides the one the user \
-         left the window on"
-    );
-    let app = MeridianApp::headless_with_layout(boot, restored.clone(), Mode::Light);
-    assert_eq!(
-        app.active(),
-        ViewKind::Protocol,
-        "a no-argument launch overrode the view the layout was left on"
-    );
+    let mut app = MeridianApp::headless_with_layout(boot, restored.clone(), Mode::Light);
     assert!(
         !app.chart_doc().is_empty(),
-        "the remembered start was not restored — deferring the view must not \
-         cost the document"
+        "the remembered start was not restored"
+    );
+    assert!(
+        !app.graph_on_canvas(),
+        "the remembered start opens a chart, and the canvas did not take it"
     );
     assert_eq!(app.layout().window.size, [903.0, 617.0]);
 
-    // ---- 5. A spec on the command line wins over it. You asked for that one,
-    //         so this is the one boot that is entitled to move the window off
-    //         the view it was left on.
+    // …and restoring a session writes nothing. The dirty tracker is a plain
+    // `live != saved` compare, so anything `assemble` changes after it is
+    // built is a difference the debounce writes back — a launch nobody touched
+    // rewriting the user's file. The first poll arms iff the layout is
+    // already dirty, so this reads that.
+    //
+    // Would catch: `assemble` mutating the workspace after `DirtyTracker::new`
+    // — which is exactly what setting a recorded active view used to do, and
+    // it wrote the boot's opinion over the user's arrangement once per launch.
+    assert!(app.poll_layout(0, &path).is_none());
+    assert!(
+        !app.layout_armed(),
+        "a launch that restored a session was dirty from construction, so the \
+         debounce will rewrite a file nobody touched"
+    );
+
+    // ---- 5. A spec on the command line wins over the remembered one. You
+    //         asked for that one.
     let named = opening_boot(
         Some("../../examples/dashboard.yaml"),
         restored.opened.as_deref(),
@@ -168,12 +167,12 @@ fn a_boot_publishes_before_it_reads_and_the_window_opens_where_it_was_left() {
         None,
     )
     .expect("the named spec opens");
-    assert_eq!(named.view, Some(ViewKind::Charts));
+    assert!(!named.graph_on_canvas());
+    assert_eq!(named.spec_path.as_deref(), Some(std::path::Path::new("../../examples/dashboard.yaml")));
     let app = MeridianApp::headless_with_layout(named, restored, Mode::Light);
-    assert_eq!(
-        app.active(),
-        ViewKind::Charts,
-        "a named spec was overruled by the view the layout was left on"
+    assert!(
+        !app.graph_on_canvas(),
+        "a named chart spec did not put its chart on the canvas"
     );
 
     // ---- 6. Persistence off is not an error. No config directory anywhere is
@@ -181,14 +180,20 @@ fn a_boot_publishes_before_it_reads_and_the_window_opens_where_it_was_left() {
     //         window rather than refuse to start.
     let (fallback, outcome) = boot_layout(None);
     assert_eq!(outcome, LoadOutcome::NoFile);
-    assert!(fallback.workspace.missing_views().is_empty());
+    assert!(fallback
+        .workspace
+        .panes_missing_from(&default_layout().workspace)
+        .is_empty());
 
     // ---- 7. A file this build cannot read never stops the boot either, and
     //         says which kind of unreadable it was.
     std::fs::write(&path, "{ not json at all").expect("writes");
     let (defaulted, outcome) = boot_layout(Some(&path));
     assert_eq!(outcome, LoadOutcome::Corrupt);
-    assert!(defaulted.workspace.missing_views().is_empty());
+    assert!(defaulted
+        .workspace
+        .panes_missing_from(&default_layout().workspace)
+        .is_empty());
     assert_eq!(
         defaulted.opened, None,
         "a layout that did not parse still claimed something was open"

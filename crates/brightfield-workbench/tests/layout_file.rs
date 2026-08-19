@@ -414,6 +414,13 @@ fn the_layout_file_survives_a_restart_and_every_way_it_can_be_broken() {
         defaults().workspace.panes(),
         "the load handed back a workspace with a region that draws nothing"
     );
+    // The arrangement, and only the arrangement: the size and position the
+    // user left were not what was wrong with this file.
+    assert_eq!(
+        repaired.window,
+        short.window,
+        "an upgrade that added a pane also resized the window the user left"
+    );
 
     // Valid JSON of the right version naming a pane this build has not got.
     let ghost = saved

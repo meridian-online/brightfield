@@ -16,9 +16,14 @@
 //! that region **empty**, silently, for as long as the file survives. So
 //! [`from_json`] compares the loaded tree's panes with the default
 //! arrangement's and, when the file is short one, reports
-//! [`LoadOutcome::Incomplete`] and hands back the default. That costs the user
-//! their splitter positions on the one upgrade that adds a pane, which is a
-//! smaller price than a region that is blank and says nothing about why.
+//! [`LoadOutcome::Incomplete`] and replaces the **arrangement** with the
+//! default. That costs the user their splitter positions on the one upgrade
+//! that adds a pane, which is a smaller price than a region that is blank and
+//! says nothing about why.
+//!
+//! The rest of the envelope is kept: the window geometry, the start to reopen
+//! and the recents were not what was wrong, and resizing somebody's window
+//! because an upgrade added a pane is a second change they did not ask for.
 //!
 //! **The price of that check is building the default arrangement on every
 //! successful load**, because the comparison needs something to compare
@@ -422,9 +427,10 @@ impl LoadOutcome {
 /// anything — and [`LAYOUT_VERSION`] 2 is exactly such a day.
 ///
 /// `default` is also the yardstick for [`LoadOutcome::Incomplete`]: a file
-/// whose tree lacks a pane the default arrangement places is discarded in
-/// favour of `default`'s own layout rather than restored with a region that
-/// would draw nothing.
+/// whose tree lacks a pane the default arrangement places has its
+/// **arrangement** replaced by `default`'s rather than being restored with a
+/// region that would draw nothing. Everything else in the file stands — see
+/// the module docs.
 #[must_use]
 pub fn from_json(
     raw: Option<&str>,
@@ -447,7 +453,7 @@ pub fn from_json(
             None => return (default(), LoadOutcome::Corrupt),
         },
     }
-    let Ok(saved) = serde_json::from_str::<SavedLayout>(raw) else {
+    let Ok(mut saved) = serde_json::from_str::<SavedLayout>(raw) else {
         return (default(), LoadOutcome::Corrupt);
     };
     let fallback = default();
@@ -456,10 +462,11 @@ pub fn from_json(
         .panes_missing_from(&fallback.workspace)
         .is_empty()
     {
-        (saved, LoadOutcome::Restored)
-    } else {
-        (fallback, LoadOutcome::Incomplete)
+        return (saved, LoadOutcome::Restored);
     }
+    // The arrangement, and only the arrangement.
+    saved.workspace = fallback.workspace;
+    (saved, LoadOutcome::Incomplete)
 }
 
 /// Read the layout from `path`, falling back to `default`.

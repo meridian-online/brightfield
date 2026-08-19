@@ -25,7 +25,7 @@ use brightfield_shell::editor::{
 use brightfield_workbench::registry::Slot;
 use brightfield_workbench::{
     audit, Activity, EmptyState, Handled, HideAffordance, Icon, Item, ItemCtx, ItemId,
-    ItemRegistry, ItemSpec, PaneKey, Request, Subject, Tone, Verb, ViewKind,
+    ItemRegistry, ItemSpec, PaneKey, Request, Subject, Tone, Verb,
 };
 use meridian_design::semantic;
 
@@ -49,7 +49,7 @@ fn temp_spec(test: &str, contents: &str) -> PathBuf {
 fn ctx(requests: &mut Vec<Request>) -> ItemCtx<'_> {
     ItemCtx::new(
         Mode::Light,
-        PaneKey::new(ViewKind::Charts, EDITOR),
+        PaneKey::new(EDITOR),
         egui_tiles::TileId::from_u64(1),
         true,
         requests,
@@ -102,7 +102,6 @@ impl Item<ChartDoc> for TestCentre {
 #[test]
 fn the_editor_passes_the_contract_audit_beside_a_centre_pane() {
     let registry = ItemRegistry::new(
-        ViewKind::Charts,
         vec![
             ItemSpec {
                 id: TEST_CENTRE,
@@ -168,7 +167,7 @@ fn a_composed_spec_reaches_the_editor_through_the_document() {
         brightfield_shell::design::apply(ui.ctx(), Mode::Light);
         let mut icx = ItemCtx::new(
             Mode::Light,
-            PaneKey::new(ViewKind::Charts, EDITOR),
+            PaneKey::new(EDITOR),
             egui_tiles::TileId::from_u64(1),
             true,
             &mut requests,

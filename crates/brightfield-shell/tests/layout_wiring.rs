@@ -29,7 +29,7 @@ use brightfield_shell::startup::{default_layout, kept_window_geometry, opening_b
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_workbench::persist::{self, LoadOutcome, LAYOUT_FILE, SAVE_DEBOUNCE_MS};
 use brightfield_workbench::workspace::{tabs_holding, tile_of};
-use brightfield_workbench::{PaneKey, RunState, ViewKind, RECENTS_KEPT};
+use brightfield_workbench::{PaneKey, RunState, RECENTS_KEPT};
 
 /// A scratch directory that removes itself, so a failing run cannot poison the
 /// next one with a file it left behind.
@@ -98,46 +98,46 @@ fn seated_layout() -> brightfield_workbench::persist::SavedLayout {
 /// test makes, which was never about the chart view specifically.
 const WIDENED_RAIL: f32 = 0.6;
 
-/// The share the protocol view's outline rail holds in `layout`.
+/// The share the outline rail holds in `layout`.
 fn rail_share(layout: &brightfield_workbench::persist::SavedLayout) -> f32 {
     let rail = layout
         .workspace
-        .tile_of(PaneKey::new(ViewKind::Protocol, OUTLINE))
-        .expect("the protocol view has an outline rail");
-    let tree = layout.workspace.tree(ViewKind::Protocol);
-    let root = tree.root().expect("the protocol view has a root");
+        .tile_of(PaneKey::new(OUTLINE))
+        .expect("the window has an outline rail");
+    let tree = layout.workspace.tree();
+    let root = tree.root().expect("the window's tree has a root");
     match tree.tiles.get(root) {
         Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin))) => lin.shares[rail],
-        _ => panic!("the protocol view's root is a linear container"),
+        _ => panic!("the window's root is a linear container"),
     }
 }
 
-/// Widen the protocol view's outline rail — the arrangement a user makes by
-/// dragging one splitter, and the smallest change that is unmistakably theirs.
+/// Widen the outline rail — the arrangement a user makes by dragging one
+/// splitter, and the smallest change that is unmistakably theirs.
 fn set_rail_share(layout: &mut brightfield_workbench::persist::SavedLayout, share: f32) {
     let rail = layout
         .workspace
-        .tile_of(PaneKey::new(ViewKind::Protocol, OUTLINE))
-        .expect("the protocol view has an outline rail");
-    let tree = layout.workspace.tree_mut(ViewKind::Protocol);
-    let root = tree.root().expect("the protocol view has a root");
+        .tile_of(PaneKey::new(OUTLINE))
+        .expect("the window has an outline rail");
+    let tree = layout.workspace.tree_mut();
+    let root = tree.root().expect("the window's tree has a root");
     match tree.tiles.get_mut(root) {
         Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin))) => {
             lin.shares.set_share(rail, share);
         }
-        _ => panic!("the protocol view's root is a linear container"),
+        _ => panic!("the window's root is a linear container"),
     }
 }
 
-/// The pane the protocol view's Canvas/Steps strip has in front, or `None` if
-/// the strip has no active tab.
+/// The pane the window's centre strip has in front, or `None` if the strip has
+/// no active tab.
 ///
 /// Read straight out of the serialised tree rather than off the model, because
 /// the strip's `active` is the thing that is *in the file* — the model's sheet
 /// flag is not persisted at all.
 fn front_tab(layout: &brightfield_workbench::persist::SavedLayout) -> Option<PaneKey> {
-    let tree = layout.workspace.tree(ViewKind::Protocol);
-    let canvas = tile_of(tree, PaneKey::new(ViewKind::Protocol, CANVAS))?;
+    let tree = layout.workspace.tree();
+    let canvas = tile_of(tree, PaneKey::new(CANVAS))?;
     let tabs_id = tabs_holding(tree, canvas)?;
     match tree.tiles.get(tabs_id) {
         Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs))) => {
@@ -146,23 +146,23 @@ fn front_tab(layout: &brightfield_workbench::persist::SavedLayout) -> Option<Pan
                 _ => None,
             }
         }
-        _ => panic!("the protocol view's canvas sits in a tab strip"),
+        _ => panic!("the canvas pane sits in a tab strip"),
     }
 }
 
-/// Bring `pane` to the front of the protocol view's tab strip — what a user
-/// does by clicking the Steps tab, or by pressing `shift-S`.
+/// Bring `pane` to the front of the window's centre strip — what a user does
+/// by clicking the Steps tab, or by pressing `shift-S`.
 fn set_front_tab(layout: &mut brightfield_workbench::persist::SavedLayout, pane: PaneKey) {
-    let tree = layout.workspace.tree_mut(ViewKind::Protocol);
+    let tree = layout.workspace.tree_mut();
     let canvas =
-        tile_of(tree, PaneKey::new(ViewKind::Protocol, CANVAS)).expect("the canvas pane exists");
+        tile_of(tree, PaneKey::new(CANVAS)).expect("the canvas pane exists");
     let want = tile_of(tree, pane).unwrap_or_else(|| panic!("{pane} exists"));
     let tabs_id = tabs_holding(tree, canvas).expect("the canvas sits in a tab strip");
     match tree.tiles.get_mut(tabs_id) {
         Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs))) => {
             tabs.set_active(want);
         }
-        _ => panic!("the protocol view's canvas sits in a tab strip"),
+        _ => panic!("the canvas pane sits in a tab strip"),
     }
 }
 
@@ -275,21 +275,6 @@ fn frames_nobody_rearranged_write_nothing() {
          layout file for the rest of the session"
     );
 
-    // The protocol on the canvas. Moving the canvas to the other document *is*
-    // a change, so it is written first and the quiet claim is made about the
-    // frames after it. What this cannot see is `set_active_tab` — see the note
-    // above, and the Steps-tab test.
-    app.show_on_canvas(ViewKind::Protocol);
-    run(&mut app, &ctx, vec![Vec::new()]);
-    assert_eq!(app.active(), ViewKind::Protocol);
-    app.flush_layout(&path)
-        .expect("switching views is a change worth keeping")
-        .expect("the write succeeded");
-    settle(&mut app, &ctx, 6);
-    assert!(
-        app.flush_layout(&path).is_none(),
-        "drawing the protocol view changed the layout every frame"
-    );
 
     // And a window nothing ever changed writes nothing when it is *polled*
     // either — not only when it is flushed. The debounce is the path the live
@@ -341,7 +326,7 @@ fn a_layout_that_moved_is_written_and_reads_back() {
     // `the_window_geometry_the_user_left_is_what_the_next_boot_reads`.
     let mut app = MeridianApp::headless_with_layout(Boot::empty(), seated_layout(), Mode::Light);
     settle(&mut app, &ctx, 3);
-    assert_eq!(app.active(), ViewKind::Charts);
+    assert!(!app.graph_on_canvas());
     assert!(
         app.poll_layout(SAVE_DEBOUNCE_MS + 1, &path).is_none(),
         "the window was dirty before anyone touched it, so nothing below can \
@@ -351,11 +336,11 @@ fn a_layout_that_moved_is_written_and_reads_back() {
     // A change a user makes, made the way a user makes it: the front door's
     // own button, clicked where the last frame recorded it.
     let target = app
-        .affordance_rect(PaneKey::new(ViewKind::Charts, CHART))
+        .affordance_rect(PaneKey::new(CHART))
         .expect("the chart view's front door drew a way in");
     run(&mut app, &ctx, vec![click_at(target.center())]);
     settle(&mut app, &ctx, 2);
-    assert_eq!(app.active(), ViewKind::Charts);
+    assert!(!app.graph_on_canvas());
     assert!(!app.chart_doc().is_empty());
 
     // Armed, and not yet written: the debounce collapses a burst of changes
@@ -379,7 +364,6 @@ fn a_layout_that_moved_is_written_and_reads_back() {
     // And the next boot reads back what this one left.
     let (restored, outcome) = persist::load(&path, default_layout);
     assert_eq!(outcome, LoadOutcome::Restored, "{}", outcome.reason());
-    assert_eq!(restored.workspace.active(), ViewKind::Charts);
     assert_eq!(
         restored.opened.as_deref(),
         Some(brightfield_shell::starts::DASHBOARD),
@@ -594,46 +578,56 @@ fn the_recents_list_is_capped_and_most_recent_first() {
     assert_eq!(layout.recents[0].run, RunState::Fresh);
 }
 
-/// A layout missing a view is repaired without resizing the window.
+/// A layout missing a pane is discarded without resizing the window.
 ///
-/// What such a file is: one written before a `ViewKind` existed. `persist`
-/// repairs it by copying the missing view's tree from the default arrangement
-/// and reports `Incomplete`, which answers `restored()` `false` — correctly,
-/// because something on screen is not what the user arranged.
+/// What such a file is: one written before a pane was added. `persist` reports
+/// `Incomplete` and hands back the default arrangement, which answers
+/// `restored()` `false` — correctly, because something on screen is not what
+/// the user arranged.
 ///
 /// The trap is treating that as "there was nothing to restore" and reaching
 /// for a content-derived window size. The file carried the size and position
-/// the user last left, nothing repaired those, and resizing their window
-/// because an upgrade added a view is a change they did not ask for.
+/// the user last left, nothing about those is wrong, and resizing their window
+/// because an upgrade added a pane is a change they did not ask for.
 ///
 /// Watched redden, one mutation: defining `kept_window_geometry` as
-/// `outcome.restored()` fails here at "an upgrade that added a view also
+/// `outcome.restored()` fails here at "an upgrade that added a pane also
 /// resized the window".
 #[test]
-fn a_layout_missing_a_view_is_repaired_without_resizing_the_window() {
+fn a_layout_missing_a_pane_is_discarded_without_resizing_the_window() {
     let scratch = Scratch::new("incomplete");
     let path = scratch.file();
     let _ = brightfield_shell::startup::boot_layout(None);
 
+    // The window's tree with the outline rail's tile taken out — a file
+    // written by a build that did not have that pane. Serialised as JSON and
+    // edited there, because `Tiles` offers no removal that leaves a valid
+    // parent behind and the point is the *bytes* a previous build wrote.
     let mut saved = default_layout();
     saved.window.size = [744.0, 512.0];
     let mut json = serde_json::to_value(&saved).expect("a layout serialises");
-    let trees = json
-        .pointer_mut("/workspace/trees")
+    let tiles = json
+        .pointer_mut("/workspace/tree/tiles/tiles")
         .and_then(serde_json::Value::as_object_mut)
-        .expect("the workspace carries a tree per view");
-    assert!(
-        trees.remove("Protocol").is_some(),
-        "there is no Protocol tree to remove, so this test proves nothing"
-    );
+        .expect("the workspace carries one tree of tiles");
+    let rail_tile = tiles
+        .iter()
+        .find(|(_, tile)| tile["Pane"] == serde_json::json!(OUTLINE.as_str()))
+        .map(|(id, _)| id.clone())
+        .expect("the outline rail has a tile in the default arrangement");
+    tiles.remove(&rail_tile);
     std::fs::write(&path, serde_json::to_string(&json).expect("writes")).expect("writes");
 
     let (repaired, outcome) = persist::load(&path, default_layout);
     assert_eq!(outcome, LoadOutcome::Incomplete, "{}", outcome.reason());
-    assert!(repaired.workspace.missing_views().is_empty());
+    assert_eq!(
+        repaired.workspace.panes(),
+        default_layout().workspace.panes(),
+        "the load handed back an arrangement with a region that draws nothing"
+    );
     assert!(
         kept_window_geometry(outcome),
-        "an upgrade that added a view also resized the window the user left"
+        "an upgrade that added a pane also resized the window the user left"
     );
     assert_eq!(repaired.window.size, [744.0, 512.0]);
 
@@ -645,18 +639,15 @@ fn a_layout_missing_a_view_is_repaired_without_resizing_the_window() {
     assert!(!kept_window_geometry(outcome));
 }
 
-/// The command line outranks what was remembered; nothing remembered and
-/// nothing named opens on nothing; and what was remembered brings its document
-/// but not a view.
+/// The command line outranks what was remembered, and nothing remembered with
+/// nothing named opens on nothing.
 ///
 /// The precedence `main` runs on, asserted through the same function `main`
 /// calls rather than through a second spelling of it.
 ///
-/// Watched redden, two mutations: having `opening_boot` ignore its `opened`
+/// Watched redden, one mutation: having `opening_boot` ignore its `opened`
 /// argument — which is all a shell that persisted only the arrangement can do
-/// — fails at "a remembered start was not reopened"; and dropping the
-/// `.map(Boot::deferring_to_the_saved_view)` from the restore path fails at
-/// "a restored start claimed a view".
+/// — fails at "a remembered start was not reopened".
 #[test]
 fn what_the_window_opens_on_prefers_the_command_line_then_what_was_open() {
     let nothing =
@@ -665,7 +656,6 @@ fn what_the_window_opens_on_prefers_the_command_line_then_what_was_open() {
         nothing.is_empty(),
         "a launch with nothing named opened something"
     );
-    assert_eq!(nothing.view, None);
 
     let remembered = opening_boot(
         None,
@@ -683,11 +673,10 @@ fn what_the_window_opens_on_prefers_the_command_line_then_what_was_open() {
         !remembered.protocol.graph_full.nodes.is_empty(),
         "the remembered start came back without its graph"
     );
-    assert_eq!(
-        remembered.view, None,
-        "a restored start claimed a view — the file records which view the \
-         window was left on separately, and that record is the one the user \
-         made deliberately"
+    assert!(
+        remembered.graph_on_canvas(),
+        "the restored crosswalk did not take the canvas, so the window comes \
+         up showing an empty chart over a 34-node graph"
     );
 
     // A named spec wins, even with something remembered.
@@ -698,7 +687,7 @@ fn what_the_window_opens_on_prefers_the_command_line_then_what_was_open() {
         None,
     )
     .expect("the named spec opens");
-    assert_eq!(named.view, Some(ViewKind::Charts));
+    assert!(!named.graph_on_canvas());
     assert!(named.protocol.graph_full.nodes.is_empty());
 
     // An id from a build that shipped a start this one does not is dropped,
@@ -746,7 +735,6 @@ fn a_saved_share_cannot_move_a_declared_rail() {
     let _ = brightfield_shell::startup::boot_layout(None);
 
     let mut arranged = seated_layout();
-    arranged.workspace.set_active(ViewKind::Protocol);
     assert!(
         (rail_share(&arranged) - WIDENED_RAIL).abs() > 0.1,
         "the fixture's rail already has the share this test widens it to, so \
@@ -771,8 +759,7 @@ fn a_saved_share_cannot_move_a_declared_rail() {
     let mut app = MeridianApp::headless_with_layout(crosswalk(), restored, Mode::Light);
     settle(&mut app, &ctx, 2);
 
-    let mut seated = seated_layout();
-    seated.workspace.set_active(ViewKind::Protocol);
+    let seated = seated_layout();
     let mut plain = MeridianApp::headless_with_layout(crosswalk(), seated, Mode::Light);
     settle(&mut plain, &ctx, 2);
 
@@ -807,8 +794,8 @@ fn a_saved_share_cannot_move_a_declared_rail() {
         "drawing reset the rail to its declared share"
     );
     assert_eq!(
-        app.layout().workspace.panes(ViewKind::Protocol),
-        plain.layout().workspace.panes(ViewKind::Protocol),
+        app.layout().workspace.panes(),
+        plain.layout().workspace.panes(),
         "the rearranged layout lost or gained a pane"
     );
 }
@@ -844,12 +831,11 @@ fn a_restored_steps_tab_survives_the_first_frame() {
     let ctx = egui::Context::default();
     let _ = brightfield_shell::startup::boot_layout(None);
 
-    let steps = PaneKey::new(ViewKind::Protocol, STEPS);
+    let steps = PaneKey::new(STEPS);
     let mut saved = seated_layout();
-    saved.workspace.set_active(ViewKind::Protocol);
-    assert_eq!(
+    assert_ne!(
         front_tab(&saved),
-        Some(PaneKey::new(ViewKind::Protocol, CANVAS)),
+        Some(steps),
         "the declared strip already has Steps in front, so nothing below \
          distinguishes a restore from the model's own default"
     );
@@ -891,7 +877,7 @@ fn a_restored_steps_tab_survives_the_first_frame() {
     assert!(!path.exists());
 }
 
-/// A restored session names its window from the view that will actually be
+/// A restored session names its window from the surface that will actually be
 /// drawn.
 ///
 /// `main` hands `Boot::title` straight to `eframe::run_native`, which is where
@@ -901,44 +887,42 @@ fn a_restored_steps_tab_survives_the_first_frame() {
 /// session, and the same expression answers the boot summary printed to
 /// stderr.
 ///
-/// The trap this pins: a restored start carries no view (`Boot::view` is
-/// `None`, deliberately — see `startup::opening_boot`), so anything that
-/// defaults a `None` to the charts view answers for `Composed::empty()`. That
-/// titled a restored 34-node crosswalk "Brightfield" and logged "composed 0x0
-/// dashboard" for it.
+/// The trap this pins: the boot has to answer for the document the canvas
+/// takes, and a restored crosswalk's chart document is `Composed::empty()`.
+/// Anything that answers for the chart regardless titles a restored 34-node
+/// crosswalk "Brightfield" and logs "composed 0x0 dashboard" for it, which is
+/// what a `Boot` carrying a defaultable view opinion used to do.
 ///
 /// Asserted as an *agreement* between the two answers rather than against a
 /// literal: `Boot::title` is only meaningful because it is the same question
 /// `MeridianApp::title` answers once the window exists, and a literal on both
 /// sides would go on agreeing with itself after either drifted.
 ///
-/// Watched redden, one mutation: replacing `Boot::view_or`'s body with
-/// `ViewKind::Charts` fails here at "the window is titled for a view it is not
+/// Watched redden, one mutation: replacing `graph_takes_the_canvas`'s body
+/// with `false` fails here at "the window is titled for a surface it is not
 /// drawing".
 #[test]
-fn a_restored_session_is_titled_for_the_view_it_draws() {
+fn a_restored_session_is_titled_for_the_surface_it_draws() {
     let mut saved = default_layout();
     saved.opened = Some(brightfield_shell::starts::CROSSWALK.to_string());
-    saved.workspace.set_active(ViewKind::Protocol);
 
     // Exactly what `main` does, in the order it does it.
     let boot = opening_boot(None, saved.opened.as_deref(), Flow::Vertical, None)
         .expect("the remembered start loads");
-    let view = boot.view_or(saved.workspace.active());
-    let title = boot.title(view);
-    let described = boot.describe(view);
+    let title = boot.title();
+    let described = boot.describe();
 
     let ctx = egui::Context::default();
     let mut app = MeridianApp::headless_with_layout(boot, saved, Mode::Light);
     settle(&mut app, &ctx, 2);
 
-    assert_eq!(app.active(), ViewKind::Protocol);
+    assert!(app.graph_on_canvas());
     assert_eq!(
         title,
         app.title(),
-        "the window is titled for a view it is not drawing, and nothing sends \
-         a `ViewportCommand::Title` on a restore, so that name survives the \
-         session"
+        "the window is titled for a surface it is not drawing, and nothing \
+         sends a `ViewportCommand::Title` on a restore, so that name survives \
+         the session"
     );
     assert!(
         described.starts_with("protocol "),

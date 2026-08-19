@@ -384,10 +384,10 @@ fn shell_dark_surface() {
     shell_surface(Mode::Dark, "shell_dark");
 }
 
-/// The command palette, **open**, over the chart view — AC5's baseline: the
-/// gate this card removed (`view == ViewKind::Protocol`) used to make this
-/// picture impossible to reach at all. One scripted `space`, then the
-/// settle frame, then capture.
+/// The command palette, **open**, over a chart — AC5's baseline: the gate
+/// this card removed (the palette opening only where the graph held the
+/// canvas) used to make this picture impossible to reach at all. One scripted
+/// `space`, then the settle frame, then capture.
 ///
 /// The guard runs *before* the snapshot, for the reason
 /// [`protocol_steps_light_surface`] gives: under `UPDATE_SNAPSHOTS=1` a
