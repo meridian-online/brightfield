@@ -959,12 +959,12 @@ fn a_first_run_populates_datasets_and_states_what_protocols_will_hold() {
 /// what was recorded* rather than a constant that happens to be right for
 /// `RunState::NeverRun`.
 ///
-/// Watched redden, two mutations. Having `door_row` label every row
+/// Watched redden, two mutations. Having `door_row` build its label from
 /// `RunState::NeverRun.label()` instead of `recent.run.label()` fails at
 /// "signals-dashboard's row does not carry the run state the layout recorded"
 /// (`"never run"` against `"fresh"`). Drawing `recents.iter().take(1)` — which
-/// is what the `SavedLayout::opened` door could do and no more — fails at "the
-/// door drew 1 row(s) for 3 remembered Protocols".
+/// is as much as the `SavedLayout::opened` door could do — fails at "the door
+/// drew 1 row(s) for 3 remembered Protocols".
 #[test]
 fn a_door_with_recents_lists_every_one_of_them_most_recent_first() {
     let recents = returning_recents();
@@ -1110,7 +1110,7 @@ fn either_route_to_the_same_subject_leaves_the_same_window() {
 ///
 /// Watched redden, one mutation: dropping the `remember` call from
 /// `open_start`, which leaves the `opened` line that was already there, fails
-/// here at "opening a start recorded nothing for the door to list".
+/// here with an empty recents list against `["signals-dashboard"]`.
 #[test]
 fn opening_a_start_remembers_it_and_keeps_what_was_remembered_before() {
     let mut win = Window::open(Boot::empty());
