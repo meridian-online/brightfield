@@ -55,14 +55,31 @@
 //! workspace that cannot be followed are named in `UNREADABLE_ALLOW` with the
 //! reason each is safe.
 //!
+//! **Where the id is built matters as much as what it is.** An id built
+//! inside `Item::describe` belongs to that pane, and a view has one
+//! implementation per pane. An id built anywhere else belongs to whoever
+//! calls that function, so two panes calling one helper draw one line twice
+//! while a scan counting constructions sees a single site — the hole
+//! `a_carrier_two_panes_call_is_reported` was written for. Such a function is
+//! a *carrier*: it is named in `CARRIERS` with the fragment that reaches it,
+//! and that fragment has to appear exactly once.
+//!
 //! # What it does not cover
 //!
-//! It reads lines, not syntax. An id assembled at run time (`format!`), one
-//! held in a `static`, one behind a function call, or a `StatusEntry`
-//! constructed by a macro is reported as unreadable rather than resolved —
-//! which fails loudly, and is the intended direction. Ids that
-//! differ but mean the same thing are outside its reach entirely; this is a
-//! collision check, not a naming review.
+//! It reads lines, not syntax, and the two ways it fails are worth keeping
+//! apart. An id *expression* it cannot follow — assembled with `format!`,
+//! held in a `static`, returned by a call, built by a macro — is **reported
+//! as unreadable**, which is loud and is the intended direction. An id built
+//! somewhere the scan cannot attribute to one pane used to be **invisible**
+//! instead, which is a different and worse failure; `CARRIERS` is what turned
+//! that case into a report as well.
+//!
+//! What stays outside its reach: a carrier's owning pane is an assertion in
+//! `CARRIERS` rather than something the scan derives, so a wrong entry is
+//! wrong until a reader catches it — the fragment count is the mechanical
+//! half, the owner is the reviewed half. Rail lines are matched by id and not
+//! by meaning, so two ids that differ and say the same thing are not this
+//! gate's business; that is a naming review.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -81,6 +98,72 @@ type Allow = (&'static str, &'static str, &'static str);
 /// How many unreadable sites may be excused. Small on purpose — the list is
 /// where a scan quietly stops being a gate.
 const ALLOW_CAP: usize = 5;
+
+/// A function that hands a finished rail line to whoever calls it, rather
+/// than declaring one for its own pane:
+/// `(declaring file suffix, function name, the call fragment that reaches it,
+/// why one caller is the right number)`.
+///
+/// A `StatusEntry` built inside `Item::describe` belongs to that pane, and a
+/// view has one implementation per pane, so the id and the pane are the same
+/// fact. A `StatusEntry` built anywhere else belongs to whoever calls that
+/// function — and if two panes call it, the rail draws the line twice while
+/// the scan sees one construction and says nothing. That was a real hole,
+/// found by review and pinned by `a_carrier_two_panes_call_is_reported`.
+///
+/// So the rule is: an id built outside a pane's `describe` names its carrier
+/// here, and the carrier's call fragment appears exactly once in
+/// `crates/*/src`. A second caller reddens on the count; an unlisted carrier
+/// reddens for being unlisted; a listed carrier nobody calls reddens as
+/// stale. The fragment is written out rather than derived because Rust calls
+/// an inherent method through its receiver, so the function's name alone does
+/// not identify it — `entries(` matches nine unrelated functions in this
+/// workspace.
+type Carrier = (&'static str, &'static str, &'static str, &'static str);
+
+/// How many carriers may exist. Small on purpose: each one is a rail line
+/// whose owning pane is an assertion in a table rather than a fact of the
+/// code, so the list is the part of this gate a reader has to check by hand.
+const CARRIER_CAP: usize = 8;
+
+/// Every function that builds a rail line for a caller.
+const CARRIERS: &[Carrier] = &[
+    (
+        "crates/brightfield-shell/src/watch.rs",
+        "entries",
+        "watch.entries(",
+        "The watcher's file notices. Reached from the chart pane's describe, \
+         which is the Charts view's presenting surface and the pane that owns \
+         the document's conditions. A second pane calling this would rail the \
+         same notice twice.",
+    ),
+    (
+        "crates/brightfield-shell/src/window.rs",
+        "idle_status_entry",
+        "idle_status_entry(",
+        "The idle line, composed by the window from the loaded document rather \
+         than declared by a pane. Reached once, from status_rail_ui, which is \
+         the whole of the window's own contribution to the rail.",
+    ),
+    (
+        "crates/brightfield-workbench/src/activity.rs",
+        "compose",
+        "ActivityIndicator::compose(",
+        "The one merged activity indicator. Composing it twice is the exact \
+         thing it exists to prevent, so one caller is the contract and not \
+         merely the current count.",
+    ),
+    (
+        "crates/brightfield-shell/src/gallery.rs",
+        "ui",
+        "Box::new(StatusRailDemo)",
+        "Two specimens the dev gallery draws straight into its own surface \
+         with chrome::status_rail, never onto a Subject, so they do not reach \
+         the window's rail at all. Listed because the scan reads a \
+         construction and cannot see where the entry goes; placed twice, the \
+         gallery would draw both specimens twice.",
+    ),
+];
 
 /// The sites whose id the scan cannot follow, each with the argument for why
 /// its id is compared anyway.
@@ -129,6 +212,123 @@ struct Site {
     expr: String,
     /// How it was found.
     via: Shape,
+    /// The function the site sits in, and whether that function is a pane's
+    /// own `Item::describe`. `None` for a site at file scope.
+    holder: Option<Holder>,
+}
+
+/// The function an id site sits in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Holder {
+    /// Its name.
+    name: String,
+    /// Whether it is a `describe` inside an `impl Item<…> for …` block — a
+    /// pane's own declaration point, of which there is one per pane by
+    /// construction.
+    pane_describe: bool,
+}
+
+/// If `lines[i]` opens a `#[cfg(test)]` **module** in column 0, the index just
+/// past that module's closing brace.
+///
+/// `None` when the attribute sits on a bare item — a `const`, a `use`, a `fn`
+/// — because such an item opens no module and closes no brace of its own. The
+/// first version of this scan skipped to the next column-0 `}` regardless,
+/// which on a bare item ran past every declaration up to whatever brace came
+/// next and took them with it. `brightfield-bench/src/main.rs` carries four
+/// consecutive bare `#[cfg(test)] const` items, so the shape is in this tree;
+/// `a_bare_cfg_test_item_does_not_hide_what_follows_it` is the test that
+/// caught it and holds it now.
+fn test_module_end(lines: &[&str], i: usize) -> Option<usize> {
+    if lines[i] != "#[cfg(test)]" {
+        return None;
+    }
+    // Further attributes, blank lines and comments may stand between the
+    // attribute and the item it applies to.
+    let mut j = i + 1;
+    while j < lines.len() {
+        let trimmed = lines[j].trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("#[") {
+            j += 1;
+            continue;
+        }
+        break;
+    }
+    let decl = lines.get(j)?.trim_start();
+    // `mod x;` names a file and has no body here; a body is what makes the
+    // closing brace below the right one to skip to.
+    let opens_a_body = decl.ends_with('{');
+    if !(opens_a_body && (decl.starts_with("mod ") || decl.starts_with("pub mod "))) {
+        return None;
+    }
+    let mut k = j;
+    while k < lines.len() && lines[k] != "}" {
+        k += 1;
+    }
+    Some(k + 1)
+}
+
+/// Whether `line` declares a function, and at what indent.
+fn fn_declaration(line: &str) -> Option<(usize, String)> {
+    let indent = line.len() - line.trim_start().len();
+    let mut rest = line.trim_start();
+    for prefix in [
+        "pub(crate) ",
+        "pub ",
+        "async ",
+        "const ",
+        "unsafe ",
+        "extern \"C\" ",
+    ] {
+        if let Some(stripped) = rest.strip_prefix(prefix) {
+            rest = stripped;
+        }
+    }
+    let name = rest.strip_prefix("fn ")?;
+    let end = name.find(|c: char| !c.is_ascii_alphanumeric() && c != '_')?;
+    (end > 0).then(|| (indent, name[..end].to_string()))
+}
+
+/// The function containing line `at`.
+///
+/// Walks back to the nearest `fn` whose body has not closed by `at` —
+/// rustfmt puts a body's closing brace alone on a line at the declaration's
+/// own indent, which is what makes the extent readable without a parser.
+fn holder(lines: &[&str], at: usize) -> Option<Holder> {
+    for f in (0..at).rev() {
+        let Some((indent, name)) = fn_declaration(lines[f]) else {
+            continue;
+        };
+        let close = format!("{}}}", " ".repeat(indent));
+        let end = (f + 1..lines.len())
+            .find(|j| lines[*j] == close)
+            .unwrap_or(lines.len());
+        if end < at {
+            continue;
+        }
+        let pane_describe = name == "describe" && in_item_impl(lines, f);
+        return Some(Holder {
+            name,
+            pane_describe,
+        });
+    }
+    None
+}
+
+/// Whether line `at` sits inside an `impl Item<…> for …` block.
+///
+/// The block opens at column 0 and closes on a column-0 brace, so a walk back
+/// that meets the brace first has left the block rather than found it.
+fn in_item_impl(lines: &[&str], at: usize) -> bool {
+    for i in (0..at).rev() {
+        if lines[i] == "}" {
+            return false;
+        }
+        if lines[i].starts_with("impl ") {
+            return lines[i].contains("Item<") && lines[i].contains(" for ");
+        }
+    }
+    false
 }
 
 /// How far past a `StatusEntry {` the `id` field may sit before the scan gives
@@ -169,6 +369,7 @@ fn call_argument(line: &str) -> Option<String> {
 
 /// The `id` field belonging to the `StatusEntry {` that opens at `open`.
 fn field_site(rel: &str, lines: &[&str], open: usize) -> Site {
+    let held = holder(lines, open);
     let end = (open + 1 + FIELD_SCAN).min(lines.len());
     for (n, line) in lines.iter().enumerate().take(end).skip(open + 1) {
         let trimmed = line.trim();
@@ -185,6 +386,7 @@ fn field_site(rel: &str, lines: &[&str], open: usize) -> Site {
             at: format!("{rel}:{}", n + 1),
             expr,
             via: Shape::Construction,
+            holder: held,
         };
     }
     Site {
@@ -192,6 +394,7 @@ fn field_site(rel: &str, lines: &[&str], open: usize) -> Site {
         at: format!("{rel}:{}", open + 1),
         expr: format!("<no id field within {FIELD_SCAN} lines of the construction>"),
         via: Shape::Construction,
+        holder: held,
     }
 }
 
@@ -202,13 +405,8 @@ fn sites(rel: &str, text: &str) -> Vec<Site> {
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i];
-        if line == "#[cfg(test)]" {
-            // A test module opening in column 0 closes on a brace in column 0.
-            i += 1;
-            while i < lines.len() && lines[i] != "}" {
-                i += 1;
-            }
-            i += 1;
+        if let Some(past) = test_module_end(&lines, i) {
+            i = past;
             continue;
         }
         if line.trim_start().starts_with("//") {
@@ -229,6 +427,7 @@ fn sites(rel: &str, text: &str) -> Vec<Site> {
                 at: format!("{rel}:{}", i + 1),
                 expr,
                 via: Shape::Call,
+                holder: holder(&lines, i),
             });
         }
         i += 1;
@@ -266,12 +465,8 @@ fn constants(files: &[(String, String)]) -> BTreeMap<String, BTreeMap<String, St
         let lines: Vec<&str> = text.lines().collect();
         let mut i = 0;
         while i < lines.len() {
-            if lines[i] == "#[cfg(test)]" {
-                i += 1;
-                while i < lines.len() && lines[i] != "}" {
-                    i += 1;
-                }
-                i += 1;
+            if let Some(past) = test_module_end(&lines, i) {
+                i = past;
                 continue;
             }
             if let Some((name, value)) = constant_decl(lines[i]) {
@@ -355,6 +550,7 @@ fn violations(
     files: &[(String, String)],
     reserved: &[(&str, String)],
     allow: &[Allow],
+    carriers: &[Carrier],
 ) -> Vec<String> {
     let consts = constants(files);
     let mut found: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -364,7 +560,12 @@ fn violations(
     for (rel, text) in files {
         for site in sites(rel, text) {
             match read_id(&site, &consts) {
-                Read::Id(id) => found.entry(id).or_default().push(site.at.clone()),
+                Read::Id(id) => {
+                    if let Some(complaint) = unowned(&site, carriers) {
+                        out.push(complaint);
+                    }
+                    found.entry(id).or_default().push(site.at.clone());
+                }
                 Read::Unreadable(why) => {
                     if let Some(index) = allow.iter().position(|(suffix, expr, _)| {
                         site.rel.ends_with(suffix) && site.expr == *expr
@@ -404,7 +605,91 @@ fn violations(
             ));
         }
     }
+    out.extend(carrier_reach(files, carriers));
     out.sort();
+    out
+}
+
+/// A complaint when `site` builds an id somewhere that is neither a pane's own
+/// `describe` nor a listed carrier.
+fn unowned(site: &Site, carriers: &[Carrier]) -> Option<String> {
+    let held = site.holder.as_ref()?;
+    if held.pane_describe {
+        return None;
+    }
+    let listed = carriers
+        .iter()
+        .any(|(suffix, name, _, _)| site.rel.ends_with(suffix) && held.name == *name);
+    if listed {
+        return None;
+    }
+    Some(format!(
+        "{}: this id is built in `{}`, which is neither a pane's own \
+         `Item::describe` nor a listed carrier — two panes calling it would \
+         rail one line twice while this scan saw a single construction. Say \
+         which pane owns the line, or add it to CARRIERS with the fragment \
+         that reaches it",
+        site.at, held.name
+    ))
+}
+
+/// How many non-declaration lines in `files` hold `fragment`.
+///
+/// A declaration is skipped because a carrier's own `fn`, `struct` or `impl`
+/// line mentions it without reaching it.
+fn reach(files: &[(String, String)], fragment: &str) -> Vec<String> {
+    let mut at = Vec::new();
+    for (rel, text) in files {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut i = 0;
+        while i < lines.len() {
+            if let Some(past) = test_module_end(&lines, i) {
+                i = past;
+                continue;
+            }
+            let trimmed = lines[i].trim_start();
+            let declares = [
+                "fn ",
+                "pub fn ",
+                "pub(crate) fn ",
+                "struct ",
+                "pub struct ",
+                "impl ",
+                "enum ",
+                "pub enum ",
+                "type ",
+                "pub type ",
+            ]
+            .iter()
+            .any(|kw| trimmed.starts_with(kw));
+            if !declares && !trimmed.starts_with("//") && lines[i].contains(fragment) {
+                at.push(format!("{rel}:{}", i + 1));
+            }
+            i += 1;
+        }
+    }
+    at
+}
+
+/// Every carrier reached from a number of places other than one.
+fn carrier_reach(files: &[(String, String)], carriers: &[Carrier]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (suffix, name, fragment, _why) in carriers {
+        let at = reach(files, fragment);
+        match at.len() {
+            1 => {}
+            0 => out.push(format!(
+                "CARRIERS entry ({suffix}, {name}) is reached by nothing — \
+                 `{fragment}` appears at no call site, so the entry has \
+                 outlived what it was written for"
+            )),
+            n => out.push(format!(
+                "carrier `{name}` in {suffix} is reached from {n} places, so \
+                 the rail line it builds is declared {n} times:\n    {}",
+                at.join("\n    ")
+            )),
+        }
+    }
     out
 }
 
@@ -505,6 +790,29 @@ fn no_two_places_declare_the_same_status_rail_id() {
         );
     }
 
+    // And the attribution still tells the two apart. If `holder` stopped
+    // resolving, every site would look like neither and the carrier rule
+    // would pass by asking nothing — the failure this whole round was about.
+    let held: Vec<&Holder> = all.iter().filter_map(|s| s.holder.as_ref()).collect();
+    assert_eq!(
+        held.len(),
+        all.len(),
+        "{} of {} sites have no enclosing function, so the carrier rule is \
+         not reading them",
+        all.len() - held.len(),
+        all.len()
+    );
+    assert!(
+        held.iter().any(|h| h.pane_describe),
+        "the scan attributed no site to a pane's own `Item::describe`, so \
+         every id now looks like a carrier"
+    );
+    assert!(
+        held.iter().any(|h| !h.pane_describe),
+        "the scan attributed every site to a pane's `Item::describe`, so the \
+         carrier rule is asking nothing"
+    );
+
     let reserved: Vec<(&str, String)> = Activity::ALL
         .iter()
         .map(|a| {
@@ -515,7 +823,7 @@ fn no_two_places_declare_the_same_status_rail_id() {
         })
         .collect();
 
-    let found = violations(&files, &reserved, UNREADABLE_ALLOW);
+    let found = violations(&files, &reserved, UNREADABLE_ALLOW, CARRIERS);
     assert!(
         found.is_empty(),
         "status-rail id violations ({}):\n{}",
@@ -539,6 +847,26 @@ fn the_allowlist_stays_small_and_justified() {
     }
 }
 
+#[test]
+fn the_carrier_table_stays_small_and_justified() {
+    assert!(
+        CARRIERS.len() <= CARRIER_CAP,
+        "CARRIERS holds {} entries, past the cap of {CARRIER_CAP}",
+        CARRIERS.len()
+    );
+    for (suffix, name, fragment, why) in CARRIERS {
+        assert!(
+            !why.trim().is_empty(),
+            "CARRIERS entry ({suffix}, {name}) names no pane and gives no reason"
+        );
+        assert!(
+            !fragment.trim().is_empty(),
+            "CARRIERS entry ({suffix}, {name}) has no call fragment, so its \
+             reach cannot be counted"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The scan proves it can still fail — every run, on synthetic source
 // ---------------------------------------------------------------------------
@@ -550,17 +878,21 @@ fn the_allowlist_stays_small_and_justified() {
 
 /// Two panes in one synthetic workspace, declaring one id between them.
 const TWO_PANES: &str = r#"
-fn describe() -> Subject {
-    Subject::new().with_status(StatusEntry {
-        id: "run-state",
-        side: StatusSide::Trailing,
-    })
+impl Item<ChartDoc> for ChartItem {
+    fn describe(&self, doc: &ChartDoc) -> Subject {
+        Subject::new().with_status(StatusEntry {
+            id: "run-state",
+            side: StatusSide::Trailing,
+        })
+    }
 }
 "#;
 
 const SECOND_PANE: &str = r#"
-fn describe() -> Subject {
-    Subject::new().with_status(state.status_entry("run-state"))
+impl Item<ChartDoc> for DataGridItem {
+    fn describe(&self, doc: &ChartDoc) -> Subject {
+        Subject::new().with_status(state.status_entry("run-state"))
+    }
 }
 "#;
 
@@ -569,7 +901,7 @@ fn synthetic(files: &[(&str, &str)]) -> Vec<String> {
         .iter()
         .map(|(rel, text)| ((*rel).to_string(), (*text).to_string()))
         .collect();
-    violations(&owned, &[], &[])
+    violations(&owned, &[], &[], &[])
 }
 
 #[test]
@@ -581,8 +913,8 @@ fn a_duplicate_across_two_files_is_reported() {
     assert_eq!(found.len(), 1, "expected one finding, got {found:?}");
     assert!(
         found[0].contains("`run-state` is declared 2 times")
-            && found[0].contains("crates/a/src/chart.rs:4")
-            && found[0].contains("crates/a/src/grid.rs:3"),
+            && found[0].contains("crates/a/src/chart.rs:5")
+            && found[0].contains("crates/a/src/grid.rs:4"),
         "the finding does not name both declarations: {}",
         found[0]
     );
@@ -598,11 +930,13 @@ fn a_constant_and_a_literal_of_the_same_id_collide() {
     let by_const = r#"
 const RUN_STATE: &str = "run-state";
 
-fn describe() -> Subject {
-    Subject::new().with_status(StatusEntry {
-        id: RUN_STATE,
-        side: StatusSide::Trailing,
-    })
+impl Item<ChartDoc> for ChartItem {
+    fn describe(&self, doc: &ChartDoc) -> Subject {
+        Subject::new().with_status(StatusEntry {
+            id: RUN_STATE,
+            side: StatusSide::Trailing,
+        })
+    }
 }
 "#;
     let found = synthetic(&[
@@ -620,11 +954,13 @@ fn describe() -> Subject {
 #[test]
 fn a_duplicate_inside_a_test_module_is_not_a_finding() {
     let with_tests = r#"
-fn describe() -> Subject {
-    Subject::new().with_status(StatusEntry {
-        id: "run-state",
-        side: StatusSide::Trailing,
-    })
+impl Item<ChartDoc> for ChartItem {
+    fn describe(&self, doc: &ChartDoc) -> Subject {
+        Subject::new().with_status(StatusEntry {
+            id: "run-state",
+            side: StatusSide::Trailing,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -741,6 +1077,89 @@ impl Item<ChartDoc> for ChartItem {
     );
 }
 
+/// A carrier and the two panes that reach it, as synthetic source.
+fn carrier_workspace(second_caller: &str) -> Vec<(String, String)> {
+    let carrier = r#"
+fn run_line(state: RunState) -> StatusEntry {
+    state.status_entry("run-state")
+}
+"#;
+    let chart = r#"
+impl Item<ChartDoc> for ChartItem {
+    fn describe(&self, doc: &ChartDoc) -> Subject {
+        Subject::new().with_status(run_line(doc.run_state))
+    }
+}
+"#;
+    let mut files = vec![
+        ("crates/a/src/rail.rs".to_string(), carrier.to_string()),
+        ("crates/a/src/chart.rs".to_string(), chart.to_string()),
+    ];
+    if !second_caller.is_empty() {
+        files.push((
+            "crates/a/src/grid.rs".to_string(),
+            second_caller.to_string(),
+        ));
+    }
+    files
+}
+
+/// The one CARRIERS entry the fixtures above need.
+const RUN_LINE: &[Carrier] = &[(
+    "crates/a/src/rail.rs",
+    "run_line",
+    "run_line(",
+    "a carrier under test",
+)];
+
+#[test]
+fn a_listed_carrier_reached_twice_is_reported() {
+    let grid = r#"
+impl Item<ChartDoc> for DataGridItem {
+    fn describe(&self, doc: &ChartDoc) -> Subject {
+        Subject::new().with_status(run_line(doc.run_state))
+    }
+}
+"#;
+    let found = violations(&carrier_workspace(grid), &[], &[], RUN_LINE);
+    assert_eq!(found.len(), 1, "expected one finding, got {found:?}");
+    assert!(
+        found[0].contains("is reached from 2 places")
+            && found[0].contains("crates/a/src/chart.rs")
+            && found[0].contains("crates/a/src/grid.rs"),
+        "listing the carrier excused the second caller: {}",
+        found[0]
+    );
+}
+
+#[test]
+fn a_listed_carrier_reached_once_is_not_a_finding() {
+    assert!(
+        violations(&carrier_workspace(""), &[], &[], RUN_LINE).is_empty(),
+        "one pane reaching a listed carrier is the shape this permits"
+    );
+}
+
+#[test]
+fn a_carrier_nothing_reaches_is_reported() {
+    let orphan = vec![(
+        "crates/a/src/rail.rs".to_string(),
+        r#"
+fn run_line(state: RunState) -> StatusEntry {
+    state.status_entry("run-state")
+}
+"#
+        .to_string(),
+    )];
+    let found = violations(&orphan, &[], &[], RUN_LINE);
+    assert_eq!(found.len(), 1, "expected one finding, got {found:?}");
+    assert!(
+        found[0].contains("is reached by nothing"),
+        "a carrier entry that outlived its call site went unreported: {}",
+        found[0]
+    );
+}
+
 #[test]
 fn a_carrier_two_panes_call_is_reported() {
     // One physical `status_entry` call, two panes reaching it. The rail draws
@@ -779,11 +1198,13 @@ impl Item<ChartDoc> for DataGridItem {
 #[test]
 fn a_reserved_id_collides_with_a_source_declaration() {
     let clash = r#"
-fn describe() -> Subject {
-    Subject::new().with_status(StatusEntry {
-        id: "activity-file-watch",
-        side: StatusSide::Trailing,
-    })
+impl Item<ChartDoc> for ChartItem {
+    fn describe(&self, doc: &ChartDoc) -> Subject {
+        Subject::new().with_status(StatusEntry {
+            id: "activity-file-watch",
+            side: StatusSide::Trailing,
+        })
+    }
 }
 "#;
     let owned = vec![("crates/a/src/chart.rs".to_string(), clash.to_string())];
@@ -791,7 +1212,7 @@ fn describe() -> Subject {
         .iter()
         .map(|a| ("Activity::ALL", a.id().to_string()))
         .collect();
-    let found = violations(&owned, &reserved, &[]);
+    let found = violations(&owned, &reserved, &[], &[]);
     assert_eq!(found.len(), 1, "expected one finding, got {found:?}");
     assert!(
         found[0].contains("`activity-file-watch` is declared 2 times")
@@ -808,7 +1229,7 @@ fn an_allowlist_entry_that_excuses_nothing_is_reported() {
         TWO_PANES.trim().to_string(),
     )];
     let stale: &[Allow] = &[("crates/a/src/gone.rs", "self.id()", "a site since deleted")];
-    let found = violations(&owned, &[], stale);
+    let found = violations(&owned, &[], stale, &[]);
     assert_eq!(found.len(), 1, "expected one finding, got {found:?}");
     assert!(
         found[0].contains("excused nothing"),
@@ -830,12 +1251,12 @@ fn describe() -> Subject {
     let owned = vec![("crates/a/src/activity.rs".to_string(), computed.to_string())];
     let matching: &[Allow] = &[("crates/a/src/activity.rs", "self.id()", "read from ALL")];
     assert!(
-        violations(&owned, &[], matching).is_empty(),
+        violations(&owned, &[], matching, &[]).is_empty(),
         "the entry did not excuse the site it names"
     );
 
     let other: &[Allow] = &[("crates/a/src/activity.rs", "other.id()", "read from ALL")];
-    let found = violations(&owned, &[], other);
+    let found = violations(&owned, &[], other, &[]);
     assert_eq!(
         found.len(),
         2,
