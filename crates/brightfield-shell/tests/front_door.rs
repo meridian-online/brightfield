@@ -812,14 +812,13 @@ fn a_launch_with_something_to_restore_shows_no_front_door() {
 /// The door heads exactly two sections — Datasets and Protocols — and says
 /// neither of the two names they replaced anywhere on the screen.
 ///
-/// Hugh's ruling, 2026-08-18, recorded in the workspace-composition decision:
-/// *Explore* and *Continue* were decision-75 §K's names for these two zones,
-/// and the sections now hold the product's own primitives. §K's own argument
-/// is why this is asserted over the **rendered text** rather than over the
-/// door's list of section names: a zone name is not only a heading, and a
-/// build that renamed the heading while leaving the old word in a body line
-/// would pass a headings-only check and still put the retired vocabulary in
-/// front of a stranger.
+/// *Explore* and *Continue* were this door's earlier names for these two
+/// zones, and the sections now hold the product's own primitives. The reason
+/// this is asserted over the **rendered text** rather than over the door's own
+/// list of section names: a zone name is not only a heading, and a build that
+/// renamed the heading while leaving the old word in a body line would pass a
+/// headings-only check and still put the retired vocabulary in front of a
+/// stranger.
 ///
 /// Watched redden, two mutations, one for each half. Passing `"Explore"` to
 /// `door_section_heading` in `datasets_section` instead of `DATASETS_SECTION`
@@ -859,7 +858,7 @@ fn the_door_heads_two_sections_and_says_neither_of_the_names_it_replaced() {
 /// A first run: Datasets is present **and populated**, and Protocols is
 /// present **and says what will fill it**.
 ///
-/// This is the blank-page state decision-75 exists to prevent, in the one
+/// This is the blank-page state the front door exists to prevent, in the one
 /// arrangement every install passes through exactly once. The two halves fail
 /// differently and are asserted separately: a Datasets section with no cards
 /// is a catalogue that shipped empty, and an absent Protocols heading is a
@@ -1294,8 +1293,8 @@ fn front_door_dark_surface() {
 /// above cannot photograph: a rect hook says a row was laid out somewhere, and
 /// only pixels say the name, the run state and the time landed in three
 /// columns that line up rather than on top of each other. The first-run pair
-/// beside it pins the other state, so the four together are what AC6 asks for
-/// — a baseline in both themes for both states.
+/// beside it pins the other state, so the four together are a baseline in both
+/// themes for both of the door's states.
 ///
 /// The two differ only in the layout handed in, which is what makes a
 /// difference between them attributable to the recents.

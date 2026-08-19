@@ -194,11 +194,11 @@ const DOOR_COLUMN_WIDTH: f32 = {
 
 /// The curated section's heading: the datasets that ship with this build.
 ///
-/// One of the door's two section names, and the pair replaces decision-75
-/// §K's *Explore* and *Continue* — Hugh's ruling, 2026-08-18, recorded in the
-/// workspace-composition decision. §K's argument (verbs invite, container
-/// nouns file) stands as reasoning and loses on the facts: these sections
-/// hold the product's own primitives, and a screen naming one thing while the
+/// One of the door's two section names. The pair replaces the door's earlier
+/// *Explore* and *Continue*, and the argument those had — verbs invite,
+/// container nouns file, so spend the inviting verb on real data — stands as
+/// reasoning and loses on the facts: these sections hold the product's own
+/// primitives, Datasets and Protocols, and a screen naming one thing while the
 /// product names another is the harder thing to unpick later.
 pub const DATASETS_SECTION: &str = "Datasets";
 
@@ -235,8 +235,9 @@ pub const PROTOCOLS_EMPTY_TITLE: &str = "Nothing here yet.";
 pub const PROTOCOLS_EMPTY_BODY: &str =
     "Opening a Dataset above puts it here — a Protocol is what an analysis is saved as.";
 
-/// What a Datasets card promises its click lands on — decision-75 §9's own
-/// sentence, at the card's foot.
+/// What a Datasets card promises its click lands on, at the card's foot: the
+/// door's standing promise that a starter opens onto a rendered result rather
+/// than onto an instrument to fill in.
 ///
 /// It is on the cards and not on the Protocols rows, and the asymmetry is the
 /// point: a card has to say what the thing becomes when you take it, and a row
@@ -3545,7 +3546,7 @@ impl MeridianApp {
     /// emptied.
     ///
     /// **The empty half is the one that matters.** A first launch has no
-    /// recents, which is the blank state decision-75 exists to prevent, so
+    /// recents, which is the blank state the front door exists to prevent, so
     /// the section is drawn *present and speaking* rather than omitted —
     /// [`PROTOCOLS_EMPTY_TITLE`] and [`PROTOCOLS_EMPTY_BODY`]. A section that
     /// appears once it has content and not before teaches a stranger nothing
@@ -3661,9 +3662,10 @@ impl MeridianApp {
                         // for, so it goes above the catalogue; a first run has
                         // nothing to lead with, so the catalogue carries the
                         // door and Protocols states what it will hold. The
-                        // greeting above is the same either way — decision-75
-                        // §K, a deliberate departure from the Zed precedent
-                        // the rest of this door follows.
+                        // greeting above is the same either way: it does not
+                        // flip to "Welcome back", which is a deliberate
+                        // departure from the Zed precedent the rest of this
+                        // door follows.
                         if recents.is_empty() {
                             self.datasets_section(ui, width, sem, requests);
                             self.protocols_section(ui, width, sem, &recents, now, requests);
@@ -3710,9 +3712,9 @@ impl MeridianApp {
     ///
     /// The empty arm is not a fallback. It is the state this section is in on
     /// every first launch of every install, so it is drawn as deliberately as
-    /// the populated one, and the section's heading is present in both — AC3's
-    /// *the Protocols heading absent* is the failure it exists to make
-    /// impossible.
+    /// the populated one, and the section's heading is present in both — a
+    /// Protocols heading that is absent until there is something under it is
+    /// the failure this arm exists to make impossible.
     fn protocols_section(
         &mut self,
         ui: &mut egui::Ui,
