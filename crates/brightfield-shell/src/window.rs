@@ -174,10 +174,23 @@ pub const OPEN_FILE_PROMISE: &str = "A CSV or a Parquet on this machine. It open
                                      can read and a chart for every column it can draw one for — \
                                      nothing is uploaded and nothing is fetched.";
 
-/// The front door's content column, in logical points: four gallery cards and
-/// the three gaps between them, so the Datasets row is what sets the measure
-/// and everything above it aligns to the gallery.
-const DOOR_COLUMN_WIDTH: f32 = 4.0 * CARD_WIDTH + 3.0 * spacing::SECTION_GAP;
+/// The front door's content column, in logical points: **every** shipped
+/// start's card and the gaps between them, so the Datasets row sets the
+/// measure and everything above it aligns to the gallery.
+///
+/// Derived from [`crate::starts::STARTS`] rather than written as a number,
+/// because the number was four and the set is five: at a hard-coded
+/// four-card column the fifth card wrapped to a second row, the Protocols
+/// section below it fell past the bottom of the default window, and the
+/// section that is empty on every first launch was invisible on every first
+/// launch. `a_first_run_populates_datasets_and_states_what_protocols_will_hold`
+/// is what holds it on screen — it fails if the set grows past what one row of
+/// the default window can hold, which is a decision about the door rather than
+/// something for this constant to absorb silently.
+const DOOR_COLUMN_WIDTH: f32 = {
+    let cards = crate::starts::STARTS.len();
+    cards as f32 * CARD_WIDTH + (cards - 1) as f32 * spacing::SECTION_GAP
+};
 
 /// The curated section's heading: the datasets that ship with this build.
 ///

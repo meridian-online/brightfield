@@ -901,6 +901,27 @@ fn a_first_run_populates_datasets_and_states_what_protocols_will_hold() {
          nothing"
     );
 
+    // Present in the frame's records is not the same as present on the
+    // screen, and the difference is the whole defect: with the gallery
+    // wrapping to a second row this section drew, recorded its heading, and
+    // landed past the bottom of the default window — so the first-run
+    // baseline could not see it and neither could a first-run user. A window
+    // that cannot hold the door's two sections at its default size is a
+    // decision about the door, and this is where it comes up for one.
+    let (_, heading) = win
+        .app
+        .front_door_sections()
+        .iter()
+        .find(|(name, _)| *name == PROTOCOLS_SECTION)
+        .copied()
+        .expect("the Protocols heading is drawn on a first run");
+    assert!(
+        win.screen.contains_rect(heading),
+        "the Protocols heading drew at {heading:?}, past the bottom of a \
+         {:?} window — the empty section nobody ever sees",
+        win.screen.size()
+    );
+
     let text = win.drawn_text();
     for said in [PROTOCOLS_EMPTY_TITLE, PROTOCOLS_EMPTY_BODY] {
         assert!(
