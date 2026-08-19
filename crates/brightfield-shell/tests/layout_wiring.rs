@@ -534,8 +534,10 @@ fn a_layout_from_before_recents_existed_still_loads() {
 /// file browser, and a list that appends rather than prepends puts the thing
 /// you were last in at the bottom.
 ///
-/// Watched redden, one mutation: dropping the `retain` from
-/// `SavedLayout::remember` fails at "reopening one added a second row for it".
+/// Watched redden, two mutations, one per claim. Dropping the `retain` from
+/// `SavedLayout::remember` fails at "reopening one added a second row for it"
+/// (2 against 1); dropping the `truncate` fails at "the list grows without
+/// bound" (9 against 6).
 #[test]
 fn the_recents_list_is_capped_and_most_recent_first() {
     let mut layout = default_layout();
@@ -565,13 +567,28 @@ fn the_recents_list_is_capped_and_most_recent_first() {
 
     // Reopening one already in the list moves it and rewrites what was seen,
     // rather than leaving a second, staler row beside it.
-    layout.remember("start-3", "renamed", RunState::Fresh, 9_000);
+    //
+    // The one reopened is **mid-list**, and that is not incidental: reopening
+    // the entry at the tail is dropped by the truncation whether or not
+    // anything de-duplicates, so a list that appends blindly passes a test
+    // written against the tail and ships a door showing the same Protocol
+    // twice. Measured — with the `retain` removed, this reopen leaves two rows
+    // for `start-6` and reopening `start-3` leaves one.
+    let middle = format!("start-{}", RECENTS_KEPT);
+    assert!(
+        layout.recents.iter().any(|r| r.id == middle)
+            && layout.recents.last().expect("a tail").id != middle,
+        "the fixture stopped putting {middle} in the middle of the list, which \
+         is the only position this assertion can see a missing de-duplication \
+         from"
+    );
+    layout.remember(&middle, "renamed", RunState::Fresh, 9_000);
     assert_eq!(
-        layout.recents.iter().filter(|r| r.id == "start-3").count(),
+        layout.recents.iter().filter(|r| r.id == middle).count(),
         1,
         "reopening one added a second row for it"
     );
-    assert_eq!(layout.recents[0].id, "start-3");
+    assert_eq!(layout.recents[0].id, middle);
     assert_eq!(layout.recents[0].name, "renamed");
     assert_eq!(layout.recents[0].run, RunState::Fresh);
 }

@@ -822,9 +822,13 @@ fn a_launch_with_something_to_restore_shows_no_front_door() {
 /// would pass a headings-only check and still put the retired vocabulary in
 /// front of a stranger.
 ///
-/// Watched redden, one mutation: passing `"Explore"` to `door_section_heading`
-/// in `datasets_section` instead of `DATASETS_SECTION` fails here at "still
-/// says Explore".
+/// Watched redden, two mutations, one for each half. Passing `"Explore"` to
+/// `door_section_heading` in `datasets_section` instead of `DATASETS_SECTION`
+/// fails at the section-order assertion (`["Explore", "Protocols"]`). Putting
+/// the retired word in a body line instead — `DATASETS_NOTE` rewritten as
+/// *"the Explore gallery, curated and shipped with this build"* — leaves that
+/// assertion green and fails at "still says Explore", which is the half a
+/// headings-only check would not have.
 #[test]
 fn the_door_heads_two_sections_and_says_neither_of_the_names_it_replaced() {
     let mut win = Window::open(Boot::empty());
@@ -866,7 +870,12 @@ fn the_door_heads_two_sections_and_says_neither_of_the_names_it_replaced() {
 /// Watched redden, one mutation: returning early from `protocols_section`
 /// before `door_section_heading` when `recents.is_empty()` — the shape of
 /// "draw the section only once it has content" — fails here at "the Protocols
-/// heading is absent".
+/// heading is absent on a first run".
+///
+/// The on-screen assertion below was watched fail on real code rather than on
+/// a mutation: with `DOOR_COLUMN_WIDTH` written as four cards, the fifth start
+/// wrapped the gallery to a second row and this heading drew at y ≈ 900 in an
+/// 820-point window.
 #[test]
 fn a_first_run_populates_datasets_and_states_what_protocols_will_hold() {
     let mut win = Window::open(Boot::empty());
@@ -950,9 +959,12 @@ fn a_first_run_populates_datasets_and_states_what_protocols_will_hold() {
 /// recorded* rather than a constant that happens to be right for the only
 /// value the shell can currently produce.
 ///
-/// Watched redden, one mutation: having `door_row` label every row
-/// `RunState::NeverRun.label()` instead of `recent.run.label()` fails here at
-/// the state assertion for `signals-dashboard`.
+/// Watched redden, two mutations. Having `door_row` label every row
+/// `RunState::NeverRun.label()` instead of `recent.run.label()` fails at
+/// "signals-dashboard's row does not carry the run state the layout recorded"
+/// (`"never run"` against `"fresh"`). Drawing `recents.iter().take(1)` — which
+/// is what the `SavedLayout::opened` door could do and no more — fails at "the
+/// door drew 1 row(s) for 3 remembered Protocols".
 #[test]
 fn a_door_with_recents_lists_every_one_of_them_most_recent_first() {
     let recents = returning_recents();
@@ -1030,9 +1042,10 @@ fn a_door_with_recents_lists_every_one_of_them_most_recent_first() {
 /// window, and a start that fails to load fails identically on both sides.
 ///
 /// Watched redden, one mutation: having `door_row` push
-/// `Request::Focus(PaneKey::new(ViewKind::Protocol, CANVAS))` after its
-/// `Request::Open` — a plausible "put the cursor where the work is" — fails
-/// here at the focus assertion for every chart start.
+/// `Request::Focus(PaneKey::new(ViewKind::Protocol, PROTOCOL_CANVAS))` after
+/// its `Request::Open` — a plausible "put the cursor where the work is" —
+/// fails at "edgar-gleif-crosswalk: the row and the card leave focus on
+/// different surfaces", `Some(protocol-canvas)` against `None`.
 #[test]
 fn either_route_to_the_same_subject_leaves_the_same_window() {
     for start in starts::STARTS {
@@ -1096,7 +1109,7 @@ fn either_route_to_the_same_subject_leaves_the_same_window() {
 ///
 /// Watched redden, one mutation: dropping the `remember` call from
 /// `open_start` — leaving only the `opened` line that was already there —
-/// fails here at "opening a start recorded nothing".
+/// fails here at "opening a start recorded nothing for the door to list".
 #[test]
 fn opening_a_start_remembers_it_and_keeps_what_was_remembered_before() {
     let mut win = Window::open(Boot::empty());
@@ -1151,8 +1164,7 @@ fn opening_a_start_remembers_it_and_keeps_what_was_remembered_before() {
 ///
 /// Watched redden, one mutation: having `open_home` clear `layout.recents`
 /// (the `open_start`-symmetric thing to do) fails here at "the door forgot the
-/// session" — the Protocols section empties and there is no way back to the
-/// work.
+/// session — the Protocols section has nothing to reopen".
 #[test]
 fn going_home_returns_to_the_door_but_keeps_the_session() {
     let mut layout = default_layout();
