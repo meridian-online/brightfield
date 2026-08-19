@@ -398,7 +398,7 @@ fn window_drew() -> Vec<&'static str> {
     let mut app = MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light);
     let ctx = egui::Context::default();
     let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0));
-    let mut frame = |app: &mut MeridianApp| {
+    let frame = |app: &mut MeridianApp| {
         let raw = egui::RawInput {
             screen_rect: Some(screen),
             ..Default::default()
