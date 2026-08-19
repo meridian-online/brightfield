@@ -111,7 +111,7 @@ fn beta_before() -> ItemRegistry<Doc> {
 
 /// The second document after it declares an id the first already uses. Each
 /// registry on its own is legal: the id appears once in this spec list, so
-/// [`ItemRegistry::new`] has nothing to complain about.
+/// [`ItemRegistry::new`] sees no duplicate.
 fn beta_after() -> ItemRegistry<Doc> {
     ItemRegistry::new(vec![
         spec(BETA_CANVAS, Slot::Centre, || Box::new(Pane(BETA_CANVAS))),
@@ -184,10 +184,10 @@ fn one_registry_still_refuses_the_same_id_twice() {
 /// ill-formed, so nothing refuses them; [`window_tree`] inserts a pane per
 /// placement, so the tree ends up with two tiles carrying the same
 /// [`PaneKey`]. [`Workspace::tile_of`] resolves a key to one tile, so from
-/// that point on one document's pane has no address at all — the shell drives
-/// panes through `tile_of` to hide them, to head them and to find the tab
-/// strip a pane sits in, and each of those would act on whichever tile came
-/// back.
+/// that point on one document's pane has no address a caller can reach — the
+/// shell drives panes through `tile_of` to hide them, to head them and to
+/// find the tab strip a pane sits in, and each of those would act on
+/// whichever tile came back.
 ///
 /// Would catch: [`window_tree`] gaining a de-duplication step that quietly
 /// drops the second placement — the tile count below would fall to one, which
@@ -250,7 +250,8 @@ fn two_registries_that_share_an_id_put_two_tiles_at_one_address() {
 /// default arrangement places — and it asks by membership, so one tile named
 /// `claimed-by-both` satisfies a default that places two. The load reports
 /// [`LoadOutcome::Restored`], and the pane belonging to whichever document
-/// loses the race in `tile_of` is not on screen and nothing says so.
+/// loses the race in `tile_of` is not on screen, with no reason recorded for
+/// it.
 ///
 /// **This test records the outcome, it does not endorse it.** The
 /// arrangement a reader would want is the one an incomplete file already
