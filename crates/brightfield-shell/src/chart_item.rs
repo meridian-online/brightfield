@@ -579,7 +579,7 @@ impl Item<ChartDoc> for ChartItem {
             "No spec is open, or the one that is composed no plots. Start \
              from the example below.",
         );
-        if let Some(start) = starts::for_view(brightfield_workbench::ViewKind::Charts) {
+        if let Some(start) = starts::for_pane(crate::app::CHART) {
             empty = empty.with_next(Affordance::open(start.label, start.id));
         }
         Some(empty)

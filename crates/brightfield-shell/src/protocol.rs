@@ -65,7 +65,7 @@ use brightfield_workbench::registry::{DockSide, Slot};
 use brightfield_workbench::subject::RunState;
 use brightfield_workbench::{
     chrome, Affordance, EmptyState, Icon, Item, ItemCtx, ItemId, ItemRegistry, ItemSpec, PaneKey,
-    Subject, Tone, Verb, ViewKind,
+    Subject, Tone, Verb,
 };
 
 use meridian_design::{control, semantic, spacing};
@@ -1557,19 +1557,20 @@ pub const STEPS: ItemId = ItemId::new("protocol-steps");
 /// Called at boot from [`crate::window::MeridianApp`], which is its only
 /// caller, and before any layout file could be read. Idempotent, so a test
 /// binary that builds two windows neither falls over nor grows the vocabulary.
-/// That the window publishes *this* view's ids even when it opened on the other
-/// one is asserted through the window rather than here, because the property is
-/// about the window's boot and not about this function.
+/// That the window publishes *this* document's ids even when it opened on the
+/// other one is asserted through the window rather than here, because the
+/// property is about the window's boot and not about this function.
 ///
 /// The ids come from [`protocol_registry`] and nowhere else. A hand-written
-/// `static [ItemId; 4]` used to stand here: a second declaration of the view's
-/// shape that a fifth pane could be added to the registry without.
+/// `static [ItemId; 4]` used to stand here: a second declaration of this
+/// document's panes that a fifth pane could be added to the registry
+/// without.
 pub fn publish_item_ids() {
     protocol_registry().publish_ids();
 }
 
 /// The canvas pane's address — the key its Vello texture slot is filed under.
-const CANVAS_PANE: PaneKey = PaneKey::new(ViewKind::Protocol, CANVAS);
+const CANVAS_PANE: PaneKey = PaneKey::new(CANVAS);
 
 /// The outline rail's share of the window. Declared once and read twice: the
 /// registry lays the dock out with it, and
@@ -1588,18 +1589,18 @@ const ICON_OUTLINE: Icon = Icon("list-tree");
 const ICON_INSPECTOR: Icon = Icon("info-panel");
 const ICON_STEPS: Icon = Icon("list-ordered");
 
-/// The protocol view's registry: four panes, where each sits, and the verb that
-/// shows and hides it.
+/// The protocol document's registry: four panes, where each sits, and the verb
+/// that shows and hides it.
 ///
-/// This is the **only** declaration of the view's shape. The dock's default
-/// arrangement ([`ItemRegistry::default_tree`]), the live item map
-/// ([`ItemRegistry::instantiate`]) and the published id vocabulary
-/// ([`ItemRegistry::publish_ids`], via [`publish_item_ids`]) are all derived
-/// from this list, so a pane cannot be added to one and forgotten in another.
+/// This is the **only** declaration of this document's panes. The window's
+/// default arrangement ([`window_tree`](brightfield_workbench::window_tree)),
+/// the live item map ([`ItemRegistry::instantiate`]) and the published id
+/// vocabulary ([`ItemRegistry::publish_ids`], via [`publish_item_ids`]) are
+/// all derived from this list, so a pane cannot be added to one and forgotten
+/// in another.
 #[must_use]
 pub fn protocol_registry() -> ItemRegistry<ProtocolDoc> {
     ItemRegistry::new(
-        ViewKind::Protocol,
         vec![
             ItemSpec {
                 id: OUTLINE,
@@ -1766,7 +1767,7 @@ impl Item<ProtocolDoc> for CanvasPane {
             "No protocol is open, or the graph in view holds no assets. \
              Start from the example below, or widen the drill scope.",
         );
-        if let Some(start) = starts::for_view(ViewKind::Protocol) {
+        if let Some(start) = starts::for_pane(CANVAS) {
             empty = empty.with_next(Affordance::open(start.label, start.id));
         }
         Some(empty)

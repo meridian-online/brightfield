@@ -61,7 +61,7 @@ use brightfield_render::canvas_host::{
     SurfaceCursor, SurfaceInput, SurfaceRect,
 };
 use brightfield_render::vello_renderer::VelloRenderer;
-use brightfield_workbench::{ItemId, PaneKey, ViewKind};
+use brightfield_workbench::{ItemId, PaneKey};
 use kurbo::{Point, Vec2};
 use vello::{wgpu, Scene};
 
@@ -77,7 +77,7 @@ pub type SharedEguiRenderer = Arc<egui::mutex::RwLock<egui_wgpu::Renderer>>;
 /// one slot per view. Neither view reaches this constant: both present under
 /// their own pane's key.
 pub const LEGACY_CANVAS: PaneKey =
-    PaneKey::new(ViewKind::Charts, ItemId::new("legacy-canvas-host"));
+    PaneKey::new(ItemId::new("legacy-canvas-host"));
 
 /// One pane's live canvas: the Vello target, the view egui samples through, the
 /// registered id, and the size it was built at.

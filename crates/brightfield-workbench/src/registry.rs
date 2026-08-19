@@ -14,12 +14,16 @@
 //!
 //! # Two registries, one pattern
 //!
-//! [`ItemSpec`] / [`ItemRegistry`] answer *which panes a view has*. Below them
-//! sits a second instance of the same shape — [`ChartKind`] /
-//! [`ChartKindRegistry`] — answering *which chart a module draws*. They are
-//! not the same registry under two names: an item is a pane and a chart kind
-//! is what one pane can be filled with, and a view has one of the first and
-//! one of the second.
+//! [`ItemSpec`] / [`ItemRegistry`] answer *which panes a document brings to
+//! the window*. Below them sits a second instance of the same shape —
+//! [`ChartKind`] / [`ChartKindRegistry`] — answering *which chart a module
+//! draws*. They are not the same registry under two names: an item is a pane
+//! and a chart kind is what one pane can be filled with.
+//!
+//! There is a registry per **document**, not per window: the shell ships two
+//! unrelated document types and a pane reads exactly one of them. The window
+//! itself holds one tile tree over the union of their panes — see
+//! [`window_tree`], which is what [`crate::Workspace`] is built around.
 //!
 //! The reason the second exists is that a caller which has to *choose* a chart
 //! for a column can only do so cheaply if a chart kind is data. So a kind is
@@ -36,7 +40,6 @@ use std::fmt::Write as _;
 
 use crate::item::{Item, ItemId, ItemMap, PaneKey};
 use crate::subject::{Icon, ToolbarEntry, Verb};
-use crate::workspace::ViewKind;
 
 /// Which edge a rail pane docks to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -49,10 +52,12 @@ pub enum DockSide {
     Bottom,
 }
 
-/// Where a pane sits in its view's default arrangement.
+/// Where a pane sits in the default arrangement.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Slot {
-    /// The view's main surface. Exactly one per view.
+    /// This document's main surface. Exactly one per registry; a window built
+    /// from several registries has one per document, and they share the
+    /// centre tab strip.
     Centre,
     /// A tab alongside [`Slot::Centre`] in the centre tab strip.
     CentreTab,
@@ -97,9 +102,8 @@ impl<D: ?Sized> std::fmt::Debug for ItemSpec<D> {
     }
 }
 
-/// One view's item vocabulary.
+/// One document's item vocabulary.
 pub struct ItemRegistry<D: ?Sized> {
-    view: ViewKind,
     specs: Vec<ItemSpec<D>>,
 }
 
@@ -108,19 +112,17 @@ impl<D: ?Sized> ItemRegistry<D> {
     ///
     /// # Panics
     ///
-    /// If two specs share an id, or if the view does not have exactly one
+    /// If two specs share an id, or if this registry does not have exactly one
     /// [`Slot::Centre`]. Both are structural mistakes that would otherwise
     /// surface as a pane that silently never appears, so they fail loudly at
-    /// construction — which happens at boot and in every contract test.
+    /// construction — which happens at boot and in every contract test. The
+    /// ids in the message are what name the offending registry; there is no
+    /// registry name to print, and a duplicate id identifies it anyway.
     #[must_use]
-    pub fn new(view: ViewKind, specs: Vec<ItemSpec<D>>) -> Self {
+    pub fn new(specs: Vec<ItemSpec<D>>) -> Self {
         let mut seen = BTreeSet::new();
         for spec in &specs {
-            assert!(
-                seen.insert(spec.id),
-                "{view:?}: duplicate item id {}",
-                spec.id
-            );
+            assert!(seen.insert(spec.id), "duplicate item id {}", spec.id);
         }
         let centres = specs
             .iter()
@@ -128,16 +130,11 @@ impl<D: ?Sized> ItemRegistry<D> {
             .collect::<Vec<_>>();
         assert!(
             centres.len() == 1,
-            "{view:?}: a view needs exactly one centre pane, found {}",
-            centres.len()
+            "a registry needs exactly one centre pane, found {} ({:?})",
+            centres.len(),
+            self::ids_of(&specs),
         );
-        Self { view, specs }
-    }
-
-    /// Which view this registry describes.
-    #[must_use]
-    pub const fn view(&self) -> ViewKind {
-        self.view
+        Self { specs }
     }
 
     /// Every spec, in declaration order.
@@ -152,12 +149,13 @@ impl<D: ?Sized> ItemRegistry<D> {
         self.specs.iter().map(|s| s.id).collect()
     }
 
-    /// Publish this view's item ids into the process's layout vocabulary, so a
-    /// saved layout naming one of these panes can be validated against a build
-    /// that has it.
+    /// Publish this registry's item ids into the process's layout vocabulary,
+    /// so a saved layout naming one of these panes can be validated against a
+    /// build that has it.
     ///
-    /// This is what makes "the registry is the only declaration of a view's
-    /// shape" true rather than aspirational. The protocol view used to hand
+    /// This is what makes "the registry is the only declaration of a
+    /// document's panes" true rather than aspirational. The protocol side used
+    /// to hand
     /// [`ItemId::publish`] a hand-written `static [ItemId; 4]` sitting beside
     /// the registry, which is a second declaration by definition: adding a
     /// fifth pane to the registry and forgetting the array compiled, ran, and
@@ -167,9 +165,9 @@ impl<D: ?Sized> ItemRegistry<D> {
     ///
     /// [`ItemId::publish`] takes `&'static [ItemId]` — see its docs for why —
     /// and the ids here are computed, so the slice has to be leaked. The early
-    /// return holds that to at most one leak per view per process: a second
-    /// call over an already-published vocabulary allocates the `Vec`, finds
-    /// every id known, and drops it.
+    /// return holds that to at most one leak per registry per process: a
+    /// second call over an already-published vocabulary allocates the `Vec`,
+    /// finds every id known, and drops it.
     pub fn publish_ids(&self) {
         let ids = self.ids();
         if ids.iter().all(|id| ItemId::known().contains(id)) {
@@ -178,13 +176,19 @@ impl<D: ?Sized> ItemRegistry<D> {
         ItemId::publish(Vec::leak(ids));
     }
 
-    /// The pane key for an item in this view.
+    /// The pane key for an item.
+    ///
+    /// A pane's address is its item id and nothing else — see [`PaneKey`] —
+    /// so this is a rename rather than a lookup. Kept as a method because the
+    /// call sites read as *this registry's pane for this item*, and because a
+    /// build that gave a key a second field would want them all to go through
+    /// one place again.
     #[must_use]
     pub const fn pane_key(&self, item: ItemId) -> PaneKey {
-        PaneKey::new(self.view, item)
+        PaneKey::new(item)
     }
 
-    /// Construct every item in this view.
+    /// Construct every item this registry declares.
     #[must_use]
     pub fn instantiate(&self) -> ItemMap<D> {
         self.specs
@@ -193,115 +197,162 @@ impl<D: ?Sized> ItemRegistry<D> {
             .collect()
     }
 
-    /// The default arrangement for this view.
+    /// Where each of this registry's panes sits, free of the document they
+    /// read — what [`window_tree`] takes so a window can lay out the panes of
+    /// several documents in one tree.
+    #[must_use]
+    pub fn placements(&self) -> Vec<(ItemId, Slot)> {
+        self.specs.iter().map(|spec| (spec.id, spec.slot)).collect()
+    }
+
+    /// The default arrangement for this registry's own panes.
     ///
-    /// Left rails, then the centre tab strip, then right rails, then bottom
-    /// rails below the lot. Shares come from the specs; the centre takes
-    /// whatever is left over.
-    ///
-    /// This is the *only* place a default layout is written, which is what
-    /// makes the registry the single declaration of a view's shape. The old
-    /// shell declared its rail widths twice — once as pixel constants used to
-    /// size the window, once as tile shares used to lay it out — and the two
-    /// had already drifted apart by the time anyone noticed.
+    /// [`window_tree`] over [`Self::placements`] — the one-document case of
+    /// the window's tree, which is what the contract tests read a registry's
+    /// declared shape off. The live window builds a single tree over every
+    /// registry's placements instead; see [`window_tree`].
     #[must_use]
     pub fn default_tree(&self) -> egui_tiles::Tree<PaneKey> {
-        let mut tiles = egui_tiles::Tiles::default();
+        window_tree(&self.placements())
+    }
+}
 
-        let mut left = Vec::new();
-        let mut right = Vec::new();
-        let mut bottom = Vec::new();
-        let mut centre_tabs = Vec::new();
-        let mut centre = None;
-        let mut shares: Vec<(egui_tiles::TileId, f32)> = Vec::new();
+/// Every id in `specs`, for a panic message that has to name the registry it
+/// is complaining about and has no other name to use.
+fn ids_of<D: ?Sized>(specs: &[ItemSpec<D>]) -> Vec<ItemId> {
+    specs.iter().map(|spec| spec.id).collect()
+}
 
-        for spec in &self.specs {
-            let tile = tiles.insert_pane(self.pane_key(spec.id));
-            match spec.slot {
-                Slot::Centre => centre = Some(tile),
-                Slot::CentreTab => centre_tabs.push(tile),
-                Slot::Rail { side, share } => {
-                    shares.push((tile, share));
-                    match side {
-                        DockSide::Left => left.push(tile),
-                        DockSide::Right => right.push(tile),
-                        DockSide::Bottom => bottom.push(tile),
-                    }
+/// The egui id the window's tile tree is built under.
+///
+/// One window, one tree, one id. Two trees drawn in one frame under one id
+/// would collide in `egui::Memory`, which is why the id was keyed by something
+/// when there was more than one tree; there is not.
+const TREE_ID: &str = "brightfield-window";
+
+/// The window's tile tree, over every pane placed in it.
+///
+/// Left rails, then the centre tab strip, then right rails, then bottom rails
+/// below the lot. Shares come from the placements; the centre takes whatever
+/// is left over.
+///
+/// This is the *only* place a default layout is written, which is what makes
+/// the registries the single declaration of the window's panes. The old shell
+/// declared its rail widths twice — once as pixel constants used to size the
+/// window, once as tile shares used to lay it out — and the two had already
+/// drifted apart by the time anyone noticed.
+///
+/// # More than one [`Slot::Centre`] is expected here, and is not in a registry
+///
+/// [`ItemRegistry::new`] asserts exactly one centre, because a document with
+/// two main surfaces is a declaration mistake. A *window* built from several
+/// documents has one centre each, and they belong in the same strip: the
+/// canvas region shows one occupant at a time, and which one is the window's
+/// question rather than a document's. The first centre in placement order is
+/// the strip's active tab, for the reason the single-centre case had one — a
+/// window whose first sight is a secondary tab is disorienting.
+///
+/// # Panics
+///
+/// If `placements` declares no [`Slot::Centre`] at all. A window with no main
+/// surface has nowhere to put the thing it exists to show.
+#[must_use]
+pub fn window_tree(placements: &[(ItemId, Slot)]) -> egui_tiles::Tree<PaneKey> {
+    let mut tiles = egui_tiles::Tiles::default();
+
+    let mut left = Vec::new();
+    let mut right = Vec::new();
+    let mut bottom = Vec::new();
+    let mut centres = Vec::new();
+    let mut centre_tabs = Vec::new();
+    let mut shares: Vec<(egui_tiles::TileId, f32)> = Vec::new();
+
+    for (id, slot) in placements {
+        let tile = tiles.insert_pane(PaneKey::new(*id));
+        match slot {
+            Slot::Centre => centres.push(tile),
+            Slot::CentreTab => centre_tabs.push(tile),
+            Slot::Rail { side, share } => {
+                shares.push((tile, *share));
+                match side {
+                    DockSide::Left => left.push(tile),
+                    DockSide::Right => right.push(tile),
+                    DockSide::Bottom => bottom.push(tile),
                 }
             }
         }
+    }
 
-        let centre = centre.expect("ItemRegistry::new guarantees exactly one centre pane");
-        let centre_tile = if centre_tabs.is_empty() {
-            centre
-        } else {
-            let mut children = vec![centre];
-            children.extend(centre_tabs);
-            let tabs = tiles.insert_tab_tile(children);
-            if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(t))) =
-                tiles.get_mut(tabs)
-            {
-                // The centre pane is the default tab; a view whose first sight
-                // is one of its secondary tabs is disorienting.
-                t.set_active(centre);
+    let first_centre = *centres
+        .first()
+        .expect("a window needs at least one centre pane");
+    let centre_tile = if centres.len() == 1 && centre_tabs.is_empty() {
+        first_centre
+    } else {
+        let mut children = centres.clone();
+        children.extend(centre_tabs);
+        let tabs = tiles.insert_tab_tile(children);
+        if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(t))) =
+            tiles.get_mut(tabs)
+        {
+            t.set_active(first_centre);
+        }
+        tabs
+    };
+
+    // The centre's share is whatever the rails leave, so the rails' shares
+    // stay the single declaration and no arithmetic has to be kept in sync.
+    let rail_total: f32 = shares
+        .iter()
+        .filter(|(t, _)| left.contains(t) || right.contains(t))
+        .map(|(_, s)| *s)
+        .sum();
+    let centre_share = (1.0 - rail_total).max(0.1);
+
+    let mut row = left.clone();
+    row.push(centre_tile);
+    row.extend(right.iter().copied());
+    let root_row = if row.len() == 1 {
+        centre_tile
+    } else {
+        let r = tiles.insert_horizontal_tile(row);
+        if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin))) =
+            tiles.get_mut(r)
+        {
+            for (tile, share) in &shares {
+                lin.shares.set_share(*tile, *share);
             }
-            tabs
-        };
+            lin.shares.set_share(centre_tile, centre_share);
+        }
+        r
+    };
 
-        // The centre's share is whatever the rails leave, so the rails' shares
-        // stay the single declaration and no arithmetic has to be kept in sync.
-        let rail_total: f32 = shares
-            .iter()
-            .filter(|(t, _)| left.contains(t) || right.contains(t))
-            .map(|(_, s)| *s)
-            .sum();
-        let centre_share = (1.0 - rail_total).max(0.1);
-
-        let mut row = left.clone();
-        row.push(centre_tile);
-        row.extend(right.iter().copied());
-        let root_row = if row.len() == 1 {
-            centre_tile
-        } else {
-            let r = tiles.insert_horizontal_tile(row);
-            if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin))) =
-                tiles.get_mut(r)
-            {
-                for (tile, share) in &shares {
+    let root = if bottom.is_empty() {
+        root_row
+    } else {
+        let mut column = vec![root_row];
+        column.extend(bottom.iter().copied());
+        let c = tiles.insert_vertical_tile(column);
+        if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin))) =
+            tiles.get_mut(c)
+        {
+            let bottom_total: f32 = shares
+                .iter()
+                .filter(|(t, _)| bottom.contains(t))
+                .map(|(_, s)| *s)
+                .sum();
+            lin.shares
+                .set_share(root_row, (1.0 - bottom_total).max(0.1));
+            for (tile, share) in &shares {
+                if bottom.contains(tile) {
                     lin.shares.set_share(*tile, *share);
                 }
-                lin.shares.set_share(centre_tile, centre_share);
             }
-            r
-        };
+        }
+        c
+    };
 
-        let root = if bottom.is_empty() {
-            root_row
-        } else {
-            let mut column = vec![root_row];
-            column.extend(bottom.iter().copied());
-            let c = tiles.insert_vertical_tile(column);
-            if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin))) =
-                tiles.get_mut(c)
-            {
-                let bottom_total: f32 = shares
-                    .iter()
-                    .filter(|(t, _)| bottom.contains(t))
-                    .map(|(_, s)| *s)
-                    .sum();
-                lin.shares
-                    .set_share(root_row, (1.0 - bottom_total).max(0.1));
-                for (tile, share) in &shares {
-                    if bottom.contains(tile) {
-                        lin.shares.set_share(*tile, *share);
-                    }
-                }
-            }
-            c
-        };
-
-        egui_tiles::Tree::new(egui::Id::new(("brightfield-view", self.view)), root, tiles)
-    }
+    egui_tiles::Tree::new(egui::Id::new(TREE_ID), root, tiles)
 }
 
 // ---------------------------------------------------------------------------
@@ -327,15 +378,15 @@ impl<D: ?Sized> ItemRegistry<D> {
 /// silence was the single most common defect in the shell this crate
 /// replaces, and the two worst instances of it were the two nobody had
 /// written at all. The gate is the thing that catches the answer, so
-/// shipping it as a test helper would mean every view re-implementing it,
+/// shipping it as a test helper would mean every caller re-implementing it,
 /// which is the per-surface drift this crate exists to end. One function,
-/// one call per view.
+/// one call per registry.
 ///
 /// # Why it takes a document rather than requiring `Default`
 ///
-/// A view's document may own something with no sensible `Default` — the
-/// charts document owns a canvas host. Requiring `D: Default` would make the
-/// gate inapplicable to exactly the view most worth gating, so the caller
+/// A document may own something with no sensible `Default` — the chart
+/// document owns a canvas host. Requiring `D: Default` would make the gate
+/// inapplicable to exactly the document most worth gating, so the caller
 /// supplies whatever "empty" means for its own document.
 ///
 /// # Errors

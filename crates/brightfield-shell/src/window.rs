@@ -1,9 +1,8 @@
-//! One window, both views.
+//! One window, one arrangement, two documents behind it.
 //!
-//! [`MeridianApp`] is the whole of the product's UI: a
-//! [`Workspace`] holding a dock tree per
-//! view, the chart view's document and items, the protocol view's document and
-//! items, and the one top bar drawn above whichever of the two is active.
+//! [`MeridianApp`] is the whole of the product's UI: a [`Workspace`] holding
+//! the window's one dock tree, the chart document and its items, the protocol
+//! document and its items, and the one set of regions drawn over the lot.
 //! [`MeridianApp::draw`] is the single frame source every tier shares — the
 //! live `eframe` window, the headless `brightfield-shot` binary and the
 //! `egui_kittest` pixel tier all call it, so what an agent sees in a PNG is
@@ -25,8 +24,8 @@
 //! and `egui_tiles::Tree::ui` takes `&mut dyn Behavior<PaneKey>`, so a
 //! `PaneChrome<'_, ChartDoc>` and a `PaneChrome<'_, ProtocolDoc>` are both
 //! accepted by the same tree method with no shared type between them. This app
-//! therefore holds the two `(document, items)` pairs as sibling fields and
-//! matches on the active view when it builds the behaviour.
+//! therefore holds the two `(document, items)` pairs as sibling fields, and a
+//! region hands its pane to whichever of the two owns it.
 //!
 //! The alternatives were considered and rejected in the same breath. An
 //! `enum Doc { Chart(..), Protocol(..) }` compiles, but every one of the six
@@ -38,15 +37,20 @@
 //! compile-time guarantee into a runtime panic. Both cost more than the eight
 //! duplicated lines the match arms cost, and both give up the property that
 //! makes the contract worth having: a pane is handed exactly one document, and
-//! it is the document of its own view.
+//! it is the document that pane reads.
 //!
-//! # Both views are always loaded
+//! **Two documents is not two views.** The window is one Protocol: the spine
+//! in the navigator rail, the step list in the ledger rail and a chart on the
+//! canvas are regions of one arrangement, drawn in the same frame, and no
+//! control moves between them. What the canvas holds is derived from the
+//! documents rather than chosen — [`graph_takes_the_canvas`].
 //!
-//! `Workspace::new` requires a tree for every [`ViewKind`], and the switcher
-//! offers every view whether or not the spec on the command line described it.
-//! So the view the spec did not describe boots on its *empty* document —
-//! `Composed::empty()` or `ProtocolInputs::empty()` — which every pane in both
-//! views already answers with a real empty state, gated by
+//! # Both documents are always loaded
+//!
+//! The window holds both whether or not the spec on the command line described
+//! them, so the one the spec did not describe boots *empty* —
+//! `Composed::empty()` or `ProtocolInputs::empty()` — which every pane already
+//! answers with a real empty state, gated by
 //! [`brightfield_workbench::audit`] in the contract tests. It is a live
 //! document with a canvas host behind it, not a headless one, so it can raster
 //! the moment it gains content.
@@ -64,7 +68,7 @@ use brightfield_workbench::workspace::{tabs_holding, tile_of};
 use brightfield_workbench::{
     chrome, Activity, ActivityIndicator, DirtyTracker, HideAffordance, ItemId, ItemMap, PaneChrome,
     PaneKey, Recent, Request, RunState, SavedLayout, StatusEntry, StatusSide, Subject, Tone,
-    ToolbarEntry, Verb, ViewKind, WindowGeometry, Workspace,
+    ToolbarEntry, Verb, WindowGeometry, Workspace,
 };
 use meridian_egui::{
     ModalChrome, ModalLayer, Notification, NotificationId, NotificationLayer, Picker, PickerEvent,
@@ -632,29 +636,44 @@ pub fn names_a_data_file(chosen: &str) -> bool {
         })
 }
 
-/// What a window opens with: both documents' contents, and which view is drawn
-/// first.
+/// Whether the canvas region holds the **asset graph** rather than a chart
+/// projection, given what each document has in it.
 ///
-/// One value rather than two entry points, because the window holds both views
-/// whichever spec was named. The view the spec did not describe gets its empty
-/// document, and that is a state the product has to render correctly anyway —
-/// it is what a first run over a spec that declares nothing looks like.
+/// The window's one derived answer to *which document the canvas belongs to*,
+/// and the reason it is a free function taking two bools rather than a method:
+/// two callers need it at different moments and must not be able to disagree.
+/// [`MeridianApp::draw`] asks it every frame from the live documents, and
+/// [`Boot::window_size`] asks it before a window exists, from documents that
+/// have been loaded and not yet handed over. When those two disagreed, the
+/// window was sized for one surface and drew the other.
+///
+/// The asymmetry — chart wins a tie — is the arrangement's, not a preference.
+/// The protocol has three regions of its own (the spine in the navigator rail,
+/// the steps in the ledger rail, an operator in the inspector rail), so it is
+/// readable without the canvas. The chart has the canvas and nothing else, so
+/// a window that gives the canvas away has put the chart nowhere.
+///
+/// `(false, false)` — nothing loaded — answers `false`, which is the front
+/// door's case and costs nothing either way: the door replaces the regions
+/// entirely.
+#[must_use]
+pub const fn graph_takes_the_canvas(has_graph: bool, has_chart: bool) -> bool {
+    has_graph && !has_chart
+}
+
+/// What a window opens with: both documents' contents.
+///
+/// One value rather than two entry points, because the window holds both
+/// documents whichever spec was named. The one the spec did not describe is
+/// empty, and that is a state the product has to render correctly anyway — it
+/// is what a first run over a spec that declares nothing looks like.
+///
+/// **It carries no opinion about what to look at.** There is one arrangement
+/// and no switcher, and which document the canvas holds is derived from these
+/// contents by [`graph_takes_the_canvas`] — so a boot that loaded a graph is
+/// looking at a graph because that is what it loaded, not because it said so.
 pub struct Boot {
-    /// The view the window opens on, when something chose one.
-    ///
-    /// `None` means nothing chose, so the saved layout's own active view
-    /// stands. Two boots are `None`: [`Boot::empty`], which loaded no document
-    /// to have a view for, and a start put back by
-    /// [`Boot::deferring_to_the_saved_view`], which loaded one but was not
-    /// *asked* for.
-    ///
-    /// A spec on the command line does have an opinion and wins — you asked
-    /// for *that*, and being shown the other view because it is where you left
-    /// off last time would be the window arguing with you. So does a start the
-    /// user picked off the front door, which is the same ask by a different
-    /// route.
-    pub view: Option<ViewKind>,
-    /// The chart view's dashboard.
+    /// The chart document's dashboard.
     pub composed: Composed,
     /// The live, session-holding dashboard behind `composed`, when this boot
     /// loaded one — what arms brushes, clicks and param sliders to re-query.
@@ -677,21 +696,20 @@ pub struct Boot {
     /// place it is made, so the two entry points cannot hand the chart pane
     /// different documents for one file.
     pub authored: Option<crate::app::Authored>,
-    /// The protocol view's graph and steps.
+    /// The protocol document's graph and steps.
     pub protocol: ProtocolInputs,
-    /// The protocol view's reading axis.
+    /// The protocol document's reading axis.
     pub flow: Flow,
     /// A dotted asset id to select before the first frame, for a scripted
-    /// capture that needs a cursor to act on. Protocol view only.
+    /// capture that needs a cursor to act on. The graph's, and nothing else's.
     pub focus: Option<String>,
 }
 
 impl Boot {
-    /// Open on the charts view over `composed`, with an empty protocol.
+    /// Open on `composed`, with an empty protocol.
     #[must_use]
     pub fn charts(composed: Composed) -> Self {
         Self {
-            view: Some(ViewKind::Charts),
             composed,
             live: None,
             spec_path: None,
@@ -702,11 +720,10 @@ impl Boot {
         }
     }
 
-    /// Open on the protocol view over `inputs`, with an empty dashboard.
+    /// Open on `inputs`, with an empty dashboard.
     #[must_use]
     pub fn protocol(inputs: ProtocolInputs, flow: Flow, focus: Option<String>) -> Self {
         Self {
-            view: Some(ViewKind::Protocol),
             composed: Composed::empty(),
             live: None,
             spec_path: None,
@@ -717,14 +734,14 @@ impl Boot {
         }
     }
 
-    /// Open on nothing: both documents empty, no view chosen.
+    /// Open on nothing: both documents empty.
     ///
     /// **The no-argument launch.** What stood here was a hardcoded
     /// `examples/dashboard.yaml`, which from the repo root silently opened a
     /// dashboard nobody asked for and from anywhere else exited with a read
     /// error before a window existed. Neither is a first run of a product.
     ///
-    /// Every pane of both views answers an empty document with a real empty
+    /// Every pane answers an empty document with a real empty
     /// state — that is the workbench contract, and
     /// [`audit`](brightfield_workbench::audit) is what makes it true rather
     /// than remembered — so this is not a blank window. It is the front door,
@@ -733,7 +750,6 @@ impl Boot {
     #[must_use]
     pub fn empty() -> Self {
         Self {
-            view: None,
             composed: Composed::empty(),
             live: None,
             spec_path: None,
@@ -744,7 +760,7 @@ impl Boot {
         }
     }
 
-    /// Open on whatever [`crate::starts`] calls `id`, in the view it fills.
+    /// Open on whatever [`crate::starts`] calls `id`.
     ///
     /// # Errors
     ///
@@ -762,44 +778,30 @@ impl Boot {
         })
     }
 
-    /// The same documents, with the view opinion dropped.
+    /// Whether the canvas of a window over these documents holds the asset
+    /// graph — [`graph_takes_the_canvas`] over what this boot loaded.
     ///
-    /// The difference between a start the user *picked* and a start the layout
-    /// file *remembered*. Both load the same document, and only the first is
-    /// an ask to be looking at it: the file separately records which view the
-    /// window was left on, that record is the deliberate one, and a restore
-    /// that overrode it would make the persisted active view dead for every
-    /// returning user. See [`crate::startup::opening_boot`], which is the only
-    /// caller and the place the precedence is stated.
+    /// The size, the title and the summary line are all answered for the
+    /// surface this names, and they are asked before a window exists. It used
+    /// to be a field the caller had to resolve against the saved layout, and
+    /// the resolution had a default in it: a restored crosswalk answered
+    /// "Brightfield" and "composed 0x0 dashboard" for a 34-node graph, and
+    /// since the window title is set once from that string the wrong one
+    /// survived the whole session. Derived from the documents, there is
+    /// nothing left to default.
     #[must_use]
-    pub fn deferring_to_the_saved_view(mut self) -> Self {
-        self.view = None;
-        self
+    pub fn graph_on_canvas(&self) -> bool {
+        graph_takes_the_canvas(!self.protocol.graph_full.nodes.is_empty(), self.has_chart())
     }
 
-    /// The view this boot's size, title and summary are answered for: the one
-    /// it named, or `fallback` when it named none.
+    /// Whether the chart document this boot loaded has a picture in it.
     ///
-    /// **The fallback is a parameter because only the caller knows it.** This
-    /// used to be a `const fn` with `ViewKind::Charts` baked in, which was
-    /// harmless while every `Boot` named a view and became wrong the moment
-    /// [`Boot::deferring_to_the_saved_view`] made `None` the *normal* case: a
-    /// restored crosswalk answered "Brightfield" and "composed 0x0 dashboard"
-    /// for a 34-node protocol graph, and since the window title is set once
-    /// from that string the wrong one survived the whole session.
-    ///
-    /// `main` has the saved layout in hand before it asks any of the three, so
-    /// it passes the view that will actually be drawn. The capture tiers build
-    /// their boots through [`Boot::open`], [`Boot::charts`] or
-    /// [`Boot::protocol`], all of which name a view, so what they pass is
-    /// unreachable — and saying it at the call site is what makes that
-    /// checkable rather than assumed.
+    /// The same question [`ChartDoc::is_empty`](crate::app::ChartDoc::is_empty)
+    /// answers once the document exists, asked of the composition before it
+    /// does.
     #[must_use]
-    pub const fn view_or(&self, fallback: ViewKind) -> ViewKind {
-        match self.view {
-            Some(view) => view,
-            None => fallback,
-        }
+    pub const fn has_chart(&self) -> bool {
+        self.composed.width != 0 || self.composed.height != 0
     }
 
     /// Whether this boot loaded no document at all.
@@ -969,24 +971,20 @@ impl Boot {
         Ok(boot)
     }
 
-    /// The window this boot asks for, in logical points — `view`'s natural
-    /// size over the documents this boot loaded.
+    /// The window this boot asks for, in logical points — the natural size of
+    /// whatever the canvas will hold.
     ///
-    /// One window means one size, and the two views want very different ones.
-    /// The opening view's is the answer because it is the only one that is a
-    /// fact at the moment the window is created: the other view's document is
-    /// usually empty, and sizing to the larger of the two would open a window
-    /// mostly full of an empty state nobody asked for. Switching views does not
-    /// resize — the user's window is theirs once it exists, and both views
-    /// reflow or scroll inside whatever they are given.
+    /// One window means one size, and the graph and a dashboard want very
+    /// different ones. The canvas occupant decides it because the canvas is
+    /// the region that cannot reflow away its content: the rails carry lists
+    /// and scroll, and sizing to the larger of the two would open a window
+    /// mostly full of an empty state nobody asked for. Nothing resizes
+    /// afterwards — the user's window is theirs once it exists.
     ///
     /// Answered here rather than on [`MeridianApp`] because a window has to be
     /// sized before it can be created, and the app cannot be built until eframe
-    /// has handed over a device.
-    ///
-    /// `view` is a parameter for the reason [`Boot::view_or`] gives: a boot
-    /// that named no view has no business inventing one when the caller
-    /// already knows which one will be drawn.
+    /// has handed over a device. [`Boot::graph_on_canvas`] is what keeps that
+    /// answer the same as the one the first frame draws.
     ///
     /// **A saved layout outranks this.** The live binary consults it only when
     /// nothing was restored, and never for a [`Boot::empty`] — see
@@ -995,53 +993,49 @@ impl Boot {
     /// only answer.
     ///
     /// **And the display outranks the answer.** *Natural* is the operative
-    /// word: this is what the content wants, in a vacuum, and on the protocol
-    /// view it is routinely wider than a laptop panel. The live binary caps it
-    /// at the monitor the window opened on — [`window_size_on_display`] — and
-    /// the capture tiers, which have no monitor and must not acquire one, do
-    /// not.
+    /// word: this is what the content wants, in a vacuum, and for the graph it
+    /// is routinely wider than a laptop panel. The live binary caps it at the
+    /// monitor the window opened on — [`window_size_on_display`] — and the
+    /// capture tiers, which have no monitor and must not acquire one, do not.
     #[must_use]
-    pub fn window_size(&self, view: ViewKind) -> (f32, f32) {
-        match view {
-            ViewKind::Charts => chart_window_size(&self.composed),
-            ViewKind::Protocol => {
-                // The ENVELOPE, not the boot canvas. Sizing to the boot canvas
-                // fitted the graph the window opens on and nothing else: every
-                // state one keystroke away overflowed and stayed overflowed,
-                // because a window is sized once and never resized. See
-                // `ProtocolModel::boot_extent`, which also names the two states
-                // the envelope deliberately leaves to scroll.
-                let (w, h) = ProtocolModel::boot_extent(&self.protocol, self.flow);
-                protocol_window_size_for(w as f32, h as f32)
-            }
+    pub fn window_size(&self) -> (f32, f32) {
+        if self.graph_on_canvas() {
+            // The ENVELOPE, not the boot canvas. Sizing to the boot canvas
+            // fitted the graph the window opens on and nothing else: every
+            // state one keystroke away overflowed and stayed overflowed,
+            // because a window is sized once and never resized. See
+            // `ProtocolModel::boot_extent`, which also names the two states
+            // the envelope deliberately leaves to scroll.
+            let (w, h) = ProtocolModel::boot_extent(&self.protocol, self.flow);
+            protocol_window_size_for(w as f32, h as f32)
+        } else {
+            chart_window_size(&self.composed)
         }
     }
 
-    /// The window title: `view`'s subject over the documents this boot loaded.
+    /// The window title: the subject of whatever the canvas will hold.
     ///
     /// The same answer [`MeridianApp::title`] gives once the window exists,
-    /// provided `view` is the view that will be drawn — which is the caller's
-    /// job to supply and `main`'s reason for resolving it against the restored
-    /// layout first. It matters more here than it looks: `main` hands this
-    /// string to `eframe::run_native`, which is where the OS window's title
-    /// comes from, and the only things that send a `ViewportCommand::Title`
-    /// afterwards are opening a start (`open_start`) and going home
-    /// (`open_home`) — both private, both re-titling from the documents they
-    /// just changed. A title that is wrong at this call stays wrong until one
-    /// of those runs.
+    /// because both read [`graph_takes_the_canvas`] over the same documents.
+    /// It matters more here than it looks: `main` hands this string to
+    /// `eframe::run_native`, which is where the OS window's title comes from,
+    /// and the only things that send a `ViewportCommand::Title` afterwards are
+    /// opening a start (`open_start`) and going home (`open_home`) — both
+    /// private, both re-titling from the documents they just changed. A title
+    /// that is wrong at this call stays wrong until one of those runs.
     #[must_use]
-    pub fn title(&self, view: ViewKind) -> String {
-        match view {
-            ViewKind::Charts => self
-                .composed
+    pub fn title(&self) -> String {
+        if self.graph_on_canvas() {
+            format!("Protocol · {}", self.protocol.protocol)
+        } else {
+            self.composed
                 .title
                 .clone()
-                .unwrap_or_else(|| "Brightfield".to_string()),
-            ViewKind::Protocol => format!("Protocol · {}", self.protocol.protocol),
+                .unwrap_or_else(|| "Brightfield".to_string())
         }
     }
 
-    /// One line describing what `view` was given, for the binaries' stderr.
+    /// One line describing what this boot loaded, for the binaries' stderr.
     ///
     /// **The protocol form carries a degrade count when there is one to
     /// carry**, because the other three numbers on that line — collapsed nodes,
@@ -1057,16 +1051,12 @@ impl Boot {
     /// for a caller holding a single render: nothing in that render says which
     /// model it should have had. The count is stated rather than inferred.
     #[must_use]
-    pub fn describe(&self, view: ViewKind) -> String {
+    pub fn describe(&self) -> String {
         if self.is_empty() {
             return "nothing open".to_string();
         }
-        match view {
-            ViewKind::Charts => format!(
-                "composed {}x{} dashboard",
-                self.composed.width, self.composed.height
-            ),
-            ViewKind::Protocol => format!(
+        if self.graph_on_canvas() {
+            format!(
                 "protocol {} ({} collapsed / {} full nodes, {} steps, {:?} flow{})",
                 self.protocol.protocol,
                 self.protocol.graph_collapsed.nodes.len(),
@@ -1077,7 +1067,12 @@ impl Boot {
                     0 => String::new(),
                     n => format!(", {n} degraded"),
                 },
-            ),
+            )
+        } else {
+            format!(
+                "composed {}x{} dashboard",
+                self.composed.width, self.composed.height
+            )
         }
     }
 }
@@ -1246,7 +1241,7 @@ fn navigation_verb(doc: &mut crate::app::ChartDoc, longname: &str) -> bool {
     true
 }
 
-/// The chart view's half: its document and its live items.
+/// The chart half of the window: its document and its live items.
 struct ChartView {
     doc: ChartDoc,
     items: ItemMap<ChartDoc>,
@@ -1258,7 +1253,7 @@ struct ChartView {
     inspector_selection: Selection,
 }
 
-/// The protocol view's half: its document and its live items.
+/// The protocol half of the window: its document and its live items.
 struct ProtocolView {
     doc: ProtocolDoc,
     items: ItemMap<ProtocolDoc>,
@@ -1477,7 +1472,6 @@ impl MeridianApp {
         }
         let model = ProtocolModel::new(boot.protocol, boot.flow);
         Self::assemble(
-            boot.view,
             boot.focus,
             layout,
             doc,
@@ -1520,7 +1514,6 @@ impl MeridianApp {
         }
         let model = ProtocolModel::new(boot.protocol, boot.flow);
         Self::assemble(
-            boot.view,
             boot.focus,
             layout,
             doc,
@@ -1530,20 +1523,20 @@ impl MeridianApp {
     }
 
     fn assemble(
-        view: Option<ViewKind>,
         focus: Option<String>,
         mut layout: SavedLayout,
         chart_doc: ChartDoc,
         mut protocol_doc: ProtocolDoc,
         mode: Mode,
     ) -> Self {
-        // Both views' vocabularies, published before any layout file could be
-        // read. Idempotent, and both are needed whichever view boots: a
-        // `PaneKey` naming a pane of the view that did not boot has to
-        // deserialise too, or a saved layout loads as corrupt. `startup`
-        // publishes them again ahead of the read that happens before this
-        // window exists; these stay because the headless tiers never go
-        // through `startup` at all.
+        // Both registries' vocabularies, published before any layout file
+        // could be read. Idempotent, and both are needed whichever document
+        // the boot filled: the window's one tree carries every pane of both,
+        // so a `PaneKey` naming a pane of the empty one has to deserialise
+        // too, or a saved layout loads as corrupt. `startup` publishes them
+        // again ahead of the read that happens before this window exists;
+        // these stay because the headless tiers never go through `startup` at
+        // all.
         crate::app::publish_item_ids();
         crate::protocol::publish_item_ids();
 
@@ -1574,37 +1567,24 @@ impl MeridianApp {
         if let Some(controls_tile) = layout.workspace.tile_of(charts.pane_key(CONTROLS)) {
             layout
                 .workspace
-                .tree_mut(ViewKind::Charts)
+                .tree_mut()
                 .tiles
                 .set_visible(controls_tile, false);
         }
 
-        let mut layout = DirtyTracker::new(layout);
-        // Something that asked for a view wins; a boot with no opinion keeps
-        // the view the saved layout was left on. See `Boot::view` for which
-        // boots have an opinion — notably a *restored* start does not.
-        //
-        // Deliberately after `DirtyTracker::new`: a boot that overrides the
-        // active view has genuinely moved the window off what the file says,
-        // and that difference should be written. A boot with no opinion
-        // touches nothing here, so it is clean from construction and a launch
-        // that restores a session writes nothing until the user moves
-        // something.
-        if let Some(view) = view {
-            layout.workspace_mut().set_active(view);
-        }
+        let layout = DirtyTracker::new(layout);
 
         // The restored tab strip is the authority over the model's default,
         // not the other way round. `ProtocolModel` boots with its sheet shut,
         // `draw` makes the strip authoritative from that flag on every frame
-        // it draws this view, and the strip's active tab is part of the
-        // serialised tree — so without this line a file that recorded the
+        // the graph holds the canvas, and the strip's active tab is part of
+        // the serialised tree — so without this line a file that recorded the
         // Steps sheet is overwritten with Canvas before any frame can read it,
         // and the overwrite is a tile-tree mutation, so a launch nobody
         // touched goes dirty and the debounce writes the reverted arrangement
         // back. The restore was one-way lossy and it rewrote the file to say
         // so. Held by `a_restored_steps_tab_survives_the_first_frame`.
-        if let Some(show) = steps_tab_is_active(layout.live().workspace.tree(ViewKind::Protocol)) {
+        if let Some(show) = steps_tab_is_active(layout.live().workspace.tree()) {
             protocol_doc.model.set_show_sheet(show);
         }
 
@@ -1620,6 +1600,17 @@ impl MeridianApp {
             charts.pane_key(CONTROLS),
             Box::new(InspectorPane::new(inspector_selection.clone())),
         );
+
+        // The inspector rail opens on the pane belonging to whichever document
+        // is leading the window — the operator when the graph has the canvas,
+        // the chart's own controls otherwise. Derived from the documents, by
+        // the same rule the canvas is, so the rail cannot open on the chart's
+        // controls over a window with no chart in it. Read before the two
+        // documents are moved into the fields below.
+        let inspector_panel = usize::from(!graph_takes_the_canvas(
+            protocol_doc.model.has_assets(),
+            !chart_doc.is_empty(),
+        ));
 
         let mut app = Self {
             layout,
@@ -1641,9 +1632,7 @@ impl MeridianApp {
             // projections, which name the grid first and the chart second.
             projection: 1,
             ledger_panel: 0,
-            // The inspector rail opens on the pane belonging to whichever
-            // document the boot had something to say about.
-            inspector_panel: usize::from(view != Some(ViewKind::Protocol)),
+            inspector_panel,
             canvas_toggle: Vec::new(),
             focus_return: None,
             home_button: None,
@@ -1841,66 +1830,57 @@ impl MeridianApp {
         self.layout.workspace_mut()
     }
 
-    /// Which document the canvas is drawing.
+    /// Whether the canvas is drawing the asset graph rather than a chart
+    /// projection — [`graph_takes_the_canvas`] over this window's documents.
+    ///
+    /// Recomputed on every call rather than latched, which is what makes it
+    /// the same answer [`MeridianApp::draw`] uses and the same answer
+    /// [`Boot::graph_on_canvas`] gave before the window existed.
     #[must_use]
-    pub fn active(&self) -> ViewKind {
-        self.ws().active()
+    pub fn graph_on_canvas(&self) -> bool {
+        graph_takes_the_canvas(
+            self.protocol.doc.model.has_assets(),
+            !self.charts.doc.is_empty(),
+        )
     }
 
     /// The pane the window's chrome is reading from, if any.
     ///
-    /// Focus is recorded per document — a document you come back to should not
-    /// have moved your cursor — so this is the record of whichever document
-    /// the canvas is drawing, falling back to the other. Read back by the
-    /// tests that press the navigator rail's toggle, which is the one verb
-    /// that moves focus across that line.
+    /// One record for the window, because both documents' panes are drawn in
+    /// the same frame and two records would mean two panes wearing the focus
+    /// ring. Read back by the tests that press the navigator rail's toggle.
     #[must_use]
     pub fn focused_pane(&self) -> Option<PaneKey> {
-        let active = self.ws().active();
-        self.ws()
-            .focus_in(active)
-            .or_else(|| self.ws().focus_in(other_view(active)))
+        self.ws().focus()
     }
 
-    /// Put `view`'s document on the canvas.
-    ///
-    /// **A test hook, and named as one.** [`MeridianApp::draw`] re-derives the
-    /// canvas from the documents on each frame it draws, so on a window with
-    /// something in it this holds until the next one. Where it does hold is
-    /// the front door: those frames leave the recorded view where they found
-    /// it, and a suite proving the door belongs to the window rather than to
-    /// either document has to move the canvas under it somehow, the
-    /// arrangement offering no control that does.
-    pub fn show_on_canvas(&mut self, view: ViewKind) {
-        self.ws_mut().set_active(view);
-    }
-
-    /// The window title: the active view's subject.
+    /// The window title: the subject of whatever the canvas holds.
     ///
     /// [`Boot::title`] is the same question answered before the window exists,
-    /// and the two agree exactly when it is asked for the view this window will
-    /// draw — which is why `Boot::title` takes that view rather than assuming
-    /// one. It matters that they agree: `main` hands `Boot::title`'s answer to
-    /// `eframe::run_native`, and the runtime `ViewportCommand::Title`s in the
-    /// workspace — in `open_start` and `open_home` — re-title from this same
-    /// method, so a restored session that reaches neither keeps `Boot::title`'s
-    /// answer. `a_restored_session_is_titled_for_the_view_it_draws` asserts
-    /// the agreement rather than either answer, because a literal on both
-    /// sides would go on matching itself after either drifted.
+    /// and the two agree because both read [`graph_takes_the_canvas`] over the
+    /// same documents. It matters that they agree: `main` hands `Boot::title`'s
+    /// answer to `eframe::run_native`, and the runtime `ViewportCommand::Title`s
+    /// in the workspace — in `open_start` and `open_home` — re-title from this
+    /// same method, so a restored session that reaches neither keeps
+    /// `Boot::title`'s answer.
+    /// `a_restored_session_is_titled_for_the_surface_it_draws` asserts the
+    /// agreement rather than either answer, because a literal on both sides
+    /// would go on matching itself after either drifted.
     #[must_use]
     pub fn title(&self) -> String {
-        // The front door spans both views, so it has no view subject to name —
-        // and the top bar draws this unconditionally. Reaching the door from
-        // the Protocol view would otherwise show "Protocol · " (the emptied
+        // The front door replaces the regions, so it has no document subject
+        // to name — and the top bar draws this unconditionally. Reaching the
+        // door from a graph would otherwise show "Protocol · " (the emptied
         // graph's blank name) in the visible chrome for the whole visit. A
         // cold-boot door is already this string (an empty `ChartDoc` titles
-        // "Brightfield"), so this only fixes the reached-from-Protocol case.
+        // "Brightfield"), so this fixes the reached-from-a-graph case.
         if self.front_door_is_live() {
             return "Brightfield".to_string();
         }
-        match self.ws().active() {
-            ViewKind::Charts => self.charts.doc.title().to_string(),
-            ViewKind::Protocol => format!("Protocol · {}", self.protocol.doc.model.protocol),
+        if self.graph_on_canvas() {
+            format!("Protocol · {}", self.protocol.doc.model.protocol)
+        } else {
+            self.charts.doc.title().to_string()
         }
     }
 
@@ -1930,7 +1910,7 @@ impl MeridianApp {
         self.charts.inspector_selection.get()
     }
 
-    /// Move focus to `key`, in its own view — the same effect the
+    /// Move focus to `key` — the same effect the
     /// click-anywhere-in-a-pane rule in `PaneChrome::pane_ui` has, without
     /// simulating a pointer event. Returns whether the move was accepted
     /// (see [`Workspace::set_focus`]). A test hook, for the reason
@@ -1939,11 +1919,11 @@ impl MeridianApp {
         self.ws_mut().set_focus(key)
     }
 
-    /// Drop the charts view's focus record, as if its focused pane had just
-    /// closed. The other half of [`Self::focus_pane`] — proving the inspector
-    /// reverts to its empty-selection state rather than holding a stale one.
-    pub fn clear_chart_focus(&mut self) {
-        self.ws_mut().clear_focus(ViewKind::Charts);
+    /// Drop the window's focus record, as if the focused pane had just closed.
+    /// The other half of [`Self::focus_pane`] — proving the inspector reverts
+    /// to its empty-selection state rather than holding a stale one.
+    pub fn clear_focus(&mut self) {
+        self.ws_mut().clear_focus();
     }
 
     /// What the item actually occupying `key` in the *live* item map declares
@@ -1984,14 +1964,11 @@ impl MeridianApp {
     /// strip and a pane header saying different things about one pane is the
     /// drift the workbench exists to end.
     fn pane_title_of(&self, item: ItemId) -> String {
-        if let Some(pane) = self
-            .protocol
-            .items
-            .get(&PaneKey::new(ViewKind::Protocol, item))
-        {
+        let key = PaneKey::new(item);
+        if let Some(pane) = self.protocol.items.get(&key) {
             return pane.subject(&self.protocol.doc).title;
         }
-        if let Some(pane) = self.charts.items.get(&PaneKey::new(ViewKind::Charts, item)) {
+        if let Some(pane) = self.charts.items.get(&key) {
             return pane.subject(&self.charts.doc).title;
         }
         item.to_string()
@@ -2025,13 +2002,13 @@ impl MeridianApp {
     /// The breadcrumb the locator band draws: where the subject sits, most
     /// general first.
     ///
-    /// The protocol's own drill trail when the graph is the subject, and the
+    /// The protocol's own drill trail when the graph holds the canvas, and the
     /// window's title otherwise — a chart has no drill state, and a locator
     /// band that went blank on the surface a stranger meets first would be a
     /// row of empty chrome.
     fn crumb_line(&self) -> Vec<String> {
         let mut crumbs = vec![self.title()];
-        if self.ws().active() == ViewKind::Protocol {
+        if self.graph_on_canvas() {
             crumbs.extend(self.protocol.doc.model.breadcrumb());
         }
         crumbs
@@ -2110,12 +2087,12 @@ impl MeridianApp {
     }
 
     /// Whether the next frame this window draws is the front door: nothing
-    /// open in either view, so the window's answer is an invitation rather
-    /// than a dock of empty instruments.
+    /// open in either document, so the window's answer is an invitation rather
+    /// than a set of empty instruments.
     ///
     /// Not a mode and not a setting — a fact about the documents, recomputed
     /// every frame, which is why the door needs no dismissal: it is
-    /// outcompeted by content the moment either view has any.
+    /// outcompeted by content the moment either document has any.
     #[must_use]
     pub fn front_door_is_live(&self) -> bool {
         self.charts.doc.is_empty() && !self.protocol.doc.model.has_assets()
@@ -2202,7 +2179,7 @@ impl MeridianApp {
     /// The protocol view's interaction model, read-only.
     ///
     /// The window is the only thing that feeds it keys, and it feeds it keys
-    /// only while the protocol view is drawn — so this is how a test asks
+    /// only while the graph holds the canvas — so this is how a test asks
     /// whether a keystroke reached the DAG, which is the half of that gate that
     /// cannot be seen from outside.
     #[must_use]
@@ -2210,21 +2187,20 @@ impl MeridianApp {
         &self.protocol.doc.model
     }
 
-    /// The chart view's document, read-only — what a test asks whether the
-    /// front door's second click actually filled.
+    /// The chart document, read-only — what a test asks whether the front
+    /// door's second click actually filled.
     #[must_use]
     pub fn chart_doc(&self) -> &ChartDoc {
         &self.charts.doc
     }
 
-    /// The protocol view's document, read-only. The twin of
-    /// [`Self::chart_doc`].
+    /// The protocol document, read-only. The twin of [`Self::chart_doc`].
     #[must_use]
     pub fn protocol_doc(&self) -> &ProtocolDoc {
         &self.protocol.doc
     }
 
-    /// The chart view's document, mutably — the seam an embedder (or a test)
+    /// The chart document, mutably — the seam an embedder (or a test)
     /// reaches the document's own state through between frames: its activity
     /// log, its file watcher, a param. Never handed to an [`Item`] — the
     /// no-document-handle rule is about panes, and this is not one.
@@ -2309,7 +2285,6 @@ impl MeridianApp {
             design::apply(&ctx, self.mode);
             self.fonts_installed = true;
         }
-        let view = self.ws().active();
         let mode = self.mode;
 
         // The document's file watcher: poll on its own cadence, keep frames
@@ -2323,19 +2298,43 @@ impl MeridianApp {
             ctx.request_repaint_after(crate::watch::WATCH_POLL);
         }
 
+        // Which document the canvas draws — content decides it, and content
+        // alone. A chart on the canvas whenever there is a chart; the graph
+        // only where there is no chart for the canvas to hold. See
+        // `graph_takes_the_canvas` for why the tie goes that way.
+        //
+        // Derived rather than latched, and that is what closes a dead end.
+        // The window used to carry a recorded active view that a boot or an
+        // open could set, which made the canvas a function of the order the
+        // two documents were opened in: open a chart start and then a protocol
+        // start and the canvas went to the graph and stayed there. There is no
+        // control that moves the canvas between the two — the graph at canvas
+        // size is a different arrangement, reached by a toggle a build
+        // supporting it would declare, and inventing one here would be the
+        // peer switcher again under a new name — so a state reached by history
+        // was a state with no way out of it. Every exit was Home, which
+        // empties both documents.
+        //
+        // `a_protocol_opened_over_a_chart_leaves_the_chart_on_the_canvas` is
+        // the pin. It reaches this state through two direct `open_start`
+        // calls, not through the UI — `Boot::open` takes exactly one spec,
+        // and no shipped control opens a second document into a window that
+        // already holds one.
+        let graph_on_canvas = self.graph_on_canvas();
+
         // The overlay-opening keys, before the grammar feed so the frame that
         // opens an overlay is already under it.
-        self.overlay_open_keys(&ctx, view);
+        self.overlay_open_keys(&ctx, graph_on_canvas);
         // Return-home, on the same gate: no overlay may own the keyboard, and
         // it is deliberately not an overlay-opener (so the registry cross-ref
         // that pins those three stays pinned).
         self.home_key(&ctx);
         // The navigator rail's round-trip focus toggle, on the same gate.
         self.navigator_key(&ctx);
-        // The frame verbs, on the same gate and only over the chart view: they
-        // are bare keys, so an overlay or a text field must own the keyboard
-        // first.
-        self.navigation_keys(&ctx, view);
+        // The frame verbs, on the same gate and only where the chart holds the
+        // canvas: they are bare keys, so an overlay or a text field must own
+        // the keyboard first.
+        self.navigation_keys(&ctx, graph_on_canvas);
 
         // Whether this frame is the front door. Decided once, **after**
         // `home_key`, because three branches below have to agree which frame
@@ -2348,61 +2347,14 @@ impl MeridianApp {
         // mode of the window.
         let door = self.front_door_is_live();
 
-        // Which document the canvas draws — content decides it, and content
-        // alone. A chart on the canvas whenever there is a chart; the graph
-        // only where there is no chart for the canvas to hold.
-        //
-        // The asymmetry is the arrangement's, not a preference: the protocol
-        // has three regions of its own — the spine in the navigator rail, the
-        // steps in the ledger rail, an operator in the inspector rail — but
-        // only the first two are readable without a click while the canvas
-        // belongs to the chart: the inspector rail opens on the chart's own
-        // controls on a chart-led boot (`inspector_panel:
-        // usize::from(view != Some(ViewKind::Protocol))`), so the operator
-        // pane is one click away rather than already showing. The chart has
-        // the canvas and nothing else, so a window that gives the canvas away
-        // has put the chart nowhere.
-        //
-        // Deriving it rather than latching it is what closes a dead end. This
-        // read `_ => view` for a window holding both documents, which made the
-        // canvas a function of the order the two were opened in: open a chart
-        // start and then a protocol start and the canvas went to the graph and
-        // stayed there. There is no control that moves the canvas between the
-        // two — the graph at canvas size is a different arrangement, reached
-        // by a toggle a build supporting it would declare, and inventing one
-        // here would be the peer switcher again under a new name — so a state
-        // reached by history was a state with no way out of it. Every exit was
-        // Home, which empties both documents.
-        //
-        // `a_protocol_opened_over_a_chart_leaves_the_chart_on_the_canvas` is
-        // the pin. It reaches this state through two direct `open_start`
-        // calls, not through the UI — `Boot::open` takes exactly one spec,
-        // and no shipped control opens a second document into a window that
-        // already holds one.
-        let view = if door {
-            view
-        } else {
-            let has_graph = self.protocol.doc.model.has_assets();
-            let has_chart = !self.charts.doc.is_empty();
-            match (has_graph, has_chart) {
-                (true, false) => ViewKind::Protocol,
-                (_, true) => ViewKind::Charts,
-                // Neither document has anything in it: nothing to decide, and
-                // the window is one frame away from the front door anyway.
-                (false, false) => view,
-            }
-        };
-        if !door && self.ws().active() != view {
-            self.ws_mut().set_active(view);
-        }
-
         // The protocol grammar is bare-key — `h j k l y t Enter Esc ⌫ shift-S`
-        // with no modifier to disambiguate it — so it is fed only while its own
-        // view is drawn. Gating on the active view rather than on the focused
-        // pane's `Subject::key_context` is deliberate: the grammar drives the
-        // *view's* model, not one pane's, and every pane of this view declares
-        // the same context anyway. A per-pane gate would be a second answer to
-        // a question the view already answers.
+        // with no modifier to disambiguate it — so it is fed only while the
+        // graph is the thing on the canvas. Gating on that rather than on the
+        // focused pane's `Subject::key_context` is deliberate: the grammar
+        // drives the *document's* model, not one pane's, and every pane
+        // reading that document declares the same context anyway. A per-pane
+        // gate would be a second answer to a question the canvas already
+        // answers.
         //
         // And it is fed only while no overlay is open — the
         // no-bare-under-overlay invariant. An open picker owns the keyboard;
@@ -2411,7 +2363,7 @@ impl MeridianApp {
         //
         // Nor while the front door is drawn: the grammar drives the DAG, and
         // the door is standing where the DAG would be.
-        if view == ViewKind::Protocol && !door {
+        if graph_on_canvas && !door {
             if self.overlay.is_none() {
                 let events = ctx.input(|i| i.events.clone());
                 self.protocol.doc.model.feed_events(&events);
@@ -2422,11 +2374,12 @@ impl MeridianApp {
             self.set_active_tab();
         }
 
-        // Only the drawn view rasters. The other view's texture is not freed —
-        // see `sweep`.
-        match view {
-            ViewKind::Charts => self.charts.doc.present(ctx.pixels_per_point(), mode),
-            ViewKind::Protocol => self.protocol.doc.present(ctx.pixels_per_point(), mode),
+        // Only the document on the canvas rasters. The other one's texture is
+        // not freed — see `sweep`.
+        if graph_on_canvas {
+            self.protocol.doc.present(ctx.pixels_per_point(), mode);
+        } else {
+            self.charts.doc.present(ctx.pixels_per_point(), mode);
         }
 
         // The window's arrangement, read once and read from nowhere else.
@@ -2485,8 +2438,8 @@ impl MeridianApp {
             // inspector's own pane (clicking its checkbox, say): that would
             // otherwise blank the panel it is itself part of the moment
             // someone touches it.
-            match self.ws().focus_in(ViewKind::Charts) {
-                Some(key) if key.item != CONTROLS => {
+            match self.ws().focus() {
+                Some(key) if key.item != CONTROLS && self.charts.items.contains_key(&key) => {
                     let subject = self
                         .charts
                         .items
@@ -2514,7 +2467,7 @@ impl MeridianApp {
             // `chart_window_size` has no term for this band —
             // `the_window_it_asks_for_fits_the_raster_it_presents` is the
             // assertion that keeps it honest about that.
-            if view == ViewKind::Protocol {
+            if graph_on_canvas {
                 let hint = plan.expect_region(arrangement::HINT_BAND);
                 let model = &self.protocol.doc.model;
                 let drawn = Panel::bottom("bf-hint-band")
@@ -2524,11 +2477,6 @@ impl MeridianApp {
                 self.regions.push((hint.id, drawn.response.rect));
             }
 
-            // The canvas holds the step's projections, and stands the graph
-            // there while there is no chart to hold — the empty state of the
-            // canvas rather than a second thing it can be showing. Settled
-            // above, from the documents and from nothing else.
-            let graph_on_canvas = view == ViewKind::Protocol;
             let ledger = plan.expect_region(arrangement::LEDGER_RAIL);
             let navigator = plan.expect_region(arrangement::NAVIGATOR_RAIL);
             let inspector = plan.expect_region(arrangement::INSPECTOR_RAIL);
@@ -2571,22 +2519,21 @@ impl MeridianApp {
             // it — `PaneChrome::pane_ui` takes that as its `tabbed` set.
             let mut headed: std::collections::HashSet<egui_tiles::TileId> =
                 std::collections::HashSet::new();
-            for (kind, item) in [
-                (ViewKind::Protocol, OUTLINE),
-                (ViewKind::Protocol, PROTOCOL_INSPECTOR),
-                (ViewKind::Protocol, STEPS),
-                (ViewKind::Protocol, PROTOCOL_CANVAS),
-                (ViewKind::Charts, CONTROLS),
-                (ViewKind::Charts, EDITOR),
-                (ViewKind::Charts, CHART),
-                (ViewKind::Charts, DATA),
+            for item in [
+                OUTLINE,
+                PROTOCOL_INSPECTOR,
+                STEPS,
+                PROTOCOL_CANVAS,
+                CONTROLS,
+                EDITOR,
+                CHART,
+                DATA,
             ] {
-                if let Some(tile) = ws.tile_of(PaneKey::new(kind, item)) {
+                if let Some(tile) = ws.tile_of(PaneKey::new(item)) {
                     headed.insert(tile);
                 }
             }
-            let chart_focus = ws.focus_in(ViewKind::Charts);
-            let protocol_focus = ws.focus_in(ViewKind::Protocol);
+            let focused = ws.focus();
 
             // ---- the ledger rail, before the side rails so it spans the
             // window's width and they stop above it.
@@ -2620,7 +2567,7 @@ impl MeridianApp {
                             ws,
                             item,
                             mode,
-                            protocol_focus,
+                            focused,
                             &headed,
                             &mut requests,
                             affordances,
@@ -2633,7 +2580,7 @@ impl MeridianApp {
                             ws,
                             item,
                             mode,
-                            chart_focus,
+                            focused,
                             &headed,
                             &mut requests,
                             affordances,
@@ -2659,7 +2606,7 @@ impl MeridianApp {
                         ws,
                         navigator_panes[0],
                         mode,
-                        protocol_focus,
+                        focused,
                         &headed,
                         &mut requests,
                         affordances,
@@ -2700,7 +2647,7 @@ impl MeridianApp {
                             ws,
                             item,
                             mode,
-                            protocol_focus,
+                            focused,
                             &headed,
                             &mut requests,
                             affordances,
@@ -2713,7 +2660,7 @@ impl MeridianApp {
                             ws,
                             item,
                             mode,
-                            chart_focus,
+                            focused,
                             &headed,
                             &mut requests,
                             affordances,
@@ -2735,7 +2682,7 @@ impl MeridianApp {
                         ws,
                         graph,
                         mode,
-                        protocol_focus,
+                        focused,
                         &headed,
                         &mut requests,
                         affordances,
@@ -2759,7 +2706,7 @@ impl MeridianApp {
                         ws,
                         projections[projection].item,
                         mode,
-                        chart_focus,
+                        focused,
                         &headed,
                         &mut requests,
                         affordances,
@@ -2781,9 +2728,9 @@ impl MeridianApp {
             }
         }
 
-        self.status_rail_ui(&ctx, &mut requests);
+        self.status_rail_ui(&ctx, graph_on_canvas, &mut requests);
 
-        self.apply(&ctx, view, requests);
+        self.apply(&ctx, graph_on_canvas, requests);
 
         // The file dialog, after the frame and outside every borrow it took:
         // it blocks the thread on a window this process did not lay out, so it
@@ -2801,7 +2748,7 @@ impl MeridianApp {
                 self.open_data_file(&ctx, &path.to_string_lossy());
             }
         }
-        if view == ViewKind::Protocol {
+        if graph_on_canvas {
             if !door {
                 self.read_active_tab();
             }
@@ -2822,7 +2769,7 @@ impl MeridianApp {
         // notification layers over that. All three draw nothing when empty,
         // so a frame with no overlay, no banner and no toast is
         // pixel-identical to one drawn before they existed.
-        self.overlay_ui(&ctx, view);
+        self.overlay_ui(&ctx, graph_on_canvas);
         self.notifications.show(&ctx);
         self.toasts.show(&ctx);
 
@@ -2835,28 +2782,28 @@ impl MeridianApp {
 
     /// Open an overlay if its registry-declared key was pressed this frame.
     ///
-    /// The palette opens on both views, but the candidate list differs: on
-    /// the protocol view, `Altitude::Protocol`'s raw registry scope already
+    /// The palette opens either way, but the candidate list differs: with the
+    /// graph on the canvas, `Altitude::Protocol`'s raw registry scope already
     /// dispatches through the model, so the raw scope IS the candidate list.
-    /// On the chart view most `Altitude::View` verbs have no
-    /// handler in this shell yet — the editing bridge that would let
-    /// `add-mark`, `set-channel` and the rest apply a `ChartEdit` is not
-    /// landed — so [`Self::open_chart_palette`] restricts the list to
+    /// With a chart there, most `Altitude::View` verbs have no handler in this
+    /// shell yet — the editing bridge that would let `add-mark`,
+    /// `set-channel` and the rest apply a `ChartEdit` is not landed — so
+    /// [`Self::open_chart_palette`] restricts the list to
     /// [`CHART_PALETTE_VERBS`](crate::overlays::CHART_PALETTE_VERBS): exactly
-    /// what [`Self::apply`]'s `Charts` arm dispatches. A palette of rows that
-    /// silently no-op would be worse than none. The node jump stays
-    /// protocol-only — it has no chart equivalent yet — and the help sheet is
+    /// what [`Self::apply`]'s chart arm dispatches. A palette of rows that
+    /// silently no-op would be worse than none. The node jump stays with the
+    /// graph — it has no chart equivalent yet — and the help sheet is
     /// read-only and opens anywhere.
-    fn overlay_open_keys(&mut self, ctx: &egui::Context, view: ViewKind) {
+    fn overlay_open_keys(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
         if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
             return;
         }
         let pressed = |token: Option<&'static str>| token.is_some_and(|t| consume_token(ctx, t));
-        if view == ViewKind::Protocol && pressed(self.overlay_keys.palette) {
+        if graph_on_canvas && pressed(self.overlay_keys.palette) {
             self.open_palette(Altitude::Protocol);
-        } else if view == ViewKind::Charts && pressed(self.overlay_keys.palette) {
+        } else if !graph_on_canvas && pressed(self.overlay_keys.palette) {
             self.open_chart_palette();
-        } else if view == ViewKind::Protocol && pressed(self.overlay_keys.jump) {
+        } else if graph_on_canvas && pressed(self.overlay_keys.jump) {
             self.open_jump();
         } else if pressed(self.overlay_keys.help) {
             self.overlay = Some(Overlay::Help(Picker::new(HelpSheet::new())));
@@ -2912,25 +2859,19 @@ impl MeridianApp {
     /// in has no focused pane, and putting focus back there is a state the
     /// window can be in rather than a missing answer.
     fn toggle_navigator_focus(&mut self, ctx: &egui::Context) {
-        let rail = PaneKey::new(ViewKind::Protocol, OUTLINE);
-        if self.ws().focus_in(ViewKind::Protocol) == Some(rail) {
+        let rail = PaneKey::new(OUTLINE);
+        if self.ws().focus() == Some(rail) {
             let back = self.focus_return.take();
-            self.ws_mut().clear_focus(ViewKind::Protocol);
+            self.ws_mut().clear_focus();
             if let Some(key) = back {
                 self.ws_mut().set_focus(key);
             }
         } else {
-            let back = self.focused_pane();
-            self.focus_return = back;
-            // The document being left gives its record up. `Workspace` keeps
-            // focus per document so that coming back to one does not move your
-            // cursor, and that reasoning held while one document was drawn at a
-            // time. Both are drawn in one frame now, so two live records would
-            // mean two panes wearing the focus ring — the toggle is the one
-            // verb that crosses that line, and it carries the tidy-up.
-            if let Some(back) = back {
-                self.ws_mut().clear_focus(back.view);
-            }
+            self.focus_return = self.focused_pane();
+            // One record for the window, so moving it is a move rather than a
+            // move plus a tidy-up: both documents' panes are drawn in the same
+            // frame, and two live records would mean two panes wearing the
+            // focus ring.
             self.ws_mut().set_focus(rail);
         }
         ctx.request_repaint();
@@ -2939,11 +2880,11 @@ impl MeridianApp {
     /// Perform whichever navigation verb's key is down this frame.
     ///
     /// Gated exactly as [`Self::home_key`] is — no overlay open, no widget
-    /// holding the keyboard — plus the chart view being the one on screen,
-    /// because a frame verb over the protocol graph has no frame to move and
-    /// its bare keys would shadow that view's own grammar.
-    fn navigation_keys(&mut self, ctx: &egui::Context, view: ViewKind) {
-        if view != ViewKind::Charts || self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
+    /// holding the keyboard — plus the chart being the thing on the canvas,
+    /// because a frame verb over the asset graph has no frame to move and its
+    /// bare keys would shadow the graph's own grammar.
+    fn navigation_keys(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
+        if graph_on_canvas || self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
             return;
         }
         for (token, longname) in self.nav_bindings.clone() {
@@ -3000,7 +2941,7 @@ impl MeridianApp {
     /// [`ModalLayer`] consumes escape first and reports it as its own
     /// [`PickerEvent::Dismissed`], while a backdrop click surfaces as the
     /// layer's `dismissed` flag.
-    fn overlay_ui(&mut self, ctx: &egui::Context, view: ViewKind) {
+    fn overlay_ui(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
         let Some(mut overlay) = self.overlay.take() else {
             return;
         };
@@ -3014,7 +2955,11 @@ impl MeridianApp {
                     Some(PickerEvent::Confirmed) => {
                         if let Some(name) = picker.delegate.take_picked() {
                             self.recency.record(name);
-                            self.apply(ctx, view, vec![Request::Verb(Verb::new(name))]);
+                            self.apply(
+                                ctx,
+                                graph_on_canvas,
+                                vec![Request::Verb(Verb::new(name))],
+                            );
                         }
                         close = true;
                     }
@@ -3099,7 +3044,8 @@ impl MeridianApp {
     /// carried modelled the protocol as a peer of the chart, and the protocol
     /// is the container the chart sits inside — it is the navigator rail, and
     /// its toggle is `toggle-outline-rail` off the keyboard registry rather
-    /// than a control invented here.
+    /// than a control invented here. There is nothing left for such a control
+    /// to switch: one window, one tile tree, one arrangement.
     ///
     /// **The right-hand group is dropped rather than allowed to spill.** A
     /// right-to-left layout draws from the window's right edge leftwards and
@@ -3113,7 +3059,7 @@ impl MeridianApp {
     /// [`Verb`]: brightfield_workbench::Verb
     fn title_band(&mut self, ui: &mut egui::Ui) -> TopBar {
         let sem = semantic(self.mode.is_dark());
-        let active = self.ws().active();
+        let graph_on_canvas = self.graph_on_canvas();
         // Read everything the band says before drawing it, so the closure
         // below borrows no more of `self` than the state it writes.
         let title = self.title();
@@ -3150,7 +3096,7 @@ impl MeridianApp {
             // always draws when the protocol view supplies one.
             let renderer =
                 crate::devtools::enabled().then(|| format!("egui · Vello · wgpu 29  —  {theme}"));
-            let toggle = (active == ViewKind::Protocol).then(|| match flow {
+            let toggle = graph_on_canvas.then(|| match flow {
                 Flow::Vertical => ("flow: vertical ⇄".to_string(), "horizontal"),
                 Flow::Horizontal => ("flow: horizontal ⇄".to_string(), "vertical"),
             });
@@ -3189,18 +3135,19 @@ impl MeridianApp {
     /// the note there on why floating rather than a bottom panel). What this
     /// method owns is the *content*:
     ///
-    /// - **every pane placed in the active view's** status lines, as
-    ///   declared on its own [`Subject`] — minus its activity reports. Not
-    ///   only the focused pane's: a window nobody has clicked in still has to
-    ///   say what its panes declare, or every honesty affordance living on
-    ///   the rail (a navigation refusal, an unrescoped-mark notice) is
-    ///   declared and never seen until the user happens to click inside the
+    /// - the status lines of **every pane reading the document the canvas
+    ///   holds**, as declared on its own [`Subject`] — minus its activity
+    ///   reports. Not only the focused pane's: a window nobody has clicked in
+    ///   still has to say what its panes declare, or every honesty affordance
+    ///   living on the rail (a navigation refusal, an unrescoped-mark notice)
+    ///   is declared and never seen until the user happens to click inside the
     ///   pane that raised it — the test
     ///   `a_panes_notice_reaches_the_rail_before_anything_is_focused` holds
     ///   this;
-    /// - **one** activity indicator, composed from *every* pane's subject in
-    ///   *both* views — in-flight work anywhere in the window is the window's
-    ///   to report, and two panes querying at once say "querying…" once;
+    /// - **one** activity indicator, composed from *every* pane's subject
+    ///   across *both* documents — in-flight work anywhere in the window is
+    ///   the window's to report, and two panes querying at once say
+    ///   "querying…" once;
     /// - when neither of those has anything to say and a chart is open, the
     ///   idle line [`idle_status_entry`] composes from the loaded dashboard —
     ///   so an idle window with a chart open is never a silent rail. Live
@@ -3213,7 +3160,12 @@ impl MeridianApp {
     /// Dismissal verbs the rail's entries declare are routed into the same
     /// request queue as pane requests — the rail can offer nothing a pane
     /// could not.
-    fn status_rail_ui(&mut self, ctx: &egui::Context, requests: &mut Vec<Request>) {
+    fn status_rail_ui(
+        &mut self,
+        ctx: &egui::Context,
+        graph_on_canvas: bool,
+        requests: &mut Vec<Request>,
+    ) {
         let mode = self.mode;
         let chart_subjects: Vec<Subject> = self
             .charts
@@ -3228,20 +3180,18 @@ impl MeridianApp {
             .map(|item| item.subject(&self.protocol.doc))
             .collect();
 
-        let active = self.ws().active();
         let mut entries: Vec<StatusEntry> = Vec::new();
-        for key in self.ws().panes(active) {
-            let subject = match active {
-                ViewKind::Charts => self
-                    .charts
+        for key in self.ws().panes() {
+            let subject = if graph_on_canvas {
+                self.protocol
                     .items
                     .get(&key)
-                    .map(|item| item.subject(&self.charts.doc)),
-                ViewKind::Protocol => self
-                    .protocol
+                    .map(|item| item.subject(&self.protocol.doc))
+            } else {
+                self.charts
                     .items
                     .get(&key)
-                    .map(|item| item.subject(&self.protocol.doc)),
+                    .map(|item| item.subject(&self.charts.doc))
             };
             if let Some(subject) = subject {
                 // Every placed pane's own lines, focused or not. Typed
@@ -3260,7 +3210,7 @@ impl MeridianApp {
             ActivityIndicator::compose(chart_subjects.iter().chain(protocol_subjects.iter()))
         {
             entries.push(indicator);
-        } else if entries.is_empty() && active == ViewKind::Charts {
+        } else if entries.is_empty() && !graph_on_canvas {
             if let Some(idle) = idle_status_entry(&self.charts.doc.composed) {
                 entries.push(idle);
             }
@@ -3281,45 +3231,49 @@ impl MeridianApp {
     /// Perform the requests the frame's panes raised, now that the tile tree's
     /// borrow is over.
     ///
-    /// A verb goes to the model of the view that raised it — only the active
-    /// view's panes drew, so that is the active view's model. The charts view
-    /// has no model; its verbs act on the document directly, and the match is
-    /// spelled out so that a chart control declaring a verb this arm does not
-    /// handle is a change to *this* line rather than a button that silently
-    /// does nothing.
-    fn apply(&mut self, ctx: &egui::Context, view: ViewKind, requests: Vec<Request>) {
+    /// A verb goes to the model of the document the canvas holds. Both
+    /// documents' panes draw in the same frame, so this is a routing choice
+    /// rather than a deduction: the canvas is the region a verb typed with no
+    /// pane focused is most plausibly aimed at, and `ProtocolModel::dispatch`
+    /// silently no-ops a verb it does not know, so a verb sent to the wrong
+    /// one would vanish rather than misfire. The chart side has no model; its
+    /// verbs act on the document directly, and the branch is spelled out so
+    /// that a chart control declaring a verb it does not handle is a change to
+    /// *this* line rather than a button that silently does nothing.
+    ///
+    /// Two verbs are the **window's** rather than either document's and are
+    /// intercepted above the branch — see the comments on each.
+    fn apply(&mut self, ctx: &egui::Context, graph_on_canvas: bool, requests: Vec<Request>) {
         for request in requests {
             match request {
-                // open-home spans both views — it is not a per-view dispatch,
-                // so it is handled before the view match rather than inside it.
-                // The Charts arm string-matches only clear-selection, and the
-                // Protocol arm forwards to `model.dispatch`, which would
-                // silently no-op an unknown verb — so without this intercept
-                // the verb would reach neither handler.
+                // open-home is the window's verb, not either document's, so
+                // it is handled before the branch rather than inside it. The
+                // chart arm string-matches only clear-selection, and the graph
+                // arm forwards to `model.dispatch`, which would silently no-op
+                // an unknown verb — so without this intercept the verb would
+                // reach neither handler.
                 Request::Verb(verb) if verb.as_str() == "open-home" => {
                     self.open_home(ctx);
                 }
                 // The navigator rail's toggle spans both documents for the
                 // same reason open-home does — it is the window's verb, not
-                // one view's — so it is intercepted here rather than inside
-                // the per-view match, which would send it to a model that
+                // one document's — so it is intercepted here rather than
+                // inside the branch, which would send it to a model that
                 // silently no-ops an unknown verb.
                 Request::Verb(verb) if verb.as_str() == NAVIGATOR_TOGGLE => {
                     self.toggle_navigator_focus(ctx);
                 }
-                Request::Verb(verb) => match view {
-                    ViewKind::Charts => {
-                        if verb.as_str() == "clear-selection" {
-                            self.charts.doc.clear_selection();
-                            ctx.request_repaint();
-                        } else if navigation_verb(&mut self.charts.doc, verb.as_str()) {
-                            ctx.request_repaint();
-                        }
+                Request::Verb(verb) if graph_on_canvas => {
+                    self.protocol.doc.model.dispatch(verb.as_str());
+                }
+                Request::Verb(verb) => {
+                    if verb.as_str() == "clear-selection" {
+                        self.charts.doc.clear_selection();
+                        ctx.request_repaint();
+                    } else if navigation_verb(&mut self.charts.doc, verb.as_str()) {
+                        ctx.request_repaint();
                     }
-                    ViewKind::Protocol => {
-                        self.protocol.doc.model.dispatch(verb.as_str());
-                    }
-                },
+                }
                 Request::Open(id) => self.open_start(ctx, id),
                 Request::Focus(key) => {
                     self.ws_mut().set_focus(key);
@@ -3354,14 +3308,12 @@ impl MeridianApp {
     /// a `Cannot render …` banner raised on the front door, about a document
     /// that was no longer open.
     ///
-    /// `active()` is reset to `ViewKind::ALL[0]`, the same "no opinion"
-    /// default [`Workspace::new`] boots with. Emptying the two documents
-    /// above does not read it: `open_chart` and `ProtocolDoc::open` each act
-    /// on their own document directly. `title_band` does read it, though, to
-    /// decide whether to draw the protocol's flow toggle — so leaving it
-    /// unset left that toggle drawing for the `ProtocolModel` this call just
-    /// emptied, and a click on it dispatched `toggle_flow` to a document with
-    /// no assets left. Held by
+    /// Nothing else has to be reset, and that is the point of deriving what
+    /// the canvas holds rather than recording it: emptying the two documents
+    /// *is* the state change. A recorded active view used to survive this call
+    /// and leave `title_band` drawing the protocol's flow toggle for the
+    /// `ProtocolModel` that had just been emptied, so a click on it dispatched
+    /// `toggle_flow` to a document with no assets left. Held by
     /// `going_home_from_a_protocol_leaves_no_protocol_control_behind`.
     fn open_home(&mut self, ctx: &egui::Context) {
         if self.front_door_is_live() {
@@ -3369,44 +3321,52 @@ impl MeridianApp {
         }
         self.open_chart(Composed::empty());
         self.protocol.doc.open(ProtocolInputs::empty());
-        self.ws_mut().set_active(ViewKind::ALL[0]);
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
         ctx.request_repaint();
     }
 
-    /// What the document filling `view` calls itself — the noun a Protocols
-    /// row draws, and the same string [`MeridianApp::title`] builds the window
-    /// title from, without its `Protocol · ` prefix.
-    fn subject_name(&self, view: ViewKind) -> String {
-        match view {
-            ViewKind::Charts => self.charts.doc.title().to_string(),
-            ViewKind::Protocol => self.protocol.doc.model.protocol.clone(),
+    /// What **this window** calls itself — the noun a Protocols row draws, and
+    /// the same string [`MeridianApp::title`] builds the window title from,
+    /// without its `Protocol · ` prefix.
+    fn subject_name(&self) -> String {
+        if self.graph_on_canvas() {
+            self.protocol.doc.model.protocol.clone()
+        } else {
+            self.charts.doc.title().to_string()
         }
     }
 
-    /// The run state recorded for the document filling `view` — what a
-    /// Protocols row draws beside the name.
+    /// The run state **this window** was last seen in — what a Protocols row
+    /// draws beside the name.
     ///
-    /// A chart document reads [`RunState::NeverRun`]: its tables are
-    /// materialised by the engine as it composes and no run contract is
-    /// written, so there is no run to report, and reporting one would be the
-    /// shell computing what the engine is the thing that computes. A protocol
-    /// document folds what its contract recorded, in
-    /// [`ProtocolModel::recorded_run_state`].
-    fn recorded_run_state(&self, view: ViewKind) -> RunState {
-        match view {
-            ViewKind::Charts => RunState::NeverRun,
-            ViewKind::Protocol => self.protocol.doc.model.recorded_run_state(),
-        }
+    /// The window's, not the opened start's, and that is the difference that
+    /// stops the front door's Protocols heading lying. A window is one
+    /// Protocol whose panes may be a chart, a grid or the asset graph, so the
+    /// run state of the row it leaves behind is the run state of that
+    /// Protocol: whatever the run contract behind this window recorded, folded
+    /// by [`ProtocolModel::recorded_run_state`]. Reading it off the start
+    /// instead answered [`RunState::NeverRun`] for anything that opened a
+    /// chart — including a chart opened into a window whose protocol *had*
+    /// run, where the row then contradicted the window it came from.
+    ///
+    /// A window with no protocol behind it folds to
+    /// [`RunState::NeverRun`] anyway, which is the honest answer for a
+    /// Protocol nothing has run: a chart's tables are materialised by the
+    /// engine as it composes and no run contract is written, so there is no
+    /// run to report, and reporting one would be the shell computing what the
+    /// engine is the thing that computes.
+    fn recorded_run_state(&self) -> RunState {
+        self.protocol.doc.model.recorded_run_state()
     }
 
-    /// Open the shipped starting point `id` into the view it fills.
+    /// Open the shipped starting point `id` into the document it fills.
     ///
     /// **The second click.** It has to land on a rendered result, not on an
     /// instrument: the document is replaced with a *composed* dashboard or a
-    /// *built* graph, its canvas is invalidated so the next frame rasters the
-    /// new one, and the view holding it is made active. There is no editor in
-    /// between, no path to type and no buffer to fill.
+    /// *built* graph and its canvas is invalidated so the next frame rasters
+    /// the new one. What the window then shows follows from the documents —
+    /// see [`graph_takes_the_canvas`]. There is no editor in between, no path
+    /// to type and no buffer to fill.
     ///
     /// It also records the id in the live layout, which is what lets a later
     /// launch restore this rather than show the front door again — the whole
@@ -3439,7 +3399,6 @@ impl MeridianApp {
                 return;
             }
         };
-        let view = opened.view();
         match opened {
             // A new chart document is a new set of things to say, and a
             // reason to stop saying the last one's.
@@ -3453,15 +3412,15 @@ impl MeridianApp {
             crate::starts::Opened::Protocol(inputs) => self.protocol.doc.open(*inputs),
         }
         self.notifications.dismiss(banner);
-        self.ws_mut().set_active(view);
         self.layout.live_mut().opened = Some(id.to_string());
         // …and remembered as a Protocol, which is the other half: `opened` is
         // what the next launch restores, and this is what the door lists. The
-        // name and the run state are read off the document that was just
-        // opened rather than off the start, because a start's label is a verb
-        // for a button and its run state is not a property of a start at all.
-        let name = self.subject_name(view);
-        let run = self.recorded_run_state(view);
+        // name and the run state are read off **this window** rather than off
+        // the start — a start's label is a verb for a button, its run state is
+        // not a property of a start at all, and the row the door draws is a
+        // row for the Protocol the window is.
+        let name = self.subject_name();
+        let run = self.recorded_run_state();
         self.layout.live_mut().remember(id, &name, run, now_secs());
         self.toasts.push(Toast::new(
             Severity::Success,
@@ -3500,9 +3459,9 @@ impl MeridianApp {
         }
     }
 
-    /// Open the data file at `chosen` into the charts view: the file as a live
-    /// DuckDB view, the dashboard generated over it, and the Data pane beside
-    /// the chart reading the file's own rows back.
+    /// Open the data file at `chosen` into the chart document: the file as a
+    /// live DuckDB view, the dashboard generated over it, and the Data pane
+    /// beside the chart reading the file's own rows back.
     ///
     /// **Public, and taking a string rather than a dialog result.** The dialog
     /// is one line in [`crate::data_file`] and a headless test may not open
@@ -3539,7 +3498,6 @@ impl MeridianApp {
         };
         self.adopt_chart_boot(boot);
         self.notifications.dismiss(banner);
-        self.ws_mut().set_active(ViewKind::Charts);
         self.toasts.push(Toast::new(
             Severity::Success,
             format!("Opened {}", self.title()),
@@ -3900,11 +3858,10 @@ impl MeridianApp {
     /// One gallery card: the start's pre-rendered thumbnail, its label and
     /// its one-line summary, the whole card clickable.
     ///
-    /// A card whose start fills a view is also recorded under that view's
-    /// canvas pane key in [`Self::affordances`] — on a door frame it *is*
-    /// where the way in that fills that pane was drawn, so
-    /// [`MeridianApp::affordance_rect`] keeps one answer across both
-    /// arrangements of the same affordance.
+    /// A card is also recorded under the pane its start fills in
+    /// [`Self::affordances`] — on a door frame it *is* where the way in that
+    /// fills that pane was drawn, so [`MeridianApp::affordance_rect`] keeps
+    /// one answer across both arrangements of the same affordance.
     fn door_card(
         &mut self,
         ui: &mut egui::Ui,
@@ -3984,13 +3941,12 @@ impl MeridianApp {
         }
 
         self.door_cards.push((start.id, rect));
-        let fills_its_view = crate::starts::for_view(start.view).map(|s| s.id) == Some(start.id);
-        if fills_its_view {
-            let pane = match start.view {
-                ViewKind::Charts => PaneKey::new(ViewKind::Charts, CHART),
-                ViewKind::Protocol => PaneKey::new(ViewKind::Protocol, PROTOCOL_CANVAS),
-            };
-            self.affordances.push((pane, rect));
+        // The card is recorded under the pane it fills only when it is the one
+        // that pane's own empty state would offer — `for_pane` hands an empty
+        // pane the FIRST start that fills it, so a second start for the same
+        // pane is on the gallery and not on that button.
+        if crate::starts::for_pane(start.fills).map(|s| s.id) == Some(start.id) {
+            self.affordances.push((PaneKey::new(start.fills), rect));
         }
         if response.clicked() {
             requests.push(Request::Open(start.id));
@@ -4038,11 +3994,11 @@ impl MeridianApp {
     /// model's sheet flag (so the `shift-S`/`Esc` keys drive it).
     fn set_active_tab(&mut self) {
         let show_sheet = self.protocol.doc.model.show_sheet();
-        let tree = self.ws_mut().tree_mut(ViewKind::Protocol);
-        let Some(canvas) = tile_of(tree, PaneKey::new(ViewKind::Protocol, PROTOCOL_CANVAS)) else {
+        let tree = self.ws_mut().tree_mut();
+        let Some(canvas) = tile_of(tree, PaneKey::new(PROTOCOL_CANVAS)) else {
             return;
         };
-        let Some(steps) = tile_of(tree, PaneKey::new(ViewKind::Protocol, STEPS)) else {
+        let Some(steps) = tile_of(tree, PaneKey::new(STEPS)) else {
             return;
         };
         let want = if show_sheet { steps } else { canvas };
@@ -4057,7 +4013,7 @@ impl MeridianApp {
     /// After rendering: read a manual tab click back into the model (so a
     /// pointer click on the Steps tab also opens the sheet, and Canvas closes it).
     fn read_active_tab(&mut self) {
-        if let Some(show) = steps_tab_is_active(self.ws().tree(ViewKind::Protocol)) {
+        if let Some(show) = steps_tab_is_active(self.ws().tree()) {
             self.protocol.doc.model.set_show_sheet(show);
         }
     }
@@ -4065,24 +4021,26 @@ impl MeridianApp {
     /// Declare which panes this frame laid out, so each host can free the canvas
     /// slot of any pane that has gone.
     ///
-    /// **Every pane of every view, every frame** — including the whole of the
-    /// view that was not drawn, and including a canvas tabbed out of sight.
-    /// `end_frame` frees any slot that neither presented this frame nor appears
-    /// in the set it is handed, while `present` caches its texture id across
-    /// frames and returns early on an unchanged key. Naming only the drawn
-    /// view's panes would therefore free the other view's texture and leave a
-    /// dangling id the instant the user switched back. The failure in the other
-    /// direction is a leak, which is the safe one to be wrong in.
+    /// **Every pane in the window, every frame**, handed to both documents —
+    /// including panes the other document owns, and including a canvas tabbed
+    /// out of sight. `end_frame` frees any slot that neither presented this
+    /// frame nor appears in the set it is handed, while `present` caches its
+    /// texture id across frames and returns early on an unchanged key. Naming
+    /// only the panes of the document on the canvas would therefore free the
+    /// other's texture and leave a dangling id the instant the canvas changed
+    /// hands. A superset frees nothing it should not: a document has no slot
+    /// filed under another's pane key, so the extra names match nothing. The
+    /// failure in the other direction is a leak, which is the safe one to be
+    /// wrong in.
     fn sweep(&mut self) {
-        let charts: BTreeSet<PaneKey> = self.ws().panes(ViewKind::Charts).into_iter().collect();
-        self.charts.doc.sweep(&charts);
-        let protocol: BTreeSet<PaneKey> = self.ws().panes(ViewKind::Protocol).into_iter().collect();
-        self.protocol.doc.sweep(&protocol);
+        let panes: BTreeSet<PaneKey> = self.ws().panes().into_iter().collect();
+        self.charts.doc.sweep(&panes);
+        self.protocol.doc.sweep(&panes);
     }
 }
 
-/// Whether the protocol view's tab strip has the steps sheet in front, or
-/// `None` when this tree has no such strip.
+/// Whether the window's tab strip has the steps sheet in front, or `None`
+/// when this tree has no such strip.
 ///
 /// The one reader of the strip, so the restore path and the click-back path
 /// cannot disagree about which tab means what:
@@ -4090,7 +4048,7 @@ impl MeridianApp {
 /// and [`MeridianApp::read_active_tab`] reads a user's click out of it after
 /// each one.
 fn steps_tab_is_active(tree: &egui_tiles::Tree<PaneKey>) -> Option<bool> {
-    let steps = tile_of(tree, PaneKey::new(ViewKind::Protocol, STEPS))?;
+    let steps = tile_of(tree, PaneKey::new(STEPS))?;
     let tabs_id = tabs_holding(tree, steps)?;
     let Some(Tile::Container(Container::Tabs(tabs))) = tree.tiles.get(tabs_id) else {
         return None;
@@ -4263,15 +4221,6 @@ fn relative_time(now: u64, then: u64) -> String {
 /// test that presses it.
 pub const NAVIGATOR_TOGGLE: &str = "toggle-outline-rail";
 
-/// The other view of the two — where focus goes looking when the active view
-/// has none.
-const fn other_view(view: ViewKind) -> ViewKind {
-    match view {
-        ViewKind::Charts => ViewKind::Protocol,
-        ViewKind::Protocol => ViewKind::Charts,
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Reading the arrangement
 // ---------------------------------------------------------------------------
@@ -4371,7 +4320,7 @@ fn draw_protocol_pane(
     requests: &mut Vec<Request>,
     affordances: &mut Vec<(PaneKey, egui::Rect)>,
 ) {
-    let mut key = PaneKey::new(ViewKind::Protocol, item);
+    let mut key = PaneKey::new(item);
     let Some(tile) = ws.tile_of(key) else {
         return;
     };
@@ -4407,7 +4356,7 @@ fn draw_chart_pane(
     requests: &mut Vec<Request>,
     affordances: &mut Vec<(PaneKey, egui::Rect)>,
 ) {
-    let mut key = PaneKey::new(ViewKind::Charts, item);
+    let mut key = PaneKey::new(item);
     let Some(tile) = ws.tile_of(key) else {
         return;
     };

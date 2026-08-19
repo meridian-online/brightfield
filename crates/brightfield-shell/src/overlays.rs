@@ -50,7 +50,7 @@ use meridian_egui::{PickerDelegate, PickerHint, PickerOutcome, PickerRow};
 // ---------------------------------------------------------------------------
 
 /// The verb longnames the chart view's palette lists — exactly what
-/// `MeridianApp::apply`'s `ViewKind::Charts` arm dispatches (`clear-selection`,
+/// `MeridianApp::apply`'s chart arm dispatches (`clear-selection`,
 /// the navigation family), plus `open-home`, which that method handles before
 /// the per-view match runs, so it takes effect no matter which view is
 /// active. (`apply` is private, so this names it as plain code rather than

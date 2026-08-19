@@ -19,7 +19,6 @@ use crate::design::Mode;
 use crate::pipeline::Composed;
 use crate::protocol::host_on_device;
 use crate::window::{Boot, MeridianApp};
-use brightfield_workbench::ViewKind;
 
 /// The device pixel ratio a capture runs at when nobody names one — what
 /// `brightfield-shot` uses without `--scale`, and a HiDPI screen's ratio.
@@ -61,13 +60,14 @@ pub fn headless_device() -> Result<(wgpu::Device, wgpu::Queue), String> {
 /// point, optionally applying one scripted frame of events per entry in
 /// `script`. Returns the device pixel dimensions written.
 ///
-/// **One entry point for both views.** It used to be two — `capture_png` over
-/// the chart shell and `capture_protocol_png` over the protocol shell — and
-/// those two functions were two of the four places the old fork was
+/// **One entry point for both documents.** It used to be two — `capture_png`
+/// over the chart shell and `capture_protocol_png` over the protocol shell —
+/// and those two functions were two of the four places the old fork was
 /// load-bearing: each constructed a different shell, read a different
 /// `window_size`, and could only ever photograph the surface it was named
-/// after. [`Boot`] carries which view opens and both documents' contents, so
-/// what used to be the choice of function is now a field.
+/// after. [`Boot`] carries both documents' contents and derives which one the
+/// canvas holds, so what used to be the choice of function is now the
+/// contents.
 ///
 /// The window is sized from the boot's content, which is the right answer for
 /// every boot that *has* content and a wrong one for [`Boot::empty`] — an
@@ -85,12 +85,7 @@ pub fn capture_png(
     out: &Path,
     script: Vec<Vec<egui::Event>>,
 ) -> Result<(u32, u32), String> {
-    // Every boot that reaches here came through `Boot::open`, `Boot::charts`
-    // or `Boot::protocol`, each of which names a view, so the fallback below
-    // is unreachable. It is spelled out at the call site rather than hidden
-    // inside the getter — a baked-in default is how a boot that named no view
-    // once answered `main`'s title and summary for the wrong document.
-    let size = boot.window_size(boot.view_or(ViewKind::Charts));
+    let size = boot.window_size();
     capture_png_at(boot, mode, scale, size, out, script)
 }
 
@@ -414,7 +409,7 @@ pub fn bench_frames(
     let chart_host = host_on_device(device.clone(), queue.clone(), egui_renderer.clone());
     let protocol_host = host_on_device(device.clone(), queue.clone(), egui_renderer.clone());
 
-    let (win_w, win_h) = boot.window_size(boot.view_or(ViewKind::Charts));
+    let (win_w, win_h) = boot.window_size();
     let mut app = MeridianApp::new(boot, chart_host, protocol_host, mode);
 
     let ctx = egui::Context::default();

@@ -143,7 +143,7 @@
 //! that one's render gate is the network-gated test beside it, run on demand
 //! rather than in CI.
 
-use brightfield_workbench::ViewKind;
+use brightfield_workbench::ItemId;
 
 use crate::design::Mode;
 use crate::pipeline::{Composed, LiveDashboard};
@@ -172,8 +172,14 @@ pub struct Start {
     pub label: &'static str,
     /// One line under the label on the gallery card: what the click lands on.
     pub summary: &'static str,
-    /// The view it fills — and therefore the view whose empty state offers it.
-    pub view: ViewKind,
+    /// The pane it fills — and therefore the pane whose empty state offers
+    /// it.
+    ///
+    /// A pane rather than a document, because that is the question every
+    /// reader of this field actually asks: which empty state offers this
+    /// start, and which pane's way-in rect does the front door record its card
+    /// under. [`for_pane`] is the lookup.
+    pub fills: ItemId,
     /// A pre-rendered PNG of what this start opens onto in [`Mode::Light`],
     /// drawn on its gallery card. Committed under `assets/starts/` and held
     /// against the bundled spec by a regeneration test — never rendered live
@@ -228,7 +234,7 @@ pub struct Start {
     /// manifest start, and an arm added beside it could open a chart from
     /// other bytes. `the_spec_a_start_carries_is_the_spec_its_click_opens` is
     /// what holds the two together: it pins this field's presence to the
-    /// declared [`Start::view`], and compares what [`load`] composes against
+    /// declared [`Start::fills`], and compares what [`load`] composes against
     /// this text for every start that opens without a network.
     ///
     /// Public because what a start *declares* is decidable without composing
@@ -279,7 +285,7 @@ pub const STARTS: &[Start] = &[
         label: "Open the EDGAR ↔ GLEIF crosswalk (no run)",
         summary: "A real ten-source protocol, fetch to validated crosswalk, \
                   as a lineage graph.",
-        view: ViewKind::Protocol,
+        fills: crate::protocol::CANVAS,
         thumbnail: include_bytes!("../assets/starts/edgar-gleif-crosswalk.png"),
         thumbnail_dark: include_bytes!("../assets/starts/edgar-gleif-crosswalk-dark.png"),
         run_less: true,
@@ -292,7 +298,7 @@ pub const STARTS: &[Start] = &[
         label: "Open the signals dashboard",
         summary: "A year of generated daily readings beside their weekday \
                   profile.",
-        view: ViewKind::Charts,
+        fills: crate::app::CHART,
         thumbnail: include_bytes!("../assets/starts/signals-dashboard.png"),
         thumbnail_dark: include_bytes!("../assets/starts/signals-dashboard-dark.png"),
         run_less: false,
@@ -304,7 +310,7 @@ pub const STARTS: &[Start] = &[
         label: "Open the reading distribution",
         summary: "Five thousand generated samples, binned into a histogram \
                   in-engine.",
-        view: ViewKind::Charts,
+        fills: crate::app::CHART,
         thumbnail: include_bytes!("../assets/starts/reading-distribution.png"),
         thumbnail_dark: include_bytes!("../assets/starts/reading-distribution-dark.png"),
         run_less: false,
@@ -315,15 +321,15 @@ pub const STARTS: &[Start] = &[
         id: BREAKDOWN,
         label: "Open the activity breakdown",
         summary: "Generated events, aggregated and ranked by the engine.",
-        view: ViewKind::Charts,
+        fills: crate::app::CHART,
         thumbnail: include_bytes!("../assets/starts/activity-breakdown.png"),
         thumbnail_dark: include_bytes!("../assets/starts/activity-breakdown-dark.png"),
         run_less: false,
         remote: false,
         spec: Some(BREAKDOWN_SPEC),
     },
-    // Last on purpose. `for_view` hands an empty pane the FIRST start for its
-    // view, and an empty state whose one button can fail for want of a
+    // Last on purpose. `for_pane` hands an empty pane the FIRST start that
+    // fills it, and an empty state whose one button can fail for want of a
     // connection is a worse empty state than the one it replaced. The gallery
     // offers this alongside the rest; the pane's single button stays local.
     Start {
@@ -331,7 +337,7 @@ pub const STARTS: &[Start] = &[
         label: "Open the EDGAR ↔ GLEIF crosswalk chart (over the network)",
         summary: "The whole published crosswalk, binned and grouped in-engine \
                   — read live over https.",
-        view: ViewKind::Charts,
+        fills: crate::app::CHART,
         thumbnail: include_bytes!("../assets/starts/edgar-gleif-crosswalk-chart.png"),
         thumbnail_dark: include_bytes!("../assets/starts/edgar-gleif-crosswalk-chart-dark.png"),
         run_less: false,
@@ -346,12 +352,12 @@ pub fn find(id: &str) -> Option<&'static Start> {
     STARTS.iter().find(|s| s.id == id)
 }
 
-/// The start that fills `view`, if it has one — the first of `view`'s starts,
-/// which is what an empty pane's single button offers. The front door's
-/// gallery offers all of them.
+/// The start that fills `pane`, if this build ships one — the first of that
+/// pane's starts, which is what its empty state's single button offers. The
+/// front door's gallery offers all of them.
 #[must_use]
-pub fn for_view(view: ViewKind) -> Option<&'static Start> {
-    STARTS.iter().find(|s| s.view == view)
+pub fn for_pane(pane: ItemId) -> Option<&'static Start> {
+    STARTS.iter().find(|s| s.fills == pane)
 }
 
 /// A loaded chart start: the first composition, and the session it came off.
@@ -368,23 +374,17 @@ pub struct OpenedChart {
     pub composed: Composed,
 }
 
-/// A loaded start: the document it produced, and therefore the view it fills.
+/// A loaded start: the document it produced.
+///
+/// The window holds both documents whichever one a start filled, so this says
+/// which of the two to replace and nothing about what the window then *is* —
+/// that is [`MeridianApp`](crate::window::MeridianApp)'s to derive from the
+/// documents it ends up holding.
 pub enum Opened {
-    /// A composed dashboard for the charts view, and its live session.
+    /// A composed dashboard, and its live session.
     Charts(Box<OpenedChart>),
-    /// A built asset graph for the protocol view.
+    /// A built asset graph.
     Protocol(Box<ProtocolInputs>),
-}
-
-impl Opened {
-    /// The view this fills.
-    #[must_use]
-    pub const fn view(&self) -> ViewKind {
-        match self {
-            Opened::Charts(_) => ViewKind::Charts,
-            Opened::Protocol(_) => ViewKind::Protocol,
-        }
-    }
 }
 
 const DASHBOARD_SPEC: &str = include_str!("../assets/starts/signals-dashboard.yaml");
