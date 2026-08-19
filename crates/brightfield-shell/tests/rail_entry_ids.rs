@@ -18,14 +18,14 @@
 //!
 //! # The property is asserted by running the panes, not by reading them
 //!
-//! This file first tried to answer the question from source text: find every
-//! string literal handed to a `StatusEntry` id and report a repeat. Review
+//! This file first tried to answer the question from source text: read the
+//! string literals handed to a `StatusEntry` id and report a repeat. Review
 //! found four ways a real duplicate reaches the rail while such a scan says
 //! the tree is clean, and they are one shape — **a source-text scan cannot
 //! see through indirection.** A second caller reached through
 //! `use crate::rail::run_line as owns_it;` contains no registered call
-//! fragment. One pane's `describe` calling another's and folding the returned
-//! `Subject`'s entries into its own contains no `StatusEntry` text at all.
+//! fragment. One pane's `describe` calling another's, folding the returned
+//! `Subject`'s entries into its own, adds no `StatusEntry` text to the tree.
 //! Alias, delegation, re-export, trait dispatch, macro, closure: same
 //! problem, different clothes, and patching two of them buys finding the next
 //! two.
@@ -59,9 +59,10 @@
 //! the real window and reading `MeridianApp::rail`, which is what actually
 //! drew.
 //!
-//! **An entry that never reaches a `Subject`.** The dev gallery builds two
+//! **An entry that reaches no `Subject`.** The dev gallery builds two
 //! specimens and hands them straight to `chrome::status_rail` on its own
-//! surface, so no pane declares them and nothing can collide with them there.
+//! surface, so no pane declares them and no pane can collide with them
+//! there.
 //!
 //! For the first two of those, the residual at the foot of this file reads the
 //! id literals it can see in `crates/*/src` and requires each to be declared
@@ -184,12 +185,13 @@ fn declared_owner(id: &str) -> Option<&'static str> {
 /// One rail line a pane placed: which pane, which id.
 type Placed = (ItemId, &'static str);
 
-/// Every rail line every registered pane of `registry` places over `doc`.
+/// The rail lines the registered panes of `registry` place over `doc`.
 ///
 /// Registered rather than currently placed, which is the conservative
-/// direction: `ItemRegistry::default_tree` gives each spec a tile, and the
-/// toggles only ever *remove* panes from that, so checking the whole registry
-/// checks a superset of any arrangement the user can reach.
+/// direction: `ItemRegistry::default_tree` gives each spec a tile, and a
+/// pane's toggle verb hides a pane the registry already holds rather than
+/// introducing one, so the registry is a superset of any arrangement the user
+/// can reach.
 fn placed<D: ?Sized>(registry: &ItemRegistry<D>, doc: &D) -> Vec<Placed> {
     let mut out = Vec::new();
     for spec in registry.specs() {
