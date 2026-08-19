@@ -316,12 +316,13 @@ impl Watched {
     }
 }
 
-/// Every subset of `Activity::ALL`, each already aged past the honesty line so
-/// the log owes its entries the moment it is read.
+/// One log per subset of `Activity::ALL` — the power set, since a log holds
+/// several kinds at once — each aged past the honesty line so it owes its
+/// entries the moment it is read.
 ///
 /// Aged once and swapped in rather than begun per state: `ActivityLog::entries`
-/// withholds anything younger than [`HONESTY_LINE_MS`], so beginning work
-/// inside the matrix would mean a sleep per document.
+/// withholds work younger than [`HONESTY_LINE_MS`], so beginning it inside the
+/// matrix would mean a sleep per document.
 fn aged_activity_logs() -> Vec<(String, ActivityLog)> {
     let mut out = Vec::new();
     for mask in 0..(1u8 << Activity::ALL.len()) {
