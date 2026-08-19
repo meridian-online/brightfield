@@ -14,15 +14,13 @@
 //!
 //! So the order is written down instead. Each step says what it would catch.
 
-use std::collections::BTreeMap;
-
 use brightfield_keys::BindingContext;
 use brightfield_workbench::persist::{
     self, LoadOutcome, SavedLayout, WindowGeometry, LAYOUT_FILE, LAYOUT_VERSION, SAVE_DEBOUNCE_MS,
 };
 use brightfield_workbench::{
-    DirtyTracker, DockSide, EmptyState, Icon, Item, ItemCtx, ItemId, ItemRegistry, ItemSpec,
-    PaneKey, Slot, Subject, ViewKind, Workspace,
+    window_tree, DirtyTracker, DockSide, EmptyState, Icon, Item, ItemCtx, ItemId, ItemRegistry,
+    ItemSpec, PaneKey, Slot, Subject, Workspace,
 };
 
 // ---------------------------------------------------------------------------
@@ -53,9 +51,8 @@ impl Item<Doc> for Pane {
     fn ui(&mut self, _doc: &mut Doc, _ui: &mut egui::Ui, _cx: &mut ItemCtx<'_>) {}
 }
 
-fn registry(view: ViewKind) -> ItemRegistry<Doc> {
+fn registry() -> ItemRegistry<Doc> {
     ItemRegistry::new(
-        view,
         vec![
             ItemSpec {
                 id: CANVAS,
@@ -77,23 +74,15 @@ fn registry(view: ViewKind) -> ItemRegistry<Doc> {
 }
 
 fn defaults() -> SavedLayout {
-    let mut trees = BTreeMap::new();
-    for view in ViewKind::ALL {
-        trees.insert(view, registry(view).default_tree());
-    }
-    SavedLayout::new(Workspace::new(trees))
+    SavedLayout::new(Workspace::new(registry().default_tree()))
 }
 
 /// Give the rail a distinctive share, so "the saved arrangement came back"
 /// is a claim about an actual arrangement rather than about a default that
 /// would have been rebuilt identically anyway.
 fn arrange(layout: &mut SavedLayout, share: f32) {
-    let root = layout
-        .workspace
-        .tree(ViewKind::Charts)
-        .root()
-        .expect("a root");
-    let tiles = &mut layout.workspace.tree_mut(ViewKind::Charts).tiles;
+    let root = layout.workspace.tree().root().expect("a root");
+    let tiles = &mut layout.workspace.tree_mut().tiles;
     if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin))) =
         tiles.get_mut(root)
     {
@@ -103,13 +92,38 @@ fn arrange(layout: &mut SavedLayout, share: f32) {
 }
 
 fn share_of(layout: &SavedLayout) -> f32 {
-    let tree = layout.workspace.tree(ViewKind::Charts);
+    let tree = layout.workspace.tree();
     let root = tree.root().expect("a root");
     match tree.tiles.get(root) {
         Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin))) => {
             lin.shares[lin.children[1]]
         }
         _ => panic!("the fixture's root is a linear container"),
+    }
+}
+
+/// The same tile tree with every pane written the way [`LAYOUT_VERSION`] 1
+/// wrote one: an object carrying the view the pane belonged to alongside its
+/// item, rather than the item's own name.
+///
+/// Used to reconstruct a previous build's layout file from this build's real
+/// tree bytes, so the only hand-made part of that file is the shape under
+/// test.
+fn with_v1_pane_keys(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(s) if s == CANVAS.as_str() || s == RAIL.as_str() => {
+            serde_json::json!({ "view": "Charts", "item": s })
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.into_iter().map(with_v1_pane_keys).collect())
+        }
+        serde_json::Value::Object(fields) => serde_json::Value::Object(
+            fields
+                .into_iter()
+                .map(|(k, v)| (k, with_v1_pane_keys(v)))
+                .collect(),
+        ),
+        other => other,
     }
 }
 
@@ -175,9 +189,7 @@ fn the_layout_file_survives_a_restart_and_every_way_it_can_be_broken() {
     // Publish the vocabulary, as boot does — every view, before the file
     // is read.
     // -----------------------------------------------------------------
-    for view in ViewKind::ALL {
-        ItemId::publish(Box::leak(registry(view).ids().into_boxed_slice()));
-    }
+    ItemId::publish(Box::leak(registry().ids().into_boxed_slice()));
     assert!(ItemId::known().contains(&CANVAS));
     assert!(ItemId::known().contains(&RAIL));
 
@@ -196,7 +208,6 @@ fn the_layout_file_survives_a_restart_and_every_way_it_can_be_broken() {
         size: [1440.0, 900.0],
         position: Some([12.0, 34.0]),
     };
-    saved.workspace.set_active(ViewKind::Protocol);
     saved.save(&path).expect("the layout writes");
     assert!(path.exists(), "save() reported success without a file");
 
@@ -204,11 +215,23 @@ fn the_layout_file_survives_a_restart_and_every_way_it_can_be_broken() {
     assert_eq!(outcome, LoadOutcome::Restored, "{}", outcome.reason());
     assert_eq!(restored, saved, "the layout did not round trip");
     assert!((share_of(&restored) - 0.37).abs() < 1e-6);
-    assert_eq!(restored.workspace.active(), ViewKind::Protocol);
     assert_eq!(restored.window.position, Some([12.0, 34.0]));
-    assert_eq!(
-        restored.workspace.panes(ViewKind::Charts),
-        saved.workspace.panes(ViewKind::Charts)
+    assert_eq!(restored.workspace.panes(), saved.workspace.panes());
+
+    // A pane on disk is the item's own name and nothing else — the whole of
+    // AC3, read off the bytes rather than off the type.
+    //
+    // Would catch: a `PaneKey` that grew a field back, or lost
+    // `#[serde(transparent)]`. Either puts an object where a string belongs,
+    // and starts the file naming a concept the window does not have.
+    let bytes = std::fs::read_to_string(&path).expect("the layout is readable");
+    assert!(
+        bytes.contains("\"persist-rail\""),
+        "the rail's pane is not named by its item in the file:\n{bytes}"
+    );
+    assert!(
+        !bytes.contains("\"view\""),
+        "a pane in the layout file still names a view:\n{bytes}"
     );
 
     // Focus is deliberately not persisted: restoring a cursor the user does
@@ -217,16 +240,14 @@ fn the_layout_file_survives_a_restart_and_every_way_it_can_be_broken() {
     // Would catch: dropping the `serde(skip)`, which also puts focus into
     // the equality the dirty tracker uses and turns every click into a write.
     let mut with_focus = saved.clone();
-    assert!(with_focus
-        .workspace
-        .set_focus(PaneKey::new(ViewKind::Charts, RAIL)));
+    assert!(with_focus.workspace.set_focus(PaneKey::new(RAIL)));
     assert_eq!(
         with_focus, saved,
         "focus counts as a layout difference, so every click would rewrite the file"
     );
     with_focus.save(&path).expect("writes");
     let (back, _) = persist::load(&path, defaults);
-    assert_eq!(back.workspace.focus_in(ViewKind::Charts), None);
+    assert_eq!(back.workspace.focus(), None);
 
     // -----------------------------------------------------------------
     // Every way the file can be broken lands on the default arrangement.
@@ -295,75 +316,104 @@ fn the_layout_file_survives_a_restart_and_every_way_it_can_be_broken() {
     assert_eq!(fallback, defaults());
 
     // -----------------------------------------------------------------
-    // A file that parses, is current, and is still short a view.
+    // A layout file written by the PREVIOUS build.
     //
-    // This is the shape a layout written before a `ViewKind` was added will
-    // have on the day one is: `trees` is a map, so it simply lacks the new
-    // key, and no version bump is warranted for adding an enum variant.
-    // `Workspace` derives `Deserialize`, so `Workspace::new`'s completeness
-    // assertion never runs on this path.
+    // Version 1 wrote a *map of one tree per view* and a pane as
+    // `{"view": …, "item": …}`. This build writes one tree and a pane as the
+    // item's own name. The two shapes do not parse as each other, so the only
+    // thing between an upgrading user and `Corrupt` — "the saved layout did
+    // not parse", which sends whoever reads the log looking for a disk fault
+    // — is [`LAYOUT_VERSION`] having been bumped.
+    //
+    // Reconstructed from THIS build's own tree bytes rather than pasted, so
+    // the envelope around the shape under test is the real one.
+    //
+    // Would catch: shipping the new pane shape without the bump. Both halves
+    // are asserted, because the first alone would pass against any two
+    // different numbers: at version 1 the load is `VersionMismatch`, and the
+    // SAME bytes relabelled with this build's version are `Corrupt` — which
+    // is what makes the bump load-bearing rather than decorative.
+    let current: serde_json::Value =
+        serde_json::from_str(&saved.to_json().expect("serialises")).expect("valid json");
+    let one_tree = current["workspace"]["tree"].clone();
+    assert!(
+        !one_tree.is_null(),
+        "this build's workspace does not serialise a `tree`, so the v1 file \
+         below is reconstructed around nothing"
+    );
+    let v1_tree = with_v1_pane_keys(one_tree);
+    let mut v1 = current.clone();
+    v1["version"] = serde_json::json!(1);
+    v1["workspace"] = serde_json::json!({
+        "active": "Charts",
+        "trees": { "Charts": v1_tree.clone(), "Protocol": v1_tree },
+    });
+    std::fs::write(&path, v1.to_string()).expect("writes");
+    let (fallback, outcome) = persist::load(&path, defaults);
+    assert_eq!(
+        outcome,
+        LoadOutcome::VersionMismatch,
+        "a layout written by the previous build was read as {}",
+        outcome.reason()
+    );
+    assert_eq!(
+        fallback,
+        defaults(),
+        "the previous build's layout was not replaced by the default arrangement"
+    );
+    assert!(
+        !outcome.restored(),
+        "a discarded file reported as a restored one"
+    );
+
+    // The same bytes, relabelled: without the version bump this is what an
+    // upgrading user would have got.
+    let mut unlabelled = v1;
+    unlabelled["version"] = serde_json::json!(LAYOUT_VERSION);
+    std::fs::write(&path, unlabelled.to_string()).expect("writes");
+    let (fallback, outcome) = persist::load(&path, defaults);
+    assert_eq!(
+        outcome,
+        LoadOutcome::Corrupt,
+        "the previous build's shape parsed as this build's, so `LAYOUT_VERSION` \
+         did not need bumping and the bump above proves nothing"
+    );
+    assert_eq!(fallback, defaults());
+
+    // -----------------------------------------------------------------
+    // A file that parses, is current, and is short a pane.
+    //
+    // The shape a layout written before a pane was added has: the tree simply
+    // has no tile for it. Nothing panics — the region that would draw it
+    // draws *nothing at all*, silently, for as long as the file survives — so
+    // the load has to notice.
     //
     // Would catch: trusting the parse. Without the completeness check the
-    // outcome below is `Restored` and the *next* `tree()` for the missing
-    // view panics — a well-formed file taking the window down, on the first
-    // view switch after an upgrade, for every existing user at once.
+    // outcome below is `Restored`, the window comes up with a hole where the
+    // rail should be, and there is no message anywhere saying why.
     // -----------------------------------------------------------------
-    let mut short: serde_json::Value =
-        serde_json::from_str(&saved.to_json().expect("serialises")).expect("valid json");
-    short["workspace"]["trees"]
-        .as_object_mut()
-        .expect("trees is a map")
-        .remove("Protocol")
-        .expect("Protocol was in the file");
-    std::fs::write(&path, short.to_string()).expect("writes");
+    let mut short = SavedLayout::new(Workspace::new(window_tree(&[(CANVAS, Slot::Centre)])));
+    short.window = WindowGeometry {
+        size: [1440.0, 900.0],
+        position: Some([12.0, 34.0]),
+    };
+    assert_eq!(
+        short.workspace.panes_missing_from(&defaults().workspace),
+        vec![PaneKey::new(RAIL)],
+        "the fixture is not actually short the rail, so this proves nothing"
+    );
+    short.save(&path).expect("writes");
     let (repaired, outcome) = persist::load(&path, defaults);
     assert_eq!(outcome, LoadOutcome::Incomplete, "{}", outcome.reason());
     assert!(
         !outcome.restored(),
-        "a partial restore reported as a full one"
-    );
-    assert!(
-        repaired.workspace.missing_views().is_empty(),
-        "the load handed back a workspace that panics on its next tree()"
-    );
-    // The repair is a repair, not a reset: what the file *did* hold is still
-    // there, and the view it did not is the default one.
-    assert!(
-        (share_of(&repaired) - 0.37).abs() < 1e-6,
-        "filling a missing view threw away the arrangement of the views the file had"
+        "an arrangement the user did not make reported as a restored one"
     );
     assert_eq!(
-        repaired.workspace.panes(ViewKind::Protocol),
-        defaults().workspace.panes(ViewKind::Protocol),
-        "the filled view is not the default arrangement"
+        repaired.workspace.panes(),
+        defaults().workspace.panes(),
+        "the load handed back a workspace with a region that draws nothing"
     );
-    // …and it is reachable, which is the whole point.
-    let mut switched = repaired;
-    switched.workspace.set_active(ViewKind::Protocol);
-    assert_eq!(
-        switched.workspace.active_tree().tiles.iter().count(),
-        defaults()
-            .workspace
-            .tree(ViewKind::Protocol)
-            .tiles
-            .iter()
-            .count()
-    );
-
-    // The degenerate case of the same thing: every view missing.
-    let mut empty: serde_json::Value =
-        serde_json::from_str(&saved.to_json().expect("serialises")).expect("valid json");
-    empty["workspace"]["trees"] = serde_json::json!({});
-    std::fs::write(&path, empty.to_string()).expect("writes");
-    let (repaired, outcome) = persist::load(&path, defaults);
-    assert_eq!(outcome, LoadOutcome::Incomplete, "{}", outcome.reason());
-    assert!(repaired.workspace.missing_views().is_empty());
-    for view in ViewKind::ALL {
-        assert_eq!(
-            repaired.workspace.panes(view),
-            defaults().workspace.panes(view)
-        );
-    }
 
     // Valid JSON of the right version naming a pane this build has not got.
     let ghost = saved

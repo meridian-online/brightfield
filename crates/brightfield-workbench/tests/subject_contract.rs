@@ -21,7 +21,7 @@ use brightfield_workbench::chrome;
 use brightfield_workbench::{
     audit, Affordance, DockSide, EmptyState, Handled, HideAffordance, Icon, Item, ItemCtx, ItemId,
     ItemRegistry, ItemSpec, Mode, PaneKey, Slot, StatusEntry, StatusSide, Subject, Tone,
-    ToolbarEntry, ToolbarLocation, Verb, ViewKind,
+    ToolbarEntry, ToolbarLocation, Verb,
 };
 
 // ---------------------------------------------------------------------------
@@ -172,7 +172,6 @@ impl Item<Doc> for NotesItem {
 
 fn good_registry() -> ItemRegistry<Doc> {
     ItemRegistry::new(
-        ViewKind::Protocol,
         vec![
             ItemSpec {
                 id: LIST,
@@ -235,7 +234,6 @@ impl Item<Doc> for NoEmptyState {
 #[test]
 fn a_pane_with_no_empty_state_fails_the_gate() {
     let reg = ItemRegistry::new(
-        ViewKind::Charts,
         vec![ItemSpec {
             id: LIST,
             slot: Slot::Centre,
@@ -265,7 +263,6 @@ impl Item<Doc> for SloppyProse {
 #[test]
 fn empty_state_prose_is_held_to_the_house_style() {
     let reg = ItemRegistry::new(
-        ViewKind::Charts,
         vec![ItemSpec {
             id: LIST,
             slot: Slot::Centre,
@@ -282,7 +279,6 @@ fn empty_state_prose_is_held_to_the_house_style() {
 #[test]
 fn a_rail_with_no_toggle_verb_fails_the_gate() {
     let reg = ItemRegistry::new(
-        ViewKind::Charts,
         vec![
             ItemSpec {
                 id: LIST,
@@ -364,10 +360,9 @@ fn a_verbs_keystroke_comes_from_the_registry_not_from_a_stored_copy() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_view_needs_exactly_one_centre_pane() {
+fn a_registry_needs_exactly_one_centre_pane() {
     let two_centres = std::panic::catch_unwind(|| {
         ItemRegistry::new(
-            ViewKind::Charts,
             vec![
                 ItemSpec {
                     id: LIST,
@@ -391,7 +386,6 @@ fn a_view_needs_exactly_one_centre_pane() {
 fn duplicate_item_ids_are_refused() {
     let dup = std::panic::catch_unwind(|| {
         ItemRegistry::new(
-            ViewKind::Charts,
             vec![
                 ItemSpec {
                     id: LIST,
@@ -432,7 +426,7 @@ fn the_registry_instantiates_one_item_per_spec_keyed_by_pane() {
     let items = reg.instantiate();
     assert_eq!(items.len(), reg.specs().len());
     for spec in reg.specs() {
-        let key = PaneKey::new(ViewKind::Protocol, spec.id);
+        let key = PaneKey::new(spec.id);
         assert_eq!(items[&key].item_id(), spec.id);
     }
 }
@@ -455,28 +449,53 @@ fn tile_pane(tile: &egui_tiles::Tile<PaneKey>) -> Option<&PaneKey> {
     }
 }
 
-/// Two views' trees are built from separate arenas, so their tile ids may
-/// coincide without the two layouts ever being confused: a tile id is only
-/// meaningful inside the tree that issued it, and the pane it resolves to
-/// carries its own view.
+/// A window built from several registries lays every one of their panes into
+/// **one** tree, with each document's own centre pane sharing the centre
+/// strip.
+///
+/// The property `ItemRegistry::default_tree` cannot show on its own, and the
+/// one the shell depends on: `window_tree` refuses more than one
+/// `Slot::Centre` inside a registry and expects them across registries, so a
+/// second document's main surface has to land in the strip rather than
+/// displace the first or be dropped.
+///
+/// Would catch: a `window_tree` that took only the first centre — which
+/// compiles, draws the first document perfectly, and leaves the second's
+/// canvas pane with no tile at all, so its region draws nothing.
 #[test]
-fn two_views_can_hold_the_same_tile_ids_without_colliding() {
-    let a = good_registry().default_tree();
-    let b = ItemRegistry::new(
-        ViewKind::Charts,
-        vec![ItemSpec {
-            id: LIST,
-            slot: Slot::Centre,
-            toggle: None,
-            make: || Box::new(ListItem::default()),
-        }],
-    )
-    .default_tree();
+fn one_window_tree_holds_every_registry_s_panes_and_every_centre() {
+    let a = good_registry();
+    let b = ItemRegistry::new(vec![ItemSpec {
+        id: NOTES,
+        slot: Slot::Centre,
+        toggle: None,
+        make: || Box::new(ListItem::default()),
+    }]);
+    let mut placements = a.placements();
+    placements.extend(b.placements());
+    let tree = brightfield_workbench::window_tree(&placements);
 
-    let a_panes: Vec<PaneKey> = a.tiles.tiles().filter_map(tile_pane).copied().collect();
-    let b_panes: Vec<PaneKey> = b.tiles.tiles().filter_map(tile_pane).copied().collect();
-    assert!(a_panes.iter().all(|p| p.view == ViewKind::Protocol));
-    assert!(b_panes.iter().all(|p| p.view == ViewKind::Charts));
+    let mut panes: Vec<PaneKey> = tree.tiles.tiles().filter_map(tile_pane).copied().collect();
+    panes.sort_unstable();
+    let mut want: Vec<PaneKey> = placements
+        .iter()
+        .map(|(id, _)| PaneKey::new(*id))
+        .collect();
+    want.sort_unstable();
+    assert_eq!(panes, want, "a placement was dropped from the window's tree");
+
+    // Both centres are under one tab strip, and the first placed is active —
+    // a window whose first sight is the second document's surface would be
+    // opening on the thing the command line did not name.
+    let tabbed = brightfield_workbench::workspace::tabbed_tiles_of(&tree);
+    for centre in [LIST, NOTES] {
+        let tile = brightfield_workbench::workspace::tile_of(&tree, PaneKey::new(centre))
+            .expect("a centre pane has a tile");
+        assert!(
+            tabbed.contains(&tile),
+            "{centre} is a centre pane and is not in the centre strip"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -498,7 +517,7 @@ fn an_item_id_deserialises_only_from_the_published_vocabulary() {
     // Before publishing, the vocabulary is empty and every id is unknown —
     // which is the safe direction: a layout read before boot finishes is
     // discarded rather than trusted.
-    let json = r#"{"view":"Protocol","item":"fixture-detail"}"#;
+    let json = r#""fixture-detail""#;
     assert!(serde_json::from_str::<PaneKey>(json).is_err());
 
     static VOCAB: &[ItemId] = &[LIST, DETAIL, NOTES];
@@ -509,13 +528,13 @@ fn an_item_id_deserialises_only_from_the_published_vocabulary() {
         "nothing else in this binary may have published"
     );
 
-    let key = PaneKey::new(ViewKind::Protocol, DETAIL);
+    let key = PaneKey::new(DETAIL);
     assert_eq!(serde_json::to_string(&key).unwrap(), json);
     assert_eq!(serde_json::from_str::<PaneKey>(json).unwrap(), key);
 
     // An id this build does not have is a load failure, not a pane nothing
     // can draw.
-    let unknown = r#"{"view":"Protocol","item":"a-pane-from-the-future"}"#;
+    let unknown = r#""a-pane-from-the-future""#;
     assert!(serde_json::from_str::<PaneKey>(unknown).is_err());
 }
 
