@@ -273,10 +273,12 @@ fn a_window_publishes_both_registries_and_nothing_else() {
 ///   `chart_viewport()` would be `None` here whatever the layout did — which
 ///   is why that half is not asserted on this window.
 /// - a window holding both draws the chart's projection, and the boot's own
-///   `view` opinion does not change that. The protocol is readable in three
-///   rails of this arrangement while the canvas holds the chart, and the chart
-///   has the canvas and nothing else. This window's DAG pane has a graph in
-///   it, so its `None` is a layout answer rather than an empty state.
+///   `view` opinion does not change that. The protocol is readable in two of
+///   its three rails without a click while the canvas holds the chart — the
+///   inspector rail opens on the chart's own controls there, so the operator
+///   pane is one click away — and the chart has the canvas and nothing else.
+///   This window's DAG pane has a graph in it, so its `None` is a layout
+///   answer rather than an empty state.
 ///
 /// Watched redden, two mutations. `(_, true) => ViewKind::Charts` in
 /// `MeridianApp::draw` put back to `(false, true)` with `_ => view` fails the
@@ -1040,5 +1042,54 @@ fn the_top_bar_home_button_returns_to_the_front_door() {
         win.app.home_rect().is_none(),
         "the front door still drew a Home button — there is nowhere to go \
          home from"
+    );
+}
+
+/// Going Home from a protocol window leaves no protocol control standing on
+/// the door it returns to.
+///
+/// The test above boots chart-led (`both(ViewKind::Charts)`), so `active()`
+/// already read `Charts` before the click and the trip home had nothing to
+/// leave behind — the title band's flow toggle only draws for
+/// `active() == ViewKind::Protocol`, and a chart-led boot never holds that
+/// value to begin with. This one boots protocol-led instead, through
+/// `Boot::protocol`, the shape a single manifest on the command line actually
+/// produces — no `both()` fixture, no chart ever opened. `open_home` empties
+/// both documents in place but, without resetting `active()`, would leave it
+/// reading `Protocol` on the door it just drew — and `title_band` reads that
+/// value raw, so the toggle would still draw for a `ProtocolModel` this same
+/// call had just emptied.
+///
+/// Watched redden: removing `open_home`'s `self.ws_mut().set_active(...)`
+/// call leaves `active()` on `Protocol` after the click, and this fails at
+/// the `assert_ne!` below — `active()` reads back `Protocol` instead of
+/// something else.
+#[test]
+fn going_home_from_a_protocol_leaves_no_protocol_control_behind() {
+    let mut win = Window::open(Boot::protocol(edgar(), Flow::Vertical, None), Mode::Light);
+    win.settle();
+    assert_eq!(
+        win.app.active(),
+        ViewKind::Protocol,
+        "a protocol boot did not open on the protocol view — this test proves \
+         nothing"
+    );
+
+    let target = win
+        .app
+        .home_rect()
+        .expect("off the door, the top bar draws a Home button");
+    win.run(vec![click_at(target.center()), Vec::new()]);
+    win.settle();
+
+    assert!(
+        win.app.front_door_is_live(),
+        "clicking Home left the window on the dock"
+    );
+    assert_ne!(
+        win.app.active(),
+        ViewKind::Protocol,
+        "active() is still Protocol after Home, so the title band's flow \
+         toggle still draws for a protocol document Home just emptied"
     );
 }
