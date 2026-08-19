@@ -126,7 +126,7 @@
 //! window state none of the four frames reach.
 //!
 //! **Two registries could declare the same `ItemId`.** `ItemRegistry::new`
-//! refuses a repeat inside one registry and nothing checks across them, which
+//! refuses a repeat inside one registry, and no check spans the two, which
 //! now matters because there is one tree. That is a pane-identity question
 //! rather than a rail-id one, so it is noted here and not guarded here.
 //!
@@ -180,9 +180,11 @@ enum Owner {
     /// twice, which is the defect this gate exists for.
     One(&'static str),
     /// Any pane may report it, because the window does not rail these at all:
-    /// `status_rail_ui` filters out every entry `Activity::of_entry`
-    /// recognises and pushes one merged indicator instead, so two panes
-    /// reporting the same work say it once.
+    /// `status_rail_ui` drops an entry `Activity::of_entry` recognises and
+    /// pushes one merged indicator instead, so two panes reporting the same
+    /// work say it once. The test
+    /// `status_rail.rs::activity_reaches_the_rail_as_the_one_indicator` holds
+    /// that merge.
     ///
     /// **This exemption is not granted by saying so.**
     /// [`a_merged_id_is_one_the_shell_really_merges`] hands each id here to
@@ -416,7 +418,7 @@ fn aged_activity_logs() -> Vec<(String, ActivityLog)> {
 /// Emptiness is a crossed dimension rather than a point beside the product.
 /// An earlier draft evaluated `ChartDoc::empty()` once, with no run state, no
 /// work in flight and no watcher notice, so a line gated on an empty document
-/// *and* anything else was unreachable. That is the same shape as the gap
+/// *plus* a second condition was unreachable. That is the same shape as the gap
 /// review found between run state and activity, one dimension over.
 fn chart_states(mut body: impl FnMut(&str, &ChartDoc)) {
     let files = Watched::new();
@@ -797,8 +799,8 @@ fn the_declared_id_space_names_each_id_once() {
 /// `Owner::Merged` is the one exemption from the uniqueness rule, so it is
 /// granted by the shell's own recognition rather than by this table saying so.
 ///
-/// `status_rail_ui` drops every entry `Activity::of_entry` recognises and
-/// pushes one merged indicator instead. An id that function does not know is
+/// `status_rail_ui` drops an entry `Activity::of_entry` recognises and pushes
+/// one merged indicator instead. An id that function does not know is
 /// railed as written, so calling it merged would silence a real duplicate;
 /// an id it does know cannot collide, so calling it owned would report one
 /// that cannot happen. Both directions are checked, which is what stops the
@@ -1235,11 +1237,11 @@ const SELF_READING_DESCRIBES: &[&str] = &["crates/brightfield-shell/src/editor.r
 /// A `describe` that reads `self` *and* declares a status line can place a
 /// rail line the document cannot summon, and `(spec.make)()` hands back a pane
 /// with none of that state — so a new one would be a branch the matrix cannot
-/// reach and nothing would say so. Surveyed when `editor_states` was written:
-/// ten `Item` implementations in this workspace, and `EditorPane` is the one
-/// whose `describe` reads `self` at all. `ModuleHost::describe` reads `self`
-/// for its title and icon and declares no status line, which is why the check
-/// asks for both.
+/// reach, arriving in silence. This test is what breaks the silence. Surveyed
+/// when `editor_states` was written: ten `Item` implementations in this
+/// workspace, of which `EditorPane` is the single one whose `describe` reads
+/// `self`. `ModuleHost::describe` reads `self` for its title and icon and
+/// declares no status line, which is why the check asks for both.
 ///
 /// Line-based, and blind to the same indirection the rest of the residual is:
 /// a `describe` that delegates to a method which reads `self` is not seen
@@ -1266,8 +1268,8 @@ fn only_the_editor_reads_its_own_state_in_describe() {
                     .unwrap_or(lines.len());
                 let body = lines[i + 1..end].join("\n");
                 // Both, not either: `ModuleHost::describe` reads `self` for
-                // its title and icon and declares no status line at all, so it
-                // places nothing the registry sweep could miss.
+                // its title and icon and declares no status line, so it places
+                // no rail entry the registry sweep could miss.
                 if body.contains("self.") && body.contains("with_status") {
                     reading.push(rel.clone());
                 }
