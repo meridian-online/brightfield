@@ -1198,8 +1198,8 @@ fn opening_a_start_remembers_it_and_keeps_what_was_remembered_before() {
 /// `a_failed_step_anywhere_beats_a_success_anywhere`.
 ///
 /// Watched redden, two mutations. `MeridianApp::subject_name` returning
-/// `String::new()` for both views fails at "the record is named nothing the
-/// opened Protocol calls itself", `""` against `"edgar_gleif"`.
+/// `String::new()` for both views fails at "the record is not named after
+/// what the opened Protocol calls itself", `""` against `"edgar_gleif"`.
 /// `MeridianApp::recorded_run_state` returning `RunState::Fresh` for both
 /// views fails at "the record carries a run state the opened Protocol does not
 /// report", `Fresh` against `NeverRun`.
@@ -1220,7 +1220,7 @@ fn what_open_start_records_is_what_the_opened_document_says() {
     let recorded = by_protocol.app.layout().recents[0].clone();
     assert_eq!(
         recorded.name, protocol_name,
-        "the record is named nothing the opened Protocol calls itself"
+        "the record is not named after what the opened Protocol calls itself"
     );
     assert_eq!(
         recorded.run,
@@ -1302,7 +1302,7 @@ fn what_open_start_records_is_what_the_opened_document_says() {
 ///
 /// Watched redden, one mutation: the whole fold deleted from
 /// `ProtocolModel::recorded_run_state`, leaving it `RunState::NeverRun`, fails
-/// at "a step that succeeded is not a Protocol that has never run", `NeverRun`
+/// at "a step that succeeded folds to something other than fresh", `NeverRun`
 /// against `Fresh`.
 #[test]
 fn a_failed_step_anywhere_beats_a_success_anywhere() {
@@ -1328,12 +1328,12 @@ fn a_failed_step_anywhere_beats_a_success_anywhere() {
     assert_eq!(
         folded(&[("fetch", SeamStatus::Ok)]),
         RunState::Fresh,
-        "a step that succeeded is not a Protocol that has never run"
+        "a step that succeeded folds to something other than fresh"
     );
     assert_eq!(
         folded(&[("fetch", SeamStatus::Skipped)]),
         RunState::Fresh,
-        "a skip the engine recorded as fresh is not a Protocol that has never run"
+        "a skip the engine recorded as fresh folds to something other than fresh"
     );
     assert_eq!(
         folded(&[("fetch", SeamStatus::Failed)]),

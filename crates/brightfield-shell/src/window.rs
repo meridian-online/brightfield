@@ -269,10 +269,11 @@ const PROTOCOL_ROW_NAME_WIDTH: f32 = 260.0;
 /// One row the front door's Protocols section drew, with the text it drew.
 ///
 /// Read back through [`MeridianApp::front_door_rows`]. Each string here is
-/// the text of the galley the row laid out at that position, taken off the
-/// galley rather than off the [`Recent`] behind it — so a row built from the
-/// right record and painted from the wrong field differs here, which is the
-/// defect this type can see and the record cannot.
+/// taken off the galley the row laid out at that position — the text that
+/// galley was built from, so it cannot be one field while the paint at that
+/// position is another. A row built from the right record and painted from the
+/// wrong field differs here, which is the defect this type can see and the
+/// record cannot.
 /// `what_open_start_records_is_what_the_opened_document_says` reads the name
 /// back this way.
 ///
@@ -3818,9 +3819,9 @@ impl MeridianApp {
         // the bottom of the column still has to answer
         // [`MeridianApp::front_door_rows`] with the text it put on the screen,
         // and a galley built inside the branch would leave that answer to
-        // whichever field the push below happened to name. A laid-out galley
-        // is cached by its job, so a row nobody sees costs a cache lookup
-        // after the first frame.
+        // whichever field the push below happened to name. egui keys its
+        // galley cache on the layout job, so a row nobody sees costs a lookup
+        // rather than a fresh shaping on the frames after the first.
         let tone = chrome::tone_colour(recent.run.tone(), self.mode);
         let name = ui.painter().layout(
             recent.name.clone(),
