@@ -98,6 +98,38 @@
 //! specimens and hands them straight to `chrome::status_rail` on its own
 //! surface, so no pane declares them and no pane can collide with them there.
 //!
+//! # What is surveyed and left open
+//!
+//! Each round of review found a gap one step outside whatever the mechanism
+//! enumerated, so here is the accounting for this one, including where it
+//! stops.
+//!
+//! **What `ChartItem::describe` reads, and whether it is crossed.** The run
+//! state, the activity log, the watcher and `ChartDoc::is_empty` are each a
+//! dimension of the product above. `nav_notice`, `nav_scope_notice` and
+//! `selection_sql` are not, and cannot be: each needs a live engine session
+//! that a headless document does not have. Those are the three
+//! `Reach::Declared` rows owned by `chart-canvas`, so the accounting closes —
+//! an input that decides a chart rail line is either crossed or named.
+//!
+//! **Protocol document state is not crossed.** Two documents are driven,
+//! empty and the offline fixture, with no product over their internals. No
+//! protocol pane declares a status entry today and none reads `self`, so
+//! there is nothing there to miss; a future protocol line gated on model
+//! state would sit outside this matrix, and closing it would mean giving that
+//! document the treatment the chart document gets.
+//!
+//! **The window is driven in four frames, not a product.** A *pane* colliding
+//! with one of the window's own two ids is caught by the owner column in the
+//! sweep above, which is the stronger net and does not wait for a frame to
+//! reach it. What is left open is a third window-composed line added on some
+//! window state none of the four frames reach.
+//!
+//! **Two registries could declare the same `ItemId`.** `ItemRegistry::new`
+//! refuses a repeat inside one registry and nothing checks across them, which
+//! now matters because there is one tree. That is a pane-identity question
+//! rather than a rail-id one, so it is noted here and not guarded here.
+//!
 //! For those, the residual at the foot of this file reads the id literals it
 //! can see in `crates/*/src` and requires each to be declared in
 //! [`RAIL_IDS`]. That is a rot-check on the table, **not** the uniqueness
