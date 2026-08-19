@@ -1296,7 +1296,7 @@ pub struct MeridianApp {
     /// [`Self::inspector_panel`] rather than [`SavedLayout`], and those three
     /// are the argument: a collapsed rail is set from the same strip, at the
     /// same granularity, by the same click as which pane that strip is
-    /// showing, and none of the other three survives a launch. Restoring a
+    /// showing, and the other three are dropped at the next launch. Restoring a
     /// collapsed ledger while the pane inside it came back at whatever this
     /// build defaults to would be a half-restored rail, which reads as a bug
     /// rather than as a restore. The day the window persists how a region is
@@ -2077,7 +2077,7 @@ impl MeridianApp {
     }
 
     /// Where the collapse control of rail `id` drew in the last frame this
-    /// window drew, or `None` on a frame that rail drew none.
+    /// window drew, or `None` on a frame that rail did not draw one.
     ///
     /// The gesture that puts a rail away and brings it back, at the place a
     /// pointer would find it — recorded and read back for the reason
@@ -4435,7 +4435,7 @@ fn rail_min(region: &Region) -> f32 {
 /// # Panics
 ///
 /// If the region declares no collapsed extent — as [`band_extent`]. The draw
-/// path reaches this only for a region the arrangement says can collapse, so a
+/// path reaches this for a region the arrangement says can collapse, so a
 /// `None` here is the declaration and the draw path disagreeing about which
 /// regions those are.
 fn rail_collapsed(region: &Region) -> f32 {

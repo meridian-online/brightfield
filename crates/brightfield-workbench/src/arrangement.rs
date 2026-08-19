@@ -46,8 +46,8 @@
 //! much of that axis stays behind when they do. It sits beside [`Extent`] on
 //! [`Region`] rather than becoming a fifth case of it, and the two questions
 //! really are independent: a rail that collapses still opens at its default,
-//! still refuses to narrow past its floor, and is still resizable, so nothing
-//! [`Extent`] already answers changes when a region gains a collapsed state.
+//! still refuses to narrow past its floor, and is still resizable, so what
+//! [`Extent`] answers is unchanged when a region gains a collapsed state.
 //!
 //! A fifth variant would change the answer for the four readers that match on
 //! [`Extent`] today — `band_extent`, `rail_default` and `rail_min` in the
@@ -289,8 +289,8 @@ impl Extent {
 /// shipped answer is pinned.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Collapse {
-    /// The region is always at its [`Extent`]. Nothing draws a control that
-    /// would take its axis away.
+    /// The region stays at its [`Extent`], and the draw path puts no control
+    /// on it that would take its axis away.
     Fixed,
     /// The user may collapse the region to this many logical points of its own
     /// axis: what the window goes on drawing there, and what the arithmetic
@@ -755,8 +755,8 @@ mod tests {
         }
     }
 
-    /// The canvas every case below needs, so `audit_arrangement` is answering
-    /// the question the case asks rather than the missing-remainder one.
+    /// The canvas a case below needs, so `audit_arrangement` is answering the
+    /// question that case asks rather than the missing-remainder one.
     static ONE_CANVAS: Region = region(CANVAS, Edge::Centre, Extent::Remainder, Collapse::Fixed);
 
     #[test]

@@ -74,7 +74,7 @@ fn settled() -> MeridianApp {
 /// click is resolved against the widget id a *previous* frame registered.
 ///
 /// [`settled`] drops its context when it returns, which is enough to read a
-/// rect off and not enough to press anything. Every assertion below that
+/// rect off and not enough to press a control. An assertion below that
 /// involves a pointer goes through this instead.
 struct Live {
     app: MeridianApp,
@@ -106,8 +106,8 @@ impl Live {
         }
     }
 
-    /// Three frames of nothing happening — one more than the layout needs, for
-    /// the reason [`settled`] runs three.
+    /// Three frames with no events — one more than the layout needs, for the
+    /// reason [`settled`] runs three.
     fn settle(&mut self) {
         self.run(vec![Vec::new(), Vec::new(), Vec::new()]);
     }

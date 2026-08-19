@@ -280,9 +280,10 @@ pub fn rail_split(rect: egui::Rect) -> (egui::Rect, egui::Rect) {
 /// of identical tabs.
 ///
 /// The collapse control takes a square of [`rail_selector_height`] at the
-/// strip's trailing end and the names get what is left, so a name never sits
-/// under it. `collapse` is `None` for a rail that does not collapse, which is
-/// the arrangement's answer rather than this function's.
+/// strip's trailing end and the names get what is left, so a name that would
+/// reach under it is dropped instead. `collapse` is `None` for a rail that
+/// does not collapse, which is the arrangement's answer rather than this
+/// function's.
 ///
 /// The same strip is drawn whether the rail is open or collapsed: a bottom
 /// rail collapsed to this height is exactly this strip, so its names stay
@@ -380,11 +381,11 @@ pub fn rail_selector(
 }
 
 /// What a side rail leaves behind when it is collapsed: the control that
-/// reopens it, and nothing else.
+/// reopens it.
 ///
 /// A side rail collapses along its *width*, so what is left is
-/// [`rail_selector_height`] of width — room for one square control and none
-/// for a name. That is the difference between this and [`rail_selector`], and
+/// [`rail_selector_height`] of width — room for one square control, and too
+/// little for a name. That is the difference between this and [`rail_selector`], and
 /// it is why the arrangement declares what a region collapses to per region
 /// rather than once: the same measure reads as a whole strip on one axis and
 /// as a stub on the other.
