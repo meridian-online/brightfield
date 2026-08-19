@@ -209,12 +209,53 @@ pub fn pane_frame(ui: &mut egui::Ui, subject: &Subject, header: bool, mode: Mode
 /// The height of a rail's selector strip, in logical points.
 ///
 /// The grid rung, because the names in it are pointer targets. It is a split
-/// of the rail's rect rather than something painted inside the rail's body:
-/// the strip is what survives when the rail collapses, and a decoration
-/// inside the body would collapse with it.
+/// of the rail's rect rather than something painted inside the rail's body,
+/// and that split is what lets a collapsed rail keep its strip: a bottom rail
+/// collapsed to this height *is* its strip, names and all, while a decoration
+/// painted inside the body would have gone with the body. A side rail
+/// collapsed to this many points of width keeps the same measure and loses the
+/// names, which is what [`rail_stub`] draws.
+///
+/// Which regions collapse, and to what, is declared in
+/// [`crate::arrangement`], not decided here — see [`Collapse`] there.
+///
+/// [`Collapse`]: crate::arrangement::Collapse
 #[must_use]
 pub const fn rail_selector_height() -> f32 {
     spacing::ROW_GRID
+}
+
+/// Which way a rail's collapse control points: the direction the rail moves
+/// when it is clicked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Caret {
+    /// Points up.
+    Up,
+    /// Points down.
+    Down,
+    /// Points left.
+    Left,
+    /// Points right.
+    Right,
+}
+
+/// What one frame of a rail's strip drew, and what the pointer did to it.
+///
+/// Returned rather than kept, for the reason [`ToggleDrawn`] is: a test aims a
+/// click at a rect the frame reports, and a control nobody can find is
+/// indistinguishable from one that is not drawn.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StripDrawn {
+    /// The strip's outer rect.
+    pub rect: egui::Rect,
+    /// One rect per name, in the order they were offered.
+    pub names: Vec<egui::Rect>,
+    /// Where the collapse control drew, on a rail that declares one.
+    pub control: Option<egui::Rect>,
+    /// The name the pointer picked this frame.
+    pub picked: Option<usize>,
+    /// Whether the pointer clicked the collapse control this frame.
+    pub toggled: bool,
 }
 
 /// A rail's rect, split into the strip at its head and the body under it.
@@ -227,8 +268,9 @@ pub fn rail_split(rect: egui::Rect) -> (egui::Rect, egui::Rect) {
     )
 }
 
-/// The strip that says which of a rail's panes is showing, and returns the
-/// index of the name that was clicked this frame.
+/// The strip that says which of a rail's panes is showing, and — on a rail
+/// the arrangement declares collapsible — the control that puts the rail away
+/// and brings it back.
 ///
 /// Drawn as names with a rule under the live one — the shape a reader already
 /// reads as "one of these", and deliberately not the shape
@@ -236,13 +278,25 @@ pub fn rail_split(rect: egui::Rect) -> (egui::Rect, egui::Rect) {
 /// rail's panes are alternatives; the canvas's projections are two readings of
 /// one thing) and drawing them alike is what made the window read as two rows
 /// of identical tabs.
+///
+/// The collapse control takes a square of [`rail_selector_height`] at the
+/// strip's trailing end and the names get what is left, so a name never sits
+/// under it. `collapse` is `None` for a rail that does not collapse, which is
+/// the arrangement's answer rather than this function's.
+///
+/// The same strip is drawn whether the rail is open or collapsed: a bottom
+/// rail collapsed to this height is exactly this strip, so its names stay
+/// drawn and stay clickable, and
+/// `the_collapsed_ledger_keeps_its_selector_strip_and_reopens_from_it` aims a
+/// click at one of them.
 pub fn rail_selector(
     ui: &mut egui::Ui,
     rect: egui::Rect,
     names: &[&str],
     active: usize,
+    collapse: Option<Caret>,
     mode: Mode,
-) -> Option<usize> {
+) -> StripDrawn {
     let sem = semantic(mode.is_dark());
     ui.painter()
         .rect_filled(rect, radius::NONE, colour(sem.tabs.bar_background));
@@ -251,10 +305,21 @@ pub fn rail_selector(
         egui::Stroke::new(1.0, colour(sem.borders.subtle)),
     );
 
+    let mut control = None;
+    let mut toggled = false;
+    let mut room = rect;
+    if let Some(caret) = collapse {
+        let square = control_square(rect);
+        toggled = collapse_control(ui, square, caret, mode);
+        control = Some(square);
+        room.max.x = square.left();
+    }
+
     let font = ui_font();
     let pad = spacing::SPACE_4;
     let mut x = rect.left() + pad;
     let mut picked = None;
+    let mut drawn = Vec::with_capacity(names.len());
     for (i, name) in names.iter().enumerate() {
         let galley = ui.painter().layout_no_wrap(
             (*name).to_owned(),
@@ -266,6 +331,13 @@ pub fn rail_selector(
             egui::pos2(x - spacing::SPACE_1, rect.top()),
             egui::pos2(x + width + spacing::SPACE_1, rect.bottom()),
         );
+        if room.right() < hit.right() {
+            // No room left before the control. Stopping is the honest answer:
+            // a name drawn under the control would be a target the pointer
+            // cannot reach, which reads as a dead control.
+            break;
+        }
+        drawn.push(hit);
         let response = ui.interact(
             hit,
             ui.id().with(("rail-selector", rect.left_top().x as i32, i)),
@@ -297,7 +369,109 @@ pub fn rail_selector(
         }
         x += width + spacing::SPACE_5;
     }
-    picked
+
+    StripDrawn {
+        rect,
+        names: drawn,
+        control,
+        picked,
+        toggled,
+    }
+}
+
+/// What a side rail leaves behind when it is collapsed: the control that
+/// reopens it, and nothing else.
+///
+/// A side rail collapses along its *width*, so what is left is
+/// [`rail_selector_height`] of width — room for one square control and none
+/// for a name. That is the difference between this and [`rail_selector`], and
+/// it is why the arrangement declares what a region collapses to per region
+/// rather than once: the same measure reads as a whole strip on one axis and
+/// as a stub on the other.
+pub fn rail_stub(ui: &mut egui::Ui, rect: egui::Rect, caret: Caret, mode: Mode) -> StripDrawn {
+    let sem = semantic(mode.is_dark());
+    ui.painter()
+        .rect_filled(rect, radius::NONE, colour(sem.tabs.bar_background));
+
+    let square = control_square(rect);
+    let toggled = collapse_control(ui, square, caret, mode);
+    StripDrawn {
+        rect,
+        names: Vec::new(),
+        control: Some(square),
+        picked: None,
+        toggled,
+    }
+}
+
+/// The square the collapse control takes: [`rail_selector_height`] on a side,
+/// anchored at the strip's trailing top corner, and clipped to a strip too
+/// small to hold it.
+///
+/// One rule for both pictures. On a bottom rail's full-width strip it is the
+/// right-hand end; on a side rail's stub, whose width is that same measure, it
+/// is the whole head of the stub.
+fn control_square(rect: egui::Rect) -> egui::Rect {
+    let side = rail_selector_height().min(rect.width()).min(rect.height());
+    egui::Rect::from_min_size(
+        egui::pos2(rect.right() - side, rect.top()),
+        egui::vec2(side, side),
+    )
+}
+
+/// The caret that collapses a rail and reopens it, and whether it was clicked.
+///
+/// A chevron rather than a glyph because the Meridian icon set has not landed
+/// here — see the module docs — and a chevron is two strokes off the row's own
+/// binding rather than a shape invented at a call site.
+fn collapse_control(ui: &mut egui::Ui, square: egui::Rect, caret: Caret, mode: Mode) -> bool {
+    let sem = semantic(mode.is_dark());
+    let b = control::binding(rail_selector_height());
+    let response = ui.interact(
+        square,
+        ui.id().with((
+            "rail-collapse",
+            square.left_top().x as i32,
+            square.left_top().y as i32,
+        )),
+        egui::Sense::click(),
+    );
+    let ink = if response.hovered() {
+        sem.text.secondary
+    } else {
+        sem.tabs.foreground
+    };
+
+    let centre = square.center();
+    let arm = b.icon / 3.0;
+    let points = match caret {
+        Caret::Up => vec![
+            egui::pos2(centre.x - arm, centre.y + arm / 2.0),
+            egui::pos2(centre.x, centre.y - arm / 2.0),
+            egui::pos2(centre.x + arm, centre.y + arm / 2.0),
+        ],
+        Caret::Down => vec![
+            egui::pos2(centre.x - arm, centre.y - arm / 2.0),
+            egui::pos2(centre.x, centre.y + arm / 2.0),
+            egui::pos2(centre.x + arm, centre.y - arm / 2.0),
+        ],
+        Caret::Left => vec![
+            egui::pos2(centre.x + arm / 2.0, centre.y - arm),
+            egui::pos2(centre.x - arm / 2.0, centre.y),
+            egui::pos2(centre.x + arm / 2.0, centre.y + arm),
+        ],
+        Caret::Right => vec![
+            egui::pos2(centre.x - arm / 2.0, centre.y - arm),
+            egui::pos2(centre.x + arm / 2.0, centre.y),
+            egui::pos2(centre.x - arm / 2.0, centre.y + arm),
+        ],
+    };
+    ui.painter().add(egui::Shape::line(
+        points,
+        egui::Stroke::new(1.5, colour(ink)),
+    ));
+
+    response.clicked()
 }
 
 /// What one frame of a [`projection_toggle`] drew, and what it was asked for.

@@ -1106,6 +1106,8 @@ struct RegionPicks {
     ledger: Option<usize>,
     /// The pane the inspector rail's strip was clicked to.
     inspector: Option<usize>,
+    /// The rails whose collapse control was clicked this frame.
+    collapse: Vec<RegionId>,
 }
 
 /// Which grammar overlay is open over the workspace, holding the live
@@ -1285,6 +1287,40 @@ pub struct MeridianApp {
     /// green whatever the window does. Read back through
     /// [`MeridianApp::region_rect`].
     regions: Vec<(RegionId, egui::Rect)>,
+    /// The regions the user has put away this session, by the id the
+    /// arrangement declares them under.
+    ///
+    /// # Why this is session state and not in the saved layout
+    ///
+    /// It joins [`Self::projection`], [`Self::ledger_panel`] and
+    /// [`Self::inspector_panel`] rather than [`SavedLayout`], and those three
+    /// are the argument: a collapsed rail is set from the same strip, at the
+    /// same granularity, by the same click as which pane that strip is
+    /// showing, and none of the other three survives a launch. Restoring a
+    /// collapsed ledger while the pane inside it came back at whatever this
+    /// build defaults to would be a half-restored rail, which reads as a bug
+    /// rather than as a restore. The day the window persists how a region is
+    /// presented, it persists the four together, at one [`LAYOUT_VERSION`]
+    /// bump — and because the collapsed extent is declared in
+    /// [`brightfield_workbench::arrangement`], [`chrome_budget`] gains a term
+    /// that reads it rather than a number of its own.
+    ///
+    /// The comparison that settles it the other way is focus, which
+    /// [`Workspace`] excludes from its own equality *because* it is
+    /// transient. That is not this: a rail the user put away is visible, and
+    /// they know they put it there.
+    ///
+    /// [`LAYOUT_VERSION`]: brightfield_workbench::persist::LAYOUT_VERSION
+    collapsed: BTreeSet<RegionId>,
+    /// What each rail's strip drew in the last frame this window drew — the
+    /// names and the collapse control, in window-space logical points.
+    ///
+    /// Recorded for the reason [`Self::regions`] is: the test that a collapsed
+    /// rail can be reopened has to click the control where it was laid out,
+    /// and the control is drawn by the chrome, so nothing else knows. Read
+    /// back through [`MeridianApp::rail_collapse_rect`] and
+    /// [`MeridianApp::rail_name_rect`].
+    strips: Vec<(RegionId, chrome::StripDrawn)>,
     /// Which of the canvas's projections is showing — an index into the
     /// arrangement's declared projections.
     projection: usize,
@@ -1621,6 +1657,8 @@ impl MeridianApp {
             mode,
             fonts_installed: false,
             regions: Vec::new(),
+            collapsed: BTreeSet::new(),
+            strips: Vec::new(),
             // The chart's drawn reading, not its tabular one: a window that
             // opens on a grid of numbers has buried the picture it exists to
             // present. The index is into the arrangement's declared
@@ -2038,6 +2076,30 @@ impl MeridianApp {
         &self.regions
     }
 
+    /// Where the collapse control of rail `id` drew in the last frame this
+    /// window drew, or `None` on a frame that rail drew none.
+    ///
+    /// The gesture that puts a rail away and brings it back, at the place a
+    /// pointer would find it — recorded and read back for the reason
+    /// [`MeridianApp::home_rect`] is.
+    #[must_use]
+    pub fn rail_collapse_rect(&self, id: RegionId) -> Option<egui::Rect> {
+        self.strips
+            .iter()
+            .find(|(r, _)| *r == id)
+            .and_then(|(_, strip)| strip.control)
+    }
+
+    /// Where the `index`-th name in rail `id`'s strip drew in the last frame,
+    /// or `None` where that rail drew no such name.
+    #[must_use]
+    pub fn rail_name_rect(&self, id: RegionId, index: usize) -> Option<egui::Rect> {
+        self.strips
+            .iter()
+            .find(|(r, _)| *r == id)
+            .and_then(|(_, strip)| strip.names.get(index).copied())
+    }
+
     /// Where the canvas toggle drew each of its segments in the last frame,
     /// left to right — empty on a frame that drew no toggle.
     ///
@@ -2385,6 +2447,7 @@ impl MeridianApp {
         // declared there.
         let plan = arrangement::default_arrangement();
         self.regions.clear();
+        self.strips.clear();
         // Cleared once per frame rather than per `PaneChrome`: several regions
         // build one each, and clearing on construction meant the last one wiped
         // what the earlier ones recorded.
@@ -2485,6 +2548,13 @@ impl MeridianApp {
             let ledger_panel = self.ledger_panel.min(ledger_panes.len() - 1);
             let inspector_panel = self.inspector_panel.min(inspector_panes.len() - 1);
 
+            // Read before the borrows below take this app apart field by
+            // field, so each rail's block has a plain `bool` rather than a
+            // second borrow of `self`.
+            let ledger_collapsed = self.collapsed.contains(&ledger.id);
+            let navigator_collapsed = self.collapsed.contains(&navigator.id);
+            let inspector_collapsed = self.collapsed.contains(&inspector.id);
+
             // Each strip's words are the panes' own `Subject` titles, read
             // before the closures below take their borrows of the documents.
             let ledger_labels = self.pane_titles(ledger_panes);
@@ -2501,6 +2571,7 @@ impl MeridianApp {
                 .unwrap_or_else(|| self.pane_title_of(graph));
 
             let mut regions = std::mem::take(&mut self.regions);
+            let mut strips = std::mem::take(&mut self.strips);
             let mut canvas_toggle: Vec<egui::Rect> = Vec::new();
             let mut picks = RegionPicks::default();
             let (ws, charts, protocol, affordances) = (
@@ -2532,136 +2603,226 @@ impl MeridianApp {
 
             // ---- the ledger rail, before the side rails so it spans the
             // window's width and they stop above it.
-            let drawn = Panel::bottom("bf-ledger-rail")
-                .default_size(rail_default(ledger))
-                .min_size(rail_min(ledger))
-                .resizable(true)
-                .frame(rail_frame)
-                .show(ui, |ui| {
-                    // `Panel::resizable`'s own doc: a resizable panel whose
-                    // content does not claim the available space shrinks to
-                    // content instead of holding its declared size, and egui
-                    // *persists* the narrower number for next frame. This is
-                    // the claim, on the axis this rail is resizable along.
-                    ui.set_min_height(ui.available_height());
-                    ui.set_min_width(ui.available_width());
-                    let (strip, body) = chrome::rail_split(ui.max_rect());
-                    picks.ledger = chrome::rail_selector(
+            //
+            // Collapsed, it is a second `Panel` under a second id rather than
+            // the same one at a smaller size, and the id is the mechanism:
+            // egui stores a panel's size per id, so drawing the open rail's id
+            // at the collapsed measure would overwrite the extent the user
+            // dragged it to and reopening would come back at that measure.
+            // Two ids keep the two sizes apart, which is what
+            // `a_rail_reopens_at_the_extent_it_was_dragged_to` measures.
+            // egui's own `Panel::show_switched` carries the same rule as a
+            // `debug_assert`.
+            let ledger_panel_widget = if ledger_collapsed {
+                Panel::bottom("bf-ledger-rail-collapsed")
+                    .resizable(false)
+                    .exact_size(rail_collapsed(ledger))
+            } else {
+                Panel::bottom("bf-ledger-rail")
+                    .default_size(rail_default(ledger))
+                    .min_size(rail_min(ledger))
+                    .resizable(true)
+            };
+            let mut ledger_strip = None;
+            let drawn = ledger_panel_widget.frame(rail_frame).show(ui, |ui| {
+                let caret = collapse_caret(ledger.edge, ledger_collapsed);
+                if ledger_collapsed {
+                    // A bottom rail collapsed to its strip's own height *is*
+                    // the strip, so it is drawn by the same call that draws it
+                    // when the rail is open — names live, and the body absent
+                    // because there is no body left to put a pane in.
+                    ledger_strip = Some(chrome::rail_selector(
                         ui,
-                        strip,
+                        ui.max_rect(),
                         &pane_labels(&ledger_labels),
                         ledger_panel,
+                        Some(caret),
                         mode,
-                    );
-                    let item = ledger_panes[ledger_panel];
-                    if item == STEPS {
-                        draw_protocol_pane(
-                            ui,
-                            body,
-                            protocol,
-                            ws,
-                            item,
-                            mode,
-                            focused,
-                            &headed,
-                            &mut requests,
-                            affordances,
-                        );
-                    } else {
-                        draw_chart_pane(
-                            ui,
-                            body,
-                            charts,
-                            ws,
-                            item,
-                            mode,
-                            focused,
-                            &headed,
-                            &mut requests,
-                            affordances,
-                        );
-                    }
-                });
-            regions.push((ledger.id, drawn.response.rect));
-
-            // ---- the navigator rail: the protocol, as an ordered spine.
-            let drawn = Panel::left("bf-navigator-rail")
-                .default_size(rail_default(navigator))
-                .min_size(rail_min(navigator))
-                .resizable(true)
-                .frame(rail_frame)
-                .show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
-                    let (strip, body) = chrome::rail_split(ui.max_rect());
-                    chrome::rail_selector(ui, strip, &pane_labels(&navigator_labels), 0, mode);
+                    ));
+                    return;
+                }
+                // `Panel::resizable`'s own doc: a resizable panel whose
+                // content does not claim the available space shrinks to
+                // content instead of holding its declared size, and egui
+                // *persists* the narrower number for next frame. This is
+                // the claim, on the axis this rail is resizable along.
+                ui.set_min_height(ui.available_height());
+                ui.set_min_width(ui.available_width());
+                let (strip, body) = chrome::rail_split(ui.max_rect());
+                ledger_strip = Some(chrome::rail_selector(
+                    ui,
+                    strip,
+                    &pane_labels(&ledger_labels),
+                    ledger_panel,
+                    Some(caret),
+                    mode,
+                ));
+                let item = ledger_panes[ledger_panel];
+                if item == STEPS {
                     draw_protocol_pane(
                         ui,
                         body,
                         protocol,
                         ws,
-                        navigator_panes[0],
+                        item,
                         mode,
                         focused,
                         &headed,
                         &mut requests,
                         affordances,
                     );
-                });
+                } else {
+                    draw_chart_pane(
+                        ui,
+                        body,
+                        charts,
+                        ws,
+                        item,
+                        mode,
+                        focused,
+                        &headed,
+                        &mut requests,
+                        affordances,
+                    );
+                }
+            });
+            if let Some(strip) = ledger_strip {
+                picks.ledger = strip.picked;
+                if strip.toggled {
+                    picks.collapse.push(ledger.id);
+                }
+                strips.push((ledger.id, strip));
+            }
+            regions.push((ledger.id, drawn.response.rect));
+
+            // ---- the navigator rail: the protocol, as an ordered spine.
+            //
+            // Two ids for the two states, as the ledger's block explains.
+            let navigator_panel_widget = if navigator_collapsed {
+                Panel::left("bf-navigator-rail-collapsed")
+                    .resizable(false)
+                    .exact_size(rail_collapsed(navigator))
+            } else {
+                Panel::left("bf-navigator-rail")
+                    .default_size(rail_default(navigator))
+                    .min_size(rail_min(navigator))
+                    .resizable(true)
+            };
+            let mut navigator_strip = None;
+            let drawn = navigator_panel_widget.frame(rail_frame).show(ui, |ui| {
+                let caret = collapse_caret(navigator.edge, navigator_collapsed);
+                if navigator_collapsed {
+                    // A side rail collapses along its width, so what is left
+                    // is that measure of *width* — a stub with room for the
+                    // control that reopens it and none for a name.
+                    navigator_strip = Some(chrome::rail_stub(ui, ui.max_rect(), caret, mode));
+                    return;
+                }
+                ui.set_min_width(ui.available_width());
+                let (strip, body) = chrome::rail_split(ui.max_rect());
+                navigator_strip = Some(chrome::rail_selector(
+                    ui,
+                    strip,
+                    &pane_labels(&navigator_labels),
+                    0,
+                    Some(caret),
+                    mode,
+                ));
+                draw_protocol_pane(
+                    ui,
+                    body,
+                    protocol,
+                    ws,
+                    navigator_panes[0],
+                    mode,
+                    focused,
+                    &headed,
+                    &mut requests,
+                    affordances,
+                );
+            });
+            if let Some(strip) = navigator_strip {
+                if strip.toggled {
+                    picks.collapse.push(navigator.id);
+                }
+                strips.push((navigator.id, strip));
+            }
             regions.push((navigator.id, drawn.response.rect));
 
             // ---- the inspector rail: what the selection is, from whichever
             // document owns the selection.
-            let drawn = Panel::right("bf-inspector-rail")
-                .default_size(rail_default(inspector))
-                .min_size(rail_min(inspector))
-                .resizable(true)
-                .frame(rail_frame)
-                .show(ui, |ui| {
-                    // Measured before this line existed: the rail's reported
-                    // rect was 200pt wide — its declared floor — by the second
-                    // frame rather than the declared 280, because a quiet
-                    // inspector does not ask for more. Watched redden without
-                    // it: `the_overlay_toggle_still_reaches_the_chart_pane`
-                    // fails, the scripted click aimed at the wider prediction
-                    // landing outside the shrunken panel.
-                    ui.set_min_width(ui.available_width());
-                    let (strip, body) = chrome::rail_split(ui.max_rect());
-                    picks.inspector = chrome::rail_selector(
+            //
+            // Two ids for the two states, as the ledger's block explains.
+            let inspector_panel_widget = if inspector_collapsed {
+                Panel::right("bf-inspector-rail-collapsed")
+                    .resizable(false)
+                    .exact_size(rail_collapsed(inspector))
+            } else {
+                Panel::right("bf-inspector-rail")
+                    .default_size(rail_default(inspector))
+                    .min_size(rail_min(inspector))
+                    .resizable(true)
+            };
+            let mut inspector_strip = None;
+            let drawn = inspector_panel_widget.frame(rail_frame).show(ui, |ui| {
+                let caret = collapse_caret(inspector.edge, inspector_collapsed);
+                if inspector_collapsed {
+                    inspector_strip = Some(chrome::rail_stub(ui, ui.max_rect(), caret, mode));
+                    return;
+                }
+                // Measured before this line existed: the rail's reported
+                // rect was 200pt wide — its declared floor — by the second
+                // frame rather than the declared 280, because a quiet
+                // inspector does not ask for more. Watched redden without
+                // it: `the_overlay_toggle_still_reaches_the_chart_pane`
+                // fails, the scripted click aimed at the wider prediction
+                // landing outside the shrunken panel.
+                ui.set_min_width(ui.available_width());
+                let (strip, body) = chrome::rail_split(ui.max_rect());
+                inspector_strip = Some(chrome::rail_selector(
+                    ui,
+                    strip,
+                    &pane_labels(&inspector_labels),
+                    inspector_panel,
+                    Some(caret),
+                    mode,
+                ));
+                let item = inspector_panes[inspector_panel];
+                if item == PROTOCOL_INSPECTOR {
+                    draw_protocol_pane(
                         ui,
-                        strip,
-                        &pane_labels(&inspector_labels),
-                        inspector_panel,
+                        body,
+                        protocol,
+                        ws,
+                        item,
                         mode,
+                        focused,
+                        &headed,
+                        &mut requests,
+                        affordances,
                     );
-                    let item = inspector_panes[inspector_panel];
-                    if item == PROTOCOL_INSPECTOR {
-                        draw_protocol_pane(
-                            ui,
-                            body,
-                            protocol,
-                            ws,
-                            item,
-                            mode,
-                            focused,
-                            &headed,
-                            &mut requests,
-                            affordances,
-                        );
-                    } else {
-                        draw_chart_pane(
-                            ui,
-                            body,
-                            charts,
-                            ws,
-                            item,
-                            mode,
-                            focused,
-                            &headed,
-                            &mut requests,
-                            affordances,
-                        );
-                    }
-                });
+                } else {
+                    draw_chart_pane(
+                        ui,
+                        body,
+                        charts,
+                        ws,
+                        item,
+                        mode,
+                        focused,
+                        &headed,
+                        &mut requests,
+                        affordances,
+                    );
+                }
+            });
+            if let Some(strip) = inspector_strip {
+                picks.inspector = strip.picked;
+                if strip.toggled {
+                    picks.collapse.push(inspector.id);
+                }
+                strips.push((inspector.id, strip));
+            }
             regions.push((inspector.id, drawn.response.rect));
 
             // ---- the canvas: the remainder, and it comes last because a
@@ -2711,15 +2872,27 @@ impl MeridianApp {
             regions.push((canvas.id, drawn.response.rect));
 
             self.regions = regions;
+            self.strips = strips;
             self.canvas_toggle = canvas_toggle;
             if let Some(next) = picks.projection {
                 self.projection = next;
             }
+            // A name picked in a collapsed rail's strip reopens it. Picking a
+            // pane you cannot see is a gesture with no result, and the strip
+            // stays live while the rail is down precisely so it is a way back
+            // in — `the_collapsed_ledger_keeps_its_selector_strip_and_reopens_from_it`.
             if let Some(next) = picks.ledger {
                 self.ledger_panel = next;
+                self.collapsed.remove(&arrangement::LEDGER_RAIL);
             }
             if let Some(next) = picks.inspector {
                 self.inspector_panel = next;
+                self.collapsed.remove(&arrangement::INSPECTOR_RAIL);
+            }
+            for id in picks.collapse {
+                if !self.collapsed.remove(&id) {
+                    self.collapsed.insert(id);
+                }
             }
         }
 
@@ -4251,6 +4424,44 @@ fn rail_min(region: &Region) -> f32 {
     match region.extent {
         arrangement::Extent::Rail { min, .. } => min,
         other => panic!("{} is drawn as a rail but declared {other:?}", region.id),
+    }
+}
+
+/// What a rail takes while it is collapsed.
+///
+/// # Panics
+///
+/// If the region declares no collapsed extent — as [`band_extent`]. The draw
+/// path reaches this only for a region the arrangement says can collapse, so a
+/// `None` here is the declaration and the draw path disagreeing about which
+/// regions those are.
+fn rail_collapsed(region: &Region) -> f32 {
+    region.collapsed_extent().unwrap_or_else(|| {
+        panic!(
+            "{} is drawn collapsed but declares no collapsed extent",
+            region.id
+        )
+    })
+}
+
+/// Which way a rail's collapse control points: the direction the rail moves
+/// when it is clicked, so an open rail's caret points at the edge it folds
+/// into and a collapsed one's points back at the room it would take.
+///
+/// # Panics
+///
+/// If the region takes no edge. A region that is the remainder has no
+/// direction to fold in, and the arrangement's audit refuses a collapsed
+/// extent on one — `the_audit_refuses_a_collapsed_extent_on_something_that_is_not_a_rail`.
+const fn collapse_caret(edge: arrangement::Edge, collapsed: bool) -> chrome::Caret {
+    match (edge, collapsed) {
+        (arrangement::Edge::Left, false) | (arrangement::Edge::Right, true) => chrome::Caret::Left,
+        (arrangement::Edge::Left, true) | (arrangement::Edge::Right, false) => chrome::Caret::Right,
+        (arrangement::Edge::Top, false) | (arrangement::Edge::Bottom, true) => chrome::Caret::Up,
+        (arrangement::Edge::Top, true) | (arrangement::Edge::Bottom, false) => chrome::Caret::Down,
+        (arrangement::Edge::Centre, _) => {
+            panic!("a region with no edge has no direction to fold in")
+        }
     }
 }
 
