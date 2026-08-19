@@ -120,7 +120,7 @@ use std::time::{Duration, SystemTime};
 use brightfield_protocol::layout::Flow;
 use brightfield_shell::app::{chart_registry_with, ChartDoc};
 use brightfield_shell::design::Mode;
-use brightfield_shell::editor::{EditorPane, EDITOR};
+use brightfield_shell::editor::{EditorPane, EDITOR, RELOAD_SPINNER_HONESTY_MS};
 use brightfield_shell::pipeline::compose_spec;
 use brightfield_shell::protocol::{
     load_protocol_offline, protocol_registry, ProtocolDoc, ProtocolModel,
@@ -129,7 +129,10 @@ use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_workbench::registry::ItemRegistry;
 use brightfield_workbench::subject::RunState;
-use brightfield_workbench::{Activity, ActivityLog, Item, Subject, HONESTY_LINE_MS};
+use brightfield_workbench::{
+    Activity, ActivityLog, HideAffordance, Item, StatusEntry, StatusSide, Subject, Tone,
+    HONESTY_LINE_MS,
+};
 
 const DASHBOARD: &str = "../../examples/dashboard.yaml";
 const EDGAR: &str = "../../examples/protocol/edgar_gleif/arcform.yaml";
@@ -137,6 +140,25 @@ const EDGAR: &str = "../../examples/protocol/edgar_gleif/arcform.yaml";
 // ---------------------------------------------------------------------------
 // The declared id space
 // ---------------------------------------------------------------------------
+
+/// How many surfaces may put an id on the rail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Owner {
+    /// Exactly one surface, named here. A second declaration draws the line
+    /// twice, which is the defect this gate exists for.
+    One(&'static str),
+    /// Any pane may report it, because the window does not rail these at all:
+    /// `status_rail_ui` filters out every entry `Activity::of_entry`
+    /// recognises and pushes one merged indicator instead, so two panes
+    /// reporting the same work say it once.
+    ///
+    /// **This exemption is not granted by saying so.**
+    /// [`a_merged_id_is_one_the_shell_really_merges`] hands each id here to
+    /// `Activity::of_entry` and requires it to be recognised, and requires
+    /// every [`Owner::One`] id to be *un*recognised — so an id cannot be moved
+    /// into this class to silence a real duplicate.
+    Merged,
+}
 
 /// Whether the fixtures in this file place an id, or why they do not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -160,46 +182,46 @@ enum Reach {
 ///
 /// A surface that is not a pane is named in angle brackets, so it cannot be
 /// confused with an `ItemId`.
-const RAIL_IDS: &[(&str, &str, Reach)] = &[
-    ("run-state", "chart-canvas", Reach::Observed),
+const RAIL_IDS: &[(&str, Owner, Reach)] = &[
+    ("run-state", Owner::One("chart-canvas"), Reach::Observed),
     (
         "chart-navigation",
-        "chart-canvas",
+        Owner::One("chart-canvas"),
         Reach::Declared("needs a navigation gesture refused on a live session"),
     ),
     (
         "chart-navigation-scope",
-        "chart-canvas",
+        Owner::One("chart-canvas"),
         Reach::Declared("needs a plot held at an extent whose mark declined to rescope"),
     ),
     (
         "chart-predicate",
-        "chart-canvas",
+        Owner::One("chart-canvas"),
         Reach::Declared("needs a committed selection on a live session"),
     ),
-    ("activity-engine-query", "chart-canvas", Reach::Observed),
-    ("activity-protocol-run", "chart-canvas", Reach::Observed),
-    ("activity-file-watch", "chart-canvas", Reach::Observed),
-    ("watch-spec", "chart-canvas", Reach::Observed),
-    ("watch-data", "chart-canvas", Reach::Observed),
-    ("editor-saved", "spec-editor", Reach::Observed),
-    ("editor-warning", "spec-editor", Reach::Observed),
-    ("chart-idle", "<window>", Reach::Observed),
-    ("activity", "<window>", Reach::Observed),
+    ("activity-engine-query", Owner::Merged, Reach::Observed),
+    ("activity-protocol-run", Owner::Merged, Reach::Observed),
+    ("activity-file-watch", Owner::Merged, Reach::Observed),
+    ("watch-spec", Owner::One("chart-canvas"), Reach::Observed),
+    ("watch-data", Owner::One("chart-canvas"), Reach::Observed),
+    ("editor-saved", Owner::One("spec-editor"), Reach::Observed),
+    ("editor-warning", Owner::One("spec-editor"), Reach::Observed),
+    ("chart-idle", Owner::One("<window>"), Reach::Observed),
+    ("activity", Owner::One("<window>"), Reach::Observed),
     (
         "gallery-status-rail-predicate",
-        "<dev gallery>",
+        Owner::One("<dev gallery>"),
         Reach::Declared("a specimen handed to `chrome::status_rail`, never to a Subject"),
     ),
     (
         "gallery-status-rail-idle",
-        "<dev gallery>",
+        Owner::One("<dev gallery>"),
         Reach::Declared("a specimen, as above"),
     ),
 ];
 
-/// The owner declared for `id`, if the table has one.
-fn declared_owner(id: &str) -> Option<&'static str> {
+/// What the table says about `id`, if it knows it.
+fn declared(id: &str) -> Option<Owner> {
     RAIL_IDS
         .iter()
         .find(|(known, _, _)| *known == id)
@@ -232,27 +254,36 @@ fn placed<D: ?Sized>(registry: &ItemRegistry<D>, doc: &D) -> Vec<Placed> {
 
 /// Everything wrong with what one window state placed.
 ///
-/// `lines` is the union across both registries, because the window holds one
-/// tree and both documents' panes draw in the same frame.
+/// `lines` is the union across both registries and the editor's own state,
+/// because the window holds one tree and every pane in it draws in the same
+/// frame.
 fn complaints(state: &str, lines: &[Placed]) -> Vec<String> {
     let mut out = Vec::new();
     let mut first: BTreeMap<&str, &str> = BTreeMap::new();
     for (owner, id) in lines {
-        if let Some(prev) = first.insert(id, owner) {
-            out.push(format!(
-                "{state}: `{id}` is declared by {prev} and by {owner} — the rail draws each \
-                 entry it is handed, so that line appears twice"
-            ));
-        }
-        match declared_owner(id) {
+        match declared(id) {
             None => out.push(format!(
                 "{state}: {owner} declares `{id}`, which RAIL_IDS does not know — add it \
                  with the surface that owns it"
             )),
-            Some(declared) if declared != owner => out.push(format!(
-                "{state}: {owner} declares `{id}`, which RAIL_IDS gives to {declared}"
-            )),
-            Some(_) => {}
+            // A merged id is a report, not a rail line: the window filters
+            // every one of them out and says the work once through the
+            // indicator, so a second reporter is the design.
+            Some(Owner::Merged) => {}
+            Some(Owner::One(declared_owner)) => {
+                if let Some(prev) = first.insert(id, owner) {
+                    out.push(format!(
+                        "{state}: `{id}` is declared by {prev} and by {owner} — the rail \
+                         draws each entry it is handed, so that line appears twice"
+                    ));
+                }
+                if declared_owner != owner {
+                    out.push(format!(
+                        "{state}: {owner} declares `{id}`, which RAIL_IDS gives to \
+                         {declared_owner}"
+                    ));
+                }
+            }
         }
     }
     out
@@ -347,39 +378,48 @@ fn aged_activity_logs() -> Vec<(String, ActivityLog)> {
     out
 }
 
-/// Drive `body` over the product of run state, work in flight and watcher
-/// state — 192 window states, one composition mutated through all of them.
+/// Drive `body` over the product of emptiness, run state, work in flight and
+/// watcher state — 384 documents, two compositions mutated through all of them.
+///
+/// Emptiness is a crossed dimension rather than a point beside the product.
+/// An earlier draft evaluated `ChartDoc::empty()` once, with no run state, no
+/// work in flight and no watcher notice, so a line gated on an empty document
+/// *and* anything else was unreachable. That is the same shape as the gap
+/// review found between run state and activity, one dimension over.
 fn chart_states(mut body: impl FnMut(&str, &ChartDoc)) {
     let files = Watched::new();
     let mut logs = aged_activity_logs();
 
     let composed = compose_spec(DASHBOARD).expect("compose examples/dashboard.yaml");
-    let mut doc = ChartDoc::headless(composed);
-    doc.spec_path = Some(DASHBOARD.into());
-
-    // The empty document first: a different shape, not a point in the product.
-    body("an empty document", &ChartDoc::empty());
+    let mut loaded = ChartDoc::headless(composed);
+    loaded.spec_path = Some(DASHBOARD.into());
+    let mut bases = [
+        ("an empty document", ChartDoc::empty()),
+        ("the dashboard", loaded),
+    ];
 
     let mut nonce = 0u64;
     let run_states: Vec<Option<RunState>> = std::iter::once(None)
         .chain(RunState::ALL.into_iter().map(Some))
         .collect();
-    for run in run_states {
-        doc.composed.run_state = run;
-        for (work, log) in &mut logs {
-            std::mem::swap(&mut doc.activity, log);
-            for (spec_moved, data_moved) in
-                [(false, false), (true, false), (false, true), (true, true)]
-            {
-                nonce += 1;
-                files.apply(&mut doc, spec_moved, data_moved, nonce);
-                let name = format!(
-                    "the dashboard recorded {run:?}, {work}, watcher spec={spec_moved} \
-                     data={data_moved}"
-                );
-                body(&name, &doc);
+    for (base, doc) in &mut bases {
+        for run in &run_states {
+            doc.composed.run_state = *run;
+            for (work, log) in &mut logs {
+                std::mem::swap(&mut doc.activity, log);
+                for (spec_moved, data_moved) in
+                    [(false, false), (true, false), (false, true), (true, true)]
+                {
+                    nonce += 1;
+                    files.apply(doc, spec_moved, data_moved, nonce);
+                    let name = format!(
+                        "{base} recorded {run:?}, {work}, watcher spec={spec_moved} \
+                         data={data_moved}"
+                    );
+                    body(&name, doc);
+                }
+                std::mem::swap(&mut doc.activity, log);
             }
-            std::mem::swap(&mut doc.activity, log);
         }
     }
 }
@@ -402,14 +442,25 @@ fn protocol_documents() -> Vec<(String, ProtocolDoc)> {
 // Panes the registry cannot reach, driven directly
 // ---------------------------------------------------------------------------
 
-/// The rail lines a pane places once it has accumulated state of its own.
+/// The rail lines the spec editor places once it has accumulated state of its
+/// own, one entry per state it can be in.
 ///
-/// `(spec.make)()` hands back a fresh pane, so an id gated on what the pane
-/// has been *given* is invisible to the registry sweep. The spec editor is the
-/// one pane in this workspace with such ids, and both of them are reached here
-/// rather than excused: a save that succeeds leaves an acknowledgement live,
-/// and a save refused by the two-writer guard leaves a warning.
-fn pane_local_states() -> Vec<(String, Vec<Placed>)> {
+/// `(spec.make)()` hands back a fresh pane, so an id gated on what a pane has
+/// been *given* is invisible to the registry sweep. `EditorPane::describe` is
+/// the only `describe` in this workspace that reads `self` at all — surveyed,
+/// and held by [`only_the_editor_reads_its_own_state_in_describe`] — so
+/// driving it closes the whole pane-local class rather than one instance of
+/// it.
+///
+/// The third state is the one review found. A reload the editor cannot
+/// complete leaves `reload_pending_since` set, and past the honesty line the
+/// pane reports `Activity::FileWatch` — the same id `ChartItem` reports from
+/// the *document's* activity log. Two panes, one id, from independent
+/// triggers. The read is made to fail by replacing the file with a directory
+/// of the same name, which is deterministic and needs no privilege games: the
+/// mtime moves so the poll proceeds, and `read_to_string` cannot succeed on a
+/// directory for any user.
+fn editor_states() -> Vec<(String, Vec<Placed>)> {
     let dir = scratch("editor");
     let doc = ChartDoc::empty();
     let ids = |subject: Subject| -> Vec<Placed> {
@@ -442,11 +493,34 @@ fn pane_local_states() -> Vec<(String, Vec<Placed>)> {
     pane.save_now();
     let after_conflict = ids(pane.subject(&doc));
 
+    let stuck = dir.join("stuck.yaml");
+    fs::write(&stuck, "seeded: 1\n").expect("seed");
+    let mut pane = EditorPane::new();
+    pane.open_file(&stuck);
+    fs::remove_file(&stuck).expect("remove the file");
+    fs::create_dir(&stuck).expect("put a directory where the file was");
+    pane.poll_disk_now();
+    std::thread::sleep(Duration::from_millis(
+        u64::try_from(RELOAD_SPINNER_HONESTY_MS).expect("small") + 40,
+    ));
+    let mid_reload = ids(pane.subject(&doc));
+    assert!(
+        mid_reload
+            .iter()
+            .any(|(_, id)| *id == Activity::FileWatch.id()),
+        "the editor was meant to be mid-reload and reporting file-watch work; \
+         it placed {mid_reload:?}"
+    );
+
     vec![
         ("the spec editor just after a save".to_string(), after_save),
         (
             "the spec editor after the two-writer guard refused a save".to_string(),
             after_conflict,
+        ),
+        (
+            "the spec editor with a reload it cannot complete".to_string(),
+            mid_reload,
         ),
     ]
 }
@@ -466,6 +540,12 @@ fn no_two_panes_declare_the_same_rail_id() {
         .map(|(name, doc)| (name.clone(), placed(&protocol_registry, doc)))
         .collect();
 
+    // Nor do the editor's, which read `self` and not the document — so they
+    // are driven once too, and substituted for the fresh editor the registry
+    // sweep builds. Substituted rather than added: the fresh pane's lines come
+    // out first, so a pane appears once per state whichever state it is in.
+    let editor = editor_states();
+
     let registries = [
         ("", chart_registry_with(false)),
         (" with the dev gallery", chart_registry_with(true)),
@@ -481,23 +561,41 @@ fn no_two_panes_declare_the_same_rail_id() {
             observed.extend(chart_lines.iter().map(|(_, id)| *id));
             for (protocol_name, protocol_lines) in &protocol_lines {
                 // One tree, so both documents' panes are compared together.
-                let mut lines = chart_lines.clone();
-                lines.extend(protocol_lines.iter().cloned());
+                let mut base = chart_lines.clone();
+                base.extend(protocol_lines.iter().cloned());
                 observed.extend(protocol_lines.iter().map(|(_, id)| *id));
                 states += 1;
                 found.extend(complaints(
                     &format!("{name}{gallery}, protocol showing {protocol_name}"),
-                    &lines,
+                    &base,
                 ));
+
+                // And the same window with the editor in each state it can
+                // accumulate. A pane's own state is a dimension of the window
+                // like the document's, so it is crossed rather than checked
+                // beside it: `activity-file-watch` reaches the rail from the
+                // editor's own pending reload and from the document's activity
+                // log, and only the union of the two shows the collision.
+                for (editor_name, editor_lines) in &editor {
+                    let mut lines: Vec<Placed> = base
+                        .iter()
+                        .filter(|(owner, _)| owner != EDITOR.as_str())
+                        .cloned()
+                        .collect();
+                    lines.extend(editor_lines.iter().cloned());
+                    observed.extend(editor_lines.iter().map(|(_, id)| *id));
+                    states += 1;
+                    found.extend(complaints(
+                        &format!(
+                            "{name}{gallery}, protocol showing {protocol_name}, \
+                             {editor_name}"
+                        ),
+                        &lines,
+                    ));
+                }
             }
         }
     });
-
-    for (name, lines) in pane_local_states() {
-        observed.extend(lines.iter().map(|(_, id)| *id));
-        states += 1;
-        found.extend(complaints(&name, &lines));
-    }
 
     // The window's own two lines, from the windows that actually drew them.
     observed.extend(window_drew().into_iter().flat_map(|(_, ids)| ids));
@@ -511,20 +609,25 @@ fn no_two_panes_declare_the_same_rail_id() {
 
     // The matrix is a product, not a sample. A draft that swept each dimension
     // singly missed a duplicate gated on `RunState::Failed` AND an engine query
-    // in flight, so the count is asserted: six run states by eight activity
-    // subsets by four watcher states, twice for the gallery arrangements, twice
-    // again for the protocol documents, plus the empty document's eight and the
-    // two editor states.
+    // in flight, so the shape is asserted: emptiness by run state by activity
+    // subset by watcher state, each crossed with both gallery arrangements,
+    // both protocol documents, and the editor's own states.
+    let bases = 2; // an empty document and the dashboard
     let run_states = 1 + RunState::ALL.len(); // absent, plus each recorded state
     let activity_subsets = 1 << Activity::ALL.len(); // the power set
     let watcher_states = 4; // neither file moved, the spec, the data, both
     let arrangements = 2; // without and with the dev gallery
     let protocol_documents = 2;
-    let editor_states = 2;
+    let editor_variants = 1 + editor.len(); // the fresh pane, plus each state
     assert_eq!(
         states,
-        (run_states * activity_subsets * watcher_states + 1) * arrangements * protocol_documents
-            + editor_states,
+        bases
+            * run_states
+            * activity_subsets
+            * watcher_states
+            * arrangements
+            * protocol_documents
+            * editor_variants,
         "the matrix no longer crosses its dimensions"
     );
 
@@ -632,7 +735,7 @@ fn a_booted_window_draws_no_id_twice() {
         );
         for id in ids {
             assert!(
-                declared_owner(id).is_some(),
+                declared(id).is_some(),
                 "{state} drew `{id}`, which RAIL_IDS does not know; it drew {ids:?}"
             );
         }
@@ -647,12 +750,49 @@ fn the_declared_id_space_names_each_id_once() {
             seen.insert(*id),
             "RAIL_IDS names `{id}` twice, so it cannot say who owns it"
         );
-        assert!(!owner.trim().is_empty(), "`{id}` has no owner");
+        if let Owner::One(who) = owner {
+            assert!(!who.trim().is_empty(), "`{id}` has no owner");
+        }
         if let Reach::Declared(why) = reach {
             assert!(
                 !why.trim().is_empty(),
                 "`{id}` is out of the fixtures' reach and does not say why"
             );
+        }
+    }
+}
+
+/// `Owner::Merged` is the one exemption from the uniqueness rule, so it is
+/// granted by the shell's own recognition rather than by this table saying so.
+///
+/// `status_rail_ui` drops every entry `Activity::of_entry` recognises and
+/// pushes one merged indicator instead. An id that function does not know is
+/// railed as written, so calling it merged would silence a real duplicate;
+/// an id it does know cannot collide, so calling it owned would report one
+/// that cannot happen. Both directions are checked, which is what stops the
+/// exemption being reachable by editing a string.
+#[test]
+fn a_merged_id_is_one_the_shell_really_merges() {
+    for (id, owner, _) in RAIL_IDS {
+        let entry = StatusEntry {
+            id,
+            side: StatusSide::Trailing,
+            text: String::new(),
+            tone: Tone::Neutral,
+            hide: HideAffordance::WithRail,
+        };
+        let merged_by_the_shell = Activity::of_entry(&entry).is_some();
+        match owner {
+            Owner::Merged => assert!(
+                merged_by_the_shell,
+                "RAIL_IDS calls `{id}` merged, but `Activity::of_entry` does not know it, \
+                 so the window rails it as written and a second declaration would draw twice"
+            ),
+            Owner::One(who) => assert!(
+                !merged_by_the_shell,
+                "RAIL_IDS gives `{id}` to {who}, but the window merges it into the one \
+                 indicator, so a second reporter is the design rather than a defect"
+            ),
         }
     }
 }
@@ -940,7 +1080,7 @@ fn undeclared(files: &[(String, String)], allow: &[Allow]) -> Vec<String> {
         for site in sites(rel, text) {
             match read_id(&site, &consts) {
                 Read::Id(id) => {
-                    if declared_owner(&id).is_none() {
+                    if declared(&id).is_none() {
                         out.push(format!(
                             "{}: `{id}` is handed to a StatusEntry and RAIL_IDS does not \
                              know it — declare it with the surface that owns it",
@@ -1047,6 +1187,74 @@ fn every_id_literal_in_the_workspace_is_declared() {
         "undeclared status-rail ids ({}):\n{}",
         found.len(),
         found.join("\n")
+    );
+}
+
+/// The files holding an `Item::describe` that decides a **status line** from
+/// state of the pane's own, rather than from the document's.
+///
+/// Such a pane is invisible to the registry sweep, which builds it fresh
+/// through `(spec.make)()`. There is one, and `editor_states` drives it.
+const SELF_READING_DESCRIBES: &[&str] = &["crates/brightfield-shell/src/editor.rs"];
+
+/// The pane-local class is closed by driving one pane, so this is the check
+/// that the class still has one member.
+///
+/// A `describe` that reads `self` *and* declares a status line can place a
+/// rail line the document cannot summon, and `(spec.make)()` hands back a pane
+/// with none of that state — so a new one would be a branch the matrix cannot
+/// reach and nothing would say so. Surveyed when `editor_states` was written:
+/// ten `Item` implementations in this workspace, and `EditorPane` is the one
+/// whose `describe` reads `self` at all. `ModuleHost::describe` reads `self`
+/// for its title and icon and declares no status line, which is why the check
+/// asks for both.
+///
+/// Line-based, and blind to the same indirection the rest of the residual is:
+/// a `describe` that delegates to a method which reads `self` is not seen
+/// here. It is a rot-check on the survey, not a proof.
+#[test]
+fn only_the_editor_reads_its_own_state_in_describe() {
+    let mut reading: Vec<String> = Vec::new();
+    for (rel, text) in production_sources() {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut i = 0;
+        while i < lines.len() {
+            if let Some(past) = test_module_end(&lines, i) {
+                i = past;
+                continue;
+            }
+            let indent = lines[i].len() - lines[i].trim_start().len();
+            // `fn describe(...) -> Subject;` in the trait declares no body,
+            // and running past it swept in the default `subject()` glue below.
+            let opens_a_body = lines[i].trim_end().ends_with('{');
+            if opens_a_body && lines[i].trim_start().starts_with("fn describe(") {
+                let close = format!("{}}}", " ".repeat(indent));
+                let end = (i + 1..lines.len())
+                    .find(|j| lines[*j] == close)
+                    .unwrap_or(lines.len());
+                let body = lines[i + 1..end].join("\n");
+                // Both, not either: `ModuleHost::describe` reads `self` for
+                // its title and icon and declares no status line at all, so it
+                // places nothing the registry sweep could miss.
+                if body.contains("self.") && body.contains("with_status") {
+                    reading.push(rel.clone());
+                }
+            }
+            i += 1;
+        }
+    }
+    reading.sort();
+    reading.dedup();
+    let known: Vec<String> = SELF_READING_DESCRIBES
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    assert_eq!(
+        reading, known,
+        "the set of panes whose `describe` reads their own state has changed. A pane \
+         like that can place a rail line no document summons, and the registry sweep \
+         builds it fresh — so drive it in `editor_states` and add it here, or say in \
+         RAIL_IDS why its ids are out of reach"
     );
 }
 
