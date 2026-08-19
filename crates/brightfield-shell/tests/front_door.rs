@@ -27,8 +27,11 @@ use brightfield_shell::design::Mode;
 use brightfield_shell::protocol::{self, protocol_registry, ProtocolDoc, CANVAS};
 use brightfield_shell::starts::{self, Opened};
 use brightfield_shell::startup::{default_layout, opening_boot};
-use brightfield_shell::window::{Boot, MeridianApp};
-use brightfield_workbench::{Action, PaneKey, Subject, ViewKind};
+use brightfield_shell::window::{
+    Boot, MeridianApp, DATASETS_SECTION, DOOR_ENTRY_PROMISE, PROTOCOLS_EMPTY_BODY,
+    PROTOCOLS_EMPTY_TITLE, PROTOCOLS_SECTION,
+};
+use brightfield_workbench::{Action, PaneKey, Recent, RunState, SavedLayout, Subject, ViewKind};
 
 const CHART_PANE: PaneKey = PaneKey::new(ViewKind::Charts, CHART);
 const CANVAS_PANE: PaneKey = PaneKey::new(ViewKind::Protocol, CANVAS);
@@ -102,6 +105,43 @@ impl Window {
         self.run(vec![click_at(target.center()), Vec::new()]);
     }
 
+    /// Every string this window's next frame draws, in no particular order.
+    ///
+    /// Read off the frame's own shapes rather than off a hook the door
+    /// maintains, because the claim is about what a person sees: a zone name
+    /// left behind in a heading, a label built from the wrong constant, and a
+    /// section drawn by code nobody remembered to delete all show up here and
+    /// none of them shows up in a list the door curates about itself.
+    fn drawn_text(&mut self) -> Vec<String> {
+        let raw = egui::RawInput {
+            screen_rect: Some(self.screen),
+            ..Default::default()
+        };
+        let out = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
+        let mut text = Vec::new();
+        for clipped in &out.shapes {
+            collect_text(&clipped.shape, &mut text);
+        }
+        text
+    }
+
+    /// Click the Protocols row for the start `id`, where the last frame drew
+    /// it.
+    fn take_the_row(&mut self, id: &str) {
+        let target = self
+            .app
+            .front_door_rows()
+            .iter()
+            .find(|row| row.id == id)
+            .unwrap_or_else(|| panic!("the door drew no Protocols row for {id}"))
+            .rect;
+        assert!(
+            self.screen.contains_rect(target),
+            "the {id} row drew at {target:?}, outside the window — nothing              could click it"
+        );
+        self.run(vec![click_at(target.center()), Vec::new()]);
+    }
+
     /// Put the other document on the canvas.
     ///
     /// Through `show_on_canvas`, because there is no control that does it: the
@@ -114,6 +154,82 @@ impl Window {
         self.run(vec![Vec::new()]);
         assert_eq!(self.app.active(), view);
     }
+}
+
+/// Every galley in `shape`, flattened — `Shape::Vec` and `Shape::Callback`
+/// nest, so a walk that only reads the top level misses whatever a widget put
+/// inside a group.
+fn collect_text(shape: &egui::epaint::Shape, into: &mut Vec<String>) {
+    match shape {
+        egui::epaint::Shape::Text(t) => into.push(t.galley.text().to_string()),
+        egui::epaint::Shape::Vec(shapes) => {
+            for s in shapes {
+                collect_text(s, into);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The sections the last frame's door drew, by name and in draw order.
+fn section_names(win: &Window) -> Vec<&'static str> {
+    win.app
+        .front_door_sections()
+        .iter()
+        .map(|(name, _)| *name)
+        .collect()
+}
+
+/// A layout that remembers `recents`, most recent first — the returning
+/// analyst's file, built here rather than by driving five opens, so a test can
+/// pin what the door draws for a run state this build cannot yet produce.
+///
+/// The times are **relative to `now`** and land mid-bucket on purpose: a
+/// fixture pinned to an absolute instant drifts into the next bucket the day
+/// after it is written, and one pinned to a bucket boundary tips whenever the
+/// capture takes a second longer than usual. See `relative_time`.
+fn layout_remembering(recents: &[(&str, &str, RunState, u64)]) -> SavedLayout {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("a clock after 1970")
+        .as_secs();
+    let mut layout = default_layout();
+    layout.recents = recents
+        .iter()
+        .map(|(id, name, run, ago)| Recent {
+            id: (*id).to_string(),
+            name: (*name).to_string(),
+            run: *run,
+            opened_at: now - ago,
+        })
+        .collect();
+    layout
+}
+
+/// The three recents both returning-door baselines are photographed over, and
+/// the fixture the interaction tests seed.
+///
+/// Three run states rather than three of one, so the state column is pinned as
+/// a column rather than as a repeated string — [`RunState::Fresh`] and
+/// [`RunState::StaleUpstream`] are states the layout file can carry and this
+/// build's own starts cannot yet reach, which is exactly why a fixture is what
+/// holds the drawing of them.
+fn returning_recents() -> [(&'static str, &'static str, RunState, u64); 3] {
+    [
+        (starts::CROSSWALK, "edgar-gleif", RunState::NeverRun, 150),
+        (
+            starts::DASHBOARD,
+            "signals-dashboard",
+            RunState::Fresh,
+            30 * 60 * 60,
+        ),
+        (
+            starts::DISTRIBUTION,
+            "reading-distribution",
+            RunState::StaleUpstream,
+            4 * 24 * 60 * 60 + 4 * 60 * 60,
+        ),
+    ]
 }
 
 /// One frame's worth of a pointer move and a primary click at `pos`.
@@ -458,8 +574,8 @@ fn an_empty_launch_opens_the_front_door_with_every_start_on_it() {
         );
     }
     assert!(
-        win.app.front_door_continue_rect().is_none(),
-        "a first run drew a Continue zone with no history to continue"
+        win.app.front_door_rows().is_empty(),
+        "a first run listed recent work it has never had"
     );
     assert!(
         win.app.front_door_help_rect().is_some(),
@@ -694,57 +810,328 @@ fn a_launch_with_something_to_restore_shows_no_front_door() {
     );
 }
 
-/// The morph's other face: a door drawn while the layout remembers work grows
-/// a Continue zone, and its control reopens exactly what was remembered.
+/// The door heads exactly two sections — Datasets and Protocols — and says
+/// neither of the two names they replaced anywhere on the screen.
 ///
-/// Today every `main` launch with something remembered restores it before the
-/// door can draw — `opening_boot`'s precedence, held by the test above — so
-/// this state is reached when the two disagree: a remembered id the restore
-/// dropped, or the returnable-Home path when it lands (the door reopened over
-/// a session that has work). The zone is built against the layout rather than
-/// against either trigger, which is why it can be held here without faking
-/// one.
+/// Hugh's ruling, 2026-08-18, recorded in the workspace-composition decision:
+/// *Explore* and *Continue* were decision-75 §K's names for these two zones,
+/// and the sections now hold the product's own primitives. §K's own argument
+/// is why this is asserted over the **rendered text** rather than over the
+/// door's list of section names: a zone name is not only a heading, and a
+/// build that renamed the heading while leaving the old word in a body line
+/// would pass a headings-only check and still put the retired vocabulary in
+/// front of a stranger.
+///
+/// Watched redden, one mutation: passing `"Explore"` to `door_section_heading`
+/// in `datasets_section` instead of `DATASETS_SECTION` fails here at "still
+/// says Explore".
 #[test]
-fn a_door_with_history_grows_a_continue_zone_that_reopens_it() {
-    let mut layout = default_layout();
-    layout.opened = Some(starts::CROSSWALK.to_string());
+fn the_door_heads_two_sections_and_says_neither_of_the_names_it_replaced() {
+    let mut win = Window::open(Boot::empty());
+    win.settle();
+    assert!(win.app.front_door_is_live());
+
+    assert_eq!(
+        section_names(&win),
+        vec![DATASETS_SECTION, PROTOCOLS_SECTION],
+        "the door's sections are not the two the ruling names, or not in the \
+         order a first run draws them"
+    );
+
+    let text = win.drawn_text();
+    for retired in ["Explore", "Continue", "Learn"] {
+        assert!(
+            !text.iter().any(|drawn| drawn.contains(retired)),
+            "a headless render of the first-run door still says {retired}: {text:?}"
+        );
+    }
+    for kept in [DATASETS_SECTION, PROTOCOLS_SECTION] {
+        assert!(
+            text.iter().any(|drawn| drawn.contains(kept)),
+            "a headless render of the first-run door never says {kept}: {text:?}"
+        );
+    }
+}
+
+/// A first run: Datasets is present **and populated**, and Protocols is
+/// present **and says what will fill it**.
+///
+/// This is the blank-page state decision-75 exists to prevent, in the one
+/// arrangement every install passes through exactly once. The two halves fail
+/// differently and are asserted separately: a Datasets section with no cards
+/// is a catalogue that shipped empty, and an absent Protocols heading is a
+/// section that appears from nowhere on the second launch, which teaches a
+/// stranger nothing about what the product saves.
+///
+/// Watched redden, one mutation: returning early from `protocols_section`
+/// before `door_section_heading` when `recents.is_empty()` — the shape of
+/// "draw the section only once it has content" — fails here at "the Protocols
+/// heading is absent".
+#[test]
+fn a_first_run_populates_datasets_and_states_what_protocols_will_hold() {
+    let mut win = Window::open(Boot::empty());
+    win.settle();
+
+    assert!(
+        win.app
+            .front_door_sections()
+            .iter()
+            .any(|(name, _)| *name == DATASETS_SECTION),
+        "the Datasets heading is absent on a first run"
+    );
+    assert!(
+        win.app
+            .front_door_sections()
+            .iter()
+            .any(|(name, _)| *name == PROTOCOLS_SECTION),
+        "the Protocols heading is absent on a first run — the section appears \
+         from nowhere on the second launch"
+    );
+    for start in starts::STARTS {
+        assert!(
+            win.app.front_door_card_rect(start.id).is_some(),
+            "the Datasets section drew no card for {} — a catalogue that \
+             shipped empty",
+            start.id
+        );
+    }
+    assert!(
+        win.app.front_door_rows().is_empty(),
+        "a first run drew a Protocols row out of a layout that remembers \
+         nothing"
+    );
+
+    let text = win.drawn_text();
+    for said in [PROTOCOLS_EMPTY_TITLE, PROTOCOLS_EMPTY_BODY] {
+        assert!(
+            text.iter().any(|drawn| drawn.contains(said)),
+            "the empty Protocols section never says {said:?}: {text:?}"
+        );
+    }
+    assert!(
+        text.iter().any(|drawn| drawn.contains(DOOR_ENTRY_PROMISE)),
+        "no entry on the first-run door carries the promise {DOOR_ENTRY_PROMISE:?}: {text:?}"
+    );
+}
+
+/// A door whose layout remembers three Protocols draws **three rows**, most
+/// recent first, each carrying its name and its run state — and Protocols
+/// leads, above the catalogue.
+///
+/// The count is the assertion the old Continue zone could not pass: it was
+/// built from `SavedLayout::opened`, one id, so a layout that remembered three
+/// sessions drew one control and the other two were unreachable from the one
+/// screen whose whole job is to put you back in them.
+///
+/// The run states are three different ones on purpose. Two of them are states
+/// this build's own starts cannot reach — nothing here writes `Fresh` without
+/// a run contract — so seeding them is what proves the row *draws what was
+/// recorded* rather than a constant that happens to be right for the only
+/// value the shell can currently produce.
+///
+/// Watched redden, one mutation: having `door_row` label every row
+/// `RunState::NeverRun.label()` instead of `recent.run.label()` fails here at
+/// the state assertion for `signals-dashboard`.
+#[test]
+fn a_door_with_recents_lists_every_one_of_them_most_recent_first() {
+    let recents = returning_recents();
     let mut win = Window {
-        app: MeridianApp::headless_with_layout(Boot::empty(), layout, Mode::Light),
+        app: MeridianApp::headless_with_layout(
+            Boot::empty(),
+            layout_remembering(&recents),
+            Mode::Light,
+        ),
         ctx: egui::Context::default(),
         screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
     };
     win.settle();
 
     assert!(win.app.front_door_is_live(), "nothing open, so the door");
-    let control = win
-        .app
-        .front_door_continue_rect()
-        .expect("history exists, so the door grows a Continue zone");
-    assert!(win.screen.contains_rect(control));
-    win.run(vec![click_at(control.center()), Vec::new()]);
-    win.settle();
-
-    assert!(
-        win.app.protocol_model().has_assets(),
-        "Continue reopened nothing"
+    assert_eq!(
+        section_names(&win),
+        vec![PROTOCOLS_SECTION, DATASETS_SECTION],
+        "a returning analyst's own work does not lead the door"
     );
-    assert_eq!(win.app.active(), ViewKind::Protocol);
+
+    let drawn = win.app.front_door_rows().to_vec();
+    assert_eq!(
+        drawn.len(),
+        recents.len(),
+        "the door drew {} row(s) for {} remembered Protocols",
+        drawn.len(),
+        recents.len()
+    );
+    for (row, (id, name, run, _)) in drawn.iter().zip(recents.iter()) {
+        assert_eq!(row.id, *id, "the rows are not in most-recent-first order");
+        assert_eq!(
+            row.name, *name,
+            "{id}'s row is not named after its Protocol"
+        );
+        assert_eq!(
+            row.state,
+            run.label(),
+            "{id}'s row does not carry the run state the layout recorded"
+        );
+        assert!(
+            win.screen.contains_rect(row.rect),
+            "{id}'s row drew at {:?}, outside the window",
+            row.rect
+        );
+    }
+    assert_eq!(
+        drawn.iter().map(|r| r.when.as_str()).collect::<Vec<_>>(),
+        vec!["2m ago", "yesterday", "4 days ago"],
+        "the rows do not say how long ago each was opened"
+    );
+
+    // And a row is a way back in, not a label: clicking the third one — the
+    // one an `opened`-shaped door could never have offered — reopens it.
+    win.take_the_row(starts::DISTRIBUTION);
+    win.settle();
+    assert!(
+        !win.app.chart_doc().is_empty(),
+        "a Protocols row reopened nothing"
+    );
     assert!(!win.app.front_door_is_live());
+}
+
+/// Either route to the same subject leaves the window in the same state.
+///
+/// The door owns no route of its own: a Protocols row and the Datasets card
+/// beside it raise the same `Request::Open` into the same `open_start`, so
+/// there is nothing for the two to disagree about. That is the property, and
+/// this walks **every** shipped start rather than one, because a route that
+/// diverges for one document kind and not the other is exactly the divergence
+/// that would survive a single-case test.
+///
+/// The remote start is included: `Boot`ing it would fetch, but nothing here
+/// boots it — each half of the comparison is the same click on the same
+/// window, and a start that fails to load fails identically on both sides.
+///
+/// Watched redden, one mutation: having `door_row` push
+/// `Request::Focus(PaneKey::new(ViewKind::Protocol, CANVAS))` after its
+/// `Request::Open` — a plausible "put the cursor where the work is" — fails
+/// here at the focus assertion for every chart start.
+#[test]
+fn either_route_to_the_same_subject_leaves_the_same_window() {
+    for start in starts::STARTS {
+        if start.remote {
+            continue;
+        }
+        let recents = [(start.id, "remembered", RunState::NeverRun, 60)];
+
+        let mut by_row = Window {
+            app: MeridianApp::headless_with_layout(
+                Boot::empty(),
+                layout_remembering(&recents),
+                Mode::Light,
+            ),
+            ctx: egui::Context::default(),
+            screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
+        };
+        by_row.settle();
+        by_row.take_the_row(start.id);
+        by_row.settle();
+
+        let mut by_card = Window::open(Boot::empty());
+        by_card.settle();
+        by_card.take_the_card(start.id);
+        by_card.settle();
+
+        assert_eq!(
+            by_row.app.active(),
+            by_card.app.active(),
+            "{}: the row and the card land on different views",
+            start.id
+        );
+        assert_eq!(
+            by_row.app.focused_pane(),
+            by_card.app.focused_pane(),
+            "{}: the row and the card leave focus on different surfaces",
+            start.id
+        );
+        assert_eq!(
+            by_row.app.front_door_is_live(),
+            by_card.app.front_door_is_live(),
+            "{}: one route left the door up and the other did not",
+            start.id
+        );
+        assert_eq!(
+            by_row.app.layout().opened.as_deref(),
+            by_card.app.layout().opened.as_deref(),
+            "{}: the two routes recorded different work to restore",
+            start.id
+        );
+    }
+}
+
+/// Opening a start puts it at the head of the door's own list, and opening a
+/// second does not lose the first.
+///
+/// The half `a_door_with_recents_lists_every_one_of_them_most_recent_first`
+/// cannot see: that test seeds the file, and a build that drew a seeded file
+/// beautifully and never wrote one would pass it and ship a Protocols section
+/// that is empty forever.
+///
+/// Watched redden, one mutation: dropping the `remember` call from
+/// `open_start` — leaving only the `opened` line that was already there —
+/// fails here at "opening a start recorded nothing".
+#[test]
+fn opening_a_start_remembers_it_and_keeps_what_was_remembered_before() {
+    let mut win = Window::open(Boot::empty());
+    win.settle();
+    assert!(win.app.layout().recents.is_empty());
+
+    win.take_the_card(starts::DASHBOARD);
+    win.settle();
+    assert_eq!(
+        win.app
+            .layout()
+            .recents
+            .iter()
+            .map(|r| r.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![starts::DASHBOARD],
+        "opening a start recorded nothing for the door to list"
+    );
+
+    // Home, so the door draws again over a session that has history, and the
+    // second card is reachable.
+    win.run(vec![press_home(), Vec::new()]);
+    win.settle();
+    win.take_the_card(starts::DISTRIBUTION);
+    win.settle();
+    assert_eq!(
+        win.app
+            .layout()
+            .recents
+            .iter()
+            .map(|r| r.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![starts::DISTRIBUTION, starts::DASHBOARD],
+        "the second open replaced the first instead of joining it"
+    );
+    assert_eq!(
+        win.app.layout().recents[0].name,
+        win.app.layout().recents[0].name.trim(),
+        "a recorded name carries surrounding whitespace"
+    );
 }
 
 /// Going home returns to the front door **without forgetting the session** —
 /// the `open-home` keystroke clears both documents but leaves `layout.opened`
-/// standing, so the door it lands on grows the Continue zone that reopens what
-/// was left. That is the deliberate asymmetry with `open_start` (which records
-/// `opened`): Home keeps your place, by design.
+/// standing and the recents list intact, so the door it lands on lists the
+/// work that was left and a row reopens it. That is the deliberate asymmetry
+/// with `open_start` (which records both): Home keeps your place, by design.
 ///
 /// The trip is driven by the live cmd-shift-h keystroke rather than by calling
 /// `open_home` directly, so the registry binding and its wiring are on the hook
 /// too — a declared-but-unwired key would leave this at "still on the dock".
 ///
-/// Watched redden, one mutation: having `open_home` null `layout.opened` (the
-/// `open_start`-symmetric thing to do) fails here at "the door forgot the
-/// session" — the Continue zone vanishes and there is no way back to the work.
+/// Watched redden, one mutation: having `open_home` clear `layout.recents`
+/// (the `open_start`-symmetric thing to do) fails here at "the door forgot the
+/// session" — the Protocols section empties and there is no way back to the
+/// work.
 #[test]
 fn going_home_returns_to_the_door_but_keeps_the_session() {
     let mut layout = default_layout();
@@ -763,6 +1150,11 @@ fn going_home_returns_to_the_door_but_keeps_the_session() {
         !win.app.front_door_is_live(),
         "the launch restored its work, so the dock — not the door"
     );
+    // A restore is not an open, so it records no recent: the layout this
+    // window came up on remembered a start and nothing else. The work has to
+    // be *taken* for the door to have a row, which is what the card click
+    // below does.
+    assert!(win.app.layout().recents.is_empty());
 
     win.run(vec![press_home(), Vec::new()]);
     win.settle();
@@ -774,20 +1166,31 @@ fn going_home_returns_to_the_door_but_keeps_the_session() {
     assert_eq!(
         win.app.layout().opened.as_deref(),
         Some(starts::CROSSWALK),
-        "going home forgot the session — the Continue zone has nothing to reopen"
+        "going home forgot what to restore next launch"
     );
-    let control = win
-        .app
-        .front_door_continue_rect()
-        .expect("the kept session should grow a Continue zone on the door");
-    assert!(win.screen.contains_rect(control));
 
-    // And Continue still reopens exactly what was left.
-    win.run(vec![click_at(control.center()), Vec::new()]);
+    // Take the crosswalk from the door, come Home again, and the row for it is
+    // there: `open_start` records and `open_home` does not un-record.
+    win.take_the_card(starts::CROSSWALK);
+    win.settle();
+    win.run(vec![press_home(), Vec::new()]);
+    win.settle();
+    assert_eq!(
+        win.app
+            .front_door_rows()
+            .iter()
+            .map(|r| r.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![starts::CROSSWALK],
+        "the door forgot the session — the Protocols section has nothing to reopen"
+    );
+
+    // And the row still reopens exactly what was left.
+    win.take_the_row(starts::CROSSWALK);
     win.settle();
     assert!(
         win.app.protocol_model().has_assets(),
-        "Continue after Home reopened nothing"
+        "a Protocols row after Home reopened nothing"
     );
     assert!(!win.app.front_door_is_live());
 }
@@ -802,7 +1205,7 @@ fn going_home_returns_to_the_door_but_keeps_the_session() {
 // `UPDATE_SNAPSHOTS=1` workflow. It lives here rather than there because the
 // door and its gallery are this file's subject.
 
-use brightfield_shell::capture::{capture_png_at, thumbnail};
+use brightfield_shell::capture::{capture_png_at, capture_png_at_with_layout, thumbnail};
 
 /// The size the front door is photographed at: the default window geometry,
 /// because an empty boot is the one boot with no content to derive a size
@@ -847,6 +1250,49 @@ fn front_door_light_surface() {
 #[test]
 fn front_door_dark_surface() {
     door_surface(Mode::Dark, "front_door_dark");
+}
+
+/// Photograph the **returning** door — the same window over the same empty
+/// boot, with a layout that remembers three Protocols — and diff it against
+/// the committed baseline.
+///
+/// The second of the door's two states, and the one the interaction tests
+/// above cannot photograph: a rect hook says a row was laid out somewhere, and
+/// only pixels say the name, the run state and the time landed in three
+/// columns that line up rather than on top of each other. The first-run pair
+/// beside it pins the other state, so the four together are what AC6 asks for
+/// — a baseline in both themes for both states.
+///
+/// The two differ only in the layout handed in, which is what makes a
+/// difference between them attributable to the recents.
+fn returning_door_surface(mode: Mode, name: &str) {
+    // Hermetic capture, as `door_surface`: a dev shell with
+    // `BRIGHTFIELD_DEVTOOLS` set must not bake the top-bar renderer string
+    // into this golden.
+    std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
+    let out = scratch(name);
+    let (w, h) = capture_png_at_with_layout(
+        Boot::empty(),
+        layout_remembering(&returning_recents()),
+        mode,
+        1.0,
+        DOOR_SIZE,
+        &out,
+        Vec::new(),
+    )
+    .unwrap_or_else(|e| panic!("capture {name}: {e}"));
+    assert!(w > 0 && h > 0, "{name}: empty capture");
+    egui_kittest::image_snapshot(&read_rgba(&out), name);
+}
+
+#[test]
+fn front_door_return_light_surface() {
+    returning_door_surface(Mode::Light, "front_door_return_light");
+}
+
+#[test]
+fn front_door_return_dark_surface() {
+    returning_door_surface(Mode::Dark, "front_door_return_dark");
 }
 
 /// Every bundled start still renders, and its committed thumbnail is what the

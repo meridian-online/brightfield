@@ -63,8 +63,8 @@ use brightfield_workbench::arrangement::{self, Occupant, Projection, Region, Reg
 use brightfield_workbench::workspace::{tabs_holding, tile_of};
 use brightfield_workbench::{
     chrome, Activity, ActivityIndicator, DirtyTracker, HideAffordance, ItemId, ItemMap, PaneChrome,
-    PaneKey, Request, SavedLayout, StatusEntry, StatusSide, Subject, Tone, ToolbarEntry, Verb,
-    ViewKind, WindowGeometry, Workspace,
+    PaneKey, Recent, Request, RunState, SavedLayout, StatusEntry, StatusSide, Subject, Tone,
+    ToolbarEntry, Verb, ViewKind, WindowGeometry, Workspace,
 };
 use meridian_egui::{
     ModalChrome, ModalLayer, Notification, NotificationId, NotificationLayer, Picker, PickerEvent,
@@ -82,8 +82,9 @@ use crate::inspector::{InspectorPane, Selection};
 use crate::overlays::{CommandPalette, HelpSheet, JumpTarget, JumpToNode};
 use crate::pipeline::Composed;
 use crate::protocol::{
-    hint_ui, load_protocol_offline, protocol_registry, ui_font, ProtocolDoc, ProtocolInputs,
-    ProtocolModel, CANVAS as PROTOCOL_CANVAS, INSPECTOR as PROTOCOL_INSPECTOR, OUTLINE, STEPS,
+    hint_ui, load_protocol_offline, mono_font, protocol_registry, ui_font, ProtocolDoc,
+    ProtocolInputs, ProtocolModel, CANVAS as PROTOCOL_CANVAS, INSPECTOR as PROTOCOL_INSPECTOR,
+    OUTLINE, STEPS,
 };
 
 // ---------------------------------------------------------------------------
@@ -174,9 +175,100 @@ pub const OPEN_FILE_PROMISE: &str = "A CSV or a Parquet on this machine. It open
                                      nothing is uploaded and nothing is fetched.";
 
 /// The front door's content column, in logical points: four gallery cards and
-/// the three gaps between them, so the Explore row is what sets the measure
+/// the three gaps between them, so the Datasets row is what sets the measure
 /// and everything above it aligns to the gallery.
 const DOOR_COLUMN_WIDTH: f32 = 4.0 * CARD_WIDTH + 3.0 * spacing::SECTION_GAP;
+
+/// The curated section's heading: the datasets that ship with this build.
+///
+/// One of the door's two section names, and the pair replaces decision-75
+/// §K's *Explore* and *Continue* — Hugh's ruling, 2026-08-18, recorded in the
+/// workspace-composition decision. §K's argument (verbs invite, container
+/// nouns file) stands as reasoning and loses on the facts: these sections
+/// hold the product's own primitives, and a screen naming one thing while the
+/// product names another is the harder thing to unpick later.
+pub const DATASETS_SECTION: &str = "Datasets";
+
+/// The analyst's own section's heading — the other of the two.
+pub const PROTOCOLS_SECTION: &str = "Protocols";
+
+/// What the Datasets heading says about itself, beside it.
+pub const DATASETS_NOTE: &str = "curated, and they ship with this build";
+
+/// What the Protocols heading says about itself on a **first run**, when the
+/// section below it is empty and has to state what it will hold rather than
+/// hold it.
+pub const PROTOCOLS_NOTE_EMPTY: &str = "your own work, once there is some";
+
+/// What the Protocols heading says once there is something under it.
+pub const PROTOCOLS_NOTE: &str = "pick up where you left off";
+
+/// The empty Protocols section's own words — the first-run half of the door,
+/// and the case the whole front door exists for: a section that is empty on
+/// every first launch has to say what will fill it, or it reads as a feature
+/// that is broken rather than one you have not used.
+pub const PROTOCOLS_EMPTY_TITLE: &str = "Nothing here yet.";
+
+/// The line under [`PROTOCOLS_EMPTY_TITLE`]: what to do about it, and what
+/// the thing it produces is called.
+///
+/// The first clause is what this build does — taking a Datasets card records
+/// it and the row appears here — and the second is the model it is naming,
+/// which [`the Protocol being the container of record`] settles. Both halves
+/// matter: an empty state that only names the concept teaches nothing about
+/// the next click.
+///
+/// [`the Protocol being the container of record`]: crate::starts
+pub const PROTOCOLS_EMPTY_BODY: &str =
+    "Opening a Dataset above puts it here — a Protocol is what an analysis is saved as.";
+
+/// The promise every entry on the door carries, in both sections: what the
+/// click lands on.
+///
+/// Decision-75 §9's own sentence, and one constant rather than two so the two
+/// sections cannot drift into promising different things — which is the half
+/// of AC4 that is about words rather than about where focus ends up.
+pub const DOOR_ENTRY_PROMISE: &str = "opens on a rendered result";
+
+/// One Protocols row's height, in logical points — the preview row of the
+/// density ladder, which is what a row carrying a name, a state and a time
+/// needs to stay readable at the door's type size.
+const PROTOCOL_ROW_HEIGHT: f32 = spacing::ROW_PREVIEW;
+
+/// How much of a Protocols row the name gets before the run state starts.
+///
+/// A fixed measure rather than a proportion of the column, so the three
+/// columns line up down the section whatever the names are; a name longer
+/// than this is clipped by its own galley rather than pushing the state
+/// sideways, which is the same trade [`CARD_HEIGHT`] makes for a card's
+/// label.
+const PROTOCOL_ROW_NAME_WIDTH: f32 = 260.0;
+
+/// One row the front door's Protocols section drew, with the text it drew.
+///
+/// Read back through [`MeridianApp::front_door_rows`]. It carries the
+/// *rendered* strings rather than the [`Recent`](brightfield_workbench::Recent)
+/// behind them, because the claim worth pinning is what the analyst reads: a
+/// row built from the right record and labelled from the wrong field is a
+/// defect this type can see and the record cannot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DoorRow {
+    /// The start id a click on this row reopens — the same id a Datasets card
+    /// for the same subject raises, which is what makes the two routes one.
+    pub id: String,
+    /// The Protocol's name, as drawn.
+    pub name: String,
+    /// Its run state, as drawn — [`RunState::label`]'s words, never this
+    /// module's own.
+    ///
+    /// [`RunState::label`]: brightfield_workbench::RunState::label
+    pub state: String,
+    /// When it was last opened, as drawn: *2m ago*, *yesterday*, *4 days ago*.
+    pub when: String,
+    /// Where the row was laid out, in window-space logical points — where a
+    /// test aims the click.
+    pub rect: egui::Rect,
+}
 
 /// One gallery card's outer width.
 const CARD_WIDTH: f32 = 216.0;
@@ -186,10 +278,11 @@ const CARD_WIDTH: f32 = 216.0;
 /// arithmetic produces so a drift in either term is a visible edit here.
 const CARD_IMAGE_HEIGHT: f32 = 130.0;
 
-/// One gallery card's outer height: the image and its insets, plus room for a
-/// two-line label and a two-line summary. A label that wraps past that is
-/// clipped by the card's own rect rather than pushing the gallery apart.
-const CARD_HEIGHT: f32 = 220.0;
+/// One gallery card's outer height: the image and its insets, room for a
+/// two-line label and a three-line summary, and one grid row at the foot for
+/// [`DOOR_ENTRY_PROMISE`]. A label that wraps past that is clipped by the
+/// card's own rect rather than pushing the gallery apart.
+const CARD_HEIGHT: f32 = 220.0 + spacing::ROW_GRID;
 
 /// The natural window size in logical points for a composed dashboard: exactly
 /// big enough that the chart pane's content box fits the dashboard's raster,
@@ -1205,10 +1298,18 @@ pub struct MeridianApp {
     /// [`Self::affordances`] is for pane empty states. Cleared on frames the
     /// door did not draw.
     door_cards: Vec<(&'static str, egui::Rect)>,
-    /// Where the front door drew the Continue zone's resolving button, when
-    /// the layout remembered work to continue. `None` on a first run — the
-    /// zone is the morph, not a fixture.
-    door_continue: Option<egui::Rect>,
+    /// Which sections the front door drew, in the order it drew them, and
+    /// where each one's heading landed.
+    ///
+    /// The order is the morph: a first run leads with Datasets because there
+    /// is nothing else to lead with, and a door with recents leads with
+    /// Protocols. Recorded rather than re-derived so a test asks the door
+    /// what it drew instead of asking the layout what it should have drawn.
+    door_sections: Vec<(&'static str, egui::Rect)>,
+    /// The rows the front door's Protocols section drew, most recent first —
+    /// each with the text it drew, so a test reads what the analyst reads
+    /// rather than what the layout holds.
+    door_rows: Vec<DoorRow>,
     /// Where the front door drew the Start zone's keyboard-help control.
     door_help: Option<egui::Rect>,
     /// Where the front door drew the Start zone's open-a-file control —
@@ -1519,7 +1620,8 @@ impl MeridianApp {
             affordances: Vec::new(),
             door_thumbs: Vec::new(),
             door_cards: Vec::new(),
-            door_continue: None,
+            door_sections: Vec::new(),
+            door_rows: Vec::new(),
             door_help: None,
             door_open_file: None,
             pick_requested: false,
@@ -2005,11 +2107,26 @@ impl MeridianApp {
             .map(|(_, r)| *r)
     }
 
-    /// The rect of the front door's Continue button, when the last frame drew
-    /// one — it exists only once the layout remembers work to continue.
+    /// Which sections the last frame's front door drew, in the order it drew
+    /// them, and where each heading landed.
+    ///
+    /// Empty on a frame the door did not draw — the same answer
+    /// [`MeridianApp::front_door_card_rect`] gives, and for the same reason:
+    /// a test asserting the door is gone asks this too.
     #[must_use]
-    pub fn front_door_continue_rect(&self) -> Option<egui::Rect> {
-        self.door_continue
+    pub fn front_door_sections(&self) -> &[(&'static str, egui::Rect)] {
+        &self.door_sections
+    }
+
+    /// The rows the last frame's front door drew in its Protocols section,
+    /// most recent first.
+    ///
+    /// The text is what was drawn, not what the layout holds: a row built
+    /// from the wrong field, or labelled by recomputing a run state the door
+    /// has no business computing, differs here.
+    #[must_use]
+    pub fn front_door_rows(&self) -> &[DoorRow] {
+        &self.door_rows
     }
 
     /// The rect of the front door's keyboard-help control, when the last
@@ -2325,7 +2442,8 @@ impl MeridianApp {
             // test that asks where a card was after the door has gone must
             // hear "nowhere", exactly as `affordances` answers for panes.
             self.door_cards.clear();
-            self.door_continue = None;
+            self.door_sections.clear();
+            self.door_rows.clear();
             self.door_help = None;
             self.door_open_file = None;
 
@@ -3244,6 +3362,32 @@ impl MeridianApp {
     /// a banner where a user is looking. The banner's id is composite over
     /// the start, so the same start failing again **replaces** its banner in
     /// place rather than stacking a second; a later success dismisses it.
+    /// What the document filling `view` calls itself — the noun a Protocols
+    /// row draws, and the same string [`MeridianApp::title`] builds the window
+    /// title from, without its `Protocol · ` prefix.
+    fn subject_name(&self, view: ViewKind) -> String {
+        match view {
+            ViewKind::Charts => self.charts.doc.title().to_string(),
+            ViewKind::Protocol => self.protocol.doc.model.protocol.clone(),
+        }
+    }
+
+    /// The run state recorded for the document filling `view` — what a
+    /// Protocols row draws beside the name.
+    ///
+    /// A chart document reads [`RunState::NeverRun`]: its tables are
+    /// materialised by the engine as it composes and no run contract is
+    /// written, so there is genuinely no run to report, and reporting one
+    /// would be the shell computing what only the engine may. A protocol
+    /// document folds what its contract recorded, in
+    /// [`ProtocolModel::recorded_run_state`].
+    fn recorded_run_state(&self, view: ViewKind) -> RunState {
+        match view {
+            ViewKind::Charts => RunState::NeverRun,
+            ViewKind::Protocol => self.protocol.doc.model.recorded_run_state(),
+        }
+    }
+
     fn open_start(&mut self, ctx: &egui::Context, id: &'static str) {
         let banner = NotificationId::composite("open-start", id);
         let opened = match crate::starts::load(id) {
@@ -3274,6 +3418,14 @@ impl MeridianApp {
         self.notifications.dismiss(banner);
         self.ws_mut().set_active(view);
         self.layout.live_mut().opened = Some(id.to_string());
+        // …and remembered as a Protocol, which is the other half: `opened` is
+        // what the next launch restores, and this is what the door lists. The
+        // name and the run state are read off the document that was just
+        // opened rather than off the start, because a start's label is a verb
+        // for a button and its run state is not a property of a start at all.
+        let name = self.subject_name(view);
+        let run = self.recorded_run_state(view);
+        self.layout.live_mut().remember(id, &name, run, now_secs());
         self.toasts.push(Toast::new(
             Severity::Success,
             format!("Opened {}", self.title()),
@@ -3366,22 +3518,34 @@ impl MeridianApp {
     /// Draw the front door into the central panel: what the window shows when
     /// nothing is open anywhere, in place of a dock of empty instruments.
     ///
-    /// Five zones, one voice: **Welcome** (the invariant greeting — the
-    /// content below it morphs, the greeting never flips), **Start** (the
-    /// verb spine), **Continue** (recent work, present only once there is
-    /// any), **Explore** (the gallery of shipped starts — the flagship), and
-    /// **Learn** (the placeholder for walkthroughs, which are their own
-    /// work). Continue appearing and disappearing *is* the morph: there is no
-    /// dismissal anywhere because there is nothing to dismiss — content
+    /// **Welcome**, the **Start** verb spine, and then two sections:
+    /// [`DATASETS_SECTION`] — the curated starts this build ships — and
+    /// [`PROTOCOLS_SECTION`] — the analyst's own recent work, drawn from
+    /// [`SavedLayout::recents`]. The greeting never flips; the morph is in
+    /// which section leads and what is under the Protocols heading. There is
+    /// no dismissal anywhere because there is nothing to dismiss: content
     /// outcompetes the door, and the door comes back only when the window is
     /// emptied.
     ///
+    /// **The empty half is the one that matters.** Protocols is empty on
+    /// every first launch, which is the case decision-75 exists to prevent
+    /// going blank, so the section is drawn *present and speaking* rather
+    /// than omitted — [`PROTOCOLS_EMPTY_TITLE`] and
+    /// [`PROTOCOLS_EMPTY_BODY`]. A section that appears only once it has
+    /// content teaches a stranger nothing about what the product saves.
+    ///
     /// Everything a click does here goes out through `requests` as the same
     /// [`Request::Open`] an empty pane's button raises, into the same
-    /// [`MeridianApp::open_start`]. The door owns no route of its own.
+    /// [`MeridianApp::open_start`]. The door owns no route of its own, and
+    /// that is what makes a Protocols row and the Datasets card for the same
+    /// subject leave the window in the same state rather than in two states a
+    /// test can tell apart.
+    ///
+    /// [`SavedLayout::recents`]: brightfield_workbench::SavedLayout::recents
     fn front_door_ui(&mut self, ui: &mut egui::Ui, requests: &mut Vec<Request>) {
         self.door_cards.clear();
-        self.door_continue = None;
+        self.door_sections.clear();
+        self.door_rows.clear();
         self.door_help = None;
         self.door_open_file = None;
         self.affordances.clear();
@@ -3389,16 +3553,20 @@ impl MeridianApp {
 
         let sem = semantic(self.mode.is_dark());
         let help_key = self.overlay_keys.help;
-        // The remembered start, when the layout carries one this build
-        // recognises. The door only draws with nothing open, so anything
-        // remembered here is by definition work that was *not* restored —
-        // which is exactly what Continue is for.
-        let remembered = self
+        // The rows this door will draw, read out of the layout before the
+        // closure below borrows `self` mutably — and filtered to what this
+        // build can reopen. A recent naming a start this binary no longer
+        // ships would draw a row whose click does nothing, which is worse
+        // than a shorter list.
+        let recents: Vec<Recent> = self
             .layout
             .live()
-            .opened
-            .as_deref()
-            .and_then(crate::starts::find);
+            .recents
+            .iter()
+            .filter(|r| crate::starts::find(&r.id).is_some())
+            .cloned()
+            .collect();
+        let now = now_secs();
         let mut open_help = false;
         let mut open_file = false;
 
@@ -3414,7 +3582,7 @@ impl MeridianApp {
                         ui.set_width(width);
                         ui.add_space(spacing::SECTION_GAP);
 
-                        // Welcome — invariant, whatever the zones below do.
+                        // Welcome — invariant, whatever the sections below do.
                         ui.label(
                             egui::RichText::new("Welcome")
                                 .text_style(egui::TextStyle::Heading)
@@ -3434,8 +3602,8 @@ impl MeridianApp {
                         //
                         // **Open leads it**, and it is the one verb here that
                         // does not open something this binary already carries.
-                        // Everything else on this door — every gallery card,
-                        // the Continue button — resolves to a start compiled
+                        // Everything else on this door — every Datasets card,
+                        // every Protocols row — resolves to a start compiled
                         // into the executable, which is a fine first click and
                         // a poor second one: the product's own promise is that
                         // you open a file and the picture is already there.
@@ -3469,55 +3637,21 @@ impl MeridianApp {
                             open_help = true;
                         }
 
-                        // Continue — the morph. Absent on a first run; a
-                        // remembered start renders its own opening control,
-                        // raising the request a pane's button would.
-                        if let Some(start) = remembered {
-                            door_zone_heading(ui, "Continue", sem);
-                            let control =
-                                ui.button(egui::RichText::new(start.label).font(ui_font()));
-                            self.door_continue = Some(control.rect);
-                            if control.clicked() {
-                                requests.push(Request::Open(start.id));
-                            }
+                        // The morph, and the whole of it: which section leads.
+                        // A returning analyst's own work is what they came
+                        // for, so it goes above the catalogue; a first run has
+                        // nothing to lead with, so the catalogue carries the
+                        // door and Protocols states what it will hold. The
+                        // greeting above is the same either way — decision-75
+                        // §K, a deliberate departure from the Zed precedent
+                        // the rest of this door follows.
+                        if recents.is_empty() {
+                            self.datasets_section(ui, width, sem, requests);
+                            self.protocols_section(ui, width, sem, &recents, now, requests);
+                        } else {
+                            self.protocols_section(ui, width, sem, &recents, now, requests);
+                            self.datasets_section(ui, width, sem, requests);
                         }
-
-                        // Explore — the gallery, and the flagship: every card
-                        // opens onto a drawn result. The second sentence is
-                        // the narrowing a fetched start forced: the SPECS all
-                        // ship inside the binary, but one of them reads a
-                        // table that does not, and the sentence that used to
-                        // end at "rendered result" read as a promise it could
-                        // not keep on a plane. Its card carries
-                        // `starts::REMOTE_MARK`; this says what that means.
-                        door_zone_heading(ui, "Explore", sem);
-                        ui.label(
-                            egui::RichText::new(
-                                "Starting points that ship with the binary — \
-                                 each opens on a rendered result. A card \
-                                 marked over the network fetches its data \
-                                 when you open it.",
-                            )
-                            .font(ui_font())
-                            .color(chrome::colour(sem.text.secondary)),
-                        );
-                        ui.add_space(spacing::CONTROL_GAP);
-                        ui.horizontal_wrapped(|ui| {
-                            ui.spacing_mut().item_spacing =
-                                egui::vec2(spacing::SECTION_GAP, spacing::SECTION_GAP);
-                            for start in crate::starts::STARTS {
-                                self.door_card(ui, start, sem, requests);
-                            }
-                        });
-
-                        // Learn — the placeholder zone; walkthrough content
-                        // is its own work and arrives as such.
-                        door_zone_heading(ui, "Learn", sem);
-                        ui.label(
-                            egui::RichText::new("Guided walkthroughs will live here.")
-                                .font(ui_font())
-                                .color(chrome::colour(sem.text.muted)),
-                        );
                         ui.add_space(spacing::SECTION_GAP);
                     });
                 });
@@ -3529,6 +3663,184 @@ impl MeridianApp {
         // Latched, not acted on: the dialog blocks on the operating system and
         // the `Ui` borrow is still live here. `draw` takes it after the frame.
         self.pick_requested = open_file;
+    }
+
+    /// The Datasets section: the curated starts, as a wrapping row of cards.
+    ///
+    /// Every card carries [`DOOR_ENTRY_PROMISE`] under its summary — the same
+    /// sentence the Protocols section states — so the two sections make one
+    /// promise rather than two.
+    fn datasets_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        width: f32,
+        sem: &semantic::Semantic,
+        requests: &mut Vec<Request>,
+    ) {
+        self.door_section_heading(ui, DATASETS_SECTION, DATASETS_NOTE, width, sem);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(spacing::SECTION_GAP, spacing::SECTION_GAP);
+            for start in crate::starts::STARTS {
+                self.door_card(ui, start, sem, requests);
+            }
+        });
+    }
+
+    /// The Protocols section: the analyst's own recent work, most recent
+    /// first — or, on a first run, what it will hold.
+    ///
+    /// The empty arm is not a fallback. It is the state this section is in on
+    /// every first launch of every install, so it is drawn as deliberately as
+    /// the populated one, and the section's heading is present in both — AC3's
+    /// *the Protocols heading absent* is the failure it exists to make
+    /// impossible.
+    fn protocols_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        width: f32,
+        sem: &semantic::Semantic,
+        recents: &[Recent],
+        now: u64,
+        requests: &mut Vec<Request>,
+    ) {
+        let note = if recents.is_empty() {
+            PROTOCOLS_NOTE_EMPTY
+        } else {
+            PROTOCOLS_NOTE
+        };
+        self.door_section_heading(ui, PROTOCOLS_SECTION, note, width, sem);
+        if recents.is_empty() {
+            door_empty_protocols(ui, width, sem);
+            return;
+        }
+        for recent in recents {
+            self.door_row(ui, width, recent, now, sem, requests);
+        }
+        ui.add_space(spacing::SPACE_2);
+        ui.label(
+            egui::RichText::new(DOOR_ENTRY_PROMISE)
+                .font(mono_font())
+                .color(chrome::colour(sem.text.muted)),
+        );
+    }
+
+    /// One section heading: the noun, what it says about itself beside it, and
+    /// a rule across the column.
+    ///
+    /// Records the heading's rect and its position in the draw order, which is
+    /// what [`MeridianApp::front_door_sections`] answers — so *which sections
+    /// the door drew, and in what order* is read off the frame rather than
+    /// recomputed from the layout the frame was drawn from.
+    fn door_section_heading(
+        &mut self,
+        ui: &mut egui::Ui,
+        name: &'static str,
+        note: &str,
+        width: f32,
+        sem: &semantic::Semantic,
+    ) {
+        ui.add_space(spacing::SECTION_GAP);
+        let heading = ui
+            .horizontal(|ui| {
+                let label = ui.label(
+                    egui::RichText::new(name)
+                        .font(ui_font())
+                        .color(chrome::colour(sem.text.primary)),
+                );
+                ui.add_space(spacing::SPACE_3);
+                ui.label(
+                    egui::RichText::new(note)
+                        .text_style(egui::TextStyle::Small)
+                        .color(chrome::colour(sem.text.muted)),
+                );
+                label.rect
+            })
+            .inner;
+        self.door_sections.push((name, heading));
+        ui.add_space(spacing::SPACE_2);
+        let (rule, _) = ui.allocate_exact_size(egui::vec2(width, 1.0), egui::Sense::hover());
+        ui.painter().hline(
+            rule.x_range(),
+            rule.center().y,
+            (1.0, chrome::colour(sem.borders.subtle)),
+        );
+        ui.add_space(spacing::SPACE_4);
+    }
+
+    /// One Protocols row: the Protocol's name, the run state it was last seen
+    /// in, and when that was — the whole row clickable, raising the same
+    /// [`Request::Open`] its Datasets card raises.
+    fn door_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        width: f32,
+        recent: &Recent,
+        now: u64,
+        sem: &semantic::Semantic,
+        requests: &mut Vec<Request>,
+    ) {
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(width, PROTOCOL_ROW_HEIGHT), egui::Sense::click());
+        let state = recent.run.label().to_string();
+        let when = relative_time(now, recent.opened_at);
+        if ui.is_rect_visible(rect) {
+            let painter = ui.painter().with_clip_rect(rect);
+            if response.hovered() {
+                painter.rect_filled(rect, radius::CONTROL, chrome::colour(sem.surfaces.raised));
+            }
+            let mid = rect.center().y;
+            let name = painter.layout(
+                recent.name.clone(),
+                ui_font(),
+                chrome::colour(sem.text.primary),
+                PROTOCOL_ROW_NAME_WIDTH - spacing::SPACE_4,
+            );
+            painter.galley(
+                egui::pos2(rect.min.x + spacing::SPACE_4, mid - name.size().y / 2.0),
+                name,
+                chrome::colour(sem.text.primary),
+            );
+            // The run state in the reader's own comparison face, and in
+            // `RunState`'s own words — a surface labels recorded run state and
+            // never coins a second vocabulary for it.
+            let tone = chrome::tone_colour(recent.run.tone(), self.mode);
+            let state_galley =
+                painter.layout(state.clone(), mono_font(), tone, PROTOCOL_ROW_NAME_WIDTH);
+            painter.galley(
+                egui::pos2(
+                    rect.min.x + PROTOCOL_ROW_NAME_WIDTH,
+                    mid - state_galley.size().y / 2.0,
+                ),
+                state_galley,
+                tone,
+            );
+            let when_galley =
+                painter.layout_no_wrap(when.clone(), mono_font(), chrome::colour(sem.text.muted));
+            painter.galley(
+                egui::pos2(
+                    rect.max.x - spacing::SPACE_4 - when_galley.size().x,
+                    mid - when_galley.size().y / 2.0,
+                ),
+                when_galley,
+                chrome::colour(sem.text.muted),
+            );
+        }
+        self.door_rows.push(DoorRow {
+            id: recent.id.clone(),
+            name: recent.name.clone(),
+            state,
+            when,
+            rect,
+        });
+        if response.clicked() {
+            // Leaked into the request queue as a `&'static str`, which is what
+            // `Request::Open` carries: the id came off a shipped start (the
+            // filter in `front_door_ui` dropped every recent that did not), so
+            // this resolves to the same static the card beside it raises.
+            if let Some(start) = crate::starts::find(&recent.id) {
+                requests.push(Request::Open(start.id));
+            }
+        }
     }
 
     /// One gallery card: the start's pre-rendered thumbnail, its label and
@@ -3600,6 +3912,19 @@ impl MeridianApp {
             painter.galley(
                 egui::pos2(text_left, title_pos.y + title.size().y + spacing::SPACE_1),
                 summary,
+                chrome::colour(sem.text.muted),
+            );
+            // The promise, at the card's foot: one constant, shared with the
+            // Protocols section, so a reader comparing the two sections is
+            // comparing one sentence with itself.
+            let promise = painter.layout_no_wrap(
+                DOOR_ENTRY_PROMISE.to_string(),
+                egui::FontId::monospace(meridian_design::typography::CHART_LABEL_SIZE),
+                chrome::colour(sem.text.muted),
+            );
+            painter.galley(
+                egui::pos2(text_left, rect.max.y - spacing::SPACE_4 - promise.size().y),
+                promise,
                 chrome::colour(sem.text.muted),
             );
         }
@@ -3780,6 +4105,103 @@ fn door_zone_heading(ui: &mut egui::Ui, name: &str, sem: &semantic::Semantic) {
     );
     ui.add_space(spacing::SPACE_2);
 }
+
+/// The empty Protocols section: a bordered box saying what will fill it.
+///
+/// A box rather than two bare lines, because the section has to read as
+/// *present and empty* rather than as the page having stopped — the whole
+/// point of drawing the heading on a first run at all.
+fn door_empty_protocols(ui: &mut egui::Ui, width: f32, sem: &semantic::Semantic) {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(width, EMPTY_PROTOCOLS_HEIGHT),
+        egui::Sense::hover(),
+    );
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let painter = ui.painter().with_clip_rect(rect);
+    painter.rect_stroke(
+        rect,
+        radius::CONTROL,
+        egui::Stroke::new(1.0, chrome::colour(sem.borders.subtle)),
+        egui::StrokeKind::Inside,
+    );
+    let left = rect.min.x + spacing::SPACE_5;
+    let wrap = width - 2.0 * spacing::SPACE_5;
+    let title = painter.layout(
+        PROTOCOLS_EMPTY_TITLE.to_string(),
+        ui_font(),
+        chrome::colour(sem.text.primary),
+        wrap,
+    );
+    let title_pos = egui::pos2(left, rect.min.y + spacing::SPACE_5);
+    painter.galley(title_pos, title.clone(), chrome::colour(sem.text.primary));
+    let body = painter.layout(
+        PROTOCOLS_EMPTY_BODY.to_string(),
+        egui::TextStyle::Small.resolve(ui.style()),
+        chrome::colour(sem.text.secondary),
+        wrap,
+    );
+    painter.galley(
+        egui::pos2(left, title_pos.y + title.size().y + spacing::SPACE_3),
+        body,
+        chrome::colour(sem.text.secondary),
+    );
+}
+
+/// The empty Protocols box's height: two lines and the padding around them,
+/// stated as the arithmetic rather than as a tuned number so a change to
+/// either term is a visible edit here.
+const EMPTY_PROTOCOLS_HEIGHT: f32 = 2.0 * spacing::SPACE_5 + 2.0 * spacing::ROW_GRID;
+
+/// Whole seconds since the Unix epoch, as [`Recent::opened_at`] records them.
+///
+/// A clock set before 1970 reads as the epoch rather than panicking: a wrong
+/// clock is a row that says *just now*, which is a cosmetic wrong answer, and
+/// a window that will not draw its own front door is not.
+///
+/// [`Recent::opened_at`]: brightfield_workbench::Recent::opened_at
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// How long ago `then` was, from `now`, in the words a Protocols row draws:
+/// *just now*, *17m ago*, *5h ago*, *yesterday*, *4 days ago*, *3 weeks ago*,
+/// *2 months ago*.
+///
+/// **`now` is a parameter, not a call.** A relative time computed from the
+/// process clock inside the draw path cannot be pinned by a committed
+/// baseline, and a golden that photographs a moving string is a gate that
+/// flaps. The door reads [`now_secs`] once per frame and hands it down; a
+/// test hands down whatever it likes.
+///
+/// A `then` in the future — a clock that went backwards between two launches,
+/// which is ordinary on a machine that has just synchronised — saturates to
+/// *just now* rather than underflowing.
+///
+/// The buckets are exclusive upper bounds in seconds: 60, 3,600, 86,400, then
+/// two days, seven days, thirty days. `the_relative_time_says_what_it_means`
+/// walks every boundary either side.
+fn relative_time(now: u64, then: u64) -> String {
+    const MINUTE: u64 = 60;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+    const WEEK: u64 = 7 * DAY;
+    const MONTH: u64 = 30 * DAY;
+    let ago = now.saturating_sub(then);
+    match ago {
+        _ if ago < MINUTE => "just now".to_string(),
+        _ if ago < HOUR => format!("{}m ago", ago / MINUTE),
+        _ if ago < DAY => format!("{}h ago", ago / HOUR),
+        _ if ago < 2 * DAY => "yesterday".to_string(),
+        _ if ago < WEEK => format!("{} days ago", ago / DAY),
+        _ if ago < MONTH => format!("{} ago", plural((ago / WEEK) as usize, "week", "weeks")),
+        _ => format!("{} ago", plural((ago / MONTH) as usize, "month", "months")),
+    }
+}
+
 /// The verb that reaches the navigator rail and returns from it.
 ///
 /// The registry's longname, said once here rather than spelled at each of the
@@ -4098,6 +4520,52 @@ mod tests {
 
     fn app() -> MeridianApp {
         MeridianApp::headless(Boot::empty(), Mode::Light)
+    }
+
+    /// Every bucket of a Protocols row's relative time, walked from both
+    /// sides of every boundary.
+    ///
+    /// The boundaries are where this goes wrong: an inclusive `<=` at the day
+    /// mark turns *23h ago* into *yesterday* an hour early, and nothing on a
+    /// door row makes that visible. The pairs below are the second either
+    /// side of each edge, so an off-by-one in any comparison changes exactly
+    /// one of them.
+    #[test]
+    fn the_relative_time_says_what_it_means() {
+        const MINUTE: u64 = 60;
+        const HOUR: u64 = 60 * MINUTE;
+        const DAY: u64 = 24 * HOUR;
+        // A fixed "now" well past every bucket, so no case saturates.
+        let now = 400 * DAY;
+        let cases: [(u64, &str); 16] = [
+            (0, "just now"),
+            (MINUTE - 1, "just now"),
+            (MINUTE, "1m ago"),
+            (2 * MINUTE + 30, "2m ago"),
+            (HOUR - 1, "59m ago"),
+            (HOUR, "1h ago"),
+            (DAY - 1, "23h ago"),
+            (DAY, "yesterday"),
+            (2 * DAY - 1, "yesterday"),
+            (2 * DAY, "2 days ago"),
+            (7 * DAY - 1, "6 days ago"),
+            (7 * DAY, "1 week ago"),
+            (14 * DAY, "2 weeks ago"),
+            (30 * DAY - 1, "4 weeks ago"),
+            (30 * DAY, "1 month ago"),
+            (400 * DAY, "13 months ago"),
+        ];
+        for (ago, said) in cases {
+            assert_eq!(
+                relative_time(now, now - ago),
+                said,
+                "{ago}s ago should read {said:?}"
+            );
+        }
+        // A clock that went backwards between two launches — ordinary on a
+        // machine that has just synchronised — reads as the present rather
+        // than underflowing.
+        assert_eq!(relative_time(now, now + 10 * DAY), "just now");
     }
 
     /// The id-dedup contract at this shell's real raise site: the same start
