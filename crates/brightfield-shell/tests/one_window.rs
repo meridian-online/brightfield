@@ -1133,3 +1133,52 @@ fn going_home_from_a_graph_leaves_no_protocol_control_behind() {
          document Home just emptied: {drawn:?}"
     );
 }
+
+/// No item id is declared by two of the registries a window is built from.
+///
+/// A pane's address in the layout file is its item id and no more than that,
+/// and a window holds one tile tree over both documents' panes — so two
+/// registries declaring one id means two tiles at one address:
+/// `Workspace::tile_of` reaches one of them, the other has no way to be
+/// named, and the file cannot tell them apart. `ItemRegistry::new` refuses the
+/// same id twice inside one spec list, but no constructor is handed the pair,
+/// so the comparison has to happen where the pair is known, which is here.
+/// What it costs when it does not hold is measured in
+/// `crates/brightfield-workbench/tests/cross_registry_ids.rs`.
+///
+/// Asserted against the two id lists directly rather than left to
+/// `a_window_publishes_both_registries_and_nothing_else` above, which catches
+/// the same fault as arithmetic: `ItemId::publish` merges the two
+/// vocabularies, a shared id merges to one entry, and the published length
+/// then falls short of the two registries' lengths added up. That is a real
+/// catch — a protocol pane given the chart controls' id reddens it — but it
+/// reads a process-global vocabulary any other test in this binary can add
+/// to, and it compares the two registries the *window* published rather than
+/// every registry the shell can build. This compares the lists themselves.
+///
+/// Both chart arrangements, because `chart_registry` picks between them from
+/// the environment: `chart_registry_with(false)` is what ships and
+/// `chart_registry_with(true)` adds the gallery pane. Those two plus
+/// `protocol_registry` are the registries a window can be built from today.
+///
+/// Watched redden, one mutation: giving `STEPS` in
+/// `crates/brightfield-shell/src/protocol.rs` the id string `CONTROLS`
+/// already uses fails this at both gallery settings.
+#[test]
+fn no_item_id_is_declared_by_two_of_the_windows_registries() {
+    let protocol = protocol_registry().ids();
+    for gallery in [false, true] {
+        let charts = chart_registry_with(gallery).ids();
+        let shared: Vec<ItemId> = charts
+            .iter()
+            .copied()
+            .filter(|id| protocol.contains(id))
+            .collect();
+        assert!(
+            shared.is_empty(),
+            "with gallery={gallery}, {shared:?} is declared by both \
+             registries — a window has one tile tree, so both panes would be \
+             the same tile and a saved layout could not tell them apart"
+        );
+    }
+}
