@@ -22,9 +22,12 @@
 use std::path::PathBuf;
 
 use brightfield_protocol::layout::Flow;
+use brightfield_protocol::SeamStatus;
 use brightfield_shell::app::{chart_registry, ChartDoc, CHART};
 use brightfield_shell::design::Mode;
-use brightfield_shell::protocol::{self, protocol_registry, ProtocolDoc, CANVAS};
+use brightfield_shell::protocol::{
+    self, protocol_registry, ProtocolDoc, ProtocolInputs, ProtocolModel, CANVAS,
+};
 use brightfield_shell::starts::{self, Opened};
 use brightfield_shell::startup::{default_layout, opening_boot};
 use brightfield_shell::window::{
@@ -1107,9 +1110,11 @@ fn either_route_to_the_same_subject_leaves_the_same_window() {
 /// beautifully and never wrote one would pass it and ship a Protocols section
 /// that is empty forever.
 ///
-/// Watched redden, one mutation: dropping the `remember` call from
+/// Watched redden, two mutations. Dropping the `remember` call from
 /// `open_start`, which leaves the `opened` line that was already there, fails
-/// here with an empty recents list against `["signals-dashboard"]`.
+/// here with an empty recents list against `["signals-dashboard"]`. Having
+/// `MeridianApp::subject_name` return `String::new()` for both views fails at
+/// the names, `["", ""]` against the two documents' own titles.
 #[test]
 fn opening_a_start_remembers_it_and_keeps_what_was_remembered_before() {
     let mut win = Window::open(Boot::empty());
@@ -1145,10 +1150,213 @@ fn opening_a_start_remembers_it_and_keeps_what_was_remembered_before() {
         vec![starts::DISTRIBUTION, starts::DASHBOARD],
         "the second open replaced the first instead of joining it"
     );
+    // What each record is *named* after, which the ids above cannot see: the
+    // document that was opened, not the start it was reached through. The
+    // start's own label is a verb — "Open the reading distribution" — and a
+    // build that recorded that, or a constant, or nothing at all, keeps every
+    // assertion above green.
+    assert_eq!(
+        win.app
+            .layout()
+            .recents
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Distribution of readings", "A year of signals"],
+        "the two records are not named after the two documents that were opened"
+    );
     assert_eq!(
         win.app.layout().recents[0].name,
-        win.app.layout().recents[0].name.trim(),
-        "a recorded name carries surrounding whitespace"
+        win.app.chart_doc().title(),
+        "the head record is not named after the document still open behind it"
+    );
+}
+
+/// What `open_start` records beside the id is what the opened document says —
+/// its own name, and its own run state.
+///
+/// The half `a_door_with_recents_lists_every_one_of_them_most_recent_first`
+/// cannot see, in the other direction from the test above: that one seeds a
+/// layout file and reads back what the door drew from it, so a build that
+/// recorded a constant name and a constant run state would draw the fixture
+/// beautifully and record neither. Both fields are produced at one site each —
+/// `MeridianApp::subject_name` and `MeridianApp::recorded_run_state` — and
+/// each has one caller, which is this write.
+///
+/// Both arms of both matches are walked. The crosswalk fills the Protocol
+/// view and the dashboard fills Charts; the two documents name themselves
+/// differently, so a name read off the wrong document is a difference here
+/// too, and the two windows are separate so that neither open is asked to
+/// find a card under the other one's rows.
+///
+/// The run state a *shipped* start records is `RunState::NeverRun` in this
+/// build, for the reason `MeridianApp::recorded_run_state` gives: a chart
+/// composes with no run contract behind it, and the crosswalk manifest is
+/// loaded with no run. So the protocol half is asserted against the document's
+/// own fold rather than against a literal alone, and the fold itself — which
+/// this build's starts cannot exercise — is held by
+/// `a_failed_step_anywhere_beats_a_success_anywhere`.
+///
+/// Watched redden, two mutations. `MeridianApp::subject_name` returning
+/// `String::new()` for both views fails at "the record is named nothing the
+/// opened Protocol calls itself", `""` against `"edgar_gleif"`.
+/// `MeridianApp::recorded_run_state` returning `RunState::Fresh` for both
+/// views fails at "the record carries a run state the opened Protocol does not
+/// report", `Fresh` against `NeverRun`.
+#[test]
+fn what_open_start_records_is_what_the_opened_document_says() {
+    // The Protocol arm.
+    let mut by_protocol = Window::open(Boot::empty());
+    by_protocol.settle();
+    by_protocol.take_the_card(starts::CROSSWALK);
+    by_protocol.settle();
+
+    let protocol_name = by_protocol.app.protocol_model().protocol.clone();
+    assert!(
+        !protocol_name.is_empty(),
+        "the opened Protocol document names itself nothing, so nothing below \
+         this line pins anything"
+    );
+    let recorded = by_protocol.app.layout().recents[0].clone();
+    assert_eq!(
+        recorded.name, protocol_name,
+        "the record is named nothing the opened Protocol calls itself"
+    );
+    assert_eq!(
+        recorded.run,
+        by_protocol.app.protocol_model().recorded_run_state(),
+        "the record carries a run state the opened Protocol does not report"
+    );
+    assert_eq!(
+        recorded.run,
+        RunState::NeverRun,
+        "the crosswalk manifest is loaded with no run behind it, so never run \
+         is what there is to record"
+    );
+
+    // The Charts arm, in a window of its own.
+    let mut by_chart = Window::open(Boot::empty());
+    by_chart.settle();
+    by_chart.take_the_card(starts::DASHBOARD);
+    by_chart.settle();
+
+    let chart_title = by_chart.app.chart_doc().title().to_string();
+    let recorded = by_chart.app.layout().recents[0].clone();
+    assert_eq!(
+        recorded.name, chart_title,
+        "the record is named nothing the opened dashboard calls itself"
+    );
+    assert_ne!(
+        chart_title, protocol_name,
+        "the two documents call themselves the same thing, so this test could \
+         not tell a name read off the wrong one"
+    );
+    assert_eq!(
+        recorded.run,
+        RunState::NeverRun,
+        "a composed dashboard has no run contract, so never run is what there \
+         is to record"
+    );
+
+    // And what the analyst reads off the row is that same recorded name, taken
+    // off the galley the row painted rather than off the record behind it.
+    for (win, expected) in [
+        (&mut by_protocol, protocol_name.as_str()),
+        (&mut by_chart, chart_title.as_str()),
+    ] {
+        win.run(vec![press_home(), Vec::new()]);
+        win.settle();
+        let rows = win.app.front_door_rows();
+        assert_eq!(rows.len(), 1, "one start was taken, so one row");
+        assert_eq!(
+            rows[0].name, expected,
+            "the row the analyst reads is not named after the document that \
+             was opened"
+        );
+        assert_eq!(
+            rows[0].state,
+            RunState::NeverRun.label(),
+            "the row states a run this build never recorded"
+        );
+    }
+}
+
+/// A failure anywhere in a Protocol's run beats a success anywhere else.
+///
+/// `ProtocolModel::recorded_run_state` is the fold `open_start` records for a
+/// Protocol document and the door draws beside its name — the one place the
+/// per-step statuses a run emitted become the single word a row has room for.
+/// Its precedence is a product claim rather than an implementation detail: one
+/// step that did not produce its data is the fact worth carrying to a surface
+/// with room for one word.
+///
+/// Asserted here rather than through a shipped start because no shipped start
+/// can reach it — each is loaded with no run contract, which is the empty case
+/// below. That case is the safe direction and worth its own line: a manifest
+/// with no run behind it folds to `RunState::NeverRun` rather than to a state
+/// a preview may present as current.
+///
+/// Both orders of the two-step cases are asserted. `statuses` is a
+/// `BTreeMap`, so it is walked in key order, and a fold that stopped at the
+/// first status it read would pass one order and fail the other.
+///
+/// Watched redden, one mutation: the whole fold deleted from
+/// `ProtocolModel::recorded_run_state`, leaving it `RunState::NeverRun`, fails
+/// at "a step that succeeded is not a Protocol that has never run", `NeverRun`
+/// against `Fresh`.
+#[test]
+fn a_failed_step_anywhere_beats_a_success_anywhere() {
+    fn folded(statuses: &[(&str, SeamStatus)]) -> RunState {
+        let mut inputs = ProtocolInputs::empty();
+        inputs.statuses = statuses
+            .iter()
+            .map(|(step, status)| ((*step).to_string(), *status))
+            .collect();
+        ProtocolModel::new(inputs, Flow::Vertical).recorded_run_state()
+    }
+
+    assert_eq!(
+        folded(&[]),
+        RunState::NeverRun,
+        "a manifest with no run behind it reads as something other than never run"
+    );
+    assert_eq!(
+        folded(&[("fetch", SeamStatus::NotRun)]),
+        RunState::NeverRun,
+        "a step the contract recorded no status for reads as a run"
+    );
+    assert_eq!(
+        folded(&[("fetch", SeamStatus::Ok)]),
+        RunState::Fresh,
+        "a step that succeeded is not a Protocol that has never run"
+    );
+    assert_eq!(
+        folded(&[("fetch", SeamStatus::Skipped)]),
+        RunState::Fresh,
+        "a skip the engine recorded as fresh is not a Protocol that has never run"
+    );
+    assert_eq!(
+        folded(&[("fetch", SeamStatus::Failed)]),
+        RunState::Failed,
+        "a step that failed reads as something other than failed"
+    );
+    assert_eq!(
+        folded(&[("a-fetch", SeamStatus::Failed), ("z-load", SeamStatus::Ok),]),
+        RunState::Failed,
+        "a success after a failure buried the failure"
+    );
+    assert_eq!(
+        folded(&[("a-fetch", SeamStatus::Ok), ("z-load", SeamStatus::Failed),]),
+        RunState::Failed,
+        "a failure after a success was not carried"
+    );
+    assert_eq!(
+        folded(&[
+            ("a-fetch", SeamStatus::Skipped),
+            ("z-load", SeamStatus::Failed),
+        ]),
+        RunState::Failed,
+        "a failure beside a skip was not carried"
     );
 }
 

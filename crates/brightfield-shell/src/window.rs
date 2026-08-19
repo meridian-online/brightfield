@@ -244,8 +244,12 @@ pub const PROTOCOLS_EMPTY_BODY: &str =
 /// already *is* the thing. The promise the two sections share is not a
 /// sentence printed twice but the route — both raise the same
 /// [`Request::Open`] into the same private `MeridianApp::open_start`, which is
-/// what `either_route_to_the_same_subject_leaves_the_same_window` holds, over
-/// every shipped start rather than over one.
+/// what `either_route_to_the_same_subject_leaves_the_same_window` holds. That
+/// test walks the shipped starts and skips the one
+/// [`crate::starts::Start::remote`] declares — taking its card reads an
+/// `https://` source, which a hermetic suite cannot do — so what carries the
+/// claim is the starts this binary opens on its own, and the remote one is
+/// outside it.
 pub const DOOR_ENTRY_PROMISE: &str = "opens on a rendered result";
 
 /// One Protocols row's height, in logical points — the preview row of the
@@ -264,11 +268,17 @@ const PROTOCOL_ROW_NAME_WIDTH: f32 = 260.0;
 
 /// One row the front door's Protocols section drew, with the text it drew.
 ///
-/// Read back through [`MeridianApp::front_door_rows`]. It carries the
-/// *rendered* strings rather than the [`Recent`]
-/// behind them, because the claim worth pinning is what the analyst reads: a
-/// row built from the right record and labelled from the wrong field is a
+/// Read back through [`MeridianApp::front_door_rows`]. Each string here is
+/// the text of the galley the row laid out at that position, taken off the
+/// galley rather than off the [`Recent`] behind it — so a row built from the
+/// right record and painted from the wrong field differs here, which is the
 /// defect this type can see and the record cannot.
+/// `what_open_start_records_is_what_the_opened_document_says` reads the name
+/// back this way.
+///
+/// What it deliberately does not carry is how much of a galley the row's clip
+/// rect let through: that is a matter of pixels, and the door's committed
+/// baselines are what hold it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DoorRow {
     /// The start id a click on this row reopens — the same id a Datasets card
@@ -1325,8 +1335,8 @@ pub struct MeridianApp {
     /// what it drew instead of asking the layout what it should have drawn.
     door_sections: Vec<(&'static str, egui::Rect)>,
     /// The rows the front door's Protocols section drew, most recent first —
-    /// each with the text it drew, so a test reads what the analyst reads
-    /// rather than what the layout holds.
+    /// each carrying the text of the galleys that row painted, so a test reads
+    /// what was handed to the painter rather than what the layout holds.
     door_rows: Vec<DoorRow>,
     /// Where the front door drew the Start zone's keyboard-help control.
     door_help: Option<egui::Rect>,
@@ -2139,9 +2149,10 @@ impl MeridianApp {
     /// The rows the last frame's front door drew in its Protocols section,
     /// most recent first.
     ///
-    /// The text is what was drawn, not what the layout holds: a row built
-    /// from the wrong field, or labelled by recomputing a run state the door
-    /// has no business computing, differs here.
+    /// The strings are the galleys' own, not the [`Recent`] fields the row
+    /// was built from: a row painted from the wrong field, or labelled by
+    /// recomputing a run state the door has no business computing, differs
+    /// here.
     #[must_use]
     pub fn front_door_rows(&self) -> &[DoorRow] {
         &self.door_rows
@@ -3361,25 +3372,6 @@ impl MeridianApp {
         ctx.request_repaint();
     }
 
-    /// Open the shipped starting point `id` into the view it fills.
-    ///
-    /// **The second click.** It has to land on a rendered result, not on an
-    /// instrument: the document is replaced with a *composed* dashboard or a
-    /// *built* graph, its canvas is invalidated so the next frame rasters the
-    /// new one, and the view holding it is made active. There is no editor in
-    /// between, no path to type and no buffer to fill.
-    ///
-    /// It also records the id in the live layout, which is what lets a later
-    /// launch restore this rather than show the front door again — the whole
-    /// reason [`SavedLayout::opened`] exists. Recording it also makes the
-    /// layout dirty, so the debounce writes it.
-    ///
-    /// An id this build does not ship, or a fixture that will not load, is a
-    /// build-time defect rather than a user's circumstance, and not worth
-    /// taking a window down for — it logs for the headless tiers and raises
-    /// a banner where a user is looking. The banner's id is composite over
-    /// the start, so the same start failing again **replaces** its banner in
-    /// place rather than stacking a second; a later success dismisses it.
     /// What the document filling `view` calls itself — the noun a Protocols
     /// row draws, and the same string [`MeridianApp::title`] builds the window
     /// title from, without its `Protocol · ` prefix.
@@ -3406,6 +3398,31 @@ impl MeridianApp {
         }
     }
 
+    /// Open the shipped starting point `id` into the view it fills.
+    ///
+    /// **The second click.** It has to land on a rendered result, not on an
+    /// instrument: the document is replaced with a *composed* dashboard or a
+    /// *built* graph, its canvas is invalidated so the next frame rasters the
+    /// new one, and the view holding it is made active. There is no editor in
+    /// between, no path to type and no buffer to fill.
+    ///
+    /// It also records the id in the live layout, which is what lets a later
+    /// launch restore this rather than show the front door again — the whole
+    /// reason [`SavedLayout::opened`] exists. Recording it also makes the
+    /// layout dirty, so the debounce writes it.
+    ///
+    /// An id this build does not ship, or a fixture that will not load, is a
+    /// build-time defect rather than a user's circumstance, and not worth
+    /// taking a window down for — it logs for the headless tiers and raises
+    /// a banner where a user is looking. The banner's id is composite over
+    /// the start, so the same start failing again **replaces** its banner in
+    /// place rather than stacking a second; a later success dismisses it.
+    ///
+    /// What it records beside the id — the name and the run state — is read
+    /// off the document this call just opened, through
+    /// [`Self::subject_name`] and [`Self::recorded_run_state`], and
+    /// `what_open_start_records_is_what_the_opened_document_says` reads both
+    /// back against the opened document itself.
     fn open_start(&mut self, ctx: &egui::Context, id: &'static str) {
         let banner = NotificationId::composite("open-start", id);
         let opened = match crate::starts::load(id) {
@@ -3796,58 +3813,75 @@ impl MeridianApp {
     ) {
         let (rect, response) =
             ui.allocate_exact_size(egui::vec2(width, PROTOCOL_ROW_HEIGHT), egui::Sense::click());
-        let state = recent.run.label().to_string();
-        let when = relative_time(now, recent.opened_at);
+        // Laid out ahead of the visibility test rather than inside it, because
+        // these three galleys are what the row records: a row scrolled past
+        // the bottom of the column still has to answer
+        // [`MeridianApp::front_door_rows`] with the text it put on the screen,
+        // and a galley built inside the branch would leave that answer to
+        // whichever field the push below happened to name. A laid-out galley
+        // is cached by its job, so a row nobody sees costs a cache lookup
+        // after the first frame.
+        let tone = chrome::tone_colour(recent.run.tone(), self.mode);
+        let name = ui.painter().layout(
+            recent.name.clone(),
+            ui_font(),
+            chrome::colour(sem.text.primary),
+            PROTOCOL_ROW_NAME_WIDTH - spacing::SPACE_4,
+        );
+        // The run state in the reader's own comparison face, and in
+        // `RunState::label`'s words rather than a second vocabulary coined
+        // here — `a_door_with_recents_lists_every_one_of_them_most_recent_first`
+        // compares this string against the enum's own label.
+        let state = ui.painter().layout(
+            recent.run.label().to_string(),
+            mono_font(),
+            tone,
+            PROTOCOL_ROW_NAME_WIDTH,
+        );
+        let when = ui.painter().layout_no_wrap(
+            relative_time(now, recent.opened_at),
+            mono_font(),
+            chrome::colour(sem.text.muted),
+        );
+        // Off the galleys, not off `recent` — which is what makes [`DoorRow`]'s
+        // claim about itself true. The strings a test reads back are the ones
+        // handed to the painter at these three positions, so painting one
+        // field and recording another is a difference the read-back can see.
+        self.door_rows.push(DoorRow {
+            id: recent.id.clone(),
+            name: name.text().to_string(),
+            state: state.text().to_string(),
+            when: when.text().to_string(),
+            rect,
+        });
         if ui.is_rect_visible(rect) {
             let painter = ui.painter().with_clip_rect(rect);
             if response.hovered() {
                 painter.rect_filled(rect, radius::CONTROL, chrome::colour(sem.surfaces.raised));
             }
             let mid = rect.center().y;
-            let name = painter.layout(
-                recent.name.clone(),
-                ui_font(),
-                chrome::colour(sem.text.primary),
-                PROTOCOL_ROW_NAME_WIDTH - spacing::SPACE_4,
-            );
             painter.galley(
                 egui::pos2(rect.min.x + spacing::SPACE_4, mid - name.size().y / 2.0),
                 name,
                 chrome::colour(sem.text.primary),
             );
-            // The run state in the reader's own comparison face, and in
-            // `RunState::label`'s words rather than a second vocabulary coined
-            // here — `a_door_with_recents_lists_every_one_of_them_most_recent_first`
-            // compares this string against the enum's own label.
-            let tone = chrome::tone_colour(recent.run.tone(), self.mode);
-            let state_galley =
-                painter.layout(state.clone(), mono_font(), tone, PROTOCOL_ROW_NAME_WIDTH);
             painter.galley(
                 egui::pos2(
                     rect.min.x + PROTOCOL_ROW_NAME_WIDTH,
-                    mid - state_galley.size().y / 2.0,
+                    mid - state.size().y / 2.0,
                 ),
-                state_galley,
+                state,
                 tone,
             );
-            let when_galley =
-                painter.layout_no_wrap(when.clone(), mono_font(), chrome::colour(sem.text.muted));
             painter.galley(
                 egui::pos2(
-                    rect.max.x - spacing::SPACE_4 - when_galley.size().x,
-                    mid - when_galley.size().y / 2.0,
+                    rect.max.x - spacing::SPACE_4 - when.size().x,
+                    mid - when.size().y / 2.0,
                 ),
-                when_galley,
+                when,
                 chrome::colour(sem.text.muted),
             );
         }
-        self.door_rows.push(DoorRow {
-            id: recent.id.clone(),
-            name: recent.name.clone(),
-            state,
-            when,
-            rect,
-        });
         if response.clicked() {
             // Leaked into the request queue as a `&'static str`, which is what
             // `Request::Open` carries: the id came off a shipped start (the
