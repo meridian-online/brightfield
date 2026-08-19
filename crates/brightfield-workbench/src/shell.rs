@@ -1,8 +1,8 @@
 //! The surfaces the shell owns rather than a pane.
 //!
 //! A [`crate::Subject`] covers what the *focused pane* contributes to the
-//! chrome. Some chrome belongs to the window instead — the view switcher, the
-//! mode toggle, the connection state, a modal. Those are declared here, and
+//! chrome. Some chrome belongs to the window instead — the mode toggle, the
+//! connection state, a modal. Those are declared here, and
 //! the crucial thing they share with a `Subject` is that they still return
 //! the same plain-data [`crate::ToolbarEntry`] and [`crate::StatusEntry`]
 //! types. There is exactly one vocabulary for "a control in a toolbar",
@@ -10,12 +10,11 @@
 //! exactly one way it can look.
 //!
 //! Note the missing generic: these traits are doc-agnostic. A shell-owned
-//! control that needed to read a view's document would be a pane's control
-//! wearing the wrong hat.
+//! control that needed to read a document would be a pane's control wearing
+//! the wrong hat.
 
 use crate::item::{PaneKey, Request};
 use crate::subject::{StatusEntry, ToolbarEntry};
-use crate::workspace::ViewKind;
 use crate::Mode;
 
 /// What a shell-owned surface can see.
@@ -23,9 +22,7 @@ use crate::Mode;
 pub struct WorkspaceView<'a> {
     /// Light or dark.
     pub mode: Mode,
-    /// The active view.
-    pub view: ViewKind,
-    /// The focused pane in the active view, if any.
+    /// The focused pane, if any.
     pub focused: Option<PaneKey>,
     /// Borrowed so this stays a view rather than a snapshot that can go
     /// stale, and so the type can grow read-only fields without every call
@@ -36,10 +33,9 @@ pub struct WorkspaceView<'a> {
 impl WorkspaceView<'_> {
     /// A read view over the workspace.
     #[must_use]
-    pub const fn new(mode: Mode, view: ViewKind, focused: Option<PaneKey>) -> Self {
+    pub const fn new(mode: Mode, focused: Option<PaneKey>) -> Self {
         Self {
             mode,
-            view,
             focused,
             _marker: std::marker::PhantomData,
         }
@@ -50,29 +46,21 @@ impl WorkspaceView<'_> {
 ///
 /// Mutation is by request, not by handle, for the same reason a pane's is:
 /// the toolbar draws while the workspace is mid-frame, and letting a control
-/// switch the active view from inside the row that is drawing it means
-/// mutating the thing being iterated.
+/// rearrange the window from inside the row that is drawing it means mutating
+/// the thing being iterated.
 pub struct WorkspaceCtx<'a> {
     /// Light or dark.
     pub mode: Mode,
-    /// The active view.
-    pub view: ViewKind,
-    /// The focused pane in the active view, if any.
+    /// The focused pane, if any.
     pub focused: Option<PaneKey>,
     requests: &'a mut Vec<Request>,
 }
 
 impl<'a> WorkspaceCtx<'a> {
     /// A mutating context over the workspace.
-    pub fn new(
-        mode: Mode,
-        view: ViewKind,
-        focused: Option<PaneKey>,
-        requests: &'a mut Vec<Request>,
-    ) -> Self {
+    pub fn new(mode: Mode, focused: Option<PaneKey>, requests: &'a mut Vec<Request>) -> Self {
         Self {
             mode,
-            view,
             focused,
             requests,
         }
@@ -83,7 +71,7 @@ impl WorkspaceCtx<'_> {
     /// The read view corresponding to this context.
     #[must_use]
     pub const fn view_only(&self) -> WorkspaceView<'_> {
-        WorkspaceView::new(self.mode, self.view, self.focused)
+        WorkspaceView::new(self.mode, self.focused)
     }
 
     /// Ask the workspace to run a command.

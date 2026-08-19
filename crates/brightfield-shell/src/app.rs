@@ -67,7 +67,7 @@ use brightfield_workbench::item::ModuleHost;
 use brightfield_workbench::registry::{ChartKindId, ChartKindRegistry, DockSide, Field, Slot};
 use brightfield_workbench::{
     chrome, Activity, ActivityLog, EmptyState, Icon, Item, ItemCtx, ItemId, ItemRegistry, ItemSpec,
-    PaneKey, Subject, Verb, ViewKind,
+    PaneKey, Subject, Verb,
 };
 
 use meridian_design::{semantic, spacing};
@@ -1250,7 +1250,7 @@ pub fn publish_item_ids() {
 }
 
 /// The chart pane's address — the key its Vello texture slot is filed under.
-const CHART_PANE: PaneKey = PaneKey::new(ViewKind::Charts, CHART);
+const CHART_PANE: PaneKey = PaneKey::new(CHART);
 
 /// The controls rail's share of the window. Declared once and read twice: the
 /// registry lays the dock out with it, and
@@ -1266,15 +1266,16 @@ pub(crate) const CONTROLS_SHARE: f32 = 0.2;
 /// mark kind's own, named by [`ChartItem`].
 const ICON_CONTROLS: Icon = Icon("sliders");
 
-/// The chart view's registry: the chart canvas, its data-grid peer, the
+/// The chart document's registry: the chart canvas, its data-grid peer, the
 /// controls rail, and the spec editor, where each sits, and the verbs that
 /// show and hide them.
 ///
-/// This is the **only** declaration of the view's shape. The dock's default
-/// arrangement ([`ItemRegistry::default_tree`]), the live item map
-/// ([`ItemRegistry::instantiate`]) and the published id vocabulary
-/// ([`ItemRegistry::publish_ids`], via [`publish_item_ids`]) are all derived
-/// from this list, so a pane cannot be added to one and forgotten in another.
+/// This is the **only** declaration of this document's panes. The window's
+/// default arrangement ([`window_tree`](brightfield_workbench::window_tree)),
+/// the live item map ([`ItemRegistry::instantiate`]) and the published id
+/// vocabulary ([`ItemRegistry::publish_ids`], via [`publish_item_ids`]) are
+/// derived from this list, so a pane cannot be added to one and forgotten in
+/// another.
 #[must_use]
 pub fn chart_registry() -> ItemRegistry<ChartDoc> {
     chart_registry_with(crate::gallery::enabled())
@@ -1308,7 +1309,7 @@ pub fn chart_registry_with(gallery: bool) -> ItemRegistry<ChartDoc> {
     if gallery {
         specs.push(crate::gallery::gallery_spec());
     }
-    ItemRegistry::new(ViewKind::Charts, specs)
+    ItemRegistry::new(specs)
 }
 
 // ---------------------------------------------------------------------------

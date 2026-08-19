@@ -65,11 +65,12 @@
 //! - [`item`] — [`Item`], [`ItemId`], [`PaneKey`], [`ItemCtx`].
 //! - [`registry`] — [`Slot`], [`ItemSpec`], [`ItemRegistry`]: the only route
 //!   from an item to a pane, and therefore the thing the contract tests gate;
-//!   plus [`audit`], the gate itself.
+//!   [`window_tree`], the one place a default arrangement is written; plus
+//!   [`audit`], the gate itself.
 //! - [`shell`] — the surfaces the *shell* owns rather than a pane:
 //!   [`ToolbarItem`], [`StatusItem`], [`ModalView`].
-//! - [`workspace`] — [`ViewKind`] and [`Workspace`]: one tile tree per view,
-//!   plus which pane holds focus in each.
+//! - [`workspace`] — [`Workspace`]: the window's one tile tree, plus which
+//!   pane holds focus in it.
 //! - [`behavior`] — [`PaneChrome`], the one `egui_tiles::Behavior`.
 //! - [`persist`] — the versioned layout file and its debounced writer.
 //! - [`chrome`] — the one drawing file.
@@ -90,13 +91,13 @@ pub use arrangement::{Arrangement, Edge, Extent, Occupant, Projection, Region, R
 pub use behavior::PaneChrome;
 pub use item::{Handled, Item, ItemCtx, ItemId, ItemMap, PaneKey, Request};
 pub use persist::{DirtyTracker, LoadOutcome, Recent, SavedLayout, WindowGeometry, RECENTS_KEPT};
-pub use registry::{audit, DockSide, ItemRegistry, ItemSpec, Slot};
+pub use registry::{audit, window_tree, DockSide, ItemRegistry, ItemSpec, Slot};
 pub use shell::{ModalOutcome, ModalView, StatusItem, ToolbarItem, WorkspaceCtx, WorkspaceView};
 pub use subject::{
     Action, Affordance, Crumb, Dirty, EmptyState, HideAffordance, Icon, RunState, StatusEntry,
     StatusSide, Subject, Tone, ToolbarEntry, ToolbarLocation, Verb,
 };
-pub use workspace::{ViewKind, Workspace};
+pub use workspace::Workspace;
 
 /// Light or dark chrome — re-exported from `meridian-egui`.
 ///

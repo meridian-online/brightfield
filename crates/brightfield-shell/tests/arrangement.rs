@@ -19,7 +19,6 @@ use brightfield_shell::pipeline::compose_spec;
 use brightfield_shell::protocol::load_protocol_offline;
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_workbench::arrangement::{self, Occupant};
-use brightfield_workbench::ViewKind;
 
 /// A path relative to the workspace root.
 fn fixture(rel: &str) -> std::path::PathBuf {
@@ -39,7 +38,6 @@ fn both() -> Boot {
     let inputs = load_protocol_offline(spec.to_str().expect("utf-8 fixture path"))
         .unwrap_or_else(|e| panic!("load {}: {e}", spec.display()));
     Boot {
-        view: Some(ViewKind::Charts),
         composed: compose_spec(DASHBOARD).expect("compose the dashboard"),
         live: None,
         spec_path: Some(DASHBOARD.into()),
@@ -53,7 +51,7 @@ fn both() -> Boot {
 /// A settled window at the size the boot asks for.
 fn settled() -> MeridianApp {
     let boot = both();
-    let (w, h) = boot.window_size(ViewKind::Charts);
+    let (w, h) = boot.window_size();
     let mut app = MeridianApp::headless(boot, Mode::Light);
     let ctx = egui::Context::default();
     let raw = egui::RawInput {

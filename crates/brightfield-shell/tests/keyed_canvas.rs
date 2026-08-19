@@ -48,11 +48,11 @@ use std::sync::{Arc, Mutex};
 use brightfield_render::canvas_host::{CanvasHost, Color, PixelSize};
 use brightfield_render::vello_renderer::VelloRenderer;
 use brightfield_shell::canvas::{EguiCanvasHost, SharedEguiRenderer, LEGACY_CANVAS};
-use brightfield_workbench::{ItemId, PaneKey, ViewKind};
+use brightfield_workbench::{ItemId, PaneKey};
 use vello::wgpu;
 
-const PANE_A: PaneKey = PaneKey::new(ViewKind::Charts, ItemId::new("keyed-canvas-test-a"));
-const PANE_B: PaneKey = PaneKey::new(ViewKind::Protocol, ItemId::new("keyed-canvas-test-b"));
+const PANE_A: PaneKey = PaneKey::new(ItemId::new("keyed-canvas-test-a"));
+const PANE_B: PaneKey = PaneKey::new(ItemId::new("keyed-canvas-test-b"));
 
 const RED: Color = Color {
     r: 1.0,

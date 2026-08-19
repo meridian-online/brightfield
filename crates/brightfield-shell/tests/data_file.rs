@@ -35,7 +35,6 @@ use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_sql::ir::ScalarValue;
 use brightfield_workbench::registry::ChartKindId;
-use brightfield_workbench::ViewKind;
 
 /// A directory of this test's own, removed when the test ends.
 ///
@@ -1724,7 +1723,10 @@ fn opening_a_file_lands_on_the_charts_view_with_a_live_session() {
     win.app.open_data_file(&ctx, &path.to_string_lossy());
     win.settle();
 
-    assert_eq!(win.app.active(), ViewKind::Charts);
+    assert!(
+        !win.app.graph_on_canvas(),
+        "an opened data file did not put its chart on the canvas"
+    );
     assert!(
         win.app.chart_doc().is_live(),
         "a file opened from the door has to arm its own gestures"

@@ -34,7 +34,7 @@ use brightfield_shell::pipeline::LiveDashboard;
 use brightfield_spec::analysis::{analyse_spec, ComponentPath};
 use brightfield_spec::{parse_spec, Format};
 use brightfield_workbench::subject::RunState;
-use brightfield_workbench::{Item, ItemCtx, PaneKey, ViewKind};
+use brightfield_workbench::{Item, ItemCtx, PaneKey};
 use egui_kittest::kittest::Queryable;
 
 // ---------------------------------------------------------------------------
@@ -337,7 +337,7 @@ fn run_pane(doc: &mut ChartDoc, item: &mut DataGridItem, ctx: &egui::Context) {
             let mut requests = Vec::new();
             let mut cx = ItemCtx::new(
                 Mode::Light,
-                PaneKey::new(ViewKind::Charts, item.item_id()),
+                PaneKey::new(item.item_id()),
                 egui_tiles::TileId::from_u64(1),
                 true,
                 &mut requests,
@@ -411,7 +411,7 @@ fn grid_harness(doc: ChartDoc) -> egui_kittest::Harness<'static, (ChartDoc, Data
                 let mut requests = Vec::new();
                 let mut cx = ItemCtx::new(
                     Mode::Light,
-                    PaneKey::new(ViewKind::Charts, item.item_id()),
+                    PaneKey::new(item.item_id()),
                     egui_tiles::TileId::from_u64(1),
                     true,
                     &mut requests,
@@ -570,7 +570,7 @@ fn grid_snapshot(mode: Mode, name: &str) {
                     let mut requests = Vec::new();
                     let mut cx = ItemCtx::new(
                         mode,
-                        PaneKey::new(ViewKind::Charts, item.item_id()),
+                        PaneKey::new(item.item_id()),
                         egui_tiles::TileId::from_u64(1),
                         true,
                         &mut requests,

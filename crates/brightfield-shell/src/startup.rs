@@ -11,8 +11,9 @@
 //! file as [`LoadOutcome::Corrupt`] and silently hands the user the default
 //! arrangement.
 //!
-//! **Both** views, not just the booting one: the tree of the view that did not
-//! boot is in the same file and deserialises in the same pass.
+//! **Both** registries, not just the one whose document the command line
+//! named: the window's one tree carries every pane of both, and they all
+//! deserialise in the same pass.
 //!
 //! The publish calls used to live inside `MeridianApp::assemble`, which runs
 //! inside `eframe::run_native`'s creation closure — i.e. after the viewport
@@ -28,7 +29,7 @@
 //! It does not build a [`MeridianApp`](crate::window::MeridianApp), and the
 //! two functions here that can reach the disk — [`layout_path`] and
 //! [`boot_layout`] — have no caller in `window.rs`. It does call
-//! [`default_layout`], which builds the registries' declared trees and reads
+//! [`default_layout`], which builds the window's declared tree and reads
 //! nothing.
 //!
 //! That is what keeps `cargo test` and the PNG capture path off the
@@ -41,7 +42,7 @@
 use std::path::{Path, PathBuf};
 
 use brightfield_workbench::persist::{self, LoadOutcome, SavedLayout};
-use brightfield_workbench::{ViewKind, Workspace};
+use brightfield_workbench::{window_tree, Workspace};
 
 use crate::app::chart_registry;
 use crate::protocol::protocol_registry;
@@ -50,20 +51,24 @@ use crate::protocol::protocol_registry;
 /// portable installs. The name the gpui-era shell already used.
 pub const CONFIG_DIR_VAR: &str = "BRIGHTFIELD_CONFIG_DIR";
 
-/// The default arrangement: every view's registry-declared tree, at the
-/// default window geometry.
+/// The default arrangement: **one** tile tree over every pane both registries
+/// declare, at the default window geometry.
+///
+/// One tree because one window draws one arrangement — the panes of both
+/// documents share it, and [`window_tree`] takes their placements together
+/// rather than each registry's tree separately. The chart document's panes
+/// come first, so the centre strip opens on the chart rather than on the
+/// graph; that is the same "no opinion" default the window's own canvas rule
+/// lands on for a window holding both.
 ///
 /// Read twice — as the fallback for a file that will not load, and as the
-/// donor a file missing a view is repaired from — so it is declared once.
+/// yardstick [`persist::from_json`] measures a short file against — so it is
+/// declared once.
 #[must_use]
 pub fn default_layout() -> SavedLayout {
-    let trees = [
-        (ViewKind::Charts, chart_registry().default_tree()),
-        (ViewKind::Protocol, protocol_registry().default_tree()),
-    ]
-    .into_iter()
-    .collect();
-    SavedLayout::new(Workspace::new(trees))
+    let mut placements = chart_registry().placements();
+    placements.extend(protocol_registry().placements());
+    SavedLayout::new(Workspace::new(window_tree(&placements)))
 }
 
 /// Where this machine's layout file lives, or `None` if it has nowhere to put
@@ -80,7 +85,8 @@ pub fn layout_path() -> Option<PathBuf> {
     )
 }
 
-/// Publish both views' item vocabularies, then read the layout at `path`.
+/// Publish both registries' item vocabularies, then read the layout at
+/// `path`.
 ///
 /// `None` means persistence is off for this run, which reports
 /// [`LoadOutcome::NoFile`] — the same outcome as a first boot, because it is
@@ -105,11 +111,11 @@ pub fn boot_layout(path: Option<&Path>) -> (SavedLayout, LoadOutcome) {
 /// Not the same question as [`LoadOutcome::restored`], and the difference is a
 /// real defect if they are conflated. `restored()` answers "is everything on
 /// screen something you arranged", which [`LoadOutcome::Incomplete`] answers
-/// `false` to because a view the file predated has been rebuilt from the
-/// default. But an `Incomplete` file still *carried* the size and position the
-/// user last left the window at, and those were repaired by nothing. Resizing
-/// their window because an upgrade added a view is a change they did not ask
-/// for and cannot undo except by resizing it back.
+/// `false` to because the arrangement was rebuilt from the default. But an
+/// `Incomplete` file still *carried* the size and position the user last left
+/// the window at, and those are fine. Resizing their window because an upgrade
+/// added a pane is a change they did not ask for and cannot undo except by
+/// resizing it back.
 #[must_use]
 pub const fn kept_window_geometry(outcome: LoadOutcome) -> bool {
     matches!(outcome, LoadOutcome::Restored | LoadOutcome::Incomplete)
@@ -131,23 +137,15 @@ pub const fn kept_window_geometry(outcome: LoadOutcome) -> bool {
 /// start this one does not, and refusing to open a window over that would turn
 /// a stale line in a config file into a product that will not start.
 ///
-/// # A restored start carries no opinion about which view to show
+/// # Nothing here chooses what the window looks at
 ///
-/// [`Boot::start`](crate::window::Boot::start) names the view its document
-/// fills, because a *user* asking for a start is asking to look at it. A
-/// restore is not that ask: the id in the file records what was loaded, and
-/// the same file separately records which view the window was left on. Those
-/// two can differ — open the chart start, switch to the protocol view, quit —
-/// and when they do it is the active view that the user chose last and
-/// deliberately.
-///
-/// So the restore path drops the view opinion and lets
-/// [`SavedLayout::workspace`](brightfield_workbench::SavedLayout)'s own active
-/// view stand. Without this the persisted active view is dead for every
-/// returning user with something remembered, and worse than dead: `assemble`
-/// would `set_active` past the tracker's saved snapshot, so every such launch
-/// is dirty from construction and the debounce writes the start's view back
-/// over the user's.
+/// A start used to name the view it filled, and a *restored* start had to be
+/// stripped of that opinion so the layout file's own recorded view could
+/// stand. Both halves are gone: the window has one arrangement, and what the
+/// canvas holds is derived from the documents, frame by frame — see
+/// [`graph_takes_the_canvas`](crate::window::graph_takes_the_canvas). So a
+/// boot carries documents and nothing else, and this function's whole job is
+/// deciding **which** documents.
 ///
 /// # Errors
 ///
@@ -166,10 +164,8 @@ pub fn opening_boot(
     let Some(id) = opened else {
         return Ok(crate::window::Boot::empty());
     };
-    Ok(crate::window::Boot::start(id, flow)
-        .map(crate::window::Boot::deferring_to_the_saved_view)
-        .unwrap_or_else(|e| {
-            eprintln!("could not reopen {id}: {e}");
-            crate::window::Boot::empty()
-        }))
+    Ok(crate::window::Boot::start(id, flow).unwrap_or_else(|e| {
+        eprintln!("could not reopen {id}: {e}");
+        crate::window::Boot::empty()
+    }))
 }

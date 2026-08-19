@@ -9,25 +9,32 @@
 //! migration and no prompt, which is the policy the gpui-era shell already
 //! settled on and had no reason to revisit.
 //!
-//! One failure mode is **not** on that list, and it is the one that would have
-//! taken the window down. [`Workspace`] derives `Deserialize`, so a load never
-//! runs `Workspace::new`'s completeness assertion, and `trees` is a map: a
-//! file that parses, carries the current version and is simply short a view —
-//! an empty map, or one written before a third
-//! [`ViewKind`](crate::ViewKind) existed — deserialises without complaint and
-//! then panics on the first `tree()` for the view it lacks. [`from_json`]
-//! therefore checks completeness itself and fills what is missing from the
-//! default arrangement, reporting [`LoadOutcome::Incomplete`]. It is the
-//! module's one repair, and it is here because the alternative to repairing is
-//! not "discard the file": it is a shell that comes up after an upgrade and
-//! dies on the first switch to the new view.
+//! One failure mode is **not** on that list, and it is the quiet one.
+//! [`Workspace`] derives `Deserialize`, so a load does not run `Workspace::new`,
+//! and a tile tree saved by a build with fewer panes parses perfectly well: a
+//! window whose arrangement declares a pane the file has no tile for draws
+//! that region **empty**, silently, for as long as the file survives. So
+//! [`from_json`] compares the loaded tree's panes with the default
+//! arrangement's and, when the file is short one, reports
+//! [`LoadOutcome::Incomplete`] and replaces the **arrangement** with the
+//! default. That costs the user their splitter positions on the one upgrade
+//! that adds a pane, which is a smaller price than a region that is blank and
+//! says nothing about why.
+//!
+//! The rest of the envelope is kept: the window geometry, the start to reopen
+//! and the recents were not what was wrong, and resizing somebody's window
+//! because an upgrade added a pane is a second change they did not ask for.
+//!
+//! **The price of that check is building the default arrangement on every
+//! successful load**, because the comparison needs something to compare
+//! against. It is two registries' worth of tiles, once, at boot.
 //!
 //! The pane-naming failure mode is not this module's doing.
 //! [`ItemId`](crate::ItemId)'s `Deserialize` rejects an id no registry
 //! published, so a layout naming a renamed pane fails to *load* rather than
 //! materialising a pane nothing can draw. It surfaces here as
 //! [`LoadOutcome::Corrupt`], and the ordering that makes it work is that every
-//! view's registry must publish before the file is read.
+//! registry must publish before the file is read.
 //!
 //! # When it is written
 //!
@@ -66,7 +73,17 @@ pub const LAYOUT_FILE: &str = "workspace-layout.json";
 
 /// Bump when the persisted shape changes incompatibly. A mismatch discards
 /// the file and rebuilds the default arrangement.
-pub const LAYOUT_VERSION: u32 = 1;
+///
+/// **2** since a pane's address stopped naming a view. Version 1 wrote each
+/// pane as `{"view": …, "item": …}` under a map of one tree per view; version
+/// 2 writes one tree, and a pane as the bare item string — see [`PaneKey`].
+/// The shapes are incompatible in the way this constant exists for: a
+/// version-1 file parses as neither, and without the bump it would report
+/// [`LoadOutcome::Corrupt`] — the log line that sends whoever reads it looking
+/// for a disk fault instead of an upgrade.
+///
+/// [`PaneKey`]: crate::PaneKey
+pub const LAYOUT_VERSION: u32 = 2;
 
 /// How long the layout must sit still before it is written, in milliseconds.
 ///
@@ -128,8 +145,8 @@ impl Default for WindowGeometry {
 }
 
 /// The whole persisted envelope: the version, the window, the workspace
-/// (which carries the per-view trees and the active view), and what the window
-/// was last opened on.
+/// (which carries the window's tile tree), and what the window was last
+/// opened on.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SavedLayout {
     /// See [`LAYOUT_VERSION`].
@@ -350,10 +367,9 @@ impl SavedLayout {
 pub enum LoadOutcome {
     /// The file was restored as saved.
     Restored,
-    /// The file parsed and every view it held was restored, but it was
-    /// missing at least one view, which was rebuilt from the default
-    /// arrangement. What a layout written before a
-    /// [`ViewKind`](crate::ViewKind) was added looks like.
+    /// The file parsed at the current version but did not carry every pane
+    /// the window draws, so the default arrangement was used instead. What a
+    /// layout written before a pane was added looks like.
     Incomplete,
     /// There is no file yet — a first boot.
     NoFile,
@@ -370,9 +386,9 @@ pub enum LoadOutcome {
 impl LoadOutcome {
     /// Whether the saved arrangement was used **as saved**.
     ///
-    /// [`LoadOutcome::Incomplete`] reports `false` even though most of the
-    /// file survived: something the user did not arrange is now on screen,
-    /// which is the thing a caller asking this question wants to know.
+    /// [`LoadOutcome::Incomplete`] reports `false`: something the user did not
+    /// arrange is now on screen, which is the thing a caller asking this
+    /// question wants to know.
     #[must_use]
     pub const fn restored(self) -> bool {
         matches!(self, LoadOutcome::Restored)
@@ -384,7 +400,7 @@ impl LoadOutcome {
         match self {
             LoadOutcome::Restored => "restored the saved layout",
             LoadOutcome::Incomplete => {
-                "the saved layout was missing a view, rebuilt from the default"
+                "the saved layout was missing a pane, rebuilt from the default"
             }
             LoadOutcome::NoFile => "no saved layout",
             LoadOutcome::Unreadable => "the saved layout could not be read",
@@ -396,25 +412,24 @@ impl LoadOutcome {
 
 /// Parse a layout from JSON text, falling back to `default` on any problem.
 ///
-/// `default` is a closure rather than a value so a healthy load costs nothing
-/// to build the arrangement it is not going to use — and building one means
-/// instantiating every view's default tree.
+/// `default` is a closure rather than a value so the two early returns above
+/// the parse — absent text, and text that is not JSON — do not build an
+/// arrangement they may not reach. A load that gets as far as a
+/// parsed envelope **does** build it, because the completeness check below
+/// has nothing to compare against otherwise; see the module docs.
 ///
 /// The version is read out of the raw JSON *before* the envelope is
 /// deserialised. Checking `saved.version` after a successful parse only works
 /// while every version shares a shape: the day one does not, the parse fails
 /// first and reports [`LoadOutcome::Corrupt`], which is the wrong answer and
 /// the wrong log line for a file that is merely from another build. Reading
-/// the field first is what makes [`LoadOutcome::VersionMismatch`] mean
-/// anything.
+/// the field first is what gives [`LoadOutcome::VersionMismatch`] its meaning
+/// — and [`LAYOUT_VERSION`] 2 is exactly such a day.
 ///
-/// `default` must return a layout with a tree for every
-/// [`ViewKind`](crate::ViewKind) — as one built through
-/// [`Workspace::new`](crate::Workspace::new) does, which asserts it. A
-/// `default` that does not cannot repair an incomplete file: the outcome is
-/// [`LoadOutcome::Corrupt`] and the layout handed back is `default`'s own,
-/// still short a view. Nothing downstream can fix that, which is exactly why
-/// `Workspace::new` asserts.
+/// `default` is also the yardstick for [`LoadOutcome::Incomplete`]: a file
+/// whose tree lacks a pane the default arrangement places has its
+/// **arrangement** replaced by `default`'s rather than being restored with an
+/// empty region. The rest of the file stands — see the module docs.
 #[must_use]
 pub fn from_json(
     raw: Option<&str>,
@@ -440,22 +455,25 @@ pub fn from_json(
     let Ok(mut saved) = serde_json::from_str::<SavedLayout>(raw) else {
         return (default(), LoadOutcome::Corrupt);
     };
-    if saved.workspace.missing_views().is_empty() {
+    let fallback = default();
+    if saved
+        .workspace
+        .panes_missing_from(&fallback.workspace)
+        .is_empty()
+    {
         return (saved, LoadOutcome::Restored);
     }
-    let fallback = default();
-    saved.workspace.fill_missing_views_from(&fallback.workspace);
-    if saved.workspace.missing_views().is_empty() {
-        (saved, LoadOutcome::Incomplete)
-    } else {
-        (fallback, LoadOutcome::Corrupt)
-    }
+    // The arrangement, and only the arrangement.
+    saved.workspace = fallback.workspace;
+    (saved, LoadOutcome::Incomplete)
 }
 
 /// Read the layout from `path`, falling back to `default`.
 ///
-/// Every view's registry must have published its ids *before* this runs, or
-/// a perfectly good file is read as [`LoadOutcome::Corrupt`].
+/// Each registry must have published its ids *before* this runs, or a
+/// perfectly good file is read as [`LoadOutcome::Corrupt`] —
+/// `a_boot_publishes_before_it_reads_and_the_window_opens_where_it_was_left`
+/// in the shell's `tests/startup.rs` is what holds the ordering.
 #[must_use]
 pub fn load(path: &Path, default: impl FnOnce() -> SavedLayout) -> (SavedLayout, LoadOutcome) {
     match std::fs::read_to_string(path) {

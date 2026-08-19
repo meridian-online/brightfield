@@ -22,7 +22,7 @@ use brightfield_shell::window::{
     fit_window_to_display, protocol_window_size_for, window_size_on_display, Boot, DisplayFit,
     MeridianApp,
 };
-use brightfield_workbench::{ItemId, PaneKey, ViewKind};
+use brightfield_workbench::{ItemId, PaneKey};
 
 const DASHBOARD: &str = "../../examples/dashboard.yaml";
 const EDGAR: &str = "../../examples/protocol/edgar_gleif/arcform.yaml";
@@ -46,7 +46,7 @@ struct Window {
 
 impl Window {
     fn open(boot: Boot, mode: Mode) -> Self {
-        let (w, h) = boot.window_size(boot.view_or(ViewKind::Charts));
+        let (w, h) = boot.window_size();
         Self::open_at(boot, mode, egui::vec2(w, h))
     }
 
@@ -78,6 +78,38 @@ impl Window {
     /// Two frames of nothing happening.
     fn settle(&mut self) {
         self.run(vec![Vec::new(), Vec::new()]);
+    }
+
+    /// Every string this window's next frame draws, in no particular order.
+    ///
+    /// Read off the frame's own shapes rather than off a hook the window
+    /// maintains, because the claim is about what a person sees. The same
+    /// device `front_door.rs` uses, for the same reason.
+    fn drawn_text(&mut self) -> Vec<String> {
+        let raw = egui::RawInput {
+            screen_rect: Some(self.screen),
+            ..Default::default()
+        };
+        let out = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
+        let mut text = Vec::new();
+        for clipped in &out.shapes {
+            collect_text(&clipped.shape, &mut text);
+        }
+        text
+    }
+}
+
+/// The galleys in `shape`, flattened. `Shape::Vec` nests, so a walk that reads
+/// the top level and stops misses whatever a widget put inside a group.
+fn collect_text(shape: &egui::epaint::Shape, into: &mut Vec<String>) {
+    match shape {
+        egui::epaint::Shape::Text(t) => into.push(t.galley.text().to_string()),
+        egui::epaint::Shape::Vec(shapes) => {
+            for s in shapes {
+                collect_text(s, into);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -117,17 +149,19 @@ fn edgar() -> ProtocolInputs {
     load_protocol_offline(EDGAR).expect("load edgar_gleif")
 }
 
-/// A boot with **both** fixtures loaded, opening on `view`.
+/// A boot with **both** fixtures loaded.
 ///
 /// Not a state the CLI produces — it names one spec — but the state every
-/// assertion about *switching* needs. With only one document loaded the other
-/// view's panes are empty, and `PaneChrome` draws an empty state *instead of*
-/// the item, so the pane whose viewport a test reads never runs its `ui` at all
-/// and "it did not draw" would be true for a reason that has nothing to do with
-/// the view being active.
-fn both(view: ViewKind) -> Boot {
+/// assertion about which document the canvas takes needs. With only one
+/// document loaded the other's panes are empty, and `PaneChrome` draws an
+/// empty state *instead of* the item, so the pane whose viewport a test reads
+/// never runs its `ui` at all and "it did not draw" would be true for a reason
+/// that has nothing to do with the canvas.
+///
+/// A window over both draws the **chart** on the canvas — see
+/// `graph_takes_the_canvas`.
+fn both() -> Boot {
     Boot {
-        view: Some(view),
         composed: compose_spec(DASHBOARD).expect("compose the dashboard"),
         live: None,
         spec_path: Some(DASHBOARD.into()),
@@ -161,9 +195,9 @@ fn both(view: ViewKind) -> Boot {
 /// in this binary reads it, since every other fixture goes through
 /// `load_protocol_offline`, which does not gate.
 #[test]
-fn a_spec_chooses_the_opening_view_and_both_views_are_loaded() {
+fn a_spec_chooses_what_the_canvas_takes_and_both_documents_are_loaded() {
     let charts = Boot::open(DASHBOARD, Flow::Vertical, None).expect("open the dashboard spec");
-    assert_eq!(charts.view, Some(ViewKind::Charts));
+    assert!(!charts.graph_on_canvas());
     assert!(
         charts.protocol.graph_collapsed.nodes.is_empty(),
         "a dashboard spec loaded a protocol"
@@ -183,7 +217,7 @@ fn a_spec_chooses_the_opening_view_and_both_views_are_loaded() {
     let protocol = Boot::open(EDGAR, Flow::Vertical, None).expect("open the manifest offline");
     std::env::remove_var(OFFLINE);
 
-    assert_eq!(protocol.view, Some(ViewKind::Protocol));
+    assert!(protocol.graph_on_canvas());
     assert!(
         !protocol.protocol.graph_collapsed.nodes.is_empty(),
         "the protocol fixture loaded no assets, so this test proves nothing"
@@ -221,7 +255,7 @@ fn a_spec_chooses_the_opening_view_and_both_views_are_loaded() {
 fn a_window_publishes_both_registries_and_nothing_else() {
     // Through the app, not through the two `publish_item_ids` entry points, so
     // this fails if `assemble` ever stops publishing the view it did not open.
-    let _app = MeridianApp::headless(both(ViewKind::Charts), Mode::Light);
+    let _app = MeridianApp::headless(both(), Mode::Light);
 
     let charts = chart_registry_with(true).ids();
     let protocol = protocol_registry().ids();
@@ -232,26 +266,25 @@ fn a_window_publishes_both_registries_and_nothing_else() {
     for id in known {
         assert!(
             charts.contains(id) || protocol.contains(id),
-            "{id} was published by something other than the two view registries"
+            "{id} was published by something other than the two registries"
         );
     }
     assert_eq!(
         known.len(),
         charts.len() + protocol.len(),
-        "the two registries share an id, so a saved layout naming one view's \
-         pane would validate against the other's"
+        "the two registries share an id, so one document's pane would \
+         validate as the other's — and a window has one tree, so the two would \
+         be the same tile"
     );
 
     // The point of the vocabulary: a saved layout naming these panes loads.
-    for (view, ids) in [(ViewKind::Charts, charts), (ViewKind::Protocol, protocol)] {
-        for item in ids {
-            let key = PaneKey::new(view, item);
-            let json = serde_json::to_string(&key).expect("a pane key serialises");
-            assert_eq!(
-                serde_json::from_str::<PaneKey>(&json).expect("and round trips"),
-                key
-            );
-        }
+    for item in charts.iter().chain(protocol.iter()) {
+        let key = PaneKey::new(*item);
+        let json = serde_json::to_string(&key).expect("a pane key serialises");
+        assert_eq!(
+            serde_json::from_str::<PaneKey>(&json).expect("and round trips"),
+            key
+        );
     }
 }
 
@@ -280,11 +313,10 @@ fn a_window_publishes_both_registries_and_nothing_else() {
 ///   This window's DAG pane has a graph in it, so its `None` is a layout
 ///   answer rather than an empty state.
 ///
-/// Watched redden, two mutations. `(_, true) => ViewKind::Charts` in
-/// `MeridianApp::draw` put back to `(false, true)` with `_ => view` fails the
-/// second window, at the chart pane's assertion. Pinning `graph_on_canvas` to
+/// Watched redden, two mutations of `graph_takes_the_canvas`: pinning it to
+/// `true` fails the second window at the chart pane's assertion; pinning it to
 /// `false`, so the canvas draws the projection whatever the documents hold,
-/// fails the first window, at the DAG pane's.
+/// fails the first window at the DAG pane's.
 #[test]
 fn one_documents_panes_are_laid_out_per_frame_and_the_documents_decide_which() {
     let mut win = Window::open(Boot::protocol(edgar(), Flow::Vertical, None), Mode::Light);
@@ -295,7 +327,7 @@ fn one_documents_panes_are_laid_out_per_frame_and_the_documents_decide_which() {
          the graph has nowhere left to be drawn at canvas size"
     );
 
-    let mut win = Window::open(both(ViewKind::Protocol), Mode::Light);
+    let mut win = Window::open(both(), Mode::Light);
     win.settle();
     assert!(
         win.app.chart_viewport().is_some(),
@@ -305,9 +337,10 @@ fn one_documents_panes_are_laid_out_per_frame_and_the_documents_decide_which() {
     assert!(
         win.app.canvas_viewport().is_none(),
         "the DAG canvas pane drew while the chart held the canvas — both \
-         trees are laid out every frame, which is not what one window means"
+         documents' canvases are drawn every frame, which is not what one \
+         window means"
     );
-    assert_eq!(win.app.active(), ViewKind::Charts);
+    assert!(!win.app.graph_on_canvas());
 }
 
 // ---------------------------------------------------------------------------
@@ -520,7 +553,7 @@ fn the_boot_envelope_covers_what_it_sizes_for_and_not_the_family_unfold() {
 #[test]
 fn the_window_asked_of_the_os_never_exceeds_the_display() {
     for flow in [Flow::Vertical, Flow::Horizontal] {
-        let natural = Boot::protocol(edgar(), flow, None).window_size(ViewKind::Protocol);
+        let natural = Boot::protocol(edgar(), flow, None).window_size();
         for (screen, display) in [("the laptop panel", LAPTOP), ("the ultrawide", ULTRAWIDE)] {
             let (w, h) = window_size_on_display(natural, display);
             assert!(
@@ -623,7 +656,7 @@ fn the_window_a_small_display_grants_leaves_the_canvas_short() {
     #[allow(clippy::cast_possible_truncation)]
     let (env_w, env_h) = (env_w as f32, env_h as f32);
 
-    let natural = Boot::protocol(edgar(), Flow::Vertical, None).window_size(ViewKind::Protocol);
+    let natural = Boot::protocol(edgar(), Flow::Vertical, None).window_size();
     let granted = window_size_on_display(natural, LAPTOP);
     assert!(
         granted.0 < natural.0,
@@ -820,8 +853,8 @@ fn the_protocol_grammar_reaches_the_dag_on_its_own_view() {
     );
 }
 
-/// The protocol grammar does **not** reach the DAG while the charts view is
-/// drawn.
+/// The protocol grammar does **not** reach the DAG while a chart holds the
+/// canvas.
 ///
 /// This is the one behaviour the merge had to invent rather than move. The
 /// grammar is bare-key — `h j k l y t Enter Esc ⌫ shift-S`, no modifier to
@@ -829,17 +862,17 @@ fn the_protocol_grammar_reaches_the_dag_on_its_own_view() {
 /// because it owned a whole window. In one window that would fold a family,
 /// drill a scope or open a steps sheet under a user who is looking at a chart.
 ///
-/// Watched redden, one mutation: removing the `view == ViewKind::Protocol`
-/// guard around `feed_events` in `MeridianApp::draw` fails here with *"shift-S
-/// reached the DAG while the charts view was drawn"*.
+/// Watched redden, one mutation: removing the `graph_on_canvas` guard around
+/// `feed_events` in `MeridianApp::draw` fails here with *"shift-S reached the
+/// DAG while a chart held the canvas"*.
 #[test]
-fn the_protocol_grammar_does_not_reach_the_dag_from_the_charts_view() {
-    let mut win = Window::open(both(ViewKind::Charts), Mode::Light);
+fn the_protocol_grammar_does_not_reach_the_dag_while_a_chart_holds_the_canvas() {
+    let mut win = Window::open(both(), Mode::Light);
     win.run(vec![Vec::new(), press(egui::Key::S, true), Vec::new()]);
-    assert_eq!(win.app.active(), ViewKind::Charts);
+    assert!(!win.app.graph_on_canvas());
     assert!(
         !win.app.protocol_model().show_sheet(),
-        "shift-S reached the DAG while the charts view was drawn"
+        "shift-S reached the DAG while a chart held the canvas"
     );
 }
 
@@ -865,17 +898,17 @@ fn the_protocol_grammar_does_not_reach_the_dag_from_the_charts_view() {
 /// focus still on the outline rail.
 #[test]
 fn pressing_the_navigator_toggle_twice_returns_focus() {
-    let mut win = Window::open(both(ViewKind::Charts), Mode::Light);
+    let mut win = Window::open(both(), Mode::Light);
     win.settle();
 
-    let started = PaneKey::new(ViewKind::Charts, brightfield_shell::app::CHART);
+    let started = PaneKey::new(brightfield_shell::app::CHART);
     assert!(
         win.app.focus_pane(started),
         "the chart pane is placed, so focus can be put on it"
     );
     win.settle();
 
-    let rail = PaneKey::new(ViewKind::Protocol, brightfield_shell::protocol::OUTLINE);
+    let rail = PaneKey::new(brightfield_shell::protocol::OUTLINE);
     win.run(vec![navigator_toggle(), Vec::new()]);
     assert_eq!(
         win.app.focused_pane(),
@@ -892,28 +925,32 @@ fn pressing_the_navigator_toggle_twice_returns_focus() {
     );
 }
 
-/// The increment-7 view switcher is gone, not restyled.
+/// No control in the title band changes which document the canvas draws.
 ///
 /// Asserted through what a person can reach rather than by reading the source:
-/// the two `selectable_label`s were controls in the title band, so a pointer
-/// swept across that band used to be able to change which document the canvas
-/// draws. Nothing there does that now — the protocol is the navigator rail,
-/// and reaching it is `toggle-outline-rail`.
+/// the increment-7 view switcher was a pair of `selectable_label`s in this
+/// band, so a pointer swept across it used to be able to change which document
+/// the canvas draws. Nothing there does that now — the protocol is the
+/// navigator rail, and reaching it is `toggle-outline-rail`.
+///
+/// **What this can and cannot see, now that the canvas is derived.** A control
+/// cannot record a canvas choice any more: `graph_takes_the_canvas` reads the
+/// documents, so a control put back in this band would have to *swap a
+/// document* to change the answer, and that is what is refused here. It is
+/// narrower than what the same sweep refused while the window carried a
+/// latched active view. The stronger half is now structural rather than
+/// tested, which is the point of removing the latch.
 ///
 /// The sweep is every four points across the band's width rather than one
-/// aimed click, because a switcher put back anywhere in the band is the thing
-/// this refuses, not a switcher put back where the old one was.
-///
-/// Watched redden, one mutation: restoring the pair of `selectable_label`s at
-/// the head of `MeridianApp::title_band` fails at the first click that lands
-/// on one.
+/// aimed click, because a control put back anywhere in the band is the thing
+/// this refuses, not one put back where the old one was.
 #[test]
 fn no_control_in_the_title_band_changes_which_document_the_canvas_draws() {
     use brightfield_workbench::arrangement;
 
-    let mut win = Window::open(both(ViewKind::Charts), Mode::Light);
+    let mut win = Window::open(both(), Mode::Light);
     win.settle();
-    let before = win.app.active();
+    let before = win.app.graph_on_canvas();
     let band = win
         .app
         .region_rect(arrangement::TITLE_BAND)
@@ -948,7 +985,7 @@ fn no_control_in_the_title_band_changes_which_document_the_canvas_draws() {
         }
         win.run(vec![click_at(egui::pos2(x, band.center().y)), Vec::new()]);
         assert_eq!(
-            win.app.active(),
+            win.app.graph_on_canvas(),
             before,
             "a click at x={x} in the title band moved the canvas to the other \
              document — the peer switcher is back"
@@ -1014,7 +1051,7 @@ fn navigator_toggle() -> Vec<egui::Event> {
 /// "clicking Home left the window on the dock".
 #[test]
 fn the_top_bar_home_button_returns_to_the_front_door() {
-    let mut win = Window::open(both(ViewKind::Charts), Mode::Light);
+    let mut win = Window::open(both(), Mode::Light);
     win.settle();
     assert!(
         !win.app.front_door_is_live(),
@@ -1045,34 +1082,37 @@ fn the_top_bar_home_button_returns_to_the_front_door() {
     );
 }
 
-/// Going Home from a protocol window leaves no protocol control standing on
-/// the door it returns to.
+/// Going Home from a graph leaves no protocol control standing on the door it
+/// returns to.
 ///
-/// The test above boots chart-led (`both(ViewKind::Charts)`), so `active()`
-/// already read `Charts` before the click and the trip home had nothing to
-/// leave behind — the title band's flow toggle only draws for
-/// `active() == ViewKind::Protocol`, and a chart-led boot never holds that
-/// value to begin with. This one boots protocol-led instead, through
-/// `Boot::protocol`, the shape a single manifest on the command line actually
-/// produces — no `both()` fixture, no chart ever opened. `open_home` empties
-/// both documents in place but, without resetting `active()`, would leave it
-/// reading `Protocol` on the door it just drew — and `title_band` reads that
-/// value raw, so the toggle would still draw for a `ProtocolModel` this same
-/// call had just emptied.
+/// The test above boots with both fixtures, so the chart already held the
+/// canvas before the click and the trip home had nothing to leave behind —
+/// the title band's flow toggle draws only where the graph holds it. This one
+/// boots graph-only, through `Boot::protocol`, the shape a single manifest on
+/// the command line actually produces.
 ///
-/// Watched redden: removing `open_home`'s `self.ws_mut().set_active(...)`
-/// call leaves `active()` on `Protocol` after the click, and this fails at
-/// the `assert_ne!` below — `active()` reads back `Protocol` instead of
-/// something else.
+/// Asserted off the **drawn frame** rather than off a recorded value: the
+/// defect this is about is a control a person can see and press, and the
+/// window used to carry a latched active view that survived `open_home` and
+/// kept that control on screen for a `ProtocolModel` the same call had just
+/// emptied. Reading the galleys is what makes the claim about the screen.
+///
+/// Watched redden, one mutation: pinning `graph_takes_the_canvas` to `true`
+/// leaves the toggle drawing on the door, and this fails at "the flow toggle
+/// is still on the front door".
 #[test]
-fn going_home_from_a_protocol_leaves_no_protocol_control_behind() {
+fn going_home_from_a_graph_leaves_no_protocol_control_behind() {
     let mut win = Window::open(Boot::protocol(edgar(), Flow::Vertical, None), Mode::Light);
     win.settle();
-    assert_eq!(
-        win.app.active(),
-        ViewKind::Protocol,
-        "a protocol boot did not open on the protocol view — this test proves \
-         nothing"
+    assert!(
+        win.app.graph_on_canvas(),
+        "a graph-only boot did not put its graph on the canvas — this test \
+         proves nothing"
+    );
+    assert!(
+        win.drawn_text().iter().any(|t| t.starts_with("flow:")),
+        "the title band drew no flow toggle over a graph, so its absence \
+         after Home says nothing"
     );
 
     let target = win
@@ -1086,10 +1126,10 @@ fn going_home_from_a_protocol_leaves_no_protocol_control_behind() {
         win.app.front_door_is_live(),
         "clicking Home left the window on the dock"
     );
-    assert_ne!(
-        win.app.active(),
-        ViewKind::Protocol,
-        "active() is still Protocol after Home, so the title band's flow \
-         toggle still draws for a protocol document Home just emptied"
+    let drawn = win.drawn_text();
+    assert!(
+        !drawn.iter().any(|t| t.starts_with("flow:")),
+        "the flow toggle is still on the front door, acting on a protocol \
+         document Home just emptied: {drawn:?}"
     );
 }

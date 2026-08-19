@@ -1,7 +1,7 @@
 //! `brightfield-shell` — the live egui/eframe window (Tier-3 of the loop).
 //!
 //! Opens the real docked window over a spec, rendering the Vello canvases on
-//! eframe's shared wgpu device. The window holds **both** views — the chart
+//! eframe's shared wgpu device. The window holds **both** documents — the chart
 //! workbench and the Protocol panel — with a switcher in the top bar; the spec
 //! decides which of them opens first, and a Protocol manifest still needs
 //! `BRIGHTFIELD_PROTOCOL_OFFLINE=1` to be rendered without a run. Press F12 to
@@ -862,18 +862,17 @@ fn main() -> Result<(), String> {
         args.force_sample,
     )?;
 
-    // Which view will actually be drawn, resolved once and asked three times.
-    // A boot that named one wins — `MeridianApp::assemble` sets it active — and
-    // a boot that named none defers to the layout, which is exactly what
-    // `assemble` leaves standing. So this is the view the first frame draws,
-    // and it is the only honest subject for the size, the title and the
-    // summary line below. Letting a `None` default to the charts view instead
-    // titled a restored crosswalk "Brightfield" and logged "composed 0x0
-    // dashboard" over a 34-node graph — and since `run_native` takes the title
-    // once and only the front door's own click ever sends a
-    // `ViewportCommand::Title`, that name stayed wrong for the session.
-    let view = boot.view_or(layout.workspace.active());
-    eprintln!("{}", boot.describe(view));
+    // The size, the title and the summary line are each answered for whatever
+    // the canvas will hold, which the boot derives from the documents it
+    // loaded rather than from a recorded choice — see
+    // `window::graph_takes_the_canvas`. It used to be resolved here against
+    // the saved layout's active view, with a default in the resolution, and
+    // the default titled a restored crosswalk "Brightfield" and logged
+    // "composed 0x0 dashboard" over a 34-node graph. Since `run_native` takes
+    // the title once, and the runtime `ViewportCommand::Title`s (opening a
+    // start, going home) are not reached by a restore, that name stayed wrong
+    // for the session.
+    eprintln!("{}", boot.describe());
 
     // A window size the user chose is authoritative. Otherwise the boot's own
     // budget stands — unless it has no document to derive one from, in which
@@ -887,7 +886,7 @@ fn main() -> Result<(), String> {
     // `window::fit_window_to_display` for why it cannot be read before then.
     let mut fit = None;
     if cap_applies(startup::kept_window_geometry(outcome), boot.is_empty()) {
-        let (w, h) = boot.window_size(view);
+        let (w, h) = boot.window_size();
         layout.window.size = [w, h];
         fit = Some((w, h));
     }
@@ -895,7 +894,7 @@ fn main() -> Result<(), String> {
     if let Some([x, y]) = layout.window.position {
         viewport = viewport.with_position([x, y]);
     }
-    let title = boot.title(view);
+    let title = boot.title();
 
     // The live window rides eframe's wgpu device — the Vello canvases are built
     // with `VelloRenderer::from_shared` on it — so the ceiling this window draws

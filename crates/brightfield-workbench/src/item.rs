@@ -36,7 +36,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::registry::{ChartKind, ChartKindId, ChartKindRegistry, Field, ModuleOptions};
 use crate::subject::{EmptyState, Icon, Subject, Verb};
-use crate::workspace::ViewKind;
 use crate::Mode;
 
 // ---------------------------------------------------------------------------
@@ -53,12 +52,13 @@ pub struct ItemId(&'static str);
 /// The process's item vocabulary, accumulated across every registry that
 /// publishes into it.
 ///
-/// A `RwLock` rather than a `OnceLock` because there is one registry *per
-/// view* and [`ViewKind::ALL`] has more than one, so "publish" is inherently
-/// plural. The first draft of this was a `OnceLock` whose `set` result was
-/// dropped, which meant the second view's ids were discarded in silence and
-/// its saved layout failed to load forever — the exact failure the custom
-/// [`Deserialize`] was written to make loud.
+/// A `RwLock` rather than a `OnceLock` because the window is filled by more
+/// than one registry — one per *document*, and the shell ships two
+/// ([`crate::ItemRegistry`]'s docs say why the documents stay apart) — so
+/// "publish" is inherently plural. The first draft of this was a `OnceLock`
+/// whose `set` result was dropped, which meant the second registry's ids were
+/// discarded in silence and its saved layout failed to load forever — the
+/// exact failure the custom [`Deserialize`] was written to make loud.
 static KNOWN: RwLock<&'static [ItemId]> = RwLock::new(&[]);
 
 impl ItemId {
@@ -76,8 +76,8 @@ impl ItemId {
 
     /// Add a registry's ids to this process's item vocabulary.
     ///
-    /// Called at boot **once per view registry** — [`ViewKind::ALL`] has more
-    /// than one — before any layout file is read, so that deserialising an id
+    /// Called at boot **once per registry** — the shell ships more than one —
+    /// before any layout file is read, so that deserialising an id
     /// can check it against something. Calls accumulate: every id ever
     /// published stays published, and re-publishing an id already present is
     /// a no-op, so a test binary that boots twice neither falls over nor
@@ -95,7 +95,7 @@ impl ItemId {
     ///
     /// Merging two `&'static [ItemId]` needs a new allocation that outlives
     /// both, so a merge leaks one `Vec`. That is bounded by the number of
-    /// `publish` calls — one per view, at boot — and buys [`ItemId::known`]
+    /// `publish` calls — one per registry, at boot — and buys [`ItemId::known`]
     /// its `&'static [ItemId]` return, which is what lets `Deserialize` look
     /// an id up without allocating on every pane in a layout file. Publishing
     /// the first registry does not allocate at all.
@@ -154,12 +154,26 @@ impl<'de> Deserialize<'de> for ItemId {
     }
 }
 
-/// A pane's address: which view it belongs to, and which item fills it.
+/// A pane's address: which item fills it, and nothing else.
 ///
 /// `Copy`, small, and free of anything a document could hide inside — see the
 /// size tripwire in the contract tests. A pane key that grew a model handle
 /// would put the document back inside the pane identity, which is the shape
 /// this crate exists to prevent.
+///
+/// # Why this is a struct rather than a bare [`ItemId`]
+///
+/// A pane belongs to the **window** — one window, one tile tree — so its
+/// address is the item and nothing else. The wrapper stays because a pane's
+/// address and an item's name are different claims that happen to coincide
+/// today: an address is what a layout file records and what focus is held as,
+/// and a build that grows a second window would give this a field again.
+///
+/// `#[serde(transparent)]` is what makes the coincidence visible on disk: a
+/// pane in the layout file is the item's own string, so the file names no
+/// concept the product does not have. It also means the serialised form is
+/// exactly [`ItemId`]'s, which is what
+/// `a_pane_in_the_layout_file_is_named_by_its_item_and_nothing_else` reads.
 #[derive(
     Clone,
     Copy,
@@ -172,9 +186,8 @@ impl<'de> Deserialize<'de> for ItemId {
     Serialize,
     Deserialize, //
 )]
+#[serde(transparent)]
 pub struct PaneKey {
-    /// The view this pane belongs to.
-    pub view: ViewKind,
     /// Which item fills it.
     pub item: ItemId,
 }
@@ -182,14 +195,14 @@ pub struct PaneKey {
 impl PaneKey {
     /// A pane key.
     #[must_use]
-    pub const fn new(view: ViewKind, item: ItemId) -> Self {
-        Self { view, item }
+    pub const fn new(item: ItemId) -> Self {
+        Self { item }
     }
 }
 
 impl std::fmt::Display for PaneKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}/{}", self.view, self.item)
+        std::fmt::Display::fmt(&self.item, f)
     }
 }
 
@@ -678,13 +691,10 @@ mod tests {
             "publishing the second view was silently dropped"
         );
 
-        // Both views' pane keys survive a round trip, which is the thing the
-        // vocabulary exists to make possible.
-        for (view, item) in [
-            (ViewKind::Charts, CHARTS_CANVAS),
-            (ViewKind::Protocol, PROTOCOL_OUTLINE),
-        ] {
-            let key = PaneKey::new(view, item);
+        // Both registries' pane keys survive a round trip, which is the thing
+        // the vocabulary exists to make possible.
+        for item in [CHARTS_CANVAS, PROTOCOL_OUTLINE] {
+            let key = PaneKey::new(item);
             let json = serde_json::to_string(&key).expect("a pane key serialises");
             assert_eq!(
                 serde_json::from_str::<PaneKey>(&json).expect("and round trips"),
@@ -928,7 +938,7 @@ mod module_tests {
             } else {
                 let mut cx = ItemCtx::new(
                     Mode::Light,
-                    PaneKey::new(ViewKind::Charts, item.item_id()),
+                    PaneKey::new(item.item_id()),
                     egui_tiles::TileId::from_u64(1),
                     false,
                     &mut requests,
@@ -1282,7 +1292,7 @@ mod module_tests {
         let mut requests = Vec::new();
         let mut cx = ItemCtx::new(
             Mode::Light,
-            PaneKey::new(ViewKind::Charts, ItemId::new("module-points")),
+            PaneKey::new(ItemId::new("module-points")),
             egui_tiles::TileId::from_u64(1),
             true,
             &mut requests,

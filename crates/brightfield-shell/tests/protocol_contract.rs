@@ -21,7 +21,7 @@ use brightfield_shell::protocol::{
     INSPECTOR, OUTLINE, STEPS,
 };
 use brightfield_workbench::registry::Slot;
-use brightfield_workbench::{audit, ItemId, PaneKey, Subject, ViewKind};
+use brightfield_workbench::{audit, ItemId, PaneKey, Subject};
 
 const EDGAR: &str = "../../examples/protocol/edgar_gleif/arcform.yaml";
 
@@ -205,7 +205,7 @@ fn the_default_dock_is_outline_canvas_steps_inspector() {
     let tree = registry.default_tree();
     let tabbed = brightfield_workbench::workspace::tabbed_tiles_of(&tree);
     let tile = |item| {
-        brightfield_workbench::workspace::tile_of(&tree, PaneKey::new(ViewKind::Protocol, item))
+        brightfield_workbench::workspace::tile_of(&tree, PaneKey::new(item))
             .unwrap_or_else(|| panic!("{item} is in the default tree"))
     };
     assert!(tabbed.contains(&tile(CANVAS)), "the canvas is tabbed");

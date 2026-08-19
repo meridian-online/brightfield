@@ -9,13 +9,13 @@
 //! vocabulary. The tests that do are in `layout_file.rs`, deliberately as one
 //! ordered test — see that file.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use brightfield_keys::BindingContext;
 use brightfield_workbench::persist::SavedLayout;
 use brightfield_workbench::{
     chrome, DirtyTracker, DockSide, EmptyState, Icon, Item, ItemCtx, ItemId, ItemMap, ItemRegistry,
-    ItemSpec, Mode, PaneChrome, PaneKey, Request, Slot, Subject, ViewKind, Workspace,
+    ItemSpec, Mode, PaneChrome, PaneKey, Request, Slot, Subject, Workspace,
 };
 
 // ---------------------------------------------------------------------------
@@ -117,56 +117,49 @@ impl Item<Doc> for Rail {
     }
 }
 
-fn registry(view: ViewKind) -> ItemRegistry<Doc> {
-    ItemRegistry::new(
-        view,
-        vec![
-            ItemSpec {
-                id: CANVAS,
-                slot: Slot::Centre,
-                toggle: None,
-                make: || Box::new(Canvas),
+fn registry() -> ItemRegistry<Doc> {
+    ItemRegistry::new(vec![
+        ItemSpec {
+            id: CANVAS,
+            slot: Slot::Centre,
+            toggle: None,
+            make: || Box::new(Canvas),
+        },
+        ItemSpec {
+            id: NOTES,
+            slot: Slot::CentreTab,
+            toggle: Some(toggle()),
+            make: || Box::new(Notes),
+        },
+        ItemSpec {
+            id: RAIL,
+            slot: Slot::Rail {
+                side: DockSide::Right,
+                share: 0.25,
             },
-            ItemSpec {
-                id: NOTES,
-                slot: Slot::CentreTab,
-                toggle: Some(toggle()),
-                make: || Box::new(Notes),
-            },
-            ItemSpec {
-                id: RAIL,
-                slot: Slot::Rail {
-                    side: DockSide::Right,
-                    share: 0.25,
-                },
-                toggle: Some(toggle()),
-                make: || Box::new(Rail),
-            },
-        ],
-    )
+            toggle: Some(toggle()),
+            make: || Box::new(Rail),
+        },
+    ])
 }
 
 fn workspace() -> Workspace {
-    let mut trees = BTreeMap::new();
-    for view in ViewKind::ALL {
-        trees.insert(view, registry(view).default_tree());
-    }
-    Workspace::new(trees)
+    Workspace::new(registry().default_tree())
 }
 
-fn key(view: ViewKind, item: ItemId) -> PaneKey {
-    PaneKey::new(view, item)
+fn key(item: ItemId) -> PaneKey {
+    PaneKey::new(item)
 }
 
-/// Put a container with exactly one child into the Charts tree, so the tree
-/// has something `SimplificationOptions`' defaults would rewrite.
+/// Put a container with exactly one child into the tree, so it has something
+/// `SimplificationOptions`' defaults would rewrite.
 ///
 /// `prune_single_child_containers` is on by default, and `Tree::ui` simplifies
 /// before it draws. Without a shape like this in the fixture, "simplification
 /// is off" is asserted against a tree that cannot exhibit the failure it is
 /// meant to catch.
 fn wrap_the_rail_in_a_single_child_container(ws: &mut Workspace) {
-    let tree = ws.tree_mut(ViewKind::Charts);
+    let tree = ws.tree_mut();
     let root = tree.root().expect("a root");
     let rail = match tree.tiles.get(root) {
         Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin))) => lin.children[1],
@@ -214,8 +207,7 @@ fn draw(
 ) -> (Vec<Request>, Vec<egui::ClippedPrimitive>) {
     let mut requests = Vec::new();
     let mut affordances = Vec::new();
-    let view = ws.active();
-    let tabbed = ws.tabbed_tiles(view);
+    let tabbed = ws.tabbed_tiles();
     let focused = ws.focus();
     let input = egui::RawInput {
         screen_rect: Some(SCREEN),
@@ -233,7 +225,7 @@ fn draw(
                 &mut requests,
                 &mut affordances,
             );
-            ws.tree_mut(view).ui(&mut behavior, ui);
+            ws.tree_mut().ui(&mut behavior, ui);
         }
     });
     let primitives = ctx.tessellate(full.shapes, full.pixels_per_point);
@@ -244,85 +236,99 @@ fn draw(
 // The workspace
 // ---------------------------------------------------------------------------
 
-/// The property the whole per-view-tree shape exists to deliver.
+/// A pane's address is its item and nothing else, on disk as well as in
+/// memory.
 ///
-/// Would catch: a `Workspace` that keeps one tree and swaps its panes on a
-/// view switch, or that rebuilds the incoming view's tree from the registry.
-/// Both compile, both look right on screen, and both silently discard the
-/// arrangement of the view you just left — which is the failure this design
-/// is a reaction to.
+/// Would catch: a `PaneKey` that grew a second field again, or lost
+/// `#[serde(transparent)]` — either of which puts a `{"…": …}` object back in
+/// the layout file where a bare item name belongs, and starts the file naming
+/// a concept the window does not have. Read off `serde_json` rather than off
+/// the type, because the claim is about the bytes.
 #[test]
-fn switching_views_leaves_the_view_you_left_untouched() {
-    let mut ws = workspace();
-
-    // Arrange the Charts view: move a share and focus a pane.
-    let charts_root = ws.tree(ViewKind::Charts).root().expect("a root");
-    if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin))) =
-        ws.tree_mut(ViewKind::Charts).tiles.get_mut(charts_root)
-    {
-        let rail = lin.children[1];
-        lin.shares.set_share(rail, 0.42);
-    }
-    assert!(ws.set_focus(key(ViewKind::Charts, RAIL)));
-    let arranged = ws.tree(ViewKind::Charts).clone();
-
-    ws.set_active(ViewKind::Protocol);
-    assert_eq!(ws.active(), ViewKind::Protocol);
+fn a_pane_in_the_layout_file_is_named_by_its_item_and_nothing_else() {
+    let json = serde_json::to_string(&key(RAIL)).expect("a pane key serialises");
     assert_eq!(
-        ws.tree(ViewKind::Charts),
-        &arranged,
-        "leaving a view changed its tree"
+        json, "\"fixture-rail\"",
+        "a pane serialised as {json}, not as its item's own name"
     );
     assert_eq!(
-        ws.focus_in(ViewKind::Charts),
-        Some(key(ViewKind::Charts, RAIL)),
-        "leaving a view forgot where focus was"
-    );
-    assert_eq!(
-        ws.focus(),
-        None,
-        "the view being entered inherited the other view's focus"
-    );
-
-    // …and arranging the view we switched *to* does not reach back.
-    assert!(ws.set_focus(key(ViewKind::Protocol, NOTES)));
-    ws.set_active(ViewKind::Charts);
-    assert_eq!(ws.tree(ViewKind::Charts), &arranged);
-    assert_eq!(ws.focus(), Some(key(ViewKind::Charts, RAIL)));
-    assert_eq!(
-        ws.focus_in(ViewKind::Protocol),
-        Some(key(ViewKind::Protocol, NOTES))
+        json,
+        serde_json::to_string(&RAIL).expect("an item id serialises"),
+        "a pane and its item disagree about what they are called on disk"
     );
 }
 
-/// Would catch: a single global `focused: Option<PaneKey>` — the obvious
-/// first implementation, which passes every single-view test and loses your
-/// cursor the moment there are two views; and a focus request applied without
-/// checking the pane is still there, which parks the window chrome on a
-/// `Subject` nobody can see.
+/// One window, one tree: every pane the window has is in it, and there is no
+/// second arrangement for a pane to be hiding in.
+///
+/// Would catch: a `Workspace` that kept a second tree behind an accessor, or
+/// a `window_tree` that dropped a placement it did not recognise — both of
+/// which leave a region drawing no pane, and read exactly like a pane with no
+/// content.
 #[test]
-fn focus_is_per_view_and_a_pane_that_is_not_there_cannot_take_it() {
+fn the_window_holds_one_tree_over_every_pane_it_declares() {
+    let ws = workspace();
+    let mut declared: Vec<PaneKey> = registry().ids().into_iter().map(PaneKey::new).collect();
+    declared.sort_unstable();
+    assert_eq!(ws.panes(), declared);
+    for item in [CANVAS, NOTES, RAIL] {
+        assert!(
+            ws.tile_of(key(item)).is_some(),
+            "{item} is declared and has no tile, so its region draws nothing"
+        );
+    }
+}
+
+/// Would catch: a focus request applied without checking the pane is still
+/// there, which parks the window chrome on a `Subject` nobody can see; and a
+/// `clear_focus` that clears something other than the record it is asked for.
+#[test]
+fn focus_is_one_record_and_a_pane_that_is_not_there_cannot_take_it() {
     let mut ws = workspace();
     assert_eq!(ws.focus(), None, "a fresh workspace focuses nothing");
 
-    assert!(ws.set_focus(key(ViewKind::Charts, CANVAS)));
-    assert!(ws.set_focus(key(ViewKind::Protocol, RAIL)));
-    assert_eq!(ws.focus(), Some(key(ViewKind::Charts, CANVAS)));
-    ws.set_active(ViewKind::Protocol);
-    assert_eq!(ws.focus(), Some(key(ViewKind::Protocol, RAIL)));
-
-    // A pane the view does not hold is refused, and refusal changes nothing.
-    let ghost = PaneKey::new(ViewKind::Protocol, ItemId::new("fixture-ghost"));
-    assert!(!ws.set_focus(ghost));
-    assert_eq!(ws.focus(), Some(key(ViewKind::Protocol, RAIL)));
-
-    ws.clear_focus(ViewKind::Protocol);
-    assert_eq!(ws.focus(), None);
+    assert!(ws.set_focus(key(CANVAS)));
+    assert_eq!(ws.focus(), Some(key(CANVAS)));
+    assert!(ws.set_focus(key(RAIL)));
     assert_eq!(
-        ws.focus_in(ViewKind::Charts),
-        Some(key(ViewKind::Charts, CANVAS)),
-        "clearing one view's focus cleared another's"
+        ws.focus(),
+        Some(key(RAIL)),
+        "a second focus move left the first record standing, so two panes \
+         would wear the ring"
     );
+
+    // A pane the tree does not hold is refused, and refusal changes nothing.
+    let ghost = PaneKey::new(ItemId::new("fixture-ghost"));
+    assert!(!ws.set_focus(ghost));
+    assert_eq!(ws.focus(), Some(key(RAIL)));
+
+    ws.clear_focus();
+    assert_eq!(ws.focus(), None);
+}
+
+/// What a load has to check, because a constructor cannot.
+///
+/// Would catch: `panes_missing_from` comparing the wrong way round, or
+/// answering against its own panes — either of which reports a short file as
+/// complete, and `persist::from_json` then restores an arrangement with an
+/// empty region and no message saying why.
+#[test]
+fn a_workspace_short_a_pane_says_which_one() {
+    let full = workspace();
+    let short = Workspace::new(brightfield_workbench::window_tree(&[
+        (CANVAS, Slot::Centre),
+        (NOTES, Slot::CentreTab),
+    ]));
+    assert_eq!(
+        short.panes_missing_from(&full),
+        vec![key(RAIL)],
+        "a tree without the rail did not report the rail missing"
+    );
+    assert!(
+        full.panes_missing_from(&short).is_empty(),
+        "a tree with everything the donor has reported something missing"
+    );
+    assert!(full.panes_missing_from(&full).is_empty());
 }
 
 /// The header de-duplication rule's input.
@@ -334,8 +340,8 @@ fn focus_is_per_view_and_a_pane_that_is_not_there_cannot_take_it() {
 #[test]
 fn the_tabbed_set_is_the_children_of_tab_containers_and_nothing_else() {
     let ws = workspace();
-    let tabbed = ws.tabbed_tiles(ViewKind::Charts);
-    let tree = ws.tree(ViewKind::Charts);
+    let tabbed = ws.tabbed_tiles();
+    let tree = ws.tree();
 
     let mut expected = std::collections::HashSet::new();
     for (id, tile) in tree.tiles.iter() {
@@ -349,11 +355,11 @@ fn the_tabbed_set_is_the_children_of_tab_containers_and_nothing_else() {
     // The registry puts the centre pane and the centre tab in one strip, and
     // the rail outside it.
     for item in [CANVAS, NOTES] {
-        let tile = ws.tile_of(key(ViewKind::Charts, item)).expect("a tile");
+        let tile = ws.tile_of(key(item)).expect("a tile");
         expected.insert(tile);
     }
     assert_eq!(tabbed, expected);
-    let rail = ws.tile_of(key(ViewKind::Charts, RAIL)).expect("a tile");
+    let rail = ws.tile_of(key(RAIL)).expect("a tile");
     assert!(!tabbed.contains(&rail), "the rail is not in a tab strip");
 }
 
@@ -381,8 +387,8 @@ fn a_tab_title_is_read_from_the_document_for_a_pane_that_is_not_drawing() {
         title: "Revenue by quarter".into(),
         ..Doc::default()
     };
-    let mut items = registry(ViewKind::Charts).instantiate();
-    let tabbed = ws.tabbed_tiles(ViewKind::Charts);
+    let mut items = registry().instantiate();
+    let tabbed = ws.tabbed_tiles();
     let mut requests = Vec::new();
     let mut affordances = Vec::new();
     let mut behavior = PaneChrome::new(
@@ -396,7 +402,7 @@ fn a_tab_title_is_read_from_the_document_for_a_pane_that_is_not_drawing() {
     );
 
     use egui_tiles::Behavior as _;
-    let canvas = key(ViewKind::Charts, CANVAS);
+    let canvas = key(CANVAS);
     assert_eq!(
         behavior.tab_title_for_pane(&canvas).text(),
         "Revenue by quarter"
@@ -421,7 +427,7 @@ fn a_tab_title_is_read_from_the_document_for_a_pane_that_is_not_drawing() {
     );
 
     // A pane no item was registered for is named rather than blank.
-    let ghost = PaneKey::new(ViewKind::Charts, ItemId::new("fixture-ghost"));
+    let ghost = PaneKey::new(ItemId::new("fixture-ghost"));
     assert_eq!(
         behavior.tab_title_for_pane(&ghost).text(),
         ghost.to_string()
@@ -447,12 +453,12 @@ fn a_pane_under_a_tab_strip_gets_no_header_band() {
         rows: vec!["a"],
         ..Doc::default()
     };
-    let mut items = registry(ViewKind::Charts).instantiate();
-    let tabbed = ws.tabbed_tiles(ViewKind::Charts);
-    let canvas_tile = ws.tile_of(key(ViewKind::Charts, CANVAS)).expect("a tile");
+    let mut items = registry().instantiate();
+    let tabbed = ws.tabbed_tiles();
+    let canvas_tile = ws.tile_of(key(CANVAS)).expect("a tile");
 
     // Drawn as the registry arranges it — the canvas is in the tab strip.
-    let mut tree = ws.tree(ViewKind::Charts).clone();
+    let mut tree = ws.tree().clone();
     let mut requests = Vec::new();
     let mut affordances = Vec::new();
     let (_, tabbed_pixels) = {
@@ -483,7 +489,7 @@ fn a_pane_under_a_tab_strip_gets_no_header_band() {
 
     // …and again with nothing declared tabbed, so every pane takes a band.
     let empty = std::collections::HashSet::new();
-    let mut tree = ws.tree(ViewKind::Charts).clone();
+    let mut tree = ws.tree().clone();
     let mut requests = Vec::new();
     let mut affordances = Vec::new();
     let untabbed_pixels = {
@@ -554,7 +560,7 @@ fn a_pane_under_a_tab_strip_gets_no_header_band() {
 fn an_empty_pane_is_drawn_by_the_shell_instead_of_by_the_item() {
     let ctx = egui::Context::default();
     let mut ws = workspace();
-    let mut items = registry(ViewKind::Charts).instantiate();
+    let mut items = registry().instantiate();
 
     // No rows: the rail declares itself empty, so only the two panes in the
     // tab strip can draw — and only the active one of those.
@@ -611,7 +617,7 @@ fn an_empty_pane_is_drawn_by_the_shell_instead_of_by_the_item() {
 fn a_press_in_a_pane_asks_the_workspace_for_focus() {
     let ctx = egui::Context::default();
     let mut ws = workspace();
-    let mut items = registry(ViewKind::Charts).instantiate();
+    let mut items = registry().instantiate();
     let mut doc = Doc {
         title: "Chart".into(),
         rows: vec!["a"],
@@ -652,7 +658,7 @@ fn a_press_in_a_pane_asks_the_workspace_for_focus() {
         .collect();
     assert_eq!(
         asked,
-        vec![key(ViewKind::Charts, RAIL)],
+        vec![key(RAIL)],
         "a press in the rail did not ask for the rail's focus"
     );
 
@@ -663,7 +669,7 @@ fn a_press_in_a_pane_asks_the_workspace_for_focus() {
             assert!(ws.set_focus(k));
         }
     }
-    assert_eq!(ws.focus(), Some(key(ViewKind::Charts, RAIL)));
+    assert_eq!(ws.focus(), Some(key(RAIL)));
 }
 
 // ---------------------------------------------------------------------------
@@ -699,7 +705,7 @@ fn a_press_in_a_pane_asks_the_workspace_for_focus() {
 #[test]
 fn drawing_the_tree_does_not_by_itself_dirty_the_layout() {
     let ctx = egui::Context::default();
-    let mut items = registry(ViewKind::Charts).instantiate();
+    let mut items = registry().instantiate();
     let mut doc = Doc {
         title: "Chart".into(),
         rows: vec!["a"],
@@ -720,9 +726,7 @@ fn drawing_the_tree_does_not_by_itself_dirty_the_layout() {
     }
 
     // Focus is state, but transient state: moving it must not be a write.
-    assert!(tracker
-        .workspace_mut()
-        .set_focus(key(ViewKind::Charts, RAIL)));
+    assert!(tracker.workspace_mut().set_focus(key(RAIL)));
     assert!(
         !tracker.is_dirty(),
         "moving focus was read as a layout change, so every click would write the layout file"
@@ -730,27 +734,14 @@ fn drawing_the_tree_does_not_by_itself_dirty_the_layout() {
 
     // A real arrangement change, however, must be seen — otherwise the test
     // above passes trivially with a comparison that can never be true.
-    let root = tracker
-        .live()
-        .workspace
-        .tree(ViewKind::Charts)
-        .root()
-        .expect("a root");
-    if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin))) = tracker
-        .workspace_mut()
-        .tree_mut(ViewKind::Charts)
-        .tiles
-        .get_mut(root)
+    let root = tracker.live().workspace.tree().root().expect("a root");
+    if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Linear(lin))) =
+        tracker.workspace_mut().tree_mut().tiles.get_mut(root)
     {
         let rail = lin.children[1];
         lin.shares.set_share(rail, 0.44);
     }
     assert!(tracker.is_dirty(), "dragging a splitter was not noticed");
-
-    // As must switching views, which is part of the saved arrangement.
-    let mut tracker = DirtyTracker::new(SavedLayout::new(workspace()));
-    tracker.workspace_mut().set_active(ViewKind::Protocol);
-    assert!(tracker.is_dirty(), "the active view is not tracked");
 }
 
 /// Two regions of one window, drawn in one frame through two `PaneChrome`s,
@@ -775,10 +766,10 @@ fn two_pane_chromes_in_one_frame_both_record_their_affordances() {
         rows: Vec::new(),
         ..Doc::default()
     };
-    let mut items = registry(ViewKind::Charts).instantiate();
-    let tabbed = ws.tabbed_tiles(ViewKind::Charts);
-    let rail_key = key(ViewKind::Charts, RAIL);
-    let canvas_key = key(ViewKind::Charts, CANVAS);
+    let mut items = registry().instantiate();
+    let tabbed = ws.tabbed_tiles();
+    let rail_key = key(RAIL);
+    let canvas_key = key(CANVAS);
     let rail_tile = ws.tile_of(rail_key).expect("the rail has a tile");
     let canvas_tile = ws.tile_of(canvas_key).expect("the canvas has a tile");
 

@@ -37,10 +37,10 @@ use brightfield_shell::window::{
     Boot, MeridianApp, DATASETS_SECTION, DOOR_ENTRY_PROMISE, PROTOCOLS_EMPTY_BODY,
     PROTOCOLS_EMPTY_TITLE, PROTOCOLS_SECTION,
 };
-use brightfield_workbench::{Action, PaneKey, Recent, RunState, SavedLayout, Subject, ViewKind};
+use brightfield_workbench::{Action, PaneKey, Recent, RunState, SavedLayout, Subject};
 
-const CHART_PANE: PaneKey = PaneKey::new(ViewKind::Charts, CHART);
-const CANVAS_PANE: PaneKey = PaneKey::new(ViewKind::Protocol, CANVAS);
+const CHART_PANE: PaneKey = PaneKey::new(CHART);
+const CANVAS_PANE: PaneKey = PaneKey::new(CANVAS);
 
 /// A window under test: the app, and **one** `egui::Context` for its whole
 /// life.
@@ -148,17 +148,19 @@ impl Window {
         self.run(vec![click_at(target.center()), Vec::new()]);
     }
 
-    /// Put the other document on the canvas.
-    ///
-    /// Through `show_on_canvas`, because there is no control that does it: the
-    /// protocol is the navigator rail rather than a peer view, and the pair of
-    /// `selectable_label`s that used to switch between them is gone. The door
-    /// is what this test is about, and the door belongs to the window rather
-    /// than to either document.
-    fn switch_to(&mut self, view: ViewKind) {
-        self.app.show_on_canvas(view);
-        self.run(vec![Vec::new()]);
-        assert_eq!(self.app.active(), view);
+    /// Press the registry's `open-home` keystroke — the way back to the door
+    /// from a window with something in it.
+    fn go_home(&mut self) {
+        self.run(vec![
+            vec![egui::Event::Key {
+                key: egui::Key::H,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            }],
+            Vec::new(),
+        ]);
     }
 }
 
@@ -350,13 +352,14 @@ fn every_shipped_start_loads_into_a_document_with_something_in_it() {
     for start in local {
         let opened = starts::load(start.id)
             .unwrap_or_else(|e| panic!("the shipped start {} does not load: {e}", start.id));
+        let loads_a_chart = matches!(opened, Opened::Charts(_));
         assert_eq!(
-            opened.view(),
-            start.view,
-            "{} is offered for the {:?} view but loads a document for {:?}",
+            loads_a_chart,
+            start.fills == CHART,
+            "{} declares it fills the {} pane and loads a {} document",
             start.id,
-            start.view,
-            opened.view()
+            start.fills,
+            if loads_a_chart { "chart" } else { "protocol" }
         );
         match opened {
             Opened::Charts(chart) => assert!(
@@ -544,8 +547,8 @@ fn every_shipped_thumbnail_is_the_committed_file() {
 // ---------------------------------------------------------------------------
 
 /// A launch that named nothing opens the front door: every shipped start's
-/// card is on it, clickable, on either view — and nothing about it is a
-/// dismissal to find, because there is nothing to dismiss.
+/// card is on it and clickable, and nothing about it is a dismissal to find,
+/// because there is nothing to dismiss.
 ///
 /// The state this replaces twice over: first a hardcoded example nobody asked
 /// for, then a dock of empty instruments each inviting the same first action
@@ -587,14 +590,31 @@ fn an_empty_launch_opens_the_front_door_with_every_start_on_it() {
         "the Start zone offers nothing to do"
     );
 
-    // The same door with the other document on the canvas: the door belongs
-    // to the window, not to a document, so this changes nothing it draws.
-    win.switch_to(ViewKind::Protocol);
+    // The door belongs to the **window**, not to a document: reached back
+    // from a graph — the document that is not the chart, and the one whose
+    // canvas the door stands where — it draws the same cards.
+    //
+    // Through the shipped route rather than a test hook, because there is no
+    // control that moves the canvas between the two: the protocol is the
+    // navigator rail rather than a peer view, and the pair of
+    // `selectable_label`s that used to switch between them is gone.
+    win.take_the_card(starts::CROSSWALK);
     win.settle();
+    assert!(
+        win.app.graph_on_canvas(),
+        "the crosswalk did not put its graph on the canvas, so going home \
+         from it proves nothing about the door"
+    );
+    win.go_home();
+    win.settle();
+    assert!(
+        win.app.front_door_is_live(),
+        "cmd-shift-h from a graph did not return to the door"
+    );
     for start in starts::STARTS {
         assert!(
             win.app.front_door_card_rect(start.id).is_some(),
-            "moving the canvas to the other document lost {}'s card",
+            "the door reached back from a graph lost {}'s card",
             start.id
         );
     }
@@ -659,10 +679,9 @@ fn a_dashboard_card_lands_on_a_rendered_dashboard() {
         "the click opened nothing — the chart pane is still empty, which is a \
          front door that has moved the blank canvas rather than removed it"
     );
-    assert_eq!(
-        win.app.active(),
-        ViewKind::Charts,
-        "opening a chart start did not land on the view it fills"
+    assert!(
+        !win.app.graph_on_canvas(),
+        "opening a chart start did not put its chart on the canvas"
     );
     assert!(
         chart_subject(win.app.chart_doc()).empty_state.is_none(),
@@ -702,7 +721,7 @@ fn a_dashboard_card_lands_on_a_rendered_dashboard() {
 fn the_crosswalk_card_lands_on_a_rendered_graph() {
     let mut win = Window::open(Boot::empty());
     win.settle();
-    assert_eq!(win.app.active(), ViewKind::Charts);
+    assert!(!win.app.graph_on_canvas());
     win.take_the_card(starts::CROSSWALK);
     win.settle();
 
@@ -716,10 +735,9 @@ fn the_crosswalk_card_lands_on_a_rendered_graph() {
         !model.sheet().is_empty(),
         "the click left the steps sheet empty"
     );
-    assert_eq!(
-        win.app.active(),
-        ViewKind::Protocol,
-        "the crosswalk opened without landing on the view it fills"
+    assert!(
+        win.app.graph_on_canvas(),
+        "the crosswalk opened without putting its graph on the canvas"
     );
     assert!(
         win.app.front_door_card_rect(starts::CROSSWALK).is_none(),
@@ -772,11 +790,6 @@ fn the_start_zone_opens_the_help_sheet() {
 fn a_launch_with_something_to_restore_shows_no_front_door() {
     let mut layout = default_layout();
     layout.opened = Some(starts::CROSSWALK.to_string());
-    // What a real file left by that session says: the start that was open,
-    // *and* the view the window was on when it was closed. The second is not
-    // derivable from the first — see `startup::opening_boot` — so the fixture
-    // has to carry it rather than let a start choose it.
-    layout.workspace.set_active(ViewKind::Protocol);
 
     // Through the same function `main` calls, with the same two arguments it
     // has: no spec on the command line, and whatever the layout remembered.
@@ -789,7 +802,7 @@ fn a_launch_with_something_to_restore_shows_no_front_door() {
     };
     win.settle();
 
-    assert_eq!(win.app.active(), ViewKind::Protocol);
+    assert!(win.app.graph_on_canvas());
     assert!(
         win.app.protocol_model().has_assets(),
         "the launch restored nothing"
@@ -1048,7 +1061,7 @@ fn a_door_with_recents_lists_every_one_of_them_most_recent_first() {
 /// suite.
 ///
 /// Watched redden, one mutation: having `door_row` push
-/// `Request::Focus(PaneKey::new(ViewKind::Protocol, PROTOCOL_CANVAS))` after
+/// `Request::Focus(PaneKey::new(PROTOCOL_CANVAS))` after
 /// its `Request::Open` — a plausible "put the cursor where the work is" —
 /// fails at "edgar-gleif-crosswalk: the row and the card leave focus on
 /// different surfaces", `Some(protocol-canvas)` against `None`.
@@ -1079,9 +1092,9 @@ fn either_route_to_the_same_subject_leaves_the_same_window() {
         by_card.settle();
 
         assert_eq!(
-            by_row.app.active(),
-            by_card.app.active(),
-            "{}: the row and the card land on different views",
+            by_row.app.graph_on_canvas(),
+            by_card.app.graph_on_canvas(),
+            "{}: the row and the card put different documents on the canvas",
             start.id
         );
         assert_eq!(
@@ -1186,26 +1199,27 @@ fn opening_a_start_remembers_it_and_keeps_what_was_remembered_before() {
 /// `MeridianApp::subject_name` and `MeridianApp::recorded_run_state` — and
 /// each has one caller, which is this write.
 ///
-/// Both arms of both matches are walked. The crosswalk fills the Protocol
-/// view and the dashboard fills Charts; the two documents name themselves
-/// differently, so a name read off the wrong document is a difference here
-/// too, and the two windows are separate so that neither open is asked to
-/// find a card under the other one's rows.
+/// Both kinds of start are walked. The crosswalk opens a graph and the
+/// dashboard opens a chart; the two documents name themselves differently, so
+/// a name read off the wrong document is a difference here too, and the two
+/// windows are separate so that neither open is asked to find a card under the
+/// other one's rows.
 ///
 /// The run state a *shipped* start records is `RunState::NeverRun` in this
-/// build, for the reason `MeridianApp::recorded_run_state` gives: a chart
-/// composes with no run contract behind it, and the crosswalk manifest is
-/// loaded with no run. So the protocol half is asserted against the document's
-/// own fold rather than against a literal alone, and the fold itself — which
-/// this build's starts cannot exercise — is held by
-/// `a_failed_step_anywhere_beats_a_success_anywhere`.
+/// build, because no shipped start carries a run contract at all — the
+/// crosswalk manifest is loaded with no run, and a chart composes without one.
+/// So both halves are asserted against the window's own fold rather than
+/// against a literal alone. What that fold *is* is
+/// `a_recent_carries_the_windows_own_run_state_whatever_opened_it`'s claim,
+/// and the fold's precedence is
+/// `a_failed_step_anywhere_beats_a_success_anywhere`'s.
 ///
 /// Watched redden, two mutations. `MeridianApp::subject_name` returning
-/// `String::new()` for both views fails at "the record is not named after
-/// what the opened Protocol calls itself", `""` against `"edgar_gleif"`.
-/// `MeridianApp::recorded_run_state` returning `RunState::Fresh` for both
-/// views fails at "the record carries a run state the opened Protocol does not
-/// report", `Fresh` against `NeverRun`.
+/// `String::new()` fails at "the record is not named after what the opened
+/// Protocol calls itself", `""` against `"edgar_gleif"`.
+/// `MeridianApp::recorded_run_state` returning `RunState::Fresh` fails at
+/// "the record carries a run state the opened Protocol does not report",
+/// `Fresh` against `NeverRun`.
 #[test]
 fn what_open_start_records_is_what_the_opened_document_says() {
     // The Protocol arm.
@@ -1256,9 +1270,14 @@ fn what_open_start_records_is_what_the_opened_document_says() {
     );
     assert_eq!(
         recorded.run,
+        by_chart.app.protocol_model().recorded_run_state(),
+        "the record carries a run state this window's Protocol does not report"
+    );
+    assert_eq!(
+        recorded.run,
         RunState::NeverRun,
-        "a composed dashboard has no run contract, so never run is what there \
-         is to record"
+        "nothing in this window has run, so never run is what there is to \
+         record"
     );
 
     // And what the analyst reads off the row is that same recorded name, taken
@@ -1282,6 +1301,89 @@ fn what_open_start_records_is_what_the_opened_document_says() {
             "the row states a run this build never recorded"
         );
     }
+}
+
+/// A row under the **Protocols** heading carries the window's own run state,
+/// whatever kind of start put it there.
+///
+/// The user-visible half of one tree, and Hugh's 2026-08-19 re-homing. The
+/// door heads a section *Protocols* and lists a row per opened start; four of
+/// the five shipped starts open a chart document. The heading was true of the
+/// concept and false of the rows, because a chart start recorded
+/// `RunState::NeverRun` by construction — a per-view answer, chosen by which
+/// of two peer documents the start filled. A window is one Protocol whose
+/// panes may be a chart, a grid or the asset graph, so the row it leaves
+/// behind is that Protocol's row and its state is that Protocol's state.
+///
+/// **The fixture supplies the run, because no shipped start can.** Every start
+/// this build ships loads with no run contract, so every one of them folds to
+/// `NeverRun` and the difference between the two rules is invisible over the
+/// shipped set — which is exactly why the old rule survived. The `statuses`
+/// map is what a run contract records and what
+/// `ProtocolModel::recorded_run_state` folds; the neighbouring
+/// `a_failed_step_anywhere_beats_a_success_anywhere` builds its inputs the
+/// same way. The graph is left empty so that the front door draws at all:
+/// the door is live when neither document has content, and a run contract is
+/// not content.
+///
+/// Read off the **drawn row** rather than off `layout().recents`, because the
+/// claim is about what the analyst reads under that heading.
+///
+/// Watched redden, one mutation: `MeridianApp::recorded_run_state` returning
+/// `RunState::NeverRun` — the answer the chart arm used to give — fails here
+/// at "the row under Protocols reports a run state the window does not have",
+/// `"never run"` against `"fresh"`.
+#[test]
+fn a_recent_carries_the_windows_own_run_state_whatever_opened_it() {
+    let mut inputs = ProtocolInputs::empty();
+    inputs.statuses = [("fetch".to_string(), SeamStatus::Ok)]
+        .into_iter()
+        .collect();
+    let mut win = Window::open(Boot {
+        protocol: inputs,
+        ..Boot::empty()
+    });
+    win.settle();
+
+    let run = win.app.protocol_model().recorded_run_state();
+    assert_eq!(
+        run,
+        RunState::Fresh,
+        "the fixture's run contract folded to {run:?}, so this window's \
+         Protocol has nothing the old per-view rule would have got wrong"
+    );
+    assert_ne!(
+        run.label(),
+        RunState::NeverRun.label(),
+        "the two states read the same word, so the assertion below cannot \
+         tell them apart"
+    );
+    assert!(
+        win.app.front_door_is_live(),
+        "a run contract with no assets behind it is not content, so the door \
+         should still be drawn"
+    );
+
+    // A **Datasets** card — a chart start, the case the heading was lying
+    // about — taken through the shipped route.
+    win.take_the_card(starts::DASHBOARD);
+    win.settle();
+    assert!(
+        !win.app.chart_doc().is_empty(),
+        "the card opened nothing, so no row was recorded"
+    );
+    win.go_home();
+    win.settle();
+
+    let rows = win.app.front_door_rows();
+    assert_eq!(rows.len(), 1, "one start was taken, so one row");
+    assert_eq!(
+        rows[0].state,
+        run.label(),
+        "the row under Protocols reports a run state the window does not \
+         have — it was read off the kind of start that opened it rather than \
+         off the Protocol the window is"
+    );
 }
 
 /// A failure anywhere in a Protocol's run beats a success anywhere else.
@@ -1380,7 +1482,6 @@ fn a_failed_step_anywhere_beats_a_success_anywhere() {
 fn going_home_returns_to_the_door_but_keeps_the_session() {
     let mut layout = default_layout();
     layout.opened = Some(starts::CROSSWALK.to_string());
-    layout.workspace.set_active(ViewKind::Protocol);
 
     let boot = opening_boot(None, layout.opened.as_deref(), Flow::Vertical, None)
         .expect("an unnamed launch cannot fail");
@@ -1656,7 +1757,7 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) -> usize {
             .unwrap_or_else(|e| panic!("{} no longer loads: {e}", start.id));
         // The window the start itself asks for — its content's own natural
         // size, the same answer the live click gives.
-        let size = boot.window_size(boot.view_or(ViewKind::Charts));
+        let size = boot.window_size();
         let out = scratch(&format!("thumb-{}-{mode:?}", start.id));
         let (w, h) = capture_png_at(boot, mode, 1.0, size, &out, Vec::new())
             .unwrap_or_else(|e| panic!("{} no longer renders: {e}", start.id));

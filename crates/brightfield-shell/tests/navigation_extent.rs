@@ -39,7 +39,7 @@ use brightfield_shell::navigation::{self, AxisLock};
 use brightfield_shell::pipeline::{compose_spec, live_spec, IntervalControl, LiveDashboard};
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
-use brightfield_workbench::{Item, ViewKind};
+use brightfield_workbench::Item;
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
@@ -1230,7 +1230,11 @@ fn the_frame_moves_under_real_keystrokes() {
     let mut app = live_window(&example("scatter.yaml"));
     let ctx = egui::Context::default();
     frame(&mut app, &ctx, Vec::new());
-    assert_eq!(app.active(), ViewKind::Charts);
+    assert!(
+        !app.graph_on_canvas(),
+        "the chart is not the thing on the canvas, so the frame verbs below \
+         are aimed at nothing"
+    );
 
     let full = mark_rows(app.chart_doc_mut(), 0);
     assert!(full > 0, "the fixture draws rows");

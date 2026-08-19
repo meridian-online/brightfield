@@ -103,7 +103,6 @@ use brightfield_shell::capture::{
 use brightfield_shell::design::Mode;
 use brightfield_shell::window::Boot;
 use brightfield_sql::ir::SampleRate;
-use brightfield_workbench::ViewKind;
 
 struct Args {
     spec: Option<String>,
@@ -174,12 +173,9 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    // `Boot::open` always names a view, so the fallback here is unreachable —
-    // said at the call site rather than baked into the getter, for the reason
-    // `Boot::view_or` records.
-    let view = boot.view_or(ViewKind::Charts);
-    eprintln!("{} from {}", boot.describe(view), spec);
-    if view == ViewKind::Protocol {
+    let graph_on_canvas = boot.graph_on_canvas();
+    eprintln!("{} from {}", boot.describe(), spec);
+    if graph_on_canvas {
         // Surface the family tile ids so `--focus` has a target for a scripted `za`.
         for (id, node) in &boot.protocol.graph_collapsed.nodes {
             if node.kind == brightfield_protocol::graph::AssetKind::Family {
@@ -194,9 +190,9 @@ fn main() -> ExitCode {
         // it, and there is no protocol analogue of it. Collapsing the fork made
         // this combination reachable for the first time, so it gets an answer
         // rather than an empty PNG.
-        if view != ViewKind::Charts {
+        if graph_on_canvas {
             eprintln!(
-                "error: --vello-only renders a composed dashboard; {spec} opens the Protocol view"
+                "error: --vello-only renders a composed dashboard; {spec} opens an asset graph"
             );
             return ExitCode::from(2);
         }
