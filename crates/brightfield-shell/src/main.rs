@@ -864,7 +864,7 @@ fn main() -> Result<(), String> {
 
     // The size, the title and the summary line are each answered for whatever
     // the canvas will hold, which the boot derives from the documents it
-    // loaded rather than from anything recorded — see
+    // loaded rather than from a recorded choice — see
     // `window::graph_takes_the_canvas`. It used to be resolved here against
     // the saved layout's active view, with a default in the resolution, and
     // the default titled a restored crosswalk "Brightfield" and logged

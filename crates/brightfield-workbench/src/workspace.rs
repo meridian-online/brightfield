@@ -88,7 +88,7 @@ impl Workspace {
     /// The neighbouring question — *is each pane the window draws actually in
     /// here* — is [`crate::persist::from_json`]'s and not this constructor's,
     /// because it is a question about a **file**: `Workspace` derives
-    /// `Deserialize`, so a load never runs this at all. See
+    /// `Deserialize`, so a load does not run this. See
     /// [`Workspace::panes_missing_from`].
     #[must_use]
     pub fn new(tree: Tree<PaneKey>) -> Self {

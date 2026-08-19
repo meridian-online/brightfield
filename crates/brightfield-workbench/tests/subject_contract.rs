@@ -449,7 +449,7 @@ fn tile_pane(tile: &egui_tiles::Tile<PaneKey>) -> Option<&PaneKey> {
 ///
 /// Would catch: a `window_tree` that took just the first centre — which
 /// compiles, draws the first document perfectly, and leaves the second's
-/// canvas pane with no tile at all, so its region draws nothing.
+/// canvas pane with no tile, so its region draws no pane.
 #[test]
 fn one_window_tree_holds_every_registry_s_panes_and_every_centre() {
     let a = good_registry();
