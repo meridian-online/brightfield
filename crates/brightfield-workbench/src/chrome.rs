@@ -210,11 +210,14 @@ pub fn pane_frame(ui: &mut egui::Ui, subject: &Subject, header: bool, mode: Mode
 ///
 /// The grid rung, because the names in it are pointer targets. It is a split
 /// of the rail's rect rather than something painted inside the rail's body,
-/// and that split is what lets a collapsed rail keep its strip: a bottom rail
-/// collapsed to this height *is* its strip, names and all, while a decoration
-/// painted inside the body would have gone with the body. A side rail
-/// collapsed to this many points of width keeps the same measure and loses the
-/// names, which is what [`rail_stub`] draws.
+/// and that split is what lets a collapsed rail keep its strip: a decoration
+/// painted inside the body would have gone down with the body, while a
+/// collapsed bottom rail is split the same way it is when open and draws this
+/// much of itself as the strip, names and all. Its collapsed rect can be
+/// taller than this — the ledger's is, so its strip clears the band the status
+/// rail floats in — and the strip itself is this. A side rail collapsed to
+/// this many points of *width* keeps the measure and loses the names, which is
+/// what [`rail_stub`] draws.
 ///
 /// Which regions collapse, and to what, is declared in
 /// [`crate::arrangement`], not decided here — see [`Collapse`] there.
