@@ -713,15 +713,21 @@ impl Item<ChartDoc> for DataGridItem {
         })
     }
 
-    fn describe(&self, doc: &ChartDoc) -> Subject {
-        let mut subject = Subject::new("Data", ICON_DATA, BindingContext::Workspace);
-        if let Some(state) = doc.composed.run_state {
-            // The one run-state vocabulary, spelled by its own type — the
-            // same entry the chart pane rails, so the two projections of a
-            // step can never label its currency differently.
-            subject = subject.with_status(state.status_entry("run-state"));
-        }
-        subject
+    /// No run-state line here, and that is the whole of it: the run state is
+    /// the *document's*, and the chart pane declares it for the view. Both
+    /// panes read `doc.composed.run_state` and both draw `run_state_pill` in
+    /// their own body — but the rail collects the status lines of each placed
+    /// pane, so two declarations of one document-level fact draw the same line
+    /// twice. `brightfield_shell::chart_item` carries the argument for why the
+    /// centre pane is the one that owns it, and
+    /// `tests/rail_entry_ids.rs` reddens if a second declaration reappears.
+    ///
+    /// What this pane says about the run state, it says in `ui` below, where
+    /// a state the record cannot vouch for stops the rows being fetched at
+    /// all. Dropping the rail entry costs the grid nothing it was telling
+    /// anyone.
+    fn describe(&self, _doc: &ChartDoc) -> Subject {
+        Subject::new("Data", ICON_DATA, BindingContext::Workspace)
     }
 
     fn ui(&mut self, doc: &mut ChartDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
