@@ -606,10 +606,13 @@ impl Item<ChartDoc> for ChartItem {
             // two panes of one view is drawn twice; one of them has to own it.
             //
             // It is this one because the chart is `Slot::Centre` with no
-            // toggle verb, and `ItemSpec::toggle` records why that matters: a
-            // centre pane is always present, and `None` is legal only there.
-            // The grid is a `Slot::CentreTab` the `toggle-data-grid` verb
-            // closes. Had the grid owned the line, closing the Data tab would
+            // toggle verb, while the grid is a `Slot::CentreTab` the
+            // `toggle-data-grid` verb closes. `ItemRegistry::new` rejects a
+            // view that does not have exactly one `Slot::Centre`, so the
+            // centre pane is in the tree whatever else is; `ItemSpec::toggle`
+            // records why that is the slot allowed to carry no verb. The test
+            // `chart_contract.rs::the_pane_that_owns_the_run_state_line_cannot_be_closed`
+            // holds both halves. Had the grid owned the line, closing the Data tab would
             // take the honesty label off the rail while the chart went on
             // drawing rows from the same run — a label the user can dismiss by
             // closing an unrelated tab is worse than one that was never there,

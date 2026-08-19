@@ -723,9 +723,8 @@ impl Item<ChartDoc> for DataGridItem {
     /// `tests/rail_entry_ids.rs` reddens if a second declaration reappears.
     ///
     /// What this pane says about the run state, it says in `ui` below, where
-    /// a state the record cannot vouch for stops the rows being fetched at
-    /// all. Dropping the rail entry costs the grid nothing it was telling
-    /// anyone.
+    /// a state the record cannot vouch for stops the rows being fetched.
+    /// Dropping the rail entry costs the grid nothing it was telling anyone.
     fn describe(&self, _doc: &ChartDoc) -> Subject {
         Subject::new("Data", ICON_DATA, BindingContext::Workspace)
     }

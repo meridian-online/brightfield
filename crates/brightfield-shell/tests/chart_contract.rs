@@ -232,9 +232,9 @@ fn an_annotated_preview_rails_its_run_state() {
 /// The fixture the two tests below need: the real dashboard, annotated with
 /// materialised run output.
 ///
-/// `Composed::with_run_state` has no caller in production — nothing ingests a
-/// run's record yet — so this state is `None` on every live document and the
-/// panes' run-state branches are unreachable from a booted window. That is
+/// `Composed::with_run_state` has no caller in production — no run's record
+/// is ingested yet — so this state is `None` on a live document, and the
+/// panes' run-state branches cannot be reached from a booted window. That is
 /// precisely why they need driving here.
 fn run_annotated() -> ChartDoc {
     let composed = compose_spec(DASHBOARD)
@@ -309,10 +309,11 @@ fn the_charts_view_declares_no_duplicate_status_id() {
 /// and an honesty label that disappears when an unrelated tab is closed reads
 /// as "nothing to report" rather than as "not shown".
 ///
-/// So this asserts the *rule* rather than the current answer: one declarer,
-/// and its spec is the centre slot with no toggle verb. `ItemSpec::toggle`
-/// records that `None` is legal only for `Slot::Centre`, which is always
-/// present, so the two halves together say the line cannot be closed away.
+/// So this asserts the *rule* rather than today's answer: one declarer, and
+/// its spec is the centre slot with no toggle verb. `ItemSpec::toggle`
+/// reserves `None` for `Slot::Centre`, and `ItemRegistry::new` rejects a view
+/// that does not have exactly one of those — so the two halves together say
+/// the line cannot be closed away.
 #[test]
 fn the_pane_that_owns_the_run_state_line_cannot_be_closed() {
     let doc = run_annotated();

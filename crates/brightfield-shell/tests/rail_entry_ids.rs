@@ -9,11 +9,12 @@
 //! declare the same id put the same line on the rail twice.
 //!
 //! There is a second, quieter failure: `Activity::of_entry` recognises a
-//! pane's activity report by matching its id against
-//! [`Activity::ALL`](brightfield_workbench::Activity::ALL), and the window
-//! filters those out of the rail because the merged indicator says them. A
-//! new line that collided with one of those three ids would be filtered out
-//! and never drawn at all.
+//! pane's activity report by matching its id against the ids in
+//! `Activity::ALL`, and the window filters those out of the rail because the
+//! merged indicator says them. A new line colliding with one of those ids
+//! would be filtered out rather than drawn — the test
+//! `status_rail.rs::activity_reaches_the_rail_as_the_one_indicator` holds
+//! that filtering.
 //!
 //! # Why this reads source rather than a rendered frame
 //!
@@ -58,8 +59,8 @@
 //!
 //! It reads lines, not syntax. An id assembled at run time (`format!`), one
 //! held in a `static`, one behind a function call, or a `StatusEntry`
-//! constructed by a macro would all be reported as unreadable rather than
-//! resolved — which fails loudly and is the intended direction. Ids that
+//! constructed by a macro is reported as unreadable rather than resolved —
+//! which fails loudly, and is the intended direction. Ids that
 //! differ but mean the same thing are outside its reach entirely; this is a
 //! collision check, not a naming review.
 
