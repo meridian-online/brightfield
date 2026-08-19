@@ -129,7 +129,7 @@ use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_workbench::registry::ItemRegistry;
 use brightfield_workbench::subject::RunState;
-use brightfield_workbench::{Activity, ActivityLog, Item, ItemId, Subject, HONESTY_LINE_MS};
+use brightfield_workbench::{Activity, ActivityLog, Item, Subject, HONESTY_LINE_MS};
 
 const DASHBOARD: &str = "../../examples/dashboard.yaml";
 const EDGAR: &str = "../../examples/protocol/edgar_gleif/arcform.yaml";
@@ -515,9 +515,16 @@ fn no_two_panes_declare_the_same_rail_id() {
     // subsets by four watcher states, twice for the gallery arrangements, twice
     // again for the protocol documents, plus the empty document's eight and the
     // two editor states.
+    let run_states = 1 + RunState::ALL.len(); // absent, plus each recorded state
+    let activity_subsets = 1 << Activity::ALL.len(); // the power set
+    let watcher_states = 4; // neither file moved, the spec, the data, both
+    let arrangements = 2; // without and with the dev gallery
+    let protocol_documents = 2;
+    let editor_states = 2;
     assert_eq!(
         states,
-        6 * 8 * 4 * 2 * 2 + 1 * 2 * 2 + 2,
+        (run_states * activity_subsets * watcher_states + 1) * arrangements * protocol_documents
+            + editor_states,
         "the matrix no longer crosses its dimensions"
     );
 
