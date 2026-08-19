@@ -706,6 +706,77 @@ fn rail(&mut self) {
 }
 
 #[test]
+fn a_bare_cfg_test_item_does_not_hide_what_follows_it() {
+    // `#[cfg(test)]` on a bare item — a `const`, a `use`, a `fn` — opens no
+    // module and closes no brace. `brightfield-bench/src/main.rs` carries four
+    // consecutive bare `#[cfg(test)] const` items, so the shape is in this
+    // tree already; a scan that skipped to the next column-0 `}` regardless
+    // would swallow the declaration below and report a clean tree.
+    let bare = r#"
+#[cfg(test)]
+const FIXTURE: &str = "a fixture compiled in for tests";
+
+impl Item<ChartDoc> for ChartItem {
+    fn describe(&self, doc: &ChartDoc) -> Subject {
+        Subject::new().with_status(StatusEntry {
+            id: "run-state",
+            side: StatusSide::Trailing,
+        })
+    }
+}
+"#;
+    let found = synthetic(&[
+        ("crates/a/src/chart.rs", bare),
+        ("crates/a/src/grid.rs", SECOND_PANE),
+    ]);
+    assert_eq!(
+        found.len(),
+        1,
+        "a bare `#[cfg(test)]` item hid the declaration after it; got {found:?}"
+    );
+    assert!(
+        found[0].contains("`run-state` is declared 2 times"),
+        "the duplicate after a bare `#[cfg(test)]` item went unreported: {}",
+        found[0]
+    );
+}
+
+#[test]
+fn a_carrier_two_panes_call_is_reported() {
+    // One physical `status_entry` call, two panes reaching it. The rail draws
+    // the line twice — the exact runtime defect this gate exists for — while a
+    // scan counting physical sites sees one declaration and nothing to say.
+    let carrier = r#"
+fn run_line(state: RunState) -> StatusEntry {
+    state.status_entry("run-state")
+}
+"#;
+    let chart = r#"
+impl Item<ChartDoc> for ChartItem {
+    fn describe(&self, doc: &ChartDoc) -> Subject {
+        Subject::new().with_status(run_line(doc.run_state))
+    }
+}
+"#;
+    let grid = r#"
+impl Item<ChartDoc> for DataGridItem {
+    fn describe(&self, doc: &ChartDoc) -> Subject {
+        Subject::new().with_status(run_line(doc.run_state))
+    }
+}
+"#;
+    let found = synthetic(&[
+        ("crates/a/src/rail.rs", carrier),
+        ("crates/a/src/chart.rs", chart),
+        ("crates/a/src/grid.rs", grid),
+    ]);
+    assert!(
+        !found.is_empty(),
+        "a helper that puts one rail line on two panes went unreported"
+    );
+}
+
+#[test]
 fn a_reserved_id_collides_with_a_source_declaration() {
     let clash = r#"
 fn describe() -> Subject {
