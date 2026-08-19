@@ -613,13 +613,20 @@ fn sites(rel: &str, text: &str) -> Vec<Site> {
             i += 1;
             continue;
         }
-        // `-> StatusEntry {` opens a function body, not a construction, and
-        // the construction it returns is on a line of its own.
-        if line.contains("StatusEntry {")
-            && !line.contains("-> StatusEntry {")
-            && !line.contains("struct StatusEntry")
-        {
-            out.push(field_site(rel, &lines, i));
+        // A return type opens a function body, not a construction, and the
+        // construction it returns is on a line of its own. The test for it is
+        // an arrow anywhere to the left rather than the literal
+        // `-> StatusEntry {`, because the type is spelled in full at some
+        // sites — `-> brightfield_workbench::subject::StatusEntry {` — and the
+        // narrower form read those signatures as constructions naming no id.
+        // A construction has no arrow before it:
+        // `subject.with_status(StatusEntry {` and `.map(|e| StatusEntry {`
+        // both pass. Held by
+        // `a_fully_qualified_return_type_is_not_a_construction`.
+        if let Some(idx) = line.find("StatusEntry {") {
+            if !line[..idx].contains("->") && !line.contains("struct StatusEntry") {
+                out.push(field_site(rel, &lines, i));
+            }
         }
         if let Some(expr) = call_argument(line) {
             out.push(Site {
@@ -938,6 +945,23 @@ impl Item<ChartDoc> for ChartItem {
     let found = synthetic(&[("crates/a/src/chart.rs", by_const)]);
     assert_eq!(found.len(), 1, "expected one finding, got {found:?}");
     assert!(found[0].contains("`not-a-declared-id`"), "{}", found[0]);
+}
+
+#[test]
+fn a_fully_qualified_return_type_is_not_a_construction() {
+    // Found by the round-3 sweep: a helper returning the type by its full path
+    // was read as a construction that names no id, and reported. Loud rather
+    // than silent, but wrong.
+    let helper = r#"
+pub fn run_line(state: RunState) -> brightfield_workbench::subject::StatusEntry {
+    state.status_entry("run-state")
+}
+"#;
+    assert_eq!(
+        synthetic(&[("crates/a/src/rail.rs", helper)]),
+        Vec::<String>::new(),
+        "a signature returning the type by its full path was read as a construction"
+    );
 }
 
 #[test]
