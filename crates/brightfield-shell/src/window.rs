@@ -2627,13 +2627,16 @@ impl MeridianApp {
             let drawn = ledger_panel_widget.frame(rail_frame).show(ui, |ui| {
                 let caret = collapse_caret(ledger.edge, ledger_collapsed);
                 if ledger_collapsed {
-                    // A bottom rail collapsed to its strip's own height *is*
-                    // the strip, so it is drawn by the same call that draws it
-                    // when the rail is open — names live, and the body absent
-                    // because there is no body left to put a pane in.
+                    // Collapsed, this rail is its own strip drawn by the same
+                    // call that draws it open — names live, and no body under
+                    // it to put a pane in. Split rather than handed the whole
+                    // rect: what the arrangement declares this rail collapses
+                    // to is the strip *plus* clearance for the status rail's
+                    // floating band, and the strip is the head of that.
+                    let (strip, _) = chrome::rail_split(ui.max_rect());
                     ledger_strip = Some(chrome::rail_selector(
                         ui,
-                        ui.max_rect(),
+                        strip,
                         &pane_labels(&ledger_labels),
                         ledger_panel,
                         Some(caret),

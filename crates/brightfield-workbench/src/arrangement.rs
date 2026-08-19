@@ -59,12 +59,16 @@
 //! drift this module exists to end.
 //!
 //! What stays behind is declared per region rather than taken from one
-//! constant, because the axis it is measured on differs. The ledger is a
-//! bottom rail, so [`chrome::rail_selector_height`] of *height* leaves its
-//! selector strip whole, with its pane names still drawn and still live. The
-//! same number of *width* on a side rail leaves a stub with room for the
-//! control that reopens it and none for the names.
-//! `the_collapsed_ledger_keeps_its_selector_strip_and_reopens_from_it` and
+//! constant, and the shipped arrangement uses two different measures for it.
+//! A side rail collapses along its *width*, so [`chrome::rail_selector_height`]
+//! of width leaves a stub with room for the control that reopens it and none
+//! for a name. The ledger collapses along its *height*, where the same measure
+//! leaves its selector strip whole — names drawn and live — and then has to
+//! clear the [`Extent::Overlay`] band the status rail floats in, because that
+//! layer is anchored to the window's bottom edge and this rail is the
+//! bottom-most panel on the surface with no hint band. A control under it
+//! cannot be clicked; the declaration is what says how far to get out of its
+//! way. `the_collapsed_ledger_keeps_its_selector_strip_and_reopens_from_it` and
 //! `the_navigator_rail_collapses_from_its_strip_and_reopens` are the two ends
 //! of that, drawn.
 //!
@@ -510,7 +514,18 @@ static SPINE_LEFT: Arrangement = Arrangement {
                 min: LEDGER_RAIL_MIN_HEIGHT,
             },
             occupant: Occupant::Panes(LEDGER_PANES),
-            collapse: Collapse::To(chrome::rail_selector_height()),
+            // The strip, plus the band the status rail floats in. The two side
+            // rails collapse to the strip measure alone; this one cannot,
+            // because `STATUS_BAND` above is an `Extent::Overlay` anchored to
+            // the window's bottom edge and this rail is the bottom-most panel
+            // on the surface that draws no hint band. Collapsed to the strip
+            // measure alone, the whole strip lands under that layer: measured
+            // on a 1386 by 588 window, the rail drew at y 564..588 and
+            // `Context::layer_id_at` answered the status rail's own layer at
+            // every name in it, so the one control left to reopen from could
+            // not be clicked. `the_collapsed_ledger_keeps_its_selector_strip_and_reopens_from_it`
+            // is that click.
+            collapse: Collapse::To(chrome::rail_selector_height() + chrome::status_rail_height()),
         },
         Region {
             id: NAVIGATOR_RAIL,
