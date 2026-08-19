@@ -7,16 +7,19 @@
 //! made it *reachable* — `Boot::empty()` on a no-argument launch, the shipped
 //! starts, `EmptyState::with_next` on the view-filling panes — landed next.
 //! What is asserted here is the content built on top of it: a window with
-//! nothing open draws the front door in place of the dock — Welcome, Start,
-//! Continue, Explore, Learn — the Explore gallery offers every start the
-//! binary ships, and taking any card lands on a rendered result rather than
-//! on an instrument.
+//! nothing open draws the front door in place of the dock, the door heads a
+//! Datasets section over the starts the binary ships and a Protocols section
+//! over what this install has opened before, and taking any card lands on a
+//! rendered result rather than on an instrument. The zone names this comment
+//! used to list were replaced; `the_door_heads_two_sections_and_says_neither_
+//! of_the_names_it_replaced` asserts the old ones are absent from the frame.
 //!
 //! Interaction tests are GPU-free. `MeridianApp::headless` has no device, so
 //! neither canvas pane paints; every rect is the same either way, and each
 //! document reports what it holds without needing a texture. The pixel
-//! section at the bottom is the exception — the door's two baselines and the
-//! thumbnail regeneration gate render through the real capture path, which
+//! section at the bottom is the exception — the door's baselines, one per
+//! state per theme, and the thumbnail regeneration gate render through the
+//! real capture path, which
 //! needs a wgpu adapter, exactly as `surfaces.rs` does.
 
 use std::path::PathBuf;

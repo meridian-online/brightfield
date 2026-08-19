@@ -270,8 +270,9 @@ const PROTOCOL_ROW_NAME_WIDTH: f32 = 260.0;
 ///
 /// Read back through [`MeridianApp::front_door_rows`]. Each string here is
 /// taken off the galley the row laid out at that position — the text that
-/// galley was built from, so it cannot be one field while the paint at that
-/// position is another. A row built from the right record and painted from the
+/// galley was built from, so at the one site that builds a row it is not one
+/// field while the paint at that position is another. The type does not
+/// enforce that; the single call site is what makes it true. A row built from the right record and painted from the
 /// wrong field differs here, which is the defect this type can see and the
 /// record cannot.
 /// `what_open_start_records_is_what_the_opened_document_says` reads the name
