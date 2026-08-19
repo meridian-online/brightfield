@@ -135,15 +135,16 @@ impl Workspace {
     /// `crates/brightfield-workbench/tests/cross_registry_ids.rs`, which is
     /// also where the arrangement that reaches that state comes from.
     ///
-    /// Everywhere ids are unique this is the same answer as `contains`, by
+    /// Where ids are unique this is the same answer as `contains`, by
     /// construction rather than by measurement: each key appears once in each
-    /// list, so there is never a second match to consume. The two readings can
-    /// only part where a donor repeats a key, and the one place a repeat can
-    /// enter a default arrangement is
-    /// [`window_tree`](crate::window_tree) — the sole caller of
-    /// `egui_tiles::Tiles::insert_pane` in this workspace — being handed two
-    /// placements with one id, which is a declaration mistake a registry
-    /// cannot make on its own.
+    /// list, so a second match to consume does not arise. The two readings
+    /// part where a donor repeats a key, which is what
+    /// `two_registries_that_share_an_id_put_two_tiles_at_one_address` builds
+    /// deliberately — two placements carrying one id, through
+    /// [`window_tree`](crate::window_tree). A repeat has to arrive that way:
+    /// grepping `insert_pane` across this workspace finds `window_tree` and
+    /// no second call site, and [`crate::ItemRegistry::new`] refuses one spec
+    /// list that repeats an id, which leaves the cross-registry case.
     ///
     /// The scan is linear per key rather than a merge over the two sorted
     /// lists. A window's panes are counted in single figures, and the
