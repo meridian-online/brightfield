@@ -731,6 +731,35 @@ impl ProtocolModel {
         }
     }
 
+    /// The one run state this whole Protocol is in, folded from the statuses
+    /// the run contract recorded — what the front door draws beside its name.
+    ///
+    /// **Ingested rather than computed.** The values folded here come off the
+    /// emitted contract, through `self.statuses`; the fold reads that map and
+    /// takes no other input, which is what [`RunState`]'s own doc asks of a
+    /// surface. A manifest loaded with no run behind it has an empty
+    /// `statuses` map, so it folds to [`RunState::NeverRun`] — that enum's
+    /// safe direction, and the state the crosswalk's own button already
+    /// discloses as `(no run)`.
+    ///
+    /// A failure anywhere wins over a success anywhere: one step that did not
+    /// produce its data is the fact worth carrying to a surface that has room
+    /// for one word.
+    #[must_use]
+    pub fn recorded_run_state(&self) -> RunState {
+        if self.statuses.values().any(|s| *s == SeamStatus::Failed) {
+            return RunState::Failed;
+        }
+        if self
+            .statuses
+            .values()
+            .any(|s| matches!(s, SeamStatus::Ok | SeamStatus::Skipped))
+        {
+            return RunState::Fresh;
+        }
+        RunState::NeverRun
+    }
+
     /// Whether the protocol declares any assets at all.
     ///
     /// The outline rail's empty-state test. A count over
@@ -2095,7 +2124,7 @@ pub(crate) fn ui_font() -> egui::FontId {
 /// `FontFamily::Monospace` is the family [`crate::design::install_fonts`] maps
 /// to the design system's [`MONO_FAMILY`](meridian_design::typography::MONO_FAMILY),
 /// so this reaches the token layer's face rather than egui's fallback.
-fn mono_font() -> egui::FontId {
+pub(crate) fn mono_font() -> egui::FontId {
     egui::FontId::monospace(meridian_design::typography::UI_SIZE)
 }
 

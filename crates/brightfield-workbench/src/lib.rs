@@ -89,12 +89,12 @@ pub use activity::{Activity, ActivityIndicator, ActivityLog, HONESTY_LINE_MS};
 pub use arrangement::{Arrangement, Edge, Extent, Occupant, Projection, Region, RegionId};
 pub use behavior::PaneChrome;
 pub use item::{Handled, Item, ItemCtx, ItemId, ItemMap, PaneKey, Request};
-pub use persist::{DirtyTracker, LoadOutcome, SavedLayout, WindowGeometry};
+pub use persist::{DirtyTracker, LoadOutcome, Recent, SavedLayout, WindowGeometry, RECENTS_KEPT};
 pub use registry::{audit, DockSide, ItemRegistry, ItemSpec, Slot};
 pub use shell::{ModalOutcome, ModalView, StatusItem, ToolbarItem, WorkspaceCtx, WorkspaceView};
 pub use subject::{
-    Action, Affordance, Crumb, Dirty, EmptyState, HideAffordance, Icon, StatusEntry, StatusSide,
-    Subject, Tone, ToolbarEntry, ToolbarLocation, Verb,
+    Action, Affordance, Crumb, Dirty, EmptyState, HideAffordance, Icon, RunState, StatusEntry,
+    StatusSide, Subject, Tone, ToolbarEntry, ToolbarLocation, Verb,
 };
 pub use workspace::{ViewKind, Workspace};
 

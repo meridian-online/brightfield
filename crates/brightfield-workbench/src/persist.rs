@@ -58,6 +58,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::subject::RunState;
 use crate::workspace::Workspace;
 
 /// The layout file's name, under whichever config directory applies.
@@ -179,7 +180,82 @@ pub struct SavedLayout {
     /// test green.
     #[serde(default)]
     pub opened: Option<String>,
+    /// The Protocols this window has opened, most recent first — what the
+    /// front door's Protocols section draws a row from.
+    ///
+    /// # Why this is not [`Self::opened`] with a longer name
+    ///
+    /// They answer different questions. `opened` is *what to restore on the
+    /// next launch*, so it is one id and the boot path reads it before a
+    /// window exists. This is *what the analyst has been working on*, so it is
+    /// a list, it outlives the restore, and nothing boots from it. A window
+    /// that restores its work and is then sent Home has both: `opened` still
+    /// naming the restored start, and this naming it plus everything before
+    /// it.
+    ///
+    /// `#[serde(default)]` is load-bearing here in the way the comment on
+    /// `opened` says it is **not** load-bearing there: this is a `Vec`, not an
+    /// `Option`, so without the attribute every layout file written before
+    /// this field existed fails to parse and reports
+    /// [`LoadOutcome::Corrupt`] — everybody's arrangement discarded by an
+    /// upgrade. `a_layout_from_before_recents_existed_still_loads` strips the
+    /// field from a saved file and holds that.
+    ///
+    /// One thing to know before adding a variant to [`RunState`] — a layout
+    /// file naming a state this build does not have fails to *parse*, and that
+    /// discards the whole envelope, not just the recent. Growing that enum is a
+    /// [`LAYOUT_VERSION`] question even though the enum lives nowhere near this
+    /// file.
+    #[serde(default)]
+    pub recents: Vec<Recent>,
 }
+
+/// One remembered Protocol: what the front door's Protocols section draws a
+/// row from, without reopening anything.
+///
+/// Everything the row needs is *recorded*, not derived at draw time, and that
+/// is the point: drawing the door must not load five documents to find out
+/// what they say. The name is what the window was titled by while it was
+/// open, and the run state is what the run contract said then, which is what
+/// [`RunState`]'s own doc asks of a surface: read the recorded value rather
+/// than deriving one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Recent {
+    /// The shipped starting point this was opened from — the same id
+    /// [`SavedLayout::opened`] records, and the id a click on the row
+    /// reopens through. An id this build does not recognise is a row that
+    /// cannot be reopened, so the door draws no row for it.
+    pub id: String,
+    /// What to call it: the Protocol's own name, as the window was titled by
+    /// while it was open. Recorded rather than looked up from the start,
+    /// because a start's `label` is a *verb* for a button ("Open the EDGAR ↔
+    /// GLEIF crosswalk") and a row is a noun.
+    pub name: String,
+    /// The run state the Protocol was last seen in, ingested from the run
+    /// contract that was open — never recomputed here. Absent from a file
+    /// written before this field existed, which reads as
+    /// [`RunState::NeverRun`]: the safe direction, exactly as that enum's
+    /// default is.
+    #[serde(default)]
+    pub run: RunState,
+    /// When it was last opened, in whole seconds since the Unix epoch — what
+    /// the row's relative time is measured from.
+    ///
+    /// Seconds rather than a timestamp type so the file stays plain JSON any
+    /// build can read, and a clock that has since gone backwards produces a
+    /// row reading *just now* rather than a panic — see the shell's
+    /// `relative_time`.
+    pub opened_at: u64,
+}
+
+/// How many [`Recent`]s the layout file keeps.
+///
+/// Small on purpose. The front door draws all of them, and a door listing
+/// twenty rows is a file browser rather than a way back into the last thing
+/// you were doing; the cap is also what stops a file that is written on every
+/// open from growing without bound.
+/// `the_recents_list_is_capped_and_most_recent_first` pins both halves.
+pub const RECENTS_KEPT: usize = 6;
 
 impl SavedLayout {
     /// A layout at the current version, around `workspace`, opened on nothing.
@@ -190,7 +266,35 @@ impl SavedLayout {
             window: WindowGeometry::default(),
             workspace,
             opened: None,
+            recents: Vec::new(),
         }
+    }
+
+    /// Record that `id` was opened at `opened_at`, at the head of
+    /// [`Self::recents`].
+    ///
+    /// Reopening something already in the list **moves** it rather than
+    /// adding a second row: two rows for one Protocol is a list of events,
+    /// and the door offers a list of Protocols. The name and the run state
+    /// are overwritten with what was just seen, because the older pair is by
+    /// construction the more stale of the two.
+    ///
+    /// Trimmed to [`RECENTS_KEPT`] from the tail, so the entry dropped is the
+    /// least recently opened one —
+    /// `the_recents_list_is_capped_and_most_recent_first` holds the length and
+    /// which entry went.
+    pub fn remember(&mut self, id: &str, name: &str, run: RunState, opened_at: u64) {
+        self.recents.retain(|r| r.id != id);
+        self.recents.insert(
+            0,
+            Recent {
+                id: id.to_string(),
+                name: name.to_string(),
+                run,
+                opened_at,
+            },
+        );
+        self.recents.truncate(RECENTS_KEPT);
     }
 
     /// Serialise to pretty JSON.

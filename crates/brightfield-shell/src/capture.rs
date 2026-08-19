@@ -114,6 +114,43 @@ pub fn capture_png_at(
     out: &Path,
     script: Vec<Vec<egui::Event>>,
 ) -> Result<(u32, u32), String> {
+    capture_png_at_with_layout(
+        boot,
+        crate::startup::default_layout(),
+        mode,
+        scale,
+        size,
+        out,
+        script,
+    )
+}
+
+/// [`capture_png_at`] over a window arranged as `layout` says, instead of over
+/// the default arrangement.
+///
+/// The caller that needs this is the front door's **returning** state: the
+/// door's two halves differ only in what the layout remembers, so
+/// photographing the second one means handing in a layout that remembers
+/// something. Everything else about the capture is identical, which is the
+/// property that makes the pair of baselines comparable — a difference between
+/// them is a difference the recents made.
+///
+/// Like [`MeridianApp::with_layout`], the layout is a parameter rather than
+/// something this function reads: a capture that read the developer's real
+/// `workspace-layout.json` would photograph their session.
+///
+/// # Errors
+/// As [`capture_png`].
+#[allow(clippy::too_many_arguments)]
+pub fn capture_png_at_with_layout(
+    boot: Boot,
+    layout: brightfield_workbench::SavedLayout,
+    mode: Mode,
+    scale: f32,
+    size: (f32, f32),
+    out: &Path,
+    script: Vec<Vec<egui::Event>>,
+) -> Result<(u32, u32), String> {
     let (device, queue) = headless_device()?;
     let target_format = wgpu::TextureFormat::Rgba8Unorm;
     let egui_renderer = new_egui_renderer(&device, target_format);
@@ -123,7 +160,7 @@ pub fn capture_png_at(
     let protocol_host = host_on_device(device.clone(), queue.clone(), egui_renderer.clone());
 
     let (win_w, win_h) = size;
-    let mut app = MeridianApp::new(boot, chart_host, protocol_host, mode);
+    let mut app = MeridianApp::with_layout(boot, layout, chart_host, protocol_host, mode);
 
     let ctx = egui::Context::default();
     let screen = egui::vec2(win_w, win_h);

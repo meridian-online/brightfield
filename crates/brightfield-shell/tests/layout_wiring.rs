@@ -29,7 +29,7 @@ use brightfield_shell::startup::{default_layout, kept_window_geometry, opening_b
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_workbench::persist::{self, LoadOutcome, LAYOUT_FILE, SAVE_DEBOUNCE_MS};
 use brightfield_workbench::workspace::{tabs_holding, tile_of};
-use brightfield_workbench::{PaneKey, ViewKind};
+use brightfield_workbench::{PaneKey, RunState, ViewKind, RECENTS_KEPT};
 
 /// A scratch directory that removes itself, so a failing run cannot poison the
 /// next one with a file it left behind.
@@ -483,6 +483,115 @@ fn a_layout_from_before_this_field_existed_still_loads() {
         outcome.reason()
     );
     assert_eq!(restored.opened, None);
+}
+
+/// A layout file written before `recents` existed still loads — and this one
+/// is the case where `#[serde(default)]` is the whole mechanism rather than a
+/// redundancy.
+///
+/// The sibling above says it in the abstract: on an `Option<T>` serde's derive
+/// already reads a missing field as `None`, so removing the attribute from
+/// `opened` changes nothing any test can see. `recents` is a `Vec`, which is
+/// the type the note warns about, so this is that claim held on a field where
+/// it bites.
+///
+/// Watched redden, one mutation: removing `#[serde(default)]` from
+/// `SavedLayout::recents` fails here with `Corrupt` — which is a layout file
+/// discarded by an upgrade that added a front-door section, on whatever
+/// machine it is sitting on.
+#[test]
+fn a_layout_from_before_recents_existed_still_loads() {
+    let scratch = Scratch::new("upgrade-recents");
+    let path = scratch.file();
+    let _ = brightfield_shell::startup::boot_layout(None);
+
+    let mut json = serde_json::to_value(default_layout()).expect("a layout serialises");
+    let removed = json
+        .as_object_mut()
+        .expect("the envelope is an object")
+        .remove("recents");
+    assert!(
+        removed.is_some(),
+        "there is no `recents` key to remove, so this test proves nothing"
+    );
+    std::fs::write(&path, serde_json::to_string(&json).expect("writes")).expect("writes");
+
+    let (restored, outcome) = persist::load(&path, default_layout);
+    assert_eq!(
+        outcome,
+        LoadOutcome::Restored,
+        "a layout written before `recents` existed no longer loads ({}) — \
+         every file on every machine is discarded on upgrade",
+        outcome.reason()
+    );
+    assert!(restored.recents.is_empty());
+}
+
+/// The recents list is capped, most recent first, and reopening something
+/// moves it rather than adding a second row for it.
+///
+/// Three claims one method owns, so they are held in one place: a door listing
+/// the same Protocol twice is a list of events, a door listing twenty is a
+/// file browser, and a list that appends rather than prepends puts the thing
+/// you were last in at the bottom.
+///
+/// Watched redden, two mutations, one per claim. Dropping the `retain` from
+/// `SavedLayout::remember` fails at "reopening one added a second row for it"
+/// (2 against 1); dropping the `truncate` fails at "the list grows without
+/// bound" (9 against 6).
+#[test]
+fn the_recents_list_is_capped_and_most_recent_first() {
+    let mut layout = default_layout();
+    for i in 0..(RECENTS_KEPT + 3) {
+        layout.remember(
+            &format!("start-{i}"),
+            &format!("protocol {i}"),
+            RunState::NeverRun,
+            1_000 + i as u64,
+        );
+    }
+    assert_eq!(
+        layout.recents.len(),
+        RECENTS_KEPT,
+        "the list grows without bound, and it is written on every open"
+    );
+    assert_eq!(
+        layout.recents[0].id,
+        format!("start-{}", RECENTS_KEPT + 2),
+        "the most recently opened is not at the head"
+    );
+    assert_eq!(
+        layout.recents.last().expect("a tail").id,
+        format!("start-{}", 3),
+        "the entry dropped is not the least recently opened one"
+    );
+
+    // Reopening one already in the list moves it and rewrites what was seen,
+    // rather than leaving a second, staler row beside it.
+    //
+    // The one reopened is **mid-list**, and that is not incidental: reopening
+    // the entry at the tail is dropped by the truncation whether or not
+    // anything de-duplicates, so a list that appends blindly passes a test
+    // written against the tail and ships a door showing the same Protocol
+    // twice. Measured — with the `retain` removed, this reopen leaves two rows
+    // for `start-6` and reopening `start-3` leaves one.
+    let middle = format!("start-{}", RECENTS_KEPT);
+    assert!(
+        layout.recents.iter().any(|r| r.id == middle)
+            && layout.recents.last().expect("a tail").id != middle,
+        "the fixture stopped putting {middle} in the middle of the list, which \
+         is the only position this assertion can see a missing de-duplication \
+         from"
+    );
+    layout.remember(&middle, "renamed", RunState::Fresh, 9_000);
+    assert_eq!(
+        layout.recents.iter().filter(|r| r.id == middle).count(),
+        1,
+        "reopening one added a second row for it"
+    );
+    assert_eq!(layout.recents[0].id, middle);
+    assert_eq!(layout.recents[0].name, "renamed");
+    assert_eq!(layout.recents[0].run, RunState::Fresh);
 }
 
 /// A layout missing a view is repaired without resizing the window.

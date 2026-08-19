@@ -17,6 +17,7 @@ use std::sync::OnceLock;
 
 use brightfield_keys::BindingContext;
 use meridian_design::a11y::WidgetRole;
+use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // Verb
@@ -343,7 +344,16 @@ pub struct StatusEntry {
 ///
 /// The default is [`RunState::NeverRun`] because that is the safe direction:
 /// nothing reads as current until a run's record proves it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// **It is serialised**, because the layout file records the state each recent
+/// Protocol was last seen in — see
+/// [`Recent::run`](crate::persist::Recent::run) — and the front door draws
+/// that beside the name without reopening the document. A `Serialize` derive
+/// is still comparable, printable data, which is what the module head is
+/// protecting.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 pub enum RunState {
     /// No run has materialised this data — or none this preview can vouch
     /// for. Never presented as current, and never silently indistinguishable
