@@ -76,8 +76,7 @@ pub type SharedEguiRenderer = Arc<egui::mutex::RwLock<egui_wgpu::Renderer>>;
 /// here. Each view's document owns its own host, so one legacy key per host is
 /// one slot per view. Neither view reaches this constant: both present under
 /// their own pane's key.
-pub const LEGACY_CANVAS: PaneKey =
-    PaneKey::new(ItemId::new("legacy-canvas-host"));
+pub const LEGACY_CANVAS: PaneKey = PaneKey::new(ItemId::new("legacy-canvas-host"));
 
 /// One pane's live canvas: the Vello target, the view egui samples through, the
 /// registered id, and the size it was built at.

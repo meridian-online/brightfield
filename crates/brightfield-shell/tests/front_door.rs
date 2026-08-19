@@ -1336,7 +1336,9 @@ fn what_open_start_records_is_what_the_opened_document_says() {
 #[test]
 fn a_recent_carries_the_windows_own_run_state_whatever_opened_it() {
     let mut inputs = ProtocolInputs::empty();
-    inputs.statuses = [("fetch".to_string(), SeamStatus::Ok)].into_iter().collect();
+    inputs.statuses = [("fetch".to_string(), SeamStatus::Ok)]
+        .into_iter()
+        .collect();
     let mut win = Window::open(Boot {
         protocol: inputs,
         ..Boot::empty()

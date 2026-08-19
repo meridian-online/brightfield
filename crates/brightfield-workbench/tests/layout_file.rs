@@ -52,25 +52,23 @@ impl Item<Doc> for Pane {
 }
 
 fn registry() -> ItemRegistry<Doc> {
-    ItemRegistry::new(
-        vec![
-            ItemSpec {
-                id: CANVAS,
-                slot: Slot::Centre,
-                toggle: None,
-                make: || Box::new(Pane(CANVAS, "Canvas")),
+    ItemRegistry::new(vec![
+        ItemSpec {
+            id: CANVAS,
+            slot: Slot::Centre,
+            toggle: None,
+            make: || Box::new(Pane(CANVAS, "Canvas")),
+        },
+        ItemSpec {
+            id: RAIL,
+            slot: Slot::Rail {
+                side: DockSide::Right,
+                share: 0.25,
             },
-            ItemSpec {
-                id: RAIL,
-                slot: Slot::Rail {
-                    side: DockSide::Right,
-                    share: 0.25,
-                },
-                toggle: Some(brightfield_workbench::Verb::new("toggle-focus")),
-                make: || Box::new(Pane(RAIL, "Rail")),
-            },
-        ],
-    )
+            toggle: Some(brightfield_workbench::Verb::new("toggle-focus")),
+            make: || Box::new(Pane(RAIL, "Rail")),
+        },
+    ])
 }
 
 fn defaults() -> SavedLayout {
@@ -417,8 +415,7 @@ fn the_layout_file_survives_a_restart_and_every_way_it_can_be_broken() {
     // The arrangement, and only the arrangement: the size and position the
     // user left were not what was wrong with this file.
     assert_eq!(
-        repaired.window,
-        short.window,
+        repaired.window, short.window,
         "an upgrade that added a pane also resized the window the user left"
     );
 

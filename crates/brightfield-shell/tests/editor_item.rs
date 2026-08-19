@@ -101,17 +101,15 @@ impl Item<ChartDoc> for TestCentre {
 /// toggle for its centre-tab slot.
 #[test]
 fn the_editor_passes_the_contract_audit_beside_a_centre_pane() {
-    let registry = ItemRegistry::new(
-        vec![
-            ItemSpec {
-                id: TEST_CENTRE,
-                slot: Slot::Centre,
-                toggle: None,
-                make: || Box::new(TestCentre),
-            },
-            editor_spec(),
-        ],
-    );
+    let registry = ItemRegistry::new(vec![
+        ItemSpec {
+            id: TEST_CENTRE,
+            slot: Slot::Centre,
+            toggle: None,
+            make: || Box::new(TestCentre),
+        },
+        editor_spec(),
+    ]);
     audit(&registry, &ChartDoc::empty()).expect("the editor is on the contract");
 }
 

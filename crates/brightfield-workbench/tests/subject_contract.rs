@@ -171,31 +171,29 @@ impl Item<Doc> for NotesItem {
 }
 
 fn good_registry() -> ItemRegistry<Doc> {
-    ItemRegistry::new(
-        vec![
-            ItemSpec {
-                id: LIST,
-                slot: Slot::Centre,
-                toggle: None,
-                make: || Box::new(ListItem::default()),
+    ItemRegistry::new(vec![
+        ItemSpec {
+            id: LIST,
+            slot: Slot::Centre,
+            toggle: None,
+            make: || Box::new(ListItem::default()),
+        },
+        ItemSpec {
+            id: DETAIL,
+            slot: Slot::Rail {
+                side: DockSide::Right,
+                share: 0.22,
             },
-            ItemSpec {
-                id: DETAIL,
-                slot: Slot::Rail {
-                    side: DockSide::Right,
-                    share: 0.22,
-                },
-                toggle: Some(toggle_verb()),
-                make: || Box::new(DetailItem),
-            },
-            ItemSpec {
-                id: NOTES,
-                slot: Slot::CentreTab,
-                toggle: Some(toggle_verb()),
-                make: || Box::new(NotesItem),
-            },
-        ],
-    )
+            toggle: Some(toggle_verb()),
+            make: || Box::new(DetailItem),
+        },
+        ItemSpec {
+            id: NOTES,
+            slot: Slot::CentreTab,
+            toggle: Some(toggle_verb()),
+            make: || Box::new(NotesItem),
+        },
+    ])
 }
 
 // ---------------------------------------------------------------------------
@@ -233,14 +231,12 @@ impl Item<Doc> for NoEmptyState {
 
 #[test]
 fn a_pane_with_no_empty_state_fails_the_gate() {
-    let reg = ItemRegistry::new(
-        vec![ItemSpec {
-            id: LIST,
-            slot: Slot::Centre,
-            toggle: None,
-            make: || Box::new(NoEmptyState),
-        }],
-    );
+    let reg = ItemRegistry::new(vec![ItemSpec {
+        id: LIST,
+        slot: Slot::Centre,
+        toggle: None,
+        make: || Box::new(NoEmptyState),
+    }]);
     let err = gate(&reg).unwrap_err();
     assert!(err.contains("shows no empty state"), "{err}");
 }
@@ -262,14 +258,12 @@ impl Item<Doc> for SloppyProse {
 
 #[test]
 fn empty_state_prose_is_held_to_the_house_style() {
-    let reg = ItemRegistry::new(
-        vec![ItemSpec {
-            id: LIST,
-            slot: Slot::Centre,
-            toggle: None,
-            make: || Box::new(SloppyProse),
-        }],
-    );
+    let reg = ItemRegistry::new(vec![ItemSpec {
+        id: LIST,
+        slot: Slot::Centre,
+        toggle: None,
+        make: || Box::new(SloppyProse),
+    }]);
     // The gate reports the first rule that bites; the terminal period is
     // checked before the case, and both before the body.
     let err = gate(&reg).unwrap_err();
@@ -278,25 +272,23 @@ fn empty_state_prose_is_held_to_the_house_style() {
 
 #[test]
 fn a_rail_with_no_toggle_verb_fails_the_gate() {
-    let reg = ItemRegistry::new(
-        vec![
-            ItemSpec {
-                id: LIST,
-                slot: Slot::Centre,
-                toggle: None,
-                make: || Box::new(ListItem::default()),
+    let reg = ItemRegistry::new(vec![
+        ItemSpec {
+            id: LIST,
+            slot: Slot::Centre,
+            toggle: None,
+            make: || Box::new(ListItem::default()),
+        },
+        ItemSpec {
+            id: DETAIL,
+            slot: Slot::Rail {
+                side: DockSide::Left,
+                share: 0.2,
             },
-            ItemSpec {
-                id: DETAIL,
-                slot: Slot::Rail {
-                    side: DockSide::Left,
-                    share: 0.2,
-                },
-                toggle: None,
-                make: || Box::new(DetailItem),
-            },
-        ],
-    );
+            toggle: None,
+            make: || Box::new(DetailItem),
+        },
+    ]);
     let err = gate(&reg).unwrap_err();
     assert!(err.contains("no toggle verb"), "{err}");
 }
@@ -362,22 +354,20 @@ fn a_verbs_keystroke_comes_from_the_registry_not_from_a_stored_copy() {
 #[test]
 fn a_registry_needs_exactly_one_centre_pane() {
     let two_centres = std::panic::catch_unwind(|| {
-        ItemRegistry::new(
-            vec![
-                ItemSpec {
-                    id: LIST,
-                    slot: Slot::Centre,
-                    toggle: None,
-                    make: || Box::new(ListItem::default()) as Box<dyn Item<Doc>>,
-                },
-                ItemSpec {
-                    id: DETAIL,
-                    slot: Slot::Centre,
-                    toggle: None,
-                    make: || Box::new(DetailItem) as Box<dyn Item<Doc>>,
-                },
-            ],
-        )
+        ItemRegistry::new(vec![
+            ItemSpec {
+                id: LIST,
+                slot: Slot::Centre,
+                toggle: None,
+                make: || Box::new(ListItem::default()) as Box<dyn Item<Doc>>,
+            },
+            ItemSpec {
+                id: DETAIL,
+                slot: Slot::Centre,
+                toggle: None,
+                make: || Box::new(DetailItem) as Box<dyn Item<Doc>>,
+            },
+        ])
     });
     assert!(two_centres.is_err());
 }
@@ -385,22 +375,20 @@ fn a_registry_needs_exactly_one_centre_pane() {
 #[test]
 fn duplicate_item_ids_are_refused() {
     let dup = std::panic::catch_unwind(|| {
-        ItemRegistry::new(
-            vec![
-                ItemSpec {
-                    id: LIST,
-                    slot: Slot::Centre,
-                    toggle: None,
-                    make: || Box::new(ListItem::default()) as Box<dyn Item<Doc>>,
-                },
-                ItemSpec {
-                    id: LIST,
-                    slot: Slot::CentreTab,
-                    toggle: Some(toggle_verb()),
-                    make: || Box::new(NotesItem) as Box<dyn Item<Doc>>,
-                },
-            ],
-        )
+        ItemRegistry::new(vec![
+            ItemSpec {
+                id: LIST,
+                slot: Slot::Centre,
+                toggle: None,
+                make: || Box::new(ListItem::default()) as Box<dyn Item<Doc>>,
+            },
+            ItemSpec {
+                id: LIST,
+                slot: Slot::CentreTab,
+                toggle: Some(toggle_verb()),
+                make: || Box::new(NotesItem) as Box<dyn Item<Doc>>,
+            },
+        ])
     });
     assert!(dup.is_err());
 }
@@ -477,12 +465,12 @@ fn one_window_tree_holds_every_registry_s_panes_and_every_centre() {
 
     let mut panes: Vec<PaneKey> = tree.tiles.tiles().filter_map(tile_pane).copied().collect();
     panes.sort_unstable();
-    let mut want: Vec<PaneKey> = placements
-        .iter()
-        .map(|(id, _)| PaneKey::new(*id))
-        .collect();
+    let mut want: Vec<PaneKey> = placements.iter().map(|(id, _)| PaneKey::new(*id)).collect();
     want.sort_unstable();
-    assert_eq!(panes, want, "a placement was dropped from the window's tree");
+    assert_eq!(
+        panes, want,
+        "a placement was dropped from the window's tree"
+    );
 
     // Both centres are under one tab strip, and the first placed is active —
     // a window whose first sight is the second document's surface would be

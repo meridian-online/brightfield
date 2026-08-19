@@ -271,18 +271,16 @@ fn the_default_dock_is_a_tabbed_chart_and_editor_with_a_controls_rail() {
     let tree = registry.default_tree();
     let tabbed = brightfield_workbench::workspace::tabbed_tiles_of(&tree);
     for item in [CHART, EDITOR] {
-        let tile =
-            brightfield_workbench::workspace::tile_of(&tree, PaneKey::new(item))
-                .unwrap_or_else(|| panic!("{item} is in the default tree"));
+        let tile = brightfield_workbench::workspace::tile_of(&tree, PaneKey::new(item))
+            .unwrap_or_else(|| panic!("{item} is in the default tree"));
         assert!(
             tabbed.contains(&tile),
             "{item} is a centre tab: the strip names it, its header band is \
              suppressed"
         );
     }
-    let rail =
-        brightfield_workbench::workspace::tile_of(&tree, PaneKey::new(CONTROLS))
-            .expect("the controls rail is in the default tree");
+    let rail = brightfield_workbench::workspace::tile_of(&tree, PaneKey::new(CONTROLS))
+        .expect("the controls rail is in the default tree");
     assert!(
         !tabbed.contains(&rail),
         "the rail is not under a tab strip, so it keeps its header band"

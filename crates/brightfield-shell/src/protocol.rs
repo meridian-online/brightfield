@@ -1600,40 +1600,38 @@ const ICON_STEPS: Icon = Icon("list-ordered");
 /// in another.
 #[must_use]
 pub fn protocol_registry() -> ItemRegistry<ProtocolDoc> {
-    ItemRegistry::new(
-        vec![
-            ItemSpec {
-                id: OUTLINE,
-                slot: Slot::Rail {
-                    side: DockSide::Left,
-                    share: OUTLINE_SHARE,
-                },
-                toggle: Some(Verb::new("toggle-outline-rail")),
-                make: || Box::new(OutlinePane),
+    ItemRegistry::new(vec![
+        ItemSpec {
+            id: OUTLINE,
+            slot: Slot::Rail {
+                side: DockSide::Left,
+                share: OUTLINE_SHARE,
             },
-            ItemSpec {
-                id: CANVAS,
-                slot: Slot::Centre,
-                toggle: None,
-                make: || Box::new(CanvasPane),
+            toggle: Some(Verb::new("toggle-outline-rail")),
+            make: || Box::new(OutlinePane),
+        },
+        ItemSpec {
+            id: CANVAS,
+            slot: Slot::Centre,
+            toggle: None,
+            make: || Box::new(CanvasPane),
+        },
+        ItemSpec {
+            id: STEPS,
+            slot: Slot::CentreTab,
+            toggle: Some(Verb::new("open-steps-sheet")),
+            make: || Box::new(StepsPane),
+        },
+        ItemSpec {
+            id: INSPECTOR,
+            slot: Slot::Rail {
+                side: DockSide::Right,
+                share: INSPECTOR_SHARE,
             },
-            ItemSpec {
-                id: STEPS,
-                slot: Slot::CentreTab,
-                toggle: Some(Verb::new("open-steps-sheet")),
-                make: || Box::new(StepsPane),
-            },
-            ItemSpec {
-                id: INSPECTOR,
-                slot: Slot::Rail {
-                    side: DockSide::Right,
-                    share: INSPECTOR_SHARE,
-                },
-                toggle: Some(Verb::new("toggle-inspector-rail")),
-                make: || Box::new(InspectorPane),
-            },
-        ],
-    )
+            toggle: Some(Verb::new("toggle-inspector-rail")),
+            make: || Box::new(InspectorPane),
+        },
+    ])
 }
 
 // ---------------------------------------------------------------------------

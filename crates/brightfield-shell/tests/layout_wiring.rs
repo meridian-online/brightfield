@@ -154,8 +154,7 @@ fn front_tab(layout: &brightfield_workbench::persist::SavedLayout) -> Option<Pan
 /// by clicking the Steps tab, or by pressing `shift-S`.
 fn set_front_tab(layout: &mut brightfield_workbench::persist::SavedLayout, pane: PaneKey) {
     let tree = layout.workspace.tree_mut();
-    let canvas =
-        tile_of(tree, PaneKey::new(CANVAS)).expect("the canvas pane exists");
+    let canvas = tile_of(tree, PaneKey::new(CANVAS)).expect("the canvas pane exists");
     let want = tile_of(tree, pane).unwrap_or_else(|| panic!("{pane} exists"));
     let tabs_id = tabs_holding(tree, canvas).expect("the canvas sits in a tab strip");
     match tree.tiles.get_mut(tabs_id) {
@@ -274,7 +273,6 @@ fn frames_nobody_rearranged_write_nothing() {
         "a click changed the layout, so every click a user makes rewrites the \
          layout file for the rest of the session"
     );
-
 
     // And a window nothing ever changed writes nothing when it is *polled*
     // either — not only when it is flushed. The debounce is the path the live

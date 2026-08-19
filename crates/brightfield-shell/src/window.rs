@@ -1513,13 +1513,7 @@ impl MeridianApp {
             doc.set_authored(authored);
         }
         let model = ProtocolModel::new(boot.protocol, boot.flow);
-        Self::assemble(
-            boot.focus,
-            layout,
-            doc,
-            ProtocolDoc::headless(model),
-            mode,
-        )
+        Self::assemble(boot.focus, layout, doc, ProtocolDoc::headless(model), mode)
     }
 
     fn assemble(
@@ -2955,11 +2949,7 @@ impl MeridianApp {
                     Some(PickerEvent::Confirmed) => {
                         if let Some(name) = picker.delegate.take_picked() {
                             self.recency.record(name);
-                            self.apply(
-                                ctx,
-                                graph_on_canvas,
-                                vec![Request::Verb(Verb::new(name))],
-                            );
+                            self.apply(ctx, graph_on_canvas, vec![Request::Verb(Verb::new(name))]);
                         }
                         close = true;
                     }

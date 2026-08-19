@@ -168,7 +168,10 @@ fn a_boot_publishes_before_it_reads_and_the_window_opens_where_it_was_left() {
     )
     .expect("the named spec opens");
     assert!(!named.graph_on_canvas());
-    assert_eq!(named.spec_path.as_deref(), Some(std::path::Path::new("../../examples/dashboard.yaml")));
+    assert_eq!(
+        named.spec_path.as_deref(),
+        Some(std::path::Path::new("../../examples/dashboard.yaml"))
+    );
     let app = MeridianApp::headless_with_layout(named, restored, Mode::Light);
     assert!(
         !app.graph_on_canvas(),

@@ -118,31 +118,29 @@ impl Item<Doc> for Rail {
 }
 
 fn registry() -> ItemRegistry<Doc> {
-    ItemRegistry::new(
-        vec![
-            ItemSpec {
-                id: CANVAS,
-                slot: Slot::Centre,
-                toggle: None,
-                make: || Box::new(Canvas),
+    ItemRegistry::new(vec![
+        ItemSpec {
+            id: CANVAS,
+            slot: Slot::Centre,
+            toggle: None,
+            make: || Box::new(Canvas),
+        },
+        ItemSpec {
+            id: NOTES,
+            slot: Slot::CentreTab,
+            toggle: Some(toggle()),
+            make: || Box::new(Notes),
+        },
+        ItemSpec {
+            id: RAIL,
+            slot: Slot::Rail {
+                side: DockSide::Right,
+                share: 0.25,
             },
-            ItemSpec {
-                id: NOTES,
-                slot: Slot::CentreTab,
-                toggle: Some(toggle()),
-                make: || Box::new(Notes),
-            },
-            ItemSpec {
-                id: RAIL,
-                slot: Slot::Rail {
-                    side: DockSide::Right,
-                    share: 0.25,
-                },
-                toggle: Some(toggle()),
-                make: || Box::new(Rail),
-            },
-        ],
-    )
+            toggle: Some(toggle()),
+            make: || Box::new(Rail),
+        },
+    ])
 }
 
 fn workspace() -> Workspace {
