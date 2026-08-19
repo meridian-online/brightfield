@@ -1199,26 +1199,27 @@ fn opening_a_start_remembers_it_and_keeps_what_was_remembered_before() {
 /// `MeridianApp::subject_name` and `MeridianApp::recorded_run_state` — and
 /// each has one caller, which is this write.
 ///
-/// Both arms of both matches are walked. The crosswalk fills the Protocol
-/// view and the dashboard fills Charts; the two documents name themselves
-/// differently, so a name read off the wrong document is a difference here
-/// too, and the two windows are separate so that neither open is asked to
-/// find a card under the other one's rows.
+/// Both kinds of start are walked. The crosswalk opens a graph and the
+/// dashboard opens a chart; the two documents name themselves differently, so
+/// a name read off the wrong document is a difference here too, and the two
+/// windows are separate so that neither open is asked to find a card under the
+/// other one's rows.
 ///
 /// The run state a *shipped* start records is `RunState::NeverRun` in this
-/// build, for the reason `MeridianApp::recorded_run_state` gives: a chart
-/// composes with no run contract behind it, and the crosswalk manifest is
-/// loaded with no run. So the protocol half is asserted against the document's
-/// own fold rather than against a literal alone, and the fold itself — which
-/// this build's starts cannot exercise — is held by
-/// `a_failed_step_anywhere_beats_a_success_anywhere`.
+/// build, because no shipped start carries a run contract at all — the
+/// crosswalk manifest is loaded with no run, and a chart composes without one.
+/// So both halves are asserted against the window's own fold rather than
+/// against a literal alone. What that fold *is* is
+/// `a_recent_carries_the_windows_own_run_state_whatever_opened_it`'s claim,
+/// and the fold's precedence is
+/// `a_failed_step_anywhere_beats_a_success_anywhere`'s.
 ///
 /// Watched redden, two mutations. `MeridianApp::subject_name` returning
-/// `String::new()` for both views fails at "the record is not named after
-/// what the opened Protocol calls itself", `""` against `"edgar_gleif"`.
-/// `MeridianApp::recorded_run_state` returning `RunState::Fresh` for both
-/// views fails at "the record carries a run state the opened Protocol does not
-/// report", `Fresh` against `NeverRun`.
+/// `String::new()` fails at "the record is not named after what the opened
+/// Protocol calls itself", `""` against `"edgar_gleif"`.
+/// `MeridianApp::recorded_run_state` returning `RunState::Fresh` fails at
+/// "the record carries a run state the opened Protocol does not report",
+/// `Fresh` against `NeverRun`.
 #[test]
 fn what_open_start_records_is_what_the_opened_document_says() {
     // The Protocol arm.
@@ -1269,9 +1270,14 @@ fn what_open_start_records_is_what_the_opened_document_says() {
     );
     assert_eq!(
         recorded.run,
+        by_chart.app.protocol_model().recorded_run_state(),
+        "the record carries a run state this window's Protocol does not report"
+    );
+    assert_eq!(
+        recorded.run,
         RunState::NeverRun,
-        "a composed dashboard has no run contract, so never run is what there \
-         is to record"
+        "nothing in this window has run, so never run is what there is to \
+         record"
     );
 
     // And what the analyst reads off the row is that same recorded name, taken
@@ -1295,6 +1301,87 @@ fn what_open_start_records_is_what_the_opened_document_says() {
             "the row states a run this build never recorded"
         );
     }
+}
+
+/// A row under the **Protocols** heading carries the window's own run state,
+/// whatever kind of start put it there.
+///
+/// The user-visible half of one tree, and Hugh's 2026-08-19 re-homing. The
+/// door heads a section *Protocols* and lists a row per opened start; four of
+/// the five shipped starts open a chart document. The heading was true of the
+/// concept and false of the rows, because a chart start recorded
+/// `RunState::NeverRun` by construction — a per-view answer, chosen by which
+/// of two peer documents the start filled. A window is one Protocol whose
+/// panes may be a chart, a grid or the asset graph, so the row it leaves
+/// behind is that Protocol's row and its state is that Protocol's state.
+///
+/// **The fixture supplies the run, because no shipped start can.** Every start
+/// this build ships loads with no run contract, so every one of them folds to
+/// `NeverRun` and the difference between the two rules is invisible over the
+/// shipped set — which is exactly why the old rule survived. The `statuses`
+/// map is what a run contract records and what
+/// `ProtocolModel::recorded_run_state` folds; the neighbouring
+/// `a_failed_step_anywhere_beats_a_success_anywhere` builds its inputs the
+/// same way. The graph is left empty so that the front door draws at all:
+/// the door is live when neither document has content, and a run contract is
+/// not content.
+///
+/// Read off the **drawn row** rather than off `layout().recents`, because the
+/// claim is about what the analyst reads under that heading.
+///
+/// Watched redden, one mutation: `MeridianApp::recorded_run_state` returning
+/// `RunState::NeverRun` — the answer the chart arm used to give — fails here
+/// at "the row under Protocols reports a run state the window does not have",
+/// `"never run"` against `"fresh"`.
+#[test]
+fn a_recent_carries_the_windows_own_run_state_whatever_opened_it() {
+    let mut inputs = ProtocolInputs::empty();
+    inputs.statuses = [("fetch".to_string(), SeamStatus::Ok)].into_iter().collect();
+    let mut win = Window::open(Boot {
+        protocol: inputs,
+        ..Boot::empty()
+    });
+    win.settle();
+
+    let run = win.app.protocol_model().recorded_run_state();
+    assert_eq!(
+        run,
+        RunState::Fresh,
+        "the fixture's run contract folded to {run:?}, so this window's \
+         Protocol has nothing the old per-view rule would have got wrong"
+    );
+    assert_ne!(
+        run.label(),
+        RunState::NeverRun.label(),
+        "the two states read the same word, so the assertion below cannot \
+         tell them apart"
+    );
+    assert!(
+        win.app.front_door_is_live(),
+        "a run contract with no assets behind it is not content, so the door \
+         should still be drawn"
+    );
+
+    // A **Datasets** card — a chart start, the case the heading was lying
+    // about — taken through the shipped route.
+    win.take_the_card(starts::DASHBOARD);
+    win.settle();
+    assert!(
+        !win.app.chart_doc().is_empty(),
+        "the card opened nothing, so no row was recorded"
+    );
+    win.go_home();
+    win.settle();
+
+    let rows = win.app.front_door_rows();
+    assert_eq!(rows.len(), 1, "one start was taken, so one row");
+    assert_eq!(
+        rows[0].state,
+        run.label(),
+        "the row under Protocols reports a run state the window does not \
+         have — it was read off the kind of start that opened it rather than \
+         off the Protocol the window is"
+    );
 }
 
 /// A failure anywhere in a Protocol's run beats a success anywhere else.
