@@ -213,7 +213,9 @@ pub fn canvas_frame(ui: &egui::Ui) -> egui::Frame {
 /// parent `Ui` whose visuals it should inherit.
 #[must_use]
 pub fn overlay_frame(mode: Mode) -> egui::Frame {
-    egui::Frame::new().fill(colour(semantic(mode.is_dark()).containers.status_bar_background))
+    egui::Frame::new().fill(colour(
+        semantic(mode.is_dark()).containers.status_bar_background,
+    ))
 }
 
 /// The frame a region with no declared style draws in: none at all.
@@ -1183,7 +1185,8 @@ pub fn status_rail(ui: &mut egui::Ui, entries: &[StatusEntry], mode: Mode) -> St
     // does this region look like" finds; a second spelling in the draw path
     // is what would make that answer wrong.
     let frame = overlay_frame(mode);
-    ui.painter().rect_filled(rect, frame.corner_radius, frame.fill);
+    ui.painter()
+        .rect_filled(rect, frame.corner_radius, frame.fill);
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = spacing::CONTROL_GAP;
