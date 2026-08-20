@@ -374,11 +374,58 @@ fn press(key: egui::Key, shift: bool) -> Vec<egui::Event> {
         .collect()
 }
 
+/// The composed window: the title band, the locator band, the navigator rail,
+/// the canvas with its Grid/Chart toggle, the inspector rail, the ledger rail
+/// and the status band, in one frame off one fixture with no scripted input.
+///
+/// # The regression this pair is here for
+///
+/// The protocol used to be a **peer view** of the chart: a view kind with a
+/// variant per document, a tile tree per variant, and a switcher in the title
+/// band to move between them. `d17d39c` retired the switcher and `beb84cd`
+/// removed the type; what replaced them is one window over one tree, with the
+/// protocol as the container the chart sits inside rather than its sibling.
+/// This pair is the picture that reddens if that comes back.
+///
+/// It had not been shown to. Shown by mutation against `0274941`, in both
+/// halves of the regression and both themes — the numbers are what those runs
+/// measured, not a property anything re-checks:
+///
+/// - the retired switcher reinstated at the head of the title band, two plain
+///   `selectable_label`s over a two-variant view kind drawn where `d17d39c^`
+///   drew them. `shell_light` reddened by 3,663 pixels, `shell_dark` by 3,655,
+///   the whole difference inside the title band.
+/// - the two documents made non-co-resident, by drawing the navigator rail in
+///   the protocol's own view alone — which is what handing one view's tree to
+///   `Tree::ui` amounted to. `shell_light` reddened by 71,746 pixels,
+///   `shell_dark` by 71,814, the rail gone and the canvas widened into it.
+///
+/// The first of those is the harder case and the reason it is worth running:
+/// a switcher is the smallest mark the peer-view model can leave on this
+/// window, so a pair that catches it catches the larger shapes a fortiori.
+/// `kittest.toml` sets `failed_pixel_count_threshold` to zero, so the gate
+/// reddens at one differing pixel and neither figure is near the floor.
+///
+/// # What it does not catch, said out loud
+///
+/// A reintroduction that stops at the type — a pane address naming a view
+/// again, a tree per document — and draws an identical frame leaves this pair
+/// green, because a pixel diff sees the drawing and not the shape behind it.
+/// That half is held in `crates/brightfield-workbench/tests/workspace_panes.rs`
+/// by `a_pane_in_the_layout_file_is_named_by_its_item_and_nothing_else`, which
+/// reads the serialised bytes rather than the type, and by
+/// `the_window_holds_one_tree_over_every_pane_it_declares`. Read the two tiers
+/// together: this one guards what a user would see, that one guards what the
+/// layout file would say.
 #[test]
 fn shell_light_surface() {
     shell_surface(Mode::Light, "shell_light");
 }
 
+/// The same window in dark, and the same guard — see [`shell_light_surface`]
+/// for the regression the pair is here for and the mutation that showed it
+/// reddens. The two captures come from one fixture and differ by [`Mode`]
+/// alone, so a peer-view switcher would land in both.
 #[test]
 fn shell_dark_surface() {
     shell_surface(Mode::Dark, "shell_dark");
