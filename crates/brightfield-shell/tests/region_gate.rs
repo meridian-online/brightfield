@@ -34,11 +34,13 @@
 //!   this gate does not reach is a window a user cannot open.
 //! - it matched a list of extent setters by name, and egui has more of them
 //!   than the list carried: `size_range` bounds the same measure `min_size`
-//!   does, so a rail could be given a floor of `160.0` that nothing pinned,
-//!   and the initial undragged layout still rendered at its default so the
-//!   running window saw nothing either. There is no setter list now. The rule
-//!   is over the whole builder chain, so a setter added to egui tomorrow is
-//!   covered by a rule that never knew the old ones' names.
+//!   does, so a rail could be given a floor of `160.0` with no test pinning
+//!   it, and the initial undragged layout still rendered at its default so
+//!   the running window saw no difference either. There is no setter list
+//!   now. `every_panel_this_shell_draws_is_addressed_by_a_declared_region`
+//!   reads the whole builder chain instead, so a setter added to egui
+//!   tomorrow is covered by a rule that was written without knowing the old
+//!   ones' names.
 //!
 //! # What neither layer covers, and why that is not a hole
 //!
@@ -167,8 +169,8 @@ fn chain(src: &str, at: usize) -> (usize, usize) {
     (at, b.len())
 }
 
-/// The balanced argument list opening at `open`, as a span, or `None` if it
-/// never closes.
+/// The balanced argument list opening at `open`, as a span, or `None` when
+/// the parens do not close.
 fn argument(src: &str, open: usize) -> Option<(usize, usize)> {
     let b = src.as_bytes();
     let mut depth = 0_i32;
@@ -379,18 +381,21 @@ fn a_protocol_and_a_chart() -> Boot {
 /// Every window this build can open, **derived rather than listed**.
 ///
 /// This is the part of the gate that was wrong before it was written down.
-/// A cover that lays out a hand-picked pair of windows is complete only as far
-/// as somebody remembered to extend the pair — which is the same defect this
-/// whole file exists to refuse, one level up in the checker. The corpus is
-/// therefore the shell's own answer to *what can a user open*: `Boot::empty`,
-/// which is the window with no document and therefore the front door, and one
-/// boot per entry of `starts::STARTS`, which is the single declaration the
-/// gallery cards, the empty-state buttons and the boot path all read. A start
-/// added there is laid out here with nothing edited, and a window shape this
-/// gate does not reach is now a window a user cannot open.
+/// A cover that lays out a hand-picked pair of windows is complete as far as
+/// somebody remembered to extend the pair, and no further — which is the same
+/// defect this whole file exists to refuse, one level up in the checker. The
+/// corpus is therefore the shell's own answer to *what can a user open*:
+/// `Boot::empty`, which is the window with no document and therefore the
+/// front door, and one boot per entry of `starts::STARTS`, which is the
+/// single declaration the gallery cards, the empty-state buttons and the boot
+/// path read. A start added there is laid out here with no edit to this file,
+/// and a window shape this gate does not reach is a window a user cannot
+/// open. `the_declared_regions_account_for_the_whole_window` is what consumes
+/// this corpus, and its coverage loop reddens when an arm of the draw path
+/// goes unlaid-out.
 ///
-/// The both-documents boot rides along because it is the only one where every
-/// rail draws content instead of an empty state.
+/// The both-documents boot rides along because it is the one window where
+/// each rail draws content instead of an empty state.
 fn every_window_this_build_can_open() -> Vec<(String, Boot)> {
     let mut boots = vec![
         ("no document — the front door".to_owned(), Boot::empty()),
