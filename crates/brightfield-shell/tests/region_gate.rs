@@ -208,6 +208,14 @@ fn every_panel_this_shell_draws_is_addressed_by_a_declared_region() {
                 };
                 let open = idx + call.len() - 1;
                 let Some(arg) = argument(line, open) else {
+                    // As the edge-panel rule above: a call this scan cannot
+                    // read is reported rather than passed over, or a measure
+                    // wrapped onto its own line is a measure with no name and
+                    // a clean gate.
+                    violations.push(format!(
+                        "{loc}: `{call}` argument does not close on its own line, so \
+                         this gate cannot read whether its measure has a name"
+                    ));
                     continue;
                 };
                 if has_numeric_literal(arg) {

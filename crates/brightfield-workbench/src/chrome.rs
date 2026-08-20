@@ -174,7 +174,6 @@ pub const fn view_padding() -> f32 {
 }
 
 /// The frame a band draws in: the panel fill, inset by [`band_margin`].
-#[must_use]
 pub fn band_frame(ui: &egui::Ui) -> egui::Frame {
     egui::Frame::new()
         .inner_margin(band_margin())
@@ -186,7 +185,6 @@ pub fn band_frame(ui: &egui::Ui) -> egui::Frame {
 /// No margin because a rail's own content brings its insets — the selector
 /// strip is measured from the rail's rect, and the pane below it is framed by
 /// [`pane_frame`]. A margin here would inset both a second time.
-#[must_use]
 pub fn rail_frame(ui: &egui::Ui) -> egui::Frame {
     egui::Frame::new().fill(ui.visuals().panel_fill)
 }
@@ -197,7 +195,6 @@ pub fn rail_frame(ui: &egui::Ui) -> egui::Frame {
 /// a call to it: the canvas is the one region whose extent is subtraction,
 /// and a change to how a rail is boxed should have to be made deliberately
 /// here rather than arriving as a side effect.
-#[must_use]
 pub fn canvas_frame(ui: &egui::Ui) -> egui::Frame {
     egui::Frame::new().fill(ui.visuals().panel_fill)
 }
@@ -211,7 +208,6 @@ pub fn canvas_frame(ui: &egui::Ui) -> egui::Frame {
 /// Takes a [`Mode`] rather than a `Ui` because the layer this frames is
 /// anchored to the window rather than nested in a panel, so there is no
 /// parent `Ui` whose visuals it should inherit.
-#[must_use]
 pub fn overlay_frame(mode: Mode) -> egui::Frame {
     egui::Frame::new().fill(colour(
         semantic(mode.is_dark()).containers.status_bar_background,
@@ -225,7 +221,6 @@ pub fn overlay_frame(mode: Mode) -> egui::Frame {
 /// reaches it draws with no fill and no inset, which reads as unfinished on
 /// screen — which is the point, and is why
 /// `audit_arrangement` refuses one in a shipped arrangement.
-#[must_use]
 pub const fn unstyled_frame() -> egui::Frame {
     egui::Frame::NONE
 }
@@ -235,7 +230,6 @@ pub const fn unstyled_frame() -> egui::Frame {
 /// The one place a [`RegionFrame`] becomes an `egui::Frame`, and the reason
 /// the enum is safe to grow: this match is exhaustive, so a variant added
 /// without a function beside it does not compile.
-#[must_use]
 pub fn region_frame(frame: RegionFrame, ui: &egui::Ui, mode: Mode) -> egui::Frame {
     match frame {
         RegionFrame::Band => band_frame(ui),
