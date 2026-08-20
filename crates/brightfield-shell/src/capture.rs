@@ -240,10 +240,58 @@ fn frame_input(screen: egui::Vec2, scale: f32, events: Vec<egui::Event>) -> egui
     raw
 }
 
+/// The most settle frames a capture will run before giving up on the window
+/// ever going quiet. At the 1/60 s `predicted_dt` egui advances its clock by
+/// when [`frame_input`] hands it no `time`, this is four seconds of animation
+/// — an order of magnitude past `Style::animation_time`, which the design
+/// system sets to 120 ms. A capture that reaches it has found a window that
+/// asks for a new frame forever, and [`run_ui_frames`] panics rather than
+/// photographing whatever the last one happened to hold.
+const MAX_SETTLE_FRAMES: usize = 240;
+
+/// Whether `out` asks for another frame **immediately** — egui's way of saying
+/// "what I just drew is not the final appearance".
+///
+/// `repaint_delay` is the shortest delay any viewport asked for; zero is the
+/// value [`egui::Context::request_repaint`] writes, and `Duration::MAX` is a
+/// window with nothing outstanding.
+fn wants_another_frame(out: &egui::FullOutput) -> bool {
+    out.viewport_output
+        .values()
+        .any(|v| v.repaint_delay.is_zero())
+}
+
 /// Drive the window's draw through a warm-up frame (fonts atlas + layout
-/// settle), the scripted frames (one per entry), and a final settle frame that
-/// becomes the captured image — keeping the renderer's texture atlas current each
-/// frame. Returns the last frame's [`egui::FullOutput`].
+/// settle), the scripted frames (one per entry), and then settle frames until
+/// the window stops asking for another — keeping the renderer's texture atlas
+/// current each frame. The last frame run is the one captured. Returns its
+/// [`egui::FullOutput`].
+///
+/// # Why settling is a loop and not one frame
+///
+/// It used to be one frame, and that is what made every modal baseline a
+/// picture of something the app never draws. `egui::Area` — which is what
+/// `egui::Modal`, and so every `meridian_egui::ModalLayer` overlay, floats on
+/// — **fades in**. `Area::begin` reads how long the area has been visible,
+/// remaps it over `Style::animation_time`, and calls `ui.multiply_opacity` with
+/// the result, which scales the alpha of every shape in that layer: the card's
+/// fill, its hairline, its shadow and the modal's backdrop scrim all together.
+/// While the fade is unfinished it calls `ctx.request_repaint()`.
+///
+/// A fixed frame list drops that request. One settle frame after the keystroke
+/// that opens a modal is ~25 ms of egui clock against a 120 ms animation, so
+/// the layer was photographed at roughly a third of its opacity: the opaque
+/// overlay surface composited as a wash, the chart behind it read straight
+/// through the command list, and the scrim dimmed the page by a fraction of
+/// what the token asks for. The live window has no such stop — eframe honours
+/// the repaint request, so by the time anyone looks the fade is over and the
+/// card is opaque. **The product was right and the capture path was wrong**,
+/// which is exactly the direction that is invisible to a golden.
+///
+/// Honouring the request settles every time-driven animation rather than this
+/// one, and it leaves a window with nothing animating on the same single
+/// settle frame it had before — so a capture with no animation in it is
+/// byte-identical to what this ran previously.
 #[allow(clippy::too_many_arguments)]
 fn run_ui_frames(
     ctx: &egui::Context,
@@ -255,13 +303,7 @@ fn run_ui_frames(
     script: Vec<Vec<egui::Event>>,
     mut draw: impl FnMut(&mut egui::Ui),
 ) -> egui::FullOutput {
-    let mut frames: Vec<Vec<egui::Event>> = Vec::with_capacity(script.len() + 2);
-    frames.push(Vec::new());
-    frames.extend(script);
-    frames.push(Vec::new());
-
-    let mut full: Option<egui::FullOutput> = None;
-    for events in frames {
+    let mut one = |events: Vec<egui::Event>| {
         let out = ctx.run_ui(frame_input(screen, scale, events), |ui| draw(ui));
         {
             let mut r = egui_renderer.write();
@@ -272,9 +314,35 @@ fn run_ui_frames(
                 r.free_texture(id);
             }
         }
-        full = Some(out);
+        out
+    };
+
+    let mut frames: Vec<Vec<egui::Event>> = Vec::with_capacity(script.len() + 1);
+    frames.push(Vec::new());
+    frames.extend(script);
+
+    let mut full: Option<egui::FullOutput> = None;
+    for events in frames {
+        full = Some(one(events));
     }
-    full.expect("at least one frame ran")
+
+    for settled in 0..MAX_SETTLE_FRAMES {
+        let out = one(Vec::new());
+        let quiet = !wants_another_frame(&out);
+        full = Some(out);
+        if quiet {
+            return full.expect("a settle frame ran");
+        }
+        assert!(
+            settled + 1 < MAX_SETTLE_FRAMES,
+            "the window still asked for an immediate repaint after \
+             {MAX_SETTLE_FRAMES} settle frames, so no frame here is the \
+             settled appearance. Find what calls request_repaint every frame \
+             — an unfinished egui animation settles well inside this — rather \
+             than raising the cap"
+        );
+    }
+    unreachable!("the loop above returns or asserts on its last iteration")
 }
 
 /// Tessellate + render the final frame into an offscreen target on the page tone,

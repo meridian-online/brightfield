@@ -906,3 +906,445 @@ fn the_crosshair_is_bounded_by_the_plot_under_the_pointer() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The modal layer — what a capture photographs of an overlay
+// ---------------------------------------------------------------------------
+//
+// These two tests exist because the committed palette baselines spent months
+// showing an appearance the product has never had. Every `meridian_egui`
+// overlay floats on an `egui::Area`, and an `Area` **fades in**: while the
+// fade runs it multiplies the opacity of every shape in its layer — the card's
+// fill, its hairline, its shadow and the modal's backdrop scrim together — and
+// asks for another frame. The live window gives it one. The capture path used
+// to stop one frame after the keystroke, so it photographed the layer at
+// roughly a third of its opacity: the chart read straight through the command
+// list and the page was barely dimmed. `capture::run_ui_frames` now settles;
+// what follows is what stops that from being silently undone, for every modal
+// rather than for the one that had a baseline.
+//
+// Both assertions are exact — no threshold, no tolerance. Neither is a pixel
+// baseline, so neither is graded by a picture an agent could regenerate.
+
+/// One modal overlay this window can float, as a test can reach it.
+///
+/// `area` is the `id_salt` [`MeridianApp`]'s overlay draw hands
+/// `meridian_egui::ModalLayer::show`, which `egui::Modal::new` turns into its
+/// `Area`'s id — so `Memory::area_rect` under that name gives back the
+/// **card**'s rect. The backdrop that fills the rest of the window is a
+/// free-floating child ui that never advances the area's cursor, so it is not
+/// in that rect; `the_modal_card_rect_is_the_card` pins that rather than
+/// trusting it.
+///
+/// `key` is the keystroke the shell reads off `brightfield_keys::registry()`
+/// for that overlay — `space`, `?` and `/` — so these are spellings of a
+/// binding the registry owns, not a second source for it.
+struct OverlayCase {
+    what: &'static str,
+    area: &'static str,
+    key: egui::Key,
+    /// Whether the overlay opens over the protocol graph rather than the
+    /// chart. Jump-to-asset only exists there (`graph_on_canvas`).
+    protocol: bool,
+}
+
+/// Every overlay `MeridianApp::overlay_ui` can draw, on every surface it can
+/// draw it on. Kept complete by `every_modal_layer_the_shell_shows_is_covered`,
+/// which counts the `ModalLayer::show` call sites in the shell's own source.
+const OVERLAY_CASES: &[OverlayCase] = &[
+    OverlayCase {
+        what: "the command palette over the chart",
+        area: "bf-overlay-palette",
+        key: egui::Key::Space,
+        protocol: false,
+    },
+    OverlayCase {
+        what: "the keyboard help sheet over the chart",
+        area: "bf-overlay-help",
+        key: egui::Key::Questionmark,
+        protocol: false,
+    },
+    OverlayCase {
+        what: "the command palette over the protocol graph",
+        area: "bf-overlay-palette",
+        key: egui::Key::Space,
+        protocol: true,
+    },
+    OverlayCase {
+        what: "the keyboard help sheet over the protocol graph",
+        area: "bf-overlay-help",
+        key: egui::Key::Questionmark,
+        protocol: true,
+    },
+    OverlayCase {
+        what: "jump-to-asset over the protocol graph",
+        area: "bf-overlay-jump",
+        key: egui::Key::Slash,
+        protocol: true,
+    },
+];
+
+impl OverlayCase {
+    /// A per-case, per-mode scratch name, so two cases never race on one
+    /// intermediate PNG.
+    fn tag(&self, mode: Mode, state: &str) -> String {
+        format!(
+            "{}_{}_{}_{state}",
+            self.area,
+            if self.protocol { "protocol" } else { "chart" },
+            if mode.is_dark() { "dark" } else { "light" },
+        )
+    }
+
+    /// The boot this overlay opens over, composed in the mode being
+    /// photographed — the same pairing `shell_capture` and `protocol_capture`
+    /// use, so the rects read off it are the rects in the picture.
+    fn boot(&self, mode: Mode) -> Boot {
+        if self.protocol {
+            protocol_boot()
+        } else {
+            let spec = fixture("examples/dashboard.yaml");
+            let composed =
+                compose_spec_in_mode(spec.to_str().expect("utf-8 fixture path"), mode)
+                    .unwrap_or_else(|e| panic!("compose {}: {e}", spec.display()));
+            Boot::charts(composed)
+        }
+    }
+
+    /// The window with this overlay open, the same window with it closed, and
+    /// the rect the card was given.
+    fn open(&self, mode: Mode) -> OpenOverlay {
+        let script = vec![press(self.key, false)];
+        let (open, closed) = if self.protocol {
+            (
+                protocol_capture(mode, &self.tag(mode, "open"), script),
+                protocol_capture(mode, &self.tag(mode, "closed"), Vec::new()),
+            )
+        } else {
+            (
+                shell_capture(mode, &self.tag(mode, "open"), script),
+                shell_capture(mode, &self.tag(mode, "closed"), Vec::new()),
+            )
+        };
+        assert_ne!(
+            open.as_raw(),
+            closed.as_raw(),
+            "{}: the capture with the opening keystroke is pixel-identical to \
+             the one without it, so the keystroke opened nothing and every \
+             assertion below would be about a window with no overlay in it",
+            self.what
+        );
+        OpenOverlay {
+            card: self.card_rect(mode),
+            open,
+            closed,
+        }
+    }
+
+    /// The rect the card was given, off a real layout pass over the same frame
+    /// schedule `capture::run_ui_frames` runs — a warm-up frame, the script,
+    /// then settle frames until the window stops asking for another. No GPU
+    /// and no capture, so this is the geometry and nothing else.
+    ///
+    /// Read out of egui's own area store rather than reconstructed from the
+    /// width and padding tokens: a reconstruction agrees with the card right
+    /// up until the chrome changes, and then it agrees with nothing. A rect
+    /// that pointed anywhere but the card would redden both assertions below
+    /// rather than quieten them — each looks *inside* it for card fill.
+    fn card_rect(&self, mode: Mode) -> egui::Rect {
+        let boot = self.boot(mode);
+        let (w, h) = boot.window_size();
+        let mut app = MeridianApp::headless(boot, mode);
+        let ctx = egui::Context::default();
+        let screen = egui::vec2(w, h);
+        let raw = |events: Vec<egui::Event>| {
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen)),
+                events,
+                ..Default::default()
+            };
+            let id = input.viewport_id;
+            input.viewports.entry(id).or_default().native_pixels_per_point = Some(SCALE);
+            input
+        };
+        let _ = ctx.run_ui(raw(Vec::new()), |ui| app.draw(ui));
+        let _ = ctx.run_ui(raw(press(self.key, false)), |ui| app.draw(ui));
+        for _ in 0..SETTLE_CAP {
+            let out = ctx.run_ui(raw(Vec::new()), |ui| app.draw(ui));
+            if !out
+                .viewport_output
+                .values()
+                .any(|v| v.repaint_delay.is_zero())
+            {
+                break;
+            }
+        }
+        ctx.memory(|m| m.area_rect(egui::Id::new(self.area)))
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}: no egui Area named {} after the opening keystroke, so \
+                     the overlay never opened in the layout pass",
+                    self.what, self.area
+                )
+            })
+    }
+}
+
+/// The settle budget the layout passes here use. It mirrors
+/// `capture::MAX_SETTLE_FRAMES` in intent rather than sharing the constant,
+/// because this is a layout pass with no renderer: what matters is that it is
+/// far past `Style::animation_time`, not that it is the same number.
+const SETTLE_CAP: usize = 240;
+
+/// A capture of one overlay open, the same window with it closed, and the
+/// card's rect.
+struct OpenOverlay {
+    open: image::RgbaImage,
+    closed: image::RgbaImage,
+    card: egui::Rect,
+}
+
+/// `src`, an egui premultiplied colour, composited over the 8-bit `dst` the
+/// way `egui_wgpu` does it: `One` / `OneMinusSrcAlpha` straight into a
+/// non-sRGB target, so the arithmetic is `src + dst * (1 - src.a)` on the
+/// stored gamma bytes with one rounding at the end.
+///
+/// Exact, not approximate. Measured against both the offscreen capture and a
+/// screenshot of the live window: the scrim over the light page tone is
+/// (209, 208, 207) in all three.
+fn composited(dst: &image::Rgba<u8>, src: egui::Color32) -> [u8; 3] {
+    let keep = 1.0 - f32::from(src.a()) / 255.0;
+    let mut out = [0u8; 3];
+    for (i, o) in out.iter_mut().enumerate() {
+        let premultiplied = f32::from(src.to_array()[i]);
+        *o = (premultiplied + f32::from(dst.0[i]) * keep).round() as u8;
+    }
+    out
+}
+
+/// The token scrim a `ModalLayer` backdrop paints, in `mode`.
+fn scrim(mode: Mode) -> egui::Color32 {
+    brightfield_shell::design::to_color32(meridian_design::semantic(mode.is_dark()).surfaces.scrim)
+}
+
+/// The token surface a modal card fills with, in `mode`.
+fn overlay_surface(mode: Mode) -> egui::Color32 {
+    brightfield_shell::design::to_color32(
+        meridian_design::semantic(mode.is_dark()).surfaces.overlay,
+    )
+}
+
+/// How far the card's modal shadow reaches past its own rect — blur, plus
+/// spread, plus however far the offset pushes it — read off the same
+/// `Visuals::window_shadow` `card_frame` hands the frame.
+fn shadow_reach(mode: Mode) -> f32 {
+    let s = brightfield_shell::design::meridian_visuals(mode).window_shadow;
+    let offset = s.offset.iter().map(|o| o.unsigned_abs()).max().unwrap_or(0);
+    f32::from(s.blur) + f32::from(s.spread) + f32::from(offset)
+}
+
+/// The card's **top inner padding band**: the strip of blank overlay fill
+/// between the card's hairline and its title row, inset at each end past the
+/// rounded corners.
+///
+/// Blank by construction — `card_frame` opens the card with
+/// `Margin::same(modal_padding)` and `chrome_contents` draws the title first —
+/// and the full width of the card, which is what makes it the widest run of
+/// pure card fill available to look at.
+fn card_padding_band(card: egui::Rect) -> Region {
+    let t = &meridian_egui::TOKENS;
+    let inset = t.radius_panel + 1.0;
+    Region {
+        x0: (card.min.x + inset).ceil() as u32,
+        y0: (card.min.y + 1.0).ceil() as u32,
+        x1: (card.max.x - inset).floor() as u32,
+        y1: (card.min.y + t.modal_padding).floor() as u32,
+    }
+}
+
+/// **AC3, the fill half.** Inside a modal card, what is drawn does not depend
+/// on what is behind it — which is the whole of what "opaque" means and the
+/// exact property the fade-in defect broke.
+///
+/// Stated without needing a second background: over the card's blank padding
+/// band the open capture must be **one colour**, and that colour must be the
+/// overlay surface token. A card drawn at any opacity below 1 shows the
+/// varying window underneath and is not one colour.
+///
+/// The guard is what keeps it honest. Light mode's chart surface and its
+/// overlay surface are deliberately the same tone (`semantic.rs` says so in
+/// those words), so a card sitting over flat chart background would read as
+/// one colour whether it were opaque or absent. The assertion therefore
+/// **requires** the closed capture to vary across the same band, and says so
+/// when it does not.
+#[test]
+fn every_modal_card_is_opaque_over_whatever_it_covers() {
+    for mode in [Mode::Light, Mode::Dark] {
+        for case in OVERLAY_CASES {
+            let shot = case.open(mode);
+            let band = card_padding_band(shot.card);
+            assert!(
+                band.x1 > band.x0 && band.y1 > band.y0,
+                "{} in {mode:?}: the card's padding band came out empty from \
+                 rect {:?}",
+                case.what,
+                shot.card
+            );
+
+            let behind = uniform_colour(&shot.closed, band);
+            assert_eq!(
+                behind, None,
+                "{} in {mode:?}: the window behind the card's padding band is \
+                 one flat colour, so this band cannot tell an opaque card from \
+                 a missing one — move the band over something that varies",
+                case.what
+            );
+
+            let drawn = uniform_colour(&shot.open, band);
+            assert_eq!(
+                drawn,
+                Some(overlay_surface(mode).to_array()),
+                "{} in {mode:?}: the card's padding band is not one flat \
+                 overlay-surface tone, so the fill is not being drawn opaque \
+                 and the window is reading through the card. Band {band:?} of \
+                 card {:?}",
+                case.what,
+                shot.card
+            );
+        }
+    }
+}
+
+/// The one colour every pixel of `r` has, or `None` if more than one appears.
+fn uniform_colour(img: &image::RgbaImage, r: Region) -> Option<[u8; 4]> {
+    let first = img.get_pixel(r.x0, r.y0).0;
+    for y in r.y0..r.y1 {
+        for x in r.x0..r.x1 {
+            if img.get_pixel(x, y).0 != first {
+                return None;
+            }
+        }
+    }
+    Some(first)
+}
+
+/// **AC3, the backdrop half.** Outside the card, every pixel is the scrim
+/// token composited over the pixel the closed window had there — exactly, with
+/// no tolerance.
+///
+/// Three failures redden this and they are the three worth having: a backdrop
+/// that stops being painted (the open window equals the closed one), a
+/// backdrop painted at a fraction of its opacity (which is what the fade-in
+/// defect did, and what a pixel baseline could not tell from a token change),
+/// and a scrim token that changes without the pictures being re-shot.
+#[test]
+fn every_modal_backdrop_is_exactly_the_scrim_token_over_the_page() {
+    for mode in [Mode::Light, Mode::Dark] {
+        for case in OVERLAY_CASES {
+            let shot = case.open(mode);
+            let keep_out = shot.card.expand(shadow_reach(mode) + 1.0);
+            let tone = scrim(mode);
+
+            let mut looked = 0u32;
+            let mut wrong = 0u32;
+            let mut changed = 0u32;
+            let mut first = None;
+            for y in 0..shot.open.height() {
+                for x in 0..shot.open.width() {
+                    #[allow(clippy::cast_precision_loss)]
+                    if keep_out.contains(egui::pos2(x as f32, y as f32)) {
+                        continue;
+                    }
+                    looked += 1;
+                    let was = shot.closed.get_pixel(x, y);
+                    let now = shot.open.get_pixel(x, y);
+                    if now.0 != was.0 {
+                        changed += 1;
+                    }
+                    if now.0[..3] != composited(was, tone) {
+                        wrong += 1;
+                        first.get_or_insert((x, y, was.0, composited(was, tone), now.0));
+                    }
+                }
+            }
+
+            assert!(
+                looked > 0,
+                "{} in {mode:?}: the card and its shadow cover the whole \
+                 window, so there is nowhere to read the backdrop",
+                case.what
+            );
+            assert!(
+                changed > 0,
+                "{} in {mode:?}: not one of {looked} pixels outside the card \
+                 changed when the overlay opened, so no backdrop was painted \
+                 at all",
+                case.what
+            );
+            assert_eq!(
+                wrong, 0,
+                "{} in {mode:?}: {wrong} of {looked} pixels outside the card \
+                 are not the scrim token {tone:?} composited over the closed \
+                 window. First at {first:?} — (x, y, closed, expected, drawn). \
+                 A backdrop at partial opacity looks exactly like this",
+                case.what
+            );
+        }
+    }
+}
+
+/// The rect [`OverlayCase::card_rect`] reads back is the card and not the
+/// whole window — the assumption both assertions above are built on, pinned
+/// rather than trusted.
+///
+/// `egui::Modal` draws its backdrop into a child ui it never advances the
+/// cursor over, so the area's own min-rect is the card frame. If a future egui
+/// folds that child in, the rect becomes the viewport, the padding band lands
+/// on window chrome, and this says why before the other two fail obscurely.
+#[test]
+fn the_modal_card_rect_is_the_card() {
+    let t = &meridian_egui::TOKENS;
+    for case in OVERLAY_CASES {
+        let card = case.card_rect(Mode::Light);
+        let (w, h) = case.boot(Mode::Light).window_size();
+        assert!(
+            card.width() < w && card.height() < h,
+            "{}: the area rect {card:?} is the whole {w}x{h} window, not the \
+             card — the backdrop child is being folded into the area's rect",
+            case.what
+        );
+        assert!(
+            (card.width() - t.modal_width_default).abs() <= 2.0,
+            "{}: the card is {} wide against the default modal width rung of \
+             {}, so the rect is not the card frame",
+            case.what,
+            card.width(),
+            t.modal_width_default
+        );
+    }
+}
+
+/// [`OVERLAY_CASES`] names every `ModalLayer::show` in the shell's own source.
+///
+/// The count is read off `window.rs` rather than written down, so a fourth
+/// overlay reddens this instead of quietly shipping with no cover — which is
+/// the failure AC4 is about: the palette pair corrected and the next modal's
+/// baseline still showing the artefact.
+#[test]
+fn every_modal_layer_the_shell_shows_is_covered() {
+    let source = include_str!("../src/window.rs");
+    let shown: std::collections::BTreeSet<&str> = source
+        .match_indices("ModalLayer::show(ctx, \"")
+        .map(|(i, m)| {
+            let rest = &source[i + m.len()..];
+            &rest[..rest.find('"').expect("an unterminated id salt literal")]
+        })
+        .collect();
+    let covered: std::collections::BTreeSet<&str> =
+        OVERLAY_CASES.iter().map(|c| c.area).collect();
+    assert_eq!(
+        shown, covered,
+        "the modal layers window.rs shows and the ones OVERLAY_CASES checks \
+         have drifted apart"
+    );
+}
