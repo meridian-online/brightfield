@@ -3413,7 +3413,16 @@ impl MeridianApp {
             }
         }
 
-        self.rail = chrome::status_rail_overlay(ctx, &entries, mode);
+        // The band's height comes off the region, like every other region's
+        // extent in this draw path. `overlay_extent` panics on a region that
+        // is not declared as one, so a status band respelled as a fixed band
+        // stops the window rather than quietly drawing at a measure the
+        // arrangement no longer names.
+        let status = arrangement::default_arrangement().expect_region(arrangement::STATUS_BAND);
+        self.rail = chrome::status_rail_overlay(ctx, &entries, overlay_extent(status), mode);
+        if let Some(rect) = self.rail.rect {
+            self.regions.push((status.id, rect));
+        }
         for verb in self.rail.dismissed.clone() {
             requests.push(Request::Verb(verb));
         }
@@ -4480,6 +4489,24 @@ fn rail_min(region: &Region) -> f32 {
     match region.extent {
         arrangement::Extent::Rail { min, .. } => min,
         other => panic!("{} is drawn as a rail but declared {other:?}", region.id),
+    }
+}
+
+/// The extent a floating region was declared at.
+///
+/// # Panics
+///
+/// If the region is not an overlay — as [`band_extent`]. A region the draw
+/// path floats while the arrangement calls it something else is the same
+/// structural mistake, and honouring it silently is how the two answers drift
+/// apart.
+fn overlay_extent(region: &Region) -> f32 {
+    match region.extent {
+        arrangement::Extent::Overlay(size) => size,
+        other => panic!(
+            "{} is drawn as an overlay but declared {other:?}",
+            region.id
+        ),
     }
 }
 

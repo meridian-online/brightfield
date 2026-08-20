@@ -1,57 +1,81 @@
-//! The region-completeness gate: what the shell draws as a region of the
-//! window has to be in the arrangement that declares them.
+//! The region gate: what the window draws has to be what the arrangement
+//! declares — which regions exist, and what extent each takes.
 //!
-//! Two layers, and they fail for different reasons on purpose. The sibling
-//! `arrangement.rs` asks whether the regions that *are* declared drew at the
-//! extents they declare; this file asks whether the declaration is the whole
-//! list.
+//! Three layers. Two of them run the window; the third reads the source, and
+//! the difference between what those two kinds of layer can hold is the whole
+//! shape of this file.
 //!
-//! - **By source scan**, in the shape of `gallery_gate.rs`'s completeness
-//!   grep. An edge panel's id comes from `window::panel_id`, whose argument is
-//!   a `Region`, so a panel drawn for something the arrangement has never
-//!   heard of has no id to draw under; and a builder chain that reaches a
-//!   `Panel` or a `Frame` may carry no numeric literal, so a measure has to
-//!   have a name. `every_panel_this_shell_draws_is_addressed_by_a_declared_region`
-//!   is that scan.
-//! - **By running the window**, which is the layer that does not depend on
-//!   how the source happens to be written: the regions the arrangement
-//!   declares are laid out and their drawn rects are measured against the
-//!   window they were laid out in. They tile it exactly — no gap and no
-//!   overlap — so a panel added anywhere, by any means, under any id, takes
-//!   its extent out of that sum and
-//!   `the_declared_regions_account_for_the_whole_window` reddens.
+//! - **Every region drew at the extent it declares.**
+//!   `every_regions_drawn_extent_is_the_one_it_declares` lays out every window
+//!   this build can open and compares each drawn rect with the number the
+//!   declaration names. This is what holds the extents.
+//! - **The declared regions cover the window exactly.**
+//!   `the_declared_regions_account_for_the_whole_window` measures the same
+//!   rects against the window they were laid out in — no gap, no overlap — so
+//!   a panel added anywhere, by any means, under any id takes its extent out
+//!   of that sum. This is what holds the list of regions.
+//! - **An edge panel's id comes from `window::panel_id`.**
+//!   `every_panel_this_shell_draws_is_addressed_by_a_declared_region` reads
+//!   the source for that. It is a fast convenience that names the offending
+//!   line, and the paragraph below says exactly what it is and is not.
 //!
-//! # Neither layer may enumerate its own coverage
+//! # What a source scan can hold here, and what it cannot
 //!
-//! This file is a completeness gate, so a hand-kept list *inside* it is the
-//! defect it exists to refuse, one level up. Both lists it started with had a
-//! gap, and both gaps were real:
+//! **It can hold the shape of a call, because that is a fact about the text.**
+//! `Panel::top(panel_id(region, false))` either is or is not spelled that way,
+//! and reading the text answers it. That is the one rule the scan below keeps.
 //!
-//! - it laid out two windows, both of them past the front door, so a panel
-//!   added to the door branch alone was drawn to a user and seen by nothing.
-//!   The corpus is now `Boot::empty` plus one boot per `starts::STARTS` entry
-//!   — the shell's own answer to *what can a user open* — so a window shape
-//!   this gate does not reach is a window a user cannot open.
-//! - it matched a list of extent setters by name, and egui has more of them
-//!   than the list carried: `size_range` bounds the same measure `min_size`
-//!   does, so a rail could be given a floor of `160.0` with no test pinning
-//!   it, and the initial undragged layout still rendered at its default so
-//!   the running window saw no difference either. There is no setter list
-//!   now. `every_panel_this_shell_draws_is_addressed_by_a_declared_region`
-//!   reads the whole builder chain instead, so a setter added to egui
-//!   tomorrow is covered by a rule that was written without knowing the old
-//!   ones' names.
+//! **It cannot hold what a value comes to, because that is not in the text.**
+//! This file used to refuse a numeric literal inside a builder chain and claim
+//! that a measure therefore had to have a name. That claim was false, and
+//! four spellings walked past it: a `let` above the chain, the same literal
+//! rebound twice, a local const, and the chain moved wholesale into a
+//! correctly-shaped helper with the literal at its call site. None of them is
+//! a gap a better pattern closes — a scan over Rust cannot follow an
+//! identifier to what it resolves to, so no version of that rule could have
+//! held the property. The rule is gone rather than qualified.
 //!
-//! # What neither layer covers, and why that is not a hole
+//! **What replaced it asks the window instead of the source.** A literal
+//! cannot survive being drawn, however it is spelled, because every one of
+//! those four spellings changes the rect that reaches the screen — which is
+//! what `every_regions_drawn_extent_is_the_one_it_declares` reads. All four
+//! were applied and watched fail there while the scan reported clean.
 //!
-//! A `CentralPanel` carries no id, so the scan has nothing to read from it;
-//! and it is the remainder by construction, so a second one does not steal
-//! space and the runtime layer would not see it either. That case is covered
-//! upstream instead: `audit_arrangement` refuses an arrangement whose count of
+//! **The two remaining scan rules are backed, and that is why they may stay.**
+//! Defeat the id rule — `let id = "bf-x"; Panel::top(id)` — and the panel
+//! still draws, still takes space, and the cover still reddens. The extent
+//! rule had no such backing: the cover sums areas and the canvas is the
+//! remainder, so a band drawn at the wrong height is absorbed by the canvas
+//! and the sum comes out right. That asymmetry is the reason one rule was
+//! deleted and two were kept.
+//!
+//! # Neither running layer may enumerate its own coverage
+//!
+//! A completeness gate with a hand-kept list inside it is the defect it exists
+//! to refuse, one level up. The corpus is therefore `Boot::empty` plus one
+//! boot per `starts::STARTS` entry — the shell's own answer to *what can a
+//! user open*, and the single declaration the gallery cards, the empty-state
+//! buttons and the boot path read. A start added there is laid out here with
+//! no edit to this file. Before that, the corpus was two hand-picked windows
+//! and both were past the front door, so a panel added to the door branch
+//! alone drew to a user and was seen by nothing.
+//!
+//! # What no layer covers
+//!
+//! A `CentralPanel` carries no id, so the scan has nothing to read from it,
+//! and it is the remainder by construction, so a second one steals no space
+//! and neither running layer would see it. That case is covered upstream:
+//! `audit_arrangement` refuses an arrangement whose count of
 //! `Extent::Remainder` regions is anything but one, and
 //! `the_shipped_arrangement_declares_one_canvas_and_no_duplicate_region`
 //! counts it. A `CentralPanel` cannot be a region the arrangement lacks — it
 //! can be the one the arrangement already has.
+//!
+//! A rail the user has collapsed or dragged is not laid out here: every window
+//! in the corpus is freshly booted, so each rail is at its default.
+//! `each_rail_collapses_to_the_measure_it_declares` and
+//! `a_rail_reopens_at_the_extent_it_was_dragged_to` in the sibling
+//! `arrangement.rs` are where those two states are held.
 
 use brightfield_protocol::layout::Flow;
 use brightfield_shell::design::Mode;
@@ -59,32 +83,29 @@ use brightfield_shell::pipeline::compose_spec;
 use brightfield_shell::protocol::load_protocol_offline;
 use brightfield_shell::starts;
 use brightfield_shell::window::{Boot, MeridianApp};
-use brightfield_workbench::arrangement::{self, RegionId};
+use brightfield_workbench::arrangement::{self, Edge, Extent, RegionId};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
-// Completeness by source scan
+// The id rule, by source scan
 // ---------------------------------------------------------------------------
 
-/// Where a builder chain that ends at a `Panel` or a `Frame` begins.
+/// Where an edge panel is constructed.
 ///
-/// Three patterns rather than a list of names, and that is the point.
-/// `Panel::` matches every edge constructor and, as a substring,
-/// `CentralPanel::` too; `Frame::` matches egui's frame constructors;
-/// `_frame(` matches the chrome token set's own frame functions by the
-/// convention they are named under. An edge, a constructor or a frame
-/// function added to any of the three is matched without this file being
-/// edited.
-const CHAIN_HEADS: &[&str] = &["Panel::", "Frame::", "_frame("];
+/// One pattern rather than a list of edges: `Panel::` matches every edge
+/// constructor egui has, and, as a substring, `CentralPanel::` too — which
+/// takes no id and shows up below as an empty argument rather than as a name
+/// written into this test.
+const PANEL: &str = "Panel::";
 
 /// The one call that may supply an edge panel's id.
 const ID_CALL: &str = "panel_id(";
 
-/// Panel spellings this scan cannot read. egui carries them as the older
-/// names for the same containers, and an alias hides the type outright; a
-/// region drawn through either would be a region drawn past this gate, so
-/// they are refused by name rather than passed over in silence.
+/// Panel spellings this scan cannot read. egui carries the first two as the
+/// older names for the same containers, and an alias hides the type outright.
+/// A region drawn through any of them would be a region drawn past this rule,
+/// so they are refused by name rather than passed over in silence.
 const UNREADABLE: &[&str] = &["SidePanel", "TopBottomPanel", "Panel as "];
 
 fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -102,75 +123,70 @@ fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// keeping length and line breaks so an offset still names its own line.
 ///
 /// Comments are blanked because prose that *names* a constructor is
-/// documentation rather than a draw call. String bodies are blanked because a
-/// digit inside one is text, not a measure — and because blanking the body
-/// while keeping the quotes leaves a hand-typed panel id still visible as a
-/// literal where an id call belongs.
+/// documentation rather than a draw call, and both spellings are blanked:
+/// reading `//` alone left a `/* */` block being read as code. String bodies
+/// are blanked while their quotes are kept, which leaves a hand-typed panel
+/// id visible as a literal exactly where an id call belongs.
+///
+/// Block comments nest in Rust, so the depth is counted rather than the first
+/// `*/` being taken as the end.
 fn masked(src: &str) -> String {
     let b = src.as_bytes();
     let mut out: Vec<u8> = b.to_vec();
     let mut i = 0;
     while i < b.len() {
-        match b[i] {
-            b'/' if i + 1 < b.len() && b[i + 1] == b'/' => {
-                while i < b.len() && b[i] != b'\n' {
-                    out[i] = b' ';
-                    i += 1;
-                }
-            }
-            b'"' => {
+        if b[i] == b'/' && i + 1 < b.len() && b[i + 1] == b'/' {
+            while i < b.len() && b[i] != b'\n' {
+                out[i] = b' ';
                 i += 1;
-                while i < b.len() && b[i] != b'"' {
-                    if b[i] == b'\\' && i + 1 < b.len() {
-                        out[i] = b' ';
-                        i += 1;
+            }
+        } else if b[i] == b'/' && i + 1 < b.len() && b[i + 1] == b'*' {
+            let mut depth = 0_u32;
+            while i < b.len() {
+                if b[i] == b'/' && i + 1 < b.len() && b[i + 1] == b'*' {
+                    depth += 1;
+                    out[i] = b' ';
+                    out[i + 1] = b' ';
+                    i += 2;
+                } else if b[i] == b'*' && i + 1 < b.len() && b[i + 1] == b'/' {
+                    depth -= 1;
+                    out[i] = b' ';
+                    out[i + 1] = b' ';
+                    i += 2;
+                    if depth == 0 {
+                        break;
                     }
+                } else {
+                    if b[i] != b'\n' {
+                        out[i] = b' ';
+                    }
+                    i += 1;
+                }
+            }
+        } else if b[i] == b'"' {
+            i += 1;
+            while i < b.len() && b[i] != b'"' {
+                if b[i] == b'\\' && i + 1 < b.len() {
                     out[i] = b' ';
                     i += 1;
                 }
+                out[i] = b' ';
                 i += 1;
             }
-            _ => i += 1,
+            i += 1;
+        } else {
+            i += 1;
         }
     }
     String::from_utf8(out).expect("blanking bytes keeps the text UTF-8")
 }
 
-/// The builder chain starting at `at`: the text up to the closure it shows
-/// into, the statement's end, or the close of the block it sits in —
-/// whichever comes first.
-///
-/// Stopping at `.show(` is what keeps the rule about the *builder* rather
-/// than about a rail's hundred-line body, where a numeric literal is
-/// ordinary.
-///
-/// Returned as a span rather than a slice: the rule reads the blanked copy so
-/// a comment or a string cannot trip it, and the failure message reads the
-/// same span of the real source so the reader sees what was written.
-fn chain(src: &str, at: usize) -> (usize, usize) {
-    let b = src.as_bytes();
-    let mut depth = 0_i32;
-    let mut i = at;
-    while i < b.len() {
-        match b[i] {
-            b'(' | b'[' | b'{' => depth += 1,
-            b')' | b']' | b'}' => {
-                depth -= 1;
-                if depth < 0 {
-                    return (at, i);
-                }
-            }
-            b';' if depth == 0 => return (at, i),
-            b'.' if depth == 0 && src[i..].starts_with(".show(") => return (at, i),
-            _ => {}
-        }
-        i += 1;
-    }
-    (at, b.len())
-}
-
 /// The balanced argument list opening at `open`, as a span, or `None` when
 /// the parens do not close.
+///
+/// A span rather than a slice: the rule reads the blanked copy so a comment
+/// or a string cannot trip it, and the failure message reads the same span of
+/// the real source so a reader sees what was written.
 fn argument(src: &str, open: usize) -> Option<(usize, usize)> {
     let b = src.as_bytes();
     let mut depth = 0_i32;
@@ -189,40 +205,12 @@ fn argument(src: &str, open: usize) -> Option<(usize, usize)> {
     None
 }
 
-/// Whether `s` holds a numeric literal that is not part of an identifier.
-///
-/// `SPACE_4`, `region.id` and `panel_id(x, false)` do not count. `32.0`,
-/// `28` and `160.0..=999.0` do.
-fn has_numeric_literal(s: &str) -> bool {
-    let b = s.as_bytes();
-    (0..b.len()).any(|i| {
-        b[i].is_ascii_digit()
-            && (i == 0
-                || !matches!(b[i - 1], b'_' | b'.' | b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z'))
-    })
-}
-
 /// The 1-based line `offset` falls on.
 fn line_of(src: &str, offset: usize) -> usize {
     src[..offset].matches('\n').count() + 1
 }
 
-/// Whether the identifier `at` sits inside is being *declared* rather than
-/// called.
-///
-/// A definition is not a call site, and reading one as a chain runs the walk
-/// through a whole function body — which is how `fn request_frame` first
-/// arrived here as an extent with a literal in it.
-fn is_a_declaration(src: &str, at: usize) -> bool {
-    let b = src.as_bytes();
-    let mut start = at;
-    while start > 0 && (b[start - 1].is_ascii_alphanumeric() || b[start - 1] == b'_') {
-        start -= 1;
-    }
-    src[..start].trim_end().ends_with("fn")
-}
-
-/// A chain, cut to something a failure message can carry.
+/// A span, cut to something a failure message can carry.
 fn shown(text: &str) -> String {
     let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if one_line.chars().count() <= 160 {
@@ -233,8 +221,18 @@ fn shown(text: &str) -> String {
     }
 }
 
-/// Every edge panel this shell draws is addressed by a declared region, and
-/// no measure reaching a panel or a frame is a literal.
+/// Every edge panel this shell draws is addressed through `window::panel_id`,
+/// whose argument is a `Region` — so a panel drawn for something the
+/// arrangement has never heard of has no id to draw under. What holds that
+/// once the spelling is evaded is
+/// `the_declared_regions_account_for_the_whole_window`, not this rule.
+///
+/// **This rule is a convenience, not the gate.** It fails in a second and
+/// names the line, which is worth having; but it is a claim about how a call
+/// is spelled, and `let id = "bf-x"; Panel::top(id)` satisfies it. What
+/// catches that is `the_declared_regions_account_for_the_whole_window`, which
+/// reads the rect the panel actually took. The module docs say why this rule
+/// survived a round that deleted its sibling.
 ///
 /// The scan is over the whole of `src/`, not over the one file that draws the
 /// window today: a panel moved into a helper in another module is the same
@@ -267,65 +265,42 @@ fn every_panel_this_shell_draws_is_addressed_by_a_declared_region() {
                 violations.push(format!(
                     "{rel}:{}: `{spelling}` — the window draws its regions through \
                      `Panel::top/bottom/left/right` with an id from `panel_id`, which \
-                     is the shape this gate can read",
+                     is the shape this rule can read",
                     line_of(&src, idx)
                 ));
             }
         }
 
-        for head in CHAIN_HEADS {
-            for (idx, _) in src.match_indices(head) {
-                if is_a_declaration(&src, idx) {
-                    continue;
-                }
-                let loc = format!("{rel}:{}", line_of(&src, idx));
-                let (from, to) = chain(&src, idx);
-
-                if has_numeric_literal(&src[from..to]) {
-                    violations.push(format!(
-                        "{loc}: a numeric literal in the builder chain at `{}` — an \
-                         extent, a floor, a bound or an inset is a named measure on \
-                         the arrangement or the chrome token set, never a number here",
-                        shown(&raw[from..to])
-                    ));
-                }
-
-                // The id rule is the edge panel's alone. A `CentralPanel` and
-                // a frame constructor take no id, which shows up here as an
-                // empty argument rather than as a name written into this test.
-                if *head != "Panel::" {
-                    continue;
-                }
-                let Some(open) = src[idx..].find('(').map(|o| idx + o) else {
-                    continue;
-                };
-                // The paren has to belong to this constructor rather than to
-                // something later in the statement.
-                if src[idx + head.len()..open].contains(|c: char| !c.is_alphanumeric() && c != '_')
-                {
-                    continue;
-                }
-                let Some((from, to)) = argument(&src, open) else {
-                    violations.push(format!(
-                        "{loc}: a panel constructor whose argument list does not close, \
-                         so this gate cannot read which region it draws"
-                    ));
-                    continue;
-                };
-                let arg = &src[from..to];
-                if arg.trim().is_empty() {
-                    continue;
-                }
-                edge_panels += 1;
-                if !arg.trim_start().starts_with(ID_CALL) {
-                    violations.push(format!(
-                        "{loc}: `{}({})` — a panel's id comes from `{ID_CALL}region)`, so \
-                         it is the region's own name. A literal here draws a region the \
-                         arrangement has never heard of",
-                        &raw[idx..open],
-                        shown(&raw[from..to])
-                    ));
-                }
+        for (idx, _) in src.match_indices(PANEL) {
+            let loc = format!("{rel}:{}", line_of(&src, idx));
+            let Some(open) = src[idx..].find('(').map(|o| idx + o) else {
+                continue;
+            };
+            // The paren has to belong to this constructor rather than to
+            // something later in the statement.
+            if src[idx + PANEL.len()..open].contains(|c: char| !c.is_alphanumeric() && c != '_') {
+                continue;
+            }
+            let Some((from, to)) = argument(&src, open) else {
+                violations.push(format!(
+                    "{loc}: a panel constructor whose argument list does not close, so \
+                     this rule cannot read which region it draws"
+                ));
+                continue;
+            };
+            let arg = &src[from..to];
+            if arg.trim().is_empty() {
+                continue; // a `CentralPanel`, which takes no id
+            }
+            edge_panels += 1;
+            if !arg.trim_start().starts_with(ID_CALL) {
+                violations.push(format!(
+                    "{loc}: `{}({})` — a panel's id comes from `{ID_CALL}region)`, so it \
+                     is the region's own name. A literal here draws a region the \
+                     arrangement has never heard of",
+                    &raw[idx..open],
+                    shown(&raw[from..to])
+                ));
             }
         }
     }
@@ -561,4 +536,132 @@ fn the_declared_regions_account_for_the_whole_window() {
             region.id
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Every extent on the screen is an extent the declaration names
+// ---------------------------------------------------------------------------
+
+/// The extent `rect` takes on the axis `edge` runs across.
+///
+/// # Panics
+///
+/// On [`Edge::Centre`], which has no axis of its own — the canvas is the
+/// remainder and is compared against the remainder arithmetic instead.
+fn extent_across(edge: Edge, rect: egui::Rect) -> f32 {
+    match edge {
+        Edge::Left | Edge::Right => rect.width(),
+        Edge::Top | Edge::Bottom => rect.height(),
+        Edge::Centre => panic!("a region that is the remainder has no extent of its own"),
+    }
+}
+
+/// Every region drew at the extent its declaration names, over every window
+/// this build can open.
+///
+/// **This is the assertion that holds the extents, and the source scan above
+/// is not.** A scan can ask whether a digit sits inside a builder chain; it
+/// cannot ask what an identifier resolves to, so `let h = 40.0; …
+/// .exact_size(h)`, a rebinding, a local const, a helper with the literal at
+/// its call site and a macro parameter all read as clean text. Each of them
+/// changes the rect that reaches the screen, which is what this reads. The
+/// rule stopped being about how the measure is spelled and became about what
+/// it comes to.
+///
+/// The sibling `arrangement.rs` carries the single-window form of this and is
+/// where the collapse and drag cases live. Two things it leaves out are here:
+///
+/// - **the canvas**, which it skips because `Extent::Remainder` names no
+///   number. It has one all the same — whatever the bands and rails leave —
+///   and that is arithmetic over the same declarations every other line here
+///   reads, so it is computed and compared. Without it, a band drawn one
+///   point taller than it declares is a point the canvas silently absorbs.
+/// - **the status band**, which it skips because an `Extent::Overlay` takes
+///   no space from a sibling. Taking no space is not the same as having no
+///   size, and its declared height was drawn by a draw path calling the
+///   measure itself rather than reading the region until this round.
+///
+/// Both over the corpus rather than one window, which is what the derived
+/// corpus was built for.
+///
+/// What this does not cover: a rail the user has collapsed or dragged. Every
+/// window here is freshly booted, so each rail is at its default;
+/// `a_rail_reopens_at_the_extent_it_was_dragged_to` and
+/// `each_rail_collapses_to_the_measure_it_declares` are where the other two
+/// states are held.
+#[test]
+fn every_regions_drawn_extent_is_the_one_it_declares() {
+    let plan = arrangement::default_arrangement();
+    let mut fixed = 0_usize;
+    let mut canvases = 0_usize;
+    let mut overlays = 0_usize;
+
+    for (name, boot) in every_window_this_build_can_open() {
+        let (app, screen) = settled(boot);
+
+        // What the declarations predict is left for the canvas, accumulated
+        // off the same numbers the per-region assertions below compare
+        // against — so a band that drew wide would have to have been declared
+        // wide for the canvas to still come out right.
+        let mut across = screen.width();
+        let mut down = screen.height();
+
+        for region in plan.regions {
+            let Some(rect) = app.region_rect(region.id) else {
+                continue; // a region this window does not draw
+            };
+            let declared = match region.extent {
+                Extent::Band(size) | Extent::Rail { default: size, .. } => size,
+                Extent::Overlay(size) => {
+                    let drawn = extent_across(region.edge, rect);
+                    assert!(
+                        (drawn - size).abs() < 1e-3,
+                        "{name}: {} floats at {drawn}pt against the {size}pt the \
+                         arrangement declares — the layer is drawing at a measure \
+                         the declaration does not name",
+                        region.id
+                    );
+                    overlays += 1;
+                    continue;
+                }
+                Extent::Remainder => continue, // compared below, once the rest is known
+            };
+
+            let drawn = extent_across(region.edge, rect);
+            assert!(
+                (drawn - declared).abs() < 1e-3,
+                "{name}: {} drew at {drawn}pt against the {declared}pt the \
+                 arrangement declares — the extent that reached the screen is not \
+                 the extent the declaration names, however it was spelled",
+                region.id
+            );
+            match region.edge {
+                Edge::Left | Edge::Right => across -= declared,
+                _ => down -= declared,
+            }
+            fixed += 1;
+        }
+
+        if let Some(rect) = app.region_rect(arrangement::CANVAS) {
+            assert!(
+                (rect.width() - across).abs() < 1e-3 && (rect.height() - down).abs() < 1e-3,
+                "{name}: the canvas drew {}x{} against the {across}x{down} the \
+                 declarations leave it — a region took room the arrangement does \
+                 not account for, or took more of it than it declares",
+                rect.width(),
+                rect.height()
+            );
+            canvases += 1;
+        }
+    }
+
+    // A sweep that compared almost nothing would satisfy every assertion
+    // above. The canvas is drawn by every window in the corpus — the door
+    // stands in it when there is no document — and the status band floats on
+    // at least the one that has something to say.
+    assert!(
+        fixed >= 20 && canvases >= 6 && overlays >= 1,
+        "the sweep compared {fixed} fixed extents, {canvases} canvases and \
+         {overlays} floating bands; it is not reading the corpus"
+    );
 }

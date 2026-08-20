@@ -1097,12 +1097,26 @@ pub fn toolbar_button(ui: &mut egui::Ui, entry: &ToolbarEntry, mode: Mode) -> Op
 }
 
 /// What a status rail did this frame.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+///
+/// `Eq` is gone from the derive because [`StatusDrawn::rect`] is a rect and a
+/// rect is floats. Nothing compared two of these for equality; every reader
+/// reads one field.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct StatusDrawn {
     /// The ids drawn, in draw order.
     pub drawn: Vec<&'static str>,
     /// The verbs the user activated by dismissing an entry.
     pub dismissed: Vec<Verb>,
+    /// The band's rect in window space, or `None` on a frame where the rail
+    /// had no line to draw.
+    ///
+    /// Reported for the reason every other region's rect is recorded: a
+    /// region whose drawn extent nothing reads is a region whose declared
+    /// extent nothing holds. The shell records this under the status band's
+    /// [`RegionId`](crate::arrangement::RegionId), and
+    /// `every_regions_drawn_extent_is_the_one_it_declares` compares it with
+    /// the `Extent::Overlay` the arrangement declares.
+    pub rect: Option<egui::Rect>,
 }
 
 /// The height [`status_rail_overlay`] gives the rail's band, in logical
@@ -1140,9 +1154,18 @@ pub const fn status_rail_height() -> f32 {
 /// pixel of workbench chrome is painted — a shell hand-placing an
 /// `egui::Area` around the rail would be the first line of a second drawing
 /// file.
+///
+/// `extent` is the band's height, handed in by the caller rather than taken
+/// from [`status_rail_height`] here. The two are the same number today — the
+/// shipped arrangement declares `Extent::Overlay(status_rail_height())` — and
+/// that is the point: a draw path that calls the measure itself is a second
+/// spelling of it, and a second spelling is what stops the declaration from
+/// being the thing the screen follows. The shell reads the region and passes
+/// what it says.
 pub fn status_rail_overlay(
     ctx: &egui::Context,
     entries: &[StatusEntry],
+    extent: f32,
     mode: Mode,
 ) -> StatusDrawn {
     if entries.is_empty() {
@@ -1155,16 +1178,15 @@ pub fn status_rail_overlay(
         .order(egui::Order::Foreground)
         .fade_in(false)
         .show(ctx, |ui| {
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(screen.width(), status_rail_height()),
-                egui::Sense::hover(),
-            );
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(screen.width(), extent), egui::Sense::hover());
             let mut band = ui.new_child(
                 egui::UiBuilder::new()
                     .max_rect(rect)
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
             out = status_rail(&mut band, entries, mode);
+            out.rect = Some(rect);
         });
     out
 }
