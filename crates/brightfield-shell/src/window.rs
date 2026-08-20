@@ -2651,19 +2651,22 @@ impl MeridianApp {
                 .show(ui, |ui| {
                     let caret = collapse_caret(ledger.edge, ledger_collapsed);
                     if ledger_collapsed {
-                        // Collapsed, this rail is its own strip drawn by the same
-                        // call that draws it open — names live, and no body under
-                        // it to put a pane in. Split rather than handed the whole
-                        // rect: what the arrangement declares this rail collapses
-                        // to is the strip *plus* clearance for the status rail's
-                        // floating band, and the strip is the head of that.
-                        let (strip, _) = chrome::rail_split(ui.max_rect());
-                        ledger_strip = Some(chrome::rail_selector(
+                        // Collapsed, this rail is its own strip — names live,
+                        // and no body under it to put a pane in. Handed the
+                        // whole rect rather than the head of it: what the
+                        // arrangement declares this rail collapses to is the
+                        // strip *plus* clearance for the status rail's floating
+                        // band, and `collapsed_rail` is what draws both as one
+                        // object. Handing it the split head instead left the
+                        // clearance in the region frame's panel fill, which is
+                        // a second fill under the strip on every frame the
+                        // status rail has nothing to say.
+                        ledger_strip = Some(chrome::collapsed_rail(
                             ui,
-                            strip,
+                            ui.max_rect(),
                             &pane_labels(&ledger_labels),
                             ledger_panel,
-                            Some(caret),
+                            caret,
                             mode,
                         ));
                         return;

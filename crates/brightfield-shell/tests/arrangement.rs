@@ -19,6 +19,7 @@ use brightfield_shell::pipeline::compose_spec;
 use brightfield_shell::protocol::load_protocol_offline;
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_workbench::arrangement::{self, Occupant};
+use brightfield_workbench::chrome;
 
 /// A path relative to the workspace root.
 fn fixture(rel: &str) -> std::path::PathBuf {
@@ -46,6 +47,22 @@ fn both() -> Boot {
         flow: Flow::Vertical,
         focus: None,
     }
+}
+
+/// A boot carrying the protocol **and no chart**, which is the one state the
+/// status rail is silent in: `graph_on_canvas` is true, so `status_rail_ui`
+/// adds no idle line, and with no per-pane status and no activity the entry
+/// list it composes is empty — and `status_rail_overlay` returns from an empty
+/// entry list without opening its `egui::Area`.
+///
+/// That is the window the collapsed ledger's reserved clearance is *visible*
+/// in, which is why the paint assertion below boots this rather than
+/// [`both`]: over [`both`] the floating band is drawn and covers it.
+fn protocol_only() -> Boot {
+    let spec = fixture("examples/protocol/edgar_gleif/arcform.yaml");
+    let inputs = load_protocol_offline(spec.to_str().expect("utf-8 fixture path"))
+        .unwrap_or_else(|e| panic!("load {}: {e}", spec.display()));
+    Boot::protocol(inputs, Flow::Vertical, None)
 }
 
 /// A settled window at the size the boot asks for.
@@ -85,7 +102,11 @@ struct Live {
 impl Live {
     /// A window over both documents, at the size its boot asks for.
     fn open() -> Self {
-        let boot = both();
+        Self::over(both())
+    }
+
+    /// A window over `boot`, at the size that boot asks for.
+    fn over(boot: Boot) -> Self {
         let (w, h) = boot.window_size();
         Self {
             app: MeridianApp::headless(boot, Mode::Light),
@@ -119,6 +140,20 @@ impl Live {
             .region_rect(id)
             .unwrap_or_else(|| panic!("{id} did not draw"));
         drawn_extent(id, rect)
+    }
+
+    /// One more frame with no events, handing back every shape it painted in
+    /// paint order.
+    ///
+    /// Read off the frame rather than off a hook the window keeps, for the
+    /// reason every other assertion in this file reads a drawn rect: a claim
+    /// about what a person sees has to come from what was painted.
+    fn shapes(&mut self) -> Vec<egui::epaint::ClippedShape> {
+        let raw = egui::RawInput {
+            screen_rect: Some(self.screen),
+            ..Default::default()
+        };
+        self.ctx.run_ui(raw, |ui| self.app.draw(ui)).shapes
     }
 
     /// Click the collapse control of rail `id` where the last frame drew it.
@@ -592,6 +627,134 @@ fn the_collapsed_ledger_keeps_its_selector_strip_and_reopens_from_it() {
         (reopened - open).abs() < 1e-3,
         "clicking a name in the collapsed ledger's strip left it at {reopened}pt \
          rather than reopening it to {open}pt"
+    );
+}
+
+/// The topmost opaque rect covering `at`, which is the colour a person sees
+/// there on a surface drawn in flat fills.
+///
+/// `shapes` is in paint order, so the last fully opaque rect containing the
+/// point, clipped in, is what is on top.
+/// Text, strokes and native textures are skipped deliberately: the question is
+/// what colour the *background* at a point is, and a glyph over a fill does
+/// not change which fill it is over.
+fn top_fill_at(shapes: &[egui::epaint::ClippedShape], at: egui::Pos2) -> Option<egui::Color32> {
+    fn walk(shape: &egui::epaint::Shape, at: egui::Pos2, found: &mut Option<egui::Color32>) {
+        match shape {
+            egui::epaint::Shape::Rect(rect) if rect.fill.is_opaque() && rect.rect.contains(at) => {
+                *found = Some(rect.fill);
+            }
+            egui::epaint::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    walk(shape, at, found);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut found = None;
+    for clipped in shapes {
+        if clipped.clip_rect.contains(at) {
+            walk(&clipped.shape, at, &mut found);
+        }
+    }
+    found
+}
+
+/// The collapsed ledger rail is one fill from its top edge to its bottom one,
+/// and that fill is its selector strip's own.
+///
+/// **What this refuses.** The rail's collapsed extent is the strip plus
+/// clearance for the band the status rail floats in — 56pt against the strip's
+/// 24 — and `RegionFrame::Rail` fills the whole 56 with the panel fill. A
+/// strip that painted only its own head therefore left 32pt of a second,
+/// different fill under it: a strip sitting on a slab, full width, on every
+/// frame the status rail had nothing to say.
+///
+/// **Why this boot.** Over [`both`] the floating band is drawn and covers the
+/// clearance, so the defect is invisible and this assertion would hold either
+/// way. [`protocol_only`] is the state that shows it, and the second assertion
+/// below is what says so rather than assuming it: the status band records no
+/// rect on a frame it did not draw.
+///
+/// Sampled across the rect rather than at one point, because the claim is
+/// about the whole of it — a fill that covered the strip and half the
+/// clearance would pass a single centre sample either way.
+///
+/// Watched failing: hand `chrome::collapsed_rail` the split head instead of
+/// the whole rect (which is what the draw path did before) and the samples
+/// below the strip come back the panel fill.
+#[test]
+fn the_collapsed_ledger_is_one_fill_from_its_strip_to_its_bottom_edge() {
+    let ledger = arrangement::default_arrangement().expect_region(arrangement::LEDGER_RAIL);
+    let collapsed = ledger
+        .collapsed_extent()
+        .expect("the arrangement declares the ledger rail collapsible");
+    assert!(
+        collapsed > chrome::rail_selector_height(),
+        "the ledger collapses to {collapsed}pt, which is its {}pt strip and no \
+         clearance under it — there is nothing for this test to be about",
+        chrome::rail_selector_height()
+    );
+
+    let mut win = Live::over(protocol_only());
+    win.settle();
+    assert!(
+        win.app.graph_on_canvas(),
+        "this boot put a chart on the canvas, so the status rail draws its idle \
+         line and covers the clearance this test is about"
+    );
+
+    win.click_collapse(arrangement::LEDGER_RAIL);
+    let rect = win
+        .app
+        .region_rect(arrangement::LEDGER_RAIL)
+        .expect("the collapsed ledger rail drew");
+    assert!(
+        (rect.height() - collapsed).abs() < 1e-3,
+        "the collapsed ledger drew at {}pt rather than the {collapsed}pt it \
+         declares, so the samples below are not over the clearance",
+        rect.height()
+    );
+    assert!(
+        win.app.region_rect(arrangement::STATUS_BAND).is_none(),
+        "the status rail drew on this frame, so whatever covers the clearance \
+         may be its floating band rather than the rail's own fill"
+    );
+
+    let shapes = win.shapes();
+    let want = chrome::colour(
+        meridian_design::semantic(Mode::Light.is_dark())
+            .tabs
+            .bar_background,
+    );
+    // Inset by a point on every side: the sample is about what fills the rect,
+    // not about which of two abutting fills owns the boundary pixel.
+    let inset = rect.shrink(1.0);
+    let mut samples = 0_usize;
+    for i in 0..=4 {
+        for j in 0..=8 {
+            let at = egui::pos2(
+                inset.left() + inset.width() * i as f32 / 4.0,
+                inset.top() + inset.height() * j as f32 / 8.0,
+            );
+            let fill = top_fill_at(&shapes, at);
+            assert_eq!(
+                fill,
+                Some(want),
+                "at {at:?}, {:.0}pt down the collapsed ledger's {:.0}pt, the \
+                 topmost fill is {fill:?} rather than the strip's own \
+                 {want:?} — the rail reads as two objects stacked",
+                at.y - rect.top(),
+                rect.height()
+            );
+            samples += 1;
+        }
+    }
+    assert_eq!(
+        samples, 45,
+        "a loop that sampled {samples} points is not the grid this asserts over"
     );
 }
 

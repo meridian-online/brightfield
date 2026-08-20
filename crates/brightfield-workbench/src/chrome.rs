@@ -401,7 +401,9 @@ pub fn rail_split(rect: egui::Rect) -> (egui::Rect, egui::Rect) {
 /// rail collapsed to this height is exactly this strip, so its names stay
 /// drawn and stay clickable, and
 /// `the_collapsed_ledger_keeps_its_selector_strip_and_reopens_from_it` aims a
-/// click at one of them.
+/// click at one of them. A rail whose collapsed rect is *taller* than the
+/// strip goes through [`collapsed_rail`] instead, which is this drawing with
+/// the rest of that rect painted the same colour.
 pub fn rail_selector(
     ui: &mut egui::Ui,
     rect: egui::Rect,
@@ -410,13 +412,83 @@ pub fn rail_selector(
     collapse: Option<Caret>,
     mode: Mode,
 ) -> StripDrawn {
+    strip(ui, rect, names, active, collapse, Below::Body, mode)
+}
+
+/// What a bottom rail collapsed to a rect taller than its own strip draws:
+/// the strip at the head of that rect, and the rest of the rect in the
+/// strip's own fill.
+///
+/// The rect is taller because the arrangement says so. The ledger rail
+/// declares `rail_selector_height() + status_rail_height()`, and the second
+/// term is clearance: the status rail floats over the window's bottom edge as
+/// an `egui::Area`, so a strip that ended at the top of that band was drawn,
+/// recorded and unclickable. What that clearance *looks like* is this
+/// function's question, and painting it with the strip's own
+/// `tabs.bar_background` is the answer — the region's frame fills the whole
+/// collapsed rect with the panel fill, so a strip that painted only its own
+/// head left the clearance as a second, different fill under it and the
+/// collapsed rail read as a strip sitting on a slab.
+///
+/// The same shape [`rail_stub`] already has on the other axis: a collapsed
+/// side rail's stub covers the whole of the rect it was given, which is why
+/// this showed on the ledger and not on the two side rails.
+///
+/// **No rule along the strip's bottom edge, and that is the one judgement
+/// here beyond the fill.** The rule [`rail_selector`] draws divides the strip
+/// from the pane under it; collapsed there is no pane, so a full-width
+/// hairline across a single fill would put the division back in ink after the
+/// fill removed it.
+///
+/// Takes the whole collapsed rect rather than a pre-split strip, so where the
+/// strip sits inside it is decided here rather than at the call site — the
+/// clearance is below the strip and not above it because the strip has to be
+/// out of the floating band to be clickable.
+pub fn collapsed_rail(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    names: &[&str],
+    active: usize,
+    caret: Caret,
+    mode: Mode,
+) -> StripDrawn {
     let sem = semantic(mode.is_dark());
     ui.painter()
         .rect_filled(rect, radius::NONE, colour(sem.tabs.bar_background));
-    ui.painter().line_segment(
-        [rect.left_bottom(), rect.right_bottom()],
-        egui::Stroke::new(1.0, colour(sem.borders.subtle)),
-    );
+    let (head, _) = rail_split(rect);
+    strip(ui, head, names, active, Some(caret), Below::Clearance, mode)
+}
+
+/// What is under a rail's selector strip, which is what decides whether the
+/// strip rules its own bottom edge.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Below {
+    /// The rail's body — a pane, which the rule separates from the strip.
+    Body,
+    /// The collapsed rail's clearance, which holds no pane and is already
+    /// painted in the strip's own fill by [`collapsed_rail`].
+    Clearance,
+}
+
+/// The selector strip itself, shared by the open and collapsed drawings.
+fn strip(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    names: &[&str],
+    active: usize,
+    collapse: Option<Caret>,
+    below: Below,
+    mode: Mode,
+) -> StripDrawn {
+    let sem = semantic(mode.is_dark());
+    ui.painter()
+        .rect_filled(rect, radius::NONE, colour(sem.tabs.bar_background));
+    if below == Below::Body {
+        ui.painter().line_segment(
+            [rect.left_bottom(), rect.right_bottom()],
+            egui::Stroke::new(1.0, colour(sem.borders.subtle)),
+        );
+    }
 
     let mut control = None;
     let mut toggled = false;
