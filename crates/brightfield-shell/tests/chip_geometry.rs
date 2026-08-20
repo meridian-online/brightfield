@@ -5,20 +5,22 @@
 //!
 //! The design system moved the status pill's and the keycap chip's horizontal
 //! inset from a raw ladder index onto a named `CHIP_PADDING_X`, which is one
-//! ladder step wider. Four committed baselines in this crate carry a pill or a
-//! chip, so all four move. A baseline that moves is graded by its own image
-//! diff, and an image diff cannot tell a pill that got 4.0 pt of padding from a
-//! pill that got 4.0 pt of something else — so before those pictures were
-//! re-captured, this file was written to hold the geometry independently of
-//! them. The pictures are then evidence of a change that is already pinned,
-//! rather than the only evidence for it.
+//! ladder step wider. Ten committed baselines in this crate carry a pill or a
+//! chip, so all ten move — a count that came out of running the suites, and
+//! that is six higher than reading the call sites suggested. A baseline that
+//! moves is graded by its own image diff, and an image diff cannot tell a pill
+//! that got 4.0 pt of padding from a pill that got 4.0 pt of something else —
+//! so before those pictures were re-captured, this file was written to hold
+//! the geometry independently of them. The pictures are then evidence of a
+//! change that is already pinned, rather than the only evidence for it.
 //!
 //! WHAT WAS HOLDING IT BEFORE: nothing on this axis. `gallery_gate.rs` asks
 //! each specimen for its accessibility label and for its *height* against a
 //! named rung; `token_discipline.rs` greps source text. The capsule's width is
-//! the thing that moved and no test in this crate mentioned it. Reverting the
-//! upstream primitives to their old inset leaves both of those suites green —
-//! see the failure text on the branch that added this file.
+//! the thing that moved and no test in this crate mentioned it. Measured, with
+//! the upstream primitives patched back to the inset they used to spend:
+//! `token_discipline` passed 2 of 2 and the nine non-pixel tests in
+//! `gallery_gate` all passed. The picture was the whole of the guard.
 //!
 //! HOW IT MEASURES. Every expectation below is laid out from
 //! `meridian_design` constants here, never asked of the code under test, and
@@ -27,12 +29,24 @@
 //! composition the goldens photograph — so a frame that measured clean and a
 //! frame that was photographed are the same frame.
 //!
+//! WHICH DRAWINGS ARE COVERED. Every gated gallery specimen, enumerated by
+//! rendering the catalog rather than by listing the ones expected to carry a
+//! chip; plus two call sites with no specimen of their own, the run-state pill
+//! on a chart item and the region listing's row.
+//!
+//! `shell_palette_open_{light,dark}` also carries keycaps and also moves, and
+//! is NOT read here: `surfaces.rs` builds that frame as a rasterised image
+//! rather than a shape list, so measuring it would mean a second copy of the
+//! shell harness. It is held by the primitive assertions below plus the
+//! wrong-state guard that baseline already carries, and not by a direct read
+//! of its own frame.
+//!
 //! This is a deliberately separate reader from the one in `arrangement.rs`: a
 //! bug in a shared walk would hide from both.
 
 use brightfield_shell::chart_item::run_state_pill;
 use brightfield_shell::design::Mode;
-use brightfield_shell::gallery::{catalog, region_catalog, region_row, solo};
+use brightfield_shell::gallery::{catalog, region_catalog, region_row, solo, Component};
 use brightfield_workbench::subject::RunState;
 use egui_kittest::Harness;
 use meridian_design::control::{HEIGHT_XS, ICON_XS};
@@ -65,11 +79,27 @@ fn near(a: f32, b: f32) -> bool {
 // Reading the frame
 // ---------------------------------------------------------------------------
 
+/// Which primitive a chip-radius box came from, told apart by HOW it draws
+/// rather than by the geometry under test.
+///
+/// The status pill lays its capsule down as two rects over one rectangle — an
+/// opaque fill with no stroke, then a hairline stroke over a transparent fill.
+/// The keycap is an `egui::Frame`, which emits a single rect carrying both. So
+/// the discriminator is the pair (fill, stroke width), and it is independent of
+/// every inset this file measures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Primitive {
+    /// A status pill: icon, gap, label, inside a capsule.
+    Pill,
+    /// A keycap chip: a monospace galley inside a stroked box.
+    Keycap,
+}
+
 /// The chip-radius boxes and the text runs a frame painted.
 struct Painted {
-    /// Boxes drawn at the chip corner radius, deduplicated: the pill paints
-    /// its fill and its stroke as two rects over the same geometry.
-    chips: Vec<egui::Rect>,
+    /// Boxes drawn at the chip corner radius, deduplicated: the pill's stroke
+    /// pass repeats the geometry its fill pass already reported.
+    chips: Vec<(egui::Rect, Primitive)>,
     /// Every text run, with the string it laid out.
     texts: Vec<(egui::Rect, String)>,
 }
@@ -79,7 +109,9 @@ fn painted<S>(harness: &Harness<'_, S>) -> Painted {
 
     fn walk(shape: &egui::Shape, radius: egui::CornerRadius, out: &mut Painted) {
         match shape {
-            egui::Shape::Rect(r) if r.corner_radius == radius => out.push_chip(r.rect),
+            egui::Shape::Rect(r) if r.corner_radius == radius => {
+                out.push_chip(r.rect, r.fill, r.stroke.width);
+            }
             egui::Shape::Text(t) => out.texts.push((
                 egui::Rect::from_min_size(t.pos, t.galley.size()),
                 t.galley.text().to_owned(),
@@ -100,18 +132,21 @@ fn painted<S>(harness: &Harness<'_, S>) -> Painted {
 }
 
 impl Painted {
-    /// Record a chip box, ignoring one already seen at the same geometry: the
-    /// pill paints its fill and its stroke as two rects over one rectangle.
-    fn push_chip(&mut self, rect: egui::Rect) {
-        let seen = self.chips.iter().any(|c| {
-            near(c.left(), rect.left())
-                && near(c.right(), rect.right())
-                && near(c.top(), rect.top())
-                && near(c.bottom(), rect.bottom())
-        });
-        if !seen {
-            self.chips.push(rect);
+    /// Record a chip box under the primitive that drew it.
+    ///
+    /// A transparent fill is the pill's stroke pass, which repeats geometry
+    /// already recorded, so it is dropped rather than deduplicated by position
+    /// — two chips genuinely sharing a rectangle would be a frame worth seeing.
+    fn push_chip(&mut self, rect: egui::Rect, fill: egui::Color32, stroke_width: f32) {
+        if fill.a() == 0 {
+            return;
         }
+        let primitive = if stroke_width > 0.0 {
+            Primitive::Keycap
+        } else {
+            Primitive::Pill
+        };
+        self.chips.push((rect, primitive));
     }
 
     /// Each chip box paired with the one text run whose centre it holds, keyed
@@ -120,9 +155,9 @@ impl Painted {
     /// Pairing by containment rather than by paint order is what lets the same
     /// reader serve a lone pill and a row of them, and keys the failure message
     /// to the label a reader can see in the picture.
-    fn chips_by_label(&self) -> Vec<(String, egui::Rect, egui::Rect)> {
+    fn chips_by_label(&self) -> Vec<Chip> {
         let mut out = Vec::new();
-        for chip in &self.chips {
+        for (chip, primitive) in &self.chips {
             let inside: Vec<&(egui::Rect, String)> = self
                 .texts
                 .iter()
@@ -135,7 +170,12 @@ impl Painted {
                  is not the frame this test measures",
                 inside.len()
             );
-            out.push((inside[0].1.clone(), *chip, inside[0].0));
+            out.push(Chip {
+                label: inside[0].1.clone(),
+                primitive: *primitive,
+                box_: *chip,
+                text: inside[0].0,
+            });
         }
         out
     }
@@ -145,9 +185,9 @@ impl Painted {
     /// The guard against a vacuous pass: a `for` loop over an empty reading
     /// asserts nothing, and a frame that drew a different set of chips is not
     /// the frame under test.
-    fn expect(&self, labels: &[&str]) -> Vec<(String, egui::Rect, egui::Rect)> {
+    fn expect(&self, labels: &[&str]) -> Vec<Chip> {
         let found = self.chips_by_label();
-        let mut names: Vec<&str> = found.iter().map(|(l, _, _)| l.as_str()).collect();
+        let mut names: Vec<&str> = found.iter().map(|c| c.label.as_str()).collect();
         names.sort_unstable();
         let mut want: Vec<&str> = labels.to_vec();
         want.sort_unstable();
@@ -159,13 +199,26 @@ impl Painted {
     }
 }
 
+/// One chip box, the primitive that drew it and the label it holds.
+struct Chip {
+    label: String,
+    primitive: Primitive,
+    box_: egui::Rect,
+    text: egui::Rect,
+}
+
 /// One gallery specimen rendered solo, in the composition `gallery_gate.rs`
 /// photographs.
 fn specimen(id: &str, mode: Mode) -> Painted {
-    let mut component = catalog()
+    let component = catalog()
         .into_iter()
         .find(|c| c.info().id == id)
         .unwrap_or_else(|| panic!("no gallery component with id {id:?}"));
+    drawn_solo(component, mode)
+}
+
+/// One catalog entry rendered solo.
+fn drawn_solo(mut component: Box<dyn Component>, mode: Mode) -> Painted {
     let (w, h) = component.info().solo_size;
     let mut harness = Harness::builder()
         .with_size(egui::vec2(w, h))
@@ -195,7 +248,13 @@ fn pill_insets(capsule: egui::Rect, text: egui::Rect) -> (f32, f32) {
     (leading, trailing)
 }
 
-fn assert_pill(where_: &str, mode: Mode, label: &str, capsule: egui::Rect, text: egui::Rect) {
+fn assert_pill(where_: &str, mode: Mode, chip: &Chip) {
+    let (label, capsule, text) = (&chip.label, chip.box_, chip.text);
+    assert_eq!(
+        chip.primitive,
+        Primitive::Pill,
+        "{where_} {mode:?} {label:?}: measured as a pill but drawn as a keycap"
+    );
     let (leading, trailing) = pill_insets(capsule, text);
     assert!(
         near(leading, CHIP_PADDING_X),
@@ -222,8 +281,39 @@ fn assert_pill(where_: &str, mode: Mode, label: &str, capsule: egui::Rect, text:
     );
 }
 
+fn assert_keycap(where_: &str, mode: Mode, chip: &Chip) {
+    let (keystroke, box_, text) = (&chip.label, chip.box_, chip.text);
+    assert_eq!(
+        chip.primitive,
+        Primitive::Keycap,
+        "{where_} {mode:?} {keystroke:?}: measured as a keycap but drawn as a pill"
+    );
+    // The hairline is in the expectation because the keycap's box is a stroked
+    // `egui::Frame` and the painted rect carries the stroke outside the margin.
+    let expected = CHIP_PADDING_X + HAIRLINE;
+    let leading = text.left() - box_.left();
+    let trailing = box_.right() - text.right();
+    assert!(
+        near(leading, expected),
+        "{where_} {mode:?} {keystroke:?}: leading inset {leading} is not \
+         CHIP_PADDING_X + hairline ({expected})"
+    );
+    assert!(
+        near(trailing, expected),
+        "{where_} {mode:?} {keystroke:?}: trailing inset {trailing} is not \
+         CHIP_PADDING_X + hairline ({expected})"
+    );
+    assert!(
+        near(box_.width(), text.width() + 2.0 * expected),
+        "{where_} {mode:?} {keystroke:?}: the keycap drew {} wide against the {} \
+         its terms add up to",
+        box_.width(),
+        text.width() + 2.0 * expected
+    );
+}
+
 // ---------------------------------------------------------------------------
-// The gallery specimens — the two goldens that carry a chip
+// The gallery specimens — every one of them, not a list
 // ---------------------------------------------------------------------------
 
 /// The labels the status-pill specimen draws, in the vocabulary that file
@@ -235,54 +325,76 @@ const PILL_SPECIMEN: [&str; 3] = ["ok", "waiting", "failing"];
 /// would report it if it ever drew inside a chip box.
 const CHIP_SPECIMEN: [&str; 3] = ["Esc", "⌘S", "Space"];
 
-/// Every pill in the gallery's own specimen is inset from its capsule by the
-/// named chip padding, on both edges.
+/// Which gated specimens draw a chip, and how many of each primitive.
 ///
-/// This is the defect the token was introduced for, stated as the picture
-/// shows it: the outer inset used to be one ladder step *below* the gap
+/// This census is the thing that predicts which committed baselines move when
+/// the chip geometry changes, and it is asserted rather than written down: a
+/// specimen that starts or stops drawing a chip reddens
+/// `every_chip_in_every_gallery_specimen_spends_the_named_padding` and says so
+/// in the failure, instead of being discovered as a golden nobody expected to
+/// move. Counts are per frame, and identical in light and dark.
+const CHIP_CENSUS: [(&str, usize, usize); 4] = [
+    // (specimen id, pills, keycaps)
+    ("key-chip", 0, 3),
+    ("modal-chrome", 0, 1),
+    ("picker", 0, 7),
+    ("status-pill", 3, 0),
+];
+
+/// Every chip drawn by every gated gallery specimen is inset from its box by
+/// the named chip padding, on both edges.
+///
+/// **Enumerated by rendering the catalog, not by listing the specimens that
+/// were expected to carry a chip.** The list would have been wrong: this change
+/// was scoped as moving two pairs of goldens, and running it moved five. Three
+/// of those pairs draw a keycap somewhere a reader of the card would not think
+/// to look — a modal's footer, a picker's shortcut column. A test that measures
+/// what the code draws cannot be short in that way, which is why this replaced
+/// a pair of per-specimen tests.
+///
+/// The inversion the token was introduced to end is asserted per chip inside
+/// `assert_pill`: the outer inset used to be one ladder step BELOW the gap
 /// between the icon and the label, so the group sat looser in its middle than
 /// it sat inside the capsule.
 #[test]
-fn the_gallery_pills_spend_the_named_chip_padding_on_both_outer_edges() {
+fn every_chip_in_every_gallery_specimen_spends_the_named_padding() {
     for mode in [Mode::Light, Mode::Dark] {
-        let painted = specimen("status-pill", mode);
-        for (label, capsule, text) in painted.expect(&PILL_SPECIMEN) {
-            assert_pill("status-pill specimen:", mode, &label, capsule, text);
+        let mut census: Vec<(&str, usize, usize)> = Vec::new();
+        for component in catalog() {
+            let info = component.info();
+            if !info.status.gated() {
+                continue;
+            }
+            let id = info.id;
+            let painted = drawn_solo(component, mode);
+            let chips = painted.chips_by_label();
+            if chips.is_empty() {
+                continue;
+            }
+            let mut pills = 0;
+            let mut keycaps = 0;
+            for chip in &chips {
+                match chip.primitive {
+                    Primitive::Pill => {
+                        pills += 1;
+                        assert_pill(id, mode, chip);
+                    }
+                    Primitive::Keycap => {
+                        keycaps += 1;
+                        assert_keycap(id, mode, chip);
+                    }
+                }
+            }
+            census.push((id, pills, keycaps));
         }
-    }
-}
-
-/// The keycap spends the same named padding, which is the half of the token
-/// that makes it shared rather than a pill constant with a general name.
-///
-/// The hairline is in the expectation because the keycap's box is a stroked
-/// `egui::Frame` and the painted rect carries the stroke outside the margin.
-#[test]
-fn the_gallery_keycaps_spend_the_same_named_chip_padding() {
-    for mode in [Mode::Light, Mode::Dark] {
-        let painted = specimen("key-chip", mode);
-        let expected = CHIP_PADDING_X + HAIRLINE;
-        for (keystroke, chip, text) in painted.expect(&CHIP_SPECIMEN) {
-            let leading = text.left() - chip.left();
-            let trailing = chip.right() - text.right();
-            assert!(
-                near(leading, expected),
-                "key-chip specimen: {mode:?} {keystroke:?}: leading inset {leading} \
-                 is not CHIP_PADDING_X + hairline ({expected})"
-            );
-            assert!(
-                near(trailing, expected),
-                "key-chip specimen: {mode:?} {keystroke:?}: trailing inset \
-                 {trailing} is not CHIP_PADDING_X + hairline ({expected})"
-            );
-            assert!(
-                near(chip.width(), text.width() + 2.0 * expected),
-                "key-chip specimen: {mode:?} {keystroke:?}: the keycap drew {} wide \
-                 against the {} its terms add up to",
-                chip.width(),
-                text.width() + 2.0 * expected
-            );
-        }
+        census.sort_unstable();
+        assert_eq!(
+            census,
+            CHIP_CENSUS.to_vec(),
+            "{mode:?}: the specimens drawing a chip are not the ones this file \
+             was written against — every entry here owns a pair of committed \
+             baselines that move when the chip geometry moves"
+        );
     }
 }
 
@@ -303,8 +415,8 @@ fn the_run_state_pill_spends_the_named_chip_padding() {
             let painted = frame(mode, (420.0, 120.0), move |ui| {
                 run_state_pill(ui, state);
             });
-            for (label, capsule, text) in painted.expect(&[state.label()]) {
-                assert_pill("run-state pill:", mode, &label, capsule, text);
+            for chip in &painted.expect(&[state.label()]) {
+                assert_pill("run-state pill", mode, chip);
             }
         }
     }
@@ -324,8 +436,8 @@ fn the_region_row_pill_spends_the_named_chip_padding() {
         }
     });
     let labels: Vec<&str> = region_catalog().iter().map(|e| e.status.label()).collect();
-    for (label, capsule, text) in painted.expect(&labels) {
-        assert_pill("region row:", mode, &label, capsule, text);
+    for chip in &painted.expect(&labels) {
+        assert_pill("region row", mode, chip);
     }
 }
 
@@ -356,28 +468,30 @@ fn each_chip_grew_by_the_step_the_named_token_added() {
 
     for mode in [Mode::Light, Mode::Dark] {
         let painted = specimen("status-pill", mode);
-        for (label, capsule, text) in painted.expect(&PILL_SPECIMEN) {
-            let former = FORMER_INSET + ICON_XS + ICON_LABEL_GAP + text.width() + FORMER_INSET;
+        for chip in &painted.expect(&PILL_SPECIMEN) {
+            let former = FORMER_INSET + ICON_XS + ICON_LABEL_GAP + chip.text.width() + FORMER_INSET;
+            let grew = chip.box_.width() - former;
             assert!(
-                near(capsule.width() - former, WIDENING_PER_CHIP),
-                "status-pill specimen: {mode:?} {label:?}: the capsule drew {} \
-                 wide against the {former} it drew before the token, a difference \
-                 of {} rather than {WIDENING_PER_CHIP}",
-                capsule.width(),
-                capsule.width() - former
+                near(grew, WIDENING_PER_CHIP),
+                "status-pill specimen: {mode:?} {:?}: the capsule drew {} wide \
+                 against the {former} it drew before the token, a difference of \
+                 {grew} rather than {WIDENING_PER_CHIP}",
+                chip.label,
+                chip.box_.width()
             );
         }
 
         let painted = specimen("key-chip", mode);
-        for (keystroke, chip, text) in painted.expect(&CHIP_SPECIMEN) {
-            let former = text.width() + 2.0 * (FORMER_INSET + HAIRLINE);
+        for chip in &painted.expect(&CHIP_SPECIMEN) {
+            let former = chip.text.width() + 2.0 * (FORMER_INSET + HAIRLINE);
+            let grew = chip.box_.width() - former;
             assert!(
-                near(chip.width() - former, WIDENING_PER_CHIP),
-                "key-chip specimen: {mode:?} {keystroke:?}: the keycap drew {} wide \
-                 against the {former} it drew before the token, a difference of {} \
+                near(grew, WIDENING_PER_CHIP),
+                "key-chip specimen: {mode:?} {:?}: the keycap drew {} wide against \
+                 the {former} it drew before the token, a difference of {grew} \
                  rather than {WIDENING_PER_CHIP}",
-                chip.width(),
-                chip.width() - former
+                chip.label,
+                chip.box_.width()
             );
         }
     }
@@ -394,23 +508,25 @@ fn each_chip_grew_by_the_step_the_named_token_added() {
 fn neither_chip_moved_on_the_vertical_ladder() {
     for mode in [Mode::Light, Mode::Dark] {
         let painted = specimen("status-pill", mode);
-        for (label, capsule, _) in painted.expect(&PILL_SPECIMEN) {
+        for chip in &painted.expect(&PILL_SPECIMEN) {
             assert!(
-                near(capsule.height(), HEIGHT_XS),
-                "status-pill specimen: {mode:?} {label:?}: the capsule drew {} tall \
+                near(chip.box_.height(), HEIGHT_XS),
+                "status-pill specimen: {mode:?} {:?}: the capsule drew {} tall \
                  against the {HEIGHT_XS} rung it sits on",
-                capsule.height()
+                chip.label,
+                chip.box_.height()
             );
         }
 
         let painted = specimen("key-chip", mode);
-        for (keystroke, chip, text) in painted.expect(&CHIP_SPECIMEN) {
-            let expected = text.height() + 2.0 * (SPACE_1 + HAIRLINE);
+        for chip in &painted.expect(&CHIP_SPECIMEN) {
+            let expected = chip.text.height() + 2.0 * (SPACE_1 + HAIRLINE);
             assert!(
-                near(chip.height(), expected),
-                "key-chip specimen: {mode:?} {keystroke:?}: the keycap drew {} tall \
-                 against the {expected} its terms add up to",
-                chip.height()
+                near(chip.box_.height(), expected),
+                "key-chip specimen: {mode:?} {:?}: the keycap drew {} tall against \
+                 the {expected} its terms add up to",
+                chip.label,
+                chip.box_.height()
             );
         }
     }
