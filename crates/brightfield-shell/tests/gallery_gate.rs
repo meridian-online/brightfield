@@ -38,7 +38,11 @@ use brightfield_shell::app::{chart_registry_with, ChartDoc};
 use brightfield_shell::capture::capture_component;
 use brightfield_shell::design::Mode;
 use brightfield_shell::gallery::{
-    catalog, enabled, solo, ActuationInput, Component, FocusTarget, GateHeight, ProbeRole, GALLERY,
+    catalog, enabled, region_catalog, region_row, regions_ui, solo, ActuationInput, Component,
+    ComponentStatus, FocusTarget, GateHeight, ProbeRole, RegionEntry, GALLERY,
+};
+use brightfield_workbench::arrangement::{
+    self, Collapse, Edge, Extent, Occupant, Region, RegionFrame, RegionId,
 };
 use brightfield_workbench::audit;
 use brightfield_workbench::registry::Slot;
@@ -97,6 +101,130 @@ fn the_catalog_is_complete_against_the_source() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// The regions — the second enumeration
+// ---------------------------------------------------------------------------
+
+/// A band under construction: declared, drawn, and with no frame named for it
+/// yet. A shipped arrangement cannot carry one — `audit_arrangement` refuses
+/// it — so the two cases below build their own; there is otherwise no
+/// unstyled region to ask the gallery about.
+static UNSTYLED: Region = Region {
+    id: RegionId::new("nobody-styled-this"),
+    edge: Edge::Top,
+    extent: Extent::Band(arrangement::TITLE_BAND_HEIGHT),
+    occupant: Occupant::Chrome("a band under construction"),
+    collapse: Collapse::Fixed,
+    frame: RegionFrame::Unstyled,
+};
+
+/// The listing is the arrangement, not a second copy of it: one entry per
+/// declared region, in the order the window lays them out.
+///
+/// A hand-written list here would be exactly the drift the arrangement module
+/// exists to end — a region added there and forgotten here is a region the
+/// one surface meant to show everything does not show.
+#[test]
+fn the_region_listing_is_the_arrangement() {
+    let declared = arrangement::default_arrangement().regions;
+    let listed = region_catalog();
+    assert_eq!(
+        listed.len(),
+        declared.len(),
+        "the arrangement declares {} regions and the gallery lists {} — the \
+         listing is derived from the arrangement, so a difference means it \
+         stopped being",
+        declared.len(),
+        listed.len()
+    );
+    for (entry, region) in listed.iter().zip(declared) {
+        assert_eq!(
+            entry.region.id, region.id,
+            "the listing is out of step with the arrangement it is read from"
+        );
+        assert!(
+            entry.contract().contains(region.frame.function()),
+            "{}: its row says {:?}, which does not name what draws its box",
+            region.id,
+            entry.contract()
+        );
+    }
+    assert!(
+        !listed.is_empty(),
+        "an empty listing satisfies every assertion above"
+    );
+}
+
+/// A region with no frame is listed under the draft pill rather than being
+/// absent — the same honesty device [`ComponentStatus::Draft`] is for a
+/// primitive the per-primitive gate cannot hold yet.
+#[test]
+fn a_region_with_no_frame_is_listed_as_draft() {
+    assert_eq!(
+        RegionEntry::of(&UNSTYLED).status,
+        ComponentStatus::Draft,
+        "a region with no frame declared is unfinished, and unfinished is \
+         visible rather than silent"
+    );
+    assert!(
+        !RegionEntry::of(&UNSTYLED).status.gated(),
+        "a draft region is not held to a contract it has not got yet"
+    );
+    for entry in region_catalog() {
+        assert_eq!(
+            entry.status,
+            ComponentStatus::Live,
+            "{}: the shipped arrangement lists a region as {:?}; every region \
+             it declares is on the shipping surface and has a frame",
+            entry.region.id,
+            entry.status
+        );
+    }
+}
+
+/// Every region reaches the screen, and so does a region with no style.
+///
+/// Drawn rather than counted, which is the difference between this and the
+/// two above: the listing could be complete and the pane could still render
+/// none of it. Each row is resolved by the name it draws and by the line
+/// saying how it sizes, so a row that drew a name and nothing else fails too.
+#[test]
+fn every_region_is_drawn_in_the_gallery_with_what_frames_it() {
+    let mut harness = Harness::builder()
+        // Tall enough that no row is laid out past the bottom of the frame:
+        // a row that never got a box has no node to resolve, which would read
+        // here as the gallery not drawing it.
+        .with_size(egui::vec2(560.0, 1400.0))
+        .with_pixels_per_point(1.0)
+        .wgpu()
+        .build_ui(|ui| {
+            brightfield_shell::design::apply(ui.ctx(), Mode::Light);
+            regions_ui(ui);
+            // The unstyled case, drawn through the same row the listing uses.
+            region_row(ui, RegionEntry::of(&UNSTYLED));
+        });
+    harness.run();
+
+    for entry in region_catalog() {
+        let contract = entry.contract();
+        // The name is unique across the arrangement, so it is resolved
+        // singly. The contract line is not — two bands on the same rung with
+        // the same frame say the same sentence — so this asks that it drew at
+        // all rather than that it drew once.
+        harness.get_by_label(entry.region.id.as_str());
+        assert!(
+            harness
+                .query_all_by_label(contract.as_str())
+                .next()
+                .is_some(),
+            "{}: its row drew a name and no contract line",
+            entry.region.id
+        );
+    }
+    harness.get_by_label(UNSTYLED.id.as_str());
+    harness.get_by_label(RegionEntry::of(&UNSTYLED).status.label());
 }
 
 /// Gate item 4's anchor: the token-discipline grep lives beside this suite

@@ -41,6 +41,7 @@
 
 use meridian_design::{control, focus, radius, semantic, spacing, typography, Elevation, Rgba};
 
+use crate::arrangement::RegionFrame;
 use crate::item::PaneKey;
 use crate::subject::{
     Action, Affordance, Crumb, EmptyState, HideAffordance, Icon, StatusEntry, StatusSide, Subject,
@@ -129,6 +130,114 @@ fn toggle_ink(enabled: bool, mode: Mode) -> Rgba {
 
 fn ui_font() -> egui::FontId {
     egui::FontId::proportional(typography::UI_SIZE)
+}
+
+// ---------------------------------------------------------------------------
+// The region frames
+// ---------------------------------------------------------------------------
+//
+// One function per kind of region, and the frame each returns is what the
+// shell's draw path hands the panel. The shape is `re_ui`'s — a function that
+// answers "what does a band look like" rather than a palette of colours a
+// call site assembles one from. What each is used by is declared in
+// `crate::arrangement`: a `Region` names its `RegionFrame`, and
+// `region_frame` below is where that name becomes an `egui::Frame`.
+//
+// Before these existed the bands took whatever frame egui defaults a panel
+// to and the rails built one inline in the draw path, so "does this region
+// have a style?" was a question with no object to ask it of. The values did
+// not move when they were named: the band margin below is the same measure
+// egui's own default carries, said on the spacing ladder instead of as two
+// numbers inside egui.
+
+/// The inner margin a band leaves around its row of chrome — wider across
+/// than down, because a band is one row tall and its content is a line.
+///
+/// On the spacing ladder rather than typed at the frame: a band's padding is
+/// a box-model measure like any other, and the ladder is what stops the next
+/// band being inset by a number somebody liked the look of.
+#[must_use]
+pub fn band_margin() -> egui::Margin {
+    egui::Margin::symmetric(spacing::SPACE_4 as i8, spacing::SPACE_1 as i8)
+}
+
+/// The padding a region leaves around an occupant that brings none of its
+/// own.
+///
+/// A pane brings [`pane_content_inset`]; the front door and anything else
+/// drawn straight onto a region take this. Named for the same reason
+/// [`header_band_height`] is: a window arithmetic that has to subtract it
+/// cannot read it out of a literal at one call site.
+#[must_use]
+pub const fn view_padding() -> f32 {
+    spacing::SPACE_4
+}
+
+/// The frame a band draws in: the panel fill, inset by [`band_margin`].
+pub fn band_frame(ui: &egui::Ui) -> egui::Frame {
+    egui::Frame::new()
+        .inner_margin(band_margin())
+        .fill(ui.visuals().panel_fill)
+}
+
+/// The frame a rail draws in: the panel fill, and no margin of its own.
+///
+/// No margin because a rail's own content brings its insets — the selector
+/// strip is measured from the rail's rect, and the pane below it is framed by
+/// [`pane_frame`]. A margin here would inset both a second time.
+pub fn rail_frame(ui: &egui::Ui) -> egui::Frame {
+    egui::Frame::new().fill(ui.visuals().panel_fill)
+}
+
+/// The frame the canvas draws in.
+///
+/// The same box as [`rail_frame`] today, and a separate function rather than
+/// a call to it: the canvas is the one region whose extent is subtraction,
+/// and a change to how a rail is boxed should have to be made deliberately
+/// here rather than arriving as a side effect.
+pub fn canvas_frame(ui: &egui::Ui) -> egui::Frame {
+    egui::Frame::new().fill(ui.visuals().panel_fill)
+}
+
+/// The frame a floating region draws in: the status bar's own fill.
+///
+/// Deliberately not the panel fill. An overlay takes no space from its
+/// siblings, so the only thing that says it is a layer rather than part of
+/// the window is how it is painted.
+///
+/// Takes a [`Mode`] rather than a `Ui` because the layer this frames is
+/// anchored to the window rather than nested in a panel, so there is no
+/// parent `Ui` whose visuals it should inherit.
+pub fn overlay_frame(mode: Mode) -> egui::Frame {
+    egui::Frame::new().fill(colour(
+        semantic(mode.is_dark()).containers.status_bar_background,
+    ))
+}
+
+/// The frame a region with no declared style draws in: none at all.
+///
+/// [`RegionFrame::Unstyled`] is the honesty device rather than a treatment,
+/// so this is deliberately not a plausible-looking default. A region that
+/// reaches it draws with no fill and no inset, which reads as unfinished on
+/// screen — which is the point, and is why
+/// `audit_arrangement` refuses one in a shipped arrangement.
+pub const fn unstyled_frame() -> egui::Frame {
+    egui::Frame::NONE
+}
+
+/// The frame a region declares, resolved.
+///
+/// The one place a [`RegionFrame`] becomes an `egui::Frame`, and the reason
+/// the enum is safe to grow: this match is exhaustive, so a variant added
+/// without a function beside it does not compile.
+pub fn region_frame(frame: RegionFrame, ui: &egui::Ui, mode: Mode) -> egui::Frame {
+    match frame {
+        RegionFrame::Band => band_frame(ui),
+        RegionFrame::Rail => rail_frame(ui),
+        RegionFrame::Canvas => canvas_frame(ui),
+        RegionFrame::Overlay => overlay_frame(mode),
+        RegionFrame::Unstyled => unstyled_frame(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -988,12 +1097,26 @@ pub fn toolbar_button(ui: &mut egui::Ui, entry: &ToolbarEntry, mode: Mode) -> Op
 }
 
 /// What a status rail did this frame.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+///
+/// `Eq` is gone from the derive because [`StatusDrawn::rect`] is a rect and a
+/// rect is floats. Nothing compared two of these for equality; every reader
+/// reads one field.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct StatusDrawn {
     /// The ids drawn, in draw order.
     pub drawn: Vec<&'static str>,
     /// The verbs the user activated by dismissing an entry.
     pub dismissed: Vec<Verb>,
+    /// The band's rect in window space, or `None` on a frame where the rail
+    /// had no line to draw.
+    ///
+    /// Reported for the reason every other region's rect is recorded: a
+    /// region whose drawn extent nothing reads is a region whose declared
+    /// extent nothing holds. The shell records this under the status band's
+    /// [`RegionId`](crate::arrangement::RegionId), and
+    /// `every_regions_drawn_extent_is_the_one_it_declares` compares it with
+    /// the `Extent::Overlay` the arrangement declares.
+    pub rect: Option<egui::Rect>,
 }
 
 /// The height [`status_rail_overlay`] gives the rail's band, in logical
@@ -1031,9 +1154,18 @@ pub const fn status_rail_height() -> f32 {
 /// pixel of workbench chrome is painted — a shell hand-placing an
 /// `egui::Area` around the rail would be the first line of a second drawing
 /// file.
+///
+/// `extent` is the band's height, handed in by the caller rather than taken
+/// from [`status_rail_height`] here. The two are the same number today — the
+/// shipped arrangement declares `Extent::Overlay(status_rail_height())` — and
+/// that is the point: a draw path that calls the measure itself is a second
+/// spelling of it, and a second spelling is what stops the declaration from
+/// being the thing the screen follows. The shell reads the region and passes
+/// what it says.
 pub fn status_rail_overlay(
     ctx: &egui::Context,
     entries: &[StatusEntry],
+    extent: f32,
     mode: Mode,
 ) -> StatusDrawn {
     if entries.is_empty() {
@@ -1046,30 +1178,31 @@ pub fn status_rail_overlay(
         .order(egui::Order::Foreground)
         .fade_in(false)
         .show(ctx, |ui| {
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(screen.width(), status_rail_height()),
-                egui::Sense::hover(),
-            );
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(screen.width(), extent), egui::Sense::hover());
             let mut band = ui.new_child(
                 egui::UiBuilder::new()
                     .max_rect(rect)
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
             out = status_rail(&mut band, entries, mode);
+            out.rect = Some(rect);
         });
     out
 }
 
 /// The status rail: leading entries at the left, trailing at the right.
 pub fn status_rail(ui: &mut egui::Ui, entries: &[StatusEntry], mode: Mode) -> StatusDrawn {
-    let sem = semantic(mode.is_dark());
     let mut out = StatusDrawn::default();
     let rect = ui.max_rect();
-    ui.painter().rect_filled(
-        rect,
-        radius::NONE,
-        colour(sem.containers.status_bar_background),
-    );
+    // The band this rail paints is the status region's declared frame, read
+    // from the one function that resolves it rather than assembled here from
+    // a token and a radius. The declaration is what a reader asking "what
+    // does this region look like" finds; a second spelling in the draw path
+    // is what would make that answer wrong.
+    let frame = overlay_frame(mode);
+    ui.painter()
+        .rect_filled(rect, frame.corner_radius, frame.fill);
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = spacing::CONTROL_GAP;

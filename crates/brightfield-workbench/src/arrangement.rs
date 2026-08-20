@@ -19,10 +19,19 @@
 //!
 //! # The shape of an arrangement
 //!
-//! A [`Region`] is a name, an [`Edge`], an [`Extent`] and an [`Occupant`]. An
-//! [`Arrangement`] is an ordered list of them: the order is the order the
-//! shell adds the panels in, which is what decides whether a rail spans past a
-//! band or stops short of it.
+//! A [`Region`] is a name, an [`Edge`], an [`Extent`], an [`Occupant`] and a
+//! [`RegionFrame`]. An [`Arrangement`] is an ordered list of them: the order
+//! is the order the shell adds the panels in, which is what decides whether a
+//! rail spans past a band or stops short of it.
+//!
+//! The frame is the region's *style* — its fill, its inner margin and its
+//! border — and it is a name here rather than an `egui::Frame` because an
+//! arrangement is a `static` and a fill has to be resolved against a live
+//! `Ui`. [`crate::chrome`] carries one function per kind, and
+//! [`crate::chrome::region_frame`] is the dispatcher the draw path calls.
+//! Naming it is what makes "does every region have a style?" a question with
+//! an answer: before this field existed the bands took whatever frame egui
+//! defaults a panel to, and nothing in the workspace could say so.
 //!
 //! Three extents, and the difference between them is a decision rather than a
 //! detail:
@@ -316,6 +325,74 @@ impl Collapse {
     }
 }
 
+/// Which named function draws a region's box: its fill, its inner margin and
+/// its border.
+///
+/// Declared here as a *name* rather than as an `egui::Frame`, for the reason
+/// the other fields on [`Region`] are plain data: an arrangement is a
+/// `static`, and a frame's fill has to be resolved against a live `Ui`.
+/// [`crate::chrome::region_frame`] resolves one, and it matches on this enum
+/// exhaustively — so a variant added here without a function beside it is a
+/// compile error rather than a region that quietly draws in whatever egui
+/// defaults a panel to.
+///
+/// One function per kind, rather than a palette each call site reaches into.
+/// That is the shape `re_ui`'s token set uses — `top_panel_frame`,
+/// `bottom_panel_frame`, `popup_frame`, `panel_margin` — and the reason to
+/// prefer it is that a palette answers *what colour is this* while a function
+/// answers *what does a band look like*, which is the question a region
+/// actually has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegionFrame {
+    /// [`crate::chrome::band_frame`] — a row of chrome on the panel fill,
+    /// inset by the band margin.
+    Band,
+    /// [`crate::chrome::rail_frame`] — the panel fill and no margin of its
+    /// own, because a rail's selector strip and the pane below it bring their
+    /// own insets.
+    Rail,
+    /// [`crate::chrome::canvas_frame`] — as a rail's today, and named apart
+    /// from it because the canvas is the one region whose extent is
+    /// subtraction: a change to how a rail is boxed should have to be made
+    /// again here rather than following silently.
+    Canvas,
+    /// [`crate::chrome::overlay_frame`] — the floating layer's own fill,
+    /// which is deliberately not the panel fill: an overlay has to read as
+    /// sitting *over* the window rather than as part of it.
+    Overlay,
+    /// **No frame declared yet.** The honesty device, and the same one the
+    /// shell's gallery uses for a primitive it cannot yet gate: a region
+    /// whose style is unfinished is drawn plain and *listed*, rather than
+    /// being silently absent from the one surface meant to show every region.
+    ///
+    /// [`audit_arrangement`] refuses it, so it cannot reach a shipped
+    /// arrangement. The two mechanisms answer different questions and both
+    /// are wanted: the gallery's is *what is unfinished*, the audit's is
+    /// *may this ship*.
+    Unstyled,
+}
+
+impl RegionFrame {
+    /// Whether a frame function has been named for this region.
+    #[must_use]
+    pub const fn is_declared(self) -> bool {
+        !matches!(self, Self::Unstyled)
+    }
+
+    /// The name of the function that resolves this frame — for a reader, for
+    /// the gallery's region row, and for a failure message.
+    #[must_use]
+    pub const fn function(self) -> &'static str {
+        match self {
+            Self::Band => "chrome::band_frame",
+            Self::Rail => "chrome::rail_frame",
+            Self::Canvas => "chrome::canvas_frame",
+            Self::Overlay => "chrome::overlay_frame",
+            Self::Unstyled => "none declared",
+        }
+    }
+}
+
 /// What fills a region.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Occupant {
@@ -376,6 +453,8 @@ pub struct Region {
     pub occupant: Occupant,
     /// Whether the user may take its axis back, and what stays when they do.
     pub collapse: Collapse,
+    /// Which named function draws its box.
+    pub frame: RegionFrame,
 }
 
 impl Region {
@@ -484,6 +563,7 @@ static SPINE_LEFT: Arrangement = Arrangement {
             extent: Extent::Band(TITLE_BAND_HEIGHT),
             occupant: Occupant::Chrome("app identity, the way home, and the subject"),
             collapse: Collapse::Fixed,
+            frame: RegionFrame::Band,
         },
         Region {
             id: LOCATOR_BAND,
@@ -491,6 +571,7 @@ static SPINE_LEFT: Arrangement = Arrangement {
             extent: Extent::Band(LOCATOR_BAND_HEIGHT),
             occupant: Occupant::Chrome("the breadcrumb"),
             collapse: Collapse::Fixed,
+            frame: RegionFrame::Band,
         },
         Region {
             id: STATUS_BAND,
@@ -498,6 +579,7 @@ static SPINE_LEFT: Arrangement = Arrangement {
             extent: Extent::Overlay(chrome::status_rail_height()),
             occupant: Occupant::Chrome("what the window is doing"),
             collapse: Collapse::Fixed,
+            frame: RegionFrame::Overlay,
         },
         Region {
             id: HINT_BAND,
@@ -505,6 +587,7 @@ static SPINE_LEFT: Arrangement = Arrangement {
             extent: Extent::Band(HINT_BAND_HEIGHT),
             occupant: Occupant::Chrome("the key grammar of the surface that has one"),
             collapse: Collapse::Fixed,
+            frame: RegionFrame::Band,
         },
         Region {
             id: LEDGER_RAIL,
@@ -526,6 +609,7 @@ static SPINE_LEFT: Arrangement = Arrangement {
             // not be clicked. `the_collapsed_ledger_keeps_its_selector_strip_and_reopens_from_it`
             // is that click.
             collapse: Collapse::To(chrome::rail_selector_height() + chrome::status_rail_height()),
+            frame: RegionFrame::Rail,
         },
         Region {
             id: NAVIGATOR_RAIL,
@@ -536,6 +620,7 @@ static SPINE_LEFT: Arrangement = Arrangement {
             },
             occupant: Occupant::Panes(NAVIGATOR_PANES),
             collapse: Collapse::To(chrome::rail_selector_height()),
+            frame: RegionFrame::Rail,
         },
         Region {
             id: INSPECTOR_RAIL,
@@ -546,6 +631,7 @@ static SPINE_LEFT: Arrangement = Arrangement {
             },
             occupant: Occupant::Panes(INSPECTOR_PANES),
             collapse: Collapse::To(chrome::rail_selector_height()),
+            frame: RegionFrame::Rail,
         },
         Region {
             id: CANVAS,
@@ -556,6 +642,7 @@ static SPINE_LEFT: Arrangement = Arrangement {
                 graph: ItemId::new("protocol-canvas"),
             },
             collapse: Collapse::Fixed,
+            frame: RegionFrame::Canvas,
         },
     ],
 };
@@ -597,6 +684,11 @@ pub const fn default_arrangement() -> &'static Arrangement {
 /// - a collapsed extent on a region that is not a rail, since the control that
 ///   collapses one is drawn in a rail's own strip and nothing would read the
 ///   declaration;
+/// - a region declaring [`RegionFrame::Unstyled`], which is a region with no
+///   style: it draws, and it draws in nothing anybody chose —
+///   `an_undeclared_frame_paints_nothing` is what that comes to on screen.
+///   The gallery lists such a region under a draft pill so the gap is
+///   *visible* while it is being closed; this is what stops it shipping;
 /// - a count of [`Extent::Remainder`] regions other than one.
 ///
 /// # Errors
@@ -653,6 +745,13 @@ pub fn audit_arrangement(arrangement: &Arrangement) -> Result<(), String> {
                      collapses a region is drawn in a rail's own strip"
                 ));
             }
+        }
+
+        if !region.frame.is_declared() {
+            findings.push(format!(
+                "{id}: declares no frame, so it would draw in whatever egui \
+                 defaults a panel to; name one in `chrome`"
+            ));
         }
 
         let occupants: Vec<ItemId> = match region.occupant {
@@ -740,7 +839,17 @@ mod tests {
     }
 
     /// One region, spelled out, for the audit's own negative cases below.
-    const fn region(id: RegionId, edge: Edge, extent: Extent, collapse: Collapse) -> Region {
+    ///
+    /// The frame is a parameter rather than a fixed value because one case
+    /// below is *about* the frame, and a helper that supplied a declared one
+    /// unconditionally would make that case unwritable.
+    const fn region(
+        id: RegionId,
+        edge: Edge,
+        extent: Extent,
+        collapse: Collapse,
+        frame: RegionFrame,
+    ) -> Region {
         Region {
             id,
             edge,
@@ -752,12 +861,19 @@ mod tests {
             // about.
             occupant: Occupant::Panes(&[]),
             collapse,
+            frame,
         }
     }
 
     /// The canvas a case below needs, so `audit_arrangement` is answering the
     /// question that case asks rather than the missing-remainder one.
-    static ONE_CANVAS: Region = region(CANVAS, Edge::Centre, Extent::Remainder, Collapse::Fixed);
+    static ONE_CANVAS: Region = region(
+        CANVAS,
+        Edge::Centre,
+        Extent::Remainder,
+        Collapse::Fixed,
+        RegionFrame::Canvas,
+    );
 
     #[test]
     fn the_shipped_arrangement_lets_a_rail_collapse_and_a_band_not() {
@@ -788,6 +904,7 @@ mod tests {
                     min: LEDGER_RAIL_MIN_HEIGHT,
                 },
                 Collapse::To(LEDGER_RAIL_HEIGHT),
+                RegionFrame::Rail,
             ),
             ONE_CANVAS,
         ];
@@ -811,6 +928,7 @@ mod tests {
                 Edge::Top,
                 Extent::Band(TITLE_BAND_HEIGHT),
                 Collapse::To(chrome::rail_selector_height()),
+                RegionFrame::Band,
             ),
             ONE_CANVAS,
         ];
@@ -822,6 +940,55 @@ mod tests {
             .expect_err("a band declaring a collapsed extent declares something nothing reads");
         assert!(
             findings.contains("is not a rail"),
+            "the audit said: {findings}"
+        );
+    }
+
+    #[test]
+    fn every_region_of_the_shipped_arrangement_names_a_frame_function() {
+        // The half of the frame contract that is about *this* arrangement
+        // rather than about the type: `RegionFrame::Unstyled` compiles, and
+        // is meant to — it is what lets a region under construction be listed
+        // in the gallery instead of vanishing from it. This is the line that
+        // says it may not ship.
+        for region in default_arrangement().regions {
+            assert!(
+                region.frame.is_declared(),
+                "{}: declares no frame, so it draws in whatever egui defaults \
+                 a panel to",
+                region.id
+            );
+            assert!(
+                region.frame.function().starts_with("chrome::"),
+                "{}: {:?} names {}, which is not a function on the chrome \
+                 token set",
+                region.id,
+                region.frame,
+                region.frame.function()
+            );
+        }
+    }
+
+    #[test]
+    fn the_audit_refuses_a_region_with_no_frame() {
+        static REGIONS: &[Region] = &[
+            region(
+                HINT_BAND,
+                Edge::Bottom,
+                Extent::Band(HINT_BAND_HEIGHT),
+                Collapse::Fixed,
+                RegionFrame::Unstyled,
+            ),
+            ONE_CANVAS,
+        ];
+        static ARRANGEMENT: Arrangement = Arrangement {
+            name: "a band nobody styled",
+            regions: REGIONS,
+        };
+        let findings = audit_arrangement(&ARRANGEMENT)
+            .expect_err("a region with no frame draws in nothing anybody chose");
+        assert!(
+            findings.contains("declares no frame"),
             "the audit said: {findings}"
         );
     }

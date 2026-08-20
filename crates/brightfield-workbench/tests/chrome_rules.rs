@@ -7,6 +7,7 @@
 //! rasterisation.
 
 use brightfield_keys::BindingContext;
+use brightfield_workbench::arrangement::RegionFrame;
 use brightfield_workbench::chrome;
 use brightfield_workbench::{
     HideAffordance, Icon, Mode, StatusEntry, StatusSide, Subject, Tone, ToolbarEntry,
@@ -292,6 +293,138 @@ fn nothing_is_activated_without_a_click() {
 // ---------------------------------------------------------------------------
 // The status rail
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The region frames
+// ---------------------------------------------------------------------------
+
+/// A band's box is the panel fill inset by the spacing ladder, and a rail's
+/// adds no inset at all.
+///
+/// The margins are the whole assertion. A rail's content brings its own
+/// insets — the selector strip is measured off the rail's rect and the pane
+/// under it is framed by `pane_frame` — so a margin here would inset both a
+/// second time and every rect a layout test reads back would move.
+#[test]
+fn a_band_is_inset_on_the_ladder_and_a_rail_is_not_inset_at_all() {
+    let (band, rail, canvas, fill) = frame(|ui| {
+        (
+            chrome::band_frame(ui),
+            chrome::rail_frame(ui),
+            chrome::canvas_frame(ui),
+            ui.visuals().panel_fill,
+        )
+    });
+
+    assert_eq!(
+        band.inner_margin,
+        egui::Margin::symmetric(spacing::SPACE_4 as i8, spacing::SPACE_1 as i8),
+        "a band's padding is a box-model measure and comes off the ladder"
+    );
+    assert_eq!(band.fill, fill, "a band sits on the panel fill");
+
+    for (name, frame) in [("rail", rail), ("canvas", canvas)] {
+        assert_eq!(
+            frame.inner_margin,
+            egui::Margin::ZERO,
+            "the {name} frame insets its content, which its occupant already does"
+        );
+        assert_eq!(frame.fill, fill, "the {name} sits on the panel fill");
+    }
+}
+
+/// A floating region is painted in something other than the panel fill, and
+/// in a different something per theme.
+///
+/// An overlay takes no space from its siblings, so how it is painted is the
+/// only thing that says it is a layer over the window rather than part of it.
+/// Painted in the panel fill it would be an invisible band.
+#[test]
+fn an_overlay_is_not_painted_in_the_panel_fill() {
+    let panel_fill = frame(|ui| ui.visuals().panel_fill);
+    let light = chrome::overlay_frame(Mode::Light).fill;
+    let dark = chrome::overlay_frame(Mode::Dark).fill;
+
+    assert_ne!(
+        light, panel_fill,
+        "the status band is painted in the panel fill, so it reads as part of \
+         the window rather than as a layer over it"
+    );
+    assert_ne!(
+        light, dark,
+        "one fill for both themes — the overlay is not reading the theme"
+    );
+}
+
+/// The status band paints the frame its region declares, on a real
+/// tessellated frame rather than by agreeing with itself.
+///
+/// `painted` reads the vertices that reached the mesh, so a fill that is
+/// resolved and then goes unpainted — or is painted and then clipped — leaves
+/// this frame with no vertex to find, which is why absence is the assertion.
+#[test]
+fn the_status_band_paints_the_frame_its_region_declares() {
+    let entries = vec![StatusEntry {
+        id: "rows",
+        side: StatusSide::Leading,
+        text: "40 rows".into(),
+        tone: Tone::Neutral,
+        hide: HideAffordance::WithRail,
+    }];
+    let (_, primitives) = frame_pixels(|ui| chrome::status_rail(ui, &entries, Mode::Light));
+    let declared = chrome::overlay_frame(Mode::Light).fill;
+    assert!(
+        painted(&primitives, declared).is_some(),
+        "nothing on the frame was painted in the fill the status region's own \
+         frame declares"
+    );
+}
+
+/// A region with no frame paints nothing, which is what makes an unfinished
+/// one read as unfinished rather than as a deliberate treatment.
+#[test]
+fn an_undeclared_frame_paints_nothing() {
+    let frame = chrome::unstyled_frame();
+    assert_eq!(
+        frame.fill.a(),
+        0,
+        "a plausible-looking default hides the gap"
+    );
+    assert_eq!(frame.inner_margin, egui::Margin::ZERO);
+    assert_eq!(frame.stroke.width, 0.0);
+}
+
+/// Each declared frame resolves to the function it names.
+///
+/// The dispatcher is where a `RegionFrame` becomes an `egui::Frame`, so two
+/// arms crossed there would give a band a rail's box and a rail a band's,
+/// while the rest of the tree went on agreeing with itself.
+#[test]
+fn each_region_frame_resolves_to_the_function_it_names() {
+    frame(|ui| {
+        let mode = Mode::Light;
+        assert_eq!(
+            chrome::region_frame(RegionFrame::Band, ui, mode),
+            chrome::band_frame(ui)
+        );
+        assert_eq!(
+            chrome::region_frame(RegionFrame::Rail, ui, mode),
+            chrome::rail_frame(ui)
+        );
+        assert_eq!(
+            chrome::region_frame(RegionFrame::Canvas, ui, mode),
+            chrome::canvas_frame(ui)
+        );
+        assert_eq!(
+            chrome::region_frame(RegionFrame::Overlay, ui, mode),
+            chrome::overlay_frame(mode)
+        );
+        assert_eq!(
+            chrome::region_frame(RegionFrame::Unstyled, ui, mode),
+            chrome::unstyled_frame()
+        );
+    });
+}
 
 #[test]
 fn the_status_rail_draws_both_sides() {

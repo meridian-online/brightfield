@@ -26,6 +26,29 @@
 //!   inventory collection, which a linker may strip, and which the grep gate
 //!   would still be needed to keep honest anyway.
 //!
+//! # Two enumerations, not one
+//!
+//! [`catalog`] lists the **widgets** — the things drawn *inside* a region.
+//! [`region_catalog`] lists the **regions** — the boxes the window lays out,
+//! read straight from `brightfield_workbench::arrangement` rather than
+//! written again here.
+//!
+//! They are separate lists because they are gated differently and counted
+//! differently. The per-primitive gate below is a widget's gate: a region has
+//! no probe to resolve, no keyboard actuation and no ladder rung, and the cap
+//! on how many primitives this product carries counts widgets. What a region
+//! is held to instead is that it *has a style at all* — the frame it
+//! declares — and where that is checked is `tests/region_gate.rs` and the
+//! arrangement's own audit.
+//!
+//! What they share is the honesty device. A region whose frame is not
+//! declared yet is listed with [`ComponentStatus::Draft`] on show, exactly as
+//! a primitive the gate cannot hold yet is — never silently absent from the
+//! surface meant to show everything.
+//! `every_region_is_drawn_in_the_gallery_with_what_frames_it` draws one that
+//! has no frame and reads its pill back off the frame, which is where that
+//! claim is held.
+//!
 //! # The dev flag
 //!
 //! The gallery tab joins the chart view's registry only when
@@ -54,6 +77,7 @@
 //! 5. carry **two goldens**, light and dark, at the `kittest.toml` floor.
 
 use brightfield_keys::{Altitude, BindingContext, RecencyCounter};
+use brightfield_workbench::arrangement::{self, Extent, Region};
 use brightfield_workbench::registry::Slot;
 use brightfield_workbench::{
     chrome, EmptyState, HideAffordance, Icon as ItemIcon, Item, ItemCtx, ItemId, ItemSpec,
@@ -366,6 +390,117 @@ pub fn solo(ui: &mut egui::Ui, mode: Mode, component: &mut dyn Component) {
 }
 
 // ---------------------------------------------------------------------------
+// The regions — the second enumeration
+// ---------------------------------------------------------------------------
+
+/// One region of the window, as the gallery lists it: the arrangement's own
+/// declaration, plus where that declaration's *style* stands.
+#[derive(Clone, Copy, Debug)]
+pub struct RegionEntry {
+    /// The region, as `brightfield_workbench::arrangement` declares it.
+    pub region: &'static Region,
+    /// Where its style stands — [`ComponentStatus::Draft`] for a region with
+    /// no frame declared, so an unfinished one is *listed* rather than
+    /// absent.
+    pub status: ComponentStatus,
+}
+
+impl RegionEntry {
+    /// The entry for one declared region.
+    #[must_use]
+    pub const fn of(region: &'static Region) -> Self {
+        let status = if region.frame.is_declared() {
+            // Every region in an arrangement is on the shipping surface by
+            // definition — the window lays it out — so a styled one is Live
+            // rather than Ready.
+            ComponentStatus::Live
+        } else {
+            ComponentStatus::Draft
+        };
+        Self { region, status }
+    }
+
+    /// The kind of region this is, in the word the taxonomy uses for it.
+    ///
+    /// Read off the extent rather than stored, because the extent *is* the
+    /// kind: a band is fixed, a rail has a floor and a drag handle, the
+    /// canvas is the remainder, an overlay floats.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self.region.extent {
+            Extent::Band(_) => "band",
+            Extent::Rail { .. } => "rail",
+            Extent::Remainder => "canvas",
+            Extent::Overlay(_) => "overlay",
+        }
+    }
+
+    /// One line describing how this region sizes and what draws its box —
+    /// the row under its name in the pane.
+    #[must_use]
+    pub fn contract(&self) -> String {
+        let extent = match self.region.extent {
+            Extent::Band(size) | Extent::Overlay(size) => format!("{size}pt fixed"),
+            Extent::Rail { default, min } => format!("{default}pt, no less than {min}pt"),
+            Extent::Remainder => "whatever is left".to_owned(),
+        };
+        let collapse = match self.region.collapse.extent() {
+            Some(size) => format!(", collapses to {size}pt"),
+            None => String::new(),
+        };
+        format!(
+            "{} · {extent}{collapse} · {}",
+            self.kind(),
+            self.region.frame.function()
+        )
+    }
+}
+
+/// The region listing: every region the shipped arrangement declares, in the
+/// order the window lays them out.
+///
+/// Derived rather than written. That is the whole of what makes AC-level
+/// "a region added tomorrow is visible here" true: a hand-written list would
+/// be a second enumeration to keep in step, which is the drift the
+/// arrangement module exists to end.
+#[must_use]
+pub fn region_catalog() -> Vec<RegionEntry> {
+    arrangement::default_arrangement()
+        .regions
+        .iter()
+        .map(RegionEntry::of)
+        .collect()
+}
+
+/// Draw one region's row: its name, its status pill, and the one line saying
+/// how it sizes and what draws its box.
+///
+/// A free function taking the entry, rather than a private branch of the
+/// loop below, for the reason [`solo`] is one: the test that proves an
+/// *unstyled* region is visible has to render the row the pane renders, and
+/// no shipped arrangement carries an unstyled region to render.
+pub fn region_row(ui: &mut egui::Ui, entry: RegionEntry) {
+    let section_gap = ui.tokens().section_gap;
+    let control_gap = ui.tokens().control_gap;
+    let muted = to_color32(semantic(ui.visuals().dark_mode).text.muted);
+    ui.add_space(section_gap);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(entry.region.id.as_str()).strong());
+        ui.add_space(control_gap);
+        status_pill_ui(ui, entry.status);
+    });
+    ui.add_space(control_gap);
+    ui.label(egui::RichText::new(entry.contract()).color(muted));
+}
+
+/// Draw the region listing — [`region_row`] over [`region_catalog`].
+pub fn regions_ui(ui: &mut egui::Ui) {
+    for entry in region_catalog() {
+        region_row(ui, entry);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The pane
 // ---------------------------------------------------------------------------
 
@@ -454,6 +589,11 @@ impl Item<ChartDoc> for GalleryPane {
                     ui.add_space(control_gap);
                     component.ui(ui);
                 }
+                // The regions, under the widgets and in the same surface: a
+                // reader asking "what is the vocabulary of this app" should
+                // not have to know that boxes and the things inside them are
+                // kept in different files.
+                regions_ui(ui);
                 ui.add_space(section_gap);
             });
     }
