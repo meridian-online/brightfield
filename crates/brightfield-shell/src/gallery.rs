@@ -85,9 +85,9 @@ use brightfield_workbench::{
 };
 use meridian_design::semantic::{semantic, Role};
 use meridian_egui::{
-    align, icons, key_chip, list_row, query_line, tooltip_for_action, widgets, ListRow, MeridianUi,
-    ModalChrome, ModalLayer, Notification, NotificationId, NotificationLayer, Picker, RowHeight,
-    Severity, Toast, ToastLayer, PROMPT_GLYPH,
+    align, icons, key_chip, list_row, overlay_frame, query_line, tooltip_for_action, widgets,
+    ListRow, MeridianUi, ModalChrome, ModalLayer, Notification, NotificationId, NotificationLayer,
+    Picker, RowHeight, Severity, Toast, ToastLayer, PROMPT_GLYPH,
 };
 
 use crate::app::ChartDoc;
@@ -1081,11 +1081,46 @@ impl Component for IconSetDemo {
     }
 }
 
-/// The modal chrome — a Draft entry: the treatment ships live through
-/// `ModalLayer`, and the inline specimen the gate can hold is pending.
+/// The title both presentations of [`ModalChromeDemo`]'s card carry, and the
+/// label gate item 1 resolves the specimen by. The title row belongs to the
+/// chrome rather than to the body it wraps, so a card that drew a body and no
+/// title row fails the probe instead of passing on the body's strength.
+const MODAL_TITLE: &str = "Modal card";
+
+/// The control inside the docked card that floats the same chrome. Gate item
+/// 2 focuses it and presses Enter; nothing here is reached with a pointer.
+const MODAL_FLOAT: &str = "Float this card over the workspace";
+
+/// The evidence label gate item 2 requires to be absent before actuating.
+/// It is drawn inside the card [`ModalLayer`] floats, so it reaches the
+/// accessibility tree once the keyboard has opened that layer, and the docked
+/// card does not draw it.
+/// `every_gated_component_resolves_actuates_and_sits_on_a_rung` queries for it
+/// before sending the key, so a specimen that leaked it into the resting state
+/// reddens rather than passing vacuously.
+const MODAL_EVIDENCE: &str = "Floating over the workspace on the modal layer";
+
+/// The one overlay treatment, in both presentations `meridian-egui` gives it:
+/// **docked** through [`overlay_frame`] — the card this pane draws and the two
+/// goldens pin — and **floating** through [`ModalLayer`] over a scrim, once
+/// the docked card's own control is actuated.
+///
+/// Docked is the resting state deliberately. A modal layer takes input away
+/// from everything beneath it, and this pane rides beside a working document;
+/// a specimen that floated on sight would hold the window hostage on the first
+/// frame the gallery tab is drawn, including at boot for a layout that already
+/// has the tile. The card is the same either way — [`overlay_frame`] is the
+/// card [`ModalLayer`] floats — so what the goldens pin is the chrome, and
+/// what the layer adds on top of it is the scrim and the centring.
+///
+/// The two presentations carry different hint footers because a footer states
+/// what the keystroke does *here*. Docked, the card has no exit to offer and
+/// Enter reaches its control, so it advertises that and drops the escape hint.
+/// Floating, Esc closes it — the contract the design system's overlay tests
+/// hold, which is why this specimen does not re-assert it.
 #[derive(Default)]
 struct ModalChromeDemo {
-    open: bool,
+    floating: bool,
 }
 
 impl Component for ModalChromeDemo {
@@ -1093,35 +1128,56 @@ impl Component for ModalChromeDemo {
         ComponentInfo {
             id: "modal-chrome",
             name: "Modal chrome",
-            status: ComponentStatus::Draft,
+            status: ComponentStatus::Live,
             probe: Probe {
-                role: ProbeRole::Button,
-                label: "Open modal chrome",
+                role: ProbeRole::Label,
+                label: MODAL_TITLE,
             },
             height: GateHeight::Intrinsic(
-                "the card's widths are the two modal rungs and its height is \
-                 content-driven; the gate needs an inline specimen before it \
-                 can measure one",
+                "the card's width is a rung of the modal scale and its height \
+                 is content-driven by design: the title row, the body and the \
+                 hint footer each measure themselves under a cap of the \
+                 screen less the largest ladder gap, so there is no rung for \
+                 the card as a whole to sit on",
             ),
-            actuation: None,
-            solo_size: (380.0, 140.0),
+            actuation: Some(Actuation {
+                focus: FocusTarget::Role(ProbeRole::Button),
+                input: ActuationInput::Key(egui::Key::Enter),
+                evidence: MODAL_EVIDENCE,
+            }),
+            solo_size: (520.0, 300.0),
         }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) {
-        if ui.button("Open modal chrome").clicked() {
-            self.open = true;
-        }
-        if self.open {
-            let chrome = ModalChrome::new().title("Specimen modal").narrow();
-            let shown = ModalLayer::show(ui.ctx(), "gallery-modal", &chrome, |ui| {
+        let gap = ui.tokens().section_gap;
+        let docked = ModalChrome::new()
+            .title(MODAL_TITLE)
+            .narrow()
+            .without_esc_hint()
+            .enter_hint("float");
+        overlay_frame(ui, &docked, |ui| {
+            ui.label(
+                "One overlay treatment: a rung of the modal width scale, a \
+                 title row, and a footer that says which keystroke does what.",
+            );
+            ui.add_space(gap);
+            if ui.button(MODAL_FLOAT).clicked() {
+                self.floating = true;
+            }
+        });
+
+        if self.floating {
+            let floating = ModalChrome::new().title(MODAL_TITLE).narrow();
+            let shown = ModalLayer::show(ui.ctx(), "gallery-modal", &floating, |ui| {
+                ui.label(MODAL_EVIDENCE);
                 ui.label(
-                    "One overlay treatment: width rung, title row, escape \
-                     hint, backdrop. Esc or a backdrop click closes it.",
+                    "The scrim and the centring belong to the layer; the card \
+                     is the chrome drawn underneath it.",
                 );
             });
             if shown.dismissed {
-                self.open = false;
+                self.floating = false;
             }
         }
     }

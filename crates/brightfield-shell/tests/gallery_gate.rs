@@ -336,15 +336,43 @@ fn every_gated_component_resolves_actuates_and_sits_on_a_rung() {
         harness.run();
 
         // 1. The probe resolves by role AND label.
+        //
+        // Every lookup in this sweep is asked as a *query* first and got
+        // second, so the failure carries the id of the entry that is wrong.
+        // kittest's own panic prints the query it could not satisfy and the
+        // tree it searched, and nothing about who asked — which reads as a
+        // lookup failure somewhere in the catalog rather than as one named
+        // entry declaring something its specimen does not draw. The
+        // comparisons in this loop already name `info.id`; the lookups did
+        // not, and a sweep is exactly where that matters.
         let probe_role = role_of(info.probe.role);
         {
+            assert!(
+                harness
+                    .query_by_role_and_label(probe_role, info.probe.label)
+                    .is_some(),
+                "{}: nothing in the solo frame carries role {:?} with label \
+                 {:?} — the entry names a probe its specimen does not draw",
+                info.id,
+                info.probe.role,
+                info.probe.label
+            );
             let node = harness.get_by_role_and_label(probe_role, info.probe.label);
             // 3. The declared height: a named ladder value, measured on the
             // probe node or the named node; or written prose.
             match info.height {
                 GateHeight::Rung { rung, node: named } => {
                     let rect = match named {
-                        Some(label) => harness.get_by_label(label).rect(),
+                        Some(label) => {
+                            assert!(
+                                harness.query_by_label(label).is_some(),
+                                "{}: the entry measures a node labelled {:?} \
+                                 and the specimen draws none",
+                                info.id,
+                                label
+                            );
+                            harness.get_by_label(label).rect()
+                        }
                         None => node.rect(),
                     };
                     let expected = rung.value();
@@ -378,7 +406,18 @@ fn every_gated_component_resolves_actuates_and_sits_on_a_rung() {
                     FocusTarget::Probe => {
                         harness.get_by_role_and_label(probe_role, info.probe.label)
                     }
-                    FocusTarget::Role(role) => harness.get_by_role(role_of(role)),
+                    FocusTarget::Role(role) => {
+                        assert!(
+                            harness.query_by_role(role_of(role)).is_some(),
+                            "{}: the actuation focuses the one node of role \
+                             {:?} in the solo frame and the specimen draws \
+                             none — a control the keyboard cannot reach is \
+                             not a keyboard path",
+                            info.id,
+                            role
+                        );
+                        harness.get_by_role(role_of(role))
+                    }
                 };
                 target.focus();
             }
@@ -388,7 +427,14 @@ fn every_gated_component_resolves_actuates_and_sits_on_a_rung() {
                 ActuationInput::Text(text) => harness.event(egui::Event::Text(text.to_owned())),
             }
             harness.run();
-            harness.get_by_label(actuation.evidence);
+            assert!(
+                harness.query_by_label(actuation.evidence).is_some(),
+                "{}: {:?} was sent to the focused node and the evidence {:?} \
+                 is still absent — the keyboard did not reach the specimen",
+                info.id,
+                actuation.input,
+                actuation.evidence
+            );
         }
     }
 }

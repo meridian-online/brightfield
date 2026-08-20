@@ -1332,11 +1332,12 @@ fn the_modal_card_rect_is_the_card() {
 /// reach, and why. An entry here is a disclosed gap, not a covered one.
 const UNCHECKED_MODALS: &[(&str, &str)] = &[(
     "gallery-modal",
-    "the component gallery's own specimen card: a Draft-status demo behind a \
-     button in a dev-flagged pane, on the narrow width rung rather than the \
-     default one the two assertions read. It floats on the same egui::Modal \
-     as the rest, so the settle in capture::run_ui_frames reaches it; what it \
-     has no assertion of its own",
+    "the component gallery's own specimen card: the floating half of a demo \
+     that rests docked, reached by a control in a dev-flagged pane, on the \
+     narrow width rung rather than the default one the two assertions read. \
+     It floats on the same egui::Modal as the rest, so the settle in \
+     capture::run_ui_frames reaches it; what it has is no baseline of its \
+     own — the gallery gate's two goldens pin the docked card, not this",
 )];
 
 /// [`OVERLAY_CASES`] plus [`UNCHECKED_MODALS`] account for the
