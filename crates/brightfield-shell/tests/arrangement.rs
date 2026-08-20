@@ -641,10 +641,8 @@ fn the_collapsed_ledger_keeps_its_selector_strip_and_reopens_from_it() {
 fn top_fill_at(shapes: &[egui::epaint::ClippedShape], at: egui::Pos2) -> Option<egui::Color32> {
     fn walk(shape: &egui::epaint::Shape, at: egui::Pos2, found: &mut Option<egui::Color32>) {
         match shape {
-            egui::epaint::Shape::Rect(rect) => {
-                if rect.fill.is_opaque() && rect.rect.contains(at) {
-                    *found = Some(rect.fill);
-                }
+            egui::epaint::Shape::Rect(rect) if rect.fill.is_opaque() && rect.rect.contains(at) => {
+                *found = Some(rect.fill);
             }
             egui::epaint::Shape::Vec(shapes) => {
                 for shape in shapes {
