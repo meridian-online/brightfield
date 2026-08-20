@@ -1345,6 +1345,106 @@ fn the_generated_dashboard_is_a_spec_the_reader_can_open_and_edit() {
     );
 }
 
+/// **Two data files with the same name are two generated specs**, and the
+/// editor pane beside each chart opens the one that composed that chart.
+///
+/// The failure this holds off is silent, and it is the reason this test was
+/// written before the fix rather than after it. The scratch path used to be the
+/// data file's stem under one per-process directory, so opening
+/// `feb/readings.csv` after `jan/readings.csv` overwrote January's spec in
+/// place. Neither window said so: the first document went on drawing January's
+/// chart with February's source in the pane beside it, which is a document
+/// whose two halves describe different files.
+///
+/// The pane is opened AFTER the second data file, which is the order that
+/// reproduces it — the buffer is read from disk by `EditorPane::open_file`, so
+/// a pane opened earlier would still be holding the right bytes in memory while
+/// the file underneath it had already changed.
+#[test]
+fn two_data_files_with_one_name_keep_their_own_generated_specs() {
+    let jan_dir = TempDir::new("same-stem-jan");
+    let feb_dir = TempDir::new("same-stem-feb");
+    let jan = jan_dir.write("readings.csv", READINGS_CSV);
+    // A third drawable column, so the two dashboards differ by their picture
+    // and not only by the path they read.
+    let feb = feb_dir.write(
+        "readings.csv",
+        "region,reading,depth\n\
+         north,12,3\n\
+         north,18,9\n\
+         south,31,14\n\
+         south,44,22\n\
+         east,7,35\n\
+         east,25,41\n\
+         west,52,57\n\
+         west,63,68\n",
+    );
+
+    let mut jan_win = Window::open();
+    jan_win.settle();
+    let jan_ctx = jan_win.ctx.clone();
+    jan_win.app.open_data_file(&jan_ctx, &jan.to_string_lossy());
+    jan_win.settle();
+    let jan_spec = jan_win.app.chart_doc().spec_path.clone().expect(
+        "the first document has to carry the spec it was composed from, or its \
+         editor pane has nothing to open",
+    );
+    let jan_plots = jan_win.app.chart_doc().composed.plots.len();
+
+    let mut feb_win = Window::open();
+    feb_win.settle();
+    let feb_ctx = feb_win.ctx.clone();
+    feb_win.app.open_data_file(&feb_ctx, &feb.to_string_lossy());
+    feb_win.settle();
+    let feb_spec = feb_win
+        .app
+        .chart_doc()
+        .spec_path
+        .clone()
+        .expect("the second document has to carry the spec it was composed from");
+    let feb_plots = feb_win.app.chart_doc().composed.plots.len();
+
+    assert_ne!(
+        jan_spec,
+        feb_spec,
+        "two data files with one name were written to one generated spec: \
+         opening {} after {} landed on {}",
+        feb.display(),
+        jan.display(),
+        jan_spec.display()
+    );
+    assert_ne!(
+        jan_plots, feb_plots,
+        "the fixtures no longer draw different dashboards, so the plot count \
+         below could not tell one document's spec from the other's"
+    );
+
+    let mut pane = EditorPane::new();
+    pane.open_file(&jan_spec);
+    let buffer = pane
+        .buffer()
+        .expect("the pane opens the first document's spec")
+        .to_string();
+    assert!(
+        buffer.contains(&*jan.to_string_lossy()),
+        "the pane beside January's chart reads a spec that does not source \
+         January's file:\n{buffer}"
+    );
+    assert!(
+        !buffer.contains(&*feb.to_string_lossy()),
+        "the pane beside January's chart reads February's data source:\n{buffer}"
+    );
+
+    let recomposed = brightfield_shell::pipeline::compose_spec_str(&buffer, None)
+        .expect("the first document's spec composes on its own");
+    assert_eq!(
+        recomposed.plots.len(),
+        jan_plots,
+        "the spec in the first document's pane draws a different dashboard \
+         from the one the reader is looking at"
+    );
+}
+
 /// The spec carries **why each tile is the tile it is**, and what was left out —
 /// so the rule is checkable by a reader holding the artefact.
 #[test]

@@ -77,6 +77,7 @@
 //! `sales<LF>2026.csv` would come back as `sales 2026.csv` and open that file
 //! instead. It is refused in the same place and for the same reason.
 
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use brightfield_engine::{ColumnProfile, Engine, LoadOptions, ProfileOutcome};
@@ -409,8 +410,50 @@ pub fn open(chosen: &str) -> Result<OpenedFile, String> {
 /// at it must not write into the folder it came from. Per process rather than a
 /// fixed name, so two runs cannot edit each other's copy and nothing inherits a
 /// directory another user created.
+///
+/// Both of those separate one run from another run, and the specs from the
+/// data. The third axis is inside a single run and neither reaches it: one
+/// process opens several data files, and two of them can be named the same. It
+/// is [`spec_scratch_path`] that keys those apart — this directory is where it
+/// puts what it names, and is deliberately a part of the key rather than the
+/// whole of it.
 fn spec_scratch_dir() -> PathBuf {
     std::env::temp_dir().join(format!("brightfield-generated-{}", std::process::id()))
+}
+
+/// Where `data`'s generated spec is written: one path per data file, and the
+/// same path each time that file is opened.
+///
+/// **Keyed by the file's whole path rather than by its name.** A stem is not an
+/// identity — an analyst comparing two months opens `jan/readings.csv` and then
+/// `feb/readings.csv`, and under a name-keyed path the second write landed on
+/// the first file's spec and replaced it with no warning, leaving one document
+/// drawing January's chart beside February's source. The digest separates two
+/// files a stem cannot, and the pair is held apart by
+/// `two_data_files_with_one_name_keep_their_own_generated_specs` in
+/// `crates/brightfield-shell/tests/data_file.rs`.
+///
+/// A **digest rather than a counter**, because re-opening one file has to land
+/// back on its own spec instead of accumulating a second copy beside it — see
+/// `a_scratch_path_is_per_data_file_and_stable_across_re_opens` below. It is
+/// taken over the canonicalized path, so two spellings of one file are one key
+/// — `two_spellings_of_one_data_file_are_one_scratch_path` below; over the path
+/// as given when canonicalizing fails, which is what a file that has gone
+/// missing since it was opened gets.
+///
+/// The digest names the **directory** and the data file's own stem names the
+/// file, rather than the other way round, because the editor pane titles itself
+/// from the file name — see `describe` in [`crate::editor`]. A reader looking
+/// at the pane beside the chart sees `readings.yaml`, not a hex string.
+fn spec_scratch_path(data: &Path) -> PathBuf {
+    let resolved = std::fs::canonicalize(data).unwrap_or_else(|_| data.to_path_buf());
+    let mut hasher = DefaultHasher::new();
+    resolved.hash(&mut hasher);
+    let stem = data.file_stem().unwrap_or(data.as_os_str());
+    spec_scratch_dir()
+        .join(format!("{:016x}", hasher.finish()))
+        .join(stem)
+        .with_extension("yaml")
 }
 
 /// Write `spec` where the editor pane can open it, and hand back the path.
@@ -423,10 +466,8 @@ fn spec_scratch_dir() -> PathBuf {
 /// cannot open; it is not a reason to refuse a file that opened, so the caller
 /// carries on without one.
 fn write_spec_file(data: &Path, spec: &str) -> Option<PathBuf> {
-    let dir = spec_scratch_dir();
-    std::fs::create_dir_all(&dir).ok()?;
-    let stem = data.file_stem().unwrap_or(data.as_os_str());
-    let path = dir.join(stem).with_extension("yaml");
+    let path = spec_scratch_path(data);
+    std::fs::create_dir_all(path.parent()?).ok()?;
     std::fs::write(&path, spec).ok()?;
     Some(path)
 }
@@ -717,5 +758,77 @@ mod tests {
             written.display()
         );
         std::fs::remove_file(&written).ok();
+    }
+
+    /// **A data file's scratch path is its own**, and it is the same path each
+    /// time that file is opened.
+    ///
+    /// The two halves of one choice, so one test: keying on the whole path is
+    /// what gives two files a stem cannot tell apart two specs, and keying on
+    /// something stable is what stops re-opening one file leaving a second copy
+    /// beside the first. A counter would buy the first and lose the second.
+    ///
+    /// Neither path exists on disk, which is the point — this is the branch
+    /// where canonicalizing fails and the path as given is the key.
+    #[test]
+    fn a_scratch_path_is_per_data_file_and_stable_across_re_opens() {
+        let jan = PathBuf::from("/tmp/bf-scratch-key/jan/readings.csv");
+        let feb = PathBuf::from("/tmp/bf-scratch-key/feb/readings.csv");
+        assert_ne!(
+            spec_scratch_path(&jan),
+            spec_scratch_path(&feb),
+            "two data files with one name share a generated spec, so the \
+             second to be opened overwrites the first"
+        );
+        assert_eq!(
+            spec_scratch_path(&jan),
+            spec_scratch_path(&jan),
+            "re-opening one data file writes a second copy of its spec instead \
+             of rewriting the one it already has"
+        );
+        assert_eq!(
+            spec_scratch_path(&jan).file_name().and_then(|n| n.to_str()),
+            Some("readings.yaml"),
+            "the editor pane titles itself from the file name, so the name has \
+             to stay the data file's own: {}",
+            spec_scratch_path(&jan).display()
+        );
+        assert!(
+            spec_scratch_path(&jan).starts_with(spec_scratch_dir()),
+            "a generated spec belongs to this process's scratch directory: {}",
+            spec_scratch_path(&jan).display()
+        );
+    }
+
+    /// **Two spellings of one data file are one scratch path.** The key is the
+    /// file, not the string the file arrived as.
+    ///
+    /// A real file, because this is the branch `std::fs::canonicalize`
+    /// succeeds on: the detour through `..` is a different string that names
+    /// the same file, and a reader who opened it twice should find their spec
+    /// where they left it rather than in a second place.
+    #[test]
+    fn two_spellings_of_one_data_file_are_one_scratch_path() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        let dir = std::env::temp_dir().join(format!(
+            "bf-scratch-spelling-{}-{nanos}",
+            std::process::id()
+        ));
+        let inner = dir.join("jan");
+        std::fs::create_dir_all(&inner).expect("a temp directory for the fixture");
+        let direct = inner.join("readings.csv");
+        std::fs::write(&direct, "region,reading\nnorth,12\n").expect("the fixture writes");
+        let detour = inner.join("..").join("jan").join("readings.csv");
+
+        assert_eq!(
+            spec_scratch_path(&direct),
+            spec_scratch_path(&detour),
+            "one file named two ways got two generated specs: {} and {}",
+            direct.display(),
+            detour.display()
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
