@@ -14,7 +14,7 @@ brightfield-spec = { path = "../brightfield-spec" }
 brightfield-protocol = { path = "../brightfield-protocol" }
 # Meridian design tokens (chart ink, Harbour palette, bundled Inter font).
 # MIT and dependency-free, so the render crate stays framework-free.
-meridian-design = { git = "https://github.com/meridian-online/design", rev = "d50b8c3f8c6c99f20ed380d8af96eedae37b2e27" }
+meridian-design = { git = "https://github.com/meridian-online/design", rev = "b45d8393d4f1d4498c72767039e564fa5eb4589f" }
 arrow = { version = "58", default-features = false, features = ["chrono-tz"] }
 # `wgpu` feature: this crate now owns the framework-free render/host seam
 # (`canvas_host` traits + `VelloRenderer`) that the egui shell implements, so it
