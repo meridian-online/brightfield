@@ -51,9 +51,9 @@ fn both() -> Boot {
 
 /// A boot carrying the protocol **and no chart**, which is the one state the
 /// status rail is silent in: `graph_on_canvas` is true, so `status_rail_ui`
-/// adds no idle line, and with no per-pane status and no activity it composes
-/// no entries at all — and `status_rail_overlay` returns from an empty entry
-/// list without opening its `egui::Area`.
+/// adds no idle line, and with no per-pane status and no activity the entry
+/// list it composes is empty — and `status_rail_overlay` returns from an empty
+/// entry list without opening its `egui::Area`.
 ///
 /// That is the window the collapsed ledger's reserved clearance is *visible*
 /// in, which is why the paint assertion below boots this rather than
@@ -633,8 +633,8 @@ fn the_collapsed_ledger_keeps_its_selector_strip_and_reopens_from_it() {
 /// The topmost opaque rect covering `at`, which is the colour a person sees
 /// there on a surface drawn in flat fills.
 ///
-/// `shapes` is in paint order, so the last opaque rect containing the point —
-/// clipped in, and with nothing transparent about it — is what is on top.
+/// `shapes` is in paint order, so the last fully opaque rect containing the
+/// point, clipped in, is what is on top.
 /// Text, strokes and native textures are skipped deliberately: the question is
 /// what colour the *background* at a point is, and a glyph over a fill does
 /// not change which fill it is over.
@@ -685,8 +685,8 @@ fn top_fill_at(shapes: &[egui::epaint::ClippedShape], at: egui::Pos2) -> Option<
 /// clearance would pass a single centre sample either way.
 ///
 /// Watched failing: hand `chrome::collapsed_rail` the split head instead of
-/// the whole rect (which is what the draw path did before) and every sample
-/// below the strip comes back the panel fill.
+/// the whole rect (which is what the draw path did before) and the samples
+/// below the strip come back the panel fill.
 #[test]
 fn the_collapsed_ledger_is_one_fill_from_its_strip_to_its_bottom_edge() {
     let ledger = arrangement::default_arrangement().expect_region(arrangement::LEDGER_RAIL);

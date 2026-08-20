@@ -432,7 +432,7 @@ pub fn rail_selector(
 ///
 /// The same shape [`rail_stub`] already has on the other axis: a collapsed
 /// side rail's stub covers the whole of the rect it was given, which is why
-/// the two side rails never showed this and the ledger did.
+/// this showed on the ledger and not on the two side rails.
 ///
 /// **No rule along the strip's bottom edge, and that is the one judgement
 /// here beyond the fill.** The rule [`rail_selector`] draws divides the strip
@@ -465,7 +465,7 @@ pub fn collapsed_rail(
 enum Below {
     /// The rail's body — a pane, which the rule separates from the strip.
     Body,
-    /// Nothing the user can act on: the collapsed rail's clearance, already
+    /// The collapsed rail's clearance, which holds no pane and is already
     /// painted in the strip's own fill by [`collapsed_rail`].
     Clearance,
 }
