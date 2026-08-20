@@ -117,15 +117,23 @@ use crate::protocol::{
 /// budget said and the DAG a point of unexplained slack. A band whose content
 /// grows past this clips rather than pushing the dock around, which is the safe
 /// direction for a row of key hints.
-pub const BAR_HEIGHT: f32 = spacing::ROW_GRID + 2.0 * spacing::SPACE_2;
+///
+/// One spelling of the number the arrangement declares for the title band,
+/// re-exported here because callers outside this crate were reading it from
+/// this path before the arrangement existed. The draw path does **not** read
+/// this: it reads the region, so a band's height and this constant cannot
+/// come apart.
+pub const BAR_HEIGHT: f32 = arrangement::TITLE_BAND_HEIGHT;
 
 /// The inset between the window edge and the dock.
 ///
 /// The value `egui::Frame::central_panel` would have used anyway, said on the
 /// spacing ladder and passed in explicitly, for the same reason as [`BAR_HEIGHT`]:
 /// a term the window arithmetic has to subtract cannot be a number that lives
-/// only inside egui.
-pub const DOCK_INSET: f32 = spacing::SPACE_4;
+/// only inside egui. It lives on the chrome token set beside the other region
+/// measures — [`chrome::view_padding`] — and is re-exported here for the
+/// callers that were reading it from this path.
+pub const DOCK_INSET: f32 = chrome::view_padding();
 
 /// The inspector rail's default width, outer — including its own frame.
 ///
@@ -2458,15 +2466,17 @@ impl MeridianApp {
         let drawn = Panel::top("bf-title-band")
             .resizable(false)
             .exact_size(band_extent(title))
+            .frame(chrome::region_frame(title.frame, ui, mode))
             .show(ui, |ui| bar = self.title_band(ui));
         self.regions.push((title.id, drawn.response.rect));
         self.home_button = bar.home_rect;
 
         let mut requests: Vec<Request> = Vec::new();
-        let dock_frame = egui::Frame::new()
-            .inner_margin(DOCK_INSET)
-            .fill(ui.visuals().panel_fill);
-        let rail_frame = egui::Frame::new().fill(ui.visuals().panel_fill);
+        // The front door stands where the canvas would: the canvas's own box,
+        // plus the padding a region leaves around an occupant that brings
+        // none of its own. A pane brings `chrome::pane_content_inset`; the
+        // door's cards are drawn straight onto the region.
+        let door_frame = chrome::canvas_frame(ui).inner_margin(chrome::view_padding());
 
         if door {
             // The front door, instead of every region below the title band: a
@@ -2476,7 +2486,7 @@ impl MeridianApp {
             // is the same `Request::Open` an empty pane's button raises — the
             // door is a different arrangement of the same way in, not a second
             // route.
-            CentralPanel::default().frame(dock_frame).show(ui, |ui| {
+            CentralPanel::default().frame(door_frame).show(ui, |ui| {
                 self.front_door_ui(ui, &mut requests);
             });
         } else {
@@ -2515,6 +2525,7 @@ impl MeridianApp {
             let drawn = Panel::top("bf-locator-band")
                 .resizable(false)
                 .exact_size(band_extent(locator))
+                .frame(chrome::region_frame(locator.frame, ui, mode))
                 .show(ui, |ui| {
                     locator_band_ui(ui, &crumbs, source.as_deref(), mode)
                 });
@@ -2531,6 +2542,7 @@ impl MeridianApp {
                 let drawn = Panel::bottom("bf-hint-band")
                     .resizable(false)
                     .exact_size(band_extent(hint))
+                    .frame(chrome::region_frame(hint.frame, ui, mode))
                     .show(ui, |ui| hint_ui(ui, model, mode));
                 self.regions.push((hint.id, drawn.response.rect));
             }
@@ -2624,7 +2636,9 @@ impl MeridianApp {
                     .resizable(true)
             };
             let mut ledger_strip = None;
-            let drawn = ledger_panel_widget.frame(rail_frame).show(ui, |ui| {
+            let drawn = ledger_panel_widget
+                .frame(chrome::region_frame(ledger.frame, ui, mode))
+                .show(ui, |ui| {
                 let caret = collapse_caret(ledger.edge, ledger_collapsed);
                 if ledger_collapsed {
                     // Collapsed, this rail is its own strip drawn by the same
@@ -2712,7 +2726,9 @@ impl MeridianApp {
                     .resizable(true)
             };
             let mut navigator_strip = None;
-            let drawn = navigator_panel_widget.frame(rail_frame).show(ui, |ui| {
+            let drawn = navigator_panel_widget
+                .frame(chrome::region_frame(navigator.frame, ui, mode))
+                .show(ui, |ui| {
                 let caret = collapse_caret(navigator.edge, navigator_collapsed);
                 if navigator_collapsed {
                     // A side rail collapses along its width, so what is left
@@ -2767,7 +2783,9 @@ impl MeridianApp {
                     .resizable(true)
             };
             let mut inspector_strip = None;
-            let drawn = inspector_panel_widget.frame(rail_frame).show(ui, |ui| {
+            let drawn = inspector_panel_widget
+                .frame(chrome::region_frame(inspector.frame, ui, mode))
+                .show(ui, |ui| {
                 let caret = collapse_caret(inspector.edge, inspector_collapsed);
                 if inspector_collapsed {
                     inspector_strip = Some(chrome::rail_stub(ui, ui.max_rect(), caret, mode));
@@ -2830,7 +2848,9 @@ impl MeridianApp {
 
             // ---- the canvas: the remainder, and it comes last because a
             // `CentralPanel` takes what the panels before it left.
-            let drawn = CentralPanel::default().frame(rail_frame).show(ui, |ui| {
+            let drawn = CentralPanel::default()
+                .frame(chrome::region_frame(canvas.frame, ui, mode))
+                .show(ui, |ui| {
                 let (head, body) = chrome::rail_split(ui.max_rect());
                 if graph_on_canvas {
                     canvas_head(ui, head, &canvas_name, None, mode);
