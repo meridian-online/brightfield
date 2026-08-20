@@ -1093,8 +1093,11 @@ const MODAL_FLOAT: &str = "Float this card over the workspace";
 
 /// The evidence label gate item 2 requires to be absent before actuating.
 /// It is drawn inside the card [`ModalLayer`] floats, so it reaches the
-/// accessibility tree once the keyboard has opened that layer and not before
-/// — the docked card above it never draws this sentence.
+/// accessibility tree once the keyboard has opened that layer, and the docked
+/// card does not draw it.
+/// `every_gated_component_resolves_actuates_and_sits_on_a_rung` queries for it
+/// before sending the key, so a specimen that leaked it into the resting state
+/// reddens rather than passing vacuously.
 const MODAL_EVIDENCE: &str = "Floating over the workspace on the modal layer";
 
 /// The one overlay treatment, in both presentations `meridian-egui` gives it:
