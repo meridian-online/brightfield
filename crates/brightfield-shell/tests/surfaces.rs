@@ -1328,27 +1328,82 @@ fn the_modal_card_rect_is_the_card() {
     }
 }
 
-/// [`OVERLAY_CASES`] and the `ModalLayer::show` call sites in the shell's own
-/// source are the same set.
+/// A modal layer the crate shows that the assertions above deliberately do not
+/// reach, and why. An entry here is a disclosed gap, not a covered one.
+const UNCHECKED_MODALS: &[(&str, &str)] = &[(
+    "gallery-modal",
+    "the component gallery's own specimen card: a Draft-status demo behind a \
+     button in a dev-flagged pane, on the narrow width rung rather than the \
+     default one the two assertions read. It floats on the same egui::Modal \
+     as the rest, so the settle in capture::run_ui_frames reaches it; what it \
+     has no assertion of its own",
+)];
+
+/// [`OVERLAY_CASES`] plus [`UNCHECKED_MODALS`] account for the
+/// `ModalLayer::show` call sites in this crate's whole `src/`.
 ///
-/// The list is read off `window.rs` rather than written down, so a fourth
-/// overlay reddens this test instead of quietly shipping with no cover — the
-/// failure being the palette pair corrected while the next modal's baseline
-/// goes on showing the artefact.
+/// **Read at run time from the source directory, not from a list of files.**
+/// The first cut of this test read `window.rs` with `include_str!` and was
+/// green while `gallery.rs` showed a fourth modal it could not see — an
+/// enumeration that names the files it looks in goes stale the day a modal
+/// lands in a fifth one. Walking `src/` is immune to that shape: a new call
+/// site in a new file reddens this test whichever file it is in.
+///
+/// The failure being kept out: the palette pair corrected while the next
+/// modal's baseline goes on showing the artefact.
 #[test]
 fn every_modal_layer_the_shell_shows_is_covered() {
-    let source = include_str!("../src/window.rs");
-    let shown: std::collections::BTreeSet<&str> = source
-        .match_indices("ModalLayer::show(ctx, \"")
-        .map(|(i, m)| {
-            let rest = &source[i + m.len()..];
-            &rest[..rest.find('"').expect("an unterminated id salt literal")]
-        })
-        .collect();
-    let covered: std::collections::BTreeSet<&str> = OVERLAY_CASES.iter().map(|c| c.area).collect();
+    let mut shown: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut files = 0usize;
+    let mut stack = vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+            .flatten()
+        {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            files += 1;
+            let source = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            for (i, m) in source.match_indices("ModalLayer::show(") {
+                let rest = &source[i + m.len()..];
+                let open = rest.find('"').unwrap_or_else(|| {
+                    panic!(
+                        "{}: a ModalLayer::show with no id-salt literal — \
+                         this scan reads the salt to name the layer",
+                        path.display()
+                    )
+                });
+                let close = open
+                    + 1
+                    + rest[open + 1..]
+                        .find('"')
+                        .expect("an unterminated id-salt literal");
+                shown.insert(rest[open + 1..close].to_owned());
+            }
+        }
+    }
+    assert!(
+        files > 0,
+        "the scan read no .rs file at all under src/, so it is not looking \
+         where the shell's modals are"
+    );
+
+    let mut accounted: std::collections::BTreeSet<String> =
+        OVERLAY_CASES.iter().map(|c| (*c.area).to_owned()).collect();
+    accounted.extend(UNCHECKED_MODALS.iter().map(|(id, _)| (*id).to_owned()));
     assert_eq!(
-        shown, covered,
-        "the modal layers window.rs shows and the ones OVERLAY_CASES checks \
-         have drifted apart"
+        shown, accounted,
+        "the modal layers this crate's src/ shows and the ones OVERLAY_CASES \
+         checks or UNCHECKED_MODALS excuses have drifted apart. A new overlay \
+         belongs in one of the two, and the second needs its reason written \
+         down beside it"
     );
 }
