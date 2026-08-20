@@ -129,8 +129,8 @@ pub const BAR_HEIGHT: f32 = arrangement::TITLE_BAND_HEIGHT;
 ///
 /// The value `egui::Frame::central_panel` would have used anyway, said on the
 /// spacing ladder and passed in explicitly, for the same reason as [`BAR_HEIGHT`]:
-/// a term the window arithmetic has to subtract cannot be a number that lives
-/// only inside egui. It lives on the chrome token set beside the other region
+/// a term the window arithmetic has to subtract has to be a number this
+/// workspace can name. It lives on the chrome token set beside the other region
 /// measures — [`chrome::view_padding`] — and is re-exported here for the
 /// callers that were reading it from this path.
 pub const DOCK_INSET: f32 = chrome::view_padding();
@@ -2471,13 +2471,9 @@ impl MeridianApp {
         self.regions.push((title.id, drawn.response.rect));
         self.home_button = bar.home_rect;
 
-        let mut requests: Vec<Request> = Vec::new();
-        // The front door stands where the canvas would: the canvas's own box,
-        // plus the padding a region leaves around an occupant that brings
-        // none of its own. A pane brings `chrome::pane_content_inset`; the
-        // door's cards are drawn straight onto the region.
-        let door_frame = chrome::canvas_frame(ui).inner_margin(chrome::view_padding());
+        let canvas = plan.expect_region(arrangement::CANVAS);
 
+        let mut requests: Vec<Request> = Vec::new();
         if door {
             // The front door, instead of every region below the title band: a
             // window of empty instruments is the surface the research warned
@@ -2486,9 +2482,24 @@ impl MeridianApp {
             // is the same `Request::Open` an empty pane's button raises — the
             // door is a different arrangement of the same way in, not a second
             // route.
-            CentralPanel::default().frame(door_frame).show(ui, |ui| {
+            //
+            // It is the *canvas* region, drawn and recorded as one. The door
+            // stands exactly where the canvas would, takes the box the canvas
+            // declares, and adds the padding a region leaves around an
+            // occupant that brings none of its own — a pane brings
+            // `chrome::pane_content_inset`, the door's cards are drawn
+            // straight onto the region. Recording it is what puts this branch
+            // inside the same cover every other window is held to: a band
+            // added here takes its height out of the door exactly as it would
+            // out of a chart, and
+            // `the_declared_regions_account_for_the_whole_window` reads that
+            // off this frame like any other.
+            let door_frame =
+                chrome::region_frame(canvas.frame, ui, mode).inner_margin(chrome::view_padding());
+            let drawn = CentralPanel::default().frame(door_frame).show(ui, |ui| {
                 self.front_door_ui(ui, &mut requests);
             });
+            self.regions.push((canvas.id, drawn.response.rect));
         } else {
             // Content somewhere, so the regions — and no stale door geometry: a
             // test that asks where a card was after the door has gone must
@@ -2550,7 +2561,6 @@ impl MeridianApp {
             let ledger = plan.expect_region(arrangement::LEDGER_RAIL);
             let navigator = plan.expect_region(arrangement::NAVIGATOR_RAIL);
             let inspector = plan.expect_region(arrangement::INSPECTOR_RAIL);
-            let canvas = plan.expect_region(arrangement::CANVAS);
             let ledger_panes = region_panes(ledger);
             let navigator_panes = region_panes(navigator);
             let inspector_panes = region_panes(inspector);

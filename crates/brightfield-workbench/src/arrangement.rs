@@ -329,7 +329,7 @@ impl Collapse {
 /// its border.
 ///
 /// Declared here as a *name* rather than as an `egui::Frame`, for the reason
-/// every other field on [`Region`] is plain data: an arrangement is a
+/// the other fields on [`Region`] are plain data: an arrangement is a
 /// `static`, and a frame's fill has to be resolved against a live `Ui`.
 /// [`crate::chrome::region_frame`] resolves one, and it matches on this enum
 /// exhaustively — so a variant added here without a function beside it is a
@@ -685,9 +685,10 @@ pub const fn default_arrangement() -> &'static Arrangement {
 ///   collapses one is drawn in a rail's own strip and nothing would read the
 ///   declaration;
 /// - a region declaring [`RegionFrame::Unstyled`], which is a region with no
-///   style: it draws, and it draws in nothing anybody chose. The gallery
-///   lists such a region under a draft pill so the gap is *visible* while it
-///   is being closed; this is what stops it shipping;
+///   style: it draws, and it draws in nothing anybody chose —
+///   `an_undeclared_frame_paints_nothing` is what that comes to on screen.
+///   The gallery lists such a region under a draft pill so the gap is
+///   *visible* while it is being closed; this is what stops it shipping;
 /// - a count of [`Extent::Remainder`] regions other than one.
 ///
 /// # Errors

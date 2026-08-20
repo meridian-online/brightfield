@@ -359,8 +359,9 @@ fn an_overlay_is_not_painted_in_the_panel_fill() {
 /// The status band paints the frame its region declares, on a real
 /// tessellated frame rather than by agreeing with itself.
 ///
-/// `painted` reads the vertices that reached the mesh, so a fill resolved but
-/// never painted — or painted and then clipped — is absence here.
+/// `painted` reads the vertices that reached the mesh, so a fill that is
+/// resolved and then goes unpainted — or is painted and then clipped — leaves
+/// this frame with no vertex to find, which is why absence is the assertion.
 #[test]
 fn the_status_band_paints_the_frame_its_region_declares() {
     let entries = vec![StatusEntry {
@@ -395,9 +396,9 @@ fn an_undeclared_frame_paints_nothing() {
 
 /// Each declared frame resolves to the function it names.
 ///
-/// The dispatcher is the one place a `RegionFrame` becomes an `egui::Frame`,
-/// so two arms crossed there would give every band a rail's box and every
-/// rail a band's, with nothing else in the tree disagreeing.
+/// The dispatcher is where a `RegionFrame` becomes an `egui::Frame`, so two
+/// arms crossed there would give a band a rail's box and a rail a band's,
+/// while the rest of the tree went on agreeing with itself.
 #[test]
 fn each_region_frame_resolves_to_the_function_it_names() {
     frame(|ui| {

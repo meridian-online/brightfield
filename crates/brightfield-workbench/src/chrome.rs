@@ -141,7 +141,7 @@ fn ui_font() -> egui::FontId {
 // answers "what does a band look like" rather than a palette of colours a
 // call site assembles one from. What each is used by is declared in
 // `crate::arrangement`: a `Region` names its `RegionFrame`, and
-// `region_frame` below is the only place that name becomes an `egui::Frame`.
+// `region_frame` below is where that name becomes an `egui::Frame`.
 //
 // Before these existed the bands took whatever frame egui defaults a panel
 // to and the rails built one inline in the draw path, so "does this region

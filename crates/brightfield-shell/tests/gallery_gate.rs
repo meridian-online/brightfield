@@ -108,9 +108,9 @@ fn the_catalog_is_complete_against_the_source() {
 // ---------------------------------------------------------------------------
 
 /// A band under construction: declared, drawn, and with no frame named for it
-/// yet. No shipped arrangement carries one — `audit_arrangement` refuses it —
-/// so the two cases below build their own, which is the only way to ask what
-/// the gallery does with a region whose style is unfinished.
+/// yet. A shipped arrangement cannot carry one — `audit_arrangement` refuses
+/// it — so the two cases below build their own, since otherwise there is
+/// nothing to ask the gallery about a region whose style is unfinished.
 static UNSTYLED: Region = Region {
     id: RegionId::new("nobody-styled-this"),
     edge: Edge::Top,

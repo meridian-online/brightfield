@@ -45,6 +45,9 @@
 //! declared yet is listed with [`ComponentStatus::Draft`] on show, exactly as
 //! a primitive the gate cannot hold yet is — never silently absent from the
 //! surface meant to show everything.
+//! `every_region_is_drawn_in_the_gallery_with_what_frames_it` draws one that
+//! has no frame and reads its pill back off the frame, which is where that
+//! claim is held.
 //!
 //! # The dev flag
 //!
