@@ -333,6 +333,88 @@ fn a_band_is_inset_on_the_ladder_and_a_rail_is_not_inset_at_all() {
     }
 }
 
+/// A bottom rail collapsed to a rect taller than its own strip paints the
+/// whole of that rect in the strip's own fill.
+///
+/// The rect is taller by declaration: the ledger rail collapses to
+/// `rail_selector_height() + status_rail_height()`, and the second term is
+/// clearance so the strip is not inside the band the status rail floats in.
+/// The region's frame fills that whole rect in the panel fill first, so a
+/// strip that painted only its own head left the clearance showing a second,
+/// different fill — a strip sitting on a slab, which is what this refuses.
+///
+/// Asserted on tessellated vertices rather than on the returned rect, because
+/// the claim is about what reached the mesh: a fill resolved and then clipped
+/// away leaves no vertex to find. The three guards around the fill are what
+/// stop it passing vacuously — the strip's fill has to differ from the panel
+/// fill, the rect has to be taller than the strip, and the strip has to have
+/// stopped short of the rect's bottom edge.
+///
+/// Watched failing: delete the `rect_filled` in `chrome::collapsed_rail` —
+/// which is exactly what this drew before — and the painted bound stops at
+/// the strip's own bottom edge.
+#[test]
+fn a_collapsed_bottom_rail_paints_the_whole_of_its_rect_in_the_strips_own_fill() {
+    let sem = meridian_design::semantic(Mode::Light.is_dark());
+    let bar = chrome::colour(sem.tabs.bar_background);
+    let rule = chrome::colour(sem.borders.subtle);
+    // The ledger rail's declared collapsed measure, taken at the bottom of
+    // this frame the way the window takes it at the bottom of itself.
+    let height = chrome::rail_selector_height() + chrome::status_rail_height();
+    let rect = egui::Rect::from_min_max(egui::pos2(PANE.left(), PANE.bottom() - height), PANE.max);
+    assert!(
+        height > chrome::rail_selector_height(),
+        "a collapsed rect no taller than its strip has no clearance in it, and \
+         everything below would hold for a rail that reserved none"
+    );
+
+    let panel_fill = frame(|ui| ui.visuals().panel_fill);
+    assert_ne!(
+        bar, panel_fill,
+        "the strip's fill and the panel fill are the same colour here, so \
+         nothing below could tell a covered clearance from a bare one"
+    );
+
+    let (drawn, primitives) = frame_pixels(|ui| {
+        chrome::collapsed_rail(
+            ui,
+            rect,
+            &["Steps", "Controls"],
+            0,
+            chrome::Caret::Up,
+            Mode::Light,
+        )
+    });
+
+    let filled = painted(&primitives, bar)
+        .expect("nothing on the frame was painted in the strip's own fill");
+    // The tessellator feathers an opaque fill: the ring of vertices carrying
+    // the colour lands half a point inside the rect it was asked for, and the
+    // outer ring is that colour at zero alpha, which `painted` does not match.
+    // Measured here — a fill of 0..400 by 244..300 paints its colour over
+    // 0.5..399.5 by 244.5..299.5 — so the comparison is "reaches every edge to
+    // within a point", which the 32pt shortfall this refuses is nowhere near.
+    const FEATHER: f32 = 1.0;
+    assert!(
+        filled.contains_rect(rect.shrink(FEATHER)),
+        "the strip's fill reached {filled:?} of the {rect:?} the collapsed rail \
+         was given — the clearance below the strip is left in whatever the \
+         region's frame painted, which is the strip-on-a-slab this refuses"
+    );
+    assert!(
+        drawn.rect.max.y < rect.max.y,
+        "the strip drew over the whole collapsed rect ({:?}), so there is no \
+         clearance below it and the fill above proves nothing",
+        drawn.rect
+    );
+    assert!(
+        painted(&primitives, rule).is_none(),
+        "a rule was drawn along the strip's bottom edge, which divides one fill \
+         into two objects again — collapsed there is no body under the strip \
+         for it to divide from"
+    );
+}
+
 /// A floating region is painted in something other than the panel fill, and
 /// in a different something per theme.
 ///
