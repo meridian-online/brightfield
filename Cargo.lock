@@ -2696,12 +2696,12 @@ dependencies = [
 [[package]]
 name = "meridian-design"
 version = "0.1.0"
-source = "git+https://github.com/meridian-online/design?rev=b45d8393d4f1d4498c72767039e564fa5eb4589f#b45d8393d4f1d4498c72767039e564fa5eb4589f"
+source = "git+https://github.com/meridian-online/design?rev=6564c329a7bb3b89ffe0ea750a4cc1dfe63971aa#6564c329a7bb3b89ffe0ea750a4cc1dfe63971aa"
 
 [[package]]
 name = "meridian-egui"
 version = "0.1.0"
-source = "git+https://github.com/meridian-online/design?rev=b45d8393d4f1d4498c72767039e564fa5eb4589f#b45d8393d4f1d4498c72767039e564fa5eb4589f"
+source = "git+https://github.com/meridian-online/design?rev=6564c329a7bb3b89ffe0ea750a4cc1dfe63971aa#6564c329a7bb3b89ffe0ea750a4cc1dfe63971aa"
 dependencies = [
  "egui",
  "kurbo",

@@ -30,7 +30,7 @@ duckdb = { version = "1.2", features = ["bundled"] }
 # no-UI-framework, no-vello property. It is here for one reason: the layout's
 # three spacing constants ARE design-system spacing, and two of the three had
 # drifted off the ladder while they were bare floats in `layout.rs`.
-meridian-design = { git = "https://github.com/meridian-online/design", rev = "b45d8393d4f1d4498c72767039e564fa5eb4589f" }
+meridian-design = { git = "https://github.com/meridian-online/design", rev = "6564c329a7bb3b89ffe0ea750a4cc1dfe63971aa" }
 brightfield-sql = { path = "../brightfield-sql" }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
