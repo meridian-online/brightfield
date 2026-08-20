@@ -253,8 +253,8 @@ const MAX_SETTLE_FRAMES: usize = 240;
 /// "what I just drew is not the final appearance".
 ///
 /// `repaint_delay` is the shortest delay any viewport asked for; zero is the
-/// value [`egui::Context::request_repaint`] writes, and `Duration::MAX` is a
-/// window with nothing outstanding.
+/// value [`egui::Context::request_repaint`] writes, and `Duration::MAX` is what
+/// a viewport that did not ask leaves it at.
 fn wants_another_frame(out: &egui::FullOutput) -> bool {
     out.viewport_output
         .values()
@@ -269,14 +269,15 @@ fn wants_another_frame(out: &egui::FullOutput) -> bool {
 ///
 /// # Why settling is a loop and not one frame
 ///
-/// It used to be one frame, and that is what made every modal baseline a
-/// picture of something the app never draws. `egui::Area` — which is what
-/// `egui::Modal`, and so every `meridian_egui::ModalLayer` overlay, floats on
-/// — **fades in**. `Area::begin` reads how long the area has been visible,
-/// remaps it over `Style::animation_time`, and calls `ui.multiply_opacity` with
-/// the result, which scales the alpha of every shape in that layer: the card's
-/// fill, its hairline, its shadow and the modal's backdrop scrim all together.
-/// While the fade is unfinished it calls `ctx.request_repaint()`.
+/// It used to be one frame, and that is what made the committed modal
+/// baselines pictures of an appearance the app does not reach. `egui::Area` —
+/// which is what `egui::Modal`, and so a `meridian_egui::ModalLayer` overlay,
+/// floats on — **fades in**. `Area::begin` reads how long the area has been
+/// visible, remaps it over `Style::animation_time`, and calls
+/// `ui.multiply_opacity` with the result, which scales the alpha of the shapes
+/// in that layer together: the card's fill, its hairline, its shadow and the
+/// modal's backdrop scrim. While the fade is unfinished it calls
+/// `ctx.request_repaint()`.
 ///
 /// A fixed frame list drops that request. One settle frame after the keystroke
 /// that opens a modal is ~25 ms of egui clock against a 120 ms animation, so
@@ -288,10 +289,13 @@ fn wants_another_frame(out: &egui::FullOutput) -> bool {
 /// card is opaque. **The product was right and the capture path was wrong**,
 /// which is exactly the direction that is invisible to a golden.
 ///
-/// Honouring the request settles every time-driven animation rather than this
-/// one, and it leaves a window with nothing animating on the same single
-/// settle frame it had before — so a capture with no animation in it is
-/// byte-identical to what this ran previously.
+/// Honouring the request settles a time-driven animation of any length rather
+/// than this one, and it leaves an idle window on the same single settle frame
+/// it had before — a capture with no animation in it is byte-identical to what
+/// this ran previously. What it holds for the modal layer is measured by
+/// `every_modal_card_is_opaque_over_whatever_it_covers` and
+/// `every_modal_backdrop_is_exactly_the_scrim_token_over_the_page`, over the
+/// overlays `every_modal_layer_the_shell_shows_is_covered` enumerates.
 #[allow(clippy::too_many_arguments)]
 fn run_ui_frames(
     ctx: &egui::Context,
@@ -320,18 +324,17 @@ fn run_ui_frames(
     let mut frames: Vec<Vec<egui::Event>> = Vec::with_capacity(script.len() + 1);
     frames.push(Vec::new());
     frames.extend(script);
-
-    let mut full: Option<egui::FullOutput> = None;
     for events in frames {
-        full = Some(one(events));
+        // The warm-up and the script are driven for their effect on the
+        // window, never captured: the frame that gets photographed is always a
+        // settle frame below, so nothing here is read back.
+        drop(one(events));
     }
 
     for settled in 0..MAX_SETTLE_FRAMES {
         let out = one(Vec::new());
-        let quiet = !wants_another_frame(&out);
-        full = Some(out);
-        if quiet {
-            return full.expect("a settle frame ran");
+        if !wants_another_frame(&out) {
+            return out;
         }
         assert!(
             settled + 1 < MAX_SETTLE_FRAMES,

@@ -944,7 +944,7 @@ struct OverlayCase {
     area: &'static str,
     key: egui::Key,
     /// Whether the overlay opens over the protocol graph rather than the
-    /// chart. Jump-to-asset only exists there (`graph_on_canvas`).
+    /// chart. Jump-to-asset is drawn under `graph_on_canvas`.
     protocol: bool,
 }
 
@@ -1004,9 +1004,8 @@ impl OverlayCase {
             protocol_boot()
         } else {
             let spec = fixture("examples/dashboard.yaml");
-            let composed =
-                compose_spec_in_mode(spec.to_str().expect("utf-8 fixture path"), mode)
-                    .unwrap_or_else(|e| panic!("compose {}: {e}", spec.display()));
+            let composed = compose_spec_in_mode(spec.to_str().expect("utf-8 fixture path"), mode)
+                .unwrap_or_else(|e| panic!("compose {}: {e}", spec.display()));
             Boot::charts(composed)
         }
     }
@@ -1064,7 +1063,11 @@ impl OverlayCase {
                 ..Default::default()
             };
             let id = input.viewport_id;
-            input.viewports.entry(id).or_default().native_pixels_per_point = Some(SCALE);
+            input
+                .viewports
+                .entry(id)
+                .or_default()
+                .native_pixels_per_point = Some(SCALE);
             input
         };
         let _ = ctx.run_ui(raw(Vec::new()), |ui| app.draw(ui));
@@ -1215,7 +1218,7 @@ fn every_modal_card_is_opaque_over_whatever_it_covers() {
     }
 }
 
-/// The one colour every pixel of `r` has, or `None` if more than one appears.
+/// The colour the whole of `r` is, or `None` if more than one appears there.
 fn uniform_colour(img: &image::RgbaImage, r: Region) -> Option<[u8; 4]> {
     let first = img.get_pixel(r.x0, r.y0).0;
     for y in r.y0..r.y1 {
@@ -1297,10 +1300,11 @@ fn every_modal_backdrop_is_exactly_the_scrim_token_over_the_page() {
 /// whole window — the assumption both assertions above are built on, pinned
 /// rather than trusted.
 ///
-/// `egui::Modal` draws its backdrop into a child ui it never advances the
-/// cursor over, so the area's own min-rect is the card frame. If a future egui
-/// folds that child in, the rect becomes the viewport, the padding band lands
-/// on window chrome, and this says why before the other two fail obscurely.
+/// `egui::Modal` draws its backdrop into a child ui whose rect it leaves out
+/// of the cursor, so the area's own min-rect is the card frame. If a future
+/// egui folds that child in, the rect becomes the viewport, the padding band
+/// lands on window chrome, and this test says why before the other two fail
+/// obscurely.
 #[test]
 fn the_modal_card_rect_is_the_card() {
     let t = &meridian_egui::TOKENS;
@@ -1324,12 +1328,13 @@ fn the_modal_card_rect_is_the_card() {
     }
 }
 
-/// [`OVERLAY_CASES`] names every `ModalLayer::show` in the shell's own source.
+/// [`OVERLAY_CASES`] and the `ModalLayer::show` call sites in the shell's own
+/// source are the same set.
 ///
-/// The count is read off `window.rs` rather than written down, so a fourth
-/// overlay reddens this instead of quietly shipping with no cover — which is
-/// the failure AC4 is about: the palette pair corrected and the next modal's
-/// baseline still showing the artefact.
+/// The list is read off `window.rs` rather than written down, so a fourth
+/// overlay reddens this test instead of quietly shipping with no cover — the
+/// failure being the palette pair corrected while the next modal's baseline
+/// goes on showing the artefact.
 #[test]
 fn every_modal_layer_the_shell_shows_is_covered() {
     let source = include_str!("../src/window.rs");
@@ -1340,8 +1345,7 @@ fn every_modal_layer_the_shell_shows_is_covered() {
             &rest[..rest.find('"').expect("an unterminated id salt literal")]
         })
         .collect();
-    let covered: std::collections::BTreeSet<&str> =
-        OVERLAY_CASES.iter().map(|c| c.area).collect();
+    let covered: std::collections::BTreeSet<&str> = OVERLAY_CASES.iter().map(|c| c.area).collect();
     assert_eq!(
         shown, covered,
         "the modal layers window.rs shows and the ones OVERLAY_CASES checks \
