@@ -72,10 +72,14 @@
 //! can be the one the arrangement already has.
 //!
 //! A rail the user has collapsed or dragged is not laid out here: every window
-//! in the corpus is freshly booted, so each rail is at its default.
-//! `each_rail_collapses_to_the_measure_it_declares` and
-//! `a_rail_reopens_at_the_extent_it_was_dragged_to` in the sibling
-//! `arrangement.rs` are where those two states are held.
+//! in the corpus is freshly booted, so each rail is at its default. Nor is a
+//! rail's *floor*, which is a rail's other declared number and binds only
+//! under a drag — an `egui::Panel` lays out at its default whatever room is
+//! left, so no window here presses one down to it. All three live in the
+//! sibling `arrangement.rs`:
+//! `each_rail_collapses_to_the_measure_it_declares`,
+//! `a_rail_reopens_at_the_extent_it_was_dragged_to`, and
+//! `a_rail_dragged_past_its_floor_stops_at_the_floor_it_declares`.
 
 use brightfield_protocol::layout::Flow;
 use brightfield_shell::design::Mode;

@@ -243,9 +243,11 @@ fn the_drawn_regions_match_the_declared_arrangement() {
 /// is what proves the draw path is following the list rather than agreeing
 /// with it by coincidence.
 ///
-/// The floor is a separate question, asked on a window narrow enough to force
-/// it — see `each_rail_refuses_to_narrow_past_its_declared_floor`, since a rail
-/// on a roomy window stays at its default and the floor goes untested.
+/// The floor is a separate question — see
+/// `each_rail_refuses_to_narrow_past_its_declared_floor`, and then
+/// `a_rail_dragged_past_its_floor_stops_at_the_floor_it_declares`, which is
+/// the one that reads it. A narrow window does not force a rail down: an
+/// `egui::Panel` lays out at its default whatever room is left. A drag does.
 #[test]
 fn each_rail_draws_at_its_declared_extent() {
     let app = settled();
@@ -274,6 +276,13 @@ fn each_rail_draws_at_its_declared_extent() {
 /// rail that ignored `min_size` would come back narrower, and one whose
 /// closure did not claim the space would come back at whatever its content
 /// happened to want.
+/// **What this reaches, measured.** A `Panel` is laid out at its default
+/// whatever room is left, so on this window the three rails draw at 240, 280
+/// and 180 and the assertion below is those numbers being at or above 160,
+/// 200 and 120. It holds that a rail is not drawn *narrower* than its floor;
+/// it does not read the floor, and it stays green when a rail is handed the
+/// wrong one. `a_rail_dragged_past_its_floor_stops_at_the_floor_it_declares`
+/// is where the floor is read, because a drag is what makes it bind.
 #[test]
 fn each_rail_refuses_to_narrow_past_its_declared_floor() {
     let boot = both();
@@ -619,5 +628,42 @@ fn a_rail_reopens_at_the_extent_it_was_dragged_to() {
         (reopened - dragged).abs() < 1e-3,
         "the navigator rail reopened at {reopened}pt rather than the {dragged}pt it \
          was dragged to; {declared}pt is the declared default it must not fall back to"
+    );
+}
+
+/// A rail dragged past its floor stops at the floor the arrangement declares.
+///
+/// **The floor was the one declared number nothing on screen was compared
+/// against.** `each_rail_refuses_to_narrow_past_its_declared_floor` above lays
+/// out a tight window and asserts the drawn extent is at or above the floor —
+/// but an `egui::Panel` is laid out at its default whatever room is left, so
+/// the floor never binds on a plain layout. Measured on 620x480, 560x400 and
+/// 700x520: the navigator drew 240 on all three, so that assertion was 240 at
+/// or above 160 rather than a reading of the floor. Handing the navigator the
+/// *ledger's* floor left every suite in this workspace green.
+///
+/// A drag is what makes the floor bind, so a drag is what reads it. The
+/// comparison is against `Extent::Rail`'s own `min` rather than a number typed
+/// here, so this fails in both directions: a floor set too low lets the rail
+/// go narrower than it declares, and one set too high stops it early.
+#[test]
+fn a_rail_dragged_past_its_floor_stops_at_the_floor_it_declares() {
+    let region = arrangement::default_arrangement().expect_region(arrangement::NAVIGATOR_RAIL);
+    let arrangement::Extent::Rail { min, .. } = region.extent else {
+        panic!("the navigator rail is declared a rail");
+    };
+
+    let mut win = Live::open();
+    win.settle();
+    // Well past it, so what stops the drag is the floor rather than where the
+    // pointer was let go.
+    win.drag_edge_to(arrangement::NAVIGATOR_RAIL, min / 2.0);
+    let drawn = win.extent(arrangement::NAVIGATOR_RAIL);
+    assert!(
+        (drawn - min).abs() < 1e-3,
+        "the navigator rail was dragged to {}pt and came to rest at {drawn}pt \
+         against the {min}pt floor it declares — the floor the draw path is \
+         holding is not the floor the arrangement names",
+        min / 2.0
     );
 }
