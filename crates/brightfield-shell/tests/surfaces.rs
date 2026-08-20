@@ -417,6 +417,16 @@ fn press(key: egui::Key, shift: bool) -> Vec<egui::Event> {
 /// `the_window_holds_one_tree_over_every_pane_it_declares`. Read the two tiers
 /// together: this one guards what a user would see, that one guards what the
 /// layout file would say.
+///
+/// It also sees one frame of one boot. [`Boot::charts`] carries
+/// `ProtocolInputs::empty()`, so the protocol document behind this window has
+/// no assets and no steps and both of its rails draw their empty state. A
+/// switcher shown under a condition an empty protocol does not meet would
+/// leave the pair green. That is a hole in what a future shape could do rather
+/// than in what the retired one did, which drew both of its controls
+/// unconditionally — which is why the mutation above lands here at all.
+/// Closing it needs a boot with a protocol loaded, and that is a capture and a
+/// baseline this test does not have.
 #[test]
 fn shell_light_surface() {
     shell_surface(Mode::Light, "shell_light");
