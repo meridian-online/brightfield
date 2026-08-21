@@ -21,6 +21,7 @@
 //!                  [--size WxH] [--scale N] [--theme light|dark]
 //!                  [--script keys.ndjson] [--force-sample N]
 //!                  [--flow vertical|horizontal] [--focus <dotted-id>]
+//!                  [--crop WxH+X+Y]
 //! brightfield-shot --gallery <component-id> --out out.png
 //!                  [--size WxH] [--scale N] [--theme light|dark]
 //! ```
@@ -28,6 +29,16 @@
 //! `--flow` / `--focus` apply to the Protocol panel: the reading axis (vertical
 //! by default) and the boot selection (the dotted asset id a click would target,
 //! so a scripted `za`/`Enter` has a cursor to act on).
+//!
+//! `--crop WxH+X+Y` (ImageMagick geometry order: size then offset) trims the
+//! written PNG to one rectangle after the capture completes — the whole window
+//! is still rendered and read back, only the file on disk is smaller. It exists
+//! so a published picture of one region (the protocol frame's title bar,
+//! outline rail and graph, say, without the operator rail or the steps band)
+//! is a build output rather than a manual crop somebody did once in an image
+//! editor. The crop runs against whatever the capture produced, so a rectangle
+//! that no longer fits inside a changed layout is a hard error naming the
+//! capture's actual size, not a silently wrong picture.
 //!
 //! `--force-sample N` draws one row in N — a power of two — through the same
 //! pushed-down clause the renderer reaches for above its drawable ceiling, and
@@ -118,6 +129,70 @@ struct Args {
     /// `--force-sample N`: draw one row in N, with the sampling notice, at a
     /// row count the spec did not have to change to produce.
     force_sample: Option<SampleRate>,
+    /// `--crop WxH+X+Y`: trim the written PNG to this rectangle after the
+    /// capture completes. See the module doc for why this is a post-capture
+    /// crop rather than a smaller render.
+    crop: Option<Crop>,
+}
+
+/// A pixel rectangle in device-pixel (capture) coordinates: the size, then the
+/// top-left offset — ImageMagick's own geometry order, so a reader who has
+/// used `convert -crop` already knows the argument shape.
+#[derive(Clone, Copy, Debug)]
+struct Crop {
+    w: u32,
+    h: u32,
+    x: u32,
+    y: u32,
+}
+
+/// Parse `--crop`'s `WxH+X+Y` geometry. `+` rather than `,` between the two
+/// halves and between the two offsets, matching the ImageMagick convention the
+/// module doc names.
+fn parse_crop(v: &str) -> Result<Crop, String> {
+    let bad = || format!("--crop {v}: expected WxH+X+Y, e.g. 1285x815+0+0");
+    let (size, offset) = v.split_once('+').ok_or_else(bad)?;
+    let (w, h) = size.split_once('x').ok_or_else(bad)?;
+    let (x, y) = offset.split_once('+').ok_or_else(bad)?;
+    Ok(Crop {
+        w: w.parse().map_err(|_| bad())?,
+        h: h.parse().map_err(|_| bad())?,
+        x: x.parse().map_err(|_| bad())?,
+        y: y.parse().map_err(|_| bad())?,
+    })
+}
+
+/// Re-read the PNG just written to `out`, cut `crop` out of it, and overwrite
+/// `out` with the result. Returns the cropped dimensions, matching
+/// [`capture_png`]'s own `(u32, u32)` result so a caller can chain the two
+/// through [`report`] unchanged.
+///
+/// A round trip through disk rather than cropping the in-memory buffer
+/// `capture_png` produced: that buffer is private to the capture path (this
+/// binary calls `capture_png`/`capture_component`/`capture_vello_only`, never
+/// touches a pixel itself), and re-reading a just-written PNG is lossless, so
+/// nothing is given up by reusing the capture path's own output as the input
+/// here rather than threading a new return type through it.
+///
+/// # Errors
+/// A message naming the rectangle and the capture's actual size if `crop`
+/// does not fit inside it, or if the file cannot be read back or rewritten.
+fn apply_crop(out: &std::path::Path, crop: Crop) -> Result<(u32, u32), String> {
+    let img = image::open(out)
+        .map_err(|e| format!("reopen {} for --crop: {e}", out.display()))?
+        .to_rgba8();
+    let (iw, ih) = img.dimensions();
+    if crop.x.saturating_add(crop.w) > iw || crop.y.saturating_add(crop.h) > ih {
+        return Err(format!(
+            "--crop {}x{}+{}+{} does not fit inside the {iw}x{ih} capture",
+            crop.w, crop.h, crop.x, crop.y
+        ));
+    }
+    let cropped = image::imageops::crop_imm(&img, crop.x, crop.y, crop.w, crop.h).to_image();
+    cropped
+        .save(out)
+        .map_err(|e| format!("write cropped {}: {e}", out.display()))?;
+    Ok((crop.w, crop.h))
 }
 
 fn main() -> ExitCode {
@@ -129,7 +204,7 @@ fn main() -> ExitCode {
                 "usage: brightfield-shot --spec S.yaml --out O.png \
                  [--scale N] [--theme light|dark] [--script keys.ndjson] \
                  [--size WxH] [--force-sample N] [--flow vertical|horizontal] \
-                 [--focus <dotted-id>]\n\
+                 [--focus <dotted-id>] [--crop WxH+X+Y]\n\
                  \x20      brightfield-shot --gallery <component-id> --out O.png \
                  [--scale N] [--theme light|dark] [--size WxH]"
             );
@@ -144,10 +219,9 @@ fn main() -> ExitCode {
     if let Some(id) = &args.gallery {
         let size = args.size.map(|(w, h)| (w as f32, h as f32));
         eprintln!("gallery component {id}");
-        return report(
-            capture_component(id, args.mode, args.scale, size, &args.out),
-            &args.out,
-        );
+        let result = capture_component(id, args.mode, args.scale, size, &args.out)
+            .and_then(|dims| crop_or_keep(&args.out, args.crop, dims));
+        return report(result, &args.out);
     }
     // `parse_args` guarantees one of the two modes is present.
     let spec = args
@@ -196,15 +270,29 @@ fn main() -> ExitCode {
             );
             return ExitCode::from(2);
         }
-        return report(
-            capture_vello_only(boot.composed, args.scale, &args.out),
-            &args.out,
-        );
+        let result = capture_vello_only(boot.composed, args.scale, &args.out)
+            .and_then(|dims| crop_or_keep(&args.out, args.crop, dims));
+        return report(result, &args.out);
     }
-    report(
-        capture_png(boot, args.mode, args.scale, &args.out, script),
-        &args.out,
-    )
+    let result = capture_png(boot, args.mode, args.scale, &args.out, script)
+        .and_then(|dims| crop_or_keep(&args.out, args.crop, dims));
+    report(result, &args.out)
+}
+
+/// Apply `crop` to the file just written at `out` if one was asked for,
+/// otherwise pass `dims` — the capture's own result — straight through. The
+/// one place all three capture branches route their result through before
+/// [`report`], so `--crop` composes with `--spec`, `--gallery` and
+/// `--vello-only` alike rather than being wired into one of them.
+fn crop_or_keep(
+    out: &std::path::Path,
+    crop: Option<Crop>,
+    dims: (u32, u32),
+) -> Result<(u32, u32), String> {
+    match crop {
+        Some(c) => apply_crop(out, c),
+        None => Ok(dims),
+    }
 }
 
 fn report(result: Result<(u32, u32), String>, out: &std::path::Path) -> ExitCode {
@@ -232,6 +320,7 @@ fn parse_args() -> Result<Args, String> {
     let mut flow = Flow::Vertical;
     let mut focus = None;
     let mut force_sample = None;
+    let mut crop = None;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         let mut next = || it.next().ok_or_else(|| format!("{a} needs a value"));
@@ -275,6 +364,7 @@ fn parse_args() -> Result<Args, String> {
                 }
             }
             "--focus" => focus = Some(next()?),
+            "--crop" => crop = Some(parse_crop(&next()?)?),
             "--size" => {
                 let v = next()?;
                 let (w, h) = v.split_once('x').ok_or_else(|| "--size WxH".to_string())?;
@@ -307,5 +397,6 @@ fn parse_args() -> Result<Args, String> {
         flow,
         focus,
         force_sample,
+        crop,
     })
 }
