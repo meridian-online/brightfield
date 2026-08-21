@@ -197,6 +197,33 @@ captures one component solo through the same deterministic pipeline the pixel te
 (`--size WxH` is honoured on this path). The per-component conformance gate lives in
 `crates/brightfield-shell/tests/gallery_gate.rs`.
 
+### Regenerating the protocol frame published outside this repo
+
+A published picture of Brightfield rendering the `edgar_gleif` Protocol — outline rail and
+DAG, without the operator rail or the steps band — is a build output, not a screenshot taken
+once by hand:
+
+```sh
+BRIGHTFIELD_PROTOCOL_OFFLINE=1 cargo run -p brightfield-shell --bin brightfield-shot -- \
+  --spec examples/protocol/edgar_gleif/arcform.yaml --scale 1.0 --theme light \
+  --crop 1285x815+0+0 --out brightfield-protocol-light.png
+```
+
+Swap `--theme dark` for the dark variant. `--crop WxH+X+Y` trims the capture after it is
+rendered (see the flag's own doc comment in `src/bin/brightfield-shot.rs`); the pixels are
+the same deterministic real-UI capture `--spec`/`--gallery` always produce, only the file on
+disk is the named rectangle instead of the whole window, written at the smallest of the 18
+PNG compression/filter combinations this crate's `image` dependency exposes (measured over
+this picture; see [`write_png_smallest`](crates/brightfield-shell/src/capture.rs)'s own doc
+comment for the numbers and why `NoFilter` wins here specifically). Running the command twice
+on the same commit writes byte-identical files, down to the SHA-256 — the capture path has no
+wall-clock or randomness in it (see `capture.rs`'s module doc), and the encoding is pinned to
+one setting rather than left to a default that could move. That determinism is a property of
+running *this* command, not of the PNG format: a file cut by a different tool (ImageMagick,
+Pillow, `oxipng`) will not match these bytes even when its pixels are identical, because
+different encoders produce different compressed streams for the same input. Diff decoded
+pixels, not files, when comparing across tools.
+
 ### The arcform dependency (`arc`)
 
 Brightfield **loads, validates and edits** `arcform.yaml` specs with the
