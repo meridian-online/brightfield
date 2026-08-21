@@ -926,7 +926,7 @@ pub fn crop_captured_png(path: &Path, crop: Crop) -> Result<(u32, u32), String> 
 /// Measured over both themes of the `edgar_gleif` protocol frame this flag
 /// was built for — each of the 18 `CompressionType`x`FilterType`
 /// combinations the encoder exposes, on the identical pixel buffer, so the
-/// comparison isolates the encoding choice from everything else:
+/// comparison isolates the encoding choice from any other variable:
 ///
 /// | encoding            | light (bytes) | dark (bytes) |
 /// |----------------------|---------------|--------------|
