@@ -916,10 +916,56 @@ pub fn crop_captured_png(path: &Path, crop: Crop) -> Result<(u32, u32), String> 
         ));
     }
     let cropped = image::imageops::crop_imm(&img, crop.x, crop.y, crop.w, crop.h).to_image();
-    cropped
-        .save(path)
-        .map_err(|e| format!("write cropped {}: {e}", path.display()))?;
+    write_png_smallest(&cropped, path)?;
     Ok((crop.w, crop.h))
+}
+
+/// Write `img` as a PNG at the smallest encoding this crate's `image` (0.25)
+/// dependency can produce: `CompressionType::Best` + `FilterType::NoFilter`.
+///
+/// Measured over both themes of the `edgar_gleif` protocol frame this flag
+/// was built for — every one of the 18 `CompressionType`x`FilterType`
+/// combinations the encoder exposes, on the identical pixel buffer, so the
+/// comparison isolates the encoding choice from everything else:
+///
+/// | encoding            | light (bytes) | dark (bytes) |
+/// |----------------------|---------------|--------------|
+/// | `Best`+`NoFilter`    | 81,191        | 76,727       |
+/// | `Default`+`NoFilter` | 85,683        | 81,237       |
+/// | `Default`+`Adaptive` (`RgbaImage::save`'s own default) | 99,576 | 96,035 |
+/// | `Fast`+`Adaptive`    | 162,214       | 160,707      |
+///
+/// `NoFilter` beating `Adaptive` — normally the better choice, and what
+/// `image`'s own default reaches for — is specific to this content: large
+/// flat regions (the page tone behind the outline rail and the graph) code
+/// almost for free unfiltered, and `Adaptive` spends bytes choosing a
+/// per-scanline filter a smooth region did not need. That is a property of
+/// this picture, not a general rule; a future image dominated by gradients or
+/// texture could reasonably compress smaller under `Adaptive`. Nothing here
+/// pins that — the choice is re-derived, not assumed, and cheap to redo:
+/// swap the two arguments below and compare `ls -la` on the two outputs.
+///
+/// Deterministic like the rest of the capture path: the same pixels through
+/// the same encoder settings write the same bytes on every run, which is
+/// what lets a caller pin a SHA-256 of this command's output at all.
+///
+/// # Errors
+/// A message naming `path` on any write failure.
+fn write_png_smallest(img: &image::RgbaImage, path: &Path) -> Result<(), String> {
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+    use image::ImageEncoder;
+
+    let file = std::fs::File::create(path)
+        .map_err(|e| format!("write cropped {}: {e}", path.display()))?;
+    let writer = std::io::BufWriter::new(file);
+    PngEncoder::new_with_quality(writer, CompressionType::Best, FilterType::NoFilter)
+        .write_image(
+            img,
+            img.width(),
+            img.height(),
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|e| format!("write cropped {}: {e}", path.display()))
 }
 
 #[cfg(test)]

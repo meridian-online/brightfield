@@ -77,6 +77,26 @@ fn crop_writes_a_png_of_exactly_the_named_rectangle() {
     );
 }
 
+/// A regression guard on the PNG encoding `write_png_smallest` chose, not a
+/// pixel-content gate: this page ships both themes in the DOM (one hidden by
+/// CSS), so every visitor downloads both files, and the naive
+/// `RgbaImage::save` default this crate used before encoded the same pixels
+/// into roughly twice the bytes (measured: 99,576 vs 81,191 for the light
+/// theme). 100 KiB is comfortably above the measured 81,191-byte output and
+/// comfortably below the ~160 KiB the previous default produced, so this
+/// reddens if a future change reverts the encoder choice without reddening
+/// on ordinary UI drift the way a pinned byte count would.
+#[test]
+fn crop_output_stays_small() {
+    let out = scratch("protocol_frame_crop_filesize.png");
+    assert!(run("light", "1285x815+0+0", &out).success());
+    let size = std::fs::metadata(&out).unwrap().len();
+    assert!(
+        size < 100 * 1024,
+        "brightfield-protocol-light.png-shaped output grew to {size} bytes (>100 KiB) —          check write_png_smallest is still choosing CompressionType::Best + FilterType::NoFilter"
+    );
+}
+
 #[test]
 fn light_and_dark_crops_are_not_byte_identical() {
     let light = scratch("protocol_frame_crop_light.png");

@@ -212,13 +212,17 @@ BRIGHTFIELD_PROTOCOL_OFFLINE=1 cargo run -p brightfield-shell --bin brightfield-
 Swap `--theme dark` for the dark variant. `--crop WxH+X+Y` trims the capture after it is
 rendered (see the flag's own doc comment in `src/bin/brightfield-shot.rs`); the pixels are
 the same deterministic real-UI capture `--spec`/`--gallery` always produce, only the file on
-disk is the named rectangle instead of the whole window. Running the command twice on the
-same commit writes byte-identical files — the capture path has no wall-clock or randomness
-in it (see `capture.rs`'s module doc) — but that determinism is over the **decoded pixels**,
-not over the PNG container: the `image` crate's encoder is not pinned to one compression/filter
-setting here, so a byte-for-byte diff against a PNG cut by a different tool or a different
-encoder configuration is not itself evidence that anything rendered differently. Diff the
-decoded pixels, not the file, when comparing across tools.
+disk is the named rectangle instead of the whole window, written at the smallest of the 18
+PNG compression/filter combinations this crate's `image` dependency exposes (measured over
+this picture; see [`write_png_smallest`](crates/brightfield-shell/src/capture.rs)'s own doc
+comment for the numbers and why `NoFilter` wins here specifically). Running the command twice
+on the same commit writes byte-identical files, down to the SHA-256 — the capture path has no
+wall-clock or randomness in it (see `capture.rs`'s module doc), and the encoding is pinned to
+one setting rather than left to a default that could move. That determinism is a property of
+running *this* command, not of the PNG format: a file cut by a different tool (ImageMagick,
+Pillow, `oxipng`) will not match these bytes even when its pixels are identical, because
+different encoders produce different compressed streams for the same input. Diff decoded
+pixels, not files, when comparing across tools.
 
 ### The arcform dependency (`arc`)
 
