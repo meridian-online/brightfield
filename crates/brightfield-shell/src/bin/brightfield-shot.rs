@@ -223,9 +223,9 @@ fn main() -> ExitCode {
 
 /// Apply `crop` to the file just written at `out` if one was asked for,
 /// otherwise pass `dims` — the capture's own result — straight through. The
-/// one place all three capture branches route their result through before
-/// [`report`], so `--crop` composes with `--spec`, `--gallery` and
-/// `--vello-only` alike rather than being wired into one of them.
+/// one place the `--spec`, `--gallery` and `--vello-only` branches each route
+/// their result through before [`report`], so `--crop` composes with the
+/// three of them rather than being wired into one.
 fn crop_or_keep(
     out: &std::path::Path,
     crop: Option<Crop>,

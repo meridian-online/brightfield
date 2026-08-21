@@ -72,7 +72,8 @@ fn binary_copies_into_stage_root<'a>(script: &'a str, vars: &[&str]) -> Vec<&'a 
                 return false;
             };
             // A copy straight into $STAGE has no further '/' before the
-            // closing quote; `examples/foo.yaml` or `finetype` do.
+            // closing quote; a path like examples/scatter.yaml or a bare
+            // subdirectory name like finetype does.
             if dest[..dest_end].contains('/') {
                 return false;
             }

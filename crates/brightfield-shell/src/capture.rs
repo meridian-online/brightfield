@@ -891,8 +891,8 @@ pub fn parse_crop(v: &str) -> Result<Crop, String> {
 /// A round trip through disk rather than a function that crops the in-memory
 /// buffer a capture produced: [`capture_png`] and its siblings already own
 /// writing the file, and PNG is lossless, so reopening what one of them just
-/// wrote costs nothing a caller would otherwise keep and adds no second
-/// GPU-facing code path for a operation that has nothing to do with the GPU.
+/// wrote costs a caller no data it would otherwise have kept, and keeps this
+/// GPU-unrelated operation off the GPU-facing code path.
 ///
 /// # Errors
 /// A message naming the rectangle and the capture's actual size if `crop`
