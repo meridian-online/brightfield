@@ -79,7 +79,7 @@ fn crop_writes_a_png_of_exactly_the_named_rectangle() {
 
 /// A regression guard on the PNG encoding `write_png_smallest` chose, not a
 /// pixel-content gate: this page ships both themes in the DOM (one hidden by
-/// CSS), so every visitor downloads both files, and the naive
+/// CSS), so a visitor's page load pays for both files, and the naive
 /// `RgbaImage::save` default this crate used before encoded the same pixels
 /// into roughly twice the bytes (measured: 99,576 vs 81,191 for the light
 /// theme). 100 KiB is comfortably above the measured 81,191-byte output and

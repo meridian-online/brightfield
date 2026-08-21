@@ -924,7 +924,7 @@ pub fn crop_captured_png(path: &Path, crop: Crop) -> Result<(u32, u32), String> 
 /// dependency can produce: `CompressionType::Best` + `FilterType::NoFilter`.
 ///
 /// Measured over both themes of the `edgar_gleif` protocol frame this flag
-/// was built for — every one of the 18 `CompressionType`x`FilterType`
+/// was built for — each of the 18 `CompressionType`x`FilterType`
 /// combinations the encoder exposes, on the identical pixel buffer, so the
 /// comparison isolates the encoding choice from everything else:
 ///
