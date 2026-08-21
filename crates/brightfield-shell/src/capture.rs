@@ -853,3 +853,198 @@ fn xy(v: &serde_json::Value) -> Option<(f32, f32)> {
     let a = v.as_array()?;
     Some((a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32))
 }
+
+/// A pixel rectangle in device-pixel (capture) coordinates: the size, then
+/// the top-left offset — ImageMagick's own `-crop` geometry order, so a
+/// reader who has used `convert -crop` already knows the shape of
+/// [`parse_crop`]'s input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Crop {
+    pub w: u32,
+    pub h: u32,
+    pub x: u32,
+    pub y: u32,
+}
+
+/// Parse a `WxH+X+Y` crop geometry, e.g. `1285x815+0+0`.
+///
+/// # Errors
+/// A message naming the input and the expected shape, on anything that does
+/// not parse as four non-negative integers in that order.
+pub fn parse_crop(v: &str) -> Result<Crop, String> {
+    let bad = || format!("--crop {v}: expected WxH+X+Y, e.g. 1285x815+0+0");
+    let (size, offset) = v.split_once('+').ok_or_else(bad)?;
+    let (w, h) = size.split_once('x').ok_or_else(bad)?;
+    let (x, y) = offset.split_once('+').ok_or_else(bad)?;
+    Ok(Crop {
+        w: w.parse().map_err(|_| bad())?,
+        h: h.parse().map_err(|_| bad())?,
+        x: x.parse().map_err(|_| bad())?,
+        y: y.parse().map_err(|_| bad())?,
+    })
+}
+
+/// Re-read the PNG at `path`, cut `crop` out of it, and overwrite `path` with
+/// the result. Returns the cropped dimensions, matching [`capture_png`]'s own
+/// `(u32, u32)` result so a caller can chain the two.
+///
+/// A round trip through disk rather than a function that crops the in-memory
+/// buffer a capture produced: [`capture_png`] and its siblings already own
+/// writing the file, and PNG is lossless, so reopening what one of them just
+/// wrote costs nothing a caller would otherwise keep and adds no second
+/// GPU-facing code path for a operation that has nothing to do with the GPU.
+///
+/// # Errors
+/// A message naming the rectangle and the capture's actual size if `crop`
+/// does not fit inside it, or if the file cannot be read back or rewritten.
+pub fn crop_captured_png(path: &Path, crop: Crop) -> Result<(u32, u32), String> {
+    let img = image::open(path)
+        .map_err(|e| format!("reopen {} for --crop: {e}", path.display()))?
+        .to_rgba8();
+    let (iw, ih) = img.dimensions();
+    if crop.x.saturating_add(crop.w) > iw || crop.y.saturating_add(crop.h) > ih {
+        // `path` currently holds the full, uncropped capture — a real
+        // picture, just not the one the caller asked for. Removing it (best
+        // effort; a caller diagnosing a permissions problem gets the crop
+        // error either way) keeps a refused crop from leaving behind a file
+        // whose only defect is invisible until someone opens it. Not a
+        // silently wrong picture, per the module doc on `--crop`.
+        let _ = std::fs::remove_file(path);
+        return Err(format!(
+            "--crop {}x{}+{}+{} does not fit inside the {iw}x{ih} capture",
+            crop.w, crop.h, crop.x, crop.y
+        ));
+    }
+    let cropped = image::imageops::crop_imm(&img, crop.x, crop.y, crop.w, crop.h).to_image();
+    cropped
+        .save(path)
+        .map_err(|e| format!("write cropped {}: {e}", path.display()))?;
+    Ok((crop.w, crop.h))
+}
+
+#[cfg(test)]
+mod crop_tests {
+    use super::{crop_captured_png, parse_crop, Crop};
+
+    #[test]
+    fn parse_crop_reads_size_then_offset() {
+        assert_eq!(
+            parse_crop("1285x815+0+0").unwrap(),
+            Crop {
+                w: 1285,
+                h: 815,
+                x: 0,
+                y: 0
+            }
+        );
+        assert_eq!(
+            parse_crop("10x20+30+40").unwrap(),
+            Crop {
+                w: 10,
+                h: 20,
+                x: 30,
+                y: 40
+            }
+        );
+    }
+
+    #[test]
+    fn parse_crop_rejects_malformed_geometry() {
+        assert!(parse_crop("1285x815").is_err(), "missing offset");
+        assert!(parse_crop("1285+0+0").is_err(), "missing height");
+        assert!(parse_crop("axb+0+0").is_err(), "non-numeric size");
+        assert!(parse_crop("").is_err(), "empty");
+    }
+
+    /// A 6×4 RGBA image, one flat colour per quadrant split at `x=3`/`y=2` —
+    /// deliberately **not** a square split at the image's centre, so a crop's
+    /// **position** is provable on both axes independently: an implementation
+    /// that swapped its `x`/`y` or its `w`/`h` arguments would read a
+    /// different quadrant here, where it would read the same one back out of
+    /// a symmetric split by coincidence.
+    fn four_quadrant_image() -> image::RgbaImage {
+        image::RgbaImage::from_fn(6, 4, |x, y| {
+            let colour = match (x < 3, y < 2) {
+                (true, true) => [255, 0, 0, 255],     // top-left: red
+                (false, true) => [0, 255, 0, 255],    // top-right: green
+                (true, false) => [0, 0, 255, 255],    // bottom-left: blue
+                (false, false) => [255, 255, 0, 255], // bottom-right: yellow
+            };
+            image::Rgba(colour)
+        })
+    }
+
+    #[test]
+    fn crop_captured_png_cuts_the_named_rectangle_from_the_named_position() {
+        let dir = std::env::temp_dir().join(format!(
+            "brightfield-crop-test-{}-{}",
+            std::process::id(),
+            "quadrant"
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("quadrants.png");
+        four_quadrant_image().save(&path).unwrap();
+
+        // The top-right quadrant: x=3 (not 0), y=0 (not 3), w=3, h=2 — every
+        // one of the four fields is a distinct value, so a mutation that
+        // reads any of them in the wrong place changes what comes back.
+        let (w, h) = crop_captured_png(
+            &path,
+            Crop {
+                w: 3,
+                h: 2,
+                x: 3,
+                y: 0,
+            },
+        )
+        .expect("crop within bounds succeeds");
+        assert_eq!((w, h), (3, 2));
+
+        let cropped = image::open(&path).unwrap().to_rgba8();
+        assert_eq!(cropped.dimensions(), (3, 2));
+        for y in 0..2 {
+            for x in 0..3 {
+                assert_eq!(
+                    cropped.get_pixel(x, y),
+                    &image::Rgba([0, 255, 0, 255]),
+                    "the x=3,y=0,w=3,h=2 crop must read back the top-right (green) quadrant, \
+                     not another one"
+                );
+            }
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn crop_captured_png_refuses_a_rectangle_that_does_not_fit() {
+        let dir = std::env::temp_dir().join(format!(
+            "brightfield-crop-test-{}-{}",
+            std::process::id(),
+            "oob"
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("quadrants.png");
+        four_quadrant_image().save(&path).unwrap();
+
+        let err = crop_captured_png(
+            &path,
+            Crop {
+                w: 3,
+                h: 5,
+                x: 3,
+                y: 0,
+            },
+        )
+        .expect_err("a 3x5 crop at (3,0) overruns a 6x4 image by one pixel on the height axis");
+        assert!(
+            err.contains("does not fit"),
+            "error should name the fit problem, got: {err}"
+        );
+        assert!(
+            !path.exists(),
+            "a refused crop must remove the full, uncropped capture rather than leave it \
+             sitting at the path the caller named as if it were the answer"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
