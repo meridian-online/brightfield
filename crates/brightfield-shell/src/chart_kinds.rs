@@ -744,9 +744,9 @@ mod tests {
     /// chooser offering more than one kind offers them in the order it did.
     ///
     /// Placing [`scatter`] ahead of [`binned_histogram`] in [`kinds`] reddens
-    /// the first assertion on every list carrying two measures — measured, and
-    /// it is the reason this is a comparison rather than a restatement of the
-    /// shipped order.
+    /// the first assertion here on any list carrying two measures — measured —
+    /// and that is why this test is a comparison rather than a restatement of
+    /// the shipped order.
     #[test]
     fn adding_the_scatter_moved_no_first_look() {
         let without =
@@ -768,8 +768,9 @@ mod tests {
         }
     }
 
-    /// Every field list of up to `max` columns over the three field types, each
-    /// column named for its position so [`ChartKind::bind`] can tell them apart.
+    /// The field lists of up to `max` columns over the three field types, one
+    /// per combination, each column named for its position so
+    /// [`ChartKind::bind`] can tell them apart.
     fn field_lists(max: usize) -> Vec<Vec<Field>> {
         let types = [
             FieldType::Quantitative,

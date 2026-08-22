@@ -3,10 +3,10 @@
 //!
 //! `chart_kinds::SCATTER` declares two required quantitative slots and builds a
 //! block of two `dot` layers over one table: the first reads the shell's table
-//! straight and never narrows, the second reads it through `filterBy:` the
-//! shared crossfilter selection and lands on top in the default mark ink. An
-//! `intervalXY` producer makes the tile a contributor to that selection and not
-//! only a subscriber to it.
+//! straight, with no `filterBy:` to narrow it, and the second reads it through
+//! `filterBy:` the shared crossfilter selection and lands on top in the default
+//! mark ink. An `intervalXY` producer makes the tile a contributor to that
+//! selection rather than a subscriber to it alone.
 //!
 //! # Four tiers, because each one passes on a picture the tier below cannot see
 //!
@@ -509,8 +509,8 @@ fn raster(composed: Composed, name: &str) -> RgbaImage {
     image::open(&png).expect("open png").to_rgba8()
 }
 
-/// The topmost row carrying subset ink in each frame column, `None` where that
-/// column carries none.
+/// The topmost row carrying subset ink in each frame column, and `None` for a
+/// column with no such ink in it.
 fn ink_tops(img: &RgbaImage, frame: &Frame) -> Vec<Option<u32>> {
     let want = subset_ink();
     (frame.x0..frame.x1)
@@ -751,7 +751,7 @@ fn sweep(
     gesture_frame(app, ctx, Vec::new());
 }
 
-/// Every `Interval` clause in a predicate tree, as `(column, lo, hi)`.
+/// The `Interval` clauses in a predicate tree, as `(column, lo, hi)`.
 fn intervals(predicate: &SqlPredicate) -> Vec<(String, f64, f64)> {
     match predicate {
         SqlPredicate::Interval { column, lo, hi, .. } => match (lo, hi) {
