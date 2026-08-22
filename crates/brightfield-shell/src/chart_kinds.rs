@@ -62,6 +62,8 @@ pub const BINNED_HISTOGRAM: ChartKindId = ChartKindId::new("binned-histogram");
 pub const COUNTS_OVER_TIME: ChartKindId = ChartKindId::new("counts-over-time");
 /// Two categories crossed and counted: `cell` over a pair of band axes.
 pub const COUNT_GRID: ChartKindId = ChartKindId::new("count-grid");
+/// Two measures related: `dot` over a pair of quantitative axes.
+pub const SCATTER: ChartKindId = ChartKindId::new("scatter");
 
 /// The widest **category** axis this registry will cross: a `distinct ×
 /// distinct` grid past this on either side is a wall of cells rather than a
@@ -86,6 +88,29 @@ const GRID_MAX_DISTINCT: u64 = 60;
 /// carrying a measure and no for a table of names — the applicability rule the
 /// first-look chooser needs, as data rather than as a branch.
 const HISTOGRAM_SLOTS: &[FieldSlot] = &[FieldSlot::required("x", &[FieldType::Quantitative])];
+
+/// The two measures a scatter relates, x before y.
+///
+/// Both required, so [`ChartKind::accepts`] answers yes for a table carrying a
+/// second measure and no for a table carrying one — a lone measure has a
+/// distribution and no relationship, and the test over that refusal is
+/// `a_table_with_one_measure_admits_no_scatter` in
+/// `crates/brightfield-shell/tests/scatter_kind.rs`.
+///
+/// # Which column fills which slot
+///
+/// [`ChartKind::bind`] is first fit in slot order and [`fields_of`] hands the
+/// measures over first, in the table's own order. So **x is the table's first
+/// measure and y is its second** — the same ordering rule [`fields_of`] already
+/// documents for the one-slot kinds, applied to two slots rather than to one,
+/// which is why it is not a second rule for a reader to learn. No name, range or
+/// correlation is consulted; `a_scatters_axes_are_the_tables_first_two_measures`
+/// is the test, and it reorders the columns to show the rule is the order rather
+/// than the names.
+const SCATTER_SLOTS: &[FieldSlot] = &[
+    FieldSlot::required("x", &[FieldType::Quantitative]),
+    FieldSlot::required("y", &[FieldType::Quantitative]),
+];
 
 /// The ink the ghost layer is drawn in — the warm-gray border step of the
 /// design system's generated gray scale,
@@ -150,14 +175,25 @@ const TIME_SLOTS: &[FieldSlot] = &[FieldSlot::required("t", &[FieldType::Tempora
 #[must_use]
 pub fn registry() -> &'static ChartKindRegistry<String> {
     static KINDS: OnceLock<ChartKindRegistry<String>> = OnceLock::new();
-    KINDS.get_or_init(|| {
-        ChartKindRegistry::new(vec![
-            binned_histogram(),
-            counts_over_time(),
-            count_grid(),
-            ranked_category_bars(),
-        ])
-    })
+    KINDS.get_or_init(|| ChartKindRegistry::new(kinds()))
+}
+
+/// The kinds [`registry`] is built from, in the order it declares them.
+///
+/// A function rather than the `vec![]` written inline where the registry is
+/// built, so a test can stand up the same list with one kind taken out and
+/// compare the two answers. `adding_the_scatter_moved_no_first_look` is that
+/// test, and building its comparison registry from this list is what stops it
+/// going stale the next time a kind is added: a second hand-written copy of the
+/// order would keep passing while the shipped order moved underneath it.
+fn kinds() -> Vec<ChartKind<String>> {
+    vec![
+        binned_histogram(),
+        scatter(),
+        counts_over_time(),
+        count_grid(),
+        ranked_category_bars(),
+    ]
 }
 
 /// The kind registered for `id`, if this build has one.
@@ -245,6 +281,115 @@ fn binned_histogram() -> ChartKind<String> {
             out
         },
     }
+}
+
+/// Two measures related, **ghosted**: the unfiltered cloud behind the filtered
+/// subset.
+///
+/// The device a scatter answers *does this move with that* with — two `dot`
+/// layers over one table, `x:` naming one measure and `y:` the other, with an
+/// `intervalXY` producer so a rectangle swept over the cloud narrows whatever
+/// else subscribes to [`SELECTION`].
+///
+/// # Where it sits in the preference order, and why no file opens differently
+///
+/// Second, behind [`binned_histogram`]. That position is a preference — once a
+/// numeric table's distribution has been offered, relating two of its measures
+/// is a better second answer than crossing two of its categories — and it is
+/// **not** what keeps an already-shipped file opening as it did.
+///
+/// What keeps that is the slots. `binned-histogram` takes one quantitative slot
+/// and this kind takes two, so a field list this kind binds is one that kind
+/// binds as well, and `binned-histogram` is declared ahead of it. A chooser
+/// taking the first applicable kind therefore cannot reach a scatter from any
+/// position after the histogram, whatever else is added later.
+/// `adding_the_scatter_moved_no_first_look` is the test, and it states that as a
+/// comparison against the registry with this kind removed rather than as a claim
+/// about the five kinds shipped today.
+///
+/// The generated dashboard is a second route and is closed by the same
+/// declaration: [`crate::dashboard::single_column_kinds`] admits a kind with
+/// exactly one required slot, and this one has two.
+///
+/// # Why two layers rather than one filtered one
+///
+/// The argument [`binned_histogram`] makes for a count axis, in two dimensions.
+/// Both layers share the plot's scales, so the extent of the cloud is fixed by
+/// the whole table: a brushed scatter reads as a subset of the points behind it
+/// instead of as a cloud that redrew itself at a new scale. A lone filtered
+/// layer would re-derive both domains from the rows that survived, which moves
+/// every remaining dot under the pointer and leaves nothing on the page to judge
+/// the fraction against.
+fn scatter() -> ChartKind<String> {
+    ChartKind {
+        id: SCATTER,
+        icon: Icon("chart-dots"),
+        description:
+            "Relates two measures as a cloud of dots, the whole cloud behind the selection",
+        slots: SCATTER_SLOTS,
+        controls: Vec::new,
+        build: |bound, _options| {
+            let x = bound.name("x").unwrap_or_default();
+            let y = bound.name("y").unwrap_or_default();
+            let mut out = String::from("params:\n");
+            let _ = writeln!(out, "  {SELECTION}: {{ select: crossfilter }}");
+            out.push_str("hconcat:\n");
+            out.push_str(&scatter_tile(x, y, 2));
+            out
+        },
+    }
+}
+
+/// [`scatter`]'s device as one entry of a concat list, indented by `indent`
+/// spaces, over [`SOURCE`] and [`SELECTION`].
+///
+/// **One emitter, published**, for the reason
+/// [`crate::dashboard::histogram_tile`]'s own header gives about the device it
+/// emits: a picture written out in two places is held in step by prose, and
+/// prose does not redden. The kind's builder above wraps this body under its own
+/// `params:` header, and a caller composing a scatter beside other tiles asks
+/// for the same string — so there is no second copy to keep honest.
+///
+/// It lives here rather than beside the dashboard's two emitters because that
+/// module keys a tile by `TileForm`, one per kind a **single column** can fill,
+/// and this device takes two columns. It is a concat entry that no generated
+/// dashboard emits.
+#[must_use]
+pub fn scatter_tile(x: &str, y: &str, indent: usize) -> String {
+    let pad = " ".repeat(indent);
+    let (xq, yq) = (yaml_quoted(x), yaml_quoted(y));
+    let mut out = String::new();
+    let _ = writeln!(out, "{pad}- plot:");
+    // The ghost, first so the subset covers it: the whole table, with no
+    // `filterBy:` to narrow it.
+    let _ = writeln!(out, "{pad}  - mark: dot");
+    let _ = writeln!(out, "{pad}    data: {{ from: {SOURCE} }}");
+    let _ = writeln!(out, "{pad}    x: {xq}");
+    let _ = writeln!(out, "{pad}    y: {yq}");
+    let _ = writeln!(out, "{pad}    fill: \"{}\"", GHOST_INK.hex());
+    // The subset: the same pair of columns, through the selection, in the mark
+    // ink a layer binding no colour channel takes.
+    let _ = writeln!(out, "{pad}  - mark: dot");
+    let _ = writeln!(
+        out,
+        "{pad}    data: {{ from: {SOURCE}, filterBy: ${SELECTION} }}"
+    );
+    let _ = writeln!(out, "{pad}    x: {xq}");
+    let _ = writeln!(out, "{pad}    y: {yq}");
+    // The producer: a rectangle swept over the cloud publishes an interval on
+    // each axis into the shared selection. `intervalXY` rather than two
+    // one-dimensional producers because a scatter's answer is a region, and
+    // both of its axes are continuous columns a pixel range inverts through.
+    let _ = writeln!(out, "{pad}  - select: intervalXY");
+    let _ = writeln!(out, "{pad}    as: ${SELECTION}");
+    // Plot attributes are siblings of `plot:`, so they sit at its indent — one
+    // level deeper and they read as more options on the last interactor, which
+    // is a spec that parses and does something else.
+    let _ = writeln!(out, "{pad}  xLabel: {xq}");
+    let _ = writeln!(out, "{pad}  yLabel: {yq}");
+    let _ = writeln!(out, "{pad}  width: {}", crate::dashboard::TILE_WIDTH);
+    let _ = writeln!(out, "{pad}  height: {}", crate::dashboard::TILE_HEIGHT);
+    out
 }
 
 /// A dated column's rows counted per day, **in time order**.
@@ -576,11 +721,96 @@ mod tests {
             registry().ids(),
             vec![
                 BINNED_HISTOGRAM,
+                SCATTER,
                 COUNTS_OVER_TIME,
                 COUNT_GRID,
                 crate::ranked_bars::KIND_ID
             ],
             "declaration order is the preference order a chooser reads"
+        );
+    }
+
+    /// **Adding the scatter moved no table's first look**, and no applicable
+    /// list beyond gaining an entry.
+    ///
+    /// The comparison is against [`registry`]'s own list with the scatter taken
+    /// out, over the field lists of up to three columns that can be drawn from
+    /// the three field types — 40 of them, generated rather than chosen, so a
+    /// shape nobody thought of is covered by construction.
+    ///
+    /// Two claims, and the second is what the first rests on. The first look is
+    /// unchanged, so a shipped file or start opens on the picture it opened on
+    /// before; and the rest of the list is unchanged as a subsequence, so a
+    /// chooser offering more than one kind offers them in the order it did.
+    ///
+    /// Placing [`scatter`] ahead of [`binned_histogram`] in [`kinds`] reddens
+    /// the first assertion on every list carrying two measures — measured, and
+    /// it is the reason this is a comparison rather than a restatement of the
+    /// shipped order.
+    #[test]
+    fn adding_the_scatter_moved_no_first_look() {
+        let without =
+            ChartKindRegistry::new(kinds().into_iter().filter(|k| k.id != SCATTER).collect());
+        for fields in field_lists(3) {
+            let mut shipped = registry().applicable(&fields);
+            assert_eq!(
+                shipped.first().copied(),
+                without.applicable(&fields).first().copied(),
+                "the first look over {fields:?} moved when the scatter was added"
+            );
+            shipped.retain(|id| *id != SCATTER);
+            assert_eq!(
+                shipped,
+                without.applicable(&fields),
+                "the kinds offered for {fields:?}, scatter aside, are not the \
+                 ones offered before it"
+            );
+        }
+    }
+
+    /// Every field list of up to `max` columns over the three field types, each
+    /// column named for its position so [`ChartKind::bind`] can tell them apart.
+    fn field_lists(max: usize) -> Vec<Vec<Field>> {
+        let types = [
+            FieldType::Quantitative,
+            FieldType::Temporal,
+            FieldType::Categorical,
+        ];
+        let mut out = vec![Vec::new()];
+        let mut frontier = vec![Vec::<Field>::new()];
+        for _ in 0..max {
+            let mut next = Vec::new();
+            for prefix in &frontier {
+                for ty in types {
+                    let mut list = prefix.clone();
+                    list.push(Field::new(format!("f{}", list.len()), ty));
+                    next.push(list);
+                }
+            }
+            out.extend(next.iter().cloned());
+            frontier = next;
+        }
+        out
+    }
+
+    /// **A pair of measures reaches the scatter, and a lone measure does not.**
+    ///
+    /// The registry-level half of the slot declaration: what `accepts` answers
+    /// is what decides whether the kind is offered at all, and the refusal is
+    /// the half a kind with one required slot would pass while drawing nothing.
+    #[test]
+    fn a_second_measure_is_what_the_scatter_waits_for() {
+        let one = fields_of(&[column("amount", "DOUBLE", 900)]);
+        assert!(!registry().applicable(&one).contains(&SCATTER), "{one:?}");
+        let two = fields_of(&[
+            column("amount", "DOUBLE", 900),
+            column("weight", "BIGINT", 400),
+        ]);
+        assert!(registry().applicable(&two).contains(&SCATTER), "{two:?}");
+        assert_eq!(
+            registry().applicable(&two).first().copied(),
+            Some(BINNED_HISTOGRAM),
+            "a pair of measures still opens on the first one's distribution"
         );
     }
 
