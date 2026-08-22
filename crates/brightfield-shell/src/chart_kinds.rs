@@ -340,8 +340,8 @@ fn scatter() -> ChartKind<String> {
     }
 }
 
-/// [`scatter`]'s device as one entry of a concat list, indented by `indent`
-/// spaces, over [`SOURCE`] and [`SELECTION`].
+/// The scatter device as one entry of a concat list, indented by `indent`
+/// spaces, over [`SOURCE`] and the private `SELECTION` this module declares.
 ///
 /// **One emitter, published**, for the reason
 /// [`crate::dashboard::histogram_tile`]'s own header gives about the device it
