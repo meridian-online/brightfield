@@ -943,11 +943,11 @@ fn a_multi_measure_file_still_opens_on_a_distribution_per_column() {
             (X, chart_kinds::BINNED_HISTOGRAM.as_str()),
             (Y, chart_kinds::BINNED_HISTOGRAM.as_str()),
             (OTHER, chart_kinds::BINNED_HISTOGRAM.as_str()),
-            ("day", chart_kinds::COUNTS_OVER_TIME.as_str()),
             ("region", brightfield_shell::ranked_bars::KIND_ID.as_str()),
+            ("day", chart_kinds::COUNTS_OVER_TIME.as_str()),
         ],
-        "a tile per column, each drawn by the kind it was drawn by before the \
-         scatter was registered"
+        "a tile per column in the file's own column order, each drawn by the \
+         kind it was drawn by before the scatter was registered"
     );
     assert!(
         !dashboard::single_column_kinds()
