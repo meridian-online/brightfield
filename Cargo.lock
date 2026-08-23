@@ -169,7 +169,7 @@ dependencies = [
 [[package]]
 name = "arc"
 version = "0.1.0"
-source = "git+https://github.com/meridian-online/arcform?rev=4b4501926b6c3428059df7cbe281fa96be183a08#4b4501926b6c3428059df7cbe281fa96be183a08"
+source = "git+https://github.com/meridian-online/arcform?rev=30b337924a502c01409710efc645d06f75f729bb#30b337924a502c01409710efc645d06f75f729bb"
 dependencies = [
  "dirs",
  "dotenvy",
@@ -188,6 +188,7 @@ dependencies = [
  "tar",
  "thiserror 2.0.18",
  "ureq",
+ "url",
  "yamlpath",
  "zip",
 ]
@@ -1495,7 +1496,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4100,7 +4101,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4598,7 +4599,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5599,7 +5600,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
