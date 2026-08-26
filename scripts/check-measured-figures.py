@@ -628,6 +628,19 @@ def self_test() -> int:
             False,
             "links ../benchmarks/results/gone.md, which is not a file",
         ),
+        # Removing the column-count guard makes the unpacking below it raise,
+        # and a raise is not a report: without this case `if len(cells) < 4:`
+        # could be deleted at self-test exit 0.
+        (
+            "a table row with a column missing",
+            DOC_FIXTURE.replace(
+                "| raw scatter, two views | zoom | *no cube possible* | 167.0 ms (238.9) |",
+                "| raw scatter, two views | zoom | *no cube possible* |",
+            ),
+            RECORD_FIXTURE,
+            False,
+            "has fewer than four columns",
+        ),
         (
             "the record was captured on another machine",
             DOC_FIXTURE,
@@ -788,15 +801,23 @@ def self_test() -> int:
             False,
             "COULD NOT RUN: docs/interaction-speed.md does not name a source record",
         ),
+        # ...and the same table read against the run it was quoting. The one
+        # case built from a committed record; it sits in this list rather than
+        # beside it so `len(cases)` counts what the loop runs.
+        _shipped_against_the_run_it_quoted(),
     ]
 
     failures = 0
     for case in cases:
         name, doc, record, should_pass = case[:4]
         expect = case[4] if len(case) > 4 else None
+        record_name = case[5] if len(case) > 5 else "fixture"
         with tempfile.TemporaryDirectory() as tmp:
-            root = _stage(Path(tmp), doc, record)
             try:
+                # Staging is inside the try because one case copies a committed
+                # record rather than writing a fixture, and a missing file there
+                # must be reported against that case rather than abort the run.
+                root = _stage(Path(tmp), doc, record, name=record_name)
                 findings = check(root)
                 passed = not findings
                 detail = "; ".join(findings)
@@ -804,9 +825,9 @@ def self_test() -> int:
                 passed = False
                 detail = f"COULD NOT RUN: {exc}"
             except Exception as exc:  # noqa: BLE001 - see below
-                # One case that raises must not abort the other twenty-eight.
+                # One case that raises must not abort the ones after it.
                 # Removing a guard clause makes the code it guards crash, and a
-                # traceback out of here reports nothing about the cases after it.
+                # traceback out of here reports nothing about the rest.
                 passed = False
                 detail = f"CRASHED: {type(exc).__name__}: {exc}"
         if passed != should_pass:
@@ -824,51 +845,35 @@ def self_test() -> int:
                 file=sys.stderr,
             )
 
-    failures += _shipped_against_the_run_it_quoted()
-
     if failures:
         return 1
-    print(f"measured-figures gate self-test: ok ({len(cases) + 1} cases)")
+    print(f"measured-figures gate self-test: ok ({len(cases)} cases)")
     return 0
 
 
-def _shipped_against_the_run_it_quoted() -> int:
+def _shipped_against_the_run_it_quoted() -> tuple:
     """...and read against 2026-07-27-apple-m1-pro.json, it is rejected on digits.
 
     This is the one case that reads a committed record rather than a fixture,
-    because the claim in WHY THIS EXISTS is about that file and no other.
+    because the claim in WHY THIS EXISTS is about that file and no other. It is
+    returned as an ordinary case and sits in the list with the rest, so the loop
+    runs it and `len(cases)` counts it. It used to run itself and be counted by a `+ 1`
+    beside the list, which meant the banner named a case the run could no longer
+    reach: dropping its result left the self-test at exit 0 still claiming it.
+
+    If the record is missing or this is not a git checkout, staging raises, the
+    loop records CRASHED, and the expected finding below does not match it — so
+    the case reports rather than passing on a technicality.
     """
-    name = "the table as it shipped, read against the run it was quoting"
     record = "2026-07-27-apple-m1-pro"
-    expect = "'density | brush' (with a cube) says 4.0 ms (5.0)"
-    try:
-        source = repo_root() / "benchmarks" / "results" / f"{record}.json"
-    except subprocess.CalledProcessError:
-        print(f"SELF-TEST FAILED: {name} needs a git checkout to read {record}.json",
-              file=sys.stderr)
-        return 1
-    if not source.is_file():
-        print(f"SELF-TEST FAILED: {name} needs {source}, which is missing", file=sys.stderr)
-        return 1
-    with tempfile.TemporaryDirectory() as tmp:
-        root = _stage(Path(tmp), SHIPPED_DOC_CITED, source, name=record)
-        try:
-            detail = "; ".join(check(root))
-        except Fail as exc:
-            detail = f"COULD NOT RUN: {exc}"
-        except Exception as exc:  # noqa: BLE001 - same reason as above
-            detail = f"CRASHED: {type(exc).__name__}: {exc}"
-    if not detail:
-        print(f"SELF-TEST FAILED: stayed silent on {name}", file=sys.stderr)
-        return 1
-    if expect not in detail:
-        print(
-            f"SELF-TEST FAILED: caught {name}, but not for the reason the case was "
-            f"written for.\n  expected a finding containing: {expect}\n  got: {detail}",
-            file=sys.stderr,
-        )
-        return 1
-    return 0
+    return (
+        "the table as it shipped, read against the run it was quoting",
+        SHIPPED_DOC_CITED,
+        repo_root() / "benchmarks" / "results" / f"{record}.json",
+        False,
+        "'density | brush' (with a cube) says 4.0 ms (5.0)",
+        record,
+    )
 
 
 def main(argv: list[str]) -> int:
