@@ -803,6 +803,12 @@ def self_test() -> int:
             except Fail as exc:
                 passed = False
                 detail = f"COULD NOT RUN: {exc}"
+            except Exception as exc:  # noqa: BLE001 - see below
+                # One case that raises must not abort the other twenty-eight.
+                # Removing a guard clause makes the code it guards crash, and a
+                # traceback out of here reports nothing about the cases after it.
+                passed = False
+                detail = f"CRASHED: {type(exc).__name__}: {exc}"
         if passed != should_pass:
             failures += 1
             if should_pass:
@@ -849,7 +855,9 @@ def _shipped_against_the_run_it_quoted() -> int:
         try:
             detail = "; ".join(check(root))
         except Fail as exc:
-            detail = str(exc)
+            detail = f"COULD NOT RUN: {exc}"
+        except Exception as exc:  # noqa: BLE001 - same reason as above
+            detail = f"CRASHED: {type(exc).__name__}: {exc}"
     if not detail:
         print(f"SELF-TEST FAILED: stayed silent on {name}", file=sys.stderr)
         return 1
