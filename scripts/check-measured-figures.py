@@ -24,16 +24,20 @@ WHY THIS EXISTS
 
 WHAT IS CHECKED
     Every claim below is a case in `--self-test`, and each of those cases names
-    the finding it expects, so a case cannot go on passing because some OTHER
-    check caught its mutation.
+    the finding it expects — prefixed `COULD NOT RUN:` where it expects the exit
+    2 refusal rather than an exit 1 disagreement. So a case cannot go on passing
+    because some OTHER check caught its mutation, which is how the .md link
+    cases at item 2 were found to be covering for each other.
 
     1. The `## Measured` section names its source record as a repo-relative path
        to a `.json` under benchmarks/results/, exactly one such path, and that
        file exists. A renamed, deleted or duplicated citation fails here, before
        any digit is compared.
-    2. Any OTHER `benchmarks/results/*.md` link in the document shares its stem
-       with that record — the prose summary and the JSON are two views of one
-       run, and citing different runs from one page is the same drift.
+    2. Any OTHER `benchmarks/results/*.md` link in the document resolves to a
+       file, and shares its stem with that record — the prose summary and the
+       JSON are two views of one run, and citing different runs from one page is
+       the same drift. Each of those two is a case of its own, because a case
+       that reddens for the other one's reason has tested nothing.
     3. The section's opening sentence, `<N> rows, on an <cpu>,`, is READ OUT OF
        THE DOCUMENT and both halves compared to the record: the row count
        against `config.rows`, the machine against `machine.cpu`. Digits or
@@ -255,14 +259,17 @@ def source_record(section: str, text: str, root: Path) -> tuple[Path, list[str]]
     findings = []
     for summary in dict.fromkeys(SOURCE_MD.findall(text)):
         summary_path = (root / "docs" / summary).resolve()
-        if summary_path.stem != path.stem:
+        # Existence first, then stem. Staged the other way round, the case for
+        # the stem comparison was caught by this branch instead and the stem
+        # comparison went untested — a mutation sweep is how that surfaced.
+        if not summary_path.is_file():
+            findings.append(f"{DOC} links {summary}, which is not a file")
+        elif summary_path.stem != path.stem:
             findings.append(
                 f"{DOC} links {summary_path.name} for prose and {path.name} for "
                 "figures. Those are different runs; link the summary of the run "
                 "the table is read from."
             )
-        elif not summary_path.is_file():
-            findings.append(f"{DOC} links {summary}, which is not a file")
     return path, findings
 
 
@@ -340,7 +347,13 @@ def check(root: Path) -> list[str]:
     section = measured_section(text)
     record_path, findings = source_record(section, text, root)
     try:
-        record = json.loads(record_path.read_text())
+        raw = record_path.read_text()
+    except OSError as exc:
+        # Reachable only if the existence check above has been broken, which a
+        # mutation sweep does. A refusal names the file; a traceback does not.
+        raise Fail(f"{record_path.name} could not be read: {exc}") from exc
+    try:
+        record = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise Fail(f"{record_path.name} is not readable JSON: {exc}") from exc
 
@@ -520,6 +533,9 @@ def _stage(tmp: Path, doc: str, record: dict | str, name: str = "fixture") -> Pa
         body = record if isinstance(record, str) else json.dumps(record)
         (results / f"{name}.json").write_text(body)
     (results / f"{name}.md").write_text("| Arrow held (MiB) |\n")
+    # `other.md` has to EXIST, or the case for the stem comparison is caught by
+    # the existence branch and the comparison itself goes untested.
+    (results / "other.md").write_text("| Arrow held (MiB) |\n")
     return root
 
 
@@ -572,7 +588,7 @@ def self_test() -> int:
             DOC_FIXTURE.replace("fixture.json", "gone.json"),
             RECORD_FIXTURE,
             False,
-            "which is not a file",
+            "COULD NOT RUN: docs/interaction-speed.md cites ../benchmarks/results/gone.json, which is not a file",
         ),
         (
             "no record is cited at all",
@@ -582,7 +598,7 @@ def self_test() -> int:
             ),
             RECORD_FIXTURE,
             False,
-            "does not name a source record",
+            "COULD NOT RUN: docs/interaction-speed.md does not name a source record",
         ),
         (
             "two records are cited and the gate cannot say which the digits equal",
@@ -592,7 +608,7 @@ def self_test() -> int:
             ),
             RECORD_FIXTURE,
             False,
-            "cites more than one record",
+            "COULD NOT RUN: docs/interaction-speed.md's `## Measured` section cites more than one record",
         ),
         (
             "the prose summary links a different run from the table",
@@ -602,6 +618,15 @@ def self_test() -> int:
             RECORD_FIXTURE,
             False,
             "links other.md for prose and fixture.json for figures",
+        ),
+        (
+            "the prose summary link leads nowhere",
+            DOC_FIXTURE.replace(
+                "(../benchmarks/results/fixture.md)", "(../benchmarks/results/gone.md)"
+            ),
+            RECORD_FIXTURE,
+            False,
+            "links ../benchmarks/results/gone.md, which is not a file",
         ),
         (
             "the record was captured on another machine",
@@ -649,14 +674,14 @@ def self_test() -> int:
             ),
             RECORD_FIXTURE,
             False,
-            "no sentence of the form",
+            "COULD NOT RUN: docs/interaction-speed.md's `## Measured` section has no sentence of the form",
         ),
         (
             "a row count nothing can read as a number",
             DOC_FIXTURE.replace("Ten million rows", "Umpteen zillion rows"),
             RECORD_FIXTURE,
             False,
-            "cannot read as a number",
+            "COULD NOT RUN: docs/interaction-speed.md says 'Umpteen zillion' rows, which this gate cannot read as a number",
         ),
         # The cube columns. Each of these leaves every digit in the table
         # correct, so only the preagg check can catch it.
@@ -713,14 +738,14 @@ def self_test() -> int:
             DOC_FIXTURE.split("| chart")[0] + "\n## After\n",
             RECORD_FIXTURE,
             False,
-            "has no table rows",
+            "COULD NOT RUN: docs/interaction-speed.md's `## Measured` section has no table rows",
         ),
         (
             "the document lost its Measured section",
             DOC_FIXTURE.replace("## Measured", "## Timings"),
             RECORD_FIXTURE,
             False,
-            "has no `## Measured` section",
+            "COULD NOT RUN: docs/interaction-speed.md has no `## Measured` section",
         ),
         (
             "the record stopped running the row count the document quotes",
@@ -734,7 +759,7 @@ def self_test() -> int:
             DOC_FIXTURE,
             "{ this is not json",
             False,
-            "is not readable JSON",
+            "COULD NOT RUN: fixture.json is not readable JSON",
         ),
         (
             "a rounding boundary reads half-up, not half-even",
@@ -761,7 +786,7 @@ def self_test() -> int:
             SHIPPED_DOC,
             RECORD_FIXTURE,
             False,
-            "does not name a source record",
+            "COULD NOT RUN: docs/interaction-speed.md does not name a source record",
         ),
     ]
 
@@ -777,7 +802,7 @@ def self_test() -> int:
                 detail = "; ".join(findings)
             except Fail as exc:
                 passed = False
-                detail = str(exc)
+                detail = f"COULD NOT RUN: {exc}"
         if passed != should_pass:
             failures += 1
             if should_pass:
