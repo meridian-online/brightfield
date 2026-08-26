@@ -2,8 +2,11 @@
 
 Brightfield pushes interaction down into the database: dragging a brush, moving a
 slider or zooming a plot becomes a predicate and a re-query, not a filter over
-data held in the client. That is what lets it work at ten million rows without
-loading ten million rows into memory.
+data held in the client. What crosses into memory is the query's answer rather
+than the table — and how large that answer is depends on the mark. An
+aggregating mark returns its bins; a row-level mark returns a row per drawn
+point, which at ten million rows is the whole column set. The `Arrow held`
+column of the measured record below has both figures.
 
 On top of that sits **pre-aggregation**. The first time you interact with a plot
 that summarises its data, brightfield builds a small summary table — a *cube* —
@@ -31,15 +34,20 @@ has as many rows as the source and buys nothing.
 ## Measured
 
 Ten million rows, on an Apple M1 Pro, median with the 95th percentile beside it.
-The full record with its methodology is in [`benchmarks/results/`](../benchmarks/results/).
+Every cell below is read from
+[`benchmarks/results/2026-08-07-apple-m1-pro.json`](../benchmarks/results/2026-08-07-apple-m1-pro.json),
+which carries the methodology beside the numbers.
+`scripts/check-measured-figures.py` re-reads that record on every pull request
+and fails if a cell here disagrees with it, so these digits cannot drift away
+from the run they came from.
 
 | chart | gesture | with a cube | without |
 |---|---|---|---|
-| binned density | zoom | **0.5 ms** (0.6) | 64.5 ms |
-| density | zoom | **2.4 ms** (3.6) | 75.7 ms |
-| density | brush | **4.0 ms** (5.0) | 90.6 ms |
-| binned density | brush | **0.7 ms** (1.2) | 76.5 ms |
-| raw scatter, two views | zoom | *no cube possible* | 157.7 ms |
+| binned density | zoom | **0.6 ms** (0.7) | 65.7 ms (76.9) |
+| density | zoom | **2.6 ms** (3.4) | 80.6 ms (88.8) |
+| density | brush | **5.1 ms** (5.8) | 82.0 ms (91.2) |
+| binned density | brush | **0.7 ms** (0.8) | 74.2 ms (87.3) |
+| raw scatter, two views | zoom | *no cube possible* | 167.0 ms (238.9) |
 
 Both columns are measured in the same run, so the comparison is not confounded
 by how busy the machine was on a given day.
@@ -71,4 +79,7 @@ None of this changes what a query returns. A cube is a substitution the engine
 makes only when it can prove the result is identical — it is matched against the
 exact query that would otherwise run, and anything that does not match falls
 through to the direct path. The failure mode of pre-aggregation here is a slow
-answer, never a wrong one.
+answer rather than a wrong one, and
+[`crates/brightfield-engine/tests/preagg_oracle.rs`](../crates/brightfield-engine/tests/preagg_oracle.rs)
+is what holds that: it runs each substitution and the query it replaces against
+DuckDB and compares the two answers.

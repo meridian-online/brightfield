@@ -44,6 +44,29 @@ jobs:
       - name: borrowed benchmark figures
         run: ./scripts/check-borrowed-benchmarks.sh
 
+      # Third honesty gate: a promise about performance at scale has to say
+      # which marks it holds for. Interaction cost stops tracking row count for
+      # a mark that aggregates and does not for a row-level one, and four
+      # shipped sentences — the README's opening line among them — made the
+      # promise without the split. Self-test first, for the reason above, and
+      # its must-fail cases are those sentences in the words they shipped in.
+      - name: scale-claims gate self-test
+        run: ./scripts/check-scale-claims.py --self-test
+
+      - name: unqualified scale claims
+        run: ./scripts/check-scale-claims.py
+
+      # Fourth: our OWN measured figures, restated in prose where nothing keeps
+      # them in step with the record. The borrowed-benchmarks gate above stops
+      # upstream numbers being claimed as ours; this stops ours drifting from
+      # the run they were read out of, which had already happened — four of the
+      # five cells in docs/interaction-speed.md matched no committed record.
+      - name: measured-figures gate self-test
+        run: ./scripts/check-measured-figures.py --self-test
+
+      - name: measured figures match the record
+        run: ./scripts/check-measured-figures.py
+
       # Release-packaging honesty, same cheap-shell shape: package.sh must
       # refuse to build an artifact whose tag disagrees with the crate version.
       # The self-test exercises both directions and runs no compiler (the guard

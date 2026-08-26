@@ -6,8 +6,8 @@
 //! or a selection never filters a materialised result set client-side; it
 //! resolves to a predicate the engine wraps into a SQL `WHERE`, and the
 //! affected marks re-execute. Whether that leaves interaction latency
-//! independent of row count depends on the mark. An aggregating mark — a
-//! density, a binned density, a heatmap, a bar — can be served from a small
+//! independent of row count depends on whether the mark aggregates. One that
+//! does — a density, a binned density, a heatmap, a bar — can be served from a
 //! pre-aggregated summary keyed on the interacting column, so the gesture
 //! costs what the summary costs rather than what the table costs. A row-level
 //! mark such as a raw scatter draws one mark per row, has no summary to stand
