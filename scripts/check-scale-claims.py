@@ -8,20 +8,22 @@ WHY THIS EXISTS
     tracks the rows. The difference between the two is measured in
     benchmarks/results/ and set out in docs/interaction-speed.md.
 
-    Read on 2026-08-26, four shipped sentences promised the property without
-    naming that split, and the strongest of them was the repo's opening line:
-    "GPU-native desktop application for interactive data visualisation at any
-    scale". Somebody evaluating this reads the first paragraph and stops there
-    if it does not match their case; if what they need is a scatter over their
-    own ten million rows, the README told them yes and they found out by
-    downloading it.
+    Read on 2026-08-26, sentences in README.md, the coordinator rustdoc and
+    docs/interaction-speed.md promised the property without naming that split,
+    and the strongest of them was the repo's opening line: "GPU-native desktop
+    application for interactive data visualisation at any scale". Somebody
+    evaluating this reads the first paragraph and stops there if it does not
+    match their case; if what they need is a scatter over their own ten million
+    rows, the README told them yes and they found out by downloading it. Every
+    one of those sentences is a must-fail case below, in the words it shipped
+    in; MUST_FAIL is the enumeration, so there is no count of them here to rot.
 
-    A sweep found two of the four and missed the other two, because it searched
-    row-count vocabulary and those two make the same promise in scale
-    vocabulary. A third phrasing, in memory vocabulary, was found later still.
-    That is the reason this is a committed gate and not a one-off grep: the
-    claim has more than one dialect, and the next one will be written by
-    somebody who has not read this file.
+    A sweep for row-count vocabulary missed the ones written in scale
+    vocabulary, which make the same promise in different words, and a third
+    dialect — memory vocabulary, "without loading ten million rows into memory"
+    — was found later still. That is the reason this is a committed gate and
+    not a one-off grep: the claim has more than one dialect, and the next one
+    will be written by somebody who has not read this file.
 
 WHAT IS CHECKED
     Every tracked `.md` file, and every `///` / `//!` doc comment in a tracked
@@ -33,6 +35,13 @@ WHAT IS CHECKED
     Sentence, not line. Prose wraps, so lines are joined into a block first;
     blank lines, list markers and table rows break the join, so one bullet's
     qualification cannot excuse the next bullet's promise.
+
+    That enumeration is itself exercised. `--self-test` has two halves: the
+    sentence cases call `scan_text`, and the tree cases stage a real git
+    checkout and call `check`, so `tracked()` is run rather than assumed. A
+    `tracked()` that has stopped listing files reports what a clean tree
+    reports, and until 2026-08-26 this self-test stayed green over exactly
+    that.
 
 WHAT IS *NOT* CHECKED (stated so nobody reads this as more than it is)
     - It cannot judge a claim, and it does not try. It asks whether the
@@ -49,6 +58,11 @@ WHAT IS *NOT* CHECKED (stated so nobody reads this as more than it is)
       is a different audience, and reading those in reddened on ordinary prose
       ("this rectangle cannot fit at any scale this spec would render at").
     - It says nothing about commit messages, PR text or the website.
+    - The tree cases prove the enumeration reaches a tracked `.md`, a tracked
+      `.rs`, and neither an untracked file nor a vendored one. They say nothing
+      about how git behaves in a checkout with submodules, sparse checkout or a
+      pathspec-altering config; the gate would report differently there and no
+      case here would notice.
 
 Usage (no arguments, from anywhere inside the repo):
 
@@ -66,6 +80,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # The promise, in every dialect this repo has written it in. Each entry is
@@ -101,11 +116,6 @@ QUALIFIED: list[str] = [
     r"interaction-speed",
 ]
 
-# Files whose whole job is to spell the patterns above.
-SELF = {
-    "scripts/check-scale-claims.py",
-}
-
 PROMISE_RE = [(label, re.compile(pat, re.IGNORECASE)) for label, pat in PROMISES]
 QUALIFIED_RE = re.compile("|".join(QUALIFIED), re.IGNORECASE)
 
@@ -128,6 +138,13 @@ class Finding:
 
 
 def tracked(root: Path) -> list[str]:
+    """The tracked files this gate reads: markdown, and Rust for its doc comments.
+
+    This file spells every phrase it looks for and is not excluded by name; the
+    pathspec is `*.md` and `*.rs`, so a `.py` is never listed. Vendored Mosaic
+    specs are upstream text nobody here writes, and a promise in one is not this
+    repo's to qualify.
+    """
     out = subprocess.run(
         ["git", "-C", str(root), "ls-files", "-z", "*.md", "*.rs"],
         capture_output=True,
@@ -137,7 +154,7 @@ def tracked(root: Path) -> list[str]:
     return [
         p
         for p in out.stdout.split("\0")
-        if p and p not in SELF and "crates/brightfield-spec/vendor/" not in p
+        if p and "crates/brightfield-spec/vendor/" not in p
     ]
 
 
@@ -212,10 +229,14 @@ def check(root: Path) -> list[Finding]:
 
 
 # --------------------------------------------------------------------------
-# Self-test. Every must_fail case is a sentence that HAS shipped in this repo,
-# in the words it shipped in; every must_pass case is prose from this tree that
-# a careless pattern would redden. The gate runs beside this in CI, because a
-# checker that has quietly stopped matching reports what a clean tree reports.
+# Self-test, part one: the sentence cases, against `scan_text`.
+#
+# Every must_fail case is a sentence that HAS shipped in this repo, in the words
+# it shipped in; every must_pass case is prose from this tree that a careless
+# pattern would redden. The gate runs beside this in CI, because a checker that
+# has quietly stopped matching reports what a clean tree reports.
+#
+# These cases reach the matching and nothing else. Part two is the other half.
 # --------------------------------------------------------------------------
 
 MUST_FAIL = [
@@ -317,6 +338,113 @@ MUST_PASS = [
 ]
 
 
+# --------------------------------------------------------------------------
+# Self-test, part two: the file enumeration, end to end.
+#
+# The cases above call `scan_text` with text handed to them, which leaves
+# `tracked()` and `check()` — the path the gate actually runs — unexercised.
+# Make `tracked()` return nothing and part one stays green while the gate goes
+# silent over a tree carrying every sentence it exists to stop. So these cases
+# stage a real git checkout, `git add` some of it, and call `check`.
+# --------------------------------------------------------------------------
+
+SHIPPED_MD = (
+    "# brightfield\n\n"
+    "GPU-native desktop application for interactive data visualisation at any\n"
+    "scale.\n"
+)
+SHIPPED_RS = (
+    "//! affected marks re-execute. That is what makes interaction latency\n"
+    "//! roughly independent of row count.\n"
+    "\npub struct Coordinator;\n"
+)
+# The same opening line as SHIPPED_MD with the split named in it.
+QUALIFIED_MD = (
+    "# brightfield\n\n"
+    "GPU-native desktop application for interactive data visualisation at any\n"
+    "scale an aggregating mark can be served from a pre-aggregated summary at.\n"
+)
+
+TREE_CASES: list[tuple[str, dict[str, str], list[str] | None, list[str]]] = [
+    # (name, files to write, files to `git add` (None = all), paths expected in findings)
+    (
+        "a tracked markdown file is reached",
+        {"README.md": SHIPPED_MD},
+        None,
+        ["README.md"],
+    ),
+    (
+        "a tracked Rust doc comment is reached",
+        {"crates/brightfield-engine/src/coordinator.rs": SHIPPED_RS},
+        None,
+        ["crates/brightfield-engine/src/coordinator.rs"],
+    ),
+    (
+        "both kinds are reached in one pass",
+        {
+            "README.md": SHIPPED_MD,
+            "crates/brightfield-engine/src/coordinator.rs": SHIPPED_RS,
+        },
+        None,
+        ["README.md", "crates/brightfield-engine/src/coordinator.rs"],
+    ),
+    (
+        "an untracked file is out of scope",
+        {"README.md": SHIPPED_MD},
+        [],
+        [],
+    ),
+    (
+        "a vendored Mosaic spec is out of scope",
+        {"crates/brightfield-spec/vendor/mosaic-specs/README.md": SHIPPED_MD},
+        None,
+        [],
+    ),
+    (
+        "a tree that names the split is clean",
+        {"README.md": QUALIFIED_MD},
+        None,
+        [],
+    ),
+]
+
+
+def _stage_repo(tmp: Path, files: dict[str, str], add: list[str] | None) -> Path:
+    root = tmp / "repo"
+    root.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", str(root)], capture_output=True, check=True)
+    for rel, body in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+    staged = sorted(files) if add is None else sorted(add)
+    if staged:
+        # --force: a global core.excludesFile on the host must not decide what
+        # this case stages, and an ignored path would otherwise abort it.
+        subprocess.run(
+            ["git", "-C", str(root), "add", "--force", "--", *staged],
+            capture_output=True,
+            check=True,
+        )
+    return root
+
+
+def tree_self_test() -> int:
+    failures = 0
+    for name, files, add, expected in TREE_CASES:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _stage_repo(Path(tmp), files, add)
+            got = sorted({finding.path for finding in check(root)})
+        if got != sorted(expected):
+            failures += 1
+            print(
+                f"SELF-TEST FAILED: {name}: expected findings in "
+                f"{sorted(expected)}, got {got}",
+                file=sys.stderr,
+            )
+    return failures
+
+
 def self_test() -> int:
     failures = 0
     for path, text in MUST_FAIL:
@@ -336,11 +464,13 @@ def self_test() -> int:
                 file=sys.stderr,
             )
             failures += 1
+    failures += tree_self_test()
     if failures:
         return 1
     print(
         "scale-claims gate self-test: ok "
-        f"({len(MUST_FAIL)} must-fail, {len(MUST_PASS)} must-pass)"
+        f"({len(MUST_FAIL)} must-fail, {len(MUST_PASS)} must-pass, "
+        f"{len(TREE_CASES)} over a staged checkout)"
     )
     return 0
 

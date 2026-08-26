@@ -6,7 +6,10 @@ data held in the client. What crosses into memory is the query's answer rather
 than the table — and how large that answer is depends on the mark. An
 aggregating mark returns its bins; a row-level mark returns a row per drawn
 point, which at ten million rows is the whole column set. The `Arrow held`
-column of the measured record below has both figures.
+column of
+[`benchmarks/results/2026-08-07-apple-m1-pro.md`](../benchmarks/results/2026-08-07-apple-m1-pro.md)
+has both figures; that file is the prose summary of the same run the table below
+is read from.
 
 On top of that sits **pre-aggregation**. The first time you interact with a plot
 that summarises its data, brightfield builds a small summary table — a *cube* —
@@ -37,9 +40,11 @@ Ten million rows, on an Apple M1 Pro, median with the 95th percentile beside it.
 Every cell below is read from
 [`benchmarks/results/2026-08-07-apple-m1-pro.json`](../benchmarks/results/2026-08-07-apple-m1-pro.json),
 which carries the methodology beside the numbers.
-`scripts/check-measured-figures.py` re-reads that record on every pull request
-and fails if a cell here disagrees with it, so these digits cannot drift away
-from the run they came from.
+`scripts/check-measured-figures.py` reads that record on every pull request and
+fails if this table disagrees with it: a wrong digit, a row it cannot resolve to
+a benchmark scenario, a cube column claiming what the run's own counters do not,
+or a row count or machine in the sentence above that the record does not carry.
+The rest of the prose on this page it does not check.
 
 | chart | gesture | with a cube | without |
 |---|---|---|---|
