@@ -5,8 +5,15 @@
 //! "translates interactions into database queries." A brush, a filter, a slider
 //! or a selection never filters a materialised result set client-side; it
 //! resolves to a predicate the engine wraps into a SQL `WHERE`, and the
-//! affected marks re-execute. That is what makes interaction latency roughly
-//! independent of row count.
+//! affected marks re-execute. Whether that leaves interaction latency
+//! independent of row count depends on the mark. An aggregating mark — a
+//! density, a binned density, a heatmap, a bar — can be served from a small
+//! pre-aggregated summary keyed on the interacting column, so the gesture
+//! costs what the summary costs rather than what the table costs. A row-level
+//! mark such as a raw scatter draws one mark per row, has no summary to stand
+//! in for it, and its cost tracks the rows. `docs/interaction-speed.md` says
+//! which marks fall on which side; the measured gap is in
+//! `benchmarks/results/`, not restated here.
 //!
 //! Two entry points sit on the same [`Session`] re-query logic:
 //!
