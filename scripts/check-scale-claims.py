@@ -32,9 +32,13 @@ WHAT IS CHECKED
     in a footnote further down, because the reader this exists for stops
     reading at the end of the paragraph.
 
-    Sentence, not line. Prose wraps, so lines are joined into a block first;
-    blank lines, list markers and table rows break the join, so one bullet's
-    qualification cannot excuse the next bullet's promise.
+    Sentence, not line. Prose wraps, so lines are joined into a block first,
+    and a blank line, a bullet, a numbered item, a table row, a heading or a
+    block quote breaks the join — so one bullet's qualification cannot excuse
+    the next bullet's promise. Each of those breaks has a must-fail case of its
+    own whose promise carries no sentence-ending punctuation, because a case
+    written for a break but ending in a full stop is caught by the sentence
+    split instead and says nothing about the break.
 
     That enumeration is itself exercised. `--self-test` has two halves: the
     sentence cases call `scan_text`, and the tree cases stage a real git
@@ -42,6 +46,12 @@ WHAT IS CHECKED
     `tracked()` that has stopped listing files reports what a clean tree
     reports, and until 2026-08-26 this self-test stayed green over exactly
     that.
+
+    Every must-fail case also names the finding it expects, so a case cannot go
+    on passing because some other mechanism caught its mutation. Without that
+    field the bullet and paragraph cases below were both being caught by the
+    sentence split, and disabling the breaks they were written for left this
+    self-test green.
 
 WHAT IS *NOT* CHECKED (stated so nobody reads this as more than it is)
     - It cannot judge a claim, and it does not try. It asks whether the
@@ -239,61 +249,153 @@ def check(root: Path) -> list[Finding]:
 # These cases reach the matching and nothing else. Part two is the other half.
 # --------------------------------------------------------------------------
 
-MUST_FAIL = [
+# (path, text, the finding this case expects). The third field is why a case
+# cannot go on passing because some OTHER mechanism caught its mutation: the
+# bullet and paragraph cases below both end in a full stop, so the sentence
+# split reddens them even with the break they were written for disabled. The
+# cases that isolate a break carry no sentence-ending punctuation at all.
+MUST_FAIL: list[tuple[str, str, str]] = [
     (
         "README.md",
         "GPU-native desktop application for interactive data visualisation at any scale. "
         "Brightfield combines Mosaic's declarative specification grammar and coordinator "
         "architecture with a Vello GPU 2D scene renderer.",
+        "README.md:1: [scale vocabulary] GPU-native desktop application for "
+        "interactive data visualisation at any scale.",
     ),
     (
         "README.md",
         "The goal is a tool that can interactively visualise and explore datasets from "
         "thousands to billions of records with fluid, GPU-rendered interactions, without "
         "the performance ceiling of browser-based rendering.",
+        "README.md:1: [scale vocabulary] The goal is a tool that can interactively "
+        "visualise and explore datasets from thousands to billions of records",
     ),
     (
         "README.md",
         "- A Mosaic YAML spec defining a two-view cross-filtered dashboard over a large "
         "Parquet file stays fluid as the table grows: interaction latency roughly "
         "independent of row count.",
+        "README.md:1: [row-count vocabulary] - A Mosaic YAML spec defining a "
+        "two-view cross-filtered dashboard",
     ),
     (
         "crates/brightfield-engine/src/coordinator.rs",
         "//! resolves to a predicate the engine wraps into a SQL `WHERE`, and the\n"
         "//! affected marks re-execute. That is what makes interaction latency roughly\n"
         "//! independent of row count.\n",
+        "crates/brightfield-engine/src/coordinator.rs:1: [row-count vocabulary] That "
+        "is what makes interaction latency roughly independent of row count.",
     ),
     (
         "docs/interaction-speed.md",
         "Brightfield pushes interaction down into the database: dragging a brush becomes a\n"
         "predicate and a re-query. That is what lets it work at ten million rows without\n"
         "loading ten million rows into memory.\n",
+        "docs/interaction-speed.md:1: [memory vocabulary] That is what lets it work "
+        "at ten million rows without loading ten million rows into memory.",
     ),
     # The wrap is the point: the promise and its would-be qualification on
-    # different lines of one sentence must still be read as one sentence.
+    # different lines of one sentence must still be read as one sentence. Stop
+    # joining wrapped lines and the block is "Interaction latency is
+    # independent", which matches no promise and reports nothing.
     (
         "docs/wrapped.md",
         "Interaction latency is independent\nof row count.\n",
+        "docs/wrapped.md:1: [row-count vocabulary] Interaction latency is "
+        "independent of row count.",
     ),
-    # A qualification in the NEXT bullet does not reach this one.
+    # The next two are shapes that have shipped. Both end in a full stop, so the
+    # sentence split catches them whichever way the block was cut; they pin the
+    # shape, and the isolating cases below pin the break.
     (
         "docs/bullets.md",
         "- Interaction latency is independent of row count.\n"
         "- A raw scatter is a row-level mark and aggregates nothing.\n",
+        "docs/bullets.md:1: [row-count vocabulary] - Interaction latency is "
+        "independent of row count.",
     ),
-    # ...nor does one in the next paragraph.
     (
         "docs/paragraphs.md",
         "Interaction latency is independent of row count.\n"
         "\n"
         "A raw scatter is a row-level mark, and aggregating marks are the ones that "
         "get a cube.\n",
+        "docs/paragraphs.md:1: [row-count vocabulary] Interaction latency is "
+        "independent of row count.",
+    ),
+    # ----------------------------------------------------------------------
+    # One case per break, each naming the break it is the only cover for. The
+    # promise carries no full stop, so the sentence split cannot separate it
+    # from the qualification beside it: disable the named break and the two
+    # join into one sentence that reads as qualified, and the case goes silent.
+    # ----------------------------------------------------------------------
+    # BREAKS, bullet alternative `[-*+]\s`.
+    (
+        "docs/bullet-break.md",
+        "- Interaction latency is independent of row count\n"
+        "- for an aggregating mark, which is served from a cube\n",
+        "docs/bullet-break.md:1: [row-count vocabulary] - Interaction latency is "
+        "independent of row count",
+    ),
+    # BREAKS, numbered alternative `\d+[.)]\s`. Written `1)` rather than `1.`
+    # so the marker itself carries no full stop for the sentence split to use.
+    (
+        "docs/numbered-break.md",
+        "1) Interaction latency is independent of row count\n"
+        "2) for an aggregating mark, which is served from a cube\n",
+        "docs/numbered-break.md:1: [row-count vocabulary] 1) Interaction latency is "
+        "independent of row count",
+    ),
+    # BREAKS, table-row alternative `\|.*\|`.
+    (
+        "docs/table-break.md",
+        "| claim | status |\n"
+        "|---|---|\n"
+        "| Interaction latency is independent of row count | shipped |\n"
+        "| an aggregating mark is served from a cube | shipped |\n",
+        "docs/table-break.md:3: [row-count vocabulary] | Interaction latency is "
+        "independent of row count | shipped |",
+    ),
+    # BREAKS, heading alternative `#{1,6}\s`.
+    (
+        "docs/heading-break.md",
+        "## Interaction latency is independent of row count\n"
+        "### When an aggregating mark is served from a cube\n",
+        "docs/heading-break.md:1: [row-count vocabulary] ## Interaction latency is "
+        "independent of row count",
+    ),
+    # BREAKS, block-quote alternative `>\s`.
+    (
+        "docs/quote-break.md",
+        "> Interaction latency is independent of row count\n"
+        "> for an aggregating mark, which is served from a cube\n",
+        "docs/quote-break.md:1: [row-count vocabulary] > Interaction latency is "
+        "independent of row count",
+    ),
+    # The blank-line flush in `blocks`, which is not part of BREAKS.
+    (
+        "docs/blank-line-break.md",
+        "Interaction latency is independent of row count\n"
+        "\n"
+        "An aggregating mark is served from a cube\n",
+        "docs/blank-line-break.md:1: [row-count vocabulary] Interaction latency is "
+        "independent of row count",
+    ),
+    # SENTENCE_SPLIT, the other half: one block, two sentences, and the
+    # qualification belongs to the second. Read the block whole and it reads as
+    # qualified. Nothing here is a break, so only the split can catch it.
+    (
+        "docs/sentence-split.md",
+        "Interaction latency is independent of row count. An aggregating mark is "
+        "served from a cube.\n",
+        "docs/sentence-split.md:1: [row-count vocabulary] Interaction latency is "
+        "independent of row count.",
     ),
 ]
 
 MUST_PASS = [
-    # The four sites as this branch rewrote them.
+    # The sites this branch rewrote, in the words it rewrote them to.
     (
         "README.md",
         "GPU-native desktop application for interactive data visualisation over large "
@@ -447,14 +549,25 @@ def tree_self_test() -> int:
 
 def self_test() -> int:
     failures = 0
-    for path, text in MUST_FAIL:
-        if not scan_text(path, text):
+    for path, text, expect in MUST_FAIL:
+        found = scan_text(path, text)
+        if not found:
             print(
                 f"SELF-TEST FAILED: stayed silent on an unqualified promise in {path}:\n"
                 f"  {text.strip()[:200]}",
                 file=sys.stderr,
             )
             failures += 1
+            continue
+        detail = "; ".join(str(finding) for finding in found)
+        if expect not in detail:
+            failures += 1
+            print(
+                f"SELF-TEST FAILED: caught {path}, but not for the reason the case "
+                f"was written for.\n  expected a finding containing: {expect}\n"
+                f"  got: {detail}",
+                file=sys.stderr,
+            )
     for path, text in MUST_PASS:
         found = scan_text(path, text)
         if found:

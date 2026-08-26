@@ -44,7 +44,9 @@ which carries the methodology beside the numbers.
 fails if this table disagrees with it: a wrong digit, a row it cannot resolve to
 a benchmark scenario, a cube column claiming what the run's own counters do not,
 or a row count or machine in the sentence above that the record does not carry.
-The rest of the prose on this page it does not check.
+It also resolves every `benchmarks/results/*.md` link on this page, including
+the one in the opening paragraph, and fails if any of them names a different
+run from that record. The rest of the prose here it does not check.
 
 | chart | gesture | with a cube | without |
 |---|---|---|---|
