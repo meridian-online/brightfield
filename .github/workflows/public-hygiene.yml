@@ -72,8 +72,9 @@ jobs:
       # docs/interaction-speed.md's table disagreed with the very record it
       # cited. That table is a self-test case twice over, in the digits it
       # shipped with: as written, and read against the run it was quoting. The
-      # table on the page TODAY is checked by the step after the self-test, not
-      # by the self-test.
+      # table on the page TODAY is checked by the step after the self-test; the
+      # self-test reaches it only through the cases that run the script as a
+      # process over a copy of the checkout and read its exit code.
       - name: measured-figures gate self-test
         run: ./scripts/check-measured-figures.py --self-test
 

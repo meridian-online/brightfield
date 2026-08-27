@@ -54,11 +54,13 @@ WHAT IS CHECKED
     promise with no sentence-ending punctuation, so a case written for one is not
     quietly caught by the other.
 
-    `--self-test` has two halves: the sentence cases call `scan_text`, and the
-    tree cases stage a real git checkout and call `check`, so `tracked()` is run
-    rather than assumed. A `tracked()` that has stopped listing files reports
+    `--self-test` has three parts. The sentence cases call `scan_text`. The tree
+    cases stage a real git checkout and call `check`, so `tracked()` is run
+    rather than assumed — a `tracked()` that has stopped listing files reports
     what a clean tree reports, and until 2026-08-26 this self-test stayed green
-    over exactly that.
+    over exactly that. The end-to-end cases run this script as a process over a
+    staged tree and read its exit code, because nothing else reaches `main`, and
+    `main` is what turns findings into exit 1 and is what the CI step runs.
 
     Each must-fail case names the finding it expects — the unpacking in
     `self_test` requires the field — so a case cannot go on passing because some
