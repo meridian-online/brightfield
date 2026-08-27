@@ -670,6 +670,13 @@ TREE_CASES: list[tuple[str, dict[str, str | bytes], list[str] | None, list[str]]
 ]
 
 
+# (name, files to write, the exit code the script must return over that tree).
+END_TO_END_CASES: list[tuple[str, dict[str, str | bytes], int]] = [
+    ("a tree carrying a shipped promise", {"README.md": SHIPPED_MD}, 1),
+    ("a tree that names the split", {"README.md": QUALIFIED_MD}, 0),
+]
+
+
 def _stage_repo(tmp: Path, files: dict[str, str | bytes], add: list[str] | None) -> Path:
     root = tmp / "repo"
     root.mkdir(parents=True, exist_ok=True)
@@ -800,6 +807,33 @@ def _break_isolation() -> int:
     return failures
 
 
+def _end_to_end_self_test() -> int:
+    """Run this script as a process over a staged tree and read its exit code.
+
+    Everything above calls `scan_text` or `check`. Nothing reaches `main`, so
+    its reporting branch could be forced to return 0 over a tree full of
+    unqualified promises and every case above would still pass — and `main` is
+    what the CI step runs.
+    """
+    failures = 0
+    for name, files, expected in END_TO_END_CASES:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = _stage_repo(Path(tmp), files, None)
+            got = subprocess.run(
+                [sys.executable, str(Path(__file__).resolve())],
+                cwd=root,
+                capture_output=True,
+            ).returncode
+        if got != expected:
+            failures += 1
+            print(
+                f"SELF-TEST FAILED: end to end, {name}: expected exit {expected}, "
+                f"got {got}",
+                file=sys.stderr,
+            )
+    return failures
+
+
 def self_test() -> int:
     failures = 0
     for case in MUST_FAIL:
@@ -835,12 +869,14 @@ def self_test() -> int:
     failures += _qualifier_isolation()
     failures += _break_isolation()
     failures += tree_self_test()
+    failures += _end_to_end_self_test()
     if failures:
         return 1
     print(
         "scale-claims gate self-test: ok "
         f"({len(MUST_FAIL)} must-fail, {len(MUST_PASS)} must-pass, "
         f"{len(TREE_CASES)} over a staged checkout, "
+        f"{len(END_TO_END_CASES)} end to end, "
         f"{len(PROMISES)} promises / {len(QUALIFIED)} qualifications / "
         f"{len(BREAK_ALTERNATIVES)} breaks each removed in turn)"
     )

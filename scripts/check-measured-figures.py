@@ -30,6 +30,11 @@ WHAT IS CHECKED
     on passing because some OTHER check caught its mutation, which is how the .md
     link cases at item 2 were found to be covering for each other.
 
+    `--self-test` also runs this script as a process over a copy of this
+    checkout and reads its exit code, once per code listed at the foot of this
+    docstring. Every other case calls `check()`, so nothing else reaches `main`
+    — and `main` is what turns findings into exit 1 and is what the CI step runs.
+
     1. The `## Measured` section names its source record as a repo-relative path
        to a `.json` under benchmarks/results/, exactly one such path, and that
        file exists. A renamed, deleted or duplicated citation fails here, before
@@ -1026,10 +1031,60 @@ def self_test() -> int:
                 file=sys.stderr,
             )
 
+    failures += _end_to_end_self_test()
     if failures:
         return 1
-    print(f"measured-figures gate self-test: ok ({len(cases)} cases)")
+    print(f"measured-figures gate self-test: ok ({len(cases)} cases, and end to end)")
     return 0
+
+
+def _end_to_end_self_test() -> int:
+    """The exit codes `main` returns, over a copy of this checkout.
+
+    Every case above calls `check()` directly. Nothing above reaches `main`, so
+    its reporting branch could be forced to return 0 over a document full of
+    wrong digits and the whole list would still pass — and `main` is what the CI
+    step runs. The document is copied from this tree rather than synthesised,
+    because the row set `main` holds it to is PUBLISHED_ROWS and this is the
+    document that carries it.
+    """
+    script = Path(__file__).resolve()
+    root = repo_root()
+    doc = (root / DOC).read_text()
+    cases = [
+        ("this checkout, unmodified", doc, 0),
+        ("one median off by a tenth", doc.replace("**5.1 ms**", "**5.2 ms**"), 1),
+        ("the Measured heading renamed", doc.replace("## Measured", "## Timings"), 2),
+    ]
+    failures = 0
+    for name, text, expected in cases:
+        if expected and text == doc:
+            failures += 1
+            print(
+                f"SELF-TEST FAILED: end to end, {name}: the mutation changed nothing, "
+                "so this case is reading an unmodified document",
+                file=sys.stderr,
+            )
+            continue
+        with tempfile.TemporaryDirectory() as tmp:
+            staged = Path(tmp) / "repo"
+            (staged / "docs").mkdir(parents=True)
+            shutil.copytree(
+                root / "benchmarks" / "results", staged / "benchmarks" / "results"
+            )
+            (staged / DOC).write_text(text)
+            subprocess.run(["git", "init", "-q", str(staged)], capture_output=True, check=True)
+            got = subprocess.run(
+                [sys.executable, str(script)], cwd=staged, capture_output=True
+            ).returncode
+        if got != expected:
+            failures += 1
+            print(
+                f"SELF-TEST FAILED: end to end, {name}: expected exit {expected}, "
+                f"got {got}",
+                file=sys.stderr,
+            )
+    return failures
 
 
 def _shipped_against_the_run_it_quoted() -> tuple:
