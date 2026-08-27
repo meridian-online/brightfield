@@ -29,8 +29,11 @@ jobs:
       - name: hygiene gate self-test
         run: ./scripts/check-public-hygiene-selftest.sh
 
-      # No `working-directory`. The gate cd's to the repo root itself and scans
-      # every tracked file in the repository, workspace crates included.
+      # No `working-directory`. The gate cd's to the repo root itself, so its
+      # scan is the whole repository rather than one directory — workspace
+      # crates included. What it leaves out it leaves out by name: the
+      # allowlist, which quotes the strings it exists to permit, and whatever
+      # `git grep -I` treats as binary.
       - name: private planning identifiers
         run: ./scripts/check-public-hygiene.sh
 
@@ -43,6 +46,40 @@ jobs:
 
       - name: borrowed benchmark figures
         run: ./scripts/check-borrowed-benchmarks.sh
+
+      # Third honesty gate: a promise about performance at scale has to say
+      # which marks it holds for. Interaction cost stops tracking row count for
+      # a mark that aggregates and does not for a row-level one, and shipped
+      # sentences — the README's opening line among them — made the promise
+      # without the split. Self-test first, for the reason above. Those shipped
+      # sentences are must-fail cases there in the words they shipped in; the
+      # rest of the cases exist so that no entry in the gate's three pattern
+      # lists can be deleted while the self-test is green, which it
+      # proves by removing one entry at a time and requiring a case to change
+      # its verdict. Its tree cases stage a git checkout and run the gate's own
+      # file enumeration, so a scan that has stopped reading files reddens here
+      # rather than passing over a tree full of them.
+      - name: scale-claims gate self-test
+        run: ./scripts/check-scale-claims.py --self-test
+
+      - name: unqualified scale claims
+        run: ./scripts/check-scale-claims.py
+
+      # Fourth: our OWN measured figures, restated in prose where nothing keeps
+      # them in step with the record. The borrowed-benchmarks gate above stops
+      # upstream numbers being claimed as ours; this stops ours drifting from
+      # the run they were read out of, which had already happened —
+      # docs/interaction-speed.md's table disagreed with the very record it
+      # cited. That table is a self-test case twice over, in the digits it
+      # shipped with: as written, and read against the run it was quoting. The
+      # table on the page TODAY is checked by the step after the self-test; the
+      # self-test reaches it only through the cases that run the script as a
+      # process over a copy of the checkout and read its exit code.
+      - name: measured-figures gate self-test
+        run: ./scripts/check-measured-figures.py --self-test
+
+      - name: measured figures match the record
+        run: ./scripts/check-measured-figures.py
 
       # Release-packaging honesty, same cheap-shell shape: package.sh must
       # refuse to build an artifact whose tag disagrees with the crate version.
