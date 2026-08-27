@@ -75,10 +75,20 @@ WHAT IS *NOT* CHECKED (stated so nobody reads this as more than it is)
       about it passes here and needs a reviewer.
     - PROMISES is an ENUMERATION and a new phrasing escapes it. That is not a
       hypothetical: this repo has already written the same promise three ways.
-      What the enumeration buys is that a phrasing already in it cannot stop
-      being caught quietly, which is the harness above; and that the phrasings
-      this repo shipped are among the entries, each with a case in --self-test in
-      the exact words it shipped in.
+      The phrasings this repo shipped are among the entries, each with a case
+      in --self-test in the exact words it shipped in.
+    - The isolation harness proves an entry cannot be REMOVED. It does not
+      prove an entry cannot be NARROWED or BROADENED, because it removes an
+      entry and asks whether some case goes silent, and a pattern narrowed to
+      still match its own case leaves this self-test green. Measured 2026-08-27,
+      each with --self-test green: narrowing the
+      `at any (data |table )?size` entry so it matches only the `table`
+      spelling stops both "at any data size" and "at any size" being caught,
+      and that entry enumerates both; broadening QUALIFIED's `summar` to `sum`
+      accepts "assuming the file is on local disk" as a qualification. What
+      would close it is replacing each entry with a fixture-locked literal
+      rather than removing it — one more loop in each of the three isolation
+      functions — and that is NOT done.
     - That harness asks whether an entry is the only cover for some case. It does
       not ask whether an entry is REACHABLE on a real tree, and it cannot: that
       depends on prose nobody has written yet.
@@ -452,7 +462,7 @@ MUST_FAIL: list[tuple] = [
     # ----------------------------------------------------------------------
     # One case per PROMISES entry that no case above is the only cover for.
     # `--self-test` takes each entry away in turn and requires some case here to
-    # go silent, so a pattern cannot be broken or deleted while this stays green.
+    # go silent, so a pattern cannot be deleted while this stays green.
     # These sentences are written for that, not quoted from anything shipped.
     # ----------------------------------------------------------------------
     (
@@ -551,9 +561,8 @@ MUST_PASS = [
     # ----------------------------------------------------------------------
     # One case per QUALIFIED entry, each carrying a promise and that entry as
     # the only qualification in the sentence. `--self-test` takes each entry
-    # away in turn and requires some case here to start reporting, so a
-    # qualification the gate tells a writer to use cannot stop being accepted
-    # while this stays green. `cube` is covered by benchmarks/README.md above.
+    # away in turn and requires some case here to start reporting. `cube` is
+    # covered by benchmarks/README.md above.
     # ----------------------------------------------------------------------
     (
         "docs/qualifier-aggregates.md",

@@ -1097,9 +1097,12 @@ def _shipped_against_the_run_it_quoted() -> tuple:
     beside the list, which meant the banner named a case the run could no longer
     reach: dropping its result left the self-test at exit 0 still claiming it.
 
-    If the record is missing or this is not a git checkout, staging raises, the
-    loop records CRASHED, and the expected finding below does not match it — so
-    the case reports rather than passing on a technicality.
+    If the record is missing, staging raises inside the loop, the case records
+    CRASHED, and the expected finding below does not match it — so the case
+    reports rather than passing on a technicality. On a tree that is not a git
+    checkout, `repo_root()` below raises while this case list is being built
+    and before the loop runs, so `--self-test` exits non-zero on that rather
+    than on a case verdict.
     """
     record = "2026-07-27-apple-m1-pro"
     return (

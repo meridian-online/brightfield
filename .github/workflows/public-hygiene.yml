@@ -54,7 +54,7 @@ jobs:
       # without the split. Self-test first, for the reason above. Those shipped
       # sentences are must-fail cases there in the words they shipped in; the
       # rest of the cases exist so that no entry in the gate's three pattern
-      # lists can be broken or deleted while the self-test is green, which it
+      # lists can be deleted while the self-test is green, which it
       # proves by removing one entry at a time and requiring a case to change
       # its verdict. Its tree cases stage a git checkout and run the gate's own
       # file enumeration, so a scan that has stopped reading files reddens here
