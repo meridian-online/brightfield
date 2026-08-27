@@ -26,32 +26,45 @@ WHY THIS EXISTS
     will be written by somebody who has not read this file.
 
 WHAT IS CHECKED
-    Every tracked `.md` file, and every `///` / `//!` doc comment in a tracked
-    `.rs` file. A sentence that makes one of the promises in PROMISES must
-    carry one of the qualifications in QUALIFIED — in that same sentence, not
-    in a footnote further down, because the reader this exists for stops
-    reading at the end of the paragraph.
+    Tracked `.md` files and the `///` / `//!` doc comments of tracked `.rs`
+    files, minus `crates/brightfield-spec/vendor/`. A sentence that makes one of
+    the promises in PROMISES must carry one of the qualifications in QUALIFIED —
+    in that same sentence, not in a footnote further down, because the reader
+    this exists for stops reading at the end of the paragraph. A tracked file
+    this gate cannot decode is a finding, not a skip.
 
-    Sentence, not line. Prose wraps, so lines are joined into a block first,
-    and a blank line, a bullet, a numbered item, a table row, a heading or a
-    block quote breaks the join — so one bullet's qualification cannot excuse
-    the next bullet's promise. Each of those breaks has a must-fail case of its
-    own whose promise carries no sentence-ending punctuation, because a case
-    written for a break but ending in a full stop is caught by the sentence
-    split instead and says nothing about the break.
+    Sentence, not line. Prose wraps, so lines are joined into a block first, and
+    a blank line, a bullet, a numbered item, a table row, a heading or a block
+    quote breaks the join — so one bullet's qualification cannot excuse the next
+    bullet's promise.
 
-    That enumeration is itself exercised. `--self-test` has two halves: the
-    sentence cases call `scan_text`, and the tree cases stage a real git
-    checkout and call `check`, so `tracked()` is run rather than assumed. A
-    `tracked()` that has stopped listing files reports what a clean tree
-    reports, and until 2026-08-26 this self-test stayed green over exactly
-    that.
+    NONE OF THOSE THREE LISTS IS DESCRIBED HERE AS COVERED. `--self-test` takes
+    one entry away at a time and requires a case to change its verdict: remove a
+    PROMISES pattern and some must-fail case has to go silent, remove a QUALIFIED
+    pattern and some must-pass case has to start reporting, remove a BREAKS
+    alternative and the case NAMED for it has to go silent. An entry no case is
+    the only cover for is a self-test failure, whether it arrived today or has
+    been here since the file was written. This replaced a sentence asserting the
+    coverage, which is a claim about a regex that nothing reddens when it stops
+    being true.
 
-    Every must-fail case also names the finding it expects, so a case cannot go
-    on passing because some other mechanism caught its mutation. Without that
-    field the bullet and paragraph cases below were both being caught by the
-    sentence split, and disabling the breaks they were written for left this
-    self-test green.
+    The blank-line flush and the sentence split in `blocks` are not BREAKS
+    alternatives, so that harness does not reach them. Their cases are
+    `docs/blank-line-break.md` and `docs/sentence-split.md`; each carries a
+    promise with no sentence-ending punctuation, so a case written for one is not
+    quietly caught by the other.
+
+    `--self-test` has two halves: the sentence cases call `scan_text`, and the
+    tree cases stage a real git checkout and call `check`, so `tracked()` is run
+    rather than assumed. A `tracked()` that has stopped listing files reports
+    what a clean tree reports, and until 2026-08-26 this self-test stayed green
+    over exactly that.
+
+    Each must-fail case names the finding it expects — the unpacking in
+    `self_test` requires the field — so a case cannot go on passing because some
+    other mechanism caught its mutation. Without it the bullet and paragraph
+    cases below were both being caught by the sentence split, and disabling the
+    breaks they were written for left this self-test green.
 
 WHAT IS *NOT* CHECKED (stated so nobody reads this as more than it is)
     - It cannot judge a claim, and it does not try. It asks whether the
@@ -60,9 +73,13 @@ WHAT IS *NOT* CHECKED (stated so nobody reads this as more than it is)
       about it passes here and needs a reviewer.
     - PROMISES is an ENUMERATION and a new phrasing escapes it. That is not a
       hypothetical: this repo has already written the same promise three ways.
-      What the enumeration buys is that the phrasings which HAVE shipped cannot
-      come back unqualified — every one of them is a case in --self-test, in the
-      exact words it shipped in.
+      What the enumeration buys is that a phrasing already in it cannot stop
+      being caught quietly, which is the harness above; and that the phrasings
+      this repo shipped are among the entries, each with a case in --self-test in
+      the exact words it shipped in.
+    - That harness asks whether an entry is the only cover for some case. It does
+      not ask whether an entry is REACHABLE on a real tree, and it cannot: that
+      depends on prose nobody has written yet.
     - Plain `//` comments are out of scope. A promise made to a reader lives in
       a doc comment or in markdown; an implementation note beside a line of code
       is a different audience, and reading those in reddened on ordinary prose
@@ -132,7 +149,24 @@ QUALIFIED_RE = re.compile("|".join(QUALIFIED), re.IGNORECASE)
 # A line that starts a new block rather than continuing the one above: a list
 # item, a table row, a heading, a quote. Joining across one of these would let a
 # neighbour's qualification excuse this line's promise.
-BREAKS = re.compile(r"^\s*(\|.*\||[-*+]\s|\d+[.)]\s|#{1,6}\s|>\s)")
+#
+# Named alternatives rather than one written-out pattern, so `--self-test` can
+# take each away in turn and require the case named for it to go silent. An
+# alternative added here without such a case reddens on arrival.
+BREAK_ALTERNATIVES: list[tuple[str, str]] = [
+    ("table row", r"\|.*\|"),
+    ("bullet", r"[-*+]\s"),
+    ("numbered item", r"\d+[.)]\s"),
+    ("heading", r"#{1,6}\s"),
+    ("block quote", r">\s"),
+]
+
+
+def breaks(alternatives: list[tuple[str, str]]) -> re.Pattern[str]:
+    return re.compile(r"^\s*(" + "|".join(pattern for _, pattern in alternatives) + ")")
+
+
+BREAKS = breaks(BREAK_ALTERNATIVES)
 FENCE = re.compile(r"^\s*(```|~~~)")
 DOC_COMMENT = re.compile(r"^\s*//[/!](.*)$")
 SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
@@ -151,9 +185,10 @@ def tracked(root: Path) -> list[str]:
     """The tracked files this gate reads: markdown, and Rust for its doc comments.
 
     This file spells every phrase it looks for and is not excluded by name; the
-    pathspec is `*.md` and `*.rs`, so a `.py` is never listed. Vendored Mosaic
+    pathspec is `*.md` and `*.rs`, which does not reach a `.py`. Vendored Mosaic
     specs are upstream text nobody here writes, and a promise in one is not this
-    repo's to qualify.
+    repo's to qualify — `crates/brightfield-spec/vendor/` is the one path dropped
+    here, and a tree case covers it.
     """
     out = subprocess.run(
         ["git", "-C", str(root), "ls-files", "-z", "*.md", "*.rs"],
@@ -232,7 +267,19 @@ def check(root: Path) -> list[Finding]:
     for path in tracked(root):
         try:
             text = (root / path).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError) as exc:
+            # A finding rather than a `continue`: a tracked file this gate
+            # cannot open is a file whose prose nobody read, and skipping it
+            # reports what a clean tree reports.
+            findings.append(
+                Finding(
+                    path,
+                    0,
+                    "unread",
+                    f"this gate could not read the file ({type(exc).__name__}), "
+                    "so nothing in it was checked",
+                )
+            )
             continue
         findings.extend(scan_text(path, text))
     return findings
@@ -241,20 +288,23 @@ def check(root: Path) -> list[Finding]:
 # --------------------------------------------------------------------------
 # Self-test, part one: the sentence cases, against `scan_text`.
 #
-# Every must_fail case is a sentence that HAS shipped in this repo, in the words
-# it shipped in; every must_pass case is prose from this tree that a careless
-# pattern would redden. The gate runs beside this in CI, because a checker that
-# has quietly stopped matching reports what a clean tree reports.
+# The cases that reproduce a sentence this repo shipped carry the words it
+# shipped in. The rest are written to be the only cover for one PROMISES entry,
+# one QUALIFIED entry or one BREAKS alternative, which is what the isolation
+# harness in `self_test` holds them to. The gate runs beside this in CI, because
+# a checker that has quietly stopped matching reports what a clean tree reports.
 #
 # These cases reach the matching and nothing else. Part two is the other half.
 # --------------------------------------------------------------------------
 
-# (path, text, the finding this case expects). The third field is why a case
-# cannot go on passing because some OTHER mechanism caught its mutation: the
-# bullet and paragraph cases below both end in a full stop, so the sentence
-# split reddens them even with the break they were written for disabled. The
-# cases that isolate a break carry no sentence-ending punctuation at all.
-MUST_FAIL: list[tuple[str, str, str]] = [
+# (path, text, the finding this case expects[, the BREAKS alternative it is the
+# only cover for]). The third field is why a case cannot go on passing because
+# some OTHER mechanism caught its mutation: the bullet and paragraph cases below
+# both end in a full stop, so the sentence split reddens them even with the break
+# they were written for disabled. The cases that isolate a break carry no
+# sentence-ending punctuation at all, and name their alternative in a fourth
+# field so `--self-test` can remove it and require them to go silent.
+MUST_FAIL: list[tuple] = [
     (
         "README.md",
         "GPU-native desktop application for interactive data visualisation at any scale. "
@@ -337,6 +387,7 @@ MUST_FAIL: list[tuple[str, str, str]] = [
         "- for an aggregating mark, which is served from a cube\n",
         "docs/bullet-break.md:1: [row-count vocabulary] - Interaction latency is "
         "independent of row count",
+        "bullet",
     ),
     # BREAKS, numbered alternative `\d+[.)]\s`. Written `1)` rather than `1.`
     # so the marker itself carries no full stop for the sentence split to use.
@@ -346,6 +397,7 @@ MUST_FAIL: list[tuple[str, str, str]] = [
         "2) for an aggregating mark, which is served from a cube\n",
         "docs/numbered-break.md:1: [row-count vocabulary] 1) Interaction latency is "
         "independent of row count",
+        "numbered item",
     ),
     # BREAKS, table-row alternative `\|.*\|`.
     (
@@ -356,6 +408,7 @@ MUST_FAIL: list[tuple[str, str, str]] = [
         "| an aggregating mark is served from a cube | shipped |\n",
         "docs/table-break.md:3: [row-count vocabulary] | Interaction latency is "
         "independent of row count | shipped |",
+        "table row",
     ),
     # BREAKS, heading alternative `#{1,6}\s`.
     (
@@ -364,6 +417,7 @@ MUST_FAIL: list[tuple[str, str, str]] = [
         "### When an aggregating mark is served from a cube\n",
         "docs/heading-break.md:1: [row-count vocabulary] ## Interaction latency is "
         "independent of row count",
+        "heading",
     ),
     # BREAKS, block-quote alternative `>\s`.
     (
@@ -372,6 +426,7 @@ MUST_FAIL: list[tuple[str, str, str]] = [
         "> for an aggregating mark, which is served from a cube\n",
         "docs/quote-break.md:1: [row-count vocabulary] > Interaction latency is "
         "independent of row count",
+        "block quote",
     ),
     # The blank-line flush in `blocks`, which is not part of BREAKS.
     (
@@ -391,6 +446,60 @@ MUST_FAIL: list[tuple[str, str, str]] = [
         "served from a cube.\n",
         "docs/sentence-split.md:1: [row-count vocabulary] Interaction latency is "
         "independent of row count.",
+    ),
+    # ----------------------------------------------------------------------
+    # One case per PROMISES entry that no case above is the only cover for.
+    # `--self-test` takes each entry away in turn and requires some case here to
+    # go silent, so a pattern cannot be broken or deleted while this stays green.
+    # These sentences are written for that, not quoted from anything shipped.
+    # ----------------------------------------------------------------------
+    (
+        "docs/dialect-any-size.md",
+        "Brushing stays responsive at any table size.\n",
+        "docs/dialect-any-size.md:1: [scale vocabulary] Brushing stays responsive "
+        "at any table size.",
+    ),
+    (
+        "docs/dialect-scales-to.md",
+        "Brightfield scales to billions of rows on a laptop.\n",
+        "docs/dialect-scales-to.md:1: [scale vocabulary] Brightfield scales to "
+        "billions of rows on a laptop.",
+    ),
+    (
+        "docs/dialect-any-row-count.md",
+        "A drag stays at a few milliseconds at any row count.\n",
+        "docs/dialect-any-row-count.md:1: [row-count vocabulary] A drag stays at a "
+        "few milliseconds at any row count.",
+    ),
+    (
+        "docs/dialect-regardless.md",
+        "Interaction stays fluid regardless of the number of rows.\n",
+        "docs/dialect-regardless.md:1: [row-count vocabulary] Interaction stays "
+        "fluid regardless of the number of rows.",
+    ),
+    (
+        "docs/dialect-no-matter.md",
+        "The gesture costs the same no matter how many rows are loaded.\n",
+        "docs/dialect-no-matter.md:1: [row-count vocabulary] The gesture costs the "
+        "same no matter how many rows are loaded.",
+    ),
+    (
+        "docs/dialect-stops-tracking.md",
+        "Interaction cost stops tracking row count once the file is open.\n",
+        "docs/dialect-stops-tracking.md:1: [row-count vocabulary] Interaction cost "
+        "stops tracking row count once the file is open.",
+    ),
+    (
+        "docs/dialect-as-it-grows.md",
+        "The dashboard stays fluid as the table grows.\n",
+        "docs/dialect-as-it-grows.md:1: [row-count vocabulary] The dashboard stays "
+        "fluid as the table grows.",
+    ),
+    (
+        "docs/dialect-never-loads.md",
+        "Brightfield never loads the table into memory.\n",
+        "docs/dialect-never-loads.md:1: [memory vocabulary] Brightfield never loads "
+        "the table into memory.",
     ),
 ]
 
@@ -437,6 +546,50 @@ MUST_PASS = [
         "docs/fenced.md",
         "Example output:\n\n```\ninteraction latency independent of row count\n```\n",
     ),
+    # ----------------------------------------------------------------------
+    # One case per QUALIFIED entry, each carrying a promise and that entry as
+    # the only qualification in the sentence. `--self-test` takes each entry
+    # away in turn and requires some case here to start reporting, so a
+    # qualification the gate tells a writer to use cannot stop being accepted
+    # while this stays green. `cube` is covered by benchmarks/README.md above.
+    # ----------------------------------------------------------------------
+    (
+        "docs/qualifier-aggregates.md",
+        "Interaction latency is independent of row count for a mark that aggregates.\n",
+    ),
+    (
+        "docs/qualifier-row-level.md",
+        "Interaction latency is independent of row count, but not for a row-level mark.\n",
+    ),
+    (
+        "docs/qualifier-scatter.md",
+        "Interaction latency is independent of row count until the plot is a raw scatter.\n",
+    ),
+    (
+        "docs/qualifier-per-row.md",
+        "Interaction latency is independent of row count unless the plot draws one dot "
+        "per row.\n",
+    ),
+    (
+        "docs/qualifier-row-per-mark.md",
+        "Interaction latency is independent of row count unless the drawing is "
+        "row-per-mark.\n",
+    ),
+    (
+        "docs/qualifier-rows-per-mark.md",
+        "Interaction latency is independent of row count unless there are two rows per "
+        "mark.\n",
+    ),
+    (
+        "docs/qualifier-summarises.md",
+        "Interaction latency is independent of row count when the mark can be "
+        "summarised first.\n",
+    ),
+    (
+        "docs/qualifier-pointer.md",
+        "Interaction latency is independent of row count; docs/interaction-speed.md "
+        "says which marks that holds for.\n",
+    ),
 ]
 
 
@@ -467,7 +620,7 @@ QUALIFIED_MD = (
     "scale an aggregating mark can be served from a pre-aggregated summary at.\n"
 )
 
-TREE_CASES: list[tuple[str, dict[str, str], list[str] | None, list[str]]] = [
+TREE_CASES: list[tuple[str, dict[str, str | bytes], list[str] | None, list[str]]] = [
     # (name, files to write, files to `git add` (None = all), paths expected in findings)
     (
         "a tracked markdown file is reached",
@@ -508,17 +661,26 @@ TREE_CASES: list[tuple[str, dict[str, str], list[str] | None, list[str]]] = [
         None,
         [],
     ),
+    (
+        "a tracked file this gate cannot decode is reported, not skipped",
+        {"docs/undecodable.md": b"\xff\xfe interaction latency at any scale\n"},
+        None,
+        ["docs/undecodable.md"],
+    ),
 ]
 
 
-def _stage_repo(tmp: Path, files: dict[str, str], add: list[str] | None) -> Path:
+def _stage_repo(tmp: Path, files: dict[str, str | bytes], add: list[str] | None) -> Path:
     root = tmp / "repo"
     root.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-q", str(root)], capture_output=True, check=True)
     for rel, body in files.items():
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(body, encoding="utf-8")
+        if isinstance(body, bytes):
+            path.write_bytes(body)
+        else:
+            path.write_text(body, encoding="utf-8")
     staged = sorted(files) if add is None else sorted(add)
     if staged:
         # --force: a global core.excludesFile on the host must not decide what
@@ -547,9 +709,101 @@ def tree_self_test() -> int:
     return failures
 
 
+def _promise_isolation() -> int:
+    """Take one PROMISES entry away; some must-fail case has to go silent.
+
+    Without this an entry can be broken or deleted with the self-test green, and
+    the gate goes on reporting a clean tree over prose it was written to catch.
+    """
+    global PROMISE_RE
+    original = PROMISE_RE
+    failures = 0
+    try:
+        for index, (label, pattern) in enumerate(original):
+            PROMISE_RE = [
+                entry for position, entry in enumerate(original) if position != index
+            ]
+            silenced = [case[0] for case in MUST_FAIL if not scan_text(case[0], case[1])]
+            PROMISE_RE = original
+            if not silenced:
+                failures += 1
+                print(
+                    f"SELF-TEST FAILED: the [{label}] pattern {pattern.pattern!r} is "
+                    "the only cover for no must-fail case. Remove it and every case "
+                    "still reports, so nothing here reddens when it stops matching",
+                    file=sys.stderr,
+                )
+    finally:
+        PROMISE_RE = original
+    return failures
+
+
+def _qualifier_isolation() -> int:
+    """Take one QUALIFIED entry away; some must-pass case has to start reporting."""
+    global QUALIFIED_RE
+    original = QUALIFIED_RE
+    failures = 0
+    try:
+        for index, pattern in enumerate(QUALIFIED):
+            QUALIFIED_RE = re.compile(
+                "|".join(
+                    entry for position, entry in enumerate(QUALIFIED) if position != index
+                ),
+                re.IGNORECASE,
+            )
+            reddened = [case[0] for case in MUST_PASS if scan_text(case[0], case[1])]
+            QUALIFIED_RE = original
+            if not reddened:
+                failures += 1
+                print(
+                    f"SELF-TEST FAILED: the qualification {pattern!r} is the only "
+                    "cover for no must-pass case. Remove it and every case is still "
+                    "clean, so nothing here reddens when the gate stops accepting a "
+                    "qualification it tells a writer to use",
+                    file=sys.stderr,
+                )
+    finally:
+        QUALIFIED_RE = original
+    return failures
+
+
+def _break_isolation() -> int:
+    """Take one BREAKS alternative away; the case named for it has to go silent."""
+    global BREAKS
+    named = {case[3]: case for case in MUST_FAIL if len(case) > 3}
+    original = BREAKS
+    failures = 0
+    try:
+        for name, _ in BREAK_ALTERNATIVES:
+            case = named.get(name)
+            if case is None:
+                failures += 1
+                print(
+                    f"SELF-TEST FAILED: the {name} alternative of BREAKS names no "
+                    "case that is the only cover for it",
+                    file=sys.stderr,
+                )
+                continue
+            BREAKS = breaks([alt for alt in BREAK_ALTERNATIVES if alt[0] != name])
+            still = scan_text(case[0], case[1])
+            BREAKS = original
+            if still:
+                failures += 1
+                print(
+                    f"SELF-TEST FAILED: {case[0]} still reports with the {name} "
+                    f"alternative of BREAKS removed ({still[0]}), so it is not the "
+                    "only cover for it and that alternative could be deleted green",
+                    file=sys.stderr,
+                )
+    finally:
+        BREAKS = original
+    return failures
+
+
 def self_test() -> int:
     failures = 0
-    for path, text, expect in MUST_FAIL:
+    for case in MUST_FAIL:
+        path, text, expect = case[:3]
         found = scan_text(path, text)
         if not found:
             print(
@@ -577,13 +831,18 @@ def self_test() -> int:
                 file=sys.stderr,
             )
             failures += 1
+    failures += _promise_isolation()
+    failures += _qualifier_isolation()
+    failures += _break_isolation()
     failures += tree_self_test()
     if failures:
         return 1
     print(
         "scale-claims gate self-test: ok "
         f"({len(MUST_FAIL)} must-fail, {len(MUST_PASS)} must-pass, "
-        f"{len(TREE_CASES)} over a staged checkout)"
+        f"{len(TREE_CASES)} over a staged checkout, "
+        f"{len(PROMISES)} promises / {len(QUALIFIED)} qualifications / "
+        f"{len(BREAK_ALTERNATIVES)} breaks each removed in turn)"
     )
     return 0
 
