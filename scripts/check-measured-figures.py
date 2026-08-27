@@ -23,21 +23,29 @@ WHY THIS EXISTS
     markdown.
 
 WHAT IS CHECKED
-    Every claim below is a case in `--self-test`, and each of those cases names
-    the finding it expects — prefixed `COULD NOT RUN:` where it expects the exit
-    2 refusal rather than an exit 1 disagreement. So a case cannot go on passing
-    because some OTHER check caught its mutation, which is how the .md link
-    cases at item 2 were found to be covering for each other.
+    Each item below has a case in `--self-test`, and every must-fail case there
+    names the finding it expects — prefixed `COULD NOT RUN:` where it expects the
+    exit 2 refusal rather than an exit 1 disagreement. A must-fail case that
+    names no expected finding is itself a self-test failure. So a case cannot go
+    on passing because some OTHER check caught its mutation, which is how the .md
+    link cases at item 2 were found to be covering for each other.
 
     1. The `## Measured` section names its source record as a repo-relative path
        to a `.json` under benchmarks/results/, exactly one such path, and that
        file exists. A renamed, deleted or duplicated citation fails here, before
        any digit is compared.
-    2. Any OTHER `benchmarks/results/*.md` link in the document resolves to a
-       file, and shares its stem with that record — the prose summary and the
-       JSON are two views of one run, and citing different runs from one page is
-       the same drift. Each of those two is a case of its own, because a case
-       that reddens for the other one's reason has tested nothing.
+    2. Every `benchmarks/results/<name>.md` and `benchmarks/results/<name>.json`
+       path written anywhere in the document — link target, link label, reference
+       definition or plain prose — names a file that exists and shares its stem
+       with that record. The prose summary and the JSON are two views of one run,
+       and citing different runs from one page is the same drift.
+
+       The scan reads the path text and not the markdown around it, because the
+       link syntaxes GitHub renders identically are not one shape: an anchor on
+       the end of the path, a `(path "title")`, a reference definition, a
+       repo-absolute path, an angle-bracket target and a raw `<a href>` each have
+       a case in `--self-test`. A path this gate cannot resolve to a file is a
+       finding, not a silent skip.
     3. The section's opening sentence, `<N> rows, on an <cpu>,`, is READ OUT OF
        THE DOCUMENT and both halves compared to the record: the row count
        against `config.rows`, the machine against `machine.cpu`. Digits or
@@ -59,8 +67,17 @@ WHAT IS CHECKED
          - A figure in the `with a cube` column requires `cube_hits > 0` for
            that scenario, or the column header is describing a run that served
            nothing from a cube.
-    6. The table's row set is exactly the mapping below — a row added to the
-       document without a mapping fails, rather than passing unchecked.
+    6. The table carries exactly the (chart, gesture) rows PUBLISHED_ROWS lists:
+       none missing, none added, none repeated. Missing is the direction that
+       matters, and `raw scatter, two views | zoom` is the row it matters most
+       for — that row is the row-level half of the comparison, and a page that
+       loses it claims only the fast half.
+
+       PUBLISHED_ROWS is not the cross product of SCENARIO and FIELD. Those two
+       translate a row's words into the record's names; the record carries
+       scenarios (`slider-drag`) and timed fields (`live_apply`) this page does
+       not publish, and the cross product names a `raw scatter, two views |
+       brush` row the page has never carried.
 
 WHAT IS *NOT* CHECKED (stated so nobody reads this as more than it is)
     - It does not check that the named record is the NEWEST one. Figures stay
@@ -74,6 +91,11 @@ WHAT IS *NOT* CHECKED (stated so nobody reads this as more than it is)
     - It reads only this one document. A latency figure written into any other
       file is out of scope and unpinned — including README.md's `Query
       optimisation` bullet, which quotes a millisecond range of its own.
+    - It does not decide WHICH rows the page should publish. PUBLISHED_ROWS is a
+      judgement written down, and item 6 only stops the document and that list
+      moving apart. A row taken out of both is taken out of both.
+    - The stem comparison at item 2 asks whether two paths name the same run. It
+      does not open the summary and compare what is inside it to the JSON.
 
 Usage (no arguments, from anywhere inside the repo):
 
@@ -89,6 +111,7 @@ Exit codes:
 
 from __future__ import annotations
 
+import collections
 import decimal
 import json
 import re
@@ -120,6 +143,23 @@ FIELD = {
 }
 COLUMN = {"engine": "with a cube", "engine_direct": "without"}
 
+# The rows the document publishes, as the (chart, gesture) pairs its first two
+# columns spell. Checked in both directions: a row here and not in the table is
+# a finding, and so is a row in the table and not here. The direction that made
+# this necessary is the first one — the `raw scatter, two views` row is the only
+# row-level measurement on the page, and deleting it used to leave every gate at
+# exit 0 over a document claiming only the fast half.
+#
+# Which rows to publish is a judgement, so this is a list and not a derivation:
+# the record measures scenarios and fields the page deliberately leaves out.
+PUBLISHED_ROWS: list[tuple[str, str]] = [
+    ("binned density", "zoom"),
+    ("density", "zoom"),
+    ("density", "brush"),
+    ("binned density", "brush"),
+    ("raw scatter, two views", "zoom"),
+]
+
 # `**5.1 ms** (5.8)` or `82.0 ms (91.2)` — a median with its 95th percentile.
 CELL = re.compile(r"\*{0,2}(\d+\.\d)\s*ms\*{0,2}\s*\((\d+\.\d)\)")
 # `*no cube possible*` — a row-level mark has no cube, so there is no cubed
@@ -128,8 +168,14 @@ CELL = re.compile(r"\*{0,2}(\d+\.\d)\s*ms\*{0,2}\s*\((\d+\.\d)\)")
 NO_CUBE = re.compile(r"\*no cube possible\*")
 # The source record, cited as a repo-relative path inside a markdown link.
 SOURCE = re.compile(r"\((\.\./benchmarks/results/[A-Za-z0-9._-]+\.json)\)")
-# The prose summary of the same run, cited the same way.
-SOURCE_MD = re.compile(r"\((\.\./benchmarks/results/[A-Za-z0-9._-]+\.md)\)")
+# Any benchmarks/results file the document names, in prose or as a link target.
+# Matching starts at the path itself rather than at a link delimiter, so the
+# markdown around it does not decide whether the citation is read: an anchor, a
+# link title, a reference definition, a repo-absolute path, an angle-bracket
+# target and a raw `<a href>` all put this same substring on the page. The
+# capture is resolved under benchmarks/results/ from the repo root, so the
+# leading `../` a link needs from docs/ is not part of what is read.
+RESULTS_REF = re.compile(r"benchmarks/results/([A-Za-z0-9._/-]+\.(?:md|json))")
 # `Ten million rows, on an Apple M1 Pro,` — the sentence that says what the
 # table below is a measurement OF.
 HEADLINE = re.compile(
@@ -255,22 +301,54 @@ def source_record(section: str, text: str, root: Path) -> tuple[Path, list[str]]
     path = (root / "docs" / cited[0]).resolve()
     if not path.is_file():
         raise Fail(f"{DOC} cites {cited[0]}, which is not a file")
+    return path, referenced_records(text, path, root)
 
+
+def referenced_records(text: str, record: Path, root: Path) -> list[str]:
+    """Findings about every benchmarks/results path the document names.
+
+    The record itself is one of them and passes trivially. Everything else has
+    to exist and name the same run, whatever markdown syntax it is written in.
+    """
     findings = []
-    for summary in dict.fromkeys(SOURCE_MD.findall(text)):
-        summary_path = (root / "docs" / summary).resolve()
+    for name in dict.fromkeys(RESULTS_REF.findall(text)):
+        named = (root / "benchmarks" / "results" / name).resolve()
         # Existence first, then stem. Staged the other way round, the case for
         # the stem comparison was caught by this branch instead and the stem
         # comparison went untested — a mutation sweep is how that surfaced.
-        if not summary_path.is_file():
-            findings.append(f"{DOC} links {summary}, which is not a file")
-        elif summary_path.stem != path.stem:
+        if not named.is_file():
+            findings.append(f"{DOC} names benchmarks/results/{name}, which is not a file")
+        elif named.stem != record.stem:
             findings.append(
-                f"{DOC} links {summary_path.name} for prose and {path.name} for "
-                "figures. Those are different runs; link the summary of the run "
-                "the table is read from."
+                f"{DOC} names benchmarks/results/{name} and reads its figures from "
+                f"{record.name}. Those are different runs; name the summary of the "
+                "run the table is read from."
             )
-    return path, findings
+    return findings
+
+
+def row_set(seen: list[tuple[str, str]], required: list[tuple[str, str]]) -> list[str]:
+    """Findings about the table's row set, in both directions."""
+    want = collections.Counter(required)
+    got = collections.Counter(seen)
+    script = Path(__file__).name
+    findings = []
+    for chart, gesture in sorted(want - got):
+        findings.append(
+            f"{DOC}'s table has no '{chart} | {gesture}' row, which PUBLISHED_ROWS "
+            f"in {script} says this page publishes. A row cannot leave the table "
+            "without leaving that list too."
+        )
+    for chart, gesture in sorted(got - want):
+        if want[(chart, gesture)]:
+            findings.append(f"{DOC}'s table repeats the '{chart} | {gesture}' row")
+        else:
+            findings.append(
+                f"{DOC}'s table has a '{chart} | {gesture}' row that PUBLISHED_ROWS "
+                f"in {script} does not list. Add it there, with the names it needs "
+                "in SCENARIO/FIELD, or take the row out."
+            )
+    return findings
 
 
 def figures(record: dict, rows: int) -> dict[tuple[str, str, str], tuple[str, str]]:
@@ -339,7 +417,7 @@ def cube_claim(
     return None
 
 
-def check(root: Path) -> list[str]:
+def check(root: Path, required: list[tuple[str, str]] | None = None) -> list[str]:
     doc = root / DOC
     if not doc.is_file():
         raise Fail(f"{DOC} is missing")
@@ -372,7 +450,13 @@ def check(root: Path) -> list[str]:
 
     known = figures(record, rows)
     preaggs = counters(record, rows)
+    seen: list[tuple[str, str]] = []
     for cells in measured_table(section):
+        # The pair is recorded before the guards below, so a row that is
+        # malformed or unresolvable still counts toward the row set and is not
+        # reported twice as missing.
+        if len(cells) >= 2:
+            seen.append((cells[0], cells[1]))
         if len(cells) < 4:
             findings.append(f"{DOC}: table row {cells!r} has fewer than four columns")
             continue
@@ -416,6 +500,7 @@ def check(root: Path) -> list[str]:
                     f"{got[0]} ms ({got[1]}); {record_path.name} measured "
                     f"{want[0]} ms ({want[1]})"
                 )
+    findings.extend(row_set(seen, PUBLISHED_ROWS if required is None else required))
     return findings
 
 
@@ -431,6 +516,35 @@ def check(root: Path) -> list[str]:
 
 FIXTURE_ROWS = 10_000_000
 FIXTURE_CPU = "Apple M1 Pro"
+
+# The fixture document and the shipped one publish different row sets, so each
+# case says which one it is being read against. PUBLISHED_ROWS — the list the
+# real document is held to — is exercised by the gate itself, not from here.
+FIXTURE_PUBLISHED_ROWS = [
+    ("density", "zoom"),
+    ("density", "brush"),
+    ("raw scatter, two views", "zoom"),
+]
+SHIPPED_PUBLISHED_ROWS = [
+    ("binned density", "zoom"),
+    ("density", "zoom"),
+    ("density", "brush"),
+    ("binned density", "brush"),
+    ("raw scatter, two views", "zoom"),
+]
+
+# One citation of a run the table is not read from, written six ways that GitHub
+# renders identically. Each is a case below: the finding has to be the stem
+# comparison naming `other.md`, so a case cannot pass because the scan mangled
+# the path into something that is merely not a file.
+LINK_SYNTAXES = [
+    ("an anchor on the end of the path", "[Arrow held](../benchmarks/results/other.md#arrow-held)"),
+    ("a link title", '[Arrow held](../benchmarks/results/other.md "Arrow held")'),
+    ("a reference definition", "[Arrow held][summary]\n\n[summary]: ../benchmarks/results/other.md"),
+    ("a repo-absolute path", "[Arrow held](/benchmarks/results/other.md)"),
+    ("an angle-bracket target", "[Arrow held](<../benchmarks/results/other.md>)"),
+    ("a raw HTML anchor", '<a href="../benchmarks/results/other.md">Arrow held</a>'),
+]
 
 RECORD_FIXTURE = {
     "machine": {"cpu": FIXTURE_CPU},
@@ -521,6 +635,11 @@ SHIPPED_DOC_CITED = SHIPPED_DOC.replace(
 )
 
 
+def _cited_through(markup: str) -> str:
+    """The fixture document with one more citation above the `## Measured` heading."""
+    return DOC_FIXTURE.replace("## Measured", f"{markup}\n\n## Measured", 1)
+
+
 def _stage(tmp: Path, doc: str, record: dict | str, name: str = "fixture") -> Path:
     root = tmp / "repo"
     (root / "docs").mkdir(parents=True, exist_ok=True)
@@ -540,7 +659,8 @@ def _stage(tmp: Path, doc: str, record: dict | str, name: str = "fixture") -> Pa
 
 
 def self_test() -> int:
-    # (name, document, record, should_pass[, substring the finding must contain])
+    # (name, document, record, should_pass[, substring the finding must contain]
+    #  [, the record's stem][, the row set the document is read against])
     cases: list[tuple] = [
         ("the fixture as published", DOC_FIXTURE, RECORD_FIXTURE, True),
         (
@@ -617,7 +737,7 @@ def self_test() -> int:
             ),
             RECORD_FIXTURE,
             False,
-            "links other.md for prose and fixture.json for figures",
+            "names benchmarks/results/other.md and reads its figures from fixture.json",
         ),
         (
             "the prose summary link leads nowhere",
@@ -626,7 +746,55 @@ def self_test() -> int:
             ),
             RECORD_FIXTURE,
             False,
-            "links ../benchmarks/results/gone.md, which is not a file",
+            "names benchmarks/results/gone.md, which is not a file",
+        ),
+        # One case per link syntax. Each cites a run the table is not read from,
+        # so a scan that stops at the shape of a plain `(path)` link goes silent
+        # on it — which is how a deep link into the prose summary un-gated that
+        # citation while the page said it was checked.
+        *[
+            (
+                f"a different run cited through {syntax}",
+                _cited_through(markup),
+                RECORD_FIXTURE,
+                False,
+                "names benchmarks/results/other.md and reads its figures from fixture.json",
+            )
+            for syntax, markup in LINK_SYNTAXES
+        ],
+        # The row set, in both directions. Every digit in these tables is
+        # correct, so only the row-set comparison can catch them.
+        (
+            "the row-level row deleted from the table",
+            DOC_FIXTURE.replace(
+                "| raw scatter, two views | zoom | *no cube possible* | 167.0 ms (238.9) |\n",
+                "",
+            ),
+            RECORD_FIXTURE,
+            False,
+            "has no 'raw scatter, two views | zoom' row",
+        ),
+        (
+            "a published row repeated",
+            DOC_FIXTURE.replace(
+                "| density | brush | **5.1 ms** (5.8) | 82.0 ms (91.2) |",
+                "| density | brush | **5.1 ms** (5.8) | 82.0 ms (91.2) |\n"
+                "| density | brush | **5.1 ms** (5.8) | 82.0 ms (91.2) |",
+            ),
+            RECORD_FIXTURE,
+            False,
+            "repeats the 'density | brush' row",
+        ),
+        (
+            "a row the published list does not carry",
+            DOC_FIXTURE.replace(
+                "| raw scatter, two views | zoom | *no cube possible* | 167.0 ms (238.9) |",
+                "| raw scatter, two views | zoom | *no cube possible* | 167.0 ms (238.9) |\n"
+                "| raw scatter, two views | brush | *no cube possible* | 200.0 ms (300.0) |",
+            ),
+            RECORD_FIXTURE,
+            False,
+            "has a 'raw scatter, two views | brush' row that PUBLISHED_ROWS",
         ),
         # Removing the column-count guard makes the unpacking below it raise,
         # and a raise is not a report: without this case `if len(cells) < 4:`
@@ -800,6 +968,8 @@ def self_test() -> int:
             RECORD_FIXTURE,
             False,
             "COULD NOT RUN: docs/interaction-speed.md does not name a source record",
+            "fixture",
+            SHIPPED_PUBLISHED_ROWS,
         ),
         # ...and the same table read against the run it was quoting. The one
         # case built from a committed record; it sits in this list rather than
@@ -812,13 +982,24 @@ def self_test() -> int:
         name, doc, record, should_pass = case[:4]
         expect = case[4] if len(case) > 4 else None
         record_name = case[5] if len(case) > 5 else "fixture"
+        required = case[6] if len(case) > 6 else FIXTURE_PUBLISHED_ROWS
+        if not should_pass and not expect:
+            # Without this a must-fail case can be added with no expectation and
+            # go on passing while the check it was written for has stopped
+            # running, because some other check caught the same mutation.
+            failures += 1
+            print(
+                f"SELF-TEST FAILED: must-fail case {name!r} names no finding it "
+                "expects, so nothing holds it to its own reason",
+                file=sys.stderr,
+            )
         with tempfile.TemporaryDirectory() as tmp:
             try:
                 # Staging is inside the try because one case copies a committed
                 # record rather than writing a fixture, and a missing file there
                 # must be reported against that case rather than abort the run.
                 root = _stage(Path(tmp), doc, record, name=record_name)
-                findings = check(root)
+                findings = check(root, required)
                 passed = not findings
                 detail = "; ".join(findings)
             except Fail as exc:
@@ -873,6 +1054,7 @@ def _shipped_against_the_run_it_quoted() -> tuple:
         False,
         "'density | brush' (with a cube) says 4.0 ms (5.0)",
         record,
+        SHIPPED_PUBLISHED_ROWS,
     )
 
 
