@@ -45,3 +45,22 @@ missing_docs = "allow"
 
 [workspace.lints.clippy]
 pedantic = { level = "allow", priority = -1 }
+
+# Measured, not assumed — the before/after pair and the machine conditions each
+# number was taken under are in the commit that added this block.
+#
+# `debug = "line-tables-only"` keeps file and line for panics and backtraces and
+# drops the variable and type debug info a debugger would use. It is the whole of
+# this block's effect: it moves the rustc flag from `-C debuginfo=2`, and both the
+# time and the disk saving come from it.
+#
+# `split-debuginfo = "unpacked"` WAS HERE AND WAS REMOVED, because it is the
+# platform default on macOS and setting it changes the rustc command line by zero
+# bytes. Verified with `cargo build -v` on a workspace crate with no `[profile.dev]`
+# block, no `.cargo/config.toml` and no `CARGO_PROFILE_*` in the environment: cargo
+# already emits `-C split-debuginfo=unpacked`. `find target/debug -maxdepth 1 -name
+# '*.dSYM'` returns 0 in the untuned arm as well as the tuned one — there was never
+# a `.dSYM` bundle here to eliminate. Recorded rather than deleted silently, because
+# this card asks that a lever which does not pay be written down as one.
+[profile.dev]
+debug = "line-tables-only"
