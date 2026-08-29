@@ -169,7 +169,7 @@ dependencies = [
 [[package]]
 name = "arc"
 version = "0.1.0"
-source = "git+https://github.com/meridian-online/arcform?rev=30b337924a502c01409710efc645d06f75f729bb#30b337924a502c01409710efc645d06f75f729bb"
+source = "git+https://github.com/meridian-online/arcform?rev=9c7e7a8fcb24bcb95752e758bdd15600c30c0d1a#9c7e7a8fcb24bcb95752e758bdd15600c30c0d1a"
 dependencies = [
  "dirs",
  "dotenvy",
@@ -4426,7 +4426,7 @@ dependencies = [
 [[package]]
 name = "sqlparser"
 version = "0.55.0"
-source = "git+https://github.com/meridian-online/arcform?rev=4b4501926b6c3428059df7cbe281fa96be183a08#4b4501926b6c3428059df7cbe281fa96be183a08"
+source = "git+https://github.com/meridian-online/arcform?rev=9c7e7a8fcb24bcb95752e758bdd15600c30c0d1a#9c7e7a8fcb24bcb95752e758bdd15600c30c0d1a"
 dependencies = [
  "log",
  "recursive",
