@@ -45,6 +45,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The sibling data repo, for the ONE test target that reads it:
+      # `crates/brightfield-protocol/tests/sibling_manifests.rs`, which loads
+      # every `arcform.yaml` the pipeline ships through the `arc` rev this
+      # workspace pins. That pin drifted three weeks behind the operator
+      # catalog once already, and the only signal was a person opening a
+      # Protocol in the shell and being told `unknown operator 'text_embed'`.
+      #
+      # This is a git checkout of a first-party PUBLIC repo, not a data fetch —
+      # so it does not make this workflow network-dependent in the sense
+      # `nightly-network.yml` argues against. It reads the same host the run is
+      # already cloning itself from, with the default `GITHUB_TOKEN` (a public
+      # repo needs no extra credential), and `persist-credentials: false`
+      # because nothing here pushes.
+      #
+      # A red step below means either this PR moved the pin backwards or the
+      # sibling repo moved ahead of it. Both are worth a person's attention and
+      # both are fixed the same way — README §"The arcform dependency".
+      - name: check out the sibling data repo's Protocols
+        uses: actions/checkout@v4
+        with:
+          repository: meridian-online/open-analytics
+          path: .sibling/open-analytics
+          persist-credentials: false
+
       # An exact toolchain PIN — not an MSRV check. Cargo.toml's
       # `rust-version = "1.95"` is a *floor* (the oldest toolchain allowed to
       # compile the workspace); this line instead nails CI to the one patch
@@ -82,6 +106,78 @@ jobs:
       # stale lock is a hard error here.
       - name: cargo test --workspace
         run: cargo test --locked --workspace -- --test-threads=1
+
+      # THE PIN-STALENESS CHECK. Its own step with its own pass/fail, for the
+      # same reason the conformance scoreboard below is one: the number that
+      # matters — how many shipped Protocols the pinned `arc` could load — is
+      # unreadable buried in the workspace suite's log.
+      #
+      # `-- --ignored` is required: the two tests in that target are
+      # `#[ignore]`d because their input is not in this checkout, so the
+      # workspace suite above compiled them and ran neither.
+      #
+      # THE GUARD, and it is the point of this step's shape. `cargo test --
+      # --ignored` with a filter that matches NOTHING exits 0 and prints
+      # "0 passed", so a green step here would otherwise prove nothing at all.
+      # libtest's executed count is parsed back out of the summary and held to
+      # a floor of 2 — the two `#[ignore]`d tests in `sibling_manifests.rs`. It
+      # is a floor, not an equality, so a third one added there does not redden
+      # this at review time; what it catches is a covered test renamed, deleted
+      # or filtered away to nothing.
+      #
+      # The count of MANIFESTS is guarded one level down, inside the test:
+      # `collect_manifests` refuses an absent root, a missing subtree, and a
+      # subtree under its own floor, and its refusals are themselves exercised
+      # by the non-ignored `floor_*` tests that the workspace suite above runs.
+      # Two floors at two altitudes, because either one alone reads as coverage
+      # it does not have.
+      #
+      # `--locked` for the same reason the suite above uses it.
+      - name: shipped Protocols load through the pinned arc
+        shell: bash
+        env:
+          OPEN_ANALYTICS_DIR: ${{ github.workspace }}/.sibling/open-analytics
+        run: |
+          set -u
+
+          # The number of `#[ignore]`d tests in the target, stated once so a
+          # reader and the log both see what this step expects to have run.
+          floor=2
+          log="${RUNNER_TEMP}/sibling-manifests.log"
+
+          # The exit code is captured, never masked: no pipe into head/tail,
+          # output redirected to a file, the code kept in a variable and the
+          # file printed afterwards.
+          code=0
+          cargo test --locked -p brightfield-protocol --test sibling_manifests \
+            -- --ignored --test-threads=1 --nocapture >"$log" 2>&1 || code=$?
+          cat "$log"
+
+          # libtest's summary line:
+          #   test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.10s
+          # so the number before the literal "passed;" is what EXECUTED, as
+          # opposed to what was compiled or filtered out. Anchored to the start
+          # of a line so the phrase occurring inside a test's own output does
+          # not add to the count.
+          ran=$(awk '/^test result:/ { for (i = 1; i <= NF; i++) if ($i == "passed;") n += $(i - 1) } END { print n + 0 }' "$log")
+          echo "--- sibling_manifests: cargo exited ${code}, ${ran} test(s) executed (floor ${floor})"
+
+          failed=0
+          if [ "$code" -ne 0 ]; then
+            echo "::error title=the pinned arc cannot load a shipped Protocol::cargo test exited ${code} — the failure above names the manifest and quotes arc's own diagnostic. Bump the pin: README section \"The arcform dependency\" (the arc rev, the root [patch.crates-io] sqlparser rev, and Cargo.lock, in one commit)."
+            failed=1
+          fi
+
+          if [ "$ran" -lt "$floor" ]; then
+            echo "::error title=executed too few tests::expected at least ${floor} ignored test(s) to execute in sibling_manifests, ${ran} executed — the filter matched nothing, or a covered test was renamed, deleted or un-ignored. A green run here would prove nothing."
+            failed=1
+          fi
+
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
+
+          echo "${ran} sibling-manifest test(s) executed and passed (floor ${floor})"
 
       # The portability contract's scoreboard, as its own step with its own
       # pass/fail. Separate from the suite on purpose: the number that matters

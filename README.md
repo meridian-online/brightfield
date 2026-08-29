@@ -257,6 +257,22 @@ own newer `sqlparser` keeps coming from crates.io.
    fresh resolve can still float its deps), pin it back with
    `cargo update <crate>@<ver> --precise <ok-ver>`.
 
+**What tells you the pin has gone stale.** Not a person. The pin drifted three weeks behind
+arcform's operator catalog once, and the first signal was somebody opening a shipped Protocol
+in the shell and reading `unknown operator 'text_embed' (not in the operator catalog)`.
+`crates/brightfield-protocol/tests/sibling_manifests.rs` is the check that replaces that
+discovery: it walks every `arcform.yaml` the sibling data repo ships and loads each through
+the pinned `arc`, naming the manifest and quoting arc's own diagnostic when one is refused.
+Its two tests are `#[ignore]`d because their input is not in this checkout — `test.yml`
+checks the sibling repo out, sets `OPEN_ANALYTICS_DIR`, runs them with `--ignored`, and holds
+libtest's executed count to a floor so a filter matching nothing cannot pass for coverage.
+To run it locally against a sibling clone:
+
+```
+OPEN_ANALYTICS_DIR=../open-analytics \
+  cargo test -p brightfield-protocol --test sibling_manifests -- --ignored --nocapture
+```
+
 Then run the whole suite: `crates/brightfield-protocol/tests/roundtrip.rs` is the canary for
 write-path behaviour changes, and the protocol/render/shell fixtures are the canary for
 validator tightening (arc's gate rejects what the old in-tree parser tolerated — an armless
