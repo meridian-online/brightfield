@@ -7,9 +7,9 @@
 //! far behind it drifts. Between 2026-08-23 and 2026-08-29 arcform's operator
 //! catalog grew `text_embed`, `umap_project` and `uv`, the sibling data repo
 //! shipped Protocols that use them, and brightfield's pin stayed where it was —
-//! so opening `examples/medmcqa/arcform.yaml` in the shell answered `unknown
-//! operator 'text_embed' (not in the operator catalog)`. Nothing reddened. The
-//! signal was a person opening a file and being refused.
+//! so opening the sibling repo's `medmcqa/arcform.yaml` in the shell answered
+//! `unknown operator 'text_embed' (not in the operator catalog)`. Nothing
+//! reddened. The signal was a person opening a file and being refused.
 //!
 //! **Why the check lives here and not in the sibling repo.** The thing that
 //! goes stale is *this* crate's pin, and the only build that knows what the pin
@@ -30,7 +30,11 @@
 //!
 //! 1. [`collect_manifests`] returns `Err` — never an empty `Ok` — when the root
 //!    is missing, when a required subtree is missing, when a subtree is under
-//!    its floor, or when the total is under its floor. It cannot pass vacuously.
+//!    its floor, or when the total is under its floor. Each of those four
+//!    refusals is held by a test: `floor_refuses_a_root_that_is_not_there`,
+//!    `floor_refuses_an_empty_directory`,
+//!    `floor_refuses_a_subtree_under_its_own_floor_even_when_the_total_is_met`,
+//!    and `floor_accepts_the_census_the_card_took` for the other side of it.
 //! 2. The floors themselves are exercised by the four `floor_*` tests below,
 //!    which are **not** `#[ignore]`d: they build synthetic trees under
 //!    `CARGO_TARGET_TMPDIR` and assert each refusal fires. So the guard's own
@@ -72,8 +76,9 @@ const MANIFEST: &str = "arcform.yaml";
 /// Every `arcform.yaml` under `root`, in sorted order, or the reason the walk
 /// cannot be trusted.
 ///
-/// Returns `Err` rather than an empty `Ok` for every shape of absence, so no
-/// caller can mistake "found nothing" for "found nothing wrong".
+/// Returns `Err` rather than an empty `Ok` for the shapes of absence the
+/// `floor_*` tests below enumerate, so no caller can mistake "found nothing"
+/// for "found nothing wrong".
 fn collect_manifests(root: &Path) -> Result<Vec<PathBuf>, String> {
     if !root.is_dir() {
         return Err(format!(
@@ -178,8 +183,8 @@ fn every_shipped_protocol_parses_against_the_pinned_arc() {
 
     let mut refused = Vec::new();
     for path in &manifests {
-        let text = fs::read_to_string(path)
-            .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+        let text =
+            fs::read_to_string(path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
         if let Err(e) = parse_manifest_str(&text) {
             refused.push(format!("  {}: {e}", rel(&root, path)));
         }
@@ -220,8 +225,8 @@ fn every_shipped_protocol_derives_a_graph_with_lineage() {
     let mut thin = Vec::new();
     let mut drawn = 0usize;
     for path in &manifests {
-        let text = fs::read_to_string(path)
-            .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+        let text =
+            fs::read_to_string(path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
         let Ok(manifest) = parse_manifest_str(&text) else {
             continue; // the parse test above is where a refusal is reported
         };
