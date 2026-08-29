@@ -34,7 +34,7 @@
 //!    refusals is held by a test: `floor_refuses_a_root_that_is_not_there`,
 //!    `floor_refuses_an_empty_directory`,
 //!    `floor_refuses_a_subtree_under_its_own_floor_even_when_the_total_is_met`,
-//!    and `floor_accepts_the_census_the_card_took` for the other side of it.
+//!    and `floor_accepts_the_census_this_check_was_cut_against` for the other side of it.
 //! 2. The floors themselves are exercised by the four `floor_*` tests below,
 //!    which are **not** `#[ignore]`d: they build synthetic trees under
 //!    `CARGO_TARGET_TMPDIR` and assert each refusal fires. So the guard's own
@@ -60,7 +60,7 @@ const DIR_VAR: &str = "OPEN_ANALYTICS_DIR";
 /// green when `datasets/` disappears and `examples/` grows by four, which is
 /// the arrangement that would quietly stop checking the published packages.
 ///
-/// The numbers are the census on the card that added this file (2026-08-29):
+/// The numbers are the census taken when this file was written (2026-08-29):
 /// four datasets, six examples. They are FLOORS — a new Protocol in either
 /// subtree must not redden this — so the only thing they catch is a subtree
 /// shrinking or vanishing, which is the thing that would fake coverage.
@@ -315,7 +315,7 @@ fn floor_refuses_a_subtree_under_its_own_floor_even_when_the_total_is_met() {
 }
 
 #[test]
-fn floor_accepts_the_census_the_card_took() {
+fn floor_accepts_the_census_this_check_was_cut_against() {
     let root = plant("census", &[("datasets", 4), ("examples", 6)]);
     let found = collect_manifests(&root).expect("four datasets and six examples clear the floors");
     assert_eq!(found.len(), TOTAL_FLOOR);
