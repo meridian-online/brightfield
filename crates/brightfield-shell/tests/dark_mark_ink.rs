@@ -74,17 +74,6 @@ const GEO: &str = concat!(
 /// be a drawn feature rather than one stray sample on an anti-aliased edge.
 const MIN_INKED: usize = 200;
 
-/// The largest per-channel gap between a raster pixel and a colour, in 8-bit
-/// steps.
-///
-/// Coverage is counted with THIS rather than with `contrast_ratio`, and the
-/// difference matters: a contrast ratio is perceptual and its midpoint sits at
-/// very different coverages on a light and a dark surface, so "pixels at half
-/// the peak RATIO" counts 158 of the same outline in light and 656 in dark. The
-/// anti-aliasing that produced them is identical. Distance is linear in
-/// coverage, so the two modes count the same feature the same way and the
-/// control below is comparing like with like.
-
 /// Compose `source` in `mode`. Written to a file because `compose_spec_in_mode`
 /// is the only mode-aware entry point, and inventing a second one to avoid a
 /// temp file would put this test on a path the app does not use.
@@ -134,6 +123,16 @@ fn frame_pixels(img: &image::RgbaImage, c: &Composed) -> Vec<[u8; 4]> {
     out
 }
 
+/// The largest per-channel gap between a raster pixel and a colour, in 8-bit
+/// steps.
+///
+/// Coverage is counted with THIS rather than with `contrast_ratio`, and the
+/// difference matters: a contrast ratio is perceptual and its midpoint sits at
+/// very different coverages on a light and a dark surface, so "pixels at half
+/// the peak RATIO" counts 158 of the same outline in light and 656 in dark. The
+/// anti-aliasing that produced them is identical. Distance is linear in
+/// coverage, so the two modes count the same feature the same way and the
+/// control below is comparing like with like.
 fn distance(p: [u8; 4], c: Color) -> u32 {
     let want = c.to_rgba8().to_u8_array();
     (0..3)
