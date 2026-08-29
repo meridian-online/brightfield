@@ -175,7 +175,9 @@ pub struct ChartInk {
     /// `HexgridRenderer` draws, and the hexbin's on-lattice sibling.
     ///
     /// Recessive on purpose: it is scaffolding under the data, not data. Light
-    /// is [`HEXGRID_STROKE_LIGHT`] unchanged (1.93:1 on the light surface);
+    /// is the private `HEXGRID_STROKE_LIGHT` unchanged — named rather than
+    /// linked, because a doc link does not get to widen an API — at 1.93:1 on
+    /// the light surface;
     /// dark is warm gray step 8, which is where the light value already sat in
     /// that scale, and gives 2.95:1 on the dark surface.
     pub hexgrid_stroke: Color,
@@ -183,8 +185,9 @@ pub struct ChartInk {
     /// content, because a `mark: geo` with no `fill:` channel draws nothing
     /// else.
     ///
-    /// Full-strength ink in both modes: light is [`GEO_STROKE_LIGHT`] unchanged
-    /// (14.74:1 on the light surface), dark is `ink_primary` (15.84:1). Before
+    /// Full-strength ink in both modes: light is the private `GEO_STROKE_LIGHT`
+    /// unchanged (14.74:1 on the light surface), dark is `ink_primary`
+    /// (15.84:1). Before
     /// this field existed the dark basemap drew the LIGHT literal on the dark
     /// surface at 1.21:1 — painted and invisible.
     pub geo_stroke: Color,
