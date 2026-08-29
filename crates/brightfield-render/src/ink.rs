@@ -373,8 +373,23 @@ mod tests {
         assert_eq!(p.widget_label, ink(L.ink_primary), "widget_label");
         assert_eq!(p.widget_affordance, ink(L.ink_muted), "widget_affordance");
         assert_eq!(p.widget_active, ink(L.focus), "widget_active");
-        assert_eq!(p.hexgrid_stroke, HEXGRID_STROKE_LIGHT, "hexgrid_stroke");
-        assert_eq!(p.geo_stroke, GEO_STROKE_LIGHT, "geo_stroke");
+        // These two are transcribed from `mark.rs`'s retired `HEXGRID_STROKE`
+        // and `GEO_STROKE_COLOUR` rather than compared to the consts above,
+        // for the reason every other line in this test transcribes: an
+        // assertion that reads the same constant the code reads is green on
+        // any value at all, including one that moved. Caught by mutation —
+        // rebinding `HEXGRID_STROKE_LIGHT` to its nearest design token left the
+        // earlier form of this line green over a changed light value.
+        assert_eq!(
+            p.hexgrid_stroke,
+            Color::new([0.72, 0.72, 0.72, 1.0]),
+            "hexgrid_stroke"
+        );
+        assert_eq!(
+            p.geo_stroke,
+            Color::new([0.15, 0.15, 0.15, 1.0]),
+            "geo_stroke"
+        );
         assert_eq!(
             p.categorical,
             &components(meridian_design::viz::CATEGORICAL_LIGHT),
@@ -456,7 +471,10 @@ mod tests {
         let black = Color::new([0.0, 0.0, 0.0, 1.0]);
         let white = Color::new([1.0, 1.0, 1.0, 1.0]);
         assert!((contrast_ratio(black, white) - 21.0).abs() < 1e-9);
-        assert!((contrast_ratio(white, black) - 21.0).abs() < 1e-9, "symmetric");
+        assert!(
+            (contrast_ratio(white, black) - 21.0).abs() < 1e-9,
+            "symmetric"
+        );
         assert!((contrast_ratio(white, white) - 1.0).abs() < 1e-9);
         // A mid gray separates the two implementations that both look right at
         // the ends: #777777 on white is 4.478:1 through the sRGB transfer
