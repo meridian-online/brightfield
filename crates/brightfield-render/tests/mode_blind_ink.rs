@@ -15,7 +15,7 @@
 //! a different string and the same defect, and a text scan closes them one at a
 //! time forever.
 //!
-//! Instead it **runs the renderers and asks the scene what they drew.** Every
+//! Instead it **runs the renderers and asks the scene what they drew.** Each
 //! entry in [`default_renderers`] is driven twice over one fixture — once on
 //! [`ChartInk::LIGHT`], once on [`ChartInk::DARK`] — and the colours vello
 //! encoded into `draw_data` are compared. A paint that took its value from the
@@ -26,16 +26,20 @@
 //!
 //! 1. no colour is in both modes' scenes except the ones [`MODE_INVARIANT`]
 //!    names and justifies;
-//! 2. the set of renderers that drew NOTHING is exactly [`SILENT`], which is
-//!    empty. A fixture that stops making a mark draw turns claim 1 into a
-//!    statement about an empty set, which is the shape of a guard that cannot
-//!    fail — so the silence is enumerated rather than tolerated.
+//! 2. the set of renderers that drew no colour at all is exactly [`SILENT`],
+//!    which is empty — held by
+//!    `the_marks_these_fixtures_drive_are_the_committed_set`. A fixture that
+//!    stops making a mark draw turns claim 1 into a statement about an empty
+//!    set, which is the shape of a guard that cannot fail, so the silence is
+//!    enumerated rather than tolerated.
 //!
 //! Data ink is exempt, and [`on_the_fill_ramp`] is where: a sequential ramp has
 //! one published value across both modes, so a heatmap cell drawing the same
 //! colour in dark as in light is right. That exemption asks the SCALE whether
 //! it can produce the colour rather than naming the renderers that use one,
-//! because naming `Heatmap` would exempt every other paint those modules make.
+//! because naming `Heatmap` would exempt whatever else those modules paint —
+//! `every_registered_mark_repaints_when_the_mode_changes` is the test that then
+//! stops holding anything about them.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -59,9 +63,10 @@ const Y_RANGE: (f64, f64) = (440.0, 40.0);
 /// reason it does not move. Capped and justified, on `token_discipline.rs`'s
 /// pattern: the cap is what stops this list absorbing the next defect.
 ///
-/// It ships EMPTY. Nothing in the fixture below binds a colour channel, so no
-/// sequential ramp and no `viz::STATUS` ink — the two families the design crate
-/// publishes as one value across modes — is reachable from it. An entry here
+/// It ships EMPTY, which `the_invariant_list_stays_small_and_justified` holds
+/// the shape of. No fixture below binds a colour channel, so a sequential ramp
+/// and the `viz::STATUS` inks — the two families the design crate publishes as
+/// one value across modes — are unreachable from it. An entry here
 /// means a mark drew a fixed colour from a path that had a mode available, and
 /// that is the defect this file exists for until someone writes down why it is
 /// not.
@@ -70,8 +75,9 @@ const MODE_INVARIANT: &[(&str, &str)] = &[];
 /// Renderers no fixture makes draw, and why — the marks the sweep above is
 /// silent about.
 ///
-/// It ships EMPTY: every kind [`default_renderers`] registers draws under at
-/// least one of [`fixtures`], including the ones that read a column the SQL
+/// It ships EMPTY: each kind [`default_renderers`] registers draws under at
+/// least one of [`fixtures`] — `the_marks_these_fixtures_drive_are_the_committed_set`
+/// is the test that holds it — including the ones that read a column the SQL
 /// lowerer synthesises (`__bf_count`, `__bf_hex_dx`/`__bf_hex_dy`), which the
 /// grid fixture writes by hand.
 ///
@@ -542,9 +548,10 @@ fn every_registered_mark_repaints_when_the_mode_changes() {
 /// **The sweep above is not talking about an empty set.**
 ///
 /// A renderer that draws nothing contributes no colours, so it satisfies the
-/// claim vacuously. The set that does so across every fixture is committed in
-/// [`SILENT`] and asserted equal, so a fixture change that silences a mark
-/// reddens instead of quietly narrowing what is being checked.
+/// claim in `every_registered_mark_repaints_when_the_mode_changes` vacuously.
+/// The set that does so across the fixtures is committed in [`SILENT`] and
+/// asserted equal, so a fixture change that silences a mark reddens instead of
+/// quietly narrowing what is being checked.
 #[test]
 fn the_marks_these_fixtures_drive_are_the_committed_set() {
     let all = fixtures();

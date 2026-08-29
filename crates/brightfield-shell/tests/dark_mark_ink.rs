@@ -20,7 +20,9 @@
 //! would report 3.54:1 for a mesh drawing anything at all — including the
 //! literal — because the label is brighter than either. Cropping to
 //! `ChartLayout`'s plot rect, which the composition hands back on its
-//! `PlotHandle`, leaves the marks and the chart surface and nothing else.
+//! `PlotHandle`, leaves the marks and the chart surface. `frame_pixels` refuses
+//! a crop under ten thousand pixels, so a rect that stopped being the plot
+//! fails both tests here rather than measuring a region nobody chose.
 //!
 //! # What is measured, and what it is measured against
 //!

@@ -3147,9 +3147,10 @@ const DEFAULT_HEX_BIN_WIDTH: f64 = 20.0;
 
 /// Mesh stroke width. The COLOUR comes from
 /// [`ChartInk::hexgrid_stroke`](crate::ink::ChartInk::hexgrid_stroke) on the
-/// `ScaleSet` this renderer is handed, like every other paint on the canvas;
-/// spec-level `stroke`/`strokeOpacity` attrs are still deferred on the
-/// literal-colour substrate (the contour precedent).
+/// `ScaleSet` this renderer is handed, as the rest of the canvas's paints do —
+/// `every_registered_mark_repaints_when_the_mode_changes` is the test that
+/// holds that of all of them. Spec-level `stroke`/`strokeOpacity` attrs are
+/// still deferred on the literal-colour substrate (the contour precedent).
 const HEXGRID_STROKE_WIDTH: f64 = 0.75;
 
 /// Renders a decorative pointy-top hex MESH across the plot area at `binWidth`
