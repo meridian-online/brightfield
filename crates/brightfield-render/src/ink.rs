@@ -13,14 +13,18 @@
 //! them. It is the [`crate::asset_scene::AssetInk`] idea applied to the data
 //! canvas.
 //!
-//! **Two raw literals on drawing paths are not yet routed through it**, and
-//! both are reachable from a spec because their renderers are registered in
-//! `default_renderers()`: `mark.rs`'s `HEXGRID_STROKE` and `GEO_STROKE_COLOUR`.
-//! Neither is bound to a `*_LIGHT` token, so neither appears in the grep that
-//! guards the rest; a stroke-only basemap therefore sits near 1.1:1 against the
-//! dark chart surface. Routing them means choosing a colour rather than
-//! resolving an existing pair, which is a design decision rather than a
-//! threading one.
+//! The last two drawing-path literals — `mark.rs`'s `HEXGRID_STROKE` and
+//! `GEO_STROKE_COLOUR` — are now [`ChartInk::hexgrid_stroke`] and
+//! [`ChartInk::geo_stroke`]. They were the pair the earlier threading left
+//! behind because routing them meant *choosing* a dark colour rather than
+//! resolving an existing pair, and a stroke-only basemap therefore sat at
+//! 1.21:1 against the dark chart surface. Their light halves are still written
+//! as components, below and nowhere else, because the light values ship today
+//! and were not what that choice was about; their dark halves are design
+//! tokens. `tests/mode_blind_ink.rs` is what stops a third one appearing: it
+//! drives every renderer in `default_renderers()` in both modes and asks the
+//! scene what was encoded, so a colour written as digits is caught the same way
+//! a mis-bound token is.
 
 use meridian_design::colour::Rgba;
 use peniko::Color;
@@ -38,6 +42,39 @@ pub const fn ink(c: Rgba) -> Color {
 #[must_use]
 pub const fn ink_with_alpha(c: Rgba, alpha: f32) -> Color {
     Color::new([c.r, c.g, c.b, alpha])
+}
+
+/// The WCAG 2.1 relative luminance of an sRGB colour, ignoring alpha.
+fn relative_luminance(c: Color) -> f64 {
+    fn channel(v: f32) -> f64 {
+        let v = f64::from(v);
+        if v <= 0.040_45 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    let [r, g, b, _] = c.components;
+    0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+}
+
+/// The WCAG 2.1 contrast ratio between two **opaque** sRGB colours: 1.0 for a
+/// colour against itself, 21.0 for black against white.
+///
+/// Alpha is ignored, so a translucent paint has to be composited onto its
+/// backdrop before it arrives here or the answer describes a colour nobody
+/// sees. Every caller today passes an opaque paint or a pixel read back off a
+/// render.
+///
+/// Public because the ratio a chart ink is CHOSEN for and the ratio a picture
+/// is MEASURED at have to be the same arithmetic. `dark_mark_ink.rs` in
+/// `brightfield-shell` reads real pixels out of a dark render and calls this;
+/// if the expectation had its own private copy the two could agree with nothing.
+#[must_use]
+pub fn contrast_ratio(a: Color, b: Color) -> f64 {
+    let (la, lb) = (relative_luminance(a), relative_luminance(b));
+    let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
 }
 
 /// Convert a design-token palette (`[Rgba; N]`) to the raw `[f32; 4]`
@@ -134,12 +171,51 @@ pub struct ChartInk {
     pub widget_affordance: Color,
     /// The active/checked state of a widget — the focus ink.
     pub widget_active: Color,
+    /// The decorative hexgrid mesh's stroke — the dataless lattice
+    /// `HexgridRenderer` draws, and the hexbin's on-lattice sibling.
+    ///
+    /// Recessive on purpose: it is scaffolding under the data, not data. Light
+    /// is the private `HEXGRID_STROKE_LIGHT` unchanged — named rather than
+    /// linked, because a doc link does not get to widen an API — at 1.93:1 on
+    /// the light surface;
+    /// dark is warm gray step 8, which is where the light value already sat in
+    /// that scale, and gives 2.95:1 on the dark surface.
+    pub hexgrid_stroke: Color,
+    /// A stroke-only geo basemap's outline — the case where the stroke IS the
+    /// content, because a `mark: geo` with no `fill:` channel draws nothing
+    /// else.
+    ///
+    /// Full-strength ink in both modes: light is the private `GEO_STROKE_LIGHT`
+    /// unchanged (14.74:1 on the light surface), dark is `ink_primary`
+    /// (15.84:1). Before
+    /// this field existed the dark basemap drew the LIGHT literal on the dark
+    /// surface at 1.21:1 — painted and invisible.
+    pub geo_stroke: Color,
     /// The "Harbour" categorical order for this mode, as the raw component
     /// arrays [`crate::scale::Scale::Colour`] stores. The ORDER is the
     /// colourblind-safety mechanism and is therefore data, never cosmetic; both
     /// modes carry the same eight slots in the same order.
     pub categorical: &'static [[f32; 4]],
 }
+
+/// The hexgrid mesh's LIGHT stroke, byte-for-byte what `mark.rs`'s retired
+/// `HEXGRID_STROKE` held.
+///
+/// Written as components rather than resolved from a token, deliberately. Its
+/// nearest step twin is `scales::GRAY_LIGHT[7]` (#b7b3ae — warm gray step 8,
+/// Radix's border band), within 10/255 on every channel and 2.03:1 against the
+/// light surface where this is 1.93:1. Binding to it would move a shipping
+/// light value, which is a separate decision from the dark one this pair exists
+/// to make. The dark half below IS that token's dark twin, so the mapping is
+/// recorded even though the light side is not yet taken from it.
+const HEXGRID_STROKE_LIGHT: Color = Color::new([0.72, 0.72, 0.72, 1.0]);
+
+/// The geo basemap outline's LIGHT stroke, byte-for-byte what `mark.rs`'s
+/// retired `GEO_STROKE_COLOUR` held. Its nearest token is
+/// `chrome::INK_LIGHT.ink_primary` (#231f1c against this #262626), whose dark
+/// twin the dark half takes; the light side stays put for the reason
+/// [`HEXGRID_STROKE_LIGHT`] gives.
+const GEO_STROKE_LIGHT: Color = Color::new([0.15, 0.15, 0.15, 1.0]);
 
 /// The Harbour categorical order in light, as scale-table components.
 const CATEGORICAL_LIGHT: [[f32; 4]; 8] = components(meridian_design::viz::CATEGORICAL_LIGHT);
@@ -195,6 +271,16 @@ impl ChartInk {
             widget_label: ink(c.ink_primary),
             widget_affordance: ink(c.ink_muted),
             widget_active: ink(c.focus),
+            hexgrid_stroke: if dark {
+                ink(gray[7])
+            } else {
+                HEXGRID_STROKE_LIGHT
+            },
+            geo_stroke: if dark {
+                ink(c.ink_primary)
+            } else {
+                GEO_STROKE_LIGHT
+            },
             categorical: if dark {
                 &CATEGORICAL_DARK
             } else {
@@ -290,6 +376,23 @@ mod tests {
         assert_eq!(p.widget_label, ink(L.ink_primary), "widget_label");
         assert_eq!(p.widget_affordance, ink(L.ink_muted), "widget_affordance");
         assert_eq!(p.widget_active, ink(L.focus), "widget_active");
+        // These two are transcribed from `mark.rs`'s retired `HEXGRID_STROKE`
+        // and `GEO_STROKE_COLOUR` rather than compared to the consts above,
+        // for the reason every other line in this test transcribes: an
+        // assertion that reads the same constant the code reads is green on
+        // any value at all, including one that moved. Caught by mutation —
+        // rebinding `HEXGRID_STROKE_LIGHT` to its nearest design token left the
+        // earlier form of this line green over a changed light value.
+        assert_eq!(
+            p.hexgrid_stroke,
+            Color::new([0.72, 0.72, 0.72, 1.0]),
+            "hexgrid_stroke"
+        );
+        assert_eq!(
+            p.geo_stroke,
+            Color::new([0.15, 0.15, 0.15, 1.0]),
+            "geo_stroke"
+        );
         assert_eq!(
             p.categorical,
             &components(meridian_design::viz::CATEGORICAL_LIGHT),
@@ -343,6 +446,8 @@ mod tests {
                 d.widget_affordance,
             ),
             ("widget_active", l.widget_active, d.widget_active),
+            ("hexgrid_stroke", l.hexgrid_stroke, d.hexgrid_stroke),
+            ("geo_stroke", l.geo_stroke, d.geo_stroke),
         ] {
             assert_ne!(
                 light, dark,
@@ -359,6 +464,98 @@ mod tests {
             d.categorical.len(),
             "the two modes carry a different number of Harbour slots, so a \
              category's colour would depend on the mode as well as its index"
+        );
+    }
+
+    /// Black on white is 21:1 and a colour on itself is 1:1 — the two ends of
+    /// the WCAG scale, so a sign error or a missing gamma step cannot pass.
+    #[test]
+    fn contrast_ratio_spans_the_wcag_range() {
+        let black = Color::new([0.0, 0.0, 0.0, 1.0]);
+        let white = Color::new([1.0, 1.0, 1.0, 1.0]);
+        assert!((contrast_ratio(black, white) - 21.0).abs() < 1e-9);
+        assert!(
+            (contrast_ratio(white, black) - 21.0).abs() < 1e-9,
+            "symmetric"
+        );
+        assert!((contrast_ratio(white, white) - 1.0).abs() < 1e-9);
+        // A mid gray separates the two implementations that both look right at
+        // the ends: #777777 on white is 4.478:1 through the sRGB transfer
+        // function and 2.032:1 through a linear one, and 21/1 is the same
+        // either way.
+        let mid = Color::new([119.0 / 255.0, 119.0 / 255.0, 119.0 / 255.0, 1.0]);
+        let got = contrast_ratio(mid, white);
+        assert!(
+            (got - 4.478).abs() < 0.001,
+            "#777777 against white is 4.478:1 by WCAG (2.032:1 if the sRGB \
+             transfer function is skipped); got {got}"
+        );
+    }
+
+    /// **The two marks this palette last routed clear a stated ratio in dark,
+    /// and the literals they replaced do not.**
+    ///
+    /// Both bounds are DERIVED from paints already on this struct rather than
+    /// typed, so they cannot be reverse-engineered from the values they judge:
+    ///
+    /// - a hexgrid mesh is scaffolding, so it must be at least as legible
+    ///   against the dark surface as it is against the light one, and must stay
+    ///   BELOW the default mark ink — data ink wins. The literal fails the
+    ///   second: #b8b8b8 on the dark surface is 9.26:1 against the mark ink's
+    ///   4.75:1, a bright white lattice laid over the data.
+    /// - a stroke-only basemap IS the content, so it takes the WCAG AAA 7:1 and
+    ///   must also be at least as legible as the light basemap. The literal
+    ///   fails both: #262626 on the dark surface is 1.21:1.
+    ///
+    /// The second half of each pair is what stops this passing on the code it
+    /// was written against: a test that only asserts the new value clears a
+    /// floor is green on any value that happens to, including one nobody chose.
+    #[test]
+    fn the_dark_marks_clear_a_stated_contrast_and_the_literals_do_not() {
+        let d = ChartInk::DARK;
+        let l = ChartInk::LIGHT;
+
+        let mesh = contrast_ratio(d.hexgrid_stroke, d.background);
+        let mesh_light = contrast_ratio(l.hexgrid_stroke, l.background);
+        let data_ink = contrast_ratio(d.mark_default, d.background);
+        assert!(
+            mesh >= mesh_light,
+            "the dark hexgrid mesh is {mesh:.2}:1 on the dark surface, less \
+             legible than the light mesh's {mesh_light:.2}:1 on the light one"
+        );
+        assert!(
+            mesh < data_ink,
+            "the dark hexgrid mesh is {mesh:.2}:1 against the default mark \
+             ink's {data_ink:.2}:1 — decoration is not allowed to out-shout the \
+             data it sits under"
+        );
+
+        let basemap = contrast_ratio(d.geo_stroke, d.background);
+        let basemap_light = contrast_ratio(l.geo_stroke, l.background);
+        assert!(
+            basemap >= 7.0,
+            "the dark basemap outline is {basemap:.2}:1; a stroke-only geo mark \
+             is the whole of what the reader came to see, so it takes WCAG AAA"
+        );
+        assert!(
+            basemap >= basemap_light,
+            "the dark basemap outline is {basemap:.2}:1, weaker than the light \
+             one's {basemap_light:.2}:1"
+        );
+
+        // The literals, judged by the same bounds on the same surface.
+        let stale_mesh = contrast_ratio(l.hexgrid_stroke, d.background);
+        assert!(
+            stale_mesh >= data_ink,
+            "the retired hexgrid literal is {stale_mesh:.2}:1 on the dark \
+             surface, which no longer breaks the ceiling this test holds — the \
+             bound has stopped distinguishing the fix from the defect"
+        );
+        let stale_basemap = contrast_ratio(l.geo_stroke, d.background);
+        assert!(
+            stale_basemap < 7.0,
+            "the retired geo literal is {stale_basemap:.2}:1 on the dark \
+             surface, which now clears the floor this test holds"
         );
     }
 

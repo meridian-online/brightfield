@@ -3145,9 +3145,12 @@ impl MarkRenderer for HexbinRenderer {
 /// overlays on-lattice.
 const DEFAULT_HEX_BIN_WIDTH: f64 = 20.0;
 
-/// Fixed light stroke for the hexgrid mesh (v1 — `stroke`/`strokeOpacity`
-/// attrs are deferred on the literal-colour substrate, the contour precedent).
-const HEXGRID_STROKE: Color = Color::new([0.72, 0.72, 0.72, 1.0]);
+/// Mesh stroke width. The COLOUR comes from
+/// [`ChartInk::hexgrid_stroke`](crate::ink::ChartInk::hexgrid_stroke) on the
+/// `ScaleSet` this renderer is handed, as the rest of the canvas's paints do —
+/// `every_registered_mark_repaints_when_the_mode_changes` is the test that
+/// holds that of all of them. Spec-level `stroke`/`strokeOpacity` attrs are
+/// still deferred on the literal-colour substrate (the contour precedent).
 const HEXGRID_STROKE_WIDTH: f64 = 0.75;
 
 /// Renders a decorative pointy-top hex MESH across the plot area at `binWidth`
@@ -3384,6 +3387,7 @@ impl MarkRenderer for HexgridRenderer {
             return;
         };
         let stroke = kurbo::Stroke::new(HEXGRID_STROKE_WIDTH);
+        let colour = scales.ink().hexgrid_stroke;
 
         if let Some(lat) = self.sibling_lattice(x_scale, y_scale) {
             // Sibling hexbin: draw the mesh in DATA units and map through the
@@ -3409,7 +3413,7 @@ impl MarkRenderer for HexgridRenderer {
                 }
                 if ok {
                     path.close_path();
-                    scene.stroke(&stroke, Affine::IDENTITY, HEXGRID_STROKE, None, &path);
+                    scene.stroke(&stroke, Affine::IDENTITY, colour, None, &path);
                 }
             }
             return;
@@ -3432,7 +3436,7 @@ impl MarkRenderer for HexgridRenderer {
                 path.line_to(*v);
             }
             path.close_path();
-            scene.stroke(&stroke, Affine::IDENTITY, HEXGRID_STROKE, None, &path);
+            scene.stroke(&stroke, Affine::IDENTITY, colour, None, &path);
         }
     }
 
@@ -3933,8 +3937,9 @@ fn albers_forward(lon: f64, lat: f64) -> (f64, f64) {
     (rho * theta.sin(), rho0 - rho * theta.cos())
 }
 
-/// Basemap outline colour + width for a stroke-only (no-fill) geo mark.
-const GEO_STROKE_COLOUR: Color = Color::new([0.15, 0.15, 0.15, 1.0]);
+/// Basemap outline width for a stroke-only (no-fill) geo mark. The COLOUR is
+/// [`ChartInk::geo_stroke`](crate::ink::ChartInk::geo_stroke), read off the
+/// `ScaleSet`, so a basemap drawn in dark is drawn in dark ink.
 const GEO_STROKE_WIDTH: f64 = 0.75;
 
 /// Renders the geo mark: projected GeoJSON Polygon/MultiPolygon features as a
@@ -4052,7 +4057,13 @@ impl MarkRenderer for GeoRenderer {
                 };
                 scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &path);
             } else {
-                scene.stroke(&stroke, Affine::IDENTITY, GEO_STROKE_COLOUR, None, &path);
+                scene.stroke(
+                    &stroke,
+                    Affine::IDENTITY,
+                    scales.ink().geo_stroke,
+                    None,
+                    &path,
+                );
             }
         }
     }

@@ -1,9 +1,12 @@
 //! **No light paint reaches a dark chart.**
 //!
 //! The failure this exists for has one shape, and `paints()` below enumerates
-//! nineteen of the twenty scalar paints plus two of the eight Harbour slots.
-//! `legend_bar_border` is the scalar it omits, so this sweep is not the guard
-//! for that field. The shape: a module
+//! nineteen of the twenty-two scalar paints plus two of the eight Harbour
+//! slots. Three scalars are omitted and none of them is guarded here:
+//! `legend_bar_border`, which no scene below draws, and `hexgrid_stroke` and
+//! `geo_stroke`, which belong to two mark renderers these four scenes do not
+//! build — `tests/mode_blind_ink.rs` holds those, by driving every renderer in
+//! `default_renderers()` in both modes. The shape: a module
 //! that resolves its ink from a `const` bound to a `*_LIGHT` token draws that
 //! ink whatever mode the window is in, and everything around it goes dark while
 //! it does not. On the chart surface that is a white slab exactly the size of
