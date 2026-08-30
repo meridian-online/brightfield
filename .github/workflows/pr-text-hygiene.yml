@@ -1,0 +1,49 @@
+name: PR text hygiene
+
+# The pull request's own title and body, re-read whenever they change.
+#
+# .github/workflows/public-hygiene.yml scans them too, and that is the scan
+# that matters for a pull request that is opened and left alone. This file
+# exists for the one it cannot cover: a body EDITED after the last run.
+# `edited` is not in public-hygiene.yml's triggers because adding it there
+# re-runs every step in that job — the borrowed-benchmarks, scale-claims,
+# measured-figures and packaging self-tests among them — on every typo fix in
+# a description. Here it costs a checkout and a `git grep`.
+#
+# The two are deliberately the same one command, not two implementations of
+# one idea. If this file ever disagrees with the step in public-hygiene.yml,
+# this file is wrong.
+#
+# Measured 2026-08-19: a private milestone identifier reached this
+# repository's own pull request text; the lane noticed and edited it out
+# about 37 seconds later, but nothing re-ran the check against the edit —
+# there was no check to re-run — and the forge retains every prior body
+# revision regardless. This trigger is what would have caught the edit itself
+# going out clean; it does not undo an exposure that already happened.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  pr-text:
+    name: Private references in pull request text
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Shallow on purpose: this job reads the pull request's text and the
+      # rules file, and nothing in the history.
+      - uses: actions/checkout@v4
+      # Through the environment, never interpolated into the script: `${{ }}`
+      # inside a `run:` substitutes before the shell sees it, so a title
+      # containing a quote or a backtick would be executed rather than scanned.
+      - name: private references in the pull request title and body
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" >"$RUNNER_TEMP/pr-text.txt"
+          ./scripts/check-history-hygiene.sh --text "$RUNNER_TEMP/pr-text.txt"

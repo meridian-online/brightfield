@@ -8,6 +8,15 @@
 # work. They have reached main repeatedly under a convention-only rule. This is
 # the enforcement: it runs in CI, and it is meant to be the first job to go red.
 #
+# THE SHAPES ARE NOT IN THIS FILE. scripts/public-hygiene-rules.txt holds them —
+# every rule, and the reasoning behind its non-obvious guards — and
+# scripts/check-history-hygiene.sh reads the same file for commit messages and
+# pull request title and body. They were two lists inside two scripts until a
+# leak used the surface only one of them read: a private planning identifier
+# reached this repository once in a pull request body and once in a commit
+# message, and this gate reported clean both times because neither surface was
+# ever its job.
+#
 # Usage (no arguments, from anywhere inside the repo):
 #
 #   ./scripts/check-public-hygiene.sh
@@ -15,9 +24,10 @@
 # Exit codes:
 #   0  clean
 #   1  one or more violations found
-#   2  the gate could not run correctly — a broken rule, a malformed allowlist
-#      entry, a stale allowlist entry, or a git without PCRE. ALWAYS a hard
-#      failure: a gate that cannot run must never look like a gate that passed.
+#   2  the gate could not run correctly — a broken rule, a missing or malformed
+#      rules file, a malformed allowlist entry, a stale allowlist entry, or a
+#      git without PCRE. ALWAYS a hard failure: a gate that cannot run must
+#      never look like a gate that passed.
 #
 # Its own regression test is scripts/check-public-hygiene-selftest.sh.
 #
@@ -28,81 +38,42 @@
 # by construction, so a dirty working tree full of generated files can never make
 # the gate cry wolf.
 #
-# NOT COVERED, and you have to watch these yourself:
-#   * commit messages,
-#   * PR titles, PR descriptions and review comments,
+# COVERED BY A SIBLING, scripts/check-history-hygiene.sh, which reads the same
+# scripts/public-hygiene-rules.txt this file reads:
+#   * commit messages, over the range the workflow hands it;
+#   * a pull request's title and body, including on a body edited after the last
+#     run (.github/workflows/pr-text-hygiene.yml triggers on `edited`).
+#
+# STILL NOT COVERED, and you have to watch these yourself:
+#   * review comments on a pull request,
 #   * branch names,
-#   * anything in git history that is no longer in the current tree,
+#   * commits reachable only from a range neither workflow was asked to scan,
+#   * anything in the current tree's history that is no longer in any tracked
+#     file and no longer in any reachable commit message,
 #   * issues, releases, wiki, and everything else that lives on the forge rather
 #     than in the repository.
-# Those are real leak vectors here — historically among the commonest — and
-# nothing in this file inspects them.
+# Those are real leak vectors here and nothing in either gate inspects them.
+#
+# A published pull request body revision cannot be fixed by editing the body —
+# the forge retains prior revisions and serves them to any reader with access —
+# and neither gate performs or decides the removal of one; see the header of
+# scripts/check-history-hygiene.sh for why.
 #
 # ---------------------------------------------------------------------------
 # On false positives
 # ---------------------------------------------------------------------------
 # A gate that cries wolf gets disabled within a week, which is worse than no
-# gate. Every pattern below was measured against the real tree before it was
-# committed, and scripts/public-hygiene-innocent-strings.txt is a tracked fixture
-# of innocent-but-similar-looking strings the gate must stay silent on. That
-# fixture is scanned like any other tracked file, so a pattern that starts biting
-# real-world prose or Rust turns the gate red on its own fixture.
+# gate. Every pattern in scripts/public-hygiene-rules.txt was measured against
+# the real tree before it was committed, and
+# scripts/public-hygiene-innocent-strings.txt is a tracked fixture of
+# innocent-but-similar-looking strings the gate must stay silent on. That
+# fixture is scanned like any other tracked file, so a pattern that starts
+# biting real-world prose or Rust turns the gate red on its own fixture.
 #
-# On case: every rule is case-INSENSITIVE except `bare-ticket-ref`, and that one
-# exception is deliberate — a lowercase t-plus-two-digits is a common substring
-# of hex digests and identifiers, and matching it would drown the gate. Every
-# other shape leaks in prose, where sentence-initial capitalisation is the most
-# likely form, so anything that is case-sensitive there is a hole by default.
-#
-# The non-obvious guards, and what they are protecting:
-#
-# * Bare ticket refs. A bare capital-T-plus-digits collides head-on with Rust
-#   generic parameters. Guards: TWO OR MORE digits (real ticket ids here are
-#   two-digit; generic params are effectively always single-digit), and
-#   lookarounds excluding the type positions generics appear in — after `<`,
-#   `,`, `&`, `(`, after a colon-space and after an arrow-space; and before `>`,
-#   `,`, `:`, `(`. Excluding a preceding digit is what keeps ISO timestamps
-#   (`...-20T10:30:00`) out. A single-digit ticket ref is caught only in its
-#   parenthesised form, and that form requires the `(` not to follow an
-#   identifier, so a Rust `Fn(T<NN>)` is left alone.
-#   Known residual: a multi-digit generic in a tuple type's non-first position
-#   still fires. That was the price of catching a comma-separated list of ticket
-#   refs in prose, which is the commoner leak.
-#
-# * Milestone ids. The bare form needs TWO OR MORE digits and rejects a
-#   preceding `/`, `-` or `_`. That is what keeps URL path segments
-#   (`https://example.com/m-2/spec`), prose like `Matrix cell m-1`, and CSS
-#   custom properties in the token pipeline (`--m-accent-bg`, `--m-2`) out. The
-#   single-digit form is caught only when the word "milestone" is right there.
-#
-# * Acceptance criteria. Case-INSENSITIVE, but a match may not be followed by a
-#   hex digit — that is what keeps lockfile git revisions out, where a rev can
-#   end `...ac#4afea48...`.
-#
-# * Spec AC ids. Deliberately NOT guarded against being part of a larger
-#   identifier: test-function names and temp-dir literals that embed a spec AC id
-#   are exactly the leak, and they are being renamed rather than exempted. The
-#   `[-_]` before `ac` is load-bearing for a different reason: without it the
-#   pattern matches inside hex digests (`fbac503`, `dedcac1`), of which this tree
-#   has hundreds.
-#
-# * Card ids. Three or four digits required; the workflow vocabulary word "card"
-#   and the literal UI cards in the renderer carry no number and are left alone.
-#
-# * Vault wikilinks. Doubled square brackets around a kebab-case note slug —
-#   Obsidian's own link syntax, spelled that way here rather than as a literal
-#   example so this comment does not trip the rule it documents. The private
-#   planning vault is full of them, and one reached this repo's rustdoc
-#   verbatim (a note title inside doubled brackets); this rule is what would
-#   have caught it. Guard: at least one internal hyphen, required so the
-#   pattern discriminates a multi-word kebab-case slug from TOML's own
-#   array-of-table headers — single words, no hyphen, and this workspace's
-#   own `Cargo.toml` files carry them for real (`[[bin]]`, `[[test]]`,
-#   `[[bench]]`, `[[example]]`; `git grep -c '^\[\[bin\]\]'` finds them).
-#
-# If a pattern flags something legitimate, FIX THE PATTERN and add the innocent
-# string to the fixture. The allowlist is for genuine content that must stay,
-# not for papering over a bad regex.
+# If a pattern flags something legitimate, FIX THE PATTERN in
+# scripts/public-hygiene-rules.txt and add the innocent string to the fixture.
+# The allowlist is for genuine content that must stay, not for papering over a
+# bad regex.
 # ---------------------------------------------------------------------------
 
 set -uo pipefail
@@ -130,30 +101,55 @@ if [[ $pcre_rc -gt 1 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Rules: "<label>|<PCRE>". Anything git grep -P accepts.
+# Rules. They are NOT in this file.
 #
-# Several labels carry more than one pattern. Matches are deduplicated per
-# (label, file, line), so one offending line is reported once per rule even when
-# two of that rule's patterns fire on it.
+# scripts/public-hygiene-rules.txt holds them, as "<label>|<PCRE>" lines, and
+# scripts/check-history-hygiene.sh reads the same file for commit messages and
+# pull request text. Several labels carry more than one pattern. Matches are
+# deduplicated per (label, file, line), so one offending line is reported once
+# per rule even when two of that rule's patterns fire on it.
 #
 # A pattern may never match a `|`: the allowlist format is pipe-separated and
 # relies on matched text being unable to collide with the separator. Everything
 # else the patterns can emit — `#`, `-`, `_`, spaces, parentheses — is fine.
 # ---------------------------------------------------------------------------
-RULES=(
-	'private-decision-record|(?i)(?<![A-Za-z0-9])decision[-_][0-9]+'
-	'planning-task-id|(?i)(?<![A-Za-z0-9])task[-_][0-9]+'
-	'bare-ticket-ref|(?<![-_A-Za-z0-9<,:&(])(?<!: )(?<!-> )T[0-9]{2,3}(?![-_A-Za-z0-9>,:(])'
-	'bare-ticket-ref|(?<![-_A-Za-z0-9>])\(T[0-9]{1,3}\)'
-	'milestone-id|(?i)(?<![-_A-Za-z0-9/])m-[0-9]{2,}(?![-_A-Za-z0-9])'
-	'milestone-id|(?i)(?<![A-Za-z0-9])milestones?[ _-](?:m[-_]?)?[0-9]+(?![-_A-Za-z0-9])'
-	'acceptance-criterion|(?i)(?<![A-Za-z0-9])ac ?#[0-9]+(?![0-9a-f])'
-	'private-doc-id|(?i)(?<![A-Za-z0-9])doc[-_][0-9]+(?![A-Za-z])'
-	'planning-card-id|(?i)(?<![A-Za-z0-9])cards?[ _-]#?[0-9]{3,4}(?![0-9])'
-	'spec-ac-id|(?i)[a-z]{2,6}[-_]ac[-_]?[0-9]+[a-z]?(?![0-9])'
-	'spec-ac-id|(?i)(?<![A-Za-z0-9])ac[-_][0-9]+[a-z]?(?![0-9])'
-	'vault-wikilink|(?i)\[\[[a-z0-9]+(?:-[a-z0-9]+)+\]\]'
-)
+RULES_FILE="scripts/public-hygiene-rules.txt"
+
+if [[ ! -f "$RULES_FILE" ]]; then
+	echo "check-public-hygiene: $RULES_FILE is missing — the gate has no rules to run" >&2
+	exit 2
+fi
+
+declare -a RULES=()
+rules_lineno=0
+bad_rules=0
+while IFS= read -r raw || [[ -n "$raw" ]]; do
+	rules_lineno=$((rules_lineno + 1))
+	line="${raw%$'\r'}"
+	[[ -z "${line//[[:space:]]/}" ]] && continue
+	[[ "${line#"${line%%[![:space:]]*}"}" == \#* ]] && continue
+	if [[ "$line" != *"|"* ]]; then
+		echo "check-public-hygiene: $RULES_FILE:$rules_lineno: expected '<label>|<pattern>'" >&2
+		echo "    $line" >&2
+		bad_rules=1
+		continue
+	fi
+	r_label="${line%%|*}"
+	r_pattern="${line#*|}"
+	if [[ -z "$r_label" || -z "$r_pattern" ]]; then
+		echo "check-public-hygiene: $RULES_FILE:$rules_lineno: label and pattern are both required" >&2
+		bad_rules=1
+		continue
+	fi
+	RULES+=("$r_label|$r_pattern")
+done <"$RULES_FILE"
+if [[ $bad_rules -ne 0 ]]; then
+	exit 2
+fi
+if [[ ${#RULES[@]} -eq 0 ]]; then
+	echo "check-public-hygiene: $RULES_FILE declares no rules — an empty gate reports clean" >&2
+	exit 2
+fi
 
 # ---------------------------------------------------------------------------
 # Allowlist.
