@@ -177,6 +177,78 @@ fn an_unpinned_band_axis_still_closes_the_gap_a_filter_leaves() {
     );
 }
 
+/// **The pin drawn, not the pin reported.** The tests above read
+/// `plot_scales`, which is `PlotHandle::scales` — the scale set the pipeline
+/// reports it drew from. `apply_pinned_domains` (`scene.rs`) could move to
+/// run after `draw_multi_mark_scene` instead of before it, and those
+/// assertions would keep passing: the returned `ScaleSet` would keep
+/// carrying six categories while the returned `Scene`, which none of them
+/// inspect, carried ink for the two categories the filter left rather than
+/// six.
+///
+/// `Composed::scene` is the single composited Vello scene placed on the
+/// page, so reading it reads what a viewer sees rather than what the
+/// pipeline reports it drew from. `compute_band_ticks` draws one tick, with
+/// one label glyph, per category, so a pinned filtered scene that keeps six
+/// slots carries more glyph runs than an unpinned filtered scene the axis
+/// narrowed to two. Applying the pin after drawing collapses that gap, so
+/// this assertion — reading the drawn scene rather than the reported scale
+/// set — reddens when `apply_pinned_domains` and `draw_multi_mark_scene`
+/// swap order inside `build_multi_mark_scene_pinned`.
+#[test]
+fn a_pinned_band_axis_draws_the_glyphs_its_slots_promise() {
+    let mut pinned_live = LiveDashboard::load_str(&bars_spec("    xDomain: Fixed"), None)
+        .expect("the pinned spec loads live");
+    let pinned_before = pinned_live.present().expect("first composite");
+    let pinned_filtered = brush(
+        &mut pinned_live,
+        &pinned_before.plots[0].path,
+        "temp",
+        0.0,
+        8.0,
+    );
+
+    let mut unpinned_live =
+        LiveDashboard::load_str(&bars_spec(""), None).expect("the unpinned spec loads live");
+    let unpinned_before = unpinned_live.present().expect("first composite");
+    let unpinned_filtered = brush(
+        &mut unpinned_live,
+        &unpinned_before.plots[0].path,
+        "temp",
+        0.0,
+        8.0,
+    );
+
+    // The scale sets, not the scenes: a fixture check that the two specs
+    // still disagree exactly as the tests above already established, so a
+    // failure below is about drawn ink and not about the fixture drifting.
+    let pinned_slots = band_categories(plot_scales(&pinned_filtered, 1), Channel::X)
+        .expect("the pinned bar chart's x axis is categorical");
+    let unpinned_slots = band_categories(plot_scales(&unpinned_filtered, 1), Channel::X)
+        .expect("the unpinned bar chart's x axis is categorical");
+    assert!(
+        pinned_slots.len() > unpinned_slots.len(),
+        "fixture check: the pinned scale set should report more slots than \
+         the unpinned one — {pinned_slots:?} vs {unpinned_slots:?}"
+    );
+
+    let pinned_glyphs = pinned_filtered.scene.encoding().resources.glyph_runs.len();
+    let unpinned_glyphs = unpinned_filtered
+        .scene
+        .encoding()
+        .resources
+        .glyph_runs
+        .len();
+    assert!(
+        pinned_glyphs > unpinned_glyphs,
+        "the pinned scale set reports {} slots against the unpinned {}, so the \
+         drawn scene should carry more tick-label glyphs too — pinned scene \
+         had {pinned_glyphs}, unpinned had {unpinned_glyphs}",
+        pinned_slots.len(),
+        unpinned_slots.len(),
+    );
+}
+
 /// The plot node path of the bar chart's neighbour, read off a throwaway
 /// dashboard so the test below can brush before it has composed anything.
 fn brushable_path(spec_source: &str) -> String {
