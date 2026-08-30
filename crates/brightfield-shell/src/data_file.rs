@@ -422,7 +422,7 @@ fn spec_scratch_dir() -> PathBuf {
 }
 
 /// Where `data`'s generated spec is written: one path per data file, and the
-/// same path each time that file is opened.
+/// same path each time that file is opened, however the caller spelled it.
 ///
 /// **Keyed by the file's whole path rather than by its name.** A stem is not an
 /// identity — an analyst comparing two months opens `jan/readings.csv` and then
@@ -441,15 +441,20 @@ fn spec_scratch_dir() -> PathBuf {
 /// as given when canonicalizing fails, which is what a file that has gone
 /// missing since it was opened gets.
 ///
-/// The digest names the **directory** and the data file's own stem names the
-/// file, rather than the other way round, because the editor pane titles itself
-/// from the file name — see `describe` in [`crate::editor`]. A reader looking
-/// at the pane beside the chart sees `readings.yaml`, not a hex string.
+/// The digest names the **directory** and the resolved path's own stem names
+/// the file — the same canonicalized path the digest is taken over, not the
+/// caller's typed path, so a file opened under two spellings that a
+/// case-folding filesystem treats as one lands on one filename too, not two
+/// — `two_case_spellings_of_one_data_file_produce_one_generated_spec_file`
+/// below. The editor pane's tab and header title itself from that file name —
+/// see `describe` in [`crate::editor`] — so a reader sees `readings.yaml`
+/// there, not a hex string; the breadcrumb ahead of it names the digest
+/// directory too, and that crumb is the hex string.
 fn spec_scratch_path(data: &Path) -> PathBuf {
     let resolved = std::fs::canonicalize(data).unwrap_or_else(|_| data.to_path_buf());
     let mut hasher = DefaultHasher::new();
     resolved.hash(&mut hasher);
-    let stem = data.file_stem().unwrap_or(data.as_os_str());
+    let stem = resolved.file_stem().unwrap_or(resolved.as_os_str());
     spec_scratch_dir()
         .join(format!("{:016x}", hasher.finish()))
         .join(stem)
@@ -828,6 +833,54 @@ mod tests {
             "one file named two ways got two generated specs: {} and {}",
             direct.display(),
             detour.display()
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **Two case spellings of one on-disk data file are one generated spec
+    /// file, not two.** The regression this closes: the digest directory was
+    /// keyed on the canonicalized path, so it was already shared across
+    /// spellings, but the filename was taken from the caller's typed path, so
+    /// opening `readings.csv` and later `READINGS.CSV` for the same file wrote
+    /// `readings.yaml` beside `READINGS.yaml` in that one directory.
+    ///
+    /// macOS only — this needs a case-folding filesystem to mean anything.
+    /// That holds by default on APFS, which is what `test.yml`'s `macos-15`
+    /// runner gives it. In-repo precedent for a filesystem-conditioned test
+    /// rather than an unconditional one: `spec_save.rs:399`, `:420`,
+    /// `protocol_degrade_channel.rs:28`, `mem.rs:98`/`:103`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn two_case_spellings_of_one_data_file_produce_one_generated_spec_file() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        let dir = std::env::temp_dir().join(format!(
+            "bf-scratch-case-fold-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("a temp directory for the fixture");
+        let lower = dir.join("readings.csv");
+        std::fs::write(&lower, "region,reading\nnorth,12\n").expect("the fixture writes");
+        let upper = dir.join("READINGS.CSV");
+        assert!(
+            std::fs::canonicalize(&upper).is_ok(),
+            "this filesystem does not fold case — {} does not resolve",
+            upper.display()
+        );
+
+        let lower_generated = spec_scratch_path(&lower);
+        let upper_generated = spec_scratch_path(&upper);
+
+        assert_eq!(
+            lower_generated,
+            upper_generated,
+            "one on-disk file opened as {} and as {} produced two generated \
+             specs, {} and {}, instead of one",
+            lower.display(),
+            upper.display(),
+            lower_generated.display(),
+            upper_generated.display()
         );
         std::fs::remove_dir_all(&dir).ok();
     }
