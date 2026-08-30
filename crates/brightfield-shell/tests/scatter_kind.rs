@@ -45,6 +45,7 @@ use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_shell::{chart_kinds, data_file};
 use brightfield_spec::ast::MarkData;
+use brightfield_spec::layout::{resolve_axis_titles, AxisTitle};
 use brightfield_spec::vocab::SelectionResolution;
 use brightfield_spec::{
     parse_spec, Component, Format, InteractorKind, Mark, MarkKind, ParamNode, PlotNode, Spec,
@@ -413,6 +414,47 @@ fn the_scatter_declares_a_ghost_cloud_behind_a_filtered_subset() {
         subset_filter.map(|p| p.0),
         Some(selection),
         "the subset layer does not read the selection the brush writes"
+    );
+}
+
+/// **The axis titles name the columns actually bound to their channels.**
+///
+/// A scatter exists so a reader can ask whether this moves with that, and the
+/// titles are how they know which "this" and which "that" — if the two were
+/// ever swapped the dots would still land in the right places, since the data
+/// binding is a separate attribute, so the picture would look correct while
+/// telling the reader the pairing backwards.
+///
+/// Read two ways off the one parsed plot node: the title through
+/// [`brightfield_spec::layout::resolve_axis_titles`], the render site's own
+/// resolver, and the bound column through [`bound_column`], which reads the
+/// layer's `x`/`y` attribute rather than this file's `X`/`Y` constants. Holding
+/// one against the other — instead of against the emitter's `yaml_quoted`
+/// expression, which is not `pub` outside `chart_kinds.rs` — is what makes this
+/// a check on the product's own output rather than a restatement of it.
+#[test]
+fn a_scatters_axis_titles_name_the_columns_bound_to_them() {
+    let spec = parsed(&document(X, Y));
+    let plot = the_plot(&spec);
+    let layer = &layers(plot)[0];
+    let titles = resolve_axis_titles(plot);
+    let x_title = match titles.x {
+        AxisTitle::Override(s) => s,
+        other => panic!("the block emits no xLabel override: {other:?}"),
+    };
+    let y_title = match titles.y {
+        AxisTitle::Override(s) => s,
+        other => panic!("the block emits no yLabel override: {other:?}"),
+    };
+    let x_column = bound_column(layer, "x");
+    let y_column = bound_column(layer, "y");
+    assert_eq!(
+        x_title, x_column,
+        "the x-axis is titled {x_title:?} but the layer plots {x_column} on x"
+    );
+    assert_eq!(
+        y_title, y_column,
+        "the y-axis is titled {y_title:?} but the layer plots {y_column} on y"
     );
 }
 
