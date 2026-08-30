@@ -18,9 +18,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      # fetch-depth 1 is enough: the gate reads the tracked files of this one
-      # commit, never history.
+      # fetch-depth 0, not 1. The tracked-file scan below only needs this one
+      # commit, but the commit-message scan two steps down needs the base ref
+      # to diff against. A shallow checkout on a `pull_request` event never
+      # creates `refs/remotes/origin/<base>`, so the range step would hit its
+      # own "does not resolve to anything" error on every pull request — loud
+      # rather than silent, but still a gate that never ran. Full history here
+      # is seconds, not minutes: this workflow needs no toolchain and no build.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # The gate's own regression test runs FIRST. A hygiene gate fails silently
       # in both directions — it can stop matching, or start matching honest
@@ -36,6 +43,57 @@ jobs:
       # `git grep -I` treats as binary.
       - name: private planning identifiers
         run: ./scripts/check-public-hygiene.sh
+
+      # The two surfaces the step above cannot see: a commit's own message, and
+      # a pull request's title and body. Same rule list,
+      # scripts/public-hygiene-rules.txt, read by both scripts — splitting the
+      # rules is how the second surface came to be uncovered while the first
+      # was gated.
+      - name: history hygiene gate self-test
+        run: ./scripts/check-history-hygiene-selftest.sh
+
+      # Scoped to NEW history only: the commits this push or pull request adds,
+      # never the whole repository's past. This repository carries commits
+      # already on `main` that predate the gate and were never swept — scanning
+      # them here would redden every pull request for history it did not add,
+      # so this deliberately runs no accepted-history record and declares no
+      # pre-existing exceptions; see scripts/check-history-hygiene.sh's own
+      # header for the mechanism that would support one.
+      #
+      # On a pull request the base is the actual merge-base with the target
+      # branch, computed locally rather than trusted from the event payload, so
+      # a pull request opened against a moving target is still scanned for
+      # exactly its own commits. On a push to `main` — after a merge — the base
+      # is the previous tip, so only what just landed is scanned.
+      - name: private references in commit messages
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git fetch --no-tags origin "${{ github.event.pull_request.base.ref }}"
+            BASE_SHA="$(git merge-base HEAD "origin/${{ github.event.pull_request.base.ref }}")"
+          else
+            BASE_SHA="${{ github.event.before }}"
+          fi
+          ./scripts/check-history-hygiene.sh --range "$BASE_SHA..HEAD"
+
+      # The pull request's own text, which is not in the repository and so is
+      # in neither scan above. Passed through the environment rather than
+      # interpolated into the script: `${{ }}` inside a `run:` substitutes
+      # before the shell sees it, so a title containing a quote or a backtick
+      # would be executed rather than scanned.
+      #
+      # This reads the body AS OF THE EVENT THAT STARTED THIS RUN. A body
+      # edited afterwards is covered by
+      # .github/workflows/pr-text-hygiene.yml, which triggers on `edited` and
+      # runs this same step; that trigger is not here because it would
+      # re-run every step in this job on every typo fix in a description.
+      - name: private references in the pull request title and body
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" >"$RUNNER_TEMP/pr-text.txt"
+          ./scripts/check-history-hygiene.sh --text "$RUNNER_TEMP/pr-text.txt"
 
       # Second honesty gate, same shape: upstream Mosaic performance figures
       # must not be restated as this project's own. Our numbers live in

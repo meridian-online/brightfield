@@ -12,7 +12,8 @@
 #
 #   1. every covered shape is caught, named, and located;
 #   2. the tracked innocent-strings fixture produces silence;
-#   3. a rule that cannot run is FATAL and names itself, never "clean";
+#   3. a rule that cannot run is FATAL and names itself, never "clean"; so are a
+#      missing rules file and a rules file that declares nothing;
 #   4. an allowlist entry that does not parse is fatal;
 #   5. an allowlist entry that suppresses nothing is fatal;
 #   6. a well-formed allowlist entry actually suppresses its match — including
@@ -30,6 +31,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHECK="$HERE/check-public-hygiene.sh"
+RULES="$HERE/public-hygiene-rules.txt"
 FIXTURE="$HERE/public-hygiene-innocent-strings.txt"
 
 [[ -x "$CHECK" ]] || {
@@ -47,13 +49,15 @@ bad() {
 	failures=$((failures + 1))
 }
 
-# A throwaway repo with the real checker and an empty allowlist.
+# A throwaway repo with the real checker, the real rules file, and an empty
+# allowlist.
 new_repo() {
 	local d
 	d="$(mktemp -d "$TMPROOT/repo.XXXXXX")"
 	git init -q "$d"
 	mkdir -p "$d/scripts"
 	cp "$CHECK" "$d/scripts/check-public-hygiene.sh"
+	cp "$RULES" "$d/scripts/public-hygiene-rules.txt"
 	: >"$d/scripts/public-hygiene-allowlist.txt"
 	printf '%s' "$d"
 }
@@ -151,7 +155,7 @@ printf '%s\n' "$(printf 'as recorded in %s-%s.' decision 69)" >"$d/subject.txt"
 # Corrupt exactly one rule's pattern into something PCRE rejects: an unclosed
 # group. git grep then exits 128 and prints nothing to stdout — indistinguishable
 # from "no violations" unless the exit code is checked per rule.
-perl -0pi -e 's/\Qdecision[-_][0-9]+\E/decision-[0-9]+(/' "$d/scripts/check-public-hygiene.sh"
+perl -0pi -e 's/\Qdecision[-_][0-9]+\E/decision-[0-9]+(/' "$d/scripts/public-hygiene-rules.txt"
 out="$(run_gate "$d")"
 rc=$?
 if [[ $rc -eq 2 ]] && printf '%s\n' "$out" | grep -q "RULE FAILED TO RUN" &&
@@ -159,6 +163,33 @@ if [[ $rc -eq 2 ]] && printf '%s\n' "$out" | grep -q "RULE FAILED TO RUN" &&
 	ok "a broken pattern is fatal and names the rule"
 else
 	bad "a broken pattern did not fail loudly (exit $rc)"
+	printf '%s\n' "$out" | sed 's/^/        /'
+fi
+
+# The rules now live in a file this gate reads at runtime rather than an array
+# baked into the script, so its absence and its emptiness are their own
+# failure modes, distinct from a single broken pattern.
+d="$(new_repo)"
+printf '%s\n' "clean subject line" >"$d/subject.txt"
+rm -f "$d/scripts/public-hygiene-rules.txt"
+out="$(run_gate "$d")"
+rc=$?
+if [[ $rc -eq 2 ]] && printf '%s\n' "$out" | grep -q "is missing"; then
+	ok "a missing rules file is a hard error, never a clean pass"
+else
+	bad "a missing rules file did not fail loudly (exit $rc)"
+	printf '%s\n' "$out" | sed 's/^/        /'
+fi
+
+d="$(new_repo)"
+printf '%s\n' "clean subject line" >"$d/subject.txt"
+printf '# every rule commented out\n' >"$d/scripts/public-hygiene-rules.txt"
+out="$(run_gate "$d")"
+rc=$?
+if [[ $rc -eq 2 ]] && printf '%s\n' "$out" | grep -q "declares no rules"; then
+	ok "a rules file with no rules is a hard error, never a clean pass"
+else
+	bad "an empty rules file reported a verdict (exit $rc)"
 	printf '%s\n' "$out" | sed 's/^/        /'
 fi
 
