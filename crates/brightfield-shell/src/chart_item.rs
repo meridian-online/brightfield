@@ -1353,6 +1353,44 @@ mod tests {
         );
     }
 
+    /// The vertical segment's height is constrained by the hovered plot's own
+    /// rect, not the union of all plots. This is invisible to guards that hover
+    /// an equal-height pair, so a ragged vertical dashboard would ship the
+    /// defect with the suite green.
+    #[test]
+    fn a_crosshair_vertical_span_is_constrained_by_the_hovered_plot() {
+        // Hover the narrow plot: vertical span should be 300-600 only.
+        // A ragged `vconcat`: the row takes the widest child's width.
+        let mut wide = plot(ScaleSet::new(), BrushKind::IntervalX);
+        wide.path = "root/vconcat[0]".to_string();
+        wide.rect = Rect::new(0.0, 0.0, 720.0, 300.0);
+        let mut narrow = plot(ScaleSet::new(), BrushKind::IntervalX);
+        narrow.path = "root/vconcat[1]".to_string();
+        narrow.rect = Rect::new(0.0, 300.0, 360.0, 300.0);
+        let [(v0, v1), _] = crosshair_segments(&[wide, narrow], kurbo::Point::new(180.0, 450.0))
+            .expect("the pointer is on the narrow plot");
+        assert_eq!(
+            (v0.y, v1.y),
+            (300.0, 600.0),
+            "vertical span must match the hovered plot's height, not the union"
+        );
+
+        // Hover the wide plot: vertical span should be 0-300 only.
+        let mut wide = plot(ScaleSet::new(), BrushKind::IntervalX);
+        wide.path = "root/vconcat[0]".to_string();
+        wide.rect = Rect::new(0.0, 0.0, 720.0, 300.0);
+        let mut narrow = plot(ScaleSet::new(), BrushKind::IntervalX);
+        narrow.path = "root/vconcat[1]".to_string();
+        narrow.rect = Rect::new(0.0, 300.0, 360.0, 300.0);
+        let [(v0, v1), _] = crosshair_segments(&[wide, narrow], kurbo::Point::new(180.0, 150.0))
+            .expect("the pointer is on the wide plot");
+        assert_eq!(
+            (v0.y, v1.y),
+            (0.0, 300.0),
+            "vertical span must match the hovered plot's height, not the union"
+        );
+    }
+
     /// One implementation, every mark kind: the parameterisation is total —
     /// each implemented kind resolves an icon from the Meridian set, so a
     /// dot, a bar and an area chart are match arms, not shells.
