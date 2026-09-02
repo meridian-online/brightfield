@@ -67,8 +67,13 @@ use meridian_egui::{PickerDelegate, PickerHint, PickerOutcome, PickerRow};
 /// that confirm and silently do nothing; this curated list is what keeps
 /// that from happening. `overlay_wiring.rs`'s dispatchability test walks
 /// [`chart_palette_candidates`] (the SAME list the palette actually shows,
-/// not a hand-copied mirror of it) and proves every one of these longnames
+/// not a hand-copied mirror of it) and proves each of these longnames
 /// changes real state when confirmed.
+///
+/// This list is the part that does not depend on the window. A verb whose
+/// dispatch does — `save-spec`, which needs a Protocol to write — is in
+/// [`SAVEABLE_CHART_VERBS`] instead, and [`chart_offers`] is the one predicate
+/// that combines them.
 pub const CHART_PALETTE_VERBS: &[&str] = &[
     "clear-selection",
     "open-home",
@@ -80,17 +85,49 @@ pub const CHART_PALETTE_VERBS: &[&str] = &[
     crate::navigation::verb::ZOOM_OUT,
     crate::navigation::verb::CYCLE_AXIS_LOCK,
     crate::navigation::verb::RESET_EXTENT,
-    // The window's Save. It writes the Protocol a data file opened as — see
-    // `MeridianApp::save_protocol` — and is inert on a window with no Protocol
-    // behind it. It is on this list because it is what gives the verb a
-    // producer at the chart altitude: this list is what the restricted palette
-    // offers and what `inspector::dispatchable` keeps, so off it the one
-    // gesture left is the editor's own cmd-S, which means something else (the
-    // spec buffer, in `EditorPane::ui`). `overlay_wiring.rs`'s
-    // `every_chart_palette_candidate_actually_dispatches` picks it off the
-    // palette and reads the written spec back.
-    "save-spec",
 ];
+
+/// The verbs a chart window offers **only when it has a Protocol to save** —
+/// the ones whose dispatch depends on what this window is, not on which view
+/// is showing.
+///
+/// `save-spec` writes the Protocol a data file opened as
+/// (`MeridianApp::save_protocol`). A window over a chart spec has none, and on
+/// such a window the verb reaches its handler, finds no source and returns —
+/// which is precisely the row this module's list exists to keep out of the
+/// palette. So it is not on the unconditional list; it is here, behind
+/// [`chart_offers`].
+const SAVEABLE_CHART_VERBS: &[&str] = &["save-spec"];
+
+/// **Whether a chart window in this state offers `verb`** — the one predicate
+/// the palette and `inspector::dispatchable` both read.
+///
+/// `saveable` is whether the window holds a Protocol with a spec behind it, as
+/// `MeridianApp::save_protocol` decides it: for a data file, yes; for a chart
+/// spec, a shipped start or the front door, no.
+///
+/// Two readers and one answer, deliberately. The pair used to read a static
+/// list, so a verb reachable on one kind of window was offered on every kind —
+/// the palette drew a Save row over four of the five shipped starts and over
+/// every `--spec` launch, and confirming it closed the palette and did nothing.
+/// A list cannot express that; a predicate over the window's state can, and
+/// both surfaces have to ask it rather than mirror it.
+#[must_use]
+pub fn chart_offers(verb: &str, saveable: bool) -> bool {
+    CHART_PALETTE_VERBS.contains(&verb) || (saveable && SAVEABLE_CHART_VERBS.contains(&verb))
+}
+
+/// Every verb a chart window in this state offers, in declaration order —
+/// what the restricted palette is built from.
+#[must_use]
+pub fn chart_palette_verbs(saveable: bool) -> Vec<&'static str> {
+    CHART_PALETTE_VERBS
+        .iter()
+        .chain(SAVEABLE_CHART_VERBS)
+        .filter(|v| chart_offers(v, saveable))
+        .copied()
+        .collect()
+}
 
 /// The command palette: every verb applicable at one altitude, fuzzy-matched
 /// over longname + help, ranked by score (non-empty query) or frequency then
@@ -163,9 +200,9 @@ impl CommandPalette {
 /// arm in the sweep is a gap the sweep itself refuses to pass over in
 /// silence — see `overlay_wiring.rs`.
 #[must_use]
-pub fn chart_palette_candidates() -> Vec<&'static str> {
-    let mut p =
-        CommandPalette::new_restricted(Altitude::View, RecencyCounter::new(), CHART_PALETTE_VERBS);
+pub fn chart_palette_candidates(saveable: bool) -> Vec<&'static str> {
+    let allow = chart_palette_verbs(saveable);
+    let mut p = CommandPalette::new_restricted(Altitude::View, RecencyCounter::new(), &allow);
     p.update_query("");
     (0..p.match_count())
         .map(|i| p.candidate(i).unwrap().longname)
@@ -736,12 +773,13 @@ mod tests {
 
     #[test]
     fn the_chart_palette_lists_only_the_allowed_verbs() {
-        let names = chart_palette_candidates();
+        let names = chart_palette_candidates(false);
         assert!(!names.is_empty(), "the chart palette lists nothing");
         for name in &names {
             assert!(
-                CHART_PALETTE_VERBS.contains(name),
-                "{name} is listed on the chart palette but not in CHART_PALETTE_VERBS"
+                chart_offers(name, false),
+                "{name} is listed on the chart palette for a window that \
+                 offers it nothing"
             );
         }
         // A verb genuinely applicable at `Altitude::View` but NOT wired to
@@ -757,6 +795,45 @@ mod tests {
             "change-mark-type awaits the editing bridge — it must not leak \
              onto the chart palette: {names:?}"
         );
+    }
+
+    /// **What a window offers is a property of that window.** A chart-spec
+    /// window is offered no Save; a window with a Protocol behind it is, and
+    /// the rest of the list is the same either way.
+    ///
+    /// The pair used to be one static list, so the palette drew a Save row
+    /// over four of the five shipped starts and over every `--spec` launch,
+    /// and confirming it closed the palette and did nothing.
+    #[test]
+    fn the_chart_palette_offers_save_only_where_there_is_something_to_save() {
+        let without = chart_palette_candidates(false);
+        let with = chart_palette_candidates(true);
+        assert!(
+            !without.contains(&"save-spec"),
+            "a window with no Protocol behind it is offered a Save that \
+             confirms and does nothing: {without:?}"
+        );
+        assert!(
+            with.contains(&"save-spec"),
+            "a window with a Protocol behind it is offered no Save: {with:?}"
+        );
+        assert!(!chart_offers("save-spec", false));
+        assert!(chart_offers("save-spec", true));
+        // Nothing else moves with the state.
+        let mut rest: Vec<&str> = with.iter().copied().filter(|v| *v != "save-spec").collect();
+        rest.sort_unstable();
+        let mut base = without.clone();
+        base.sort_unstable();
+        assert_eq!(
+            rest, base,
+            "the saveable state changed more than the Save row"
+        );
+        for verb in CHART_PALETTE_VERBS {
+            assert!(
+                chart_offers(verb, false) && chart_offers(verb, true),
+                "{verb} is unconditional and stopped being offered"
+            );
+        }
     }
 
     #[test]

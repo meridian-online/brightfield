@@ -589,8 +589,6 @@ pub struct ProtocolModel {
     /// The spec brightfield wrote when a data file was opened, and where it
     /// would be written. `None` for a Protocol read off disk.
     source: Option<OneStepProtocol>,
-    /// Where the spec was last written, when it has been.
-    saved_to: Option<std::path::PathBuf>,
     /// Which column the window's inspector is showing — mirrored in from the
     /// chart document each frame so the rail's highlight and the inspector's
     /// heading cannot name two different columns.
@@ -637,7 +635,6 @@ impl ProtocolModel {
             tiles: inputs.tiles,
             table: inputs.table,
             source: inputs.source,
-            saved_to: None,
             selected_column: None,
             column_pick: None,
             nav,
@@ -1049,22 +1046,16 @@ impl ProtocolModel {
         &self.tiles
     }
 
-    /// The spec Save would write, when this Protocol came from a data file and
-    /// has not been written yet.
+    /// The spec Save would write, when this Protocol came from a data file.
+    ///
+    /// It survives the write: saving does not clear it, so saving twice writes
+    /// the same bytes to the same place rather than the second Save finding
+    /// nothing to do. `MeridianApp::has_protocol_to_save` is this question
+    /// asked of the window, and it is what decides whether the palette and the
+    /// inspector rail offer Save at all.
     #[must_use]
     pub const fn source(&self) -> Option<&OneStepProtocol> {
         self.source.as_ref()
-    }
-
-    /// Where this Protocol's spec was written, once it has been.
-    #[must_use]
-    pub fn saved_to(&self) -> Option<&std::path::Path> {
-        self.saved_to.as_deref()
-    }
-
-    /// Record that the spec was written to `path`.
-    pub fn note_saved(&mut self, path: std::path::PathBuf) {
-        self.saved_to = Some(path);
     }
 
     /// Mirror in which column the window's inspector is showing, so the

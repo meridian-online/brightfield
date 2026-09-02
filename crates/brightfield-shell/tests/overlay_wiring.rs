@@ -17,7 +17,7 @@ use brightfield_protocol::layout::Flow;
 use brightfield_shell::app::ChartDoc;
 use brightfield_shell::design::Mode;
 use brightfield_shell::navigation::AxisLock;
-use brightfield_shell::overlays::{chart_palette_candidates, CHART_PALETTE_VERBS};
+use brightfield_shell::overlays::{chart_palette_candidates, chart_palette_verbs};
 use brightfield_shell::pipeline::live_spec;
 use brightfield_shell::starts;
 use brightfield_shell::startup::default_layout;
@@ -97,6 +97,13 @@ impl Window {
 
     fn type_text(&mut self, text: &str) {
         self.run(vec![vec![egui::Event::Text(text.to_owned())], Vec::new()]);
+    }
+
+    /// The longnames the open palette lists, read off the delegate the window
+    /// is holding — the list that frame drew, not a list rebuilt from an
+    /// allow table.
+    fn palette_rows(&self) -> Vec<String> {
+        self.app.open_palette_rows()
     }
 }
 
@@ -321,6 +328,50 @@ fn confirm_chart_verb(win: &mut Window, longname: &str) {
     );
 }
 
+/// **A shipped chart start is offered no Save.**
+///
+/// `signals-dashboard` is one of the four shipped starts that open a chart
+/// spec, and a chart spec has no Protocol behind it — so `save_protocol`
+/// returns before it writes anything. Offering the row anyway is the defect
+/// this test exists to keep out: a palette row that confirms, closes the
+/// palette, and does nothing.
+///
+/// Read off the palette the window actually opened, through the key a person
+/// presses, rather than off the allow list — the list was the thing that was
+/// wrong.
+#[test]
+fn a_chart_start_is_offered_no_save() {
+    let boot = Boot::start(starts::DASHBOARD, Flow::Vertical).expect("the start ships");
+    let mut win = Window::open(boot);
+    win.settle();
+    assert!(!win.app.graph_on_canvas());
+    assert!(
+        !win.app.has_protocol_to_save(),
+        "a shipped chart start has no Protocol behind it — if it did, this \
+         test would be asserting the wrong thing about the wrong window"
+    );
+
+    win.key(egui::Key::Space);
+    assert_eq!(win.app.open_overlay(), Some("palette"));
+    win.settle();
+    let rows = win.palette_rows();
+    assert!(
+        !rows.is_empty(),
+        "the palette drew no rows, so an absence proves nothing: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|r| r == "clear-selection"),
+        "the palette is missing the verbs every chart window offers, so this \
+         is not the chart palette: {rows:?}"
+    );
+    assert!(
+        !rows.iter().any(|r| r == "save-spec"),
+        "a window with nothing to save is offered Save; confirming it closes \
+         the palette and does nothing: {rows:?}"
+    );
+    win.key(egui::Key::Escape);
+}
+
 /// **AC2 + AC3.** Every verb the chart palette lists is dispatchable at the
 /// chart altitude.
 ///
@@ -338,12 +389,18 @@ fn confirm_chart_verb(win: &mut Window, longname: &str) {
 /// the sweep does not pass an unproven verb by omission.
 #[test]
 fn every_chart_palette_candidate_actually_dispatches() {
-    let candidates = chart_palette_candidates();
+    // The saveable state, because that is the state with the MOST rows on it:
+    // a sweep over the other one would pass over `save-spec` by never seeing
+    // it. What keeps the two states honest about each other is
+    // `overlays::the_chart_palette_offers_save_only_where_there_is_something_to_save`
+    // and `a_chart_start_is_offered_no_save` below.
+    let candidates = chart_palette_candidates(true);
     assert!(!candidates.is_empty(), "the chart palette lists nothing");
     assert_eq!(
         candidates.len(),
-        CHART_PALETTE_VERBS.len(),
-        "the chart palette's candidate count does not match its own allow list: {candidates:?}"
+        chart_palette_verbs(true).len(),
+        "the chart palette's candidate count does not match what a saveable \
+         window offers: {candidates:?}"
     );
 
     for longname in candidates {

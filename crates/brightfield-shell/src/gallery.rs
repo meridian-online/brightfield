@@ -849,7 +849,9 @@ impl Component for InspectorDemo {
         // gallery has no document to clear a selection on — but the same
         // function draws it, so the gallery cannot show a control the
         // shipping pane would render differently.
-        let _ = crate::inspector::render_selection(ui, Some(&subject), mode);
+        // `false`: the specimen's window has no Protocol behind it, and the
+        // specimen draws `clear-selection`, which every chart window offers.
+        let _ = crate::inspector::render_selection(ui, Some(&subject), mode, false);
     }
 }
 

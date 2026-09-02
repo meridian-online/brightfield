@@ -83,7 +83,7 @@ use crate::canvas::EguiCanvasHost;
 use crate::data_grid::DATA;
 use crate::design::{self, Mode};
 use crate::editor::EDITOR;
-use crate::inspector::{ColumnTable, InspectorPane, Selection, TableHandle};
+use crate::inspector::{ColumnTable, InspectorPane, SaveTarget, Selection, TableHandle};
 use crate::overlays::{CommandPalette, HelpSheet, JumpTarget, JumpToNode};
 use crate::pipeline::Composed;
 use crate::protocol::{
@@ -1311,6 +1311,10 @@ struct ChartView {
     /// inspector. Written whenever a document is adopted; see
     /// [`wire_columns`].
     inspector_table: TableHandle,
+    /// Whether this window has a Protocol for Save to write — written fresh
+    /// every frame, read by the boxed `InspectorPane` at the [`CONTROLS`] key.
+    /// See `MeridianApp::has_protocol_to_save`.
+    inspector_saveable: SaveTarget,
 }
 
 /// Hand the chart document the columns its **tiles** draw, and the inspector
@@ -1712,12 +1716,14 @@ impl MeridianApp {
         // the `ChartView` it sits in. See `crate::inspector`'s module docs.
         let inspector_selection = Selection::default();
         let inspector_table = TableHandle::default();
+        let inspector_saveable = SaveTarget::default();
         let mut chart_items = charts.instantiate();
         chart_items.insert(
             charts.pane_key(CONTROLS),
             Box::new(InspectorPane::new(
                 inspector_selection.clone(),
                 inspector_table.clone(),
+                inspector_saveable.clone(),
             )),
         );
         // The two documents' one join: what each tile is of. Done here rather
@@ -1745,6 +1751,7 @@ impl MeridianApp {
                 items: chart_items,
                 inspector_selection,
                 inspector_table,
+                inspector_saveable,
             },
             protocol: ProtocolView {
                 doc: protocol_doc,
@@ -2618,6 +2625,12 @@ impl MeridianApp {
                 Some(_) => {}
                 None => self.charts.inspector_selection.set(None),
             }
+            // …and what this window can be asked to do, from the same frame.
+            // The rail filters its toolbar with it; the palette is built from
+            // the same predicate at the moment it opens.
+            self.charts
+                .inspector_saveable
+                .set(self.protocol.doc.model.source().is_some());
 
             let locator = plan.expect_region(arrangement::LOCATOR_BAND);
             let crumbs = self.crumb_line();
@@ -3202,18 +3215,33 @@ impl MeridianApp {
         ))));
     }
 
-    /// Open the command palette at the chart altitude, restricted to
-    /// [`crate::overlays::CHART_PALETTE_VERBS`] — see [`Self::overlay_open_keys`]
-    /// for why the chart view cannot simply reuse [`Self::open_palette`] with
+    /// Open the command palette at the chart altitude, restricted to what a
+    /// window in **this** state offers — see [`Self::overlay_open_keys`] for
+    /// why the chart view cannot simply reuse [`Self::open_palette`] with
     /// [`Altitude::View`].
+    ///
+    /// The list is [`crate::overlays::chart_palette_verbs`] over
+    /// [`Self::has_protocol_to_save`], not a static: a verb whose handler
+    /// finds nothing to do on this window is a row that confirms and does
+    /// nothing, which is the row that list exists to keep out.
     fn open_chart_palette(&mut self) {
+        let allow = crate::overlays::chart_palette_verbs(self.has_protocol_to_save());
         self.overlay = Some(Overlay::Palette(Picker::new(
-            CommandPalette::new_restricted(
-                Altitude::View,
-                self.recency.clone(),
-                crate::overlays::CHART_PALETTE_VERBS,
-            ),
+            CommandPalette::new_restricted(Altitude::View, self.recency.clone(), &allow),
         )));
+    }
+
+    /// **Whether this window has a Protocol for Save to write** — the one
+    /// predicate the chart palette and the inspector rail are both built from,
+    /// and the same question [`Self::save_protocol`] answers by returning
+    /// `None`.
+    ///
+    /// True for a window a data file opened, false for one over a chart spec,
+    /// a shipped start or the front door. Asked of the live document rather
+    /// than cached, so going Home takes the row away with the document.
+    #[must_use]
+    pub fn has_protocol_to_save(&self) -> bool {
+        self.protocol.doc.model.source().is_some()
     }
 
     /// Open the node jump over the outline — the graph in view, in its
@@ -3300,6 +3328,28 @@ impl MeridianApp {
             Overlay::Help(_) => "help",
             Overlay::Jump(_) => "jump",
         })
+    }
+
+    /// The longnames the **open palette** is listing, in the order it lists
+    /// them — empty when no palette is open.
+    ///
+    /// Read off the delegate this window is holding rather than rebuilt from
+    /// an allow table, because the allow table is the thing a test of this
+    /// needs to be independent of: what a window offers is a property of that
+    /// window's state (`Self::has_protocol_to_save`), and a test that
+    /// re-derived the list from the same table could not see the two coming
+    /// apart.
+    #[must_use]
+    pub fn open_palette_rows(&self) -> Vec<String> {
+        let Some(Overlay::Palette(picker)) = self.overlay.as_ref() else {
+            return Vec::new();
+        };
+        use meridian_egui::PickerDelegate as _;
+        let delegate = &picker.delegate;
+        (0..delegate.match_count())
+            .filter_map(|i| delegate.candidate(i))
+            .map(|c| c.longname.to_string())
+            .collect()
     }
 
     /// The persistent banner layer, read-only — what a test holds the
@@ -3873,7 +3923,6 @@ impl MeridianApp {
         match &written {
             Ok(path) => {
                 self.notifications.dismiss(banner);
-                self.protocol.doc.model.note_saved(path.clone());
                 let name = self.protocol.doc.model.protocol.clone();
                 let run = self.recorded_run_state();
                 self.layout
@@ -3920,7 +3969,6 @@ impl MeridianApp {
         self.notifications.dismiss(banner);
         // Saved already, by construction: it was opened off its own file.
         let name = self.protocol.doc.model.protocol.clone();
-        self.protocol.doc.model.note_saved(PathBuf::from(path));
         let run = self.recorded_run_state();
         self.layout
             .live_mut()

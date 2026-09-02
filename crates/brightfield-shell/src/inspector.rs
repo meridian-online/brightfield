@@ -37,7 +37,7 @@
 //! would silently stop finding them if this pane drew something else in their
 //! place.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use brightfield_keys::BindingContext;
@@ -49,7 +49,7 @@ use meridian_design::{semantic, spacing};
 use crate::app::{ChartDoc, CONTROLS};
 use crate::design::Mode;
 use crate::one_step::ColumnFacts;
-use crate::overlays::CHART_PALETTE_VERBS;
+use crate::overlays::chart_offers;
 use crate::protocol::ui_font;
 
 /// The rail's icon — unchanged from the pane it replaces, so the Meridian
@@ -107,10 +107,15 @@ impl Selection {
 // ---------------------------------------------------------------------------
 
 /// The subset of `entries` this rail may draw: an entry passes when its verb
-/// is one `MeridianApp::apply`'s Charts arm dispatches, per
-/// [`CHART_PALETTE_VERBS`] — the same enumeration the chart command palette
-/// (`overlays.rs`) is restricted to, so the two surfaces read one answer for
-/// what is live at this altitude rather than two that could drift apart.
+/// is one `MeridianApp::apply`'s Charts arm dispatches **on a window in this
+/// state**, per [`chart_offers`] — the same predicate the chart command
+/// palette is built from, so the two surfaces read one answer rather than two
+/// that could drift apart.
+///
+/// `saveable` is the window's, not the document's: whether there is a Protocol
+/// with a spec behind it for Save to write. It arrives through
+/// [`SaveTarget`] because an `Item` is handed its own document and no other,
+/// and this pane's is the chart's while the Protocol is the other one's.
 ///
 /// This is the pane's whole answer to "what can be done with it": a
 /// declared-but-undispatchable entry would look live while doing nothing if
@@ -119,10 +124,10 @@ impl Selection {
 /// see `tests/inspector_contract.rs`'s
 /// `every_declared_toolbar_verb_either_dispatches_or_is_filtered_out` for the
 /// sweep that keeps this from widening in silence.
-fn dispatchable(entries: &[ToolbarEntry]) -> Vec<ToolbarEntry> {
+pub fn dispatchable(entries: &[ToolbarEntry], saveable: bool) -> Vec<ToolbarEntry> {
     entries
         .iter()
-        .filter(|entry| CHART_PALETTE_VERBS.contains(&entry.verb.as_str()))
+        .filter(|entry| chart_offers(entry.verb.as_str(), saveable))
         .cloned()
         .collect()
 }
@@ -139,12 +144,17 @@ fn dispatchable(entries: &[ToolbarEntry]) -> Vec<ToolbarEntry> {
 /// Returns the verbs any drawn toolbar button activated this frame — the
 /// caller's to act on ([`ItemCtx::request`] in the shipping pane; the gallery
 /// specimen only checks it fired).
-pub fn render_selection(ui: &mut egui::Ui, subject: Option<&Subject>, mode: Mode) -> Vec<Verb> {
+pub fn render_selection(
+    ui: &mut egui::Ui,
+    subject: Option<&Subject>,
+    mode: Mode,
+    saveable: bool,
+) -> Vec<Verb> {
     match subject {
         Some(subject) => {
             ui.label(egui::RichText::new(&subject.title).strong());
             chrome::breadcrumb(ui, &subject.breadcrumb, mode);
-            let entries = dispatchable(&subject.toolbar);
+            let entries = dispatchable(&subject.toolbar, saveable);
             let toolbar = chrome::Toolbar::new(&entries);
             if toolbar.has_something_to_say() {
                 ui.add_space(spacing::CONTROL_GAP);
@@ -183,6 +193,33 @@ pub struct InspectorPane {
     /// file into a window that already exists has to move this too, and by
     /// then the pane is boxed behind `dyn Item`.
     table: TableHandle,
+    /// Whether this window has a Protocol for Save to write — the predicate
+    /// [`dispatchable`] filters this rail's toolbar with.
+    saveable: SaveTarget,
+}
+
+/// The window's handle on **whether this window has a Protocol to save** —
+/// written fresh every frame by `MeridianApp::draw`, read by
+/// [`InspectorPane::ui`] the moment after.
+///
+/// Frame-fresh rather than set at adoption, for the reason [`Selection`] is:
+/// going Home empties both documents without going through the adoption path,
+/// and a cached `true` would leave this rail offering Save over a window that
+/// no longer has anything to write.
+#[derive(Clone, Default)]
+pub struct SaveTarget(Rc<Cell<bool>>);
+
+impl SaveTarget {
+    /// Declare whether this window has a Protocol to save.
+    pub fn set(&self, saveable: bool) {
+        self.0.set(saveable);
+    }
+
+    /// What was last declared.
+    #[must_use]
+    pub fn get(&self) -> bool {
+        self.0.get()
+    }
 }
 
 /// The window's handle on which table a selected column belongs to — written
@@ -220,8 +257,12 @@ impl InspectorPane {
     /// frame before the dock draws. See the module docs for why this is a
     /// shared cell rather than a field `Item::ui` is handed directly.
     #[must_use]
-    pub fn new(selection: Selection, table: TableHandle) -> Self {
-        Self { selection, table }
+    pub fn new(selection: Selection, table: TableHandle, saveable: SaveTarget) -> Self {
+        Self {
+            selection,
+            table,
+            saveable,
+        }
     }
 }
 
@@ -354,7 +395,7 @@ impl Item<ChartDoc> for InspectorPane {
             ui.add_space(spacing::SECTION_GAP);
         } else {
             let subject = self.selection.get();
-            let activated = render_selection(ui, subject.as_ref(), cx.mode);
+            let activated = render_selection(ui, subject.as_ref(), cx.mode, self.saveable.get());
             for verb in activated {
                 cx.request(verb);
             }
@@ -472,17 +513,39 @@ mod tests {
     }
 
     /// The filter's whole job: keep the verb the Charts view can run, drop
-    /// the one it cannot — never the reverse, and never both or neither.
+    /// the one it cannot — not the reverse, and not both or neither.
     #[test]
     fn dispatchable_keeps_only_verbs_the_charts_view_can_run() {
         let (keep, drop) = sample_entries();
-        let filtered = dispatchable(&[keep.clone(), drop]);
+        let filtered = dispatchable(&[keep.clone(), drop], false);
         assert_eq!(
             filtered,
             vec![keep],
             "dispatchable() let an undispatchable verb through, or dropped a \
              real one — either way the inspector would draw a button that \
              lies about what it does"
+        );
+    }
+
+    /// **The editor's Save survives this filter on a window that has a
+    /// Protocol, and is dropped on one that does not** — the same predicate
+    /// the palette is built from, asked of the same two states.
+    ///
+    /// Without this the rail drew a Save button on every chart-spec window,
+    /// where pressing it reaches `save_protocol`, finds no source and returns.
+    #[test]
+    fn dispatchable_offers_save_only_where_there_is_something_to_save() {
+        let save = ToolbarEntry::button("editor-save", "Save", Verb::new("save-spec"));
+        assert_eq!(
+            dispatchable(&[save.clone()], true),
+            vec![save.clone()],
+            "a window with a Protocol behind it must keep its Save"
+        );
+        assert_eq!(
+            dispatchable(&[save], false),
+            Vec::new(),
+            "a window over a chart spec has nothing for Save to write, so the \
+             rail must not draw the button"
         );
     }
 
@@ -493,7 +556,7 @@ mod tests {
     fn dispatchable_preserves_declaration_order() {
         let (keep, _drop) = sample_entries();
         let reset = ToolbarEntry::button("reset-extent", "Reset view", Verb::new("reset-extent"));
-        let filtered = dispatchable(&[reset.clone(), keep.clone()]);
+        let filtered = dispatchable(&[reset.clone(), keep.clone()], false);
         assert_eq!(filtered, vec![reset, keep]);
     }
 }

@@ -214,6 +214,12 @@ impl Window {
     /// gesture in the shipped app produced the verb, so replacing the call
     /// with a no-op left the suite green.
     fn save_through_the_palette(&mut self) {
+        assert!(
+            self.app.has_protocol_to_save(),
+            "this window has no Protocol behind it, so the palette will not \
+             offer Save and the gesture below would be typing into a list that \
+             does not contain it"
+        );
         self.key(egui::Key::Space);
         assert_eq!(
             self.app.open_overlay(),
@@ -221,6 +227,16 @@ impl Window {
             "space did not open the chart palette"
         );
         self.settle();
+        // The row is there BEFORE it is typed. What a window offers is a
+        // property of that window's state, and the other half of that claim —
+        // that a chart-spec window is offered nothing — is
+        // `overlay_wiring.rs::a_chart_start_is_offered_no_save`.
+        let rows = self.app.open_palette_rows();
+        assert!(
+            rows.iter().any(|r| r == "save-spec"),
+            "the palette over a window with a Protocol does not offer Save: \
+             {rows:?}"
+        );
         self.type_text("save-spec");
         self.key(egui::Key::Enter);
         assert_eq!(
