@@ -941,12 +941,18 @@ fn the_inspector_rail_draws_no_save_while_the_palette_offers_one() {
     data.key(egui::Key::Escape);
 }
 
-/// **Going Home takes the Save offer with the document.**
+/// **Going Home takes the Save offer with the document — at the door, and in
+/// the start opened after it.**
 ///
-/// A window walked from a data file, home, and into a shipped chart start. The
-/// palette is built from a flag written fresh each frame; going Home empties
-/// the protocol document without going through the adoption path, so a flag
-/// that went up and stayed up would leave the start offering a Save that
+/// One window walked through three states: a data file, the front door, and a
+/// shipped chart start. The palette is built by asking the live protocol
+/// document, so each of the three answers for itself.
+///
+/// The **front door** is the state a cached answer gets wrong, and it is the
+/// one a reader reaches first. The door's frame does not draw the chart view's
+/// regions at all, so a flag written while those regions drew is not written
+/// there — while the palette key still opens the chart palette over it. A
+/// window that had a data file open a moment ago would offer a Save that
 /// reaches `save_protocol`, finds no source and returns.
 ///
 /// The start is `signals-dashboard`, one of the four shipped starts that open
@@ -978,6 +984,30 @@ fn going_home_takes_the_save_offer_with_the_start() {
         "cmd-shift-h did not reach the front door"
     );
     assert!(!win.app.has_protocol_to_save());
+
+    // …and the palette opened AT THE DOOR offers nothing to save. The door
+    // draws none of the chart view's regions, so this is the state a value
+    // cached while they drew would still be answering for.
+    win.key(egui::Key::Space);
+    assert_eq!(
+        win.app.open_overlay(),
+        Some("palette"),
+        "the palette key does not open a palette at the front door"
+    );
+    win.settle();
+    let door_rows = win.app.open_palette_rows();
+    assert!(
+        door_rows.iter().any(|r| r == "clear-selection"),
+        "the door's palette lists nothing a chart window offers, so an \
+         absence in it proves nothing: {door_rows:?}"
+    );
+    assert!(
+        !door_rows.iter().any(|r| r == "save-spec"),
+        "the front door offers a Save; the document it was true of was \
+         emptied one gesture ago, and confirming it here does nothing: \
+         {door_rows:?}"
+    );
+    win.key(egui::Key::Escape);
 
     // 3. A shipped chart start, off the door's own card.
     let card = win

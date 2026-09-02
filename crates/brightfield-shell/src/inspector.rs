@@ -37,7 +37,7 @@
 //! would silently stop finding them if this pane drew something else in their
 //! place.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use brightfield_keys::BindingContext;
@@ -193,32 +193,6 @@ pub struct InspectorPane {
     /// file into a window that already exists has to move this too, and by
     /// then the pane is boxed behind `dyn Item`.
     table: TableHandle,
-}
-
-/// The window's handle on **whether this window has a Protocol to save** —
-/// written fresh each frame by `MeridianApp::draw` from the live protocol
-/// document, and read by `MeridianApp::open_chart_palette` when the palette
-/// opens.
-///
-/// It lives beside [`Selection`] because both are the window's frame-fresh
-/// answers about the chart view, and it is frame-fresh for the same reason
-/// that one is: going Home empties both documents without going through the
-/// adoption path, so a flag written once at adoption would go on offering Save
-/// over a window with no Protocol left to write.
-#[derive(Clone, Default)]
-pub struct SaveTarget(Rc<Cell<bool>>);
-
-impl SaveTarget {
-    /// Declare whether this window has a Protocol to save.
-    pub fn set(&self, saveable: bool) {
-        self.0.set(saveable);
-    }
-
-    /// What was last declared.
-    #[must_use]
-    pub fn get(&self) -> bool {
-        self.0.get()
-    }
 }
 
 /// The window's handle on which table a selected column belongs to — written

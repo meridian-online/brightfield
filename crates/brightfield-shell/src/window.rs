@@ -83,7 +83,7 @@ use crate::canvas::EguiCanvasHost;
 use crate::data_grid::DATA;
 use crate::design::{self, Mode};
 use crate::editor::EDITOR;
-use crate::inspector::{ColumnTable, InspectorPane, SaveTarget, Selection, TableHandle};
+use crate::inspector::{ColumnTable, InspectorPane, Selection, TableHandle};
 use crate::overlays::{CommandPalette, HelpSheet, JumpTarget, JumpToNode};
 use crate::pipeline::Composed;
 use crate::protocol::{
@@ -1311,10 +1311,6 @@ struct ChartView {
     /// inspector. Written whenever a document is adopted; see
     /// [`wire_columns`].
     inspector_table: TableHandle,
-    /// Whether this window has a Protocol for Save to write — written fresh
-    /// each frame, read when the chart palette opens. See
-    /// `MeridianApp::has_protocol_to_save`.
-    chart_saveable: SaveTarget,
 }
 
 /// Hand the chart document the columns its **tiles** draw, and the inspector
@@ -1716,7 +1712,6 @@ impl MeridianApp {
         // the `ChartView` it sits in. See `crate::inspector`'s module docs.
         let inspector_selection = Selection::default();
         let inspector_table = TableHandle::default();
-        let chart_saveable = SaveTarget::default();
         let mut chart_items = charts.instantiate();
         chart_items.insert(
             charts.pane_key(CONTROLS),
@@ -1750,7 +1745,6 @@ impl MeridianApp {
                 items: chart_items,
                 inspector_selection,
                 inspector_table,
-                chart_saveable,
             },
             protocol: ProtocolView {
                 doc: protocol_doc,
@@ -2624,15 +2618,6 @@ impl MeridianApp {
                 Some(_) => {}
                 None => self.charts.inspector_selection.set(None),
             }
-            // …and what this window can be asked to do, from the same frame.
-            // The palette is built from it at the moment it opens. An
-            // assignment rather than an accumulation: going Home empties the
-            // protocol document, and a flag that only ever went up would go on
-            // offering Save over the start opened after it.
-            self.charts
-                .chart_saveable
-                .set(self.protocol.doc.model.source().is_some());
-
             let locator = plan.expect_region(arrangement::LOCATOR_BAND);
             let crumbs = self.crumb_line();
             let source = self.document_source();
@@ -3221,19 +3206,16 @@ impl MeridianApp {
     /// why the chart view cannot simply reuse [`Self::open_palette`] with
     /// [`Altitude::View`].
     ///
-    /// The list is [`crate::overlays::chart_palette_verbs`] over what the last
-    /// frame answered for [`Self::has_protocol_to_save`], not a static: a verb
-    /// whose handler has no work on this window is a row that confirms and
-    /// then sits there, which is the row that list exists to keep out.
+    /// The list is [`crate::overlays::chart_palette_verbs`] over
+    /// [`Self::has_protocol_to_save`], not a static: a verb whose handler has
+    /// no work on this window is a row that confirms and then sits there,
+    /// which is the row that list exists to keep out.
     /// `overlay_wiring.rs`'s `a_chart_start_is_offered_no_save` reads the
-    /// absence off a shipped start's own palette.
-    ///
-    /// Read through the frame-fresh [`SaveTarget`] rather than by asking the
-    /// document here, so that what the palette offers cannot outlive the
-    /// document it was true of — `going_home_takes_the_save_offer_with_the_start`
-    /// walks a window from a data file, home, and into a shipped start.
+    /// absence off a shipped start's own palette, and
+    /// `going_home_takes_the_save_offer_with_the_start` walks one window from
+    /// a data file, to the front door, and into a shipped start.
     fn open_chart_palette(&mut self) {
-        let allow = crate::overlays::chart_palette_verbs(self.charts.chart_saveable.get());
+        let allow = crate::overlays::chart_palette_verbs(self.has_protocol_to_save());
         self.overlay = Some(Overlay::Palette(Picker::new(
             CommandPalette::new_restricted(Altitude::View, self.recency.clone(), &allow),
         )));
