@@ -5224,14 +5224,27 @@ fn count_overlay(ui: &egui::Ui, body: egui::Rect, text: &str, mode: Mode) -> egu
     let galley = ui
         .painter()
         .layout_no_wrap(text.to_owned(), font, chrome::colour(sem.text.muted));
-    let size = galley.size();
-    let at = egui::pos2(
-        body.right() - spacing::SPACE_4 - size.x,
-        body.bottom() - spacing::SPACE_4 - size.y,
+    // The chip `overlay_frame` gives a floating region — the status band's own
+    // fill rather than the panel's, which is the only thing that says this is a
+    // layer over the picture rather than a stray line of the chart's own ink.
+    // It is also what keeps the count legible where it crosses the map's axis
+    // label, which at this inset it does.
+    let pad = egui::vec2(spacing::SPACE_3, spacing::SPACE_2);
+    let size = galley.size() + 2.0 * pad;
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(
+            body.right() - spacing::SPACE_4 - size.x,
+            body.bottom() - spacing::SPACE_4 - size.y,
+        ),
+        size,
     );
-    let rect = egui::Rect::from_min_size(at, size);
+    ui.painter().rect_filled(
+        rect,
+        radius::CONTROL,
+        chrome::colour(sem.containers.status_bar_background),
+    );
     ui.painter()
-        .galley(at, galley, chrome::colour(sem.text.muted));
+        .galley(rect.min + pad, galley, chrome::colour(sem.text.muted));
     rect
 }
 
