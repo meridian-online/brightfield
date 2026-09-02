@@ -177,18 +177,24 @@ fn decided_types(opened: &data_file::OpenedFile) -> Vec<(String, String)> {
         .columns
         .iter()
         .map(|c| {
-            let tile = opened
-                .dashboard
-                .tiles()
-                .iter()
-                .find(|t| t.column() == c.column);
+            let tile =
+                opened.dashboard.tiles().iter().find(|t| {
+                    t.column() == c.column || t.paired_column() == Some(c.column.as_str())
+                });
             let decided = match tile.map(brightfield_shell::dashboard::Tile::chosen_by) {
                 Some(ChosenBy::Storage { type_name }) => type_name.clone(),
                 Some(ChosenBy::Meaning { label, .. }) => {
                     label.rsplit('.').next().unwrap_or(label).to_string()
                 }
-                // A declined column has no tile, so nothing chose one from a
-                // label; the rail shows what the engine stored it as.
+                // A point map is chosen from the pair rather than from either
+                // column's own type, so the rail falls back to each column's
+                // own label — or, with no label, to its storage type.
+                Some(ChosenBy::CoordinatePair { .. }) => c.label.as_deref().map_or_else(
+                    || c.storage.clone(),
+                    |l| l.rsplit('.').next().unwrap_or(l).to_string(),
+                ),
+                // A declined column has no tile, so no label chose one for it;
+                // the rail shows what the engine stored it as.
                 None => c.storage.clone(),
             };
             (c.column.clone(), decided)

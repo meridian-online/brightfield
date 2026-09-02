@@ -290,6 +290,17 @@ fn domain_span(doc: &ChartDoc) -> (f64, f64) {
     (span(Channel::X), span(Channel::Y))
 }
 
+/// A directory of this test's own for the `save-spec` case, which writes.
+fn save_fixture_dir() -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    let dir = std::env::temp_dir().join(format!("bf-overlay-save-{}-{nanos}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a temp directory for the fixture");
+    dir
+}
+
 /// Open the chart palette, type `longname` verbatim (an exact match ranks
 /// first) and confirm — the same path a person takes, not a shortcut around
 /// it.
@@ -430,6 +441,35 @@ fn every_chart_palette_candidate_actually_dispatches() {
                     win.app.chart_doc().is_empty(),
                     "open-home did not return to the front door"
                 );
+            }
+            "save-spec" => {
+                // The window's Save. A chart window has no Protocol behind it,
+                // so the proof needs a window that does: a data file, opened
+                // into a directory this test owns. What is read back is the
+                // FILE — the verb is only dispatched if something wrote it.
+                let dir = save_fixture_dir();
+                let csv = dir.join("harbour.csv");
+                std::fs::write(
+                    &csv,
+                    "station,reading\nnorth,12\nsouth,31\neast,7\nwest,52\n",
+                )
+                .expect("the fixture writes");
+                let mut win = Window::open(
+                    Boot::data_file(csv.to_str().expect("utf-8")).expect("the file opens"),
+                );
+                win.settle();
+                let spec = dir.join("arcform.yaml");
+                assert!(
+                    !spec.exists(),
+                    "the spec is unsaved until the verb is dispatched"
+                );
+                confirm_chart_verb(&mut win, longname);
+                assert!(
+                    spec.is_file(),
+                    "save-spec did not write {} — the verb reached no handler",
+                    spec.display()
+                );
+                let _ = std::fs::remove_dir_all(&dir);
             }
             other => panic!(
                 "{other} is listed on the chart palette with no dispatch proof in \

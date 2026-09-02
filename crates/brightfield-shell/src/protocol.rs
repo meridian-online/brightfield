@@ -121,6 +121,11 @@ pub struct ProtocolInputs {
     /// guessed from SQL would be a claim no profile stands behind. The
     /// data-file path fills it after the fact — see [`crate::one_step`].
     pub columns: Vec<ColumnFacts>,
+    /// The same facts, one per **tile**, in the order the composition places
+    /// its plots — what a click on plot *n* names. Not `columns` filtered: a
+    /// point map is one tile over two columns, so the two lists differ in
+    /// length as well as in content.
+    pub tiles: Vec<ColumnFacts>,
     /// The asset the columns belong to. `None` whenever `columns` is empty.
     pub table: Option<AssetId>,
     /// The spec brightfield wrote for an opened data file, when this document
@@ -157,6 +162,7 @@ impl ProtocolInputs {
             steps: BTreeMap::new(),
             sheet_rows: Vec::new(),
             columns: Vec::new(),
+            tiles: Vec::new(),
             table: None,
             source: None,
         }
@@ -237,7 +243,20 @@ pub fn offline_optin() -> bool {
 /// narrower rule than the one recorded, and it was written down once before
 /// being noticed.
 ///
-/// # The one exemption, and what it actually is
+/// # What is exempt, and what each exemption actually is
+///
+/// **A Protocol whose single step is a local read of a data file this build
+/// opens does not reach this refusal at all**, because it is not rendered as a
+/// manifest: [`crate::window::Boot::open_sampled`] resolves the file the step
+/// reads and opens *that*, and the graph the rails then draw is the one
+/// [`crate::one_step`] derives from the profile brightfield just took. The
+/// declaration is read to find the file and discarded. The predicate is a
+/// shape — [`crate::one_step::data_file_named_by`] — so a hand-authored spec
+/// of that shape is treated the same way, which is deliberate: the rule above
+/// is about the artifact class, and a one-step read of a CSV is a class this
+/// build can render honestly without a run.
+///
+/// The other exemption is the older one:
 ///
 /// A [`crate::starts::Start`] that sets
 /// [`run_less`](crate::starts::Start::run_less) is exempt, because its label
@@ -409,6 +428,7 @@ fn inputs_from(
         // table, so the outline lists assets alone. The data-file path fills
         // these in afterwards — `crate::one_step::OneStepProtocol::inputs`.
         columns: Vec::new(),
+        tiles: Vec::new(),
         table: None,
         source: None,
     }
@@ -562,6 +582,8 @@ pub struct ProtocolModel {
     /// outline lists under it. Empty for a Protocol with no profiled table
     /// behind it, which is every manifest read off disk.
     columns: Vec<ColumnFacts>,
+    /// The same facts in the composition's plot order — one per tile.
+    tiles: Vec<ColumnFacts>,
     /// The asset those columns hang under.
     table: Option<AssetId>,
     /// The spec brightfield wrote when a data file was opened, and where it
@@ -612,6 +634,7 @@ impl ProtocolModel {
             assets: inputs.assets,
             steps: inputs.steps,
             columns: inputs.columns,
+            tiles: inputs.tiles,
             table: inputs.table,
             source: inputs.source,
             saved_to: None,
@@ -1018,6 +1041,12 @@ impl ProtocolModel {
     #[must_use]
     pub fn columns(&self) -> &[ColumnFacts] {
         &self.columns
+    }
+
+    /// The columns the composition's plots draw, in plot order — one per tile.
+    #[must_use]
+    pub fn tiles(&self) -> &[ColumnFacts] {
+        &self.tiles
     }
 
     /// The spec Save would write, when this Protocol came from a data file and

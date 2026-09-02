@@ -99,6 +99,10 @@ pub struct ColumnFacts {
     pub tile: Option<String>,
     /// Why that kind, or — for a declined column — why none.
     pub because: String,
+    /// The other half of a coordinate pair, when this column is drawn as one:
+    /// a point map is a single tile over two columns, and each of the two names
+    /// the other here. `None` for a column drawn on its own.
+    pub paired: Option<String>,
     /// Rows in the table (null and non-null alike), measured by the engine
     /// when the file was profiled.
     pub rows: u64,
@@ -139,8 +143,14 @@ pub struct OneStepProtocol {
     pub manifest: String,
     /// The `models/load.sql` text.
     pub model: String,
-    /// One entry per column of the table, in the table's own order.
+    /// One entry per column of the table, in the table's own order — what the
+    /// navigator rail lists.
     pub columns: Vec<ColumnFacts>,
+    /// One entry per **tile**, in the order the dashboard laid them out and
+    /// therefore the order the composition places its plots — what a click on
+    /// plot *n* names. See [`tiles_in_plot_order`] for why this is not
+    /// [`Self::columns`] filtered.
+    pub tiles: Vec<ColumnFacts>,
 }
 
 impl OneStepProtocol {
@@ -162,6 +172,7 @@ impl OneStepProtocol {
             model: model_sql(&name, &spelled, reader_for(path)),
             manifest: manifest_yaml(&name, &spelled),
             columns: facts(columns, dashboard),
+            tiles: tiles_in_plot_order(columns, dashboard),
             name,
             data: path.to_path_buf(),
             dir,
@@ -186,6 +197,7 @@ impl OneStepProtocol {
         let mut inputs = load_protocol_str(&self.manifest, &[(MODEL_PATH, &self.model)])?;
         inputs.table = Some(self.table_id());
         inputs.columns.clone_from(&self.columns);
+        inputs.tiles.clone_from(&self.tiles);
         inputs.source = Some(self.clone());
         Ok(inputs)
     }
@@ -209,17 +221,32 @@ impl OneStepProtocol {
 
     /// Write the spec into `dir`: the manifest and its one model.
     ///
-    /// **Gated before anything is written.** The bytes go through the pinned
-    /// loader — the same gate `arc run` loads with — and a spec it refuses is
-    /// refused here, with its own diagnostic, leaving the directory untouched.
+    /// **Both files are gated before either is written**, and they need two
+    /// gates because the pinned loader reads one of them. The manifest's bytes
+    /// go through `arc`'s own validator — the gate `arc run` loads with — which
+    /// never opens the model: `Manifest::from_yaml_str` touches no filesystem,
+    /// so a `sql:` step naming a model that is malformed, or absent, is a
+    /// manifest it accepts. The model is gated by [`Self::inputs`] instead,
+    /// which parses it exactly as the rails do and degrades a statement it
+    /// cannot read to an issue-badged chip; a spec that would draw one is
+    /// refused here rather than written. Either refusal leaves the directory
+    /// untouched.
     ///
     /// # Errors
     ///
-    /// If the loader refuses the manifest, or if the directory or either file
-    /// cannot be written. Each carries the path.
+    /// If the loader refuses the manifest, if the model does not parse into a
+    /// clean graph, or if the directory or either file cannot be written. Each
+    /// carries the reason.
     pub fn save_to(&self, dir: &Path) -> Result<PathBuf, String> {
         brightfield_protocol::parse_manifest_str(&self.manifest)
             .map_err(|e| format!("the spec brightfield wrote will not load: {e}"))?;
+        let degrades = self.inputs()?.degrade_report();
+        if !degrades.is_empty() {
+            return Err(format!(
+                "the model brightfield wrote does not derive a clean graph: {}",
+                degrades.join("; ")
+            ));
+        }
         let manifest = Self::manifest_path_in(dir);
         let model = dir.join(MODEL_PATH);
         let models_dir = model
@@ -332,8 +359,29 @@ fn manifest_yaml(name: &str, spelled: &str) -> String {
 }
 
 /// The one model: the table, created from the file.
+///
+/// The path is a **SQL** single-quoted literal here and a **YAML** one in the
+/// manifest, and the two languages are escaped separately because they are two
+/// languages that happen to agree on the doubling rule. `data_file::accept`
+/// admits an apostrophe in a file name — it is not glob syntax and not a
+/// control character — so `it's.csv` reaches here, and an unescaped literal
+/// would be `read_csv('./it's.csv')`: an unterminated string that the graph
+/// derivation cannot parse and DuckDB would refuse. It is escaped rather than
+/// refused at `accept` because an apostrophe in a file name is ordinary and
+/// the escape is exact, where the glob characters `accept` does refuse have no
+/// escape this build is willing to rely on.
 fn model_sql(name: &str, spelled: &str, reader: &str) -> String {
-    format!("CREATE OR REPLACE TABLE {name} AS SELECT * FROM {reader}('{spelled}');\n")
+    format!(
+        "CREATE OR REPLACE TABLE {name} AS SELECT * FROM {reader}({});\n",
+        sql_quoted(spelled)
+    )
+}
+
+/// `value` as a SQL single-quoted string literal, with an embedded quote
+/// doubled — the one escape a standard SQL string has, and the one DuckDB
+/// reads.
+fn sql_quoted(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 /// `value` as a YAML single-quoted scalar.
@@ -351,50 +399,98 @@ fn yaml_quoted(value: &str) -> String {
 /// The walk is over the **profile**, not over the dashboard's tiles, so a
 /// column the generator declined is still listed — with the reason in
 /// [`ColumnFacts::because`] and no tile.
+///
+/// A column can be drawn by a tile that is not *of* it: a point map is one
+/// tile over two columns, whose [`Tile::column`] is the longitude and whose
+/// [`Tile::paired_column`] is the latitude. Both are looked up here, so the
+/// latitude row reads as drawn rather than declined — and both carry the other
+/// half in [`ColumnFacts::paired`]. That is also why the tile list the chart
+/// document is handed is built separately, in [`tiles_in_plot_order`]: two
+/// column rows can share one plot.
 fn facts(columns: &[ColumnProfile], dashboard: &Dashboard) -> Vec<ColumnFacts> {
-    columns
+    columns.iter().map(|p| facts_for(p, dashboard)).collect()
+}
+
+/// One column's facts.
+fn facts_for(profile: &ColumnProfile, dashboard: &Dashboard) -> ColumnFacts {
+    let tile = dashboard
+        .tiles()
         .iter()
-        .map(|profile| {
-            let tile = dashboard
-                .tiles()
-                .iter()
-                .find(|t| t.column() == profile.name);
-            let (label, because) = match tile.map(crate::dashboard::Tile::chosen_by) {
-                Some(ChosenBy::Meaning { label, role }) => (
-                    Some(label.clone()),
-                    format!("the semantic type {label}, read as {role:?}"),
-                ),
-                Some(ChosenBy::Storage { type_name }) => {
-                    (None, format!("the storage type {type_name}"))
-                }
-                None => (
-                    profile.semantic.label().map(str::to_string),
-                    dashboard
-                        .omitted()
-                        .iter()
-                        .find(|o| o.column == profile.name)
-                        .map_or_else(
-                            || "no tile".to_string(),
-                            |o| format!("no tile — {}", o.because),
-                        ),
-                ),
+        .find(|t| t.column() == profile.name || t.paired_column() == Some(profile.name.as_str()));
+    let mut paired = None;
+    let (label, because) = match tile.map(crate::dashboard::Tile::chosen_by) {
+        Some(ChosenBy::Meaning { label, role }) => (
+            Some(label.clone()),
+            format!("the semantic type {label}, read as {role:?}"),
+        ),
+        Some(ChosenBy::Storage { type_name }) => (None, format!("the storage type {type_name}")),
+        Some(ChosenBy::CoordinatePair { latitude, rule }) => {
+            // The tile is of the longitude and paired with the latitude, so
+            // which of the two this row is decides which name it reports as
+            // the other half.
+            let tile = tile.expect("the arm matched on this tile's own chosen_by");
+            let other = if profile.name == *latitude {
+                tile.column().to_string()
+            } else {
+                latitude.clone()
             };
-            let leaf = label.as_deref().map_or_else(
-                || profile.type_name.clone(),
-                |l| l.rsplit('.').next().unwrap_or(l).to_string(),
-            );
-            ColumnFacts {
-                column: profile.name.clone(),
-                label,
-                leaf,
-                storage: profile.type_name.clone(),
-                tile: tile.map(|t| t.kind().as_str().to_string()),
-                because,
-                rows: profile.non_null.saturating_add(profile.nulls),
-                nulls: profile.nulls,
-                min: profile.min.clone(),
-                max: profile.max.clone(),
-            }
+            let because = format!("a coordinate pair with {other}, found by its {rule}");
+            paired = Some(other);
+            // The label is this column's own, not the pair's: a pair found by
+            // its labels has `geography.coordinate.longitude` on one side and
+            // `…latitude` on the other, and the rail draws each row its own.
+            (profile.semantic.label().map(str::to_string), because)
+        }
+        None => (
+            profile.semantic.label().map(str::to_string),
+            dashboard
+                .omitted()
+                .iter()
+                .find(|o| o.column == profile.name)
+                .map_or_else(
+                    || "no tile".to_string(),
+                    |o| format!("no tile — {}", o.because),
+                ),
+        ),
+    };
+    let leaf = label.as_deref().map_or_else(
+        || profile.type_name.clone(),
+        |l| l.rsplit('.').next().unwrap_or(l).to_string(),
+    );
+    ColumnFacts {
+        column: profile.name.clone(),
+        label,
+        leaf,
+        storage: profile.type_name.clone(),
+        tile: tile.map(|t| t.kind().as_str().to_string()),
+        because,
+        paired,
+        rows: profile.non_null.saturating_add(profile.nulls),
+        nulls: profile.nulls,
+        min: profile.min.clone(),
+        max: profile.max.clone(),
+    }
+}
+
+/// The columns the composition's **plots** draw, in the composition's own plot
+/// order — one entry per tile.
+///
+/// Not the column list filtered to the ones that earned a tile, and the
+/// difference is a point map: it is one tile over two columns, so filtering the
+/// columns yields two entries where the composition places one plot and every
+/// click after it names the column next door. Walking the tiles cannot drift
+/// that way, because the tiles are what `Dashboard::to_spec` lays out and
+/// therefore what the composition places.
+///
+/// Each entry is the facts of the tile's own [`Tile::column`] — for a point map
+/// the longitude, with the latitude in [`ColumnFacts::paired`].
+fn tiles_in_plot_order(columns: &[ColumnProfile], dashboard: &Dashboard) -> Vec<ColumnFacts> {
+    dashboard
+        .tiles()
+        .iter()
+        .filter_map(|tile| {
+            let profile = columns.iter().find(|p| p.name == tile.column())?;
+            Some(facts_for(profile, dashboard))
         })
         .collect()
 }

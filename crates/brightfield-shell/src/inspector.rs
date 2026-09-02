@@ -113,11 +113,10 @@ impl Selection {
 /// what is live at this altitude rather than two that could drift apart.
 ///
 /// This is the pane's whole answer to "what can be done with it": a
-/// declared-but-undispatchable entry — `editor.rs`'s `save-spec`, say, which
-/// `MeridianApp::apply`'s Charts arm has no case for — would look live while
-/// doing nothing if drawn here unfiltered, which is worse than the checkbox
-/// this rail replaced. So an entry not on the allow list is dropped rather
-/// than shown disabled — see `tests/inspector_contract.rs`'s
+/// declared-but-undispatchable entry would look live while doing nothing if
+/// drawn here unfiltered, which is worse than the checkbox this rail replaced.
+/// So an entry not on the allow list is dropped rather than shown disabled —
+/// see `tests/inspector_contract.rs`'s
 /// `every_declared_toolbar_verb_either_dispatches_or_is_filtered_out` for the
 /// sweep that keeps this from widening in silence.
 fn dispatchable(entries: &[ToolbarEntry]) -> Vec<ToolbarEntry> {
@@ -255,6 +254,12 @@ fn column_body(ui: &mut egui::Ui, column: &ColumnFacts, table: Option<&ColumnTab
         Some(kind) => {
             column_field(ui, mode, "tile", kind);
             column_field(ui, mode, "chosen by", &column.because);
+            if let Some(other) = &column.paired {
+                // A point map is one picture of two columns, so the rail says
+                // which other column is in it — without this the reader is
+                // looking at a map and told about one axis of it.
+                column_field(ui, mode, "drawn with", other);
+            }
         }
         None => column_field(ui, mode, "tile", &column.because),
     }
@@ -448,8 +453,9 @@ mod tests {
     use super::*;
 
     /// A dispatchable verb (drawn on the real chart pane's toolbar) and one
-    /// that is not (the editor's `save-spec`, which has no arm in
-    /// `MeridianApp::apply`'s Charts branch).
+    /// that is not: `toggle-presentation` is a real registry verb that
+    /// `MeridianApp::apply`'s Charts branch has no arm for, so it is what an
+    /// entry the rail must drop looks like.
     fn sample_entries() -> (ToolbarEntry, ToolbarEntry) {
         (
             ToolbarEntry::button(
@@ -457,7 +463,11 @@ mod tests {
                 "Clear selection",
                 Verb::new("clear-selection"),
             ),
-            ToolbarEntry::button("save-spec", "Save", Verb::new("save-spec")),
+            ToolbarEntry::button(
+                "toggle-presentation",
+                "Present",
+                Verb::new("toggle-presentation"),
+            ),
         )
     }
 

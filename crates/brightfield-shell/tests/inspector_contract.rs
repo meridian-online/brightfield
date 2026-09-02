@@ -275,6 +275,13 @@ fn editor_toolbar_verbs(doc: &mut ChartDoc) -> Vec<&'static str> {
 /// `overlay_wiring.rs::every_chart_palette_candidate_actually_dispatches`
 /// uses for the command palette.
 ///
+/// `save-spec` changed sides. It used to be the file's worked example of a
+/// verb the Charts arm had no case for; the arm exists now — it writes the
+/// Protocol a data file opened as — so the verb is on `CHART_PALETTE_VERBS`
+/// and this rail may draw it. What proves it does something rather than
+/// looking live is `overlay_wiring.rs`'s sweep, which picks it off the
+/// palette and reads the written spec back.
+///
 /// Proof this sweep can fail: dropping the `"save-spec"` arm below (so it
 /// falls to the `other => panic!` case) reddens this test with "save-spec is
 /// declared on a chart-view pane's toolbar with no verdict in this sweep".
@@ -297,9 +304,12 @@ fn every_declared_toolbar_verb_either_dispatches_or_is_filtered_out() {
                  verdict for it needs re-checking"
             ),
             "save-spec" => assert!(
-                !dispatches,
-                "save-spec now dispatches at the chart altitude — \
-                 inspector::dispatchable can stop excluding it"
+                dispatches,
+                "save-spec is expected to dispatch at the chart altitude — it \
+                 is the window's Save, and `MeridianApp::apply`'s Charts arm \
+                 writes the Protocol for it. If it has been taken off \
+                 CHART_PALETTE_VERBS then the verb has no producer there at \
+                 all and `save_protocol` is unreachable from the shipped app."
             ),
             other => panic!(
                 "{other} is declared on a chart-view pane's toolbar with no \

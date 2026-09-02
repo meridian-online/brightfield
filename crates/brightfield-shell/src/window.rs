@@ -899,17 +899,24 @@ impl Boot {
     /// had to agree about an environment gate, a window size and a summary line
     /// that neither shared.
     ///
-    /// Three kinds now, not two: a chart spec, a Protocol manifest, and a
-    /// **data file**, which is decided first and by extension alone — see
-    /// [`names_a_data_file`]. It has to come first because the other two are
-    /// classified by reading the file as text, and a Parquet is not text.
+    /// Four outcomes, in the order they are decided. A **data file** goes
+    /// first and by extension alone — see [`names_a_data_file`] — because the
+    /// other three are classified by reading the file as text and a Parquet is
+    /// not text. Then a **one-step Protocol**, which is a manifest whose single
+    /// step is a local read of a data file this build opens: it resolves to
+    /// that file and takes the data-file route, so the declaration is read to
+    /// find the file and then discarded rather than rendered (see
+    /// [`crate::one_step::data_file_named_by`], and
+    /// [`crate::protocol::run_less_manifest_refusal`] for why that is not a
+    /// hole in the gate below). Then any other **Protocol manifest**, behind
+    /// that gate. Then a **chart spec**.
     ///
     /// # Errors
-    /// A message if the file cannot be read, if it is a run-less protocol
-    /// manifest and this process has not opted in — see
+    /// A message if the file cannot be read; if it is a run-less protocol
+    /// manifest of some other shape and this process has not opted in — see
     /// [`crate::protocol::run_less_manifest_refusal`], which states that rule
-    /// once for both callers — or if the pipeline rejects it. A data file
-    /// refuses through [`Boot::data_file`].
+    /// once for both callers; or if the pipeline rejects it. A data file, and a
+    /// one-step Protocol resolved to one, refuse through [`Boot::data_file`].
     pub fn open(spec: &str, flow: Flow, focus: Option<String>) -> Result<Self, String> {
         Self::open_sampled(spec, flow, focus, None)
     }
@@ -1309,22 +1316,18 @@ struct ChartView {
 /// Hand the chart document the columns its **tiles** draw, and the inspector
 /// the table those columns belong to.
 ///
-/// The tile columns are the profiled columns the generator gave a picture to,
-/// in the table's own order — which is the order the dashboard laid them out
-/// in and therefore the order the composition placed its plots in. A column
-/// the generator declined is in the navigator rail (it is a column of the
-/// table) and not here (it is not a tile).
+/// The tile columns come off the dashboard's own tiles, in the order it laid
+/// them out and therefore the order the composition placed its plots in — see
+/// `one_step::tiles_in_plot_order`. Filtering the *column* list to the ones
+/// that earned a picture is the same thing right up until a point map, which
+/// is one tile over two columns and would put two entries where the
+/// composition places one plot.
 ///
 /// Both are set from one call because they are one fact split across two
 /// documents, and a window that had moved one without the other would draw a
 /// column block naming the previous file's table.
 fn wire_columns(chart: &mut ChartDoc, model: &ProtocolModel, table: &TableHandle) {
-    let tiles: Vec<crate::one_step::ColumnFacts> = model
-        .columns()
-        .iter()
-        .filter(|c| c.tile.is_some())
-        .cloned()
-        .collect();
+    let tiles: Vec<crate::one_step::ColumnFacts> = model.tiles().to_vec();
     table.set((!tiles.is_empty()).then(|| ColumnTable {
         table: model.protocol.clone(),
         step: crate::one_step::STEP_NAME.to_string(),
