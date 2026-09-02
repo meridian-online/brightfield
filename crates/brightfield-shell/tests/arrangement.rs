@@ -43,6 +43,7 @@ fn both() -> Boot {
         live: None,
         spec_path: Some(DASHBOARD.into()),
         authored: None,
+        stacked_tiles: None,
         protocol: inputs,
         flow: Flow::Vertical,
         focus: None,

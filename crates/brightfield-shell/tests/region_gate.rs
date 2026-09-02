@@ -351,6 +351,7 @@ fn a_protocol_and_a_chart() -> Boot {
         live: None,
         spec_path: Some(DASHBOARD.into()),
         authored: None,
+        stacked_tiles: None,
         protocol: inputs,
         flow: Flow::Vertical,
         focus: None,

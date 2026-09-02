@@ -2025,29 +2025,190 @@ mod tests {
         );
     }
 
-    /// The tiles are laid out in rows of [`TILES_PER_ROW`], and the layout is
-    /// the spec's own `vconcat`/`hconcat` rather than something the pane does
-    /// afterwards.
+    /// Every plot rect the emitted spec lays out into a box of `width` by
+    /// `height`, in the order the composition places them.
+    ///
+    /// The spec's own layout engine rather than a second copy of its rules,
+    /// which is the whole point: a claim about where the hero lands is a claim
+    /// about what `brightfield_spec::layout` does with these weights.
+    fn plot_rects(source: &str, width: f64, height: f64) -> Vec<brightfield_spec::layout::Rect> {
+        use brightfield_spec::layout::{compute_layout, LayoutNode, Rect};
+        let parsed = parse_spec(source, Format::Yaml)
+            .unwrap_or_else(|e| panic!("the generated spec does not parse: {e}\n{source}"));
+        let tree = compute_layout(&parsed.spec, Rect::new(0.0, 0.0, width, height));
+        fn walk(node: &LayoutNode, out: &mut Vec<Rect>) {
+            match node {
+                LayoutNode::Plot { rect, .. } => out.push(*rect),
+                LayoutNode::HConcat { children, .. } | LayoutNode::VConcat { children, .. } => {
+                    for child in children {
+                        walk(child, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        if let Some(root) = &tree {
+            walk(root, &mut out);
+        }
+        out
+    }
+
+    /// **The hero takes the larger share of the page and the rest stack beside
+    /// it** — read off the layout the emitted spec produces, not off the
+    /// weights it declares.
+    ///
+    /// The two claims a picture cannot make: the hero's width is
+    /// [`HERO_SHARE`] of what the gutter leaves, and every stacked tile stands
+    /// at one width and one height in one column to its right.
     #[test]
-    fn the_tiles_are_laid_out_in_rows() {
-        let many: Vec<ColumnProfile> = (0..7)
+    fn the_hero_takes_the_larger_share_of_the_page() {
+        let many: Vec<ColumnProfile> = (0..8)
             .map(|i| column(&format!("m{i}"), "DOUBLE", 900))
             .collect();
         let source = of(&many).to_spec();
-        let rows = source.matches("- hconcat:").count();
-        assert_eq!(
-            rows, 3,
-            "seven tiles at three per row is three rows:\n{source}"
+        let (w, h) = (1000.0_f64, 700.0_f64);
+        let rects = plot_rects(&source, w, h);
+        assert_eq!(rects.len(), 8, "eight columns, eight plots:\n{source}");
+
+        let gutter = f64::from(HERO_GUTTER);
+        let residual = w - gutter;
+        let hero = rects[0];
+        assert!(
+            (hero.width - f64::from(HERO_SHARE) * residual).abs() < 0.5,
+            "the hero is {} wide of a {residual} residual, which is {:.4} of it \
+             rather than the declared {HERO_SHARE}:\n{source}",
+            hero.width,
+            hero.width / residual
         );
-        assert_eq!(source.matches("- plot:").count(), 7);
-        let parsed = parse_spec(&source, Format::Yaml).expect("parses");
-        let root = parsed.spec.root.expect("the dashboard has a root");
-        match root {
-            brightfield_spec::ast::Component::VConcat(node) => {
-                assert_eq!(node.items.len(), 3, "{node:?}");
-            }
-            other => panic!("the root of a laid-out dashboard is a vconcat: {other:?}"),
+        assert!(
+            (hero.x - 0.0).abs() < 0.5 && (hero.height - h).abs() < 0.5,
+            "the hero does not fill its column: {hero:?}"
+        );
+
+        let stacked = &rects[1..];
+        let left = hero.x + hero.width + gutter;
+        for (i, tile) in stacked.iter().enumerate() {
+            assert!(
+                (tile.x - left).abs() < 0.5,
+                "tile {i} starts at {} rather than beside the hero at {left}",
+                tile.x
+            );
+            assert!(
+                (tile.width - stacked[0].width).abs() < 0.5
+                    && (tile.height - stacked[0].height).abs() < 0.5,
+                "tile {i} is {:?} where the first is {:?} — the column's tiles \
+                 stand at one size",
+                tile,
+                stacked[0]
+            );
         }
+        let spanned: f64 = stacked.iter().map(|r| r.height).sum();
+        assert!(
+            (spanned - h).abs() < 0.5,
+            "the seven tiles span {spanned} of the {h} their column offers"
+        );
+    }
+
+    /// **The map's tile is the hero, wherever the file puts its coordinates**,
+    /// and the plot order leads with it while the tile list stays in file
+    /// order.
+    #[test]
+    fn the_plot_order_leads_with_the_hero() {
+        let dash = of(&[
+            column("amount", "DOUBLE", 900),
+            column("weight", "DOUBLE", 900),
+            column("latitude", "DOUBLE", 900),
+            column("longitude", "DOUBLE", 900),
+        ]);
+        let filed: Vec<&str> = dash.tiles().iter().map(Tile::column).collect();
+        assert_eq!(
+            filed,
+            vec!["amount", "weight", "longitude"],
+            "the tile list stays in the file's own order, the pair's joint tile \
+             where its first column sits"
+        );
+        assert_eq!(dash.hero_index(), Some(2));
+        let drawn: Vec<&str> = dash.plot_order().iter().map(|t| t.column()).collect();
+        assert_eq!(
+            drawn,
+            vec!["longitude", "amount", "weight"],
+            "the composition places the hero first"
+        );
+        let stacked: Vec<&str> = dash.column_tiles().iter().map(|t| t.column()).collect();
+        assert_eq!(stacked, vec!["amount", "weight"]);
+    }
+
+    /// **A table with no coordinate pair still opens as a hero beside a
+    /// column**, and the hero is the generator's first tile.
+    ///
+    /// The fallback is decided rather than inherited from the tile order by
+    /// accident, so it is asserted rather than left to
+    /// `the_plot_order_leads_with_the_hero` to imply.
+    #[test]
+    fn a_table_with_no_coordinate_pair_makes_its_first_tile_the_hero() {
+        let dash = of(&[
+            column("sensor", "VARCHAR", 1),
+            column("amount", "DOUBLE", 900),
+            column("region", "VARCHAR", 4),
+        ]);
+        // `sensor` earns no tile at all, so the first *tile* and the first
+        // column are deliberately different here.
+        assert_eq!(dash.hero_index(), Some(0));
+        assert_eq!(dash.plot_order()[0].column(), "amount");
+    }
+
+    /// **A dashboard of one tile has no column to stand a hero beside**, and
+    /// is written the way it always was.
+    #[test]
+    fn a_single_tile_dashboard_is_not_a_pane_group() {
+        let dash = of(&[column("amount", "DOUBLE", 900)]);
+        assert_eq!(dash.hero_index(), None);
+        assert!(dash.column_tiles().is_empty());
+        let source = dash.to_spec();
+        assert!(
+            source.contains("vconcat:") && !source.contains("hspace"),
+            "one tile is one row, with no gutter to leave:\n{source}"
+        );
+    }
+
+    /// **[`HERO_GUTTER`] is what puts the map pane's drawn rect at
+    /// [`HERO_SHARE`] of the canvas**, and it is derived from the chrome
+    /// rather than tuned by eye.
+    ///
+    /// The shell splits the canvas into two panes, each of which takes
+    /// `pane_content_inset` out of its own rect on every side, with a pane gap
+    /// between them; the page the raster is composed on spans the two content
+    /// rects and the gutter, and its hero takes `HERO_SHARE` of what the
+    /// gutter leaves. Setting the map pane's outer width equal to
+    /// `HERO_SHARE · canvas` and solving for the gutter gives the line below.
+    /// Move either chrome measurement and this reddens rather than the map
+    /// pane quietly drifting off its share.
+    #[test]
+    fn the_gutter_is_what_puts_the_map_pane_at_its_declared_share() {
+        let inset = brightfield_workbench::chrome::pane_content_inset();
+        let gap = brightfield_workbench::behavior::TILE_GAP;
+        let derived = (2.0 * HERO_SHARE * inset + gap) / (1.0 - HERO_SHARE);
+        #[allow(clippy::cast_precision_loss)]
+        let declared = HERO_GUTTER as f32;
+        assert!(
+            (derived - declared).abs() < 0.5,
+            "the declared gutter is {declared} where the chrome asks for \
+             {derived:.2}: a pane inset of {inset} and a pane gap of {gap}"
+        );
+    }
+
+    /// **The column's tiles hold at their floor and the page grows instead** —
+    /// the "or 96 points whichever is greater, scrolling past that" rule, as
+    /// the one number the canvas scrolls a page of.
+    #[test]
+    fn the_stacked_tiles_hold_at_their_height_floor() {
+        // Room to spare: the offered box is what the tiles share.
+        assert!((stack_extent(700.0, 7) - 700.0).abs() < f32::EPSILON);
+        // Too short: the page grows to the floor, and the difference is what
+        // there is to scroll.
+        assert!((stack_extent(500.0, 7) - 7.0 * MIN_COLUMN_TILE_HEIGHT).abs() < f32::EPSILON);
+        assert!(stack_extent(500.0, 7) > 500.0);
     }
 
     /// **One selection, declared once, driven and read by every tile.** This is
