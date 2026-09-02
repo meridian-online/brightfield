@@ -49,7 +49,7 @@ use meridian_design::{semantic, spacing};
 use crate::app::{ChartDoc, CONTROLS};
 use crate::design::Mode;
 use crate::one_step::ColumnFacts;
-use crate::overlays::chart_offers;
+use crate::overlays::CHART_PALETTE_VERBS;
 use crate::protocol::ui_font;
 
 /// The rail's icon — unchanged from the pane it replaces, so the Meridian
@@ -107,15 +107,20 @@ impl Selection {
 // ---------------------------------------------------------------------------
 
 /// The subset of `entries` this rail may draw: an entry passes when its verb
-/// is one `MeridianApp::apply`'s Charts arm dispatches **on a window in this
-/// state**, per [`chart_offers`] — the same predicate the chart command
-/// palette is built from, so the two surfaces read one answer rather than two
-/// that could drift apart.
+/// is one `MeridianApp::apply`'s Charts arm dispatches, per
+/// [`CHART_PALETTE_VERBS`] — the verbs whose meaning does not depend on which
+/// window they are pressed over.
 ///
-/// `saveable` is the window's, not the document's: whether there is a Protocol
-/// with a spec behind it for Save to write. It arrives through
-/// [`SaveTarget`] because an `Item` is handed its own document and no other,
-/// and this pane's is the chart's while the Protocol is the other one's.
+/// **`save-spec` is not among them, on any window**, and the reason is that
+/// the name carries two writes. `EditorPane` declares a Save entry for its own
+/// buffer, and `MeridianApp::apply`'s arm writes the Protocol; this rail draws
+/// the *editor's* entry, so passing it here put a control on screen that is
+/// dead while the buffer is clean and, when the buffer is dirty, dispatches the
+/// **Protocol** save and reports success over an edit that was never written.
+/// The palette is the surface that offers the Protocol save, because there the
+/// row is the verb rather than a pane's button — see
+/// [`crate::overlays::chart_offers`]. Splitting the verb is what would let this
+/// rail offer either one honestly, and that is not this change.
 ///
 /// This is the pane's whole answer to "what can be done with it": a
 /// declared-but-undispatchable entry would look live while doing nothing if
@@ -124,10 +129,10 @@ impl Selection {
 /// see `tests/inspector_contract.rs`'s
 /// `every_declared_toolbar_verb_either_dispatches_or_is_filtered_out` for the
 /// sweep that keeps this from widening in silence.
-pub fn dispatchable(entries: &[ToolbarEntry], saveable: bool) -> Vec<ToolbarEntry> {
+pub fn dispatchable(entries: &[ToolbarEntry]) -> Vec<ToolbarEntry> {
     entries
         .iter()
-        .filter(|entry| chart_offers(entry.verb.as_str(), saveable))
+        .filter(|entry| CHART_PALETTE_VERBS.contains(&entry.verb.as_str()))
         .cloned()
         .collect()
 }
@@ -144,17 +149,12 @@ pub fn dispatchable(entries: &[ToolbarEntry], saveable: bool) -> Vec<ToolbarEntr
 /// Returns the verbs any drawn toolbar button activated this frame — the
 /// caller's to act on ([`ItemCtx::request`] in the shipping pane; the gallery
 /// specimen only checks it fired).
-pub fn render_selection(
-    ui: &mut egui::Ui,
-    subject: Option<&Subject>,
-    mode: Mode,
-    saveable: bool,
-) -> Vec<Verb> {
+pub fn render_selection(ui: &mut egui::Ui, subject: Option<&Subject>, mode: Mode) -> Vec<Verb> {
     match subject {
         Some(subject) => {
             ui.label(egui::RichText::new(&subject.title).strong());
             chrome::breadcrumb(ui, &subject.breadcrumb, mode);
-            let entries = dispatchable(&subject.toolbar, saveable);
+            let entries = dispatchable(&subject.toolbar);
             let toolbar = chrome::Toolbar::new(&entries);
             if toolbar.has_something_to_say() {
                 ui.add_space(spacing::CONTROL_GAP);
@@ -193,19 +193,18 @@ pub struct InspectorPane {
     /// file into a window that already exists has to move this too, and by
     /// then the pane is boxed behind `dyn Item`.
     table: TableHandle,
-    /// Whether this window has a Protocol for Save to write — the predicate
-    /// [`dispatchable`] filters this rail's toolbar with.
-    saveable: SaveTarget,
 }
 
 /// The window's handle on **whether this window has a Protocol to save** —
-/// written fresh each frame by `MeridianApp::draw`, read by
-/// [`InspectorPane::ui`] the moment after.
+/// written fresh each frame by `MeridianApp::draw` from the live protocol
+/// document, and read by `MeridianApp::open_chart_palette` when the palette
+/// opens.
 ///
-/// Frame-fresh rather than set at adoption, for the reason [`Selection`] is:
-/// going Home empties both documents without going through the adoption path,
-/// and a cached `true` would leave this rail offering Save over a window with
-/// no Protocol left to write.
+/// It lives beside [`Selection`] because both are the window's frame-fresh
+/// answers about the chart view, and it is frame-fresh for the same reason
+/// that one is: going Home empties both documents without going through the
+/// adoption path, so a flag written once at adoption would go on offering Save
+/// over a window with no Protocol left to write.
 #[derive(Clone, Default)]
 pub struct SaveTarget(Rc<Cell<bool>>);
 
@@ -257,12 +256,8 @@ impl InspectorPane {
     /// frame before the dock draws. See the module docs for why this is a
     /// shared cell rather than a field `Item::ui` is handed directly.
     #[must_use]
-    pub fn new(selection: Selection, table: TableHandle, saveable: SaveTarget) -> Self {
-        Self {
-            selection,
-            table,
-            saveable,
-        }
+    pub fn new(selection: Selection, table: TableHandle) -> Self {
+        Self { selection, table }
     }
 }
 
@@ -395,7 +390,7 @@ impl Item<ChartDoc> for InspectorPane {
             ui.add_space(spacing::SECTION_GAP);
         } else {
             let subject = self.selection.get();
-            let activated = render_selection(ui, subject.as_ref(), cx.mode, self.saveable.get());
+            let activated = render_selection(ui, subject.as_ref(), cx.mode);
             for verb in activated {
                 cx.request(verb);
             }
@@ -517,7 +512,7 @@ mod tests {
     #[test]
     fn dispatchable_keeps_only_verbs_the_charts_view_can_run() {
         let (keep, drop) = sample_entries();
-        let filtered = dispatchable(&[keep.clone(), drop], false);
+        let filtered = dispatchable(&[keep.clone(), drop]);
         assert_eq!(
             filtered,
             vec![keep],
@@ -527,28 +522,25 @@ mod tests {
         );
     }
 
-    /// **The editor's Save survives this filter on a window that has a
-    /// Protocol, and is dropped on one that does not** — the same predicate
-    /// the palette is built from, asked of the same two states.
+    /// **This rail never offers `save-spec`, whatever the window is.**
     ///
-    /// Without this the rail drew a Save button on a chart-spec window, where
-    /// pressing it reaches `save_protocol`, finds no source and returns —
-    /// `one_step_protocol.rs`'s
-    /// `the_inspector_rail_draws_save_only_on_a_window_that_has_one` is the
-    /// same claim read off the rail's own pixels.
+    /// The entry it would draw is the *editor's* — its own buffer's Save,
+    /// declared on `EditorPane`'s subject — while the verb, dispatched, writes
+    /// the **Protocol**. On a chart-spec window that is a dead button; on a
+    /// data-file window with a dirty buffer it is worse, because the click
+    /// saves the Protocol and reports success over an edit that was never
+    /// written. One name, two writes, and this rail cannot tell a reader which
+    /// it is about — so it draws neither, and the palette carries the Protocol
+    /// save instead.
     #[test]
-    fn dispatchable_offers_save_only_where_there_is_something_to_save() {
+    fn dispatchable_never_offers_save_because_the_verb_means_two_writes() {
         let save = ToolbarEntry::button("editor-save", "Save", Verb::new("save-spec"));
         assert_eq!(
-            dispatchable(std::slice::from_ref(&save), true),
-            vec![save.clone()],
-            "a window with a Protocol behind it must keep its Save"
-        );
-        assert_eq!(
-            dispatchable(&[save], false),
+            dispatchable(std::slice::from_ref(&save)),
             Vec::new(),
-            "a window over a chart spec has nothing for Save to write, so the \
-             rail must not draw the button"
+            "the rail drew a Save button; the entry is the editor's and the \
+             dispatch is the Protocol's, so whichever the reader meant, one of \
+             the two silently does not happen"
         );
     }
 
@@ -559,7 +551,7 @@ mod tests {
     fn dispatchable_preserves_declaration_order() {
         let (keep, _drop) = sample_entries();
         let reset = ToolbarEntry::button("reset-extent", "Reset view", Verb::new("reset-extent"));
-        let filtered = dispatchable(&[reset.clone(), keep.clone()], false);
+        let filtered = dispatchable(&[reset.clone(), keep.clone()]);
         assert_eq!(filtered, vec![reset, keep]);
     }
 }

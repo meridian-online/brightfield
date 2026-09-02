@@ -1051,8 +1051,10 @@ impl ProtocolModel {
     /// It survives the write: saving does not clear it, so saving twice writes
     /// the same bytes to the same place rather than the second Save finding
     /// nothing to do. `MeridianApp::has_protocol_to_save` is this question
-    /// asked of the window, and it is what decides whether the palette and the
-    /// inspector rail offer Save.
+    /// asked of the window, and it is what decides whether the **chart command
+    /// palette** offers Save. The inspector rail does not offer it on any
+    /// window — the entry it would draw is the editor's own buffer save, under
+    /// the same verb name — see `crate::inspector::dispatchable`.
     #[must_use]
     pub const fn source(&self) -> Option<&OneStepProtocol> {
         self.source.as_ref()

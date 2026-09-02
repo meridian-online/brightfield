@@ -99,19 +99,22 @@ pub const CHART_PALETTE_VERBS: &[&str] = &[
 /// [`chart_offers`].
 const SAVEABLE_CHART_VERBS: &[&str] = &["save-spec"];
 
-/// **Whether a chart window in this state offers `verb`** — the one predicate
-/// the palette and `inspector::dispatchable` both read.
+/// **Whether a chart window in this state offers `verb`** — what the chart
+/// palette is built from.
 ///
 /// `saveable` is whether the window holds a Protocol with a spec behind it, as
 /// `MeridianApp::save_protocol` decides it: for a data file, yes; for a chart
 /// spec, a shipped start or the front door, no.
 ///
-/// Two readers and one answer, deliberately. The pair used to read a static
-/// list, so a verb reachable on one kind of window was offered on every kind —
-/// the palette drew a Save row over four of the five shipped starts and over
-/// every `--spec` launch, and confirming it closed the palette and did nothing.
-/// A list cannot express that; a predicate over the window's state can, and
-/// both surfaces have to ask it rather than mirror it.
+/// A predicate rather than a list, because the list could not express it: with
+/// `save-spec` on a static allow table the palette drew a Save row over four
+/// of the five shipped starts and over every `--spec` launch, and confirming
+/// it closed the palette and did nothing.
+///
+/// The inspector rail does not ask this. It draws a *pane's* toolbar entry,
+/// and the entry declared for `save-spec` is the editor's own buffer save —
+/// a different write under the same verb name — so it filters the verb out on
+/// any window (`inspector::dispatchable`).
 #[must_use]
 pub fn chart_offers(verb: &str, saveable: bool) -> bool {
     CHART_PALETTE_VERBS.contains(&verb) || (saveable && SAVEABLE_CHART_VERBS.contains(&verb))

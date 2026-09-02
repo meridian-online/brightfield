@@ -333,6 +333,28 @@ fn collect_text_in(shape: &egui::epaint::Shape, rect: egui::Rect, into: &mut Vec
     }
 }
 
+/// One frame's worth of the `open-home` keystroke, cmd-shift-h. `command` and
+/// `shift` are what `consume_key`'s logical match reads — mac_cmd/ctrl are
+/// platform detail the pattern ignores — so this fires the same on every
+/// runner. `front_door.rs`'s spelling, for the same reason.
+fn press_home() -> Vec<egui::Event> {
+    let modifiers = egui::Modifiers {
+        command: true,
+        shift: true,
+        ..Default::default()
+    };
+    [true, false]
+        .into_iter()
+        .map(|pressed| egui::Event::Key {
+            key: egui::Key::H,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers,
+        })
+        .collect()
+}
+
 fn button_at(pos: egui::Pos2, pressed: bool) -> egui::Event {
     egui::Event::PointerButton {
         pos,
@@ -823,22 +845,23 @@ fn a_labelled_column_sends_its_leaf_to_the_rail_and_its_whole_label_to_the_inspe
     );
 }
 
-/// **The inspector rail draws the editor's Save on a window with a Protocol,
-/// and does not on a window over a chart spec** — read off the rail's own
-/// pixels, over both kinds of window, with everything else about the two the
-/// same.
+/// **The inspector rail draws no Save on either kind of window, while the
+/// palette on the data-file window offers one** — the two surfaces read off
+/// the same two windows, in the same frames.
 ///
-/// The predicate is unit-tested in `inspector::dispatchable`. This is the other
-/// altitude: that `InspectorPane::ui` asks it about **this** window rather
-/// than answering for itself. Replacing `self.saveable.get()` with a constant
-/// passes every unit test and puts a dead Save button on every chart-spec
-/// window, which is the defect this round is about.
+/// The rail draws a *pane's* toolbar entry, and the entry declared for
+/// `save-spec` is `EditorPane`'s: the editor's own buffer save. The verb,
+/// dispatched, writes the Protocol. One name, two writes — so a Save button in
+/// this rail is dead over a clean buffer and wrong over a dirty one, where the
+/// click saves the Protocol and reports success over an edit that was never
+/// written. It draws neither, and the palette carries the Protocol save, where
+/// the row is the verb rather than a pane's button.
 ///
 /// Both windows carry a spec file, so the editor pane has a buffer and
-/// declares its Save entry in either case — otherwise the absence below would
+/// declares its Save entry in either case — otherwise the absences below would
 /// be true for the wrong reason. The rail naming that file is the guard.
 #[test]
-fn the_inspector_rail_draws_save_only_on_a_window_that_has_one() {
+fn the_inspector_rail_draws_no_save_while_the_palette_offers_one() {
     use brightfield_workbench::arrangement::{INSPECTOR_RAIL, LEDGER_RAIL};
 
     /// Focus the editor pane over `win` and read the inspector rail's text.
@@ -870,7 +893,7 @@ fn the_inspector_rail_draws_save_only_on_a_window_that_has_one() {
     // The editor pane titles its subject from its open FILE, so the rail
     // naming one is proof the pane has a buffer — and `EditorPane::describe`
     // declares its Save entry under exactly that condition. Without this the
-    // absence below could be an editor that never opened anything.
+    // absences below could be an editor that never opened anything.
     assert!(
         chart_rail.iter().any(|t| t == "dashboard.yaml"),
         "the rail is not naming a focused editor with a buffer, so the \
@@ -884,7 +907,8 @@ fn the_inspector_rail_draws_save_only_on_a_window_that_has_one() {
          returns: {chart_rail:?}"
     );
 
-    // A window a data file opened: the same focused pane, and a Protocol.
+    // A window a data file opened: the same focused pane, and a Protocol —
+    // and the rail still draws no Save, because the entry is the editor's.
     let dir = TempDir::new("rail-save");
     let path = dir.write("harbour.csv", HARBOUR_CSV);
     let mut data =
@@ -897,10 +921,100 @@ fn the_inspector_rail_draws_save_only_on_a_window_that_has_one() {
          generated spec: {data_rail:?}"
     );
     assert!(
-        data_rail.iter().any(|t| t == "Save"),
-        "the inspector rail drew no Save on a window that has a Protocol to \
-         write, so the only route to it is the palette: {data_rail:?}"
+        !data_rail.iter().any(|t| t == "Save"),
+        "the inspector rail drew the EDITOR's Save on a window whose \
+         `save-spec` writes the PROTOCOL — a dirty buffer clicked there is \
+         reported saved and is not: {data_rail:?}"
     );
+
+    // …and the surface that does offer it, on the same window, in the same
+    // state: the palette, where the row is the verb and not a pane's button.
+    data.key(egui::Key::Space);
+    assert_eq!(data.app.open_overlay(), Some("palette"));
+    data.settle();
+    let rows = data.app.open_palette_rows();
+    assert!(
+        rows.iter().any(|r| r == "save-spec"),
+        "the Protocol save is offered nowhere at all on a window that has \
+         one to write: {rows:?}"
+    );
+    data.key(egui::Key::Escape);
+}
+
+/// **Going Home takes the Save offer with the document.**
+///
+/// A window walked from a data file, home, and into a shipped chart start. The
+/// palette is built from a flag written fresh every frame; going Home empties
+/// the protocol document without going through the adoption path, so a flag
+/// that only ever went up would leave the start offering a Save that reaches
+/// `save_protocol`, finds no source and returns.
+///
+/// The start is `signals-dashboard`, one of the four shipped starts that open
+/// a chart spec.
+#[test]
+fn going_home_takes_the_save_offer_with_the_start() {
+    let dir = TempDir::new("home-then-start");
+    let path = dir.write("harbour.csv", HARBOUR_CSV);
+    let mut win =
+        Window::over(Boot::data_file(&path.to_string_lossy()).expect("the file opens as a boot"));
+
+    // 1. The data file: a Protocol, and the offer.
+    assert!(win.app.has_protocol_to_save());
+    win.key(egui::Key::Space);
+    assert_eq!(win.app.open_overlay(), Some("palette"));
+    win.settle();
+    assert!(
+        win.app.open_palette_rows().iter().any(|r| r == "save-spec"),
+        "the fixture starts without the offer, so its disappearance below \
+         would prove nothing"
+    );
+    win.key(egui::Key::Escape);
+
+    // 2. Home. Both documents are emptied in place.
+    win.run(press_home());
+    win.settle();
+    assert!(
+        win.app.front_door_is_live(),
+        "cmd-shift-h did not reach the front door"
+    );
+    assert!(!win.app.has_protocol_to_save());
+
+    // 3. A shipped chart start, off the door's own card.
+    let card = win
+        .app
+        .front_door_card_rect(brightfield_shell::starts::DASHBOARD)
+        .expect("the door draws a card for the signals dashboard")
+        .center();
+    win.run(vec![
+        egui::Event::PointerMoved(card),
+        button_at(card, true),
+        button_at(card, false),
+    ]);
+    win.settle();
+    assert!(
+        !win.app.front_door_is_live(),
+        "the card click opened nothing"
+    );
+    assert!(
+        !win.app.has_protocol_to_save(),
+        "a shipped chart start has no Protocol behind it"
+    );
+
+    win.key(egui::Key::Space);
+    assert_eq!(win.app.open_overlay(), Some("palette"));
+    win.settle();
+    let rows = win.app.open_palette_rows();
+    assert!(
+        rows.iter().any(|r| r == "clear-selection"),
+        "the palette is missing the verbs every chart window offers, so this \
+         is not the chart palette: {rows:?}"
+    );
+    assert!(
+        !rows.iter().any(|r| r == "save-spec"),
+        "the Save offer outlived the document it was true of — confirming it \
+         here closes the palette and does nothing: {rows:?}"
+    );
+    win.key(egui::Key::Escape);
 }
 
 // ---------------------------------------------------------------------------
