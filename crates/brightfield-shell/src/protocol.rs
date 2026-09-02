@@ -117,10 +117,9 @@ pub struct ProtocolInputs {
     /// order — the rows the navigator rail lists **under** that table.
     ///
     /// Empty for a Protocol read off a manifest: a declaration says which
-    /// relations a step produces and nothing about what is in them, and a
-    /// column list guessed from SQL would be a claim nothing measured. It is
-    /// filled only on the path that profiled a real file — see
-    /// [`crate::one_step`].
+    /// relations a step produces and not what is in them, and a column list
+    /// guessed from SQL would be a claim no profile stands behind. The
+    /// data-file path fills it after the fact — see [`crate::one_step`].
     pub columns: Vec<ColumnFacts>,
     /// The asset the columns belong to. `None` whenever `columns` is empty.
     pub table: Option<AssetId>,
@@ -444,11 +443,11 @@ fn synth_sheet_rows(graph: &AssetGraph) -> Vec<StepRow> {
                 label: seam.step.clone(),
                 kind,
                 detail,
-                // The offline path has no run behind it, so every step is
+                // The offline path has no run behind it, so a step here is
                 // unrun — and it says the words. An em dash said the same
                 // thing in a spelling the status rail, the inspector and
-                // `status_word` do not use, so the one surface a reader can
-                // check the others against read differently from all of them.
+                // `status_word` do not use, so the sheet a reader checks the
+                // others against was the one surface spelling it differently.
                 status: "not run",
                 live_state: None,
                 skip_reason: None,
@@ -566,8 +565,7 @@ pub struct ProtocolModel {
     /// The asset those columns hang under.
     table: Option<AssetId>,
     /// The spec brightfield wrote when a data file was opened, and where it
-    /// would be written. `None` once it has been saved, and for a Protocol
-    /// that never came from a data file.
+    /// would be written. `None` for a Protocol read off disk.
     source: Option<OneStepProtocol>,
     /// Where the spec was last written, when it has been.
     saved_to: Option<std::path::PathBuf>,
@@ -986,7 +984,7 @@ impl ProtocolModel {
     /// graph and must not be: an asset graph is what the *lineage* says, and a
     /// column list is what the *engine measured*. Keeping the second out of
     /// the first is what stops a manifest read off disk growing a column list
-    /// nothing profiled — see [`ProtocolInputs::columns`].
+    /// no profile stands behind — see [`ProtocolInputs::columns`].
     #[must_use]
     pub fn outline(&self) -> Vec<OutlineRow> {
         let rows = outline_rows(
@@ -1814,7 +1812,7 @@ impl Item<ProtocolDoc> for OutlinePane {
                     if outline_row(ui, row, cx.mode).clicked() {
                         // A column row addresses no node, so it cannot go
                         // through `select_id` — the nav would be asked to
-                        // focus an id its graph has never seen.
+                        // focus an id absent from its graph.
                         if row.depth == 0 {
                             clicked = Some(row.id.clone());
                         } else {

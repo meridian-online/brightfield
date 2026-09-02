@@ -370,7 +370,8 @@ impl ChartItem {
                     // and a document with no session behind it are both still
                     // tiles of a column, and a reader who clicks one is asking
                     // the same question either way. On a dashboard that
-                    // declared no tile columns this selects nothing — see
+                    // declared no tile columns the index is out of range and
+                    // the selection is left empty — see
                     // `ChartDoc::select_tile`.
                     doc.select_tile(plot);
                     if doc.composed.plots[plot].gesture.is_some() && doc.is_live() {

@@ -58,9 +58,9 @@ impl OutlineRow {
     ///
     /// [`AssetKind::Internal`] because a column is not an asset the graph
     /// carries — it has no node, no producer of its own and no seam. The kind
-    /// is never drawn for a column row (that edge draws `note`); it is here
-    /// because the field is not optional and `Internal` is the only member
-    /// that does not claim the row is something the canvas could show.
+    /// is not drawn for a column row (that edge draws `note`); it is here
+    /// because the field is not optional, and `Internal` is the member that
+    /// claims least — it names no thing the canvas could put a tile on.
     #[must_use]
     pub fn column(id: AssetId, label: String, note: String, selected: bool) -> Self {
         Self {

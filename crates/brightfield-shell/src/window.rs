@@ -3594,9 +3594,9 @@ impl MeridianApp {
             }
         }
         // The one place the two documents' idea of "which column" is
-        // reconciled, and it is here because it can only happen with both
-        // borrows over: an `Item` is handed its own document and no other, so
-        // the outline records a pick and this carries it. The mirror back is
+        // reconciled, and it is here because both borrows are over by this
+        // point: an `Item` is handed its own document and no other, so the
+        // outline records a pick and this carries it. The mirror back is
         // unconditional — a tile click writes the chart document directly and
         // the rail's highlight has to follow it too.
         if let Some(column) = self.protocol.doc.model.take_column_pick() {
@@ -3853,9 +3853,9 @@ impl MeridianApp {
     /// what is remembered afterwards — is on this side of the dispatch.
     ///
     /// A window with no Protocol behind it (a chart spec, a shipped start, the
-    /// front door) has nothing to write and says so by returning `None` rather
-    /// than by raising anything. That is what keeps the Save verb meaning what
-    /// it has always meant everywhere else.
+    /// front door) has no spec to write and says so by returning `None` rather
+    /// than by raising anything. That is what leaves the Save verb doing on
+    /// those windows what it did before this existed.
     ///
     /// What is remembered is a **path**, not a start id: `SavedLayout::opened`
     /// holds an id this build ships and cannot name a file, but

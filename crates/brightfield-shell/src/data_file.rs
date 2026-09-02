@@ -22,9 +22,9 @@
 //!
 //! [`open`] also builds the **spec** that says what was opened — one SQL step
 //! reading the file, one table, and the file's columns — so the navigator,
-//! Steps and inspector rails have something to draw. That is
-//! [`crate::one_step`]'s shape and none of this module's business; what is
-//! here is the route.
+//! Steps and inspector rails have something to draw. The shape of that spec
+//! is [`crate::one_step`]'s business rather than this module's; what is here
+//! is the route.
 //!
 //! **What is drawn on it is [`crate::dashboard`]'s decision, not this
 //! module's**: a tile per column, each chosen from what that column means. This

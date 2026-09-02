@@ -11,11 +11,11 @@
 //!
 //! # What is written and what is not
 //!
-//! Brightfield writes the spec and never a run record. The step is *not run*
-//! and says so; the table the charts read is materialised by the chart
-//! document's own engine exactly as it was before this module existed. Nothing
-//! here opens a database, executes SQL, or asks `arc` to run anything — the
-//! model file is a declaration, and the only thing that ever reads it back is
+//! Brightfield writes the spec and no run record. The step is *not run* and
+//! says so; the table the charts read is materialised by the chart document's
+//! own engine exactly as it was before this module existed. This module writes
+//! text: it opens no database, executes no SQL and asks `arc` to run nothing.
+//! The model file is a declaration, and what reads it back is
 //! [`crate::protocol::load_protocol_str`], which derives the lineage graph from
 //! its text.
 //!
@@ -67,10 +67,10 @@ pub const STEP_NAME: &str = "load";
 /// Where the step's model is written, relative to the Protocol's directory.
 ///
 /// `models/` is `arc`'s own convention for a `sql:` step's file. The other
-/// half of the pair — the manifest's own filename — is not spelled here at
-/// all: [`brightfield_protocol::MANIFEST_FILENAME`] re-exports the loader's
-/// constant, so a bump that renamed it cannot leave this writing to a name
-/// nothing reads.
+/// half of the pair — the manifest's own filename — is not spelled here:
+/// [`brightfield_protocol::MANIFEST_FILENAME`] re-exports the loader's
+/// constant, so a bump that renamed it cannot leave this writing to a name the
+/// loader has stopped looking for.
 pub const MODEL_PATH: &str = "models/load.sql";
 
 /// What the rails know about one column of the opened table.
@@ -86,7 +86,7 @@ pub struct ColumnFacts {
     /// The whole semantic label the tile was chosen from, when a trusted label
     /// decided it — `representation.numeric.decimal_number`. `None` when the
     /// DuckDB type decided instead, which is what a session with no FineType
-    /// bundle behind it gets for every column.
+    /// bundle behind it gets.
     pub label: Option<String>,
     /// What the 240-point navigator rail draws beside the column name: the
     /// **leaf** of [`Self::label`] (`decimal_number`), or the storage type when
@@ -286,9 +286,10 @@ fn reader_for(path: &Path) -> &'static str {
     }
 }
 
-/// `path`'s stem as a SQL identifier that needs no quoting: every character
+/// `path`'s stem as a SQL identifier that needs no quoting: a character
 /// outside `[A-Za-z0-9_]` becomes `_`, and a name that would start with a digit
-/// (or is empty) is prefixed.
+/// (or is empty) is prefixed. `a_file_stem_becomes_an_unquoted_identifier`
+/// holds both halves.
 ///
 /// Unquoted on purpose. The name is written into the model's `CREATE OR
 /// REPLACE TABLE` target, into `produces:`, and read back out of the SQL by
@@ -311,10 +312,11 @@ fn table_name(path: &Path) -> String {
 /// The `arcform.yaml` a data file opens as.
 ///
 /// Single-quoted scalars for the path, for the reason
-/// [`crate::data_file`]'s emitter gives: the only escape a single-quoted YAML
-/// scalar has is a doubled quote, so a path full of punctuation survives
-/// verbatim. `accept` has already refused a path carrying a control character,
-/// which is the one thing single-quoting cannot carry.
+/// [`crate::data_file`]'s emitter gives: a single-quoted YAML scalar
+/// interprets a doubled quote and leaves the rest of its bytes alone, so a
+/// path full of punctuation survives verbatim. `accept` has already refused a
+/// path carrying a control character, which is the byte single-quoting cannot
+/// carry — YAML folds a line break inside a quoted scalar to a space.
 fn manifest_yaml(name: &str, spelled: &str) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "name: {name}");

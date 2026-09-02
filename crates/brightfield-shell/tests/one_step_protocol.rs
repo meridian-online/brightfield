@@ -72,8 +72,8 @@ impl Drop for TempDir {
 
 /// Four columns, three of which earn a tile: a `VARCHAR` of stations ranked, a
 /// `BIGINT` of readings binned, a `DOUBLE` of depths binned — and a `survey`
-/// column of one distinct value, which every picture of it draws as one bar, so
-/// the generator declines it.
+/// column of one distinct value, which a picture of it draws as a single bar,
+/// so the generator declines it.
 ///
 /// The declined column is the point of the fourth: the navigator rail lists the
 /// **table's** columns, not the dashboard's tiles, so a column with no picture
@@ -530,8 +530,8 @@ fn a_spec_the_loader_refuses_is_not_written() {
 /// Protocol, ahead of the curated Datasets.**
 ///
 /// "The next launch" is a second window built over the layout the first one
-/// wrote into — the same value `startup::boot_layout` would hand back — opened
-/// on nothing, which is the front door. What is read is the frame: the sections
+/// wrote into — the same value `startup::boot_layout` would hand back — over
+/// an empty boot, which is the front door. What is read is the frame: the sections
 /// in the order they were drawn, and the rows drawn under the Protocols
 /// heading, off the galleys the painter was handed.
 #[test]
@@ -695,8 +695,8 @@ fn clicking_a_saved_protocols_row_reopens_it_as_the_dashboard() {
 /// A window over a data file draws the **chart** on the canvas and the Protocol
 /// in the rails — not the lineage graph.
 ///
-/// The rule is `graph_takes_the_canvas`: the graph takes it only when there is
-/// no chart. Filling the protocol document was the change that could have moved
+/// The rule is `graph_takes_the_canvas`: the graph takes it when there is no
+/// chart to hold it. Filling the protocol document was the change that could have moved
 /// this, and moving it would replace the analyst's dashboard with a two-node
 /// diagram.
 #[test]
