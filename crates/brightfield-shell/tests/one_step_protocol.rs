@@ -206,12 +206,12 @@ impl Window {
     /// **Save, through the gesture a person has.** Open the chart command
     /// palette with `space`, type the verb's longname (an exact match ranks
     /// first) and confirm with enter — `overlay_wiring.rs`'s
-    /// `confirm_chart_verb`, which is the path that sweep drives every chart
+    /// `confirm_chart_verb`, which is the path that sweep drives each chart
     /// verb through.
     ///
     /// Calling `MeridianApp::save_protocol` directly is what the refused round
-    /// of this file did, and it proved the method rather than the product:
-    /// nothing in the shipped app produced the verb, so replacing the call
+    /// of this file did, and it proved the method rather than the product: no
+    /// gesture in the shipped app produced the verb, so replacing the call
     /// with a no-op left the suite green.
     fn save_through_the_palette(&mut self) {
         self.key(egui::Key::Space);
@@ -562,7 +562,7 @@ fn plot_columns(app: &MeridianApp, index: usize) -> Vec<String> {
 /// The second is that the rail drew something: the column's name, the
 /// `finetype` caption and its type, harvested from the frame's own galleys. An
 /// inspector whose column block returned immediately leaves `selected_column`
-/// set and the rail blank, which every assertion against the document alone
+/// set and the rail blank, which an assertion against the document alone
 /// passes through.
 #[test]
 fn clicking_a_tile_selects_the_column_that_plot_draws_and_the_inspector_shows_it() {

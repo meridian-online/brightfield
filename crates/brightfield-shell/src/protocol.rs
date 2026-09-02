@@ -246,7 +246,7 @@ pub fn offline_optin() -> bool {
 /// # What is exempt, and what each exemption actually is
 ///
 /// **A Protocol whose single step is a local read of a data file this build
-/// opens does not reach this refusal at all**, because it is not rendered as a
+/// opens does not reach this refusal**, because it is not rendered as a
 /// manifest: [`crate::window::Boot::open_sampled`] resolves the file the step
 /// reads and opens *that*, and the graph the rails then draw is the one
 /// [`crate::one_step`] derives from the profile brightfield just took. The

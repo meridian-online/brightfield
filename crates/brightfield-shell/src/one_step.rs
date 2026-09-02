@@ -148,8 +148,8 @@ pub struct OneStepProtocol {
     pub columns: Vec<ColumnFacts>,
     /// One entry per **tile**, in the order the dashboard laid them out and
     /// therefore the order the composition places its plots — what a click on
-    /// plot *n* names. See [`tiles_in_plot_order`] for why this is not
-    /// [`Self::columns`] filtered.
+    /// plot *n* names. Not [`Self::columns`] filtered: see the private
+    /// `tiles_in_plot_order` for the point map that separates them.
     pub tiles: Vec<ColumnFacts>,
 }
 
@@ -224,9 +224,9 @@ impl OneStepProtocol {
     /// **Both files are gated before either is written**, and they need two
     /// gates because the pinned loader reads one of them. The manifest's bytes
     /// go through `arc`'s own validator — the gate `arc run` loads with — which
-    /// never opens the model: `Manifest::from_yaml_str` touches no filesystem,
-    /// so a `sql:` step naming a model that is malformed, or absent, is a
-    /// manifest it accepts. The model is gated by [`Self::inputs`] instead,
+    /// does not open the model: `Manifest::from_yaml_str` touches no
+    /// filesystem, so a `sql:` step naming a model that is malformed, or
+    /// absent, is a manifest it accepts. The model is gated by [`Self::inputs`] instead,
     /// which parses it exactly as the rails do and degrades a statement it
     /// cannot read to an issue-badged chip; a spec that would draw one is
     /// refused here rather than written. Either refusal leaves the directory
@@ -401,12 +401,13 @@ fn yaml_quoted(value: &str) -> String {
 /// [`ColumnFacts::because`] and no tile.
 ///
 /// A column can be drawn by a tile that is not *of* it: a point map is one
-/// tile over two columns, whose [`Tile::column`] is the longitude and whose
-/// [`Tile::paired_column`] is the latitude. Both are looked up here, so the
-/// latitude row reads as drawn rather than declined — and both carry the other
-/// half in [`ColumnFacts::paired`]. That is also why the tile list the chart
-/// document is handed is built separately, in [`tiles_in_plot_order`]: two
-/// column rows can share one plot.
+/// tile over two columns, whose [`Tile::column`](crate::dashboard::Tile::column)
+/// is the longitude and whose
+/// [`Tile::paired_column`](crate::dashboard::Tile::paired_column) is the
+/// latitude. Both are looked up here, so the latitude row reads as drawn rather
+/// than declined — and both carry the other half in [`ColumnFacts::paired`].
+/// That is also why the tile list the chart document is handed is built
+/// separately, by `tiles_in_plot_order`: two column rows can share one plot.
 fn facts(columns: &[ColumnProfile], dashboard: &Dashboard) -> Vec<ColumnFacts> {
     columns.iter().map(|p| facts_for(p, dashboard)).collect()
 }
@@ -482,8 +483,9 @@ fn facts_for(profile: &ColumnProfile, dashboard: &Dashboard) -> ColumnFacts {
 /// that way, because the tiles are what `Dashboard::to_spec` lays out and
 /// therefore what the composition places.
 ///
-/// Each entry is the facts of the tile's own [`Tile::column`] — for a point map
-/// the longitude, with the latitude in [`ColumnFacts::paired`].
+/// Each entry is the facts of the tile's own
+/// [`Tile::column`](crate::dashboard::Tile::column) — for a point map the
+/// longitude, with the latitude in [`ColumnFacts::paired`].
 fn tiles_in_plot_order(columns: &[ColumnProfile], dashboard: &Dashboard) -> Vec<ColumnFacts> {
     dashboard
         .tiles()
