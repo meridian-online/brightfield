@@ -53,6 +53,9 @@
 //!   and what can be done with it, plus the live document controls (param
 //!   sliders, interval sliders, the hover-overlay checkbox) the pane it
 //!   replaces used to be the whole of.
+//! - [`one_step`] — the Protocol a data file opens as: one SQL step reading
+//!   the file, the table it produces, and the columns the rails list under it.
+//!   The spec brightfield writes, and never a run record.
 //! - [`overlays`] — the picker delegates: the domain halves of the command
 //!   palette, help sheet, jump lists and argument prompt, over the
 //!   framework-free corpora in `brightfield-keys` / `brightfield-model`.
@@ -80,6 +83,7 @@ pub mod inspector;
 pub mod interval_drag;
 pub mod legend;
 pub mod navigation;
+pub mod one_step;
 pub mod overlays;
 pub mod pipeline;
 pub mod protocol;

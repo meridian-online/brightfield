@@ -78,6 +78,7 @@ use crate::chart_kinds;
 use crate::design::Mode;
 use crate::interval_drag::IntervalDrags;
 use crate::navigation::{AxisLock, NavGesture, NavOutcome};
+use crate::one_step::ColumnFacts;
 use crate::pipeline::{Composed, IntervalControl, LiveDashboard};
 use crate::watch::FileWatcher;
 use brightfield_spec::layout::Rect as SpecRect;
@@ -275,6 +276,20 @@ pub struct ChartDoc {
     /// is a different event with a different lifetime, and it goes to
     /// [`Self::interaction_fault`] and the window's banner instead.
     nav_notice: Option<String>,
+    /// What each **tile** of a generated dashboard is of, in the composition's
+    /// own plot order — one entry per plot, or empty for a document that was
+    /// not generated from a data file.
+    ///
+    /// The order is the join. `Dashboard::to_spec` lays the tiles out in the
+    /// order it chose them and the composition places its plots in the order
+    /// the spec declares them, so plot *n* draws tile *n*'s column; this is
+    /// that correspondence recorded once, at the point both are in scope,
+    /// rather than re-derived from a plot's channel expression at click time.
+    tile_columns: Vec<ColumnFacts>,
+    /// Which of them the inspector is showing, by index into
+    /// [`Self::tile_columns`]. Set by a click on a tile, cleared with the
+    /// document.
+    selected_tile: Option<usize>,
     canvas: CanvasSlot<CanvasKey>,
 }
 
@@ -328,6 +343,8 @@ impl ChartDoc {
             axis_lock: AxisLock::default(),
             nav_plot: 0,
             nav_notice: None,
+            tile_columns: Vec::new(),
+            selected_tile: None,
             canvas: CanvasSlot::new(host),
         }
     }
@@ -355,6 +372,8 @@ impl ChartDoc {
             axis_lock: AxisLock::default(),
             nav_plot: 0,
             nav_notice: None,
+            tile_columns: Vec::new(),
+            selected_tile: None,
             canvas: CanvasSlot::headless(),
         }
     }
@@ -402,6 +421,9 @@ impl ChartDoc {
         self.nav_plot = 0;
         self.authored = None;
         self.spec_path = None;
+        // …and the columns described the replaced document's table.
+        self.tile_columns = Vec::new();
+        self.selected_tile = None;
         // The watch list described the replaced document's files, and any
         // in-flight marks belonged to its session — both go with it.
         self.watch.watch(None, Vec::new());
@@ -1006,6 +1028,38 @@ impl ChartDoc {
     /// everything that belonged to the outgoing spec, this included.
     pub fn set_authored(&mut self, authored: Authored) {
         self.authored = Some(authored);
+    }
+
+    /// Declare what each tile of this dashboard is of, in plot order — the
+    /// open-a-data-file path's, and nothing else's.
+    pub fn set_tile_columns(&mut self, columns: Vec<ColumnFacts>) {
+        self.tile_columns = columns;
+        self.selected_tile = None;
+    }
+
+    /// What each tile is of, in plot order.
+    #[must_use]
+    pub fn tile_columns(&self) -> &[ColumnFacts] {
+        &self.tile_columns
+    }
+
+    /// Select the column tile `plot` draws. Out-of-range indices select
+    /// nothing rather than panicking: a document with no declared tile columns
+    /// is the ordinary case for every dashboard that came from a spec.
+    pub fn select_tile(&mut self, plot: usize) {
+        self.selected_tile = (plot < self.tile_columns.len()).then_some(plot);
+    }
+
+    /// Select by column name — what an outline row's click resolves to.
+    /// A name this document draws no tile for selects nothing.
+    pub fn select_column(&mut self, column: &str) {
+        self.selected_tile = self.tile_columns.iter().position(|c| c.column == column);
+    }
+
+    /// The column the inspector is showing, if one is selected.
+    #[must_use]
+    pub fn selected_column(&self) -> Option<&ColumnFacts> {
+        self.selected_tile.and_then(|i| self.tile_columns.get(i))
     }
 
     /// Reserve the raster's rect in `ui` and paint the composited dashboard

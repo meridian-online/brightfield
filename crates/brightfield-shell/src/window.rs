@@ -56,6 +56,7 @@
 //! the moment it gains content.
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 
 use egui::containers::{CentralPanel, Panel};
 use egui_tiles::{Behavior, Container, Tile};
@@ -82,7 +83,7 @@ use crate::canvas::EguiCanvasHost;
 use crate::data_grid::DATA;
 use crate::design::{self, Mode};
 use crate::editor::EDITOR;
-use crate::inspector::{InspectorPane, Selection};
+use crate::inspector::{ColumnTable, InspectorPane, Selection, TableHandle};
 use crate::overlays::{CommandPalette, HelpSheet, JumpTarget, JumpToNode};
 use crate::pipeline::Composed;
 use crate::protocol::{
@@ -862,7 +863,16 @@ impl Boot {
             composed,
             dashboard,
             spec_file,
+            protocol,
         } = opened;
+        // The other document. A spec this module wrote and the loader refused
+        // is a build-time defect, not a user's circumstance, so it is said out
+        // loud and the file still opens — with the rails reporting that nothing
+        // exists, which is loud enough for a reader to notice.
+        let inputs = protocol.inputs().unwrap_or_else(|e| {
+            eprintln!("the Protocol for this file could not be built: {e}");
+            ProtocolInputs::empty()
+        });
         // Only for a dashboard of ONE tile: that is the case where a tile's
         // picture is the document's picture, so the chart pane can host it
         // through that kind's module. A dashboard of several tiles is one
@@ -876,6 +886,7 @@ impl Boot {
             live: Some(live),
             spec_path: spec_file,
             authored,
+            protocol: inputs,
             ..Self::charts(composed)
         }
     }
@@ -888,17 +899,24 @@ impl Boot {
     /// had to agree about an environment gate, a window size and a summary line
     /// that neither shared.
     ///
-    /// Three kinds now, not two: a chart spec, a Protocol manifest, and a
-    /// **data file**, which is decided first and by extension alone — see
-    /// [`names_a_data_file`]. It has to come first because the other two are
-    /// classified by reading the file as text, and a Parquet is not text.
+    /// Four outcomes, in the order they are decided. A **data file** goes
+    /// first and by extension alone — see [`names_a_data_file`] — because the
+    /// other three are classified by reading the file as text and a Parquet is
+    /// not text. Then a **one-step Protocol**, which is a manifest whose single
+    /// step is a local read of a data file this build opens: it resolves to
+    /// that file and takes the data-file route, so the declaration is read to
+    /// find the file and then discarded rather than rendered (see
+    /// [`crate::one_step::data_file_named_by`], and
+    /// [`crate::protocol::run_less_manifest_refusal`] for why that is not a
+    /// hole in the gate below). Then any other **Protocol manifest**, behind
+    /// that gate. Then a **chart spec**.
     ///
     /// # Errors
-    /// A message if the file cannot be read, if it is a run-less protocol
-    /// manifest and this process has not opted in — see
+    /// A message if the file cannot be read; if it is a run-less protocol
+    /// manifest of some other shape and this process has not opted in — see
     /// [`crate::protocol::run_less_manifest_refusal`], which states that rule
-    /// once for both callers — or if the pipeline rejects it. A data file
-    /// refuses through [`Boot::data_file`].
+    /// once for both callers; or if the pipeline rejects it. A data file, and a
+    /// one-step Protocol resolved to one, refuse through [`Boot::data_file`].
     pub fn open(spec: &str, flow: Flow, focus: Option<String>) -> Result<Self, String> {
         Self::open_sampled(spec, flow, focus, None)
     }
@@ -935,6 +953,32 @@ impl Boot {
             return Self::data_file(spec);
         }
         let text = std::fs::read_to_string(spec).map_err(|e| format!("read {spec}: {e}"))?;
+        // A Protocol whose single step is a local read of a data file this
+        // build opens is opened AS that data file — the file is profiled, the
+        // dashboard is generated over it and the spec is re-derived, exactly as
+        // if the file had been named directly. That is what makes a saved
+        // Protocol reopenable, and it is why the run-less-manifest gate below
+        // does not stand in front of it: nothing here renders the declaration.
+        // The manifest is read to find the file and then discarded; the graph
+        // the rails draw is the one derived from the profile.
+        //
+        // The shape is the whole predicate — see
+        // `crate::one_step::data_file_named_by` for why it is a shape and not
+        // a marker brightfield writes into its own specs.
+        let dir = std::path::Path::new(spec)
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .to_path_buf();
+        if let Some(data) = crate::one_step::data_file_named_by(&text, &dir) {
+            if sample.is_some() {
+                return Err(format!(
+                    "{spec}: a sample rate is pushed into a plot's own query, and the dashboard \
+                     generated for a data file has no authored plot to push it into. Open it \
+                     without the flag."
+                ));
+            }
+            return Self::data_file(&data.to_string_lossy());
+        }
         if brightfield_protocol::is_protocol_manifest(&text) {
             if !crate::protocol::offline_optin() {
                 return Err(crate::protocol::run_less_manifest_refusal(spec));
@@ -1262,6 +1306,34 @@ struct ChartView {
     /// `crate::inspector`'s module docs for why this is not a field on
     /// [`ChartDoc`].
     inspector_selection: Selection,
+    /// Which table a selected column belongs to, and the step that produced
+    /// it — the protocol document's answer, handed to the chart document's
+    /// inspector. Written whenever a document is adopted; see
+    /// [`wire_columns`].
+    inspector_table: TableHandle,
+}
+
+/// Hand the chart document the columns its **tiles** draw, and the inspector
+/// the table those columns belong to.
+///
+/// The tile columns come off the dashboard's own tiles, in the order it laid
+/// them out and therefore the order the composition placed its plots in — see
+/// `one_step::tiles_in_plot_order`. Filtering the *column* list to the ones
+/// that earned a picture is the same thing right up until a point map, which
+/// is one tile over two columns and would put two entries where the
+/// composition places one plot.
+///
+/// Both are set from one call because they are one fact split across two
+/// documents, and a window that had moved one without the other would draw a
+/// column block naming the previous file's table.
+fn wire_columns(chart: &mut ChartDoc, model: &ProtocolModel, table: &TableHandle) {
+    let tiles: Vec<crate::one_step::ColumnFacts> = model.tiles().to_vec();
+    table.set((!tiles.is_empty()).then(|| ColumnTable {
+        table: model.protocol.clone(),
+        step: crate::one_step::STEP_NAME.to_string(),
+        kind: "sql",
+    }));
+    chart.set_tile_columns(tiles);
 }
 
 /// The protocol half of the window: its document and its live items.
@@ -1393,6 +1465,11 @@ pub struct MeridianApp {
     /// the `Ui` borrow across a window this process does not own. It is read
     /// after the frame's requests are applied — see [`MeridianApp::draw`].
     pick_requested: bool,
+    /// A saved Protocol whose front-door row was clicked, latched for after the
+    /// frame. Latched rather than acted on for the reason `pick_requested` is:
+    /// the `Ui` borrow the door drew through is still live at the click, and
+    /// reopening replaces both documents.
+    door_open_protocol: Option<String>,
     /// Whether this app may raise an operating-system dialog at all.
     ///
     /// **Off unless the live window turns it on**, which is the safe default
@@ -1564,7 +1641,7 @@ impl MeridianApp {
     fn assemble(
         focus: Option<String>,
         mut layout: SavedLayout,
-        chart_doc: ChartDoc,
+        mut chart_doc: ChartDoc,
         mut protocol_doc: ProtocolDoc,
         mode: Mode,
     ) -> Self {
@@ -1634,11 +1711,21 @@ impl MeridianApp {
         // construction: an `InspectorPane` sharing a `Selection` cell with
         // the `ChartView` it sits in. See `crate::inspector`'s module docs.
         let inspector_selection = Selection::default();
+        let inspector_table = TableHandle::default();
         let mut chart_items = charts.instantiate();
         chart_items.insert(
             charts.pane_key(CONTROLS),
-            Box::new(InspectorPane::new(inspector_selection.clone())),
+            Box::new(InspectorPane::new(
+                inspector_selection.clone(),
+                inspector_table.clone(),
+            )),
         );
+        // The two documents' one join: what each tile is of. Done here rather
+        // than in each constructor because all four of them land here, and the
+        // pair has to be set together — a chart document carrying tile columns
+        // with no table declared beside them would draw a column block that
+        // could not say what the column belongs to.
+        wire_columns(&mut chart_doc, &protocol_doc.model, &inspector_table);
 
         // The inspector rail opens on the pane belonging to whichever document
         // is leading the window — the operator when the graph has the canvas,
@@ -1657,6 +1744,7 @@ impl MeridianApp {
                 doc: chart_doc,
                 items: chart_items,
                 inspector_selection,
+                inspector_table,
             },
             protocol: ProtocolView {
                 doc: protocol_doc,
@@ -1685,6 +1773,7 @@ impl MeridianApp {
             door_help: None,
             door_open_file: None,
             pick_requested: false,
+            door_open_protocol: None,
             dialogs_allowed: false,
             overlay: None,
             overlay_keys: OverlayKeys::from_registry(),
@@ -2529,7 +2618,6 @@ impl MeridianApp {
                 Some(_) => {}
                 None => self.charts.inspector_selection.set(None),
             }
-
             let locator = plan.expect_region(arrangement::LOCATOR_BAND);
             let crumbs = self.crumb_line();
             let source = self.document_source();
@@ -2952,6 +3040,12 @@ impl MeridianApp {
                 self.open_data_file(&ctx, &path.to_string_lossy());
             }
         }
+        // A saved Protocol picked off the door. No dialog and no gate: the path
+        // came off a row this build already decided it can reopen, so unlike
+        // the picker above this runs on every tier.
+        if let Some(path) = self.door_open_protocol.take() {
+            self.open_protocol_path(&ctx, &path);
+        }
         if graph_on_canvas {
             if !door {
                 self.read_active_tab();
@@ -3107,18 +3201,40 @@ impl MeridianApp {
         ))));
     }
 
-    /// Open the command palette at the chart altitude, restricted to
-    /// [`crate::overlays::CHART_PALETTE_VERBS`] — see [`Self::overlay_open_keys`]
-    /// for why the chart view cannot simply reuse [`Self::open_palette`] with
+    /// Open the command palette at the chart altitude, restricted to what a
+    /// window in **this** state offers — see [`Self::overlay_open_keys`] for
+    /// why the chart view cannot simply reuse [`Self::open_palette`] with
     /// [`Altitude::View`].
+    ///
+    /// The list is [`crate::overlays::chart_palette_verbs`] over
+    /// [`Self::has_protocol_to_save`], not a static: a verb whose handler has
+    /// no work on this window is a row that confirms and then sits there,
+    /// which is the row that list exists to keep out.
+    /// `overlay_wiring.rs`'s `a_chart_start_is_offered_no_save` reads the
+    /// absence off a shipped start's own palette, and
+    /// `going_home_takes_the_save_offer_with_the_start` walks one window from
+    /// a data file, to the front door, and into a shipped start.
     fn open_chart_palette(&mut self) {
+        let allow = crate::overlays::chart_palette_verbs(self.has_protocol_to_save());
         self.overlay = Some(Overlay::Palette(Picker::new(
-            CommandPalette::new_restricted(
-                Altitude::View,
-                self.recency.clone(),
-                crate::overlays::CHART_PALETTE_VERBS,
-            ),
+            CommandPalette::new_restricted(Altitude::View, self.recency.clone(), &allow),
         )));
+    }
+
+    /// **Whether this window has a Protocol for Save to write** — what the
+    /// chart palette is built from, and the same question
+    /// [`Self::save_protocol`] answers by returning `None`.
+    ///
+    /// The inspector rail does not read it: that rail draws the *editor's*
+    /// Save entry, which is a different write under the same verb name, so it
+    /// offers neither — see [`crate::inspector::dispatchable`].
+    ///
+    /// True for a window a data file opened, false for one over a chart spec,
+    /// a shipped start or the front door. Asked of the live document rather
+    /// than cached, so going Home takes the row away with the document.
+    #[must_use]
+    pub fn has_protocol_to_save(&self) -> bool {
+        self.protocol.doc.model.source().is_some()
     }
 
     /// Open the node jump over the outline — the graph in view, in its
@@ -3205,6 +3321,28 @@ impl MeridianApp {
             Overlay::Help(_) => "help",
             Overlay::Jump(_) => "jump",
         })
+    }
+
+    /// The longnames the **open palette** is listing, in the order it lists
+    /// them — empty when no palette is open.
+    ///
+    /// Read off the delegate this window is holding rather than rebuilt from
+    /// an allow table, because the allow table is the thing a test of this
+    /// needs to be independent of: what a window offers is a property of that
+    /// window's state (`Self::has_protocol_to_save`), and a test that
+    /// re-derived the list from the same table could not see the two coming
+    /// apart.
+    #[must_use]
+    pub fn open_palette_rows(&self) -> Vec<String> {
+        let Some(Overlay::Palette(picker)) = self.overlay.as_ref() else {
+            return Vec::new();
+        };
+        use meridian_egui::PickerDelegate as _;
+        let delegate = &picker.delegate;
+        (0..delegate.match_count())
+            .filter_map(|i| delegate.candidate(i))
+            .map(|c| c.longname.to_string())
+            .collect()
     }
 
     /// The persistent banner layer, read-only — what a test holds the
@@ -3479,6 +3617,17 @@ impl MeridianApp {
                     if verb.as_str() == "clear-selection" {
                         self.charts.doc.clear_selection();
                         ctx.request_repaint();
+                    } else if verb.as_str() == "save-spec" {
+                        // The window's Save, not the editor's. The editor
+                        // consumes cmd-S itself while its text edit holds the
+                        // keyboard (`EditorPane::ui`), so that gesture never
+                        // becomes a request and this arm cannot take it; what
+                        // reaches here is the verb raised from a toolbar or
+                        // dispatched by a test, over a window whose document
+                        // came from a data file. A window with no Protocol
+                        // behind it answers `None` and nothing happens, which
+                        // is what the verb did here before.
+                        self.save_protocol(ctx);
                     } else if navigation_verb(&mut self.charts.doc, verb.as_str()) {
                         ctx.request_repaint();
                     }
@@ -3490,6 +3639,21 @@ impl MeridianApp {
                 Request::Repaint => ctx.request_repaint(),
             }
         }
+        // The one place the two documents' idea of "which column" is
+        // reconciled, and it is here because both borrows are over by this
+        // point: an `Item` is handed its own document and no other, so the
+        // outline records a pick and this carries it. The mirror back is
+        // unconditional — a tile click writes the chart document directly and
+        // the rail's highlight has to follow it too.
+        if let Some(column) = self.protocol.doc.model.take_column_pick() {
+            self.charts.doc.select_column(&column);
+            ctx.request_repaint();
+        }
+        let shown = self.charts.doc.selected_column().map(|c| c.column.clone());
+        self.protocol
+            .doc
+            .model
+            .set_selected_column(shown.as_deref());
     }
 
     /// Return to the front door, **keeping the session** so the door's
@@ -3639,7 +3803,7 @@ impl MeridianApp {
         ctx.request_repaint();
     }
 
-    /// Take the charts half of `boot` into a window that already exists.
+    /// Take `boot` — both its documents — into a window that already exists.
     ///
     /// The counterpart of what [`MeridianApp::with_layout`] does while building
     /// one, in the same order and with the same fields — a boot is a document
@@ -3652,7 +3816,7 @@ impl MeridianApp {
     /// entry: it clears the session, the spec path, the authored record and
     /// everything else that belonged to the outgoing document, so each of them
     /// has to be put back **after** it rather than before.
-    fn adopt_chart_boot(&mut self, boot: Boot) {
+    fn adopt_boot(&mut self, boot: Boot) {
         self.open_chart(boot.composed);
         if let Some(live) = boot.live {
             self.charts.doc.attach_live(live);
@@ -3666,6 +3830,17 @@ impl MeridianApp {
         if let Some(authored) = boot.authored {
             self.charts.doc.set_authored(authored);
         }
+        // …and the other document, which is what fills the navigator, Steps
+        // and inspector rails. It goes with the chart half rather than
+        // separately: they are two readings of one file, and a window holding
+        // one file's chart beside another file's Protocol is a state nothing
+        // downstream is written for.
+        self.protocol.doc.open(boot.protocol);
+        wire_columns(
+            &mut self.charts.doc,
+            &self.protocol.doc.model,
+            &self.charts.inspector_table,
+        );
     }
 
     /// Open the data file at `chosen` into the chart document: the file as a
@@ -3705,8 +3880,92 @@ impl MeridianApp {
                 return;
             }
         };
-        self.adopt_chart_boot(boot);
+        self.adopt_boot(boot);
         self.notifications.dismiss(banner);
+        self.toasts.push(Toast::new(
+            Severity::Success,
+            format!("Opened {}", self.title()),
+        ));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        ctx.request_repaint();
+    }
+
+    /// Write this window's Protocol to disk: `arcform.yaml` and its one model,
+    /// in the data file's own directory.
+    ///
+    /// **The entry point a test drives and the entry point the Save verb
+    /// reaches through**, the same arrangement [`Self::open_data_file`] has and
+    /// for the same reason: everything worth gating — what is written, where,
+    /// what is remembered afterwards — is on this side of the dispatch.
+    ///
+    /// A window with no Protocol behind it (a chart spec, a shipped start, the
+    /// front door) has no spec to write and says so by returning `None`, which
+    /// raises no banner and writes no toast. That is what leaves the Save verb
+    /// doing on those windows what it did before this existed.
+    ///
+    /// What is remembered is a **path**, not a start id: `SavedLayout::opened`
+    /// holds an id this build ships and cannot name a file, but
+    /// `SavedLayout::recents` is keyed by a string and the front door reopens a
+    /// row by whichever of the two its id turns out to be. So a saved Protocol
+    /// is listed on the next launch and the Protocols section leads with it —
+    /// which is the whole of what saving buys a reader who closes the window.
+    pub fn save_protocol(&mut self, ctx: &egui::Context) -> Option<Result<PathBuf, String>> {
+        let banner = NotificationId::new("save-protocol");
+        let source = self.protocol.doc.model.source()?.clone();
+        let written = source.save_to(&source.dir);
+        match &written {
+            Ok(path) => {
+                self.notifications.dismiss(banner);
+                let name = self.protocol.doc.model.protocol.clone();
+                let run = self.recorded_run_state();
+                self.layout
+                    .live_mut()
+                    .remember(&path.to_string_lossy(), &name, run, now_secs());
+                self.toasts
+                    .push(Toast::new(Severity::Success, format!("Saved {name}")));
+            }
+            Err(e) => {
+                eprintln!("could not save the Protocol: {e}");
+                self.notifications.raise(
+                    Notification::new(banner, Severity::Error, "Could not save this Protocol")
+                        .body(e.clone()),
+                );
+            }
+        }
+        ctx.request_repaint();
+        Some(written)
+    }
+
+    /// Open the Protocol saved at `path` — the route a front door row for a
+    /// saved Protocol takes.
+    ///
+    /// It goes through [`Boot::open`], which classifies a one-step Protocol
+    /// back to the data file it reads, so this and the picker land on the same
+    /// document for the same file. A path that no longer resolves raises a
+    /// banner and changes nothing, exactly as a data file that will not read
+    /// does.
+    pub fn open_protocol_path(&mut self, ctx: &egui::Context, path: &str) {
+        let banner = NotificationId::new("open-protocol");
+        let boot = match Boot::open(path, self.protocol.doc.model.flow(), None) {
+            Ok(boot) => boot,
+            Err(e) => {
+                eprintln!("could not open {path}: {e}");
+                self.notifications.raise(
+                    Notification::new(banner, Severity::Error, "Could not open that Protocol")
+                        .body(e),
+                );
+                ctx.request_repaint();
+                return;
+            }
+        };
+        self.adopt_boot(boot);
+        self.notifications.dismiss(banner);
+        // Saved already, by construction: it was opened off its own file.
+        let name = self.protocol.doc.model.protocol.clone();
+        let run = self.recorded_run_state();
+        self.layout
+            .live_mut()
+            .remember(path, &name, run, now_secs());
         self.toasts.push(Toast::new(
             Severity::Success,
             format!("Opened {}", self.title()),
@@ -3752,6 +4011,7 @@ impl MeridianApp {
         self.door_cards.clear();
         self.door_sections.clear();
         self.door_rows.clear();
+        self.door_open_protocol = None;
         self.door_help = None;
         self.door_open_file = None;
         self.affordances.clear();
@@ -3769,7 +4029,7 @@ impl MeridianApp {
             .live()
             .recents
             .iter()
-            .filter(|r| crate::starts::find(&r.id).is_some())
+            .filter(|r| reopenable(&r.id))
             .cloned()
             .collect();
         let now = now_secs();
@@ -4052,14 +4312,23 @@ impl MeridianApp {
             );
         }
         if response.clicked() {
-            // Leaked into the request queue as a `&'static str`, which is what
-            // `Request::Open` carries: the id came off a shipped start (the
-            // filter in `front_door_ui` drops a recent that does not resolve),
-            // so this raises the same static the card beside it raises —
+            // Two kinds of row, because there are two kinds of thing a window
+            // can have been. A shipped start is leaked into the request queue
+            // as a `&'static str`, which is what `Request::Open` carries, and
+            // raises the same static the card beside it raises —
             // `either_route_to_the_same_subject_leaves_the_same_window` walks
-            // the shipped set and compares the two windows.
+            // the shipped set and compares the two windows. A saved Protocol is
+            // a path, which is neither static nor a start, so it is latched for
+            // after the frame exactly as the file picker is; `Request::Open`
+            // cannot carry it and widening that enum would be widening a
+            // vocabulary the workbench publishes to every shell.
+            //
+            // The filter in `front_door_ui` has already dropped a recent that
+            // is neither, so a row that is drawn is a row that reopens.
             if let Some(start) = crate::starts::find(&recent.id) {
                 requests.push(Request::Open(start.id));
+            } else {
+                self.door_open_protocol = Some(recent.id.clone());
             }
         }
     }
@@ -4576,6 +4845,17 @@ fn canvas_occupants(region: &Region) -> (&'static [Projection], ItemId) {
             region.id
         ),
     }
+}
+
+/// Whether a recorded recent is something this build can reopen — the filter
+/// that keeps the front door from drawing a row whose click does nothing.
+///
+/// Two ways it can be: a shipped starting point this binary still carries, or a
+/// saved Protocol still on disk. A start id this build no longer ships and a
+/// file that has been deleted or moved both fail it, and a shorter list is a
+/// better answer than a dead row.
+fn reopenable(id: &str) -> bool {
+    crate::starts::find(id).is_some() || std::path::Path::new(id).is_file()
 }
 
 /// The words a rail's selector strip offers its panes under — each pane's own

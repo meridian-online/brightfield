@@ -48,7 +48,9 @@ use meridian_design::{semantic, spacing};
 
 use crate::app::{ChartDoc, CONTROLS};
 use crate::design::Mode;
+use crate::one_step::ColumnFacts;
 use crate::overlays::CHART_PALETTE_VERBS;
+use crate::protocol::ui_font;
 
 /// The rail's icon — unchanged from the pane it replaces, so the Meridian
 /// icon set landing later is one change, not two.
@@ -106,19 +108,28 @@ impl Selection {
 
 /// The subset of `entries` this rail may draw: an entry passes when its verb
 /// is one `MeridianApp::apply`'s Charts arm dispatches, per
-/// [`CHART_PALETTE_VERBS`] — the same enumeration the chart command palette
-/// (`overlays.rs`) is restricted to, so the two surfaces read one answer for
-/// what is live at this altitude rather than two that could drift apart.
+/// [`CHART_PALETTE_VERBS`] — the verbs whose meaning does not depend on which
+/// window they are pressed over.
+///
+/// **`save-spec` is not among them, on any window**, and the reason is that
+/// the name carries two writes. `EditorPane` declares a Save entry for its own
+/// buffer, and `MeridianApp::apply`'s arm writes the Protocol; this rail draws
+/// the *editor's* entry, so passing it here put a control on screen that is
+/// dead while the buffer is clean and, when the buffer is dirty, dispatches the
+/// **Protocol** save and reports success over an edit that was never written.
+/// The palette is the surface that offers the Protocol save, because there the
+/// row is the verb rather than a pane's button — see
+/// [`crate::overlays::chart_offers`]. Splitting the verb is what would let this
+/// rail offer either one honestly, and that is not this change.
 ///
 /// This is the pane's whole answer to "what can be done with it": a
-/// declared-but-undispatchable entry — `editor.rs`'s `save-spec`, say, which
-/// `MeridianApp::apply`'s Charts arm has no case for — would look live while
-/// doing nothing if drawn here unfiltered, which is worse than the checkbox
-/// this rail replaced. So an entry not on the allow list is dropped rather
-/// than shown disabled — see `tests/inspector_contract.rs`'s
+/// declared-but-undispatchable entry would look live while doing nothing if
+/// drawn here unfiltered, which is worse than the checkbox this rail replaced.
+/// So an entry not on the allow list is dropped rather than shown disabled —
+/// see `tests/inspector_contract.rs`'s
 /// `every_declared_toolbar_verb_either_dispatches_or_is_filtered_out` for the
 /// sweep that keeps this from widening in silence.
-fn dispatchable(entries: &[ToolbarEntry]) -> Vec<ToolbarEntry> {
+pub fn dispatchable(entries: &[ToolbarEntry]) -> Vec<ToolbarEntry> {
     entries
         .iter()
         .filter(|entry| CHART_PALETTE_VERBS.contains(&entry.verb.as_str()))
@@ -171,6 +182,47 @@ pub fn render_selection(ui: &mut egui::Ui, subject: Option<&Subject>, mode: Mode
 /// sliders, the interval sliders, the hover-overlay checkbox), unchanged.
 pub struct InspectorPane {
     selection: Selection,
+    /// The table a selected column belongs to, and the step that produced it —
+    /// the two lines the column block draws under the column's name.
+    ///
+    /// A shared cell rather than a field, for the reason this module's header
+    /// gives about [`Selection`]: an `Item` is handed its own document and no
+    /// other, and this one's is the chart's, while the table is the protocol
+    /// document's. It is a cell rather than a value fixed at construction
+    /// because a window outlives the document in it — opening a second data
+    /// file into a window that already exists has to move this too, and by
+    /// then the pane is boxed behind `dyn Item`.
+    table: TableHandle,
+}
+
+/// The window's handle on which table a selected column belongs to — written
+/// when a document is adopted, read by [`InspectorPane::ui`].
+#[derive(Clone, Default)]
+pub struct TableHandle(Rc<RefCell<Option<ColumnTable>>>);
+
+impl TableHandle {
+    /// Declare the table a selected column belongs to. `None` for a document
+    /// with no Protocol behind it.
+    pub fn set(&self, table: Option<ColumnTable>) {
+        *self.0.borrow_mut() = table;
+    }
+
+    /// What was last declared.
+    #[must_use]
+    pub fn get(&self) -> Option<ColumnTable> {
+        self.0.borrow().clone()
+    }
+}
+
+/// What a column belongs to: the table's name, and the step that built it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ColumnTable {
+    /// The table the column is in.
+    pub table: String,
+    /// The step that produces it.
+    pub step: String,
+    /// That step's transform class — `sql` for a one-step Protocol.
+    pub kind: &'static str,
 }
 
 impl InspectorPane {
@@ -178,9 +230,101 @@ impl InspectorPane {
     /// frame before the dock draws. See the module docs for why this is a
     /// shared cell rather than a field `Item::ui` is handed directly.
     #[must_use]
-    pub fn new(selection: Selection) -> Self {
-        Self { selection }
+    pub fn new(selection: Selection, table: TableHandle) -> Self {
+        Self { selection, table }
     }
+}
+
+/// The selected column, as the inspector draws it: what it is called, what it
+/// belongs to, what it means as opposed to what DuckDB stored it as, the
+/// picture it was given and why, what the engine measured, and the step that
+/// produced it.
+///
+/// The **whole** semantic label is here, not its leaf. The navigator rail
+/// draws the leaf because 240 logical points do not hold
+/// `representation.numeric.decimal_number` beside an eighteen-character column
+/// name; this rail is the place the reader can read the rest.
+fn column_body(ui: &mut egui::Ui, column: &ColumnFacts, table: Option<&ColumnTable>, mode: Mode) {
+    let sem = semantic(mode.is_dark());
+    ui.label(
+        egui::RichText::new(&column.column)
+            .font(ui_font())
+            .color(chrome::colour(sem.text.primary)),
+    );
+    let belongs = table.map_or_else(|| "column".to_string(), |t| format!("column · {}", t.table));
+    ui.label(
+        egui::RichText::new(belongs)
+            .font(ui_font())
+            .color(chrome::colour(sem.text.secondary)),
+    );
+
+    column_field(ui, mode, "finetype", column.full_type());
+    column_field(ui, mode, "storage", &column.storage);
+    match &column.tile {
+        Some(kind) => {
+            column_field(ui, mode, "tile", kind);
+            column_field(ui, mode, "chosen by", &column.because);
+            if let Some(other) = &column.paired {
+                // A point map is one picture of two columns, so the rail says
+                // which other column is in it — without this the reader is
+                // looking at a map and told about one axis of it.
+                column_field(ui, mode, "drawn with", other);
+            }
+        }
+        None => column_field(ui, mode, "tile", &column.because),
+    }
+
+    ui.add_space(spacing::SPACE_4);
+    ui.label(
+        egui::RichText::new("VALUES · FROM THE ENGINE")
+            .font(ui_font())
+            .color(chrome::colour(sem.text.muted)),
+    );
+    column_field(ui, mode, "rows", &column.rows.to_string());
+    if let Some(min) = &column.min {
+        column_field(ui, mode, "min", min);
+    }
+    if let Some(max) = &column.max {
+        column_field(ui, mode, "max", max);
+    }
+    column_field(ui, mode, "nulls", &column.nulls.to_string());
+
+    if let Some(t) = table {
+        ui.add_space(spacing::SPACE_4);
+        ui.label(
+            egui::RichText::new("PRODUCED BY")
+                .font(ui_font())
+                .color(chrome::colour(sem.text.muted)),
+        );
+        column_field(ui, mode, "step", &format!("{} · {}", t.step, t.kind));
+        // Brightfield writes the spec and never a run record, so the honest
+        // answer here is always the same one and it is stated rather than
+        // computed — a status derived from nothing would be a claim about a
+        // run that did not happen.
+        column_field(ui, mode, "status", NOT_RUN);
+    }
+}
+
+/// What a step brightfield declared and nobody ran reads as. The word the
+/// protocol view's own `status_word` uses for `SeamStatus::NotRun`, spelled
+/// once so the two rails cannot disagree about it.
+pub const NOT_RUN: &str = "not run";
+
+/// One caption-and-value line of the column block.
+fn column_field(ui: &mut egui::Ui, mode: Mode, label: &str, value: &str) {
+    let sem = semantic(mode.is_dark());
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(label)
+                .font(ui_font())
+                .color(chrome::colour(sem.text.muted)),
+        );
+        ui.label(
+            egui::RichText::new(value)
+                .font(ui_font())
+                .color(chrome::colour(sem.text.primary)),
+        );
+    });
 }
 
 impl Item<ChartDoc> for InspectorPane {
@@ -210,12 +354,22 @@ impl Item<ChartDoc> for InspectorPane {
     }
 
     fn ui(&mut self, doc: &mut ChartDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
-        let subject = self.selection.get();
-        let activated = render_selection(ui, subject.as_ref(), cx.mode);
-        for verb in activated {
-            cx.request(verb);
+        // A selected COLUMN outranks the focused pane, and that is a statement
+        // about what the reader just did rather than a preference. Clicking a
+        // tile is the only gesture that reaches this rail carrying a subject of
+        // its own; the pane subject is what the rail falls back to when nobody
+        // has pointed at anything in the picture yet.
+        if let Some(column) = doc.selected_column().cloned() {
+            column_body(ui, &column, self.table.get().as_ref(), cx.mode);
+            ui.add_space(spacing::SECTION_GAP);
+        } else {
+            let subject = self.selection.get();
+            let activated = render_selection(ui, subject.as_ref(), cx.mode);
+            for verb in activated {
+                cx.request(verb);
+            }
+            ui.add_space(spacing::SECTION_GAP);
         }
-        ui.add_space(spacing::SECTION_GAP);
 
         // The rest of this method is `ControlsPane::ui`, ported verbatim —
         // see the module docs for why it has to stay exactly this code.
@@ -309,8 +463,9 @@ mod tests {
     use super::*;
 
     /// A dispatchable verb (drawn on the real chart pane's toolbar) and one
-    /// that is not (the editor's `save-spec`, which has no arm in
-    /// `MeridianApp::apply`'s Charts branch).
+    /// that is not: `toggle-presentation` is a real registry verb that
+    /// `MeridianApp::apply`'s Charts branch has no arm for, so it is what an
+    /// entry the rail must drop looks like.
     fn sample_entries() -> (ToolbarEntry, ToolbarEntry) {
         (
             ToolbarEntry::button(
@@ -318,12 +473,16 @@ mod tests {
                 "Clear selection",
                 Verb::new("clear-selection"),
             ),
-            ToolbarEntry::button("save-spec", "Save", Verb::new("save-spec")),
+            ToolbarEntry::button(
+                "toggle-presentation",
+                "Present",
+                Verb::new("toggle-presentation"),
+            ),
         )
     }
 
     /// The filter's whole job: keep the verb the Charts view can run, drop
-    /// the one it cannot — never the reverse, and never both or neither.
+    /// the one it cannot — not the reverse, and not both or neither.
     #[test]
     fn dispatchable_keeps_only_verbs_the_charts_view_can_run() {
         let (keep, drop) = sample_entries();
@@ -334,6 +493,28 @@ mod tests {
             "dispatchable() let an undispatchable verb through, or dropped a \
              real one — either way the inspector would draw a button that \
              lies about what it does"
+        );
+    }
+
+    /// **This rail never offers `save-spec`, whatever the window is.**
+    ///
+    /// The entry it would draw is the *editor's* — its own buffer's Save,
+    /// declared on `EditorPane`'s subject — while the verb, dispatched, writes
+    /// the **Protocol**. On a chart-spec window that is a dead button; on a
+    /// data-file window with a dirty buffer it is worse, because the click
+    /// saves the Protocol and reports success over an edit that was never
+    /// written. One name, two writes, and this rail cannot tell a reader which
+    /// it is about — so it draws neither, and the palette carries the Protocol
+    /// save instead.
+    #[test]
+    fn dispatchable_never_offers_save_because_the_verb_means_two_writes() {
+        let save = ToolbarEntry::button("editor-save", "Save", Verb::new("save-spec"));
+        assert_eq!(
+            dispatchable(std::slice::from_ref(&save)),
+            Vec::new(),
+            "the rail drew a Save button; the entry is the editor's and the \
+             dispatch is the Protocol's, so whichever the reader meant, one of \
+             the two silently does not happen"
         );
     }
 

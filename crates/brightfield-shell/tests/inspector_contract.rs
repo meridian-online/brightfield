@@ -21,7 +21,7 @@
 use brightfield_shell::app::{ChartDoc, CHART, CONTROLS};
 use brightfield_shell::design::Mode;
 use brightfield_shell::editor::EDITOR;
-use brightfield_shell::inspector::{InspectorPane, Selection};
+use brightfield_shell::inspector::{InspectorPane, Selection, TableHandle};
 use brightfield_shell::overlays::CHART_PALETTE_VERBS;
 use brightfield_shell::pipeline::compose_spec;
 use brightfield_shell::window::{Boot, MeridianApp};
@@ -197,7 +197,7 @@ fn the_hover_overlay_checkbox_draws_whether_or_not_anything_is_selected() {
 /// it does not.
 #[test]
 fn the_inspector_is_empty_only_when_the_document_is() {
-    let pane = InspectorPane::new(Selection::default());
+    let pane = InspectorPane::new(Selection::default(), TableHandle::default());
     let empty = ChartDoc::empty();
     assert!(
         pane.empty_state(&empty).is_some(),
@@ -275,6 +275,17 @@ fn editor_toolbar_verbs(doc: &mut ChartDoc) -> Vec<&'static str> {
 /// `overlay_wiring.rs::every_chart_palette_candidate_actually_dispatches`
 /// uses for the command palette.
 ///
+/// `save-spec` stays filtered here, and the reason changed. It used to be
+/// this file's worked example of a verb `MeridianApp::apply`'s Charts arm had
+/// no case for. The arm exists now — it writes the Protocol a data file opened
+/// as — but the entry this rail would draw for that verb is `EditorPane`'s,
+/// which means the editor's own buffer. One name, two writes: drawn here it is
+/// a dead button over a clean buffer and a wrong one over a dirty buffer,
+/// because the click saves the Protocol and reports success over an edit that
+/// was never written. The palette carries the Protocol save instead —
+/// `overlay_wiring.rs`'s sweep picks it off there and reads the written spec
+/// back.
+///
 /// Proof this sweep can fail: dropping the `"save-spec"` arm below (so it
 /// falls to the `other => panic!` case) reddens this test with "save-spec is
 /// declared on a chart-view pane's toolbar with no verdict in this sweep".
@@ -293,13 +304,16 @@ fn every_declared_toolbar_verb_either_dispatches_or_is_filtered_out() {
             "clear-selection" | "reset-extent" => assert!(
                 dispatches,
                 "{verb} is expected to dispatch at the chart altitude — \
-                 CHART_PALETTE_VERBS moved and inspector::dispatchable's \
-                 verdict for it needs re-checking"
+                 CHART_PALETTE_VERBS moved and \
+                 inspector::dispatchable's verdict for it needs re-checking"
             ),
             "save-spec" => assert!(
                 !dispatches,
-                "save-spec now dispatches at the chart altitude — \
-                 inspector::dispatchable can stop excluding it"
+                "save-spec is drawable in the inspector rail again. The entry \
+                 there is the editor's buffer Save and the dispatch is the \
+                 Protocol's, so one of the two writes silently does not \
+                 happen. The palette is where the Protocol save is offered — \
+                 see overlays::chart_offers."
             ),
             other => panic!(
                 "{other} is declared on a chart-view pane's toolbar with no \

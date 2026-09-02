@@ -28,7 +28,7 @@
 //! router, not a schema — it never validates, and Mosaic inputs reach the spec
 //! parser byte-untouched.
 
-pub use arc::spec::{Manifest, Step};
+pub use arc::spec::{Manifest, Step, MANIFEST_FILENAME};
 
 /// Derived accessors on [`Step`] that brightfield's graph derivation uses.
 ///
