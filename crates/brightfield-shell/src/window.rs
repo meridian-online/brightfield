@@ -5300,11 +5300,15 @@ fn draw_canvas_pane_group(
         );
         chrome::pane_frame(&mut pane, subject, true, mode).max_rect()
     };
-    let header_of = |rect: egui::Rect| {
-        egui::Rect::from_min_size(
-            rect.min,
-            egui::vec2(rect.width(), chrome::header_band_height()),
-        )
+    // The band a pane actually drew, derived from the content rect
+    // `pane_frame` handed back rather than from the height it would have used:
+    // a pane drawn with `header: false` has a content rect that starts one
+    // inset below its own top, so this comes out zero-high and a test counting
+    // bands sees the band that is not there. Deriving it from
+    // `header_band_height` instead would report a band whatever was drawn.
+    let header_of = |rect: egui::Rect, body: egui::Rect| {
+        let bottom = (body.top() - chrome::pane_content_inset()).clamp(rect.top(), rect.bottom());
+        egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), bottom))
     };
 
     let map_body = frame_of(ui, map_rect, &map_subject);
@@ -5336,13 +5340,13 @@ fn draw_canvas_pane_group(
             CanvasPane {
                 name: "map",
                 rect: map_rect,
-                header: header_of(map_rect),
+                header: header_of(map_rect, map_body),
                 body: map_body,
             },
             CanvasPane {
                 name: "columns",
                 rect: columns_rect,
-                header: header_of(columns_rect),
+                header: header_of(columns_rect, columns_body),
                 body: columns_body,
             },
         ],
