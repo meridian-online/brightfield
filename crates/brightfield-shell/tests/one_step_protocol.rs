@@ -26,11 +26,29 @@
 //! label that would be present only on a machine carrying a bundle. A build
 //! that does carry one fails these by naming the label it found, which is the
 //! right way round.
+//!
+//! That leaves the *labelled* branch — the one a packaged build takes for every
+//! column — unreached by anything an engine can produce here.
+//! [`a_labelled_column_sends_its_leaf_to_the_rail_and_its_whole_label_to_the_inspector`]
+//! reaches it without a bundle, by handing the generator a
+//! [`ColumnProfile`](brightfield_engine::ColumnProfile) that carries a label
+//! and driving the real inspector over the result.
+//!
+//! # What is read back is what the frame painted
+//!
+//! Where a claim is about a rail, it is asserted against the galleys the frame
+//! handed the painter — [`Window::drawn_text`] — rather than against the
+//! document field the rail is drawn from. Both were true in the round of this
+//! file that was refused, and only one of them is what a person sees: the
+//! inspector's whole column block could be deleted and every
+//! document-field assertion would stay green.
 
 use std::path::{Path, PathBuf};
 
+use brightfield_engine::semantic::ValueCheck;
+use brightfield_engine::{ColumnProfile, SemanticType};
 use brightfield_protocol::layout::Flow;
-use brightfield_shell::dashboard::ChosenBy;
+use brightfield_shell::dashboard::{ChosenBy, Dashboard};
 use brightfield_shell::design::Mode;
 use brightfield_shell::one_step::{self, OneStepProtocol};
 use brightfield_shell::startup::default_layout;
@@ -88,6 +106,23 @@ const HARBOUR_CSV: &str = "station,reading,depth,survey\n\
                            west,52,3.0,autumn\n\
                            west,63,8.0,autumn\n";
 
+/// [`HARBOUR_CSV`]'s columns reordered so the **declined** one comes first.
+///
+/// The order is the assertion. `wire_columns` hands the chart document one
+/// entry per tile in the composition's plot order; building that list by
+/// filtering the *column* list instead is indistinguishable from it right up
+/// until a column with no tile sits ahead of one that has a picture, at which
+/// point index 0 is `survey` and plot 0 draws `station`.
+const DECLINED_FIRST_CSV: &str = "survey,station,reading,depth\n\
+                                  autumn,north,12,4.5\n\
+                                  autumn,north,18,6.0\n\
+                                  autumn,south,31,2.5\n\
+                                  autumn,south,44,9.5\n\
+                                  autumn,east,7,1.0\n\
+                                  autumn,east,25,7.5\n\
+                                  autumn,west,52,3.0\n\
+                                  autumn,west,63,8.0\n";
+
 /// The columns [`HARBOUR_CSV`] declares, in the file's own order.
 const HARBOUR_COLUMNS: &[&str] = &["station", "reading", "depth", "survey"];
 
@@ -134,6 +169,68 @@ impl Window {
         }
     }
 
+    fn key(&mut self, key: egui::Key) {
+        self.run(vec![egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        }]);
+        self.run(Vec::new());
+    }
+
+    fn type_text(&mut self, text: &str) {
+        self.run(vec![egui::Event::Text(text.to_owned())]);
+        self.run(Vec::new());
+    }
+
+    /// Every string this window's next frame hands the painter.
+    ///
+    /// Read off the frame's own shapes rather than off a document field,
+    /// because the claim is about what a person sees — `one_window.rs` and
+    /// `front_door.rs` read their rails the same way and for the same reason.
+    fn drawn_text(&mut self) -> Vec<String> {
+        let raw = egui::RawInput {
+            screen_rect: Some(self.screen),
+            ..Default::default()
+        };
+        let out = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
+        let mut text = Vec::new();
+        for clipped in &out.shapes {
+            collect_text(&clipped.shape, &mut text);
+        }
+        text
+    }
+
+    /// **Save, through the gesture a person has.** Open the chart command
+    /// palette with `space`, type the verb's longname (an exact match ranks
+    /// first) and confirm with enter — `overlay_wiring.rs`'s
+    /// `confirm_chart_verb`, which is the path that sweep drives every chart
+    /// verb through.
+    ///
+    /// Calling `MeridianApp::save_protocol` directly is what the refused round
+    /// of this file did, and it proved the method rather than the product:
+    /// nothing in the shipped app produced the verb, so replacing the call
+    /// with a no-op left the suite green.
+    fn save_through_the_palette(&mut self) {
+        self.key(egui::Key::Space);
+        assert_eq!(
+            self.app.open_overlay(),
+            Some("palette"),
+            "space did not open the chart palette"
+        );
+        self.settle();
+        self.type_text("save-spec");
+        self.key(egui::Key::Enter);
+        assert_eq!(
+            self.app.open_overlay(),
+            None,
+            "confirming save-spec did not close the palette"
+        );
+        self.settle();
+    }
+
     /// A pointer position in the middle of plot `index`'s data area, in the
     /// window coordinates the raster was presented at — `tests/data_file.rs`'s
     /// `at`, at the one fraction this file needs.
@@ -157,6 +254,20 @@ impl Window {
         self.run(vec![egui::Event::PointerMoved(pos), button_at(pos, true)]);
         self.run(vec![button_at(pos, false)]);
         self.settle();
+    }
+}
+
+/// The galleys in `shape`, flattened. `Shape::Vec` nests, so a walk that reads
+/// the top level and stops misses whatever a widget put inside a group.
+fn collect_text(shape: &egui::epaint::Shape, into: &mut Vec<String>) {
+    match shape {
+        egui::epaint::Shape::Text(t) => into.push(t.galley.text().to_string()),
+        egui::epaint::Shape::Vec(shapes) => {
+            for s in shapes {
+                collect_text(s, into);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -331,18 +442,49 @@ fn the_steps_pane_lists_one_sql_step_that_has_not_run() {
 // AC3 — a click on a tile fills the inspector rail
 // ---------------------------------------------------------------------------
 
-/// **Clicking a tile selects the column it draws, and the inspector shows that
-/// column's name, its semantic type and the tile kind chosen for it.**
+/// The columns the plot at `index` actually draws, off its
+/// [`PlotHandle`](brightfield_shell::pipeline::PlotHandle) — the x and y
+/// channels of its first mark, with the count column the SQL layer synthesises
+/// dropped.
 ///
-/// Driven through a real frame: the click is a pointer press and release at the
-/// middle of a placed plot's data area, in the coordinates that frame presented
-/// the raster at. What is read back is the document the inspector pane draws
-/// from — with nothing selected it draws the `Nothing selected` empty state and
-/// `selected_column` is `None`, which is the failure this test exists to catch.
+/// This is the independent side of AC3's join. The document's own
+/// `tile_columns[n]` is what `wire_columns` put there; the plot handle is what
+/// the composition placed. Comparing the inspector against the first is
+/// circular — it is the same value read twice — and comparing it against the
+/// second is the assertion that catches a list that has slipped out of step
+/// with the plots.
+fn plot_columns(app: &MeridianApp, index: usize) -> Vec<String> {
+    let plot = &app.chart_doc().composed.plots[index];
+    [plot.x_column.as_ref(), plot.y_column.as_ref()]
+        .into_iter()
+        .flatten()
+        .filter(|c| !c.starts_with("__bf_"))
+        .cloned()
+        .collect()
+}
+
+/// **Clicking a tile selects the column that plot draws, and the inspector
+/// draws that column's block.**
+///
+/// Two independent claims, and the refused round of this file had neither.
+///
+/// The first is the join: the column the inspector names is a column the
+/// *clicked plot* draws, read off its `PlotHandle` rather than off the list
+/// `wire_columns` built. The fixture's first column earns no tile, so a
+/// tile-column list built by filtering the columns instead of by walking the
+/// dashboard's tiles is off by one from plot 0 onwards — and the assertion
+/// below is what says so.
+///
+/// The second is that the rail drew something: the column's name, the
+/// `finetype` caption and its type, harvested from the frame's own galleys. An
+/// inspector whose column block returned immediately leaves `selected_column`
+/// set and the rail blank, which every assertion against the document alone
+/// passes through.
 #[test]
-fn clicking_a_tile_selects_its_column_and_fills_the_inspector() {
+fn clicking_a_tile_selects_the_column_that_plot_draws_and_the_inspector_shows_it() {
     let dir = TempDir::new("tile-click");
-    let path = dir.write("harbour.csv", HARBOUR_CSV);
+    // `survey` is first and earns no tile — see DECLINED_FIRST_CSV.
+    let path = dir.write("harbour.csv", DECLINED_FIRST_CSV);
     let mut win =
         Window::over(Boot::data_file(&path.to_string_lossy()).expect("the file opens as a boot"));
 
@@ -351,31 +493,65 @@ fn clicking_a_tile_selects_its_column_and_fills_the_inspector() {
         "nothing is selected before anything is clicked — otherwise this test \
          cannot tell the click apart from the initial state"
     );
-    let tiles = win.app.chart_doc().tile_columns().len();
+    let before = win.drawn_text();
     assert!(
-        tiles >= 2,
-        "this fixture needs at least two tiles for the second click below to \
-         mean anything; saw {tiles}"
+        before.iter().any(|t| t == "Nothing selected"),
+        "the inspector rail does not start on its empty state, so a later \
+         assertion that it left that state proves nothing: {before:?}"
     );
+    let tiles = win.app.chart_doc().tile_columns().len();
+    assert_eq!(
+        tiles,
+        win.app.chart_doc().composed.plots.len(),
+        "the window holds {tiles} tile columns for {} placed plots — a click \
+         on the last plot would index the wrong column or none",
+        win.app.chart_doc().composed.plots.len()
+    );
+    assert!(tiles >= 2, "this fixture needs two tiles; saw {tiles}");
 
-    win.click_tile(1);
+    win.click_tile(0);
     let picked = win.app.chart_doc().selected_column().cloned().expect(
         "clicking a tile selects the column it draws — the inspector \
                  would still read `Nothing selected`",
     );
-    let expected = win.app.chart_doc().tile_columns()[1].clone();
-    assert_eq!(
-        picked.column, expected.column,
-        "the click selected a different column from the one that tile draws"
+
+    // The join, against the composition rather than against the list under test.
+    let drawn_by_plot = plot_columns(&win.app, 0);
+    assert!(
+        !drawn_by_plot.is_empty(),
+        "plot 0 names no column on either channel, so the comparison below \
+         would pass over an empty set"
     );
     assert!(
-        picked.tile.is_some(),
-        "a tile's column has to carry the kind drawn over it — the inspector's \
-         `tile` line has nothing to say otherwise"
+        drawn_by_plot.contains(&picked.column),
+        "the inspector names `{}` for a click on plot 0, which draws {:?} — \
+         the tile-column list is out of step with the plots the composition \
+         placed",
+        picked.column,
+        drawn_by_plot
+    );
+    assert_ne!(
+        picked.column, DECLINED,
+        "the click named the column the generator DECLINED, which draws no \
+         plot at all"
+    );
+
+    // …and the rail drew it.
+    let after = win.drawn_text();
+    for expected in [picked.column.as_str(), "finetype", "storage", "tile"] {
+        assert!(
+            after.iter().any(|t| t == expected),
+            "the inspector rail drew no `{expected}` after the click, so the \
+             column block is not on screen: {after:?}"
+        );
+    }
+    assert!(
+        after.iter().any(|t| t == picked.full_type()),
+        "the inspector rail drew no type for the selected column: {after:?}"
     );
     assert!(
-        !picked.full_type().is_empty(),
-        "the inspector names the column's type, and an empty one is a blank row"
+        !after.iter().any(|t| t == "Nothing selected"),
+        "the inspector rail is still on its empty state after a click"
     );
 
     // …and the navigator rail's highlight follows it, so the two rails cannot
@@ -394,14 +570,110 @@ fn clicking_a_tile_selects_its_column_and_fills_the_inspector() {
         "the outline highlights exactly the column the inspector is showing"
     );
 
-    // A second tile moves the selection rather than adding to it.
-    win.click_tile(0);
+    // A second tile moves the selection rather than adding to it, and lands on
+    // that plot's column too.
+    win.click_tile(1);
+    let second = win
+        .app
+        .chart_doc()
+        .selected_column()
+        .cloned()
+        .expect("the second click selects");
+    assert_ne!(second.column, picked.column, "the selection did not move");
+    assert!(
+        plot_columns(&win.app, 1).contains(&second.column),
+        "the second click named a column plot 1 does not draw"
+    );
+}
+
+/// **A labelled column sends its leaf to the navigator rail and its whole
+/// label to the inspector.**
+///
+/// The branch a packaged build takes for every column, and the one no engine
+/// in this test binary can produce: `LoadOptions::packaged` finds no FineType
+/// bundle beside a `cargo test` executable, so every profiled column arrives
+/// `SemanticType::NotAsked`. The profile is therefore built here, carrying a
+/// label, and put through the real generator and the real inspector.
+///
+/// Four claims, because the rail and the inspector deliberately show different
+/// amounts of one string: the rail's note is the label's **leaf** (240 logical
+/// points do not hold `representation.numeric.decimal_number` beside a column
+/// name), the inspector's `finetype` row is the **whole** label, `storage`
+/// stays the DuckDB type, and the tile's reason names the semantic type rather
+/// than the storage one.
+#[test]
+fn a_labelled_column_sends_its_leaf_to_the_rail_and_its_whole_label_to_the_inspector() {
+    const LABEL: &str = "representation.numeric.decimal_number";
+    let profile = ColumnProfile {
+        name: "median_income".to_string(),
+        type_name: "DOUBLE".to_string(),
+        non_null: 16_640,
+        nulls: 0,
+        distinct: 12_000,
+        min: Some("0.4999".to_string()),
+        max: Some("15.0001".to_string()),
+        semantic: SemanticType::Labelled {
+            label: LABEL.to_string(),
+            confidence: 0.99,
+            check: ValueCheck::Checked {
+                checked: 100,
+                failed: 0,
+            },
+        },
+    };
+    let path = Path::new("/data/california_housing.parquet");
+    let dashboard = Dashboard::of(path, std::slice::from_ref(&profile));
     assert_eq!(
-        win.app
-            .chart_doc()
-            .selected_column()
-            .map(|c| c.column.clone()),
-        Some(win.app.chart_doc().tile_columns()[0].column.clone())
+        dashboard.tiles().len(),
+        1,
+        "the generator declined the labelled column, so there is no tile to \
+         read a reason off: {:?}",
+        dashboard.omitted()
+    );
+    assert!(
+        matches!(dashboard.tiles()[0].chosen_by(), ChosenBy::Meaning { .. }),
+        "the label did not decide the tile, so this fixture is exercising the \
+         storage branch under a different name: {:?}",
+        dashboard.tiles()[0].chosen_by()
+    );
+
+    let spec = OneStepProtocol::of(path, std::slice::from_ref(&profile), &dashboard);
+    let facts = &spec.columns[0];
+    assert_eq!(
+        facts.leaf, "decimal_number",
+        "the navigator rail draws the label's leaf, not the whole of it"
+    );
+    assert_eq!(
+        facts.full_type(),
+        LABEL,
+        "the inspector's `finetype` row is the whole label"
+    );
+    assert_eq!(facts.storage, "DOUBLE", "storage is the DuckDB type");
+    assert!(
+        facts.because.contains(LABEL),
+        "the tile's reason has to name the semantic type it was chosen from: {}",
+        facts.because
+    );
+
+    // …and the real inspector draws it. The document is a real window's — only
+    // the tile columns are this fixture's, because a labelled profile cannot
+    // come out of the engine here.
+    let dir = TempDir::new("labelled-inspector");
+    let real = dir.write("harbour.csv", HARBOUR_CSV);
+    let mut win =
+        Window::over(Boot::data_file(&real.to_string_lossy()).expect("the file opens as a boot"));
+    win.app.chart_doc_mut().set_tile_columns(spec.tiles.clone());
+    win.app.chart_doc_mut().select_tile(0);
+    win.settle();
+    let drawn = win.drawn_text();
+    assert!(
+        drawn.iter().any(|t| t == LABEL),
+        "the inspector rail drew no whole label for a labelled column — it \
+         shows the leaf, or nothing: {drawn:?}"
+    );
+    assert!(
+        drawn.iter().any(|t| t == "DOUBLE"),
+        "the inspector rail drew no storage type beside the label: {drawn:?}"
     );
 }
 
@@ -425,7 +697,6 @@ fn save_writes_a_spec_the_loader_accepts_and_reopening_it_regenerates_the_dashbo
     let path = dir.write("harbour.csv", HARBOUR_CSV);
     let named = path.to_string_lossy().into_owned();
 
-    let ctx = egui::Context::default();
     let mut win = Window::over(Boot::data_file(&named).expect("the file opens as a boot"));
     let before: Vec<(String, Option<String>)> = win
         .app
@@ -435,15 +706,19 @@ fn save_writes_a_spec_the_loader_accepts_and_reopening_it_regenerates_the_dashbo
         .map(|c| (c.column.clone(), c.tile.clone()))
         .collect();
 
-    let saved = win
-        .app
-        .save_protocol(&ctx)
-        .expect("a window over a data file has a Protocol to save")
-        .expect("the save writes");
-    assert_eq!(
-        saved,
-        dir.path().join("arcform.yaml"),
-        "the spec is written beside the data it reads"
+    let saved = dir.path().join("arcform.yaml");
+    assert!(
+        !saved.exists(),
+        "the spec is unsaved until the gesture — otherwise the assertion \
+         below cannot tell the Save apart from the open"
+    );
+    win.save_through_the_palette();
+    assert!(
+        saved.is_file(),
+        "the palette's Save wrote nothing to {} — the verb reached no \
+         handler, which is what happens when `save-spec` has no producer at \
+         the chart altitude",
+        saved.display()
     );
     assert!(
         dir.path().join(one_step::MODEL_PATH).is_file(),
@@ -528,6 +803,136 @@ fn a_spec_the_loader_refuses_is_not_written() {
     );
 }
 
+/// A **model** the loader would never look at, and Save refuses it anyway.
+///
+/// `arc::spec::Manifest::from_yaml_str` touches no filesystem, so a manifest
+/// naming a `sql:` model that is malformed — or absent — is a manifest it
+/// accepts. The manifest gate alone would write both files and report success
+/// over a model nothing can read. `save_to` puts the model through the same
+/// derivation the rails use and refuses a spec that would draw an issue chip.
+#[test]
+fn a_model_that_will_not_parse_is_not_written() {
+    let dir = TempDir::new("bad-model");
+    let path = dir.write("harbour.csv", HARBOUR_CSV);
+    let opened = data_file::open(&path.to_string_lossy()).expect("an ordinary CSV opens");
+    let mut broken = opened.protocol.clone();
+    broken.model =
+        "CREATE OR REPLACE TABLE harbour AS SELECT * FROM read_csv('unterminated;\n".to_string();
+
+    // The manifest is untouched, so the loader is happy with it — which is the
+    // point: the refusal below cannot come from that gate.
+    brightfield_protocol::parse_manifest_str(&broken.manifest)
+        .expect("the manifest itself is still valid");
+
+    let out = TempDir::new("bad-model-out");
+    let err = broken
+        .save_to(out.path())
+        .expect_err("a model that does not parse must not be written");
+    assert!(
+        err.contains("clean graph"),
+        "the refusal names what failed: {err}"
+    );
+    assert!(
+        !OneStepProtocol::manifest_path_in(out.path()).exists(),
+        "the manifest was written beside a model that cannot be read"
+    );
+    assert!(
+        !out.path().join(one_step::MODEL_PATH).exists(),
+        "the model was written after the gate refused it"
+    );
+}
+
+/// **A file name with an apostrophe in it.**
+///
+/// `data_file::accept` admits one — it is not glob syntax and not a control
+/// character — so it reaches the spec, where the path crosses two languages
+/// that both need it escaped and are escaped separately: a YAML scalar in
+/// `depends_on:` and a SQL string literal in the model. Doubling it in one and
+/// not the other writes an unterminated literal to `models/load.sql` and
+/// reports success.
+///
+/// Held three ways, none of which needs a network or an external binary:
+///
+/// 1. the spec's own graph derivation, which parses the model with the same
+///    sqlparser the rails use, resolves **one** file node and reports no
+///    degrade — an unterminated literal degrades the step to an issue chip;
+/// 2. `save_to`, which now refuses such a spec rather than writing it, so a
+///    written spec is one that parsed;
+/// 3. **DuckDB itself**, executing the written model. The engine's own
+///    dependency, on the version the shell links, run from the protocol
+///    directory because that is where `arc run` resolves a relative
+///    `depends_on:` from.
+#[test]
+fn a_file_name_with_an_apostrophe_survives_both_escapes() {
+    let dir = TempDir::new("apostrophe");
+    let path = dir.write("it's harbour.csv", HARBOUR_CSV);
+    let opened = data_file::open(&path.to_string_lossy()).expect("an apostrophe is openable");
+    let spec = &opened.protocol;
+    assert_eq!(spec.spelled, "./it's harbour.csv");
+    assert_eq!(
+        spec.name, "it_s_harbour",
+        "a stem with an apostrophe and a space is sanitised into an unquoted \
+         identifier, so the model's CREATE TABLE target needs no quoting"
+    );
+    assert!(
+        spec.model.contains("read_csv('./it''s harbour.csv')"),
+        "the SQL literal doubles the apostrophe: {}",
+        spec.model
+    );
+    assert!(
+        spec.manifest.contains("'./it''s harbour.csv'"),
+        "the YAML scalar doubles it too: {}",
+        spec.manifest
+    );
+
+    // 1. The graph reads one file, and nothing degraded.
+    let inputs = spec.inputs().expect("the Protocol builds");
+    assert!(
+        inputs.degrade_report().is_empty(),
+        "the model did not parse: {:?}",
+        inputs.degrade_report()
+    );
+    let files: Vec<String> = inputs
+        .graph_full
+        .nodes
+        .values()
+        .filter(|n| n.kind == brightfield_protocol::AssetKind::File)
+        .map(|n| n.label.clone())
+        .collect();
+    assert_eq!(
+        files,
+        vec!["./it's harbour.csv".to_string()],
+        "the two escapes decoded to different strings, so the graph holds two \
+         nodes for one file"
+    );
+
+    // 2. It is written rather than refused.
+    let saved = spec.save_to(dir.path()).expect("the spec saves");
+    assert!(saved.is_file());
+    let model = std::fs::read_to_string(dir.path().join(one_step::MODEL_PATH))
+        .expect("the model reads back");
+
+    // 3. DuckDB runs it, from the directory arc would run it from.
+    let here = std::env::current_dir().expect("a working directory");
+    std::env::set_current_dir(dir.path()).expect("the protocol directory");
+    let conn = duckdb::Connection::open_in_memory().expect("an in-memory DuckDB");
+    let ran = conn.execute_batch(&model);
+    // The table is named from the sanitised stem — `it's harbour` cannot be an
+    // unquoted identifier, so it is `it_s_harbour` — and the count is asked of
+    // the name the spec declares rather than of one typed here.
+    let counted: Result<i64, _> =
+        conn.query_row(&format!("SELECT count(*) FROM {}", spec.name), [], |r| {
+            r.get(0)
+        });
+    std::env::set_current_dir(here).expect("the working directory is restored");
+    ran.unwrap_or_else(|e| panic!("DuckDB refused the model brightfield wrote: {e}\n{model}"));
+    assert_eq!(
+        counted.expect("the table is there to count"),
+        8,
+        "the model read a different file, or none"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // AC5 — the front door lists it on the next launch
 // ---------------------------------------------------------------------------
@@ -544,15 +949,11 @@ fn a_spec_the_loader_refuses_is_not_written() {
 fn a_saved_protocol_leads_the_front_door_on_the_next_launch() {
     let dir = TempDir::new("front-door");
     let path = dir.write("harbour.csv", HARBOUR_CSV);
-    let ctx = egui::Context::default();
-
     let mut first =
         Window::over(Boot::data_file(&path.to_string_lossy()).expect("the file opens as a boot"));
-    let saved = first
-        .app
-        .save_protocol(&ctx)
-        .expect("there is a Protocol to save")
-        .expect("the save writes");
+    first.save_through_the_palette();
+    let saved = dir.path().join("arcform.yaml");
+    assert!(saved.is_file(), "the palette's Save wrote the spec");
     let layout = first.app.layout().clone();
     assert!(
         layout
@@ -600,15 +1001,11 @@ fn a_saved_protocol_leads_the_front_door_on_the_next_launch() {
 fn a_saved_protocol_that_has_gone_draws_no_row() {
     let dir = TempDir::new("front-door-gone");
     let path = dir.write("harbour.csv", HARBOUR_CSV);
-    let ctx = egui::Context::default();
-
     let mut first =
         Window::over(Boot::data_file(&path.to_string_lossy()).expect("the file opens as a boot"));
-    let saved = first
-        .app
-        .save_protocol(&ctx)
-        .expect("there is a Protocol to save")
-        .expect("the save writes");
+    first.save_through_the_palette();
+    let saved = dir.path().join("arcform.yaml");
+    assert!(saved.is_file(), "the palette's Save wrote the spec");
     let mut layout = first.app.layout().clone();
     // The layout still remembers it; the file is gone.
     std::fs::remove_file(&saved).expect("the spec is removed");
@@ -644,15 +1041,11 @@ fn a_saved_protocol_that_has_gone_draws_no_row() {
 fn clicking_a_saved_protocols_row_reopens_it_as_the_dashboard() {
     let dir = TempDir::new("door-click");
     let path = dir.write("harbour.csv", HARBOUR_CSV);
-    let ctx = egui::Context::default();
-
     let mut first =
         Window::over(Boot::data_file(&path.to_string_lossy()).expect("the file opens as a boot"));
-    let saved = first
-        .app
-        .save_protocol(&ctx)
-        .expect("there is a Protocol to save")
-        .expect("the save writes");
+    first.save_through_the_palette();
+    let saved = dir.path().join("arcform.yaml");
+    assert!(saved.is_file(), "the palette's Save wrote the spec");
     let layout = first.app.layout().clone();
 
     let mut next = Window::with_layout(Boot::empty(), layout);
@@ -728,14 +1121,11 @@ fn a_data_file_keeps_its_chart_on_the_canvas_now_that_the_rails_are_full() {
 fn a_saved_protocol_is_remembered_as_never_run() {
     let dir = TempDir::new("run-state");
     let path = dir.write("harbour.csv", HARBOUR_CSV);
-    let ctx = egui::Context::default();
     let mut win =
         Window::over(Boot::data_file(&path.to_string_lossy()).expect("the file opens as a boot"));
-    let saved = win
-        .app
-        .save_protocol(&ctx)
-        .expect("there is a Protocol to save")
-        .expect("the save writes");
+    win.save_through_the_palette();
+    let saved = dir.path().join("arcform.yaml");
+    assert!(saved.is_file(), "the palette's Save wrote the spec");
     let layout = win.app.layout();
     let recent = layout
         .recents
