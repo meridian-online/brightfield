@@ -537,7 +537,7 @@ mod tests {
     fn dispatchable_offers_save_only_where_there_is_something_to_save() {
         let save = ToolbarEntry::button("editor-save", "Save", Verb::new("save-spec"));
         assert_eq!(
-            dispatchable(&[save.clone()], true),
+            dispatchable(std::slice::from_ref(&save), true),
             vec![save.clone()],
             "a window with a Protocol behind it must keep its Save"
         );

@@ -71,9 +71,9 @@ use meridian_egui::{PickerDelegate, PickerHint, PickerOutcome, PickerRow};
 /// changes real state when confirmed.
 ///
 /// This list is the part that does not depend on the window. A verb whose
-/// dispatch does — `save-spec`, which needs a Protocol to write — is in
-/// [`SAVEABLE_CHART_VERBS`] instead, and [`chart_offers`] is the one predicate
-/// that combines them.
+/// dispatch does — `save-spec`, which needs a Protocol to write — is in the
+/// private `SAVEABLE_CHART_VERBS` instead, and [`chart_offers`] is the one
+/// predicate that combines them.
 pub const CHART_PALETTE_VERBS: &[&str] = &[
     "clear-selection",
     "open-home",
