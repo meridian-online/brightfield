@@ -185,6 +185,37 @@ impl Window {
         self.run(Vec::new());
     }
 
+    /// Every string this window's next frame hands the painter **inside
+    /// `rect`** — the device for asking what one rail drew rather than what
+    /// the window drew.
+    fn drawn_text_in(&mut self, rect: egui::Rect) -> Vec<String> {
+        let raw = egui::RawInput {
+            screen_rect: Some(self.screen),
+            ..Default::default()
+        };
+        let out = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
+        let mut text = Vec::new();
+        for clipped in &out.shapes {
+            collect_text_in(&clipped.shape, rect, &mut text);
+        }
+        text
+    }
+
+    /// Pick rail `id`'s `index`-th name, at the place a pointer would find it.
+    fn pick_rail_tab(&mut self, id: brightfield_workbench::arrangement::RegionId, index: usize) {
+        let at = self
+            .app
+            .rail_name_rect(id, index)
+            .expect("the rail drew that name")
+            .center();
+        self.run(vec![
+            egui::Event::PointerMoved(at),
+            button_at(at, true),
+            button_at(at, false),
+        ]);
+        self.settle();
+    }
+
     /// Every string this window's next frame hands the painter.
     ///
     /// Read off the frame's own shapes rather than off a document field,
@@ -281,6 +312,21 @@ fn collect_text(shape: &egui::epaint::Shape, into: &mut Vec<String>) {
         egui::epaint::Shape::Vec(shapes) => {
             for s in shapes {
                 collect_text(s, into);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// [`collect_text`], kept to the galleys drawn inside `rect`.
+fn collect_text_in(shape: &egui::epaint::Shape, rect: egui::Rect, into: &mut Vec<String>) {
+    match shape {
+        egui::epaint::Shape::Text(t) if rect.contains(t.pos) => {
+            into.push(t.galley.text().to_string());
+        }
+        egui::epaint::Shape::Vec(shapes) => {
+            for s in shapes {
+                collect_text_in(s, rect, into);
             }
         }
         _ => {}
@@ -774,6 +820,86 @@ fn a_labelled_column_sends_its_leaf_to_the_rail_and_its_whole_label_to_the_inspe
     assert!(
         drawn.iter().any(|t| t == "DOUBLE"),
         "the inspector rail drew no storage type beside the label: {drawn:?}"
+    );
+}
+
+/// **The inspector rail draws the editor's Save on a window with a Protocol,
+/// and does not on a window over a chart spec** — read off the rail's own
+/// pixels, over both kinds of window, with everything else about the two the
+/// same.
+///
+/// The predicate is unit-tested in `inspector::dispatchable`. This is the other
+/// altitude: that `InspectorPane::ui` asks it about **this** window rather
+/// than answering for itself. Replacing `self.saveable.get()` with a constant
+/// passes every unit test and puts a dead Save button on every chart-spec
+/// window, which is the defect this round is about.
+///
+/// Both windows carry a spec file, so the editor pane has a buffer and
+/// declares its Save entry in either case — otherwise the absence below would
+/// be true for the wrong reason. The rail naming that file is the guard.
+#[test]
+fn the_inspector_rail_draws_save_only_on_a_window_that_has_one() {
+    use brightfield_workbench::arrangement::{INSPECTOR_RAIL, LEDGER_RAIL};
+
+    /// Focus the editor pane over `win` and read the inspector rail's text.
+    fn rail_text(win: &mut Window) -> Vec<String> {
+        // The Editor is the ledger rail's second name; the pane has to DRAW
+        // before it opens a buffer, and it only draws when its tab is picked.
+        win.pick_rail_tab(LEDGER_RAIL, 1);
+        assert!(
+            win.app.focus_pane(brightfield_workbench::PaneKey::new(
+                brightfield_shell::editor::EDITOR
+            )),
+            "the editor pane is not in this window's tree"
+        );
+        win.settle();
+        let rect = win
+            .app
+            .region_rect(INSPECTOR_RAIL)
+            .expect("the inspector rail drew");
+        win.drawn_text_in(rect)
+    }
+
+    // A window over a chart spec: a buffer to save, and no Protocol.
+    let spec = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/dashboard.yaml");
+    let mut chart = Window::over(
+        Boot::open(spec.to_str().expect("utf-8"), Flow::Vertical, None).expect("the spec opens"),
+    );
+    assert!(!chart.app.has_protocol_to_save());
+    let chart_rail = rail_text(&mut chart);
+    // The editor pane titles its subject from its open FILE, so the rail
+    // naming one is proof the pane has a buffer — and `EditorPane::describe`
+    // declares its Save entry under exactly that condition. Without this the
+    // absence below could be an editor that never opened anything.
+    assert!(
+        chart_rail.iter().any(|t| t == "dashboard.yaml"),
+        "the rail is not naming a focused editor with a buffer, so the \
+         toolbar it filters is empty and the assertion below proves nothing: \
+         {chart_rail:?}"
+    );
+    assert!(
+        !chart_rail.iter().any(|t| t == "Save"),
+        "the inspector rail drew a Save button on a window with no Protocol \
+         behind it — pressing it reaches `save_protocol`, finds no source and \
+         returns: {chart_rail:?}"
+    );
+
+    // A window a data file opened: the same focused pane, and a Protocol.
+    let dir = TempDir::new("rail-save");
+    let path = dir.write("harbour.csv", HARBOUR_CSV);
+    let mut data =
+        Window::over(Boot::data_file(&path.to_string_lossy()).expect("the file opens as a boot"));
+    assert!(data.app.has_protocol_to_save());
+    let data_rail = rail_text(&mut data);
+    assert!(
+        data_rail.iter().any(|t| t == "harbour.yaml"),
+        "the rail is not naming a focused editor with a buffer over the \
+         generated spec: {data_rail:?}"
+    );
+    assert!(
+        data_rail.iter().any(|t| t == "Save"),
+        "the inspector rail drew no Save on a window that has a Protocol to \
+         write, so the only route to it is the palette: {data_rail:?}"
     );
 }
 
