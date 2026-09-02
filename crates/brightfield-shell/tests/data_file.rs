@@ -1328,8 +1328,18 @@ fn the_generated_dashboard_is_a_spec_the_reader_can_open_and_edit() {
         !pane.can_save(),
         "nothing has been typed yet, so there is nothing to write"
     );
+    // The hero's declared height, read from the generator rather than typed:
+    // a literal here silently stopped matching the day the dashboard became a
+    // hero beside a column, and a no-op edit fails three assertions down as
+    // "an edited buffer has something to write", which names the wrong thing.
+    let declared = format!("height: {}", brightfield_shell::dashboard::HERO_HEIGHT);
+    assert!(
+        on_disk.contains(&declared),
+        "the generated spec no longer declares `{declared}`, so the edit below \
+         changes nothing and the three assertions after it prove nothing:\n{on_disk}"
+    );
     if let Some(buffer) = pane.buffer_mut() {
-        *buffer = buffer.replace("height: 300", "height: 220");
+        *buffer = buffer.replace(&declared, "height: 220");
     }
     pane.note_buffer_edited();
     assert!(pane.can_save(), "an edited buffer has something to write");
