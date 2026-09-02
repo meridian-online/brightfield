@@ -413,7 +413,14 @@ mod tests {
             table_name(Path::new("/x/2026 readings-final.csv")),
             "t_2026_readings_final"
         );
-        assert_eq!(table_name(Path::new("/x/.csv")), "t_");
+        // A dotfile has no extension as far as `Path` is concerned, so the
+        // whole name is the stem — `.csv` sanitises to `_csv`, which is
+        // already an identifier and needs no prefix.
+        assert_eq!(table_name(Path::new("/x/.csv")), "_csv");
+        // A name that sanitises to nothing at all, and one that starts with a
+        // digit, are the two cases the prefix exists for.
+        assert_eq!(table_name(Path::new("/x/2026.csv")), "t_2026");
+        assert_eq!(table_name(Path::new("/x/x")), "x");
     }
 
     /// The reader dispatches on the extension the same way the engine's source
