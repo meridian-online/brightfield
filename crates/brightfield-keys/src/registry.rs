@@ -471,7 +471,7 @@ pub fn registry() -> Vec<VerbEntry> {
             drives: D::RuntimeDispatch,
             status: VerbStatus::Built,
             reserved_reason: None,
-            help: "Save the spec (editor)",
+            help: "Save — the Protocol a data file opened as, or the editor's buffer",
             scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 5, motor_note: "cmd-s = save (universal; shipped, editor-scoped)" }),
         },
         // ---- colour preview: transient, view-scoped ----
