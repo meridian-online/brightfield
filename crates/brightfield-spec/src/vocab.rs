@@ -444,9 +444,10 @@ vocab_enum! {
 ///   one px-per-unit. Real Observable Plot's `aspectRatio` is a plot-level
 ///   option; this build reads it per mark instead, because a mark option
 ///   reaches `ChannelMap::from_mark` with no further wiring, while a new
-///   plot-level attribute would need threading through every
-///   renderer-construction call site. Only `1` is read; any other value is
-///   left unbound, the same silence an unrecognised `label:` value gets.
+///   plot-level attribute would need threading through each
+///   renderer-construction call site. The value `1` is the one read; any
+///   other value is left unbound, the same silence an unrecognised `label:`
+///   value gets.
 pub const CONSUMED_MARK_OPTION_KEYS: &[&str] = &[
     "x",
     "y",

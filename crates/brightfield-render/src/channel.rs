@@ -161,10 +161,10 @@ impl LabelForm {
 ///
 /// It also carries the mark options that are not channels and that a
 /// RENDERER (rather than a lowerer) reads — see [`ChannelMap::label`] and
-/// [`ChannelMap::equal_aspect`]. This is the only route such an option has:
+/// [`ChannelMap::equal_aspect`]. This is the route such an option has:
 /// [`crate::mark::MarkRenderer::render`] and
 /// [`crate::mark::MarkRenderer::augment_scales`] are handed a batch, a channel
-/// map and a scale set, and never the mark.
+/// map and a scale set, not the mark itself.
 #[derive(Debug, Clone, Default)]
 pub struct ChannelMap {
     map: HashMap<Channel, String>,
@@ -250,11 +250,12 @@ impl ChannelMap {
     /// to the plot rect independently.
     ///
     /// A mark option rather than a channel for the reason [`Self::label`]
-    /// already is one: there is no column behind it and nothing for
-    /// `infer_scales` to see. `crate::mark::DotRenderer`'s
-    /// `MarkRenderer::augment_scales` implementation is the one reader —
-    /// every other mark, and every plain `dot` mark that does not write
-    /// `aspectRatio: 1`, draws exactly as before.
+    /// already is one: there is no column behind it, so `infer_scales` reads
+    /// no channel from it. `crate::mark::DotRenderer`'s
+    /// `MarkRenderer::augment_scales` implementation is the one reader — a
+    /// plain `dot` mark that does not write `aspectRatio: 1` draws exactly as
+    /// before, held by `augment_scales_without_the_flag_leaves_scales_untouched`
+    /// in that crate's test module.
     #[must_use]
     pub fn equal_aspect(&self) -> bool {
         self.equal_aspect
@@ -379,8 +380,8 @@ impl ChannelMap {
             }
         }
         // The non-channel options read here. Both are scanned outside the
-        // channel loop because neither binds a column: there is nothing for
-        // `infer_scales` to see and nothing for a scale to be built over.
+        // channel loop because neither binds a column: there is no column for
+        // `infer_scales` to see and no scale to be built over either.
         if let Some(ValueOrParamRef::Value(SpecValue::String(form))) = mark.options.get("label") {
             if let Some(form) = LabelForm::from_wire(form) {
                 cm.set_label(form);

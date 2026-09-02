@@ -119,11 +119,12 @@ const SCATTER_SLOTS: &[FieldSlot] = &[
 /// The two measures a point map plots, longitude before latitude.
 ///
 /// Both required, for the reason [`SCATTER_SLOTS`] gives: one column alone has
-/// nothing to pair it with. Unlike the scatter's `x`/`y`, **which column fills
-/// which slot is not the table's own order** — a point map is only ever built
-/// from [`crate::dashboard::coordinate_pair`], which names the longitude and
-/// the latitude explicitly and binds them in that order, so `bind`'s first-fit
-/// never has to guess between two otherwise-identical quantitative fields.
+/// no partner to pair it with. Unlike the scatter's `x`/`y`, **which column
+/// fills which slot is not the table's own order** — a point map is built
+/// from [`crate::dashboard::coordinate_pair`] and nowhere else, which names
+/// the longitude and the latitude explicitly and binds them in that order, so
+/// `bind`'s first-fit never has to guess between two otherwise-identical
+/// quantitative fields.
 const POINT_MAP_SLOTS: &[FieldSlot] = &[
     FieldSlot::required("lon", &[FieldType::Quantitative]),
     FieldSlot::required("lat", &[FieldType::Quantitative]),

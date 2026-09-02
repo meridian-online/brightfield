@@ -289,7 +289,7 @@ pub struct Tile {
     resampled: Option<Step>,
     /// The second column and field of a two-column tile — the latitude beside
     /// [`Tile::column`]'s longitude, for [`chart_kinds::POINT_MAP`]. `None`
-    /// for every other kind this dashboard draws, which is one column each.
+    /// for the rest of the kinds this dashboard draws, each one column.
     paired: Option<(String, Field)>,
 }
 
@@ -332,7 +332,7 @@ impl Tile {
 
     /// The second column of a two-column tile — the latitude beside
     /// [`Self::column`]'s longitude, for [`chart_kinds::POINT_MAP`]. `None`
-    /// for every other kind this dashboard draws.
+    /// for the rest of the kinds this dashboard draws.
     #[must_use]
     pub fn paired_column(&self) -> Option<&str> {
         self.paired.as_ref().map(|(name, _)| name.as_str())
@@ -639,7 +639,7 @@ fn tile_for(column: &ColumnProfile, taken: &[String]) -> Result<Tile, Omission> 
 ///   rule matches **exactly one** column, so a table with two candidate
 ///   latitudes finds no pair rather than guessing which is real.
 ///
-/// Every candidate still has to be a column [`tile_for`] would draw at all —
+/// Each candidate still has to be a column [`tile_for`] would draw at all —
 /// nameable, non-null, more than one distinct value, and quantitative — so a
 /// constant or all-null `latitude` column does not steal its neighbour into a
 /// tile neither of them can hold.
@@ -899,7 +899,7 @@ enum TileForm {
     /// [`RankedCategoryBars`], whose own emitter writes it.
     RankedBars,
     /// [`chart_kinds::point_map_tile`], over the tile's two columns rather
-    /// than one — the only form this module writes for a [`Tile`] whose
+    /// than one — the form this module writes for a [`Tile`] whose
     /// [`Tile::paired_column`] answers.
     PointMap,
 }
@@ -925,10 +925,10 @@ fn tile_yaml(tile: &Tile, indent: usize) -> String {
             indent,
         ),
         // Unreachable: a tile's kind came from `single_column_kinds` or from
-        // `point_map_tile_for`, and every kind either of those can produce has
-        // a form. Emitting nothing rather than a half-written plot is the
-        // answer that cannot produce a spec which parses and draws something
-        // else.
+        // `point_map_tile_for`, and a kind reaching here from either one
+        // already has a form. Emitting an empty string rather than a
+        // half-written plot is the answer that cannot produce a spec which
+        // parses and draws something else.
         None => String::new(),
     }
 }
@@ -1228,7 +1228,7 @@ mod tests {
     ///
     /// `lon`/`lat` are named so the name tier alone would find them too, but
     /// this asks whether the label tier is consulted FIRST and reads its
-    /// rule off [`Tile::chosen_by`] rather than only its outcome.
+    /// rule off [`Tile::chosen_by`] rather than its outcome alone.
     #[test]
     fn a_coordinate_pair_found_by_its_finetype_label_names_the_label_tier() {
         let dash = of(&[

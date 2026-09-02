@@ -761,8 +761,10 @@ pub struct DotRenderer;
 impl MarkRenderer for DotRenderer {
     /// Equal-aspect the X/Y domains when the mark asked for it
     /// ([`ChannelMap::equal_aspect`]) — the point-map's device, a `dot` with
-    /// `aspectRatio: 1`, and a no-op for every other `dot` mark shipped,
-    /// scatter included.
+    /// `aspectRatio: 1`, and a no-op for a `dot` mark that did not ask,
+    /// scatter included — held by
+    /// `augment_scales_without_the_flag_leaves_scales_untouched` in this
+    /// module's own tests.
     ///
     /// Reuses `aspect_fit_domains`, the same equal-px-per-unit fit
     /// [`GeoRenderer::augment_scales`] computes from a projected geometry
