@@ -1753,4 +1753,63 @@ mod tests {
         assert_eq!(drawn, ToolbarDrawn::default());
         assert_eq!(height, 0.0);
     }
+
+    // -----------------------------------------------------------------------
+    // PANE_RADIUS at the one site no shipped baseline reaches
+    // -----------------------------------------------------------------------
+
+    /// [`orphan_pane`] is a `PANE_RADIUS` site with no pixel baseline behind
+    /// it: a shipped layout resolves each pane it names, so no snapshot
+    /// test renders a missing one. This pins it a level down from pixels
+    /// instead of skipping it.
+    ///
+    /// A rounded rect's tessellation does not place a vertex at the rect's
+    /// exact geometric corner — the curve starts short of it, `PANE_RADIUS`
+    /// in along each edge — so a fill-coloured vertex sitting exactly on
+    /// `outer`'s corner is reachable exactly when the fill drew square.
+    /// Cheaper and more exact than a pixel diff at this shape's scale: this
+    /// file's own `kittest.toml` policy notes a 2pt→3pt corner nudge does
+    /// not even trip the perceptual gate.
+    #[test]
+    fn an_orphan_panes_fill_has_a_vertex_at_each_exact_square_corner() {
+        let key = PaneKey::new(crate::item::ItemId::new("test-orphan-pane"));
+        let (_, primitives) = frame_pixels(|ui| orphan_pane(ui, key, Mode::Light));
+
+        let sem = semantic(Mode::Light.is_dark());
+        let fill = colour(sem.surfaces.sunken);
+        let outer = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(400.0, 300.0));
+        let corners = [
+            outer.left_top(),
+            outer.right_top(),
+            outer.left_bottom(),
+            outer.right_bottom(),
+        ];
+
+        // Feathering insets the opaque fill by half a pixel off the true
+        // geometric edge for anti-aliasing (measured: a vertex at (0.5, 0.5)
+        // carries the fill colour exactly; the true corner (0, 0) carries a
+        // zero-alpha feather vertex instead) — true at any radius, so the
+        // corner itself is not the point to check. What radius decides is
+        // how much closer than that a fill vertex gets: a square corner's
+        // nearest fill vertex is that ~0.7px feather diagonal; at
+        // `radius::PANEL` (8) the arc does not begin until a full 8px along
+        // each edge, so no fill-coloured vertex sits within a couple of
+        // pixels of the corner. 1.5px is comfortably inside the first band
+        // and comfortably short of the second.
+        const NEAR: f32 = 1.5;
+
+        for corner in corners {
+            let has_corner_vertex = primitives.iter().any(|p| match &p.primitive {
+                egui::epaint::Primitive::Mesh(mesh) => mesh.vertices.iter().any(|v| {
+                    v.color == fill && (v.pos.to_vec2() - corner.to_vec2()).length() < NEAR
+                }),
+                egui::epaint::Primitive::Callback(_) => false,
+            });
+            assert!(
+                has_corner_vertex,
+                "no fill vertex within {NEAR}px of {corner:?} — orphan_pane's \
+                 fill is rounded, not square"
+            );
+        }
+    }
 }
