@@ -488,8 +488,8 @@ fn facts_for(profile: &ColumnProfile, dashboard: &Dashboard) -> ColumnFacts {
 /// longitude, with the latitude in [`ColumnFacts::paired`].
 fn tiles_in_plot_order(columns: &[ColumnProfile], dashboard: &Dashboard) -> Vec<ColumnFacts> {
     dashboard
-        .tiles()
-        .iter()
+        .plot_order()
+        .into_iter()
         .filter_map(|tile| {
             let profile = columns.iter().find(|p| p.name == tile.column())?;
             Some(facts_for(profile, dashboard))

@@ -125,7 +125,83 @@ pub const TILE_HEIGHT: u32 = 300;
 /// 1080-point row, which is the width a laptop panel gives a docked pane
 /// without the reflow squeezing each tile below the width its axis labels
 /// need.
+///
+/// Read only by the one-tile fallback in [`Dashboard::to_spec`] now that a
+/// dashboard of two tiles or more is a hero beside a column — see
+/// [`HERO_WIDTH`].
 pub const TILES_PER_ROW: usize = 3;
+
+// ---------------------------------------------------------------------------
+// The hero and the column beside it
+// ---------------------------------------------------------------------------
+
+/// The share of the canvas the hero takes, as a fraction of the width.
+///
+/// The declared widths below are this ratio written as two weights, because
+/// [`brightfield_spec::layout`] shares a constrained `hconcat`'s residual out
+/// in proportion to its items' intrinsic sizes. Stated as a number as well
+/// because the shell splits the canvas into panes with it, and the two have to
+/// be one declaration: `the_hero_weight_is_the_pane_share` holds them equal.
+pub const HERO_SHARE: f32 = 0.62;
+
+/// The hero plot's declared width in logical points — [`HERO_SHARE`] of a
+/// thousand, so the pair of weights below reads as the ratio it is.
+pub const HERO_WIDTH: u32 = 620;
+
+/// The hero plot's declared height. Only the *unconstrained* layout reads it —
+/// the size the window is first derived from — because a constrained `hconcat`
+/// stretches its items to the box it was offered.
+pub const HERO_HEIGHT: u32 = 620;
+
+/// One stacked tile's declared width — the remainder of [`HERO_WIDTH`]'s
+/// thousand.
+pub const COLUMN_TILE_WIDTH: u32 = 380;
+
+/// One stacked tile's declared height, unconstrained.
+///
+/// Small deliberately: it is the *weight* the column's tiles share their box
+/// out by (all equal, so the split is even) and it is what a window derived
+/// from an unconstrained layout is sized around. At [`TILE_HEIGHT`] a file of
+/// nine columns would ask for a two-thousand-point window.
+pub const COLUMN_TILE_HEIGHT: u32 = 100;
+
+/// The floor a stacked tile's drawn height is held at, in logical points.
+///
+/// Below this a histogram is a smear rather than a distribution. The column
+/// scrolls rather than compressing past it — see [`stack_extent`].
+pub const MIN_COLUMN_TILE_HEIGHT: f32 = 96.0;
+
+/// The gutter between the hero and the column, in logical points, written into
+/// the emitted spec as an `hspace`.
+///
+/// **It is a chrome measurement, and that is deliberate.** The two panes the
+/// shell draws this dashboard in each take
+/// [`brightfield_workbench::chrome::pane_content_inset`] out of their own rect
+/// and stand a pane gap apart, so the page the raster is composed on has to
+/// carry that gutter or the hero's right edge and the column's left edge land
+/// inside the other pane's frame. Its value is what makes the map pane's
+/// drawn rect [`HERO_SHARE`] of the canvas exactly:
+///
+/// ```text
+/// gutter = (2 · HERO_SHARE · pane_content_inset + pane_gap) / (1 − HERO_SHARE)
+/// ```
+///
+/// `the_gutter_is_what_puts_the_map_pane_at_its_declared_share` derives it
+/// from the chrome and reddens if either moves.
+pub const HERO_GUTTER: u32 = 42;
+
+/// The height the composed page needs for a column of `tiles` stacked tiles,
+/// given the `offered` height of the pane they stand in.
+///
+/// [`MIN_COLUMN_TILE_HEIGHT`] each, or the offered box shared out evenly when
+/// that is the larger — the "or 96 points whichever is greater, scrolling past
+/// that" rule, as one number the caller can scroll a page of.
+#[must_use]
+pub fn stack_extent(offered: f32, tiles: usize) -> f32 {
+    #[allow(clippy::cast_precision_loss)]
+    let floor = MIN_COLUMN_TILE_HEIGHT * tiles as f32;
+    offered.max(floor)
+}
 
 /// The crossfilter param every tile drives and reads.
 ///
@@ -468,6 +544,71 @@ impl Dashboard {
         &self.omitted
     }
 
+    /// **Which tile takes the map pane** — the hero — as an index into
+    /// [`Self::tiles`], or `None` for a dashboard of fewer than two tiles,
+    /// which has no column to stand a hero beside.
+    ///
+    /// The generator names it: the joint tile a coordinate pair earned, if the
+    /// table has one, and **otherwise the generator's first tile**. That
+    /// fallback is decided here rather than left to the tile order by
+    /// accident, because a table with no coordinate pair still opens as a hero
+    /// beside a column and something has to be the hero. The first tile is the
+    /// first column of the file that earned a picture, which is the one a
+    /// reader's eye is already going to.
+    #[must_use]
+    pub fn hero_index(&self) -> Option<usize> {
+        if self.tiles.len() < 2 {
+            return None;
+        }
+        Some(
+            self.tiles
+                .iter()
+                .position(|t| t.kind == chart_kinds::POINT_MAP)
+                .unwrap_or(0),
+        )
+    }
+
+    /// The tiles **in the order the composition places its plots**: the hero
+    /// first, then every other tile in the table's own column order.
+    ///
+    /// Not the same list as [`Self::tiles`], which stays in file order: a
+    /// coordinate pair's joint tile sits where its first column does, and the
+    /// hero is lifted out of that order to head the page. Anything that maps a
+    /// plot index back to a column — the inspector's read of a clicked tile —
+    /// has to read this one. `the_plot_order_leads_with_the_hero` holds it.
+    #[must_use]
+    pub fn plot_order(&self) -> Vec<&Tile> {
+        match self.hero_index() {
+            None => self.tiles.iter().collect(),
+            Some(hero) => std::iter::once(&self.tiles[hero])
+                .chain(
+                    self.tiles
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| *i != hero)
+                        .map(|(_, t)| t),
+                )
+                .collect(),
+        }
+    }
+
+    /// The tiles that stack in the column beside the hero, in file order.
+    ///
+    /// Empty for a dashboard with no hero, which draws no column.
+    #[must_use]
+    pub fn column_tiles(&self) -> Vec<&Tile> {
+        match self.hero_index() {
+            None => Vec::new(),
+            Some(hero) => self
+                .tiles
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != hero)
+                .map(|(_, t)| t)
+                .collect(),
+        }
+    }
+
     /// The one tile this dashboard has, when it has exactly one.
     ///
     /// The single-tile dashboard is the case where a tile's picture *is* the
@@ -483,10 +624,14 @@ impl Dashboard {
 
     /// The whole dashboard as spec source: the header comment, the title, the
     /// shared selection, the data block — the file, and the bucket column of
-    /// every tile that had to be resampled — and the tiles laid out in rows of
-    /// [`TILES_PER_ROW`]. The tests are
+    /// every tile that had to be resampled — and the tiles laid out as **the
+    /// hero beside the column that holds the rest**. The tests are
     /// `every_tile_reads_the_one_table_however_many_columns_are_derived` over
-    /// the derived half and `the_tiles_are_laid_out_in_rows` over the layout.
+    /// the derived half and `the_hero_takes_the_larger_share_of_the_page` over
+    /// the layout.
+    ///
+    /// A dashboard of one tile has no column to stand a hero beside and is
+    /// written as it always was: one row of one plot.
     ///
     /// **This is the artefact, not a rendering of one.** The picture is
     /// composed from these exact bytes, so a reader who opens the spec is
@@ -501,13 +646,27 @@ impl Dashboard {
         let _ = writeln!(out, "params:");
         let _ = writeln!(out, "  {SELECTION}: {{ select: crossfilter }}");
         out.push_str(&source_spec_deriving(&self.path, &self.derived_columns()));
-        let _ = writeln!(out, "vconcat:");
-        for row in self.tiles.chunks(TILES_PER_ROW) {
-            let _ = writeln!(out, "  - hconcat:");
-            for tile in row {
-                let _ = writeln!(out, "    # {}", tile_comment(tile));
-                out.push_str(&tile_yaml(tile, 4));
+        let Some(hero) = self.hero_index() else {
+            let _ = writeln!(out, "vconcat:");
+            for row in self.tiles.chunks(TILES_PER_ROW) {
+                let _ = writeln!(out, "  - hconcat:");
+                for tile in row {
+                    let _ = writeln!(out, "    # {}", tile_comment(tile));
+                    out.push_str(&tile_yaml(tile, 4, TILE_WIDTH, TILE_HEIGHT));
+                }
             }
+            return out;
+        };
+        let _ = writeln!(out, "hconcat:");
+        let _ = writeln!(out, "  # {}", tile_comment(&self.tiles[hero]));
+        out.push_str(&tile_yaml(&self.tiles[hero], 2, HERO_WIDTH, HERO_HEIGHT));
+        // The gutter the two panes' own frames take out of the page between
+        // them. See `HERO_GUTTER`.
+        let _ = writeln!(out, "  - hspace: {HERO_GUTTER}");
+        let _ = writeln!(out, "  - vconcat:");
+        for tile in self.column_tiles() {
+            let _ = writeln!(out, "    # {}", tile_comment(tile));
+            out.push_str(&tile_yaml(tile, 4, COLUMN_TILE_WIDTH, COLUMN_TILE_HEIGHT));
         }
         out
     }
@@ -912,17 +1071,23 @@ enum TileForm {
 /// reads the two apart is `a_timestamp_past_the_grid_ceiling_gets_a_tile`, and
 /// `the_dates_tile_counts_in_time_order_and_drops_no_date` is the date beside
 /// it, whose mark names the file's own column.
-fn tile_yaml(tile: &Tile, indent: usize) -> String {
+fn tile_yaml(tile: &Tile, indent: usize, width: u32, height: u32) -> String {
     match tile_form(tile.kind) {
-        Some(TileForm::Histogram) => histogram_tile(tile.drawn_column(), indent),
-        Some(TileForm::TimeBars) => time_bars_tile(tile.drawn_column(), indent),
+        Some(TileForm::Histogram) => {
+            histogram_tile_sized(tile.drawn_column(), indent, width, height)
+        }
+        Some(TileForm::TimeBars) => {
+            time_bars_tile_sized(tile.drawn_column(), indent, width, height)
+        }
         Some(TileForm::RankedBars) => RankedCategoryBars::new(tile.drawn_column())
-            .with_size(TILE_WIDTH, TILE_HEIGHT)
+            .with_size(width, height)
             .plot_yaml(SOURCE, SELECTION, indent),
-        Some(TileForm::PointMap) => chart_kinds::point_map_tile(
+        Some(TileForm::PointMap) => chart_kinds::point_map_tile_sized(
             tile.drawn_column(),
             tile.paired_column().unwrap_or_default(),
             indent,
+            width,
+            height,
         ),
         // Unreachable: a tile's kind came from `single_column_kinds` or from
         // `point_map_tile_for`, and a kind reaching here from either one
@@ -973,6 +1138,13 @@ const GHOST_INK: meridian_design::colour::Rgba = meridian_design::scales::GRAY_L
 /// has to be made twice, and this comment is where a reader finds that out.
 #[must_use]
 pub fn histogram_tile(column: &str, indent: usize) -> String {
+    histogram_tile_sized(column, indent, TILE_WIDTH, TILE_HEIGHT)
+}
+
+/// [`histogram_tile`] at a declared size — the weight a constrained concat
+/// shares its box out by. See [`HERO_WIDTH`].
+#[must_use]
+pub fn histogram_tile_sized(column: &str, indent: usize, width: u32, height: u32) -> String {
     let pad = " ".repeat(indent);
     let col = yaml_string(column);
     let table = yaml_string(SOURCE);
@@ -1002,8 +1174,8 @@ pub fn histogram_tile(column: &str, indent: usize) -> String {
     // is a spec that parses and does something else.
     let _ = writeln!(out, "{pad}  xDomain: Fixed");
     let _ = writeln!(out, "{pad}  xLabel: {col}");
-    let _ = writeln!(out, "{pad}  width: {TILE_WIDTH}");
-    let _ = writeln!(out, "{pad}  height: {TILE_HEIGHT}");
+    let _ = writeln!(out, "{pad}  width: {width}");
+    let _ = writeln!(out, "{pad}  height: {height}");
     out
 }
 
@@ -1039,6 +1211,12 @@ pub fn histogram_tile(column: &str, indent: usize) -> String {
 /// on the mark; that module's header says what one would cost.
 #[must_use]
 pub fn time_bars_tile(column: &str, indent: usize) -> String {
+    time_bars_tile_sized(column, indent, TILE_WIDTH, TILE_HEIGHT)
+}
+
+/// [`time_bars_tile`] at a declared size. See [`histogram_tile_sized`].
+#[must_use]
+pub fn time_bars_tile_sized(column: &str, indent: usize, width: u32, height: u32) -> String {
     let pad = " ".repeat(indent);
     let col = yaml_string(column);
     let table = yaml_string(SOURCE);
@@ -1058,8 +1236,8 @@ pub fn time_bars_tile(column: &str, indent: usize) -> String {
     // level deeper and they read as more options on the last interactor, which
     // is a spec that parses and does something else.
     let _ = writeln!(out, "{pad}  xLabel: {col}");
-    let _ = writeln!(out, "{pad}  width: {TILE_WIDTH}");
-    let _ = writeln!(out, "{pad}  height: {TILE_HEIGHT}");
+    let _ = writeln!(out, "{pad}  width: {width}");
+    let _ = writeln!(out, "{pad}  height: {height}");
     out
 }
 

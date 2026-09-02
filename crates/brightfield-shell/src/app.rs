@@ -214,6 +214,23 @@ pub struct ChartDoc {
     /// a layout nothing derived it from stops landing the first time a row
     /// height moves without anything going red.
     pub interval_slider_rects: Vec<(String, egui::Rect)>,
+    /// **How many tiles stand in the column beside the hero**, when this
+    /// document is a generated dashboard laid out as a hero and a column —
+    /// `None` for a document that is one picture, which the canvas draws as
+    /// one pane.
+    ///
+    /// It rides on the document because the canvas has to decide, before it
+    /// draws anything, whether the region is one pane or a pane group, and the
+    /// only body that knows is the generator that laid the page out. Deriving
+    /// it from the composed plots' rects instead would be reading the answer
+    /// off the geometry the answer produced.
+    stacked_tiles: Option<usize>,
+    /// The floor the composed page's height is held at, in logical points.
+    ///
+    /// Zero for every document but a hero-and-column dashboard, whose stacked
+    /// tiles have a height floor: the page grows past the pane and the canvas
+    /// scrolls it. See [`crate::dashboard::stack_extent`].
+    min_page_height: f32,
     /// How this document's picture was chosen, when a chart kind chose it —
     /// see [`Authored`]. Written by the open-a-data-file path, cleared by
     /// [`ChartDoc::open`] with the rest of the outgoing document's state.
@@ -331,6 +348,8 @@ impl ChartDoc {
             raster_rect: None,
             legend_rect: None,
             interval_slider_rects: Vec::new(),
+            stacked_tiles: None,
+            min_page_height: 0.0,
             authored: None,
             spec_path: None,
             activity: ActivityLog::new(),
@@ -360,6 +379,8 @@ impl ChartDoc {
             raster_rect: None,
             legend_rect: None,
             interval_slider_rects: Vec::new(),
+            stacked_tiles: None,
+            min_page_height: 0.0,
             authored: None,
             spec_path: None,
             activity: ActivityLog::new(),
@@ -424,6 +445,11 @@ impl ChartDoc {
         // …and the columns described the replaced document's table.
         self.tile_columns = Vec::new();
         self.selected_tile = None;
+        // …and the pane group described the replaced document's layout. A
+        // document that arrives as one picture must not be drawn in the
+        // outgoing dashboard's two panes.
+        self.stacked_tiles = None;
+        self.min_page_height = 0.0;
         // The watch list described the replaced document's files, and any
         // in-flight marks belonged to its session — both go with it.
         self.watch.watch(None, Vec::new());
@@ -481,7 +507,12 @@ impl ChartDoc {
             0.0,
             0.0,
             f64::from(size.x.floor().max(MIN_CHART_EXTENT)),
-            f64::from(size.y.floor().max(MIN_CHART_EXTENT)),
+            f64::from(
+                size.y
+                    .max(self.min_page_height)
+                    .floor()
+                    .max(MIN_CHART_EXTENT),
+            ),
         );
         let Some(live) = self.live.as_mut() else {
             return false;
@@ -1032,6 +1063,32 @@ impl ChartDoc {
 
     /// Declare what each tile of this dashboard is of, in plot order — the
     /// open-a-data-file path's, and nothing else's.
+    /// Declare that this document is a generated dashboard laid out as a hero
+    /// beside a column of `tiles`, or (with `None`) that it is one picture.
+    ///
+    /// Set by the open-a-data-file path from
+    /// [`Dashboard::hero_index`](crate::dashboard::Dashboard::hero_index),
+    /// which is where the layout is decided.
+    pub fn set_stacked_tiles(&mut self, tiles: Option<usize>) {
+        self.stacked_tiles = tiles;
+    }
+
+    /// How many tiles stand in the column beside the hero — see
+    /// [`Self::set_stacked_tiles`].
+    #[must_use]
+    pub const fn stacked_tiles(&self) -> Option<usize> {
+        self.stacked_tiles
+    }
+
+    /// Hold the composed page at `height` logical points or taller.
+    ///
+    /// The column's tiles have a height floor, so a canvas too short to give
+    /// them one composes a page taller than the pane and is scrolled. See
+    /// [`crate::dashboard::stack_extent`].
+    pub fn set_min_page_height(&mut self, height: f32) {
+        self.min_page_height = height;
+    }
+
     pub fn set_tile_columns(&mut self, columns: Vec<ColumnFacts>) {
         self.tile_columns = columns;
         self.selected_tile = None;
