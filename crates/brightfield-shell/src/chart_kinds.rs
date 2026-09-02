@@ -123,7 +123,7 @@ const SCATTER_SLOTS: &[FieldSlot] = &[
 /// fills which slot is not the table's own order** — a point map is built
 /// from [`crate::dashboard::coordinate_pair`] and nowhere else, which names
 /// the longitude and the latitude explicitly and binds them in that order, so
-/// `bind`'s first-fit never has to guess between two otherwise-identical
+/// `bind`'s first-fit is not left to guess between two otherwise-identical
 /// quantitative fields.
 const POINT_MAP_SLOTS: &[FieldSlot] = &[
     FieldSlot::required("lon", &[FieldType::Quantitative]),

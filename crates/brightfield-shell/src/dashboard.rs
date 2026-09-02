@@ -639,10 +639,10 @@ fn tile_for(column: &ColumnProfile, taken: &[String]) -> Result<Tile, Omission> 
 ///   rule matches **exactly one** column, so a table with two candidate
 ///   latitudes finds no pair rather than guessing which is real.
 ///
-/// Each candidate still has to be a column [`tile_for`] would draw at all —
-/// nameable, non-null, more than one distinct value, and quantitative — so a
-/// constant or all-null `latitude` column does not steal its neighbour into a
-/// tile neither of them can hold.
+/// Each candidate still has to be a column [`tile_for`] would draw in the
+/// first place — nameable, non-null, more than one distinct value, and
+/// quantitative — so a constant or all-null `latitude` column does not steal
+/// its neighbour into a tile neither of them can hold.
 pub(crate) fn coordinate_pair(columns: &[ColumnProfile]) -> Option<(usize, usize, &'static str)> {
     let eligible = |c: &ColumnProfile| {
         chart_kinds::nameable(&c.name)
