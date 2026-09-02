@@ -2241,6 +2241,35 @@ impl MeridianApp {
         &self.canvas_toggle
     }
 
+    /// Where each of the composed dashboard's plots landed **on the screen**,
+    /// in the order the composition placed them.
+    ///
+    /// The plot rects the composition produced, moved by the page's own origin
+    /// — so a caller can ask which pane a tile was drawn in without repeating
+    /// the page arithmetic. Empty on a frame that presented no raster.
+    #[must_use]
+    pub fn composed_plot_rects(&self) -> Vec<egui::Rect> {
+        let Some(page) = self.charts.doc.raster_rect else {
+            return Vec::new();
+        };
+        self.charts
+            .doc
+            .composed
+            .plots
+            .iter()
+            .map(|plot| {
+                #[allow(clippy::cast_possible_truncation)]
+                egui::Rect::from_min_size(
+                    egui::pos2(
+                        page.left() + plot.rect.x as f32,
+                        page.top() + plot.rect.y as f32,
+                    ),
+                    egui::vec2(plot.rect.width as f32, plot.rect.height as f32),
+                )
+            })
+            .collect()
+    }
+
     /// What the canvas's pane group drew in the last frame — the panes, their
     /// header bands, their content rects and the count overlay.
     ///
