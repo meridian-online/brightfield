@@ -399,6 +399,90 @@ fn the_navigator_rail_lists_the_table_and_every_column_under_it() {
     );
 }
 
+/// A coordinate pair: eight points around one city, plus a reading.
+///
+/// `longitude` and `latitude` are drawn as ONE point map — the fixture
+/// `tests/point_map_baseline.rs` uses, in this file for the other half of that
+/// fact: two column rows over one plot.
+const COORDINATE_CSV: &str = "longitude,latitude,reading\n\
+                              -122.40,37.77,12\n\
+                              -122.42,37.75,18\n\
+                              -122.41,37.79,25\n\
+                              -122.43,37.78,9\n\
+                              -122.39,37.76,31\n\
+                              -122.44,37.80,14\n\
+                              -122.38,37.74,22\n\
+                              -122.45,37.81,6\n";
+
+/// **Both halves of a coordinate pair are listed as drawn, and the two of them
+/// share one plot.**
+///
+/// A point map is one tile over two columns, which is the one shape where the
+/// navigator rail's list and the chart document's tile list cannot be the same
+/// list. Matching a column to a tile by the tile's own column alone leaves
+/// `latitude` reading as declined in a rail that is sitting beside a map of it;
+/// filtering the column list to the ones with a tile puts two entries where the
+/// composition places one plot, and every click from there on names the column
+/// next door.
+#[test]
+fn both_halves_of_a_coordinate_pair_are_drawn_and_share_one_plot() {
+    let dir = TempDir::new("coordinates");
+    let path = dir.write("points.csv", COORDINATE_CSV);
+    let mut win =
+        Window::over(Boot::data_file(&path.to_string_lossy()).expect("the file opens as a boot"));
+
+    let columns = win.app.protocol_model().columns().to_vec();
+    let lon = columns
+        .iter()
+        .find(|c| c.column == "longitude")
+        .expect("the rail lists longitude");
+    let lat = columns
+        .iter()
+        .find(|c| c.column == "latitude")
+        .expect("the rail lists latitude");
+    assert!(
+        lat.tile.is_some(),
+        "latitude reads as declined in the rail while the canvas draws a map \
+         of it: {}",
+        lat.because
+    );
+    assert_eq!(lon.tile, lat.tile, "both halves name the same picture");
+    assert_eq!(lon.paired.as_deref(), Some("latitude"));
+    assert_eq!(lat.paired.as_deref(), Some("longitude"));
+
+    // One plot for the pair, and the tile list is as long as the plot list.
+    let tiles = win.app.chart_doc().tile_columns().len();
+    assert_eq!(
+        tiles,
+        win.app.chart_doc().composed.plots.len(),
+        "the window holds {tiles} tile columns for {} placed plots — a point \
+         map is one tile over two columns, so a list built by filtering the \
+         COLUMNS is one longer than the plots it indexes",
+        win.app.chart_doc().composed.plots.len()
+    );
+
+    // …and a click on the map names a column that map draws.
+    win.click_tile(0);
+    let picked = win
+        .app
+        .chart_doc()
+        .selected_column()
+        .cloned()
+        .expect("the click selects");
+    let drawn_by_plot = plot_columns(&win.app, 0);
+    assert!(
+        drawn_by_plot.contains(&picked.column),
+        "the inspector names `{}` for plot 0, which draws {drawn_by_plot:?}",
+        picked.column
+    );
+    let after = win.drawn_text();
+    assert!(
+        after.iter().any(|t| t == "drawn with"),
+        "the inspector says nothing about the other half of the pair, so a \
+         reader looking at a map is told about one axis of it: {after:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // AC2 — the Steps pane lists the one step
 // ---------------------------------------------------------------------------
