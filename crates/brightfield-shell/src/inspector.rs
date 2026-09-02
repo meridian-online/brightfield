@@ -199,13 +199,13 @@ pub struct InspectorPane {
 }
 
 /// The window's handle on **whether this window has a Protocol to save** —
-/// written fresh every frame by `MeridianApp::draw`, read by
+/// written fresh each frame by `MeridianApp::draw`, read by
 /// [`InspectorPane::ui`] the moment after.
 ///
 /// Frame-fresh rather than set at adoption, for the reason [`Selection`] is:
 /// going Home empties both documents without going through the adoption path,
-/// and a cached `true` would leave this rail offering Save over a window that
-/// no longer has anything to write.
+/// and a cached `true` would leave this rail offering Save over a window with
+/// no Protocol left to write.
 #[derive(Clone, Default)]
 pub struct SaveTarget(Rc<Cell<bool>>);
 
@@ -531,8 +531,11 @@ mod tests {
     /// Protocol, and is dropped on one that does not** — the same predicate
     /// the palette is built from, asked of the same two states.
     ///
-    /// Without this the rail drew a Save button on every chart-spec window,
-    /// where pressing it reaches `save_protocol`, finds no source and returns.
+    /// Without this the rail drew a Save button on a chart-spec window, where
+    /// pressing it reaches `save_protocol`, finds no source and returns —
+    /// `one_step_protocol.rs`'s
+    /// `the_inspector_rail_draws_save_only_on_a_window_that_has_one` is the
+    /// same claim read off the rail's own pixels.
     #[test]
     fn dispatchable_offers_save_only_where_there_is_something_to_save() {
         let save = ToolbarEntry::button("editor-save", "Save", Verb::new("save-spec"));

@@ -1312,7 +1312,7 @@ struct ChartView {
     /// [`wire_columns`].
     inspector_table: TableHandle,
     /// Whether this window has a Protocol for Save to write — written fresh
-    /// every frame, read by the boxed `InspectorPane` at the [`CONTROLS`] key.
+    /// each frame, read by the boxed `InspectorPane` at the [`CONTROLS`] key.
     /// See `MeridianApp::has_protocol_to_save`.
     inspector_saveable: SaveTarget,
 }
@@ -3221,9 +3221,11 @@ impl MeridianApp {
     /// [`Altitude::View`].
     ///
     /// The list is [`crate::overlays::chart_palette_verbs`] over
-    /// [`Self::has_protocol_to_save`], not a static: a verb whose handler
-    /// finds nothing to do on this window is a row that confirms and does
-    /// nothing, which is the row that list exists to keep out.
+    /// [`Self::has_protocol_to_save`], not a static: a verb whose handler has
+    /// no work on this window is a row that confirms and then sits there,
+    /// which is the row that list exists to keep out.
+    /// `overlay_wiring.rs`'s `a_chart_start_is_offered_no_save` reads the
+    /// absence off a shipped start's own palette.
     fn open_chart_palette(&mut self) {
         let allow = crate::overlays::chart_palette_verbs(self.has_protocol_to_save());
         self.overlay = Some(Overlay::Palette(Picker::new(

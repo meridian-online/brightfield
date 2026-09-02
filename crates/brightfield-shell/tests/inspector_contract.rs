@@ -285,7 +285,7 @@ fn editor_toolbar_verbs(doc: &mut ChartDoc) -> Vec<&'static str> {
 /// **chart spec**, which has no Protocol, so the answer here is still that the
 /// rail must filter it. `overlays::chart_offers` is asked both ways below,
 /// because a verdict that read the same for both is what put a dead Save
-/// button on every chart-spec window. That it does something on the window
+/// button on a chart-spec window. That it does something on the window
 /// that offers it is `overlay_wiring.rs`'s sweep, which picks it off the
 /// palette and reads the written spec back.
 ///

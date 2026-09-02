@@ -1052,7 +1052,7 @@ impl ProtocolModel {
     /// the same bytes to the same place rather than the second Save finding
     /// nothing to do. `MeridianApp::has_protocol_to_save` is this question
     /// asked of the window, and it is what decides whether the palette and the
-    /// inspector rail offer Save at all.
+    /// inspector rail offer Save.
     #[must_use]
     pub const fn source(&self) -> Option<&OneStepProtocol> {
         self.source.as_ref()
