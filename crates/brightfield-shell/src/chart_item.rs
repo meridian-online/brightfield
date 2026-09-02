@@ -363,6 +363,16 @@ impl ChartItem {
         if down && !self.was_down {
             if let Some(p) = pointer {
                 if let Some(plot) = plot_at(&doc.composed.plots, p) {
+                    // Pressing on a tile selects the column it draws, whatever
+                    // else the press goes on to do. It is here, on the press
+                    // edge and outside the two conditions below, because
+                    // selecting is not a gesture: a tile with no brush binding
+                    // and a document with no session behind it are both still
+                    // tiles of a column, and a reader who clicks one is asking
+                    // the same question either way. On a dashboard that
+                    // declared no tile columns this selects nothing — see
+                    // `ChartDoc::select_tile`.
+                    doc.select_tile(plot);
                     if doc.composed.plots[plot].gesture.is_some() && doc.is_live() {
                         self.drag = Some(Drag {
                             plot,

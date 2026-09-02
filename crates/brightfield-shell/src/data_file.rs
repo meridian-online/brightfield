@@ -18,6 +18,14 @@
 //! the engine's windowed row seam, so a Parquet larger than memory opens as
 //! readily as a small CSV.
 //!
+//! # The other half: what was opened, as a Protocol
+//!
+//! [`open`] also builds the **spec** that says what was opened — one SQL step
+//! reading the file, one table, and the file's columns — so the navigator,
+//! Steps and inspector rails have something to draw. That is
+//! [`crate::one_step`]'s shape and none of this module's business; what is
+//! here is the route.
+//!
 //! **What is drawn on it is [`crate::dashboard`]'s decision, not this
 //! module's**: a tile per column, each chosen from what that column means. This
 //! module owns the route — what may be opened, how the schema is read, and
@@ -118,6 +126,10 @@ pub const SOURCE: &str = "opened";
 pub struct OpenedFile {
     /// The session holding the file as a DuckDB view.
     pub live: LiveDashboard,
+    /// The **Protocol** this file opened as: one SQL step reading it, one
+    /// table, and the columns the rails list under that table. The spec is in
+    /// memory and unsaved — see [`crate::one_step`].
+    pub protocol: crate::one_step::OneStepProtocol,
     /// The first composition over it.
     pub composed: Composed,
     /// The dashboard [`crate::dashboard::Dashboard::of`] chose: a tile per
@@ -396,11 +408,16 @@ pub fn open(chosen: &str) -> Result<OpenedFile, String> {
         .present()
         .map_err(|e| format!("{}: {e}", path.display()))?;
     let spec_file = write_spec_file(&path, &spec);
+    // The other document. Built from the same profile the dashboard was chosen
+    // from, so the columns the rails list and the columns the tiles draw are
+    // one walk over one table rather than two that could disagree.
+    let protocol = crate::one_step::OneStepProtocol::of(&path, &columns, &dashboard);
     Ok(OpenedFile {
         live,
         composed,
         dashboard,
         spec_file,
+        protocol,
     })
 }
 

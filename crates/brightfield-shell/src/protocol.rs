@@ -72,6 +72,7 @@ use meridian_design::{control, semantic, spacing};
 
 use crate::canvas::{CanvasSlot, EguiCanvasHost};
 use crate::design::Mode;
+use crate::one_step::{ColumnFacts, OneStepProtocol};
 use crate::starts;
 
 // ---------------------------------------------------------------------------
@@ -112,6 +113,21 @@ pub struct ProtocolInputs {
     pub steps: BTreeMap<StepId, StepView>,
     /// The S-sheet rows in run order.
     pub sheet_rows: Vec<StepRow>,
+    /// The columns of the one table this Protocol produces, in the table's own
+    /// order — the rows the navigator rail lists **under** that table.
+    ///
+    /// Empty for a Protocol read off a manifest: a declaration says which
+    /// relations a step produces and nothing about what is in them, and a
+    /// column list guessed from SQL would be a claim nothing measured. It is
+    /// filled only on the path that profiled a real file — see
+    /// [`crate::one_step`].
+    pub columns: Vec<ColumnFacts>,
+    /// The asset the columns belong to. `None` whenever `columns` is empty.
+    pub table: Option<AssetId>,
+    /// The spec brightfield wrote for an opened data file, when this document
+    /// came from one — what Save writes, and what says the Protocol is not
+    /// saved yet. `None` for a Protocol that was read off disk.
+    pub source: Option<OneStepProtocol>,
 }
 
 impl ProtocolInputs {
@@ -141,6 +157,9 @@ impl ProtocolInputs {
             assets: BTreeMap::new(),
             steps: BTreeMap::new(),
             sheet_rows: Vec::new(),
+            columns: Vec::new(),
+            table: None,
+            source: None,
         }
     }
 
@@ -387,7 +406,23 @@ fn inputs_from(
         assets: BTreeMap::new(),
         steps: BTreeMap::new(),
         sheet_rows,
+        // A manifest declares relations, not columns: nothing here profiled a
+        // table, so the outline lists assets alone. The data-file path fills
+        // these in afterwards — `crate::one_step::OneStepProtocol::inputs`.
+        columns: Vec::new(),
+        table: None,
+        source: None,
     }
+}
+
+/// The outline row id for one column of `table`.
+///
+/// A `column.` prefix over the table's own dotted id, so it can never collide
+/// with an asset id — every one of those is `asset.`, `file.`, `source.` or
+/// `stmt.` — and so a reader of a logged id can tell which of the two it is.
+#[must_use]
+pub fn column_row_id(table: &AssetId, column: &str) -> AssetId {
+    format!("column.{table}.{column}")
 }
 
 /// Synthesise the flat run-ordered step rows from the graph's seams — the S
@@ -409,7 +444,12 @@ fn synth_sheet_rows(graph: &AssetGraph) -> Vec<StepRow> {
                 label: seam.step.clone(),
                 kind,
                 detail,
-                status: "—",
+                // The offline path has no run behind it, so every step is
+                // unrun — and it says the words. An em dash said the same
+                // thing in a spelling the status rail, the inspector and
+                // `status_word` do not use, so the one surface a reader can
+                // check the others against read differently from all of them.
+                status: "not run",
                 live_state: None,
                 skip_reason: None,
                 gate: seam.gate,
@@ -519,6 +559,27 @@ pub struct ProtocolModel {
     /// The current laid-out graph (matches `flow` + `display_expanded` + scope).
     layout: Layout,
     layout_key: (bool, Flow),
+    /// The columns of the one table this Protocol produces — the rows the
+    /// outline lists under it. Empty for a Protocol with no profiled table
+    /// behind it, which is every manifest read off disk.
+    columns: Vec<ColumnFacts>,
+    /// The asset those columns hang under.
+    table: Option<AssetId>,
+    /// The spec brightfield wrote when a data file was opened, and where it
+    /// would be written. `None` once it has been saved, and for a Protocol
+    /// that never came from a data file.
+    source: Option<OneStepProtocol>,
+    /// Where the spec was last written, when it has been.
+    saved_to: Option<std::path::PathBuf>,
+    /// Which column the window's inspector is showing — mirrored in from the
+    /// chart document each frame so the rail's highlight and the inspector's
+    /// heading cannot name two different columns.
+    selected_column: Option<String>,
+    /// A column row the reader clicked, drained by the window and handed to
+    /// the chart document. The outline cannot write the chart document itself
+    /// — an item is handed its own document and no other — so the pick is
+    /// recorded here and carried across after the frame.
+    column_pick: Option<String>,
     /// Bumps on every re-layout — the raster cache invalidates on a scope/drill
     /// change too, not just an expand/flow flip.
     layout_gen: u64,
@@ -552,6 +613,12 @@ impl ProtocolModel {
             statuses: inputs.statuses,
             assets: inputs.assets,
             steps: inputs.steps,
+            columns: inputs.columns,
+            table: inputs.table,
+            source: inputs.source,
+            saved_to: None,
+            selected_column: None,
+            column_pick: None,
             nav,
             sheet,
             family_ids,
@@ -911,14 +978,85 @@ impl ProtocolModel {
         &self.sheet
     }
 
-    /// The outline rows in topological order (over the collapsed graph).
+    /// The outline rows in topological order (over the collapsed graph), with
+    /// the table's own columns listed under it.
+    ///
+    /// The columns are spliced here rather than derived by
+    /// [`brightfield_protocol::outline_rows`] because they are not in the
+    /// graph and must not be: an asset graph is what the *lineage* says, and a
+    /// column list is what the *engine measured*. Keeping the second out of
+    /// the first is what stops a manifest read off disk growing a column list
+    /// nothing profiled — see [`ProtocolInputs::columns`].
     #[must_use]
     pub fn outline(&self) -> Vec<OutlineRow> {
-        outline_rows(
+        let rows = outline_rows(
             &self.graph_collapsed,
             &self.statuses,
             self.selected.as_ref(),
-        )
+        );
+        let Some(table) = self.table.as_ref() else {
+            return rows;
+        };
+        let mut out = Vec::with_capacity(rows.len() + self.columns.len());
+        for row in rows {
+            let under = row.id == *table;
+            out.push(row);
+            if under {
+                out.extend(self.columns.iter().map(|c| {
+                    OutlineRow::column(
+                        column_row_id(table, &c.column),
+                        c.column.clone(),
+                        c.leaf.clone(),
+                        self.selected_column.as_deref() == Some(c.column.as_str()),
+                    )
+                }));
+            }
+        }
+        out
+    }
+
+    /// The columns of the table this Protocol produces, in the table's own
+    /// order — empty for a Protocol with no profiled table behind it.
+    #[must_use]
+    pub fn columns(&self) -> &[ColumnFacts] {
+        &self.columns
+    }
+
+    /// The spec Save would write, when this Protocol came from a data file and
+    /// has not been written yet.
+    #[must_use]
+    pub const fn source(&self) -> Option<&OneStepProtocol> {
+        self.source.as_ref()
+    }
+
+    /// Where this Protocol's spec was written, once it has been.
+    #[must_use]
+    pub fn saved_to(&self) -> Option<&std::path::Path> {
+        self.saved_to.as_deref()
+    }
+
+    /// Record that the spec was written to `path`.
+    pub fn note_saved(&mut self, path: std::path::PathBuf) {
+        self.saved_to = Some(path);
+    }
+
+    /// Mirror in which column the window's inspector is showing, so the
+    /// outline's highlight follows it.
+    pub fn set_selected_column(&mut self, column: Option<&str>) {
+        let next = column.map(str::to_string);
+        self.selected_column = next;
+    }
+
+    /// Take the column a reader clicked in the outline, if one was clicked
+    /// this frame.
+    pub fn take_column_pick(&mut self) -> Option<String> {
+        self.column_pick.take()
+    }
+
+    /// Record that `column`'s outline row was clicked.
+    fn pick_column(&mut self, column: &str) {
+        self.column_pick = Some(column.to_string());
+        self.selected_column = Some(column.to_string());
     }
 
     /// The inspector facts for the current selection.
@@ -1668,17 +1806,29 @@ impl Item<ProtocolDoc> for OutlinePane {
     fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
         let rows = doc.model.outline();
         let mut clicked: Option<AssetId> = None;
+        let mut column: Option<String> = None;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for row in &rows {
                     if outline_row(ui, row, cx.mode).clicked() {
-                        clicked = Some(row.id.clone());
+                        // A column row addresses no node, so it cannot go
+                        // through `select_id` — the nav would be asked to
+                        // focus an id its graph has never seen.
+                        if row.depth == 0 {
+                            clicked = Some(row.id.clone());
+                        } else {
+                            column = Some(row.label.clone());
+                        }
                     }
                 }
             });
         if let Some(id) = clicked {
             doc.model.select_id(id);
+        }
+        if let Some(column) = column {
+            doc.model.pick_column(&column);
+            cx.request_repaint();
         }
     }
 }
@@ -1691,6 +1841,12 @@ impl Item<ProtocolDoc> for OutlinePane {
 /// this replaces used `Ui::selectable_label`, whose wash is the framework's,
 /// and then swapped the label ink on top of it — two signals for one state, one
 /// of them not from the token layer at all.
+///
+/// A **column** row (`depth` 1) differs in three ways, each of them a fact
+/// about the row rather than a decoration: it is indented one rung, it draws no
+/// status dot because it has no producing step of its own, and its right edge
+/// carries [`OutlineRow::note`] — the leaf of its type — where an asset row
+/// carries its kind.
 fn outline_row(ui: &mut egui::Ui, row: &OutlineRow, mode: Mode) -> egui::Response {
     let sem = semantic(mode.is_dark());
     let b = control::binding(spacing::ROW_DENSE);
@@ -1704,12 +1860,14 @@ fn outline_row(ui: &mut egui::Ui, row: &OutlineRow, mode: Mode) -> egui::Respons
 
     let painter = ui.painter();
     let dot = b.icon / 4.0;
-    let mut x = rect.left() + b.pad_x;
-    painter.circle_filled(
-        egui::pos2(x + dot, rect.center().y),
-        dot,
-        status_colour(row.status, mode),
-    );
+    let mut x = rect.left() + b.pad_x + f32::from(row.depth) * spacing::SPACE_4;
+    if row.depth == 0 {
+        painter.circle_filled(
+            egui::pos2(x + dot, rect.center().y),
+            dot,
+            status_colour(row.status, mode),
+        );
+    }
     x += b.icon + spacing::ICON_LABEL_GAP;
     painter.text(
         egui::pos2(x, rect.center().y),
@@ -1718,10 +1876,11 @@ fn outline_row(ui: &mut egui::Ui, row: &OutlineRow, mode: Mode) -> egui::Respons
         ui_font(),
         chrome::colour(sem.text.primary),
     );
+    let right = row.note.as_deref().unwrap_or_else(|| kind_label(row.kind));
     painter.text(
         egui::pos2(rect.right() - b.pad_x, rect.center().y),
         egui::Align2::RIGHT_CENTER,
-        kind_label(row.kind),
+        truncate(right, 20),
         ui_font(),
         chrome::colour(sem.text.muted),
     );

@@ -19,7 +19,8 @@ use crate::contract::{SkipReason, StepState};
 use crate::contract_graph::{AssetMeta, SeamStatus, StepView};
 use crate::graph::{AssetGraph, AssetId, AssetKind, StepId};
 
-/// One row of the outline tree — an asset placed in topological order.
+/// One row of the outline tree — an asset placed in topological order, or a
+/// column listed beneath the asset that carries it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutlineRow {
     /// Stable dotted id (the outline's selection key + the yank address).
@@ -33,6 +34,45 @@ pub struct OutlineRow {
     /// The producing step's execution status (`NotRun` for external inputs or
     /// an unmeasured offline manifest).
     pub status: SeamStatus,
+    /// How far this row is indented: `0` for an asset, `1` for a column listed
+    /// beneath the asset above it.
+    ///
+    /// A depth rather than a boolean because the outline is a tree and the
+    /// renderer indents by rung; nothing today nests deeper than one, and a
+    /// boolean would have to be replaced rather than extended the first time
+    /// something does.
+    pub depth: u8,
+    /// The text the row draws on its right-hand edge **instead of** its kind
+    /// label — a column's type, in the spelling that fits the rail.
+    ///
+    /// `None` on an asset row, which draws [`kind_label`]. The whole label a
+    /// leaf was taken from belongs in the inspector, not here: the navigator
+    /// rail is 240 logical points wide and an eighteen-character column name
+    /// leaves no room beside it for `representation.numeric.decimal_number`.
+    pub note: Option<String>,
+}
+
+impl OutlineRow {
+    /// A column row: indented one rung under the asset it belongs to, drawing
+    /// `note` where an asset row draws its kind.
+    ///
+    /// [`AssetKind::Internal`] because a column is not an asset the graph
+    /// carries — it has no node, no producer of its own and no seam. The kind
+    /// is never drawn for a column row (that edge draws `note`); it is here
+    /// because the field is not optional and `Internal` is the only member
+    /// that does not claim the row is something the canvas could show.
+    #[must_use]
+    pub fn column(id: AssetId, label: String, note: String, selected: bool) -> Self {
+        Self {
+            id,
+            label,
+            kind: AssetKind::Internal,
+            selected,
+            status: SeamStatus::NotRun,
+            depth: 1,
+            note: Some(note),
+        }
+    }
 }
 
 /// The inspector facts for one selected asset — the detail pane's content.
@@ -207,6 +247,8 @@ pub fn outline_rows(
                 label: node.label.clone(),
                 kind: node.kind,
                 id,
+                depth: 0,
+                note: None,
             })
         })
         .collect()

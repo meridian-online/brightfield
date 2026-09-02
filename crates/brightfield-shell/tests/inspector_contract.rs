@@ -21,7 +21,7 @@
 use brightfield_shell::app::{ChartDoc, CHART, CONTROLS};
 use brightfield_shell::design::Mode;
 use brightfield_shell::editor::EDITOR;
-use brightfield_shell::inspector::{InspectorPane, Selection};
+use brightfield_shell::inspector::{InspectorPane, Selection, TableHandle};
 use brightfield_shell::overlays::CHART_PALETTE_VERBS;
 use brightfield_shell::pipeline::compose_spec;
 use brightfield_shell::window::{Boot, MeridianApp};
@@ -197,7 +197,7 @@ fn the_hover_overlay_checkbox_draws_whether_or_not_anything_is_selected() {
 /// it does not.
 #[test]
 fn the_inspector_is_empty_only_when_the_document_is() {
-    let pane = InspectorPane::new(Selection::default());
+    let pane = InspectorPane::new(Selection::default(), TableHandle::default());
     let empty = ChartDoc::empty();
     assert!(
         pane.empty_state(&empty).is_some(),

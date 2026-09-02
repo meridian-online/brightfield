@@ -62,7 +62,9 @@ pub use graph::{
     degrades, AssetGraph, AssetKind, AssetNode, Degradation, Degrade, Edge, Seam, SeamKind,
 };
 pub use layout::{layout, Flow, Layout, LayoutConfig};
-pub use manifest::{is_protocol_manifest, parse_manifest_str, Manifest, Step, StepExt};
+pub use manifest::{
+    is_protocol_manifest, parse_manifest_str, Manifest, Step, StepExt, MANIFEST_FILENAME,
+};
 pub use nav::{Dir, FoldOutcome, ProtocolNav};
 pub use panel::{
     inspector_for, kind_label, outline_order, outline_rows, InspectorFacts, OutlineRow,

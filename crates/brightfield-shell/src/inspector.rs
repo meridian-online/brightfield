@@ -48,7 +48,9 @@ use meridian_design::{semantic, spacing};
 
 use crate::app::{ChartDoc, CONTROLS};
 use crate::design::Mode;
+use crate::one_step::ColumnFacts;
 use crate::overlays::CHART_PALETTE_VERBS;
+use crate::protocol::ui_font;
 
 /// The rail's icon — unchanged from the pane it replaces, so the Meridian
 /// icon set landing later is one change, not two.
@@ -171,6 +173,47 @@ pub fn render_selection(ui: &mut egui::Ui, subject: Option<&Subject>, mode: Mode
 /// sliders, the interval sliders, the hover-overlay checkbox), unchanged.
 pub struct InspectorPane {
     selection: Selection,
+    /// The table a selected column belongs to, and the step that produced it —
+    /// the two lines the column block draws under the column's name.
+    ///
+    /// A shared cell rather than a field, for the reason this module's header
+    /// gives about [`Selection`]: an `Item` is handed its own document and no
+    /// other, and this one's is the chart's, while the table is the protocol
+    /// document's. It is a cell rather than a value fixed at construction
+    /// because a window outlives the document in it — opening a second data
+    /// file into a window that already exists has to move this too, and by
+    /// then the pane is boxed behind `dyn Item`.
+    table: TableHandle,
+}
+
+/// The window's handle on which table a selected column belongs to — written
+/// when a document is adopted, read by [`InspectorPane::ui`].
+#[derive(Clone, Default)]
+pub struct TableHandle(Rc<RefCell<Option<ColumnTable>>>);
+
+impl TableHandle {
+    /// Declare the table a selected column belongs to. `None` for a document
+    /// with no Protocol behind it.
+    pub fn set(&self, table: Option<ColumnTable>) {
+        *self.0.borrow_mut() = table;
+    }
+
+    /// What was last declared.
+    #[must_use]
+    pub fn get(&self) -> Option<ColumnTable> {
+        self.0.borrow().clone()
+    }
+}
+
+/// What a column belongs to: the table's name, and the step that built it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ColumnTable {
+    /// The table the column is in.
+    pub table: String,
+    /// The step that produces it.
+    pub step: String,
+    /// That step's transform class — `sql` for a one-step Protocol.
+    pub kind: &'static str,
 }
 
 impl InspectorPane {
@@ -178,9 +221,95 @@ impl InspectorPane {
     /// frame before the dock draws. See the module docs for why this is a
     /// shared cell rather than a field `Item::ui` is handed directly.
     #[must_use]
-    pub fn new(selection: Selection) -> Self {
-        Self { selection }
+    pub fn new(selection: Selection, table: TableHandle) -> Self {
+        Self { selection, table }
     }
+}
+
+/// The selected column, as the inspector draws it: what it is called, what it
+/// belongs to, what it means as opposed to what DuckDB stored it as, the
+/// picture it was given and why, what the engine measured, and the step that
+/// produced it.
+///
+/// The **whole** semantic label is here, not its leaf. The navigator rail
+/// draws the leaf because 240 logical points do not hold
+/// `representation.numeric.decimal_number` beside an eighteen-character column
+/// name; this rail is the place the reader can read the rest.
+fn column_body(ui: &mut egui::Ui, column: &ColumnFacts, table: Option<&ColumnTable>, mode: Mode) {
+    let sem = semantic(mode.is_dark());
+    ui.label(
+        egui::RichText::new(&column.column)
+            .font(ui_font())
+            .color(chrome::colour(sem.text.primary)),
+    );
+    let belongs = table.map_or_else(|| "column".to_string(), |t| format!("column · {}", t.table));
+    ui.label(
+        egui::RichText::new(belongs)
+            .font(ui_font())
+            .color(chrome::colour(sem.text.secondary)),
+    );
+
+    column_field(ui, mode, "finetype", column.full_type());
+    column_field(ui, mode, "storage", &column.storage);
+    match &column.tile {
+        Some(kind) => {
+            column_field(ui, mode, "tile", kind);
+            column_field(ui, mode, "chosen by", &column.because);
+        }
+        None => column_field(ui, mode, "tile", &column.because),
+    }
+
+    ui.add_space(spacing::SPACE_4);
+    ui.label(
+        egui::RichText::new("VALUES · FROM THE ENGINE")
+            .font(ui_font())
+            .color(chrome::colour(sem.text.muted)),
+    );
+    column_field(ui, mode, "rows", &column.rows.to_string());
+    if let Some(min) = &column.min {
+        column_field(ui, mode, "min", min);
+    }
+    if let Some(max) = &column.max {
+        column_field(ui, mode, "max", max);
+    }
+    column_field(ui, mode, "nulls", &column.nulls.to_string());
+
+    if let Some(t) = table {
+        ui.add_space(spacing::SPACE_4);
+        ui.label(
+            egui::RichText::new("PRODUCED BY")
+                .font(ui_font())
+                .color(chrome::colour(sem.text.muted)),
+        );
+        column_field(ui, mode, "step", &format!("{} · {}", t.step, t.kind));
+        // Brightfield writes the spec and never a run record, so the honest
+        // answer here is always the same one and it is stated rather than
+        // computed — a status derived from nothing would be a claim about a
+        // run that did not happen.
+        column_field(ui, mode, "status", NOT_RUN);
+    }
+}
+
+/// What a step brightfield declared and nobody ran reads as. The word the
+/// protocol view's own `status_word` uses for `SeamStatus::NotRun`, spelled
+/// once so the two rails cannot disagree about it.
+pub const NOT_RUN: &str = "not run";
+
+/// One caption-and-value line of the column block.
+fn column_field(ui: &mut egui::Ui, mode: Mode, label: &str, value: &str) {
+    let sem = semantic(mode.is_dark());
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(label)
+                .font(ui_font())
+                .color(chrome::colour(sem.text.muted)),
+        );
+        ui.label(
+            egui::RichText::new(value)
+                .font(ui_font())
+                .color(chrome::colour(sem.text.primary)),
+        );
+    });
 }
 
 impl Item<ChartDoc> for InspectorPane {
@@ -210,12 +339,22 @@ impl Item<ChartDoc> for InspectorPane {
     }
 
     fn ui(&mut self, doc: &mut ChartDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
-        let subject = self.selection.get();
-        let activated = render_selection(ui, subject.as_ref(), cx.mode);
-        for verb in activated {
-            cx.request(verb);
+        // A selected COLUMN outranks the focused pane, and that is a statement
+        // about what the reader just did rather than a preference. Clicking a
+        // tile is the only gesture that reaches this rail carrying a subject of
+        // its own; the pane subject is what the rail falls back to when nobody
+        // has pointed at anything in the picture yet.
+        if let Some(column) = doc.selected_column().cloned() {
+            column_body(ui, &column, self.table.get().as_ref(), cx.mode);
+            ui.add_space(spacing::SECTION_GAP);
+        } else {
+            let subject = self.selection.get();
+            let activated = render_selection(ui, subject.as_ref(), cx.mode);
+            for verb in activated {
+                cx.request(verb);
+            }
+            ui.add_space(spacing::SECTION_GAP);
         }
-        ui.add_space(spacing::SECTION_GAP);
 
         // The rest of this method is `ControlsPane::ui`, ported verbatim —
         // see the module docs for why it has to stay exactly this code.
