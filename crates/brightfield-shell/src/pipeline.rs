@@ -41,7 +41,7 @@ use brightfield_render::{grow_margins, resolve_titles};
 use brightfield_spec::analysis::{
     analyse_spec, build_brushable_bindings, BrushKind, ComponentPath,
 };
-use brightfield_spec::ast::ParamNode;
+use brightfield_spec::ast::{MarkData, ParamNode};
 use brightfield_spec::layout::{
     collect_plot_nodes, placed_plots, resolve_fixed_domains, resolve_plot_insets, Rect,
 };
@@ -314,6 +314,34 @@ pub struct Composed {
     /// the live session when this disagrees with the mode in force, and the
     /// crate-private `ChartDoc::present` calls it before it rasters.
     pub mode: Mode,
+    /// How many of the table's rows are currently selected, against the
+    /// table's own total — both counted by the engine, never by measuring a
+    /// batch this composition already fetched. `None` when the spec has no
+    /// ghost/subset device for [`ghost_subset_marks`] to find (a hand-authored
+    /// plot with one layer, say), which is the honest answer: there is no
+    /// predicate seam here to read a count off.
+    pub rows: Option<RowCount>,
+}
+
+/// The status band's row count: how many of [`Self::total`] the current
+/// selection state admits.
+///
+/// Both counted the SAME way [`brightfield_engine::Session::step_rows_count`]
+/// counts a mark's step — `count(*)` over the exact SQL that mark's own rows
+/// query runs, never a client-side count of a fetched batch — so this can
+/// never disagree with what a brush actually filtered. See
+/// [`compute_row_count`] for where the two marks come from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RowCount {
+    /// Rows the current selection state admits — the count under the ghost
+    /// device's subset layer (`filterBy: $sel`), which is the compiled
+    /// predicate a brush pushed.
+    pub selected: u64,
+    /// The table's own total — the count under the same device's ghost layer,
+    /// which never narrows. Read from the engine, not from a file's own
+    /// metadata: a Parquet's row-group header can be stale or absent, and this
+    /// is the number DuckDB itself just counted.
+    pub total: u64,
 }
 
 /// One mark the engine would not run, and what it said.
@@ -357,6 +385,7 @@ impl Composed {
             run_state: None,
             mark_faults: Vec::new(),
             mode: Mode::Light,
+            rows: None,
         }
     }
 
@@ -367,6 +396,17 @@ impl Composed {
     #[must_use]
     pub fn with_diagnostics(mut self, diagnostics: LoadDiagnostics) -> Self {
         self.diagnostics = diagnostics;
+        self
+    }
+
+    /// Attach the status band's row count. Consumes and returns `self` for the
+    /// reason [`Composed::with_diagnostics`] does: only the compose call site
+    /// still holds the `Session` [`compute_row_count`] needs, so the
+    /// attachment has to happen there rather than as a mutation something else
+    /// could forget to make.
+    #[must_use]
+    pub fn with_row_count(mut self, rows: Option<RowCount>) -> Self {
+        self.rows = rows;
         self
     }
 
@@ -579,6 +619,9 @@ fn compose(
     // A one-shot compose never navigates, so nothing can have declined; read it
     // through the same helper anyway rather than hard-coding the empty answer.
     let beyond = marks_beyond_frame(&session, &spec, results.len());
+    // Read BEFORE `results` is moved into `compose_from_results` below: the
+    // session is still live here and never again in this function.
+    let rows = compute_row_count(&session, &spec);
     Ok(compose_from_results(
         &spec,
         results,
@@ -589,7 +632,8 @@ fn compose(
         viewport,
         mode,
     )?
-    .with_diagnostics(diagnostics))
+    .with_diagnostics(diagnostics)
+    .with_row_count(rows))
 }
 
 /// A live, session-holding dashboard — the push-down seam at the presentation
@@ -850,6 +894,11 @@ impl LiveDashboard {
         // Same reasoning, same seam: a mark that could not be narrowed to the
         // frame has to keep saying so on every repaint, not only the first.
         let beyond = marks_beyond_frame(self.coordinator.session(), &self.spec, results.len());
+        // Read on every re-present, not only the first: this IS the seam that
+        // makes the band move under a brush — an interaction lands on the
+        // session before `present` is called (see `LiveDashboard::apply`), so
+        // the count read here is already under the settled predicate.
+        let rows = compute_row_count(self.coordinator.session(), &self.spec);
         let mut composed = compose_from_results(
             &self.spec,
             results,
@@ -860,7 +909,8 @@ impl LiveDashboard {
             self.viewport,
             self.mode,
         )?
-        .with_diagnostics(self.diagnostics.clone());
+        .with_diagnostics(self.diagnostics.clone())
+        .with_row_count(rows);
         ink_committed_selections(&mut composed, self.coordinator.session());
         Ok(composed)
     }
@@ -1681,7 +1731,78 @@ fn compose_from_results(
         run_state: None,
         mark_faults,
         mode,
+        // Attached by the caller with `with_row_count`, which is the only
+        // place that still holds the `Session` a count is read from —
+        // `compose_from_results` runs after `execute_all`, over batches
+        // already fetched, and has no session to query.
+        rows: None,
     })
+}
+
+/// The `(ghost, subset)` mark indices of the first ghost/subset device this
+/// spec's marks contain, `None` when there is no such pair.
+///
+/// **Every generated tile is this device** — [`crate::dashboard::histogram_tile`],
+/// [`crate::chart_kinds::point_map_tile`] and the scatter's own tile all draw
+/// it: two adjacent marks over the SAME `from:` source, the first with no
+/// `filterBy:` (the ghost, the whole table, never narrows) and the second
+/// `filterBy:`-bound to a selection (the subset, what a brush leaves). That
+/// shape is what this reads back, rather than re-deriving it from
+/// [`crate::dashboard::SELECTION`] by name: a hand-authored spec is free to
+/// call its selection anything, and the pairing the status band needs is
+/// structural, not nominal.
+///
+/// The FIRST such pair, because every tile a generated dashboard writes reads
+/// the one opened table through the one shared crossfilter selection — a
+/// brush on any tile narrows the same predicate, so any one tile's pair
+/// answers for the whole document. A hand-authored spec with several
+/// unrelated sources is not this card's scope; see the card for why one
+/// figure is what the band owes.
+fn ghost_subset_marks(spec: &Spec) -> Option<(usize, usize)> {
+    let marks = collect_marks(spec);
+    for i in 0..marks.len().checked_sub(1)? {
+        let (
+            Some(MarkData::From {
+                source: ghost_source,
+                filter_by: None,
+                ..
+            }),
+            Some(MarkData::From {
+                source: subset_source,
+                filter_by: Some(_),
+                ..
+            }),
+        ) = (&marks[i].data, &marks[i + 1].data)
+        else {
+            continue;
+        };
+        if ghost_source == subset_source {
+            return Some((i, i + 1));
+        }
+    }
+    None
+}
+
+/// The status band's row count, read off `session` under its CURRENT
+/// interaction state — the one query this seam owes, at the ghost/subset
+/// device [`ghost_subset_marks`] finds.
+///
+/// Both figures ride [`brightfield_engine::Session::step_rows_count`], the
+/// same `count(*)`-over-the-emitted-SQL seam the data grid sizes its scroll
+/// range with: `count(*)` inside DuckDB, never a materialised batch counted
+/// on this side. The subset mark's own `filterBy:` is what makes its count
+/// move under a brush — the SAME predicate the mark's own query is filtered
+/// by, not a second compilation of it — and the ghost mark declares none, so
+/// its count is the table's total regardless of what is currently held.
+///
+/// `None` when the spec has no such device, or when either count fails (the
+/// mark's source has since vanished, say) — a band that cannot ask the engine
+/// says nothing sooner than it says something it did not check.
+fn compute_row_count(session: &Session, spec: &Spec) -> Option<RowCount> {
+    let (ghost, subset) = ghost_subset_marks(spec)?;
+    let total = session.step_rows_count(ghost).ok()?;
+    let selected = session.step_rows_count(subset).ok()?;
+    Some(RowCount { selected, total })
 }
 
 /// The spec's slider-backed scalar params: every `input: slider` widget bound
@@ -2112,6 +2233,142 @@ plot:
         assert!(
             err.contains("batch-assembly limit"),
             "the failure names the limit: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // The status band's row count — the ghost/subset device
+    // -----------------------------------------------------------------
+
+    /// A minimal ghost/subset device over ten known rows: mark 0 the ghost
+    /// (`data: { from: t }`, no `filterBy:`), mark 1 the subset
+    /// (`filterBy: $sel`) — the same shape every generated tile writes
+    /// (`dashboard::histogram_tile`, `chart_kinds::point_map_tile`), over a
+    /// table small enough to hand-count.
+    const ROW_COUNT_DEVICE: &str = r#"
+params:
+  sel:
+    select: intersect
+data:
+  t:
+    - { x: 1 }
+    - { x: 2 }
+    - { x: 3 }
+    - { x: 4 }
+    - { x: 5 }
+    - { x: 6 }
+    - { x: 7 }
+    - { x: 8 }
+    - { x: 9 }
+    - { x: 10 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: x
+  - mark: dot
+    data: { from: t, filterBy: $sel }
+    x: x
+    y: x
+"#;
+
+    /// [`ghost_subset_marks`] finds the pair by SHAPE — no `filterBy:` beside
+    /// a `filterBy:` over the same source, adjacent in mark order — not by
+    /// the selection's name, so a spec that calls its selection anything
+    /// still earns a row count.
+    #[test]
+    fn ghost_subset_marks_finds_the_pair_by_shape_not_by_name() {
+        let spec = parse_spec(ROW_COUNT_DEVICE, Format::Yaml)
+            .expect("parse")
+            .spec;
+        assert_eq!(ghost_subset_marks(&spec), Some((0, 1)));
+    }
+
+    /// A spec with one layer and no `filterBy:` anywhere has no predicate
+    /// seam for the band to read a count off — `None`, not a guess.
+    #[test]
+    fn a_spec_with_no_filter_by_mark_has_no_row_count_device() {
+        let spec = parse_spec(DOT_SPEC, Format::Yaml).expect("parse").spec;
+        assert_eq!(ghost_subset_marks(&spec), None);
+    }
+
+    /// AC1: a freshly opened document with a ghost/subset device reads its
+    /// row count straight off the engine — selected equal to total, because
+    /// nobody has brushed yet, over a fixture with no file metadata at all
+    /// (the rows are inline literals) to prove the number cannot have come
+    /// from one.
+    #[test]
+    fn a_freshly_opened_document_reads_selected_equal_to_total() {
+        let mut dash = LiveDashboard::load_str(ROW_COUNT_DEVICE, None).expect("load");
+        let composed = dash.present().expect("first paint");
+        assert_eq!(
+            composed.rows,
+            Some(RowCount {
+                selected: 10,
+                total: 10
+            }),
+            "ten inline rows, nobody has brushed"
+        );
+    }
+
+    /// AC2: a brush moves the selected figure to exactly the compiled
+    /// predicate's `COUNT(*)` and leaves the total where it was — proof that
+    /// the total is the table's own count, not re-derived under the brush.
+    #[test]
+    fn a_brush_moves_selected_to_the_compiled_predicates_count_and_leaves_total() {
+        let mut dash = LiveDashboard::load_str(ROW_COUNT_DEVICE, None).expect("load");
+        let _ = dash.present().expect("first paint");
+
+        let after = dash
+            .apply(Interaction::Select {
+                name: "sel".to_string(),
+                contributor: ComponentPath("root/plot[99]".to_string()),
+                predicate: SqlPredicate::Expr("x > 5".to_string()),
+            })
+            .expect("re-paint after brush");
+        assert_eq!(
+            after.rows,
+            Some(RowCount {
+                selected: 5,
+                total: 10
+            }),
+            "x > 5 admits {{6,7,8,9,10}} — five of the table's ten rows — and \
+             the total must not move under a brush that never touches it"
+        );
+    }
+
+    /// AC3: the count is issued to the engine and never computed from a batch
+    /// this side already fetched. `Session::duckdb_execute_count` only
+    /// advances on the cached mark-execution path
+    /// (`execute_mark`/`execute_emitted`); `step_rows_count` rides the raw
+    /// query path deliberately (see its own doc), so reading the row count
+    /// off a session that has executed NOTHING must leave that counter at
+    /// zero — asserted at the crosswalk's own magnitude (207,099 rows,
+    /// `crosswalk_chart.rs`'s `CROSSWALK_ROWS`), where a client-side count
+    /// would mean fetching and counting that many rows rather than asking
+    /// DuckDB for one number.
+    #[test]
+    fn computing_the_row_count_fetches_no_full_table_result() {
+        let spec_src = "params:\n  sel:\n    select: intersect\ndata:\n  t:\n    query: \
+             \"SELECT i AS x FROM range(207099) t(i)\"\nplot:\n  - mark: dot\n    \
+             data: { from: t }\n    x: x\n    y: x\n  - mark: dot\n    data: \
+             { from: t, filterBy: $sel }\n    x: x\n    y: x\n";
+        let parsed = parse_spec(spec_src, Format::Yaml).expect("parse").spec;
+        let analysis = analyse_spec(&parsed).expect("analyse");
+        let session = Engine::new()
+            .load_spec(parsed.clone(), analysis, None)
+            .expect("load")
+            .session;
+        assert_eq!(session.duckdb_execute_count(), 0, "nothing executed yet");
+
+        let rows = compute_row_count(&session, &parsed).expect("device found");
+        assert_eq!(rows.total, 207_099);
+        assert_eq!(rows.selected, 207_099, "nothing brushed yet");
+        assert_eq!(
+            session.duckdb_execute_count(),
+            0,
+            "the row count must ride the raw count(*) path — a materialised \
+             fetch of any of the 207,099 rows would show up here"
         );
     }
 }
