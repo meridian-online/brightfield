@@ -335,8 +335,8 @@ fn collect_text_in(shape: &egui::epaint::Shape, rect: egui::Rect, into: &mut Vec
 
 /// One frame's worth of the `open-home` keystroke, cmd-shift-h. `command` and
 /// `shift` are what `consume_key`'s logical match reads — mac_cmd/ctrl are
-/// platform detail the pattern ignores — so this fires the same on every
-/// runner. `front_door.rs`'s spelling, for the same reason.
+/// platform detail the pattern ignores — so this fires the same whichever
+/// runner it is on. `front_door.rs`'s spelling, for the same reason.
 fn press_home() -> Vec<egui::Event> {
     let modifiers = egui::Modifiers {
         command: true,
@@ -944,10 +944,10 @@ fn the_inspector_rail_draws_no_save_while_the_palette_offers_one() {
 /// **Going Home takes the Save offer with the document.**
 ///
 /// A window walked from a data file, home, and into a shipped chart start. The
-/// palette is built from a flag written fresh every frame; going Home empties
+/// palette is built from a flag written fresh each frame; going Home empties
 /// the protocol document without going through the adoption path, so a flag
-/// that only ever went up would leave the start offering a Save that reaches
-/// `save_protocol`, finds no source and returns.
+/// that went up and stayed up would leave the start offering a Save that
+/// reaches `save_protocol`, finds no source and returns.
 ///
 /// The start is `signals-dashboard`, one of the four shipped starts that open
 /// a chart spec.
