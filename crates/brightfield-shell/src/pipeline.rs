@@ -317,7 +317,7 @@ pub struct Composed {
     /// How many of the table's rows are currently selected, against the
     /// table's own total — both counted by the engine, never by measuring a
     /// batch this composition already fetched. `None` when the spec has no
-    /// ghost/subset device for [`ghost_subset_marks`] to find (a hand-authored
+    /// ghost/subset device for `ghost_subset_marks` to find (a hand-authored
     /// plot with one layer, say), which is the honest answer: there is no
     /// predicate seam here to read a count off.
     pub rows: Option<RowCount>,
@@ -329,8 +329,8 @@ pub struct Composed {
 /// Both counted the SAME way [`brightfield_engine::Session::step_rows_count`]
 /// counts a mark's step — `count(*)` over the exact SQL that mark's own rows
 /// query runs, never a client-side count of a fetched batch — so this can
-/// never disagree with what a brush actually filtered. See
-/// [`compute_row_count`] for where the two marks come from.
+/// never disagree with what a brush actually filtered. See `compute_row_count`
+/// (this module) for where the two marks come from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RowCount {
     /// Rows the current selection state admits — the count under the ghost
@@ -401,7 +401,7 @@ impl Composed {
 
     /// Attach the status band's row count. Consumes and returns `self` for the
     /// reason [`Composed::with_diagnostics`] does: only the compose call site
-    /// still holds the `Session` [`compute_row_count`] needs, so the
+    /// still holds the `Session` `compute_row_count` needs, so the
     /// attachment has to happen there rather than as a mutation something else
     /// could forget to make.
     #[must_use]
