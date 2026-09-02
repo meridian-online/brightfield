@@ -152,6 +152,9 @@ fn chosen_lines(dash: &Dashboard) -> Vec<String> {
                 ChosenBy::Meaning { label, role } => {
                     format!("from the label {label}, read as {role:?}")
                 }
+                ChosenBy::CoordinatePair { latitude, rule } => {
+                    format!("paired with {latitude} by its {rule}")
+                }
             };
             format!("{}: {} ({because})", tile.column(), tile.kind())
         })
