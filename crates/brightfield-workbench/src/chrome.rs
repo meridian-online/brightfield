@@ -29,6 +29,11 @@
 //! - **No headings.** All chrome text is the 12px UI size. The two top bars
 //!   this crate replaces differed by four pixels because one used a heading
 //!   and the other did not, and nobody had decided that.
+//! - **A docked pane is square, not panelled.** `PANE_RADIUS`, the rung a
+//!   pane fixed edge to edge in the arrangement draws at, is
+//!   [`radius::NONE`] rather than [`radius::PANEL`] — its own doc comment,
+//!   just above [`pane_frame`], says why — and the rail's selector strip
+//!   above it already draws to the same rung.
 //!
 //! # Not here yet
 //!
@@ -244,6 +249,35 @@ pub fn region_frame(frame: RegionFrame, ui: &egui::Ui, mode: Mode) -> egui::Fram
 // The pane frame
 // ---------------------------------------------------------------------------
 
+/// The rung a pane fixed edge to edge in the arrangement draws at, at every
+/// rect that stands in for its outer shape: [`pane_frame`]'s own outer fill
+/// and hairline, [`header_band`]'s fill, and [`orphan_pane`]'s fill for a
+/// tile whose item is missing.
+///
+/// [`radius::NONE`], not [`radius::PANEL`]. `meridian_design::radius`'s own
+/// doc comment already settles this for anything that tiles: rounding a
+/// tiled edge shows the surface through the corner and reads as a mistake,
+/// and a docked pane tiles against a rail or a canvas on every edge it has —
+/// there is no side of it that is not flush against a sibling. [`strip`], the
+/// selector band a rail draws above its pane, was already square before this
+/// constant existed; the pane just had not been brought to the same rung, so
+/// the strip's square underline sat directly over the pane's rounded corner
+/// and read as a notch cut into the seam. Squaring the pane is the cheaper of
+/// the two fixes that keep the strip and the pane reading as one shape — the
+/// alternative moves the strip inside the pane's own rounded outline instead
+/// — and it is also the one the ladder's doc comment already prescribes.
+///
+/// Floating chrome is exempt and unaffected: the command palette, the help
+/// sheet and popovers never tile against a sibling region, so they keep
+/// `radius::PANEL` through `meridian_egui`'s own modal frame, a different
+/// crate this constant does not reach.
+///
+/// `meridian_design::radius::PANEL`'s own doc comment still lists "docked
+/// containers" among its examples, which this constant now contradicts for
+/// the one docked container the workbench has; fixing that word belongs to
+/// the design crate, not here.
+const PANE_RADIUS: f32 = radius::NONE;
+
 /// Draw a pane's frame and return the `Ui` its item may draw into.
 ///
 /// `header` is the de-duplication rule already decided by the caller: `false`
@@ -277,7 +311,7 @@ pub fn pane_frame(ui: &mut egui::Ui, subject: &Subject, header: bool, mode: Mode
     let outer = ui.max_rect();
 
     ui.painter()
-        .rect_filled(outer, radius::PANEL, colour(sem.surfaces.raised));
+        .rect_filled(outer, PANE_RADIUS, colour(sem.surfaces.raised));
 
     let mut content = outer;
     if header {
@@ -290,7 +324,7 @@ pub fn pane_frame(ui: &mut egui::Ui, subject: &Subject, header: bool, mode: Mode
     if Elevation::Raised.hairline() {
         ui.painter().rect_stroke(
             outer,
-            radius::PANEL,
+            PANE_RADIUS,
             egui::Stroke::new(1.0, colour(sem.borders.subtle)),
             egui::StrokeKind::Inside,
         );
@@ -842,7 +876,7 @@ fn header_band(ui: &egui::Ui, rect: egui::Rect, subject: &Subject, mode: Mode) {
 
     painter.rect_filled(
         rect,
-        radius::outer(radius::PANEL, 0.0),
+        radius::outer(PANE_RADIUS, 0.0),
         colour(sem.surfaces.header),
     );
 
@@ -895,7 +929,7 @@ pub fn orphan_pane(ui: &mut egui::Ui, key: PaneKey, mode: Mode) {
     let sem = semantic(mode.is_dark());
     let rect = ui.max_rect();
     ui.painter()
-        .rect_filled(rect, radius::PANEL, colour(sem.surfaces.sunken));
+        .rect_filled(rect, PANE_RADIUS, colour(sem.surfaces.sunken));
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
