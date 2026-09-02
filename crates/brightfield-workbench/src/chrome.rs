@@ -1755,8 +1755,16 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // PANE_RADIUS at the one site no shipped baseline reaches
+    // PANE_RADIUS at the sites no shipped baseline reaches
     // -----------------------------------------------------------------------
+    //
+    // Two of the four `PANE_RADIUS` sites are drawn by no committed layout,
+    // so no pixel baseline pins them: `orphan_pane`, pinned below at the
+    // tessellation level, and `header_band`'s fill, which is NOT pinned
+    // here. A shipped layout puts each pane under a tab strip, so a header
+    // band is not drawn in a snapshot yet; the first shipped surface with an
+    // untabbed pane pins that site with its own baseline, and until then a
+    // change to that rect's radius is not caught in this crate.
 
     /// [`orphan_pane`] is a `PANE_RADIUS` site with no pixel baseline behind
     /// it: a shipped layout resolves each pane it names, so no snapshot
@@ -1764,12 +1772,12 @@ mod tests {
     /// instead of skipping it.
     ///
     /// A rounded rect's tessellation does not place a vertex at the rect's
-    /// exact geometric corner — the curve starts short of it, `PANE_RADIUS`
-    /// in along each edge — so a fill-coloured vertex sitting exactly on
-    /// `outer`'s corner is reachable exactly when the fill drew square.
-    /// Cheaper and more exact than a pixel diff at this shape's scale: this
-    /// file's own `kittest.toml` policy notes a 2pt→3pt corner nudge does
-    /// not even trip the perceptual gate.
+    /// exact geometric corner — the curve starts short of it, the radius in
+    /// along each edge — so a fill-coloured vertex within a couple of pixels
+    /// of `outer`'s corner is reachable when the fill drew square and not
+    /// when it drew at a rung of the ladder above [`radius::NONE`]. The read
+    /// is within 1.5 px, so a radius of 1 would pass it; the ladder's next
+    /// rung, [`radius::CHIP`], is 3.
     #[test]
     fn an_orphan_panes_fill_has_a_vertex_at_each_exact_square_corner() {
         let key = PaneKey::new(crate::item::ItemId::new("test-orphan-pane"));
