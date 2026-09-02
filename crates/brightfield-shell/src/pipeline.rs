@@ -328,9 +328,11 @@ pub struct Composed {
 ///
 /// Both counted the SAME way [`brightfield_engine::Session::step_rows_count`]
 /// counts a mark's step — `count(*)` over the exact SQL that mark's own rows
-/// query runs, never a client-side count of a fetched batch — so this can
-/// never disagree with what a brush actually filtered. See `compute_row_count`
-/// (this module) for where the two marks come from.
+/// query runs, not a client-side count of a fetched batch — the test
+/// `computing_the_row_count_fetches_no_full_table_result` holds that. So this
+/// reads the same predicate a brush pushed rather than a second compilation
+/// of it. See `compute_row_count` (this module) for where the two marks come
+/// from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RowCount {
     /// Rows the current selection state admits — the count under the ghost
@@ -400,10 +402,10 @@ impl Composed {
     }
 
     /// Attach the status band's row count. Consumes and returns `self` for the
-    /// reason [`Composed::with_diagnostics`] does: only the compose call site
-    /// still holds the `Session` `compute_row_count` needs, so the
-    /// attachment has to happen there rather than as a mutation something else
-    /// could forget to make.
+    /// reason [`Composed::with_diagnostics`] does: the compose call site is
+    /// where the `Session` `compute_row_count` needs is still in scope, so
+    /// the attachment has to happen there rather than as a mutation something
+    /// else could forget to make.
     #[must_use]
     pub fn with_row_count(mut self, rows: Option<RowCount>) -> Self {
         self.rows = rows;
@@ -619,8 +621,8 @@ fn compose(
     // A one-shot compose never navigates, so nothing can have declined; read it
     // through the same helper anyway rather than hard-coding the empty answer.
     let beyond = marks_beyond_frame(&session, &spec, results.len());
-    // Read BEFORE `results` is moved into `compose_from_results` below: the
-    // session is still live here and never again in this function.
+    // Read BEFORE `results` is moved into `compose_from_results` below: this
+    // is the last line in this function that still reads `session`.
     let rows = compute_row_count(&session, &spec);
     Ok(compose_from_results(
         &spec,
@@ -894,10 +896,13 @@ impl LiveDashboard {
         // Same reasoning, same seam: a mark that could not be narrowed to the
         // frame has to keep saying so on every repaint, not only the first.
         let beyond = marks_beyond_frame(self.coordinator.session(), &self.spec, results.len());
-        // Read on every re-present, not only the first: this IS the seam that
-        // makes the band move under a brush — an interaction lands on the
-        // session before `present` is called (see `LiveDashboard::apply`), so
-        // the count read here is already under the settled predicate.
+        // Read on each re-present, the same as the first: this IS the seam
+        // that makes the band move under a brush — an interaction lands on
+        // the session before `present` is called (see `LiveDashboard::apply`),
+        // so the count read here is already under the settled predicate. The
+        // test `a_brush_moves_selected_to_the_compiled_predicates_count_and_leaves_total`
+        // drives a brush through exactly this second call and reads a moved
+        // count back.
         let rows = compute_row_count(self.coordinator.session(), &self.spec);
         let mut composed = compose_from_results(
             &self.spec,
@@ -1731,8 +1736,8 @@ fn compose_from_results(
         run_state: None,
         mark_faults,
         mode,
-        // Attached by the caller with `with_row_count`, which is the only
-        // place that still holds the `Session` a count is read from —
+        // Attached by the caller with `with_row_count`, at the call site
+        // that still holds the `Session` a count is read from —
         // `compose_from_results` runs after `execute_all`, over batches
         // already fetched, and has no session to query.
         rows: None,
@@ -1742,15 +1747,19 @@ fn compose_from_results(
 /// The `(ghost, subset)` mark indices of the first ghost/subset device this
 /// spec's marks contain, `None` when there is no such pair.
 ///
-/// **Every generated tile is this device** — [`crate::dashboard::histogram_tile`],
-/// [`crate::chart_kinds::point_map_tile`] and the scatter's own tile all draw
-/// it: two adjacent marks over the SAME `from:` source, the first with no
-/// `filterBy:` (the ghost, the whole table, never narrows) and the second
-/// `filterBy:`-bound to a selection (the subset, what a brush leaves). That
-/// shape is what this reads back, rather than re-deriving it from
-/// [`crate::dashboard::SELECTION`] by name: a hand-authored spec is free to
-/// call its selection anything, and the pairing the status band needs is
-/// structural, not nominal.
+/// **This is the device three of the generated tiles draw** —
+/// [`crate::dashboard::histogram_tile`], [`crate::chart_kinds::point_map_tile`]
+/// and the scatter's own tile: two adjacent marks over the SAME `from:`
+/// source, the first with no `filterBy:` (the ghost, the whole table, does
+/// not narrow) and the second `filterBy:`-bound to a selection (the subset,
+/// what a brush leaves). The other generated tiles
+/// (`crate::dashboard::time_bars_tile`, `crate::ranked_bars::RankedCategoryBars`)
+/// use one mark and `highlight` instead, so a dashboard built from just
+/// those tiles gets no row count from this seam. That shape is what this
+/// reads back,
+/// rather than re-deriving it from [`crate::dashboard::SELECTION`] by name: a
+/// hand-authored spec can name its selection whatever it likes, and the
+/// pairing the status band needs is structural, not nominal.
 ///
 /// The FIRST such pair, because every tile a generated dashboard writes reads
 /// the one opened table through the one shared crossfilter selection — a
@@ -1789,15 +1798,17 @@ fn ghost_subset_marks(spec: &Spec) -> Option<(usize, usize)> {
 ///
 /// Both figures ride [`brightfield_engine::Session::step_rows_count`], the
 /// same `count(*)`-over-the-emitted-SQL seam the data grid sizes its scroll
-/// range with: `count(*)` inside DuckDB, never a materialised batch counted
-/// on this side. The subset mark's own `filterBy:` is what makes its count
-/// move under a brush — the SAME predicate the mark's own query is filtered
-/// by, not a second compilation of it — and the ghost mark declares none, so
-/// its count is the table's total regardless of what is currently held.
+/// range with: `count(*)` inside DuckDB, not a materialised batch counted on
+/// this side — `computing_the_row_count_fetches_no_full_table_result` is the
+/// test that holds that. The subset mark's own `filterBy:` is what makes its
+/// count move under a brush — the SAME predicate the mark's own query is
+/// filtered by, not a second compilation of it — and the ghost mark declares
+/// no `filterBy:` at all, so its count is the table's total regardless of
+/// what is currently held.
 ///
 /// `None` when the spec has no such device, or when either count fails (the
 /// mark's source has since vanished, say) — a band that cannot ask the engine
-/// says nothing sooner than it says something it did not check.
+/// stays quiet rather than say something it did not check.
 fn compute_row_count(session: &Session, spec: &Spec) -> Option<RowCount> {
     let (ghost, subset) = ghost_subset_marks(spec)?;
     let total = session.step_rows_count(ghost).ok()?;
@@ -2242,9 +2253,9 @@ plot:
 
     /// A minimal ghost/subset device over ten known rows: mark 0 the ghost
     /// (`data: { from: t }`, no `filterBy:`), mark 1 the subset
-    /// (`filterBy: $sel`) — the same shape every generated tile writes
-    /// (`dashboard::histogram_tile`, `chart_kinds::point_map_tile`), over a
-    /// table small enough to hand-count.
+    /// (`filterBy: $sel`) — the shape `dashboard::histogram_tile` and
+    /// `chart_kinds::point_map_tile` write, over a table small enough to
+    /// hand-count.
     const ROW_COUNT_DEVICE: &str = r#"
 params:
   sel:
@@ -2274,8 +2285,8 @@ plot:
 
     /// [`ghost_subset_marks`] finds the pair by SHAPE — no `filterBy:` beside
     /// a `filterBy:` over the same source, adjacent in mark order — not by
-    /// the selection's name, so a spec that calls its selection anything
-    /// still earns a row count.
+    /// the selection's name, so a spec naming its selection whatever it
+    /// likes still earns a row count.
     #[test]
     fn ghost_subset_marks_finds_the_pair_by_shape_not_by_name() {
         let spec = parse_spec(ROW_COUNT_DEVICE, Format::Yaml)
@@ -2337,16 +2348,15 @@ plot:
         );
     }
 
-    /// AC3: the count is issued to the engine and never computed from a batch
-    /// this side already fetched. `Session::duckdb_execute_count` only
-    /// advances on the cached mark-execution path
-    /// (`execute_mark`/`execute_emitted`); `step_rows_count` rides the raw
-    /// query path deliberately (see its own doc), so reading the row count
-    /// off a session that has executed NOTHING must leave that counter at
-    /// zero — asserted at the crosswalk's own magnitude (207,099 rows,
-    /// `crosswalk_chart.rs`'s `CROSSWALK_ROWS`), where a client-side count
-    /// would mean fetching and counting that many rows rather than asking
-    /// DuckDB for one number.
+    /// AC3: the count is issued to the engine and not computed from a batch
+    /// this side already fetched. `Session::duckdb_execute_count` advances on
+    /// the cached mark-execution path (`execute_mark`/`execute_emitted`) and
+    /// not on the raw query path `step_rows_count` rides (see its own doc),
+    /// so reading the row count off a session that has executed no mark yet
+    /// leaves that counter at zero — which this test asserts directly, at the
+    /// crosswalk's own magnitude (207,099 rows, `crosswalk_chart.rs`'s
+    /// `CROSSWALK_ROWS`), where a client-side count would mean fetching and
+    /// counting that many rows rather than asking DuckDB for one number.
     #[test]
     fn computing_the_row_count_fetches_no_full_table_result() {
         let spec_src = "params:\n  sel:\n    select: intersect\ndata:\n  t:\n    query: \

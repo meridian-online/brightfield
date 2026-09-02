@@ -4566,14 +4566,15 @@ const IDLE_STATUS_ID: &str = "chart-idle";
 /// document is empty, and a second empty-state line here would repeat it in
 /// fainter ink.
 ///
-/// **The row count leads when there is one.** `composed.rows` is `Some` only
-/// for a document whose marks contain the ghost/subset device — every
-/// generated dashboard does, a hand-authored single-layer plot does not — and
-/// it is what a sceptical analyst checks first after a brush, ahead of
-/// "loaded" and ahead of how many marks are on screen. The two selected/total
-/// figures came straight off DuckDB's own `count(*)`, never off a file's
-/// metadata, so `16,640 of 16,640 rows` names the table the engine just
-/// counted, not a Parquet row-group header repeated back.
+/// **The row count leads when there is one.** `composed.rows` is `Some` for
+/// a document whose marks contain the ghost/subset device — a histogram,
+/// point-map or scatter tile earns one, a dashboard built from just
+/// time-bars or ranked-bars tiles does not, and neither does a hand-authored
+/// single-layer plot — and it is what a sceptical analyst checks first after
+/// a brush, ahead of "loaded" and ahead of how many marks are on screen. The
+/// two selected/total figures came straight off DuckDB's own `count(*)`, not
+/// off a file's metadata, so `16,640 of 16,640 rows` names the table the
+/// engine just counted, not a Parquet row-group header repeated back.
 fn idle_status_entry(composed: &Composed) -> Option<StatusEntry> {
     if composed.plots.is_empty() {
         return None;
