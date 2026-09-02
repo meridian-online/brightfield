@@ -710,8 +710,8 @@ pub struct Boot {
     /// `None` for a document that is one picture — see
     /// [`crate::app::ChartDoc::set_stacked_tiles`].
     ///
-    /// Set by [`Boot::data_file`] and by nothing else, for the reason
-    /// [`Self::authored`] is: the layout is decided by the generator, and both
+    /// Set on the open-a-data-file route, for the reason [`Self::authored`]
+    /// is: the layout is decided by the generator, and both
     /// routes into an opened file build their document from a `Boot`.
     pub stacked_tiles: Option<usize>,
     /// The protocol document's graph and steps.
@@ -1432,14 +1432,13 @@ pub struct MeridianApp {
     /// What the canvas's pane group drew last frame — empty on a frame the
     /// canvas drew one pane instead. Read back through
     /// [`MeridianApp::canvas_panes`]; recorded for the reason [`Self::regions`]
-    /// is, and it is the only honest answer to "did each pane draw its own
-    /// header band", which no declaration can give.
+    /// is. No declaration can answer "did each pane draw its own header band";
+    /// a laid-out frame can, and this is where it leaves the answer.
     canvas_panes: CanvasPanes,
     /// How far the canvas's pane group is scrolled, in logical points.
     ///
-    /// Non-zero only when the column's tiles are at their height floor and the
-    /// page is taller than the pane — see
-    /// [`crate::dashboard::stack_extent`].
+    /// Zero until the column's tiles reach their height floor and the page
+    /// grows past the pane — see [`crate::dashboard::stack_extent`].
     canvas_scroll: f32,
     /// Where focus was before the navigator rail's toggle took it, so pressing
     /// that toggle again puts it back. `None` when the rail does not hold
@@ -5214,8 +5213,9 @@ fn count_overlay_text(hero: Option<&crate::one_step::ColumnFacts>) -> Option<Str
 ///
 /// Painted rather than laid out, which is the whole of "takes no layout
 /// space": nothing is allocated, so the pane's content rect is the same rect
-/// whether this draws or not — `the_count_overlay_costs_the_map_pane_no_room`
-/// is what holds that.
+/// whether this draws or not —
+/// `the_count_reads_at_the_map_panes_lower_right_and_costs_it_no_room` is
+/// what holds that.
 ///
 /// Returns the rect it painted into, for a test to read.
 fn count_overlay(ui: &egui::Ui, body: egui::Rect, text: &str, mode: Mode) -> egui::Rect {
@@ -5225,8 +5225,8 @@ fn count_overlay(ui: &egui::Ui, body: egui::Rect, text: &str, mode: Mode) -> egu
         .painter()
         .layout_no_wrap(text.to_owned(), font, chrome::colour(sem.text.muted));
     // The chip `overlay_frame` gives a floating region — the status band's own
-    // fill rather than the panel's, which is the only thing that says this is a
-    // layer over the picture rather than a stray line of the chart's own ink.
+    // fill rather than the panel's, which is what says this is a layer over the
+    // picture rather than a stray line of the chart's own ink.
     // It is also what keeps the count legible where it crosses the map's axis
     // label, which at this inset it does.
     let pad = egui::vec2(spacing::SPACE_3, spacing::SPACE_2);

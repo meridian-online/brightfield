@@ -291,8 +291,8 @@ fn the_count_reads_at_the_map_panes_lower_right_and_costs_it_no_room() {
     );
 
     // The content rect is the pane's own, unshrunk: an overlay takes no
-    // layout space, so this is the rect `pane_frame` hands over and nothing
-    // else.
+    // layout space, so this is the rect `pane_frame` hands over, and no
+    // smaller.
     let inset = chrome::pane_content_inset();
     let band = chrome::header_band_height();
     let mut expected = map.rect;
@@ -354,8 +354,8 @@ fn the_column_scrolls_when_its_tiles_reach_their_floor() {
 /// column pane's content rect.**
 ///
 /// The arithmetic in `window::canvas_pane_rects` and the `hspace` in
-/// `Dashboard::to_spec` are two halves of one number, and nothing but a laid
-/// out frame can say whether they agree. A page whose stack landed a few
+/// `Dashboard::to_spec` are two halves of one number, and a laid-out frame is
+/// what says whether they agree. A page whose stack landed a few
 /// points off would clip a tile's axis labels and look, in a photograph, like
 /// a font change.
 #[test]

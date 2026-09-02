@@ -126,9 +126,10 @@ pub const TILE_HEIGHT: u32 = 300;
 /// without the reflow squeezing each tile below the width its axis labels
 /// need.
 ///
-/// Read only by the one-tile fallback in [`Dashboard::to_spec`] now that a
-/// dashboard of two tiles or more is a hero beside a column — see
-/// [`HERO_WIDTH`].
+/// The one-tile fallback in [`Dashboard::to_spec`] is what still reads it,
+/// now that a dashboard of two tiles or more is a hero beside a column — see
+/// [`HERO_WIDTH`], and `a_single_tile_dashboard_is_not_a_pane_group` for the
+/// case that still comes through here.
 pub const TILES_PER_ROW: usize = 3;
 
 // ---------------------------------------------------------------------------
@@ -2058,9 +2059,10 @@ mod tests {
     /// it** — read off the layout the emitted spec produces, not off the
     /// weights it declares.
     ///
-    /// The two claims a picture cannot make: the hero's width is
-    /// [`HERO_SHARE`] of what the gutter leaves, and every stacked tile stands
-    /// at one width and one height in one column to its right.
+    /// The two claims a picture cannot make, and this test walks both: the
+    /// hero's width is [`HERO_SHARE`] of what the gutter leaves, and each
+    /// stacked tile stands at one width and one height in one column to its
+    /// right.
     #[test]
     fn the_hero_takes_the_larger_share_of_the_page() {
         let many: Vec<ColumnProfile> = (0..8)
@@ -2177,8 +2179,8 @@ mod tests {
     /// rather than tuned by eye.
     ///
     /// The shell splits the canvas into two panes, each of which takes
-    /// `pane_content_inset` out of its own rect on every side, with a pane gap
-    /// between them; the page the raster is composed on spans the two content
+    /// `pane_content_inset` out of its own rect at the top, at the bottom and
+    /// at both sides, with a pane gap between them; the page the raster is composed on spans the two content
     /// rects and the gutter, and its hero takes `HERO_SHARE` of what the
     /// gutter leaves. Setting the map pane's outer width equal to
     /// `HERO_SHARE · canvas` and solving for the gutter gives the line below.
