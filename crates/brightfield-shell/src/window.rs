@@ -4556,22 +4556,43 @@ const IDLE_STATUS_ID: &str = "chart-idle";
 /// otherwise be silent.
 ///
 /// Built from `Composed`, the data the window already holds from composing
-/// the spec — no live query, no new vocabulary: the same [`StatusEntry`]
-/// carrier the rail's other declared lines use, and the same rows a
-/// sampled plot already carries in [`crate::pipeline::PlotHandle::sample`].
-/// `None` for an empty document (`Composed::empty()`) — the front door's own
-/// empty state already says the document is empty, and a second empty-state
-/// line here would repeat it in fainter ink.
+/// the spec — no live query of its own, no new vocabulary: the same
+/// [`StatusEntry`] carrier the rail's other declared lines use, the row count
+/// the compose call already read off the engine via `step_rows_count` when
+/// this composition was built ([`crate::pipeline::Composed::rows`]), and the
+/// same sample fact a sampled plot already carries in
+/// [`crate::pipeline::PlotHandle::sample`]. `None` for an empty document
+/// (`Composed::empty()`) — the front door's own empty state already says the
+/// document is empty, and a second empty-state line here would repeat it in
+/// fainter ink.
+///
+/// **The row count leads when there is one.** `composed.rows` is `Some` for
+/// a document whose marks contain the ghost/subset device — a histogram,
+/// point-map or scatter tile earns one, a dashboard built from just
+/// time-bars or ranked-bars tiles does not, and neither does a hand-authored
+/// single-layer plot — and it is what a sceptical analyst checks first after
+/// a brush, ahead of "loaded" and ahead of how many marks are on screen. The
+/// two selected/total figures came straight off DuckDB's own `count(*)`, not
+/// off a file's metadata, so `16,640 of 16,640 rows` names the table the
+/// engine just counted, not a Parquet row-group header repeated back.
 fn idle_status_entry(composed: &Composed) -> Option<StatusEntry> {
     if composed.plots.is_empty() {
         return None;
     }
     let marks: usize = composed.plots.iter().map(|plot| plot.marks.len()).sum();
-    let text = match composed.plots.iter().find_map(|plot| plot.sample.as_ref()) {
+    let loaded = match composed.plots.iter().find_map(|plot| plot.sample.as_ref()) {
         Some(sample) if sample.of > sample.drawn => {
             format!("loaded · {} of {} rows sampled", sample.drawn, sample.of)
         }
         _ => format!("loaded · {}", plural(marks, "mark", "marks")),
+    };
+    let text = match composed.rows {
+        Some(rows) => format!(
+            "{} of {} rows · {loaded}",
+            brightfield_model::profile_model::thousands(rows.selected),
+            brightfield_model::profile_model::thousands(rows.total),
+        ),
+        None => loaded,
     };
     Some(StatusEntry {
         id: IDLE_STATUS_ID,
@@ -5314,5 +5335,68 @@ mod tests {
                  the opener would be dead"
             );
         }
+    }
+
+    /// AC1: the idle line leads with the row count, comma-grouped, when the
+    /// composed document carries one — a document opened over a ghost/subset
+    /// device (every generated dashboard is one; see
+    /// `crate::pipeline::ghost_subset_marks`) with nobody having brushed yet,
+    /// so selected and total read the same.
+    ///
+    /// `1,234` rather than the card's own `16,640` because this is a fixture,
+    /// not California Housing — the grouping is the property under test, and
+    /// four digits already needs one comma.
+    #[test]
+    fn the_idle_line_leads_with_the_row_count_when_the_document_has_one() {
+        let spec = r#"
+params:
+  sel:
+    select: intersect
+data:
+  t:
+    query: "SELECT i AS x FROM range(1234) t(i)"
+plot:
+  - mark: rectY
+    data: { from: t }
+    x: { bin: x }
+    y: { count: }
+  - mark: rectY
+    data: { from: t, filterBy: $sel }
+    x: { bin: x }
+    y: { count: }
+"#;
+        let composed = crate::pipeline::compose_spec_str(spec, None).expect("compose");
+        let entry = idle_status_entry(&composed).expect("a loaded chart always says something");
+        assert_eq!(
+            entry.text, "1,234 of 1,234 rows · loaded · 2 marks",
+            "the row count leads, comma-grouped, ahead of what used to be \
+             the whole line"
+        );
+    }
+
+    /// The row count is absent, not zero and not guessed, for a document
+    /// whose marks carry no `filterBy:` at all — the idle line falls back to
+    /// exactly its pre-card wording, so a hand-authored single-layer plot is
+    /// unaffected by this seam.
+    #[test]
+    fn the_idle_line_keeps_its_old_wording_with_no_ghost_subset_device() {
+        let spec = r#"
+data:
+  t:
+    - { x: 1, y: 1 }
+    - { x: 2, y: 2 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: y
+"#;
+        let composed = crate::pipeline::compose_spec_str(spec, None).expect("compose");
+        assert!(
+            composed.rows.is_none(),
+            "no filterBy: mark anywhere in this spec"
+        );
+        let entry = idle_status_entry(&composed).expect("a loaded chart always says something");
+        assert_eq!(entry.text, "loaded · 1 mark");
     }
 }
