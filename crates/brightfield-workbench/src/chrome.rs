@@ -249,15 +249,15 @@ pub fn region_frame(frame: RegionFrame, ui: &egui::Ui, mode: Mode) -> egui::Fram
 // The pane frame
 // ---------------------------------------------------------------------------
 
-/// The rung a pane fixed edge to edge in the arrangement draws at, at every
+/// The rung a pane fixed edge to edge in the arrangement draws at, at each
 /// rect that stands in for its outer shape: [`pane_frame`]'s own outer fill
 /// and hairline, [`header_band`]'s fill, and [`orphan_pane`]'s fill for a
 /// tile whose item is missing.
 ///
 /// [`radius::NONE`], not [`radius::PANEL`]. `meridian_design::radius`'s own
-/// doc comment already settles this for anything that tiles: rounding a
+/// doc comment already settles this for a rect that tiles: rounding a
 /// tiled edge shows the surface through the corner and reads as a mistake,
-/// and a docked pane tiles against a rail or a canvas on every edge it has —
+/// and a docked pane tiles against a rail or a canvas on each edge it has —
 /// there is no side of it that is not flush against a sibling. [`strip`], the
 /// selector band a rail draws above its pane, was already square before this
 /// constant existed; the pane just had not been brought to the same rung, so
@@ -268,7 +268,7 @@ pub fn region_frame(frame: RegionFrame, ui: &egui::Ui, mode: Mode) -> egui::Fram
 /// — and it is also the one the ladder's doc comment already prescribes.
 ///
 /// Floating chrome is exempt and unaffected: the command palette, the help
-/// sheet and popovers never tile against a sibling region, so they keep
+/// sheet and popovers do not tile against a sibling region, so they keep
 /// `radius::PANEL` through `meridian_egui`'s own modal frame, a different
 /// crate this constant does not reach.
 ///
