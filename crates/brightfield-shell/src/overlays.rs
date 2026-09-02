@@ -82,11 +82,13 @@ pub const CHART_PALETTE_VERBS: &[&str] = &[
     crate::navigation::verb::RESET_EXTENT,
     // The window's Save. It writes the Protocol a data file opened as — see
     // `MeridianApp::save_protocol` — and is inert on a window with no Protocol
-    // behind it. It is on this list because without it the verb has no
-    // producer at the chart altitude at all: the restricted palette would not
-    // offer it, `inspector::dispatchable` would drop it off the editor pane's
-    // toolbar, and the one gesture left would be the editor's own cmd-S, which
-    // means something else (the spec buffer, in `EditorPane::ui`).
+    // behind it. It is on this list because it is what gives the verb a
+    // producer at the chart altitude: this list is what the restricted palette
+    // offers and what `inspector::dispatchable` keeps, so off it the one
+    // gesture left is the editor's own cmd-S, which means something else (the
+    // spec buffer, in `EditorPane::ui`). `overlay_wiring.rs`'s
+    // `every_chart_palette_candidate_actually_dispatches` picks it off the
+    // palette and reads the written spec back.
     "save-spec",
 ];
 
