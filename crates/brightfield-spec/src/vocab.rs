@@ -437,6 +437,17 @@ vocab_enum! {
 ///   [`ParseWarning::UnconsumedSort`](crate::parse::ParseWarning::UnconsumedSort)
 ///   rather than by this list, for the same reason `x` is listed here while
 ///   the transforms sitting on it are reported separately.
+/// - `aspectRatio` — read by `brightfield_render::channel::ChannelMap::from_mark`
+///   into `ChannelMap::equal_aspect`, and honoured by
+///   `brightfield_render::mark::DotRenderer::augment_scales`, which widens the
+///   narrower of a `dot` mark's two positional domains until both axes share
+///   one px-per-unit. Real Observable Plot's `aspectRatio` is a plot-level
+///   option; this build reads it per mark instead, because a mark option
+///   reaches `ChannelMap::from_mark` with no further wiring, while a new
+///   plot-level attribute would need threading through each
+///   renderer-construction call site. The value `1` is the one read; any
+///   other value is left unbound, the same silence an unrecognised `label:`
+///   value gets.
 pub const CONSUMED_MARK_OPTION_KEYS: &[&str] = &[
     "x",
     "y",
@@ -457,6 +468,7 @@ pub const CONSUMED_MARK_OPTION_KEYS: &[&str] = &[
     "geometry",
     "sort",
     "label",
+    "aspectRatio",
 ];
 
 /// Whether a mark option key reaches a lowerer or a renderer.

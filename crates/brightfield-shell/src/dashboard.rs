@@ -265,6 +265,16 @@ pub enum ChosenBy {
         /// The DuckDB type name the profile carried.
         type_name: String,
     },
+    /// Two columns identified together as a coordinate pair — see this
+    /// module's private `coordinate_pair`. This tile's own [`Tile::column`]
+    /// is the longitude; `latitude` names the column beside it.
+    CoordinatePair {
+        /// The paired latitude column's name.
+        latitude: String,
+        /// Which test found the pair: `"label"`, `"name"`, or `"range"` — see
+        /// this module's private `coordinate_pair`.
+        rule: &'static str,
+    },
 }
 
 /// One tile of a generated dashboard: a column, the kind drawn over it, and why
@@ -277,6 +287,10 @@ pub struct Tile {
     block: String,
     chosen_by: ChosenBy,
     resampled: Option<Step>,
+    /// The second column and field of a two-column tile — the latitude beside
+    /// [`Tile::column`]'s longitude, for [`chart_kinds::POINT_MAP`]. `None`
+    /// for the rest of the kinds this dashboard draws, each one column.
+    paired: Option<(String, Field)>,
 }
 
 impl Tile {
@@ -314,6 +328,14 @@ impl Tile {
     #[must_use]
     pub const fn resampled(&self) -> Option<Step> {
         self.resampled
+    }
+
+    /// The second column of a two-column tile — the latitude beside
+    /// [`Self::column`]'s longitude, for [`chart_kinds::POINT_MAP`]. `None`
+    /// for the rest of the kinds this dashboard draws.
+    #[must_use]
+    pub fn paired_column(&self) -> Option<&str> {
+        self.paired.as_ref().map(|(name, _)| name.as_str())
     }
 
     /// What decided this tile's field type.
@@ -387,18 +409,38 @@ pub struct Dashboard {
 }
 
 impl Dashboard {
-    /// Walk `columns` and choose a tile for each, over the file at `path`.
+    /// Walk `columns` and choose a tile for each, over the file at `path` —
+    /// except a coordinate pair, which this module's private
+    /// `coordinate_pair` finds and this draws as one joint
+    /// [`chart_kinds::POINT_MAP`] tile instead of two.
     ///
     /// The walk is in the table's own column order, so the dashboard reads in
-    /// the order the file does. Every column ends in exactly one of the two
-    /// lists — [`Self::tiles`] or [`Self::omitted`] — which is what
-    /// `every_column_is_either_a_tile_or_an_omission` holds.
+    /// the order the file does — a coordinate pair's joint tile takes the
+    /// position of whichever of the two columns the table declares first.
+    /// Every column ends in exactly one of the two lists — [`Self::tiles`] or
+    /// [`Self::omitted`] — which is what
+    /// `every_column_is_either_a_tile_or_an_omission` holds for a table with
+    /// no pair; a table with one accounts for both its columns in a single
+    /// entry of [`Self::tiles`] instead, which
+    /// `a_coordinate_pair_draws_one_tile_for_two_columns` holds.
     #[must_use]
     pub fn of(path: &Path, columns: &[ColumnProfile]) -> Self {
         let mut tiles = Vec::new();
         let mut omitted = Vec::new();
         let taken: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
-        for column in columns {
+        let pair = coordinate_pair(columns);
+        for (i, column) in columns.iter().enumerate() {
+            if let Some((lon_i, lat_i, rule)) = pair {
+                let anchor = lon_i.min(lat_i);
+                let other = lon_i.max(lat_i);
+                if i == other {
+                    continue;
+                }
+                if i == anchor {
+                    tiles.push(point_map_tile_for(&columns[lon_i], &columns[lat_i], rule));
+                    continue;
+                }
+            }
             match tile_for(column, &taken) {
                 Ok(tile) => tiles.push(tile),
                 Err(because) => omitted.push(Omitted {
@@ -575,7 +617,132 @@ fn tile_for(column: &ColumnProfile, taken: &[String]) -> Result<Tile, Omission> 
         block,
         chosen_by,
         resampled: bucket.map(|(_, step)| step),
+        paired: None,
     })
+}
+
+/// The columns [`Dashboard::of`] draws as one [`chart_kinds::POINT_MAP`] tile
+/// instead of two histograms — the longitude's index, the latitude's, and
+/// which test found them — or `None` when no pair is there.
+///
+/// Three tests, in strength order, and the first that answers wins:
+///
+/// - **a finetype label** naming one column `geography.coordinate.longitude`
+///   and another `geography.coordinate.latitude` — read straight off
+///   [`role_of`], which already gives both that role;
+/// - **a column name**, case-insensitively `longitude`/`lon`/`lng` beside
+///   `latitude`/`lat`;
+/// - **a measured range that fits degrees**: a column whose profiled `min`/
+///   `max` both fall inside `[-90, 90]` (a plausible latitude) beside one
+///   whose range needs `[-180, 180]` — falls outside `[-90, 90]` somewhere,
+///   which a latitude cannot — and is still inside it. Applied only when each
+///   rule matches **exactly one** column, so a table with two candidate
+///   latitudes finds no pair rather than guessing which is real.
+///
+/// Each candidate still has to be a column [`tile_for`] would draw in the
+/// first place — nameable, non-null, more than one distinct value, and
+/// quantitative — so a constant or all-null `latitude` column does not steal
+/// its neighbour into a tile neither of them can hold.
+pub(crate) fn coordinate_pair(columns: &[ColumnProfile]) -> Option<(usize, usize, &'static str)> {
+    let eligible = |c: &ColumnProfile| {
+        chart_kinds::nameable(&c.name)
+            && c.non_null > 0
+            && c.distinct > 1
+            && chart_kinds::fields_of(std::slice::from_ref(c))
+                .first()
+                .is_some_and(|f| f.ty == FieldType::Quantitative)
+    };
+
+    // Tier 1: the finetype label.
+    let labelled_as = |leaf: &str| {
+        columns.iter().position(|c| {
+            eligible(c)
+                && matches!(role_of(&c.semantic), Some((label, _)) if label == format!("geography.coordinate.{leaf}"))
+        })
+    };
+    if let (Some(lon_i), Some(lat_i)) = (labelled_as("longitude"), labelled_as("latitude")) {
+        return Some((lon_i, lat_i, "label"));
+    }
+
+    // Tier 2: the column name.
+    let named = |names: &[&str]| {
+        columns
+            .iter()
+            .position(|c| eligible(c) && names.iter().any(|n| c.name.eq_ignore_ascii_case(n)))
+    };
+    if let (Some(lon_i), Some(lat_i)) = (
+        named(&["longitude", "lon", "lng"]),
+        named(&["latitude", "lat"]),
+    ) {
+        if lon_i != lat_i {
+            return Some((lon_i, lat_i, "name"));
+        }
+    }
+
+    // Tier 3: the measured range.
+    let range = |c: &ColumnProfile| -> Option<(f64, f64)> {
+        let min: f64 = c.min.as_ref()?.parse().ok()?;
+        let max: f64 = c.max.as_ref()?.parse().ok()?;
+        (min <= max).then_some((min, max))
+    };
+    let candidates = |test: fn(f64, f64) -> bool| -> Vec<usize> {
+        columns
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| eligible(c))
+            .filter(|(_, c)| range(c).is_some_and(|(min, max)| test(min, max)))
+            .map(|(i, _)| i)
+            .collect()
+    };
+    let lat_candidates =
+        candidates(|min, max| (-90.0..=90.0).contains(&min) && (-90.0..=90.0).contains(&max));
+    let lon_candidates = candidates(|min, max| {
+        (-180.0..=180.0).contains(&min)
+            && (-180.0..=180.0).contains(&max)
+            && (min < -90.0 || max > 90.0)
+    });
+    if let ([lat_i], [lon_i]) = (lat_candidates.as_slice(), lon_candidates.as_slice()) {
+        return Some((*lon_i, *lat_i, "range"));
+    }
+
+    None
+}
+
+/// The joint [`chart_kinds::POINT_MAP`] tile over `lon` and `lat`, found by
+/// `rule` — [`coordinate_pair`]'s own account of why these two columns and not
+/// two histograms.
+///
+/// # Panics
+///
+/// Never, in practice: the point map kind's two required quantitative slots
+/// are exactly what [`coordinate_pair`]'s own eligibility test already proved
+/// of both columns, so the `expect`s below hold for any pair this function is
+/// actually called with. They are `expect`s rather than a `Result` because a
+/// caller that reaches here has nothing left to hand back — the two columns
+/// were already promised a tile the moment [`coordinate_pair`] found them.
+fn point_map_tile_for(lon: &ColumnProfile, lat: &ColumnProfile, rule: &'static str) -> Tile {
+    let x = Field::new(&lon.name, FieldType::Quantitative);
+    let y = Field::new(&lat.name, FieldType::Quantitative);
+    let kind =
+        chart_kinds::find(chart_kinds::POINT_MAP).expect("this build ships a point map kind");
+    let binding = kind
+        .bind(&[x.clone(), y.clone()])
+        .expect("two measures fill the point map's two required slots");
+    let block = kind
+        .spec(&binding, &kind.options())
+        .expect("the point map kind builds its spec");
+    Tile {
+        kind: kind.id,
+        column: lon.name.clone(),
+        field: x,
+        block,
+        chosen_by: ChosenBy::CoordinatePair {
+            latitude: lat.name.clone(),
+            rule,
+        },
+        resampled: None,
+        paired: Some((lat.name.clone(), y)),
+    }
 }
 
 /// The temporal field a timestamp column is drawn through, and the step it is
@@ -715,6 +882,8 @@ fn tile_form(kind: ChartKindId) -> Option<TileForm> {
         Some(TileForm::TimeBars)
     } else if kind == crate::ranked_bars::KIND_ID {
         Some(TileForm::RankedBars)
+    } else if kind == chart_kinds::POINT_MAP {
+        Some(TileForm::PointMap)
     } else {
         None
     }
@@ -729,6 +898,10 @@ enum TileForm {
     TimeBars,
     /// [`RankedCategoryBars`], whose own emitter writes it.
     RankedBars,
+    /// [`chart_kinds::point_map_tile`], over the tile's two columns rather
+    /// than one — the form this module writes for a [`Tile`] whose
+    /// [`Tile::paired_column`] answers.
+    PointMap,
 }
 
 /// `tile` as one entry of a concat list, indented by `indent` spaces.
@@ -746,8 +919,14 @@ fn tile_yaml(tile: &Tile, indent: usize) -> String {
         Some(TileForm::RankedBars) => RankedCategoryBars::new(tile.drawn_column())
             .with_size(TILE_WIDTH, TILE_HEIGHT)
             .plot_yaml(SOURCE, SELECTION, indent),
-        // Unreachable: a tile's kind came from `single_column_kinds`, which
-        // admits only kinds with a form. Emitting nothing rather than a
+        Some(TileForm::PointMap) => chart_kinds::point_map_tile(
+            tile.drawn_column(),
+            tile.paired_column().unwrap_or_default(),
+            indent,
+        ),
+        // Unreachable: a tile's kind came from `single_column_kinds` or from
+        // `point_map_tile_for`, and a kind reaching here from either one
+        // already has a form. Emitting an empty string rather than a
         // half-written plot is the answer that cannot produce a spec which
         // parses and draws something else.
         None => String::new(),
@@ -908,6 +1087,9 @@ fn tile_comment(tile: &Tile) -> String {
         ChosenBy::Storage { type_name } => {
             format!("no trusted label, and DuckDB stored it as {type_name}")
         }
+        ChosenBy::CoordinatePair { latitude, rule } => {
+            format!("a coordinate pair with {latitude}, found by its {rule}")
+        }
     };
     // The step a resampled column is counted at is part of what the reader has
     // to be able to check: it is the difference between a count per day and a
@@ -989,6 +1171,157 @@ mod tests {
         let columns: Vec<&str> = dash.tiles().iter().map(Tile::column).collect();
         assert_eq!(columns, vec!["amount", "region", "day", "weight"]);
         assert!(dash.omitted().is_empty(), "{:?}", dash.omitted());
+    }
+
+    // -----------------------------------------------------------------
+    // AC2 — a coordinate pair draws one point-map tile, not two histograms
+    // -----------------------------------------------------------------
+
+    /// A profiled column carrying a measured `min`/`max`, for
+    /// [`coordinate_pair`]'s range tier — `DuckDB`'s own `CAST(min/max AS
+    /// VARCHAR)` rendering, which is plain decimal text for these values.
+    fn ranged(name: &str, distinct: u64, min: f64, max: f64) -> ColumnProfile {
+        ColumnProfile {
+            min: Some(min.to_string()),
+            max: Some(max.to_string()),
+            ..column(name, "DOUBLE", distinct)
+        }
+    }
+
+    /// **The card's own scenario**: `longitude` and `latitude` beside an
+    /// ordinary measure, none of them carrying a semantic label — a `cargo
+    /// test` binary carries no FineType bundle (see [`role_of`]'s callers),
+    /// so the pair is found by column name, the tier the label defers to.
+    #[test]
+    fn a_coordinate_pair_draws_one_tile_for_two_columns() {
+        let dash = of(&[
+            column("longitude", "DOUBLE", 900),
+            column("latitude", "DOUBLE", 900),
+            column("housing_median_age", "BIGINT", 52),
+        ]);
+        let kinds: Vec<(&str, ChartKindId)> = dash
+            .tiles()
+            .iter()
+            .map(|t| (t.column(), t.kind()))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ("longitude", chart_kinds::POINT_MAP),
+                ("housing_median_age", chart_kinds::BINNED_HISTOGRAM),
+            ],
+            "{kinds:?}"
+        );
+        assert_eq!(dash.tiles()[0].paired_column(), Some("latitude"));
+        assert!(
+            !dash
+                .tiles()
+                .iter()
+                .any(|t| t.kind() == chart_kinds::BINNED_HISTOGRAM
+                    && (t.column() == "longitude" || t.column() == "latitude")),
+            "a coordinate column reached a histogram tile: {kinds:?}"
+        );
+        assert!(dash.omitted().is_empty(), "{:?}", dash.omitted());
+    }
+
+    /// **The finetype label wins over a name that would answer differently.**
+    ///
+    /// `lon`/`lat` are named so the name tier alone would find them too, but
+    /// this asks whether the label tier is consulted FIRST and reads its
+    /// rule off [`Tile::chosen_by`] rather than its outcome alone.
+    #[test]
+    fn a_coordinate_pair_found_by_its_finetype_label_names_the_label_tier() {
+        let dash = of(&[
+            labelled("lon", "DOUBLE", 900, "geography.coordinate.longitude"),
+            labelled("lat", "DOUBLE", 900, "geography.coordinate.latitude"),
+        ]);
+        assert_eq!(dash.tiles().len(), 1, "{dash:?}");
+        match dash.tiles()[0].chosen_by() {
+            ChosenBy::CoordinatePair { latitude, rule } => {
+                assert_eq!(latitude, "lat");
+                assert_eq!(
+                    *rule, "label",
+                    "a labelled pair should not fall to the name tier"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// **The joint tile takes the position of whichever column the table
+    /// declares first** — here the latitude, so the pair's tile sits second
+    /// and `weight` keeps its own histogram after it rather than before.
+    #[test]
+    fn a_coordinate_pairs_tile_takes_the_position_of_whichever_column_comes_first() {
+        let dash = of(&[
+            column("region", "VARCHAR", 4),
+            column("latitude", "DOUBLE", 900),
+            column("longitude", "DOUBLE", 900),
+            column("weight", "BIGINT", 400),
+        ]);
+        let kinds: Vec<(&str, ChartKindId)> = dash
+            .tiles()
+            .iter()
+            .map(|t| (t.column(), t.kind()))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ("region", crate::ranked_bars::KIND_ID),
+                ("longitude", chart_kinds::POINT_MAP),
+                ("weight", chart_kinds::BINNED_HISTOGRAM),
+            ],
+            "{kinds:?}"
+        );
+        assert_eq!(dash.tiles()[1].paired_column(), Some("latitude"));
+    }
+
+    /// **A lone coordinate column, with no partner, gets its own histogram —
+    /// the fallback per-column path is unchanged.**
+    #[test]
+    fn a_lone_coordinate_column_still_gets_its_own_histogram() {
+        let dash = of(&[column("longitude", "DOUBLE", 900)]);
+        assert_eq!(dash.tiles().len(), 1);
+        assert_eq!(dash.tiles()[0].kind(), chart_kinds::BINNED_HISTOGRAM);
+        assert_eq!(dash.tiles()[0].paired_column(), None);
+    }
+
+    /// **The measured-range tier**, when neither a label nor a name helps: two
+    /// numeric columns named nothing like coordinates, one whose range is a
+    /// plausible latitude and one whose range escapes it but still fits a
+    /// longitude.
+    #[test]
+    fn a_coordinate_pair_found_by_its_measured_range_names_the_range_tier() {
+        let dash = of(&[
+            ranged("y_coord", 900, 32.5, 41.9),
+            ranged("x_coord", 900, -124.3, -114.3),
+        ]);
+        assert_eq!(dash.tiles().len(), 1, "{dash:?}");
+        let tile = &dash.tiles()[0];
+        assert_eq!(tile.column(), "x_coord", "x is the longitude candidate");
+        assert_eq!(tile.paired_column(), Some("y_coord"));
+        match tile.chosen_by() {
+            ChosenBy::CoordinatePair { rule, .. } => assert_eq!(*rule, "range"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// **An ambiguous range finds no pair rather than guessing.** Two columns
+    /// both fit inside a plausible latitude span, so the range tier — which
+    /// only answers when exactly one column matches each side — declines, and
+    /// each column keeps its own histogram.
+    #[test]
+    fn an_ambiguous_measured_range_is_not_guessed_into_a_pair() {
+        let dash = of(&[
+            ranged("metric_a", 900, 10.0, 40.0),
+            ranged("metric_b", 900, 5.0, 60.0),
+        ]);
+        let kinds: Vec<ChartKindId> = dash.tiles().iter().map(Tile::kind).collect();
+        assert_eq!(
+            kinds,
+            vec![chart_kinds::BINNED_HISTOGRAM, chart_kinds::BINNED_HISTOGRAM],
+            "two ordinary measures were paired into a map: {kinds:?}"
+        );
     }
 
     /// **The count grid can never be a per-column tile**, and the reason is its

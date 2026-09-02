@@ -64,6 +64,10 @@ pub const COUNTS_OVER_TIME: ChartKindId = ChartKindId::new("counts-over-time");
 pub const COUNT_GRID: ChartKindId = ChartKindId::new("count-grid");
 /// Two measures related: `dot` over a pair of quantitative axes.
 pub const SCATTER: ChartKindId = ChartKindId::new("scatter");
+/// A coordinate pair plotted as points on an equal-aspect frame: `dot` over
+/// longitude and latitude, with `aspectRatio: 1` asking one px-per-unit of
+/// both axes rather than each fitting its own domain to the tile independently.
+pub const POINT_MAP: ChartKindId = ChartKindId::new("point-map");
 
 /// The widest **category** axis this registry will cross: a `distinct ×
 /// distinct` grid past this on either side is a wall of cells rather than a
@@ -110,6 +114,20 @@ const HISTOGRAM_SLOTS: &[FieldSlot] = &[FieldSlot::required("x", &[FieldType::Qu
 const SCATTER_SLOTS: &[FieldSlot] = &[
     FieldSlot::required("x", &[FieldType::Quantitative]),
     FieldSlot::required("y", &[FieldType::Quantitative]),
+];
+
+/// The two measures a point map plots, longitude before latitude.
+///
+/// Both required, for the reason [`SCATTER_SLOTS`] gives: one column alone has
+/// no partner to pair it with. Unlike the scatter's `x`/`y`, **which column
+/// fills which slot is not the table's own order** — a point map is built
+/// from [`crate::dashboard::coordinate_pair`] and nowhere else, which names
+/// the longitude and the latitude explicitly and binds them in that order, so
+/// `bind`'s first-fit is not left to guess between two otherwise-identical
+/// quantitative fields.
+const POINT_MAP_SLOTS: &[FieldSlot] = &[
+    FieldSlot::required("lon", &[FieldType::Quantitative]),
+    FieldSlot::required("lat", &[FieldType::Quantitative]),
 ];
 
 /// The ink the ghost layer is drawn in — the warm-gray border step of the
@@ -190,6 +208,7 @@ fn kinds() -> Vec<ChartKind<String>> {
     vec![
         binned_histogram(),
         scatter(),
+        point_map(),
         counts_over_time(),
         count_grid(),
         ranked_category_bars(),
@@ -380,6 +399,95 @@ pub fn scatter_tile(x: &str, y: &str, indent: usize) -> String {
     // each axis into the shared selection. `intervalXY` rather than two
     // one-dimensional producers because a scatter's answer is a region, and
     // both of its axes are continuous columns a pixel range inverts through.
+    let _ = writeln!(out, "{pad}  - select: intervalXY");
+    let _ = writeln!(out, "{pad}    as: ${SELECTION}");
+    // Plot attributes are siblings of `plot:`, so they sit at its indent — one
+    // level deeper and they read as more options on the last interactor, which
+    // is a spec that parses and does something else.
+    let _ = writeln!(out, "{pad}  xLabel: {xq}");
+    let _ = writeln!(out, "{pad}  yLabel: {yq}");
+    let _ = writeln!(out, "{pad}  width: {}", crate::dashboard::TILE_WIDTH);
+    let _ = writeln!(out, "{pad}  height: {}", crate::dashboard::TILE_HEIGHT);
+    out
+}
+
+/// A coordinate pair plotted as points, **ghosted and equal-aspect**: the
+/// unfiltered cloud behind the filtered subset, on a frame where one
+/// px-per-unit is shared by both axes.
+///
+/// [`scatter`] with two differences: the columns are longitude and latitude
+/// rather than the table's first two measures, chosen by
+/// [`crate::dashboard::coordinate_pair`] and not by this registry; and both
+/// layers write `aspectRatio: 1`, which `brightfield_render::mark`'s
+/// `DotRenderer` reads (through its `MarkRenderer::augment_scales`
+/// implementation) to widen the narrower axis's domain until a degree of
+/// longitude and a degree of latitude cover the same number of pixels — see
+/// that implementation for why the fit needs no map projection: at this
+/// scale a plate-carrée identity (`u = lon, v = lat`) and an equal-aspect
+/// cartesian frame draw the same picture.
+///
+/// # Why two layers and a brush, same as the scatter
+///
+/// The device — ghost behind subset, `intervalXY` producing the shared
+/// selection — is [`scatter_tile`]'s argument unchanged: both layers share the
+/// plot's scales, so a brushed map reads as a subset of the points behind it,
+/// and a rectangle swept over the cloud narrows whatever else subscribes to
+/// [`SELECTION`]. `tests/point_map_kind.rs`'s gesture tier drives a real sweep
+/// through `MeridianApp` the way `tests/scatter_kind.rs`'s does.
+fn point_map() -> ChartKind<String> {
+    ChartKind {
+        id: POINT_MAP,
+        icon: Icon("map-pin"),
+        description:
+            "Plots a coordinate pair on an equal-aspect map, the whole cloud behind the selection",
+        slots: POINT_MAP_SLOTS,
+        controls: Vec::new,
+        build: |bound, _options| {
+            let lon = bound.name("lon").unwrap_or_default();
+            let lat = bound.name("lat").unwrap_or_default();
+            let mut out = String::from("params:\n");
+            let _ = writeln!(out, "  {SELECTION}: {{ select: crossfilter }}");
+            out.push_str("hconcat:\n");
+            out.push_str(&point_map_tile(lon, lat, 2));
+            out
+        },
+    }
+}
+
+/// The point-map device as one entry of a concat list, indented by `indent`
+/// spaces, over [`SOURCE`] and the private `SELECTION` this module declares.
+///
+/// **One emitter, published** — [`scatter_tile`]'s own header gives the reason:
+/// the kind's builder above wraps this body under its own `params:` header,
+/// and [`crate::dashboard`] asks for the same string when it draws the joint
+/// tile a coordinate pair earns, so there is no second copy to keep honest.
+#[must_use]
+pub fn point_map_tile(lon: &str, lat: &str, indent: usize) -> String {
+    let pad = " ".repeat(indent);
+    let (xq, yq) = (yaml_quoted(lon), yaml_quoted(lat));
+    let mut out = String::new();
+    let _ = writeln!(out, "{pad}- plot:");
+    // The ghost, first so the subset covers it: the whole table, with no
+    // `filterBy:` to narrow it.
+    let _ = writeln!(out, "{pad}  - mark: dot");
+    let _ = writeln!(out, "{pad}    data: {{ from: {SOURCE} }}");
+    let _ = writeln!(out, "{pad}    x: {xq}");
+    let _ = writeln!(out, "{pad}    y: {yq}");
+    let _ = writeln!(out, "{pad}    fill: \"{}\"", GHOST_INK.hex());
+    let _ = writeln!(out, "{pad}    aspectRatio: 1");
+    // The subset: the same pair of columns, through the selection, in the mark
+    // ink a layer binding no colour channel takes.
+    let _ = writeln!(out, "{pad}  - mark: dot");
+    let _ = writeln!(
+        out,
+        "{pad}    data: {{ from: {SOURCE}, filterBy: ${SELECTION} }}"
+    );
+    let _ = writeln!(out, "{pad}    x: {xq}");
+    let _ = writeln!(out, "{pad}    y: {yq}");
+    let _ = writeln!(out, "{pad}    aspectRatio: 1");
+    // The producer: a rectangle swept over the cloud publishes an interval on
+    // each axis into the shared selection — the same two-dimensional device
+    // the scatter's own tile writes.
     let _ = writeln!(out, "{pad}  - select: intervalXY");
     let _ = writeln!(out, "{pad}    as: ${SELECTION}");
     // Plot attributes are siblings of `plot:`, so they sit at its indent — one
@@ -722,6 +830,7 @@ mod tests {
             vec![
                 BINNED_HISTOGRAM,
                 SCATTER,
+                POINT_MAP,
                 COUNTS_OVER_TIME,
                 COUNT_GRID,
                 crate::ranked_bars::KIND_ID
