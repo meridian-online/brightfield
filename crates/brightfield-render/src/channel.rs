@@ -159,16 +159,19 @@ impl LabelForm {
 /// renderers that accept constants read [`ChannelMap::literal`] or
 /// [`ChannelMap::colour`].
 ///
-/// It also carries the one mark option that is not a channel and that a
-/// RENDERER (rather than a lowerer) reads — see [`ChannelMap::label`]. This is
-/// the only route such an option has: [`crate::mark::MarkRenderer::render`] is
-/// handed a batch, a channel map and a scale set, and never the mark.
+/// It also carries the mark options that are not channels and that a
+/// RENDERER (rather than a lowerer) reads — see [`ChannelMap::label`] and
+/// [`ChannelMap::equal_aspect`]. This is the only route such an option has:
+/// [`crate::mark::MarkRenderer::render`] and
+/// [`crate::mark::MarkRenderer::augment_scales`] are handed a batch, a channel
+/// map and a scale set, and never the mark.
 #[derive(Debug, Clone, Default)]
 pub struct ChannelMap {
     map: HashMap<Channel, String>,
     literals: HashMap<Channel, f64>,
     colours: HashMap<Channel, Color>,
     label: Option<LabelForm>,
+    equal_aspect: bool,
 }
 
 impl ChannelMap {
@@ -234,6 +237,27 @@ impl ChannelMap {
     #[must_use]
     pub fn label(&self) -> Option<LabelForm> {
         self.label
+    }
+
+    /// Set whether this mark asked for an equal-aspect frame — see
+    /// [`ChannelMap::equal_aspect`].
+    pub fn set_equal_aspect(&mut self, on: bool) {
+        self.equal_aspect = on;
+    }
+
+    /// Whether this mark wrote `aspectRatio: 1`, asking the positional axes it
+    /// binds to share one px-per-unit rather than each fitting its own domain
+    /// to the plot rect independently.
+    ///
+    /// A mark option rather than a channel for the reason [`Self::label`]
+    /// already is one: there is no column behind it and nothing for
+    /// `infer_scales` to see. `crate::mark::DotRenderer`'s
+    /// `MarkRenderer::augment_scales` implementation is the one reader —
+    /// every other mark, and every plain `dot` mark that does not write
+    /// `aspectRatio: 1`, draws exactly as before.
+    #[must_use]
+    pub fn equal_aspect(&self) -> bool {
+        self.equal_aspect
     }
 
     /// Extract a ChannelMap from a mark's options.
@@ -354,13 +378,25 @@ impl ChannelMap {
                 }
             }
         }
-        // The one non-channel option read here. It is scanned outside the
-        // channel loop because it binds no column: there is nothing for
+        // The non-channel options read here. Both are scanned outside the
+        // channel loop because neither binds a column: there is nothing for
         // `infer_scales` to see and nothing for a scale to be built over.
         if let Some(ValueOrParamRef::Value(SpecValue::String(form))) = mark.options.get("label") {
             if let Some(form) = LabelForm::from_wire(form) {
                 cm.set_label(form);
             }
+        }
+        // `aspectRatio: 1` — the one ratio this build honours. A different
+        // number is not a request this renderer refuses; it is a request
+        // nothing here reads yet, so it is left unbound rather than rejected,
+        // the same silence an unrecognised `label:` value gets.
+        let asks_equal_aspect = match mark.options.get("aspectRatio") {
+            Some(ValueOrParamRef::Value(SpecValue::Integer(1))) => true,
+            Some(ValueOrParamRef::Value(SpecValue::Float(f))) => (*f - 1.0).abs() < f64::EPSILON,
+            _ => false,
+        };
+        if asks_equal_aspect {
+            cm.set_equal_aspect(true);
         }
         cm
     }

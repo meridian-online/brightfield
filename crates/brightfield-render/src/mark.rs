@@ -759,6 +759,53 @@ fn deemphasise(colour: Color, style: &HighlightStyle) -> Color {
 pub struct DotRenderer;
 
 impl MarkRenderer for DotRenderer {
+    /// Equal-aspect the X/Y domains when the mark asked for it
+    /// ([`ChannelMap::equal_aspect`]) — the point-map's device, a `dot` with
+    /// `aspectRatio: 1`, and a no-op for every other `dot` mark shipped,
+    /// scatter included.
+    ///
+    /// Reuses `aspect_fit_domains`, the same equal-px-per-unit fit
+    /// [`GeoRenderer::augment_scales`] computes from a projected geometry
+    /// bbox — here the bbox is the domain generic column inference already
+    /// wrote into `scales` before this runs, so no geometry parsing is
+    /// needed. Widening is idempotent (a domain already fit to the pixel
+    /// ranges maps back to itself, since its own `du`/`dv` already equal the
+    /// pixel-range-implied span), so it does not matter that a two-layer tile
+    /// (ghost + subset) calls this once per layer.
+    fn augment_scales(
+        &self,
+        scales: &mut ScaleSet,
+        _batch: &RecordBatch,
+        channel_map: &ChannelMap,
+        x_range: (f64, f64),
+        y_range: (f64, f64),
+    ) {
+        if !channel_map.equal_aspect() {
+            return;
+        }
+        let (
+            Some(Scale::Linear {
+                domain_min: x0,
+                domain_max: x1,
+                ..
+            }),
+            Some(Scale::Linear {
+                domain_min: y0,
+                domain_max: y1,
+                ..
+            }),
+        ) = (scales.get(Channel::X), scales.get(Channel::Y))
+        else {
+            // No linear pair to fit — a table with nothing bound on one axis
+            // draws nothing either way, and there is no bbox to widen.
+            return;
+        };
+        let bbox = (*x0, *x1, *y0, *y1);
+        let ((nx0, nx1), (ny0, ny1)) = aspect_fit_domains(bbox, x_range, y_range);
+        merge_linear_scale(scales, Channel::X, nx0, nx1, x_range);
+        merge_linear_scale(scales, Channel::Y, ny0, ny1, y_range);
+    }
+
     fn render(
         &self,
         scene: &mut Scene,
@@ -4569,6 +4616,124 @@ mod tests {
         assert!(
             !encoding.path_tags.is_empty(),
             "scene should have path tags after rendering 3 coloured dots"
+        );
+    }
+
+    /// **`aspectRatio: 1` widens the narrower domain until both axes share one
+    /// px-per-unit** — the same equal-px-per-unit fit
+    /// `augment_scales_aspect_fits_and_suppresses_frame` measures for
+    /// [`GeoRenderer`], read here off [`DotRenderer`] instead.
+    ///
+    /// `x` spans 10 units and `y` spans 1, over a SQUARE pixel range, so a plain
+    /// column-inferred scale gives x ten times y's px-per-unit. The fit widens
+    /// y's domain — the narrower fit — until the two slopes match, and leaves
+    /// x's domain alone, since x was already the wider fit.
+    #[test]
+    fn augment_scales_equal_aspect_widens_the_narrower_axis() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.0, 10.0])),
+                Arc::new(Float64Array::from(vec![0.0, 1.0])),
+            ],
+        )
+        .unwrap();
+
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        cm.set_equal_aspect(true);
+
+        let (x_range, y_range) = ((0.0, 500.0), (500.0, 0.0));
+        let mut scales = infer_scales(&batch, &cm, x_range, y_range);
+        DotRenderer.augment_scales(&mut scales, &batch, &cm, x_range, y_range);
+
+        let (
+            Some(Scale::Linear {
+                domain_min: x0,
+                domain_max: x1,
+                range_start: xr0,
+                range_end: xr1,
+            }),
+            Some(Scale::Linear {
+                domain_min: y0,
+                domain_max: y1,
+                range_start: yr0,
+                range_end: yr1,
+            }),
+        ) = (scales.get(Channel::X), scales.get(Channel::Y))
+        else {
+            panic!("equal-aspect augment_scales must keep both x/y as Linear scales");
+        };
+        assert_eq!((*x0, *x1), (0.0, 10.0), "x was already the wider fit");
+        let slope_x = (xr1 - xr0) / (x1 - x0);
+        let slope_y = (yr1 - yr0) / (y1 - y0);
+        assert!(
+            (slope_x.abs() - slope_y.abs()).abs() < 1e-9,
+            "equal px-per-unit: |{slope_x}| vs |{slope_y}|"
+        );
+        assert!(
+            y1 - y0 > 1.0 + 1e-9,
+            "y's domain (still {} wide) was not widened past its own data span",
+            y1 - y0
+        );
+        // Centred on the data's own mean, not shifted toward one edge.
+        assert!((*y0 + *y1 - 1.0).abs() < 1e-9, "y0={y0} y1={y1}");
+    }
+
+    /// **A `dot` mark that does not ask draws exactly as before** — the
+    /// no-op half of the same feature, over the same fixture.
+    #[test]
+    fn augment_scales_without_the_flag_leaves_scales_untouched() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.0, 10.0])),
+                Arc::new(Float64Array::from(vec![0.0, 1.0])),
+            ],
+        )
+        .unwrap();
+
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        assert!(!cm.equal_aspect(), "a plain dot mark asked for nothing");
+
+        let (x_range, y_range) = ((0.0, 500.0), (500.0, 0.0));
+        let before = infer_scales(&batch, &cm, x_range, y_range);
+        let mut after = infer_scales(&batch, &cm, x_range, y_range);
+        DotRenderer.augment_scales(&mut after, &batch, &cm, x_range, y_range);
+        assert_eq!(
+            (
+                before.get(Channel::X).unwrap().domain_min(),
+                before.get(Channel::X).unwrap().domain_max()
+            ),
+            (
+                after.get(Channel::X).unwrap().domain_min(),
+                after.get(Channel::X).unwrap().domain_max()
+            ),
+            "augment_scales moved the x domain of a mark that never asked for \
+             an equal-aspect frame"
+        );
+        assert_eq!(
+            (
+                before.get(Channel::Y).unwrap().domain_min(),
+                before.get(Channel::Y).unwrap().domain_max()
+            ),
+            (
+                after.get(Channel::Y).unwrap().domain_min(),
+                after.get(Channel::Y).unwrap().domain_max()
+            ),
+            "augment_scales moved the y domain of a mark that never asked for \
+             an equal-aspect frame"
         );
     }
 
