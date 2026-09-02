@@ -3853,9 +3853,9 @@ impl MeridianApp {
     /// what is remembered afterwards — is on this side of the dispatch.
     ///
     /// A window with no Protocol behind it (a chart spec, a shipped start, the
-    /// front door) has no spec to write and says so by returning `None` rather
-    /// than by raising anything. That is what leaves the Save verb doing on
-    /// those windows what it did before this existed.
+    /// front door) has no spec to write and says so by returning `None`, which
+    /// raises no banner and writes no toast. That is what leaves the Save verb
+    /// doing on those windows what it did before this existed.
     ///
     /// What is remembered is a **path**, not a start id: `SavedLayout::opened`
     /// holds an id this build ships and cannot name a file, but
