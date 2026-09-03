@@ -580,8 +580,10 @@ def production_item_names() -> set[str]:
     the two attribute-free enumerations.
 
     A `#[test]` function is exempt from this: the attribute is proof the name
-    IS a test, whatever else in the tree shares the spelling. Measured here,
-    the refusal costs 13 of the 536 names the attribute-free half contributes.
+    IS a test, whatever else in the tree shares the spelling. What the refusal
+    costs is a small tail of the attribute-free half; the commit that landed it
+    carries the count it cost on the tree of that day, which is where a figure
+    nothing re-measures belongs.
     """
     global _PRODUCTION
     if _PRODUCTION is None:
