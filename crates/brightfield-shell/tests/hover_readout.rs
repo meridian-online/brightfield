@@ -555,7 +555,10 @@ fn a_brush_on_a_tile_leaves_the_hover_reading_only_what_the_map_still_draws() {
 
     // Sweep the right-hand third of the tile, and read the interval back
     // through the same scale the gesture inverts through.
-    let from = egui::pos2(tile_rect.left() + tile_rect.width() * 0.66, tile_rect.center().y);
+    let from = egui::pos2(
+        tile_rect.left() + tile_rect.width() * 0.66,
+        tile_rect.center().y,
+    );
     let to = egui::pos2(tile_rect.right() - 2.0, tile_rect.center().y);
     let interval = {
         let scale = app.chart_doc().composed.plots[tile]
@@ -644,10 +647,7 @@ fn harness(app: MeridianApp) -> egui_kittest::Harness<'static, MeridianApp> {
     let mut harness = egui_kittest::Harness::builder()
         .with_size(SCREEN.size())
         .with_pixels_per_point(1.0)
-        .build_ui_state(
-            |ui, app: &mut MeridianApp| app.draw(ui),
-            app,
-        );
+        .build_ui_state(|ui, app: &mut MeridianApp| app.draw(ui), app);
     harness.run();
     harness
 }
@@ -819,7 +819,9 @@ fn no_hover_overlay_checkbox_is_drawn_on_a_window_holding_a_chart() {
         "the window is not holding a live chart"
     );
     assert!(
-        h.query_all_by_label_contains("hover overlay").next().is_none(),
+        h.query_all_by_label_contains("hover overlay")
+            .next()
+            .is_none(),
         "a control labelled \"hover overlay\" is still drawn"
     );
 }
@@ -860,7 +862,9 @@ fn surfaces(app: &mut MeridianApp) -> Surfaces {
         .live_coordinator()
         .expect("a live document")
         .session();
-    let grid = fetch_page(session, mark, 0..8).expect("the grid reads").rows;
+    let grid = fetch_page(session, mark, 0..8)
+        .expect("the grid reads")
+        .rows;
     Surfaces {
         selection,
         plots,

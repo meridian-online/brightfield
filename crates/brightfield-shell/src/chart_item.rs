@@ -49,6 +49,7 @@
 //! machine-readable downstream.
 
 use brightfield_engine::coordinator::Interaction;
+use brightfield_engine::nearest::{NearestAxis, NearestProbe};
 use brightfield_engine::SqlPredicate;
 use brightfield_keys::BindingContext;
 use brightfield_render::canvas_host::{Color, OverlayPainter, SurfaceCursor};
@@ -63,7 +64,6 @@ use brightfield_workbench::{
     chrome, Affordance, EmptyState, Icon, Item, ItemCtx, ItemId, Subject, ToolbarEntry,
     ToolbarLocation, Verb,
 };
-use brightfield_engine::nearest::{NearestAxis, NearestProbe};
 use meridian_design::chrome::{OverlayTokens, INK_DARK, INK_LIGHT, OVERLAY_DARK, OVERLAY_LIGHT};
 use meridian_design::semantic::{semantic, Role};
 use meridian_design::{radius, spacing, Elevation};
@@ -807,9 +807,7 @@ fn hover_readout(ctx: &egui::Context, readout: &HoverReadout, mode: Mode) {
             frame.show(ui, |ui| {
                 ui.vertical(|ui| {
                     for line in &readout.lines {
-                        ui.label(
-                            egui::RichText::new(line).color(chrome::colour(sem.text.primary)),
-                        );
+                        ui.label(egui::RichText::new(line).color(chrome::colour(sem.text.primary)));
                     }
                 });
             });
@@ -1519,10 +1517,7 @@ mod tests {
             sample: None,
             hover: Some(HoverLayer {
                 mark: 0,
-                channels: vec![
-                    (Channel::X, "x".to_string()),
-                    (Channel::Y, "y".to_string()),
-                ],
+                channels: vec![(Channel::X, "x".to_string()), (Channel::Y, "y".to_string())],
             }),
         }
     }

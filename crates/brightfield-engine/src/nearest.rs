@@ -277,7 +277,10 @@ mod tests {
             2,
             "two columns asked for, so two projected: {head}"
         );
-        assert!(head.contains("\"lon\"") && head.contains("\"lat\""), "{head}");
+        assert!(
+            head.contains("\"lon\"") && head.contains("\"lat\""),
+            "{head}"
+        );
     }
 
     /// A column named with a quote is written as one identifier, not two.

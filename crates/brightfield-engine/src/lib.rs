@@ -194,10 +194,7 @@ fn spec_value_at(array: &dyn duckdb::arrow::array::Array, row: usize) -> Option<
 /// and DuckDB chunks a large result. `cells` comes from the first row of the
 /// first non-empty batch, which is the nearest one: the query orders by
 /// distance.
-fn read_nearest(
-    batches: &[RecordBatch],
-    probe: &nearest::NearestProbe,
-) -> nearest::NearestRead {
+fn read_nearest(batches: &[RecordBatch], probe: &nearest::NearestProbe) -> nearest::NearestRead {
     use duckdb::arrow::array::{Array, StringArray};
 
     let rows: usize = batches.iter().map(RecordBatch::num_rows).sum();

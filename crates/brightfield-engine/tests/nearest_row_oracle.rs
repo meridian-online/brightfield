@@ -84,7 +84,9 @@ fn spec_yaml(filter_by: bool) -> String {
 /// A live session over [`spec_yaml`], wrapped so a selection can be pushed.
 fn coordinator(filter_by: bool) -> Coordinator {
     let source = spec_yaml(filter_by);
-    let spec = parse_spec(&source, Format::Yaml).expect("the fixture parses").spec;
+    let spec = parse_spec(&source, Format::Yaml)
+        .expect("the fixture parses")
+        .spec;
     let analysis = analyse_spec(&spec).expect("the fixture analyses");
     Coordinator::from_session(session(spec, analysis))
 }
@@ -262,7 +264,9 @@ plot:
     x: x
     y: y
 ";
-    let spec = parse_spec(CLUSTER, Format::Yaml).expect("the cluster parses").spec;
+    let spec = parse_spec(CLUSTER, Format::Yaml)
+        .expect("the cluster parses")
+        .spec;
     let analysis = analyse_spec(&spec).expect("the cluster analyses");
     let mut s = session(spec, analysis);
     let read = s
@@ -406,13 +410,19 @@ fn a_hover_read_raises_the_execute_count_without_touching_the_cache() {
 
     let executes = c.session().duckdb_execute_count();
     let cached = c.session().sql_cache_len();
-    assert!(cached > 0, "the chart's query did not cache, so this proves nothing");
+    assert!(
+        cached > 0,
+        "the chart's query did not cache, so this proves nothing"
+    );
 
     let read = c
         .session_mut()
         .nearest_row(0, &probe_at(AIM.0, AIM.1, 40.0))
         .expect("the read runs");
-    assert!(read.found(), "the read found nothing, so it may not have run");
+    assert!(
+        read.found(),
+        "the read found nothing, so it may not have run"
+    );
 
     assert_eq!(
         c.session().duckdb_execute_count(),
