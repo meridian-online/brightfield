@@ -563,8 +563,8 @@ fn the_window_it_asks_for_fits_the_raster_it_presents() {
 /// [`arrangement::INSPECTOR_RAIL_WIDTH`] is a default and
 /// [`arrangement::INSPECTOR_RAIL_MIN_WIDTH`] is a floor, and an `egui`
 /// side panel takes the floor unless its content asks for more: a quiet
-/// inspector — nothing selected, a one-shot document with no live controls —
-/// asks for nothing at all. Measured before `window.rs` called
+/// inspector — no pane selected, a one-shot document with no live controls —
+/// asks for none. Measured before `window.rs` called
 /// `ui.set_min_width(ui.available_width())` inside the rail, the reported rect
 /// was the 200pt floor by the second frame rather than the declared 280.
 ///

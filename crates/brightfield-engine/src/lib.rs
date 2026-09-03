@@ -185,7 +185,7 @@ fn spec_value_at(array: &dyn duckdb::arrow::array::Array, row: usize) -> Option<
 
 /// Turn what the nearest-row query returned into a [`nearest::NearestRead`].
 ///
-/// The query casts every projected column to `VARCHAR`, so the whole batch is
+/// The query casts each projected column to `VARCHAR`, so the whole batch is
 /// one array type and there is no per-type dispatch here. A cell that is SQL
 /// NULL is dropped rather than rendered — see [`nearest::NearestRead::cells`].
 ///
@@ -1594,21 +1594,21 @@ impl Session {
     /// bounded in DuckDB rather than in the caller, so the client never holds
     /// more than the one row — a hover over a ten-million-row step reads one
     /// row, not ten million. And this read is **uncached** ([`Self::execute_uncached`]):
-    /// a pointer resting at a new pixel is a new query string every time, so
+    /// a pointer resting at a new pixel is a new query string each time, so
     /// caching them would evict the chart's own results to store answers
     /// nobody asks twice.
     ///
-    /// The read raises [`Self::duckdb_execute_count`] all the same, because it
-    /// *is* a DuckDB execute and a counter that skipped it would report a
-    /// hover as free.
+    /// The read raises [`Self::duckdb_execute_count`] even so, because it *is*
+    /// a DuckDB execute and a counter that skipped it would report a hover as
+    /// free — `a_hover_read_raises_the_execute_count_without_touching_the_cache`.
     ///
     /// # Errors
     ///
     /// As [`Self::execute_step_rows`]: emit failure for an inline or
     /// data-less mark, or [`EngineError::QueryFailed`] if DuckDB rejects the
-    /// query. A probe that cannot be expressed at all — a degenerate axis, an
-    /// empty column list; see [`nearest::nearest_row_sql`] — is not an error
-    /// and comes back as a read that found nothing.
+    /// query. A probe that cannot be expressed — a degenerate axis, an empty
+    /// column list; see [`nearest::nearest_row_sql`] — is not an error and
+    /// comes back as a read that found no row.
     pub fn nearest_row(
         &mut self,
         index: usize,
@@ -1629,8 +1629,8 @@ impl Session {
     ///
     /// The production non-caching read. It differs from the private
     /// `query_arrow_raw` in exactly one thing — the execute is counted — and
-    /// from `execute_emitted` in two: nothing is looked up in `sql_cache` on
-    /// the way in and nothing is inserted on the way out.
+    /// from `execute_emitted` in two: it neither reads `sql_cache` on the way
+    /// in nor writes it on the way out.
     ///
     /// That combination is what a per-pointer-position read needs. Counting
     /// keeps a hover visible to anything measuring how much this session asks

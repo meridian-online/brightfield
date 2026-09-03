@@ -111,8 +111,10 @@ pub struct PlotHandle {
 /// pointing at the layer on top, and that layer is the filtered one — so the
 /// nearest-point read has to run against *its* mark index or the row it hands
 /// back can be one the brush has already excluded from the picture. Which mark
-/// that is comes off the composed spec, never off a position:
-/// `the_hover_layer_is_the_one_that_narrows` builds a tile and reads it back.
+/// that is comes off the composed spec rather than off a position, and
+/// `a_brush_on_a_tile_leaves_the_hover_reading_only_what_the_map_still_draws`
+/// is what holds it: it brushes a tile and then asks the map about a row that
+/// brush excluded.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HoverLayer {
     /// The mark's depth-first index — the engine's own mark numbering, so it
@@ -187,9 +189,10 @@ fn narrows(mark: &brightfield_spec::ast::Mark) -> bool {
 /// scale that cannot answer.
 ///
 /// Linear only, and that is a real limit rather than an oversight. A
-/// [`Scale::Band`] has no pixels-per-unit at all: a category has a slot, not a
+/// [`Scale::Band`] has no pixels-per-unit: a category has a slot, not a
 /// coordinate, and "how far is this row from the pointer" has no answer along
-/// it. A [`Scale::Time`] does have one, but its column is a DuckDB `TIMESTAMP`
+/// it — `a_hover_on_a_plot_that_encodes_colour_names_the_colour_column` asks
+/// that of the banded plot in its fixture. A [`Scale::Time`] does have one, but its column is a DuckDB `TIMESTAMP`
 /// and the nearest-point query does arithmetic on the column itself, so a time
 /// axis needs an epoch conversion in the emitted SQL that this build does not
 /// write — a plot with one offers no hover layer rather than offering a wrong
@@ -1263,17 +1266,17 @@ impl LiveDashboard {
     /// Straight to the session, deliberately not through
     /// [`Coordinator::apply`]: a hover is a question, not an interaction. It
     /// pushes no predicate, it produces no [`Interaction`], and it leaves
-    /// [`Coordinator::generation`] where it found it, so nothing downstream
-    /// re-composites and nothing treats the answer as a new state of the
-    /// picture. `a_hover_is_not_an_interaction` holds all three.
+    /// [`Coordinator::generation`] where it found it, so no downstream reader
+    /// re-composites and none treats the answer as a new state of the picture —
+    /// `a_hover_is_not_an_interaction` holds the three of them.
     ///
     /// # Errors
     ///
     /// As [`brightfield_engine::Session::nearest_row`].
     // The Err variant is the engine's own error type, at the engine's own size,
     // on the same terms as `data_grid::fetch_page`: boxing it at this one seam
-    // would make the hover the only consumer to receive it boxed, and the one
-    // caller unwraps it into an `Option` on the next line.
+    // would leave the hover as its single boxed consumer, and its one caller
+    // unwraps it into an `Option` on the next line.
     #[allow(clippy::result_large_err)]
     pub fn nearest_row(
         &mut self,
@@ -1285,11 +1288,13 @@ impl LiveDashboard {
 
     /// How many DuckDB executes this dashboard's session has performed.
     ///
-    /// Surfaced here because the counter is the only way to ask "did that
-    /// frame issue a query", and the question is asked of the *dashboard* by
-    /// the tests that hold the pointer-stillness gate — `a_sweep_issues_no_query`
-    /// and `a_rest_issues_exactly_one_query`. Reading it needs no `&mut`,
-    /// which is what lets a test take it around a frame it is also drawing.
+    /// Surfaced here because the counter is how a test asks "did that frame
+    /// issue a query", and the question is asked of the *dashboard* by the
+    /// pair that hold the pointer-stillness gate —
+    /// `a_sweep_across_a_plot_issues_no_query` and
+    /// `a_rest_issues_exactly_one_query_however_long_it_lasts`. Reading it
+    /// needs no `&mut`, which is what lets a test take it around a frame it is
+    /// also drawing.
     #[must_use]
     pub fn executes(&self) -> usize {
         self.coordinator.session().duckdb_execute_count()

@@ -3,8 +3,8 @@
 //! The engine's own oracle (`brightfield-engine/tests/nearest_row_oracle.rs`)
 //! holds what the read *returns*. Nothing there says a pointer ever reaches
 //! it, and that gap is the one this file exists to close: a criterion driven
-//! through the read function passes with the gesture missing entirely. So every
-//! claim here is driven by **pointer events into `MeridianApp::draw`** — real
+//! through the read function passes with the gesture missing entirely. So the
+//! claims here are driven by **pointer events into `MeridianApp::draw`** — real
 //! `PointerMoved` and `PointerButton` events, at coordinates derived from the
 //! frame the window laid out — and read back off the frame or off the
 //! accessibility tree.
@@ -377,7 +377,7 @@ fn a_paused_drag_reads_nothing() {
 ///
 /// The engine's oracle holds the same pair one level down. This one is what
 /// says the shell's own call site goes through the uncached read: a hover
-/// wired to `execute_step_rows` instead would pass every counting test above
+/// wired to `execute_step_rows` instead would pass the counting tests above
 /// and fail here.
 #[test]
 fn a_hover_read_raises_the_execute_count_without_touching_the_cache() {
@@ -523,7 +523,7 @@ fn brush(app: &mut MeridianApp, ctx: &egui::Context, from: egui::Pos2, to: egui:
 /// The sweep's interval is read back through the tile's own x scale, exactly as
 /// the gesture inverts it, and the fixture's rows are then partitioned by it in
 /// this file. The aim is an excluded row whose nearest surviving row is more
-/// than [`CLEAR_OF_THE_RADIUS`] points away, so "nothing was found" cannot be
+/// than [`CLEAR_OF_THE_RADIUS`] points away, so "no row was found" cannot be
 /// a surviving neighbour being found instead.
 ///
 /// Three readings, and all three are needed. Before the brush the aim finds a

@@ -120,7 +120,7 @@ fn probe_at(px: f64, py: f64, radius: f64) -> NearestProbe {
     }
 }
 
-/// The label the read named, or `None` when it found nothing.
+/// The label the read named, or `None` when it found no row.
 fn label(read: &NearestRead) -> Option<&str> {
     read.cells
         .iter()
@@ -132,9 +132,9 @@ fn label(read: &NearestRead) -> Option<&str> {
 /// minimising pixel distance from `(px, py)`, or `None` when the nearest is
 /// outside `radius`.
 ///
-/// It scans [`ROWS`] — the literal values the spec declares — rather than
-/// anything the engine returned, so agreeing with it is a claim about the SQL
-/// and not a comparison of the implementation with itself.
+/// It scans [`ROWS`] — the literal values the spec declares — rather than what
+/// the engine returned, so agreeing with it is a claim about the SQL and not a
+/// comparison of the implementation with itself.
 fn brute_force(rows: &[Row], px: f64, py: f64, radius: f64) -> Option<&'static str> {
     let mut best: Option<(f64, &'static str)> = None;
     for (x, y, l) in rows {

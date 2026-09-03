@@ -306,11 +306,11 @@ pub fn page_offset(
 ///
 /// One row's worth of named values and the point they were read at — and
 /// **not** the [`brightfield_engine::RecordBatch`] they came out of. The batch
-/// never leaves the engine: [`brightfield_engine::Session::nearest_row`] hands
+/// stays inside the engine: [`brightfield_engine::Session::nearest_row`] hands
 /// back cells, so no surface has a whole-row copy to hold across frames even by
-/// accident. That is the whole difference between this and reading every column
-/// of a materialised batch on the client, and it is enforced by what crosses
-/// the crate boundary rather than by care.
+/// accident. That is the difference between this and reading the whole of a
+/// materialised batch on the client, and it is enforced by what crosses the
+/// crate boundary rather than by care.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HoverReadout {
     /// Where the pointer was, in window-space logical points, on the frame
@@ -410,11 +410,11 @@ pub struct ChartDoc {
     /// `(control key, rect)` in window-space logical points — empty until a
     /// frame has laid the rail out, and empty for a spec that declares none.
     ///
-    /// Recorded for the reason [`Self::viewport`] is, one level in: the only
+    /// Recorded for the reason [`Self::viewport`] is, one level in: an
     /// assertion worth making about a drag is one that aims a real pointer at
     /// the widget a person would grab, and a coordinate typed by hand against
     /// a layout nothing derived it from stops landing the first time a row
-    /// height moves without anything going red.
+    /// height moves, with no test going red.
     pub interval_slider_rects: Vec<(String, egui::Rect)>,
     /// **How many tiles stand in the column beside the hero**, when this
     /// document is a generated dashboard laid out as a hero and a column —
@@ -797,19 +797,19 @@ impl ChartDoc {
     ///
     /// `None` for a document with no session behind it (a capture, the pixel
     /// tier, a shipped start), which is the same answer a still frame gives
-    /// every other gesture entry point here.
+    /// the other gesture entry points here.
     ///
-    /// **A failed read is not a chart fault.** Every other engine call on this
-    /// document raises the banner when it fails, because every other one is a
+    /// **A failed read is not a chart fault.** The engine calls on this
+    /// document raise the banner when they fail, because each of them is a
     /// picture the reader asked for and did not get. A hover that cannot be
     /// answered has no picture behind it: the reader moved a pointer, and the
-    /// honest response is to say nothing rather than to put a banner over the
-    /// chart. The reason still goes to stderr, on the same terms as an
-    /// unsampled-facts query that fails.
+    /// honest response is to say so by drawing no readout rather than by
+    /// putting a banner over the chart. The reason still goes to stderr, on the
+    /// same terms as an unsampled-facts query that fails.
     ///
-    /// Nothing about this touches [`Self::apply_interaction`]: no
-    /// [`Interaction`] is produced, no predicate is pushed, and
-    /// [`Coordinator::generation`] does not move — see
+    /// This does not touch [`Self::apply_interaction`]: no [`Interaction`] is
+    /// produced, no predicate is pushed, and [`Coordinator::generation`] does
+    /// not move — `a_hover_is_not_an_interaction`, and see
     /// [`LiveDashboard::nearest_row`].
     pub fn nearest_row(&mut self, mark: usize, probe: &NearestProbe) -> Option<NearestRead> {
         match self.live.as_mut()?.nearest_row(mark, probe) {

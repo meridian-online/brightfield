@@ -329,10 +329,10 @@ pub struct ChartItem {
     /// Where the last nearest-point read was **taken**, including the reads
     /// that found nothing.
     ///
-    /// [`ChartDoc::hover_readout`] cannot carry this: a rest over empty space is a read
-    /// that produced no readout, and without somewhere to record that it
-    /// happened the rest would re-ask on every frame anything else caused. One
-    /// query per rest is a property of this field, and
+    /// [`ChartDoc::hover_readout`] cannot carry this: a rest over empty space
+    /// is a read that produced no readout, and without somewhere to record
+    /// that it happened the rest would re-ask on each frame something else
+    /// caused. One query per rest is a property of this field, and
     /// `a_rest_outside_the_hit_radius_issues_one_query_and_no_more` is what
     /// holds it.
     hover_read_at: Option<egui::Pos2>,
@@ -688,10 +688,10 @@ impl ChartItem {
 /// the readout is drawn beside the pointer, and the panel is chrome, so it is
 /// placed in the window's coordinates and not the page's.
 ///
-/// `None` is the answer for every reason there is nothing to say, and they are
+/// `None` is the answer whenever there is no row to name, and the reasons are
 /// deliberately not distinguished: the pointer is on no plot, the plot's top
 /// layer summarises rather than draws rows, an axis is not continuous, or no
-/// mark is inside [`HOVER_RADIUS`]. A readout that appeared saying "nothing
+/// mark is inside [`HOVER_RADIUS`]. A readout that appeared saying "no row
 /// here" would be chrome following the pointer around an empty plot.
 ///
 /// **No row set crosses into this function.** It hands the engine a probe and
@@ -778,8 +778,8 @@ fn hover_probe(plot: &PlotHandle, layer: &HoverLayer, p: kurbo::Point) -> Option
 ///
 /// The frame is the workbench's own overlay treatment plus the shadow
 /// [`Elevation::Overlay`] declares — read off the design system rather than
-/// typed here, so a change to what an overlay looks like moves this with
-/// everything else.
+/// typed here, so a change to what an overlay looks like moves this with the
+/// rest of the chrome.
 fn hover_readout(ctx: &egui::Context, readout: &HoverReadout, mode: Mode) {
     let dark = mode.is_dark();
     let sem = semantic(dark);

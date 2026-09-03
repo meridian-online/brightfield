@@ -3,7 +3,7 @@
 //!
 //! Resting a pointer on a mark asks a question about *data*: which row is that
 //! dot. The answer this module produces is a single row read out of DuckDB by a
-//! query the caller never assembles, under the same `WHERE` the mark it is
+//! query the caller does not assemble, under the same `WHERE` the mark it is
 //! hovering was drawn with. The alternative — keeping the mark's `RecordBatch`
 //! on the client and scanning it — is the architecture this seam exists to
 //! reject, for the same reason the tabular surface's windowed read does: a
@@ -21,9 +21,9 @@
 //! `at` by `per_pixel` puts both axes in pixels, and
 //! [`NearestProbe::radius`] is then a plain screen distance.
 //!
-//! Both axes must be continuous for that division to mean anything, which is
-//! why [`NearestAxis::per_pixel`] is a number and not a scale: a band axis has
-//! no pixels-per-unit and a caller holding one cannot build a probe.
+//! Both axes have to be continuous for that division to mean something, which
+//! is why [`NearestAxis::per_pixel`] is a number and not a scale: a band axis
+//! has no pixels-per-unit and a caller holding one cannot build a probe.
 
 use std::fmt::Write as _;
 
@@ -132,8 +132,8 @@ fn quote(name: &str) -> String {
 ///
 /// `{:?}` on an `f64` is Rust's round-trip form, which is what this needs —
 /// `{}` truncates and a truncated pointer position moves the answer. A
-/// non-finite value cannot be written as a SQL literal at all and is the one
-/// case [`nearest_row_sql`] refuses over.
+/// non-finite value cannot be written as a SQL literal, and is one of the
+/// cases [`nearest_row_sql`] refuses over.
 fn literal(v: f64) -> String {
     format!("{v:?}")
 }
@@ -147,8 +147,9 @@ fn literal(v: f64) -> String {
 /// ordering, and the bound.
 ///
 /// Returns `None` when the probe cannot be expressed: a zero or non-finite
-/// `per_pixel` on either axis (a degenerate scale — every row is equidistant,
-/// and dividing by it produces infinities rather than an answer), a
+/// `per_pixel` on either axis (a degenerate scale — one where the rows are
+/// equidistant, and dividing by it produces infinities rather than an
+/// answer — `a_degenerate_axis_produces_no_query`), a
 /// non-finite pointer position or radius, or an empty `read` list (a query
 /// projecting nothing has no row to hand back).
 ///
