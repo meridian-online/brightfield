@@ -2266,6 +2266,21 @@ impl MeridianApp {
             .and_then(|(_, strip)| strip.control)
     }
 
+    /// Where the trailing summary of rail `id`'s strip drew in the last frame
+    /// this window drew, or `None` on a frame that strip was given no summary.
+    ///
+    /// Recorded and read back for the reason [`Self::rail_collapse_rect`] is:
+    /// whether a line of chrome reached the screen, and where, is a fact about
+    /// a frame, and a test that read it off the document the line is derived
+    /// from would be asserting the derivation against itself.
+    #[must_use]
+    pub fn rail_summary_rect(&self, id: RegionId) -> Option<egui::Rect> {
+        self.strips
+            .iter()
+            .find(|(r, _)| *r == id)
+            .and_then(|(_, strip)| strip.summary)
+    }
+
     /// Where the `index`-th name in rail `id`'s strip drew in the last frame,
     /// or `None` where that rail drew no such name.
     #[must_use]
@@ -6009,11 +6024,19 @@ mod tests {
     /// the canvas to the chart, and the only exit was Home, which discards
     /// both documents.
     ///
-    /// Asserted off a drawn frame rather than off `active()`: the branch that
-    /// puts the graph on the canvas draws no toggle, so two segments coming
-    /// back are the screen saying which document it gave the canvas to.
-    /// Then one of them is clicked, because a canvas that draws the chart and
-    /// answers no pointer is the same dead end with a picture of the way out.
+    /// Asserted off a drawn frame rather than off `active()`: the chart pane
+    /// records the box it was handed *before* it looks for a texture and it
+    /// draws nowhere but the canvas, so a recorded box is the screen saying
+    /// which document the canvas went to. This window has drawn no frame
+    /// before the assertion, so there is no stale box for it to read.
+    ///
+    /// **What this used to also hold, and no longer can.** It clicked the head
+    /// band's `Grid` segment and read the projection back, because a canvas
+    /// that draws the chart and answers no pointer is the same dead end with a
+    /// picture of the way out. The canvas declares one projection now and the
+    /// band draws no toggle, so there is no such control to press and that
+    /// half is lost rather than moved — saying so is better than a comment
+    /// claiming a guard this cannot give.
     #[test]
     fn a_protocol_opened_over_a_chart_leaves_the_chart_on_the_canvas() {
         let mut app = app();
@@ -6045,42 +6068,21 @@ mod tests {
             let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
         }
 
-        let segments = app.canvas_toggle_segments().to_vec();
-        assert_eq!(
-            segments.len(),
-            2,
-            "the canvas drew {} toggle segments over a window holding both \
-             documents. The toggle draws where the canvas holds the chart, so \
-             none means the graph took the canvas — and there is no control \
-             that gives it back",
-            segments.len()
-        );
-
-        // The window opens on the chart, which is the second projection; the
-        // grid is the first. Clicking it is the click a person makes.
-        let opened_on = app.projection();
-        assert_eq!(opened_on, 1, "the window did not open on the chart");
-        let grid = segments[0].center();
-        let mut events = vec![egui::Event::PointerMoved(grid)];
-        for pressed in [true, false] {
-            events.push(egui::Event::PointerButton {
-                pos: grid,
-                button: egui::PointerButton::Primary,
-                pressed,
-                modifiers: egui::Modifiers::default(),
-            });
-        }
-        let clicked = egui::RawInput {
-            events,
-            ..raw.clone()
-        };
-        let _ = ctx.run_ui(clicked, |ui| app.draw(ui));
-        assert_eq!(
-            app.projection(),
-            0,
-            "clicking the grid segment at {grid:?} left the canvas on \
-             projection {opened_on}, so the toggle drew over a canvas that \
-             does not answer it"
+        let box_ = app.chart_viewport().unwrap_or_else(|| {
+            panic!(
+                "the chart pane recorded no box over a window holding both \
+                 documents, so it did not draw — the graph took the canvas, \
+                 and there is no control that gives it back"
+            )
+        });
+        let canvas = app
+            .region_rect(arrangement::CANVAS)
+            .expect("the canvas region drew");
+        assert!(
+            canvas.contains_rect(box_),
+            "the chart pane drew at {box_:?}, which is not inside the canvas \
+             region {canvas:?} — it is being drawn somewhere other than the \
+             region this test is about"
         );
     }
 

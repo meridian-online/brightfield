@@ -368,38 +368,48 @@ fn the_shipped_arrangement_names_only_panes_this_build_has() {
         .unwrap_or_else(|findings| panic!("{findings}"));
 }
 
-/// AC2. The canvas toggle offers a grid and a chart, and nothing else.
+/// The canvas declares one projection and its head band draws no toggle.
 ///
-/// Counted where it drew rather than where it was declared: the segments come
-/// back off the frame, so a third entry added to the declaration would arrive
-/// here as a third rect. The declaration's own count is held separately, in
-/// `brightfield_workbench::arrangement`'s unit tests — this is the half that
-/// says the screen agrees with it.
+/// Two halves, and the second is the one that bites. The declaration is read
+/// off `arrangement`, which is where a second projection would be added back;
+/// the **screen** is read off a laid-out frame, which is where a toggle drawn
+/// from something other than that declaration would still turn up. A rect
+/// search over the frame is what the criterion asks for, and
+/// `MeridianApp::canvas_toggle_segments` is where the head band records every
+/// segment `chrome::projection_toggle` gave it.
+///
+/// The window under it holds a chart **and** a protocol, which is the window
+/// the toggle used to draw on: over a window with no chart the canvas goes to
+/// the graph and passes `None` for the toggle whatever the declaration says,
+/// so a search there would find nothing for the wrong reason.
 #[test]
-fn the_canvas_toggle_offers_two_projections_and_no_more() {
-    let app = settled();
-    let segments = app.canvas_toggle_segments();
-    assert_eq!(
-        segments.len(),
-        2,
-        "the canvas toggle drew {} segments",
-        segments.len()
-    );
-    // One control, not two: the segments abut, so they are halves of one
-    // capsule rather than two separate controls that happen to be adjacent.
-    assert!(
-        (segments[0].right() - segments[1].left()).abs() < 1e-3,
-        "the two segments are {}pt apart, so the canvas is offering two \
-         controls where the arrangement declares one",
-        segments[1].left() - segments[0].right()
-    );
-
+fn the_canvas_declares_one_projection_and_draws_no_toggle() {
     let canvas = arrangement::default_arrangement().expect_region(arrangement::CANVAS);
     let Occupant::Canvas { projections, .. } = canvas.occupant else {
         panic!("the canvas region is occupied by the canvas");
     };
     let labels: Vec<&str> = projections.iter().map(|p| p.label).collect();
-    assert_eq!(labels, ["Grid", "Chart"]);
+    assert_eq!(
+        labels,
+        ["Chart"],
+        "the canvas declares {} projections; the tabular reading is a pane of \
+         the canvas's own group rather than a second projection of it",
+        labels.len()
+    );
+
+    let app = settled();
+    assert!(
+        !app.chart_doc().is_empty(),
+        "this window holds no chart, so the canvas went to the graph and drew \
+         no toggle for a reason that has nothing to do with the declaration"
+    );
+    let segments = app.canvas_toggle_segments();
+    assert!(
+        segments.is_empty(),
+        "the canvas head band drew {} projection-toggle segments at {segments:?} \
+         over a window holding a chart",
+        segments.len()
+    );
 }
 
 /// AC4. No numeric binding addresses a surface.

@@ -422,6 +422,85 @@ fn grid_harness(doc: ChartDoc) -> egui_kittest::Harness<'static, (ChartDoc, Data
         )
 }
 
+/// A table whose **values** are much wider than their headers, and one column
+/// beside it that is not — the shape a column sized from its header alone gets
+/// wrong.
+const WIDE_VALUES: &str = r#"
+data:
+  t:
+    - { n: 1, note: "Alameda County, unincorporated" }
+    - { n: 2, note: "short" }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: n
+    y: n
+"#;
+
+/// **A column is as wide as its widest value, not as wide as its header** —
+/// so nothing the grid draws is cut off by the column it is drawn in.
+///
+/// Read off two drawn rects and nothing else: the accessibility tree's rect
+/// for the widest cell, and the header cell rect the table reported for the
+/// column that cell is in. A column narrower than the value inside it is a
+/// value the reader cannot finish, and it is what a width taken from the
+/// header — or a width declared as one number for every column — produces
+/// here: `note`'s header is four characters and its widest value is thirty.
+///
+/// The narrow column beside it is the other half. Without it, a rule that made
+/// every column as wide as the widest value in the whole table would pass, and
+/// that rule is the one that pushes the rest of the table off screen.
+#[test]
+fn a_columns_width_covers_its_widest_value_not_just_its_header() {
+    const WIDEST: &str = "Alameda County, unincorporated";
+    let mut harness = grid_harness(live_doc(WIDE_VALUES));
+    harness.run();
+
+    let cell = harness.get_by_label(WIDEST).rect();
+    let drawn = harness
+        .state()
+        .0
+        .grid_drawn
+        .clone()
+        .expect("the grid laid a table out");
+    assert_eq!(drawn.columns, 2, "the fixture's table has two columns");
+
+    // Which column that cell is in, by the header rect it falls inside —
+    // resolved from the frame rather than assumed to be the second one.
+    let (col, header, _) = drawn
+        .header_cells
+        .iter()
+        .find(|(_, rect, _)| {
+            #[allow(clippy::cast_possible_truncation)]
+            let x = cell.min.x as f32 + 1.0;
+            rect.x_range().contains(x)
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the cell drew at {cell:?}, in none of the columns {:?}",
+                drawn.header_cells
+            )
+        });
+    #[allow(clippy::cast_possible_truncation)]
+    let cell_width = cell.width() as f32;
+    assert!(
+        cell_width <= header.width(),
+        "the value {WIDEST:?} drew {cell_width} points wide in a column {}          points wide, so the reader sees it cut off — column {col} was sized          from something other than its widest held value",
+        header.width()
+    );
+
+    let other = drawn
+        .header_cells
+        .iter()
+        .find(|(c, _, _)| c != col)
+        .expect("the table has a second column");
+    assert!(
+        other.1.width() < header.width(),
+        "both columns drew {} points wide, so the width is one number for the          whole table rather than each column's own",
+        header.width()
+    );
+}
+
 #[test]
 fn the_row_pitch_is_the_dense_rung_measured_by_node_rect() {
     let mut harness = grid_harness(live_doc(BRUSH_DASHBOARD));
