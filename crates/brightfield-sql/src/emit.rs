@@ -1085,7 +1085,7 @@ pub enum RowsAudience {
     /// A mark drawn on a plot. Crossfilter drops the clause that plot
     /// published — [`compile_selection`] is given the mark's own plot node
     /// path — so this is byte-identical to what
-    /// [`emit_query`](crate::emit::emit_query) compiles for the same mark, and
+    /// [`emit_query`] compiles for the same mark, and
     /// the chart and a grid asking as `Plot` cannot resolve two WHERE clauses.
     Plot,
     /// A surface that draws no mark and publishes no clause: the rows pane, a
@@ -1099,7 +1099,7 @@ pub enum RowsAudience {
 impl RowsAudience {
     /// The `self_source` [`compile_selection`] is given for a mark at
     /// `mark_path`.
-    fn self_source<'a>(self, mark_path: &'a str) -> &'a str {
+    fn self_source(self, mark_path: &str) -> &str {
         match self {
             Self::Plot => brightfield_spec::analysis::plot_node_path(mark_path),
             Self::Reader => crate::lower::NO_SELF_EXCLUDE,

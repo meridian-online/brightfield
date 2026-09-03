@@ -1863,7 +1863,7 @@ pub(crate) fn ghost_subset_marks(spec: &Spec) -> Option<(usize, usize)> {
 /// rows at** — the layer that carries `filterBy:`, resolved from the composed
 /// spec rather than written down as a literal.
 ///
-/// The subset mark of the first ghost/subset device [`ghost_subset_marks`]
+/// The subset mark of the first ghost/subset device `ghost_subset_marks`
 /// finds, and mark `0` for a spec that declares no such device. A one-mark spec
 /// therefore resolves to its only mark, and a hand-authored single layer bound
 /// `filterBy:` resolves to itself — in both cases because there is no ghost to
@@ -1888,7 +1888,7 @@ pub(crate) fn ghost_subset_marks(spec: &Spec) -> Option<(usize, usize)> {
 /// `[240, 240, 240, 45, 240, 45, 240, 45, 240, 45, 240, 45, 240, 45, 240, 45]`,
 /// and marks 0 and 1 are the hero's pair. So the mark index answers *which
 /// materialisation*, and
-/// [`RowsAudience`](brightfield_engine::RowsAudience) answers *whose clause is
+/// [`RowsAudience`] answers *whose clause is
 /// dropped*; a reader needs both and passes `Reader` for the second.
 #[must_use]
 pub fn presenting_rows_mark(spec: &Spec) -> usize {

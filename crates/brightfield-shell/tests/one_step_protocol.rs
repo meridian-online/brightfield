@@ -1573,7 +1573,7 @@ fn the_ledger_strip_reads_the_steps_own_name_kind_and_status() {
         let want = format!("{step} \u{b7} {kind} \u{b7} {status}");
         let words = win.drawn_text_in(rect);
         assert!(
-            words.iter().any(|w| *w == want),
+            words.contains(&want),
             "the collapsed ledger's strip drew {words:?}, which does not \
              contain {want:?} — the summary is not reading this step"
         );
