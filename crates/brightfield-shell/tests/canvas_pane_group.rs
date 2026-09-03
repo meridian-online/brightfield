@@ -325,6 +325,9 @@ fn the_map_pane_takes_the_larger_share_of_the_canvas_width() {
 fn the_rows_pane_sits_under_the_map_and_takes_the_rest_of_its_column() {
     for screen in [baseline_screen(), SCREEN] {
         let app = settled(screen);
+        let canvas = app
+            .region_rect(arrangement::CANVAS)
+            .expect("the canvas drew");
         let group = app.canvas_panes();
         let map = group.pane("map").expect("the map pane drew");
         let rows = group.pane("rows").expect("the rows pane drew");
@@ -352,14 +355,41 @@ fn the_rows_pane_sits_under_the_map_and_takes_the_rest_of_its_column() {
             columns.rect
         );
 
+        // **Both halves of the share are read off the frame.** A comparison
+        // against `MAP_COLUMN_SHARE` alone cannot fail: the constant decides
+        // the rect and then the same constant is asked whether the rect is
+        // right, so the two move together and the assertion is the
+        // declaration against itself. Watched pass with the constant at 0.5.
+        //
+        // What is asserted instead is the design the constant is a spelling
+        // of: the map is the same fraction of the canvas ACROSS as it is of
+        // its column DOWN, and that fraction is 0.62. The first line is
+        // immune to either constant moving, because it compares two drawn
+        // rects; the second is the number itself, written out here so that
+        // moving both constants together still reddens.
         let column = rows.rect.bottom() - map.rect.top();
-        let want = MAP_COLUMN_SHARE * column;
+        let down = map.rect.height() / column;
+        let across = map.rect.width() / canvas.width();
         assert!(
-            (map.rect.height() - want).abs() <= CANVAS_PANE_GAP,
-            "at {screen:?} the map pane drew {} points tall where \
-             {MAP_COLUMN_SHARE} of the {column} points its column spans is \
-             {want} — more than the {CANVAS_PANE_GAP} point gap between them",
+            (down - across).abs() <= CANVAS_PANE_GAP / column,
+            "at {screen:?} the map pane took {down} of its column's {column} \
+             points down and {across} of the canvas's {} across — the two \
+             shares are one design and the panes have stopped drawing it",
+            canvas.width()
+        );
+        const SHARE: f32 = 0.62;
+        assert!(
+            (down - SHARE).abs() <= CANVAS_PANE_GAP / column,
+            "at {screen:?} the map pane drew {} points tall, which is {down} \
+             of the {column} points its column spans where the composition \
+             this is cut from says {SHARE}",
             map.rect.height()
+        );
+        assert!(
+            (MAP_COLUMN_SHARE - SHARE).abs() < f32::EPSILON,
+            "`MAP_COLUMN_SHARE` is {MAP_COLUMN_SHARE} where the composition \
+             says {SHARE} — the drawn share above is measured, and this is the \
+             declaration it is supposed to be a spelling of"
         );
         assert!(
             (rows.rect.bottom() - columns.rect.bottom()).abs() < 1.0,
@@ -2070,6 +2100,17 @@ fn the_rows_pane_says_how_many_of_the_tables_columns_are_on_screen() {
          are {:?}",
         drawn.columns,
         rows.body,
+        drawn.header_cells
+    );
+    // …and some of them do fit, which is what stops the readout and this
+    // test agreeing on a record that says nothing drew at all. Watched fail
+    // with `widest_per_column` keeping the first offer `egui_table` makes for
+    // each header cell — the one under the zero-width corner region's clip.
+    assert!(
+        whole > 0,
+        "no column of the table drew whole inside the clip it was drawn \
+         under, so the record the readout is built from says the grid put \
+         nothing on screen: {:?}",
         drawn.header_cells
     );
 
