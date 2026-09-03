@@ -9,7 +9,9 @@ use vello::Scene;
 use crate::ink::ChartInk;
 use crate::layout::ChartLayout;
 use crate::scale::Scale;
-use crate::text::{draw_text, draw_text_rotated, TextAnchor, LABEL_SIZE, TITLE_SIZE};
+use crate::text::{
+    draw_text, draw_text_rotated, measure_width, TextAnchor, LABEL_SIZE, TITLE_SIZE,
+};
 
 /// A computed tick mark with its position and label.
 #[derive(Debug, Clone)]
@@ -228,8 +230,66 @@ pub(crate) fn format_number(value: f64) -> String {
     }
 }
 
+/// Horizontal clearance a drawn tick label must keep from its neighbour's, in
+/// pixels — [`labels_clear_horizontally`]'s threshold. Small on purpose: it is
+/// not a design gap, it is the minimum that keeps two adjacent digits from
+/// reading as one run of glyphs.
+const LABEL_CLEARANCE: f64 = 4.0;
+
+/// The vertical gap between a tick mark and a rotated label's near end, in
+/// pixels — the rotation fallback in `render_x_axis` anchors the label's last
+/// character here rather than at the horizontal band's baseline, since a
+/// rotated run's own length is what needs the room a fixed baseline assumes a
+/// horizontal one has.
+const ROTATED_LABEL_GAP: f64 = 3.0;
+
+/// Whether consecutive labels in `ticks` — each centred under its own tick's
+/// `position` at `size`, the anchor `render_x_axis` draws with — clear
+/// [`LABEL_CLEARANCE`] of their neighbour's.
+///
+/// Reads `position` as a distance, not a direction — `compute_ticks` hands
+/// `ticks` back walking the domain low to high, which is ascending screen
+/// position on an x axis and descending on a y axis reused through this same
+/// path, and a neighbour gap is a collision risk either way.
+fn labels_clear_horizontally(ticks: &[&Tick], size: f32) -> bool {
+    ticks.windows(2).all(|pair| {
+        let gap = (pair[1].position - pair[0].position).abs();
+        let reach =
+            measure_width(&pair[0].label, size) / 2.0 + measure_width(&pair[1].label, size) / 2.0;
+        gap - reach >= LABEL_CLEARANCE
+    })
+}
+
+/// The widest evenly-strided subset of `ticks` whose labels clear each other
+/// horizontally ([`labels_clear_horizontally`]) at `size` — Observable Plot's
+/// own answer to a crowded axis: try drawing each label, then try dropping
+/// alternating ones, then try a wider stride still, and so on until a stride
+/// clears or the search has narrowed to the two end ticks. `render_x_axis`
+/// rotates the full set instead of drawing this candidate when even that pair
+/// collides.
+fn thinned_x_ticks(ticks: &[Tick], size: f32) -> Vec<&Tick> {
+    if ticks.len() < 2 {
+        return ticks.iter().collect();
+    }
+    for stride in 1..ticks.len() {
+        let subset: Vec<&Tick> = ticks.iter().step_by(stride).collect();
+        if labels_clear_horizontally(&subset, size) {
+            return subset;
+        }
+    }
+    vec![&ticks[0], &ticks[ticks.len() - 1]]
+}
+
 /// Render the x-axis into the scene. `title`, when `Some`, is drawn centred
 /// below the tick-label band (the bottom margin has grown to make room).
+///
+/// A tick mark draws for each tick regardless of what its label does —
+/// dropping one would misstate which values the axis carries. A tick label
+/// draws thinned first ([`thinned_x_ticks`]) and rotated a quarter turn
+/// ([`draw_text_rotated`]) when even the sparsest horizontal set still
+/// collides. `thinning_keeps_labels_from_touching` and
+/// `rotation_is_the_fallback_when_thinning_cannot_clear_the_labels` (this
+/// module's tests) pin the two branches.
 pub fn render_x_axis(
     scene: &mut Scene,
     layout: &ChartLayout,
@@ -247,24 +307,46 @@ pub fn render_x_axis(
     );
     scene.stroke(&stroke, Affine::IDENTITY, ink.axis, None, &axis_line);
 
-    // Tick marks.
+    // Tick marks, independent of which labels draw.
     for tick in ticks {
         let tick_line = Line::new(
             Point::new(tick.position, y),
             Point::new(tick.position, y + TICK_LENGTH),
         );
         scene.stroke(&stroke, Affine::IDENTITY, ink.tick, None, &tick_line);
+    }
 
-        // Tick label, centred under the tick mark.
-        draw_text(
-            scene,
-            &tick.label,
-            tick.position,
-            y + TICK_LENGTH + f64::from(LABEL_SIZE),
-            LABEL_SIZE,
-            ink.label,
-            TextAnchor::Middle,
-        );
+    // Tick labels: thin before rotating.
+    let thinned = thinned_x_ticks(ticks, LABEL_SIZE);
+    if labels_clear_horizontally(&thinned, LABEL_SIZE) {
+        for tick in thinned {
+            draw_text(
+                scene,
+                &tick.label,
+                tick.position,
+                y + TICK_LENGTH + f64::from(LABEL_SIZE),
+                LABEL_SIZE,
+                ink.label,
+                TextAnchor::Middle,
+            );
+        }
+    } else {
+        // Even the two end labels collide horizontally — rotate the full set
+        // a quarter turn so each label's OWN footprint is its font size
+        // rather than its text width, anchored (`TextAnchor::End`) so the
+        // label's last character sits nearest the tick and the rest reaches
+        // down into the margin instead of up into the plot.
+        for tick in ticks {
+            draw_text_rotated(
+                scene,
+                &tick.label,
+                tick.position,
+                y + TICK_LENGTH + ROTATED_LABEL_GAP,
+                LABEL_SIZE,
+                ink.label,
+                TextAnchor::End,
+            );
+        }
     }
 
     // Axis title, centred below the tick-label band.
@@ -597,5 +679,157 @@ mod tests {
             (step - 200.0).abs() < f64::EPSILON,
             "expected step 200, got {step}"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Thin before you rotate — a time axis at a dashboard tile's width
+    // -----------------------------------------------------------------
+
+    /// The six real dates `crates/brightfield-shell/tests/data/dashboard_baseline.csv`'s
+    /// `day` column carries, in file order. Restated rather than read off the
+    /// CSV, because this crate carries no CSV reader and no dependency on
+    /// `brightfield-shell`; the six strings are what ties the test below to
+    /// that fixture rather than to an invented one.
+    const FIXTURE_DAYS: &[&str] = &[
+        "2026-01-05",
+        "2026-01-06",
+        "2026-01-07",
+        "2026-01-08",
+        "2026-01-09",
+        "2026-01-10",
+    ];
+
+    /// A [`Scale::Band`] over [`FIXTURE_DAYS`], ranged across `layout`'s own
+    /// (inset-adjusted) x range — the same range [`crate::scale::infer_scales_in`]
+    /// would resolve a `day` column's scale against.
+    fn fixture_day_scale(layout: &ChartLayout) -> Scale {
+        let (range_start, range_end) = layout.x_range();
+        Scale::Band {
+            categories: FIXTURE_DAYS.iter().map(|s| (*s).to_string()).collect(),
+            range_start,
+            range_end,
+            padding: 0.1,
+        }
+    }
+
+    /// Matches each horizontal glyph run in `scene` back to whichever `ticks`
+    /// entry its draw position ([`TextAnchor::Middle`], `render_x_axis`'s own
+    /// anchor) is nearest, then asserts no two runs' `[x, x + width]`
+    /// intervals intersect — the width read with [`measure_width`], the same
+    /// shaping `render_x_axis` measured it with, rather than estimated from
+    /// the run's raw glyph count. A rotated run (its transform carries a
+    /// quarter turn) is skipped: this checks the horizontal branch.
+    fn assert_no_tick_label_overlap(scene: &Scene, ticks: &[Tick], size: f32) {
+        let candidates: Vec<(f64, &str)> = ticks
+            .iter()
+            .map(|t| {
+                (
+                    t.position - measure_width(&t.label, size) / 2.0,
+                    t.label.as_str(),
+                )
+            })
+            .collect();
+        let mut spans: Vec<(f64, f64)> = Vec::new();
+        for run in &scene.encoding().resources.glyph_runs {
+            let m = run.transform.matrix;
+            let rotated = m[0].abs() < 1e-3 && m[3].abs() < 1e-3;
+            if rotated {
+                continue;
+            }
+            let x0 = f64::from(run.transform.translation[0]);
+            let (_, label) = candidates
+                .iter()
+                .min_by(|a, b| (a.0 - x0).abs().partial_cmp(&(b.0 - x0).abs()).unwrap())
+                .expect("fixture check: at least one candidate tick");
+            spans.push((x0, x0 + measure_width(label, size)));
+        }
+        spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        for pair in spans.windows(2) {
+            assert!(
+                pair[0].1 <= pair[1].0,
+                "two drawn tick labels overlap: {pair:?} (all spans: {spans:?})"
+            );
+        }
+    }
+
+    /// The counts_over_time tile's real dates stay legible at a narrow tile
+    /// (240 points) and a wide one (720), so the thinning rule is a rule
+    /// rather than a constant tuned to one width. At both, `thinned_x_ticks`
+    /// finds a stride that clears, so the labels stay horizontal — see
+    /// `rotation_is_the_fallback_when_thinning_cannot_clear_the_labels` for a
+    /// width where it cannot.
+    #[test]
+    fn thinning_keeps_labels_from_touching_at_various_widths() {
+        for width in [240.0_f64, 720.0_f64] {
+            let layout = ChartLayout::new(width, 300.0);
+            let scale = fixture_day_scale(&layout);
+            let ticks = compute_ticks(&scale, 5);
+            assert_eq!(
+                ticks.len(),
+                FIXTURE_DAYS.len(),
+                "fixture check: one tick per date"
+            );
+
+            let mut scene = Scene::new();
+            render_x_axis(&mut scene, &layout, &ticks, None, ChartInk::LIGHT);
+            assert!(
+                !scene_has_quarter_turn(&scene),
+                "at {width} points wide thinning should have kept the labels \
+                 horizontal rather than rotating them"
+            );
+            assert_no_tick_label_overlap(&scene, &ticks, LABEL_SIZE);
+        }
+    }
+
+    /// The rotation fallback, isolated — the same six real dates crowded past
+    /// what dropping labels can fix, at a width picked to force it (132
+    /// points: even the two end dates' labels do not clear each other there).
+    /// `render_x_axis` should fall back to `draw_text_rotated` and draw a
+    /// label for each tick rather than a thinned subset, and the rotated
+    /// labels themselves should not collide either — 132 was chosen so the
+    /// band between ticks still clears one rotated label's own width even
+    /// though it cannot clear the unrotated text.
+    #[test]
+    fn rotation_is_the_fallback_when_thinning_cannot_clear_the_labels() {
+        let layout = ChartLayout::new(132.0, 300.0);
+        let scale = fixture_day_scale(&layout);
+        let ticks = compute_ticks(&scale, 5);
+
+        let mut scene = Scene::new();
+        render_x_axis(&mut scene, &layout, &ticks, None, ChartInk::LIGHT);
+
+        assert!(
+            scene_has_quarter_turn(&scene),
+            "thinning cannot clear real dates at 132 points wide, so the axis \
+             should have rotated its labels instead of drawing them horizontal"
+        );
+        let glyph_runs = scene.encoding().resources.glyph_runs.len();
+        assert_eq!(
+            glyph_runs,
+            ticks.len(),
+            "a rotated axis draws a label for each tick ({} ticks) rather than \
+             the thinned subset a horizontal axis would ({glyph_runs} runs drawn)",
+            ticks.len(),
+        );
+
+        // The rotated labels themselves must not collide: consecutive runs'
+        // pivots (`TextAnchor::End`, so translation is each label's END, the
+        // point nearest its tick) sit at least `LABEL_SIZE` apart along the x
+        // axis, which is a rotated label's own footprint.
+        let mut xs: Vec<f64> = scene
+            .encoding()
+            .resources
+            .glyph_runs
+            .iter()
+            .map(|r| f64::from(r.transform.translation[0]))
+            .collect();
+        xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        for pair in xs.windows(2) {
+            assert!(
+                pair[1] - pair[0] >= f64::from(LABEL_SIZE) - 0.01,
+                "two rotated tick labels sit closer than one label's own \
+                 width apart: {pair:?}"
+            );
+        }
     }
 }
