@@ -80,10 +80,28 @@ WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
       past it, whatever the test asserts. It buys a reader a place to look and
       an author a moment of doubt, not a proof. Naming a test anywhere in the
       surrounding paragraph is enough, which is generous in the direction that
-      reduces what D reports. A name counts two ways: the word `test` in the
-      prose, or a token that resolves to a `#[test]` function in this tree. The
-      rule asks for the test to be NAMED, so a name that resolves is the
-      citation — a word that happens to sit near it is the weaker of the two.
+      reduces what D reports. A NAMED test has to RESOLVE, though — see
+      cites_test() for what counts and in which order — which is what closed
+      the shape that shipped false: a name whose own spelling merely LOOKED
+      like a test (`foo_test`) used to discharge a claim on its spelling
+      alone, whether or not anything by that name existed, and a bare word
+      `test` sitting elsewhere in the same paragraph does not excuse a
+      specific name that fails to resolve.
+    - The workspace-wide resolver has a residual COLLISION risk of its own,
+      in the opposite direction from the defect above: it is a name lookup
+      with no notion of RELEVANCE, so a name that resolves ANYWHERE in the
+      12-crate workspace discharges a claim ANYWHERE else in it, whether or
+      not the two have anything to do with each other. Measured on this
+      tree: a comment describing a keyboard shortcut — "the user presses
+      `za`" — went silent because `za` is ALSO a `#[cfg(test)]` helper's name
+      in an unrelated file, and a comment describing a trait method shared by
+      many structs resolves through whichever ONE of them happens to be a
+      test fixture. The underscore requirement in cfg_test_fn_names() closes
+      the worst of this (a bare one-or-two-syllable word colliding by pure
+      chance), but does not close a genuine, multi-word production name that
+      a test fixture also happens to implement. This is the same shape as
+      rule A's `defines()` — an existence check, not a relevance check — just
+      wider, because the enumeration it resolves against is wider.
     - Rule D's RECALL is PARTIAL. It was measured against the comment lines a
       review wave in this repo made an author delete, and the measurement is in
       the commit that landed the block reader. What that measurement leaves
@@ -245,12 +263,36 @@ SENTENCE_END = re.compile(r"(?<=[.!?;])\s+")
 # where that join would be wrong — two bullets are two claims.
 SEGMENT_START = re.compile(r"^\s*(?:[-*+]\s|\d+[.)]\s)")
 
-# The WORD, one of the two ways a paragraph names a test. Deliberately generous
-# — `tests`, `#[test]`, `self-test`, `tested`, `foo_test`, `test_foo` all count,
-# and the test is never opened. The gate asks for a place to look; a reviewer
-# decides whether what is there holds the claim. Generous in this direction only
-# reduces what D reports, which is the direction a gate survives being wrong in.
-TEST_WORD = re.compile(r"(?:\b|_)test", re.I)
+# The WORD, one of the two ways a paragraph names a test — but only as the
+# word ITSELF: `test`, `tests`, `tested`, `testing`, each bounded on both
+# sides. A prior version of this pattern anchored only the left side
+# (`(?:\b|_)test`), so it matched "test" as a mere PREFIX or an
+# underscore-joined FRAGMENT of any longer identifier — `foo_test`,
+# `test_foo`, even `testify`, all satisfied it without the identifier
+# resolving to anything. That is the defect this closes: an identifier that
+# merely SPELLS like a test name is not prose about testing, it is a
+# citation, and a citation has to resolve — see LOOKS_NAMED and cites_test().
+TEST_WORD = re.compile(r"\b(?:tests?|tested|testing)\b", re.I)
+
+# An identifier-shaped token whose OWN spelling makes it look like it is
+# naming a test: `test` as a whole UNDERSCORE-DELIMITED component —
+# `foo_test`, `test_foo`, `foo_test_bar` — the shape Rust's snake_case gives
+# a test's name. `^`/`$` anchor to the token's own start and end, since this
+# runs against one already-extracted identifier, not a paragraph.
+#
+# Deliberately NOT the plain left-anchored `(?:\b|_)test` this repo's prose
+# rule used: that also matches "test" as a mere PREFIX of a longer plain
+# word — "testable", "testify" — words with no underscore at all, meaning no
+# Rust identifier convention behind them. Requiring the underscore (or the
+# token boundary) on BOTH sides is what keeps ordinary English out of a rule
+# whose job is deciding whether a NAME must resolve: an English adjective is
+# not a citation, and forcing one to resolve is exactly the kind of noise
+# that gets a gate switched off (see the module docstring).
+#
+# A token matching this must resolve; the bare-word forgiveness in
+# cites_test() does not reach it, because it is not a mention of testing in
+# general, it is a specific, checkable name.
+LOOKS_NAMED = re.compile(r"(?:^|_)test(?:_|$)", re.I)
 
 # A test attribute: `#[test]`, `#[tokio::test]`, `#[test(...)]`. NOT `#[cfg(test)]`
 # — that marks a module of test-only code, and the helpers inside it are not
@@ -261,6 +303,22 @@ TEST_ATTR = r"#\[(?:[A-Za-z_][A-Za-z0-9_]*::)*test(?:\([^\]]*\))?\]"
 # (`#[ignore = "…"]`, `#[should_panic(…)]`) sitting between the two.
 TEST_FN_DEFN = re.compile(
     rf"{TEST_ATTR}\s*(?:#\[[^\]]*\]\s*)*(?:pub\s+)?(?:async\s+)?fn\s+({SYMBOL})"
+)
+
+# Any `fn`, anywhere, no attribute required — the enumeration
+# resolvable_test_names() reads a `tests/` file or a `#[cfg(test)]` module
+# through. A helper a test calls (`fn parse(yaml: &str) -> Spec`) carries no
+# attribute of its own, so TEST_FN_DEFN above never sees it, and a comment
+# that cites it by name is citing something a reader following it still
+# finds — which is what rule D asks a name to do.
+FN_DEFN_ANY = re.compile(rf"\bfn\s+({SYMBOL})")
+
+# `#[cfg(test)]`, immediately followed (allowing other attributes and `pub`)
+# by the `mod NAME {` it gates. Matched so the module's BODY can be found —
+# see cfg_test_fn_names() — not so the module itself is treated as a test.
+CFG_TEST_MOD = re.compile(
+    r"#\[cfg\(test\)\]\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?"
+    r"mod\s+[A-Za-z_][A-Za-z0-9_]*\s*\{"
 )
 
 # Any identifier-shaped token, backticked or bare. What rule D resolves against
@@ -281,9 +339,10 @@ _TEST_FNS: set[str] | None = None
 def test_functions() -> set[str]:
     """Every `#[test]` function name in the tree, read once.
 
-    The enumeration rule D resolves a cited name against. Whole-tree, unlike the
-    file-scoped mark in symbol_citations(): a test is cited from the module it
-    measures, which is rarely the file it lives in.
+    The narrow enumeration: only a function individually carrying a test
+    attribute. Used to derive a fixture that IS genuinely a test in
+    --self-test; the gate itself resolves against the wider
+    resolvable_test_names() below, which this is a subset of.
     """
     global _TEST_FNS
     if _TEST_FNS is None:
@@ -299,18 +358,129 @@ def test_functions() -> set[str]:
     return _TEST_FNS
 
 
-def cites_test(text: str) -> bool:
-    """Does this paragraph point a reader at a test?
+def _brace_match_end(text: str, start: int) -> int:
+    """Index just past the `}` balancing the `{` at `text[start - 1]`.
 
-    Two ways. The word `test`, which is prose about a test; or a token that
-    resolves to a test function this tree defines, which is the test named. The
-    second is what rule D asks for in words, and requiring the first instead
-    rejected the citation the rule wants — a paragraph whose only reference to
-    its measurement is that measurement's own function name.
+    A linear scan, not a parser — it does not know a brace inside a string or
+    comment from a real one. Test modules do not commonly carry unbalanced
+    braces in a string literal, and the cost of being wrong is bounded: a
+    name inside the misread span is one this gate resolves that a stricter
+    reader would not, which is the direction a citation gate is allowed to be
+    wrong in (see the module docstring on precision over recall).
     """
-    return bool(TEST_WORD.search(text)) or any(
-        name in test_functions() for name in IDENT.findall(text)
-    )
+    depth = 1
+    i = start
+    n = len(text)
+    while i < n and depth:
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+        i += 1
+    return i
+
+
+def cfg_test_fn_names(text: str) -> set[str]:
+    """`fn` names defined inside a `#[cfg(test)]` module in this file's text.
+
+    A helper beside the `#[test]` functions that call it — `fn cp(s: &str) ->
+    ComponentPath` next to the tests that use it — is not itself attributed,
+    so TEST_FN_DEFN never finds it. This walks the module's brace depth from
+    its opening `{` to the matching `}` and reads every `fn` in between.
+
+    Underscore-bearing names only. A short, single-word helper name is a
+    real and MEASURED collision risk here in a way it is not for
+    test_functions(): a genuine `#[cfg(test)]` helper this tree defines can
+    be `fn za(m: &mut ProtocolModel) -> bool` (a synthetic keystroke for a
+    protocol test), and a comment naming a keyboard shortcut — "the user
+    presses `za`" — cites the SAME token with no test in mind at all. That
+    comment's completeness claim resolved silently once this enumeration
+    reached it, which is a false NEGATIVE — the gate stops reporting a
+    finding it is right to report — and the shape this whole rule exists to
+    avoid, just from the opposite direction of the defect the card closes.
+    Rust's own snake_case convention makes a multi-word, descriptive helper
+    name (`ensure_dataset`, `a_protocol_and_a_chart`) the common case; a bare
+    single word is the collision-prone exception, so it is excluded here
+    rather than resolved.
+    """
+    names: set[str] = set()
+    for m in CFG_TEST_MOD.finditer(text):
+        end = _brace_match_end(text, m.end())
+        names |= {n for n in FN_DEFN_ANY.findall(text[m.end():end]) if "_" in n}
+    return names
+
+
+_RESOLVABLE: set[str] | None = None
+
+
+def resolvable_test_names() -> set[str]:
+    """Every name a comment's cited test can resolve against.
+
+    Wider than test_functions() in exactly one way: a function defined inside
+    a `#[cfg(test)]` module counts even when it carries no `#[test]` of its
+    own — a helper beside the tests that call it (`fn parse(yaml: &str) ->
+    Spec` next to the `#[test]` functions that use it). A `#[test]` function
+    under `tests/` is already in test_functions(), which scans every `.rs`
+    file in the workspace regardless of its directory, so nothing further is
+    added for that location — deliberately NOT every plain `fn` a `tests/`
+    file happens to define: measured on this tree, that reading resolves
+    ordinary short helper names (`category`, `path`) that also turn up
+    backticked as prose about a column or a filesystem path elsewhere in the
+    tree, and a citation gate that resolves those is reporting nothing.
+    """
+    global _RESOLVABLE
+    if _RESOLVABLE is None:
+        names = set(test_functions())
+        for f in sorted(ROOT.glob("crates/**/*.rs")):
+            if "target" in f.parts:
+                continue
+            try:
+                text = f.read_text(errors="replace")
+            except OSError:
+                continue
+            names |= cfg_test_fn_names(text)
+        _RESOLVABLE = names
+    return _RESOLVABLE
+
+
+def cites_test(text: str) -> bool:
+    """Does this paragraph point a reader at a test THAT EXISTS?
+
+    Checked in this order:
+
+      1. A name resolves against test_functions() — an individually
+         `#[test]`-attributed function, this repo's narrowest and least
+         ambiguous enumeration — or ACKNOWLEDGED. Checked whether the name is
+         backticked or bare, this repo writes both; a descriptive test name
+         (`a_band_click_resolves_to_a_structured_point_clause`) is long and
+         specific enough that a bare mention is not read as ordinary prose.
+      2. Failing that, a BACKTICKED name resolves against the wider
+         resolvable_test_names() (a `tests/` helper or a `#[cfg(test)]`
+         module function, neither individually `#[test]`-attributed) or
+         ACKNOWLEDGED. Backticks required here and not in (1): this
+         enumeration is ~3x larger and its names are ordinary, short helper
+         names — `path`, `apply` — that DO turn up as bare prose, and a bare
+         scan against it exempted claims that never cited anything. A
+         backtick is this repo's own convention for "this word is code," and
+         restricts the match to what the author marked as one.
+      3. Failing both, a token whose own spelling LOOKS like a test's name
+         (LOOKS_NAMED — `foo_test`, `test_foo`) is a wrong citation, not an
+         absent one, and does not fall through to (4): a real word `test`
+         sitting elsewhere in the same paragraph does not excuse a specific,
+         broken name. This is the defect the change closes — a comment used
+         to discharge a claim by naming a test that did not exist, because
+         SOMETHING in the paragraph merely spelled like the word "test".
+      4. Otherwise, the bare word (TEST_WORD) is prose about testing with no
+         name to check, and is still forgiven — there is nothing to resolve.
+    """
+    names = IDENT.findall(text)
+    if any(n in test_functions() or n in ACKNOWLEDGED for n in names):
+        return True
+    if any(n in resolvable_test_names() or n in ACKNOWLEDGED for n in SYMBOL_TICKED.findall(text)):
+        return True
+    if any(LOOKS_NAMED.search(n) and not TEST_WORD.fullmatch(n) for n in names):
+        return False
+    return bool(TEST_WORD.search(text))
 
 
 _CRATE_TEXT: dict[str, str] = {}
@@ -901,6 +1071,55 @@ def revision_guards() -> list[tuple[bool, str]]:
     ]
 
 
+def resolver_stub_guard() -> list[tuple[bool, str]]:
+    """Prove --self-test would catch a resolver rubber-stamping every name.
+
+    A resolver that always says yes is this rule's silent-failure mode: the
+    gate stays green and simply stops checking a specific name — exactly the
+    defect this card closes, just moved one level down, into the checker
+    that is meant to prove the checker works. Written out rather than
+    derived, like the QUANTIFIER guards above: it tests the WIRING between
+    cites_test() and resolvable_test_names(), not a shape found in this
+    tree's own crates.
+
+    Stub resolvable_test_names() to accept anything, run ONE fixture whose
+    cited name does not exist, and require it to wrongly PASS under the
+    stub — proving the rejection is pinned to what the resolver decides, not
+    merely to the shape of an unresolved name.
+    """
+
+    class _Everything:
+        def __contains__(self, _item: object) -> bool:
+            return True
+
+    body = "[`Widget`] is the only thing that makes one; `not_a_real_test_case` holds that"
+    probe = ROOT / "src" / "__resolver_stub_guard_probe__.rs"
+    unit = Unit(probe, [(1, body)], frozenset({1}))
+
+    honest = check([unit])
+
+    module = sys.modules[__name__]
+    real = module.resolvable_test_names
+    module.resolvable_test_names = lambda: _Everything()
+    try:
+        stubbed = check([unit])
+    finally:
+        module.resolvable_test_names = real
+
+    return [
+        (
+            bool(honest),
+            "the real resolver reports the fixture's unresolved name as a finding",
+        ),
+        (
+            not stubbed,
+            "and a resolver stubbed to accept every name lets the same fixture "
+            "through — this case is pinned to the resolver's answer, not to the "
+            "name's own shape",
+        ),
+    ]
+
+
 def self_test() -> int:
     """Prove the gate detects — on fixtures DERIVED from this repo, not named.
 
@@ -1249,6 +1468,54 @@ def self_test() -> int:
          ('"only"', f"`{camel}`")),
     ]
 
+    # --- the RESOLVED-NAME fixtures ----------------------------------------
+    # This is the defect the card exists to close: a completeness claim used
+    # to be discharged by ANY paragraph carrying the word `test`, whether or
+    # not the specific name it named existed. These pin the fix at both
+    # halves — a name that resolves passes, a name that does not fails, EVEN
+    # WHEN the bare word `test` sits right beside it — and separately pin the
+    # broadened enumeration (a `tests/`-dir or `#[cfg(test)]`-module helper,
+    # neither individually `#[test]`-attributed) that makes the wider
+    # resolution meaningful, and the backtick it requires.
+    fake_test_name = f"definitely_not_a_real_test_{abs(hash(home)) % 9973}"
+    if fake_test_name in resolvable_test_names() or fake_test_name in ACKNOWLEDGED:
+        print(f"self-test: {fake_test_name} resolves here, so it cannot serve as the "
+              f"unresolved-name negative case")
+        return 1
+
+    broadened_only = sorted(
+        n for n in resolvable_test_names() - test_functions()
+        if not cites_test(n) and not QUANTIFIER.fullmatch(n)
+    )
+    if not broadened_only:
+        print("self-test: no name resolvable ONLY through the broadened enumeration "
+              "(a tests/-dir or #[cfg(test)]-module helper), so the broadening this "
+              "card adds cannot be pinned")
+        return 1
+    helper = broadened_only[0]
+
+    ack_name = next(iter(ACKNOWLEDGED))
+
+    cases += [
+        (f"[`{camel}`] is the only thing that makes one; `{fake_test_name}` holds that",
+         False, f"a name spelled like a test does not resolve unless it IS one "
+                 f"({fake_test_name})", ('"only"', f"`{camel}`")),
+        (f"[`{camel}`] is the only thing that makes one; the `{fake_test_name}` test "
+         f"holds that", False,
+         "a bare word `test` beside the SAME broken name does not excuse it — "
+         "this is the exact shape that shipped false", ('"only"', f"`{camel}`")),
+        (f"[`{camel}`] is the only thing that makes one; `{helper}` holds that", True,
+         f"STAYS GREEN: a `tests/`-dir or `#[cfg(test)]`-module helper resolves "
+         f"even with no `#[test]` attribute of its own ({helper})"),
+        (f"[`{camel}`] is the only thing that makes one; held by {helper}", False,
+         f"the broadened enumeration needs the BACKTICK — a bare mention of an "
+         f"ordinary helper name is indistinguishable from prose ({helper})",
+         ('"only"', f"`{camel}`")),
+        (f"[`{camel}`] is the only thing that makes one; `{ack_name}` holds that", True,
+         f"STAYS GREEN: a name registered in ACKNOWLEDGED as a test outside this "
+         f"workspace ({ack_name})"),
+    ]
+
     # --- the BLOCK fixtures -----------------------------------------------
     # A sentence wraps. Reading a line as if the wrap ended it was rule D's
     # largest measured miss, so these carry the claim ACROSS lines — and the
@@ -1309,7 +1576,7 @@ def self_test() -> int:
          "DEFN does not read `type` inside `retype` as a definition of `only`"),
         (bool(re.search(DEFN.format(sym="only"), "pub type only = u8;")),
          "DEFN still reads a real `type only` as a definition"),
-    ] + revision_guards()
+    ] + revision_guards() + resolver_stub_guard()
 
     # A finding has to say WHERE, or a reader cannot act on it. Asserted on
     # every case that is meant to be reported, not on a sample of them.
