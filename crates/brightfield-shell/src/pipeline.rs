@@ -879,9 +879,12 @@ impl LiveDashboard {
     /// so the hero would be composed at the column's height and reach below the
     /// map pane it is drawn in. The generator emits it under a `vspace` for
     /// this: a spacer does not flex, so what is written here comes off the
-    /// hero's share and nothing else's. See [`crate::dashboard::HERO_BOUND`].
+    /// hero's share rather than the column's. See
+    /// [`crate::dashboard::HERO_BOUND`], and
+    /// `the_hero_is_composed_whole_inside_the_map_pane` for the frame that
+    /// reads the result back.
     ///
-    /// `false` — nothing written — for any spec whose root is not the shape
+    /// `false`, and no write, for a spec whose root is not the shape
     /// [`crate::dashboard::Dashboard::to_spec`] emits. An authored spec has no
     /// such spacer and must not acquire one.
     pub fn set_hero_bound(&mut self, points: f64) -> bool {
@@ -1188,12 +1191,12 @@ impl LiveDashboard {
 /// as [`crate::dashboard::Dashboard::to_spec`] writes one: the last item of the
 /// `vconcat` that is the first item of the root `hconcat`.
 ///
-/// `None` for every other spec, and the match is the whole of that judgement —
-/// an authored `hconcat` whose first item happens to be a `vconcat` ending in a
-/// `vspace` is a spec that asked for exactly this and gets it. Nothing else is
-/// touched, which is why the shape is matched here rather than a marker being
-/// written into the emitted source: a spec is a file a reader edits, and a
-/// magic comment they could delete would take the map's axis with it.
+/// `None` for a spec of another shape, and the match is the whole of that
+/// judgement — an authored `hconcat` whose first item happens to be a `vconcat`
+/// ending in a `vspace` is a spec that asked for exactly this and gets it. The
+/// shape is matched here rather than a marker being written into the emitted
+/// source, because a spec is a file a reader edits and a magic comment they
+/// could delete would take the map's axis with it.
 fn hero_bound_spacer(spec: &mut Spec) -> Option<&mut SpaceNode> {
     let Some(Component::HConcat(row)) = spec.root.as_mut() else {
         return None;

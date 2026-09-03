@@ -440,12 +440,15 @@ impl ChartItem {
             // 32 with no further travel), so "the delta is zero" is not the end
             // of a gesture, it is some frames after it. A frame carrying no
             // wheel event is.
-            // **Nothing, on a frame whose wheel already has a consumer.** The
+            // **Zero, on a frame whose wheel already has a consumer.** The
             // canvas takes the wheel when the pointer is over the pane that
             // scrolls its page — see [`ChartDoc::wheel_taken`] — and one wheel
             // event read twice is one gesture doing two things: the column
             // scrolled and the tile under the cursor zoomed out of its own
-            // domain at the same time.
+            // domain at the same time. The test is
+            // `a_wheel_over_the_column_does_not_zoom_the_tile_under_it`, and
+            // `a_wheel_over_the_map_does_not_scroll_the_column` is the other
+            // direction.
             let scroll = if doc.wheel_taken {
                 0.0
             } else {

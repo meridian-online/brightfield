@@ -167,13 +167,16 @@ pub struct Authored {
 /// inside it.
 ///
 /// The canvas's pane group composes one page — one engine session, one
-/// crossfilter selection — and each pane shows its own part of it. Only one of
-/// them scrolls: the hero is bounded to the map pane's height
-/// ([`crate::dashboard::HERO_BOUND`]) and the column is what grows, so the page
-/// is drawn at its own origin for the map and moved up by [`Self::by`] for the
-/// column. Everything a pointer does inside [`Self::clip`] is read against the
-/// moved origin, which is what keeps a brush on a scrolled tile landing on the
-/// tile under the pointer.
+/// crossfilter selection — and each pane shows its own part of it. The column
+/// is the pane that scrolls, because the hero is bounded to the map pane's
+/// height ([`crate::dashboard::HERO_BOUND`]): the page is drawn at its own
+/// origin for the map and moved up by [`Self::by`] for the column, which
+/// `a_wheel_over_the_column_moves_the_column_and_leaves_the_map_where_it_was`
+/// reads back off a frame.
+///
+/// A pointer inside [`Self::clip`] is read against the moved origin, which is
+/// what keeps a brush on a scrolled tile landing on the tile under it —
+/// `a_brush_on_a_scrolled_tile_lands_on_the_tile_under_the_pointer`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SecondView {
     /// The box this view fills, in window-space logical points. Nothing it
@@ -212,10 +215,10 @@ pub struct ChartDoc {
     /// **The second pane's view of this document's page**, when a canvas is
     /// drawing one page across two panes — see [`SecondView`].
     ///
-    /// `None` for a document drawn in one view, which is every document but a
-    /// generated dashboard's. Written by the canvas each frame *before* the
-    /// pane draws, because it is a fact about the layout the frame chose rather
-    /// than about the document.
+    /// `None` for a document drawn in one view, which is what an authored
+    /// spec gets — `an_authored_spec_still_draws_one_pane`. Written by the
+    /// canvas each frame *before* the pane draws, because it is a fact about
+    /// the layout the frame chose rather than about the document.
     pub second_view: Option<SecondView>,
     /// **Whether this frame's wheel travel already has a consumer.**
     ///

@@ -2249,12 +2249,13 @@ impl MeridianApp {
     /// Empty on a frame that presented no raster.
     ///
     /// **A page drawn in two views has two origins.** The canvas's pane group
-    /// draws one page across two panes and only one of them scrolls, so a plot
-    /// standing in the scrolled pane is on the screen at the moved origin and
-    /// nowhere else — see [`crate::app::SecondView`]. Which view a plot is in
-    /// is read off the view's own clip rather than off the plot's index, so a
-    /// third pane changes this by changing what the canvas records, not by
-    /// changing the rule here.
+    /// draws one page across two panes, of which the column is the one that
+    /// scrolls, so a plot standing there is on the screen at the moved origin —
+    /// see [`crate::app::SecondView`], and
+    /// `a_wheel_over_the_column_moves_the_column_and_leaves_the_map_where_it_was`
+    /// for what a frame answers. Which view a plot is in is read off the view's
+    /// own clip rather than off the plot's index, so a third pane changes this
+    /// by changing what the canvas records, not by changing the rule here.
     #[must_use]
     pub fn composed_plot_rects(&self) -> Vec<egui::Rect> {
         let Some(page) = self.charts.doc.raster_rect else {
