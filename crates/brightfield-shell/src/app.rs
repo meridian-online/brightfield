@@ -188,6 +188,67 @@ pub struct SecondView {
     pub by: f32,
 }
 
+impl SecondView {
+    /// **Whether this view holds the page's column at screen `x`** — the
+    /// containment rule for a page drawn at two origins, written once and read
+    /// by both callers that need it: the pointer mapping in
+    /// [`crate::chart_item`] (through [`page_offset`]) and the plot readback in
+    /// [`crate::window::MeridianApp::composed_plot_rects`].
+    ///
+    /// Membership is **horizontal**, because the pane group is a left-right
+    /// split: the two views take disjoint parts of the page's width and share
+    /// its vertical band. It is not a rect test, and that is the part worth
+    /// stating — this is asked about a page *taller* than the pane it is drawn
+    /// in, so a tile standing below the column's content bottom is still the
+    /// column's tile. A rect test would hand that tile to the first view and
+    /// report it at the unmoved origin, which is the readback
+    /// `a_wheel_over_the_column_moves_the_column_and_leaves_the_map_where_it_was`
+    /// holds to the offset the frame applied. [`page_offset`] adds the vertical
+    /// clause for the one caller whose subject is a pointer rather than a plot.
+    #[must_use]
+    pub fn holds(self, x: f32) -> bool {
+        self.clip.x_range().contains(x)
+    }
+}
+
+/// **How far up the page is moved for a pointer**, in logical points: zero for
+/// the first view's origin and [`SecondView::by`] for the second's.
+///
+/// The one place a screen point becomes a page origin. `latched` is a gesture's
+/// own origin, captured at its press edge, and when it is `Some` it is the
+/// answer whatever the pointer has crossed since — see [`SecondView::holds`]
+/// for the containment rule this shares with the plot readback.
+///
+/// **Why a gesture latches and a frame does not.** A press, a hover and a wheel
+/// zoom are facts about one frame, so the origin the pointer is in *now* is the
+/// right one for them. A brush and a pan are relations *between* frames: the
+/// drag's start and the pan's previous point were taken in the origin the press
+/// chose, and differencing them against a point read in the other origin
+/// subtracts across two coordinate systems. Unlatched, a sweep begun on the map
+/// and released in the column committed a band taller than the same screen
+/// gesture on an unscrolled column by exactly `by` points of the plot's own
+/// scale, and a pan crossing the boundary jumped the frame by `by` in one step.
+/// The pins are `a_brush_across_the_pane_boundary_commits_what_it_swept` and
+/// `a_pan_across_the_pane_boundary_moves_by_what_the_hand_moved`.
+#[must_use]
+pub fn page_offset(
+    view: Option<SecondView>,
+    latched: Option<f32>,
+    at: Option<egui::Pos2>,
+) -> f32 {
+    if let Some(by) = latched {
+        return by;
+    }
+    match (view, at) {
+        // The vertical clause a pointer needs and a plot does not: this view
+        // paints nothing outside its own box, so a pointer above or below it —
+        // the pane's own header band, the chrome under the canvas — is over
+        // nothing this view drew, and reads against the first origin.
+        (Some(view), Some(p)) if view.holds(p.x) && view.clip.y_range().contains(p.y) => view.by,
+        _ => 0.0,
+    }
+}
+
 /// The chart view's **document**: the composited dashboard, the canvas it
 /// rasters into, and the chart state the panes read.
 ///

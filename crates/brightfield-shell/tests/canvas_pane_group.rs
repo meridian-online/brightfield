@@ -811,3 +811,4 @@ fn a_brush_on_a_scrolled_tile_lands_on_the_tile_under_the_pointer() {
          is {scrolled} points up the page"
     );
 }
+

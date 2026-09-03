@@ -2254,8 +2254,9 @@ impl MeridianApp {
     /// see [`crate::app::SecondView`], and
     /// `a_wheel_over_the_column_moves_the_column_and_leaves_the_map_where_it_was`
     /// for what a frame answers. Which view a plot is in is read off the view's
-    /// own clip rather than off the plot's index, so a third pane changes this
-    /// by changing what the canvas records, not by changing the rule here.
+    /// own containment rule — [`crate::app::SecondView::holds`], the same one
+    /// the pointer mapping in [`crate::chart_item`] reads — rather than off the
+    /// plot's index.
     #[must_use]
     pub fn composed_plot_rects(&self) -> Vec<egui::Rect> {
         let Some(page) = self.charts.doc.raster_rect else {
@@ -2277,7 +2278,7 @@ impl MeridianApp {
                     egui::vec2(plot.rect.width as f32, plot.rect.height as f32),
                 );
                 match view {
-                    Some(view) if view.clip.x_range().contains(at.center().x) => {
+                    Some(view) if view.holds(at.center().x) => {
                         at.translate(egui::vec2(0.0, -view.by))
                     }
                     _ => at,
