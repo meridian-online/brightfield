@@ -343,7 +343,20 @@ fn the_count_reads_at_the_map_panes_lower_right_and_costs_it_no_room() {
          quadrant: {count:?} in {:?}",
         map.body
     );
+    // …and the picture still fills the pane it is drawn in, which is the
+    // falsifiable half of "costs the pane no room": a chip given a band of its
+    // own at the foot of the pane would stop the hero short of the pane's
+    // bottom edge by exactly the band's height.
     let hero = app.composed_plot_rects()[0];
+    assert!(
+        (hero.bottom() - map.body.bottom()).abs() <= 1.5,
+        "the hero's drawn rect ends at {} where the map pane's content rect \
+         ends at {} — {:.1} points of the pane are not picture, and the count \
+         is what is drawn in them",
+        hero.bottom(),
+        map.body.bottom(),
+        map.body.bottom() - hero.bottom()
+    );
     assert!(
         hero.contains_rect(count),
         "the count at {count:?} is not on the hero at {hero:?} — an overlay \
