@@ -705,6 +705,15 @@ pub struct Boot {
     /// place it is made, so the two entry points cannot hand the chart pane
     /// different documents for one file.
     pub authored: Option<crate::app::Authored>,
+    /// How many tiles stand in the column beside the hero, when this boot's
+    /// dashboard is one the generator laid out as a hero and a column.
+    /// `None` for a document that is one picture — see
+    /// [`crate::app::ChartDoc::set_stacked_tiles`].
+    ///
+    /// Set on the open-a-data-file route, for the reason [`Self::authored`]
+    /// is: the layout is decided by the generator, and both
+    /// routes into an opened file build their document from a `Boot`.
+    pub stacked_tiles: Option<usize>,
     /// The protocol document's graph and steps.
     pub protocol: ProtocolInputs,
     /// The protocol document's reading axis.
@@ -723,6 +732,7 @@ impl Boot {
             live: None,
             spec_path: None,
             authored: None,
+            stacked_tiles: None,
             protocol: ProtocolInputs::empty(),
             flow: Flow::Vertical,
             focus: None,
@@ -737,6 +747,7 @@ impl Boot {
             live: None,
             spec_path: None,
             authored: None,
+            stacked_tiles: None,
             protocol: inputs,
             flow,
             focus,
@@ -764,6 +775,7 @@ impl Boot {
             live: None,
             spec_path: None,
             authored: None,
+            stacked_tiles: None,
             protocol: ProtocolInputs::empty(),
             flow: Flow::Vertical,
             focus: None,
@@ -886,6 +898,11 @@ impl Boot {
             live: Some(live),
             spec_path: spec_file,
             authored,
+            // The generator decided the layout; the canvas reads it back to
+            // know whether the region is one pane or a pane group.
+            stacked_tiles: dashboard
+                .hero_index()
+                .map(|_| dashboard.column_tiles().len()),
             protocol: inputs,
             ..Self::charts(composed)
         }
@@ -1412,6 +1429,17 @@ pub struct MeridianApp {
     /// logical points — the hook a test aims a click at, and counts to find a
     /// third projection. Empty on a frame that drew no toggle.
     canvas_toggle: Vec<egui::Rect>,
+    /// What the canvas's pane group drew last frame — empty on a frame the
+    /// canvas drew one pane instead. Read back through
+    /// [`MeridianApp::canvas_panes`]; recorded for the reason [`Self::regions`]
+    /// is. No declaration can answer "did each pane draw its own header band";
+    /// a laid-out frame can, and this is where it leaves the answer.
+    canvas_panes: CanvasPanes,
+    /// How far the canvas's pane group is scrolled, in logical points.
+    ///
+    /// Zero until the column's tiles reach their height floor and the page
+    /// grows past the pane — see [`crate::dashboard::stack_extent`].
+    canvas_scroll: f32,
     /// Where focus was before the navigator rail's toggle took it, so pressing
     /// that toggle again puts it back. `None` when the rail does not hold
     /// focus — see [`MeridianApp::toggle_navigator_focus`].
@@ -1592,6 +1620,7 @@ impl MeridianApp {
         if let Some(authored) = boot.authored {
             doc.set_authored(authored);
         }
+        doc.set_stacked_tiles(boot.stacked_tiles);
         let model = ProtocolModel::new(boot.protocol, boot.flow);
         Self::assemble(
             boot.focus,
@@ -1634,6 +1663,7 @@ impl MeridianApp {
         if let Some(authored) = boot.authored {
             doc.set_authored(authored);
         }
+        doc.set_stacked_tiles(boot.stacked_tiles);
         let model = ProtocolModel::new(boot.protocol, boot.flow);
         Self::assemble(boot.focus, layout, doc, ProtocolDoc::headless(model), mode)
     }
@@ -1763,6 +1793,8 @@ impl MeridianApp {
             ledger_panel: 0,
             inspector_panel,
             canvas_toggle: Vec::new(),
+            canvas_panes: CanvasPanes::default(),
+            canvas_scroll: 0.0,
             focus_return: None,
             home_button: None,
             affordances: Vec::new(),
@@ -2208,6 +2240,79 @@ impl MeridianApp {
         &self.canvas_toggle
     }
 
+    /// Where each of the composed dashboard's plots landed **on the screen**,
+    /// in the order the composition placed them.
+    ///
+    /// The plot rects the composition produced, moved by the origin of the
+    /// view that drew each one — so a caller can ask which pane a tile was
+    /// drawn in, and where in it, without repeating the page arithmetic.
+    /// Empty on a frame that presented no raster.
+    ///
+    /// **A page drawn in two views has two origins.** The canvas's pane group
+    /// draws one page across two panes, of which the column is the one that
+    /// scrolls, so a plot standing there is on the screen at the moved origin —
+    /// see [`crate::app::PaneViews`], and
+    /// `a_wheel_over_the_column_moves_the_column_and_leaves_the_map_where_it_was`
+    /// for what a frame answers. Which view a plot is in is read off the
+    /// second view's own containment rule —
+    /// [`crate::app::PaneViews::second_holds`] — rather than off the plot's
+    /// index. A *pointer* is placed by
+    /// [`crate::app::PaneViews::offset_at`] instead, which is a rect test and
+    /// can answer that there is no page there at all; a plot below the fold is
+    /// still the column's, and that difference is the reason there are two
+    /// rules rather than one.
+    #[must_use]
+    pub fn composed_plot_rects(&self) -> Vec<egui::Rect> {
+        let Some(page) = self.charts.doc.raster_rect else {
+            return Vec::new();
+        };
+        let view = self.charts.doc.pane_views;
+        self.charts
+            .doc
+            .composed
+            .plots
+            .iter()
+            .map(|plot| {
+                #[allow(clippy::cast_possible_truncation)]
+                let at = egui::Rect::from_min_size(
+                    egui::pos2(
+                        page.left() + plot.rect.x as f32,
+                        page.top() + plot.rect.y as f32,
+                    ),
+                    egui::vec2(plot.rect.width as f32, plot.rect.height as f32),
+                );
+                match view {
+                    Some(view) if view.second_holds(at.center().x) => {
+                        at.translate(egui::vec2(0.0, -view.by))
+                    }
+                    _ => at,
+                }
+            })
+            .collect()
+    }
+
+    /// How far the canvas's pane group has scrolled its column, in logical
+    /// points — zero on every window with room for the whole of it.
+    ///
+    /// Read back so a test can hold the column's tiles to the offset the frame
+    /// actually applied rather than to a number it typed, which is the only
+    /// form in which "the wheel moved the column and not the map" is an
+    /// assertion about this window rather than about arithmetic.
+    #[must_use]
+    pub const fn canvas_scroll(&self) -> f32 {
+        self.canvas_scroll
+    }
+
+    /// What the canvas's pane group drew in the last frame — the panes, their
+    /// header bands, their content rects and the count overlay.
+    ///
+    /// Empty on a frame the canvas drew one pane, which is every frame whose
+    /// document is one picture rather than a generated dashboard.
+    #[must_use]
+    pub const fn canvas_panes(&self) -> &CanvasPanes {
+        &self.canvas_panes
+    }
+
     /// Which of the canvas's projections is showing — an index into the
     /// declared projections.
     #[must_use]
@@ -2549,6 +2654,10 @@ impl MeridianApp {
         // build one each, and clearing on construction meant the last one wiped
         // what the earlier ones recorded.
         self.affordances.clear();
+        // …and the pane group, for the same reason: a frame that draws the
+        // front door draws no canvas panes, and a rect left standing from the
+        // last frame would answer a test about a pane that is not there.
+        self.canvas_panes = CanvasPanes::default();
 
         let mut bar = TopBar::default();
         let title = plan.expect_region(arrangement::TITLE_BAND);
@@ -2683,6 +2792,8 @@ impl MeridianApp {
             let mut regions = std::mem::take(&mut self.regions);
             let mut strips = std::mem::take(&mut self.strips);
             let mut canvas_toggle: Vec<egui::Rect> = Vec::new();
+            let mut canvas_panes = CanvasPanes::default();
+            let mut canvas_scroll = self.canvas_scroll;
             let mut picks = RegionPicks::default();
             let (ws, charts, protocol, affordances) = (
                 self.layout.workspace_mut(),
@@ -2979,18 +3090,89 @@ impl MeridianApp {
                             canvas_toggle = toggle.segments;
                             picks.projection = toggle.picked;
                         }
-                        draw_chart_pane(
-                            ui,
-                            body,
-                            charts,
-                            ws,
-                            projections[projection].item,
-                            mode,
-                            focused,
-                            &headed,
-                            &mut requests,
-                            affordances,
-                        );
+                        let item = projections[projection].item;
+                        // A generated dashboard is a hero beside a column, and
+                        // the canvas draws it as the pane group that is. Any
+                        // other document is one picture in one pane, which is
+                        // what every projection but the dashboard's is.
+                        let stacked = if item == CHART {
+                            charts.doc.stacked_tiles()
+                        } else {
+                            None
+                        };
+                        if let Some(tiles) = stacked {
+                            // The page's height floor, and the scroll that
+                            // buys it: the column's tiles do not compress past
+                            // `MIN_COLUMN_TILE_HEIGHT`, so a canvas too short
+                            // for them composes a taller page and moves it.
+                            // What the page gained is the column's alone — the
+                            // hero is held at the room the pane has, through
+                            // `ChartDoc::reflow_to`.
+                            let content_h = body.height()
+                                - chrome::header_band_height()
+                                - 2.0 * chrome::pane_content_inset()
+                                - chart_toolbar_band(&charts.doc.composed);
+                            let page_h = crate::dashboard::stack_extent(content_h, tiles);
+                            charts.doc.set_min_page_height(page_h);
+                            let reach = (page_h - content_h).max(0.0);
+                            // **The wheel belongs to the pane under the
+                            // pointer, and to one of them.** Over the column it
+                            // scrolls the column, and the chart's own wheel
+                            // zoom stands down for the frame; over the map it
+                            // is the chart's, and the column does not move.
+                            let (_, columns_rect) = canvas_pane_rects(body);
+                            let over_columns = ui.rect_contains_pointer(columns_rect);
+                            charts.doc.wheel_taken = over_columns;
+                            // **A gesture holding a page origin pins the
+                            // column.** A drag reads every frame's pointer
+                            // against the origin the page was drawn at when
+                            // the button went down, so a page that moves
+                            // under it keeps resolving to the tile the press
+                            // landed on while the reader watches the picture
+                            // slide — the ink and the clause part company and
+                            // the clause is the one that gets committed. The
+                            // clamp is skipped with it: a resize mid-gesture
+                            // re-clamps to a new reach, which moves the page
+                            // for exactly the same reason a wheel does.
+                            let latched = charts.doc.gesture_latched;
+                            let wheel = if reach > 0.0 && over_columns && !latched {
+                                ui.input(|i| i.smooth_scroll_delta.y)
+                            } else {
+                                0.0
+                            };
+                            if !latched {
+                                canvas_scroll = (canvas_scroll - wheel).clamp(0.0, reach);
+                            }
+                            canvas_panes = draw_canvas_pane_group(
+                                ui,
+                                body,
+                                charts,
+                                ws,
+                                item,
+                                mode,
+                                focused,
+                                canvas_scroll,
+                                &mut requests,
+                                affordances,
+                            );
+                        } else {
+                            charts.doc.set_min_page_height(0.0);
+                            charts.doc.pane_views = None;
+                            charts.doc.wheel_taken = false;
+                            canvas_scroll = 0.0;
+                            draw_chart_pane(
+                                ui,
+                                body,
+                                charts,
+                                ws,
+                                item,
+                                mode,
+                                focused,
+                                &headed,
+                                &mut requests,
+                                affordances,
+                            );
+                        }
                     }
                 });
             regions.push((canvas.id, drawn.response.rect));
@@ -2998,6 +3180,8 @@ impl MeridianApp {
             self.regions = regions;
             self.strips = strips;
             self.canvas_toggle = canvas_toggle;
+            self.canvas_panes = canvas_panes;
+            self.canvas_scroll = canvas_scroll;
             if let Some(next) = picks.projection {
                 self.projection = next;
             }
@@ -3830,6 +4014,7 @@ impl MeridianApp {
         if let Some(authored) = boot.authored {
             self.charts.doc.set_authored(authored);
         }
+        self.charts.doc.set_stacked_tiles(boot.stacked_tiles);
         // …and the other document, which is what fills the navigator, Steps
         // and inspector rails. It goes with the chart half rather than
         // separately: they are two readings of one file, and a window holding
@@ -4965,6 +5150,420 @@ fn draw_chart_pane(
         affordances,
     );
     let _ = behavior.pane_ui(&mut child, tile, &mut key);
+}
+
+// ---------------------------------------------------------------------------
+// The canvas's pane group: the map pane, and the column of tiles beside it
+// ---------------------------------------------------------------------------
+
+/// The gap between two panes of the canvas's pane group, in logical points.
+///
+/// [`brightfield_workbench::behavior::TILE_GAP`] — the hairline `egui_tiles`
+/// leaves between two sibling tiles — because these two panes are siblings in
+/// the same sense, and a group drawn by the shell that seamed differently from
+/// one drawn by the dock would read as two different kinds of pane.
+pub const CANVAS_PANE_GAP: f32 = brightfield_workbench::behavior::TILE_GAP;
+
+/// One pane of the canvas's pane group, as it was drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CanvasPane {
+    /// What the pane is, for a test and for a failure message: `"map"` or
+    /// `"columns"`.
+    pub name: &'static str,
+    /// The pane's outer rect, in window-space logical points.
+    pub rect: egui::Rect,
+    /// The header band `pane_frame` drew at its head.
+    pub header: egui::Rect,
+    /// The content rect below that band and inside the pane's own inset — the
+    /// box the picture is drawn in.
+    pub body: egui::Rect,
+}
+
+/// What the canvas's pane group drew in one frame.
+///
+/// Empty for a canvas showing one pane, which is what a document that is one
+/// picture gets. Recorded rather than declared: whether a pane drew a header
+/// band is a fact about a frame, and a test that read it off the arrangement
+/// would be asserting the declaration against itself.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CanvasPanes {
+    /// The panes, in the order the group lays them out: the map pane, then the
+    /// column.
+    pub panes: Vec<CanvasPane>,
+    /// The count overlay's rect inside the map pane, when one was drawn.
+    pub count: Option<egui::Rect>,
+    /// The composed page's rect as it reached the screen, scroll included —
+    /// what the two panes clip their share of.
+    pub page: Option<egui::Rect>,
+}
+
+impl CanvasPanes {
+    /// One pane by name.
+    #[must_use]
+    pub fn pane(&self, name: &str) -> Option<&CanvasPane> {
+        self.panes.iter().find(|p| p.name == name)
+    }
+}
+
+/// The map pane's and the column pane's outer rects inside `body`.
+///
+/// **The map pane's width is [`crate::dashboard::HERO_SHARE`] of `body` and
+/// the arithmetic is what makes that true rather than approximately true.**
+/// The page the raster is composed on spans both panes' content rects, and the
+/// hero's share of it is decided by the weights in the emitted spec, so the
+/// split has to be read back out of those weights and the gutter between them
+/// — see [`crate::dashboard::HERO_GUTTER`], whose value is chosen so that this
+/// comes out at the declared share.
+#[must_use]
+pub fn canvas_pane_rects(body: egui::Rect) -> (egui::Rect, egui::Rect) {
+    let inset = chrome::pane_content_inset();
+    let gutter = f32::from(u16::try_from(crate::dashboard::HERO_GUTTER).unwrap_or(u16::MAX));
+    // The page: the union of the two content rects, gutter included.
+    let page = (body.width() - 2.0 * inset).max(1.0);
+    // What the hero and the column share out between them, the gutter taken
+    // off first — an `hspace` does not flex.
+    let residual = (page - gutter).max(1.0);
+    let map_width = (crate::dashboard::HERO_SHARE * residual + gutter - CANVAS_PANE_GAP)
+        .clamp(1.0, (body.width() - 1.0).max(1.0));
+    let map =
+        egui::Rect::from_min_max(body.min, egui::pos2(body.left() + map_width, body.bottom()));
+    let columns = egui::Rect::from_min_max(
+        egui::pos2(map.right() + CANVAS_PANE_GAP, body.top()),
+        body.max,
+    );
+    (map, columns)
+}
+
+/// The map pane's title: the hero and the columns it draws.
+///
+/// A coordinate pair reads as the map it is; any other hero is named by its
+/// own column, because the pane holds that one column's picture and the column
+/// name is the shortest thing that distinguishes it from the tiles beside it.
+fn map_pane_title(hero: Option<&crate::one_step::ColumnFacts>) -> String {
+    match hero {
+        Some(facts) => match &facts.paired {
+            Some(other) => format!("Map \u{b7} {other} \u{d7} {}", facts.column),
+            None => facts.column.clone(),
+        },
+        None => "Map".to_string(),
+    }
+}
+
+/// The column pane's title: how many tiles stand in it.
+fn column_pane_title(tiles: usize) -> String {
+    if tiles == 1 {
+        "Columns \u{b7} 1 tile".to_string()
+    } else {
+        format!("Columns \u{b7} {tiles} tiles")
+    }
+}
+
+/// `n` with a thousands separator — `16640` reads `16,640`.
+///
+/// Local because it exists for one line of chrome. The status band's own count
+/// is somebody else's, and a shared helper between the two would be a shared
+/// decision about wording neither of them has made.
+fn grouped(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// What the count overlay says: how many rows the hero draws, and over which
+/// columns.
+fn count_overlay_text(hero: Option<&crate::one_step::ColumnFacts>) -> Option<String> {
+    let facts = hero?;
+    let rows = grouped(facts.rows);
+    Some(match &facts.paired {
+        Some(other) => format!(
+            "{rows} points \u{b7} {other} \u{d7} {} \u{b7} equal aspect",
+            facts.column
+        ),
+        None => format!("{rows} rows \u{b7} {}", facts.column),
+    })
+}
+
+/// **The hero's data area**, in window-space logical points: the frame its own
+/// axes bound, moved by the origin the page was drawn at.
+///
+/// Read off the composition rather than re-derived, because the margins that
+/// put the axis band where it is are the renderer's — a second copy of them
+/// here would be a chip that drifts onto the axis the first time a tick label
+/// gets longer. `None` for a document with no plots, and for a frame that
+/// presented no raster: in both, there is no picture to read a count over.
+///
+/// `pane` bounds the answer, so an overlay cannot be placed outside the pane
+/// it belongs to even if the page reaches past it.
+fn hero_data_area(doc: &ChartDoc, pane: egui::Rect) -> Option<egui::Rect> {
+    let page = doc.raster_rect?;
+    let plot = doc.composed.plots.first()?;
+    #[allow(clippy::cast_possible_truncation)]
+    let area = egui::Rect::from_min_max(
+        egui::pos2(
+            page.left() + (plot.rect.x + plot.layout.plot_x_start()) as f32,
+            page.top() + (plot.rect.y + plot.layout.plot_y_start()) as f32,
+        ),
+        egui::pos2(
+            page.left() + (plot.rect.x + plot.layout.plot_x_end()) as f32,
+            page.top() + (plot.rect.y + plot.layout.plot_y_end()) as f32,
+        ),
+    );
+    let held = area.intersect(pane);
+    (held.width() > 0.0 && held.height() > 0.0).then_some(held)
+}
+
+/// **The count, at the lower-right of the hero's data area** — a canvas
+/// overlay in the taxonomy's sense: painted over the picture, inset from its
+/// edge, and taking no layout space at all.
+///
+/// Painted rather than laid out, which is the whole of "takes no layout
+/// space": the signature takes `&egui::Ui`, and allocating needs `&mut` — so
+/// the pane's content rect is the same rect whether this draws or not, by
+/// construction rather than by care.
+///
+/// `within` is the plot's **data area**, not the pane: inside the frame the
+/// axes bound, so the chip cannot land on the x-axis title or a tick label.
+/// It used to be the pane's content rect, and at that inset it covered the
+/// map's `longitude` title outright in both themes.
+/// `the_count_reads_over_the_map_and_leaves_its_axes_whole` is what holds it
+/// there.
+///
+/// Returns the rect it painted into, for a test to read.
+fn count_overlay(ui: &egui::Ui, within: egui::Rect, text: &str, mode: Mode) -> egui::Rect {
+    let sem = semantic(mode.is_dark());
+    let font = egui::FontId::monospace(meridian_design::typography::UI_SIZE - 1.0);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), font, chrome::colour(sem.text.muted));
+    // The chip `overlay_frame` gives a floating region — the status band's own
+    // fill rather than the panel's, which is what says this is a layer over the
+    // picture rather than a stray line of the chart's own ink. It is also what
+    // keeps the count legible over the marks it now sits on.
+    let pad = egui::vec2(spacing::SPACE_3, spacing::SPACE_2);
+    let size = galley.size() + 2.0 * pad;
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(
+            within.right() - spacing::SPACE_3 - size.x,
+            within.bottom() - spacing::SPACE_3 - size.y,
+        ),
+        size,
+    );
+    ui.painter().rect_filled(
+        rect,
+        radius::CONTROL,
+        chrome::colour(sem.containers.status_bar_background),
+    );
+    ui.painter()
+        .galley(rect.min + pad, galley, chrome::colour(sem.text.muted));
+    rect
+}
+
+/// Draw the canvas as a **pane group**: the map pane, the column of tiles
+/// beside it, and the one composed page clipped across both.
+///
+/// # Why one page and two clips rather than two pictures
+///
+/// Every tile of a generated dashboard drives and reads one crossfilter
+/// selection, and that selection lives in the one DuckDB session the one
+/// composition holds. Two compositions would be two sessions and two
+/// selections, so a brush on the map would stop reaching the histograms —
+/// which is the thing the dashboard is for. So the page is composed once,
+/// across the union of the two panes' content rects, and each pane clips its
+/// own share of it. The gutter between them is an `hspace` in the emitted
+/// spec, which is why [`crate::dashboard::HERO_GUTTER`] is a chrome
+/// measurement and says so.
+///
+/// # What is vertical here
+///
+/// Three rules, and they are one design:
+///
+/// - **the page** is as tall as the column's tiles need at their floor, which
+///   at a short window is taller than the panes — [`crate::dashboard::stack_extent`];
+/// - **the hero** is bounded to the map pane's own content height, by the
+///   spacer under it in the emitted spec, so it is composed whole inside the
+///   pane it is drawn in whatever the column asked the page for — see
+///   [`crate::dashboard::HERO_BOUND`], written per layout by
+///   [`crate::app::ChartDoc::reflow_to`];
+/// - **the scroll** is the column's. The page is laid out at the union's own
+///   top for the map, and the column pane reads it through a
+///   [`crate::app::PaneViews`] moved up by `scroll` — one composition, one
+///   texture, two origins.
+#[allow(clippy::too_many_arguments)]
+fn draw_canvas_pane_group(
+    ui: &mut egui::Ui,
+    body: egui::Rect,
+    charts: &mut ChartView,
+    ws: &Workspace,
+    item: ItemId,
+    mode: Mode,
+    focused: Option<PaneKey>,
+    scroll: f32,
+    requests: &mut Vec<Request>,
+    affordances: &mut Vec<(PaneKey, egui::Rect)>,
+) -> CanvasPanes {
+    let (map_rect, columns_rect) = canvas_pane_rects(body);
+    let hero = charts.doc.tile_columns().first().cloned();
+    let stacked = charts.doc.stacked_tiles().unwrap_or_default();
+    let map_subject = Subject::new(
+        map_pane_title(hero.as_ref()),
+        subject_icon(hero.as_ref()),
+        brightfield_keys::BindingContext::Workspace,
+    );
+    let columns_subject = Subject::new(
+        column_pane_title(stacked),
+        brightfield_workbench::subject::Icon("chart-bar"),
+        brightfield_keys::BindingContext::Workspace,
+    );
+
+    let frame_of = |ui: &mut egui::Ui, rect: egui::Rect, subject: &Subject| {
+        let mut pane = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        chrome::pane_frame(&mut pane, subject, true, mode).max_rect()
+    };
+    // The band a pane actually drew, derived from the content rect
+    // `pane_frame` handed back rather than from the height it would have used:
+    // a pane drawn with `header: false` has a content rect that starts one
+    // inset below its own top, so this comes out zero-high and a test counting
+    // bands sees the band that is not there. Deriving it from
+    // `header_band_height` instead would report a band whatever was drawn.
+    let header_of = |rect: egui::Rect, body: egui::Rect| {
+        let bottom = (body.top() - chrome::pane_content_inset()).clamp(rect.top(), rect.bottom());
+        egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), bottom))
+    };
+
+    let map_body = frame_of(ui, map_rect, &map_subject);
+    let columns_body = frame_of(ui, columns_rect, &columns_subject);
+
+    // The one page, across both content rects, offered to the pane's item as
+    // its own box and clipped to the union so the gutter between the panes
+    // keeps their frames.
+    //
+    // Laid out at the union's own top, scroll or no scroll: the hero is bound
+    // to this height and sits at the page's head, so moving the page here
+    // would carry the map's picture out of the map's pane. The scroll is the
+    // column's, and it is carried by the second view below.
+    let union = map_body.union(columns_body);
+    charts.doc.pane_views = Some(crate::app::PaneViews {
+        first: map_body,
+        second: columns_body,
+        by: scroll,
+    });
+    draw_chart_body(
+        ui,
+        union,
+        union,
+        charts,
+        ws,
+        item,
+        mode,
+        focused,
+        requests,
+        affordances,
+    );
+
+    // The chip goes inside the hero's own frame, which is why this waits for
+    // the page to have been drawn: the data area is a fact about the
+    // composition's layout and the origin it landed at.
+    let count = count_overlay_text(hero.as_ref())
+        .zip(hero_data_area(&charts.doc, map_body))
+        .map(|(text, within)| count_overlay(ui, within, &text, mode));
+
+    CanvasPanes {
+        panes: vec![
+            CanvasPane {
+                name: "map",
+                rect: map_rect,
+                header: header_of(map_rect, map_body),
+                body: map_body,
+            },
+            CanvasPane {
+                name: "columns",
+                rect: columns_rect,
+                header: header_of(columns_rect, columns_body),
+                body: columns_body,
+            },
+        ],
+        count,
+        page: charts.doc.raster_rect,
+    }
+}
+
+/// The icon the map pane's header carries: the point-map kind's own for a
+/// coordinate pair, and the histogram's otherwise.
+fn subject_icon(
+    hero: Option<&crate::one_step::ColumnFacts>,
+) -> brightfield_workbench::subject::Icon {
+    match hero.and_then(|f| f.paired.as_ref()) {
+        Some(_) => brightfield_workbench::subject::Icon("map-pin"),
+        None => brightfield_workbench::subject::Icon("chart-bar"),
+    }
+}
+
+/// [`draw_chart_pane`] **without the frame** — the body of a pane whose frame
+/// somebody else has already drawn.
+///
+/// The canvas's pane group draws two frames and one picture across both, so
+/// the picture cannot come through `PaneChrome::pane_ui`: that would fill and
+/// inset a third rect over the two panes and the page would no longer land on
+/// their content rects. `laid` is the box the item lays out in — the union,
+/// moved by the scroll — and `clip` is what it may paint inside.
+#[allow(clippy::too_many_arguments)]
+fn draw_chart_body(
+    ui: &mut egui::Ui,
+    laid: egui::Rect,
+    clip: egui::Rect,
+    charts: &mut ChartView,
+    ws: &Workspace,
+    item: ItemId,
+    mode: Mode,
+    focused: Option<PaneKey>,
+    requests: &mut Vec<Request>,
+    affordances: &mut Vec<(PaneKey, egui::Rect)>,
+) {
+    let key = PaneKey::new(item);
+    let Some(tile) = ws.tile_of(key) else {
+        return;
+    };
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(laid)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    child.shrink_clip_rect(clip);
+    let ChartView { doc, items, .. } = charts;
+    let Some(pane) = items.get_mut(&key) else {
+        chrome::orphan_pane(&mut child, key, mode);
+        return;
+    };
+    let subject = pane.subject(&*doc);
+    if let Some(empty) = &subject.empty_state {
+        let drawn = chrome::empty_state(&mut child, empty, mode);
+        if let Some(rect) = drawn.affordance {
+            affordances.push((key, rect));
+        }
+        match drawn.activated {
+            Some(brightfield_workbench::subject::Action::Verb(verb)) => {
+                requests.push(Request::Verb(verb));
+            }
+            Some(brightfield_workbench::subject::Action::Open(id)) => {
+                requests.push(Request::Open(id));
+            }
+            None => {}
+        }
+    } else {
+        let mut cx =
+            brightfield_workbench::ItemCtx::new(mode, key, tile, focused == Some(key), requests);
+        pane.ui(doc, &mut child, &mut cx);
+    }
 }
 
 /// The canvas's head band: what is on the canvas at its left, the one toggle

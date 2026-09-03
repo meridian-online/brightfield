@@ -162,6 +162,144 @@ pub struct Authored {
     pub block: String,
 }
 
+/// **The boxes one composed page is drawn in**, for a canvas drawing that page
+/// across two panes: the box each view fills and how far the page is moved up
+/// inside the second.
+///
+/// The canvas's pane group composes one page — one engine session, one
+/// crossfilter selection — and each pane shows its own part of it. The column
+/// is the pane that scrolls, because the hero is bounded to the map pane's
+/// height ([`crate::dashboard::HERO_BOUND`]): the page is drawn at its own
+/// origin in [`Self::first`] and moved up by [`Self::by`] in [`Self::second`],
+/// which `a_wheel_over_the_column_moves_the_column_and_leaves_the_map_where_it_was`
+/// reads back off a frame.
+///
+/// A pointer inside [`Self::second`] is read against the moved origin, which is
+/// what keeps a brush on a scrolled tile landing on the tile under it —
+/// `a_brush_on_a_scrolled_tile_lands_on_the_tile_under_the_pointer`. That is a
+/// per-frame answer, and a gesture spanning frames latches its own instead:
+/// [`page_offset`].
+///
+/// **Both boxes are here because the page reaches past them.** The page is as
+/// tall as the column's tiles need and the panes are as tall as the window
+/// left them, so at a short window it hangs below both — and the gutter
+/// between the panes is inside its width and inside neither of them. A pointer
+/// there is over a page nobody drew, which is a question about the two boxes
+/// together and cannot be asked of one; [`Self::offset_at`] is the answer and
+/// `a_press_over_no_pane_of_the_group_is_over_no_page` holds it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PaneViews {
+    /// The box the first view fills, in window-space logical points — the pane
+    /// that draws the page at the page's own origin.
+    pub first: egui::Rect,
+    /// The box the second view fills, in window-space logical points. Nothing
+    /// it paints reaches outside this, and a pointer outside it is not in this
+    /// view.
+    pub second: egui::Rect,
+    /// How far the page is moved **up** inside [`Self::second`], in logical
+    /// points. Zero is the same view as the first one.
+    pub by: f32,
+}
+
+impl PaneViews {
+    /// **Whether the second view holds the page's column at screen `x`** — the
+    /// containment rule for a *plot* on a page drawn at two origins, read by
+    /// [`crate::window::MeridianApp::composed_plot_rects`].
+    ///
+    /// Membership is **horizontal**, because the pane group is a left-right
+    /// split: the two views take disjoint parts of the page's width and share
+    /// its vertical band. It is not a rect test, and that is the part worth
+    /// stating — this is asked about a page *taller* than the pane it is drawn
+    /// in, so a tile standing below the column's content bottom is still the
+    /// column's tile. A rect test would hand that tile to the first view and
+    /// report it at the unmoved origin, which is the readback
+    /// `a_wheel_over_the_column_moves_the_column_and_leaves_the_map_where_it_was`
+    /// holds to the offset the frame applied.
+    ///
+    /// A **pointer** is the other subject and gets [`Self::offset_at`]
+    /// instead. The difference is not a missing clause on one side: a tile
+    /// below the fold is still drawn, clipped, and the reader can scroll to it,
+    /// whereas a pointer below the fold is on chrome that pane never painted.
+    #[must_use]
+    pub fn second_holds(self, x: f32) -> bool {
+        self.second.x_range().contains(x)
+    }
+
+    /// **Which view drew the page under `at`**, as the offset that view moved
+    /// the page by — `None` where neither of them drew it.
+    ///
+    /// The rect test the pointer needs and the plot does not. Each pane paints
+    /// inside its own box, so the page is under the pointer exactly where one
+    /// of these two boxes is: the header bands above them, the gutter between
+    /// them, the pane insets around them and the band below them where the
+    /// page overhangs the panes are all places the page reaches and no pane
+    /// drew it. `None` is that, and it is a different answer from the first
+    /// view's zero — which is why this returns an [`Option`] rather than an
+    /// offset a caller has to know to disbelieve.
+    ///
+    /// The two boxes are disjoint by construction — the gutter is between them
+    /// — so the order of the tests below is not a tie-break.
+    #[must_use]
+    pub fn offset_at(self, at: egui::Pos2) -> Option<f32> {
+        if self.second.contains(at) {
+            Some(self.by)
+        } else if self.first.contains(at) {
+            Some(0.0)
+        } else {
+            None
+        }
+    }
+}
+
+/// **How far up the page is moved for a pointer**, in logical points, or
+/// `None` where no pane drew a page under the pointer: zero for the first
+/// view's origin and [`PaneViews::by`] for the second's.
+///
+/// The one place a screen point becomes a page origin. `latched` is a gesture's
+/// own origin, captured at its press edge, and when it is `Some` it is the
+/// answer whatever the pointer has crossed since — including out of the pane
+/// group entirely, because a sweep is the difference between two points and a
+/// difference is a distance inside one origin and arithmetic across two.
+///
+/// **Why the answer can be absence.** A page drawn in a pane group is drawn in
+/// the two boxes [`PaneViews`] names and nowhere else, and it is bigger than
+/// their union: it hangs below both at a short window and the gutter runs
+/// through it. Answering the first view's origin for a point in that leftover —
+/// which is what an offset with no absence in it has to do — puts the pointer
+/// on whichever tile the page happens to have there, so a press on the ledger
+/// rail under the canvas commits a crossfilter and selects a column. See
+/// [`PaneViews::offset_at`].
+///
+/// **Why a gesture latches and a frame does not.** A press, a hover and a wheel
+/// zoom are facts about one frame, so the origin the pointer is in *now* is the
+/// right one for them. A brush and a pan are relations *between* frames: the
+/// drag's start and the pan's previous point were taken in the origin the press
+/// chose, and differencing them against a point read in the other origin
+/// subtracts across two coordinate systems. Unlatched, a sweep begun on the map
+/// and released in the column committed a band taller than the same screen
+/// gesture on an unscrolled column by exactly `by` points of the plot's own
+/// scale, and a pan crossing the boundary jumped the frame by `by` in one step.
+/// The pins are `a_brush_across_the_pane_boundary_commits_what_it_swept` and
+/// `a_pan_across_the_pane_boundary_moves_by_what_the_hand_moved`.
+#[must_use]
+pub fn page_offset(
+    views: Option<PaneViews>,
+    latched: Option<f32>,
+    at: Option<egui::Pos2>,
+) -> Option<f32> {
+    if let Some(by) = latched {
+        return Some(by);
+    }
+    let at = at?;
+    match views {
+        Some(views) => views.offset_at(at),
+        // One view, and its box IS the page's: a document drawn in one pane
+        // lays the raster out inside that pane, so the containment test that
+        // matters is the raster's own and the callers already make it.
+        None => Some(0.0),
+    }
+}
+
 /// The chart view's **document**: the composited dashboard, the canvas it
 /// rasters into, and the chart state the panes read.
 ///
@@ -186,6 +324,49 @@ pub struct ChartDoc {
     /// arithmetic — which is the only kind of assertion that could have caught
     /// this window clipping its own raster.
     pub viewport: Option<egui::Rect>,
+    /// **The boxes this document's page is drawn in**, when a canvas is
+    /// drawing one page across two panes — see [`PaneViews`].
+    ///
+    /// `None` for a document drawn in one view, which is what an authored
+    /// spec gets — `an_authored_spec_still_draws_one_pane`. Written by the
+    /// canvas each frame *before* the pane draws, because it is a fact about
+    /// the layout the frame chose rather than about the document.
+    pub pane_views: Option<PaneViews>,
+    /// **Whether a pointer gesture is holding a page origin**, as of the last
+    /// frame the chart pane drew.
+    ///
+    /// Written by the chart pane's gesture machine, read by the canvas before
+    /// it applies the wheel, and the mirror of [`Self::wheel_taken`]: that one
+    /// carries "the canvas has taken this wheel" inwards, this one carries "a
+    /// gesture is in progress" outwards. A drag latches the origin the page
+    /// was drawn at when the button went down and reads every later frame's
+    /// pointer against it, so moving the page under a live gesture leaves the
+    /// numbers pointing at tiles the hand never touched while the picture says
+    /// otherwise — `a_wheel_during_a_drag_does_not_move_the_column`.
+    ///
+    /// It is one frame old where the canvas reads it, because the canvas
+    /// decides the scroll before the pane it hands the page to has drawn.
+    /// That is the right age: the frame a press lands on has already chosen
+    /// its scroll, and the press latches the origin that frame drew.
+    pub gesture_latched: bool,
+    /// **Where the transient gesture's ink is**, in window-space logical
+    /// points — `None` on a frame with no gesture in progress.
+    ///
+    /// The rect the brush rectangle is painted at, recorded on the frame the
+    /// pane draws whether or not there is a device behind the document to
+    /// paint it with. Recorded rather than re-derived: it comes from the same
+    /// value the painter is handed, in one expression, so a test can hold the
+    /// ink to the origin the gesture latched instead of holding a second copy
+    /// of the arithmetic to itself — `the_brush_rectangle_stays_where_the_hand_is`.
+    pub gesture_ink: Option<egui::Rect>,
+    /// **Whether this frame's wheel travel already has a consumer.**
+    ///
+    /// The canvas takes the wheel when the pointer is over the pane that
+    /// scrolls, and a wheel event with two consumers is one gesture doing two
+    /// things — it scrolled the column and zoomed the plot under the cursor at
+    /// the same time. Written by the canvas each frame, read by the chart
+    /// pane's gesture machine, and false on every frame nobody claims it.
+    pub wheel_taken: bool,
     /// The rect the controls rail's overlay checkbox last occupied, in
     /// window-space logical points — `None` until a frame has been laid out.
     ///
@@ -214,6 +395,23 @@ pub struct ChartDoc {
     /// a layout nothing derived it from stops landing the first time a row
     /// height moves without anything going red.
     pub interval_slider_rects: Vec<(String, egui::Rect)>,
+    /// **How many tiles stand in the column beside the hero**, when this
+    /// document is a generated dashboard laid out as a hero and a column —
+    /// `None` for a document that is one picture, which the canvas draws as
+    /// one pane.
+    ///
+    /// It rides on the document because the canvas has to decide, before it
+    /// draws anything, whether the region is one pane or a pane group, and the
+    /// only body that knows is the generator that laid the page out. Deriving
+    /// it from the composed plots' rects instead would be reading the answer
+    /// off the geometry the answer produced.
+    stacked_tiles: Option<usize>,
+    /// The floor the composed page's height is held at, in logical points.
+    ///
+    /// Zero for every document but a hero-and-column dashboard, whose stacked
+    /// tiles have a height floor: the page grows past the pane and the canvas
+    /// scrolls it. See [`crate::dashboard::stack_extent`].
+    min_page_height: f32,
     /// How this document's picture was chosen, when a chart kind chose it —
     /// see [`Authored`]. Written by the open-a-data-file path, cleared by
     /// [`ChartDoc::open`] with the rest of the outgoing document's state.
@@ -327,10 +525,16 @@ impl ChartDoc {
             composed,
             overlay: true,
             viewport: None,
+            pane_views: None,
+            gesture_latched: false,
+            gesture_ink: None,
+            wheel_taken: false,
             overlay_checkbox: None,
             raster_rect: None,
             legend_rect: None,
             interval_slider_rects: Vec::new(),
+            stacked_tiles: None,
+            min_page_height: 0.0,
             authored: None,
             spec_path: None,
             activity: ActivityLog::new(),
@@ -356,10 +560,16 @@ impl ChartDoc {
             composed,
             overlay: true,
             viewport: None,
+            pane_views: None,
+            gesture_latched: false,
+            gesture_ink: None,
+            wheel_taken: false,
             overlay_checkbox: None,
             raster_rect: None,
             legend_rect: None,
             interval_slider_rects: Vec::new(),
+            stacked_tiles: None,
+            min_page_height: 0.0,
             authored: None,
             spec_path: None,
             activity: ActivityLog::new(),
@@ -424,6 +634,14 @@ impl ChartDoc {
         // …and the columns described the replaced document's table.
         self.tile_columns = Vec::new();
         self.selected_tile = None;
+        // …and the pane group described the replaced document's layout. A
+        // document that arrives as one picture must not be drawn in the
+        // outgoing dashboard's two panes.
+        self.stacked_tiles = None;
+        self.min_page_height = 0.0;
+        self.pane_views = None;
+        self.gesture_latched = false;
+        self.gesture_ink = None;
         // The watch list described the replaced document's files, and any
         // in-flight marks belonged to its session — both go with it.
         self.watch.watch(None, Vec::new());
@@ -476,17 +694,33 @@ impl ChartDoc {
     /// [`MIN_CHART_EXTENT`] on each axis, so a pane reported at a fractional
     /// or vanishing size cannot re-query once per frame or ask for a scene
     /// with no range in it.
+    ///
+    /// **The page's height and the hero's are two numbers here, not one.** The
+    /// box offered is the taller of the room and [`Self::set_min_page_height`]'s
+    /// floor, because the column's tiles do not compress past their own; what
+    /// the floor added is then handed to
+    /// [`LiveDashboard::set_hero_bound`](crate::pipeline::LiveDashboard::set_hero_bound)
+    /// so the hero is composed at the room it was offered and the growth is the
+    /// column's alone. Both are written before the re-present, and either being
+    /// news is what makes one happen.
     pub fn reflow_to(&mut self, size: egui::Vec2) -> bool {
+        let room = size.y.floor().max(MIN_CHART_EXTENT);
+        let page = size
+            .y
+            .max(self.min_page_height)
+            .floor()
+            .max(MIN_CHART_EXTENT);
         let box_ = SpecRect::new(
             0.0,
             0.0,
             f64::from(size.x.floor().max(MIN_CHART_EXTENT)),
-            f64::from(size.y.floor().max(MIN_CHART_EXTENT)),
+            f64::from(page),
         );
         let Some(live) = self.live.as_mut() else {
             return false;
         };
-        if !live.set_viewport(box_) {
+        let bound = live.set_hero_bound(f64::from((page - room).max(0.0)));
+        if !live.set_viewport(box_) && !bound {
             return false;
         }
         self.activity.begin(Activity::EngineQuery);
@@ -1032,6 +1266,32 @@ impl ChartDoc {
 
     /// Declare what each tile of this dashboard is of, in plot order — the
     /// open-a-data-file path's, and nothing else's.
+    /// Declare that this document is a generated dashboard laid out as a hero
+    /// beside a column of `tiles`, or (with `None`) that it is one picture.
+    ///
+    /// Set by the open-a-data-file path from
+    /// [`Dashboard::hero_index`](crate::dashboard::Dashboard::hero_index),
+    /// which is where the layout is decided.
+    pub fn set_stacked_tiles(&mut self, tiles: Option<usize>) {
+        self.stacked_tiles = tiles;
+    }
+
+    /// How many tiles stand in the column beside the hero — see
+    /// [`Self::set_stacked_tiles`].
+    #[must_use]
+    pub const fn stacked_tiles(&self) -> Option<usize> {
+        self.stacked_tiles
+    }
+
+    /// Hold the composed page at `height` logical points or taller.
+    ///
+    /// The column's tiles have a height floor, so a canvas too short to give
+    /// them one composes a page taller than the pane and is scrolled. See
+    /// [`crate::dashboard::stack_extent`].
+    pub fn set_min_page_height(&mut self, height: f32) {
+        self.min_page_height = height;
+    }
+
     pub fn set_tile_columns(&mut self, columns: Vec<ColumnFacts>) {
         self.tile_columns = columns;
         self.selected_tile = None;

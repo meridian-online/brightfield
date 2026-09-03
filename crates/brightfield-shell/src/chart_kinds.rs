@@ -463,6 +463,25 @@ fn point_map() -> ChartKind<String> {
 /// tile a coordinate pair earns, so there is no second copy to keep honest.
 #[must_use]
 pub fn point_map_tile(lon: &str, lat: &str, indent: usize) -> String {
+    point_map_tile_sized(
+        lon,
+        lat,
+        indent,
+        crate::dashboard::TILE_WIDTH,
+        crate::dashboard::TILE_HEIGHT,
+    )
+}
+
+/// [`point_map_tile`] at a declared size — the weight a constrained concat
+/// shares its box out by. See [`crate::dashboard::HERO_WIDTH`].
+#[must_use]
+pub fn point_map_tile_sized(
+    lon: &str,
+    lat: &str,
+    indent: usize,
+    width: u32,
+    height: u32,
+) -> String {
     let pad = " ".repeat(indent);
     let (xq, yq) = (yaml_quoted(lon), yaml_quoted(lat));
     let mut out = String::new();
@@ -495,8 +514,8 @@ pub fn point_map_tile(lon: &str, lat: &str, indent: usize) -> String {
     // is a spec that parses and does something else.
     let _ = writeln!(out, "{pad}  xLabel: {xq}");
     let _ = writeln!(out, "{pad}  yLabel: {yq}");
-    let _ = writeln!(out, "{pad}  width: {}", crate::dashboard::TILE_WIDTH);
-    let _ = writeln!(out, "{pad}  height: {}", crate::dashboard::TILE_HEIGHT);
+    let _ = writeln!(out, "{pad}  width: {width}");
+    let _ = writeln!(out, "{pad}  height: {height}");
     out
 }
 

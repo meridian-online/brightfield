@@ -86,6 +86,78 @@ fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/dashboard_baseline.csv")
 }
 
+/// **The table the committed picture is of**: nine numeric columns named and
+/// ordered as California Housing's are, two of them a coordinate pair.
+///
+/// A committed **sample**, not the dataset — the real Parquet is 16,640 rows
+/// and belongs in `open-analytics` rather than in this repo's test data. What
+/// it shares with the real file is everything the picture depends on: the nine
+/// columns in file order, a coordinate pair among them so the generator draws
+/// a map, and seven other columns that each earn a tile.
+///
+/// The choice table above stays on [`fixture`], whose four columns are four
+/// different shapes and answer a different question — which kind each *type*
+/// earns. This one answers what the first screen looks like, which is a
+/// question about a file with a map in it.
+fn housing() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/california_housing_sample.csv")
+}
+
+/// The tiles [`housing`] earns, in the order the composition places them: the
+/// map first, then its seven columns in the file's own order.
+const HOUSING_PLOTS: &[&str] = &[
+    "longitude",
+    "median_income",
+    "house_age",
+    "avg_rooms",
+    "avg_bedrooms",
+    "population",
+    "avg_occupancy",
+    "median_house_value",
+];
+
+/// **The structural half of the picture below**: the map is the hero, its pair
+/// is the two coordinate columns, and the seven others stack beside it in file
+/// order.
+///
+/// Runs ahead of `image_snapshot` for the reason [`assert_choices`] does, and
+/// it is the assertion that makes a red baseline legible: a photograph of a
+/// dashboard whose hero had moved and one of a dashboard whose font had moved
+/// differ by the same kind of pixel diff.
+fn assert_housing(dash: &Dashboard) {
+    let drawn: Vec<&str> = dash.plot_order().iter().map(|t| t.column()).collect();
+    assert_eq!(
+        drawn,
+        HOUSING_PLOTS.to_vec(),
+        "the tiles this picture is of, or the order the composition places \
+         them in, have moved. The first is the hero the map pane holds and \
+         the rest are the column beside it."
+    );
+    let hero = &dash.plot_order()[0];
+    assert_eq!(
+        hero.kind(),
+        chart_kinds::POINT_MAP,
+        "the hero is not the point map, so the map pane is holding something \
+         else and the picture below is not the first screen"
+    );
+    assert_eq!(
+        hero.paired_column(),
+        Some("latitude"),
+        "the map's paired column moved"
+    );
+    assert_eq!(
+        dash.column_tiles().len(),
+        7,
+        "the column holds {} tiles rather than the seven the file earns",
+        dash.column_tiles().len()
+    );
+    assert!(
+        dash.omitted().is_empty(),
+        "a column was left out of this dashboard: {:?}",
+        dash.omitted()
+    );
+}
+
 /// Where the capture's intermediate PNG goes. Under the target dir, already
 /// git-ignored, so a concurrent test cannot race this one on a path.
 fn scratch(name: &str) -> PathBuf {
@@ -248,30 +320,31 @@ fn the_preference_between_applicable_kinds_is_the_registrys_declaration_order() 
 ///
 /// The boot is [`Boot::data_file`]'s, which is the boot the front door's picker
 /// builds and the boot `brightfield-shot --spec table.csv` builds; the capture
-/// is the crate's own headless path. The dashboard that chose the tiles is
+/// is the crate's own headless path. The table is [`housing`] — the first
+/// screen is a picture of a file with a map in it. The dashboard that chose the tiles is
 /// asked for separately, because a `Boot` carries the composed document rather
 /// than the walk that produced it.
 ///
 /// The tile CHOICES are mode-independent — they are read off column types, not
-/// off ink — so [`assert_choices`] runs here and the dark twin below inherits
+/// off ink — so [`assert_housing`] runs here and the dark twin below inherits
 /// its verdict rather than restating it. What the pair holds that neither half
 /// can alone is that the ink moves and nothing else does.
 #[test]
 fn the_generated_dashboard_light_baseline() {
-    let path = fixture();
+    let path = housing();
     let chosen = path.to_str().expect("utf-8 fixture path");
 
     // The structural guard, ahead of the photograph, for the reason in this
     // file's header: `UPDATE_SNAPSHOTS=1` writes whatever `image_snapshot` is
     // handed.
     let opened = data_file::open(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
-    assert_choices(&opened.dashboard);
+    assert_housing(&opened.dashboard);
     assert_eq!(
         opened.composed.plots.len(),
-        EXPECTED.len(),
+        HOUSING_PLOTS.len(),
         "the walk chose {} tiles and the composition placed {} plots, so the \
          image below is not a picture of those choices",
-        EXPECTED.len(),
+        HOUSING_PLOTS.len(),
         opened.composed.plots.len()
     );
     drop(opened);
@@ -330,7 +403,7 @@ fn pixels_of(image: &image::RgbaImage, token: meridian_design::colour::Rgba) -> 
 /// composition inside a dark window.
 #[test]
 fn the_generated_dashboard_dark_baseline() {
-    let path = fixture();
+    let path = housing();
     let chosen = path.to_str().expect("utf-8 fixture path");
 
     std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
@@ -360,4 +433,263 @@ fn the_generated_dashboard_dark_baseline() {
     );
 
     egui_kittest::image_snapshot(&image, "dashboard_dark");
+}
+
+/// The window the scrolled capture below is taken in — the size the
+/// composition this card is cut from was drawn at, and short enough that seven
+/// tiles at their 96-point floor need a page taller than the pane.
+const SHORT_WINDOW: (f32, f32) = (1440.0, 900.0);
+
+/// One turn of the wheel in logical points, and how many frames carry one.
+///
+/// Enough travel to reach the end of the column's scroll, which is where the
+/// page is furthest from where it was composed and therefore where a missing
+/// clip paints over the most chrome. The offset the frame reached is clamped by
+/// the window, so over-turning the wheel is how a test scrolls "to the end"
+/// without naming a distance.
+const WHEEL_TRAVEL: f32 = 400.0;
+/// How many frames of [`WHEEL_TRAVEL`] the scripted capture turns.
+const WHEEL_FRAMES: usize = 8;
+
+/// A settled headless window over [`housing`] at `size`, for reading the pane
+/// rects the capture below is measured against.
+///
+/// The layout is the one the capture runs: `MeridianApp::headless` differs from
+/// the device path in the raster alone — the canvas pane reserves the same box
+/// and paints nothing into it — which is the property `tests/canvas_pane_group.rs`
+/// is built on.
+fn pane_rects(size: (f32, f32)) -> Vec<brightfield_shell::window::CanvasPane> {
+    let path = housing();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let mut app = brightfield_shell::window::MeridianApp::headless(boot, Mode::Light);
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(size.0, size.1),
+        )),
+        ..Default::default()
+    };
+    for _ in 0..3 {
+        let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
+    }
+    app.canvas_panes().panes.clone()
+}
+
+/// **The two panes clip their own share of the one page, and a scroll moves
+/// one of them** — held over a pair of captures at 1440 by 900, where seven
+/// tiles at their 96-point floor need a page taller than either pane.
+///
+/// Three claims, and the pair is what makes the middle one decidable:
+///
+/// 1. the wheel over the column **moved** it — the column's content rect
+///    differs between the two captures, so nothing below is being asserted
+///    about a window where the scroll did nothing;
+/// 2. it moved **nothing else** — every pixel outside the column's content
+///    rect is identical in the two captures, the map's picture and both header
+///    bands included. This is [`the_generated_dashboard_light_baseline`]'s
+///    claim about a scrolled window, and it is what reddens when the column's
+///    second view stops clipping: an unclipped copy of the scrolled page
+///    paints across the map pane and over both bands;
+/// 3. no pixel of the marks' own ink lands outside a pane's content rect in
+///    either capture. This is what reddens when `draw_chart_body` stops
+///    clipping the page it lays out: the page is 84 points taller than the
+///    panes at this window, and what hangs below is the last tile's bars.
+///
+/// Both clips are one line each — `child.shrink_clip_rect(clip)` and
+/// `Painter::with_clip_rect` — and deleting either left the rest of this
+/// crate's test targets green.
+#[test]
+fn the_pane_group_clips_the_page_to_the_panes_it_is_drawn_in() {
+    let panes = pane_rects(SHORT_WINDOW);
+    assert_eq!(
+        panes.len(),
+        2,
+        "the canvas drew {} panes at {SHORT_WINDOW:?}, so the rects below are \
+         not the pane group's",
+        panes.len()
+    );
+    let bodies: Vec<egui::Rect> = panes.iter().map(|p| p.body).collect();
+    let column = panes
+        .iter()
+        .find(|p| p.name == "columns")
+        .expect("the column pane drew")
+        .body;
+
+    // The pointer lands in the same place in both captures and the wheel is
+    // the only difference between them, so a pixel that differs is one the
+    // scroll moved. Two empty frames lead: a resizable panel's reported size
+    // is read back on the frame after, so the pointer has to land on a settled
+    // layout.
+    let point = vec![
+        Vec::new(),
+        Vec::new(),
+        vec![egui::Event::PointerMoved(column.center())],
+    ];
+    let mut turn = point.clone();
+    for _ in 0..WHEEL_FRAMES {
+        turn.push(vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -WHEEL_TRAVEL),
+            modifiers: egui::Modifiers::default(),
+            phase: egui::TouchPhase::Move,
+        }]);
+    }
+    let still = capture_short(point, "dashboard_pane_group_still");
+    let moved = capture_short(turn, "dashboard_pane_group_scrolled");
+    assert_eq!(still.dimensions(), moved.dimensions());
+
+    let mut in_column = 0usize;
+    let mut elsewhere: Vec<(u32, u32)> = Vec::new();
+    for (x, y, p) in still.enumerate_pixels() {
+        if p == moved.get_pixel(x, y) {
+            continue;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let at = egui::pos2(x as f32 / SCALE, y as f32 / SCALE);
+        if column.expand(1.0).contains(at) {
+            in_column += 1;
+        } else {
+            elsewhere.push((x, y));
+        }
+    }
+    assert!(
+        in_column > 0,
+        "the two captures are identical inside the column's content rect \
+         {column:?}, so the wheel scrolled nothing and the comparison below \
+         holds over a window this test is not about"
+    );
+    assert!(
+        elsewhere.is_empty(),
+        "{} device pixels outside the column's content rect changed when the \
+         column scrolled — the first five at {:?}. Scrolling the column moves \
+         the column; the map's picture, both header bands and every frame \
+         around them are somebody else's.",
+        elsewhere.len(),
+        &elsewhere[..elsewhere.len().min(5)]
+    );
+
+    // …and each pane's own bottom frame survives the page laid out over it.
+    // This is the one the mark ink cannot see: what the page paints into a
+    // pane's inset is its BACKGROUND, and the chart surface and a pane's fill
+    // are the same token, so the visible loss is the hairline the page covers.
+    // Measured: with the clip, each pane's strip carries the border colour
+    // across its full width on two device rows; without it, on one — the page
+    // paints over the upper row of a stroke that straddles the pane's edge.
+    // The `rows >= 2` below is that measurement as an assertion.
+    let border = meridian_design::semantic(false).borders.subtle;
+    for pane in &panes {
+        let strip = pane.rect.bottom() - pane.body.bottom();
+        assert!(
+            strip > 1.0,
+            "the {} pane's content rect ends at its own bottom edge, so there \
+             is no frame below it to paint over and this claim is empty",
+            pane.name
+        );
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let rows = (0..(strip * SCALE).ceil() as u32 + 1)
+            .filter(|dy| {
+                let y = (pane.body.bottom() * SCALE) as u32 + dy;
+                let run = ((pane.body.left() * SCALE) as u32..(pane.body.right() * SCALE) as u32)
+                    .filter(|x| {
+                        y < still.height()
+                            && *x < still.width()
+                            && is_token(still.get_pixel(*x, y), border)
+                    })
+                    .count();
+                #[allow(clippy::cast_precision_loss)]
+                let across = run as f32 >= 0.9 * pane.body.width() * SCALE;
+                across
+            })
+            .count();
+        assert!(
+            rows >= 2,
+            "the {} pane's bottom frame runs the pane's full width on {rows} \
+             device rows below its content rect, where the hairline is one \
+             logical point straddling the edge and lands on two — the page is \
+             painting over the frame of the pane it is drawn in",
+            pane.name
+        );
+    }
+
+    for (name, image) in [("still", &still), ("scrolled", &moved)] {
+        let mut ink = 0usize;
+        let mut stray: Vec<(u32, u32)> = Vec::new();
+        for (x, y, p) in image.enumerate_pixels() {
+            if !is_mark_ink(p) {
+                continue;
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let at = egui::pos2(x as f32 / SCALE, y as f32 / SCALE);
+            if bodies.iter().any(|body| body.expand(1.0).contains(at)) {
+                ink += 1;
+            } else {
+                stray.push((x, y));
+            }
+        }
+        assert!(
+            ink > 0,
+            "not one pixel of the {name} capture is the marks' own ink, so the \
+             count below is passing for the wrong reason — the picture did not \
+             draw"
+        );
+        assert!(
+            stray.is_empty(),
+            "{} device pixels of the marks' own ink landed outside both panes' \
+             content rects {bodies:?} in the {name} capture — the first five \
+             at {:?}. The page is painting where no picture is drawn.",
+            stray.len(),
+            &stray[..stray.len().min(5)]
+        );
+    }
+}
+
+/// [`housing`] captured at [`SHORT_WINDOW`] under `script`, read back as
+/// pixels.
+fn capture_short(script: Vec<Vec<egui::Event>>, name: &str) -> image::RgbaImage {
+    let path = housing();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let out = scratch(name);
+    let (w, h) = brightfield_shell::capture::capture_png_at(
+        boot,
+        Mode::Light,
+        SCALE,
+        SHORT_WINDOW,
+        &out,
+        script,
+    )
+    .unwrap_or_else(|e| panic!("capture {name}: {e}"));
+    assert!(w > 0 && h > 0, "{name}: empty capture");
+    image::open(&out)
+        .unwrap_or_else(|e| panic!("read capture {}: {e}", out.display()))
+        .to_rgba8()
+}
+
+/// Whether `p` is the first series colour of the chart palette — the ink every
+/// mark of this dashboard is drawn in.
+///
+/// The right ink to count for a clip: it has exactly one source in the window.
+/// The chart *surface* would be the wrong one — a pane's own frame is filled
+/// with the same token, so a page painting over a pane's inset would be
+/// invisible to it: the surface colour is already down there, below the panes'
+/// content rects, with the clip in place. The mark ink is not, and that is the
+/// assertion — `stray.is_empty()` in
+/// [`the_pane_group_clips_the_page_to_the_panes_it_is_drawn_in`].
+///
+/// Exact rather than perceptual, for the reason [`pixels_of`] gives: a mark's
+/// interior is the flat fill, and antialiasing at its edge produces neighbours
+/// this deliberately does not count.
+fn is_mark_ink(p: &image::Rgba<u8>) -> bool {
+    is_token(p, meridian_design::viz::CATEGORICAL_LIGHT[0])
+}
+
+/// Whether `p` is exactly `token`, alpha ignored.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn is_token(p: &image::Rgba<u8>, token: meridian_design::colour::Rgba) -> bool {
+    p.0[0] == (token.r * 255.0).round() as u8
+        && p.0[1] == (token.g * 255.0).round() as u8
+        && p.0[2] == (token.b * 255.0).round() as u8
 }
