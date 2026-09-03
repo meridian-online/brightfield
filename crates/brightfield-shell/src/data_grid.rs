@@ -10,8 +10,8 @@
 //! **cannot disagree about the PREDICATE** — the selection state resolves to
 //! one WHERE clause, neither surface is authoritative over the other, and
 //! neither ever filters a materialised batch client-side. That is why they are
-//! peers: two projections of one step, one toggle between them (the centre tab
-//! strip).
+//! peers: two readings of one step, side by side on the canvas — the grid is
+//! the rows pane of the canvas's own group, beneath the map.
 //!
 //! ## The sampling clause is the one deliberate divergence
 //!
@@ -196,11 +196,111 @@ pub trait RowSource {
     fn selected_row(&self) -> Option<u64> {
         None
     }
+    /// The rows this source can answer [`RowSource::cell_text`] for without
+    /// going back to its store — the window [`ColumnWidths::Natural`] measures
+    /// a column's values over.
+    ///
+    /// It contains the visible range, because the engine source fetches
+    /// [`PAGE_PAD`] rows of margin around that range, and it is bounded by the
+    /// same thing: the viewport plus that margin. The default is the whole
+    /// source, which is what an in-memory one holds anyway.
+    fn held_rows(&self) -> Range<u64> {
+        0..self.total_rows()
+    }
 }
+
+/// How a table decides how wide each of its columns is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColumnWidths {
+    /// One declared width per column, resizable by the pointer from there —
+    /// the Steps sheet's treatment, where the columns are a fixed vocabulary
+    /// rather than a table's own.
+    Declared,
+    /// Each column as wide as its content: the wider of its header and its
+    /// widest value among the rows [`RowSource::held_rows`] reports, plus the
+    /// cell padding, held between [`min_column_width`] and
+    /// [`MAX_COLUMN_WIDTH`].
+    ///
+    /// The measured set contains the rows on screen, so a value the grid draws
+    /// is cut short where its column hit the ceiling and not otherwise —
+    /// `no_value_the_grid_draws_is_cut_off_by_its_columns_width`. What does
+    /// not fit across is reached by scrolling sideways rather than by
+    /// squeezing the columns until they stop reading.
+    Natural,
+}
+
+/// A column's floor in logical points under [`ColumnWidths::Natural`]: the
+/// cell padding either side of one icon slot, which is the room a header of
+/// one character still has to reserve. Derived from the dense rung's binding,
+/// like the rest of this module's geometry.
+#[must_use]
+pub fn min_column_width() -> f32 {
+    let b = control::binding(spacing::ROW_DENSE);
+    2.0f32.mul_add(b.pad_x, b.icon)
+}
+
+/// A column's ceiling in logical points. A free-text column has no natural
+/// width worth honouring; past this it is one column wide enough to push the
+/// others off screen.
+pub const MAX_COLUMN_WIDTH: f32 = 480.0;
+
+/// What one frame of [`show_table`] laid out, for a caller that has to say how
+/// much of the table is on screen.
+///
+/// Recorded from the cells the table drew rather than derived from the widths
+/// handed to it: whether a column fits is a fact about the frame, and a
+/// caller that recomputed it from the declared widths would be reporting its
+/// own arithmetic back to itself.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TableDrawn {
+    /// One entry per column the table drew, in column order: the column's
+    /// index, its header cell's rect, and the clip that cell was drawn under.
+    /// A column scrolled halfway off has a clip narrower than its rect; one
+    /// scrolled off entirely is not here at all. See `widest_per_column` in
+    /// this module for which of a cell's several offers is the one kept.
+    pub header_cells: Vec<(usize, egui::Rect, egui::Rect)>,
+    /// The table's own column count — how many there are to fit.
+    pub columns: usize,
+}
+
+impl TableDrawn {
+    /// How many columns drew **whole**: the header cell entirely inside the
+    /// clip the table gave it.
+    #[must_use]
+    pub fn on_screen(&self) -> usize {
+        self.header_cells
+            .iter()
+            .filter(|(_, rect, clip)| clip.contains_rect(rect.shrink(CLIP_SLACK)))
+            .count()
+    }
+
+    /// Whether some column of the table is off screen or cut off by the edge
+    /// of the view — whether a reader has to scroll sideways to see the table.
+    #[must_use]
+    pub fn some_column_is_off_screen(&self) -> bool {
+        self.on_screen() < self.columns
+    }
+}
+
+/// How far inside its clip a header cell may fall and still count as whole,
+/// in logical points. The scroll area's own rounding, not a tolerance for a
+/// column that is really cut off: a half-point is a hairline and a clipped
+/// column is short by whole points.
+pub const CLIP_SLACK: f32 = 0.5;
 
 /// Render `source` as the one Meridian table: `egui_table` (sticky header,
 /// virtualised rows) under the dense-rung cell chrome.
-pub fn show_table(ui: &mut egui::Ui, salt: &str, mode: Mode, source: &mut dyn RowSource) {
+///
+/// Reports what it laid out — see [`TableDrawn`] — because the caller that has
+/// to say *"five of nine columns"* can answer that from the cells the table
+/// drew and from nothing it declared.
+pub fn show_table(
+    ui: &mut egui::Ui,
+    salt: &str,
+    mode: Mode,
+    source: &mut dyn RowSource,
+    widths: ColumnWidths,
+) -> TableDrawn {
     let binding = control::binding(spacing::ROW_DENSE);
     let num_rows = source.total_rows();
     let num_columns = source.columns().len();
@@ -208,26 +308,109 @@ pub fn show_table(ui: &mut egui::Ui, salt: &str, mode: Mode, source: &mut dyn Ro
         // Nothing fetched yet, or a schema-less result — there is no table to
         // draw. The engine source reports its state through the pane around
         // this call; an empty reserve here would be a table-shaped lie.
-        return;
+        return TableDrawn::default();
     }
-    let columns: Vec<egui_table::Column> = (0..num_columns)
-        .map(|_| {
-            egui_table::Column::new(120.0)
-                .range(egui::Rangef::new(2.0 * binding.pad_x + binding.icon, 480.0))
-                .resizable(true)
-        })
-        .collect();
+    let columns: Vec<egui_table::Column> = match widths {
+        ColumnWidths::Declared => (0..num_columns)
+            .map(|_| {
+                egui_table::Column::new(120.0)
+                    .range(egui::Rangef::new(min_column_width(), MAX_COLUMN_WIDTH))
+                    .resizable(true)
+            })
+            .collect(),
+        ColumnWidths::Natural => natural_widths(ui, source, binding)
+            .into_iter()
+            .map(|w| {
+                // Pinned rather than seeded: `egui_table` stores a resizable
+                // column's width per table id and reads it back over whatever
+                // it is handed next frame, so a natural width offered as a
+                // starting point would be overwritten by the first frame's and
+                // stop tracking the content. A range of one value is what makes
+                // the drawn width the measured width on every frame.
+                egui_table::Column::new(w)
+                    .range(egui::Rangef::new(w, w))
+                    .resizable(false)
+            })
+            .collect(),
+    };
     let mut delegate = MeridianTableDelegate {
         source,
         mode,
         binding,
+        drawn: TableDrawn {
+            header_cells: Vec::new(),
+            columns: num_columns,
+        },
     };
     let _ = egui_table::Table::new()
         .id_salt(salt)
         .num_rows(num_rows)
-        .columns(columns)
         .headers([egui_table::HeaderRow::new(binding.row)])
+        .columns(columns)
         .show(ui, &mut delegate);
+    delegate.drawn.header_cells = widest_per_column(&delegate.drawn.header_cells);
+    delegate.drawn
+}
+
+/// One entry per column out of the several `egui_table` draws each header cell
+/// under, keeping the one that shows most of it.
+///
+/// A table is split into scrolling regions — a fixed corner, the sticky
+/// header, the body — and a column's header cell is offered to the delegate
+/// once per region it falls in, under that region's own clip. A table with no
+/// sticky columns has a zero-width corner, so one of those offers carries a
+/// clip that shows nothing at all. Keeping the widest visible slice per column
+/// is what makes the record read as *"how much of this column reaches the
+/// reader"* rather than as one row per region.
+fn widest_per_column(
+    cells: &[(usize, egui::Rect, egui::Rect)],
+) -> Vec<(usize, egui::Rect, egui::Rect)> {
+    let mut best: std::collections::BTreeMap<usize, (egui::Rect, egui::Rect)> =
+        std::collections::BTreeMap::new();
+    for (col, rect, clip) in cells {
+        let seen = clip.intersect(*rect).width().max(0.0);
+        match best.get(col) {
+            Some((held, held_clip)) if held_clip.intersect(*held).width().max(0.0) >= seen => {}
+            _ => {
+                best.insert(*col, (*rect, *clip));
+            }
+        }
+    }
+    best.into_iter()
+        .map(|(col, (rect, clip))| (col, rect, clip))
+        .collect()
+}
+
+/// One width per column of `source`, in column order: the wider of the header
+/// and the widest held value, plus the cell padding either side, clamped.
+///
+/// Measured with the painter's own text layout at [`cell_font`], which is the
+/// face the cells draw in, so the answer is the width the glyphs take rather
+/// than an estimate from the character count. Repeated strings cost one layout
+/// between them — egui caches a laid-out galley by its job.
+fn natural_widths(ui: &egui::Ui, source: &dyn RowSource, binding: control::Binding) -> Vec<f32> {
+    let font = cell_font();
+    let width_of = |text: &str| -> f32 {
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::PLACEHOLDER)
+            .size()
+            .x
+    };
+    let held = source.held_rows();
+    let mut widths: Vec<f32> = source.columns().iter().map(|c| width_of(&c.name)).collect();
+    for row in held {
+        for (col, width) in widths.iter_mut().enumerate() {
+            if let Some(cell) = source.cell_text(row, col) {
+                *width = width.max(width_of(&cell.text));
+            }
+        }
+    }
+    for width in &mut widths {
+        *width = 2.0f32
+            .mul_add(binding.pad_x, *width)
+            .clamp(min_column_width(), MAX_COLUMN_WIDTH);
+    }
+    widths
 }
 
 /// The delegate `egui_table` calls back into: window prefetch, the dense row
@@ -236,6 +419,8 @@ struct MeridianTableDelegate<'a> {
     source: &'a mut dyn RowSource,
     mode: Mode,
     binding: control::Binding,
+    /// What this frame laid out, filled in as the header cells draw.
+    drawn: TableDrawn,
 }
 
 impl MeridianTableDelegate<'_> {
@@ -266,6 +451,14 @@ impl egui_table::TableDelegate for MeridianTableDelegate<'_> {
     }
 
     fn header_cell_ui(&mut self, ui: &mut egui::Ui, cell: &egui_table::HeaderCellInfo) {
+        // The cell's own box and the clip it is drawn under, before anything
+        // is painted into it: `egui_table` hands each header cell the rect the
+        // column occupies and shrinks the clip to what survives the scroll, so
+        // the pair is exactly "where this column is" and "how much of it the
+        // reader can see".
+        self.drawn
+            .header_cells
+            .push((cell.col_range.start, ui.max_rect(), ui.clip_rect()));
         let Some(column) = self.source.columns().get(cell.col_range.start) else {
             return;
         };
@@ -557,6 +750,10 @@ impl RowSource for EngineRows<'_> {
         let row = self.cache.rows.get(usize::try_from(offset).ok()?)?;
         row.get(col).cloned()
     }
+
+    fn held_rows(&self) -> Range<u64> {
+        self.cache.window.clone()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -651,8 +848,9 @@ pub const DATA: ItemId = ItemId::new("chart-data-grid");
 /// The pane's icon name, from the Meridian icon set.
 const ICON_DATA: Icon = Icon("table");
 
-/// The Data pane's registry entry: a centre tab beside the chart — the ONE
-/// toggle between the step's two projections.
+/// The Data pane's registry entry: a centre tab beside the chart, which is what
+/// gives it a tile in the window's tree. The canvas's pane group draws it in
+/// the rows pane rather than through the dock, the way it draws the chart.
 #[must_use]
 pub fn data_grid_spec() -> ItemSpec<ChartDoc> {
     ItemSpec {
@@ -786,13 +984,25 @@ impl Item<ChartDoc> for DataGridItem {
         // ended around the borrow so the seam is already marked when this
         // read moves off the UI thread.
         doc.activity.begin(Activity::EngineQuery);
+        let mut drawn = None;
         if let Some(coordinator) = doc.live_coordinator() {
             let generation = coordinator.generation();
             let session = coordinator.session();
             let mut source = EngineRows::new(session, 0, generation, &mut self.cache);
-            show_table(ui, "chart-data-grid", mode, &mut source);
+            drawn = Some(show_table(
+                ui,
+                "chart-data-grid",
+                mode,
+                &mut source,
+                ColumnWidths::Natural,
+            ));
         }
         doc.activity.end(Activity::EngineQuery);
+        // What the frame laid out, back on the document: the pane around this
+        // one draws the readout that says how much of the table is on screen,
+        // and it has to read that off the cells rather than off the widths
+        // this pane asked for.
+        doc.grid_drawn = drawn;
 
         if self.cache.error.is_none() && self.cache.total == 0 {
             // A real answer, not an empty pane: the query ran and selected

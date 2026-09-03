@@ -2274,7 +2274,13 @@ impl Item<ProtocolDoc> for StepsPane {
         // untouched; this pane is only its projection.
         let sheet = doc.model.sheet();
         let mut source = crate::data_grid::StepSheetRows::new(sheet.rows(), sheet.cursor());
-        crate::data_grid::show_table(ui, "proto-steps-grid", cx.mode, &mut source);
+        let _ = crate::data_grid::show_table(
+            ui,
+            "proto-steps-grid",
+            cx.mode,
+            &mut source,
+            crate::data_grid::ColumnWidths::Declared,
+        );
     }
 }
 

@@ -1785,11 +1785,10 @@ impl MeridianApp {
             regions: Vec::new(),
             collapsed: BTreeSet::new(),
             strips: Vec::new(),
-            // The chart's drawn reading, not its tabular one: a window that
-            // opens on a grid of numbers has buried the picture it exists to
-            // present. The index is into the arrangement's declared
-            // projections, which name the grid first and the chart second.
-            projection: 1,
+            // An index into the arrangement's declared projections, of which
+            // there is one: the drawn reading. The tabular one is a pane of
+            // the canvas's own group rather than a second projection of it.
+            projection: 0,
             ledger_panel: 0,
             inspector_panel,
             canvas_toggle: Vec::new(),
@@ -1825,6 +1824,10 @@ impl MeridianApp {
             toasts: ToastLayer::new(),
             rail: chrome::StatusDrawn::default(),
         };
+        // The ledger's state before the first frame, from the document this
+        // window was built over — the same derivation `adopt_boot` runs when a
+        // second document arrives.
+        app.apply_ledger_default();
         // Say what this document's load found, before its first frame. A
         // diagnostic that waits for the user to go looking is a diagnostic
         // that does not exist.
@@ -2140,6 +2143,50 @@ impl MeridianApp {
     /// order.
     fn pane_titles(&self, items: &[ItemId]) -> Vec<String> {
         items.iter().map(|item| self.pane_title_of(*item)).collect()
+    }
+
+    /// **What the ledger rail's strip says at its trailing end**: the one step,
+    /// as its name, its kind and its run status.
+    ///
+    /// A Protocol of one step is what a data file opens as, and the rail's
+    /// list of it is one row — so the rail opens closed
+    /// ([`Self::ledger_opens_collapsed`]) and this line is the whole of what
+    /// the list would have said. `None` for a Protocol of two steps or more,
+    /// where the rail opens at its declared height and a summary of one step
+    /// would be a summary of the wrong thing.
+    fn ledger_summary(&self) -> Option<String> {
+        let [step] = self.protocol.doc.model.sheet().rows() else {
+            return None;
+        };
+        Some(format!(
+            "{} \u{b7} {} \u{b7} {}",
+            step.label, step.kind, step.status
+        ))
+    }
+
+    /// Whether this window's ledger rail **opens closed to its strip**.
+    ///
+    /// A Protocol of one step, which is what a data file opens as: the rail's
+    /// declared 180 points would hold a list of one row, so the rail reads as
+    /// ceremony under the data rather than as the spine. Collapsed, it is its
+    /// strip — the step named at that strip's trailing end by
+    /// [`Self::ledger_summary`], and the way back in one click.
+    ///
+    /// A property of the document, so it is re-derived when a document is
+    /// adopted rather than decided once at construction: opening a Protocol of
+    /// several steps into this window gives that Protocol its rail back.
+    fn ledger_opens_collapsed(&self) -> bool {
+        self.protocol.doc.model.sheet().len() == 1
+    }
+
+    /// Put the ledger rail at the state [`Self::ledger_opens_collapsed`] gives
+    /// the document this window is now holding.
+    fn apply_ledger_default(&mut self) {
+        if self.ledger_opens_collapsed() {
+            self.collapsed.insert(arrangement::LEDGER_RAIL);
+        } else {
+            self.collapsed.remove(&arrangement::LEDGER_RAIL);
+        }
     }
 
     /// Where the document on the canvas came from, for the locator band's
@@ -2776,14 +2823,15 @@ impl MeridianApp {
 
             // Each strip's words are the panes' own `Subject` titles, read
             // before the closures below take their borrows of the documents.
+            let ledger_summary = self.ledger_summary();
             let ledger_labels = self.pane_titles(ledger_panes);
             let navigator_labels = self.pane_titles(navigator_panes);
             let inspector_labels = self.pane_titles(inspector_panes);
             let projection_labels: Vec<&str> = projections.iter().map(|p| p.label).collect();
             // What the canvas is showing, which is the leaf of the locator
-            // rather than the pane's own kind: the toggle beside it already
-            // says "Grid" and "Chart", so a head band repeating the pane's
-            // title would name the reading twice and the subject not at all.
+            // rather than the pane's own kind: each pane of the group below
+            // already carries its own title in its own header band, so a head
+            // band repeating one of them would name a part and not the whole.
             let canvas_name = crumbs
                 .last()
                 .cloned()
@@ -2866,6 +2914,7 @@ impl MeridianApp {
                             &pane_labels(&ledger_labels),
                             ledger_panel,
                             caret,
+                            ledger_summary.as_deref(),
                             mode,
                         ));
                         return;
@@ -2884,6 +2933,7 @@ impl MeridianApp {
                         &pane_labels(&ledger_labels),
                         ledger_panel,
                         Some(caret),
+                        ledger_summary.as_deref(),
                         mode,
                     ));
                     let item = ledger_panes[ledger_panel];
@@ -2957,6 +3007,7 @@ impl MeridianApp {
                         &pane_labels(&navigator_labels),
                         0,
                         Some(caret),
+                        None,
                         mode,
                     ));
                     draw_protocol_pane(
@@ -3018,6 +3069,7 @@ impl MeridianApp {
                         &pane_labels(&inspector_labels),
                         inspector_panel,
                         Some(caret),
+                        None,
                         mode,
                     ));
                     let item = inspector_panes[inspector_panel];
@@ -3079,13 +3131,13 @@ impl MeridianApp {
                             affordances,
                         );
                     } else {
-                        let toggle = canvas_head(
-                            ui,
-                            head,
-                            &canvas_name,
-                            Some((&projection_labels, projection)),
-                            mode,
-                        );
+                        // A toggle where there is more than one reading to
+                        // toggle between, which today there is not — the
+                        // arrangement declares one projection and the rows
+                        // stand beside the picture rather than behind it.
+                        let offered = (projection_labels.len() > 1)
+                            .then_some((projection_labels.as_slice(), projection));
+                        let toggle = canvas_head(ui, head, &canvas_name, offered, mode);
                         if let Some(toggle) = toggle {
                             canvas_toggle = toggle.segments;
                             picks.projection = toggle.picked;
@@ -3120,8 +3172,8 @@ impl MeridianApp {
                             // scrolls the column, and the chart's own wheel
                             // zoom stands down for the frame; over the map it
                             // is the chart's, and the column does not move.
-                            let (_, columns_rect) = canvas_pane_rects(body);
-                            let over_columns = ui.rect_contains_pointer(columns_rect);
+                            let over_columns =
+                                ui.rect_contains_pointer(canvas_pane_rects(body).columns);
                             charts.doc.wheel_taken = over_columns;
                             // **A gesture holding a page origin pins the
                             // column.** A drag reads every frame's pointer
@@ -4026,6 +4078,7 @@ impl MeridianApp {
             &self.protocol.doc.model,
             &self.charts.inspector_table,
         );
+        self.apply_ledger_default();
     }
 
     /// Open the data file at `chosen` into the chart document: the file as a
@@ -5167,8 +5220,8 @@ pub const CANVAS_PANE_GAP: f32 = brightfield_workbench::behavior::TILE_GAP;
 /// One pane of the canvas's pane group, as it was drawn.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CanvasPane {
-    /// What the pane is, for a test and for a failure message: `"map"` or
-    /// `"columns"`.
+    /// What the pane is, for a test and for a failure message: `"map"`,
+    /// `"rows"` or `"columns"`.
     pub name: &'static str,
     /// The pane's outer rect, in window-space logical points.
     pub rect: egui::Rect,
@@ -5187,13 +5240,17 @@ pub struct CanvasPane {
 /// would be asserting the declaration against itself.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CanvasPanes {
-    /// The panes, in the order the group lays them out: the map pane, then the
-    /// column.
+    /// The panes, in the order the group lays them out: the map pane, the rows
+    /// pane under it, then the column of tiles beside both.
     pub panes: Vec<CanvasPane>,
     /// The count overlay's rect inside the map pane, when one was drawn.
     pub count: Option<egui::Rect>,
+    /// The note at the trailing end of the rows pane's header band — what it
+    /// said and where it drew — on a frame where some column of the table was
+    /// off screen. `None` on a frame where the grid fitted.
+    pub rows_note: Option<(egui::Rect, String)>,
     /// The composed page's rect as it reached the screen, scroll included —
-    /// what the two panes clip their share of.
+    /// what the map pane and the column pane clip their share of.
     pub page: Option<egui::Rect>,
 }
 
@@ -5205,33 +5262,59 @@ impl CanvasPanes {
     }
 }
 
-/// The map pane's and the column pane's outer rects inside `body`.
+/// The three outer rects of the canvas's pane group.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CanvasPaneRects {
+    /// The map pane: the head of the left column.
+    pub map: egui::Rect,
+    /// The rows pane: the rest of that column, under the map.
+    pub rows: egui::Rect,
+    /// The column of tiles beside both, at the canvas's full height.
+    pub columns: egui::Rect,
+}
+
+/// The pane group's outer rects inside `body`.
 ///
 /// **The map pane's width is [`crate::dashboard::HERO_SHARE`] of `body` and
 /// the arithmetic is what makes that true rather than approximately true.**
-/// The page the raster is composed on spans both panes' content rects, and the
-/// hero's share of it is decided by the weights in the emitted spec, so the
-/// split has to be read back out of those weights and the gutter between them
-/// — see [`crate::dashboard::HERO_GUTTER`], whose value is chosen so that this
-/// comes out at the declared share.
+/// The page the raster is composed on spans the map pane's and the column
+/// pane's content rects, and the hero's share of it is decided by the weights
+/// in the emitted spec, so the split has to be read back out of those weights
+/// and the gutter between them — see [`crate::dashboard::HERO_GUTTER`], whose
+/// value is chosen so that this comes out at the declared share.
+///
+/// **Down, there is no page to reconcile with.** The rows pane draws a table
+/// rather than a share of the composition, so the left column is split at
+/// [`crate::dashboard::MAP_COLUMN_SHARE`] of its own height with no gutter
+/// term: the map takes exactly that fraction and the pane gap comes out of the
+/// rows beneath it, the way the gap between the two columns comes out of the
+/// map's width.
 #[must_use]
-pub fn canvas_pane_rects(body: egui::Rect) -> (egui::Rect, egui::Rect) {
+pub fn canvas_pane_rects(body: egui::Rect) -> CanvasPaneRects {
     let inset = chrome::pane_content_inset();
     let gutter = f32::from(u16::try_from(crate::dashboard::HERO_GUTTER).unwrap_or(u16::MAX));
-    // The page: the union of the two content rects, gutter included.
+    // The page: the union of the map's and the column's content rects, gutter
+    // included.
     let page = (body.width() - 2.0 * inset).max(1.0);
     // What the hero and the column share out between them, the gutter taken
     // off first — an `hspace` does not flex.
     let residual = (page - gutter).max(1.0);
     let map_width = (crate::dashboard::HERO_SHARE * residual + gutter - CANVAS_PANE_GAP)
         .clamp(1.0, (body.width() - 1.0).max(1.0));
-    let map =
-        egui::Rect::from_min_max(body.min, egui::pos2(body.left() + map_width, body.bottom()));
-    let columns = egui::Rect::from_min_max(
-        egui::pos2(map.right() + CANVAS_PANE_GAP, body.top()),
-        body.max,
+    let split = body.left() + map_width;
+    let map_height = (crate::dashboard::MAP_COLUMN_SHARE * body.height())
+        .clamp(1.0, (body.height() - 1.0).max(1.0));
+    let map = egui::Rect::from_min_max(body.min, egui::pos2(split, body.top() + map_height));
+    let rows = egui::Rect::from_min_max(
+        egui::pos2(
+            body.left(),
+            (map.bottom() + CANVAS_PANE_GAP).min(body.bottom()),
+        ),
+        egui::pos2(split, body.bottom()),
     );
-    (map, columns)
+    let columns =
+        egui::Rect::from_min_max(egui::pos2(split + CANVAS_PANE_GAP, body.top()), body.max);
+    CanvasPaneRects { map, rows, columns }
 }
 
 /// The map pane's title: the hero and the columns it draws.
@@ -5364,8 +5447,9 @@ fn count_overlay(ui: &egui::Ui, within: egui::Rect, text: &str, mode: Mode) -> e
     rect
 }
 
-/// Draw the canvas as a **pane group**: the map pane, the column of tiles
-/// beside it, and the one composed page clipped across both.
+/// Draw the canvas as a **pane group**: the map pane, the rows beneath it, the
+/// column of tiles beside both, and the one composed page clipped across the
+/// map and the column.
 ///
 /// # Why one page and two clips rather than two pictures
 ///
@@ -5394,6 +5478,16 @@ fn count_overlay(ui: &egui::Ui, within: egui::Rect, text: &str, mode: Mode) -> e
 ///   top for the map, and the column pane reads it through a
 ///   [`crate::app::PaneViews`] moved up by `scroll` — one composition, one
 ///   texture, two origins.
+///
+/// # The third pane, and why it is not a third view
+///
+/// The rows pane draws the grid — the same DuckDB session under a different
+/// query, so a brush on the map narrows what it lists — and the grid is not
+/// part of the composed page. So the group has three panes and the page still
+/// has two views: a pointer over the rows pane is over no page, which is what
+/// [`crate::app::page_offset`] already answers with absence, and the rows pane
+/// is drawn **after** the page so the frame it paints stands over the blank
+/// foot of the page's left column rather than under it.
 #[allow(clippy::too_many_arguments)]
 fn draw_canvas_pane_group(
     ui: &mut egui::Ui,
@@ -5407,7 +5501,8 @@ fn draw_canvas_pane_group(
     requests: &mut Vec<Request>,
     affordances: &mut Vec<(PaneKey, egui::Rect)>,
 ) -> CanvasPanes {
-    let (map_rect, columns_rect) = canvas_pane_rects(body);
+    let rects = canvas_pane_rects(body);
+    let (map_rect, rows_rect, columns_rect) = (rects.map, rects.rows, rects.columns);
     let hero = charts.doc.tile_columns().first().cloned();
     let stacked = charts.doc.stacked_tiles().unwrap_or_default();
     let map_subject = Subject::new(
@@ -5418,6 +5513,11 @@ fn draw_canvas_pane_group(
     let columns_subject = Subject::new(
         column_pane_title(stacked),
         brightfield_workbench::subject::Icon("chart-bar"),
+        brightfield_keys::BindingContext::Workspace,
+    );
+    let rows_subject = Subject::new(
+        ROWS_PANE_TITLE.to_string(),
+        brightfield_workbench::subject::Icon("table"),
         brightfield_keys::BindingContext::Workspace,
     );
 
@@ -5442,6 +5542,10 @@ fn draw_canvas_pane_group(
 
     let map_body = frame_of(ui, map_rect, &map_subject);
     let columns_body = frame_of(ui, columns_rect, &columns_subject);
+    // The rows pane's frame comes after the page below, so its own fill and
+    // header band are not painted over by the texture the group composes
+    // across the union. What is decided here is only that it is drawn, which
+    // the page's `set_hero_bound` already depends on through `PaneViews`.
 
     // The one page, across both content rects, offered to the pane's item as
     // its own box and clipped to the union so the gutter between the panes
@@ -5477,6 +5581,35 @@ fn draw_canvas_pane_group(
         .zip(hero_data_area(&charts.doc, map_body))
         .map(|(text, within)| count_overlay(ui, within, &text, mode));
 
+    // The rows: the same session read as rows rather than as marks, in a pane
+    // of its own under the map.
+    let rows_body = frame_of(ui, rows_rect, &rows_subject);
+    draw_chart_body(
+        ui,
+        rows_body,
+        rows_body,
+        charts,
+        ws,
+        DATA,
+        mode,
+        focused,
+        requests,
+        affordances,
+    );
+    // …and what the grid could not fit, said at the trailing end of that
+    // pane's own header band. Read off the cells the table drew — this frame's
+    // — rather than off the widths it was handed.
+    let rows_header = header_of(rows_rect, rows_body);
+    let rows_note = charts
+        .doc
+        .grid_drawn
+        .as_ref()
+        .filter(|drawn| drawn.some_column_is_off_screen())
+        .map(|drawn| {
+            let text = format!("{} of {} columns", drawn.on_screen(), drawn.columns);
+            (band_note(ui, rows_header, &text, mode), text)
+        });
+
     CanvasPanes {
         panes: vec![
             CanvasPane {
@@ -5486,6 +5619,12 @@ fn draw_canvas_pane_group(
                 body: map_body,
             },
             CanvasPane {
+                name: "rows",
+                rect: rows_rect,
+                header: rows_header,
+                body: rows_body,
+            },
+            CanvasPane {
                 name: "columns",
                 rect: columns_rect,
                 header: header_of(columns_rect, columns_body),
@@ -5493,8 +5632,42 @@ fn draw_canvas_pane_group(
             },
         ],
         count,
+        rows_note,
         page: charts.doc.raster_rect,
     }
+}
+
+/// The rows pane's header title.
+///
+/// A plain noun, where the two panes beside it carry a count: what the map is
+/// of changes with the file and how many tiles stand in the column changes
+/// with it too, while this pane is the file's rows whatever the file is. The
+/// number that does move here — how much of the table is across — is
+/// [`band_note`]'s, at the other end of the same band.
+const ROWS_PANE_TITLE: &str = "Rows";
+
+/// A note at the **trailing end of a pane's header band**: muted, in the
+/// chrome's own face, painted rather than laid out.
+///
+/// The band is drawn by [`brightfield_workbench::chrome::pane_frame`] from the
+/// pane's `Subject` before the pane's body exists, so a readout that depends
+/// on what the body drew cannot be part of the title without being a frame
+/// stale. Painting it here instead keeps the claim and the frame the same one.
+/// Takes `&egui::Ui` for the reason [`count_overlay`] does: allocating needs
+/// `&mut`, so this cannot move the pane's content rect.
+///
+/// Returns the rect it painted into, for a test to read.
+fn band_note(ui: &egui::Ui, band: egui::Rect, text: &str, mode: Mode) -> egui::Rect {
+    let sem = semantic(mode.is_dark());
+    let ink = chrome::colour(sem.text.muted);
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), ui_font(), ink);
+    let size = galley.size();
+    let at = egui::pos2(
+        band.right() - spacing::SPACE_4 - size.x,
+        band.center().y - size.y / 2.0,
+    );
+    ui.painter().galley(at, galley, ink);
+    egui::Rect::from_min_size(at, size)
 }
 
 /// The icon the map pane's header carries: the point-map kind's own for a
