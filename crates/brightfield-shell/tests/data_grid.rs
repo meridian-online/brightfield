@@ -74,7 +74,7 @@ vconcat:
       y: y
 "#;
 
-/// **The shape every generated tile writes**: two layers over one source, the
+/// **The shape a generated tile writes**: two layers over one source, the
 /// first with no `filterBy:` (the ghost, the whole table) and the second bound
 /// to a `crossfilter` selection (the subset, what a brush leaves) — see
 /// `chart_kinds::point_map_tile` and the histogram and scatter tiles beside it.
@@ -389,7 +389,7 @@ fn clearing_the_brush_restores_the_grids_full_range() {
 /// |---|---|---|---|
 /// | 0 (ghost) | `Reader` | 5 | it declares no `filterBy:`, so no predicate reaches it at all |
 /// | 1 (subset) | `Plot` | 5 | crossfilter drops the clause this plot published — its own |
-/// | 1 (subset) | `Reader` | 2 | nothing dropped: the selection's value |
+/// | 1 (subset) | `Reader` | 2 | no clause dropped: the selection's value |
 ///
 /// The first row is what the pane used to read. The second is what reading the
 /// subset layer *without* fixing the audience would read, and it is the same

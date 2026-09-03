@@ -1090,9 +1090,9 @@ pub enum RowsAudience {
     Plot,
     /// A surface that draws no mark and publishes no clause: the rows pane, a
     /// status band's count, an export. [`compile_selection`] is given
-    /// [`crate::lower::NO_SELF_EXCLUDE`], so nothing is dropped and the query
-    /// carries the selection's **value** — every contributor's predicate under
-    /// the declared resolution.
+    /// [`crate::lower::NO_SELF_EXCLUDE`], which matches no contributor path, so
+    /// the query carries the selection's **value**: each contributor's
+    /// predicate under the declared resolution.
     Reader,
 }
 

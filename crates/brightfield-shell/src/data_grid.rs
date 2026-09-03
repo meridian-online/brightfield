@@ -686,7 +686,7 @@ impl GridCache {
 }
 
 /// The engine-backed [`RowSource`]: windowed reads over the live session, at
-/// one mark, always as a [`RowsAudience::Reader`].
+/// one mark, as a [`RowsAudience::Reader`].
 ///
 /// The audience is fixed here rather than passed in because this source IS the
 /// rows pane's read: the pane draws no mark, so it has no clause of its own to
@@ -1048,11 +1048,13 @@ impl Item<ChartDoc> for DataGridItem {
         //
         // The mark comes from the document — `LiveDashboard::rows_mark`, the
         // layer carrying `filterBy:` — because a generated dashboard's mark 0
-        // is the hero's ghost, which declares no `filterBy:` and so narrows
-        // under nothing. The audience is `Reader`, fixed inside `EngineRows`,
+        // is the hero's ghost, which declares no `filterBy:` and so does not
+        // narrow at all. The audience is `Reader`, fixed inside `EngineRows`,
         // because this pane draws no mark and therefore has no crossfilter
         // contribution to exclude; asking as the hero would answer with the
         // hero's own WHERE, which drops the brush the reader just drew.
+        // `the_rows_pane_lists_the_rows_the_brush_selects` reads both off the
+        // drawn frame.
         //
         // The read marks itself as engine work — resolved within the frame
         // today (see the activity module for why a synchronous read owes no

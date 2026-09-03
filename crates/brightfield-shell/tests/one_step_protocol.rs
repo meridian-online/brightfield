@@ -1513,9 +1513,8 @@ fn a_saved_protocol_is_remembered_as_never_run() {
 /// Protocol the rest of this suite has is the generated one**, whose step is
 /// `load`, of kind `sql`, at status `not run`. Against that fixture alone,
 /// `ledger_summary` could return the literal string `load · sql · not run` and
-/// nothing would notice — measured: 92 tests stay green on that substitution.
-/// A step named and kinded differently is the only fixture that can tell a
-/// format from a constant.
+/// go unnoticed — measured: 92 tests stay green on that substitution. A step
+/// named and kinded differently is what tells a format from a constant.
 fn one_step_manifest(name: &str, with: &str) -> String {
     format!(
         "name: readings\nengine: duckdb\ndb: build/readings.db\nsteps:\n  \
@@ -1585,10 +1584,10 @@ fn the_ledger_strip_reads_the_steps_own_name_kind_and_status() {
 ///
 /// `apply_ledger_default` runs at construction and again in `adopt_boot`, and
 /// its own doc says why the second call exists: *"opening a Protocol of several
-/// steps into this window gives that Protocol its rail back."* Nothing held it.
-/// Deleting the `adopt_boot` call left 314 tests green, because every test that
-/// reads the rail's height reads it on a window that was CONSTRUCTED over the
-/// document it is asking about, and construction has its own call.
+/// steps into this window gives that Protocol its rail back."* Deleting the
+/// `adopt_boot` call left 314 tests green, because a test that reads the rail's
+/// height reads it on a window CONSTRUCTED over the document it is asking
+/// about, and construction has its own call.
 ///
 /// So this opens a second document into a window that already has one, both
 /// ways round, and reads the rail's DRAWN height each time. One window, three
@@ -1626,9 +1625,9 @@ fn adopting_a_document_re_derives_the_ledger_default() {
     // route a front door row takes. `Boot::open` refuses a run-less manifest
     // unless the offline gate is lifted — the same opt-in `one_window.rs`
     // makes, set and removed around the one call that needs it, which the
-    // mandated `--test-threads=1` keeps ordered. Nothing else in this binary
-    // reads it: the other manifest fixtures here go through
-    // `load_protocol_offline`, which does not gate.
+    // mandated `--test-threads=1` keeps ordered. The other manifest fixtures
+    // in this binary go through `load_protocol_offline`, which does not gate,
+    // so the variable is read here and not by them.
     let ctx = win.ctx.clone();
     std::env::set_var(protocol::OFFLINE_VAR, "1");
     win.app

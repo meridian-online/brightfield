@@ -200,10 +200,11 @@ fn reopen_the_ledger(app: &mut MeridianApp, ctx: &egui::Context, raw: &egui::Raw
 
 /// The window the **gesture** claims are read in: [`SCREEN`] less 120 points.
 ///
-/// Every caller of [`window`] asserts something that needs the column to have
-/// scrolled **more than one tile** — a sweep, a press or a painted rectangle
-/// read against the wrong origin lands within the same tile otherwise, and the
-/// assertion holds either way. The reach is the page's height over the pane's,
+/// [`window`] is called by the gesture tests, and each of them asserts
+/// something that needs the column to have scrolled **more than one tile** — a
+/// sweep, a press or a painted rectangle read against the wrong origin lands
+/// within the same tile otherwise, and the assertion holds either way. Each
+/// states that need as its own guard rather than leaving it to this window. The reach is the page's height over the pane's,
 /// so it is a term of the window, and each time this window has lost chrome the
 /// reach has shrunk with it: the ledger closing to its strip took 124 points
 /// back and the canvas head band's removal took 28 more, leaving 88 at
@@ -2452,9 +2453,9 @@ fn drawn_rows(
             .position(|r| x >= r.left() - 0.5 && x <= r.right() + 0.5)
     };
 
-    // The header row names the columns; it is the one row whose cells are all
-    // in `HOUSING_HEADERS`. Found rather than assumed to be first: the sticky
-    // header is painted after the body.
+    // The header row names the columns; it is the row whose cells are drawn
+    // from `HOUSING_HEADERS` rather than from the data. Found rather than
+    // assumed to be first: the sticky header is painted after the body.
     let mut by_row: std::collections::BTreeMap<i64, Vec<(usize, String)>> =
         std::collections::BTreeMap::new();
     for (pos, text) in cells {

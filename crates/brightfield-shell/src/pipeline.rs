@@ -1871,9 +1871,9 @@ pub(crate) fn ghost_subset_marks(spec: &Spec) -> Option<(usize, usize)> {
 ///
 /// # Why a literal was wrong, and why the obvious repair is also wrong
 ///
-/// Every generated tile writes its ghost first and its subset second
-/// ([`crate::chart_kinds::point_map_tile`] and the histogram and scatter tiles
-/// beside it), so mark `0` of a generated dashboard is the hero's **ghost** —
+/// A generated tile writes its ghost first and its subset second — see
+/// [`crate::chart_kinds::point_map_tile`] and the histogram and scatter tiles
+/// beside it — so mark `0` of a generated dashboard is the hero's **ghost** —
 /// `data: { from: opened }` with no `filterBy:` at all. A surface reading it
 /// reads the whole table whatever anybody brushes, and that is what the rows
 /// pane did: it listed 240 of 240 rows beside a status band saying 45 were
@@ -2459,10 +2459,10 @@ plot:
     /// asking the subset layer as the plot answers ten under this brush: the
     /// figure a status band would report is `10 of 10 rows` beside a chart in
     /// which everything outside the brush has gone grey. That was live until
-    /// this round. `compute_row_count` asks as a
-    /// [`RowsAudience::Reader`] — no plot, no contribution, nothing to drop —
-    /// and the first assertion here holds the fixture's self-exclusion so this
-    /// cannot go green by the selection quietly ceasing to be a crossfilter.
+    /// this round. `compute_row_count` asks as a [`RowsAudience::Reader`] — no
+    /// plot, so no contribution of its own to drop — and the first assertion
+    /// here holds the fixture's self-exclusion so this cannot go green by the
+    /// selection quietly ceasing to be a crossfilter.
     #[test]
     fn a_crossfilter_brush_from_the_plot_itself_still_moves_the_selected_figure() {
         let src = ROW_COUNT_DEVICE.replace("select: intersect", "select: crossfilter");

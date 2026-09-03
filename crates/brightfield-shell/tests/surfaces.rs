@@ -1054,7 +1054,9 @@ fn shadow_reach(mode: Mode) -> f32 {
 ///
 /// Blank by construction — `card_frame` opens the card with
 /// `Margin::same(modal_padding)` and `chrome_contents` draws the title first —
-/// so all three are pure card fill whatever the card holds.
+/// so each of the three is pure card fill whatever the card holds, which
+/// `every_modal_card_is_opaque_over_whatever_it_covers` asserts of each in
+/// turn.
 ///
 /// **Three rather than one, because no single one of them crosses varying
 /// window on every case.** Measured over the five overlay cases in both modes:
