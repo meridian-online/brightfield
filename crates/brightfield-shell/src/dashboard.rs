@@ -142,7 +142,10 @@ pub const TILES_PER_ROW: usize = 3;
 /// [`brightfield_spec::layout`] shares a constrained `hconcat`'s residual out
 /// in proportion to its items' intrinsic sizes. Stated as a number as well
 /// because the shell splits the canvas into panes with it, and the two have to
-/// be one declaration: `the_hero_weight_is_the_pane_share` holds them equal.
+/// be one declaration: `the_hero_takes_the_larger_share_of_the_page` lays the
+/// emitted spec out and reads the hero's width back as a fraction of what the
+/// gutter leaves, so a weight that stopped agreeing with this number reddens
+/// there.
 pub const HERO_SHARE: f32 = 0.62;
 
 /// The hero plot's declared width in logical points — [`HERO_SHARE`] of a
@@ -191,12 +194,33 @@ pub const MIN_COLUMN_TILE_HEIGHT: f32 = 96.0;
 /// from the chrome and reddens if either moves.
 pub const HERO_GUTTER: u32 = 42;
 
+/// The spacer under the hero, as the emitted spec declares it: **zero**.
+///
+/// The page is as tall as the *column* needs — [`stack_extent`] — and an
+/// `hconcat` offers each item that flexes its whole height, so a hero standing
+/// directly in the row is composed at the page's height rather than at the map
+/// pane's. That is what put its x-axis below the pane's content rect at 1440 by
+/// 900. It stands under a `vspace` instead, which does not flex: the hero takes
+/// the page height less the spacer, so setting the spacer to what the page
+/// overflows the pane by bounds the hero at the pane's own content height.
+///
+/// Zero here because the emitted source is the artefact a reader opens and the
+/// overflow is not a property of the dashboard — it is a property of the window
+/// it is laid out in, which is why [`crate::app::ChartDoc::reflow_to`] writes
+/// the live value on each layout and [`crate::pipeline::LiveDashboard::set_hero_bound`]
+/// is what receives it. A window with room for the whole column overflows by
+/// nothing and leaves this at the value written here.
+pub const HERO_BOUND: u32 = 0;
+
 /// The height the composed page needs for a column of `tiles` stacked tiles,
 /// given the `offered` height of the pane they stand in.
 ///
 /// [`MIN_COLUMN_TILE_HEIGHT`] each, or the offered box shared out evenly when
 /// that is the larger — the "or 96 points whichever is greater, scrolling past
 /// that" rule, as one number the caller can scroll a page of.
+///
+/// What the page grows by is what the hero must *not* grow by: see
+/// [`HERO_BOUND`].
 #[must_use]
 pub fn stack_extent(offered: f32, tiles: usize) -> f32 {
     #[allow(clippy::cast_precision_loss)]
@@ -659,8 +683,13 @@ impl Dashboard {
             return out;
         };
         let _ = writeln!(out, "hconcat:");
-        let _ = writeln!(out, "  # {}", tile_comment(&self.tiles[hero]));
-        out.push_str(&tile_yaml(&self.tiles[hero], 2, HERO_WIDTH, HERO_HEIGHT));
+        // The hero stands in a column of its own, under a spacer, because an
+        // `hconcat` offers each flexing item its whole height and the page is
+        // as tall as the *column* needs — see `HERO_BOUND`.
+        let _ = writeln!(out, "  - vconcat:");
+        let _ = writeln!(out, "    # {}", tile_comment(&self.tiles[hero]));
+        out.push_str(&tile_yaml(&self.tiles[hero], 4, HERO_WIDTH, HERO_HEIGHT));
+        let _ = writeln!(out, "    - vspace: {HERO_BOUND}");
         // The gutter the two panes' own frames take out of the page between
         // them. See `HERO_GUTTER`.
         let _ = writeln!(out, "  - hspace: {HERO_GUTTER}");

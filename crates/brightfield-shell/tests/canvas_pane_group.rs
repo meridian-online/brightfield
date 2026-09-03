@@ -2,17 +2,18 @@
 //! it, and the count that reads at the map's lower-right.
 //!
 //! Every claim here is read off a **laid-out frame**, not off a declaration.
-//! Whether a pane drew a header band, where its content rect fell, and whether
-//! an overlay cost the pane any room are all facts about pixels a frame put on
-//! a screen; a test that read them out of `arrangement.rs` would be comparing
-//! the declaration with itself. `MeridianApp::canvas_panes` is what the frame
-//! leaves behind for that, the way `region_rect` is for the regions.
+//! Whether a pane drew a header band, where its content rect fell, where the
+//! hero landed and how far a wheel moved the column are facts about pixels a
+//! frame put on a screen; a test that read them out of `arrangement.rs` would
+//! be comparing the declaration with itself. `MeridianApp::canvas_panes` is
+//! what the frame leaves behind for that, the way `region_rect` is for the
+//! regions, and `composed_plot_rects` is where each plot was drawn.
 //!
-//! No GPU here on purpose. `MeridianApp::headless` lays every rect out exactly
-//! as the device path does — the canvas pane reserves and paints nothing, and
-//! the geometry around it is unchanged — which is what lets the *layout* half
-//! of this card be gated without a wgpu adapter. The picture is
-//! `tests/dashboard_baseline.rs`'s.
+//! No GPU here on purpose. What `MeridianApp::headless` differs from the device
+//! path in is the raster: the canvas pane reserves the same box and paints
+//! nothing into it, so the layout, the pane split and the gesture routing are
+//! the ones the window runs, and the *layout* half of this card is gated
+//! without a wgpu adapter. The picture is `tests/dashboard_baseline.rs`'s.
 //!
 //! # The third pane
 //!
@@ -58,6 +59,20 @@ const SCREEN: egui::Rect = egui::Rect {
 
 /// A settled window over the fixture, laid out in `screen`.
 fn settled(screen: egui::Rect) -> MeridianApp {
+    settled_after(screen, None, 0)
+}
+
+/// [`settled`] with a **wheel** turned over `at` first: the pointer is put
+/// there, `notches` frames each carry one wheel event, and the window is then
+/// settled with the pointer left where it was.
+///
+/// The wheel is driven over frames rather than as one event because egui
+/// smooths a wheel: a single event is delivered as an exponential tail over
+/// the frames after it, so a test that read the offset one frame later would
+/// be asserting against the smoothing constant rather than against the
+/// window. What is asserted downstream is the offset the frame actually
+/// applied — [`MeridianApp::canvas_scroll`] — and never a number typed here.
+fn settled_after(screen: egui::Rect, at: Option<egui::Pos2>, notches: usize) -> MeridianApp {
     let path = fixture();
     let chosen = path.to_str().expect("utf-8 fixture path");
     let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
@@ -72,8 +87,37 @@ fn settled(screen: egui::Rect) -> MeridianApp {
     for _ in 0..3 {
         let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
     }
+    let Some(at) = at else {
+        return app;
+    };
+    let mut moved = raw.clone();
+    moved.events = vec![egui::Event::PointerMoved(at)];
+    let _ = ctx.run_ui(moved, |ui| app.draw(ui));
+    for _ in 0..notches {
+        let mut turned = raw.clone();
+        turned.events = vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -WHEEL_NOTCH),
+            modifiers: egui::Modifiers::default(),
+            phase: egui::TouchPhase::Move,
+        }];
+        let _ = ctx.run_ui(turned, |ui| app.draw(ui));
+    }
+    // The pointer stays put — egui holds a hover position until it is told
+    // otherwise — so these settle the smoothing tail with the wheel still over
+    // the same pane.
+    for _ in 0..6 {
+        let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
+    }
     app
 }
+
+/// One turn of the wheel, in logical points of travel.
+///
+/// egui's own note: a single notch on a Logitech wheel into a MacBook arrives
+/// as 14 raw points. This is four of them, so a test scrolls a visible
+/// distance in a few frames rather than a hairline.
+const WHEEL_NOTCH: f32 = 56.0;
 
 /// The window the dashboard baseline is photographed in — derived from the
 /// composition, exactly as `capture_png` derives it.
@@ -258,13 +302,23 @@ fn the_column_holds_one_tile_per_column_at_one_height_inside_the_pane() {
     );
 }
 
-/// **AC4 — the count reads at the map pane's lower-right, and costs the pane
-/// no room.**
+/// **AC4 — the count reads at the map pane's lower-right, over the picture and
+/// clear of its axes.**
 ///
-/// Two claims, and the second is the one that makes it an *overlay* rather
-/// than a line of chrome: the map pane's content rect is the same rect it
-/// would be with nothing painted in it. Asserted against the geometry the
-/// pane frame produces, which is what an overlay may not move.
+/// Two claims. It is at the lower-right *of the hero's own frame*, which is
+/// what an overlay on a chart means — inside the data area, on the marks,
+/// above the axis band. And it is an overlay rather than a band: it sits ON the
+/// hero's drawn rect instead of beside it, which is the falsifiable half of
+/// "costs the pane no room".
+///
+/// **What this used to assert, and why that clause is gone.** It compared the
+/// map pane's content rect against the rect the frame alone gives, to hold that
+/// the overlay allocated nothing. That assertion could not fail: `map.body` is
+/// captured from `pane_frame` before the overlay is drawn, so nothing the
+/// overlay did could move the value being compared. The property does hold,
+/// and it holds by construction one level down — `count_overlay` takes
+/// `&egui::Ui`, and allocating space needs `&mut` — so it is a signature, not a
+/// test. What is asserted here instead is what a reader would actually lose.
 #[test]
 fn the_count_reads_at_the_map_panes_lower_right_and_costs_it_no_room() {
     let app = settled(SCREEN);
@@ -289,21 +343,55 @@ fn the_count_reads_at_the_map_panes_lower_right_and_costs_it_no_room() {
          quadrant: {count:?} in {:?}",
         map.body
     );
-
-    // The content rect is the pane's own, unshrunk: an overlay takes no
-    // layout space, so this is the rect `pane_frame` hands over, and no
-    // smaller.
-    let inset = chrome::pane_content_inset();
-    let band = chrome::header_band_height();
-    let mut expected = map.rect;
-    expected.min.y += band;
-    let expected = expected.shrink(inset);
+    let hero = app.composed_plot_rects()[0];
     assert!(
-        (map.body.width() - expected.width()).abs() < 0.5
-            && (map.body.height() - expected.height()).abs() < 0.5,
-        "the map pane's content rect is {:?} where the frame alone gives \
-         {expected:?} — something took layout space out of it",
-        map.body
+        hero.contains_rect(count),
+        "the count at {count:?} is not on the hero at {hero:?} — an overlay \
+         beside the picture is a band, and a band is layout"
+    );
+}
+
+/// **The count is over the map's marks and clear of its axes** — the chip
+/// covers no tick label and no axis title.
+///
+/// It did: at the map pane's lower-right the chip landed on the x-axis band
+/// and covered the `longitude` title outright in the dashboard baselines, and
+/// left it reading as the orphan "lo" in the point-map pair. The axis region is
+/// readable from the composition — a plot's own layout says where its frame
+/// ends and its axis band starts — so this is asserted rather than left to a
+/// photograph.
+///
+/// The frame is derived from the SAME layout the chip is placed against, which
+/// is deliberate: what is being held is not the arithmetic but that the chip is
+/// placed against the plot's frame at all. Move it back to the pane's rect —
+/// where it was — and this reddens, because a pane is taller than the frame
+/// inside it by exactly the axis band.
+#[test]
+fn the_count_reads_over_the_map_and_leaves_its_axes_whole() {
+    let app = settled(SCREEN);
+    let count = app
+        .canvas_panes()
+        .count
+        .expect("the map pane drew its count overlay");
+    let hero = app.composed_plot_rects()[0];
+    let doc = app.chart_doc();
+    let layout = &doc.composed.plots[0].layout;
+    #[allow(clippy::cast_possible_truncation)]
+    let frame = egui::Rect::from_min_max(
+        egui::pos2(
+            hero.left() + layout.plot_x_start() as f32,
+            hero.top() + layout.plot_y_start() as f32,
+        ),
+        egui::pos2(
+            hero.left() + layout.plot_x_end() as f32,
+            hero.top() + layout.plot_y_end() as f32,
+        ),
+    );
+    assert!(
+        frame.contains_rect(count),
+        "the count at {count:?} reaches outside the map's data area {frame:?} \
+         — below it is the x-axis band, whose ticks and `longitude` title the \
+         chip then covers; to its left is the y-axis band"
     );
 }
 
@@ -405,4 +493,192 @@ fn an_authored_spec_still_draws_one_pane() {
         "an authored spec drew a pane group: {:?}",
         app.canvas_panes()
     );
+}
+
+/// **The map pane holds the whole hero, axes and all** — at the window the
+/// baseline is photographed in and at the shorter one where the column
+/// overflows.
+///
+/// The failure this is here for is not subtle and was invisible to every test
+/// above: at 1440 by 900 the page is composed 672 points tall for the column's
+/// seven tiles at their floor, the map pane's content rect is 588, and a hero
+/// that took the page's height put its x-axis — ticks, labels and the
+/// `longitude` title — 84 points below the pane and had them clipped away. The
+/// containment tests in this file all open with `let stacked = &placed[1..];`,
+/// so the hero is excluded from every one of them by construction. This is the
+/// one that looks at it.
+///
+/// Read off the drawn rect, which is the composition's own placed rect moved
+/// by the origin the pane painted the page at.
+#[test]
+fn the_hero_is_composed_whole_inside_the_map_pane() {
+    for screen in [baseline_screen(), SCREEN] {
+        let app = settled(screen);
+        let group = app.canvas_panes();
+        let map = group.pane("map").expect("the map pane drew");
+        let placed = app.composed_plot_rects();
+        assert_eq!(
+            placed.len(),
+            STACKED + 1,
+            "eight tiles were chosen and {} plots were placed",
+            placed.len()
+        );
+        let hero = placed[0];
+        assert!(
+            map.body.contains_rect(hero.shrink(0.5)),
+            "at {screen:?} the hero drew {hero:?}, which is not inside the map \
+             pane's content rect {:?} — it overflows by {:.1} points at the \
+             bottom, and what is down there is the x-axis",
+            map.body,
+            (hero.bottom() - map.body.bottom()).max(0.0)
+        );
+    }
+}
+
+/// **A wheel over the column moves the column, and the map stays where it
+/// was.**
+///
+/// One page, two views: the column's tiles are drawn at an origin the scroll
+/// moves and the hero at one it does not, so this reads both back off the same
+/// frame. Before this, the page moved under both panes together — the whole
+/// picture rose, the map's title went with it, and the page's top reached
+/// above the panes' header bands.
+///
+/// The distances are the frame's own: the tile is asserted to have moved by
+/// exactly [`MeridianApp::canvas_scroll`], not by the wheel travel this test
+/// sent, because what the smoothing delivered in six frames is egui's business
+/// and what the pane did with it is this window's.
+#[test]
+fn a_wheel_over_the_column_moves_the_column_and_leaves_the_map_where_it_was() {
+    let before = settled(SCREEN);
+    let still = before.composed_plot_rects();
+    let columns = before
+        .canvas_panes()
+        .pane("columns")
+        .expect("the column pane drew");
+    let after = settled_after(SCREEN, Some(columns.body.center()), 4);
+
+    let scrolled = after.canvas_scroll();
+    assert!(
+        scrolled > 0.0,
+        "the wheel over the column pane moved it {scrolled} points, so nothing \
+         below is being asserted about a scrolled window"
+    );
+    let moved = after.composed_plot_rects();
+    assert_eq!(moved.len(), still.len());
+    for (i, (was, now)) in still.iter().zip(&moved).enumerate().skip(1) {
+        assert!(
+            (was.top() - now.top() - scrolled).abs() < 0.5,
+            "tile {i} was at {was:?} and is at {now:?}, a move of {} where the \
+             column scrolled {scrolled}",
+            was.top() - now.top()
+        );
+    }
+    assert!(
+        (still[0].top() - moved[0].top()).abs() < 0.5
+            && (still[0].bottom() - moved[0].bottom()).abs() < 0.5,
+        "the hero was at {:?} and is at {:?} after a wheel over the COLUMN — \
+         the map moved with the scroll",
+        still[0],
+        moved[0]
+    );
+    let map = after.canvas_panes().pane("map").expect("the map pane drew");
+    assert!(
+        map.body.contains_rect(moved[0].shrink(0.5)),
+        "after the scroll the hero at {:?} is no longer inside the map pane's \
+         content rect {:?}",
+        moved[0],
+        map.body
+    );
+}
+
+/// **One wheel event, one consumer** — the column's, when the pointer is over
+/// the column.
+///
+/// The wheel had two readers: the canvas scrolled the page from
+/// `smooth_scroll_delta` and the chart's own gesture machine zoomed the plot
+/// under the cursor from the same frame's wheel events, and neither consumed
+/// it. Four notches over the column scrolled it AND left the tile under the
+/// pointer zoomed onto a domain with no bars in it.
+#[test]
+fn a_wheel_over_the_column_does_not_zoom_the_tile_under_it() {
+    let before = settled(SCREEN);
+    let columns = before
+        .canvas_panes()
+        .pane("columns")
+        .expect("the column pane drew");
+    let placed = before.composed_plot_rects();
+    let under = placed[1].center();
+    assert!(
+        columns.body.contains(under),
+        "the point this test turns the wheel over, {under:?}, is not on a tile \
+         of the column pane at {:?}",
+        columns.body
+    );
+    let was = tile_domains(&before);
+
+    let after = settled_after(SCREEN, Some(under), 4);
+    assert!(
+        after.canvas_scroll() > 0.0,
+        "the wheel over the column did not scroll it, so a domain that did not \
+         move says nothing"
+    );
+    let now = tile_domains(&after);
+    assert_eq!(
+        was, now,
+        "a wheel over the column pane moved a tile's domain: the column \
+         scrolled and the plot under the pointer zoomed on the same event"
+    );
+}
+
+/// **The other half of one wheel, one consumer**: over the map the wheel is
+/// the chart's, and the column does not move under it.
+#[test]
+fn a_wheel_over_the_map_does_not_scroll_the_column() {
+    let before = settled(SCREEN);
+    let map = before
+        .canvas_panes()
+        .pane("map")
+        .expect("the map pane drew");
+    let still = before.composed_plot_rects();
+    let after = settled_after(SCREEN, Some(map.body.center()), 4);
+
+    assert_eq!(
+        after.canvas_scroll(),
+        0.0,
+        "a wheel over the MAP pane scrolled the column by {} points",
+        after.canvas_scroll()
+    );
+    let moved = after.composed_plot_rects();
+    for (i, (was, now)) in still.iter().zip(&moved).enumerate().skip(1) {
+        assert!(
+            (was.top() - now.top()).abs() < 0.5,
+            "tile {i} moved from {was:?} to {now:?} on a wheel over the map"
+        );
+    }
+    // …and the wheel reached the chart, which is what makes the assertion
+    // above a routing claim rather than a wheel that went nowhere.
+    assert_ne!(
+        tile_domains(&before)[0],
+        tile_domains(&after)[0],
+        "the wheel over the map pane left the hero's domain alone, so nothing \
+         consumed it and this test would pass with the wheel unwired"
+    );
+}
+
+/// Every plot's x and y domain, in the order the composition placed them —
+/// the readback a zoom moves and a scroll must not.
+fn tile_domains(app: &MeridianApp) -> Vec<(String, String)> {
+    app.chart_doc()
+        .composed
+        .plots
+        .iter()
+        .map(|plot| {
+            let read = |channel| format!("{:?}", plot.scales.get(channel));
+            (
+                read(brightfield_render::channel::Channel::X),
+                read(brightfield_render::channel::Channel::Y),
+            )
+        })
+        .collect()
 }

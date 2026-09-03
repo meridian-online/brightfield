@@ -41,7 +41,7 @@ use brightfield_render::{grow_margins, resolve_titles};
 use brightfield_spec::analysis::{
     analyse_spec, build_brushable_bindings, BrushKind, ComponentPath,
 };
-use brightfield_spec::ast::{MarkData, ParamNode};
+use brightfield_spec::ast::{Component, MarkData, ParamNode, SpaceNode, SpecValue};
 use brightfield_spec::layout::{
     collect_plot_nodes, placed_plots, resolve_fixed_domains, resolve_plot_insets, Rect,
 };
@@ -870,6 +870,32 @@ impl LiveDashboard {
         true
     }
 
+    /// Hold the hero `points` short of the composed page's height, and say
+    /// whether that is news — the [`LiveDashboard::set_viewport`] shape, for
+    /// the same reason and on the same frame.
+    ///
+    /// The page a generated dashboard composes onto is as tall as its **column**
+    /// needs, and an `hconcat` offers every item that flexes its whole height,
+    /// so the hero would be composed at the column's height and reach below the
+    /// map pane it is drawn in. The generator emits it under a `vspace` for
+    /// this: a spacer does not flex, so what is written here comes off the
+    /// hero's share and nothing else's. See [`crate::dashboard::HERO_BOUND`].
+    ///
+    /// `false` — nothing written — for any spec whose root is not the shape
+    /// [`crate::dashboard::Dashboard::to_spec`] emits. An authored spec has no
+    /// such spacer and must not acquire one.
+    pub fn set_hero_bound(&mut self, points: f64) -> bool {
+        let Some(space) = hero_bound_spacer(&mut self.spec) else {
+            return false;
+        };
+        let next = SpecValue::Float(points);
+        if space.value == next {
+            return false;
+        }
+        space.value = next;
+        true
+    }
+
     /// Composite the CURRENT materialisation into a dashboard scene — the first
     /// paint and every post-interaction re-paint go through here.
     ///
@@ -1155,6 +1181,29 @@ impl LiveDashboard {
     #[must_use]
     pub fn data_files(&self, spec_dir: Option<&Path>) -> Vec<PathBuf> {
         spec_data_files(&self.spec, spec_dir)
+    }
+}
+
+/// The spacer that holds the hero short of the page's height, in a spec shaped
+/// as [`crate::dashboard::Dashboard::to_spec`] writes one: the last item of the
+/// `vconcat` that is the first item of the root `hconcat`.
+///
+/// `None` for every other spec, and the match is the whole of that judgement —
+/// an authored `hconcat` whose first item happens to be a `vconcat` ending in a
+/// `vspace` is a spec that asked for exactly this and gets it. Nothing else is
+/// touched, which is why the shape is matched here rather than a marker being
+/// written into the emitted source: a spec is a file a reader edits, and a
+/// magic comment they could delete would take the map's axis with it.
+fn hero_bound_spacer(spec: &mut Spec) -> Option<&mut SpaceNode> {
+    let Some(Component::HConcat(row)) = spec.root.as_mut() else {
+        return None;
+    };
+    let Some(Component::VConcat(column)) = row.items.first_mut() else {
+        return None;
+    };
+    match column.items.last_mut() {
+        Some(Component::VSpace(space)) => Some(space),
+        _ => None,
     }
 }
 

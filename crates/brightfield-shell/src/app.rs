@@ -162,6 +162,29 @@ pub struct Authored {
     pub block: String,
 }
 
+/// **A second view of the one composed page**, for a canvas drawing that page
+/// across two panes: the box this view fills and how far the page is moved up
+/// inside it.
+///
+/// The canvas's pane group composes one page — one engine session, one
+/// crossfilter selection — and each pane shows its own part of it. Only one of
+/// them scrolls: the hero is bounded to the map pane's height
+/// ([`crate::dashboard::HERO_BOUND`]) and the column is what grows, so the page
+/// is drawn at its own origin for the map and moved up by [`Self::by`] for the
+/// column. Everything a pointer does inside [`Self::clip`] is read against the
+/// moved origin, which is what keeps a brush on a scrolled tile landing on the
+/// tile under the pointer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SecondView {
+    /// The box this view fills, in window-space logical points. Nothing it
+    /// paints reaches outside this, and a pointer outside it is not in this
+    /// view.
+    pub clip: egui::Rect,
+    /// How far the page is moved **up** inside [`Self::clip`], in logical
+    /// points. Zero is the same view as the first one.
+    pub by: f32,
+}
+
 /// The chart view's **document**: the composited dashboard, the canvas it
 /// rasters into, and the chart state the panes read.
 ///
@@ -186,6 +209,22 @@ pub struct ChartDoc {
     /// arithmetic — which is the only kind of assertion that could have caught
     /// this window clipping its own raster.
     pub viewport: Option<egui::Rect>,
+    /// **The second pane's view of this document's page**, when a canvas is
+    /// drawing one page across two panes — see [`SecondView`].
+    ///
+    /// `None` for a document drawn in one view, which is every document but a
+    /// generated dashboard's. Written by the canvas each frame *before* the
+    /// pane draws, because it is a fact about the layout the frame chose rather
+    /// than about the document.
+    pub second_view: Option<SecondView>,
+    /// **Whether this frame's wheel travel already has a consumer.**
+    ///
+    /// The canvas takes the wheel when the pointer is over the pane that
+    /// scrolls, and a wheel event with two consumers is one gesture doing two
+    /// things — it scrolled the column and zoomed the plot under the cursor at
+    /// the same time. Written by the canvas each frame, read by the chart
+    /// pane's gesture machine, and false on every frame nobody claims it.
+    pub wheel_taken: bool,
     /// The rect the controls rail's overlay checkbox last occupied, in
     /// window-space logical points — `None` until a frame has been laid out.
     ///
@@ -344,6 +383,8 @@ impl ChartDoc {
             composed,
             overlay: true,
             viewport: None,
+            second_view: None,
+            wheel_taken: false,
             overlay_checkbox: None,
             raster_rect: None,
             legend_rect: None,
@@ -375,6 +416,8 @@ impl ChartDoc {
             composed,
             overlay: true,
             viewport: None,
+            second_view: None,
+            wheel_taken: false,
             overlay_checkbox: None,
             raster_rect: None,
             legend_rect: None,
@@ -450,6 +493,7 @@ impl ChartDoc {
         // outgoing dashboard's two panes.
         self.stacked_tiles = None;
         self.min_page_height = 0.0;
+        self.second_view = None;
         // The watch list described the replaced document's files, and any
         // in-flight marks belonged to its session — both go with it.
         self.watch.watch(None, Vec::new());
@@ -502,22 +546,33 @@ impl ChartDoc {
     /// [`MIN_CHART_EXTENT`] on each axis, so a pane reported at a fractional
     /// or vanishing size cannot re-query once per frame or ask for a scene
     /// with no range in it.
+    ///
+    /// **The page's height and the hero's are two numbers here, not one.** The
+    /// box offered is the taller of the room and [`Self::set_min_page_height`]'s
+    /// floor, because the column's tiles do not compress past their own; what
+    /// the floor added is then handed to
+    /// [`LiveDashboard::set_hero_bound`](crate::pipeline::LiveDashboard::set_hero_bound)
+    /// so the hero is composed at the room it was offered and the growth is the
+    /// column's alone. Both are written before the re-present, and either being
+    /// news is what makes one happen.
     pub fn reflow_to(&mut self, size: egui::Vec2) -> bool {
+        let room = size.y.floor().max(MIN_CHART_EXTENT);
+        let page = size
+            .y
+            .max(self.min_page_height)
+            .floor()
+            .max(MIN_CHART_EXTENT);
         let box_ = SpecRect::new(
             0.0,
             0.0,
             f64::from(size.x.floor().max(MIN_CHART_EXTENT)),
-            f64::from(
-                size.y
-                    .max(self.min_page_height)
-                    .floor()
-                    .max(MIN_CHART_EXTENT),
-            ),
+            f64::from(page),
         );
         let Some(live) = self.live.as_mut() else {
             return false;
         };
-        if !live.set_viewport(box_) {
+        let bound = live.set_hero_bound(f64::from((page - room).max(0.0)));
+        if !live.set_viewport(box_) && !bound {
             return false;
         }
         self.activity.begin(Activity::EngineQuery);

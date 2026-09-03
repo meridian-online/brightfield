@@ -440,7 +440,17 @@ impl ChartItem {
             // 32 with no further travel), so "the delta is zero" is not the end
             // of a gesture, it is some frames after it. A frame carrying no
             // wheel event is.
-            let scroll = wheel_travel(ctx);
+            // **Nothing, on a frame whose wheel already has a consumer.** The
+            // canvas takes the wheel when the pointer is over the pane that
+            // scrolls its page — see [`ChartDoc::wheel_taken`] — and one wheel
+            // event read twice is one gesture doing two things: the column
+            // scrolled and the tile under the cursor zoomed out of its own
+            // domain at the same time.
+            let scroll = if doc.wheel_taken {
+                0.0
+            } else {
+                wheel_travel(ctx)
+            };
             let scrolling = scroll.abs() > f64::EPSILON;
             if scrolling {
                 if let Some(p) = pointer {
@@ -499,6 +509,30 @@ impl ChartItem {
             }
         }
         (repaint, GestureFrame { hovered, pointer })
+    }
+}
+
+/// **Where the page's origin is for the pointer this frame** — `raster` as it
+/// was painted, or the same rect moved by [`crate::app::SecondView::by`] when
+/// the pointer is inside the second view.
+///
+/// A page drawn in two views has two origins, and a pointer position is only
+/// meaningful against the one whose view it is in: read against the wrong one,
+/// a press on a scrolled tile lands on whichever tile is that far up the page,
+/// which is a brush filtering a column the reader did not touch. The two views
+/// hold disjoint parts of the page's width, so the pointer is in at most one.
+///
+/// `raster` for a document drawn in one view, which is every document but a
+/// generated dashboard's, and for a pointer that is nowhere.
+fn page_view_rect(doc: &ChartDoc, ctx: &egui::Context, raster: egui::Rect) -> egui::Rect {
+    let Some(view) = doc.second_view else {
+        return raster;
+    };
+    let inside = ctx.input(|i| i.pointer.hover_pos().is_some_and(|p| view.clip.contains(p)));
+    if inside {
+        raster.translate(egui::vec2(0.0, -view.by))
+    } else {
+        raster
     }
 }
 
@@ -796,9 +830,33 @@ impl Item<ChartDoc> for ChartItem {
                 return;
             };
 
+            // **The second pane's view of the same page**, when a canvas is
+            // drawing this document across two panes and one of them has
+            // scrolled. The same texture, painted again at the origin that
+            // pane reads the page from and clipped to that pane, which is what
+            // makes one composition — one session, one selection — two views.
+            //
+            // Nothing is painted when the two views coincide: the paint above
+            // spans the whole page, so a second copy at the same origin would
+            // be the same pixels twice.
+            if let Some(view) = doc.second_view.filter(|v| v.by > 0.0) {
+                if let Some(texture) = doc.canvas_texture() {
+                    ui.painter().with_clip_rect(view.clip).image(
+                        texture,
+                        rect.translate(egui::vec2(0.0, -view.by)),
+                        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                }
+            }
+            // Which view the pointer is in decides where the page's origin is
+            // for everything below: the gesture that reads a plot out of a
+            // pointer position, and the transient ink painted back over it.
+            let page = page_view_rect(doc, &ctx, rect);
+
             // Same gestures with a device and without one. The overlay is the
             // only thing a headless document loses: it has nowhere to paint.
-            let (repaint, gesture) = self.drive_gestures(doc, &ctx, rect);
+            let (repaint, gesture) = self.drive_gestures(doc, &ctx, page);
             if repaint {
                 cx.request_repaint();
             }
@@ -812,7 +870,7 @@ impl Item<ChartDoc> for ChartItem {
                 if let Some(drag) = self.drag {
                     let tokens = overlay_tokens(mode);
                     let r = drag_rect(&doc.composed.plots[drag.plot], drag);
-                    let mut painter = EguiOverlay::new(ui, rect);
+                    let mut painter = EguiOverlay::new(ui, page);
                     painter.fill_rect(r, Color::from_token(tokens.brush_fill));
                     painter.stroke_rect(r, Color::from_token(tokens.brush_border), 1.0);
                 } else if overlay_on && hovered {
@@ -827,7 +885,7 @@ impl Item<ChartDoc> for ChartItem {
                                 Mode::Dark => INK_DARK.focus,
                             };
                             let ink = Color::from_token_alpha(focus, 0.9);
-                            let mut painter = EguiOverlay::new(ui, rect);
+                            let mut painter = EguiOverlay::new(ui, page);
                             for (a, b) in segments {
                                 painter.line(a, b, ink, 1.0);
                             }

@@ -129,13 +129,16 @@ fn assert_housing(dash: &Dashboard) {
     assert_eq!(
         drawn,
         HOUSING_PLOTS.to_vec(),
-        "the tiles this picture is of, or the order the composition places          them in, have moved. The first is the hero the map pane holds and the          rest are the column beside it."
+        "the tiles this picture is of, or the order the composition places \
+         them in, have moved. The first is the hero the map pane holds and \
+         the rest are the column beside it."
     );
     let hero = &dash.plot_order()[0];
     assert_eq!(
         hero.kind(),
         chart_kinds::POINT_MAP,
-        "the hero is not the point map, so the map pane is holding something          else and the picture below is not the first screen"
+        "the hero is not the point map, so the map pane is holding something \
+         else and the picture below is not the first screen"
     );
     assert_eq!(
         hero.paired_column(),
