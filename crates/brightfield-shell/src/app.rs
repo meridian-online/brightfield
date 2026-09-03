@@ -162,39 +162,48 @@ pub struct Authored {
     pub block: String,
 }
 
-/// **A second view of the one composed page**, for a canvas drawing that page
-/// across two panes: the box this view fills and how far the page is moved up
-/// inside it.
+/// **The boxes one composed page is drawn in**, for a canvas drawing that page
+/// across two panes: the box each view fills and how far the page is moved up
+/// inside the second.
 ///
 /// The canvas's pane group composes one page — one engine session, one
 /// crossfilter selection — and each pane shows its own part of it. The column
 /// is the pane that scrolls, because the hero is bounded to the map pane's
 /// height ([`crate::dashboard::HERO_BOUND`]): the page is drawn at its own
-/// origin for the map and moved up by [`Self::by`] for the column, which
-/// `a_wheel_over_the_column_moves_the_column_and_leaves_the_map_where_it_was`
+/// origin in [`Self::first`] and moved up by [`Self::by`] in [`Self::second`],
+/// which `a_wheel_over_the_column_moves_the_column_and_leaves_the_map_where_it_was`
 /// reads back off a frame.
 ///
-/// A pointer inside [`Self::clip`] is read against the moved origin, which is
+/// A pointer inside [`Self::second`] is read against the moved origin, which is
 /// what keeps a brush on a scrolled tile landing on the tile under it —
 /// `a_brush_on_a_scrolled_tile_lands_on_the_tile_under_the_pointer`. That is a
 /// per-frame answer, and a gesture spanning frames latches its own instead:
 /// [`page_offset`].
+///
+/// **Both boxes are here because the page reaches past them.** The page is as
+/// tall as the column's tiles need and the panes are as tall as the window
+/// left them, so at a short window it hangs below both — and the gutter
+/// between the panes is inside its width and inside neither of them. A pointer
+/// there is over a page nobody drew, which is a question about the two boxes
+/// together and cannot be asked of one; [`Self::offset_at`] is the answer and
+/// `a_press_over_no_pane_of_the_group_is_over_no_page` holds it.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SecondView {
-    /// The box this view fills, in window-space logical points. Nothing it
-    /// paints reaches outside this, and a pointer outside it is not in this
+pub struct PaneViews {
+    /// The box the first view fills, in window-space logical points — the pane
+    /// that draws the page at the page's own origin.
+    pub first: egui::Rect,
+    /// The box the second view fills, in window-space logical points. Nothing
+    /// it paints reaches outside this, and a pointer outside it is not in this
     /// view.
-    pub clip: egui::Rect,
-    /// How far the page is moved **up** inside [`Self::clip`], in logical
+    pub second: egui::Rect,
+    /// How far the page is moved **up** inside [`Self::second`], in logical
     /// points. Zero is the same view as the first one.
     pub by: f32,
 }
 
-impl SecondView {
-    /// **Whether this view holds the page's column at screen `x`** — the
-    /// containment rule for a page drawn at two origins, written once and read
-    /// by both callers that need it: the pointer mapping in
-    /// [`crate::chart_item`] (through [`page_offset`]) and the plot readback in
+impl PaneViews {
+    /// **Whether the second view holds the page's column at screen `x`** — the
+    /// containment rule for a *plot* on a page drawn at two origins, read by
     /// [`crate::window::MeridianApp::composed_plot_rects`].
     ///
     /// Membership is **horizontal**, because the pane group is a left-right
@@ -205,21 +214,61 @@ impl SecondView {
     /// column's tile. A rect test would hand that tile to the first view and
     /// report it at the unmoved origin, which is the readback
     /// `a_wheel_over_the_column_moves_the_column_and_leaves_the_map_where_it_was`
-    /// holds to the offset the frame applied. [`page_offset`] adds the vertical
-    /// clause for the one caller whose subject is a pointer rather than a plot.
+    /// holds to the offset the frame applied.
+    ///
+    /// A **pointer** is the other subject and gets [`Self::offset_at`]
+    /// instead. The difference is not a missing clause on one side: a tile
+    /// below the fold is still drawn, clipped, and the reader can scroll to it,
+    /// whereas a pointer below the fold is on chrome that pane never painted.
     #[must_use]
-    pub fn holds(self, x: f32) -> bool {
-        self.clip.x_range().contains(x)
+    pub fn second_holds(self, x: f32) -> bool {
+        self.second.x_range().contains(x)
+    }
+
+    /// **Which view drew the page under `at`**, as the offset that view moved
+    /// the page by — `None` where neither of them drew it.
+    ///
+    /// The rect test the pointer needs and the plot does not. Each pane paints
+    /// inside its own box, so the page is under the pointer exactly where one
+    /// of these two boxes is: the header bands above them, the gutter between
+    /// them, the pane insets around them and the band below them where the
+    /// page overhangs the panes are all places the page reaches and no pane
+    /// drew it. `None` is that, and it is a different answer from the first
+    /// view's zero — which is why this returns an [`Option`] rather than an
+    /// offset a caller has to know to disbelieve.
+    ///
+    /// The two boxes are disjoint by construction — the gutter is between them
+    /// — so the order of the tests below is not a tie-break.
+    #[must_use]
+    pub fn offset_at(self, at: egui::Pos2) -> Option<f32> {
+        if self.second.contains(at) {
+            Some(self.by)
+        } else if self.first.contains(at) {
+            Some(0.0)
+        } else {
+            None
+        }
     }
 }
 
-/// **How far up the page is moved for a pointer**, in logical points: zero for
-/// the first view's origin and [`SecondView::by`] for the second's.
+/// **How far up the page is moved for a pointer**, in logical points, or
+/// `None` when the pointer is over no page at all: zero for the first view's
+/// origin and [`PaneViews::by`] for the second's.
 ///
 /// The one place a screen point becomes a page origin. `latched` is a gesture's
 /// own origin, captured at its press edge, and when it is `Some` it is the
-/// answer whatever the pointer has crossed since — see [`SecondView::holds`]
-/// for the containment rule this shares with the plot readback.
+/// answer whatever the pointer has crossed since — including out of the pane
+/// group entirely, because a sweep is the difference between two points and a
+/// difference is only a distance inside one origin.
+///
+/// **Why the answer can be absence.** A page drawn in a pane group is drawn in
+/// the two boxes [`PaneViews`] names and nowhere else, and it is bigger than
+/// their union: it hangs below both at a short window and the gutter runs
+/// through it. Answering the first view's origin for a point in that leftover —
+/// which is what an offset with no absence in it has to do — puts the pointer
+/// on whichever tile the page happens to have there, so a press on the ledger
+/// rail under the canvas commits a crossfilter and selects a column. See
+/// [`PaneViews::offset_at`].
 ///
 /// **Why a gesture latches and a frame does not.** A press, a hover and a wheel
 /// zoom are facts about one frame, so the origin the pointer is in *now* is the
@@ -233,17 +282,21 @@ impl SecondView {
 /// The pins are `a_brush_across_the_pane_boundary_commits_what_it_swept` and
 /// `a_pan_across_the_pane_boundary_moves_by_what_the_hand_moved`.
 #[must_use]
-pub fn page_offset(view: Option<SecondView>, latched: Option<f32>, at: Option<egui::Pos2>) -> f32 {
+pub fn page_offset(
+    views: Option<PaneViews>,
+    latched: Option<f32>,
+    at: Option<egui::Pos2>,
+) -> Option<f32> {
     if let Some(by) = latched {
-        return by;
+        return Some(by);
     }
-    match (view, at) {
-        // The vertical clause a pointer needs and a plot does not: this view
-        // paints nothing outside its own box, so a pointer above or below it —
-        // the pane's own header band, the chrome under the canvas — is over
-        // nothing this view drew, and reads against the first origin.
-        (Some(view), Some(p)) if view.holds(p.x) && view.clip.y_range().contains(p.y) => view.by,
-        _ => 0.0,
+    let at = at?;
+    match views {
+        Some(views) => views.offset_at(at),
+        // One view, and its box IS the page's: a document drawn in one pane
+        // lays the raster out inside that pane, so the containment test that
+        // matters is the raster's own and the callers already make it.
+        None => Some(0.0),
     }
 }
 
@@ -271,14 +324,41 @@ pub struct ChartDoc {
     /// arithmetic — which is the only kind of assertion that could have caught
     /// this window clipping its own raster.
     pub viewport: Option<egui::Rect>,
-    /// **The second pane's view of this document's page**, when a canvas is
-    /// drawing one page across two panes — see [`SecondView`].
+    /// **The boxes this document's page is drawn in**, when a canvas is
+    /// drawing one page across two panes — see [`PaneViews`].
     ///
     /// `None` for a document drawn in one view, which is what an authored
     /// spec gets — `an_authored_spec_still_draws_one_pane`. Written by the
     /// canvas each frame *before* the pane draws, because it is a fact about
     /// the layout the frame chose rather than about the document.
-    pub second_view: Option<SecondView>,
+    pub pane_views: Option<PaneViews>,
+    /// **Whether a pointer gesture is holding a page origin**, as of the last
+    /// frame the chart pane drew.
+    ///
+    /// Written by the chart pane's gesture machine, read by the canvas before
+    /// it applies the wheel, and the mirror of [`Self::wheel_taken`]: that one
+    /// carries "the canvas has taken this wheel" inwards, this one carries "a
+    /// gesture is in progress" outwards. A drag latches the origin the page
+    /// was drawn at when the button went down and reads every later frame's
+    /// pointer against it, so moving the page under a live gesture leaves the
+    /// numbers pointing at tiles the hand never touched while the picture says
+    /// otherwise — `a_wheel_during_a_drag_does_not_move_the_column`.
+    ///
+    /// It is one frame old where the canvas reads it, because the canvas
+    /// decides the scroll before the pane it hands the page to has drawn.
+    /// That is the right age: the frame a press lands on has already chosen
+    /// its scroll, and the press latches the origin that frame drew.
+    pub gesture_latched: bool,
+    /// **Where the transient gesture's ink is**, in window-space logical
+    /// points — `None` on a frame with no gesture in progress.
+    ///
+    /// The rect the brush rectangle is painted at, recorded on the frame the
+    /// pane draws whether or not there is a device behind the document to
+    /// paint it with. Recorded rather than re-derived: it comes from the same
+    /// value the painter is handed, in one expression, so a test can hold the
+    /// ink to the origin the gesture latched instead of holding a second copy
+    /// of the arithmetic to itself — `the_brush_rectangle_stays_where_the_hand_is`.
+    pub gesture_ink: Option<egui::Rect>,
     /// **Whether this frame's wheel travel already has a consumer.**
     ///
     /// The canvas takes the wheel when the pointer is over the pane that
@@ -445,7 +525,9 @@ impl ChartDoc {
             composed,
             overlay: true,
             viewport: None,
-            second_view: None,
+            pane_views: None,
+            gesture_latched: false,
+            gesture_ink: None,
             wheel_taken: false,
             overlay_checkbox: None,
             raster_rect: None,
@@ -478,7 +560,9 @@ impl ChartDoc {
             composed,
             overlay: true,
             viewport: None,
-            second_view: None,
+            pane_views: None,
+            gesture_latched: false,
+            gesture_ink: None,
             wheel_taken: false,
             overlay_checkbox: None,
             raster_rect: None,
@@ -555,7 +639,9 @@ impl ChartDoc {
         // outgoing dashboard's two panes.
         self.stacked_tiles = None;
         self.min_page_height = 0.0;
-        self.second_view = None;
+        self.pane_views = None;
+        self.gesture_latched = false;
+        self.gesture_ink = None;
         // The watch list described the replaced document's files, and any
         // in-flight marks belonged to its session — both go with it.
         self.watch.watch(None, Vec::new());

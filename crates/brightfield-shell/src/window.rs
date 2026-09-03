@@ -2251,18 +2251,22 @@ impl MeridianApp {
     /// **A page drawn in two views has two origins.** The canvas's pane group
     /// draws one page across two panes, of which the column is the one that
     /// scrolls, so a plot standing there is on the screen at the moved origin —
-    /// see [`crate::app::SecondView`], and
+    /// see [`crate::app::PaneViews`], and
     /// `a_wheel_over_the_column_moves_the_column_and_leaves_the_map_where_it_was`
-    /// for what a frame answers. Which view a plot is in is read off the view's
-    /// own containment rule — [`crate::app::SecondView::holds`], the same one
-    /// the pointer mapping in [`crate::chart_item`] reads — rather than off the
-    /// plot's index.
+    /// for what a frame answers. Which view a plot is in is read off the
+    /// second view's own containment rule —
+    /// [`crate::app::PaneViews::second_holds`] — rather than off the plot's
+    /// index. A *pointer* is placed by
+    /// [`crate::app::PaneViews::offset_at`] instead, which is a rect test and
+    /// can answer that there is no page there at all; a plot below the fold is
+    /// still the column's, and that difference is the reason there are two
+    /// rules rather than one.
     #[must_use]
     pub fn composed_plot_rects(&self) -> Vec<egui::Rect> {
         let Some(page) = self.charts.doc.raster_rect else {
             return Vec::new();
         };
-        let view = self.charts.doc.second_view;
+        let view = self.charts.doc.pane_views;
         self.charts
             .doc
             .composed
@@ -2278,7 +2282,7 @@ impl MeridianApp {
                     egui::vec2(plot.rect.width as f32, plot.rect.height as f32),
                 );
                 match view {
-                    Some(view) if view.holds(at.center().x) => {
+                    Some(view) if view.second_holds(at.center().x) => {
                         at.translate(egui::vec2(0.0, -view.by))
                     }
                     _ => at,
@@ -3119,12 +3123,26 @@ impl MeridianApp {
                             let (_, columns_rect) = canvas_pane_rects(body);
                             let over_columns = ui.rect_contains_pointer(columns_rect);
                             charts.doc.wheel_taken = over_columns;
-                            let wheel = if reach > 0.0 && over_columns {
+                            // **A gesture holding a page origin pins the
+                            // column.** A drag reads every frame's pointer
+                            // against the origin the page was drawn at when
+                            // the button went down, so a page that moves
+                            // under it keeps resolving to the tile the press
+                            // landed on while the reader watches the picture
+                            // slide — the ink and the clause part company and
+                            // the clause is the one that gets committed. The
+                            // clamp is skipped with it: a resize mid-gesture
+                            // re-clamps to a new reach, which moves the page
+                            // for exactly the same reason a wheel does.
+                            let latched = charts.doc.gesture_latched;
+                            let wheel = if reach > 0.0 && over_columns && !latched {
                                 ui.input(|i| i.smooth_scroll_delta.y)
                             } else {
                                 0.0
                             };
-                            canvas_scroll = (canvas_scroll - wheel).clamp(0.0, reach);
+                            if !latched {
+                                canvas_scroll = (canvas_scroll - wheel).clamp(0.0, reach);
+                            }
                             canvas_panes = draw_canvas_pane_group(
                                 ui,
                                 body,
@@ -3139,7 +3157,7 @@ impl MeridianApp {
                             );
                         } else {
                             charts.doc.set_min_page_height(0.0);
-                            charts.doc.second_view = None;
+                            charts.doc.pane_views = None;
                             charts.doc.wheel_taken = false;
                             canvas_scroll = 0.0;
                             draw_chart_pane(
@@ -5374,7 +5392,7 @@ fn count_overlay(ui: &egui::Ui, within: egui::Rect, text: &str, mode: Mode) -> e
 ///   [`crate::app::ChartDoc::reflow_to`];
 /// - **the scroll** is the column's. The page is laid out at the union's own
 ///   top for the map, and the column pane reads it through a
-///   [`crate::app::SecondView`] moved up by `scroll` — one composition, one
+///   [`crate::app::PaneViews`] moved up by `scroll` — one composition, one
 ///   texture, two origins.
 #[allow(clippy::too_many_arguments)]
 fn draw_canvas_pane_group(
@@ -5434,8 +5452,9 @@ fn draw_canvas_pane_group(
     // would carry the map's picture out of the map's pane. The scroll is the
     // column's, and it is carried by the second view below.
     let union = map_body.union(columns_body);
-    charts.doc.second_view = Some(crate::app::SecondView {
-        clip: columns_body,
+    charts.doc.pane_views = Some(crate::app::PaneViews {
+        first: map_body,
+        second: columns_body,
         by: scroll,
     });
     draw_chart_body(

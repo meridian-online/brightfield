@@ -541,11 +541,25 @@ impl<'u> EguiOverlay<'u> {
     }
 
     fn rect(&self, r: SurfaceRect) -> egui::Rect {
-        egui::Rect::from_min_size(
-            egui::pos2(r.x as f32 + self.origin.x, r.y as f32 + self.origin.y),
-            egui::vec2(r.width as f32, r.height as f32),
-        )
+        overlay_rect(self.origin, r)
     }
+}
+
+/// A surface-local rect in window space, against a page whose top-left is
+/// `origin` — the mapping [`EguiOverlay`] paints a rect through.
+///
+/// A function rather than a method so the rect the transient ink lands on can
+/// be **recorded** as well as drawn, out of the one expression the painter is
+/// handed. Two copies of this arithmetic would be a readback that agrees with
+/// the paint until the day it does not; see
+/// [`ChartDoc::gesture_ink`](crate::app::ChartDoc::gesture_ink).
+#[must_use]
+#[allow(clippy::cast_possible_truncation)]
+pub fn overlay_rect(origin: egui::Vec2, r: SurfaceRect) -> egui::Rect {
+    egui::Rect::from_min_size(
+        egui::pos2(r.x as f32 + origin.x, r.y as f32 + origin.y),
+        egui::vec2(r.width as f32, r.height as f32),
+    )
 }
 
 impl OverlayPainter for EguiOverlay<'_> {
@@ -599,14 +613,26 @@ pub fn set_surface_cursor(ctx: &egui::Context, cursor: SurfaceCursor) {
 /// Map egui pointer state over `rect` into the framework-free [`SurfaceInput`]
 /// (surface-local logical pixels). The render seam's egui input boundary: past
 /// this point nothing downstream knows egui exists.
-pub fn surface_input(ctx: &egui::Context, rect: egui::Rect) -> SurfaceInput {
+///
+/// **`rect` is an [`Option`] because a pointer can be over no surface at all.**
+/// A page drawn across a pane group is drawn inside the panes' content rects
+/// and reaches past them — below them at a short window, and through the
+/// gutter between them — so the caller's answer to "which box is this pointer
+/// reading the page in" is itself an `Option`
+/// ([`page_offset`](crate::app::page_offset)). Taking a rect here would make
+/// the caller invent one for the absent case, and the rect it would invent —
+/// the page's own — is the one that puts the pointer on a tile nobody drew
+/// under it. `None` reports not hovered, with no pointer position, and leaves
+/// the button and modifier state alone: a button released off the surface is
+/// still a release.
+pub fn surface_input(ctx: &egui::Context, rect: Option<egui::Rect>) -> SurfaceInput {
     ctx.input(|i| {
-        let hovered = i.pointer.hover_pos().is_some_and(|p| rect.contains(p));
-        let pointer_pos = i
-            .pointer
-            .hover_pos()
-            .filter(|p| rect.contains(*p))
-            .map(|p| Point::new((p.x - rect.min.x) as f64, (p.y - rect.min.y) as f64));
+        let over = rect
+            .zip(i.pointer.hover_pos())
+            .filter(|(rect, p)| rect.contains(*p));
+        let hovered = over.is_some();
+        let pointer_pos =
+            over.map(|(rect, p)| Point::new((p.x - rect.min.x) as f64, (p.y - rect.min.y) as f64));
         let m = i.modifiers;
         let d = i.pointer.delta();
         SurfaceInput {

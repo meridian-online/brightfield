@@ -377,17 +377,14 @@ impl ChartItem {
         // the offset, and takes a gesture's latched origin when there is one —
         // read its docs for why a frame and a gesture answer differently.
         let at = ctx.input(|i| i.pointer.hover_pos());
-        let view = doc.second_view;
-        let frame_by = crate::app::page_offset(view, None, at);
-        let frame_page = page_at(raster, frame_by);
-        let drag_page = page_at(
-            raster,
-            crate::app::page_offset(view, self.drag.map(|d| d.by), at),
-        );
-        let pan_page = page_at(
-            raster,
-            crate::app::page_offset(view, self.pan.map(|p| p.by), at),
-        );
+        let views = doc.pane_views;
+        let page_of = |latched: Option<f32>| {
+            crate::app::page_offset(views, latched, at).map(|by| page_at(raster, by))
+        };
+        let frame_by = crate::app::page_offset(views, None, at);
+        let frame_page = page_of(None);
+        let drag_page = page_of(self.drag.map(|d| d.by));
+        let pan_page = page_of(self.pan.map(|p| p.by));
 
         // Gestures and the transient overlay, before the legend band so
         // the frame borrow ends inside this scope.
@@ -408,7 +405,11 @@ impl ChartItem {
         // The drag state machine: press starts a brush in the plot under
         // the pointer, release commits it. Edge-triggered on the button.
         if down && !self.was_down {
-            if let Some(p) = pointer {
+            // `frame_by` is `Some` wherever `pointer` is — the pointer is
+            // page-local against the box that offset named — and taken
+            // together rather than unwrapped so the press cannot latch an
+            // origin the page was not read in.
+            if let Some((p, by)) = pointer.zip(frame_by) {
                 if let Some(plot) = plot_at(&doc.composed.plots, p) {
                     // Pressing on a tile selects the column it draws, whatever
                     // else the press goes on to do. It is here, on the press
@@ -426,7 +427,7 @@ impl ChartItem {
                             plot,
                             start: p,
                             current: p,
-                            by: frame_by,
+                            by,
                         });
                     }
                 }
@@ -455,12 +456,8 @@ impl ChartItem {
             // position rather than against the gesture's origin, so each
             // step moves the frame by exactly what the hand moved.
             if secondary_down && !self.was_secondary_down {
-                self.pan = pointer.and_then(|p| {
-                    plot_at(&doc.composed.plots, p).map(|plot| Pan {
-                        plot,
-                        last: p,
-                        by: frame_by,
-                    })
+                self.pan = pointer.zip(frame_by).and_then(|(p, by)| {
+                    plot_at(&doc.composed.plots, p).map(|plot| Pan { plot, last: p, by })
                 });
             } else if secondary_down {
                 // Both points in the origin the press latched. `last` was read
@@ -575,7 +572,14 @@ impl ChartItem {
         // has two origins, and the brush rectangle belongs to the gesture, so
         // it stays where the sweep is rather than jumping the instant the
         // pointer crosses into the other pane.
-        let page = self.drag.map_or(frame_page, |d| page_at(raster, d.by));
+        let page = self
+            .drag
+            .map_or(frame_page, |d| Some(page_at(raster, d.by)));
+        // What the canvas reads back next frame, before it decides the scroll:
+        // a gesture holding an origin is a gesture the page must not move
+        // under. Both latches, because a pan's step is differenced against a
+        // point read a frame ago in the same way a sweep's is.
+        doc.gesture_latched = self.drag.is_some() || self.pan.is_some();
         (
             repaint,
             GestureFrame {
@@ -603,11 +607,16 @@ fn page_at(raster: egui::Rect, by: f32) -> egui::Rect {
 /// that page.
 ///
 /// [`surface_input`]'s own mapping, for the pages this frame's input was *not*
-/// read against — the origins a drag and a pan latched, which coincide with
-/// this frame's until the gesture crosses between the views.
-fn page_local(at: Option<egui::Pos2>, page: egui::Rect) -> Option<kurbo::Point> {
-    at.filter(|p| page.contains(*p))
-        .map(|p| kurbo::Point::new(f64::from(p.x - page.min.x), f64::from(p.y - page.min.y)))
+/// read against — the origins a drag and a pan latched. `page` is an
+/// [`Option`] for the reason [`surface_input`]'s rect is: there are frames on
+/// which the pointer is reading no page, and a caller that had to remember to
+/// check would be the caller that forgot.
+fn page_local(at: Option<egui::Pos2>, page: Option<egui::Rect>) -> Option<kurbo::Point> {
+    let (p, page) = at.zip(page).filter(|(p, page)| page.contains(*p))?;
+    Some(kurbo::Point::new(
+        f64::from(p.x - page.min.x),
+        f64::from(p.y - page.min.y),
+    ))
 }
 
 /// The chart module this document's picture is drawn as, or `None` when no
@@ -644,9 +653,10 @@ struct GestureFrame {
     /// Where it is, in raster-local logical pixels.
     pointer: Option<kurbo::Point>,
     /// **The page rect the transient ink is painted against** — the origin the
-    /// drag in progress latched, or this frame's when there is no drag. See
+    /// drag in progress latched, or this frame's when there is no drag, and
+    /// `None` on a frame with neither a drag nor a pointer over a page. See
     /// [`crate::app::page_offset`].
-    page: egui::Rect,
+    page: Option<egui::Rect>,
 }
 
 impl Default for ChartItem {
@@ -888,6 +898,7 @@ impl Item<ChartDoc> for ChartItem {
             // no longer fit — and a rect left standing from the last frame
             // would aim this frame's gestures at a raster that is not there.
             doc.raster_rect = None;
+            doc.gesture_ink = None;
             let rect = match module_of(doc) {
                 Some(mut module) => {
                     Item::ui(&mut module, doc, ui, cx);
@@ -917,9 +928,9 @@ impl Item<ChartDoc> for ChartItem {
             // Nothing is painted when the two views coincide: the paint above
             // spans the whole page, so a second copy at the same origin would
             // be the same pixels twice.
-            if let Some(view) = doc.second_view.filter(|v| v.by > 0.0) {
+            if let Some(view) = doc.pane_views.filter(|v| v.by > 0.0) {
                 if let Some(texture) = doc.canvas_texture() {
-                    ui.painter().with_clip_rect(view.clip).image(
+                    ui.painter().with_clip_rect(view.second).image(
                         texture,
                         rect.translate(egui::vec2(0.0, -view.by)),
                         egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
@@ -943,10 +954,21 @@ impl Item<ChartDoc> for ChartItem {
             // `drive_gestures` above has already taken a released drag, so the
             // rectangle is gone on the release frame rather than one frame
             // later — see the note at that take.
+            // The brush rectangle, as one value: the page-local rect and the
+            // page it is against, resolved once and then both recorded and
+            // painted. Recorded on every frame a gesture is in progress and
+            // painted only where there is a texture to paint over, which is
+            // what lets a GPU-free test read the ink back — see
+            // [`ChartDoc::gesture_ink`].
+            let ink = self
+                .drag
+                .zip(page)
+                .map(|(drag, page)| (page, drag_rect(&doc.composed.plots[drag.plot], drag)));
+            doc.gesture_ink =
+                ink.map(|(page, r)| crate::canvas::overlay_rect(page.min.to_vec2(), r));
             if textured {
-                if let Some(drag) = self.drag {
+                if let Some((page, r)) = ink {
                     let tokens = overlay_tokens(mode);
-                    let r = drag_rect(&doc.composed.plots[drag.plot], drag);
                     let mut painter = EguiOverlay::new(ui, page);
                     painter.fill_rect(r, Color::from_token(tokens.brush_fill));
                     painter.stroke_rect(r, Color::from_token(tokens.brush_border), 1.0);
@@ -955,18 +977,18 @@ impl Item<ChartDoc> for ChartItem {
                     // to the raster's palette rather than the chrome's, and
                     // bounded by the plot the pointer is in. See
                     // `crosshair_segments`.
-                    if let Some(p) = pointer {
+                    if let Some((p, page)) = pointer.zip(page) {
                         if let Some(segments) = crosshair_segments(&doc.composed.plots, p) {
                             let focus = match mode {
                                 Mode::Light => INK_LIGHT.focus,
                                 Mode::Dark => INK_DARK.focus,
                             };
-                            let ink = Color::from_token_alpha(focus, 0.9);
+                            let stroke = Color::from_token_alpha(focus, 0.9);
                             let mut painter = EguiOverlay::new(ui, page);
                             for (a, b) in segments {
-                                painter.line(a, b, ink, 1.0);
+                                painter.line(a, b, stroke, 1.0);
                             }
-                            painter.fill_circle(p, 3.0, ink);
+                            painter.fill_circle(p, 3.0, stroke);
                         }
                     }
                     set_surface_cursor(ui.ctx(), SurfaceCursor::Grab);
