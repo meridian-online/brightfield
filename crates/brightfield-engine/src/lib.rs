@@ -191,6 +191,7 @@ use brightfield_sql::binding::{Binding, EmittedQuery, ParamValues};
 use brightfield_sql::emit::{
     collect_marks, emit_query_sampled, emit_rows_query, emit_sources, SourceKindTag,
 };
+pub use brightfield_sql::emit::RowsAudience;
 use brightfield_sql::ir::{Predicate, SampleRate, SelectionPredicate};
 use brightfield_sql::navigation_filter_pass::NavigationFilterPass;
 use brightfield_sql::passes::Pass;
@@ -1393,17 +1394,22 @@ impl Session {
     /// `selection_state`. This is the tabular ("grid") surface's read path.
     ///
     /// It shares the mark's live selection predicate with [`Self::execute_mark`]
-    /// bit-for-bit: both go through `brightfield_sql`'s one selection-compile
-    /// path (`emit_rows_query` reuses the same `compile_selection` as
-    /// `emit_query`). A grid and a chart at the same step therefore issue two
-    /// queries over the SAME source view with the SAME `WHERE`, and cannot
-    /// resolve different rows from the same selection state. Neither filters a
-    /// materialised batch client-side — the predicate is in the SQL.
+    /// bit-for-bit **at [`RowsAudience::Plot`]**: both go through
+    /// `brightfield_sql`'s one selection-compile path (`emit_rows_query` reuses
+    /// the same `compile_selection` as `emit_query`), so a grid and a chart at
+    /// the same step issue two queries over the SAME source view with the SAME
+    /// `WHERE`. At [`RowsAudience::Reader`] the `WHERE` is deliberately the
+    /// selection's value instead — see the enum. Neither filters a materialised
+    /// batch client-side; the predicate is in the SQL.
     ///
     /// Errors as [`Self::execute_mark`]: a mark without a `from`-source (inline
     /// data) has no materialisation to tabulate and returns
     /// [`EngineError::EmitFailed`].
-    pub fn execute_step_rows(&mut self, index: usize) -> Result<Vec<RecordBatch>, EngineError> {
+    pub fn execute_step_rows(
+        &mut self,
+        index: usize,
+        audience: RowsAudience,
+    ) -> Result<Vec<RecordBatch>, EngineError> {
         let params = if self.param_state.is_empty() {
             None
         } else {
@@ -1415,7 +1421,7 @@ impl Session {
         } else {
             Some(selections.as_slice())
         };
-        let emitted = emit_rows_query(&self.spec, index, params, selections_ref)
+        let emitted = emit_rows_query(&self.spec, index, params, selections_ref, audience)
             .map_err(|e| EngineError::EmitFailed { cause: e })?;
 
         let mark_kind = self.mark_kind_at(index);
@@ -1428,7 +1434,7 @@ impl Session {
     /// emission path (`emit_rows_query`, the same `compile_selection` the
     /// chart's `emit_query` uses), so every step-rows surface — full read,
     /// count, window — queries the identical filtered row set by construction.
-    fn step_rows_sql(&self, index: usize) -> Result<String, EngineError> {
+    fn step_rows_sql(&self, index: usize, audience: RowsAudience) -> Result<String, EngineError> {
         let params = if self.param_state.is_empty() {
             None
         } else {
@@ -1440,7 +1446,7 @@ impl Session {
         } else {
             Some(selections.as_slice())
         };
-        emit_rows_query(&self.spec, index, params, selections_ref)
+        emit_rows_query(&self.spec, index, params, selections_ref, audience)
             .map(|emitted| emitted.sql)
             .map_err(|e| EngineError::EmitFailed { cause: e })
     }
@@ -1465,8 +1471,12 @@ impl Session {
     ///
     /// As [`Self::execute_step_rows`]: emit failure for an inline/data-less
     /// mark, or [`EngineError::QueryFailed`] if DuckDB rejects the query.
-    pub fn step_rows_count(&self, index: usize) -> Result<u64, EngineError> {
-        let rows_sql = self.step_rows_sql(index)?;
+    pub fn step_rows_count(
+        &self,
+        index: usize,
+        audience: RowsAudience,
+    ) -> Result<u64, EngineError> {
+        let rows_sql = self.step_rows_sql(index, audience)?;
         let sql = format!("SELECT count(*) AS n FROM ({rows_sql}) AS bf_step_rows");
         let batches = self.query_arrow_raw(&sql).map_err(|e| {
             self.classify_query_failure(index, &self.mark_kind_at(index), sql.clone(), e)
@@ -1530,8 +1540,9 @@ impl Session {
         index: usize,
         offset: u64,
         limit: u64,
+        audience: RowsAudience,
     ) -> Result<Vec<RecordBatch>, EngineError> {
-        let rows_sql = self.step_rows_sql(index)?;
+        let rows_sql = self.step_rows_sql(index, audience)?;
         let sql = format!(
             "SELECT * FROM ({rows_sql}) AS bf_step_rows \
              ORDER BY ALL LIMIT {limit} OFFSET {offset}"

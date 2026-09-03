@@ -36,7 +36,7 @@
 //! three tiers above take the selection as given, so none of them can tell a
 //! working brush from a predicate handed to the document.
 
-use brightfield_engine::{ColumnProfile, SemanticType, SqlPredicate};
+use brightfield_engine::{ColumnProfile, RowsAudience, SemanticType, SqlPredicate};
 use brightfield_shell::capture::capture_vello_only;
 use brightfield_shell::dashboard::{self, SELECTION};
 use brightfield_shell::design::Mode;
@@ -827,7 +827,7 @@ fn step_rows(app: &mut MeridianApp, mark: usize) -> u64 {
         .live_coordinator()
         .expect("the opened document has a live session")
         .session()
-        .step_rows_count(mark)
+        .step_rows_count(mark, RowsAudience::Plot)
         .expect("the step counts")
 }
 

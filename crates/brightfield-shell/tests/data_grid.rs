@@ -26,7 +26,7 @@
 //!    the five-state workbench vocabulary and no second one.
 
 use brightfield_engine::coordinator::{Coordinator, Interaction};
-use brightfield_engine::{RecordBatch, SqlPredicate};
+use brightfield_engine::{RecordBatch, RowsAudience, SqlPredicate};
 use brightfield_shell::app::ChartDoc;
 use brightfield_shell::data_grid::{fetch_page, DataGridItem, GridPage, PAGE_PAD};
 use brightfield_shell::design::Mode;
@@ -98,12 +98,12 @@ fn a_window_of_a_million_row_table_returns_only_the_window() {
     let coord = coordinator_from(MILLION_ROWS);
     let session = coord.session();
 
-    let total = session.step_rows_count(0).expect("count");
+    let total = session.step_rows_count(0, RowsAudience::Reader).expect("count");
     assert_eq!(total, 1_000_000, "the scroll range is the real cardinality");
 
     // The read the grid scrolls with: a mid-table window, sized like a
     // viewport. Only the window comes back.
-    let page = fetch_page(session, 0, 500_000..500_100).expect("window fetch");
+    let page = fetch_page(session, 0, 500_000..500_100, RowsAudience::Reader).expect("window fetch");
     assert_eq!(page.rows.len(), 100, "exactly the window, nothing more");
     assert_eq!(page.window, 500_000..500_100);
     assert_eq!(
@@ -122,7 +122,7 @@ fn a_window_of_a_million_row_table_returns_only_the_window() {
     assert_eq!(page.rows[0][0].text, "500000");
 
     // A window at the tail clamps rather than reading past the end.
-    let tail = fetch_page(session, 0, 999_990..1_000_000).expect("tail fetch");
+    let tail = fetch_page(session, 0, 999_990..1_000_000, RowsAudience::Reader).expect("tail fetch");
     assert_eq!(tail.rows.len(), 10);
     assert_eq!(tail.rows[9][0].text, "999999");
 }
@@ -139,8 +139,8 @@ fn the_windowed_reads_bypass_the_mark_caches() {
 
     let session = coord.session();
     for start in [0_u64, 1, 2, 3] {
-        let _ = fetch_page(session, 0, start..start + 2).expect("window");
-        let _ = session.step_rows_count(0).expect("count");
+        let _ = fetch_page(session, 0, start..start + 2, RowsAudience::Reader).expect("window");
+        let _ = session.step_rows_count(0, RowsAudience::Reader).expect("count");
     }
     assert_eq!(
         coord.session().sql_cache_len(),
@@ -187,7 +187,10 @@ fn page_texts(page: &GridPage) -> Vec<Vec<String>> {
 fn re_reading_one_window_of_an_order_unstable_source_is_byte_identical() {
     let coord = coordinator_from(UNSTABLE_GROUPED);
     let session = coord.session();
-    assert_eq!(session.step_rows_count(0).expect("count"), 5_000);
+    assert_eq!(
+        session.step_rows_count(0, RowsAudience::Reader).expect("count"),
+        5_000
+    );
 
     // The same mid-table window, fetched repeatedly — what a grid does every
     // time a scroll position is revisited. Without the total order the
@@ -196,10 +199,10 @@ fn re_reading_one_window_of_an_order_unstable_source_is_byte_identical() {
     // returned a different row set on most fetches. Byte-identity, every
     // time, is the contract a scrollbar rests on.
     let window = 2_000..2_100;
-    let first = page_texts(&fetch_page(session, 0, window.clone()).expect("first read"));
+    let first = page_texts(&fetch_page(session, 0, window.clone(), RowsAudience::Reader).expect("first read"));
     assert_eq!(first.len(), 100, "exactly the window came back");
     for read in 1..=5 {
-        let again = page_texts(&fetch_page(session, 0, window.clone()).expect("re-read"));
+        let again = page_texts(&fetch_page(session, 0, window.clone(), RowsAudience::Reader).expect("re-read"));
         assert_eq!(
             again, first,
             "re-read {read} of the same window returned a different row set"
@@ -211,10 +214,10 @@ fn re_reading_one_window_of_an_order_unstable_source_is_byte_identical() {
 fn adjacent_windows_of_an_order_unstable_source_tile_the_full_read() {
     let coord = coordinator_from(UNSTABLE_GROUPED);
     let session = coord.session();
-    let total = session.step_rows_count(0).expect("count");
+    let total = session.step_rows_count(0, RowsAudience::Reader).expect("count");
 
     // The whole step in one ordered read — the reference row set.
-    let full = page_texts(&fetch_page(session, 0, 0..total).expect("full read"));
+    let full = page_texts(&fetch_page(session, 0, 0..total, RowsAudience::Reader).expect("full read"));
     assert_eq!(full.len(), total as usize);
 
     // The same step as adjacent windows, sized to misalign with any internal
@@ -227,7 +230,7 @@ fn adjacent_windows_of_an_order_unstable_source_tile_the_full_read() {
     while start < total {
         let end = (start + 97).min(total);
         tiled.extend(page_texts(
-            &fetch_page(session, 0, start..end).expect("page"),
+            &fetch_page(session, 0, start..end, RowsAudience::Reader).expect("page"),
         ));
         start = end;
     }
@@ -259,19 +262,19 @@ fn the_grids_windowed_read_agrees_with_the_chart_under_a_brush() {
 
     for mark in 0..=1 {
         let chart = coord.chart_rows(mark).expect("chart");
-        let full = coord.grid_rows(mark).expect("grid full read");
+        let full = coord.grid_rows(mark, RowsAudience::Plot).expect("grid full read");
         assert_eq!(rows(&chart), 3, "the predicate went into DuckDB");
         assert_eq!(rows(&full), rows(&chart), "the landed agreement holds");
 
         // The grid side: count + paged windows over the same state.
         let session = coord.session();
-        let total = session.step_rows_count(mark).expect("count");
+        let total = session.step_rows_count(mark, RowsAudience::Plot).expect("count");
         assert_eq!(total as usize, rows(&chart), "the scroll range agrees");
 
         let mut seen: Vec<String> = Vec::new();
         let mut start = 0;
         while start < total {
-            let page = fetch_page(session, mark, start..(start + 2).min(total)).expect("page");
+            let page = fetch_page(session, mark, start..(start + 2).min(total), RowsAudience::Plot).expect("page");
             assert!(page.rows.len() <= 2, "no page exceeds its window");
             for row in &page.rows {
                 seen.push(row[0].text.clone());
@@ -298,13 +301,21 @@ fn clearing_the_brush_restores_the_grids_full_range() {
         contributor: contributor.clone(),
         predicate: SqlPredicate::Expr("x > 4".to_string()),
     });
-    assert_eq!(coord.session().step_rows_count(0).expect("count"), 1);
+    assert_eq!(
+        coord
+            .session()
+            .step_rows_count(0, RowsAudience::Reader)
+            .expect("count"),
+        1
+    );
     coord.apply(Interaction::ClearSelect {
         name: "brush".to_string(),
         contributor,
     });
     assert_eq!(
-        coord.session().step_rows_count(0).expect("count"),
+        coord.session()
+            .step_rows_count(0, RowsAudience::Reader)
+            .expect("count"),
         5,
         "retraction re-queries: the grid's range follows the interaction state"
     );

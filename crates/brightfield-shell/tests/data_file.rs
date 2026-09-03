@@ -21,7 +21,7 @@
 use std::path::{Path, PathBuf};
 
 use brightfield_engine::coordinator::Interaction;
-use brightfield_engine::SqlPredicate;
+use brightfield_engine::{RowsAudience, SqlPredicate};
 use brightfield_protocol::layout::Flow;
 use brightfield_shell::chart_kinds;
 use brightfield_shell::dashboard;
@@ -224,14 +224,14 @@ fn a_chosen_csv_becomes_a_table_the_session_can_be_queried_for() {
     // data rows in, eight rows out.
     let session = live.coordinator().session();
     assert_eq!(
-        session.step_rows_count(0).expect("the step counts"),
+        session.step_rows_count(0, RowsAudience::Plot).expect("the step counts"),
         8,
         "every row of the file is in the table, unaggregated"
     );
 
     // …and its columns are the file's columns, in the file's order.
     let batches = session
-        .execute_step_rows_window(0, 0, 8)
+        .execute_step_rows_window(0, 0, 8, RowsAudience::Plot)
         .expect("the windowed read the Data pane makes");
     let schema = batches.first().expect("a batch of rows").schema();
     let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
@@ -261,7 +261,7 @@ fn a_chosen_parquet_opens_on_the_same_path() {
     assert_eq!(
         live.coordinator()
             .session()
-            .step_rows_count(0)
+            .step_rows_count(0, RowsAudience::Plot)
             .expect("the step counts"),
         8
     );
@@ -366,7 +366,7 @@ fn a_table_of_two_categories_is_two_rankings_and_not_a_grid() {
     assert_eq!(
         live.coordinator()
             .session()
-            .step_rows_count(0)
+            .step_rows_count(0, RowsAudience::Plot)
             .expect("the step counts"),
         6,
         "a tile aggregates in its own query, so the table behind it is still the \
@@ -403,7 +403,7 @@ fn a_table_of_one_category_opens_on_its_ranking() {
     assert_eq!(
         live.coordinator()
             .session()
-            .step_rows_count(0)
+            .step_rows_count(0, RowsAudience::Plot)
             .expect("the step counts"),
         5,
         "the ranking aggregates in its own query, so the table behind it is \
@@ -957,7 +957,7 @@ fn a_brush_on_one_tile_filters_the_others_and_not_itself() {
     let rows = |live: &mut brightfield_shell::pipeline::LiveDashboard, i: usize| -> u64 {
         live.coordinator()
             .session()
-            .step_rows_count(i)
+            .step_rows_count(i, RowsAudience::Plot)
             .expect("the step counts")
     };
     for layer in [ghost_0, subset_0, ghost_1, subset_1] {
@@ -1100,7 +1100,7 @@ fn step_rows(win: &mut Window, index: usize) -> u64 {
         .live_coordinator()
         .expect("an opened data file has a live session")
         .session()
-        .step_rows_count(index)
+        .step_rows_count(index, RowsAudience::Plot)
         .expect("the step counts")
 }
 
@@ -1562,7 +1562,7 @@ fn assert_opens_the_chosen_file_or_refuses(chosen: &Path, chosen_rows: u64, deco
             let rows = live
                 .coordinator()
                 .session()
-                .step_rows_count(0)
+                .step_rows_count(0, RowsAudience::Plot)
                 .expect("the step counts");
             assert_ne!(
                 rows, decoy_rows,

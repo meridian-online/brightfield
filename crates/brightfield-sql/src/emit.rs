@@ -1064,20 +1064,66 @@ fn selected_count_aggregate(predicate: &Predicate) -> AggregateExpr {
     ))
 }
 
+/// **Whose contribution a step-rows query is allowed to drop.**
+///
+/// Under `select: crossfilter` every consumer of a selection drops the clause
+/// its OWN plot published, so the brushed plot keeps drawing the whole table
+/// while its siblings narrow. That is right for a mark — a plot that erased the
+/// points the hand is still holding would fight the gesture — and wrong for
+/// anything that is not a mark, because a surface that published no clause has
+/// none to drop. There is therefore no one query that answers for both, and the
+/// choice cannot be inferred from the mark index: it is a fact about the
+/// **caller**, so this type makes every call site state it.
+///
+/// The variants exist because reading it off the mark is exactly what the rows
+/// pane did wrong. It read mark 0 of a generated dashboard — the hero's ghost
+/// layer, which carries no `filterBy:` at all — and would still have read 240
+/// of 240 rows had it read the hero's subset layer instead, because a brush on
+/// the map is the hero's own contribution and the hero drops it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowsAudience {
+    /// A mark drawn on a plot. Crossfilter drops the clause that plot
+    /// published — [`compile_selection`] is given the mark's own plot node
+    /// path — so this is byte-identical to what
+    /// [`emit_query`](crate::emit::emit_query) compiles for the same mark, and
+    /// the chart and a grid asking as `Plot` cannot resolve two WHERE clauses.
+    Plot,
+    /// A surface that draws no mark and publishes no clause: the rows pane, a
+    /// status band's count, an export. [`compile_selection`] is given
+    /// [`crate::lower::NO_SELF_EXCLUDE`], so nothing is dropped and the query
+    /// carries the selection's **value** — every contributor's predicate under
+    /// the declared resolution.
+    Reader,
+}
+
+impl RowsAudience {
+    /// The `self_source` [`compile_selection`] is given for a mark at
+    /// `mark_path`.
+    fn self_source<'a>(self, mark_path: &'a str) -> &'a str {
+        match self {
+            Self::Plot => brightfield_spec::analysis::plot_node_path(mark_path),
+            Self::Reader => crate::lower::NO_SELF_EXCLUDE,
+        }
+    }
+}
+
 /// Emit the ROW-LEVEL query for a mark's step — every column of the step's
 /// materialisation, under the *same* static `data.filter` and the *same* live
 /// selection predicate the chart's [`emit_query`] applies to that mark.
 ///
 /// This is the seam that makes a tabular ("grid") surface and a chart surface at
-/// one step **unable to disagree about the PREDICATE**: both read from the
-/// identical source view and both push the identical predicate into DuckDB. The
-/// chart query then projects its channels (and may aggregate); the grid query
-/// keeps `SELECT *`. Because the filter is compiled by the one code path here —
-/// the same `mark_filter_by_name` and
-/// `compile_selection(sel_node, plot_node_path(mark_path), contributors)` call
-/// that [`emit_query_with_passes`] uses — one selection state cannot resolve to
-/// two different WHERE clauses. Neither surface filters a materialised result
-/// client-side; the predicate lives in the SQL `WHERE`.
+/// one step **unable to disagree about the PREDICATE when both ask as the same
+/// [`RowsAudience`]**: both read from the identical source view, both compile
+/// through the one `mark_filter_by_name` + `compile_selection` path below, and
+/// both push the result into DuckDB rather than filtering a materialised result
+/// client-side. The chart query then projects its channels (and may aggregate);
+/// the grid query keeps `SELECT *`.
+///
+/// The audience is the term that used to be implied, and implying it is what
+/// produced a rows pane listing 240 rows under a brush that selected 45. A mark
+/// asks as [`RowsAudience::Plot`] and a surface that is not a mark asks as
+/// [`RowsAudience::Reader`]; under `select: crossfilter` those are two different
+/// WHERE clauses **on purpose**, and the enum's own doc says why.
 ///
 /// It is **not** a claim that the two draw the same rows, and since sampling
 /// landed it would be false as one. Above the renderer's drawable ceiling the
@@ -1100,6 +1146,7 @@ pub fn emit_rows_query(
     mark_index: usize,
     param_values: Option<&ParamValues>,
     selection_predicates: Option<&[SelectionPredicate]>,
+    audience: RowsAudience,
 ) -> Result<EmittedQuery, EmitError> {
     let marks_with_paths = collect_marks_with_paths(spec);
     let (mark, mark_path) =
@@ -1134,12 +1181,13 @@ pub fn emit_rows_query(
     };
     let mut plan = crate::lower::apply_data_filter(extras, base);
 
-    // The SAME live selection filter the chart mark receives — identical
-    // self-exclusion identity (the stable plot-node path) and identical
-    // `compile_selection`, so grid and chart share one predicate.
+    // The same live selection filter and the same `compile_selection` the chart
+    // mark receives. What `audience` decides is the self-exclusion identity: a
+    // mark passes its own plot node path and drops the clause that plot
+    // published, a reader passes the sentinel and drops nothing.
     if let Some(selection_name) = mark_filter_by_name(mark) {
         if let Some(ParamNode::Selection(sel_node)) = spec.params.get(selection_name) {
-            let self_source = brightfield_spec::analysis::plot_node_path(mark_path);
+            let self_source = audience.self_source(mark_path);
             let contributors: &[(String, Predicate)] = selection_predicates
                 .and_then(|all| {
                     all.iter()
@@ -1693,7 +1741,8 @@ plot:
         )];
 
         let chart = emit_query(&spec, 0, None, Some(&selections)).expect("chart emit");
-        let rows = emit_rows_query(&spec, 0, None, Some(&selections)).expect("rows emit");
+        let rows =
+            emit_rows_query(&spec, 0, None, Some(&selections), RowsAudience::Plot).expect("rows emit");
 
         // Both surfaces carry the identical predicate — pushed into DuckDB.
         assert!(
@@ -1724,7 +1773,7 @@ plot:
         // Inline data has no materialisation view to tabulate.
         let src = "plot:\n  - mark: dot\n    data:\n      - { x: 1, y: 2 }\n    x: x\n    y: y\n";
         let spec = parse_spec(src, Format::Yaml).unwrap().spec;
-        let result = emit_rows_query(&spec, 0, None, None);
+        let result = emit_rows_query(&spec, 0, None, None, RowsAudience::Plot);
         assert!(matches!(result, Err(EmitError::UnsupportedMark { .. })));
     }
 

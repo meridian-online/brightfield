@@ -21,7 +21,7 @@
 use std::path::PathBuf;
 
 use brightfield_engine::coordinator::Interaction;
-use brightfield_engine::SqlPredicate;
+use brightfield_engine::{RowsAudience, SqlPredicate};
 use brightfield_render::sample_notice::NOTICE_BAND;
 use brightfield_shell::capture::capture_vello_only;
 use brightfield_shell::pipeline::{compose_spec_sampled, live_spec_sampled};
@@ -1237,7 +1237,7 @@ fn the_matched_control_draws_exactly_the_rows_the_sample_draws() {
     let control_rows = live
         .coordinator()
         .session()
-        .step_rows_count(0)
+        .step_rows_count(0, RowsAudience::Plot)
         .expect("count the control's rows");
 
     assert_eq!(

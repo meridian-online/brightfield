@@ -4,19 +4,41 @@
 //!
 //! A step's output is a table in DuckDB, and the chart and this grid are two
 //! queries over that same materialisation: the chart projects channels, the
-//! grid keeps the row shape. Both queries are compiled by the one emission
-//! path in `brightfield-sql` (the chart through `emit_query`, the grid through
-//! `emit_rows_query`, sharing one `compile_selection`), so the two surfaces
-//! **cannot disagree about the PREDICATE** — the selection state resolves to
-//! one WHERE clause, neither surface is authoritative over the other, and
-//! neither ever filters a materialised batch client-side. That is why they are
-//! peers: two readings of one step, side by side on the canvas — the grid is
-//! the rows pane of the canvas's own group, beneath the map.
+//! grid keeps the row shape. Both are compiled by the one emission path in
+//! `brightfield-sql` (the chart through `emit_query`, the grid through
+//! `emit_rows_query`, sharing one `compile_selection`), and neither ever
+//! filters a materialised batch client-side — the predicate lives in the SQL
+//! `WHERE`. That is why they are peers: two readings of one step, side by side
+//! on the canvas, the grid being the rows pane of the canvas's own group,
+//! beneath the map.
 //!
-//! ## The sampling clause is the one deliberate divergence
+//! ## Which step, and whose clause it drops
 //!
-//! There is exactly one way the two can now show different rows, and it is on
-//! purpose. Above the renderer's drawable ceiling the chart draws a pushed-down
+//! Two questions the pane has to answer before it reads anything, and reading
+//! either off a literal is what made it list the whole table under a brush.
+//!
+//! **The step** is the presenting plot's *filtered* layer, resolved from the
+//! composed spec by [`crate::pipeline::presenting_rows_mark`]. Every generated
+//! tile writes its ghost first and its subset second, so depth-first mark 0 is
+//! the hero's ghost — `data: { from: opened }` with no `filterBy:` — and a
+//! grid reading it narrows under nothing at all. A one-mark spec resolves to
+//! its only mark.
+//!
+//! **The clause** is the selection's whole value: this pane reads as
+//! [`RowsAudience::Reader`]. Under `select: crossfilter` each consumer drops the
+//! clause its OWN plot published, so the hero's subset layer keeps drawing 240
+//! points under a brush on the hero — right for the mark, because a plot that
+//! erased the points the hand is holding would fight the gesture, and wrong
+//! here, because this pane published nothing and has nothing to drop.
+//!
+//! So the honest statement is the conditional one: **grid and chart cannot
+//! disagree about the predicate when both ask as the same audience**, and where
+//! they differ it is because they were asked two different questions. The
+//! sampling clause below is the other, unconditional difference.
+//!
+//! ## The sampling clause is the other deliberate divergence
+//!
+//! The second of the two, and it applies whatever audience is asked. Above the renderer's drawable ceiling the chart draws a pushed-down
 //! sample — a `hash(row) % 2^k = 0` clause the chart's query carries and this
 //! grid's does not — and the chart says so in its own ink. **The grid never
 //! samples.** It is the unsampled view: the place someone goes precisely
@@ -78,7 +100,7 @@ use arrow::compute::cast;
 use arrow::datatypes::DataType;
 
 use brightfield_engine::error::EngineError;
-use brightfield_engine::{RecordBatch, Session};
+use brightfield_engine::{RecordBatch, RowsAudience, Session};
 use brightfield_keys::BindingContext;
 use brightfield_protocol::{sheet, StepRow};
 use brightfield_workbench::registry::Slot;
@@ -92,6 +114,7 @@ use meridian_design::{control, semantic, spacing};
 use crate::app::ChartDoc;
 use crate::chart_item::run_state_pill;
 use crate::design::Mode;
+use crate::pipeline::LiveDashboard;
 
 // ---------------------------------------------------------------------------
 // Cell chrome — the table-scope typography and geometry.
@@ -541,6 +564,12 @@ pub struct GridPage {
 /// including the grid/chart agreement re-exercised from this side — rather
 /// than a lookalike.
 ///
+/// `audience` is not a default this function may pick. The pane passes
+/// [`RowsAudience::Reader`] because it draws no mark and publishes no clause;
+/// a caller re-exercising the chart's own WHERE passes
+/// [`RowsAudience::Plot`]. See the enum for why those are two different
+/// queries under `select: crossfilter`.
+///
 /// # Errors
 ///
 /// As [`Session::execute_step_rows_window`].
@@ -552,9 +581,10 @@ pub fn fetch_page(
     session: &Session,
     mark_index: usize,
     window: Range<u64>,
+    audience: RowsAudience,
 ) -> Result<GridPage, EngineError> {
     let limit = window.end.saturating_sub(window.start);
-    let batches = session.execute_step_rows_window(mark_index, window.start, limit)?;
+    let batches = session.execute_step_rows_window(mark_index, window.start, limit, audience)?;
     let (columns, rows) = tabulate(&batches);
     let held = window.start..window.start + rows.len() as u64;
     Ok(GridPage {
@@ -618,6 +648,15 @@ fn tabulate(batches: &[RecordBatch]) -> (Vec<GridColumn>, Vec<Vec<CellText>>) {
 pub struct GridCache {
     /// The generation the cache was read at; `None` before the first read.
     generation: Option<u64>,
+    /// The mark index the held rows were read at; `None` before the first
+    /// read.
+    ///
+    /// A second key beside the generation because the mark is now resolved from
+    /// the document rather than fixed at `0`: adopting a different document
+    /// into the same pane can move it, and a generation that happens to match
+    /// would otherwise serve the previous document's rows under the new one's
+    /// mark.
+    mark: Option<usize>,
     /// `count(*)` over the step's rows SQL at that generation.
     total: u64,
     /// The step's columns.
@@ -639,7 +678,15 @@ impl GridCache {
     }
 }
 
-/// The engine-backed [`RowSource`]: windowed reads over the live session.
+/// The engine-backed [`RowSource`]: windowed reads over the live session, at
+/// one mark, always as a [`RowsAudience::Reader`].
+///
+/// The audience is fixed here rather than passed in because this source IS the
+/// rows pane's read: the pane draws no mark, so it has no clause of its own to
+/// drop. `mark_index` is the caller's — [`DataGridItem::ui`] resolves it from
+/// the document through
+/// [`LiveDashboard::rows_mark`](crate::pipeline::LiveDashboard::rows_mark) —
+/// and a test driving this directly says which mark it means.
 pub struct EngineRows<'a> {
     session: &'a Session,
     mark_index: usize,
@@ -660,8 +707,8 @@ impl<'a> EngineRows<'a> {
         generation: u64,
         cache: &'a mut GridCache,
     ) -> Self {
-        if cache.generation != Some(generation) {
-            match session.step_rows_count(mark_index) {
+        if cache.generation != Some(generation) || cache.mark != Some(mark_index) {
+            match session.step_rows_count(mark_index, RowsAudience::Reader) {
                 Ok(total) => {
                     cache.total = total;
                     cache.error = None;
@@ -675,6 +722,7 @@ impl<'a> EngineRows<'a> {
             cache.window = 0..0;
             cache.rows.clear();
             cache.generation = Some(generation);
+            cache.mark = Some(mark_index);
         }
         // The schema has to exist before the table can lay out at all — the
         // column count is the table's shape — and it only arrives with a
@@ -682,7 +730,12 @@ impl<'a> EngineRows<'a> {
         // window [`RowSource::prepare`] asks for replaces this immediately
         // when the scroll position is elsewhere.
         if cache.error.is_none() && cache.columns.is_empty() && cache.total > 0 {
-            match fetch_page(session, mark_index, 0..cache.total.min(PAGE_PAD)) {
+            match fetch_page(
+                session,
+                mark_index,
+                0..cache.total.min(PAGE_PAD),
+                RowsAudience::Reader,
+            ) {
                 Ok(page) => {
                     cache.window = page.window;
                     cache.columns = page.columns;
@@ -711,8 +764,8 @@ impl<'a> EngineRows<'a> {
 impl RowSource for EngineRows<'_> {
     fn prepare(&mut self, visible: Range<u64>) {
         debug_assert_eq!(
-            self.cache.generation,
-            Some(self.generation),
+            (self.cache.generation, self.cache.mark),
+            (Some(self.generation), Some(self.mark_index)),
             "EngineRows::new keys the cache before the table draws"
         );
         if visible.start >= self.cache.window.start && visible.end <= self.cache.window.end {
@@ -724,7 +777,7 @@ impl RowSource for EngineRows<'_> {
         if start >= end {
             return; // an empty materialisation has no window to fetch
         }
-        match fetch_page(self.session, self.mark_index, start..end) {
+        match fetch_page(self.session, self.mark_index, start..end, RowsAudience::Reader) {
             Ok(page) => {
                 self.cache.window = page.window;
                 self.cache.columns = page.columns;
@@ -977,18 +1030,29 @@ impl Item<ChartDoc> for DataGridItem {
             return;
         }
 
-        // The step this grid projects is the one the chart pane presents:
-        // depth-first mark 0, the dashboard's presenting step. The read marks
-        // itself as engine work — resolved within the frame today (see the
-        // activity module for why a synchronous read owes no cue), begun and
-        // ended around the borrow so the seam is already marked when this
-        // read moves off the UI thread.
+        // **Which step this grid projects, and whose clause it drops.** Two
+        // separate questions, and reading either off a literal is what made
+        // this pane list the whole table under a brush.
+        //
+        // The mark comes from the document — `LiveDashboard::rows_mark`, the
+        // layer carrying `filterBy:` — because a generated dashboard's mark 0
+        // is the hero's ghost, which declares no `filterBy:` and so narrows
+        // under nothing. The audience is `Reader`, fixed inside `EngineRows`,
+        // because this pane draws no mark and therefore has no crossfilter
+        // contribution to exclude; asking as the hero would answer with the
+        // hero's own WHERE, which drops the brush the reader just drew.
+        //
+        // The read marks itself as engine work — resolved within the frame
+        // today (see the activity module for why a synchronous read owes no
+        // cue), begun and ended around the borrow so the seam is already
+        // marked when this read moves off the UI thread.
+        let mark = doc.live_dashboard().map_or(0, LiveDashboard::rows_mark);
         doc.activity.begin(Activity::EngineQuery);
         let mut drawn = None;
         if let Some(coordinator) = doc.live_coordinator() {
             let generation = coordinator.generation();
             let session = coordinator.session();
-            let mut source = EngineRows::new(session, 0, generation, &mut self.cache);
+            let mut source = EngineRows::new(session, mark, generation, &mut self.cache);
             drawn = Some(show_table(
                 ui,
                 "chart-data-grid",

@@ -5507,9 +5507,11 @@ fn count_overlay(ui: &egui::Ui, within: egui::Rect, text: &str, mode: Mode) -> e
 ///
 /// # The third pane, and why it is not a third view
 ///
-/// The rows pane draws the grid — the same DuckDB session under a different
-/// query, so a brush on the map narrows what it lists — and the grid is not
-/// part of the composed page. So the group has three panes and the page still
+/// The rows pane draws the grid — the same DuckDB session, at the presenting
+/// plot's `filterBy:` layer rather than at its ghost, and read as a
+/// [`RowsAudience::Reader`](brightfield_engine::RowsAudience::Reader) so that
+/// nothing is self-excluded, which is what makes a brush on the map narrow what
+/// it lists — and the grid is not part of the composed page. So the group has three panes and the page still
 /// has two views: a pointer over the rows pane is over no page, which is what
 /// [`crate::app::page_offset`] already answers with absence, and the rows pane
 /// is drawn **after** the page so the frame it paints stands over the blank

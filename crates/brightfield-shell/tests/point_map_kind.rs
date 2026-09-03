@@ -26,7 +26,7 @@
 //! beside a histogram tile, driven through `MeridianApp` on the presented
 //! raster, the same harness `tests/scatter_kind.rs`'s gesture tier uses.
 
-use brightfield_engine::{ColumnProfile, SqlPredicate};
+use brightfield_engine::{ColumnProfile, RowsAudience, SqlPredicate};
 use brightfield_shell::dashboard::{self, SELECTION};
 use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::live_spec;
@@ -488,7 +488,7 @@ fn step_rows(app: &mut MeridianApp, mark: usize) -> u64 {
         .live_coordinator()
         .expect("the opened document has a live session")
         .session()
-        .step_rows_count(mark)
+        .step_rows_count(mark, RowsAudience::Plot)
         .expect("the step counts")
 }
 
