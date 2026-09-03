@@ -52,7 +52,10 @@ fn open() -> (MeridianApp, egui::Context) {
     let path = fixture();
     let chosen = path.to_str().expect("utf-8 fixture path");
     let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
-    (MeridianApp::headless(boot, Mode::Light), egui::Context::default())
+    (
+        MeridianApp::headless(boot, Mode::Light),
+        egui::Context::default(),
+    )
 }
 
 /// Run `frames` frames of `app` at `size`, egui's screen rect — the resize
