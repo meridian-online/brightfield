@@ -1841,13 +1841,21 @@ def self_test() -> int:
             tests_free |= {n for n in free if "_" in n}
             tests_short |= {n for n in free if "_" not in n}
 
-    def fixture(pool: set[str], *, resolves: bool) -> str | None:
-        """A name from `pool` rule D reads as an ordinary citation, and nothing else.
+    def fixture(pool: set[str]) -> str | None:
+        """A name from `pool` rule D would read as an ordinary citation.
 
-        `resolves` is asserted against the real resolver rather than assumed
-        from which pool the name came out of: a case whose fixture the resolver
-        disagrees about passes for a reason its label does not state, which is
-        how a derived fixture goes quietly wrong.
+        STRUCTURAL only: which pool the name came out of, and nothing about
+        what the resolver currently says. Filtering here on `n in
+        resolvable_test_names()` is the trap this function is written to
+        avoid — the derivation then MOVES when a filter in the resolver is
+        deleted, finds another name that filter does not reach, and the case
+        built from it passes over the deleted filter. Measured: with the
+        underscore filter removed, a resolver-filtered derivation re-picked a
+        one-word name the PRODUCTION filter happens to refuse, and the whole
+        self-test stayed green over the deletion it exists to catch.
+
+        Each pool below is cut so that exactly ONE filter decides its name, and
+        what the resolver says about each is asserted in `guards` instead.
         """
         return next(
             (
@@ -1858,34 +1866,50 @@ def self_test() -> int:
                 and not QUANTIFIER.fullmatch(n)
                 and n not in test_functions()
                 and not acknowledged(n, "test")
-                and (n in resolvable_test_names()) == resolves
             ),
             None,
         )
 
+    # `prod` is subtracted from every pool but the last, so a fixture meant to
+    # be refused by one filter is not also refused by that one — a name two
+    # filters refuse pins neither, because deleting either leaves it refused.
+    prod = production_item_names()
     derived = {
-        "a `#[cfg(test)]`-module helper": fixture(cfg_free - tests_free, resolves=True),
-        "a `tests/`-file helper": fixture(tests_free - cfg_free, resolves=True),
-        "a one-word `#[cfg(test)]` helper": fixture(cfg_short, resolves=False),
-        "a one-word `tests/`-file helper": fixture(tests_short, resolves=False),
-        "a method in a `#[cfg(test)]` impl": fixture(
-            cfg_method - cfg_free - tests_free, resolves=False
+        "a `#[cfg(test)]`-module helper": (fixture(cfg_free - tests_free - prod), True),
+        "a `tests/`-file helper": (fixture(tests_free - cfg_free - prod), True),
+        "a one-word `#[cfg(test)]` helper": (fixture(cfg_short - prod), False),
+        "a one-word `tests/`-file helper": (fixture(tests_short - prod), False),
+        "a method in a `#[cfg(test)]` impl": (
+            fixture(cfg_method - cfg_free - tests_free - prod), False
         ),
-        "a test-side name production also defines": fixture(
-            (cfg_free | tests_free) & production_item_names(), resolves=False
+        "a test-side name production also defines": (
+            fixture((cfg_free | tests_free) & prod), False
         ),
     }
-    if any(n is None for n in derived.values()):
+    if any(n is None for n, _ in derived.values()):
         print("self-test: could not derive " + "; ".join(
-            what for what, n in derived.items() if n is None
+            what for what, (n, _) in derived.items() if n is None
         ))
         return 1
-    helper = derived["a `#[cfg(test)]`-module helper"]
-    tests_helper = derived["a `tests/`-file helper"]
-    short_cfg = derived["a one-word `#[cfg(test)]` helper"]
-    short_tests = derived["a one-word `tests/`-file helper"]
-    method = derived["a method in a `#[cfg(test)]` impl"]
-    shadowed = derived["a test-side name production also defines"]
+    helper = derived["a `#[cfg(test)]`-module helper"][0]
+    tests_helper = derived["a `tests/`-file helper"][0]
+    short_cfg = derived["a one-word `#[cfg(test)]` helper"][0]
+    short_tests = derived["a one-word `tests/`-file helper"][0]
+    method = derived["a method in a `#[cfg(test)]` impl"][0]
+    shadowed = derived["a test-side name production also defines"][0]
+
+    # What the resolver says about each fixture, asserted rather than assumed.
+    # A case built on a fixture the resolver disagrees about passes for a
+    # reason its label does not state; these say which way each fixture is
+    # meant to go, in one line each, so a disagreement names itself.
+    resolver_verdicts = [
+        (
+            (name in resolvable_test_names()) == resolves,
+            f"the resolver {'accepts' if resolves else 'refuses'} {what} "
+            f"({name})",
+        )
+        for what, (name, resolves) in derived.items()
+    ]
 
     cases += [
         (f"[`{camel}`] is the only thing that makes one; `{fake_test_name}` holds that",
@@ -1995,7 +2019,7 @@ def self_test() -> int:
          "DEFN does not read `type` inside `retype` as a definition of `only`"),
         (bool(re.search(DEFN.format(sym="only"), "pub type only = u8;")),
          "DEFN still reads a real `type only` as a definition"),
-    ] + revision_guards() + resolver_stub_guard() + acknowledged_kind_guard()
+    ] + resolver_verdicts + revision_guards() + resolver_stub_guard() + acknowledged_kind_guard()
 
     # A finding has to say WHERE, or a reader cannot act on it. Asserted on
     # every case that is meant to be reported, not on a sample of them.
