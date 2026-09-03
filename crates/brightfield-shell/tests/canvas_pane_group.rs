@@ -687,7 +687,7 @@ fn a_wheel_over_the_map_does_not_scroll_the_column() {
 /// readback a zoom and a pan move, and a scroll must not.
 type Domain = (String, String);
 
-/// Every plot's [`Domain`], in the order the composition placed them.
+/// One [`Domain`] per plot, in the order the composition placed them.
 fn tile_domains(app: &MeridianApp) -> Vec<Domain> {
     app.chart_doc()
         .composed
@@ -1157,15 +1157,15 @@ fn the_columns_scroll_stops_at_the_end_of_its_page() {
 /// **The second view's own box bounds its pointer mapping** — a sweep across
 /// the column pane's header band brushes no tile, with the column scrolled.
 ///
-/// `SecondView::holds` is horizontal, because which view a *plot* is in is a
-/// question about the page's width: a tile scrolled below the pane's content
-/// bottom is still the column's tile. A *pointer* needs the vertical clause
-/// too, and `page_offset` is where it lives — this view paints outside its own
-/// clip, so a pointer above the clip is over the pane's title rather than over
-/// a tile. Drop the clause and the band maps onto whatever the scroll has
-/// carried above the fold: at this window a sweep across the pane's own title
-/// commits an interval on the first stacked tile's column, which is a
-/// cross-filter nobody asked for.
+/// `PaneViews::second_holds` is horizontal, because which view a *plot* is in
+/// is a question about the page's width: a tile scrolled below the pane's
+/// content bottom is still the column's tile. A *pointer* is placed by a rect
+/// test instead — `PaneViews::offset_at`, through `page_offset` — because this
+/// view paints nothing outside its own box, so a pointer above it is on the
+/// pane's title band and not on anything this view drew. Drop the vertical
+/// half and the band maps onto whatever the scroll has carried above the fold:
+/// at this window a sweep across the pane's own title commits an interval on
+/// the first stacked tile's column, which is a cross-filter nobody asked for.
 ///
 /// The second run is the control. It is the same sweep at the same x, moved
 /// down into the pane's content rect, and it does commit — so the silence above
@@ -1234,5 +1234,612 @@ fn a_sweep_on_the_column_panes_header_band_lands_on_no_tile() {
         "a sweep across the column pane's header band committed {on_the_band:?} \
          — the band was mapped onto the page at the second view's origin, which \
          puts it on the part of the column the scroll carried above the fold"
+    );
+}
+
+/// The column the inspector is showing, by name — what a press on a tile sets,
+/// and what a press on nothing must leave alone.
+fn selected_column(app: &MeridianApp) -> Option<String> {
+    app.chart_doc()
+        .selected_column()
+        .map(|facts| facts.column.clone())
+}
+
+/// What a press-and-drag left behind: the clause the engine is holding, and the
+/// column the inspector is showing.
+type Landed = (Option<String>, Option<String>);
+
+/// Scroll the column by `notches` with the pointer `over` it, click `hero` so
+/// the group has a selected tile, then press at `from`, drag to `to` and
+/// release. Reports the scroll the gesture ran at and what it left behind.
+///
+/// The hero click is what makes "the selected tile is unchanged" an assertion
+/// rather than a tautology: with nothing selected to begin with, a probe that
+/// selected nothing and a document with nothing to select read the same.
+fn landing_of(
+    notches: usize,
+    over: egui::Pos2,
+    hero: egui::Pos2,
+    from: egui::Pos2,
+    to: egui::Pos2,
+) -> (f32, Landed) {
+    let (mut app, ctx, raw) = window();
+    let frame = |app: &mut MeridianApp, events: Vec<egui::Event>| {
+        let mut input = raw.clone();
+        input.events = events;
+        let _ = ctx.run_ui(input, |ui| app.draw(ui));
+    };
+    for _ in 0..3 {
+        frame(&mut app, Vec::new());
+    }
+    if notches > 0 {
+        scroll_the_column(&mut app, &ctx, &raw, over, notches);
+    }
+    let scrolled = app.canvas_scroll();
+
+    frame(
+        &mut app,
+        vec![
+            egui::Event::PointerMoved(hero),
+            button(hero, egui::PointerButton::Primary, true),
+        ],
+    );
+    frame(
+        &mut app,
+        vec![button(hero, egui::PointerButton::Primary, false)],
+    );
+    for _ in 0..2 {
+        frame(&mut app, Vec::new());
+    }
+
+    frame(
+        &mut app,
+        vec![
+            egui::Event::PointerMoved(from),
+            button(from, egui::PointerButton::Primary, true),
+        ],
+    );
+    frame(&mut app, vec![egui::Event::PointerMoved(to)]);
+    frame(
+        &mut app,
+        vec![button(to, egui::PointerButton::Primary, false)],
+    );
+    for _ in 0..2 {
+        frame(&mut app, Vec::new());
+    }
+    (
+        scrolled,
+        (app.chart_doc().selection_sql(), selected_column(&app)),
+    )
+}
+
+/// **A pointer is over a page only where a pane drew one.**
+///
+/// The pane group draws one page in two boxes — the map pane's content rect at
+/// the page's own origin, the column pane's moved up by the scroll — and the
+/// page is bigger than their union in two directions at once. It is taller
+/// than the panes, because the column's tiles have a height floor and the page
+/// grows to hold them; and the gutter that keeps the two pane frames apart runs
+/// down the middle of its width. The leftover is a real region of a real page:
+/// at 1440 by 900 the band below the panes' content bottom is 112 points deep,
+/// three quarters of it underneath the ledger rail.
+///
+/// Until the mapping could answer absence, a press there was answered with the
+/// first view's origin, because "outside the second view" and "at the page's
+/// own origin" were the same value. So a press-and-drag on the ledger rail
+/// committed a crossfilter on whichever tile the page happened to have at that
+/// depth, and the bare press changed the column the inspector was showing. The
+/// gutter and the panes' own inset strips did the same at every window.
+///
+/// Each probe is checked to be inside the page and outside both panes before it
+/// is used, so a layout change that moves the leftover out from under it
+/// reddens this rather than quietly making it a press on nothing that could
+/// never have been a press on something.
+///
+/// **Three of the six probes are the ones that bite, and the test says which.**
+/// A press is only harmful where the page carries a tile at the origin it was
+/// wrongly read against, and at this composition the gutter is a gap in the
+/// page too: the hero's plot ends at x=781.5 and the column's tiles begin at
+/// x=823.5, so a press between them was already refused for want of a plot
+/// rather than for want of a pane. The band below the content rects is not —
+/// the column's tiles run the whole height of the page. Each probe carries
+/// whether the frame puts a tile under it, and that flag is checked against the
+/// frame rather than trusted, so a layout that moves a plot into the gutter
+/// turns those three probes load-bearing and says so instead of leaving them
+/// decorative.
+///
+/// The last case is the control and the boundary: a sweep ending just above the
+/// column's content bottom lands on the tile drawn there. Without it, "nothing
+/// commits" would be satisfied by a mapping that refused the whole column.
+#[test]
+fn a_press_over_no_pane_of_the_group_is_over_no_page() {
+    let reference = settled(SCREEN);
+    let panes = reference.canvas_panes();
+    let map = panes.pane("map").expect("the map pane drew").clone();
+    let columns = panes.pane("columns").expect("the column pane drew").clone();
+    let page = reference
+        .chart_doc()
+        .raster_rect
+        .expect("the page was laid out");
+    let hero = hero_data_point(&reference, 0.30, 0.30);
+    let hero_column = reference.chart_doc().tile_columns()[0].column.clone();
+
+    // The leftover, as the sweeps that stay inside it: across the band below
+    // both content rects and across the column pane's own inset strip in it,
+    // then down the gap between the two pane frames and down each pane's inset
+    // strip beside that gap. The band is deep and full width, so its sweeps run
+    // across; the gap is 25 points wide, so its sweeps run down.
+    //
+    // The flag is whether the page carries a tile under the sweep at the page's
+    // own origin — which is the origin the mapping used to answer with, so it
+    // is exactly "would removing the bound land this press on something".
+    let mid = columns.body.center().y;
+    let across = |x: f32, y: f32| (egui::pos2(x - 30.0, y), egui::pos2(x + 30.0, y));
+    let down = |x: f32, y: f32| (egui::pos2(x, y - 30.0), egui::pos2(x, y + 30.0));
+    let probes = [
+        (
+            "the band below the panes' content rects",
+            across(
+                columns.body.center().x,
+                (columns.body.bottom() + page.bottom()) / 2.0,
+            ),
+            true,
+        ),
+        (
+            "the column pane's inset strip below its content rect",
+            across(
+                columns.body.center().x,
+                (columns.body.bottom() + columns.rect.bottom()) / 2.0,
+            ),
+            true,
+        ),
+        (
+            "one point below the column pane's content bottom",
+            across(columns.body.center().x, columns.body.bottom() + 1.0),
+            true,
+        ),
+        (
+            "the gap between the two pane frames",
+            down((map.rect.right() + columns.rect.left()) / 2.0, mid),
+            false,
+        ),
+        (
+            "the map pane's inset strip beside that gap",
+            down((map.body.right() + map.rect.right()) / 2.0, mid),
+            false,
+        ),
+        (
+            "the column pane's inset strip beside that gap",
+            down((columns.rect.left() + columns.body.left()) / 2.0, mid),
+            false,
+        ),
+    ];
+    let unmoved = reference.composed_plot_rects();
+    let over_a_tile = |at: egui::Pos2| unmoved.iter().any(|rect| rect.contains(at));
+    for (what, (from, to), bites) in probes {
+        for at in [from, to] {
+            assert!(
+                page.contains(at),
+                "{what} puts an end of the sweep at {at:?}, which is outside \
+                 the page {page:?} — the mapping refuses it for want of a page \
+                 rather than for want of a pane, and this probe would hold with \
+                 the bound gone"
+            );
+            assert!(
+                !map.body.contains(at) && !columns.body.contains(at),
+                "{what} puts an end of the sweep at {at:?}, which is inside a \
+                 pane's content rect ({:?} or {:?}) — a pane did draw the page \
+                 there",
+                map.body,
+                columns.body
+            );
+        }
+        assert_eq!(
+            over_a_tile(from) || over_a_tile(to),
+            bites,
+            "{what} was written as a probe the bound {} the deciding refusal \
+             for, and the frame says the opposite: the page's tiles at its own \
+             origin are {unmoved:?} and the sweep runs {from:?} to {to:?}",
+            if bites { "is" } else { "is not" }
+        );
+    }
+
+    // Unscrolled and at the end of the column's reach, because the two are
+    // different pages under the same probe. Collected rather than asserted one
+    // at a time so a run that has lost the bound reports the whole leftover
+    // instead of the first point of it.
+    let mut landed = Vec::new();
+    for notches in [0, 12] {
+        for (what, (from, to), _) in probes {
+            let (scroll, (held, selected)) =
+                landing_of(notches, columns.body.center(), hero, from, to);
+            if held.is_some() {
+                landed.push(format!(
+                    "a press-and-drag across {what}, with the column scrolled \
+                     {scroll} points, committed {held:?}"
+                ));
+            }
+            if selected.as_deref() != Some(hero_column.as_str()) {
+                landed.push(format!(
+                    "a press across {what}, with the column scrolled {scroll} \
+                     points, moved the inspector from {hero_column} to \
+                     {selected:?}"
+                ));
+            }
+        }
+    }
+    assert!(
+        landed.is_empty(),
+        "the pointer was mapped onto a page no pane drew under it:\n  {}",
+        landed.join("\n  ")
+    );
+
+    // The boundary, from the other side: the tile drawn just inside the
+    // column's content bottom is the tile that sweep lands on.
+    let scrolled = settled_after(SCREEN, Some(columns.body.center()), 12);
+    let at = egui::pos2(columns.body.center().x, columns.body.bottom() - 1.0);
+    let tile = scrolled
+        .composed_plot_rects()
+        .iter()
+        .position(|rect| rect.contains(at))
+        .expect("a tile is drawn at the foot of the column pane");
+    let want = scrolled.chart_doc().tile_columns()[tile].column.clone();
+    let (scroll, (held, selected)) = landing_of(
+        12,
+        columns.body.center(),
+        hero,
+        egui::pos2(at.x - 30.0, at.y),
+        egui::pos2(at.x + 30.0, at.y),
+    );
+    assert_eq!(
+        scroll,
+        scrolled.canvas_scroll(),
+        "the probe run and the run the tile was resolved against scrolled to \
+         different places, so the tile under {at:?} is not the tile the probe \
+         swept"
+    );
+    let held = held.unwrap_or_default();
+    assert!(
+        held.contains(&want),
+        "a sweep one point above the column pane's content bottom committed \
+         {held:?}, which does not name {want} — the tile drawn there"
+    );
+    assert_eq!(
+        selected.as_deref(),
+        Some(want.as_str()),
+        "the same press left the inspector on {selected:?} rather than on \
+         {want}, the tile drawn under it"
+    );
+}
+
+/// A point across the middle of a stacked tile's data area, at `fx` of its
+/// width — resolved against the frame, like [`hero_data_point`], for a tile the
+/// column had to scroll to reach.
+fn tile_data_point(app: &MeridianApp, tile: usize, fx: f64) -> egui::Pos2 {
+    let drawn = app.composed_plot_rects()[tile];
+    let doc = app.chart_doc();
+    let l = &doc.composed.plots[tile].layout;
+    #[allow(clippy::cast_possible_truncation)]
+    let at = egui::pos2(
+        drawn.left() + (l.plot_x_start() + (l.plot_x_end() - l.plot_x_start()) * fx) as f32,
+        drawn.top() + ((l.plot_y_start() + l.plot_y_end()) / 2.0) as f32,
+    );
+    at
+}
+
+/// **A held click on a scrolled tile clears the selection** — the value the
+/// press latches, held to the origin the frame drew rather than to a constant.
+///
+/// A click is a drag that swept nothing, and "swept nothing" is `start` and
+/// `current` differing by less than the slop. Both are page-local points, so
+/// they are comparable only in one origin: `start` is captured at the press
+/// edge and `current` is re-read on every frame the button stays down, and the
+/// value the press latched is what makes those two readings the same origin.
+///
+/// Latch zero instead of the frame's answer and the two readings sit a scroll
+/// apart, so a click on a tile in a scrolled column arrives at the release with
+/// a phantom vertical travel the hand never made. It resolves as a sweep, and
+/// an interval sweep of no width commits a clause that selects nothing where
+/// the click was meant to retract this plot's contribution and let the other
+/// tiles back out. The gesture tests either side of this one hold a *sweep*
+/// across the boundary, and a sweep is unmoved by a constant added to both of
+/// its ends — which is why the wrong latch survived them.
+///
+/// Held for three frames with the button down, because the phantom travel is
+/// written by the frames between the press and the release. A press and a
+/// release in consecutive frames never re-read `current` at all.
+#[test]
+fn a_held_click_on_a_scrolled_tile_clears_the_selection() {
+    let (mut app, ctx, raw) = window();
+    let frame = |app: &mut MeridianApp, events: Vec<egui::Event>| {
+        let mut input = raw.clone();
+        input.events = events;
+        let _ = ctx.run_ui(input, |ui| app.draw(ui));
+    };
+    for _ in 0..3 {
+        frame(&mut app, Vec::new());
+    }
+    let columns = app
+        .canvas_panes()
+        .pane("columns")
+        .expect("the column pane drew")
+        .body;
+    scroll_the_column(&mut app, &ctx, &raw, columns.center(), 12);
+    let scrolled = app.canvas_scroll();
+    assert!(
+        scrolled > MIN_COLUMN_TILE_HEIGHT,
+        "the column scrolled {scrolled} points, which is less than one tile — \
+         the phantom travel a mislatched click carries is the scroll, and under \
+         the slop it is not a sweep at all"
+    );
+
+    // The last tile, reachable only because the column scrolled, and a click at
+    // the middle of its data area.
+    let last = app.composed_plot_rects().len() - 1;
+    let at = tile_data_point(&app, last, 0.5);
+    assert!(
+        columns.contains(at),
+        "the click at {at:?} is outside the column pane's content rect \
+         {columns:?}, so it is not a click on the tile this test is about"
+    );
+
+    // A sweep first, so there is a contribution for the click to retract.
+    let from = tile_data_point(&app, last, 0.25);
+    let to = tile_data_point(&app, last, 0.70);
+    frame(
+        &mut app,
+        vec![
+            egui::Event::PointerMoved(from),
+            button(from, egui::PointerButton::Primary, true),
+        ],
+    );
+    frame(&mut app, vec![egui::Event::PointerMoved(to)]);
+    frame(
+        &mut app,
+        vec![button(to, egui::PointerButton::Primary, false)],
+    );
+    for _ in 0..2 {
+        frame(&mut app, Vec::new());
+    }
+    let swept = app
+        .chart_doc()
+        .selection_sql()
+        .expect("the sweep committed a selection for the click to clear");
+
+    // The click: press, three frames with the button down and the pointer
+    // still, release.
+    frame(
+        &mut app,
+        vec![
+            egui::Event::PointerMoved(at),
+            button(at, egui::PointerButton::Primary, true),
+        ],
+    );
+    for _ in 0..3 {
+        frame(&mut app, Vec::new());
+    }
+    frame(
+        &mut app,
+        vec![button(at, egui::PointerButton::Primary, false)],
+    );
+    for _ in 0..2 {
+        frame(&mut app, Vec::new());
+    }
+
+    let after = app.chart_doc().selection_sql();
+    assert_eq!(
+        after, None,
+        "a held click on a tile in a column scrolled {scrolled} points left \
+         {after:?} standing where it should have retracted {swept} — the press \
+         latched an origin the frame did not draw the page at, so the frames \
+         the button was held for read the pointer {scrolled} points off the \
+         point it was pressed at and the click resolved as a sweep"
+    );
+}
+
+/// **The brush rectangle stays where the hand is** — the transient ink is
+/// painted in the origin the gesture latched, not in the origin of the frame
+/// the pointer has reached.
+///
+/// A page drawn at two origins puts the same page-local rect in two window
+/// places. The sweep's numbers are latched, so painting the ink against the
+/// frame's origin instead makes the rectangle jump by the scroll at the instant
+/// the pointer crosses the pane boundary and stay there for the rest of the
+/// drag, while the clause the release commits is unmoved. The picture and the
+/// predicate would be describing different rows.
+///
+/// Asserted as the same gesture at two scrolls rather than against a rect typed
+/// here: the press is on the hero, the hero does not move with the column's
+/// scroll, and the drag is latched to the map's origin — so the ink is the same
+/// window-space rectangle in both runs. `gesture_ink` is what the painter is
+/// handed, recorded rather than recomputed, which is what lets this run without
+/// a device.
+#[test]
+fn the_brush_rectangle_stays_where_the_hand_is() {
+    let reference = settled(SCREEN);
+    let columns = reference
+        .canvas_panes()
+        .pane("columns")
+        .expect("the column pane drew")
+        .body;
+    let press = hero_data_point(&reference, 0.30, 0.30);
+    let enter = egui::pos2(columns.left() + 20.0, press.y + 40.0);
+    assert!(
+        columns.contains(enter),
+        "the drag ends at {enter:?}, outside the column pane's content rect \
+         {columns:?} — it never crosses into the other origin"
+    );
+
+    let ink_mid_drag = |notches: usize| -> (f32, Option<egui::Rect>) {
+        let (mut app, ctx, raw) = window();
+        let frame = |app: &mut MeridianApp, events: Vec<egui::Event>| {
+            let mut input = raw.clone();
+            input.events = events;
+            let _ = ctx.run_ui(input, |ui| app.draw(ui));
+        };
+        for _ in 0..3 {
+            frame(&mut app, Vec::new());
+        }
+        if notches > 0 {
+            scroll_the_column(&mut app, &ctx, &raw, columns.center(), notches);
+        }
+        let scrolled = app.canvas_scroll();
+        frame(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(press),
+                button(press, egui::PointerButton::Primary, true),
+            ],
+        );
+        frame(&mut app, vec![egui::Event::PointerMoved(enter)]);
+        // Read with the button still down: the ink is the picture of an
+        // uncommitted sweep and the release is where it stops existing.
+        (scrolled, app.chart_doc().gesture_ink)
+    };
+
+    let (still, unscrolled) = ink_mid_drag(0);
+    let (moved, scrolled) = ink_mid_drag(12);
+    assert_eq!(
+        still, 0.0,
+        "the unscrolled run scrolled {still} points, so it is not the reading \
+         the scrolled run is being compared against"
+    );
+    assert!(
+        moved > MIN_COLUMN_TILE_HEIGHT,
+        "the scrolled run moved the column {moved} points, less than one tile \
+         — the two origins are close enough here that ink painted in either \
+         would compare equal"
+    );
+    let unscrolled = unscrolled.expect("the unscrolled drag recorded its ink");
+    let scrolled_ink = scrolled.expect("the scrolled drag recorded its ink");
+    assert!(
+        unscrolled.width() > 1.0 && unscrolled.height() > 1.0,
+        "the drag recorded an ink rect of {unscrolled:?}, which has no area — \
+         two empty rectangles compare equal wherever they are"
+    );
+    assert_eq!(
+        scrolled_ink, unscrolled,
+        "the same drag from the map into the column painted its rectangle at \
+         {scrolled_ink:?} with the column scrolled {moved} points and at \
+         {unscrolled:?} with it unscrolled — the ink was painted against the \
+         origin of the frame the pointer had reached rather than the one the \
+         press latched, so it jumped by the scroll at the boundary while the \
+         clause the release commits stayed where the hand was"
+    );
+}
+
+/// **A wheel during a drag does not move the column** — a latched origin is a
+/// scroll value, and the page it names has to still be the page on screen.
+///
+/// The drag reads every frame's pointer against the origin the press latched,
+/// which is what keeps a sweep across the pane boundary the sweep the hand
+/// made. Nothing was stopping the column from scrolling underneath it: the
+/// canvas takes the wheel whenever the pointer is over the column pane and asks
+/// no question about the button. Turn the wheel mid-drag and the page moves
+/// while the numbers do not, so the rectangle sits over tiles the gesture is
+/// not about and the release commits the tile the press landed on. The x-only
+/// clauses the other gesture tests assert cannot see it, because the offset
+/// between the views is vertical.
+///
+/// A window resize does the same thing by re-clamping the scroll to a reach the
+/// new height changed, which is why the clamp stands down with the wheel rather
+/// than the wheel alone.
+///
+/// The third run is what makes this a routing claim: the same wheel with no
+/// button down does scroll the column, so the silence in the first run is the
+/// gesture holding the page and not a wheel that went nowhere.
+#[test]
+fn a_wheel_during_a_drag_does_not_move_the_column() {
+    let reference = settled(SCREEN);
+    let columns = reference
+        .canvas_panes()
+        .pane("columns")
+        .expect("the column pane drew")
+        .body;
+    let first = tile_data_point(&reference, 1, 0.25);
+    let mid = tile_data_point(&reference, 1, 0.50);
+    let last = tile_data_point(&reference, 1, 0.70);
+    for at in [first, mid, last] {
+        assert!(
+            columns.contains(at),
+            "the sweep passes through {at:?}, outside the column pane's content \
+             rect {columns:?} — the wheel this test turns would not be the \
+             column's"
+        );
+    }
+
+    // The scroll read with the button still down, the scroll after the release,
+    // and the clause the release committed.
+    let drag = |wheel_during: bool, press: bool| -> (f32, f32, Option<String>) {
+        let (mut app, ctx, raw) = window();
+        let frame = |app: &mut MeridianApp, events: Vec<egui::Event>| {
+            let mut input = raw.clone();
+            input.events = events;
+            let _ = ctx.run_ui(input, |ui| app.draw(ui));
+        };
+        for _ in 0..3 {
+            frame(&mut app, Vec::new());
+        }
+        let mut down = vec![egui::Event::PointerMoved(first)];
+        if press {
+            down.push(button(first, egui::PointerButton::Primary, true));
+        }
+        frame(&mut app, down);
+        for _ in 0..4 {
+            let mut events = vec![egui::Event::PointerMoved(mid)];
+            if wheel_during {
+                events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -WHEEL_NOTCH),
+                    modifiers: egui::Modifiers::default(),
+                    phase: egui::TouchPhase::Move,
+                });
+            }
+            frame(&mut app, events);
+        }
+        frame(&mut app, vec![egui::Event::PointerMoved(last)]);
+        let held = app.canvas_scroll();
+        if press {
+            frame(
+                &mut app,
+                vec![button(last, egui::PointerButton::Primary, false)],
+            );
+        }
+        for _ in 0..6 {
+            frame(&mut app, Vec::new());
+        }
+        (held, app.canvas_scroll(), app.chart_doc().selection_sql())
+    };
+
+    let (turned_held, _, turned) = drag(true, true);
+    let (still_held, _, still) = drag(false, true);
+    let (_, loose, _) = drag(true, false);
+
+    assert!(
+        loose > MIN_COLUMN_TILE_HEIGHT,
+        "the same wheel with no button down scrolled the column {loose} points \
+         — under a tile, so a run that refused to scroll during the drag would \
+         read the same as one where the wheel reached nothing"
+    );
+    assert_eq!(
+        turned_held, 0.0,
+        "the column scrolled {turned_held} points while a drag was holding its \
+         origin — the page moved out from under a gesture whose start point is \
+         a page position in the origin the press latched"
+    );
+    assert_eq!(
+        turned_held, still_held,
+        "a drag with the wheel turned during it left the column at \
+         {turned_held} and the same drag without at {still_held}"
+    );
+    assert!(
+        still.is_some(),
+        "the drag with no wheel committed nothing, so the comparison below is \
+         between two absences"
+    );
+    assert_eq!(
+        turned, still,
+        "the same sweep committed {turned:?} with the wheel turned during it \
+         and {still:?} without"
     );
 }

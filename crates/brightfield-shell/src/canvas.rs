@@ -614,7 +614,7 @@ pub fn set_surface_cursor(ctx: &egui::Context, cursor: SurfaceCursor) {
 /// (surface-local logical pixels). The render seam's egui input boundary: past
 /// this point nothing downstream knows egui exists.
 ///
-/// **`rect` is an [`Option`] because a pointer can be over no surface at all.**
+/// **`rect` is an [`Option`] because a pointer can be over no surface.**
 /// A page drawn across a pane group is drawn inside the panes' content rects
 /// and reaches past them — below them at a short window, and through the
 /// gutter between them — so the caller's answer to "which box is this pointer

@@ -252,14 +252,14 @@ impl PaneViews {
 }
 
 /// **How far up the page is moved for a pointer**, in logical points, or
-/// `None` when the pointer is over no page at all: zero for the first view's
-/// origin and [`PaneViews::by`] for the second's.
+/// `None` where no pane drew a page under the pointer: zero for the first
+/// view's origin and [`PaneViews::by`] for the second's.
 ///
 /// The one place a screen point becomes a page origin. `latched` is a gesture's
 /// own origin, captured at its press edge, and when it is `Some` it is the
 /// answer whatever the pointer has crossed since — including out of the pane
 /// group entirely, because a sweep is the difference between two points and a
-/// difference is only a distance inside one origin.
+/// difference is a distance inside one origin and arithmetic across two.
 ///
 /// **Why the answer can be absence.** A page drawn in a pane group is drawn in
 /// the two boxes [`PaneViews`] names and nowhere else, and it is bigger than
