@@ -285,9 +285,10 @@ fn thinned_x_ticks(ticks: &[Tick], size: f32) -> Vec<&Tick> {
 ///
 /// A tick mark draws for each tick regardless of what its label does —
 /// dropping one would misstate which values the axis carries. A tick label
-/// draws thinned first ([`thinned_x_ticks`]) and rotated a quarter turn
-/// ([`draw_text_rotated`]) when even the sparsest horizontal set still
-/// collides. `thinning_keeps_labels_from_touching` and
+/// draws thinned first (`thinned_x_ticks`, private to this module) and
+/// rotated a quarter turn ([`draw_text_rotated`]) when even the sparsest
+/// horizontal set still collides.
+/// `thinning_keeps_labels_from_touching_at_various_widths` and
 /// `rotation_is_the_fallback_when_thinning_cannot_clear_the_labels` (this
 /// module's tests) pin the two branches.
 pub fn render_x_axis(
