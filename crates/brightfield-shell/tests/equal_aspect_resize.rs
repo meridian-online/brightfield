@@ -5,10 +5,10 @@
 //!
 //! `DotRenderer::augment_scales` (`crates/brightfield-render/src/mark.rs`)
 //! fits the map's x/y domains to the pane's pixel range so `aspectRatio: 1`
-//! holds, and that fit is recomputed from the raw column domain on every
-//! composite — a resize with **no** navigation in force was already correct
-//! before this card, because nothing else in the pipeline touches the domain
-//! it produces.
+//! holds. That fit is recomputed from the raw column domain each time the
+//! plot composes. A resize with **no** navigation in force was already
+//! correct before this card, since no other step touches the domain it
+//! produces.
 //!
 //! The break is a **navigated** plot: `infer_multi_mark_scales`
 //! (`crates/brightfield-render/src/scene.rs`) applies the analyst's view
@@ -144,8 +144,8 @@ fn a_navigated_map_keeps_equal_aspect_through_a_resize() {
     settle_at(&mut app, &ctx, WIDE, SETTLE);
 
     // The gesture: zoom the map in, so a view extent is on record for plot 0
-    // (the hero — `Dashboard::hero_index` always leads the plot order with
-    // the coordinate pair). This is what makes the bug reproduce: an
+    // — the hero, which `Dashboard::hero_index` picks to lead the plot order
+    // with the coordinate pair. This is what makes the bug reproduce: an
     // unnavigated resize was already aspect-correct before this card.
     assert!(
         app.chart_doc_mut().zoom_view(2.0),
@@ -238,9 +238,9 @@ fn reset_after_an_unnavigated_resize_changes_nothing() {
         "the resize alone, with nothing navigated",
     );
 
-    // Reset, with nothing on record to reset: `ChartDoc::reset_navigation`
-    // returns `false` and re-composes nothing when `view_extents()` is empty
-    // — so this must leave the scales the resize already produced exactly
+    // Reset, with no navigation on record: `ChartDoc::reset_navigation`
+    // returns `false` and skips the re-compose when `view_extents()` is
+    // empty. That leaves the scales the resize already produced exactly
     // where they were, not merely aspect-correct but numerically the same.
     let applied = app.chart_doc_mut().reset_navigation();
     assert!(
