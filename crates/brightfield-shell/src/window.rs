@@ -81,7 +81,7 @@ use meridian_design::{radius, semantic, spacing};
 use crate::app::{chart_registry, ChartDoc, ChartFault, CHART, CONTROLS};
 use crate::canvas::EguiCanvasHost;
 use crate::data_grid::DATA;
-use crate::design::{self, Mode};
+use crate::design::Mode;
 use crate::editor::EDITOR;
 use crate::inspector::{ColumnTable, InspectorPane, Selection, TableHandle};
 use crate::overlays::{CommandPalette, HelpSheet, JumpTarget, JumpToNode};
@@ -2594,7 +2594,7 @@ impl MeridianApp {
     pub fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         if !self.fonts_installed {
-            design::apply(&ctx, self.mode);
+            crate::apply_theme_without_unaligned_marker(&ctx, self.mode);
             self.fonts_installed = true;
         }
         let mode = self.mode;
