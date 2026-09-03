@@ -1048,23 +1048,43 @@ fn shadow_reach(mode: Mode) -> f32 {
     f32::from(s.blur) + f32::from(s.spread) + f32::from(offset)
 }
 
-/// The card's **top inner padding band**: the strip of blank overlay fill
-/// between the card's hairline and its title row, inset at each end past the
-/// rounded corners.
+/// The card's three **inner padding bands**: the strip between the hairline and
+/// the title row, and the left and right gutters between the hairline and the
+/// content, each inset past the rounded corners at both ends.
 ///
 /// Blank by construction — `card_frame` opens the card with
 /// `Margin::same(modal_padding)` and `chrome_contents` draws the title first —
-/// and the full width of the card, which is what makes it the widest run of
-/// pure card fill available to look at.
-fn card_padding_band(card: egui::Rect) -> Region {
+/// so all three are pure card fill whatever the card holds.
+///
+/// **Three rather than one, because no single one of them crosses varying
+/// window on every case.** Measured over the five overlay cases in both modes:
+/// the palette over the chart has a flat window behind its top band and a
+/// varying one behind both gutters; the palette over the protocol graph is the
+/// other way round. A test pinned to either band alone is vacuous on one of
+/// those two, which is what the caller's own guard says when it fires.
+fn card_padding_bands(card: egui::Rect) -> [Region; 3] {
     let t = &meridian_egui::TOKENS;
     let inset = t.radius_panel + 1.0;
-    Region {
-        x0: (card.min.x + inset).ceil() as u32,
-        y0: (card.min.y + 1.0).ceil() as u32,
-        x1: (card.max.x - inset).floor() as u32,
-        y1: (card.min.y + t.modal_padding).floor() as u32,
-    }
+    [
+        Region {
+            x0: (card.min.x + inset).ceil() as u32,
+            y0: (card.min.y + 1.0).ceil() as u32,
+            x1: (card.max.x - inset).floor() as u32,
+            y1: (card.min.y + t.modal_padding).floor() as u32,
+        },
+        Region {
+            x0: (card.min.x + 1.0).ceil() as u32,
+            y0: (card.min.y + inset).ceil() as u32,
+            x1: (card.min.x + t.modal_padding).floor() as u32,
+            y1: (card.max.y - inset).floor() as u32,
+        },
+        Region {
+            x0: (card.max.x - t.modal_padding).ceil() as u32,
+            y0: (card.min.y + inset).ceil() as u32,
+            x1: (card.max.x - 1.0).floor() as u32,
+            y1: (card.max.y - inset).floor() as u32,
+        },
+    ]
 }
 
 /// **AC3, the fill half.** Inside a modal card, what is drawn does not depend
@@ -1078,44 +1098,55 @@ fn card_padding_band(card: egui::Rect) -> Region {
 ///
 /// The guard is what keeps it honest. Light mode's chart surface and its
 /// overlay surface are deliberately the same tone (`semantic.rs` says so in
-/// those words), so a card sitting over flat chart background would read as
-/// one colour whether it were opaque or absent. The assertion therefore
-/// **requires** the closed capture to vary across the same band, and says so
-/// when it does not.
+/// those words), so a card sitting over flat background would read as one
+/// colour whether it were opaque or absent. So **at least one** of the three
+/// bands has to vary in the closed capture, and the test says so when none
+/// does; the front-side assertion is then made over all three, because a band
+/// that is card fill is card fill whether or not it is the one carrying the
+/// guard.
 #[test]
 fn every_modal_card_is_opaque_over_whatever_it_covers() {
     for mode in [Mode::Light, Mode::Dark] {
         for case in OVERLAY_CASES {
             let shot = case.open(mode);
-            let band = card_padding_band(shot.card);
+            let bands = card_padding_bands(shot.card);
+            for band in bands {
+                assert!(
+                    band.x1 > band.x0 && band.y1 > band.y0,
+                    "{} in {mode:?}: the padding band {band:?} came out empty \
+                     from card rect {:?}",
+                    case.what,
+                    shot.card
+                );
+            }
+
+            let behind: Vec<Option<[u8; 4]>> = bands
+                .iter()
+                .map(|b| uniform_colour(&shot.closed, *b))
+                .collect();
             assert!(
-                band.x1 > band.x0 && band.y1 > band.y0,
-                "{} in {mode:?}: the card's padding band came out empty from \
-                 rect {:?}",
+                behind.iter().any(Option::is_none),
+                "{} in {mode:?}: the window behind every one of the card's \
+                 padding bands is one flat colour ({behind:?}), so none of them \
+                 can tell an opaque card from a missing one — the bands are \
+                 {bands:?} of card {:?}",
                 case.what,
                 shot.card
             );
 
-            let behind = uniform_colour(&shot.closed, band);
-            assert_eq!(
-                behind, None,
-                "{} in {mode:?}: the window behind the card's padding band is \
-                 one flat colour, so this band cannot tell an opaque card from \
-                 a missing one — move the band over something that varies",
-                case.what
-            );
-
-            let drawn = uniform_colour(&shot.open, band);
-            assert_eq!(
-                drawn,
-                Some(overlay_surface(mode).to_array()),
-                "{} in {mode:?}: the card's padding band is not one flat \
-                 overlay-surface tone, so the fill is not being drawn opaque \
-                 and the window is reading through the card. Band {band:?} of \
-                 card {:?}",
-                case.what,
-                shot.card
-            );
+            for band in bands {
+                let drawn = uniform_colour(&shot.open, band);
+                assert_eq!(
+                    drawn,
+                    Some(overlay_surface(mode).to_array()),
+                    "{} in {mode:?}: the card's padding band is not one flat \
+                     overlay-surface tone, so the fill is not being drawn \
+                     opaque and the window is reading through the card. Band \
+                     {band:?} of card {:?}",
+                    case.what,
+                    shot.card
+                );
+            }
         }
     }
 }
