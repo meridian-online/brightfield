@@ -118,17 +118,20 @@ WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
       many structs resolves through whichever ONE of them happens to be a
       test fixture. Three filters in resolvable_test_names() close the worst
       of it — a name with no underscore never resolves, in either the
-      `tests/` or the `#[cfg(test)]` half; a METHOD never resolves at all;
-      and a name production itself defines never resolves through either
-      attribute-free half. What none of them closes is a name that exists
-      ONLY as a test-side helper and is cited as the SUBJECT of the claim
-      rather than as its measurement, which is a question about relevance
-      and not about existence. Two comments in
-      crates/brightfield-shell/tests/ghosted_histogram.rs are silent for
-      exactly that reason. This is the same
-      shape as rule A's `defines()` — an existence check, not a relevance
-      check — just wider, because the enumeration it resolves against is
-      wider.
+      `tests/` or the `#[cfg(test)]` half; a METHOD never resolves through
+      either half, because free_fn_names() drops every `fn` inside an
+      `impl` or `trait` span before cfg_test_fn_names() or
+      tests_dir_fn_names() is built from what is left (an individually
+      `#[test]`-attributed method is a different claim: it still resolves
+      through the narrower test_functions(), which these three filters do
+      not touch); and a name production itself defines never resolves
+      through either attribute-free half. What none of them closes is a name
+      that exists ONLY as a test-side helper and is cited as the SUBJECT of
+      the claim rather than as its measurement, which is a question about
+      relevance and not about existence, and no count of it is kept here.
+      This is the same shape as rule A's `defines()` — an existence check,
+      not a relevance check — just wider, because the enumeration it
+      resolves against is wider.
     - Rule D's RECALL is PARTIAL. It was measured against the comment lines a
       review wave in this repo made an author delete, and the measurement is in
       the commit that landed the block reader. What that measurement leaves
@@ -1223,8 +1226,9 @@ def check(units: list[Unit]) -> list[str]:
             if claim.lineno not in unit.scope:
                 continue
             failures.append(
-                f"{rel}:{claim.lineno} says \"{claim.word}\" of `{claim.symbol}` and "
-                f"names no test — cite the test that holds it, or drop the quantifier"
+                f"{rel}:{claim.lineno} says \"{claim.word}\" of `{claim.symbol}` — "
+                f"its own sentence names no test; cite the test in that sentence, "
+                f"or drop the quantifier"
             )
     return failures
 
@@ -1716,7 +1720,8 @@ def self_test() -> int:
         "anything": f"[`{camel}`] refuses anything carrying a control character",
     }
     cases += [
-        (body, False, f"the quantifier `{word}` is read as a claim", (f'"{word}"',))
+        (body, False, f"the quantifier `{word}` is read as a claim",
+         (f'"{word}"', "in that sentence"))
         for word, body in quantified.items()
     ]
 
@@ -1746,9 +1751,11 @@ def self_test() -> int:
          f"STAYS GREEN: a name that RESOLVES, with the bare word beside it "
          f"({named_test})"),
         (f"[`{camel}`] is the only thing that makes one. `{named_test}` holds that",
-         False, f"a test named in the NEXT sentence discharges nothing: the claim\'s "
-                f"own sentence is the unit ({named_test})",
-         ('"only"', f"`{camel}`")),
+         False, f"a test named in the NEXT sentence discharges nothing, and the "
+                f"message tells the author where to move it, not merely that it "
+                f"is missing ({named_test})",
+         ('"only"', f"`{camel}`", "its own sentence names no test",
+          "in that sentence")),
         ("nothing else can be what reddens", True,
          "STAYS GREEN: a quantifier with no symbol is prose this cannot judge"),
         (f"[`{camel}`] states where that stops", True,
