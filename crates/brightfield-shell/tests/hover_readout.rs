@@ -473,6 +473,11 @@ fn a_hover_is_not_an_interaction() {
         before.1,
         "the hover changed what the selections hold, so it pushed a predicate"
     );
+    assert!(
+        !before.2.starts_with("[]|[]|"),
+        "the Protocol on the canvas has no nodes, no seams and no edges, so \
+         comparing its fingerprint across a hover compares two empty lists"
+    );
     assert_eq!(
         protocol_fingerprint(&app),
         before.2,
@@ -881,11 +886,15 @@ fn the_shipped_surfaces_behave_the_same_with_and_without_a_hover() {
 
         let (lon, lat) = a_row_of_the_fixture(0);
         let landed = at_data(&app, 0, lon, lat);
-        let before = executes(&app);
+        // Counted around the rests alone: the brush below re-queries every
+        // mark, so a delta taken across the whole run would be dominated by
+        // the cross-filter and would not say whether a hover happened.
+        let mut hovers = 0;
         if hover {
+            let before = executes(&app);
             rest_at(&mut app, &ctx, landed);
+            hovers += executes(&app) - before;
         }
-        let hovers = executes(&app) - before;
 
         // The same brush either way, swept about the hero's own centre so the
         // press lands inside the plot whatever the fixture's coordinates do.
@@ -896,6 +905,17 @@ fn the_shipped_surfaces_behave_the_same_with_and_without_a_hover() {
             hero.center() - egui::vec2(30.0, 30.0),
             hero.center() + egui::vec2(30.0, 30.0),
         );
+
+        // And a second rest AFTER the brush, so a hover that perturbed shared
+        // state — retracted a selection, moved a sample rate, selected a tile —
+        // has somewhere to show up. A hovering run whose only rest came before
+        // the gesture would compare two windows in the same state.
+        if hover {
+            rest_at(&mut app, &ctx, egui::pos2(1.0, 1.0));
+            let before = executes(&app);
+            rest_at(&mut app, &ctx, landed);
+            hovers += executes(&app) - before;
+        }
         // No click after the sweep, deliberately: a click with no sweep on an
         // interval binding is the crossfilter's clear gesture, so one here
         // would retract the brush this comparison is about. The press that
@@ -907,7 +927,11 @@ fn the_shipped_surfaces_behave_the_same_with_and_without_a_hover() {
 
     let (with, hovers) = run(true);
     let (without, none) = run(false);
-    assert_eq!(hovers, 1, "the hovering run issued {hovers} hover queries");
+    assert!(
+        hovers >= 2,
+        "the hovering run issued {hovers} hover queries, so it did not rest \
+         both before and after the brush"
+    );
     assert_eq!(none, 0, "the non-hovering run issued {none} hover queries");
     assert!(
         with.selection.is_some(),
