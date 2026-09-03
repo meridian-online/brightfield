@@ -387,7 +387,7 @@ fn clearing_the_brush_restores_the_grids_full_range() {
 ///
 /// | mark | audience | rows | why |
 /// |---|---|---|---|
-/// | 0 (ghost) | `Reader` | 5 | it declares no `filterBy:`, so no predicate reaches it at all |
+/// | 0 (ghost) | `Reader` | 5 | it declares no `filterBy:`, so no predicate reaches it |
 /// | 1 (subset) | `Plot` | 5 | crossfilter drops the clause this plot published — its own |
 /// | 1 (subset) | `Reader` | 2 | no clause dropped: the selection's value |
 ///

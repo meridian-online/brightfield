@@ -1874,7 +1874,7 @@ pub(crate) fn ghost_subset_marks(spec: &Spec) -> Option<(usize, usize)> {
 /// A generated tile writes its ghost first and its subset second — see
 /// [`crate::chart_kinds::point_map_tile`] and the histogram and scatter tiles
 /// beside it — so mark `0` of a generated dashboard is the hero's **ghost** —
-/// `data: { from: opened }` with no `filterBy:` at all. A surface reading it
+/// `data: { from: opened }` and no `filterBy:`. A surface reading it
 /// reads the whole table whatever anybody brushes, and that is what the rows
 /// pane did: it listed 240 of 240 rows beside a status band saying 45 were
 /// selected.

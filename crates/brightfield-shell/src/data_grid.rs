@@ -1049,7 +1049,7 @@ impl Item<ChartDoc> for DataGridItem {
         // The mark comes from the document — `LiveDashboard::rows_mark`, the
         // layer carrying `filterBy:` — because a generated dashboard's mark 0
         // is the hero's ghost, which declares no `filterBy:` and so does not
-        // narrow at all. The audience is `Reader`, fixed inside `EngineRows`,
+        // narrow. The audience is `Reader`, fixed inside `EngineRows`,
         // because this pane draws no mark and therefore has no crossfilter
         // contribution to exclude; asking as the hero would answer with the
         // hero's own WHERE, which drops the brush the reader just drew.
