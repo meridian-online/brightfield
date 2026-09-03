@@ -48,7 +48,7 @@ use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_spec::{parse_spec, Format, Spec};
-use brightfield_sql::emit::{emit_query, emit_rows_query};
+use brightfield_sql::emit::{emit_query, emit_rows_query, RowsAudience};
 use brightfield_sql::ir::ScalarValue;
 use brightfield_workbench::Item;
 
@@ -196,9 +196,15 @@ fn click_x(app: &mut MeridianApp, ctx: &egui::Context, plot: usize, at: f32) {
 /// `compile_selection` with the chart's `emit_query`, so the WHERE in it is the
 /// WHERE the chart ran.
 fn emitted_rows_sql(session: &Session, spec: &Spec, mark: usize) -> String {
-    emit_rows_query(spec, mark, None, Some(&live_selections(session)))
-        .expect("the mark emits")
-        .sql
+    emit_rows_query(
+        spec,
+        mark,
+        None,
+        Some(&live_selections(session)),
+        RowsAudience::Plot,
+    )
+    .expect("the mark emits")
+    .sql
 }
 
 /// The chart SQL the engine emits for `mark` under the session's CURRENT

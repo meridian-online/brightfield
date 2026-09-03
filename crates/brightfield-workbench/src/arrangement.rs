@@ -406,10 +406,11 @@ pub enum Occupant {
     /// projection of a step is showing, and what stands there when the subject
     /// is the protocol rather than one of its steps.
     Canvas {
-        /// The step's projections, behind the canvas's one toggle. Two, and
-        /// the toggle is built from this slice, so a third here would be a
-        /// third on screen — which is what
-        /// `the_canvas_toggle_offers_two_projections_and_no_more` refuses.
+        /// The step's projections. One entry today, and the shell draws no
+        /// toggle for a canvas that has one reading — a second projection
+        /// declared here is a control the shell would have to put back
+        /// somewhere, which is what
+        /// `the_canvas_declares_one_projection_and_draws_no_head_band` counts.
         projections: &'static [Projection],
         /// The asset graph, which stands at canvas size while there is no
         /// chart for the canvas to hold — the canvas's empty state rather
@@ -421,17 +422,21 @@ pub enum Occupant {
     },
 }
 
-/// One reading of a step's output, and the word the canvas toggle offers it
-/// under.
+/// One reading of a step's output, and the word a toggle would offer it under.
 ///
 /// The word is declared here rather than taken from the pane's own
 /// [`Subject`](crate::Subject) title, and that is a departure from the rule
 /// the rest of the chrome follows. The reason is that the two are different
 /// claims: a pane's title names the document it is showing — the chart pane's
-/// is the dashboard's own name, which changes with the file — while these two
-/// words name the *reading*, and stay put while the subject under them
-/// changes. `the_canvas_toggle_offers_two_projections_and_no_more` counts
-/// them.
+/// is the dashboard's own name, which changes with the file — while this word
+/// names the *reading*, and stays put while the subject under it changes.
+///
+/// The canvas declares one of these today, so the word is unread and no toggle
+/// is drawn —
+/// `the_canvas_declares_one_projection_and_draws_no_head_band`. It stays
+/// declared because the label belongs beside the item whether or not a second
+/// reading is on offer, and a projection added back is a projection with a word
+/// already chosen for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Projection {
     /// The pane that draws this reading.
@@ -530,18 +535,18 @@ static INSPECTOR_PANES: &[ItemId] = &[
 /// The ledger rail's panes — the step list and the document that declares it.
 static LEDGER_PANES: &[ItemId] = &[ItemId::new("protocol-steps"), ItemId::new("spec-editor")];
 
-/// The canvas's two projections, in the order the toggle offers them: the
-/// tabular reading of a step's output, then the drawn one.
-static PROJECTIONS: &[Projection] = &[
-    Projection {
-        item: ItemId::new("chart-data-grid"),
-        label: "Grid",
-    },
-    Projection {
-        item: ItemId::new("chart-canvas"),
-        label: "Chart",
-    },
-];
+/// The canvas's projections: the drawn reading of a step's output, one entry,
+/// so no toggle is drawn —
+/// `the_canvas_declares_one_projection_and_draws_no_head_band`.
+///
+/// The tabular reading is not a projection of the canvas: a dashboard's rows
+/// are a pane of the canvas's own group, drawn through [`crate::chrome::pane_frame`]
+/// beneath the map, so the numbers and the picture are on screen at once
+/// rather than one behind the other.
+static PROJECTIONS: &[Projection] = &[Projection {
+    item: ItemId::new("chart-canvas"),
+    label: "Chart",
+}];
 
 /// Arrangement A — spine left.
 ///
@@ -824,17 +829,21 @@ mod tests {
     }
 
     #[test]
-    fn the_canvas_toggles_between_two_projections() {
-        // AC2's declaration half: the toggle is built from this slice, so a
-        // third entry here would be a third entry on screen.
+    fn the_canvas_declares_one_projection() {
+        // The declaration half. One entry means no toggle is drawn, so a
+        // second entry here is a control the shell would have to put back
+        // somewhere; the shell's own
+        // `the_canvas_declares_one_projection_and_draws_no_head_band` is the
+        // half that reads a drawn frame.
         let canvas = default_arrangement().expect_region(CANVAS);
         let Occupant::Canvas { projections, .. } = canvas.occupant else {
             panic!("the canvas region is occupied by the canvas");
         };
         assert_eq!(
             projections.len(),
-            2,
-            "the canvas toggle offers a grid and a chart: {projections:?}"
+            1,
+            "the canvas declares the drawn reading and no second one: \
+             {projections:?}"
         );
     }
 

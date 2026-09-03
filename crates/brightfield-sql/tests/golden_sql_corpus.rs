@@ -34,7 +34,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use brightfield_spec::{parse_spec, Format};
-use brightfield_sql::emit::{emit_all_queries, emit_rows_query, emit_sources};
+use brightfield_sql::emit::{emit_all_queries, emit_rows_query, emit_sources, RowsAudience};
 
 /// Corpus roots, relative to this crate's manifest dir, with the stable label
 /// each contributes to section headers (so the dump never contains absolute
@@ -114,7 +114,7 @@ fn dump_spec(out: &mut String, label: &str, path: &Path) {
                 if !q.bindings.is_empty() {
                     let _ = writeln!(out, "-- mark[{i}] bindings: {:?}", q.bindings);
                 }
-                match emit_rows_query(&spec, i, None, None) {
+                match emit_rows_query(&spec, i, None, None, RowsAudience::Plot) {
                     Ok(r) => {
                         let _ = writeln!(out, "-- mark[{i}] rows: {}", r.sql);
                     }

@@ -23,10 +23,12 @@
 
 use std::path::PathBuf;
 
+use brightfield_engine::RowsAudience;
 use brightfield_render::channel::Channel;
 use brightfield_shell::app::HoverReadout;
 use brightfield_shell::data_grid::fetch_page;
 use brightfield_shell::design::Mode;
+use brightfield_shell::pipeline::LiveDashboard;
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_workbench::arrangement;
 use egui_kittest::kittest::Queryable;
@@ -1018,11 +1020,21 @@ struct Surfaces {
 }
 
 fn surfaces(app: &mut MeridianApp) -> Surfaces {
-    let mark = app.chart_doc().composed.plots[0]
-        .hover
-        .as_ref()
-        .expect("the hero offers a hover layer")
-        .mark;
+    // The hero has to offer a hover layer for the run with a rest in it to
+    // rest on anything, so this reading is taken before the surfaces are.
+    assert!(
+        app.chart_doc().composed.plots[0].hover.is_some(),
+        "the hero offers no hover layer, so the hovering run below rests on \
+         nothing and the comparison is between two identical runs"
+    );
+    // The grid is read the way the rows pane reads it — the mark
+    // `LiveDashboard::rows_mark` resolves, at `RowsAudience::Reader` — so the
+    // surface compared here is the shipped surface rather than a neighbouring
+    // query. `data_grid::DataGridPane::ui` is the production call.
+    let mark = app
+        .chart_doc()
+        .live_dashboard()
+        .map_or(0, LiveDashboard::rows_mark);
     let selection = app.chart_doc().selection_sql();
     let plots = app.chart_doc().composed.plots.len();
     let page = (
@@ -1036,7 +1048,7 @@ fn surfaces(app: &mut MeridianApp) -> Surfaces {
         .live_coordinator()
         .expect("a live document")
         .session();
-    let grid = fetch_page(session, mark, 0..8)
+    let grid = fetch_page(session, mark, 0..8, RowsAudience::Reader)
         .expect("the grid reads")
         .rows;
     Surfaces {

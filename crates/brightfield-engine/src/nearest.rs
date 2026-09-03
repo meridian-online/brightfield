@@ -140,11 +140,13 @@ fn literal(v: f64) -> String {
 
 /// **The nearest-row query**, wrapped around a step's own emitted rows SQL.
 ///
-/// `rows_sql` is the row-level query for the mark being hovered — the same
-/// string the tabular surface reads, carrying the same static `data.filter`
-/// and the same live selection predicate the mark was drawn under. Everything
-/// this adds is outside it: a squared pixel distance, the radius test, the
-/// ordering, and the bound.
+/// `rows_sql` is the row-level query for the mark being hovered, carrying the
+/// same static `data.filter` and the same live selection predicate the mark
+/// was drawn under — the string `Session::execute_step_rows` runs for that
+/// mark at the plot's own audience, which is the row set on screen rather than
+/// the one a reader of the selection would get. Everything this adds is
+/// outside it: a squared pixel distance, the radius test, the ordering, and
+/// the bound.
 ///
 /// Returns `None` when the probe cannot be expressed: a zero or non-finite
 /// `per_pixel` on either axis (a degenerate scale — one where the rows are

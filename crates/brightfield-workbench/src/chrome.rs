@@ -398,6 +398,13 @@ pub struct StripDrawn {
     pub names: Vec<egui::Rect>,
     /// Where the collapse control drew, on a rail that declares one.
     pub control: Option<egui::Rect>,
+    /// Where the trailing summary drew, on a strip that was given one.
+    ///
+    /// Content of the strip rather than a control: it is not a pointer target
+    /// and it takes its room out of the same trailing end the control does,
+    /// so a name that would reach under it is dropped by the rule the control
+    /// already imposes.
+    pub summary: Option<egui::Rect>,
     /// The name the pointer picked this frame.
     pub picked: Option<usize>,
     /// Whether the pointer clicked the collapse control this frame.
@@ -431,6 +438,12 @@ pub fn rail_split(rect: egui::Rect) -> (egui::Rect, egui::Rect) {
 /// does not collapse, which is the arrangement's answer rather than this
 /// function's.
 ///
+/// `summary` is a line of the rail's own content at that trailing end, drawn
+/// left of the control and taking its room out of the same end — so the
+/// dropping rule above covers it without a second rule. `None` where the
+/// caller has no summary to give, which is its answer rather than this
+/// function's.
+///
 /// The same strip is drawn whether the rail is open or collapsed: a bottom
 /// rail collapsed to this height is exactly this strip, so its names stay
 /// drawn and stay clickable, and
@@ -444,9 +457,19 @@ pub fn rail_selector(
     names: &[&str],
     active: usize,
     collapse: Option<Caret>,
+    summary: Option<&str>,
     mode: Mode,
 ) -> StripDrawn {
-    strip(ui, rect, names, active, collapse, Below::Body, mode)
+    strip(
+        ui,
+        rect,
+        names,
+        active,
+        collapse,
+        summary,
+        Below::Body,
+        mode,
+    )
 }
 
 /// What a bottom rail collapsed to a rect taller than its own strip draws:
@@ -484,13 +507,23 @@ pub fn collapsed_rail(
     names: &[&str],
     active: usize,
     caret: Caret,
+    summary: Option<&str>,
     mode: Mode,
 ) -> StripDrawn {
     let sem = semantic(mode.is_dark());
     ui.painter()
         .rect_filled(rect, radius::NONE, colour(sem.tabs.bar_background));
     let (head, _) = rail_split(rect);
-    strip(ui, head, names, active, Some(caret), Below::Clearance, mode)
+    strip(
+        ui,
+        head,
+        names,
+        active,
+        Some(caret),
+        summary,
+        Below::Clearance,
+        mode,
+    )
 }
 
 /// What is under a rail's selector strip, which is what decides whether the
@@ -505,12 +538,19 @@ enum Below {
 }
 
 /// The selector strip itself, shared by the open and collapsed drawings.
+// Eight, because the strip is one drawing with eight independent inputs: the
+// `ui` it paints into, the box, the names, which is live, whether it collapses
+// and which way, what it summarises, what is under it, and the mode. A struct
+// here would be a name for the argument list rather than for a thing — every
+// field is read once, by this function, at one call.
+#[allow(clippy::too_many_arguments)]
 fn strip(
     ui: &mut egui::Ui,
     rect: egui::Rect,
     names: &[&str],
     active: usize,
     collapse: Option<Caret>,
+    summary: Option<&str>,
     below: Below,
     mode: Mode,
 ) -> StripDrawn {
@@ -533,6 +573,25 @@ fn strip(
         control = Some(square);
         room.max.x = square.left();
     }
+
+    // The summary, against the trailing end of what the control left. Muted
+    // ink and the same face as the names: it is what the rail is about rather
+    // than one of the things it offers, so it must not read as a fourth name
+    // the pointer can pick.
+    let summary = summary.map(|text| {
+        let galley =
+            ui.painter()
+                .layout_no_wrap(text.to_owned(), ui_font(), colour(sem.text.muted));
+        let size = galley.size();
+        let at = egui::pos2(
+            room.right() - spacing::SPACE_4 - size.x,
+            rect.center().y - size.y / 2.0,
+        );
+        ui.painter().galley(at, galley, colour(sem.text.muted));
+        let drawn = egui::Rect::from_min_size(at, size);
+        room.max.x = drawn.left() - spacing::SPACE_4;
+        drawn
+    });
 
     let font = ui_font();
     let pad = spacing::SPACE_4;
@@ -593,6 +652,7 @@ fn strip(
         rect,
         names: drawn,
         control,
+        summary,
         picked,
         toggled,
     }
@@ -618,6 +678,7 @@ pub fn rail_stub(ui: &mut egui::Ui, rect: egui::Rect, caret: Caret, mode: Mode) 
         rect,
         names: Vec::new(),
         control: Some(square),
+        summary: None,
         picked: None,
         toggled,
     }

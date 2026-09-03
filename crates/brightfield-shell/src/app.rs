@@ -363,6 +363,16 @@ pub struct ChartDoc {
     /// canvas each frame *before* the pane draws, because it is a fact about
     /// the layout the frame chose rather than about the document.
     pub pane_views: Option<PaneViews>,
+    /// **What the rows pane's table laid out**, as of the last frame it drew —
+    /// see [`crate::data_grid::TableDrawn`].
+    ///
+    /// Written by the grid pane, read by the canvas group that draws the
+    /// readout above it. It lives on the document rather than on the pane for
+    /// the reason [`Self::raster_rect`] does: the shell hands out one
+    /// `&mut ChartDoc` for the duration of one pane's draw, so a fact one pane
+    /// records and another reports has to pass through here. `None` on a frame
+    /// where the grid drew no table.
+    pub grid_drawn: Option<crate::data_grid::TableDrawn>,
     /// **Whether a pointer gesture is holding a page origin**, as of the last
     /// frame the chart pane drew.
     ///
@@ -547,6 +557,7 @@ impl ChartDoc {
             hover_readout: None,
             viewport: None,
             pane_views: None,
+            grid_drawn: None,
             gesture_latched: false,
             gesture_ink: None,
             wheel_taken: false,
@@ -581,6 +592,7 @@ impl ChartDoc {
             hover_readout: None,
             viewport: None,
             pane_views: None,
+            grid_drawn: None,
             gesture_latched: false,
             gesture_ink: None,
             wheel_taken: false,
@@ -659,6 +671,7 @@ impl ChartDoc {
         self.stacked_tiles = None;
         self.min_page_height = 0.0;
         self.pane_views = None;
+        self.grid_drawn = None;
         self.gesture_latched = false;
         self.gesture_ink = None;
         // …and the readout named a row of the replaced document's table. Left
@@ -726,8 +739,23 @@ impl ChartDoc {
     /// so the hero is composed at the room it was offered and the growth is the
     /// column's alone. Both are written before the re-present, and either being
     /// news is what makes one happen.
+    ///
+    /// **And the hero's room is the map pane's, not the group's.** The page
+    /// spans a pane group whose panes are no longer the same height: the map
+    /// pane gives the foot of its column to the rows pane, and
+    /// [`PaneViews::first`] is that pane's content rect while
+    /// [`PaneViews::second`] is the full-height column beside it. The offered
+    /// box is the group's, so the difference between the two views is exactly
+    /// what the rows took, and it comes off the hero's room and off nothing
+    /// else — `the_hero_is_composed_whole_inside_the_map_pane`.
     pub fn reflow_to(&mut self, size: egui::Vec2) -> bool {
         let room = size.y.floor().max(MIN_CHART_EXTENT);
+        let hero_room = self
+            .pane_views
+            .map_or(room, |v| {
+                room - (v.second.height() - v.first.height()).max(0.0)
+            })
+            .max(MIN_CHART_EXTENT);
         let page = size
             .y
             .max(self.min_page_height)
@@ -742,7 +770,7 @@ impl ChartDoc {
         let Some(live) = self.live.as_mut() else {
             return false;
         };
-        let bound = live.set_hero_bound(f64::from((page - room).max(0.0)));
+        let bound = live.set_hero_bound(f64::from((page - hero_room).max(0.0)));
         if !live.set_viewport(box_) && !bound {
             return false;
         }

@@ -19,7 +19,7 @@
 
 use brightfield_engine::coordinator::{Coordinator, Interaction};
 use brightfield_engine::nearest::{NearestAxis, NearestCell, NearestProbe, NearestRead};
-use brightfield_engine::{Engine, Session, SqlPredicate};
+use brightfield_engine::{Engine, RowsAudience, Session, SqlPredicate};
 use brightfield_spec::analysis::{analyse_spec, ComponentPath};
 use brightfield_spec::{parse_spec, Format};
 use brightfield_sql::ir::ScalarValue;
@@ -497,5 +497,124 @@ fn each_rest_at_a_new_pixel_is_its_own_execute() {
         c.session().duckdb_execute_count(),
         before + 3,
         "three rests at three pixels are three queries"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Which audience the read runs at
+// ---------------------------------------------------------------------------
+
+/// The same fixture under `select: crossfilter`, so a clause published by the
+/// plot's own node path is one that plot does not receive back.
+///
+/// `plot_node_path("root/plot[0]/mark[dot]")` is `"root"`, so
+/// [`CROSSFILTER_CONTRIBUTOR`] below is this plot's own identity rather than a
+/// synthetic neighbour — under a synthetic path self-exclusion does not fire,
+/// the two audiences answer alike, and the test discriminates neither.
+fn crossfilter_spec_yaml() -> String {
+    let rows: Vec<String> = ROWS
+        .iter()
+        .map(|(x, y, label)| format!("    - {{ x: {x}, y: {y}, label: {label} }}"))
+        .collect();
+    format!(
+        "params:\n  brush:\n    select: crossfilter\ndata:\n  t:\n{}\nplot:\n  \
+         - mark: dot\n    data: {{ from: t, filterBy: $brush }}\n    x: x\n    y: y\n",
+        rows.join("\n")
+    )
+}
+
+/// The plot's own identity, which is what makes the brush below self-excluding.
+const CROSSFILTER_CONTRIBUTOR: &str = "root";
+
+/// **A hover reads the rows the plot DREW, not the rows the selection holds.**
+///
+/// `Session::nearest_row` wraps the step's rows SQL at
+/// `RowsAudience::Plot`, and this is the case where the two audiences give
+/// different answers. Under `select: crossfilter` a plot is not filtered by
+/// the clause it published itself, so brushing this plot leaves the excluded
+/// dots on screen — and a read asking as `RowsAudience::Reader` would apply
+/// that clause and come back empty over a dot the reader can see.
+///
+/// Four readings, in the order that makes each one mean something:
+///
+/// | reading | value | why |
+/// |---|---|---|
+/// | rows at `Plot` | 3 | crossfilter drops this plot's own clause, so the picture is unchanged |
+/// | rows at `Reader` | 1 | no clause dropped: the selection's value, `x` in 80..=100 |
+/// | hover at [`AT_ORIGIN`] | `near-in-y` | an EXCLUDED row, 3 pixels from the aim |
+/// | the surviving row's distance | ~89 pixels | outside the probe's 40, so `Reader` empties the read |
+///
+/// The first two are asserted before the hover, because a fixture whose
+/// selection had stopped being self-excluding would make the third pass for
+/// the wrong reason. The fourth is why the third discriminates: swap the
+/// audience and the one row left to find is out of radius, so the read comes
+/// back empty rather than merely different.
+#[test]
+fn a_hover_reads_what_its_own_brushed_plot_still_draws() {
+    let source = crossfilter_spec_yaml();
+    let spec = parse_spec(&source, Format::Yaml)
+        .expect("the fixture parses")
+        .spec;
+    let analysis = analyse_spec(&spec).expect("the fixture analyses");
+    let mut c = Coordinator::from_session(session(spec, analysis));
+
+    c.apply(Interaction::Select {
+        name: "brush".to_string(),
+        contributor: ComponentPath(CROSSFILTER_CONTRIBUTOR.to_string()),
+        predicate: SqlPredicate::Interval {
+            column: "\"x\"".to_string(),
+            lo: ScalarValue::Float(80.0),
+            hi: ScalarValue::Float(100.0),
+            meta: None,
+        },
+    });
+
+    let drawn = c
+        .session()
+        .step_rows_count(0, RowsAudience::Plot)
+        .expect("the plot's own count");
+    assert_eq!(
+        drawn,
+        ROWS.len() as u64,
+        "the plot's own audience answered {drawn} of {} rows — this fixture's \
+         selection is no longer self-excluding, so the two audiences agree and \
+         the reading below discriminates nothing",
+        ROWS.len(),
+    );
+    let held = c
+        .session()
+        .step_rows_count(0, RowsAudience::Reader)
+        .expect("the reader's count");
+    assert_eq!(
+        held, 1,
+        "`x` in 80..=100 admits one of the fixture's rows and a reader drops \
+         no clause; a reader count of {held} means the brush did not land"
+    );
+
+    let read = c
+        .session_mut()
+        .nearest_row(0, &probe_at(AT_ORIGIN.0, AT_ORIGIN.1, 40.0))
+        .expect("the read runs");
+    assert_eq!(
+        label(&read),
+        Some("near-in-y"),
+        "a rest on a dot the plot is still drawing named {:?} — the read is \
+         searching the rows the SELECTION holds rather than the rows the mark \
+         drew, which is what asking as a reader would do",
+        label(&read),
+    );
+
+    // Why the reading above discriminates: the one row a reader would have
+    // left is 89.4 pixels from the aim, so an audience swap does not merely
+    // change the answer — it empties it.
+    let (fx, fy, _) = ROWS[2];
+    let dx = (fx - (X_DOMAIN.0 + AT_ORIGIN.0 * X_UNITS)) / X_UNITS;
+    let dy = (fy - (Y_DOMAIN.0 + AT_ORIGIN.1 * Y_UNITS)) / Y_UNITS;
+    assert!(
+        dx.hypot(dy) > 40.0,
+        "the row the brush kept is {:.1} pixels from the aim, inside the \
+         probe's radius — a read at the reader's audience would find it and \
+         this test would go green on the wrong row set",
+        dx.hypot(dy),
     );
 }

@@ -4,19 +4,41 @@
 //!
 //! A step's output is a table in DuckDB, and the chart and this grid are two
 //! queries over that same materialisation: the chart projects channels, the
-//! grid keeps the row shape. Both queries are compiled by the one emission
-//! path in `brightfield-sql` (the chart through `emit_query`, the grid through
-//! `emit_rows_query`, sharing one `compile_selection`), so the two surfaces
-//! **cannot disagree about the PREDICATE** — the selection state resolves to
-//! one WHERE clause, neither surface is authoritative over the other, and
-//! neither ever filters a materialised batch client-side. That is why they are
-//! peers: two projections of one step, one toggle between them (the centre tab
-//! strip).
+//! grid keeps the row shape. Both are compiled by the one emission path in
+//! `brightfield-sql` (the chart through `emit_query`, the grid through
+//! `emit_rows_query`, sharing one `compile_selection`), and neither ever
+//! filters a materialised batch client-side — the predicate lives in the SQL
+//! `WHERE`. That is why they are peers: two readings of one step, side by side
+//! on the canvas, the grid being the rows pane of the canvas's own group,
+//! beneath the map.
 //!
-//! ## The sampling clause is the one deliberate divergence
+//! ## Which step, and whose clause it drops
 //!
-//! There is exactly one way the two can now show different rows, and it is on
-//! purpose. Above the renderer's drawable ceiling the chart draws a pushed-down
+//! Two questions the pane has to answer before it reads anything, and reading
+//! either off a literal is what made it list the whole table under a brush.
+//!
+//! **The step** is the presenting plot's *filtered* layer, resolved from the
+//! composed spec by [`crate::pipeline::presenting_rows_mark`]. Every generated
+//! tile writes its ghost first and its subset second, so depth-first mark 0 is
+//! the hero's ghost — `data: { from: opened }` with no `filterBy:` — and a
+//! grid reading it narrows under nothing at all. A one-mark spec resolves to
+//! its only mark.
+//!
+//! **The clause** is the selection's whole value: this pane reads as
+//! [`RowsAudience::Reader`]. Under `select: crossfilter` each consumer drops the
+//! clause its OWN plot published, so the hero's subset layer keeps drawing 240
+//! points under a brush on the hero — right for the mark, because a plot that
+//! erased the points the hand is holding would fight the gesture, and wrong
+//! here, because this pane published nothing and has nothing to drop.
+//!
+//! So the honest statement is the conditional one: **grid and chart cannot
+//! disagree about the predicate when both ask as the same audience**, and where
+//! they differ it is because they were asked two different questions. The
+//! sampling clause below is the other, unconditional difference.
+//!
+//! ## The sampling clause is the other deliberate divergence
+//!
+//! The second of the two, and it applies whatever audience is asked. Above the renderer's drawable ceiling the chart draws a pushed-down
 //! sample — a `hash(row) % 2^k = 0` clause the chart's query carries and this
 //! grid's does not — and the chart says so in its own ink. **The grid never
 //! samples.** It is the unsampled view: the place someone goes precisely
@@ -78,7 +100,7 @@ use arrow::compute::cast;
 use arrow::datatypes::DataType;
 
 use brightfield_engine::error::EngineError;
-use brightfield_engine::{RecordBatch, Session};
+use brightfield_engine::{RecordBatch, RowsAudience, Session};
 use brightfield_keys::BindingContext;
 use brightfield_protocol::{sheet, StepRow};
 use brightfield_workbench::registry::Slot;
@@ -92,6 +114,7 @@ use meridian_design::{control, semantic, spacing};
 use crate::app::ChartDoc;
 use crate::chart_item::run_state_pill;
 use crate::design::Mode;
+use crate::pipeline::LiveDashboard;
 
 // ---------------------------------------------------------------------------
 // Cell chrome — the table-scope typography and geometry.
@@ -196,11 +219,111 @@ pub trait RowSource {
     fn selected_row(&self) -> Option<u64> {
         None
     }
+    /// The rows this source can answer [`RowSource::cell_text`] for without
+    /// going back to its store — the window [`ColumnWidths::Natural`] measures
+    /// a column's values over.
+    ///
+    /// It contains the visible range, because the engine source fetches
+    /// [`PAGE_PAD`] rows of margin around that range, and it is bounded by the
+    /// same thing: the viewport plus that margin. The default is the whole
+    /// source, which is what an in-memory one holds anyway.
+    fn held_rows(&self) -> Range<u64> {
+        0..self.total_rows()
+    }
 }
+
+/// How a table decides how wide each of its columns is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColumnWidths {
+    /// One declared width per column, resizable by the pointer from there —
+    /// the Steps sheet's treatment, where the columns are a fixed vocabulary
+    /// rather than a table's own.
+    Declared,
+    /// Each column as wide as its content: the wider of its header and its
+    /// widest value among the rows [`RowSource::held_rows`] reports, plus the
+    /// cell padding, held between [`min_column_width`] and
+    /// [`MAX_COLUMN_WIDTH`].
+    ///
+    /// The measured set contains the rows on screen, so a value the grid draws
+    /// is cut short where its column hit the ceiling and not otherwise —
+    /// `no_value_the_grid_draws_is_cut_off_by_its_columns_width`. What does
+    /// not fit across is reached by scrolling sideways rather than by
+    /// squeezing the columns until they stop reading.
+    Natural,
+}
+
+/// A column's floor in logical points under [`ColumnWidths::Natural`]: the
+/// cell padding either side of one icon slot, which is the room a header of
+/// one character still has to reserve. Derived from the dense rung's binding,
+/// like the rest of this module's geometry.
+#[must_use]
+pub fn min_column_width() -> f32 {
+    let b = control::binding(spacing::ROW_DENSE);
+    2.0f32.mul_add(b.pad_x, b.icon)
+}
+
+/// A column's ceiling in logical points. A free-text column has no natural
+/// width worth honouring; past this it is one column wide enough to push the
+/// others off screen.
+pub const MAX_COLUMN_WIDTH: f32 = 480.0;
+
+/// What one frame of [`show_table`] laid out, for a caller that has to say how
+/// much of the table is on screen.
+///
+/// Recorded from the cells the table drew rather than derived from the widths
+/// handed to it: whether a column fits is a fact about the frame, and a
+/// caller that recomputed it from the declared widths would be reporting its
+/// own arithmetic back to itself.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TableDrawn {
+    /// One entry per column the table drew, in column order: the column's
+    /// index, its header cell's rect, and the clip that cell was drawn under.
+    /// A column scrolled halfway off has a clip narrower than its rect; one
+    /// scrolled off entirely is not here at all. See `widest_per_column` in
+    /// this module for which of a cell's several offers is the one kept.
+    pub header_cells: Vec<(usize, egui::Rect, egui::Rect)>,
+    /// The table's own column count — how many there are to fit.
+    pub columns: usize,
+}
+
+impl TableDrawn {
+    /// How many columns drew **whole**: the header cell entirely inside the
+    /// clip the table gave it.
+    #[must_use]
+    pub fn on_screen(&self) -> usize {
+        self.header_cells
+            .iter()
+            .filter(|(_, rect, clip)| clip.contains_rect(rect.shrink(CLIP_SLACK)))
+            .count()
+    }
+
+    /// Whether some column of the table is off screen or cut off by the edge
+    /// of the view — whether a reader has to scroll sideways to see the table.
+    #[must_use]
+    pub fn some_column_is_off_screen(&self) -> bool {
+        self.on_screen() < self.columns
+    }
+}
+
+/// How far inside its clip a header cell may fall and still count as whole,
+/// in logical points. The scroll area's own rounding, not a tolerance for a
+/// column that is really cut off: a half-point is a hairline and a clipped
+/// column is short by whole points.
+pub const CLIP_SLACK: f32 = 0.5;
 
 /// Render `source` as the one Meridian table: `egui_table` (sticky header,
 /// virtualised rows) under the dense-rung cell chrome.
-pub fn show_table(ui: &mut egui::Ui, salt: &str, mode: Mode, source: &mut dyn RowSource) {
+///
+/// Reports what it laid out — see [`TableDrawn`] — so the caller that has to
+/// say *"five of nine columns"* answers from the cells the table drew rather
+/// than from the widths it was handed.
+pub fn show_table(
+    ui: &mut egui::Ui,
+    salt: &str,
+    mode: Mode,
+    source: &mut dyn RowSource,
+    widths: ColumnWidths,
+) -> TableDrawn {
     let binding = control::binding(spacing::ROW_DENSE);
     let num_rows = source.total_rows();
     let num_columns = source.columns().len();
@@ -208,26 +331,116 @@ pub fn show_table(ui: &mut egui::Ui, salt: &str, mode: Mode, source: &mut dyn Ro
         // Nothing fetched yet, or a schema-less result — there is no table to
         // draw. The engine source reports its state through the pane around
         // this call; an empty reserve here would be a table-shaped lie.
-        return;
+        return TableDrawn::default();
     }
-    let columns: Vec<egui_table::Column> = (0..num_columns)
-        .map(|_| {
-            egui_table::Column::new(120.0)
-                .range(egui::Rangef::new(2.0 * binding.pad_x + binding.icon, 480.0))
-                .resizable(true)
-        })
-        .collect();
+    let columns: Vec<egui_table::Column> = match widths {
+        ColumnWidths::Declared => (0..num_columns)
+            .map(|_| {
+                egui_table::Column::new(120.0)
+                    .range(egui::Rangef::new(min_column_width(), MAX_COLUMN_WIDTH))
+                    .resizable(true)
+            })
+            .collect(),
+        ColumnWidths::Natural => natural_widths(ui, source, binding)
+            .into_iter()
+            .map(|w| {
+                // Pinned rather than seeded, and **the column-resize drag is
+                // the price**. `egui_table` stores a resizable column's width
+                // per table id and reads it back over whatever it is handed
+                // next frame, so a natural width offered as a starting point
+                // would be overwritten by the first frame's and stop tracking
+                // the content — and the content moves, because a brush
+                // re-queries the rows the width is measured over. A range of
+                // one value is what makes the drawn width the measured width on
+                // every frame, and `resizable(false)` follows from it: the
+                // widget draws no resize handle and no vertical separator
+                // between columns where one cannot be dragged. Keeping both
+                // needs `egui_table` to distinguish a width a person set from
+                // one a previous frame measured, which it does not expose.
+                egui_table::Column::new(w)
+                    .range(egui::Rangef::new(w, w))
+                    .resizable(false)
+            })
+            .collect(),
+    };
     let mut delegate = MeridianTableDelegate {
         source,
         mode,
         binding,
+        drawn: TableDrawn {
+            header_cells: Vec::new(),
+            columns: num_columns,
+        },
     };
     let _ = egui_table::Table::new()
         .id_salt(salt)
         .num_rows(num_rows)
-        .columns(columns)
         .headers([egui_table::HeaderRow::new(binding.row)])
+        .columns(columns)
         .show(ui, &mut delegate);
+    delegate.drawn.header_cells = widest_per_column(&delegate.drawn.header_cells);
+    delegate.drawn
+}
+
+/// One entry per column out of the several `egui_table` draws each header cell
+/// under, keeping the one that shows most of it.
+///
+/// A table is split into scrolling regions — a fixed corner, the sticky
+/// header, the body — and a column's header cell is offered to the delegate
+/// once per region it falls in, under that region's own clip. A table with no
+/// sticky columns has a zero-width corner, so one of those offers carries a
+/// clip that shows nothing at all. Keeping the widest visible slice per column
+/// is what makes the record read as *"how much of this column reaches the
+/// reader"* rather than as one row per region.
+fn widest_per_column(
+    cells: &[(usize, egui::Rect, egui::Rect)],
+) -> Vec<(usize, egui::Rect, egui::Rect)> {
+    let mut best: std::collections::BTreeMap<usize, (egui::Rect, egui::Rect)> =
+        std::collections::BTreeMap::new();
+    for (col, rect, clip) in cells {
+        let seen = clip.intersect(*rect).width().max(0.0);
+        match best.get(col) {
+            Some((held, held_clip)) if held_clip.intersect(*held).width().max(0.0) >= seen => {}
+            _ => {
+                best.insert(*col, (*rect, *clip));
+            }
+        }
+    }
+    best.into_iter()
+        .map(|(col, (rect, clip))| (col, rect, clip))
+        .collect()
+}
+
+/// One width per column of `source`, in column order: the wider of the header
+/// and the widest held value, plus the cell padding either side, clamped.
+///
+/// Measured with the painter's own text layout at [`cell_font`], which is the
+/// face the cells draw in, so the answer is the width the glyphs take rather
+/// than an estimate from the character count. Repeated strings cost one layout
+/// between them — egui caches a laid-out galley by its job.
+fn natural_widths(ui: &egui::Ui, source: &dyn RowSource, binding: control::Binding) -> Vec<f32> {
+    let font = cell_font();
+    let width_of = |text: &str| -> f32 {
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::PLACEHOLDER)
+            .size()
+            .x
+    };
+    let held = source.held_rows();
+    let mut widths: Vec<f32> = source.columns().iter().map(|c| width_of(&c.name)).collect();
+    for row in held {
+        for (col, width) in widths.iter_mut().enumerate() {
+            if let Some(cell) = source.cell_text(row, col) {
+                *width = width.max(width_of(&cell.text));
+            }
+        }
+    }
+    for width in &mut widths {
+        *width = 2.0f32
+            .mul_add(binding.pad_x, *width)
+            .clamp(min_column_width(), MAX_COLUMN_WIDTH);
+    }
+    widths
 }
 
 /// The delegate `egui_table` calls back into: window prefetch, the dense row
@@ -236,6 +449,8 @@ struct MeridianTableDelegate<'a> {
     source: &'a mut dyn RowSource,
     mode: Mode,
     binding: control::Binding,
+    /// What this frame laid out, filled in as the header cells draw.
+    drawn: TableDrawn,
 }
 
 impl MeridianTableDelegate<'_> {
@@ -266,6 +481,14 @@ impl egui_table::TableDelegate for MeridianTableDelegate<'_> {
     }
 
     fn header_cell_ui(&mut self, ui: &mut egui::Ui, cell: &egui_table::HeaderCellInfo) {
+        // The cell's own box and the clip it is drawn under, recorded before
+        // the paint below: `egui_table` hands each header cell the rect the
+        // column occupies and shrinks the clip to what survives the scroll, so
+        // the pair is exactly "where this column is" and "how much of it the
+        // reader can see".
+        self.drawn
+            .header_cells
+            .push((cell.col_range.start, ui.max_rect(), ui.clip_rect()));
         let Some(column) = self.source.columns().get(cell.col_range.start) else {
             return;
         };
@@ -348,6 +571,12 @@ pub struct GridPage {
 /// including the grid/chart agreement re-exercised from this side — rather
 /// than a lookalike.
 ///
+/// `audience` is not a default this function may pick. The pane passes
+/// [`RowsAudience::Reader`] because it draws no mark and publishes no clause;
+/// a caller re-exercising the chart's own WHERE passes
+/// [`RowsAudience::Plot`]. See the enum for why those are two different
+/// queries under `select: crossfilter`.
+///
 /// # Errors
 ///
 /// As [`Session::execute_step_rows_window`].
@@ -359,9 +588,10 @@ pub fn fetch_page(
     session: &Session,
     mark_index: usize,
     window: Range<u64>,
+    audience: RowsAudience,
 ) -> Result<GridPage, EngineError> {
     let limit = window.end.saturating_sub(window.start);
-    let batches = session.execute_step_rows_window(mark_index, window.start, limit)?;
+    let batches = session.execute_step_rows_window(mark_index, window.start, limit, audience)?;
     let (columns, rows) = tabulate(&batches);
     let held = window.start..window.start + rows.len() as u64;
     Ok(GridPage {
@@ -425,6 +655,15 @@ fn tabulate(batches: &[RecordBatch]) -> (Vec<GridColumn>, Vec<Vec<CellText>>) {
 pub struct GridCache {
     /// The generation the cache was read at; `None` before the first read.
     generation: Option<u64>,
+    /// The mark index the held rows were read at; `None` before the first
+    /// read.
+    ///
+    /// A second key beside the generation because the mark is now resolved from
+    /// the document rather than fixed at `0`: adopting a different document
+    /// into the same pane can move it, and a generation that happens to match
+    /// would otherwise serve the previous document's rows under the new one's
+    /// mark.
+    mark: Option<usize>,
     /// `count(*)` over the step's rows SQL at that generation.
     total: u64,
     /// The step's columns.
@@ -446,7 +685,15 @@ impl GridCache {
     }
 }
 
-/// The engine-backed [`RowSource`]: windowed reads over the live session.
+/// The engine-backed [`RowSource`]: windowed reads over the live session, at
+/// one mark, as a [`RowsAudience::Reader`].
+///
+/// The audience is fixed here rather than passed in because this source IS the
+/// rows pane's read: the pane draws no mark, so it has no clause of its own to
+/// drop. `mark_index` is the caller's — [`DataGridItem::ui`] resolves it from
+/// the document through
+/// [`LiveDashboard::rows_mark`](crate::pipeline::LiveDashboard::rows_mark) —
+/// and a test driving this directly says which mark it means.
 pub struct EngineRows<'a> {
     session: &'a Session,
     mark_index: usize,
@@ -467,8 +714,8 @@ impl<'a> EngineRows<'a> {
         generation: u64,
         cache: &'a mut GridCache,
     ) -> Self {
-        if cache.generation != Some(generation) {
-            match session.step_rows_count(mark_index) {
+        if cache.generation != Some(generation) || cache.mark != Some(mark_index) {
+            match session.step_rows_count(mark_index, RowsAudience::Reader) {
                 Ok(total) => {
                     cache.total = total;
                     cache.error = None;
@@ -482,6 +729,7 @@ impl<'a> EngineRows<'a> {
             cache.window = 0..0;
             cache.rows.clear();
             cache.generation = Some(generation);
+            cache.mark = Some(mark_index);
         }
         // The schema has to exist before the table can lay out at all — the
         // column count is the table's shape — and it only arrives with a
@@ -489,7 +737,12 @@ impl<'a> EngineRows<'a> {
         // window [`RowSource::prepare`] asks for replaces this immediately
         // when the scroll position is elsewhere.
         if cache.error.is_none() && cache.columns.is_empty() && cache.total > 0 {
-            match fetch_page(session, mark_index, 0..cache.total.min(PAGE_PAD)) {
+            match fetch_page(
+                session,
+                mark_index,
+                0..cache.total.min(PAGE_PAD),
+                RowsAudience::Reader,
+            ) {
                 Ok(page) => {
                     cache.window = page.window;
                     cache.columns = page.columns;
@@ -518,8 +771,8 @@ impl<'a> EngineRows<'a> {
 impl RowSource for EngineRows<'_> {
     fn prepare(&mut self, visible: Range<u64>) {
         debug_assert_eq!(
-            self.cache.generation,
-            Some(self.generation),
+            (self.cache.generation, self.cache.mark),
+            (Some(self.generation), Some(self.mark_index)),
             "EngineRows::new keys the cache before the table draws"
         );
         if visible.start >= self.cache.window.start && visible.end <= self.cache.window.end {
@@ -531,7 +784,12 @@ impl RowSource for EngineRows<'_> {
         if start >= end {
             return; // an empty materialisation has no window to fetch
         }
-        match fetch_page(self.session, self.mark_index, start..end) {
+        match fetch_page(
+            self.session,
+            self.mark_index,
+            start..end,
+            RowsAudience::Reader,
+        ) {
             Ok(page) => {
                 self.cache.window = page.window;
                 self.cache.columns = page.columns;
@@ -556,6 +814,10 @@ impl RowSource for EngineRows<'_> {
         let offset = row.checked_sub(self.cache.window.start)?;
         let row = self.cache.rows.get(usize::try_from(offset).ok()?)?;
         row.get(col).cloned()
+    }
+
+    fn held_rows(&self) -> Range<u64> {
+        self.cache.window.clone()
     }
 }
 
@@ -651,8 +913,9 @@ pub const DATA: ItemId = ItemId::new("chart-data-grid");
 /// The pane's icon name, from the Meridian icon set.
 const ICON_DATA: Icon = Icon("table");
 
-/// The Data pane's registry entry: a centre tab beside the chart — the ONE
-/// toggle between the step's two projections.
+/// The Data pane's registry entry: a centre tab beside the chart, which is what
+/// gives it a tile in the window's tree. The canvas's pane group draws it in
+/// the rows pane rather than through the dock, the way it draws the chart.
 #[must_use]
 pub fn data_grid_spec() -> ItemSpec<ChartDoc> {
     ItemSpec {
@@ -779,20 +1042,45 @@ impl Item<ChartDoc> for DataGridItem {
             return;
         }
 
-        // The step this grid projects is the one the chart pane presents:
-        // depth-first mark 0, the dashboard's presenting step. The read marks
-        // itself as engine work — resolved within the frame today (see the
-        // activity module for why a synchronous read owes no cue), begun and
-        // ended around the borrow so the seam is already marked when this
-        // read moves off the UI thread.
+        // **Which step this grid projects, and whose clause it drops.** Two
+        // separate questions, and reading either off a literal is what made
+        // this pane list the whole table under a brush.
+        //
+        // The mark comes from the document — `LiveDashboard::rows_mark`, the
+        // layer carrying `filterBy:` — because a generated dashboard's mark 0
+        // is the hero's ghost, which declares no `filterBy:` and so does not
+        // narrow. The audience is `Reader`, fixed inside `EngineRows`,
+        // because this pane draws no mark and therefore has no crossfilter
+        // contribution to exclude; asking as the hero would answer with the
+        // hero's own WHERE, which drops the brush the reader just drew.
+        // `the_rows_pane_lists_the_rows_the_brush_selects` reads both off the
+        // drawn frame.
+        //
+        // The read marks itself as engine work — resolved within the frame
+        // today (see the activity module for why a synchronous read owes no
+        // cue), begun and ended around the borrow so the seam is already
+        // marked when this read moves off the UI thread.
+        let mark = doc.live_dashboard().map_or(0, LiveDashboard::rows_mark);
         doc.activity.begin(Activity::EngineQuery);
+        let mut drawn = None;
         if let Some(coordinator) = doc.live_coordinator() {
             let generation = coordinator.generation();
             let session = coordinator.session();
-            let mut source = EngineRows::new(session, 0, generation, &mut self.cache);
-            show_table(ui, "chart-data-grid", mode, &mut source);
+            let mut source = EngineRows::new(session, mark, generation, &mut self.cache);
+            drawn = Some(show_table(
+                ui,
+                "chart-data-grid",
+                mode,
+                &mut source,
+                ColumnWidths::Natural,
+            ));
         }
         doc.activity.end(Activity::EngineQuery);
+        // What the frame laid out, back on the document: the pane around this
+        // one draws the readout that says how much of the table is on screen,
+        // and it has to read that off the cells rather than off the widths
+        // this pane asked for.
+        doc.grid_drawn = drawn;
 
         if self.cache.error.is_none() && self.cache.total == 0 {
             // A real answer, not an empty pane: the query ran and selected

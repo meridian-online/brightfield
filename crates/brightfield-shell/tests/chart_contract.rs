@@ -463,18 +463,20 @@ fn the_window_is_sized_from_the_inspector_rails_declared_width() {
     );
 
     // Down: the title band, the locator band and the ledger rail come off the
-    // window; the canvas keeps its own head band, which is the strip a rail is
-    // split at; and the pane frame takes its padding above and below. No hint
-    // band — the chart projections have no bare-key grammar, so a hint band
-    // appearing on this window would take its height out of the box read back
-    // by `the_window_it_asks_for_fits_the_raster_it_presents`. The toolbar band
-    // is a term too, and for this gesture-less dashboard it must be exactly
-    // zero — quiet means no row, and no row means no budget.
+    // window, and the pane frame takes its padding above and below. Two bands
+    // that are NOT terms here, both because they belong to the other occupant:
+    // the hint band, since the chart projections have no bare-key grammar; and
+    // the canvas's own head band, which the graph canvas draws above its one
+    // pane and the chart canvas does not — its panes carry their own headers
+    // and the locator band above already names the document. Either appearing
+    // on this window would take its height out of the box read back by
+    // `the_window_it_asks_for_fits_the_raster_it_presents`. The toolbar band is
+    // a term too, and for this gesture-less dashboard it must be exactly zero —
+    // quiet means no row, and no row means no budget.
     let content_h = h
         - arrangement::TITLE_BAND_HEIGHT
         - arrangement::LOCATOR_BAND_HEIGHT
         - arrangement::LEDGER_RAIL_HEIGHT
-        - chrome::rail_selector_height()
         - 2.0 * inset;
     assert_eq!(
         chart_toolbar_band(&composed),

@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use brightfield_engine::coordinator::{Coordinator, Interaction};
 use brightfield_engine::{
-    assemble_batches, AxisExtent, NavigationExtent, RecordBatch, SqlPredicate,
+    assemble_batches, AxisExtent, NavigationExtent, RecordBatch, RowsAudience, SqlPredicate,
 };
 use brightfield_spec::analysis::{
     analyse_spec, build_brushable_bindings, plot_node_path, ComponentPath,
@@ -399,7 +399,7 @@ pub fn run_engine_suites(
     // Mark 1 is plot B's mark in every scenario (spec order).
     let unfiltered_step_rows = coord
         .session()
-        .step_rows_count(1)
+        .step_rows_count(1, RowsAudience::Plot)
         .map_err(|e| format!("{}: step count: {e}", scenario.name))?;
 
     // --- Coordinator seam: per-interaction apply latency. ------------------
@@ -532,7 +532,7 @@ pub fn run_engine_suites(
     // fewer rows than unfiltered — otherwise the applies filtered nothing.
     let brushed_step_rows = coord
         .session()
-        .step_rows_count(1)
+        .step_rows_count(1, RowsAudience::Plot)
         .map_err(|e| format!("{}: brushed step count: {e}", scenario.name))?;
     if brushed_step_rows >= unfiltered_step_rows {
         return Err(format!(

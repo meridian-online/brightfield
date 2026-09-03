@@ -225,6 +225,7 @@ use brightfield_spec::parse::ParseWarning;
 use brightfield_spec::vocab::MarkKind;
 
 use brightfield_sql::binding::{Binding, EmittedQuery, ParamValues};
+pub use brightfield_sql::emit::RowsAudience;
 use brightfield_sql::emit::{
     collect_marks, emit_query_sampled, emit_rows_query, emit_sources, SourceKindTag,
 };
@@ -1430,17 +1431,22 @@ impl Session {
     /// `selection_state`. This is the tabular ("grid") surface's read path.
     ///
     /// It shares the mark's live selection predicate with [`Self::execute_mark`]
-    /// bit-for-bit: both go through `brightfield_sql`'s one selection-compile
-    /// path (`emit_rows_query` reuses the same `compile_selection` as
-    /// `emit_query`). A grid and a chart at the same step therefore issue two
-    /// queries over the SAME source view with the SAME `WHERE`, and cannot
-    /// resolve different rows from the same selection state. Neither filters a
-    /// materialised batch client-side — the predicate is in the SQL.
+    /// bit-for-bit **at [`RowsAudience::Plot`]**: both go through
+    /// `brightfield_sql`'s one selection-compile path (`emit_rows_query` reuses
+    /// the same `compile_selection` as `emit_query`), so a grid and a chart at
+    /// the same step issue two queries over the SAME source view with the SAME
+    /// `WHERE`. At [`RowsAudience::Reader`] the `WHERE` is deliberately the
+    /// selection's value instead — see the enum. Neither filters a materialised
+    /// batch client-side; the predicate is in the SQL.
     ///
     /// Errors as [`Self::execute_mark`]: a mark without a `from`-source (inline
     /// data) has no materialisation to tabulate and returns
     /// [`EngineError::EmitFailed`].
-    pub fn execute_step_rows(&mut self, index: usize) -> Result<Vec<RecordBatch>, EngineError> {
+    pub fn execute_step_rows(
+        &mut self,
+        index: usize,
+        audience: RowsAudience,
+    ) -> Result<Vec<RecordBatch>, EngineError> {
         let params = if self.param_state.is_empty() {
             None
         } else {
@@ -1452,7 +1458,7 @@ impl Session {
         } else {
             Some(selections.as_slice())
         };
-        let emitted = emit_rows_query(&self.spec, index, params, selections_ref)
+        let emitted = emit_rows_query(&self.spec, index, params, selections_ref, audience)
             .map_err(|e| EngineError::EmitFailed { cause: e })?;
 
         let mark_kind = self.mark_kind_at(index);
@@ -1465,7 +1471,7 @@ impl Session {
     /// emission path (`emit_rows_query`, the same `compile_selection` the
     /// chart's `emit_query` uses), so every step-rows surface — full read,
     /// count, window — queries the identical filtered row set by construction.
-    fn step_rows_sql(&self, index: usize) -> Result<String, EngineError> {
+    fn step_rows_sql(&self, index: usize, audience: RowsAudience) -> Result<String, EngineError> {
         let params = if self.param_state.is_empty() {
             None
         } else {
@@ -1477,7 +1483,7 @@ impl Session {
         } else {
             Some(selections.as_slice())
         };
-        emit_rows_query(&self.spec, index, params, selections_ref)
+        emit_rows_query(&self.spec, index, params, selections_ref, audience)
             .map(|emitted| emitted.sql)
             .map_err(|e| EngineError::EmitFailed { cause: e })
     }
@@ -1502,8 +1508,12 @@ impl Session {
     ///
     /// As [`Self::execute_step_rows`]: emit failure for an inline/data-less
     /// mark, or [`EngineError::QueryFailed`] if DuckDB rejects the query.
-    pub fn step_rows_count(&self, index: usize) -> Result<u64, EngineError> {
-        let rows_sql = self.step_rows_sql(index)?;
+    pub fn step_rows_count(
+        &self,
+        index: usize,
+        audience: RowsAudience,
+    ) -> Result<u64, EngineError> {
+        let rows_sql = self.step_rows_sql(index, audience)?;
         let sql = format!("SELECT count(*) AS n FROM ({rows_sql}) AS bf_step_rows");
         let batches = self.query_arrow_raw(&sql).map_err(|e| {
             self.classify_query_failure(index, &self.mark_kind_at(index), sql.clone(), e)
@@ -1567,8 +1577,9 @@ impl Session {
         index: usize,
         offset: u64,
         limit: u64,
+        audience: RowsAudience,
     ) -> Result<Vec<RecordBatch>, EngineError> {
-        let rows_sql = self.step_rows_sql(index)?;
+        let rows_sql = self.step_rows_sql(index, audience)?;
         let sql = format!(
             "SELECT * FROM ({rows_sql}) AS bf_step_rows \
              ORDER BY ALL LIMIT {limit} OFFSET {offset}"
@@ -1582,11 +1593,26 @@ impl Session {
     /// the columns `probe` asked for.
     ///
     /// Wrapped around the same emitted rows SQL [`Self::execute_step_rows`]
-    /// runs, so the row this hands back is one the mark is *currently
-    /// drawing*: the static `data.filter` and the live selection predicate are
-    /// both already inside `rows_sql`, and a brush that has narrowed the mark
-    /// has narrowed what can be found here. See [`crate::nearest`] for the
-    /// wrap's shape and for why the distance is measured in pixels.
+    /// runs at [`RowsAudience::Plot`], so the row this hands back is one the
+    /// mark is *currently drawing*: the static `data.filter` and the live
+    /// selection predicate are both already inside `rows_sql`, and a brush
+    /// that has narrowed the mark has narrowed what can be found here. See
+    /// [`crate::nearest`] for the wrap's shape and for why the distance is
+    /// measured in pixels.
+    ///
+    /// # Why [`RowsAudience::Plot`] and not [`RowsAudience::Reader`]
+    ///
+    /// A hover names the dot under the pointer, so it has to search the row
+    /// set the mark DREW, and `Plot` is the audience whose `WHERE` is
+    /// byte-identical to the one `emit_query` compiled for that mark. Under
+    /// `select: crossfilter` a plot is not filtered by the clause it published
+    /// itself, so brushing a plot and then hovering it leaves the dots outside
+    /// the brush on screen; a read asking as `Reader` would apply that clause
+    /// and come back empty over a dot the user can see, or name a farther row
+    /// that survived it. The rows pane and the status band ask as
+    /// `Reader` because they draw no mark and publish no clause — see the
+    /// enum. Held by
+    /// `a_hover_reads_what_its_own_brushed_plot_still_draws`.
     ///
     /// # Why this is not [`Self::execute_step_rows`] with a filter
     ///
@@ -1614,7 +1640,7 @@ impl Session {
         index: usize,
         probe: &nearest::NearestProbe,
     ) -> Result<nearest::NearestRead, EngineError> {
-        let rows_sql = self.step_rows_sql(index)?;
+        let rows_sql = self.step_rows_sql(index, RowsAudience::Plot)?;
         let Some(sql) = nearest::nearest_row_sql(&rows_sql, probe) else {
             return Ok(nearest::NearestRead::default());
         };
@@ -4096,7 +4122,11 @@ plot:
         let read = session.nearest_row(0, &probe).expect("the read runs");
         assert_eq!(read.rows, 1, "the read found {} rows", read.rows);
 
-        let rows_sql = session.step_rows_sql(0).expect("the step emits rows");
+        // The same audience `nearest_row` reads at, so this is the string the
+        // read runs rather than a neighbouring one.
+        let rows_sql = session
+            .step_rows_sql(0, RowsAudience::Plot)
+            .expect("the step emits rows");
         let sql = nearest::nearest_row_sql(&rows_sql, &probe).expect("the probe is expressible");
         let witness = {
             let batches = session.execute_uncached(&sql).expect("the query runs");

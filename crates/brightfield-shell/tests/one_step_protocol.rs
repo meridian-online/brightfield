@@ -1505,3 +1505,268 @@ fn a_saved_protocol_is_remembered_as_never_run() {
     assert_eq!(recent.run, RunState::NeverRun);
     assert_eq!(recent.name, "harbour");
 }
+
+/// A hand-written one-step Protocol manifest: one `op:` step, `name` and
+/// `op` as given.
+///
+/// Written here rather than opened as a data file because **every one-step
+/// Protocol the rest of this suite has is the generated one**, whose step is
+/// `load`, of kind `sql`, at status `not run`. Against that fixture alone,
+/// `ledger_summary` could return the literal string `load · sql · not run` and
+/// go unnoticed — measured: 92 tests stay green on that substitution. A step
+/// named and kinded differently is what tells a format from a constant.
+fn one_step_manifest(name: &str, with: &str) -> String {
+    format!(
+        "name: readings\nengine: duckdb\ndb: build/readings.db\nsteps:\n  \
+         - name: {name}\n{with}"
+    )
+}
+
+/// A `http_fetch@1` step body — the operator's own `with:` fields, which the
+/// manifest parser validates, so a typo here is a load failure rather than a
+/// silently different fixture.
+const FETCH: &str = "    op: http_fetch@1\n    with:\n      url:                      https://example.invalid/readings.parquet\n      out:                      build/readings.parquet\n";
+
+/// A `parquet_export@1` step body, for the same reason.
+const EXPORT: &str = "    op: parquet_export@1\n    with:\n      input:                       readings\n      dest: build/readings.parquet\n";
+
+/// **The ledger strip reads the step's own name, kind and status — none of the
+/// three is a constant.**
+///
+/// Three one-step Protocols, differing in all three parts, each opened into a
+/// window and read back off the galleys the painter was handed. A summary that
+/// hard-coded any part reddens on the row that changes it.
+///
+/// The status is set on the sheet row rather than produced by executing the
+/// step: a run is `arc`'s, needs a network and an engine this test binary has
+/// neither of, and what the strip reads is the row a run WRITES. So the third
+/// column here is the run's record, put there directly, and the claim it
+/// carries is the narrow one — that the strip reports the row's status rather
+/// than the words `not run`.
+#[test]
+fn the_ledger_strip_reads_the_steps_own_name_kind_and_status() {
+    use brightfield_workbench::arrangement::LEDGER_RAIL;
+
+    for (step, body, kind, status) in [
+        ("ingest_readings", FETCH, "op", "not run"),
+        ("ingest_readings", FETCH, "op", "ok"),
+        ("tide_gauge", EXPORT, "op", "failed"),
+    ] {
+        let mut inputs = protocol::load_protocol_str(&one_step_manifest(step, body), &[])
+            .unwrap_or_else(|e| panic!("the hand-written manifest loads: {e}"));
+        assert_eq!(
+            inputs.sheet_rows.len(),
+            1,
+            "the fixture is a Protocol of ONE step, or the rail does not \
+             collapse and there is no strip to read"
+        );
+        assert_eq!(inputs.sheet_rows[0].label, step);
+        assert_eq!(inputs.sheet_rows[0].kind, kind);
+        inputs.sheet_rows[0].status = status;
+
+        let mut win = Window::over(Boot::protocol(inputs, Flow::Vertical, None));
+        let rect = win
+            .app
+            .region_rect(LEDGER_RAIL)
+            .expect("the ledger rail drew");
+        let want = format!("{step} \u{b7} {kind} \u{b7} {status}");
+        let words = win.drawn_text_in(rect);
+        assert!(
+            words.contains(&want),
+            "the collapsed ledger's strip drew {words:?}, which does not \
+             contain {want:?} — the summary is not reading this step"
+        );
+    }
+}
+
+/// **The ledger default is re-derived when a document is adopted, in both
+/// directions.**
+///
+/// `apply_ledger_default` runs at construction and again in `adopt_boot`, and
+/// its own doc says why the second call exists: *"opening a Protocol of several
+/// steps into this window gives that Protocol its rail back."* Deleting the
+/// `adopt_boot` call left 314 tests green, because a test that reads the rail's
+/// height reads it on a window CONSTRUCTED over the document it is asking
+/// about, and construction has its own call.
+///
+/// So this opens a second document into a window that already has one, both
+/// ways round, and reads the rail's DRAWN height each time. One window, three
+/// documents, three heights.
+#[test]
+fn adopting_a_document_re_derives_the_ledger_default() {
+    use brightfield_workbench::arrangement::LEDGER_RAIL;
+
+    let region =
+        brightfield_workbench::arrangement::default_arrangement().expect_region(LEDGER_RAIL);
+    let strip = region.collapsed_extent().expect("the collapsed measure");
+    let open = region.default_extent().expect("the declared measure");
+
+    let dir = TempDir::new("adopt-ledger");
+    let path = dir.write("harbour.csv", HARBOUR_CSV);
+    let many = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/protocol/edgar_gleif/arcform.yaml");
+
+    // A window over the data file: one step, so the rail is its strip.
+    let mut win =
+        Window::over(Boot::data_file(&path.to_string_lossy()).expect("the file opens as a boot"));
+    let height = |win: &mut Window| -> f32 {
+        win.settle();
+        win.app
+            .region_rect(LEDGER_RAIL)
+            .expect("the ledger rail drew")
+            .height()
+    };
+    assert!(
+        (height(&mut win) - strip).abs() < 0.5,
+        "the window did not open collapsed, so neither reading below is a change"
+    );
+
+    // …and the many-step Protocol adopted into that same window, through the
+    // route a front door row takes. `Boot::open` refuses a run-less manifest
+    // unless the offline gate is lifted — the same opt-in `one_window.rs`
+    // makes, set and removed around the one call that needs it, which the
+    // mandated `--test-threads=1` keeps ordered. The other manifest fixtures
+    // in this binary go through `load_protocol_offline`, which does not gate,
+    // so the variable is read here and not by them.
+    let ctx = win.ctx.clone();
+    std::env::set_var(protocol::OFFLINE_VAR, "1");
+    win.app
+        .open_protocol_path(&ctx, many.to_str().expect("utf-8 fixture path"));
+    std::env::remove_var(protocol::OFFLINE_VAR);
+    let after = height(&mut win);
+    assert!(
+        (after - open).abs() < 0.5,
+        "a Protocol of {} steps adopted into this window drew its ledger rail \
+         {after} points tall where it declares {open} — the default is decided \
+         once at construction, so the rail a reader is given belongs to the \
+         document they closed",
+        win.app.protocol_model().sheet().len()
+    );
+    assert!(
+        win.app.protocol_model().sheet().len() > 1,
+        "the fixture Protocol has one step, so the two states are the same one"
+    );
+
+    // …and back: the data file adopted into the window the Protocol left.
+    win.app.open_data_file(&ctx, &path.to_string_lossy());
+    let back = height(&mut win);
+    assert!(
+        (back - strip).abs() < 0.5,
+        "a one-step Protocol adopted into this window drew its ledger rail \
+         {back} points tall where its strip is {strip} — 180 points of rail \
+         holding one row, kept from the document before it"
+    );
+}
+
+/// **AC4 — a one-step Protocol opens with its ledger rail closed to its strip,
+/// and the strip names the step.**
+///
+/// Two halves, and both are read off a frame the window drew rather than off
+/// the state the window holds. The rail's **drawn** height comes back through
+/// `MeridianApp::region_rect`, so a rail that was recorded collapsed and drawn
+/// at its full height fails here; the strip's words come back through
+/// [`Window::drawn_text_in`], which is the galleys the painter was handed.
+///
+/// Driven through `Boot::data_file` and a real frame, the way the shell opens
+/// a file, rather than by calling the collapse path: a criterion driven
+/// through the function it is implemented by passes with the gesture missing.
+///
+/// The **other** half of the claim is the one that keeps the protocol
+/// baselines still. A Protocol of several steps is not a one-row list, so its
+/// rail opens at the height it declares and its strip carries no summary; the
+/// same assertions are made over `examples/protocol/edgar_gleif`, in the
+/// negative, in the same test — because "collapsed for one step" and
+/// "collapsed always" are the same reading of a window with one file in it.
+#[test]
+fn a_one_step_protocol_opens_with_the_ledger_closed_to_its_strip() {
+    use brightfield_workbench::arrangement::LEDGER_RAIL;
+
+    let region =
+        brightfield_workbench::arrangement::default_arrangement().expect_region(LEDGER_RAIL);
+    let strip = region
+        .collapsed_extent()
+        .expect("the ledger rail declares what it collapses to");
+    let open = region
+        .default_extent()
+        .expect("the ledger rail declares what it opens at");
+    assert!(
+        strip < open,
+        "the ledger's collapsed measure {strip} is not smaller than its \
+         declared {open}, so nothing below distinguishes the two states"
+    );
+
+    let dir = TempDir::new("ledger-strip");
+    let path = dir.write("harbour.csv", HARBOUR_CSV);
+    let mut win =
+        Window::over(Boot::data_file(&path.to_string_lossy()).expect("the file opens as a boot"));
+    let rect = win
+        .app
+        .region_rect(LEDGER_RAIL)
+        .expect("the ledger rail drew");
+    assert!(
+        (rect.height() - strip).abs() < 0.5,
+        "opening a data file drew the ledger rail {} points tall where the \
+         strip it collapses to is {strip} — it opened at its declared {open}, \
+         which is 180 points of rail holding one row",
+        rect.height()
+    );
+
+    // The step, as the sheet reports it, said at the strip's trailing end. The
+    // words are the generated Protocol's own: `load` is the step brightfield
+    // writes for a data file, `sql` its kind, and `not run` its status —
+    // brightfield writes the spec and no run record.
+    let words = win.drawn_text_in(rect);
+    assert!(
+        words.iter().any(|w| w == "load \u{b7} sql \u{b7} not run"),
+        "the collapsed ledger's strip drew {words:?}, which does not name the \
+         step, its kind and its run status"
+    );
+    let summary = win
+        .app
+        .rail_summary_rect(LEDGER_RAIL)
+        .expect("the strip drew a summary");
+    let control = win
+        .app
+        .rail_collapse_rect(LEDGER_RAIL)
+        .expect("the strip drew its collapse control");
+    assert!(
+        summary.right() <= control.left(),
+        "the summary drew at {summary:?} and the collapse control at \
+         {control:?} — the summary is under the control the reader clicks"
+    );
+    assert!(
+        rect.contains_rect(summary),
+        "the summary drew at {summary:?}, outside the rail's own {rect:?}"
+    );
+
+    // …and a Protocol of several steps keeps the rail it declares, with no
+    // summary of a step it does not have one of.
+    let spec = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/protocol/edgar_gleif/arcform.yaml");
+    let inputs = protocol::load_protocol_offline(spec.to_str().expect("utf-8 fixture path"))
+        .unwrap_or_else(|e| panic!("load {}: {e}", spec.display()));
+    let mut many = Window::over(Boot::protocol(inputs, Flow::Vertical, None));
+    let rect = many
+        .app
+        .region_rect(LEDGER_RAIL)
+        .expect("the ledger rail drew");
+    assert!(
+        (rect.height() - open).abs() < 0.5,
+        "a Protocol of several steps drew its ledger rail {} points tall where \
+         it declares {open} — the collapse is not conditioned on the step \
+         count and the protocol baselines move with it",
+        rect.height()
+    );
+    assert_eq!(
+        many.app.rail_summary_rect(LEDGER_RAIL),
+        None,
+        "the ledger's strip drew a summary over a Protocol of several steps, \
+         so its one-step line is on every window and the protocol baselines \
+         carry it"
+    );
+    let words = many.drawn_text_in(rect);
+    assert!(
+        !words.iter().any(|w| w.contains(" \u{b7} sql \u{b7} ")),
+        "the many-step window's ledger drew a step summary: {words:?}"
+    );
+}
