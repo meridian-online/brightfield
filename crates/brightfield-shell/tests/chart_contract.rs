@@ -564,14 +564,14 @@ fn the_window_it_asks_for_fits_the_raster_it_presents() {
 /// [`arrangement::INSPECTOR_RAIL_MIN_WIDTH`] is a floor, and an `egui`
 /// side panel takes the floor unless its content asks for more: a quiet
 /// inspector — no pane selected, a one-shot document with no live controls —
-/// asks for none. Measured before `window.rs` called
+/// has little to ask for. Measured before `window.rs` called
 /// `ui.set_min_width(ui.available_width())` inside the rail, the reported rect
 /// was the 200pt floor by the second frame rather than the declared 280.
 ///
-/// Read off the **drawn** rect, which is the only reading that can catch it:
+/// Read off the **drawn** rect, which is the reading that can catch it:
 /// `the_window_is_sized_from_the_inspector_rails_declared_width` above walks
-/// the same constant through the window arithmetic and would stay green with
-/// the rail drawing at any width at all.
+/// the same constant through the window arithmetic and stays green whatever
+/// width the rail draws at.
 ///
 /// This claim used to ride on a pixel test in `surfaces.rs` that clicked a
 /// checkbox in the rail. That checkbox is gone with the *hover overlay*
