@@ -243,6 +243,26 @@ const LABEL_CLEARANCE: f64 = 4.0;
 /// horizontal one has.
 const ROTATED_LABEL_GAP: f64 = 3.0;
 
+/// The vertical room, in pixels, a rotated label's run has below the tick line
+/// before it reaches whichever floor this axis actually reserves: the x-title
+/// text's own top edge when `titled`, the tile's bottom edge otherwise.
+///
+/// Read off `layout` rather than assumed, because the floor is not a fixed
+/// distance from the tile's bottom: `x_title_baseline` sits a FIXED offset
+/// below `plot_y_end()` regardless of how large the margin is, so a titled
+/// axis's room does not grow with the margin the way an untitled one's does —
+/// see `the_axis_degrades_to_one_label_rather_than_clip_a_rotated_band_past_a_title`
+/// (this module), which measures that floor rather than restating it.
+fn rotated_label_room(layout: &ChartLayout, titled: bool) -> f64 {
+    let near_end = layout.plot_y_end() + TICK_LENGTH + ROTATED_LABEL_GAP;
+    let floor = if titled {
+        x_title_baseline(layout) - f64::from(TITLE_SIZE) - TITLE_GAP
+    } else {
+        layout.height
+    };
+    (floor - near_end).max(0.0)
+}
+
 /// Whether consecutive labels in `ticks` — each centred under its own tick's
 /// `position` at `size`, the anchor `render_x_axis` draws with — clear
 /// [`LABEL_CLEARANCE`] of their neighbour's.
@@ -266,7 +286,8 @@ fn labels_clear_horizontally(ticks: &[&Tick], size: f32) -> bool {
 /// alternating ones, then try a wider stride still, and so on until a stride
 /// clears or the search has narrowed to the two end ticks. `render_x_axis`
 /// rotates the full set instead of drawing this candidate when even that pair
-/// collides.
+/// collides AND there is room to rotate into; it degrades past this candidate
+/// instead when there is not — see [`rotated_label_room`].
 fn thinned_x_ticks(ticks: &[Tick], size: f32) -> Vec<&Tick> {
     if ticks.len() < 2 {
         return ticks.iter().collect();
@@ -285,12 +306,18 @@ fn thinned_x_ticks(ticks: &[Tick], size: f32) -> Vec<&Tick> {
 ///
 /// A tick mark draws for each tick regardless of what its label does —
 /// dropping one would misstate which values the axis carries. A tick label
-/// draws thinned first (`thinned_x_ticks`, private to this module) and
-/// rotated a quarter turn ([`draw_text_rotated`]) when even the sparsest
-/// horizontal set still collides.
-/// `thinning_keeps_labels_from_touching_at_various_widths` and
-/// `rotation_is_the_fallback_when_thinning_cannot_clear_the_labels` (this
-/// module's tests) pin the two branches.
+/// draws thinned first (`thinned_x_ticks`, private to this module); when even
+/// the sparsest horizontal set still collides, it rotates a quarter turn
+/// ([`draw_text_rotated`]) IF `rotated_label_room` (private to this module)
+/// says the run fits below the tick line, and degrades past the two end
+/// labels to a single one
+/// otherwise — a rotated run that does not fit reads as clipped digits under
+/// the title rather than as an axis, which is worse than one label. Three of
+/// this module's tests pin the three branches:
+/// `thinning_keeps_labels_from_touching_at_various_widths`,
+/// `rotation_is_the_fallback_when_thinning_cannot_clear_the_labels_and_there_is_room_to_rotate`
+/// and
+/// `the_axis_degrades_to_one_label_rather_than_clip_a_rotated_band_past_a_title`.
 pub fn render_x_axis(
     scene: &mut Scene,
     layout: &ChartLayout,
@@ -332,20 +359,50 @@ pub fn render_x_axis(
             );
         }
     } else {
-        // Even the two end labels collide horizontally — rotate the full set
-        // a quarter turn so each label's OWN footprint is its font size
-        // rather than its text width, anchored (`TextAnchor::End`) so the
-        // label's last character sits nearest the tick and the rest reaches
-        // down into the margin instead of up into the plot.
-        for tick in ticks {
-            draw_text_rotated(
+        // Even the two end labels collide horizontally. Rotating helps only
+        // when the widest label's run actually fits the room below the tick
+        // line — `rotated_label_room` reads that off `layout`, and a titled
+        // axis's room is a small, FIXED distance (the title sits a constant
+        // offset below the tick line no matter how large the margin is), so
+        // this is not a check that more margin alone can satisfy.
+        let widest = ticks
+            .iter()
+            .map(|t| measure_width(&t.label, LABEL_SIZE))
+            .fold(0.0_f64, f64::max);
+        if widest <= rotated_label_room(layout, title.is_some()) {
+            // Rotate the full set a quarter turn so each label's OWN
+            // footprint is its font size rather than its text width,
+            // anchored (`TextAnchor::End`) so the label's last character
+            // sits nearest the tick and the rest reaches down into the
+            // margin instead of up into the plot.
+            for tick in ticks {
+                draw_text_rotated(
+                    scene,
+                    &tick.label,
+                    tick.position,
+                    y + TICK_LENGTH + ROTATED_LABEL_GAP,
+                    LABEL_SIZE,
+                    ink.label,
+                    TextAnchor::End,
+                );
+            }
+        } else {
+            // No room to rotate into without running past the tile's own
+            // bottom edge or under the title: degrade past the two end
+            // labels `thinned_x_ticks` stopped at to the single label
+            // nearest the domain's start, on the SAME horizontal baseline
+            // the thinned case draws at. One label cannot collide with
+            // itself, and that baseline is already proven clear of a title —
+            // `axis_titles_render_and_clear_tick_labels`, this module.
+            let solo = &ticks[0];
+            draw_text(
                 scene,
-                &tick.label,
-                tick.position,
-                y + TICK_LENGTH + ROTATED_LABEL_GAP,
+                &solo.label,
+                solo.position,
+                y + TICK_LENGTH + f64::from(LABEL_SIZE),
                 LABEL_SIZE,
                 ink.label,
-                TextAnchor::End,
+                TextAnchor::Middle,
             );
         }
     }
@@ -420,7 +477,7 @@ pub fn render_y_axis(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::ChartLayout;
+    use crate::layout::{ChartLayout, Insets, Margins};
     use crate::scale::Scale;
 
     #[test]
@@ -554,7 +611,6 @@ mod tests {
 
     #[test]
     fn axis_titles_render_and_clear_tick_labels() {
-        use crate::layout::{Insets, Margins};
         use crate::text::measure_width;
 
         // Grown margins (left +band for a y-title, bottom +band for an x-title).
@@ -757,8 +813,9 @@ mod tests {
     /// (240 points) and a wide one (720), so the thinning rule is a rule
     /// rather than a constant tuned to one width. At both, `thinned_x_ticks`
     /// finds a stride that clears, so the labels stay horizontal — see
-    /// `rotation_is_the_fallback_when_thinning_cannot_clear_the_labels` for a
-    /// width where it cannot.
+    /// `rotation_is_the_fallback_when_thinning_cannot_clear_the_labels_and_there_is_room_to_rotate`
+    /// and `the_axis_degrades_to_one_label_rather_than_clip_a_rotated_band_past_a_title`
+    /// for widths where it cannot.
     #[test]
     fn thinning_keeps_labels_from_touching_at_various_widths() {
         for width in [240.0_f64, 720.0_f64] {
@@ -782,27 +839,46 @@ mod tests {
         }
     }
 
-    /// The rotation fallback, isolated — the same six real dates crowded past
-    /// what dropping labels can fix, at a width picked to force it (132
-    /// points: even the two end dates' labels do not clear each other there).
-    /// `render_x_axis` should fall back to `draw_text_rotated` and draw a
-    /// label for each tick rather than a thinned subset, and the rotated
+    /// The rotation fallback, isolated, over a margin with room to rotate
+    /// into — the same six real dates crowded past what dropping labels can
+    /// fix, at a width picked to force it (132 points: even the two end
+    /// dates' labels do not clear each other there), with a bottom margin
+    /// grown past [`rotated_label_room`]'s floor for one date's own width.
+    /// `render_x_axis` should still fall back to `draw_text_rotated` and draw
+    /// a label for each tick rather than a thinned subset, and the rotated
     /// labels themselves should not collide either — 132 was chosen so the
     /// band between ticks still clears one rotated label's own width even
-    /// though it cannot clear the unrotated text.
+    /// though it cannot clear the unrotated text. See
+    /// `the_axis_degrades_to_one_label_rather_than_clip_a_rotated_band_past_a_title`
+    /// for the same crowding with no such room.
     #[test]
-    fn rotation_is_the_fallback_when_thinning_cannot_clear_the_labels() {
-        let layout = ChartLayout::new(132.0, 300.0);
+    fn rotation_is_the_fallback_when_thinning_cannot_clear_the_labels_and_there_is_room_to_rotate()
+    {
+        let margins = Margins {
+            bottom: 100.0,
+            ..Margins::default()
+        };
+        let layout = ChartLayout::with_margins_and_insets(132.0, 300.0, margins, Insets::default());
         let scale = fixture_day_scale(&layout);
         let ticks = compute_ticks(&scale, 5);
+        let widest = ticks
+            .iter()
+            .map(|t| measure_width(&t.label, LABEL_SIZE))
+            .fold(0.0_f64, f64::max);
+        assert!(
+            widest <= rotated_label_room(&layout, false),
+            "fixture check: the margin this test grew ({margins:?}) is meant \
+             to leave room to rotate a real date ({widest} points wide) into"
+        );
 
         let mut scene = Scene::new();
         render_x_axis(&mut scene, &layout, &ticks, None, ChartInk::LIGHT);
 
         assert!(
             scene_has_quarter_turn(&scene),
-            "thinning cannot clear real dates at 132 points wide, so the axis \
-             should have rotated its labels instead of drawing them horizontal"
+            "thinning cannot clear real dates at 132 points wide and there is \
+             room to rotate into, so the axis should have rotated its labels \
+             instead of drawing them horizontal"
         );
         let glyph_runs = scene.encoding().resources.glyph_runs.len();
         assert_eq!(
@@ -832,5 +908,98 @@ mod tests {
                  width apart: {pair:?}"
             );
         }
+    }
+
+    /// **When there is no room to rotate a real date past a title, the axis
+    /// degrades to a single label rather than clip one under it.**
+    /// [`FIXTURE_DAYS`] crowded at 130 points — narrow enough that
+    /// `thinned_x_ticks` cannot clear even its two end ticks — with an
+    /// x title present. [`rotated_label_room`] measures the floor a title
+    /// leaves as a small, FIXED distance below the tick line regardless of
+    /// how large the margin is (`x_title_baseline` is a constant offset from
+    /// `ChartLayout::plot_y_end`, not from the margin's own size), so growing
+    /// the margin further would not have bought a 65-point date any more
+    /// room here — unlike
+    /// `rotation_is_the_fallback_when_thinning_cannot_clear_the_labels_and_there_is_room_to_rotate`,
+    /// which has no title and grows past its floor instead.
+    #[test]
+    fn the_axis_degrades_to_one_label_rather_than_clip_a_rotated_band_past_a_title() {
+        let unfitted = ChartLayout::new(130.0, 300.0);
+        let scale = fixture_day_scale(&unfitted);
+        let ticks = compute_ticks(&scale, 5);
+        let thinned = thinned_x_ticks(&ticks, LABEL_SIZE);
+        assert!(
+            !labels_clear_horizontally(&thinned, LABEL_SIZE),
+            "fixture check: 130 points is meant to be a width where even the \
+             two end dates collide, which is what forces the choice this \
+             test is about"
+        );
+
+        let titles = crate::title::ResolvedTitles {
+            x: Some("day".to_string()),
+            y: None,
+            plot: None,
+        };
+        let margins = crate::title::grow_margins(Margins::default(), &titles);
+        let layout = ChartLayout::with_margins_and_insets(130.0, 300.0, margins, Insets::default());
+        let scale = fixture_day_scale(&layout);
+        let ticks = compute_ticks(&scale, 5);
+        let widest = ticks
+            .iter()
+            .map(|t| measure_width(&t.label, LABEL_SIZE))
+            .fold(0.0_f64, f64::max);
+        assert!(
+            widest > rotated_label_room(&layout, true),
+            "fixture check: a real date ({widest} points wide) is meant to \
+             overrun the room a title leaves"
+        );
+
+        let mut scene = Scene::new();
+        render_x_axis(
+            &mut scene,
+            &layout,
+            &ticks,
+            titles.x.as_deref(),
+            ChartInk::LIGHT,
+        );
+
+        assert!(
+            !scene_has_quarter_turn(&scene),
+            "there is no room below the title to rotate a real date into, so \
+             the axis should have degraded to a single label rather than \
+             clip a rotated one past the title"
+        );
+        let glyph_runs = &scene.encoding().resources.glyph_runs;
+        assert_eq!(
+            glyph_runs.len(),
+            2,
+            "a degraded titled axis draws one tick label plus the title, not \
+             {} runs",
+            glyph_runs.len(),
+        );
+
+        // The one label drawn sits at the ordinary horizontal tick-label
+        // baseline (`axis_titles_render_and_clear_tick_labels` pins that row
+        // clear of the title already) and the other run is the title itself
+        // — nothing draws anywhere else, in particular not past either.
+        let label_y = layout.plot_y_end() + TICK_LENGTH + f64::from(LABEL_SIZE);
+        let title_y = x_title_baseline(&layout);
+        let mut saw_label_row = false;
+        for run in glyph_runs {
+            let y = f64::from(run.transform.translation[1]);
+            assert!(
+                (y - label_y).abs() < 0.5 || (y - title_y).abs() < 0.5,
+                "a glyph run drew at y={y}, neither the tick-label baseline \
+                 {label_y} nor the title baseline {title_y} — it drew \
+                 somewhere a rotated run would have, clipped or not"
+            );
+            if (y - label_y).abs() < 0.5 {
+                saw_label_row = true;
+            }
+        }
+        assert!(
+            saw_label_row,
+            "no run drew at the ordinary tick-label baseline {label_y}"
+        );
     }
 }
