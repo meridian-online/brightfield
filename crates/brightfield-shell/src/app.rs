@@ -57,6 +57,7 @@
 use std::collections::BTreeSet;
 
 use brightfield_engine::coordinator::{Coordinator, Interaction};
+use brightfield_engine::nearest::{NearestProbe, NearestRead};
 use brightfield_engine::{AxisExtent, NavigationExtent};
 use brightfield_keys::BindingContext;
 use brightfield_render::canvas_host::{ChartSurface, Color, PixelSize};
@@ -305,15 +306,12 @@ pub fn page_offset(
 ///
 /// No [`Item`] holds a handle to it — the shell hands out exactly one
 /// `&mut ChartDoc`, for the duration of one pane's draw. That is why the canvas
-/// host lives here rather than inside the canvas pane, and why the overlay flag
-/// lives here rather than inside the controls pane: the controls rail writes it
-/// and the chart pane reads it, so it belongs to the view, not to either pane.
+/// host lives here rather than inside the canvas pane: the rail writes state
+/// the chart pane reads, so that state belongs to the view rather than to
+/// either pane.
 pub struct ChartDoc {
     /// The composited Vello dashboard and its logical size.
     pub composed: Composed,
-    /// Whether the hover crosshair overlay is armed — the worked example that
-    /// keeps the overlay seam exercised end to end.
-    pub overlay: bool,
     /// The content box the chart pane was last handed, in window-space logical
     /// points — `None` until a frame has been laid out.
     ///
@@ -367,16 +365,6 @@ pub struct ChartDoc {
     /// the same time. Written by the canvas each frame, read by the chart
     /// pane's gesture machine, and false on every frame nobody claims it.
     pub wheel_taken: bool,
-    /// The rect the controls rail's overlay checkbox last occupied, in
-    /// window-space logical points — `None` until a frame has been laid out.
-    ///
-    /// Recorded for the same reason as [`Self::viewport`], and it buys the same
-    /// thing one level in. The pixel test that proves the overlay seam still
-    /// crosses the dock has to *click* this checkbox, and it used to aim at a
-    /// coordinate typed against a layout nothing derived it from: it landed
-    /// today, and would have silently stopped landing the first time the rail's
-    /// share or a row height moved. It aims from a headless layout pass now.
-    pub overlay_checkbox: Option<egui::Rect>,
     /// The rect the raster was presented into last frame, in window-space
     /// logical points — the box the legend must never enter. Recorded for the
     /// reason [`Self::viewport`] is: the no-legend-overlaps-data exercise
@@ -389,7 +377,7 @@ pub struct ChartDoc {
     /// `(control key, rect)` in window-space logical points — empty until a
     /// frame has laid the rail out, and empty for a spec that declares none.
     ///
-    /// Recorded for the reason [`Self::overlay_checkbox`] is: the only
+    /// Recorded for the reason [`Self::viewport`] is, one level in: the only
     /// assertion worth making about a drag is one that aims a real pointer at
     /// the widget a person would grab, and a coordinate typed by hand against
     /// a layout nothing derived it from stops landing the first time a row
@@ -523,13 +511,11 @@ impl ChartDoc {
     pub fn new(composed: Composed, host: EguiCanvasHost) -> Self {
         Self {
             composed,
-            overlay: true,
             viewport: None,
             pane_views: None,
             gesture_latched: false,
             gesture_ink: None,
             wheel_taken: false,
-            overlay_checkbox: None,
             raster_rect: None,
             legend_rect: None,
             interval_slider_rects: Vec::new(),
@@ -558,13 +544,11 @@ impl ChartDoc {
     pub fn headless(composed: Composed) -> Self {
         Self {
             composed,
-            overlay: true,
             viewport: None,
             pane_views: None,
             gesture_latched: false,
             gesture_ink: None,
             wheel_taken: false,
-            overlay_checkbox: None,
             raster_rect: None,
             legend_rect: None,
             interval_slider_rects: Vec::new(),
@@ -767,6 +751,35 @@ impl ChartDoc {
     #[must_use]
     pub fn live_dashboard(&self) -> Option<&LiveDashboard> {
         self.live.as_ref()
+    }
+
+    /// **The nearest drawn row to a point on one of this document's marks** —
+    /// one engine query returning at most one row.
+    ///
+    /// `None` for a document with no session behind it (a capture, the pixel
+    /// tier, a shipped start), which is the same answer a still frame gives
+    /// every other gesture entry point here.
+    ///
+    /// **A failed read is not a chart fault.** Every other engine call on this
+    /// document raises the banner when it fails, because every other one is a
+    /// picture the reader asked for and did not get. A hover that cannot be
+    /// answered has no picture behind it: the reader moved a pointer, and the
+    /// honest response is to say nothing rather than to put a banner over the
+    /// chart. The reason still goes to stderr, on the same terms as an
+    /// unsampled-facts query that fails.
+    ///
+    /// Nothing about this touches [`Self::apply_interaction`]: no
+    /// [`Interaction`] is produced, no predicate is pushed, and
+    /// [`Coordinator::generation`] does not move — see
+    /// [`LiveDashboard::nearest_row`].
+    pub fn nearest_row(&mut self, mark: usize, probe: &NearestProbe) -> Option<NearestRead> {
+        match self.live.as_mut()?.nearest_row(mark, probe) {
+            Ok(read) => Some(read),
+            Err(e) => {
+                eprintln!("warning: hover read on mark {mark}: {e}");
+                None
+            }
+        }
     }
 
     /// Whether any selection currently holds a committed gesture.
@@ -1674,7 +1687,7 @@ impl Item<ChartDoc> for ControlsPane {
         // widget's own range, and wired through the coordinator seam — a drag
         // is an `Interaction::SetParam`, a pushed value and a re-query, never
         // a Rust-side filter. A spec with no declared params draws no slider at
-        // all — just the crosshair toggle below.
+        // all.
         let params = doc.composed.params.clone();
         if doc.is_live() && !params.is_empty() {
             for control in params {
@@ -1726,7 +1739,6 @@ impl Item<ChartDoc> for ControlsPane {
                 ui.ctx().request_repaint();
             }
         }
-        doc.overlay_checkbox = Some(ui.checkbox(&mut doc.overlay, "hover overlay").rect);
         if crate::devtools::enabled() {
             ui.add_space(spacing::CONTROL_GAP);
             let sem = semantic(cx.mode.is_dark());

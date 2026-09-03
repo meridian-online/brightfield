@@ -1378,11 +1378,10 @@ pub struct MeridianApp {
     /// window drew, in window-space logical points — empty until a frame has
     /// been laid out, and holding only the regions that drew.
     ///
-    /// Recorded for the reason `ChartDoc::overlay_checkbox` is: the assertion
-    /// that a rail is the width it declares has to read the rect the rail was
-    /// *drawn* at, and a test comparing the declared constant with itself is
-    /// green whatever the window does. Read back through
-    /// [`MeridianApp::region_rect`].
+    /// Recorded because the assertion that a rail is the width it declares has
+    /// to read the rect the rail was *drawn* at, and a test comparing the
+    /// declared constant with itself is green whatever the window does. Read
+    /// back through [`MeridianApp::region_rect`].
     regions: Vec<(RegionId, egui::Rect)>,
     /// The regions the user has put away this session, by the id the
     /// arrangement declares them under.
@@ -2053,20 +2052,13 @@ impl MeridianApp {
         self.charts.doc.viewport
     }
 
-    /// The rect the controls rail's overlay checkbox occupied in the last frame
-    /// this window drew.
-    #[must_use]
-    pub fn overlay_checkbox(&self) -> Option<egui::Rect> {
-        self.charts.doc.overlay_checkbox
-    }
-
     /// What the inspector currently says is selected — the focused pane's
     /// [`Subject`], recomputed each frame from [`Workspace::focus`]
     /// immediately before the dock draws. `None` before anything in the
     /// charts view has been focused, or once focus is cleared — never a
     /// stale previous answer. A test hook, for the reason
-    /// [`Self::overlay_checkbox`] is one: proving the inspector tracks
-    /// selection should not have to pay for a pixel capture per pane.
+    /// [`Self::chart_viewport`] is one: proving the inspector tracks selection
+    /// should not have to pay for a pixel capture per pane.
     #[must_use]
     pub fn inspector_selection(&self) -> Option<Subject> {
         self.charts.inspector_selection.get()
@@ -3007,9 +2999,9 @@ impl MeridianApp {
                     // rect was 200pt wide — its declared floor — by the second
                     // frame rather than the declared 280, because a quiet
                     // inspector does not ask for more. Watched redden without
-                    // it: `the_overlay_toggle_still_reaches_the_chart_pane`
-                    // fails, the scripted click aimed at the wider prediction
-                    // landing outside the shrunken panel.
+                    // it: `the_settled_inspector_rail_is_as_wide_as_it_declares`
+                    // reads the drawn rect back off the frame and finds the
+                    // floor.
                     ui.set_min_width(ui.available_width());
                     let (strip, body) = chrome::rail_split(ui.max_rect());
                     inspector_strip = Some(chrome::rail_selector(

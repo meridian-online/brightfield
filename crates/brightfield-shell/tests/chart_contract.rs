@@ -556,3 +556,54 @@ fn the_window_it_asks_for_fits_the_raster_it_presents() {
         (dash_h - box_.height()).max(dash_w - box_.width()),
     );
 }
+
+/// **A settled inspector rail is as wide as it declares**, not as narrow as it
+/// could get away with.
+///
+/// [`arrangement::INSPECTOR_RAIL_WIDTH`] is a default and
+/// [`arrangement::INSPECTOR_RAIL_MIN_WIDTH`] is a floor, and an `egui`
+/// side panel takes the floor unless its content asks for more: a quiet
+/// inspector — nothing selected, a one-shot document with no live controls —
+/// asks for nothing at all. Measured before `window.rs` called
+/// `ui.set_min_width(ui.available_width())` inside the rail, the reported rect
+/// was the 200pt floor by the second frame rather than the declared 280.
+///
+/// Read off the **drawn** rect, which is the only reading that can catch it:
+/// `the_window_is_sized_from_the_inspector_rails_declared_width` above walks
+/// the same constant through the window arithmetic and would stay green with
+/// the rail drawing at any width at all.
+///
+/// This claim used to ride on a pixel test in `surfaces.rs` that clicked a
+/// checkbox in the rail. That checkbox is gone with the *hover overlay*
+/// toggle, so the claim is asserted here instead — directly, GPU-free, and
+/// without inferring a width from where a click landed.
+#[test]
+fn the_settled_inspector_rail_is_as_wide_as_it_declares() {
+    let composed = compose_spec(DASHBOARD).expect("compose examples/dashboard.yaml");
+    let (w, h) = chart_window_size(&composed);
+    let mut app = MeridianApp::headless(Boot::charts(composed), Mode::Light);
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(w, h),
+        )),
+        ..Default::default()
+    };
+    for _ in 0..2 {
+        let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
+    }
+
+    let rail = app
+        .region_rect(arrangement::INSPECTOR_RAIL)
+        .expect("the inspector rail drew");
+    assert!(
+        (rail.width() - arrangement::INSPECTOR_RAIL_WIDTH).abs() < 0.5,
+        "the inspector rail drew {:.2}pt across against a declared {:.0} \
+         (its floor is {:.0}) — a quiet rail has collapsed to what egui will \
+         give it rather than to what the arrangement asked for",
+        rail.width(),
+        arrangement::INSPECTOR_RAIL_WIDTH,
+        arrangement::INSPECTOR_RAIL_MIN_WIDTH,
+    );
+}

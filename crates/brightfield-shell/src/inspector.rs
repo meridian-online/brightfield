@@ -31,11 +31,13 @@
 //!
 //! # What still lives here from `ControlsPane`
 //!
-//! The param sliders, the interval sliders and the hover-overlay checkbox are
-//! ported verbatim — same document methods, same fields, same widget code —
-//! because `tests/interval_slider.rs` drives them through a real window and
-//! would silently stop finding them if this pane drew something else in their
-//! place.
+//! The param sliders and the interval sliders are ported verbatim — same
+//! document methods, same fields, same widget code — because
+//! `tests/interval_slider.rs` drives them through a real window and would
+//! silently stop finding them if this pane drew something else in their place.
+//!
+//! The *hover overlay* checkbox that stood beside them is gone: the chart
+//! answers the pointer with no control to arm, so there is nothing to draw.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -60,8 +62,8 @@ const ICON_INSPECTOR: Icon = Icon("sliders");
 /// own text below: that one answers "no dashboard is open" (the pane is
 /// empty, so the shell skips calling `ui` for the frame); this one answers "a
 /// dashboard is open, but no pane in it has been clicked on yet" — drawn
-/// *inside* `ui`, alongside the hover-overlay checkbox, which has to stay
-/// reachable either way (AC5).
+/// *inside* `ui`, alongside the live document controls, which have to stay
+/// reachable either way.
 const NOTHING_SELECTED_HEADLINE: &str = "Nothing selected";
 const NOTHING_SELECTED_BODY: &str = "Click a pane — the chart, the data grid, \
      the spec editor — and this panel names it and lists what you can do \
@@ -179,7 +181,7 @@ pub fn render_selection(ui: &mut egui::Ui, subject: Option<&Subject>, mode: Mode
 
 /// The inspector: what is selected, and what can be done with it — plus the
 /// live document controls that used to be the whole of "Controls" (the param
-/// sliders, the interval sliders, the hover-overlay checkbox), unchanged.
+/// sliders and the interval sliders), unchanged.
 pub struct InspectorPane {
     selection: Selection,
     /// The table a selected column belongs to, and the step that produced it —
@@ -335,9 +337,9 @@ impl Item<ChartDoc> for InspectorPane {
     /// Empty under the same condition the pane it replaces used: no dashboard
     /// open. An open dashboard with an empty selection is a *narrower* case,
     /// drawn inside [`Self::ui`] instead of here — an `Item::empty_state`
-    /// answer of `Some` skips the call to `ui` for the frame, and the
-    /// hover-overlay checkbox has to stay reachable whether or not the user
-    /// has clicked on a pane yet (AC5).
+    /// answer of `Some` skips the call to `ui` for the frame, and the live
+    /// document controls have to stay reachable whether or not the user has
+    /// clicked on a pane yet.
     fn empty_state(&self, doc: &ChartDoc) -> Option<EmptyState> {
         doc.is_empty().then(|| {
             EmptyState::new(
@@ -386,7 +388,7 @@ impl Item<ChartDoc> for InspectorPane {
         // widget's own range, and wired through the coordinator seam — a drag
         // is an `Interaction::SetParam`, a pushed value and a re-query rather
         // than a Rust-side filter. A spec with no declared params draws no
-        // slider — just the crosshair toggle below.
+        // slider.
         let params = doc.composed.params.clone();
         if doc.is_live() && !params.is_empty() {
             for control in params {
@@ -438,7 +440,6 @@ impl Item<ChartDoc> for InspectorPane {
                 ui.ctx().request_repaint();
             }
         }
-        doc.overlay_checkbox = Some(ui.checkbox(&mut doc.overlay, "hover overlay").rect);
         if crate::devtools::enabled() {
             ui.add_space(spacing::CONTROL_GAP);
             let sem = semantic(cx.mode.is_dark());

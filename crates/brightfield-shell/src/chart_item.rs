@@ -63,15 +63,17 @@ use brightfield_workbench::{
     chrome, Affordance, EmptyState, Icon, Item, ItemCtx, ItemId, Subject, ToolbarEntry,
     ToolbarLocation, Verb,
 };
+use brightfield_engine::nearest::{NearestAxis, NearestProbe};
 use meridian_design::chrome::{OverlayTokens, INK_DARK, INK_LIGHT, OVERLAY_DARK, OVERLAY_LIGHT};
-use meridian_design::semantic::Role;
+use meridian_design::semantic::{semantic, Role};
+use meridian_design::{radius, spacing, Elevation};
 
 use crate::app::{ChartDoc, CHART};
 use crate::canvas::{set_surface_cursor, surface_input, EguiOverlay};
 use crate::design::Mode;
 use crate::legend;
 use crate::navigation::{self, verb::RESET_EXTENT};
-use crate::pipeline::{GestureBinding, PlotHandle};
+use crate::pipeline::{GestureBinding, HoverLayer, PlotHandle};
 use crate::starts;
 
 /// The predicate readout's status-entry id — the handle a headless test asserts
@@ -97,6 +99,29 @@ pub const PREDICATE_READOUT: &str = "chart-predicate";
 /// distance. Ln-2 scaled, so travelling this far in and then back out returns
 /// the frame to exactly where it started rather than somewhere near it.
 const WHEEL_ZOOM_PIXELS: f64 = 180.0 / std::f64::consts::LN_2;
+
+/// How close the pointer has to be to a mark, in logical pixels, for that mark
+/// to be the one it is resting on.
+///
+/// A **distance**, not a delay: this gate has no clock in it, and the frame a
+/// read is issued on is decided by the pointer having stopped rather than by
+/// any elapsed time — see [`ChartItem::hover_at`].
+///
+/// Three times the default dot radius (`brightfield_render`'s own `DOT_RADIUS`,
+/// 4.0), which is what makes it a distance a hand can hit: at one radius a
+/// reader has to land inside a four-pixel disc, and the readout would blink in
+/// and out along a row of dots. At the other end it must stay well under the
+/// gap between neighbouring marks or a rest anywhere on the plot names *some*
+/// row; the radius test is what makes empty space read as empty —
+/// `a_rest_outside_the_hit_radius_reads_no_row`.
+const HOVER_RADIUS: f64 = 12.0;
+
+/// How far the readout is offset from the pointer, in logical points.
+///
+/// The pointer's own hot-spot is at its top-left, so the panel is placed down
+/// and right of it: any smaller and the cursor glyph covers the first line it
+/// is meant to be reading out.
+const HOVER_READOUT_OFFSET: f32 = meridian_design::spacing::SPACE_6;
 
 /// This frame's wheel travel in logical pixels, summed from the raw events.
 ///
@@ -273,6 +298,28 @@ struct Pan {
     by: f32,
 }
 
+/// **What one hover read produced**, held for as long as the pointer stays
+/// where it was read.
+///
+/// One row's worth of named values and the point they were read at — and
+/// **not** the [`brightfield_engine::RecordBatch`] they came out of. The batch
+/// never leaves the engine: [`brightfield_engine::Session::nearest_row`] hands
+/// back cells, so the pane has no whole-row copy to hold across frames even by
+/// accident. That is the whole difference between this and reading every
+/// column of a materialised batch on the client, and it is enforced by what
+/// crosses the crate boundary rather than by care.
+#[derive(Clone, Debug, PartialEq)]
+struct HoverReadout {
+    /// Where the pointer was, in window-space logical points, on the frame
+    /// this was read. The readout is dropped the moment the pointer is
+    /// somewhere else, so this doubles as the "already answered" mark that
+    /// keeps a rest from re-querying every frame.
+    at: egui::Pos2,
+    /// One line per channel the hovered layer binds to a column, in readout
+    /// order, already rendered as `column: value`.
+    lines: Vec<String>,
+}
+
 /// The chart pane. See the module docs for what this one type replaces.
 pub struct ChartItem {
     drag: Option<Drag>,
@@ -292,6 +339,28 @@ pub struct ChartItem {
     /// wheel delta after one that had some IS the gesture's end — the settle
     /// test for a gesture with no button to let go of.
     was_scrolling: bool,
+    /// Where the pointer was on the last frame this pane drew, in window-space
+    /// logical points — the whole of the pointer-stillness gate's memory.
+    ///
+    /// A frame on which this equals the pointer's position *now* is a frame
+    /// the pointer did not move on, and that is the only kind of frame a
+    /// nearest-point read is issued on. There is no duration in it and no
+    /// debounce: a hover is not a gesture that settles over time, it is a
+    /// question asked once the hand has stopped.
+    hover_at: Option<egui::Pos2>,
+    /// Where the last nearest-point read was **taken**, including the reads
+    /// that found nothing.
+    ///
+    /// [`Self::readout`] cannot carry this: a rest over empty space is a read
+    /// that produced no readout, and without somewhere to record that it
+    /// happened the rest would re-ask on every frame anything else caused. One
+    /// query per rest is a property of this field, and
+    /// `a_rest_outside_the_hit_radius_issues_one_query_and_no_more` is what
+    /// holds it.
+    hover_read_at: Option<egui::Pos2>,
+    /// The answer being shown, or `None` when the pointer is moving, is off
+    /// every plot, or rested somewhere with no mark inside the hit radius.
+    readout: Option<HoverReadout>,
 }
 
 impl ChartItem {
@@ -304,6 +373,9 @@ impl ChartItem {
             pan: None,
             was_secondary_down: false,
             was_scrolling: false,
+            hover_at: None,
+            hover_read_at: None,
+            readout: None,
         }
     }
 
@@ -450,6 +522,10 @@ impl ChartItem {
             input.pointer_secondary,
             brightfield_render::canvas_host::ButtonState::Down
         );
+        // Whether the wheel is turning on THIS frame, hoisted out of the live
+        // branch below because the hover gate reads it and a still document
+        // has no wheel to turn.
+        let mut scrolled = false;
         if doc.is_live() {
             // A secondary-button drag pans the plot it started on. The
             // delta is measured against the pointer's own previous
@@ -535,6 +611,7 @@ impl ChartItem {
                 doc.settle_navigation();
             }
             self.was_scrolling = scrolling;
+            scrolled = scrolling;
         }
         self.was_secondary_down = secondary_down;
         // Release: resolve the gesture to a structured predicate and push
@@ -567,6 +644,48 @@ impl ChartItem {
                 }
             }
         }
+        // ---------------------------------------------------------------
+        // **The pointer-stillness gate** — the ONE site a nearest-point read
+        // is issued from.
+        //
+        // The condition is a comparison between two frames' pointer
+        // positions and nothing else. There is no duration constant here and
+        // no debounce, deliberately: a hover is not a gesture that settles
+        // over time the way a pan does, it is a question the hand asks by
+        // stopping, and "the pointer is where it was last frame" is that fact
+        // stated directly. A clock would additionally have to be pumped —
+        // egui draws on input, so the frame a timer expires on is a frame
+        // somebody has to ask for anyway.
+        //
+        // What IS asked for is one frame after each move. Without it the
+        // condition could never hold at all: the last frame of a sweep is
+        // drawn because the pointer moved, and if nothing requests another
+        // one the pointer's having stopped is never observed. That is one
+        // extra frame per rest, and the still frame itself requests nothing,
+        // so a pointer left on the chart costs no frames at all.
+        //
+        // A gesture in progress reads nothing. A sweep with the button down
+        // pauses mid-drag all the time — the hand hesitating over where to
+        // release — and a readout appearing then would answer a question
+        // nobody asked, over ink that is about to become a selection.
+        let gesturing =
+            down || secondary_down || self.drag.is_some() || self.pan.is_some() || scrolled;
+        let moved = at != self.hover_at;
+        self.hover_at = at;
+        if moved || gesturing {
+            // What is on screen names a pixel the pointer has left.
+            self.readout = None;
+            self.hover_read_at = None;
+            if at.is_some() && !gesturing {
+                repaint = true;
+            }
+        } else if at.is_some() && at != self.hover_read_at {
+            self.hover_read_at = at;
+            self.readout = pointer
+                .zip(at)
+                .and_then(|(p, at)| hover_read(doc, p, at));
+        }
+
         // The origin the transient ink is painted in: the drag's own while one
         // is in progress, and this frame's otherwise. A page drawn in two views
         // has two origins, and the brush rectangle belongs to the gesture, so
@@ -589,6 +708,162 @@ impl ChartItem {
             },
         )
     }
+}
+
+/// **What the mark under `p` is**, as one engine query returning one row.
+///
+/// `p` is page-local logical pixels, `at` is the same point in window space —
+/// the readout is drawn beside the pointer, and the panel is chrome, so it is
+/// placed in the window's coordinates and not the page's.
+///
+/// `None` is the answer for every reason there is nothing to say, and they are
+/// deliberately not distinguished: the pointer is on no plot, the plot's top
+/// layer summarises rather than draws rows, an axis is not continuous, or no
+/// mark is inside [`HOVER_RADIUS`]. A readout that appeared saying "nothing
+/// here" would be chrome following the pointer around an empty plot.
+///
+/// **No row set crosses into this function.** It hands the engine a probe and
+/// receives named cells; the batch the query produced is assembled, read and
+/// dropped inside [`brightfield_engine::Session::nearest_row`]. See
+/// [`HoverReadout`].
+fn hover_read(doc: &mut ChartDoc, p: kurbo::Point, at: egui::Pos2) -> Option<HoverReadout> {
+    // The plot's own facts are taken first and the borrow released, because
+    // the read that follows needs the document mutably. Both are cheap: a
+    // handful of column names and four floats.
+    let (mark, probe) = {
+        let plot = doc.composed.plots.get(plot_at(&doc.composed.plots, p)?)?;
+        let layer = plot.hover.as_ref()?;
+        (layer.mark, hover_probe(plot, layer, p)?)
+    };
+    let read = doc.nearest_row(mark, &probe)?;
+    if read.cells.is_empty() {
+        return None;
+    }
+    Some(HoverReadout {
+        at,
+        lines: read
+            .cells
+            .iter()
+            .map(|cell| format!("{}: {}", cell.column, cell.value))
+            .collect(),
+    })
+}
+
+/// The probe a rest at `p` (page-local logical pixels) on `plot` means.
+///
+/// The two positional axes are inverted through the plot's **displayed**
+/// scales — the same set a brush inverts through, so a hover and a sweep at
+/// the same pixel are talking about the same data value — and each carries the
+/// scale's own data-units-per-pixel so the engine can measure distance on
+/// screen rather than in data units. See [`brightfield_engine::nearest`].
+///
+/// `None` when either positional channel is missing, is not a continuous
+/// scale, or has collapsed to a point. A band axis is the ordinary case of the
+/// second: a category has a slot, not a coordinate, and "how far is this row
+/// from the pointer" has no answer along it.
+fn hover_probe(plot: &PlotHandle, layer: &HoverLayer, p: kurbo::Point) -> Option<NearestProbe> {
+    let axis = |channel: Channel, pixel: f64| -> Option<NearestAxis> {
+        let scale = plot.scales.get(channel)?;
+        Some(NearestAxis {
+            column: layer.column(channel)?.to_string(),
+            at: scale.inverse_f64(pixel)?,
+            per_pixel: units_per_pixel(scale)?,
+        })
+    };
+    // The columns to read back: the layer's own channels in readout order,
+    // with a column bound to two channels asked for once. The probe's
+    // projection is exactly this list, so the shell cannot come to hold a
+    // column no channel of this plot encodes.
+    let mut read: Vec<String> = Vec::new();
+    for (_, column) in &layer.channels {
+        if !read.iter().any(|c| c == column) {
+            read.push(column.clone());
+        }
+    }
+    Some(NearestProbe {
+        x: axis(Channel::X, p.x - plot.rect.x)?,
+        y: axis(Channel::Y, p.y - plot.rect.y)?,
+        read,
+        radius: HOVER_RADIUS,
+    })
+}
+
+/// How many data units one logical pixel spans on a scale, or `None` for a
+/// scale that cannot answer.
+///
+/// Linear only, and that is a real limit rather than an oversight. A
+/// [`Scale::Band`] has no pixels-per-unit at all. A [`Scale::Time`] does, but
+/// its column is a DuckDB `TIMESTAMP` and the arithmetic in the probe's query
+/// is over the column itself, so a time axis needs an epoch conversion in the
+/// emitted SQL that this build does not write — a hover over a time axis
+/// therefore reads nothing rather than reading something wrong.
+fn units_per_pixel(scale: &Scale) -> Option<f64> {
+    let Scale::Linear {
+        domain_min,
+        domain_max,
+        range_start,
+        range_end,
+    } = scale
+    else {
+        return None;
+    };
+    let range = range_end - range_start;
+    let domain = domain_max - domain_min;
+    (range.abs() > f64::EPSILON && domain.abs() > f64::EPSILON).then_some(domain / range)
+}
+
+/// The readout panel: what the mark under the pointer is, beside the pointer.
+///
+/// **Native egui chrome, not raster ink**, and the two consequences are the
+/// reason. It carries an accesskit node per line, so what a reader sees is
+/// what a headless test reads — `a_hover_on_the_hero_map_names_the_coordinate_pair`
+/// asks the accessibility tree for the exact line. And it is absent from a
+/// chart-only PNG export, which is correct: an export is the picture, and the
+/// picture does not include where somebody's pointer was.
+///
+/// Drawn in an [`egui::Area`] rather than inside the pane's own `Ui` because
+/// the pane clips to its content rect and a panel beside a mark near the pane's
+/// edge would be cut in half by it. `constrain` keeps it inside the window
+/// instead, which is the bound that matters.
+///
+/// The frame is the workbench's own overlay treatment plus the shadow
+/// [`Elevation::Overlay`] declares — read off the design system rather than
+/// typed here, so a change to what an overlay looks like moves this with
+/// everything else.
+fn hover_readout(ctx: &egui::Context, readout: &HoverReadout, mode: Mode) {
+    let dark = mode.is_dark();
+    let sem = semantic(dark);
+    let mut frame = chrome::overlay_frame(mode)
+        .inner_margin(egui::Margin::symmetric(
+            spacing::SPACE_4 as i8,
+            spacing::SPACE_3 as i8,
+        ))
+        .corner_radius(radius::CONTROL);
+    if let Some(shadow) = Elevation::Overlay.shadow(dark) {
+        frame = frame.shadow(egui::epaint::Shadow {
+            offset: [shadow.x as i8, shadow.y as i8],
+            blur: shadow.blur as u8,
+            spread: 0,
+            color: chrome::colour(shadow.colour),
+        });
+    }
+    egui::Area::new(egui::Id::new("chart-hover-readout"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(readout.at + egui::Vec2::splat(HOVER_READOUT_OFFSET))
+        .constrain(true)
+        .interactable(false)
+        .fade_in(false)
+        .show(ctx, |ui| {
+            frame.show(ui, |ui| {
+                ui.vertical(|ui| {
+                    for line in &readout.lines {
+                        ui.label(
+                            egui::RichText::new(line).color(chrome::colour(sem.text.primary)),
+                        );
+                    }
+                });
+            });
+        });
 }
 
 /// `raster` moved up by `by` — the page as the view with that offset draws it.
@@ -877,7 +1152,6 @@ impl Item<ChartDoc> for ChartItem {
         // The raster and, when any plot calls for one, the legend band beside
         // it — OUTSIDE the plot rect, in the chart's margin, by layout rather
         // than by hope.
-        let overlay_on = doc.overlay;
         let ctx = ui.ctx().clone();
         let textured = doc.canvas_texture().is_some();
         let mut legend_rect = None;
@@ -972,11 +1246,17 @@ impl Item<ChartDoc> for ChartItem {
                     let mut painter = EguiOverlay::new(ui, page);
                     painter.fill_rect(r, Color::from_token(tokens.brush_fill));
                     painter.stroke_rect(r, Color::from_token(tokens.brush_border), 1.0);
-                } else if overlay_on && hovered {
+                } else if hovered {
                     // The hover crosshair — the chart's own ink layer, matched
                     // to the raster's palette rather than the chrome's, and
                     // bounded by the plot the pointer is in. See
                     // `crosshair_segments`.
+                    //
+                    // Unconditional. It used to be armed by a *hover overlay*
+                    // checkbox in the controls rail, which is gone: a control
+                    // whose whole effect was to stop the chart answering the
+                    // pointer is not a preference, and the first screen had it
+                    // sitting unexplained beside the sliders.
                     if let Some((p, page)) = pointer.zip(page) {
                         if let Some(segments) = crosshair_segments(&doc.composed.plots, p) {
                             let focus = match mode {
@@ -1011,6 +1291,14 @@ impl Item<ChartDoc> for ChartItem {
             }
         });
         doc.legend_rect = legend_rect;
+
+        // The readout, outside the horizontal so its own layer is placed
+        // against the window rather than against the raster's row. Drawn
+        // whether or not there is a device behind the document: it is egui
+        // chrome, and a GPU-free window is exactly where it is read from.
+        if let Some(readout) = &self.readout {
+            hover_readout(ui.ctx(), readout, mode);
+        }
     }
 }
 
@@ -1279,6 +1567,13 @@ mod tests {
             x_column: Some("x".to_string()),
             y_column: Some("y".to_string()),
             sample: None,
+            hover: Some(HoverLayer {
+                mark: 0,
+                channels: vec![
+                    (Channel::X, "x".to_string()),
+                    (Channel::Y, "y".to_string()),
+                ],
+            }),
         }
     }
 
