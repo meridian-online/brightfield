@@ -837,20 +837,20 @@ fn plot_for_x_column<'a>(
 /// actually drawn into `scene` — [`Composed::scene`]'s glyph runs, not a
 /// second render.
 ///
-/// `render_x_axis` (`brightfield-render`'s `axis` module) draws every tick
+/// `render_x_axis` (`brightfield-render`'s `axis` module) draws each tick's
 /// label at ONE shared y right under the axis line
 /// (`plot_y_end() + TICK_LENGTH + LABEL_SIZE`) and, when the tile has an x
 /// title, that title strictly further down still
-/// (`x_title_baseline` adds `TITLE_SIZE + TITLE_GAP` on top) — so among
-/// everything a tile draws below its own axis line, the row nearest the line
-/// is always the tick labels. That is how this tells `day`'s tick-label row
-/// apart from its `"day"` axis title without needing either private offset
-/// constant: it keeps only the runs in [`plot`]'s own rect, below its axis
-/// line by more than half a label's cap height — clearing the y-axis's own
-/// occasional stray label (a tick landing exactly on `plot_y_end` draws its
-/// row-label `LABEL_SIZE / 3` below the line, which is short of half) while
-/// staying well under the tick-label row's own, much larger offset — then
-/// takes whichever surviving y is smallest.
+/// (`x_title_baseline` adds `TITLE_SIZE + TITLE_GAP` on top) — so of what a
+/// tile draws below its own axis line, the row nearest the line is the tick
+/// labels rather than the title. That is how this tells `day`'s tick-label
+/// row apart from its `"day"` axis title without needing either private
+/// offset constant: it keeps just the runs in [`plot`]'s own rect, below its
+/// axis line by more than half a label's cap height — clearing the y-axis's
+/// own occasional stray label (a tick landing exactly on `plot_y_end` draws
+/// its row-label `LABEL_SIZE / 3` below the line, which is short of half)
+/// while staying well under the tick-label row's own, much larger offset —
+/// then takes whichever surviving y is smallest.
 ///
 /// Each surviving run is matched to the nearest of `ticks`' own candidate
 /// positions (`render_x_axis`'s `TextAnchor::Middle`, the same technique
