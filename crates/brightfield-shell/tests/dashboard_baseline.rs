@@ -852,7 +852,7 @@ fn rect_inside(inner: Rect4, outer: Rect4) -> bool {
         && inner.3 <= outer.3 + 0.5
 }
 
-/// Every rect `render_x_axis` (`brightfield-render`'s `axis` module) drew for
+/// The rects `render_x_axis` (`brightfield-render`'s `axis` module) drew for
 /// `plot`'s x axis, read straight out of the real composed `scene` —
 /// [`Composed::scene`]'s glyph runs, not a second render — rather than
 /// assumed from which branch it is expected to have taken: the tick labels
@@ -862,7 +862,7 @@ fn rect_inside(inner: Rect4, outer: Rect4) -> bool {
 ///
 /// A run's own [`vello_encoding::GlyphRun::font_size`] is what tells a title
 /// apart from a tick label — the SAME field `render_x_axis` sets when it
-/// draws each (`TITLE_SIZE` for the title, `size` for every tick label,
+/// draws each (`TITLE_SIZE` for the title, `size` for a tick label,
 /// whichever way it drew them), rather than the two being told apart by
 /// where they landed. A ROTATED run's rect runs the other way from a
 /// horizontal one: its OWN glyph-height footprint (`size` wide) is centred on
@@ -1048,12 +1048,12 @@ fn site_readings_baseline_window() -> (f32, f32) {
 /// be read by reference: `day`'s tile at whatever width THIS window's
 /// constrained `hconcat` resolved for it, not [`data_file::open`]'s own
 /// one-shot, UNCONSTRAINED composition — which is what this card's round 2
-/// read, and which is always `crate::dashboard::COLUMN_TILE_WIDTH` (380
+/// read, and which sits at `crate::dashboard::COLUMN_TILE_WIDTH` (380
 /// points) regardless of window, because an unconstrained `hconcat` sizes
 /// each item to its OWN declared weight rather than sharing a box out. The
-/// live app never lays this dashboard out unconstrained —
-/// `ChartDoc::reflow_to` always hands `LiveDashboard::set_viewport` a real
-/// box first.
+/// live app does not lay this dashboard out unconstrained — `ChartDoc::reflow_to`
+/// hands `LiveDashboard::set_viewport` a real box first, the box the window's
+/// own arrangement gave the chart pane.
 fn site_readings_app_at(size: (f32, f32)) -> brightfield_shell::window::MeridianApp {
     let path = site_readings();
     let chosen = path.to_str().expect("utf-8 fixture path");
