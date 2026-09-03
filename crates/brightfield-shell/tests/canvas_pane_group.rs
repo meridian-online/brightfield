@@ -1355,8 +1355,8 @@ fn landing_of(
 fn a_press_over_no_pane_of_the_group_is_over_no_page() {
     let reference = settled(SCREEN);
     let panes = reference.canvas_panes();
-    let map = panes.pane("map").expect("the map pane drew").clone();
-    let columns = panes.pane("columns").expect("the column pane drew").clone();
+    let map = *panes.pane("map").expect("the map pane drew");
+    let columns = *panes.pane("columns").expect("the column pane drew");
     let page = reference
         .chart_doc()
         .raster_rect
