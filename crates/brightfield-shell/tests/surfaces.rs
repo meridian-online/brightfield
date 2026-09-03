@@ -143,23 +143,6 @@ fn move_to(x: f32, y: f32) -> Vec<egui::Event> {
     vec![egui::Event::PointerMoved(egui::pos2(x, y))]
 }
 
-/// One frame that moves the pointer and clicks the primary button there — the
-/// same event triple `capture::parse_script` synthesises for a `{"click":[x,y]}`
-/// line.
-fn click_at(x: f32, y: f32) -> Vec<egui::Event> {
-    let pos = egui::pos2(x, y);
-    let mut events = move_to(x, y);
-    for pressed in [true, false] {
-        events.push(egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        });
-    }
-    events
-}
-
 /// A rectangle of a capture, in pixels. Half-open: `x0..x1`, `y0..y1`.
 #[derive(Clone, Copy, Debug)]
 struct Region {
@@ -236,22 +219,19 @@ fn region_diff(a: &image::RgbaImage, b: &image::RgbaImage, r: Region) -> Option<
     })
 }
 
-/// The rects the chart shell's layout produces at the window size it asks for:
-/// the chart pane's content box, and the overlay checkbox in the controls rail.
+/// The chart pane's content box, as the chart shell's layout produces it at
+/// the window size it asks for.
 ///
 /// A real layout pass over a **headless** document — no GPU, no capture — run
 /// for the same two frames `capture_png` runs before the one it photographs, so
-/// the rects are the settled ones. This is how the pixel test below aims: the
-/// checkbox coordinate was `(800.0, 125.0)`, pinned against a layout nothing
-/// derived it from. It landed, but it would have gone on being green while
-/// clicking empty rail the first time the rail's share or a row height moved.
-fn chart_layout(mode: Mode) -> (egui::Rect, egui::Rect) {
-    let app = settled_chart_app(mode);
-    (
-        app.chart_viewport().expect("the chart pane drew"),
-        app.overlay_checkbox()
-            .expect("the controls rail drew its overlay checkbox"),
-    )
+/// the rect is the settled one. This is how the pixel test below aims, rather
+/// than at a coordinate pinned against a layout nothing derived it from: such a
+/// coordinate goes on being green while it points at empty rail, the first time
+/// a share or a row height moves.
+fn chart_layout(mode: Mode) -> egui::Rect {
+    settled_chart_app(mode)
+        .chart_viewport()
+        .expect("the chart pane drew")
 }
 
 /// A chart-view window run through a real layout pass over a **headless**
@@ -375,8 +355,8 @@ fn press(key: egui::Key, shift: bool) -> Vec<egui::Event> {
 }
 
 /// The composed window: the title band, the locator band, the navigator rail,
-/// the canvas with its Grid/Chart toggle, the inspector rail, the ledger rail
-/// and the status band, in one frame off one fixture with no scripted input.
+/// the canvas, the inspector rail, the ledger rail and the status band, in one
+/// frame off one fixture with no scripted input.
 ///
 /// # The regression this pair is here for
 ///
@@ -635,38 +615,45 @@ fn protocol_cte_light_surface() {
 fn protocol_cte_dark_surface() {
     cte_surface(Mode::Dark, "protocol_cte_dark");
 }
-/// The overlay toggle still reaches the canvas across the dock.
+
+/// The hover crosshair still reaches the canvas across the dock.
 ///
-/// The chart pane and the controls rail are two `egui_tiles` panes now, and the
-/// flag one writes and the other reads lives on the document between them. That
-/// is exactly the kind of wiring a re-expression can drop in silence: the
-/// checkbox would still tick, the crosshair would simply never appear again, and
-/// no baseline in this file would notice — none of the five moves a pointer.
+/// The chart pane and the controls rail are two `egui_tiles` panes, and what
+/// the pointer does to the chart is drawn by the first over a raster the
+/// document between them owns. That is exactly the kind of wiring a
+/// re-expression can drop in silence: the crosshair would simply never appear
+/// again, and no baseline in this file would notice — none of the seven moves a
+/// pointer.
 ///
-/// Three captures, compared over a rectangle **strictly inside the chart raster**
-/// so the controls rail's own change of state is out of frame:
+/// Two captures, compared over a rectangle **strictly inside the chart raster**
+/// so nothing the rail does is in frame:
 ///
 /// - pointer nowhere (the baseline capture's input),
-/// - pointer over the chart, overlay armed as it boots,
-/// - the "hover overlay" checkbox clicked off, *then* the pointer over the chart.
+/// - pointer over the chart.
 ///
-/// The first two must differ — that is the crosshair being drawn. The first and
-/// third must be identical — that is the toggle actually suppressing it. Light
-/// only: the plumbing is mode-independent and a dark twin would cost three more
+/// They must differ, and that difference is the crosshair being drawn. Light
+/// only: the plumbing is mode-independent and a dark twin would cost two more
 /// GPU captures to re-photograph the same wire.
 ///
-/// Both rectangles and the click are derived from a headless layout pass
-/// ([`chart_layout`]) rather than typed in, and the click is *verified to have
-/// landed* before the chart region is read: a miss and a broken seam produce the
-/// same failure otherwise, and the message would have to guess between them.
+/// # What this test no longer does
+///
+/// It used to take a **third** capture with a *hover overlay* checkbox clicked
+/// off, and assert that one identical to the idle one. There is no such
+/// checkbox: the chart answers the pointer, with nothing to arm. The rail-width
+/// claim that click carried incidentally — that a settled inspector rail is
+/// [`arrangement::INSPECTOR_RAIL_WIDTH`] across and not its floor — is asserted
+/// directly in `tests/chart_contract.rs` by
+/// `the_settled_inspector_rail_is_as_wide_as_it_declares`, which reads the
+/// drawn rect rather than inferring it from where a click landed.
+///
+/// The rectangle is derived from a headless layout pass ([`chart_layout`])
+/// rather than typed in.
 #[test]
-fn the_overlay_toggle_still_reaches_the_chart_pane() {
-    let (chart, checkbox) = chart_layout(Mode::Light);
+fn the_hover_crosshair_still_reaches_the_chart_pane() {
+    let chart = chart_layout(Mode::Light);
     // Strictly inside the Vello raster, clear of the pane's frame, its header
     // band and the rail beside it.
     let inside_chart = Region::inside(chart, 20.0);
-    // The checkbox and its label, and nothing else in the rail.
-    let on_checkbox = Region::inside(checkbox, 1.0);
     // The middle of the chart, so both crosshair lines cross `inside_chart`.
     let over_chart = chart.center();
 
@@ -676,47 +663,10 @@ fn the_overlay_toggle_still_reaches_the_chart_pane() {
         "overlay_on",
         vec![move_to(over_chart.x, over_chart.y)],
     );
-    // A settle frame before the click, and it is load-bearing rather than
-    // padding. `capture::run_ui_frames` runs one frame before the script, and
-    // egui resolves "which widget is under the pointer" against the *previous*
-    // frame's widget rects — so a click on the script's first frame is hit-
-    // tested against a layout drawn before the font atlas was installed. The
-    // aim comes from `chart_layout`, which is settled; measured on this window
-    // the two answers differ by six points vertically, and the aim landed
-    // exactly on the unsettled rect's bottom edge and was given to the pane
-    // underneath.
-    let toggled_off = shell_capture(
-        Mode::Light,
-        "overlay_off",
-        vec![
-            Vec::new(),
-            click_at(checkbox.center().x, checkbox.center().y),
-            move_to(over_chart.x, over_chart.y),
-        ],
-    );
-
-    // The click landed on the checkbox and changed it. Asserted first, and over
-    // the checkbox alone, so that the two assertions below mean exactly one
-    // thing each: a missed click cannot masquerade as a broken overlay seam.
-    assert!(
-        region_diff(&idle, &toggled_off, on_checkbox).is_some(),
-        "the checkbox at {:?} looks identical before and after being clicked at \
-         {:?} — the click did not land on it, so this test proves nothing about \
-         the overlay seam",
-        checkbox,
-        checkbox.center(),
-    );
 
     assert!(
         region_diff(&idle, &hovered, inside_chart).is_some(),
-        "hovering the chart drew nothing — the overlay seam no longer reaches the pane"
-    );
-    assert_eq!(
-        region_diff(&idle, &toggled_off, inside_chart),
-        None,
-        "the crosshair drew inside the chart with the overlay checkbox off (and \
-         the click did land — see above), so the flag the rail writes is not the \
-         flag the chart pane reads"
+        "hovering the chart drew nothing — the crosshair no longer reaches the pane"
     );
 }
 
@@ -748,7 +698,7 @@ fn the_overlay_toggle_still_reaches_the_chart_pane() {
 /// `plots[0]` rather than to the plot under the pointer passes one of them.
 /// Then the departure: with the pointer gone, both plots return to idle.
 ///
-/// Light only, for the reason [`the_overlay_toggle_still_reaches_the_chart_pane`]
+/// Light only, for the reason [`the_hover_crosshair_still_reaches_the_chart_pane`]
 /// gives: the geometry is mode-independent and a dark twin would cost four more
 /// GPU captures to re-photograph the same arithmetic.
 #[test]

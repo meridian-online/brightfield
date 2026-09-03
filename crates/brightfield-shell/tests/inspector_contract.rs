@@ -166,31 +166,6 @@ fn focusing_the_inspector_itself_leaves_the_last_real_selection_standing() {
     );
 }
 
-/// AC5: the checkbox draws — with area to click — whether or not a pane is
-/// selected, because the whole-pane empty state this pane declares is gated
-/// on `doc.is_empty()`, not on selection. Proven at the document level,
-/// without a GPU, so the pixel-tier `the_overlay_toggle_still_reaches_the_
-/// chart_pane` (in `surfaces.rs`) is proving the seam still reaches the
-/// canvas, not proving the checkbox is there to click.
-#[test]
-fn the_hover_overlay_checkbox_draws_whether_or_not_anything_is_selected() {
-    let (app, _ctx) = settled();
-    assert_eq!(
-        app.inspector_selection(),
-        None,
-        "nothing was focused, so the panel's own empty state applies to the \
-         selection half"
-    );
-    let checkbox = app
-        .overlay_checkbox()
-        .expect("the hover-overlay checkbox drew even with nothing selected");
-    assert!(
-        checkbox.width() > 0.0 && checkbox.height() > 0.0,
-        "the checkbox drew with no area to click: {checkbox:?}"
-    );
-    assert!(app.chart_doc().overlay, "the overlay starts armed");
-}
-
 /// AC2's whole-pane gate, over the pane that actually ships rather than over
 /// the registry's dormant `ControlsPane`: no dashboard open means the shell
 /// draws the empty state instead of calling `ui`, and a real dashboard means

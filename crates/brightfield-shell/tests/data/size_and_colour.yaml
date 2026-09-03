@@ -1,0 +1,25 @@
+meta:
+  title: A dot mark encoding both colour and size
+  description: |
+    A test fixture for the hover readout, not a shipped example. It exists
+    because nothing in examples/ binds a `size:` channel to a column, so
+    without it the readout's size line is the one channel of the four no test
+    drives.
+
+    Deliberately in tests/data/ rather than in examples/: examples/ is a
+    shipped corpus with its own exercise gate and its own baselines, and this
+    spec is here to be hovered, not to be looked at.
+data:
+  points:
+    - { weight: 10, height: 20, group: A, span: 3 }
+    - { weight: 30, height: 55, group: B, span: 9 }
+    - { weight: 50, height: 90, group: C, span: 6 }
+plot:
+  - mark: dot
+    data: { from: points }
+    x: weight
+    y: height
+    fill: group
+    size: span
+width: 640
+height: 480
