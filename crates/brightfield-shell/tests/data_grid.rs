@@ -470,19 +470,14 @@ fn a_columns_width_covers_its_widest_value_not_just_its_header() {
     let (col, header, _) = drawn
         .header_cells
         .iter()
-        .find(|(_, rect, _)| {
-            #[allow(clippy::cast_possible_truncation)]
-            let x = cell.min.x as f32 + 1.0;
-            rect.x_range().contains(x)
-        })
+        .find(|(_, rect, _)| rect.x_range().contains(cell.min.x + 1.0))
         .unwrap_or_else(|| {
             panic!(
                 "the cell drew at {cell:?}, in none of the columns {:?}",
                 drawn.header_cells
             )
         });
-    #[allow(clippy::cast_possible_truncation)]
-    let cell_width = cell.width() as f32;
+    let cell_width = cell.width();
     assert!(
         cell_width <= header.width(),
         "the value {WIDEST:?} drew {cell_width} points wide in a column {}          points wide, so the reader sees it cut off — column {col} was sized          from something other than its widest held value",
