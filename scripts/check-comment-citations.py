@@ -1821,6 +1821,35 @@ def self_test() -> int:
     # `tests/`-file half cannot pass through the `#[cfg(test)]` half instead.
     # The short and method pools are what the resolver\'s two filters refuse:
     # deleting a filter turns exactly the case built from that pool green.
+    def split_fns(text: str) -> tuple[set[str], set[str], set[str]]:
+        """(free with `_`, free one-word, method with `_`) among this text's `fn`s.
+
+        Written out here rather than called through free_fn_names(), and for
+        the same reason the QUANTIFIER words are spelled a second time: a pool
+        derived from the thing under test is emptied by the very edit it exists
+        to catch. Derive the METHOD pool through free_fn_names() and deleting
+        the method exclusion empties it, so the run ends in "could not derive"
+        instead of the case that was supposed to redden — a louder noise
+        carrying less information, and one that says nothing about whether the
+        case detects.
+        """
+        spans = [
+            (m.end(), _brace_match_end(text, m.end())) for m in IMPL_BLOCK.finditer(text)
+        ]
+        free_named: set[str] = set()
+        free_word: set[str] = set()
+        methods: set[str] = set()
+        for m in FN_DEFN_ANY.finditer(text):
+            n = m.group(1)
+            if any(a <= m.start() < b for a, b in spans):
+                if "_" in n:
+                    methods.add(n)
+            elif "_" in n:
+                free_named.add(n)
+            else:
+                free_word.add(n)
+        return free_named, free_word, methods
+
     cfg_free: set[str] = set()
     cfg_short: set[str] = set()
     cfg_method: set[str] = set()
@@ -1832,14 +1861,14 @@ def self_test() -> int:
         text = f.read_text(errors="replace")
         for m in CFG_TEST_MOD.finditer(text):
             body = text[m.end():_brace_match_end(text, m.end())]
-            free = free_fn_names(body)
-            cfg_free |= {n for n in free if "_" in n}
-            cfg_short |= {n for n in free if "_" not in n}
-            cfg_method |= {n for n in FN_DEFN_ANY.findall(body) if n not in free and "_" in n}
-        if f.parent.name == "tests" and f.parent.parent.parent.name == "crates":
-            free = free_fn_names(text)
-            tests_free |= {n for n in free if "_" in n}
-            tests_short |= {n for n in free if "_" not in n}
+            named, word, methods = split_fns(body)
+            cfg_free |= named
+            cfg_short |= word
+            cfg_method |= methods
+        if is_integration_test(f):
+            named, word, _methods = split_fns(text)
+            tests_free |= named
+            tests_short |= word
 
     def fixture(pool: set[str]) -> str | None:
         """A name from `pool` rule D would read as an ordinary citation.
