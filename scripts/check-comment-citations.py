@@ -30,7 +30,8 @@ WHAT IS CHECKED (changed comment lines only, `origin/main...HEAD`, read at HEAD)
        which is the gap this closes.
     D  COMPLETENESS — a quantifier that asserts a completeness (only, always,
        every, never, nothing, none, all, everything, anything) in the same
-       sentence as a named symbol, where the comment names no test. A, B and C
+       sentence as a named symbol, where THAT SENTENCE names no test that
+       resolves. A, B and C
        ask whether a cited thing is where the comment says it is; D asks
        whether a claim about ALL of something has anything holding it. It
        cannot judge the claim — no gate can — so it asks for the citation that
@@ -52,6 +53,15 @@ WHAT IS CHECKED (changed comment lines only, `origin/main...HEAD`, read at HEAD)
        lines and list markers break the join: two bullets are two claims, and
        joining them would pair one item's quantifier with the next item's
        symbol. A claim is reported once, at the line its quantifier is on.
+
+       A sentence, not a PARAGRAPH either — and that is the other half. The
+       citation that discharges a claim has to sit in the sentence the
+       quantifier is in. Read across the paragraph, as this did until the
+       sentence rule, a test named about one claim silenced a different claim
+       three lines away that it says nothing about. The two readings are
+       deliberately different sizes and STATEMENT_END records why: a claim is
+       read from a `;`-split clause, a citation from the whole sentence the
+       clause sits in.
 
 WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
     - Findings land on ADDED comment lines in the diff. Rule D reads the
@@ -78,15 +88,25 @@ WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
       no citation gate would ever have caught it — that needs a reviewer.
     - Rule D does not read the test it asks for. A comment that names one is
       past it, whatever the test asserts. It buys a reader a place to look and
-      an author a moment of doubt, not a proof. Naming a test anywhere in the
-      surrounding paragraph is enough, which is generous in the direction that
-      reduces what D reports. A NAMED test has to RESOLVE, though — see
-      cites_test() for what counts and in which order — which is what closed
-      the shape that shipped false: a name whose own spelling merely LOOKED
-      like a test (`foo_test`) used to discharge a claim on its spelling
-      alone, whether or not anything by that name existed, and a bare word
-      `test` sitting elsewhere in the same paragraph does not excuse a
-      specific name that fails to resolve.
+      an author a moment of doubt, not a proof. What it does insist on is that
+      the name RESOLVE and that it sit in the claim's own sentence — see
+      cites_test() for what counts and in which order. Three shapes shipped
+      false through the looser readings this replaces, and each is now a named
+      case in --self-test: a name whose own spelling merely LOOKED like a test
+      (`foo_test`) discharged a claim on its spelling alone, whether or not
+      anything by that name existed; a real citation in one sentence
+      discharged a claim in another; and
+
+          /// [`kind_options`] is the only thing that enumerates kinds; the
+          /// `the_hero_weight_is_the_pane_share` test holds that.
+
+      went silent over a function that does not exist, because the fake name
+      carries no `test` component of its own and the bare word `test` beside
+      it forgave the paragraph. What still forgives, and it is the residue
+      this leaves rather than an oversight: a sentence carrying the bare word
+      `test` and NO backticked snake_case name at all — "…and that is tested",
+      over a CamelCase subject — has no name to resolve, so it discharges.
+      Name the test and that gap closes itself.
     - The workspace-wide resolver has a residual COLLISION risk of its own,
       in the opposite direction from the defect above: it is a name lookup
       with no notion of RELEVANCE, so a name that resolves ANYWHERE in the
@@ -96,12 +116,14 @@ WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
       `za`" — went silent because `za` is ALSO a `#[cfg(test)]` helper's name
       in an unrelated file, and a comment describing a trait method shared by
       many structs resolves through whichever ONE of them happens to be a
-      test fixture. The underscore requirement in cfg_test_fn_names() closes
-      the worst of this (a bare one-or-two-syllable word colliding by pure
-      chance), but does not close a genuine, multi-word production name that
-      a test fixture also happens to implement. This is the same shape as
-      rule A's `defines()` — an existence check, not a relevance check — just
-      wider, because the enumeration it resolves against is wider.
+      test fixture. Two filters in resolvable_test_names() close the worst of
+      it — a name with no underscore never resolves, in either the `tests/`
+      or the `#[cfg(test)]` half, and a METHOD never resolves at all — but
+      neither closes a genuine, multi-word production name that a test
+      fixture also happens to define as a free function. This is the same
+      shape as rule A's `defines()` — an existence check, not a relevance
+      check — just wider, because the enumeration it resolves against is
+      wider.
     - Rule D's RECALL is PARTIAL. It was measured against the comment lines a
       review wave in this repo made an author delete, and the measurement is in
       the commit that landed the block reader. What that measurement leaves
@@ -116,7 +138,8 @@ WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
           resolve, and treating every backticked word as a symbol was measured
           on this tree: it adds sentences about parameters and literal values,
           which is the shape that gets a gate switched off.
-        * the paragraph names a test, which is the exemption above.
+        * the claim's own sentence names a test that resolves, which is the
+          exemption above.
         * the diff adds the SYMBOL half of a wrapped claim and leaves the
           quantifier where it already was. Reported at the quantifier's line
           and admitted on it, that claim is old debt by this gate's reckoning
@@ -138,7 +161,9 @@ ESCAPE HATCH
     A claim about code outside this repo (upstream libraries, a sibling repo)
     cannot resolve here and must be registered in ACKNOWLEDGED with a reason,
     not silently skipped. Writing the reason is the point. The registry keys on
-    the name as the comment writes it — a symbol for A, a package for C.
+    the name as the comment writes it and each entry carries the KIND of thing
+    it stands in for — a symbol for A, a package for C, a test for D. An entry
+    excuses the rule it was registered for and no other; see Ack.
 
 USAGE
     scripts/check-comment-citations.py             # gate the diff vs origin/main
@@ -157,19 +182,58 @@ from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parent.parent
 
+class Ack(NamedTuple):
+    """One registered external name: which RULE may spend it, and why it is absent.
+
+    The kind is not decoration. Rule D discharges a completeness claim when the
+    claim's sentence names a TEST, and an entry registered here for rule A's or
+    rule C's purpose is not a test — it is a symbol or a package this tree does
+    not contain. Read as one flat set, `queryFieldInfo` — a mosaic function
+    registered so that prose ABOUT mosaic resolves — discharged a completeness
+    claim in crates/brightfield-shell/tests/binned_histogram.rs as if it were
+    the measurement holding it, while the three names that sentence actually
+    cites resolve to nothing. So each entry says which rule may spend it:
+
+      symbol   an item outside this repo, for rule A and for the symbol half of
+               a claim. Never a citation of a test.
+      package  a package this tree does not build against, for rule C.
+      test     a test outside this workspace. The only kind rule D accepts.
+    """
+
+    kind: str
+    reason: str
+
+
 # Symbols and packages named in comments that this repo does not contain. Each
-# needs a reason: the point of the registry is that "it's external" gets
-# written down rather than assumed.
-ACKNOWLEDGED: dict[str, str] = {
-    "markPlotSpec": "mosaic/vgplot source; this tree vendors only the YAML spec corpus",
-    "channelOption": "mosaic/vgplot source, same reason",
-    "queryFieldInfo": "mosaic/vgplot source, same reason",
-    "isColorChannel": "mosaic/vgplot source, same reason",
-    "literalToSQL": "mosaic sql package, not vendored",
-    "egui_code_editor": "evaluated against the spec editor and rejected, so it is "
-                        "deliberately absent from Cargo.lock; the comparison is in "
-                        "crates/brightfield-shell/src/editor.rs",
+# needs a reason — the point of the registry is that "it's external" gets
+# written down rather than assumed — and a KIND, because an entry excuses the
+# rule it was registered for and not every rule at once.
+ACKNOWLEDGED: dict[str, Ack] = {
+    "markPlotSpec": Ack(
+        "symbol", "mosaic/vgplot source; this tree vendors only the YAML spec corpus"
+    ),
+    "channelOption": Ack("symbol", "mosaic/vgplot source, same reason"),
+    "queryFieldInfo": Ack("symbol", "mosaic/vgplot source, same reason"),
+    "isColorChannel": Ack("symbol", "mosaic/vgplot source, same reason"),
+    "literalToSQL": Ack("symbol", "mosaic sql package, not vendored"),
+    "egui_code_editor": Ack(
+        "package",
+        "evaluated against the spec editor and rejected, so it is deliberately "
+        "absent from Cargo.lock; the comparison is in "
+        "crates/brightfield-shell/src/editor.rs",
+    ),
 }
+
+
+def acknowledged(name: str, kind: str) -> bool:
+    """Is `name` registered for THIS rule's purpose?
+
+    Membership alone is not an answer. A name registered as an external SYMBOL
+    answers rule A and says nothing about whether a test holds a claim, which
+    is the distinction rule D turns on.
+    """
+    entry = ACKNOWLEDGED.get(name)
+    return entry is not None and entry.kind == kind
 
 # An item definition. The leading `\b` is load-bearing: without it `retype only`
 # in a doc comment resolves as a definition of `only`, because `type` matches
@@ -257,6 +321,15 @@ TICKED_SPAN = re.compile(r"`[^`]*`")
 # rather than quietly widening it.
 SENTENCE_END = re.compile(r"(?<=[.!?;])\s+")
 
+# The same split for the DISCHARGE only, and deliberately without the `;`. The
+# two readings are different sizes on purpose. A claim is read from the smaller
+# unit, because pairing one clause's quantifier with another clause's symbol is
+# the false positive this rule can least afford. A citation is read from the
+# whole sentence, because "X is the only thing that does Y; `t` holds that" is
+# one statement to a reader, and the semicolon is where this repo habitually
+# puts the citation — including in the comment that shipped false.
+STATEMENT_END = re.compile(r"(?<=[.!?])\s+")
+
 # A comment line that begins a new PARAGRAPH rather than continuing the previous
 # line's sentence: a list item. An empty comment line does the same and is
 # handled in segments(). Rule D joins wrapped lines, and a list is the shape
@@ -294,6 +367,18 @@ TEST_WORD = re.compile(r"\b(?:tests?|tested|testing)\b", re.I)
 # general, it is a specific, checkable name.
 LOOKS_NAMED = re.compile(r"(?:^|_)test(?:_|$)", re.I)
 
+# A BACKTICKED token spelled the way Rust spells a test function: lowercase,
+# with at least one underscore. LOOKS_NAMED above only catches a name with the
+# word `test` in its own spelling, and the name that shipped false did not have
+# one — `the_hero_weight_is_the_pane_share`, in a sentence whose bare word
+# `test` then forgave it. A snake_case name a comment puts in backticks is the
+# author asserting "this is code"; in the sentence carrying a completeness
+# claim it is a citation, so it has to resolve, and the bare word beside it
+# does not stand in for it. Uppercase is excluded because `AGGREGATE_COUNT_COL`
+# is a const rather than a test, and `::` is excluded with it because a path
+# names an item in the production tree.
+SNAKE_CITED = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+")
+
 # A test attribute: `#[test]`, `#[tokio::test]`, `#[test(...)]`. NOT `#[cfg(test)]`
 # — that marks a module of test-only code, and the helpers inside it are not
 # tests a comment can cite as its measurement.
@@ -305,13 +390,25 @@ TEST_FN_DEFN = re.compile(
     rf"{TEST_ATTR}\s*(?:#\[[^\]]*\]\s*)*(?:pub\s+)?(?:async\s+)?fn\s+({SYMBOL})"
 )
 
-# Any `fn`, anywhere, no attribute required — the enumeration
-# resolvable_test_names() reads a `tests/` file or a `#[cfg(test)]` module
-# through. A helper a test calls (`fn parse(yaml: &str) -> Spec`) carries no
-# attribute of its own, so TEST_FN_DEFN above never sees it, and a comment
-# that cites it by name is citing something a reader following it still
-# finds — which is what rule D asks a name to do.
+# Any `fn`, anywhere, no attribute required, METHOD or free function. Nothing
+# resolves against this pattern directly, because it reads far more than a
+# citation: free_fn_names() filters it down to the functions outside every
+# `impl` and `trait` block, and resolvable_test_names() filters that again to
+# the ones carrying an underscore. What survives both is the shape rule D
+# accepts — a helper an integration test calls (`fn collect_inputs(…)`) carries
+# no attribute of its own, so TEST_FN_DEFN above never sees it, and a comment
+# citing it by name points a reader at something they still find. Read
+# resolvable_test_names() for the enumeration itself; this is only its raw
+# material.
 FN_DEFN_ANY = re.compile(rf"\bfn\s+({SYMBOL})")
+
+# An `impl` or `trait` BLOCK, so its body can be excluded. Anchored to the
+# start of a line, which is where Rust puts the keyword and is what keeps
+# `-> impl Iterator<…> {` in a return type from being read as one.
+IMPL_BLOCK = re.compile(
+    r"(?m)^[ \t]*(?:pub(?:\([^)]*\))?\s+)?(?:default\s+)?(?:unsafe\s+)?"
+    r"(?:impl|trait)\b[^;{]*\{"
+)
 
 # `#[cfg(test)]`, immediately followed (allowing other attributes and `pub`)
 # by the `mod NAME {` it gates. Matched so the module's BODY can be found —
@@ -380,8 +477,33 @@ def _brace_match_end(text: str, start: int) -> int:
     return i
 
 
+def free_fn_names(text: str) -> set[str]:
+    """`fn` names defined OUTSIDE every `impl` and `trait` block in this text.
+
+    A METHOD is not a test. `#[test]` does not apply to one, `cargo test` does
+    not run one, and a comment writing `empty_state` is naming the production
+    field of that name far more often than a fixture type's method — which is
+    how one method on a `#[cfg(test)]` fixture in
+    crates/brightfield-workbench/src/item.rs discharged completeness claims in
+    three unrelated test files. So the impl and trait spans are found first and
+    every `fn` inside one is dropped.
+
+    The spans come from _brace_match_end(), a brace count rather than a parser.
+    Its failure mode here is one-directional: a `{` miscounted inside a string
+    literal makes a span too long, so a free function after it is mistaken for
+    a method and stops resolving, and the gate reports a claim it could have
+    discharged. That costs a reader a citation to write, not a false silence.
+    """
+    spans = [(m.end(), _brace_match_end(text, m.end())) for m in IMPL_BLOCK.finditer(text)]
+    return {
+        m.group(1)
+        for m in FN_DEFN_ANY.finditer(text)
+        if not any(s <= m.start() < e for s, e in spans)
+    }
+
+
 def cfg_test_fn_names(text: str) -> set[str]:
-    """`fn` names defined inside a `#[cfg(test)]` module in this file's text.
+    """FREE `fn` names defined inside a `#[cfg(test)]` module in this file's text.
 
     A helper beside the `#[test]` functions that call it — `fn cp(s: &str) ->
     ComponentPath` next to the tests that use it — is not itself attributed,
@@ -406,27 +528,50 @@ def cfg_test_fn_names(text: str) -> set[str]:
     names: set[str] = set()
     for m in CFG_TEST_MOD.finditer(text):
         end = _brace_match_end(text, m.end())
-        names |= {n for n in FN_DEFN_ANY.findall(text[m.end():end]) if "_" in n}
+        names |= {n for n in free_fn_names(text[m.end():end]) if "_" in n}
     return names
+
+
+def tests_dir_fn_names(text: str) -> set[str]:
+    """FREE `fn` names in an integration-test file, underscore-bearing only.
+
+    A `crates/*/tests/*.rs` file is test code all the way down — Cargo builds
+    each one as its own test binary — so a free function in it is a test helper
+    whether or not it carries an attribute, and a comment citing one by name
+    points a reader somewhere real. The same two filters as cfg_test_fn_names()
+    apply and for the same measured reasons: a method is not a test, and a
+    one-word name is not a citation.
+    """
+    return {n for n in free_fn_names(text) if "_" in n}
 
 
 _RESOLVABLE: set[str] | None = None
 
 
 def resolvable_test_names() -> set[str]:
-    """Every name a comment's cited test can resolve against.
+    """Every name a comment's cited test can resolve against. Three sets:
 
-    Wider than test_functions() in exactly one way: a function defined inside
-    a `#[cfg(test)]` module counts even when it carries no `#[test]` of its
-    own — a helper beside the tests that call it (`fn parse(yaml: &str) ->
-    Spec` next to the `#[test]` functions that use it). A `#[test]` function
-    under `tests/` is already in test_functions(), which scans every `.rs`
-    file in the workspace regardless of its directory, so nothing further is
-    added for that location — deliberately NOT every plain `fn` a `tests/`
-    file happens to define: measured on this tree, that reading resolves
-    ordinary short helper names (`category`, `path`) that also turn up
-    backticked as prose about a column or a filesystem path elsewhere in the
-    tree, and a citation gate that resolves those is reporting nothing.
+      1. a function carrying a `#[test]` of its own, anywhere in the workspace
+         — test_functions(), the narrowest and least ambiguous of the three.
+      2. a FREE, underscore-bearing function in a `crates/*/tests/*.rs` file —
+         tests_dir_fn_names(). An integration test's helper carries no
+         attribute, so (1) never sees it.
+      3. a FREE, underscore-bearing function in a `#[cfg(test)]` module —
+         cfg_test_fn_names().
+
+    Two things are excluded from (2) and (3), and each is the fix for a
+    measured false silence rather than a matter of taste:
+
+      * a METHOD, whatever module it sits in. See free_fn_names().
+      * a name with no underscore. This tree's integration-test files define
+        free functions called `nothing`, `parse`, `read`, `run`, `block`,
+        `column` and `key`, among many others of the same shape — ordinary
+        English words this repo backticks in prose about something else
+        entirely, and `block` alone discharged a completeness claim in
+        crates/brightfield-shell/tests/data_file.rs that cites it as a field
+        of a record. Rust's snake_case convention makes a multi-word name the
+        common case for a real helper, so the one-word name is given up rather
+        than resolved. --self-test pins this from both directions.
     """
     global _RESOLVABLE
     if _RESOLVABLE is None:
@@ -439,45 +584,64 @@ def resolvable_test_names() -> set[str]:
             except OSError:
                 continue
             names |= cfg_test_fn_names(text)
+            if f.parent.name == "tests" and f.parent.parent.parent.name == "crates":
+                names |= tests_dir_fn_names(text)
         _RESOLVABLE = names
     return _RESOLVABLE
 
 
 def cites_test(text: str) -> bool:
-    """Does this paragraph point a reader at a test THAT EXISTS?
+    """Does this SENTENCE point a reader at a test THAT EXISTS?
+
+    A sentence, not a paragraph. completeness_claims() calls this on the one
+    sentence the quantifier falls in, because a test named in a NEIGHBOURING
+    sentence holds nothing about this one — and reading the paragraph is what
+    let a real citation two sentences away discharge a claim it had never been
+    written about.
 
     Checked in this order:
 
       1. A name resolves against test_functions() — an individually
          `#[test]`-attributed function, this repo's narrowest and least
-         ambiguous enumeration — or ACKNOWLEDGED. Checked whether the name is
+         ambiguous enumeration — or ACKNOWLEDGED AS A TEST, which is a kind
+         the registry states and not mere membership of it. Checked whether the name is
          backticked or bare, this repo writes both; a descriptive test name
          (`a_band_click_resolves_to_a_structured_point_clause`) is long and
          specific enough that a bare mention is not read as ordinary prose.
       2. Failing that, a BACKTICKED name resolves against the wider
          resolvable_test_names() (a `tests/` helper or a `#[cfg(test)]`
          module function, neither individually `#[test]`-attributed) or
-         ACKNOWLEDGED. Backticks required here and not in (1): this
+         ACKNOWLEDGED AS A TEST. Backticks required here and not in (1): this
          enumeration is ~3x larger and its names are ordinary, short helper
          names — `path`, `apply` — that DO turn up as bare prose, and a bare
          scan against it exempted claims that never cited anything. A
          backtick is this repo's own convention for "this word is code," and
          restricts the match to what the author marked as one.
-      3. Failing both, a token whose own spelling LOOKS like a test's name
-         (LOOKS_NAMED — `foo_test`, `test_foo`) is a wrong citation, not an
-         absent one, and does not fall through to (4): a real word `test`
-         sitting elsewhere in the same paragraph does not excuse a specific,
-         broken name. This is the defect the change closes — a comment used
-         to discharge a claim by naming a test that did not exist, because
-         SOMETHING in the paragraph merely spelled like the word "test".
+      3. Failing both, this sentence carries a citation that did NOT resolve,
+         which is a wrong citation rather than an absent one — so it does not
+         fall through to (4), and the bare word `test` beside it does not
+         excuse it. Two spellings say "this is a name" that loudly:
+         a BACKTICKED snake_case token (SNAKE_CITED), and any token whose own
+         spelling contains `test` as a component (LOOKS_NAMED — `foo_test`,
+         `test_foo`). The first is the one that shipped false:
+         `the_hero_weight_is_the_pane_share` names no function in this
+         workspace, carries no `test` in its own spelling, and the bare word
+         `test` next to it discharged the claim.
       4. Otherwise, the bare word (TEST_WORD) is prose about testing with no
          name to check, and is still forgiven — there is nothing to resolve.
+         This is the forgiveness that remains, and it is narrow: it needs a
+         sentence with the word `test` and NO backticked snake_case name at
+         all, which in practice means a claim whose subject is CamelCase or an
+         intra-doc link. Naming the test is what closes it.
     """
     names = IDENT.findall(text)
-    if any(n in test_functions() or n in ACKNOWLEDGED for n in names):
+    if any(n in test_functions() or acknowledged(n, "test") for n in names):
         return True
-    if any(n in resolvable_test_names() or n in ACKNOWLEDGED for n in SYMBOL_TICKED.findall(text)):
+    ticked = SYMBOL_TICKED.findall(text)
+    if any(n in resolvable_test_names() or acknowledged(n, "test") for n in ticked):
         return True
+    if any(SNAKE_CITED.fullmatch(n) for n in ticked):
+        return False
     if any(LOOKS_NAMED.search(n) and not TEST_WORD.fullmatch(n) for n in names):
         return False
     return bool(TEST_WORD.search(text))
@@ -637,15 +801,18 @@ def symbol_citations(text: str, file_text: str = "") -> list[str]:
     return seen
 
 
-def sentences(text: str) -> list[tuple[int, int, str]]:
+def sentences(text: str, end: re.Pattern[str] = SENTENCE_END) -> list[tuple[int, int, str]]:
     """(start, end, sentence) for each sentence of `text`, offsets kept.
 
     Text that ends mid-sentence yields that fragment as a sentence: a comment
     is prose someone stopped writing, not a grammar.
+
+    `end` is which split — SENTENCE_END for a claim, STATEMENT_END for the
+    citation that discharges one. See STATEMENT_END for why they differ.
     """
     spans: list[tuple[int, int, str]] = []
     pos = 0
-    for m in SENTENCE_END.finditer(text):
+    for m in end.finditer(text):
         spans.append((pos, m.start(), text[pos:m.start()]))
         pos = m.end()
     spans.append((pos, len(text), text[pos:]))
@@ -712,15 +879,18 @@ def completeness_claims(lines: list[tuple[int, str]], file_text: str = "") -> li
     `file_text` is the source the comment lives in, for the resolving mark in
     symbol_citations().
 
-    A paragraph that names a test is skipped whole: the claim then has a place a
-    reader can go, which is all this rule asks for, and reading the citation as
-    covering the paragraph rather than the sentence errs towards silence.
+    A claim is discharged by a test named in the sentence the QUANTIFIER falls
+    in — see cites_test(). Reading the paragraph instead, which is what this
+    did until the sentence rule, errs towards silence in a way that turned out
+    to be the whole defect: a real citation in one sentence discharged a claim
+    in another, and a broken citation was discharged by any bare word `test`
+    beside it. The two units in play are different sizes and STATEMENT_END says
+    why.
     """
     claims: list[Claim] = []
     for segment in segments(lines):
         text, spans = joined(segment)
-        if cites_test(text):
-            continue
+        statements = sentences(text, STATEMENT_END)
         for start, _end, sentence in sentences(text):
             # The quantifier has to be PROSE. A backticked `all` is a column, a
             # field or a variant this repo happens to have named that, and it
@@ -735,6 +905,13 @@ def completeness_claims(lines: list[tuple[int, str]], file_text: str = "") -> li
             if not syms:
                 continue
             at = start + q.start()
+            # The citation has to sit in the same STATEMENT as the quantifier.
+            # Falling back to the claim's own segment keeps a quantifier the
+            # statement split cannot place — there is no such text today, and a
+            # silent None here would be a claim reported for the wrong reason.
+            here = next((s for a, b, s in statements if a <= at < b), sentence)
+            if cites_test(here):
+                continue
             over = frozenset(
                 ln for s, e, ln in spans if s < start + len(sentence) and e > start
             )
@@ -956,7 +1133,7 @@ def check(units: list[Unit]) -> list[str]:
                 [(c, s) for c, s in ATTR_POSSESSIVE.findall(body)]
                 + [(c, s) for s, c in ATTR_IN.findall(body)]
             ):
-                if crate not in known or symbol in ACKNOWLEDGED:
+                if crate not in known or acknowledged(symbol, "symbol"):
                     continue
                 if not defines(crate, symbol):
                     where = [k for k in known if defines(k, symbol)]
@@ -966,7 +1143,7 @@ def check(units: list[Unit]) -> list[str]:
                 if not path_exists(ref):
                     failures.append(f"{rel}:{lineno} cites `{ref}`, which does not exist")
             for name in package_citations(body):
-                if name in ACKNOWLEDGED or package_resolves(name):
+                if acknowledged(name, "package") or package_resolves(name):
                     continue
                 failures.append(
                     f"{rel}:{lineno} cites the `{name}` package, which is not a crate "
@@ -1099,12 +1276,12 @@ def resolver_stub_guard() -> list[tuple[bool, str]]:
     honest = check([unit])
 
     module = sys.modules[__name__]
-    real = module.resolvable_test_names
-    module.resolvable_test_names = lambda: _Everything()
+    real = getattr(module, "resolvable_test_names")
+    setattr(module, "resolvable_test_names", lambda: _Everything())
     try:
         stubbed = check([unit])
     finally:
-        module.resolvable_test_names = real
+        setattr(module, "resolvable_test_names", real)
 
     return [
         (
@@ -1116,6 +1293,58 @@ def resolver_stub_guard() -> list[tuple[bool, str]]:
             "and a resolver stubbed to accept every name lets the same fixture "
             "through — this case is pinned to the resolver's answer, not to the "
             "name's own shape",
+        ),
+    ]
+
+
+def acknowledged_kind_guard() -> list[tuple[bool, str]]:
+    """Prove rule D spends the registry's KIND, not mere membership of it.
+
+    ACKNOWLEDGED holds names this repo does not contain, registered for three
+    different rules. Read as one flat set it discharged a completeness claim
+    over `queryFieldInfo` — a mosaic function registered so that prose ABOUT
+    mosaic resolves — as if a test had been named, in a sentence whose three
+    real citations resolve to nothing.
+
+    Written out rather than derived, and for a reason worth stating: there is
+    no `test`-kind entry in the registry today, because nothing in this tree
+    cites a test outside the workspace. So the positive half cannot come from
+    the registry. One fixture name is registered here as a symbol, checked,
+    registered as a test, checked again, and removed — the SAME name and the
+    SAME sentence, so the only thing that moved is the kind.
+    """
+    name = "aNameThisTreeDoesNotContain"
+    body = f"[`Widget`] is the only thing that makes one; `{name}` holds that"
+    probe = ROOT / "src" / "__acknowledged_kind_guard_probe__.rs"
+    unit = Unit(probe, [(1, body)], frozenset({1}))
+
+    if name in ACKNOWLEDGED:
+        return [(False, f"the guard's fixture name `{name}` is already registered, "
+                        f"so it cannot show what registering it does")]
+
+    def under(kind: str) -> list[str]:
+        ACKNOWLEDGED[name] = Ack(kind, "guard fixture, removed before this returns")
+        try:
+            return check([unit])
+        finally:
+            del ACKNOWLEDGED[name]
+
+    as_symbol = under("symbol")
+    as_test = under("test")
+
+    return [
+        (
+            bool(as_symbol),
+            "a registered external SYMBOL does not discharge a completeness claim",
+        ),
+        (
+            not as_test,
+            "and the same name registered as an external TEST does — rule D spends "
+            "the registry's kind, not membership of it",
+        ),
+        (
+            name not in ACKNOWLEDGED,
+            "and the guard leaves the registry as it found it",
         ),
     ]
 
@@ -1155,7 +1384,7 @@ def self_test() -> int:
                 break
         if sym:
             break
-    if not sym:
+    if not sym or not home or not other:
         print("self-test: could not derive a crate-exclusive symbol")
         return 1
 
@@ -1230,9 +1459,14 @@ def self_test() -> int:
          f"STAYS GREEN: a crate-relative path, real under crates/*/{rel_path}"),
     ]
 
-    for name, why in list(ACKNOWLEDGED.items())[:1]:
-        cases.append((f"`{name}` is called here", True,
-                      f"STAYS GREEN: ACKNOWLEDGED as external ({why})"))
+    ack_symbol = next((n for n, a in ACKNOWLEDGED.items() if a.kind == "symbol"), None)
+    if ack_symbol is None:
+        print("self-test: no ACKNOWLEDGED symbol-kind entry to derive the escape-hatch "
+              "case from")
+        return 1
+    cases.append((f"`{ack_symbol}` is called here", True,
+                  f"STAYS GREEN: ACKNOWLEDGED as an external symbol "
+                  f"({ACKNOWLEDGED[ack_symbol].reason})"))
 
     # --- the PACKAGE fixtures ---------------------------------------------
     # The defect these exist for carries no symbol, so the cases above cannot
@@ -1265,13 +1499,13 @@ def self_test() -> int:
     ack_pkg = next(
         (
             n
-            for n in ACKNOWLEDGED
-            if re.fullmatch(PKG_NAME, n) and not package_resolves(n)
+            for n, a in ACKNOWLEDGED.items()
+            if a.kind == "package" and re.fullmatch(PKG_NAME, n) and not package_resolves(n)
         ),
         None,
     )
     if ack_pkg is None:
-        print("self-test: no ACKNOWLEDGED package-shaped name to derive the escape-hatch case from")
+        print("self-test: no ACKNOWLEDGED package-kind name to derive the escape-hatch case from")
         return 1
 
     cases += [
@@ -1288,7 +1522,8 @@ def self_test() -> int:
         (f"`{home}` v1.1.4 behaves this way", True,
          f"STAYS GREEN: a workspace crate ({home})"),
         (f"`{ack_pkg}` v1.1.4 was evaluated and rejected", True,
-         f"STAYS GREEN: ACKNOWLEDGED as external ({ACKNOWLEDGED[ack_pkg]})"),
+         f"STAYS GREEN: ACKNOWLEDGED as an external package "
+         f"({ACKNOWLEDGED[ack_pkg].reason})"),
         (f"one `{absent}` sample costs ~2.5 ms", True,
          "STAYS GREEN: a duration is not a version"),
         (f"`{absent}` clamps to [0.0, 1.0]", True,
@@ -1296,6 +1531,20 @@ def self_test() -> int:
         (f"`{absent}` binds 127.0.0.1:1 to refuse connections", True,
          "STAYS GREEN: an address is not a version"),
     ]
+
+    # A real `#[test]` function whose own NAME does not contain the word
+    # `test`, so a case citing it is pinned to the resolution and not to the
+    # word. Derived here rather than in the named-test block below because the
+    # completeness fixtures need it too: the sentence rule is pinned by putting
+    # this name in the claim's sentence and then in a neighbouring one.
+    named_test = next(
+        (n for n in sorted(test_functions()) if not TEST_WORD.search(n)),
+        None,
+    )
+    if named_test is None:
+        print("self-test: no test function whose own name lacks the word `test`, so the "
+              "named-test case cannot be told apart from the word case")
+        return 1
 
     # --- the COMPLETENESS fixtures ----------------------------------------
     # Rule D judges no claim, so its fixtures are about where it stops. The
@@ -1311,7 +1560,17 @@ def self_test() -> int:
     # pattern alone: a derived `fn` name can BE a test function, and then the
     # paragraph built from it goes green for a reason the label does not say.
     def usable(name: str) -> bool:
-        return not cites_test(name) and not QUANTIFIER.fullmatch(name)
+        # ...and not a name the RESOLVER would accept either. The enumeration
+        # reaches into `tests/` files and `#[cfg(test)]` modules, which is where
+        # this derivation is reading, so a fixture drawn from one can be a name
+        # rule D discharges on — and the case built from it then goes green for
+        # a reason its label does not say.
+        return (
+            not cites_test(name)
+            and not QUANTIFIER.fullmatch(name)
+            and name not in resolvable_test_names()
+            and not acknowledged(name, "test")
+        )
 
     # The probe file is a REAL file, because the resolving mark reads the source
     # the comment sits in. A fixture written against a path that does not exist
@@ -1418,8 +1677,14 @@ def self_test() -> int:
          "a quantifier opening a sentence is capitalised, and still a claim",
          ('"Nothing"',)),
         # Controls.
-        (f"[`{camel}`] is the only thing that makes one; the `{test_stem}` tests hold that", True,
-         f"STAYS GREEN: a test is named ({test_stem})"),
+        (f"[`{camel}`] is the only thing that makes one; the `{named_test}` test "
+         f"holds that", True,
+         f"STAYS GREEN: a name that RESOLVES, with the bare word beside it "
+         f"({named_test})"),
+        (f"[`{camel}`] is the only thing that makes one. `{named_test}` holds that",
+         False, f"a test named in the NEXT sentence discharges nothing: the claim\'s "
+                f"own sentence is the unit ({named_test})",
+         ('"only"', f"`{camel}`")),
         ("nothing else can be what reddens", True,
          "STAYS GREEN: a quantifier with no symbol is prose this cannot judge"),
         (f"[`{camel}`] states where that stops", True,
@@ -1448,15 +1713,6 @@ def self_test() -> int:
     # paragraph carrying no other reference to a test, and the negative is a
     # real function that is not one — so a rule that merely accepted anything
     # snake_case would redden here rather than pass quietly.
-    named_test = next(
-        (n for n in sorted(test_functions()) if not TEST_WORD.search(n)),
-        None,
-    )
-    if named_test is None:
-        print("self-test: no test function whose own name lacks the word `test`, so the "
-              "named-test case cannot be told apart from the word case")
-        return 1
-
     cases += [
         (f"[`{camel}`] is the only thing that makes one; `{named_test}` holds that", True,
          f"STAYS GREEN: a test named by its function, no word `test` anywhere "
@@ -1483,18 +1739,87 @@ def self_test() -> int:
               f"unresolved-name negative case")
         return 1
 
-    broadened_only = sorted(
-        n for n in resolvable_test_names() - test_functions()
-        if not cites_test(n) and not QUANTIFIER.fullmatch(n)
-    )
-    if not broadened_only:
-        print("self-test: no name resolvable ONLY through the broadened enumeration "
-              "(a tests/-dir or #[cfg(test)]-module helper), so the broadening this "
-              "card adds cannot be pinned")
+    # A name of the SAME snake_case shape whose own spelling carries no `test`
+    # component, so LOOKS_NAMED never fires on it. This is the reviewer\'s
+    # reproduction: the fake name was forgiven because the only thing the gate
+    # would have insisted on resolving was a name that LOOKED like a test, and
+    # this one does not.
+    fake_plain_name = f"the_shape_this_gate_missed_{abs(hash(other)) % 9973}"
+    if fake_plain_name in resolvable_test_names() or fake_plain_name in ACKNOWLEDGED:
+        print(f"self-test: {fake_plain_name} resolves here, so it cannot serve as the "
+              f"not-test-shaped negative case")
         return 1
-    helper = broadened_only[0]
+    if LOOKS_NAMED.search(fake_plain_name) or TEST_WORD.search(fake_plain_name):
+        print(f"self-test: {fake_plain_name} spells like a test, so it cannot tell the "
+              f"spelling rule apart from the resolution rule")
+        return 1
 
-    ack_name = next(iter(ACKNOWLEDGED))
+    # The three enumerations resolvable_test_names() unions, kept APART here so
+    # a fixture can name WHICH one it exercises, and so a case meant to pin the
+    # `tests/`-file half cannot pass through the `#[cfg(test)]` half instead.
+    # The short and method pools are what the resolver\'s two filters refuse:
+    # deleting a filter turns exactly the case built from that pool green.
+    cfg_free: set[str] = set()
+    cfg_short: set[str] = set()
+    cfg_method: set[str] = set()
+    tests_free: set[str] = set()
+    tests_short: set[str] = set()
+    for f in sorted(ROOT.glob("crates/**/*.rs")):
+        if "target" in f.parts:
+            continue
+        text = f.read_text(errors="replace")
+        for m in CFG_TEST_MOD.finditer(text):
+            body = text[m.end():_brace_match_end(text, m.end())]
+            free = free_fn_names(body)
+            cfg_free |= {n for n in free if "_" in n}
+            cfg_short |= {n for n in free if "_" not in n}
+            cfg_method |= {n for n in FN_DEFN_ANY.findall(body) if n not in free and "_" in n}
+        if f.parent.name == "tests" and f.parent.parent.parent.name == "crates":
+            free = free_fn_names(text)
+            tests_free |= {n for n in free if "_" in n}
+            tests_short |= {n for n in free if "_" not in n}
+
+    def fixture(pool: set[str], *, resolves: bool) -> str | None:
+        """A name from `pool` rule D reads as an ordinary citation, and nothing else.
+
+        `resolves` is asserted against the real resolver rather than assumed
+        from which pool the name came out of: a case whose fixture the resolver
+        disagrees about passes for a reason its label does not state, which is
+        how a derived fixture goes quietly wrong.
+        """
+        return next(
+            (
+                n
+                for n in sorted(pool)
+                if not TEST_WORD.search(n)
+                and not LOOKS_NAMED.search(n)
+                and not QUANTIFIER.fullmatch(n)
+                and n not in test_functions()
+                and not acknowledged(n, "test")
+                and (n in resolvable_test_names()) == resolves
+            ),
+            None,
+        )
+
+    derived = {
+        "a `#[cfg(test)]`-module helper": fixture(cfg_free - tests_free, resolves=True),
+        "a `tests/`-file helper": fixture(tests_free - cfg_free, resolves=True),
+        "a one-word `#[cfg(test)]` helper": fixture(cfg_short, resolves=False),
+        "a one-word `tests/`-file helper": fixture(tests_short, resolves=False),
+        "a method in a `#[cfg(test)]` impl": fixture(
+            cfg_method - cfg_free - tests_free, resolves=False
+        ),
+    }
+    if any(n is None for n in derived.values()):
+        print("self-test: could not derive " + "; ".join(
+            what for what, n in derived.items() if n is None
+        ))
+        return 1
+    helper = derived["a `#[cfg(test)]`-module helper"]
+    tests_helper = derived["a `tests/`-file helper"]
+    short_cfg = derived["a one-word `#[cfg(test)]` helper"]
+    short_tests = derived["a one-word `tests/`-file helper"]
+    method = derived["a method in a `#[cfg(test)]` impl"]
 
     cases += [
         (f"[`{camel}`] is the only thing that makes one; `{fake_test_name}` holds that",
@@ -1504,16 +1829,36 @@ def self_test() -> int:
          f"holds that", False,
          "a bare word `test` beside the SAME broken name does not excuse it — "
          "this is the exact shape that shipped false", ('"only"', f"`{camel}`")),
+        (f"[`{camel}`] is the only thing that enumerates kinds; the "
+         f"`{fake_plain_name}` test holds that", False,
+         f"a backticked snake_case name that resolves to nothing is a citation "
+         f"whatever its OWN spelling, and the bare word `test` beside it does "
+         f"not excuse it ({fake_plain_name})", ('"only"', f"`{camel}`")),
         (f"[`{camel}`] is the only thing that makes one; `{helper}` holds that", True,
-         f"STAYS GREEN: a `tests/`-dir or `#[cfg(test)]`-module helper resolves "
-         f"even with no `#[test]` attribute of its own ({helper})"),
+         f"STAYS GREEN: a `#[cfg(test)]`-module helper resolves even with no "
+         f"`#[test]` attribute of its own ({helper})"),
+        (f"[`{camel}`] is the only thing that makes one; `{tests_helper}` holds that",
+         True, f"STAYS GREEN: a free function in a `crates/*/tests/*.rs` file "
+               f"resolves the same way ({tests_helper})"),
         (f"[`{camel}`] is the only thing that makes one; held by {helper}", False,
          f"the broadened enumeration needs the BACKTICK — a bare mention of an "
          f"ordinary helper name is indistinguishable from prose ({helper})",
          ('"only"', f"`{camel}`")),
-        (f"[`{camel}`] is the only thing that makes one; `{ack_name}` holds that", True,
-         f"STAYS GREEN: a name registered in ACKNOWLEDGED as a test outside this "
-         f"workspace ({ack_name})"),
+        (f"[`{camel}`] is the only thing that makes one; the user presses "
+         f"`{short_cfg}`", False,
+         f"a ONE-WORD `#[cfg(test)]` helper is not a citation, it is the English "
+         f"word it collides with ({short_cfg})", ('"only"', f"`{camel}`")),
+        (f"[`{camel}`] is the only thing that makes one; see the `{short_tests}` "
+         f"above", False,
+         f"and a one-word free function in a `tests/` file is not one either "
+         f"({short_tests})", ('"only"', f"`{camel}`")),
+        (f"[`{camel}`] is the only thing that makes one; `{method}` holds that", False,
+         f"a METHOD is not a test, whatever module it sits in ({method})",
+         ('"only"', f"`{camel}`")),
+        (f"[`{camel}`] is the only thing that makes one; `{ack_symbol}` holds that",
+         False, f"a name registered as an external SYMBOL is not a registered "
+                f"external TEST, and discharges nothing ({ack_symbol})",
+         ('"only"', f"`{camel}`")),
     ]
 
     # --- the BLOCK fixtures -----------------------------------------------
@@ -1532,9 +1877,14 @@ def self_test() -> int:
         (["nothing else writes here", "", f"[`{camel}`] is rebuilt at boot"],
          True, "STAYS GREEN: a blank comment line ends the paragraph"),
         ([f"[`{camel}`] is the only thing that makes one.",
-          f"The `{test_stem}` tests hold that."],
-         True, f"STAYS GREEN: the test is named in the next line of the same "
-               f"paragraph ({test_stem})"),
+          f"The `{named_test}` test holds that."],
+         False, f"a citation on the next LINE of the same paragraph is still in "
+                f"another sentence, and discharges nothing ({named_test})",
+         ('"only"', f"`{camel}`")),
+        ([f"[`{camel}`] is the only thing that makes one and",
+          f"`{named_test}` holds that"],
+         True, f"STAYS GREEN: the citation wraps onto the next line but stays "
+               f"inside the claim\'s sentence ({named_test})"),
         ([f"nothing else writes [`{camel}`].", "and that is where it stops"],
          True, "STAYS GREEN: the claim's sentence touches no line this run checks",
          (), 0, (1,)),
@@ -1576,7 +1926,7 @@ def self_test() -> int:
          "DEFN does not read `type` inside `retype` as a definition of `only`"),
         (bool(re.search(DEFN.format(sym="only"), "pub type only = u8;")),
          "DEFN still reads a real `type only` as a definition"),
-    ] + revision_guards() + resolver_stub_guard()
+    ] + revision_guards() + resolver_stub_guard() + acknowledged_kind_guard()
 
     # A finding has to say WHERE, or a reader cannot act on it. Asserted on
     # every case that is meant to be reported, not on a sample of them.
