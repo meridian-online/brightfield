@@ -5570,8 +5570,8 @@ fn draw_canvas_pane_group(
     let columns_body = frame_of(ui, columns_rect, &columns_subject);
     // The rows pane's frame comes after the page below, so its own fill and
     // header band are not painted over by the texture the group composes
-    // across the union. What is settled here is that it is drawn at all: the
-    // page's `set_hero_bound` reads its height through `PaneViews`.
+    // across the union. What is settled here is that it is drawn: the page's
+    // `set_hero_bound` reads its height through `PaneViews`.
 
     // The one page, across both content rects, offered to the pane's item as
     // its own box and clipped to the union so the gutter between the panes
