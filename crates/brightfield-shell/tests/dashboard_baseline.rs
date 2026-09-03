@@ -171,7 +171,7 @@ fn assert_housing(dash: &Dashboard) {
 /// draws at whenever a file's map takes the hero's place, the shape the
 /// time-axis collision was recorded against. `reading` earns the column's
 /// second tile so the width
-/// [`the_time_axis_does_not_collide_at_the_column_tiles_drawn_width`] reads
+/// [`the_time_axis_never_overlaps_or_clips_across_real_window_widths`] reads
 /// is a real dashboard's, not a single-tile one.
 fn site_readings() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/site_readings_sample.csv")
@@ -833,43 +833,72 @@ fn plot_for_x_column<'a>(
         .unwrap_or_else(|| panic!("fixture check: no placed plot binds x to {column}"))
 }
 
-/// The absolute `[x, x + width]` spans of `plot`'s own x-axis tick labels, as
-/// actually drawn into `scene` — [`Composed::scene`]'s glyph runs, not a
-/// second render.
+/// `(x0, y0, x1, y1)` — an axis-aligned rect in the composed PAGE's own
+/// coordinate space, the same space [`brightfield_shell::pipeline::PlotHandle::rect`]
+/// lives in.
+type Rect4 = (f64, f64, f64, f64);
+
+/// Whether `a` and `b` share any interior point.
+fn rects_intersect(a: Rect4, b: Rect4) -> bool {
+    a.0 < b.2 && b.0 < a.2 && a.1 < b.3 && b.1 < a.3
+}
+
+/// Whether `inner` lies inside `outer`, both edges included up to float
+/// round-trip slop.
+fn rect_inside(inner: Rect4, outer: Rect4) -> bool {
+    inner.0 >= outer.0 - 0.5
+        && inner.2 <= outer.2 + 0.5
+        && inner.1 >= outer.1 - 0.5
+        && inner.3 <= outer.3 + 0.5
+}
+
+/// Every rect `render_x_axis` (`brightfield-render`'s `axis` module) drew for
+/// `plot`'s x axis, read straight out of the real composed `scene` —
+/// [`Composed::scene`]'s glyph runs, not a second render — rather than
+/// assumed from which branch it is expected to have taken: the tick labels
+/// (whichever family `render_x_axis` chose — thinned, degraded to one, or
+/// rotated) as the first element, and the axis title's rect, when the tile
+/// draws one, as the second.
 ///
-/// `render_x_axis` (`brightfield-render`'s `axis` module) draws each tick's
-/// label at ONE shared y right under the axis line
-/// (`plot_y_end() + TICK_LENGTH + LABEL_SIZE`) and, when the tile has an x
-/// title, that title strictly further down still
-/// (`x_title_baseline` adds `TITLE_SIZE + TITLE_GAP` on top) — so of what a
-/// tile draws below its own axis line, the row nearest the line is the tick
-/// labels rather than the title. That is how this tells `day`'s tick-label
-/// row apart from its `"day"` axis title without needing either private
-/// offset constant: it keeps just the runs in [`plot`]'s own rect, below its
-/// axis line by more than half a label's cap height — clearing the y-axis's
-/// own occasional stray label (a tick landing exactly on `plot_y_end` draws
-/// its row-label `LABEL_SIZE / 3` below the line, which is short of half)
-/// while staying well under the tick-label row's own, much larger offset —
-/// then takes whichever surviving y is smallest.
-///
-/// Each surviving run is matched to the nearest of `ticks`' own candidate
-/// positions (`render_x_axis`'s `TextAnchor::Middle`, the same technique
-/// [`assert_no_tick_label_overlap`] uses) to recover its label text, so its
-/// width can be measured the way `render_x_axis` measured it rather than
-/// estimated from the run's raw glyph count. A rotated run is skipped: this
-/// reads the horizontal branch, which is the one thinning defends.
-fn drawn_x_tick_label_spans(
+/// A run's own [`vello_encoding::GlyphRun::font_size`] is what tells a title
+/// apart from a tick label — the SAME field `render_x_axis` sets when it
+/// draws each (`TITLE_SIZE` for the title, `size` for every tick label,
+/// whichever way it drew them), rather than the two being told apart by
+/// where they landed. A ROTATED run's rect runs the other way from a
+/// horizontal one: its OWN glyph-height footprint (`size` wide) is centred on
+/// its pivot along x, and its measured text length runs DOWN from the pivot
+/// along y — the near end is nearest the tick
+/// (`draw_text_rotated`'s `TextAnchor::End`) — so a run that has clipped past
+/// the tile or under the title is exactly one whose far end has run past
+/// `plot.rect.height` or into the title's own rect, which
+/// `rect_inside`/`rects_intersect` read directly off the rects this returns.
+fn drawn_x_axis_rects(
     scene: &vello::Scene,
     plot: &brightfield_shell::pipeline::PlotHandle,
     ticks: &[brightfield_render::axis::Tick],
+    title_text: &str,
     size: f32,
-) -> Vec<(f64, f64)> {
+) -> (Vec<Rect4>, Option<Rect4>) {
+    let title_size = brightfield_render::text::TITLE_SIZE;
+    let title_width = brightfield_render::text::measure_width(title_text, title_size);
+
     let x_lo = plot.rect.x - 200.0;
     let x_hi = plot.rect.x + plot.rect.width + 200.0;
+    // Half a label's cap height below the axis line, not the line itself:
+    // the y-axis's own occasional stray label (a y-tick landing exactly on
+    // `plot_y_end` draws its row-label `LABEL_SIZE / 3` below the line) sits
+    // short of this floor, while the x-axis's tick-label row (`LABEL_SIZE`
+    // below the line, or the rotated pivots' `ROTATED_LABEL_GAP` short of
+    // that) clears it.
     let y_lo = plot.rect.y + plot.layout.plot_y_end() + f64::from(size) / 2.0;
     let y_hi = plot.rect.y + plot.rect.height;
 
-    let candidates: Vec<(f64, &str)> = ticks
+    // A horizontal draw (`TextAnchor::Middle`) anchors its LEFT edge at
+    // `position - width / 2`; a rotated one (`TextAnchor::End`) anchors its
+    // PIVOT exactly at `position` — two different predicted x0s for the same
+    // tick, so two candidate lists, matched against whichever family a given
+    // run turns out to belong to.
+    let horiz_candidates: Vec<(f64, &str)> = ticks
         .iter()
         .map(|t| {
             (
@@ -879,51 +908,49 @@ fn drawn_x_tick_label_spans(
             )
         })
         .collect();
+    let rotated_candidates: Vec<(f64, &str)> = ticks
+        .iter()
+        .map(|t| (plot.rect.x + t.position, t.label.as_str()))
+        .collect();
 
-    // Runs below the axis line, in this tile's own footprint, grouped by
-    // their shared draw y (within a pixel, for float round-trip slop).
-    let mut rows: Vec<(f64, Vec<(f64, &str)>)> = Vec::new();
+    let mut label_rects = Vec::new();
+    let mut title_rect = None;
     for run in &scene.encoding().resources.glyph_runs {
-        let m = run.transform.matrix;
-        let rotated = m[0].abs() < 1e-3 && m[3].abs() < 1e-3;
-        if rotated {
-            continue;
-        }
         let x0 = f64::from(run.transform.translation[0]);
         let y0 = f64::from(run.transform.translation[1]);
         if x0 < x_lo || x0 > x_hi || y0 < y_lo || y0 > y_hi {
             continue;
         }
-        let (_, label) = candidates
-            .iter()
-            .min_by(|a, b| (a.0 - x0).abs().partial_cmp(&(b.0 - x0).abs()).unwrap())
-            .expect("fixture check: at least one candidate tick");
-        match rows.iter_mut().find(|(y, _)| (*y - y0).abs() < 1.0) {
-            Some((_, runs)) => runs.push((x0, *label)),
-            None => rows.push((y0, vec![(x0, *label)])),
+        if (run.font_size - title_size).abs() < 0.01 {
+            // The axis title itself: `TextAnchor::Middle`, so x0 is already
+            // its own left edge.
+            title_rect = Some((x0, y0 - f64::from(title_size), x0 + title_width, y0));
+            continue;
+        }
+        let m = run.transform.matrix;
+        let rotated = m[0].abs() < 1e-3 && m[3].abs() < 1e-3;
+        if rotated {
+            let (_, label) = rotated_candidates
+                .iter()
+                .min_by(|a, b| (a.0 - x0).abs().partial_cmp(&(b.0 - x0).abs()).unwrap())
+                .expect("fixture check: at least one candidate tick");
+            let run_len = brightfield_render::text::measure_width(label, size);
+            label_rects.push((
+                x0 - f64::from(size) / 2.0,
+                y0,
+                x0 + f64::from(size) / 2.0,
+                y0 + run_len,
+            ));
+        } else {
+            let (_, label) = horiz_candidates
+                .iter()
+                .min_by(|a, b| (a.0 - x0).abs().partial_cmp(&(b.0 - x0).abs()).unwrap())
+                .expect("fixture check: at least one candidate tick");
+            let width = brightfield_render::text::measure_width(label, size);
+            label_rects.push((x0, y0 - f64::from(size), x0 + width, y0));
         }
     }
-    let (_, nearest_row) = rows
-        .into_iter()
-        .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
-        .unwrap_or_else(|| {
-            panic!(
-                "fixture check: no horizontal label was drawn below {}'s axis \
-                 line — the axis rotated, or drew nothing",
-                plot.path
-            )
-        });
-    let mut spans: Vec<(f64, f64)> = nearest_row
-        .into_iter()
-        .map(|(x0, label)| {
-            (
-                x0,
-                x0 + brightfield_render::text::measure_width(label, size),
-            )
-        })
-        .collect();
-    spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-    spans
+    (label_rects, title_rect)
 }
 
 /// A `day`-axis rendered in isolation at `width`, over `categories` — the same
@@ -1002,64 +1029,147 @@ fn assert_no_tick_label_overlap(
     }
 }
 
-/// **The counts_over_time tile's time axis does not run its dates together at
-/// the width a dashboard tile is actually drawn at** — read off the REAL
-/// composed scene, not an isolated re-render.
+/// The logical window [`site_readings`]'s own baseline captures
+/// ([`the_site_readings_dashboard_light_baseline`] and its dark twin) open
+/// at — [`Boot::window_size`], the natural size their `capture_png` call
+/// derives with no explicit size of its own.
+fn site_readings_baseline_window() -> (f32, f32) {
+    let path = site_readings();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    boot.window_size()
+}
+
+/// [`site_readings`] driven through the REAL pane group at a window `size` —
+/// the same `MeridianApp::headless` + `ctx.run_ui` settle loop [`pane_rects`]
+/// drives, three frames so a resizable panel's reported size is read back
+/// on the frame after (the same reason [`pane_rects`] settles before reading
+/// anything back). Returns the settled app so its `chart_doc().composed` can
+/// be read by reference: `day`'s tile at whatever width THIS window's
+/// constrained `hconcat` resolved for it, not [`data_file::open`]'s own
+/// one-shot, UNCONSTRAINED composition — which is what this card's round 2
+/// read, and which is always `crate::dashboard::COLUMN_TILE_WIDTH` (380
+/// points) regardless of window, because an unconstrained `hconcat` sizes
+/// each item to its OWN declared weight rather than sharing a box out. The
+/// live app never lays this dashboard out unconstrained —
+/// `ChartDoc::reflow_to` always hands `LiveDashboard::set_viewport` a real
+/// box first.
+fn site_readings_app_at(size: (f32, f32)) -> brightfield_shell::window::MeridianApp {
+    let path = site_readings();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let mut app = brightfield_shell::window::MeridianApp::headless(boot, Mode::Light);
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(size.0, size.1),
+        )),
+        ..Default::default()
+    };
+    for _ in 0..3 {
+        let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
+    }
+    app
+}
+
+/// **The counts_over_time tile's time axis never overlaps or clips at the
+/// widths the live app actually resolves for it** — read off the REAL pane
+/// group at four real window widths, not [`data_file::open`]'s one-shot
+/// unconstrained composition ([`site_readings_app_at`]'s doc names why
+/// round 2's own version of this test read the wrong quantity).
 ///
-/// [`site_readings`] gives the coordinate pair its own hero, so `day` earns an
-/// ordinary tile in the STACKED column ([`assert_site_readings`] runs first
-/// and pins that shape) rather than falling back into the map pane the way
-/// [`fixture`]'s `day` does. [`plot_for_x_column`] finds that placed tile by
-/// its `x: day` binding, [`drawn_x_tick_label_spans`] reads its tick labels'
-/// rects straight out of `opened.composed.scene` — the one field
-/// [`brightfield_shell::pipeline::Composed`] documents as "the single
-/// composited Vello scene... the shell presents", so this is the picture a
-/// reader is actually shown — and the width is the tile's own placed
-/// `rect.width`, read off that same frame rather than off a constant or a
-/// sibling tile.
+/// [`site_readings`] gives the coordinate pair its own hero, so `day` earns
+/// an ordinary tile in the STACKED column ([`assert_site_readings`] pins
+/// that shape) rather than falling back into the map pane the way
+/// [`fixture`]'s `day` does. Four widths: the baseline window
+/// [`site_readings`]'s own baseline captures open at
+/// ([`site_readings_baseline_window`]), and 1400/1200/1000 — measured on
+/// round 2's build, the column tile these four resolve to was 380, 309, 233
+/// and 157 points wide, and at 157 the pre-fix axis rotated a real date past
+/// the tile's own bottom edge. At every width: [`drawn_x_axis_rects`] reads
+/// every tick-label rect straight out of the composed scene, and each must
+/// lie inside `day`'s own tile rect, clear of every other tick-label rect,
+/// and clear of the axis title's rect — whichever way `render_x_axis` chose
+/// to draw them.
 #[test]
-fn the_time_axis_does_not_collide_at_the_column_tiles_drawn_width() {
+fn the_time_axis_never_overlaps_or_clips_across_real_window_widths() {
+    // Fixture check, once: the shape the whole sweep below assumes.
     let path = site_readings();
     let chosen = path.to_str().expect("utf-8 fixture path");
     let opened = data_file::open(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
     assert_site_readings(&opened.dashboard);
+    drop(opened);
 
-    let day_plot = plot_for_x_column(&opened.composed, "day");
-    let width = day_plot.rect.width;
-    assert!(
-        width > 0.0,
-        "fixture check: the day column tile drew at a non-positive width"
-    );
+    let baseline = site_readings_baseline_window();
+    let widths = [baseline.0, 1400.0, 1200.0, 1000.0];
 
-    let x_scale = day_plot
-        .scales
-        .get(brightfield_render::channel::Channel::X)
-        .expect("fixture check: day's placed plot carries an x scale");
-    let ticks = brightfield_render::axis::compute_ticks(x_scale, 5);
-    assert_eq!(
-        ticks.len(),
-        6,
-        "fixture check: site_readings_sample.csv's day column no longer \
-         carries six distinct dates"
-    );
-
-    let spans = drawn_x_tick_label_spans(
-        &opened.composed.scene,
-        day_plot,
-        &ticks,
-        brightfield_render::text::LABEL_SIZE,
-    );
-    assert!(
-        !spans.is_empty(),
-        "no horizontal tick label was drawn for day's x axis at {width} \
-         points wide"
-    );
-    for pair in spans.windows(2) {
+    for width in widths {
+        let app = site_readings_app_at((width, baseline.1));
+        let composed = &app.chart_doc().composed;
+        let day_plot = plot_for_x_column(composed, "day");
+        let tile_width = day_plot.rect.width;
         assert!(
-            pair[0].1 <= pair[1].0,
-            "two of day's drawn tick labels overlap at the real column \
-             tile width ({width} points): {pair:?} (all spans: {spans:?})"
+            tile_width > 0.0,
+            "fixture check: day's tile drew at a non-positive width at \
+             window width {width}"
         );
+
+        let x_scale = day_plot
+            .scales
+            .get(brightfield_render::channel::Channel::X)
+            .expect("fixture check: day's placed plot carries an x scale");
+        let ticks = brightfield_render::axis::compute_ticks(x_scale, 5);
+        assert_eq!(
+            ticks.len(),
+            6,
+            "fixture check: site_readings_sample.csv's day column no longer \
+             carries six distinct dates"
+        );
+        let (label_rects, title_rect) = drawn_x_axis_rects(
+            &composed.scene,
+            day_plot,
+            &ticks,
+            "day",
+            brightfield_render::text::LABEL_SIZE,
+        );
+        assert!(
+            !label_rects.is_empty(),
+            "no tick-label rect was drawn for day's x axis at window width \
+             {width} (its tile drew at {tile_width} points wide)"
+        );
+
+        let tile: Rect4 = (
+            day_plot.rect.x,
+            day_plot.rect.y,
+            day_plot.rect.x + day_plot.rect.width,
+            day_plot.rect.y + day_plot.rect.height,
+        );
+        for rect in &label_rects {
+            assert!(
+                rect_inside(*rect, tile),
+                "a tick-label rect {rect:?} does not lie inside day's own \
+                 tile rect {tile:?} at window width {width} (tile \
+                 {tile_width} points wide)"
+            );
+            if let Some(title_rect) = title_rect {
+                assert!(
+                    !rects_intersect(*rect, title_rect),
+                    "a tick-label rect {rect:?} intersects the axis title's \
+                     rect {title_rect:?} at window width {width}"
+                );
+            }
+        }
+        for i in 0..label_rects.len() {
+            for other in &label_rects[i + 1..] {
+                assert!(
+                    !rects_intersect(label_rects[i], *other),
+                    "two of day's drawn tick-label rects intersect at window \
+                     width {width}: {:?} and {other:?}",
+                    label_rects[i],
+                );
+            }
+        }
     }
 }
 
@@ -1118,19 +1228,17 @@ fn the_site_readings_dashboard_light_baseline() {
 /// the white-slab regression `the_generated_dashboard_dark_baseline` guards
 /// against on [`housing`], rather than as antialiasing.
 ///
-/// [`housing`]'s hero and column tiles carry one mark layer each.
-/// [`site_readings`]'s `reading` tile carries two (the binned histogram's
-/// unfiltered ghost behind its filtered subset — see `histogram_tile`), so
-/// this composition has an edge shape [`housing`]'s capture has not needed to
-/// draw: two antialiased layers meeting. Measured on this build, zero device
-/// pixels blend to the light surface's precise bytes — this fixture's one
-/// two-layer tile does not reproduce the coincidence the four-shapes fixture
-/// once measured (one pixel inside the `region` tile's ranked bars, beside
-/// its `"10"` value label, where THAT fixture's ranked-bars tile drew its own
-/// highlight-over-total pair; this fixture has no ranked-bars tile). The
-/// budget stays at what is actually measured here rather than carrying that
-/// figure over, so it still catches the defect this check exists for: a pane
-/// painted the light surface wholesale runs to thousands of pixels, nowhere
+/// [`site_readings`]'s `reading` tile is a binned histogram, whose two
+/// `rectY` layers (the unfiltered ghost behind its filtered subset — see
+/// `histogram_tile`) meet at an antialiased edge inside the tile. Measured on
+/// this build, zero device pixels blend to the light surface's precise bytes
+/// even so — this fixture does not reproduce the coincidence the four-shapes
+/// fixture once measured (one pixel inside the `region` tile's ranked bars,
+/// beside its `"10"` value label, where THAT fixture's ranked-bars tile drew
+/// its own highlight-over-total pair; this fixture has no ranked-bars tile).
+/// The budget stays at what is actually measured here rather than carrying
+/// that figure over, so it still catches the defect this check exists for: a
+/// pane painted the light surface wholesale runs to thousands of pixels, nowhere
 /// near this floor.
 const DARK_CAPTURE_LIGHT_PIXEL_BUDGET: usize = 0;
 

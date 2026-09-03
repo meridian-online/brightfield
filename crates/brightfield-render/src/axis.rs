@@ -359,9 +359,9 @@ pub fn render_x_axis(
             );
         }
     } else {
-        // Even the two end labels collide horizontally. Rotating helps only
-        // when the widest label's run actually fits the room below the tick
-        // line — `rotated_label_room` reads that off `layout`, and a titled
+        // Even the two end labels collide horizontally. Rotating helps when
+        // the widest label's run actually fits the room below the tick line
+        // — `rotated_label_room` reads that off `layout`, and a titled
         // axis's room is a small, FIXED distance (the title sits a constant
         // offset below the tick line no matter how large the margin is), so
         // this is not a check that more margin alone can satisfy.
