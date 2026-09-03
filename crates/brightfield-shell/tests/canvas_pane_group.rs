@@ -2229,3 +2229,403 @@ fn the_rows_grid_scrolls_sideways_to_a_column_the_pane_cannot_fit() {
         "the same columns drew whole before and after the sideways scroll"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The rows pane under a brush — what the table lists, off the drawn frame.
+// ---------------------------------------------------------------------------
+
+/// [`window`] with the ledger rail left as it opens.
+///
+/// The scroll fixtures reopen it because their claims are about a page taller
+/// than its pane. Nothing below is, and the window the composition is
+/// photographed in is the one where the rail is closed, so this reads the frame
+/// a reader gets.
+fn settled_window() -> (MeridianApp, egui::Context, egui::RawInput) {
+    let path = fixture();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let mut app = MeridianApp::headless(boot, Mode::Light);
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(SCREEN),
+        ..Default::default()
+    };
+    for _ in 0..3 {
+        let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
+    }
+    (app, ctx, raw)
+}
+
+/// Every string the next frame hands the painter inside `rect`.
+///
+/// The galleys, not a document field: what a table LISTS is what a reader sees
+/// in it, and a cache the pane holds is not that. `one_step_protocol.rs` reads
+/// its ledger strip the same way and for the same reason.
+fn drawn_text_in(
+    app: &mut MeridianApp,
+    ctx: &egui::Context,
+    raw: &egui::RawInput,
+    rect: egui::Rect,
+) -> Vec<String> {
+    let out = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
+    let mut text = Vec::new();
+    for clipped in &out.shapes {
+        collect_text_in(&clipped.shape, rect, &mut text);
+    }
+    text
+}
+
+fn drawn_cells_in(
+    app: &mut MeridianApp,
+    ctx: &egui::Context,
+    raw: &egui::RawInput,
+    rect: egui::Rect,
+) -> Vec<(egui::Pos2, String)> {
+    let out = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
+    let mut cells = Vec::new();
+    for clipped in &out.shapes {
+        collect_cells_in(&clipped.shape, rect, &mut cells);
+    }
+    cells
+}
+
+fn collect_cells_in(
+    shape: &egui::epaint::Shape,
+    rect: egui::Rect,
+    into: &mut Vec<(egui::Pos2, String)>,
+) {
+    match shape {
+        egui::epaint::Shape::Text(t) if rect.contains(t.pos) => {
+            into.push((t.pos, t.galley.text().to_string()));
+        }
+        egui::epaint::Shape::Vec(shapes) => {
+            for s in shapes {
+                collect_cells_in(s, rect, into);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_text_in(shape: &egui::epaint::Shape, rect: egui::Rect, into: &mut Vec<String>) {
+    match shape {
+        egui::epaint::Shape::Text(t) if rect.contains(t.pos) => {
+            into.push(t.galley.text().to_string());
+        }
+        egui::epaint::Shape::Vec(shapes) => {
+            for s in shapes {
+                collect_text_in(s, rect, into);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// **The rows the pane DREW**, one map per row: column name to cell text.
+///
+/// Read off the galleys and their positions, bucketed into columns by the
+/// header cell rects the table reported — so this is what a reader sees, and it
+/// survives the pane scrolling sideways or fitting a different number of
+/// columns. The header row is the row whose cells are the column names; every
+/// other row is data.
+fn drawn_rows(
+    app: &mut MeridianApp,
+    ctx: &egui::Context,
+    raw: &egui::RawInput,
+    rect: egui::Rect,
+) -> Vec<std::collections::BTreeMap<String, String>> {
+    let cells = drawn_cells_in(app, ctx, raw, rect);
+    let columns: Vec<egui::Rect> = app
+        .chart_doc()
+        .grid_drawn
+        .as_ref()
+        .expect("the rows pane's grid laid a table out")
+        .header_cells
+        .iter()
+        .map(|(_, r, _)| *r)
+        .collect();
+    let column_at = |x: f32| -> Option<usize> {
+        columns
+            .iter()
+            .position(|r| x >= r.left() - 0.5 && x <= r.right() + 0.5)
+    };
+
+    // The header row names the columns; it is the one row whose cells are all
+    // in `HOUSING_HEADERS`. Found rather than assumed to be first: the sticky
+    // header is painted after the body.
+    let mut by_row: std::collections::BTreeMap<i64, Vec<(usize, String)>> =
+        std::collections::BTreeMap::new();
+    for (pos, text) in cells {
+        let Some(col) = column_at(pos.x) else { continue };
+        by_row
+            .entry((pos.y * 10.0).round() as i64)
+            .or_default()
+            .push((col, text));
+    }
+    let names: std::collections::BTreeMap<usize, String> = by_row
+        .values()
+        .find(|row| row.iter().all(|(_, t)| HOUSING_HEADERS.contains(&t.as_str())))
+        .expect("the table drew its header row")
+        .iter()
+        .map(|(c, t)| (*c, t.clone()))
+        .collect();
+
+    by_row
+        .into_values()
+        .filter(|row| !row.iter().all(|(_, t)| HOUSING_HEADERS.contains(&t.as_str())))
+        .map(|row| {
+            row.into_iter()
+                .filter_map(|(c, t)| names.get(&c).map(|n| (n.clone(), t)))
+                .collect()
+        })
+        .collect()
+}
+
+/// The fixture's column names, in file order.
+const HOUSING_HEADERS: [&str; 9] = [
+    "median_income",
+    "house_age",
+    "avg_rooms",
+    "avg_bedrooms",
+    "population",
+    "avg_occupancy",
+    "latitude",
+    "longitude",
+    "median_house_value",
+];
+
+/// The fixture as rows of `name -> value`, read straight out of the CSV.
+///
+/// **The independent oracle.** Every other figure below comes through DuckDB;
+/// this one comes from the file, so "the table lists only rows inside the
+/// brush" is checked against the data rather than against a second query that
+/// would agree with the first whatever either of them did.
+fn fixture_rows() -> Vec<std::collections::BTreeMap<String, f64>> {
+    let text = std::fs::read_to_string(fixture()).expect("the fixture reads");
+    let mut lines = text.lines();
+    let header: Vec<&str> = lines.next().expect("a header").split(',').collect();
+    assert_eq!(header, HOUSING_HEADERS, "the fixture's columns moved");
+    lines
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            l.split(',')
+                .enumerate()
+                .map(|(i, c)| {
+                    (
+                        header[i].to_string(),
+                        c.parse::<f64>().unwrap_or_else(|e| {
+                            panic!("the fixture's {} cell {c:?}: {e}", header[i])
+                        }),
+                    )
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// The one fixture row whose drawn cells are `drawn`, by value on every column
+/// the pane drew.
+///
+/// Panics when none matches (the table listed something the file does not hold)
+/// and when several do (the fixture has duplicate rows on those columns, so the
+/// oracle cannot say which row was listed and nothing below would mean
+/// anything).
+fn fixture_row_for(
+    rows: &[std::collections::BTreeMap<String, f64>],
+    drawn: &std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, f64> {
+    let matches: Vec<&std::collections::BTreeMap<String, f64>> = rows
+        .iter()
+        .filter(|row| {
+            drawn.iter().all(|(name, text)| {
+                text.parse::<f64>()
+                    .is_ok_and(|v| row.get(name).is_some_and(|f| (f - v).abs() < 1e-9))
+            })
+        })
+        .collect();
+    assert_eq!(
+        matches.len(),
+        1,
+        "the drawn row {drawn:?} matches {} rows of the fixture — 0 means the \
+         table listed something the file does not hold, more than 1 means the \
+         oracle cannot say which row it is",
+        matches.len()
+    );
+    matches[0].clone()
+}
+
+/// **The rows pane lists the rows the brush selects, and goes back when it is
+/// cleared.**
+///
+/// The behaviour the whole card is for, read off the drawn frame at both ends.
+/// It failed before this branch's second round in a way no criterion here
+/// caught: the pane read depth-first mark 0, which on a generated dashboard is
+/// the hero's GHOST layer — `data: { from: opened }`, no `filterBy:` — so the
+/// table under the map listed all 240 rows while the marks outside the brush
+/// went grey and the status band said 45 were selected.
+///
+/// **The contributor is the hero's own plot path**, off the composition, and
+/// that is the half a weaker fixture loses. The generated selection is
+/// `select: crossfilter`, so a brush the hero published is dropped by the
+/// hero's own layers: asking the subset layer as `RowsAudience::Plot` answers
+/// 240 under this very brush. The assertion below checks that directly, so a
+/// selection that stopped self-excluding reddens here rather than quietly
+/// making the rest of the test pass for the wrong reason.
+///
+/// Three claims, none of them a count the pane reported about itself:
+///
+/// 1. the drawn cells change, and change to the rows inside the brush —
+///    checked against [`fixture_rows`], the CSV, not a second query;
+/// 2. the count the engine reports for the filtered layer at
+///    `RowsAudience::Reader` agrees with the CSV's own count of rows inside
+///    the interval;
+/// 3. clearing the selection restores the frame byte for byte.
+#[test]
+fn the_rows_pane_lists_the_rows_the_brush_selects() {
+    use brightfield_engine::coordinator::Interaction;
+    use brightfield_engine::{RowsAudience, SqlPredicate};
+    use brightfield_spec::analysis::ComponentPath;
+    use brightfield_sql::ir::ScalarValue;
+
+    // A west-of-the-valley strip, chosen so that plenty of rows fall each side
+    // of it: an interval that kept everything, or nothing, would make the
+    // narrowing unreadable.
+    const LO: f64 = -122.5;
+    const HI: f64 = -121.5;
+
+    let file = fixture_rows();
+    assert_eq!(file.len(), 240, "the committed sample is 240 rows");
+    let inside: Vec<&std::collections::BTreeMap<String, f64>> = file
+        .iter()
+        .filter(|r| {
+            let lon = r["longitude"];
+            (LO..=HI).contains(&lon)
+        })
+        .collect();
+    assert_eq!(
+        inside.len(),
+        45,
+        "the CSV holds 45 rows between {LO} and {HI} of longitude"
+    );
+
+    let (mut app, ctx, raw) = settled_window();
+    let pane = app
+        .canvas_panes()
+        .pane("rows")
+        .expect("the rows pane drew")
+        .body;
+    let before = drawn_rows(&mut app, &ctx, &raw, pane);
+    assert!(
+        before.len() >= 10,
+        "the rows pane drew {} rows at {SCREEN:?}, too few to read a change off",
+        before.len()
+    );
+    assert!(
+        before
+            .iter()
+            .any(|d| !(LO..=HI).contains(&fixture_row_for(&file, d)["longitude"])),
+        "every row the pane lists at rest is already inside the brush's \
+         interval, so narrowing to it would change nothing and the claim below \
+         would hold on a pane that ignores the selection"
+    );
+
+    let hero = ComponentPath(app.chart_doc().composed.plots[0].path.clone());
+    assert!(app.chart_doc_mut().apply_interaction(Interaction::Select {
+        name: brightfield_shell::dashboard::SELECTION.to_string(),
+        contributor: hero.clone(),
+        predicate: SqlPredicate::Interval {
+            column: "longitude".to_string(),
+            lo: ScalarValue::Float(LO),
+            hi: ScalarValue::Float(HI),
+            meta: None,
+        },
+    }));
+    for _ in 0..3 {
+        let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
+    }
+
+    // What the engine holds, at the three readings that matter.
+    let doc = app.chart_doc_mut();
+    let mark = doc
+        .live_dashboard()
+        .expect("the opened file has a live dashboard")
+        .rows_mark();
+    assert_eq!(mark, 1, "the hero's ghost is mark 0 and its subset is mark 1");
+    let session = doc
+        .live_coordinator()
+        .expect("the opened file has a live session")
+        .session();
+    assert_eq!(
+        session.step_rows_count(0, RowsAudience::Reader).expect("ghost"),
+        240,
+        "the ghost layer declares no `filterBy:`, so it holds the whole file \
+         under any brush — a pane reading it lists 240 rows for ever"
+    );
+    assert_eq!(
+        session
+            .step_rows_count(mark, RowsAudience::Plot)
+            .expect("subset as the plot"),
+        240,
+        "the subset layer asked as its own plot answers the whole file too, \
+         because crossfilter drops the clause this plot published. If this is \
+         45 the selection is no longer self-excluding and the rest of this \
+         test passes without exercising the defect"
+    );
+    assert_eq!(
+        session
+            .step_rows_count(mark, RowsAudience::Reader)
+            .expect("subset as a reader"),
+        inside.len() as u64,
+        "the filtered layer read as a reader must agree with the CSV's own \
+         count of rows inside the interval"
+    );
+    assert_eq!(
+        app.chart_doc().composed.rows,
+        Some(brightfield_shell::pipeline::RowCount {
+            selected: 45,
+            total: 240
+        }),
+        "the status band's own figures come off the same two readings, so a \
+         band saying `240 of 240 rows` under this brush is the same defect one \
+         surface along"
+    );
+
+    // …and what the pane DREW.
+    let after = drawn_rows(&mut app, &ctx, &raw, pane);
+    assert_ne!(
+        before, after,
+        "the rows pane drew the identical cells before and after the brush — \
+         the table under the map does not follow the selection"
+    );
+    assert!(!after.is_empty(), "the pane drew no rows after the brush");
+    for drawn in &after {
+        let lon = fixture_row_for(&file, drawn)["longitude"];
+        assert!(
+            (LO..=HI).contains(&lon),
+            "the pane lists a row at longitude {lon}, outside the brushed \
+             [{LO}, {HI}]: {drawn:?}"
+        );
+    }
+
+    // Clearing it puts the whole table back.
+    assert!(app.chart_doc_mut().apply_interaction(Interaction::ClearSelect {
+        name: brightfield_shell::dashboard::SELECTION.to_string(),
+        contributor: hero,
+    }));
+    for _ in 0..3 {
+        let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
+    }
+    assert_eq!(
+        drawn_rows(&mut app, &ctx, &raw, pane),
+        before,
+        "retracting the brush left the pane on the brushed rows — the read \
+         follows the interaction state in one direction only"
+    );
+    assert_eq!(
+        app.chart_doc().composed.rows,
+        Some(brightfield_shell::pipeline::RowCount {
+            selected: 240,
+            total: 240
+        }),
+    );
+}

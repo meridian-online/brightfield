@@ -30,7 +30,7 @@ use brightfield_engine::{RecordBatch, RowsAudience, SqlPredicate};
 use brightfield_shell::app::ChartDoc;
 use brightfield_shell::data_grid::{fetch_page, DataGridItem, GridPage, PAGE_PAD};
 use brightfield_shell::design::Mode;
-use brightfield_shell::pipeline::LiveDashboard;
+use brightfield_shell::pipeline::{presenting_rows_mark, LiveDashboard};
 use brightfield_spec::analysis::{analyse_spec, ComponentPath};
 use brightfield_spec::{parse_spec, Format};
 use brightfield_workbench::subject::RunState;
@@ -72,6 +72,39 @@ vconcat:
       data: { from: t, filterBy: $brush }
       x: x
       y: y
+"#;
+
+/// **The shape every generated tile writes**: two layers over one source, the
+/// first with no `filterBy:` (the ghost, the whole table) and the second bound
+/// to a `crossfilter` selection (the subset, what a brush leaves) — see
+/// `chart_kinds::point_map_tile` and the histogram and scatter tiles beside it.
+///
+/// [`BRUSH_DASHBOARD`] cannot stand in for it and that is why this exists.
+/// Both of its marks carry `filterBy:` and its selection is `intersect`, so it
+/// has no ghost to be misread as the presenting layer and no self-exclusion to
+/// drop a reader's brush. A test driven only through it is green on a pane
+/// reading mark 0 with the chart's own audience, which is exactly the pane
+/// that listed 240 of 240 rows under a brush.
+const GHOST_AND_SUBSET: &str = r#"
+params:
+  sel:
+    select: crossfilter
+data:
+  t:
+    - { x: 1 }
+    - { x: 2 }
+    - { x: 3 }
+    - { x: 4 }
+    - { x: 5 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: x
+  - mark: dot
+    data: { from: t, filterBy: $sel }
+    x: x
+    y: x
 "#;
 
 /// A million-row source — far more rows than any grid should ever hold.
@@ -318,6 +351,83 @@ fn clearing_the_brush_restores_the_grids_full_range() {
             .expect("count"),
         5,
         "retraction re-queries: the grid's range follows the interaction state"
+    );
+}
+
+/// **The rows pane's read resolves to the filtered layer, and drops nobody's
+/// clause** — the engine-level half of the defect, over a TWO-layer spec.
+///
+/// Three readings of one brush, and the pane's answer is the third:
+///
+/// | mark | audience | rows | why |
+/// |---|---|---|---|
+/// | 0 (ghost) | `Reader` | 5 | it declares no `filterBy:`, so no predicate reaches it at all |
+/// | 1 (subset) | `Plot` | 5 | crossfilter drops the clause this plot published — its own |
+/// | 1 (subset) | `Reader` | 2 | nothing dropped: the selection's value |
+///
+/// The first row is what the pane used to read. The second is what reading the
+/// subset layer *without* fixing the audience would read, and it is the same
+/// wrong number by a different route — which is why both terms are asserted
+/// here rather than only the one the fix started from.
+///
+/// **The contributor is the plot's own node path**, taken off the composition
+/// rather than typed. A synthetic path (`root/plot[99]`, which the tests above
+/// use) is not this plot, so crossfilter drops nothing for it and mark 1 at
+/// `Plot` would answer 2 — the middle row would pass against the unfixed code
+/// and the test would pin nothing.
+#[test]
+fn the_rows_pane_reads_the_filtered_layer_and_drops_no_contributors_clause() {
+    let parsed = parse_spec(GHOST_AND_SUBSET, Format::Yaml).expect("parse");
+    assert_eq!(
+        presenting_rows_mark(&parsed.spec),
+        1,
+        "the ghost is mark 0 and the layer carrying `filterBy:` is mark 1; a          rule answering 0 here is the rule that read the whole table"
+    );
+
+    let mut live = LiveDashboard::load_str(GHOST_AND_SUBSET, None).expect("load live");
+    let composed = live.present().expect("present");
+    let plot = ComponentPath(composed.plots[0].path.clone());
+    live.apply(Interaction::Select {
+        name: "sel".to_string(),
+        contributor: plot,
+        predicate: SqlPredicate::Expr("x >= 4".to_string()),
+    })
+    .expect("the brush re-composites");
+
+    let mark = presenting_rows_mark(&parsed.spec);
+    let session = live.coordinator().session();
+    assert_eq!(
+        session.step_rows_count(0, RowsAudience::Reader).expect("ghost"),
+        5,
+        "the ghost layer narrows under nothing, which is what makes reading          mark 0 a grid that never moves"
+    );
+    assert_eq!(
+        session
+            .step_rows_count(mark, RowsAudience::Plot)
+            .expect("subset as the plot"),
+        5,
+        "the subset layer asked as its own plot drops the clause that plot          published, so the fixture's crossfilter is live — if this is 2 the          selection is no longer self-excluding and the reading below proves          nothing"
+    );
+    assert_eq!(
+        session
+            .step_rows_count(mark, RowsAudience::Reader)
+            .expect("subset as a reader"),
+        2,
+        "`x >= 4` admits {{4, 5}}, and a reader that published no clause has          none to drop"
+    );
+
+    // …and the rows themselves, through the code the pane scrolls with.
+    let page = fetch_page(session, mark, 0..2, RowsAudience::Reader).expect("page");
+    assert_eq!(
+        page_texts(&page),
+        vec![vec!["4".to_string()], vec!["5".to_string()]],
+        "the pane's own read path lists the rows inside the brush"
+    );
+    let ghost_page = fetch_page(session, 0, 0..2, RowsAudience::Reader).expect("ghost page");
+    assert_eq!(
+        page_texts(&ghost_page),
+        vec![vec!["1".to_string()], vec!["2".to_string()]],
+        "…and the same read at mark 0 answers with the head of the whole          table, which is the picture the reader was given before"
     );
 }
 

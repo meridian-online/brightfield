@@ -2451,6 +2451,56 @@ plot:
         );
     }
 
+    /// The same device under `select: crossfilter`, brushed from **its own
+    /// plot** — the shape every generated dashboard writes, and the one the
+    /// `intersect` fixture above cannot see.
+    ///
+    /// Under crossfilter a consumer drops the clause its own plot published, so
+    /// asking the subset layer as the plot answers ten under this brush: the
+    /// figure a status band would report is `10 of 10 rows` beside a chart in
+    /// which everything outside the brush has gone grey. That was live until
+    /// this round. `compute_row_count` asks as a
+    /// [`RowsAudience::Reader`] — no plot, no contribution, nothing to drop —
+    /// and the first assertion here holds the fixture's self-exclusion so this
+    /// cannot go green by the selection quietly ceasing to be a crossfilter.
+    #[test]
+    fn a_crossfilter_brush_from_the_plot_itself_still_moves_the_selected_figure() {
+        let src = ROW_COUNT_DEVICE.replace("select: intersect", "select: crossfilter");
+        let mut dash = LiveDashboard::load_str(&src, None).expect("load");
+        let composed = dash.present().expect("first paint");
+        let plot = ComponentPath(composed.plots[0].path.clone());
+
+        let after = dash
+            .apply(Interaction::Select {
+                name: "sel".to_string(),
+                contributor: plot,
+                predicate: SqlPredicate::Expr("x > 5".to_string()),
+            })
+            .expect("re-paint after brush");
+
+        let spec = parse_spec(&src, Format::Yaml).expect("parse").spec;
+        let (_, subset) = ghost_subset_marks(&spec).expect("the device");
+        assert_eq!(
+            dash.coordinator()
+                .session()
+                .step_rows_count(subset, RowsAudience::Plot)
+                .expect("subset as the plot"),
+            10,
+            "the subset layer asked as its own plot must still drop this \
+             plot's clause, or the fixture is no longer a crossfilter and \
+             nothing below is a claim about one"
+        );
+        assert_eq!(
+            after.rows,
+            Some(RowCount {
+                selected: 5,
+                total: 10
+            }),
+            "the band reports the selection's own count — reading the subset \
+             layer as its plot would report ten of ten under this brush"
+        );
+    }
+
     /// AC3: the count is issued to the engine and not computed from a batch
     /// this side already fetched. `Session::duckdb_execute_count` advances on
     /// the cached mark-execution path (`execute_mark`/`execute_emitted`) and
