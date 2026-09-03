@@ -375,13 +375,13 @@ fn the_shipped_arrangement_names_only_panes_this_build_has() {
 /// the **screen** is read off a laid-out frame, which is where a toggle drawn
 /// from something other than that declaration would still turn up. A rect
 /// search over the frame is what the criterion asks for, and
-/// `MeridianApp::canvas_toggle_segments` is where the head band records every
-/// segment `chrome::projection_toggle` gave it.
+/// `MeridianApp::canvas_toggle_segments` is where the head band records the
+/// segments `chrome::projection_toggle` gave it.
 ///
 /// The window under it holds a chart **and** a protocol, which is the window
-/// the toggle used to draw on: over a window with no chart the canvas goes to
+/// the toggle used to draw on. Over a window with no chart the canvas goes to
 /// the graph and passes `None` for the toggle whatever the declaration says,
-/// so a search there would find nothing for the wrong reason.
+/// so a search there would come up empty for the wrong reason.
 #[test]
 fn the_canvas_declares_one_projection_and_draws_no_toggle() {
     let canvas = arrangement::default_arrangement().expect_region(arrangement::CANVAS);

@@ -26,12 +26,12 @@
 //!
 //! A data file opens as a Protocol of one step, so this window's ledger rail
 //! opens **closed to its strip** and the canvas has the rail's other 124
-//! points. That is the window the picture is photographed in and the window
-//! every claim about the group's own geometry is read in — [`settled`].
+//! points. That is the window the picture is photographed in, and the window
+//! the claims about the group's own geometry are read in — [`settled`].
 //!
 //! It is also a window in which, at [`SCREEN`], the column has no reach: the
 //! canvas is tall enough for seven tiles at their floor, so the page does not
-//! outgrow the pane and the wheel has nothing to move. The scroll and
+//! outgrow the pane and a wheel over it moves the page no distance. The scroll and
 //! page-bound claims are therefore read in the window with the rail reopened
 //! — [`settled_scrollable`], one click on the strip's own control — because
 //! they are claims about a page bigger than its pane and that is where this
@@ -86,7 +86,7 @@ fn settled(screen: egui::Rect) -> MeridianApp {
     settled_after(screen, Ledger::Closed, None, 0)
 }
 
-/// [`settled`] with the ledger rail reopened before anything is read off it.
+/// [`settled`] with the ledger rail reopened before the frame is read.
 ///
 /// The column has reach where the composed page outgrows the pane it is drawn
 /// in, and at [`SCREEN`] the rail's own height is what decides whether it
@@ -1595,9 +1595,9 @@ fn a_press_over_no_pane_of_the_group_is_over_no_page() {
             // itself. `PaneViews::first` is the map's CONTENT rect, and this
             // is the band that says so: widen it to the pane rect and the
             // hero — bounded to `first`'s height by `ChartDoc::reflow_to` —
-            // is composed 48 points taller and reaches down into here, so the
-            // page carries a tile where the frame says it carries none and
-            // the flag below stops agreeing with the frame.
+            // is composed 48 points taller and reaches down into here, so a
+            // tile turns up where the frame reports blank page and the flag
+            // below stops agreeing with the frame.
             "the map pane's inset strip below its content rect",
             across(
                 map.body.center().x,

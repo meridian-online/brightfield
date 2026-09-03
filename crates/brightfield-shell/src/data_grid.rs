@@ -291,9 +291,9 @@ pub const CLIP_SLACK: f32 = 0.5;
 /// Render `source` as the one Meridian table: `egui_table` (sticky header,
 /// virtualised rows) under the dense-rung cell chrome.
 ///
-/// Reports what it laid out — see [`TableDrawn`] — because the caller that has
-/// to say *"five of nine columns"* can answer that from the cells the table
-/// drew and from nothing it declared.
+/// Reports what it laid out — see [`TableDrawn`] — so the caller that has to
+/// say *"five of nine columns"* answers from the cells the table drew rather
+/// than from the widths it was handed.
 pub fn show_table(
     ui: &mut egui::Ui,
     salt: &str,
@@ -451,8 +451,8 @@ impl egui_table::TableDelegate for MeridianTableDelegate<'_> {
     }
 
     fn header_cell_ui(&mut self, ui: &mut egui::Ui, cell: &egui_table::HeaderCellInfo) {
-        // The cell's own box and the clip it is drawn under, before anything
-        // is painted into it: `egui_table` hands each header cell the rect the
+        // The cell's own box and the clip it is drawn under, recorded before
+        // the paint below: `egui_table` hands each header cell the rect the
         // column occupies and shrinks the clip to what survives the scroll, so
         // the pair is exactly "where this column is" and "how much of it the
         // reader can see".

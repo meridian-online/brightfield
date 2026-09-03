@@ -905,9 +905,9 @@ impl Item<ChartDoc> for ChartItem {
             // map pane gave the foot of its column to the rows pane, reaches
             // over the map pane's own bottom frame and over the rows pane
             // under it. The clip is narrowed to the first view for the paint
-            // and put back before anything else reads it: `Ui::interact` takes
-            // its hit rect from the clip, and the gestures below are aimed at
-            // the whole page across both views.
+            // and put back afterwards, because `Ui::interact` takes its hit
+            // rect from the clip and the gestures below are aimed at the whole
+            // page across both views.
             let laid = ui.clip_rect();
             if let Some(views) = doc.pane_views {
                 ui.shrink_clip_rect(views.first);
