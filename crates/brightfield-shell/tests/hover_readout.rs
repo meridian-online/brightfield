@@ -24,6 +24,7 @@
 use std::path::PathBuf;
 
 use brightfield_render::channel::Channel;
+use brightfield_shell::app::HoverReadout;
 use brightfield_shell::data_grid::fetch_page;
 use brightfield_shell::design::Mode;
 use brightfield_shell::window::{Boot, MeridianApp};
@@ -799,6 +800,58 @@ fn a_hover_on_a_plot_that_encodes_colour_names_the_colour_column() {
     );
 }
 
+/// **A plot that encodes size names it too**, by the column it encodes — and
+/// names it fourth, after the coordinate pair and the colour.
+///
+/// The fourth of the readout's four channels, and the one the shipped example
+/// corpus does not bind: the generated tiles the first screen draws bind the
+/// coordinate pair and stop there, and `examples/dashboard.yaml` adds a
+/// colour. So the fixture is a committed test spec rather than an example,
+/// and it binds colour *and* size so the ORDER is asserted rather than just
+/// the presence — a readout that named size before colour would satisfy a
+/// per-channel assertion and read wrongly to a person.
+///
+/// # A limit stated here rather than discovered later
+///
+/// `Channel::Size` reaches `ChannelMap` from the spec and is named by the
+/// readout, but `DOT_RADIUS` is a constant and the dot renderer draws with it:
+/// binding `size:` to a column changes what this readout says and does not
+/// change how the picture looks. What is pinned here is therefore the readout
+/// half of the channel, not a claim that the marks vary by it.
+#[test]
+fn a_hover_on_a_plot_that_encodes_size_names_the_size_column() {
+    let mut h = harness(spec_window("tests/data/size_and_colour.yaml"));
+    let columns = encoded_columns(h.state(), 0);
+    assert_eq!(
+        columns,
+        vec![
+            "weight".to_string(),
+            "height".to_string(),
+            "group".to_string(),
+            "span".to_string()
+        ],
+        "the mark binds x, y, fill and size, each to a column, in that order"
+    );
+
+    // The second row of the inline data.
+    let at = at_data(h.state(), 0, 30.0, 55.0);
+    h.hover_at(at);
+    h.step();
+    h.step();
+
+    let lines = lines_on_screen(&h);
+    assert_eq!(
+        lines,
+        vec![
+            "weight: 30".to_string(),
+            "height: 55".to_string(),
+            "group: B".to_string(),
+            "span: 9".to_string()
+        ],
+        "the readout named {lines:?}"
+    );
+}
+
 /// **The *hover overlay* checkbox is gone from a window holding a chart.**
 ///
 /// Asked of the accessibility tree, which is where a checkbox that is still
@@ -823,6 +876,127 @@ fn no_hover_overlay_checkbox_is_drawn_on_a_window_holding_a_chart() {
             .next()
             .is_none(),
         "a control labelled \"hover overlay\" is still drawn"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// AC1, at the window — one row's worth held, and nothing growing behind it
+// ---------------------------------------------------------------------------
+
+/// **A run of rests leaves the window holding one row's worth**, and leaves
+/// the session holding what it held before the first of them.
+///
+/// The engine's oracle bounds what one read *returns*. This is the claim one
+/// level out and over time: after twelve rests at twelve different marks, what
+/// the shell is carrying is still a single row of named values, and the
+/// session behind it has not grown by twelve of anything. A hover that filed
+/// each answer away — appended to the readout, cached the query, kept the
+/// batch — passes every single-rest assertion in this file and fails here.
+///
+/// Three readings, and each is a different way the same defect shows up.
+///
+/// The **execute count** moves by exactly twelve. That is what says twelve
+/// reads happened, so the two assertions below are about a window that did the
+/// work rather than one that quietly stopped hovering.
+///
+/// The **readout width** after each rest is the number of columns the hovered
+/// layer encodes. A readout that accumulated would be two lines after the
+/// first rest and twenty-four after the twelfth.
+///
+/// The **cache length** is unchanged across all twelve. `sql_cache` is the one
+/// place in the session a read can leave something behind that outlives it,
+/// and each rest is a distinct pixel and therefore a distinct SQL string, so a
+/// read on the caching path grows it by one per rest. The single-rest version
+/// of this in `a_hover_read_raises_the_execute_count_without_touching_the_cache`
+/// cannot tell an unchanged cache from an LRU that happened to be at its cap.
+///
+/// The width of `HoverReadout` is pinned beside them, because the three above
+/// measure *how much* is held, and would not move if a `RecordBatch` rode
+/// alongside the lines. Its engine-side twin is
+/// `the_reads_result_type_is_exactly_its_two_declared_fields_wide`.
+#[test]
+fn a_run_of_rests_leaves_the_window_holding_one_rows_worth() {
+    const RESTS: usize = 12;
+
+    let mut app = window();
+    let ctx = egui::Context::default();
+    settle(&mut app, &ctx);
+
+    let width = encoded_columns(&app, 0).len();
+    assert_eq!(
+        width, 2,
+        "the hero map encodes {width} columns, so the per-rest assertion below \
+         is not the two-line coordinate readout it is written for"
+    );
+
+    // Twelve aims, each exactly on a fixture row so a rest is certain to find
+    // one, each inside the hero's own rect, and each at a DISTINCT pixel: two
+    // rests at the same position are one read, and the count below would then
+    // be reporting the gate rather than the retention.
+    let hero = app.composed_plot_rects()[0];
+    let mut aims: Vec<egui::Pos2> = Vec::new();
+    for row in fixture_rows() {
+        let at = at_data(&app, 0, row.longitude, row.latitude);
+        if hero.contains(at) && !aims.iter().any(|p| *p == at) {
+            aims.push(at);
+        }
+        if aims.len() == RESTS {
+            break;
+        }
+    }
+    assert_eq!(
+        aims.len(),
+        RESTS,
+        "the fixture yielded {} distinct on-screen aims inside the hero",
+        aims.len()
+    );
+
+    let executes_before = executes(&app);
+    let cached_before = cached(&app);
+    assert!(
+        cached_before > 0,
+        "the boot composition cached nothing, so an unchanged cache below \
+         would be a comparison of zero with zero"
+    );
+
+    for (n, aim) in aims.iter().enumerate() {
+        rest_at(&mut app, &ctx, *aim);
+        let readout = app
+            .chart_doc()
+            .hover_readout
+            .clone()
+            .unwrap_or_else(|| panic!("rest {n} at {aim:?} is on a mark and found none"));
+        assert_eq!(
+            readout.lines.len(),
+            width,
+            "rest {n} left the window holding {} lines against the {width} \
+             columns the layer encodes: {:?}",
+            readout.lines.len(),
+            readout.lines
+        );
+    }
+
+    assert_eq!(
+        executes(&app),
+        executes_before + RESTS,
+        "{RESTS} rests at {RESTS} distinct pixels issued {} queries",
+        executes(&app) - executes_before
+    );
+    assert_eq!(
+        cached(&app),
+        cached_before,
+        "the session's cache grew by {} over {RESTS} rests — a stream of \
+         pointer positions is accumulating in it",
+        cached(&app) - cached_before
+    );
+
+    assert_eq!(
+        std::mem::size_of::<HoverReadout>(),
+        std::mem::size_of::<egui::Pos2>() + std::mem::size_of::<Vec<String>>(),
+        "`HoverReadout` is {} bytes against the {} its declared `at` and \
+         `lines` account for — the window is holding something else per hover",
+        std::mem::size_of::<HoverReadout>(),
+        std::mem::size_of::<egui::Pos2>() + std::mem::size_of::<Vec<String>>(),
     );
 }
 

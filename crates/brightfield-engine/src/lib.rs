@@ -4031,6 +4031,91 @@ plot:
         assert_eq!(session.sql_cache_len(), 1);
     }
 
+    // --- the hover read's batch does not outlive the read ---
+
+    /// **The hover's own query keeps no batch alive once it has been read.**
+    ///
+    /// The row-count assertions elsewhere say the read hands back one row.
+    /// They say nothing about *lifetime*: a session that filed the batch away
+    /// on the way past would return the same one row and go on holding every
+    /// row DuckDB materialised, which is the client-side copy this seam exists
+    /// to reject.
+    ///
+    /// So this holds a weak reference to the first column of the batch the
+    /// read produced, drops the read's own handle, and asks whether some other
+    /// owner remains. An Arrow `ArrayRef` is an `Arc`, so the answer is exact
+    /// rather than inferred: a live upgrade means a second owner exists,
+    /// wherever it is.
+    ///
+    /// The SQL is the string `Session::nearest_row` itself builds —
+    /// `Session::step_rows_sql` wrapped by `nearest::nearest_row_sql` —
+    /// executed through `Session::execute_uncached`, which is where
+    /// `nearest_row` obtains its batch. What it hands on from there is a
+    /// `nearest::NearestRead`, whose width
+    /// `the_reads_result_type_is_exactly_its_two_declared_fields_wide` pins, so
+    /// between the two there is no route by which a batch reaches a caller.
+    #[test]
+    fn the_hover_query_keeps_no_batch_alive_once_it_has_been_read() {
+        use std::sync::Arc;
+
+        let yaml = r"
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+    - { x: 3, y: 30 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: y
+";
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let mut session = Engine::new()
+            .load_spec(spec, analysis, None)
+            .expect("the fixture loads")
+            .session;
+
+        let probe = nearest::NearestProbe {
+            x: nearest::NearestAxis {
+                column: "x".to_string(),
+                at: 1.0,
+                per_pixel: 0.1,
+            },
+            y: nearest::NearestAxis {
+                column: "y".to_string(),
+                at: 10.0,
+                per_pixel: 1.0,
+            },
+            read: vec!["x".to_string(), "y".to_string()],
+            radius: 40.0,
+        };
+
+        // The read runs and finds something, so the batch below is a batch a
+        // real hover produced rather than an empty result nothing could retain.
+        let read = session.nearest_row(0, &probe).expect("the read runs");
+        assert_eq!(read.rows, 1, "the read found {} rows", read.rows);
+
+        let rows_sql = session.step_rows_sql(0).expect("the step emits rows");
+        let sql = nearest::nearest_row_sql(&rows_sql, &probe).expect("the probe is expressible");
+        let witness = {
+            let batches = session.execute_uncached(&sql).expect("the query runs");
+            let batch = batches
+                .iter()
+                .find(|b| b.num_rows() > 0)
+                .expect("the query returned a row");
+            assert!(batch.num_columns() > 0, "the query projected no columns");
+            Arc::downgrade(batch.column(0))
+        };
+
+        assert!(
+            witness.upgrade().is_none(),
+            "the batch the hover's query produced is still owned by something \
+             after the read returned — a stream of pointer positions is \
+             accumulating row data inside the session"
+        );
+    }
+
     #[test]
     fn sql_cache_lru_eviction() {
         // Property: cache eviction is LRU, not FIFO/random/MRU.

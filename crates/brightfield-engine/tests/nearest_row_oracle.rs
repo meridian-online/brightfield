@@ -18,7 +18,7 @@
 //! square fixture would let both readings agree and pin neither.
 
 use brightfield_engine::coordinator::{Coordinator, Interaction};
-use brightfield_engine::nearest::{NearestAxis, NearestProbe, NearestRead};
+use brightfield_engine::nearest::{NearestAxis, NearestCell, NearestProbe, NearestRead};
 use brightfield_engine::{Engine, Session, SqlPredicate};
 use brightfield_spec::analysis::{analyse_spec, ComponentPath};
 use brightfield_spec::{parse_spec, Format};
@@ -277,6 +277,48 @@ plot:
         "four coincident rows are all inside the radius and the read returned \
          {} of them — the client is holding more than one row",
         read.rows
+    );
+}
+
+/// **The read's result type is exactly its two declared fields wide**, so a
+/// batch cannot be riding along inside it.
+///
+/// The sibling above bounds how many rows the query *returns*. This bounds
+/// what the crate hands over, and the two are different questions: a
+/// `NearestRead` that carried the `RecordBatch` beside its cells would report
+/// `rows == 1` and still put the whole materialised result in the caller's
+/// hands, which is the client-side copy the seam exists to reject.
+///
+/// Asserted as a width rather than by reading the struct, because a width is
+/// something a test can watch move. A `RecordBatch` field, a `Vec` of them, a
+/// `Box` or an `Arc` around one, or a second `Vec` holding the rows that were
+/// not returned, each grow this number. The declared shape is a `usize` and a
+/// `Vec`, and the cost of the assertion is that a field added for a good
+/// reason has to be added here too — which is the point, since the review that
+/// costs is the one for the field that was not added for a good reason.
+///
+/// `NearestCell` is pinned beside it: widening the cell would widen what one
+/// row's worth means without moving the outer type.
+#[test]
+fn the_reads_result_type_is_exactly_its_two_declared_fields_wide() {
+    use std::mem::size_of;
+
+    assert_eq!(
+        size_of::<NearestRead>(),
+        size_of::<usize>() + size_of::<Vec<NearestCell>>(),
+        "`NearestRead` is {} bytes against the {} its declared `rows` and \
+         `cells` account for — something else is being carried across the \
+         crate boundary with the row",
+        size_of::<NearestRead>(),
+        size_of::<usize>() + size_of::<Vec<NearestCell>>(),
+    );
+    assert_eq!(
+        size_of::<NearestCell>(),
+        2 * size_of::<String>(),
+        "`NearestCell` is {} bytes against the {} its two declared `String` \
+         fields account for",
+        size_of::<NearestCell>(),
+        2 * size_of::<String>(),
     );
 }
 
