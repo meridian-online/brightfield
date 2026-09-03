@@ -116,11 +116,16 @@ WHAT IS *NOT* CHECKED (scope, stated so nobody reads this as more than it is)
       `za`" — went silent because `za` is ALSO a `#[cfg(test)]` helper's name
       in an unrelated file, and a comment describing a trait method shared by
       many structs resolves through whichever ONE of them happens to be a
-      test fixture. Two filters in resolvable_test_names() close the worst of
-      it — a name with no underscore never resolves, in either the `tests/`
-      or the `#[cfg(test)]` half, and a METHOD never resolves at all — but
-      neither closes a genuine, multi-word production name that a test
-      fixture also happens to define as a free function. This is the same
+      test fixture. Three filters in resolvable_test_names() close the worst
+      of it — a name with no underscore never resolves, in either the
+      `tests/` or the `#[cfg(test)]` half; a METHOD never resolves at all;
+      and a name production itself defines never resolves through either
+      attribute-free half. What none of them closes is a name that exists
+      ONLY as a test-side helper and is cited as the SUBJECT of the claim
+      rather than as its measurement, which is a question about relevance
+      and not about existence. Two comments in
+      crates/brightfield-shell/tests/ghosted_histogram.rs are silent for
+      exactly that reason. This is the same
       shape as rule A's `defines()` — an existence check, not a relevance
       check — just wider, because the enumeration it resolves against is
       wider.
@@ -239,6 +244,14 @@ def acknowledged(name: str, kind: str) -> bool:
 # in a doc comment resolves as a definition of `only`, because `type` matches
 # inside `retype`.
 DEFN = r"\b(?:const|static|fn|struct|enum|trait|type|union|mod)\s+{sym}\b|\bmacro_rules!\s+{sym}\b"
+
+# The same keywords, collecting the NAMES instead of asking about one. DEFN
+# answers "is this name defined here"; this enumerates what a file defines, for
+# production_item_names().
+ITEM_DEFN = re.compile(
+    r"\b(?:const|static|fn|struct|enum|trait|type|union|mod)\s+([A-Za-z_][A-Za-z0-9_]*)\b"
+    r"|\bmacro_rules!\s+([A-Za-z_][A-Za-z0-9_]*)\b"
+)
 
 COMMENT = re.compile(r"^\s*(?://!|///|//)\s?(.*)$")
 
@@ -532,6 +545,11 @@ def cfg_test_fn_names(text: str) -> set[str]:
     return names
 
 
+def is_integration_test(path: Path) -> bool:
+    """Is this `crates/<crate>/tests/<name>.rs` — a file Cargo builds as a test?"""
+    return path.parent.name == "tests" and path.parent.parent.parent.name == "crates"
+
+
 def tests_dir_fn_names(text: str) -> set[str]:
     """FREE `fn` names in an integration-test file, underscore-bearing only.
 
@@ -543,6 +561,48 @@ def tests_dir_fn_names(text: str) -> set[str]:
     one-word name is not a citation.
     """
     return {n for n in free_fn_names(text) if "_" in n}
+
+
+_PRODUCTION: set[str] | None = None
+
+
+def production_item_names() -> set[str]:
+    """Item names this workspace defines OUTSIDE its test code, read once.
+
+    A citation gate cannot tell what a name MEANS, only where it is defined,
+    and a name production defines is being cited as production far more often
+    than as a measurement. `new_egui_renderer` is a function of
+    crates/brightfield-shell/src/capture.rs; a helper in
+    crates/brightfield-shell/tests/keyed_canvas.rs shadows it, and that
+    coincidence discharged a completeness claim in capture.rs that is plainly
+    describing the renderer. `role_of` and `idle_status_entry` did the same in
+    three more places. So a name production defines does not resolve through
+    the two attribute-free enumerations.
+
+    A `#[test]` function is exempt from this: the attribute is proof the name
+    IS a test, whatever else in the tree shares the spelling. Measured here,
+    the refusal costs 13 of the 536 names the attribute-free half contributes.
+    """
+    global _PRODUCTION
+    if _PRODUCTION is None:
+        found: set[str] = set()
+        for f in sorted(ROOT.glob("crates/**/*.rs")):
+            if "target" in f.parts or is_integration_test(f):
+                continue
+            try:
+                text = f.read_text(errors="replace")
+            except OSError:
+                continue
+            hidden = [
+                (m.start(), _brace_match_end(text, m.end()))
+                for m in CFG_TEST_MOD.finditer(text)
+            ]
+            for m in ITEM_DEFN.finditer(text):
+                if any(a <= m.start() < b for a, b in hidden):
+                    continue
+                found.add(m.group(1) or m.group(2))
+        _PRODUCTION = found
+    return _PRODUCTION
 
 
 _RESOLVABLE: set[str] | None = None
@@ -559,10 +619,12 @@ def resolvable_test_names() -> set[str]:
       3. a FREE, underscore-bearing function in a `#[cfg(test)]` module —
          cfg_test_fn_names().
 
-    Two things are excluded from (2) and (3), and each is the fix for a
+    Three things are excluded from (2) and (3), and each is the fix for a
     measured false silence rather than a matter of taste:
 
       * a METHOD, whatever module it sits in. See free_fn_names().
+      * a name production also defines, in either half. See
+        production_item_names().
       * a name with no underscore. This tree's integration-test files define
         free functions called `nothing`, `parse`, `read`, `run`, `block`,
         `column` and `key`, among many others of the same shape — ordinary
@@ -575,7 +637,7 @@ def resolvable_test_names() -> set[str]:
     """
     global _RESOLVABLE
     if _RESOLVABLE is None:
-        names = set(test_functions())
+        wider: set[str] = set()
         for f in sorted(ROOT.glob("crates/**/*.rs")):
             if "target" in f.parts:
                 continue
@@ -583,10 +645,10 @@ def resolvable_test_names() -> set[str]:
                 text = f.read_text(errors="replace")
             except OSError:
                 continue
-            names |= cfg_test_fn_names(text)
-            if f.parent.name == "tests" and f.parent.parent.parent.name == "crates":
-                names |= tests_dir_fn_names(text)
-        _RESOLVABLE = names
+            wider |= cfg_test_fn_names(text)
+            if is_integration_test(f):
+                wider |= tests_dir_fn_names(text)
+        _RESOLVABLE = test_functions() | (wider - production_item_names())
     return _RESOLVABLE
 
 
@@ -1809,6 +1871,9 @@ def self_test() -> int:
         "a method in a `#[cfg(test)]` impl": fixture(
             cfg_method - cfg_free - tests_free, resolves=False
         ),
+        "a test-side name production also defines": fixture(
+            (cfg_free | tests_free) & production_item_names(), resolves=False
+        ),
     }
     if any(n is None for n in derived.values()):
         print("self-test: could not derive " + "; ".join(
@@ -1820,6 +1885,7 @@ def self_test() -> int:
     short_cfg = derived["a one-word `#[cfg(test)]` helper"]
     short_tests = derived["a one-word `tests/`-file helper"]
     method = derived["a method in a `#[cfg(test)]` impl"]
+    shadowed = derived["a test-side name production also defines"]
 
     cases += [
         (f"[`{camel}`] is the only thing that makes one; `{fake_test_name}` holds that",
@@ -1855,6 +1921,9 @@ def self_test() -> int:
         (f"[`{camel}`] is the only thing that makes one; `{method}` holds that", False,
          f"a METHOD is not a test, whatever module it sits in ({method})",
          ('"only"', f"`{camel}`")),
+        (f"[`{camel}`] is the only thing that makes one; `{shadowed}` holds that",
+         False, f"a name PRODUCTION defines is not a test citation, however a test "
+                f"file shadows it ({shadowed})", ('"only"', f"`{camel}`")),
         (f"[`{camel}`] is the only thing that makes one; `{ack_symbol}` holds that",
          False, f"a name registered as an external SYMBOL is not a registered "
                 f"external TEST, and discharges nothing ({ack_symbol})",
