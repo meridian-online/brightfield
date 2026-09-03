@@ -734,3 +734,264 @@ fn is_token(p: &image::Rgba<u8>, token: meridian_design::colour::Rgba) -> bool {
         && p.0[1] == (token.g * 255.0).round() as u8
         && p.0[2] == (token.b * 255.0).round() as u8
 }
+
+// ---------------------------------------------------------------------------
+// A time axis at a dashboard tile's real width
+// ---------------------------------------------------------------------------
+
+/// The `day` column's real dates, walked off the composed dashboard's own
+/// resolved `Scale::Band` for [`fixture`] rather than typed a second time —
+/// a change to the fixture's dates cannot leave this test checking a set the
+/// picture no longer draws.
+fn fixture_day_categories(composed: &brightfield_shell::pipeline::Composed) -> Vec<String> {
+    let day_plot = composed
+        .plots
+        .iter()
+        .find(|p| p.x_column.as_deref() == Some("day"))
+        .expect("fixture check: the day column earns a tile with x: day");
+    match day_plot.scales.get(brightfield_render::channel::Channel::X) {
+        Some(brightfield_render::scale::Scale::Band { categories, .. }) => categories.clone(),
+        other => panic!("fixture check: day's x scale is not a band scale: {other:?}"),
+    }
+}
+
+/// The width a tile in the STACKED column beside the hero draws at, read off
+/// two of them rather than off `dashboard::COLUMN_TILE_WIDTH` — the width the
+/// card behind this test is about reads off a real frame, not a constant.
+/// Both non-hero tiles of [`fixture`] (`region`, `reading`) are asserted to
+/// agree, which is the fixture check that makes "the" width below meaningful.
+fn column_tile_drawn_width(composed: &brightfield_shell::pipeline::Composed) -> f64 {
+    let widths: Vec<f64> = composed
+        .plots
+        .iter()
+        .filter(|p| p.x_column.as_deref() != Some("day"))
+        .map(|p| f64::from(p.layout.width))
+        .collect();
+    assert!(
+        widths.len() >= 2,
+        "fixture check: expected two non-hero tiles in the column, got {widths:?}"
+    );
+    assert!(
+        widths.windows(2).all(|w| (w[0] - w[1]).abs() < 0.5),
+        "fixture check: the column's tiles are not drawn at one shared \
+         width, so there is no single 'the column tile's drawn width' to \
+         read: {widths:?}"
+    );
+    widths[0]
+}
+
+/// A `day`-axis rendered in isolation at `width`, over `categories` — the same
+/// [`brightfield_render::axis::compute_ticks`] / `render_x_axis` path a
+/// counts_over_time tile's own scene draws its x axis through, at
+/// [`brightfield_render::layout::ChartLayout`]'s own inset-adjusted x range.
+fn day_axis_scene(
+    categories: &[String],
+    width: f64,
+) -> (vello::Scene, Vec<brightfield_render::axis::Tick>) {
+    let layout = brightfield_render::layout::ChartLayout::new(width, 300.0);
+    let (range_start, range_end) = layout.x_range();
+    let scale = brightfield_render::scale::Scale::Band {
+        categories: categories.to_vec(),
+        range_start,
+        range_end,
+        padding: 0.1,
+    };
+    let ticks = brightfield_render::axis::compute_ticks(&scale, 5);
+    let mut scene = vello::Scene::new();
+    brightfield_render::axis::render_x_axis(
+        &mut scene,
+        &layout,
+        &ticks,
+        None,
+        brightfield_render::ink::ChartInk::LIGHT,
+    );
+    (scene, ticks)
+}
+
+/// Matches each horizontal glyph run in `scene` back to whichever `ticks`
+/// entry its draw position (`TextAnchor::Middle`, `render_x_axis`'s own
+/// anchor) is nearest, then asserts no two runs' `[x, x + width]` intervals
+/// intersect — the width read with `measure_width`, the shaping
+/// `render_x_axis` measured it with, rather than estimated from the run's raw
+/// glyph count. A run whose transform carries a quarter turn is skipped: a
+/// rotated axis is a different claim, made in `brightfield-render`'s own
+/// `axis` tests.
+fn assert_no_tick_label_overlap(
+    scene: &vello::Scene,
+    ticks: &[brightfield_render::axis::Tick],
+    size: f32,
+) {
+    let candidates: Vec<(f64, &str)> = ticks
+        .iter()
+        .map(|t| {
+            (
+                t.position - brightfield_render::text::measure_width(&t.label, size) / 2.0,
+                t.label.as_str(),
+            )
+        })
+        .collect();
+    let mut spans: Vec<(f64, f64)> = Vec::new();
+    for run in &scene.encoding().resources.glyph_runs {
+        let m = run.transform.matrix;
+        let rotated = m[0].abs() < 1e-3 && m[3].abs() < 1e-3;
+        if rotated {
+            continue;
+        }
+        let x0 = f64::from(run.transform.translation[0]);
+        let (_, label) = candidates
+            .iter()
+            .min_by(|a, b| (a.0 - x0).abs().partial_cmp(&(b.0 - x0).abs()).unwrap())
+            .expect("fixture check: at least one candidate tick");
+        spans.push((
+            x0,
+            x0 + brightfield_render::text::measure_width(label, size),
+        ));
+    }
+    spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    for pair in spans.windows(2) {
+        assert!(
+            pair[0].1 <= pair[1].0,
+            "two drawn tick labels overlap: {pair:?} (all spans: {spans:?})"
+        );
+    }
+}
+
+/// **The counts_over_time tile's time axis does not run its dates together at
+/// the width a dashboard tile is actually drawn at.**
+///
+/// [`fixture`] opened as a data file makes `day` the hero (it has no
+/// coordinate pair, so `Dashboard::hero_index` falls back to the first tile —
+/// `day` is the fixture's first column), which draws it in the map pane
+/// rather than the column. The width this test measures the axis against is
+/// therefore read off the column's OTHER two tiles
+/// ([`column_tile_drawn_width`]) instead of off `day`'s own pane — the width
+/// any counts_over_time tile draws at when a coordinate pair puts something
+/// else in the hero's place, which is the shape the original defect was
+/// recorded against. The categories are `day`'s real, composed ones
+/// ([`fixture_day_categories`]); only the width is borrowed from a sibling.
+#[test]
+fn the_time_axis_does_not_collide_at_the_column_tiles_drawn_width() {
+    let path = fixture();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let opened = data_file::open(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+
+    let categories = fixture_day_categories(&opened.composed);
+    assert_eq!(
+        categories,
+        vec![
+            "2026-01-05".to_string(),
+            "2026-01-06".to_string(),
+            "2026-01-07".to_string(),
+            "2026-01-08".to_string(),
+            "2026-01-09".to_string(),
+            "2026-01-10".to_string(),
+        ],
+        "fixture check: the day column's real dates moved"
+    );
+    let width = column_tile_drawn_width(&opened.composed);
+
+    let (scene, ticks) = day_axis_scene(&categories, width);
+    assert_eq!(
+        ticks.len(),
+        categories.len(),
+        "fixture check: one tick per date"
+    );
+    assert_no_tick_label_overlap(&scene, &ticks, brightfield_render::text::LABEL_SIZE);
+}
+
+/// **The same axis, at 240 and at 720 points wide** — so the claim above is a
+/// rule about the render path rather than a fact about today's one measured
+/// column width.
+#[test]
+fn the_time_axis_does_not_collide_at_240_or_720_points() {
+    let path = fixture();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let opened = data_file::open(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let categories = fixture_day_categories(&opened.composed);
+
+    for width in [240.0_f64, 720.0_f64] {
+        let (scene, ticks) = day_axis_scene(&categories, width);
+        assert_no_tick_label_overlap(&scene, &ticks, brightfield_render::text::LABEL_SIZE);
+    }
+}
+
+/// **[`fixture`]'s own generated dashboard, as pixels** — the pair
+/// [`the_generated_dashboard_light_baseline`] / `_dark_baseline` draw for
+/// [`housing`], drawn instead for the table whose `day` column is what this
+/// card's regression is about. `assert_choices` already runs over this same
+/// fixture in `each_column_of_the_table_gets_the_tile_its_type_earns`, ahead
+/// of any capture, for the reason this file's header gives.
+#[test]
+fn the_four_shapes_dashboard_light_baseline() {
+    let path = fixture();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+
+    let opened = data_file::open(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    assert_choices(&opened.dashboard);
+    drop(opened);
+
+    std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let out = scratch("four_shapes_dashboard_light");
+    let (w, h) = capture_png(boot, Mode::Light, SCALE, &out, Vec::new())
+        .unwrap_or_else(|e| panic!("capture four_shapes_dashboard_light: {e}"));
+    assert!(w > 0 && h > 0, "four_shapes_dashboard_light: empty capture");
+
+    let image = image::open(&out)
+        .unwrap_or_else(|e| panic!("read capture {}: {e}", out.display()))
+        .to_rgba8();
+    egui_kittest::image_snapshot(&image, "four_shapes_dashboard_light");
+}
+
+/// The most pixels of a dark [`fixture`] capture allowed to land exactly on
+/// the light chart surface's bytes before this test reads it as the
+/// white-slab regression `the_generated_dashboard_dark_baseline` guards
+/// against on [`housing`], rather than as antialiasing.
+///
+/// [`housing`]'s hero and column tiles carry one mark layer each. Two of
+/// [`fixture`]'s three tiles carry two (the binned histogram's unfiltered
+/// ghost behind its filtered subset — see `histogram_tile`), so this
+/// composition has an edge shape [`housing`]'s capture has not needed to
+/// draw: two antialiased layers meeting. Measured on this build, one device
+/// pixel — inside the `reading` tile's bars, away from any axis or tick
+/// label — blends to the light surface's precise bytes by coincidence of the
+/// two layers' opacities. The budget below catches the defect this check
+/// exists for: a pane painted the light surface wholesale runs to thousands
+/// of pixels, well past a small handful.
+const DARK_CAPTURE_LIGHT_PIXEL_BUDGET: usize = 4;
+
+/// **The dark twin of [`the_four_shapes_dashboard_light_baseline`]** — the
+/// same white-slab regression check `the_generated_dashboard_dark_baseline`
+/// runs for [`housing`], run here for [`fixture`] instead, with the
+/// tolerance [`DARK_CAPTURE_LIGHT_PIXEL_BUDGET`] documents.
+#[test]
+fn the_four_shapes_dashboard_dark_baseline() {
+    let path = fixture();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+
+    std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let out = scratch("four_shapes_dashboard_dark");
+    let (w, h) = capture_png(boot, Mode::Dark, SCALE, &out, Vec::new())
+        .unwrap_or_else(|e| panic!("capture four_shapes_dashboard_dark: {e}"));
+    assert!(w > 0 && h > 0, "four_shapes_dashboard_dark: empty capture");
+
+    let image = image::open(&out)
+        .unwrap_or_else(|e| panic!("read capture {}: {e}", out.display()))
+        .to_rgba8();
+
+    let light = pixels_of(&image, meridian_design::chrome::INK_LIGHT.surface);
+    assert!(
+        light <= DARK_CAPTURE_LIGHT_PIXEL_BUDGET,
+        "{light} pixels of this dark dashboard are the LIGHT chart surface \
+         (#fcfcfb), past the {DARK_CAPTURE_LIGHT_PIXEL_BUDGET}-pixel budget \
+         antialiasing accounts for — a pane is painting the light surface"
+    );
+    let dark = pixels_of(&image, meridian_design::chrome::INK_DARK.surface);
+    assert!(
+        dark > 0,
+        "no pixel of this dark dashboard is the dark chart surface (#161413)"
+    );
+
+    egui_kittest::image_snapshot(&image, "four_shapes_dashboard_dark");
+}
