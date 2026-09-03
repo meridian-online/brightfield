@@ -765,7 +765,7 @@ fn column_tile_drawn_width(composed: &brightfield_shell::pipeline::Composed) -> 
         .plots
         .iter()
         .filter(|p| p.x_column.as_deref() != Some("day"))
-        .map(|p| f64::from(p.layout.width))
+        .map(|p| p.layout.width)
         .collect();
     assert!(
         widths.len() >= 2,
