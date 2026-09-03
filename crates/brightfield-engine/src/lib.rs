@@ -10,6 +10,7 @@
 pub mod coordinator;
 pub mod error;
 pub mod facts;
+pub mod nearest;
 pub mod preagg;
 pub mod profile;
 pub mod semantic;
@@ -180,6 +181,42 @@ fn spec_value_at(array: &dyn duckdb::arrow::array::Array, row: usize) -> Option<
             .map(|a| SpecValue::Float(a.value(row))),
         _ => None,
     }
+}
+
+/// Turn what the nearest-row query returned into a [`nearest::NearestRead`].
+///
+/// The query casts each projected column to `VARCHAR`, so the whole batch is
+/// one array type and there is no per-type dispatch here. A cell that is SQL
+/// NULL is dropped rather than rendered — see [`nearest::NearestRead::cells`].
+///
+/// `rows` is summed across batches rather than read off the first, because a
+/// read that lost its bound is exactly the case this number exists to report
+/// and DuckDB chunks a large result. `cells` comes from the first row of the
+/// first non-empty batch, which is the nearest one: the query orders by
+/// distance.
+fn read_nearest(batches: &[RecordBatch], probe: &nearest::NearestProbe) -> nearest::NearestRead {
+    use duckdb::arrow::array::{Array, StringArray};
+
+    let rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
+    let mut cells = Vec::new();
+    if let Some(batch) = batches.iter().find(|b| b.num_rows() > 0) {
+        for column in &probe.read {
+            let Some(array) = batch
+                .column_by_name(column)
+                .and_then(|a| a.as_any().downcast_ref::<StringArray>())
+            else {
+                continue;
+            };
+            if array.is_null(0) {
+                continue;
+            }
+            cells.push(nearest::NearestCell {
+                column: column.clone(),
+                value: array.value(0).to_string(),
+            });
+        }
+    }
+    nearest::NearestRead { rows, cells }
 }
 
 use brightfield_spec::analysis::{ComponentPath, SpecAnalysis};
@@ -1550,6 +1587,90 @@ impl Session {
         self.query_arrow_raw(&sql).map_err(|e| {
             self.classify_query_failure(index, &self.mark_kind_at(index), sql.clone(), e)
         })
+    }
+
+    /// **The nearest drawn row to a point on a mark**, as at most one row of
+    /// the columns `probe` asked for.
+    ///
+    /// Wrapped around the same emitted rows SQL [`Self::execute_step_rows`]
+    /// runs at [`RowsAudience::Plot`], so the row this hands back is one the
+    /// mark is *currently drawing*: the static `data.filter` and the live
+    /// selection predicate are both already inside `rows_sql`, and a brush
+    /// that has narrowed the mark has narrowed what can be found here. See
+    /// [`crate::nearest`] for the wrap's shape and for why the distance is
+    /// measured in pixels.
+    ///
+    /// # Why [`RowsAudience::Plot`] and not [`RowsAudience::Reader`]
+    ///
+    /// A hover names the dot under the pointer, so it has to search the row
+    /// set the mark DREW, and `Plot` is the audience whose `WHERE` is
+    /// byte-identical to the one `emit_query` compiled for that mark. Under
+    /// `select: crossfilter` a plot is not filtered by the clause it published
+    /// itself, so brushing a plot and then hovering it leaves the dots outside
+    /// the brush on screen; a read asking as `Reader` would apply that clause
+    /// and come back empty over a dot the user can see, or name a farther row
+    /// that survived it. The rows pane and the status band ask as
+    /// `Reader` because they draw no mark and publish no clause — see the
+    /// enum. Held by
+    /// `a_hover_reads_what_its_own_brushed_plot_still_draws`.
+    ///
+    /// # Why this is not [`Self::execute_step_rows`] with a filter
+    ///
+    /// Two reasons, and the second is the load-bearing one. The row set is
+    /// bounded in DuckDB rather than in the caller, so the client never holds
+    /// more than the one row — a hover over a ten-million-row step reads one
+    /// row, not ten million. And this read is **uncached** ([`Self::execute_uncached`]):
+    /// a pointer resting at a new pixel is a new query string each time, so
+    /// caching them would evict the chart's own results to store answers
+    /// nobody asks twice.
+    ///
+    /// The read raises [`Self::duckdb_execute_count`] even so, because it *is*
+    /// a DuckDB execute and a counter that skipped it would report a hover as
+    /// free — `a_hover_read_raises_the_execute_count_without_touching_the_cache`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::execute_step_rows`]: emit failure for an inline or
+    /// data-less mark, or [`EngineError::QueryFailed`] if DuckDB rejects the
+    /// query. A probe that cannot be expressed — a degenerate axis, an empty
+    /// column list; see [`nearest::nearest_row_sql`] — is not an error and
+    /// comes back as a read that found no row.
+    pub fn nearest_row(
+        &mut self,
+        index: usize,
+        probe: &nearest::NearestProbe,
+    ) -> Result<nearest::NearestRead, EngineError> {
+        let rows_sql = self.step_rows_sql(index, RowsAudience::Plot)?;
+        let Some(sql) = nearest::nearest_row_sql(&rows_sql, probe) else {
+            return Ok(nearest::NearestRead::default());
+        };
+        let batches = self.execute_uncached(&sql).map_err(|e| {
+            self.classify_query_failure(index, &self.mark_kind_at(index), sql.clone(), e)
+        })?;
+        Ok(read_nearest(&batches, probe))
+    }
+
+    /// Execute `sql` and return its Arrow batches **without touching either
+    /// cache**, recording one DuckDB execute.
+    ///
+    /// The production non-caching read. It differs from the private
+    /// `query_arrow_raw` in exactly one thing — the execute is counted — and
+    /// from `execute_emitted` in two: it neither reads `sql_cache` on the way
+    /// in nor writes it on the way out.
+    ///
+    /// That combination is what a per-pointer-position read needs. Counting
+    /// keeps a hover visible to anything measuring how much this session asks
+    /// of DuckDB; not caching keeps a stream of one-shot query strings from
+    /// evicting the chart's own results out of an LRU they will never be read
+    /// from again.
+    ///
+    /// # Errors
+    ///
+    /// DuckDB's own, unclassified — the caller knows which mark it was asking
+    /// about and is the one that can say so.
+    pub fn execute_uncached(&mut self, sql: &str) -> Result<Vec<RecordBatch>, duckdb::Error> {
+        self.sql_cache.duckdb_execute_count += 1;
+        self.query_arrow_raw(sql)
     }
 
     /// A cancellation handle for whatever query this session's connection is
@@ -3934,6 +4055,95 @@ plot:
             "duckdb_execute_count must not increment on cache hit"
         );
         assert_eq!(session.sql_cache_len(), 1);
+    }
+
+    // --- the hover read's batch does not outlive the read ---
+
+    /// **The hover's own query keeps no batch alive once it has been read.**
+    ///
+    /// The row-count assertions elsewhere say the read hands back one row.
+    /// They say nothing about *lifetime*: a session that filed the batch away
+    /// on the way past would return the same one row and go on holding every
+    /// row DuckDB materialised, which is the client-side copy this seam exists
+    /// to reject.
+    ///
+    /// So this holds a weak reference to the first column of the batch the
+    /// read produced, drops the read's own handle, and asks whether some other
+    /// owner remains. An Arrow `ArrayRef` is an `Arc`, so the answer is exact
+    /// rather than inferred: a live upgrade means a second owner exists,
+    /// wherever it is.
+    ///
+    /// The SQL is the string `Session::nearest_row` itself builds —
+    /// `Session::step_rows_sql` wrapped by `nearest::nearest_row_sql` —
+    /// executed through `Session::execute_uncached`, which is where
+    /// `nearest_row` obtains its batch. What it hands on from there is a
+    /// `nearest::NearestRead`, whose width
+    /// `the_reads_result_type_is_exactly_its_two_declared_fields_wide` pins, so
+    /// between the two there is no route by which a batch reaches a caller.
+    #[test]
+    fn the_hover_query_keeps_no_batch_alive_once_it_has_been_read() {
+        use std::sync::Arc;
+
+        let yaml = r"
+data:
+  t:
+    - { x: 1, y: 10 }
+    - { x: 2, y: 20 }
+    - { x: 3, y: 30 }
+plot:
+  - mark: dot
+    data: { from: t }
+    x: x
+    y: y
+";
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let mut session = Engine::new()
+            .load_spec(spec, analysis, None)
+            .expect("the fixture loads")
+            .session;
+
+        let probe = nearest::NearestProbe {
+            x: nearest::NearestAxis {
+                column: "x".to_string(),
+                at: 1.0,
+                per_pixel: 0.1,
+            },
+            y: nearest::NearestAxis {
+                column: "y".to_string(),
+                at: 10.0,
+                per_pixel: 1.0,
+            },
+            read: vec!["x".to_string(), "y".to_string()],
+            radius: 40.0,
+        };
+
+        // The read runs and finds something, so the batch below is a batch a
+        // real hover produced rather than an empty result nothing could retain.
+        let read = session.nearest_row(0, &probe).expect("the read runs");
+        assert_eq!(read.rows, 1, "the read found {} rows", read.rows);
+
+        // The same audience `nearest_row` reads at, so this is the string the
+        // read runs rather than a neighbouring one.
+        let rows_sql = session
+            .step_rows_sql(0, RowsAudience::Plot)
+            .expect("the step emits rows");
+        let sql = nearest::nearest_row_sql(&rows_sql, &probe).expect("the probe is expressible");
+        let witness = {
+            let batches = session.execute_uncached(&sql).expect("the query runs");
+            let batch = batches
+                .iter()
+                .find(|b| b.num_rows() > 0)
+                .expect("the query returned a row");
+            assert!(batch.num_columns() > 0, "the query projected no columns");
+            Arc::downgrade(batch.column(0))
+        };
+
+        assert!(
+            witness.upgrade().is_none(),
+            "the batch the hover's query produced is still owned by something \
+             after the read returned — a stream of pointer positions is \
+             accumulating row data inside the session"
+        );
     }
 
     #[test]

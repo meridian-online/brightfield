@@ -23,6 +23,7 @@ use brightfield_conformance::LoadDiagnostics;
 use brightfield_engine::coordinator::{Coordinator, Interaction};
 use brightfield_engine::error::EngineError;
 use brightfield_engine::facts::MarkFacts;
+use brightfield_engine::nearest::{NearestProbe, NearestRead};
 use brightfield_engine::{
     assemble_batches, DeclinedMark, Engine, NavigationExtent, RowsAudience, Session,
 };
@@ -33,7 +34,7 @@ use brightfield_render::layout::{ChartLayout, Margins};
 use brightfield_render::mark::{default_renderers, find_renderer, MarkRenderer};
 use brightfield_render::sample_notice::{sample_band_margins, SampleFact};
 use brightfield_render::sample_policy;
-use brightfield_render::scale::{PinnedDomains, ScaleSet, ViewExtent};
+use brightfield_render::scale::{PinnedDomains, Scale, ScaleSet, ViewExtent};
 use brightfield_render::scene::{
     build_multi_mark_scene_pinned, compose_dashboard, unrestorable_under_sampling, ChartData,
     UnsampledDomains,
@@ -95,6 +96,162 @@ pub struct PlotHandle {
     /// surface reading plot handles (chrome, a future export caption) can tell
     /// a sampled plot from a complete one without re-deriving it.
     pub sample: Option<SampleFact>,
+    /// **The layer a pointer resting on this plot reads**, when one of its
+    /// marks can be read that way — see [`HoverLayer`].
+    ///
+    /// `None` for a plot whose top layer summarises rather than draws them
+    /// (a histogram's bars are bins, and there is no row under one), and for
+    /// a plot whose positional channels are not both plain columns.
+    pub hover: Option<HoverLayer>,
+}
+
+/// **Which of a plot's layers a hover reads, and what that layer encodes.**
+///
+/// A generated tile is two marks over one table: a ghost that never narrows,
+/// drawn first, and the subset that reads the shared selection through
+/// `filterBy:`, drawn over it. A reader resting the pointer on a dot is
+/// pointing at the layer on top, and that layer is the filtered one — so the
+/// nearest-point read has to run against *its* mark index or the row it hands
+/// back can be one the brush has already excluded from the picture. Which mark
+/// that is comes off the composed spec rather than off a position, and
+/// `a_brush_on_a_tile_leaves_the_hover_reading_only_what_the_map_still_draws`
+/// is what holds it: it brushes a tile and then asks the map about a row that
+/// brush excluded.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HoverLayer {
+    /// The mark's depth-first index — the engine's own mark numbering, so it
+    /// is what [`brightfield_engine::Session::nearest_row`] is asked about.
+    pub mark: usize,
+    /// What this layer encodes, as `(channel, column)` in readout order: x,
+    /// y, colour, size. A channel the layer does not bind to a **column** is
+    /// absent — a `fill:` written as a colour literal encodes nothing about
+    /// the data, and a `{count:}` or a `{bin:}` names a column the step's own
+    /// rows do not carry.
+    pub channels: Vec<(Channel, String)>,
+}
+
+impl HoverLayer {
+    /// The column this layer binds to `channel`, if any.
+    #[must_use]
+    pub fn column(&self, channel: Channel) -> Option<&str> {
+        self.channels
+            .iter()
+            .find(|(c, _)| *c == channel)
+            .map(|(_, col)| col.as_str())
+    }
+}
+
+/// The channels this readout names, in the order it names them.
+///
+/// Four, and the two positional ones are load-bearing: a readout that named
+/// only what the mark was coloured by would leave a reader unable to say where
+/// the dot they are pointing at *is*. Colour and size follow because they are
+/// the other two channels a mark can encode a column in, and a mark that binds
+/// neither shows neither rather than two blank rows.
+const READOUT_CHANNELS: [Channel; 4] = [Channel::X, Channel::Y, Channel::Fill, Channel::Size];
+
+/// What one mark encodes, restricted to channels bound to a plain column.
+///
+/// The **raw option** is what decides, not the channel map: `ChannelMap` maps
+/// `y: { count: }` onto the reserved count column and `x: { bin: c }` onto `c`,
+/// both of which are columns of the *chart's* query and neither of which is a
+/// column of the step's rows. Only a bare string is a column name a row read
+/// can project. The channel map is then consulted anyway, because a colour
+/// literal is a bare string too and that is the one place the distinction
+/// already lives — a literal binds no column there.
+fn hover_channels(mark: &brightfield_spec::ast::Mark, map: &ChannelMap) -> Vec<(Channel, String)> {
+    READOUT_CHANNELS
+        .iter()
+        .filter_map(|&channel| {
+            let raw = mark.options.get(channel.wire_name())?;
+            if !matches!(
+                raw,
+                brightfield_spec::ast::ValueOrParamRef::Value(SpecValue::String(_))
+            ) {
+                return None;
+            }
+            Some((channel, map.get(channel)?.to_string()))
+        })
+        .collect()
+}
+
+/// Whether this mark narrows under a live selection — the `filterBy:` that
+/// separates a generated tile's subset layer from the ghost behind it.
+fn narrows(mark: &brightfield_spec::ast::Mark) -> bool {
+    matches!(
+        &mark.data,
+        Some(MarkData::From {
+            filter_by: Some(_),
+            ..
+        })
+    )
+}
+
+/// **How many data units one logical pixel spans** on a scale, or `None` for a
+/// scale that cannot answer.
+///
+/// Linear only, and that is a real limit rather than an oversight. A
+/// [`Scale::Band`] has no pixels-per-unit: a category has a slot, not a
+/// coordinate, and "how far is this row from the pointer" has no answer along
+/// it — `a_hover_on_a_plot_that_encodes_colour_names_the_colour_column` asks
+/// that of the banded plot in its fixture. A [`Scale::Time`] does have one, but its column is a DuckDB `TIMESTAMP`
+/// and the nearest-point query does arithmetic on the column itself, so a time
+/// axis needs an epoch conversion in the emitted SQL that this build does not
+/// write — a plot with one offers no hover layer rather than offering a wrong
+/// one.
+///
+/// One definition, two callers: this decides whether a plot *has* a hover
+/// layer, and [`crate::chart_item`] uses the same number to build the probe. A
+/// second spelling is how a plot could come to declare a hover the pointer
+/// path then declines to serve.
+#[must_use]
+pub fn units_per_pixel(scale: &Scale) -> Option<f64> {
+    let Scale::Linear {
+        domain_min,
+        domain_max,
+        range_start,
+        range_end,
+    } = scale
+    else {
+        return None;
+    };
+    let range = range_end - range_start;
+    let domain = domain_max - domain_min;
+    (range.abs() > f64::EPSILON && domain.abs() > f64::EPSILON).then_some(domain / range)
+}
+
+/// The [`HoverLayer`] for a plot, given the marks it **drew** in draw order and
+/// the scales it drew them against.
+///
+/// The layer that narrows, latest first; the topmost drawn layer when none
+/// does, which is what an authored single-layer plot gets.
+///
+/// `None` on either of two counts, and they are different failures. The chosen
+/// layer may not bind both positional channels to plain columns — there is no
+/// row under a bar whose height is a count. Or the plot's positional scales may
+/// not be ones a screen distance can be measured along; see
+/// [`units_per_pixel`].
+fn hover_layer(
+    drawn: &[usize],
+    marks: &[&brightfield_spec::ast::Mark],
+    maps: &[ChannelMap],
+    scales: &ScaleSet,
+) -> Option<HoverLayer> {
+    for channel in [Channel::X, Channel::Y] {
+        scales.get(channel).and_then(units_per_pixel)?;
+    }
+    let mark = drawn
+        .iter()
+        .rev()
+        .find(|&&mi| narrows(marks[mi]))
+        .or_else(|| drawn.last())
+        .copied()?;
+    let channels = hover_channels(marks[mark], &maps[mark]);
+    let positional = channels
+        .iter()
+        .filter(|(c, _)| matches!(c, Channel::X | Channel::Y))
+        .count();
+    (positional == 2).then_some(HoverLayer { mark, channels })
 }
 
 /// A plot's declared interaction, resolved from the spec's brushable-interactor
@@ -1106,6 +1263,56 @@ impl LiveDashboard {
         &mut self.coordinator
     }
 
+    /// **The nearest drawn row to a point on one of this dashboard's marks.**
+    ///
+    /// Straight to the session, deliberately not through
+    /// [`Coordinator::apply`]: a hover is a question, not an interaction. It
+    /// pushes no predicate, it produces no [`Interaction`], and it leaves
+    /// [`Coordinator::generation`] where it found it, so no downstream reader
+    /// re-composites and none treats the answer as a new state of the picture —
+    /// `a_hover_is_not_an_interaction` holds the three of them.
+    ///
+    /// # Errors
+    ///
+    /// As [`brightfield_engine::Session::nearest_row`].
+    // The Err variant is the engine's own error type, at the engine's own size,
+    // on the same terms as `data_grid::fetch_page`: boxing it at this one seam
+    // would leave the hover as its single boxed consumer, and its one caller
+    // unwraps it into an `Option` on the next line.
+    #[allow(clippy::result_large_err)]
+    pub fn nearest_row(
+        &mut self,
+        mark: usize,
+        probe: &NearestProbe,
+    ) -> Result<NearestRead, brightfield_engine::error::EngineError> {
+        self.coordinator.session_mut().nearest_row(mark, probe)
+    }
+
+    /// How many DuckDB executes this dashboard's session has performed.
+    ///
+    /// Surfaced here because the counter is how a test asks "did that frame
+    /// issue a query", and the question is asked of the *dashboard* by the
+    /// pair that hold the pointer-stillness gate —
+    /// `a_sweep_across_a_plot_issues_no_query` and
+    /// `a_rest_issues_exactly_one_query_however_long_it_lasts`. Reading it
+    /// needs no `&mut`, which is what lets a test take it around a frame it is
+    /// also drawing.
+    #[must_use]
+    pub fn executes(&self) -> usize {
+        self.coordinator.session().duckdb_execute_count()
+    }
+
+    /// How many distinct SQL strings the session's renderer-side cache holds.
+    ///
+    /// The other half of the pair above. A hover read that went through the
+    /// caching path would move this, and a stream of one-shot pointer
+    /// positions would evict the chart's own results out of the LRU —
+    /// `a_hover_read_raises_the_execute_count_without_touching_the_cache`.
+    #[must_use]
+    pub fn sql_cache_len(&self) -> usize {
+        self.coordinator.session().sql_cache_len()
+    }
+
     /// **What each live selection currently HOLDS**, as `(name, clause)` pairs
     /// **The mark index this dashboard's rows are read at** by a surface that
     /// is not a plot — [`presenting_rows_mark`] over the spec this dashboard
@@ -1547,6 +1754,11 @@ fn compose_from_results(
         let mut plot_domains = UnsampledDomains::default();
         let mut plot_x_column: Option<String> = None;
         let mut plot_y_column: Option<String> = None;
+        // The marks this plot DREW, in draw order — the candidates a hover can
+        // read. A mark the engine refused is not on screen, so a pointer
+        // cannot be resting on it, and offering it here would hand a reader a
+        // row from a layer they cannot see.
+        let mut drawn: Vec<usize> = Vec::new();
         for &mi in &group.mark_indices {
             let Some(batch) = batches.get(mi).and_then(|b| b.as_ref()) else {
                 continue;
@@ -1559,6 +1771,7 @@ fn compose_from_results(
                 }
             };
             plot_marks.push(kinds[mi]);
+            drawn.push(mi);
             if plot_x_column.is_none() {
                 plot_x_column = channel_maps[mi].get(Channel::X).map(str::to_string);
             }
@@ -1735,6 +1948,7 @@ fn compose_from_results(
                 x_column: b.channels.x.clone(),
                 y_column: b.channels.y.clone(),
             });
+        let hover = hover_layer(&drawn, &marks, &channel_maps, &scales);
         plots.push(PlotHandle {
             path: plot.path.clone(),
             rect: plot.rect,
@@ -1745,6 +1959,7 @@ fn compose_from_results(
             x_column: plot_x_column,
             y_column: plot_y_column,
             sample: plot_sample,
+            hover,
         });
     }
 

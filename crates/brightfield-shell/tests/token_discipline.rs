@@ -36,7 +36,23 @@ type Allow = (&'static str, &'static str, &'static str);
 const COLOUR_ALLOW: &[Allow] = &[];
 const HEX_ALLOW: &[Allow] = &[];
 const FLOAT_ALLOW: &[Allow] = &[];
-const OVERLAY_ALLOW: &[Allow] = &[];
+const OVERLAY_ALLOW: &[Allow] = &[(
+    "src/chart_item.rs",
+    r#"egui::Area::new(egui::Id::new("chart-hover-readout"))"#,
+    "The hover readout is a panel that follows the pointer, and meridian-egui \
+     offers no layer for one: ModalLayer is a blocking dialog, NotificationLayer \
+     a persistent banner, ToastLayer a transient message that places itself. \
+     None of the three can be anchored to a pixel, which is the whole \
+     requirement here. The rule's own rationale is that a conceptual overlay \
+     must not be re-declared at several treatments; this is a first \
+     declaration, not a second, and it takes its frame and its shadow from \
+     chrome::overlay_frame and Elevation::Overlay rather than inventing either. \
+     The entry is anchored to this Area's id salt, so a second hand-rolled \
+     overlay in this file is still a violation \
+     (a_second_hand_rolled_overlay_in_the_chart_pane_is_still_a_violation). \
+     The standing fix is a pointer-anchored layer in meridian-egui, which is a \
+     different repository and a different lane.",
+)];
 
 /// Call fragments that construct a floating layer by hand. `egui::Modal` has
 /// no paren anchor because `Modal::new(egui::Id…)` is exactly the call the
@@ -135,6 +151,41 @@ fn allowlists_stay_small_and_justified() {
             );
         }
     }
+}
+
+/// **The one sanctioned overlay is sanctioned by its id, not by its file.**
+///
+/// An allowlist entry is a hole in a gate, and a hole the width of a file is a
+/// different thing from a hole the width of one call. `OVERLAY_ALLOW`'s entry
+/// names the hover readout's own id salt, so this asks the matcher directly:
+/// the sanctioned line passes, and the same construction in the same file
+/// under a different id does not.
+///
+/// Written because the entry's justification claims exactly this, and a
+/// justification nothing checks is a sentence.
+#[test]
+fn a_second_hand_rolled_overlay_in_the_chart_pane_is_still_a_violation() {
+    let sanctioned = r#"        egui::Area::new(egui::Id::new("chart-hover-readout"))"#;
+    assert!(
+        allowed(OVERLAY_ALLOW, "src/chart_item.rs", sanctioned),
+        "the hover readout's own Area is not matched by the entry that exists \
+         for it — the gate is red on the line it was widened for"
+    );
+    for other in [
+        r#"        egui::Area::new(egui::Id::new("chart-second-overlay"))"#,
+        r#"        egui::Window::new("chart-hover-readout")"#,
+        r#"        let m = egui::Modal::new(egui::Id::new("chart-hover-readout"));"#,
+    ] {
+        assert!(
+            !allowed(OVERLAY_ALLOW, "src/chart_item.rs", other),
+            "the allowlist admits `{other}` — the entry is wider than the one \
+             call it was written for"
+        );
+    }
+    assert!(
+        !allowed(OVERLAY_ALLOW, "src/inspector.rs", sanctioned),
+        "the allowlist admits the readout's line in another file"
+    );
 }
 
 #[test]
