@@ -32,7 +32,7 @@ use brightfield_render::layout::{ChartLayout, Margins};
 use brightfield_render::mark::{default_renderers, find_renderer, MarkRenderer};
 use brightfield_render::sample_notice::{sample_band_margins, SampleFact};
 use brightfield_render::sample_policy;
-use brightfield_render::scale::{PinnedDomains, ScaleSet, ViewExtent};
+use brightfield_render::scale::{PinnedDomains, Scale, ScaleSet, ViewExtent};
 use brightfield_render::scene::{
     build_multi_mark_scene_pinned, compose_dashboard, unrestorable_under_sampling, ChartData,
     UnsampledDomains,
@@ -183,17 +183,58 @@ fn narrows(mark: &brightfield_spec::ast::Mark) -> bool {
     )
 }
 
-/// The [`HoverLayer`] for a plot, given the marks it **drew** in draw order.
+/// **How many data units one logical pixel spans** on a scale, or `None` for a
+/// scale that cannot answer.
+///
+/// Linear only, and that is a real limit rather than an oversight. A
+/// [`Scale::Band`] has no pixels-per-unit at all: a category has a slot, not a
+/// coordinate, and "how far is this row from the pointer" has no answer along
+/// it. A [`Scale::Time`] does have one, but its column is a DuckDB `TIMESTAMP`
+/// and the nearest-point query does arithmetic on the column itself, so a time
+/// axis needs an epoch conversion in the emitted SQL that this build does not
+/// write — a plot with one offers no hover layer rather than offering a wrong
+/// one.
+///
+/// One definition, two callers: this decides whether a plot *has* a hover
+/// layer, and [`crate::chart_item`] uses the same number to build the probe. A
+/// second spelling is how a plot could come to declare a hover the pointer
+/// path then declines to serve.
+#[must_use]
+pub fn units_per_pixel(scale: &Scale) -> Option<f64> {
+    let Scale::Linear {
+        domain_min,
+        domain_max,
+        range_start,
+        range_end,
+    } = scale
+    else {
+        return None;
+    };
+    let range = range_end - range_start;
+    let domain = domain_max - domain_min;
+    (range.abs() > f64::EPSILON && domain.abs() > f64::EPSILON).then_some(domain / range)
+}
+
+/// The [`HoverLayer`] for a plot, given the marks it **drew** in draw order and
+/// the scales it drew them against.
 ///
 /// The layer that narrows, latest first; the topmost drawn layer when none
-/// does, which is what an authored single-layer plot gets. `None` when the
-/// chosen layer does not bind both positional channels to plain columns —
-/// there is no row under a bar whose height is a count.
+/// does, which is what an authored single-layer plot gets.
+///
+/// `None` on either of two counts, and they are different failures. The chosen
+/// layer may not bind both positional channels to plain columns — there is no
+/// row under a bar whose height is a count. Or the plot's positional scales may
+/// not be ones a screen distance can be measured along; see
+/// [`units_per_pixel`].
 fn hover_layer(
     drawn: &[usize],
     marks: &[&brightfield_spec::ast::Mark],
     maps: &[ChannelMap],
+    scales: &ScaleSet,
 ) -> Option<HoverLayer> {
+    for channel in [Channel::X, Channel::Y] {
+        scales.get(channel).and_then(units_per_pixel)?;
+    }
     let mark = drawn
         .iter()
         .rev()
@@ -1882,6 +1923,7 @@ fn compose_from_results(
                 x_column: b.channels.x.clone(),
                 y_column: b.channels.y.clone(),
             });
+        let hover = hover_layer(&drawn, &marks, &channel_maps, &scales);
         plots.push(PlotHandle {
             path: plot.path.clone(),
             rect: plot.rect,
@@ -1892,7 +1934,7 @@ fn compose_from_results(
             x_column: plot_x_column,
             y_column: plot_y_column,
             sample: plot_sample,
-            hover: hover_layer(&drawn, &marks, &channel_maps),
+            hover,
         });
     }
 

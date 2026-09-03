@@ -68,7 +68,7 @@ use meridian_design::chrome::{OverlayTokens, INK_DARK, INK_LIGHT, OVERLAY_DARK, 
 use meridian_design::semantic::{semantic, Role};
 use meridian_design::{radius, spacing, Elevation};
 
-use crate::app::{ChartDoc, CHART};
+use crate::app::{ChartDoc, HoverReadout, CHART};
 use crate::canvas::{set_surface_cursor, surface_input, EguiOverlay};
 use crate::design::Mode;
 use crate::legend;
@@ -298,28 +298,6 @@ struct Pan {
     by: f32,
 }
 
-/// **What one hover read produced**, held for as long as the pointer stays
-/// where it was read.
-///
-/// One row's worth of named values and the point they were read at — and
-/// **not** the [`brightfield_engine::RecordBatch`] they came out of. The batch
-/// never leaves the engine: [`brightfield_engine::Session::nearest_row`] hands
-/// back cells, so the pane has no whole-row copy to hold across frames even by
-/// accident. That is the whole difference between this and reading every
-/// column of a materialised batch on the client, and it is enforced by what
-/// crosses the crate boundary rather than by care.
-#[derive(Clone, Debug, PartialEq)]
-struct HoverReadout {
-    /// Where the pointer was, in window-space logical points, on the frame
-    /// this was read. The readout is dropped the moment the pointer is
-    /// somewhere else, so this doubles as the "already answered" mark that
-    /// keeps a rest from re-querying every frame.
-    at: egui::Pos2,
-    /// One line per channel the hovered layer binds to a column, in readout
-    /// order, already rendered as `column: value`.
-    lines: Vec<String>,
-}
-
 /// The chart pane. See the module docs for what this one type replaces.
 pub struct ChartItem {
     drag: Option<Drag>,
@@ -358,9 +336,6 @@ pub struct ChartItem {
     /// `a_rest_outside_the_hit_radius_issues_one_query_and_no_more` is what
     /// holds it.
     hover_read_at: Option<egui::Pos2>,
-    /// The answer being shown, or `None` when the pointer is moving, is off
-    /// every plot, or rested somewhere with no mark inside the hit radius.
-    readout: Option<HoverReadout>,
 }
 
 impl ChartItem {
@@ -375,7 +350,6 @@ impl ChartItem {
             was_scrolling: false,
             hover_at: None,
             hover_read_at: None,
-            readout: None,
         }
     }
 
@@ -674,16 +648,14 @@ impl ChartItem {
         self.hover_at = at;
         if moved || gesturing {
             // What is on screen names a pixel the pointer has left.
-            self.readout = None;
+            doc.hover_readout = None;
             self.hover_read_at = None;
             if at.is_some() && !gesturing {
                 repaint = true;
             }
         } else if at.is_some() && at != self.hover_read_at {
             self.hover_read_at = at;
-            self.readout = pointer
-                .zip(at)
-                .and_then(|(p, at)| hover_read(doc, p, at));
+            doc.hover_readout = pointer.zip(at).and_then(|(p, at)| hover_read(doc, p, at));
         }
 
         // The origin the transient ink is painted in: the drag's own while one
@@ -757,17 +729,19 @@ fn hover_read(doc: &mut ChartDoc, p: kurbo::Point, at: egui::Pos2) -> Option<Hov
 /// scale's own data-units-per-pixel so the engine can measure distance on
 /// screen rather than in data units. See [`brightfield_engine::nearest`].
 ///
-/// `None` when either positional channel is missing, is not a continuous
-/// scale, or has collapsed to a point. A band axis is the ordinary case of the
-/// second: a category has a slot, not a coordinate, and "how far is this row
-/// from the pointer" has no answer along it.
+/// `None` when either positional channel is missing or its scale cannot be
+/// measured along. That second refusal is the same one
+/// [`crate::pipeline::units_per_pixel`] makes when the plot's hover layer is
+/// decided, so a plot that offers a layer has already passed it here; the check
+/// stays because the alternative is a function whose correctness depends on a
+/// caller having asked something else first.
 fn hover_probe(plot: &PlotHandle, layer: &HoverLayer, p: kurbo::Point) -> Option<NearestProbe> {
     let axis = |channel: Channel, pixel: f64| -> Option<NearestAxis> {
         let scale = plot.scales.get(channel)?;
         Some(NearestAxis {
             column: layer.column(channel)?.to_string(),
             at: scale.inverse_f64(pixel)?,
-            per_pixel: units_per_pixel(scale)?,
+            per_pixel: crate::pipeline::units_per_pixel(scale)?,
         })
     };
     // The columns to read back: the layer's own channels in readout order,
@@ -786,30 +760,6 @@ fn hover_probe(plot: &PlotHandle, layer: &HoverLayer, p: kurbo::Point) -> Option
         read,
         radius: HOVER_RADIUS,
     })
-}
-
-/// How many data units one logical pixel spans on a scale, or `None` for a
-/// scale that cannot answer.
-///
-/// Linear only, and that is a real limit rather than an oversight. A
-/// [`Scale::Band`] has no pixels-per-unit at all. A [`Scale::Time`] does, but
-/// its column is a DuckDB `TIMESTAMP` and the arithmetic in the probe's query
-/// is over the column itself, so a time axis needs an epoch conversion in the
-/// emitted SQL that this build does not write — a hover over a time axis
-/// therefore reads nothing rather than reading something wrong.
-fn units_per_pixel(scale: &Scale) -> Option<f64> {
-    let Scale::Linear {
-        domain_min,
-        domain_max,
-        range_start,
-        range_end,
-    } = scale
-    else {
-        return None;
-    };
-    let range = range_end - range_start;
-    let domain = domain_max - domain_min;
-    (range.abs() > f64::EPSILON && domain.abs() > f64::EPSILON).then_some(domain / range)
 }
 
 /// The readout panel: what the mark under the pointer is, beside the pointer.
@@ -1296,8 +1246,8 @@ impl Item<ChartDoc> for ChartItem {
         // against the window rather than against the raster's row. Drawn
         // whether or not there is a device behind the document: it is egui
         // chrome, and a GPU-free window is exactly where it is read from.
-        if let Some(readout) = &self.readout {
-            hover_readout(ui.ctx(), readout, mode);
+        if let Some(readout) = doc.hover_readout.clone() {
+            hover_readout(ui.ctx(), &readout, mode);
         }
     }
 }

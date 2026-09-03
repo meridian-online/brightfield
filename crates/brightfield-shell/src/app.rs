@@ -301,6 +301,26 @@ pub fn page_offset(
     }
 }
 
+/// **What one hover read produced**, held for as long as the pointer stays
+/// where it was read.
+///
+/// One row's worth of named values and the point they were read at — and
+/// **not** the [`brightfield_engine::RecordBatch`] they came out of. The batch
+/// never leaves the engine: [`brightfield_engine::Session::nearest_row`] hands
+/// back cells, so no surface has a whole-row copy to hold across frames even by
+/// accident. That is the whole difference between this and reading every column
+/// of a materialised batch on the client, and it is enforced by what crosses
+/// the crate boundary rather than by care.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HoverReadout {
+    /// Where the pointer was, in window-space logical points, on the frame
+    /// this was read. The panel is drawn beside it.
+    pub at: egui::Pos2,
+    /// One line per channel the hovered layer binds to a column, in readout
+    /// order, already rendered as `column: value`.
+    pub lines: Vec<String>,
+}
+
 /// The chart view's **document**: the composited dashboard, the canvas it
 /// rasters into, and the chart state the panes read.
 ///
@@ -312,6 +332,19 @@ pub fn page_offset(
 pub struct ChartDoc {
     /// The composited Vello dashboard and its logical size.
     pub composed: Composed,
+    /// **What the pointer is resting on**, or `None` on a frame where it is
+    /// moving, is over no plot, or came to rest with no mark inside the hit
+    /// radius.
+    ///
+    /// Written by the chart pane's hover gate and read back by it one line
+    /// later to draw the panel. It rides on the document rather than inside
+    /// [`crate::chart_item::ChartItem`] for the reason [`Self::gesture_ink`]
+    /// does: it is the *answer* a gesture produced, and an answer nothing
+    /// outside the pane can see is one a GPU-free test has to infer from
+    /// pixels. The gate's own edge detectors — where the pointer was last
+    /// frame, where the last read was taken — stay view-local, because they
+    /// are the pane's memory rather than the document's state.
+    pub hover_readout: Option<HoverReadout>,
     /// The content box the chart pane was last handed, in window-space logical
     /// points — `None` until a frame has been laid out.
     ///
@@ -511,6 +544,7 @@ impl ChartDoc {
     pub fn new(composed: Composed, host: EguiCanvasHost) -> Self {
         Self {
             composed,
+            hover_readout: None,
             viewport: None,
             pane_views: None,
             gesture_latched: false,
@@ -544,6 +578,7 @@ impl ChartDoc {
     pub fn headless(composed: Composed) -> Self {
         Self {
             composed,
+            hover_readout: None,
             viewport: None,
             pane_views: None,
             gesture_latched: false,
@@ -626,6 +661,10 @@ impl ChartDoc {
         self.pane_views = None;
         self.gesture_latched = false;
         self.gesture_ink = None;
+        // …and the readout named a row of the replaced document's table. Left
+        // standing it would sit over the incoming chart naming a house nobody
+        // is pointing at.
+        self.hover_readout = None;
         // The watch list described the replaced document's files, and any
         // in-flight marks belonged to its session — both go with it.
         self.watch.watch(None, Vec::new());
