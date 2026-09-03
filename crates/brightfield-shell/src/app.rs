@@ -176,7 +176,9 @@ pub struct Authored {
 ///
 /// A pointer inside [`Self::clip`] is read against the moved origin, which is
 /// what keeps a brush on a scrolled tile landing on the tile under it —
-/// `a_brush_on_a_scrolled_tile_lands_on_the_tile_under_the_pointer`.
+/// `a_brush_on_a_scrolled_tile_lands_on_the_tile_under_the_pointer`. That is a
+/// per-frame answer, and a gesture spanning frames latches its own instead:
+/// [`page_offset`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SecondView {
     /// The box this view fills, in window-space logical points. Nothing it
@@ -231,11 +233,7 @@ impl SecondView {
 /// The pins are `a_brush_across_the_pane_boundary_commits_what_it_swept` and
 /// `a_pan_across_the_pane_boundary_moves_by_what_the_hand_moved`.
 #[must_use]
-pub fn page_offset(
-    view: Option<SecondView>,
-    latched: Option<f32>,
-    at: Option<egui::Pos2>,
-) -> f32 {
+pub fn page_offset(view: Option<SecondView>, latched: Option<f32>, at: Option<egui::Pos2>) -> f32 {
     if let Some(by) = latched {
         return by;
     }

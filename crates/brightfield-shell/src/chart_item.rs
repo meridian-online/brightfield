@@ -279,7 +279,7 @@ pub struct ChartItem {
     /// Whether the primary button was down over the raster last frame — the
     /// edge detector the drag state machine runs on.
     was_down: bool,
-    /// The secondary-button pan in progress, or `None` when there is none.
+    /// The secondary-button pan in progress, or `None` while the button is up.
     ///
     /// A pan is the SECONDARY button on purpose: the primary drag is the brush,
     /// and one button cannot mean both "select these rows" and "move the frame"
@@ -380,8 +380,14 @@ impl ChartItem {
         let view = doc.second_view;
         let frame_by = crate::app::page_offset(view, None, at);
         let frame_page = page_at(raster, frame_by);
-        let drag_page = page_at(raster, crate::app::page_offset(view, self.drag.map(|d| d.by), at));
-        let pan_page = page_at(raster, crate::app::page_offset(view, self.pan.map(|p| p.by), at));
+        let drag_page = page_at(
+            raster,
+            crate::app::page_offset(view, self.drag.map(|d| d.by), at),
+        );
+        let pan_page = page_at(
+            raster,
+            crate::app::page_offset(view, self.pan.map(|p| p.by), at),
+        );
 
         // Gestures and the transient overlay, before the legend band so
         // the frame borrow ends inside this scope.
@@ -597,8 +603,8 @@ fn page_at(raster: egui::Rect, by: f32) -> egui::Rect {
 /// that page.
 ///
 /// [`surface_input`]'s own mapping, for the pages this frame's input was *not*
-/// read against — the origins a drag and a pan latched, which are this frame's
-/// only when the gesture has not crossed between the views.
+/// read against — the origins a drag and a pan latched, which coincide with
+/// this frame's until the gesture crosses between the views.
 fn page_local(at: Option<egui::Pos2>, page: egui::Rect) -> Option<kurbo::Point> {
     at.filter(|p| page.contains(*p))
         .map(|p| kurbo::Point::new(f64::from(p.x - page.min.x), f64::from(p.y - page.min.y)))

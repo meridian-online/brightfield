@@ -498,8 +498,8 @@ fn pane_rects(size: (f32, f32)) -> Vec<brightfield_shell::window::CanvasPane> {
 ///    panes at this window, and what hangs below is the last tile's bars.
 ///
 /// Both clips are one line each — `child.shrink_clip_rect(clip)` and
-/// `Painter::with_clip_rect` — and deleting either left all 67 of this crate's
-/// test targets green.
+/// `Painter::with_clip_rect` — and deleting either left the rest of this
+/// crate's test targets green.
 #[test]
 fn the_pane_group_clips_the_page_to_the_panes_it_is_drawn_in() {
     let panes = pane_rects(SHORT_WINDOW);
@@ -573,11 +573,11 @@ fn the_pane_group_clips_the_page_to_the_panes_it_is_drawn_in() {
     // …and each pane's own bottom frame survives the page laid out over it.
     // This is the one the mark ink cannot see: what the page paints into a
     // pane's inset is its BACKGROUND, and the chart surface and a pane's fill
-    // are the same token, so the only visible loss is the hairline the page
-    // covers. Measured: with the clip, the map pane's strip carries 1,092
-    // border pixels over two rows and the column's 650 over two; without it,
-    // 546 and 325 over one — the page paints over the upper row of a stroke
-    // that straddles the pane's edge.
+    // are the same token, so the visible loss is the hairline the page covers.
+    // Measured: with the clip, each pane's strip carries the border colour
+    // across its full width on two device rows; without it, on one — the page
+    // paints over the upper row of a stroke that straddles the pane's edge.
+    // The `rows >= 2` below is that measurement as an assertion.
     let border = meridian_design::semantic(false).borders.subtle;
     for pane in &panes {
         let strip = pane.rect.bottom() - pane.body.bottom();
@@ -674,9 +674,10 @@ fn capture_short(script: Vec<Vec<egui::Event>>, name: &str) -> image::RgbaImage 
 /// The right ink to count for a clip: it has exactly one source in the window.
 /// The chart *surface* would be the wrong one — a pane's own frame is filled
 /// with the same token, so a page painting over a pane's inset would be
-/// invisible to it, which is measured: 8,940 pixels of the surface colour sit
-/// in the twelve points below the panes' content rects with the clip in place.
-/// The mark ink appears there 0 times.
+/// invisible to it: the surface colour is already down there, below the panes'
+/// content rects, with the clip in place. The mark ink is not, and that is the
+/// assertion — `stray.is_empty()` in
+/// [`the_pane_group_clips_the_page_to_the_panes_it_is_drawn_in`].
 ///
 /// Exact rather than perceptual, for the reason [`pixels_of`] gives: a mark's
 /// interior is the flat fill, and antialiasing at its edge produces neighbours

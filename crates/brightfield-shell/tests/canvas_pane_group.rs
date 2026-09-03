@@ -516,7 +516,11 @@ fn an_authored_spec_still_draws_one_pane() {
 /// above: at 1440 by 900 the page is composed 672 points tall for the column's
 /// seven tiles at their floor, the map pane's content rect is 588, and a hero
 /// that took the page's height put its x-axis — ticks, labels and the
-/// `longitude` title — 84 points below the pane and had them clipped away. The
+/// `longitude` title — 112 points below the pane and had them clipped away.
+/// (The page is 84 points taller than the pane's content rect; the raster
+/// starts 28 points down it, below the chart's toolbar band, so what hangs
+/// past the bottom is the sum. `the_columns_scroll_stops_at_the_end_of_its_page`
+/// reads that overflow off a frame as the column's reach.) The
 /// containment tests in this file all open with `let stacked = &placed[1..];`,
 /// so the hero is excluded from every one of them by construction. This is the
 /// one that looks at it.
@@ -812,3 +816,337 @@ fn a_brush_on_a_scrolled_tile_lands_on_the_tile_under_the_pointer() {
     );
 }
 
+/// A window over the fixture and a closure that drives one raw frame into it.
+///
+/// The gesture tests below need frames they choose the events for, one at a
+/// time, which is what [`settled`] and [`settled_after`] do not offer: a press
+/// and its release are different frames, and a gesture that crosses the pane
+/// boundary needs the frames in between to carry the pointer across.
+fn window() -> (MeridianApp, egui::Context, egui::RawInput) {
+    let path = fixture();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let app = MeridianApp::headless(boot, Mode::Light);
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(SCREEN),
+        ..Default::default()
+    };
+    (app, ctx, raw)
+}
+
+/// Turn the wheel over the column pane until the scroll stops moving, then
+/// settle — the whole reach, without naming a distance.
+///
+/// `notches` frames of travel, then six carrying no wheel: the six are egui's
+/// smoothing tail, which decays across frames after the wheel stops, so a frame
+/// read before them is reading the smoothing constant.
+fn scroll_the_column(
+    app: &mut MeridianApp,
+    ctx: &egui::Context,
+    raw: &egui::RawInput,
+    over: egui::Pos2,
+    notches: usize,
+) {
+    let mut frame = |events: Vec<egui::Event>| {
+        let mut input = raw.clone();
+        input.events = events;
+        let _ = ctx.run_ui(input, |ui| app.draw(ui));
+    };
+    frame(vec![egui::Event::PointerMoved(over)]);
+    for _ in 0..notches {
+        frame(vec![egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -WHEEL_NOTCH),
+            modifiers: egui::Modifiers::default(),
+            phase: egui::TouchPhase::Move,
+        }]);
+    }
+    for _ in 0..6 {
+        frame(Vec::new());
+    }
+}
+
+/// A point of the hero's own data area, at `fx` and `fy` of its width and
+/// height — resolved against the frame rather than typed.
+///
+/// The hero is drawn in the map pane and does not move with the column's
+/// scroll, so it is the same window-space point whatever the column's scroll.
+fn hero_data_point(app: &MeridianApp, fx: f64, fy: f64) -> egui::Pos2 {
+    let drawn = app.composed_plot_rects()[0];
+    let doc = app.chart_doc();
+    let l = &doc.composed.plots[0].layout;
+    #[allow(clippy::cast_possible_truncation)]
+    let at = egui::pos2(
+        drawn.left() + (l.plot_x_start() + (l.plot_x_end() - l.plot_x_start()) * fx) as f32,
+        drawn.top() + (l.plot_y_start() + (l.plot_y_end() - l.plot_y_start()) * fy) as f32,
+    );
+    at
+}
+
+/// A pointer button event, primary or secondary.
+fn button(pos: egui::Pos2, button: egui::PointerButton, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos,
+        button,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    }
+}
+
+/// **A gesture is a relation between frames, and a frame is not a gesture** —
+/// the sweep a brush commits is the one the hand made, whichever pane the
+/// pointer ended in.
+///
+/// The page is drawn at two origins, and until the gesture latched one, `start`
+/// was captured in the origin of the frame the button went down in and
+/// `current` was re-resolved on each frame in the origin of THAT frame.
+/// Subtract the two and you have subtracted across two coordinate systems.
+/// Measured on the code before the latch, with this exact gesture: the
+/// committed `latitude` band came out taller than the identical screen gesture
+/// on an unscrolled column by the scroll converted through the hero's y scale,
+/// while `longitude` was bit-identical — the offset between the views is
+/// vertical.
+///
+/// Asserted against the same gesture at scroll zero rather than against a
+/// number, because at scroll zero the two origins coincide and the gesture has
+/// one reading. The predicate is read off `selection_sql`, which is the clause
+/// the engine is holding and therefore what the other tiles draw through.
+#[test]
+fn a_brush_across_the_pane_boundary_commits_what_it_swept() {
+    // The screen points, derived once from an unscrolled window and used
+    // unchanged in both runs — so the two runs are literally the same gesture.
+    let reference = settled(SCREEN);
+    let columns = reference
+        .canvas_panes()
+        .pane("columns")
+        .expect("the column pane drew")
+        .body;
+    let map = reference
+        .canvas_panes()
+        .pane("map")
+        .expect("the map pane drew")
+        .body;
+    let press = hero_data_point(&reference, 0.30, 0.30);
+    let enter = egui::pos2(columns.left() + 2.0, press.y + 30.0);
+    let release = egui::pos2(columns.left() + 20.0, press.y + 60.0);
+    assert!(
+        map.contains(press),
+        "the press {press:?} is not in the map pane's content rect {map:?}"
+    );
+    assert!(
+        columns.contains(enter) && columns.contains(release),
+        "the sweep does not end inside the column pane's content rect \
+         {columns:?}, so it never crosses the boundary this test is about"
+    );
+
+    let sweep = |notches: usize| -> (f32, String) {
+        let (mut app, ctx, raw) = window();
+        let frame = |app: &mut MeridianApp, events: Vec<egui::Event>| {
+            let mut input = raw.clone();
+            input.events = events;
+            let _ = ctx.run_ui(input, |ui| app.draw(ui));
+        };
+        for _ in 0..3 {
+            frame(&mut app, Vec::new());
+        }
+        if notches > 0 {
+            scroll_the_column(&mut app, &ctx, &raw, columns.center(), notches);
+        }
+        let scrolled = app.canvas_scroll();
+        frame(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(press),
+                button(press, egui::PointerButton::Primary, true),
+            ],
+        );
+        frame(&mut app, vec![egui::Event::PointerMoved(enter)]);
+        frame(&mut app, vec![egui::Event::PointerMoved(release)]);
+        frame(
+            &mut app,
+            vec![button(release, egui::PointerButton::Primary, false)],
+        );
+        for _ in 0..2 {
+            frame(&mut app, Vec::new());
+        }
+        let held = app
+            .chart_doc()
+            .selection_sql()
+            .expect("the sweep committed a selection");
+        (scrolled, held)
+    };
+
+    let (still, unscrolled) = sweep(0);
+    let (moved, scrolled) = sweep(12);
+    assert_eq!(
+        still, 0.0,
+        "the unscrolled run scrolled {still} points, so it is not the reading \
+         the scrolled run is being compared against"
+    );
+    assert!(
+        moved > MIN_COLUMN_TILE_HEIGHT,
+        "the scrolled run moved the column {moved} points, less than one tile \
+         — an origin read against the wrong view would land within the same \
+         tile and this comparison would hold either way"
+    );
+    assert_eq!(
+        scrolled, unscrolled,
+        "the same screen sweep committed one predicate with the column \
+         scrolled {moved} points and another with it unscrolled — the drag's \
+         current point was re-read in the origin of the frame the pointer had \
+         reached, and differenced against a start latched in the other"
+    );
+}
+
+/// **The other gesture that spans frames**: a secondary-button pan moves the
+/// frame by what the hand moved, and crossing the pane boundary is not hand
+/// movement.
+///
+/// The pan's step is `p - last`, and `last` was read a frame ago. Read `p` in
+/// this frame's origin and the frame the pointer crosses on contributes the
+/// hand's travel plus the offset between the views, in one step the reader did
+/// not make. This had no test under the pane group.
+///
+/// Asserted against the same pan at scroll zero, for the reason
+/// `a_brush_across_the_pane_boundary_commits_what_it_swept` gives, plus the
+/// second half of the rule: the pan belongs to the plot it started on, so no
+/// tile of the column moves under it.
+#[test]
+fn a_pan_across_the_pane_boundary_moves_by_what_the_hand_moved() {
+    let reference = settled(SCREEN);
+    let columns = reference
+        .canvas_panes()
+        .pane("columns")
+        .expect("the column pane drew")
+        .body;
+    let press = hero_data_point(&reference, 0.30, 0.30);
+    let enter = egui::pos2(columns.left() + 2.0, press.y + 30.0);
+    let release = egui::pos2(columns.left() + 20.0, press.y + 60.0);
+
+    let pan = |notches: usize| -> (f32, Vec<(String, String)>, Vec<(String, String)>) {
+        let (mut app, ctx, raw) = window();
+        let frame = |app: &mut MeridianApp, events: Vec<egui::Event>| {
+            let mut input = raw.clone();
+            input.events = events;
+            let _ = ctx.run_ui(input, |ui| app.draw(ui));
+        };
+        for _ in 0..3 {
+            frame(&mut app, Vec::new());
+        }
+        if notches > 0 {
+            scroll_the_column(&mut app, &ctx, &raw, columns.center(), notches);
+        }
+        let scrolled = app.canvas_scroll();
+        let before = tile_domains(&app);
+        frame(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(press),
+                button(press, egui::PointerButton::Secondary, true),
+            ],
+        );
+        frame(&mut app, vec![egui::Event::PointerMoved(enter)]);
+        frame(&mut app, vec![egui::Event::PointerMoved(release)]);
+        frame(
+            &mut app,
+            vec![button(release, egui::PointerButton::Secondary, false)],
+        );
+        for _ in 0..2 {
+            frame(&mut app, Vec::new());
+        }
+        (scrolled, before, tile_domains(&app))
+    };
+
+    let (still, _, unscrolled) = pan(0);
+    let (moved, was, scrolled) = pan(12);
+    assert_eq!(
+        still, 0.0,
+        "the unscrolled run scrolled {still} points, so it is not the reading \
+         the scrolled run is being compared against"
+    );
+    assert!(
+        moved > 0.0,
+        "the scrolled run did not scroll the column, so both runs read the \
+         page at one origin and a latch that did nothing would pass here"
+    );
+    assert_ne!(
+        was[0], scrolled[0],
+        "the pan left the hero's domain where it was, so nothing consumed the \
+         gesture and the comparison below is between two unmoved frames"
+    );
+    assert_eq!(
+        scrolled[0], unscrolled[0],
+        "the same screen pan moved the hero's frame one distance with the \
+         column scrolled {moved} points and another with it unscrolled — the \
+         step across the pane boundary carried the offset between the views"
+    );
+    assert_eq!(
+        &was[1..],
+        &scrolled[1..],
+        "a pan that started on the hero and ended over the column moved a \
+         column tile's domain — the pan belongs to the plot its press landed on"
+    );
+}
+
+/// **The column's scroll stops at the end of its page.**
+///
+/// `canvas_scroll` is clamped to the page's reach — how far the page hangs
+/// below the column pane's content rect — and no test held that ceiling until
+/// this one: with the clamp loosened, more wheel than the reach needs carries
+/// the last tile off the top of the pane and leaves the pane's foot blank,
+/// while the scroll tests above stay green because each turns the wheel a
+/// distance the loose ceiling still clamps.
+///
+/// The reach is read off the frame — the page's own bottom against the pane's
+/// content bottom — rather than recomputed from the tile floor and the pane
+/// arithmetic, which would be the clamp's own sum written twice.
+#[test]
+fn the_columns_scroll_stops_at_the_end_of_its_page() {
+    let before = settled(SCREEN);
+    let columns = before
+        .canvas_panes()
+        .pane("columns")
+        .expect("the column pane drew")
+        .body;
+    let page = before
+        .chart_doc()
+        .raster_rect
+        .expect("the page was laid out");
+    let reach = page.bottom() - columns.bottom();
+    assert!(
+        reach > 0.0,
+        "the page ends at {} and the column pane's content rect at {} — \
+         nothing hangs below the fold at this window, so there is no ceiling \
+         to reach",
+        page.bottom(),
+        columns.bottom()
+    );
+
+    // Four times the travel the reach needs, so a ceiling raised by any margin
+    // short of that is overshot rather than approached.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let notches = (reach / WHEEL_NOTCH).ceil() as usize * 4 + 4;
+    let after = settled_after(SCREEN, Some(columns.center()), notches);
+    assert!(
+        (after.canvas_scroll() - reach).abs() < 0.5,
+        "{notches} notches of wheel scrolled the column {} points where the \
+         page's reach below the pane is {reach} — the scroll ran past the end \
+         of its own page",
+        after.canvas_scroll()
+    );
+
+    let last = *after
+        .composed_plot_rects()
+        .last()
+        .expect("the composition placed its tiles");
+    assert!(
+        (last.bottom() - columns.bottom()).abs() < 0.5,
+        "scrolled to the end, the last tile's bottom is at {} and the column \
+         pane's content rect ends at {} — the column tore away from the foot \
+         of the pane and left {} points of it blank",
+        last.bottom(),
+        columns.bottom(),
+        columns.bottom() - last.bottom()
+    );
+}
