@@ -368,38 +368,68 @@ fn the_shipped_arrangement_names_only_panes_this_build_has() {
         .unwrap_or_else(|findings| panic!("{findings}"));
 }
 
-/// AC2. The canvas toggle offers a grid and a chart, and nothing else.
+/// The canvas declares one projection and draws no head band of its own.
 ///
-/// Counted where it drew rather than where it was declared: the segments come
-/// back off the frame, so a third entry added to the declaration would arrive
-/// here as a third rect. The declaration's own count is held separately, in
-/// `brightfield_workbench::arrangement`'s unit tests — this is the half that
-/// says the screen agrees with it.
+/// Two halves, and the second is the one that bites. The declaration is read
+/// off `arrangement`, which is where a second projection would be added back;
+/// the **screen** is read off a laid-out frame.
+///
+/// # What the screen half asserts now, and why it changed
+///
+/// It used to search the frame for a `projection_toggle` rect through
+/// `MeridianApp::canvas_toggle_segments`. That accessor is gone with the band
+/// that held the toggle: the chart canvas draws no head band at all, so nothing
+/// can write a toggle segment there and a test asserting the list is empty
+/// would be a test that cannot fail. What replaces it is the wider claim the
+/// band's removal makes — **no band, so no toggle** — read as the geometry it
+/// is: the canvas's own rect and the top of the pane group drawn in it. A head
+/// band coming back puts `rail_selector_height` of canvas between the two, and
+/// that is what this measures.
+///
+/// The window under it holds a chart **and** a protocol, which is the window
+/// the band used to draw on. Over a window with no chart the canvas goes to the
+/// graph, which keeps its band, so a reading there would fail for the right
+/// reason and the wrong surface.
 #[test]
-fn the_canvas_toggle_offers_two_projections_and_no_more() {
-    let app = settled();
-    let segments = app.canvas_toggle_segments();
-    assert_eq!(
-        segments.len(),
-        2,
-        "the canvas toggle drew {} segments",
-        segments.len()
-    );
-    // One control, not two: the segments abut, so they are halves of one
-    // capsule rather than two separate controls that happen to be adjacent.
-    assert!(
-        (segments[0].right() - segments[1].left()).abs() < 1e-3,
-        "the two segments are {}pt apart, so the canvas is offering two \
-         controls where the arrangement declares one",
-        segments[1].left() - segments[0].right()
-    );
-
+fn the_canvas_declares_one_projection_and_draws_no_head_band() {
     let canvas = arrangement::default_arrangement().expect_region(arrangement::CANVAS);
     let Occupant::Canvas { projections, .. } = canvas.occupant else {
         panic!("the canvas region is occupied by the canvas");
     };
     let labels: Vec<&str> = projections.iter().map(|p| p.label).collect();
-    assert_eq!(labels, ["Grid", "Chart"]);
+    assert_eq!(
+        labels,
+        ["Chart"],
+        "the canvas declares {} projections; the tabular reading is a pane of \
+         the canvas's own group rather than a second projection of it",
+        labels.len()
+    );
+
+    let app = settled();
+    assert!(
+        !app.chart_doc().is_empty(),
+        "this window holds no chart, so the canvas went to the graph and drew \
+         no toggle for a reason that has nothing to do with the declaration"
+    );
+    let canvas = app
+        .region_rect(arrangement::CANVAS)
+        .expect("the canvas region drew");
+    let pane = app
+        .chart_viewport()
+        .expect("the chart pane drew, so it recorded the box it was given");
+    // The chart pane fills the canvas, so the distance from the canvas's top to
+    // the box that pane was handed is its own frame and nothing else. A head
+    // band puts a whole `rail_selector_height` more between the two, which is
+    // what separates the two states: measured on this fixture, 12 points
+    // without the band and 36 with it, against a band of 24.
+    let gap = pane.top() - canvas.top();
+    assert!(
+        gap < chrome::rail_selector_height(),
+        "the chart pane's content box starts {gap} points below the canvas at \
+         {canvas:?} — at least a band's {} points of it, and the band above \
+         the chart is where the projection toggle used to live",
+        chrome::rail_selector_height()
+    );
 }
 
 /// AC4. No numeric binding addresses a surface.

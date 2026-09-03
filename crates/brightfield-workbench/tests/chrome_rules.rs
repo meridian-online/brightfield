@@ -382,6 +382,7 @@ fn a_collapsed_bottom_rail_paints_the_whole_of_its_rect_in_the_strips_own_fill()
             &["Steps", "Controls"],
             0,
             chrome::Caret::Up,
+            None,
             Mode::Light,
         )
     });

@@ -148,6 +148,16 @@ pub const TILES_PER_ROW: usize = 3;
 /// there.
 pub const HERO_SHARE: f32 = 0.62;
 
+/// The share of its own **column** the map pane takes, as a fraction of the
+/// height — the rows pane beneath it takes what is left.
+///
+/// [`HERO_SHARE`] again, and the tie is the design rather than a coincidence:
+/// the map is the same fraction of the canvas across and of its column down,
+/// so the two panes beside and below it read as one proportion instead of two.
+/// `the_rows_pane_sits_under_the_map_and_takes_the_rest_of_its_column` reads
+/// the drawn rects back against it.
+pub const MAP_COLUMN_SHARE: f32 = HERO_SHARE;
+
 /// The hero plot's declared width in logical points — [`HERO_SHARE`] of a
 /// thousand, so the pair of weights below reads as the ratio it is.
 pub const HERO_WIDTH: u32 = 620;

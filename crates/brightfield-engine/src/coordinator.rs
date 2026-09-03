@@ -212,17 +212,25 @@ impl Coordinator {
         self.session.execute_mark(mark_index)
     }
 
-    /// The grid surface's read of the SAME step at the SAME interaction state —
-    /// row-level `SELECT *` over the same materialisation, under the same
-    /// `WHERE`. Because it shares one selection-compile path with
-    /// [`Coordinator::chart_rows`], the two surfaces cannot resolve different
-    /// rows from the same selection state.
+    /// A row-level `SELECT *` read of the SAME step at the SAME interaction
+    /// state, for the audience named. At
+    /// [`RowsAudience::Plot`](brightfield_sql::emit::RowsAudience::Plot) it is
+    /// the same materialisation under the same `WHERE` as
+    /// [`Coordinator::chart_rows`], because the two share one
+    /// selection-compile path; at
+    /// [`RowsAudience::Reader`](brightfield_sql::emit::RowsAudience::Reader)
+    /// the `WHERE` is the selection's value, which under crossfilter is a
+    /// different clause on purpose.
     ///
     /// # Errors
     ///
     /// Propagates emit / query failure for the mark's step.
-    pub fn grid_rows(&mut self, mark_index: usize) -> Result<Vec<RecordBatch>, EngineError> {
-        self.session.execute_step_rows(mark_index)
+    pub fn grid_rows(
+        &mut self,
+        mark_index: usize,
+        audience: brightfield_sql::emit::RowsAudience,
+    ) -> Result<Vec<RecordBatch>, EngineError> {
+        self.session.execute_step_rows(mark_index, audience)
     }
 
     /// Consume the coordinator, returning the owned session (to move it onto a
@@ -373,6 +381,7 @@ mod tests {
     use super::*;
     use brightfield_spec::analysis::analyse_spec;
     use brightfield_spec::{parse_spec, Format};
+    use brightfield_sql::emit::RowsAudience;
     use duckdb::arrow::array::Array;
 
     fn coordinator_from(yaml: &str) -> Coordinator {
@@ -416,7 +425,7 @@ vconcat:
         // No selection: grid and chart both read the full materialisation.
         let mut coord = coordinator_from(BRUSH_DASHBOARD);
         let chart = coord.chart_rows(0).expect("chart");
-        let grid = coord.grid_rows(0).expect("grid");
+        let grid = coord.grid_rows(0, RowsAudience::Plot).expect("grid");
         assert_eq!(rows(&chart), 5, "chart sees all rows at rest");
         assert_eq!(rows(&grid), rows(&chart), "grid and chart agree at rest");
     }
@@ -439,7 +448,7 @@ vconcat:
         // Mark 0 (dot) and mark 1 (line) both filtered to x in {3,4,5}.
         for mark in 0..=1 {
             let chart = coord.chart_rows(mark).expect("chart");
-            let grid = coord.grid_rows(mark).expect("grid");
+            let grid = coord.grid_rows(mark, RowsAudience::Plot).expect("grid");
             assert_eq!(
                 rows(&chart),
                 3,
@@ -569,7 +578,12 @@ vconcat:
             let t = column_i64(&coord_structured.chart_rows(mark).expect("chart"), "x");
             assert_eq!(t, s, "mark {mark}: structured == string filtered rows");
             assert_eq!(t, vec![2, 3, 4], "x kept in {{2,3,4}}");
-            let g = column_i64(&coord_structured.grid_rows(mark).expect("grid"), "x");
+            let g = column_i64(
+                &coord_structured
+                    .grid_rows(mark, RowsAudience::Plot)
+                    .expect("grid"),
+                "x",
+            );
             assert_eq!(g, t, "mark {mark}: grid agrees under the structured clause");
         }
 
@@ -948,7 +962,7 @@ plot:
             predicate: structured_y_interval(0.0, 49.0),
         });
         assert_eq!(coord.session().preagg_stats().cube_hits, 1);
-        let grid = coord.grid_rows(0).expect("grid rows");
+        let grid = coord.grid_rows(0, RowsAudience::Plot).expect("grid rows");
         assert_eq!(
             rows(&grid),
             10_000,

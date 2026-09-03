@@ -899,6 +899,19 @@ impl Item<ChartDoc> for ChartItem {
             // would aim this frame's gestures at a raster that is not there.
             doc.raster_rect = None;
             doc.gesture_ink = None;
+            // **The first view's own clip.** A page drawn in a pane group is
+            // drawn in the boxes `PaneViews` names and nowhere else, and the
+            // box this paint is laid out in is their union — which, since the
+            // map pane gave the foot of its column to the rows pane, reaches
+            // over the map pane's own bottom frame and over the rows pane
+            // under it. The clip is narrowed to the first view for the paint
+            // and put back afterwards, because `Ui::interact` takes its hit
+            // rect from the clip and the gestures below are aimed at the whole
+            // page across both views.
+            let laid = ui.clip_rect();
+            if let Some(views) = doc.pane_views {
+                ui.shrink_clip_rect(views.first);
+            }
             let rect = match module_of(doc) {
                 Some(mut module) => {
                     Item::ui(&mut module, doc, ui, cx);
@@ -915,20 +928,22 @@ impl Item<ChartDoc> for ChartItem {
                 }
                 None => doc.present_raster(ui),
             };
+            ui.set_clip_rect(laid);
             let Some(rect) = rect else {
                 return;
             };
 
             // **The second pane's view of the same page**, when a canvas is
-            // drawing this document across two panes and one of them has
-            // scrolled. The same texture, painted again at the origin that
-            // pane reads the page from and clipped to that pane, which is what
-            // makes one composition — one session, one selection — two views.
+            // drawing this document across two panes. The same texture,
+            // painted again at the origin that pane reads the page from and
+            // clipped to that pane, which is what makes one composition — one
+            // session, one selection — two views.
             //
-            // Nothing is painted when the two views coincide: the paint above
-            // spans the whole page, so a second copy at the same origin would
-            // be the same pixels twice.
-            if let Some(view) = doc.pane_views.filter(|v| v.by > 0.0) {
+            // Drawn whether or not the second view has scrolled, because the
+            // paint above is clipped to the *first* view: at a scroll of zero
+            // the two are the same pixels in a box the first paint did not
+            // reach rather than a second copy of pixels already there.
+            if let Some(view) = doc.pane_views {
                 if let Some(texture) = doc.canvas_texture() {
                     ui.painter().with_clip_rect(view.second).image(
                         texture,

@@ -458,7 +458,7 @@ const WHEEL_FRAMES: usize = 8;
 /// the device path in the raster alone — the canvas pane reserves the same box
 /// and paints nothing into it — which is the property `tests/canvas_pane_group.rs`
 /// is built on.
-fn pane_rects(size: (f32, f32)) -> Vec<brightfield_shell::window::CanvasPane> {
+fn pane_rects(size: (f32, f32)) -> (Vec<brightfield_shell::window::CanvasPane>, egui::Pos2) {
     let path = housing();
     let chosen = path.to_str().expect("utf-8 fixture path");
     let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
@@ -474,7 +474,42 @@ fn pane_rects(size: (f32, f32)) -> Vec<brightfield_shell::window::CanvasPane> {
     for _ in 0..3 {
         let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
     }
-    app.canvas_panes().panes.clone()
+    // The control that reopens the ledger rail, read before it is clicked and
+    // returned for the capture to aim at. A data file opens as a one-step
+    // Protocol, so the rail opens closed to its strip and hands the canvas its
+    // other 124 points; at this window that is exactly enough for the column's
+    // seven tiles at their floor, and a page that fits its pane is a page no
+    // clip and no scroll can be asserted about. See `settled_scrollable` in
+    // `tests/canvas_pane_group.rs`, which reopens it for the same reason.
+    let control = app
+        .rail_collapse_rect(brightfield_workbench::arrangement::LEDGER_RAIL)
+        .expect("the collapsed ledger drew the control that reopens it")
+        .center();
+    for events in reopen_the_ledger(control) {
+        let mut input = raw.clone();
+        input.events = events;
+        let _ = ctx.run_ui(input, |ui| app.draw(ui));
+    }
+    (app.canvas_panes().panes.clone(), control)
+}
+
+/// The frames that reopen a collapsed ledger rail by clicking `control` — one
+/// to put the pointer there, one carrying the press and release, and three to
+/// settle the panel egui reads back on the frame after.
+fn reopen_the_ledger(control: egui::Pos2) -> Vec<Vec<egui::Event>> {
+    let button = |pressed| egui::Event::PointerButton {
+        pos: control,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    };
+    vec![
+        vec![egui::Event::PointerMoved(control)],
+        vec![button(true), button(false)],
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    ]
 }
 
 /// **The two panes clip their own share of the one page, and a scroll moves
@@ -502,10 +537,10 @@ fn pane_rects(size: (f32, f32)) -> Vec<brightfield_shell::window::CanvasPane> {
 /// crate's test targets green.
 #[test]
 fn the_pane_group_clips_the_page_to_the_panes_it_is_drawn_in() {
-    let panes = pane_rects(SHORT_WINDOW);
+    let (panes, ledger_control) = pane_rects(SHORT_WINDOW);
     assert_eq!(
         panes.len(),
-        2,
+        3,
         "the canvas drew {} panes at {SHORT_WINDOW:?}, so the rects below are \
          not the pane group's",
         panes.len()
@@ -522,11 +557,12 @@ fn the_pane_group_clips_the_page_to_the_panes_it_is_drawn_in() {
     // scroll moved. Two empty frames lead: a resizable panel's reported size
     // is read back on the frame after, so the pointer has to land on a settled
     // layout.
-    let point = vec![
+    let mut point = reopen_the_ledger(ledger_control);
+    point.extend([
         Vec::new(),
         Vec::new(),
         vec![egui::Event::PointerMoved(column.center())],
-    ];
+    ]);
     let mut turn = point.clone();
     for _ in 0..WHEEL_FRAMES {
         turn.push(vec![egui::Event::MouseWheel {
@@ -574,10 +610,16 @@ fn the_pane_group_clips_the_page_to_the_panes_it_is_drawn_in() {
     // This is the one the mark ink cannot see: what the page paints into a
     // pane's inset is its BACKGROUND, and the chart surface and a pane's fill
     // are the same token, so the visible loss is the hairline the page covers.
-    // Measured: with the clip, each pane's strip carries the border colour
-    // across its full width on two device rows; without it, on one — the page
-    // paints over the upper row of a stroke that straddles the pane's edge.
-    // The `rows >= 2` below is that measurement as an assertion.
+    //
+    // Measured at this window, with the clip: the map pane's strip carries the
+    // border colour across its full width on one device row — its own stroke,
+    // with the pane gap under it in the canvas's own fill — and the rows and
+    // column panes on two, their own stroke and the hairline of the rail
+    // below them. Without the clip the map pane shows NONE: the page is laid
+    // out across the union of the map's and the column's content rects, which
+    // since the map gave the foot of its column to the rows pane reaches over
+    // the map's bottom frame. The `rows >= 1` below is that measurement as an
+    // assertion, and the map pane is the one it bites on.
     let border = meridian_design::semantic(false).borders.subtle;
     for pane in &panes {
         let strip = pane.rect.bottom() - pane.body.bottom();
@@ -604,11 +646,10 @@ fn the_pane_group_clips_the_page_to_the_panes_it_is_drawn_in() {
             })
             .count();
         assert!(
-            rows >= 2,
+            rows >= 1,
             "the {} pane's bottom frame runs the pane's full width on {rows} \
-             device rows below its content rect, where the hairline is one \
-             logical point straddling the edge and lands on two — the page is \
-             painting over the frame of the pane it is drawn in",
+             device rows below its content rect — the page is painting over \
+             the frame of the pane it is drawn in",
             pane.name
         );
     }

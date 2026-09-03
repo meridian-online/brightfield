@@ -23,7 +23,9 @@ use brightfield_conformance::LoadDiagnostics;
 use brightfield_engine::coordinator::{Coordinator, Interaction};
 use brightfield_engine::error::EngineError;
 use brightfield_engine::facts::MarkFacts;
-use brightfield_engine::{assemble_batches, DeclinedMark, Engine, NavigationExtent, Session};
+use brightfield_engine::{
+    assemble_batches, DeclinedMark, Engine, NavigationExtent, RowsAudience, Session,
+};
 use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::ink::ChartInk;
 use brightfield_render::inset::{resolve_insets_for_marks, DEFAULT_SCALE_INSET};
@@ -1105,6 +1107,19 @@ impl LiveDashboard {
     }
 
     /// **What each live selection currently HOLDS**, as `(name, clause)` pairs
+    /// **The mark index this dashboard's rows are read at** by a surface that
+    /// is not a plot — [`presenting_rows_mark`] over the spec this dashboard
+    /// was composed from.
+    ///
+    /// It lives here because the spec does: the rows pane holds a `ChartDoc`,
+    /// the `ChartDoc` holds this, and the alternative — the pane reaching for
+    /// the spec itself — is how a second copy of the rule gets written. There
+    /// is one rule and this is the only way to it from a pane.
+    #[must_use]
+    pub fn rows_mark(&self) -> usize {
+        presenting_rows_mark(&self.spec)
+    }
+
     /// ordered by name — the store's own values, resolved through the very
     /// [`compile_selection`] every emitted query resolves them through, so a
     /// surface that shows one of these clauses is showing the string DuckDB
@@ -1819,7 +1834,7 @@ fn compose_from_results(
 /// answers for the whole document. A hand-authored spec with several
 /// unrelated sources is not this card's scope; see the card for why one
 /// figure is what the band owes.
-fn ghost_subset_marks(spec: &Spec) -> Option<(usize, usize)> {
+pub(crate) fn ghost_subset_marks(spec: &Spec) -> Option<(usize, usize)> {
     let marks = collect_marks(spec);
     for i in 0..marks.len().checked_sub(1)? {
         let (
@@ -1844,6 +1859,42 @@ fn ghost_subset_marks(spec: &Spec) -> Option<(usize, usize)> {
     None
 }
 
+/// **The mark index a surface that is not a plot reads the presenting step's
+/// rows at** — the layer that carries `filterBy:`, resolved from the composed
+/// spec rather than written down as a literal.
+///
+/// The subset mark of the first ghost/subset device `ghost_subset_marks`
+/// finds, and mark `0` for a spec that declares no such device. A one-mark spec
+/// therefore resolves to its only mark, and a hand-authored single layer bound
+/// `filterBy:` resolves to itself — in both cases because there is no ghost to
+/// pass over, not because `0` is a safe default.
+///
+/// # Why a literal was wrong, and why the obvious repair is also wrong
+///
+/// A generated tile writes its ghost first and its subset second — see
+/// [`crate::chart_kinds::point_map_tile`] and the histogram and scatter tiles
+/// beside it — so mark `0` of a generated dashboard is the hero's **ghost** —
+/// `data: { from: opened }` and no `filterBy:`. A surface reading it
+/// reads the whole table whatever anybody brushes, and that is what the rows
+/// pane did: it listed 240 of 240 rows beside a status band saying 45 were
+/// selected.
+///
+/// Moving to the subset mark is necessary and not sufficient, and this is the
+/// half that is easy to miss. The generated selection is `select: crossfilter`,
+/// under which every consumer drops the clause its own plot published, so the
+/// hero's subset layer answers 240 under a brush **on the hero** — measured, at
+/// the fixture in `tests/canvas_pane_group.rs`: after one interval on
+/// `longitude` the sixteen marks count
+/// `[240, 240, 240, 45, 240, 45, 240, 45, 240, 45, 240, 45, 240, 45, 240, 45]`,
+/// and marks 0 and 1 are the hero's pair. So the mark index answers *which
+/// materialisation*, and
+/// [`RowsAudience`] answers *whose clause is
+/// dropped*; a reader needs both and passes `Reader` for the second.
+#[must_use]
+pub fn presenting_rows_mark(spec: &Spec) -> usize {
+    ghost_subset_marks(spec).map_or(0, |(_ghost, subset)| subset)
+}
+
 /// The status band's row count, read off `session` under its CURRENT
 /// interaction state — the one query this seam owes, at the ghost/subset
 /// device [`ghost_subset_marks`] finds.
@@ -1863,8 +1914,8 @@ fn ghost_subset_marks(spec: &Spec) -> Option<(usize, usize)> {
 /// stays quiet rather than say something it did not check.
 fn compute_row_count(session: &Session, spec: &Spec) -> Option<RowCount> {
     let (ghost, subset) = ghost_subset_marks(spec)?;
-    let total = session.step_rows_count(ghost).ok()?;
-    let selected = session.step_rows_count(subset).ok()?;
+    let total = session.step_rows_count(ghost, RowsAudience::Reader).ok()?;
+    let selected = session.step_rows_count(subset, RowsAudience::Reader).ok()?;
     Some(RowCount { selected, total })
 }
 
@@ -2397,6 +2448,56 @@ plot:
             }),
             "x > 5 admits {{6,7,8,9,10}} — five of the table's ten rows — and \
              the total must not move under a brush that never touches it"
+        );
+    }
+
+    /// The same device under `select: crossfilter`, brushed from **its own
+    /// plot** — the shape every generated dashboard writes, and the one the
+    /// `intersect` fixture above cannot see.
+    ///
+    /// Under crossfilter a consumer drops the clause its own plot published, so
+    /// asking the subset layer as the plot answers ten under this brush: the
+    /// figure a status band would report is `10 of 10 rows` beside a chart in
+    /// which everything outside the brush has gone grey. That was live until
+    /// this round. `compute_row_count` asks as a [`RowsAudience::Reader`] — no
+    /// plot, so no contribution of its own to drop — and the first assertion
+    /// here holds the fixture's self-exclusion so this cannot go green by the
+    /// selection quietly ceasing to be a crossfilter.
+    #[test]
+    fn a_crossfilter_brush_from_the_plot_itself_still_moves_the_selected_figure() {
+        let src = ROW_COUNT_DEVICE.replace("select: intersect", "select: crossfilter");
+        let mut dash = LiveDashboard::load_str(&src, None).expect("load");
+        let composed = dash.present().expect("first paint");
+        let plot = ComponentPath(composed.plots[0].path.clone());
+
+        let after = dash
+            .apply(Interaction::Select {
+                name: "sel".to_string(),
+                contributor: plot,
+                predicate: SqlPredicate::Expr("x > 5".to_string()),
+            })
+            .expect("re-paint after brush");
+
+        let spec = parse_spec(&src, Format::Yaml).expect("parse").spec;
+        let (_, subset) = ghost_subset_marks(&spec).expect("the device");
+        assert_eq!(
+            dash.coordinator()
+                .session()
+                .step_rows_count(subset, RowsAudience::Plot)
+                .expect("subset as the plot"),
+            10,
+            "the subset layer asked as its own plot must still drop this \
+             plot's clause, or the fixture is no longer a crossfilter and \
+             nothing below is a claim about one"
+        );
+        assert_eq!(
+            after.rows,
+            Some(RowCount {
+                selected: 5,
+                total: 10
+            }),
+            "the band reports the selection's own count — reading the subset \
+             layer as its plot would report ten of ten under this brush"
         );
     }
 
