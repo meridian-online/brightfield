@@ -1150,3 +1150,86 @@ fn the_columns_scroll_stops_at_the_end_of_its_page() {
         columns.bottom() - last.bottom()
     );
 }
+
+/// **The second view's own box bounds its pointer mapping** — a sweep across
+/// the column pane's header band brushes no tile, with the column scrolled.
+///
+/// `SecondView::holds` is horizontal, because which view a *plot* is in is a
+/// question about the page's width: a tile scrolled below the pane's content
+/// bottom is still the column's tile. A *pointer* needs the vertical clause
+/// too, and `page_offset` is where it lives — this view paints outside its own
+/// clip, so a pointer above the clip is over the pane's title rather than over
+/// a tile. Drop the clause and the band maps onto whatever the scroll has
+/// carried above the fold: at this window a sweep across the pane's own title
+/// commits an interval on the first stacked tile's column, which is a
+/// cross-filter nobody asked for.
+///
+/// The second run is the control. It is the same sweep at the same x, moved
+/// down into the pane's content rect, and it does commit — so the silence above
+/// is the mapping refusing the band and not the gesture machine being wired to
+/// nothing.
+#[test]
+fn a_sweep_on_the_column_panes_header_band_lands_on_no_tile() {
+    let reference = settled(SCREEN);
+    let pane = reference
+        .canvas_panes()
+        .pane("columns")
+        .expect("the column pane drew");
+    let (header, body) = (pane.header, pane.body);
+    assert!(
+        header.bottom() <= body.top(),
+        "the column pane's header band {header:?} reaches into its content \
+         rect {body:?}, so a point in the band is not above the second view"
+    );
+
+    let sweep_at = |y: f32| -> Option<String> {
+        let (mut app, ctx, raw) = window();
+        let frame = |app: &mut MeridianApp, events: Vec<egui::Event>| {
+            let mut input = raw.clone();
+            input.events = events;
+            let _ = ctx.run_ui(input, |ui| app.draw(ui));
+        };
+        for _ in 0..3 {
+            frame(&mut app, Vec::new());
+        }
+        scroll_the_column(&mut app, &ctx, &raw, body.center(), 12);
+        assert!(
+            app.canvas_scroll() > 0.0,
+            "the column did not scroll, so the band and the page's top are the \
+             same place and this test is about neither"
+        );
+        let from = egui::pos2(body.center().x - 40.0, y);
+        let to = egui::pos2(body.center().x + 40.0, y);
+        frame(
+            &mut app,
+            vec![
+                egui::Event::PointerMoved(from),
+                button(from, egui::PointerButton::Primary, true),
+            ],
+        );
+        frame(&mut app, vec![egui::Event::PointerMoved(to)]);
+        frame(
+            &mut app,
+            vec![button(to, egui::PointerButton::Primary, false)],
+        );
+        for _ in 0..2 {
+            frame(&mut app, Vec::new());
+        }
+        app.chart_doc().selection_sql()
+    };
+
+    let on_the_band = sweep_at(header.center().y);
+    let in_the_pane = sweep_at(body.top() + MIN_COLUMN_TILE_HEIGHT / 2.0);
+    assert!(
+        in_the_pane.is_some(),
+        "the control sweep inside the column pane's content rect committed \
+         nothing, so the band committing nothing says only that the gesture \
+         machine is dead"
+    );
+    assert_eq!(
+        on_the_band, None,
+        "a sweep across the column pane's header band committed {on_the_band:?} \
+         — the band was mapped onto the page at the second view's origin, which \
+         puts it on the part of the column the scroll carried above the fold"
+    );
+}
