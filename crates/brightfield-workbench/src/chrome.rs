@@ -539,10 +539,10 @@ enum Below {
 
 /// The selector strip itself, shared by the open and collapsed drawings.
 // Eight, because the strip is one drawing with eight independent inputs: the
-// box, the names, which is live, whether it collapses and which way, what it
-// summarises, what is under it, and the mode. A struct here would be a name
-// for the argument list rather than for a thing — every field is read once, by
-// this function, at one call.
+// `ui` it paints into, the box, the names, which is live, whether it collapses
+// and which way, what it summarises, what is under it, and the mode. A struct
+// here would be a name for the argument list rather than for a thing — every
+// field is read once, by this function, at one call.
 #[allow(clippy::too_many_arguments)]
 fn strip(
     ui: &mut egui::Ui,

@@ -344,12 +344,19 @@ pub fn show_table(
         ColumnWidths::Natural => natural_widths(ui, source, binding)
             .into_iter()
             .map(|w| {
-                // Pinned rather than seeded: `egui_table` stores a resizable
-                // column's width per table id and reads it back over whatever
-                // it is handed next frame, so a natural width offered as a
-                // starting point would be overwritten by the first frame's and
-                // stop tracking the content. A range of one value is what makes
-                // the drawn width the measured width on every frame.
+                // Pinned rather than seeded, and **the column-resize drag is
+                // the price**. `egui_table` stores a resizable column's width
+                // per table id and reads it back over whatever it is handed
+                // next frame, so a natural width offered as a starting point
+                // would be overwritten by the first frame's and stop tracking
+                // the content — and the content moves, because a brush
+                // re-queries the rows the width is measured over. A range of
+                // one value is what makes the drawn width the measured width on
+                // every frame, and `resizable(false)` follows from it: the
+                // widget draws no resize handle and no vertical separator
+                // between columns where one cannot be dragged. Keeping both
+                // needs `egui_table` to distinguish a width a person set from
+                // one a previous frame measured, which it does not expose.
                 egui_table::Column::new(w)
                     .range(egui::Rangef::new(w, w))
                     .resizable(false)

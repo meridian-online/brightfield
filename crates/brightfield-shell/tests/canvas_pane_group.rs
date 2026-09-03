@@ -681,12 +681,17 @@ fn the_count_reads_over_the_map_and_leaves_its_axes_whole() {
 /// **The other half of AC3's rule: past the floor, the page grows and the
 /// group scrolls.**
 ///
-/// At 1440 by 900 the ledger rail is open at its default and the canvas has
-/// less height than seven tiles at their floor need, so the column does not
-/// compress: the page is composed taller than the pane and what does not fit
-/// is scrolled to. Held here rather than left implicit, because "the tiles
-/// shrank instead" and "the page grew" are the same picture at the top of the
-/// pane and differ only in what is below the fold.
+/// The canvas here has less height than seven tiles at their floor need, so the
+/// column does not compress: the page is composed taller than the pane and what
+/// does not fit is scrolled to. Held here rather than left implicit, because
+/// "the tiles shrank instead" and "the page grew" are the same picture at the
+/// top of the pane and differ only in what is below the fold.
+///
+/// [`settled_scrollable`], because a data file opens with the ledger rail
+/// closed to its strip and the 124 points that gives the canvas back are enough
+/// at [`SCREEN`] for the tiles to clear their floor inside the pane. The last
+/// assertion holds that this window is one where the page outgrew the pane, so
+/// a fixture that stopped making one says so rather than passing.
 #[test]
 fn the_column_scrolls_when_its_tiles_reach_their_floor() {
     let app = settled_scrollable(SCREEN);
