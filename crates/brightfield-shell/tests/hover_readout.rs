@@ -937,7 +937,7 @@ fn a_run_of_rests_leaves_the_window_holding_one_rows_worth() {
     let mut aims: Vec<egui::Pos2> = Vec::new();
     for row in fixture_rows() {
         let at = at_data(&app, 0, row.longitude, row.latitude);
-        if hero.contains(at) && !aims.iter().any(|p| *p == at) {
+        if hero.contains(at) && !aims.contains(&at) {
             aims.push(at);
         }
         if aims.len() == RESTS {
