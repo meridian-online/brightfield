@@ -683,9 +683,12 @@ fn a_wheel_over_the_map_does_not_scroll_the_column() {
     );
 }
 
-/// Every plot's x and y domain, in the order the composition placed them —
-/// the readback a zoom moves and a scroll must not.
-fn tile_domains(app: &MeridianApp) -> Vec<(String, String)> {
+/// One plot's x and y domain, as the debug spelling of the two scales — the
+/// readback a zoom and a pan move, and a scroll must not.
+type Domain = (String, String);
+
+/// Every plot's [`Domain`], in the order the composition placed them.
+fn tile_domains(app: &MeridianApp) -> Vec<Domain> {
     app.chart_doc()
         .composed
         .plots
@@ -1024,7 +1027,7 @@ fn a_pan_across_the_pane_boundary_moves_by_what_the_hand_moved() {
     let enter = egui::pos2(columns.left() + 2.0, press.y + 30.0);
     let release = egui::pos2(columns.left() + 20.0, press.y + 60.0);
 
-    let pan = |notches: usize| -> (f32, Vec<(String, String)>, Vec<(String, String)>) {
+    let pan = |notches: usize| -> (f32, Vec<Domain>, Vec<Domain>) {
         let (mut app, ctx, raw) = window();
         let frame = |app: &mut MeridianApp, events: Vec<egui::Event>| {
             let mut input = raw.clone();
