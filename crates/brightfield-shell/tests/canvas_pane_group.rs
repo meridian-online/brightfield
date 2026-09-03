@@ -695,3 +695,119 @@ fn tile_domains(app: &MeridianApp) -> Vec<(String, String)> {
         })
         .collect()
 }
+
+/// **A brush on a scrolled tile lands on the tile under the pointer** — the
+/// gesture half of drawing one page in two views.
+///
+/// A page drawn at two origins has two pointer mappings, and a press read
+/// against the wrong one lands wherever on the page that distance falls: at
+/// this window the column is scrolled 112 points, which is more than a tile, so
+/// the unshifted mapping puts a sweep on the *last* tile onto a different
+/// column's bars. That is a cross-filter narrowing a column the reader never
+/// touched — the same picture as a working brush, over the wrong data.
+///
+/// Read off the committed selection rather than off the drag: what is asserted
+/// is the clause the engine is holding, which is what every other tile then
+/// draws through.
+#[test]
+fn a_brush_on_a_scrolled_tile_lands_on_the_tile_under_the_pointer() {
+    let path = fixture();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let mut app = MeridianApp::headless(boot, Mode::Light);
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(SCREEN),
+        ..Default::default()
+    };
+    let frame = |app: &mut MeridianApp, events: Vec<egui::Event>| {
+        let mut input = raw.clone();
+        input.events = events;
+        let _ = ctx.run_ui(input, |ui| app.draw(ui));
+    };
+    for _ in 0..3 {
+        frame(&mut app, Vec::new());
+    }
+
+    // Scroll the column to the end of its reach, over the column pane.
+    let columns = app
+        .canvas_panes()
+        .pane("columns")
+        .expect("the column pane drew")
+        .body;
+    frame(&mut app, vec![egui::Event::PointerMoved(columns.center())]);
+    for _ in 0..6 {
+        frame(
+            &mut app,
+            vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -WHEEL_NOTCH),
+                modifiers: egui::Modifiers::default(),
+                phase: egui::TouchPhase::Move,
+            }],
+        );
+    }
+    for _ in 0..6 {
+        frame(&mut app, Vec::new());
+    }
+    let scrolled = app.canvas_scroll();
+    assert!(
+        scrolled > MIN_COLUMN_TILE_HEIGHT,
+        "the column scrolled {scrolled} points, which is less than one tile — \
+         a sweep read against the unmoved origin would land on the same tile \
+         and this test would pass either way"
+    );
+
+    // The last tile, which is only reachable at all because the column
+    // scrolled, and a point across the middle of its data area.
+    let last = app.composed_plot_rects().len() - 1;
+    let (at, want) = {
+        let drawn = app.composed_plot_rects()[last];
+        let doc = app.chart_doc();
+        let plot = &doc.composed.plots[last];
+        let l = &plot.layout;
+        #[allow(clippy::cast_possible_truncation)]
+        let x = |f: f64| {
+            drawn.left() + (l.plot_x_start() + (l.plot_x_end() - l.plot_x_start()) * f) as f32
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        let y = drawn.top() + ((l.plot_y_start() + l.plot_y_end()) / 2.0) as f32;
+        (
+            (egui::pos2(x(0.25), y), egui::pos2(x(0.7), y)),
+            plot.x_column.clone().expect("the tile draws a column"),
+        )
+    };
+    assert!(
+        columns.contains(at.0) && columns.contains(at.1),
+        "the sweep {at:?} is not inside the column pane's content rect \
+         {columns:?}, so it is not a gesture on the tile this test is about"
+    );
+
+    let press = |pos: egui::Pos2, pressed: bool| egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    };
+    frame(
+        &mut app,
+        vec![egui::Event::PointerMoved(at.0), press(at.0, true)],
+    );
+    frame(&mut app, vec![egui::Event::PointerMoved(at.1)]);
+    frame(&mut app, vec![press(at.1, false)]);
+    for _ in 0..2 {
+        frame(&mut app, Vec::new());
+    }
+
+    let held = app
+        .chart_doc()
+        .selection_sql()
+        .expect("the sweep committed a selection");
+    assert!(
+        held.contains(&want),
+        "the sweep on the last tile committed {held:?}, which does not name \
+         {want} — the press was read against the page's own origin rather than \
+         the origin the column pane draws it at, so it landed on whichever tile \
+         is {scrolled} points up the page"
+    );
+}
