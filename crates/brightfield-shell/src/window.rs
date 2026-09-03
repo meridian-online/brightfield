@@ -5317,9 +5317,20 @@ pub fn canvas_pane_rects(body: egui::Rect) -> CanvasPaneRects {
     let map_width = (crate::dashboard::HERO_SHARE * residual + gutter - CANVAS_PANE_GAP)
         .clamp(1.0, (body.width() - 1.0).max(1.0));
     let split = body.left() + map_width;
-    let map_height = (crate::dashboard::MAP_COLUMN_SHARE * body.height())
-        .clamp(1.0, (body.height() - 1.0).max(1.0));
-    let map = egui::Rect::from_min_max(body.min, egui::pos2(split, body.top() + map_height));
+    // Rounded to a whole logical point, because this edge is a pane's own
+    // bottom frame: a hairline stroked at a fractional y is antialiased across
+    // two device rows at neither's full strength, and the pane below it starts
+    // half a pixel into the gap. `the_pane_group_clips_the_page_to_the_panes_it_is_drawn_in`
+    // reads that frame back off a capture and counts the rows it runs across.
+    // Half a point either way is inside the tolerance the share is asserted at.
+    let split_y = crate::dashboard::MAP_COLUMN_SHARE
+        .mul_add(body.height(), body.top())
+        .round()
+        .clamp(
+            body.top() + 1.0,
+            (body.bottom() - 1.0).max(body.top() + 1.0),
+        );
+    let map = egui::Rect::from_min_max(body.min, egui::pos2(split, split_y));
     let rows = egui::Rect::from_min_max(
         egui::pos2(
             body.left(),

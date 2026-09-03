@@ -827,17 +827,21 @@ mod tests {
     }
 
     #[test]
-    fn the_canvas_toggles_between_two_projections() {
-        // AC2's declaration half: the toggle is built from this slice, so a
-        // third entry here would be a third entry on screen.
+    fn the_canvas_declares_one_projection() {
+        // The declaration half. The head band's toggle is built from this
+        // slice and drawn where there is more than one entry in it, so a
+        // second entry here is a control on screen; the shell's own
+        // `the_canvas_declares_one_projection_and_draws_no_toggle` is the
+        // half that searches a drawn frame for it.
         let canvas = default_arrangement().expect_region(CANVAS);
         let Occupant::Canvas { projections, .. } = canvas.occupant else {
             panic!("the canvas region is occupied by the canvas");
         };
         assert_eq!(
             projections.len(),
-            2,
-            "the canvas toggle offers a grid and a chart: {projections:?}"
+            1,
+            "the canvas declares the drawn reading and no second one: \
+             {projections:?}"
         );
     }
 
