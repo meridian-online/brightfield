@@ -203,8 +203,8 @@ fn emitted_rows_sql(session: &Session, spec: &Spec, mark: usize) -> String {
         Some(&live_selections(session)),
         RowsAudience::Plot,
     )
-        .expect("the mark emits")
-        .sql
+    .expect("the mark emits")
+    .sql
 }
 
 /// The chart SQL the engine emits for `mark` under the session's CURRENT

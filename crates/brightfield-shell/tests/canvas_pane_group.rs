@@ -198,6 +198,26 @@ fn reopen_the_ledger(app: &mut MeridianApp, ctx: &egui::Context, raw: &egui::Raw
     );
 }
 
+/// The window the **gesture** claims are read in: [`SCREEN`] less 120 points.
+///
+/// Every caller of [`window`] asserts something that needs the column to have
+/// scrolled **more than one tile** — a sweep, a press or a painted rectangle
+/// read against the wrong origin lands within the same tile otherwise, and the
+/// assertion holds either way. The reach is the page's height over the pane's,
+/// so it is a term of the window, and each time this window has lost chrome the
+/// reach has shrunk with it: the ledger closing to its strip took 124 points
+/// back and the canvas head band's removal took 28 more, leaving 88 at
+/// [`SCREEN`] against a 96-point tile floor.
+///
+/// So the reach is bought in the axis it lives in rather than by scrolling
+/// further, which cannot buy any: 120 points of window height is 120 points of
+/// page over pane, and the guards inside each test state the tile floor they
+/// need rather than trusting this number.
+const GESTURE_SCREEN: egui::Rect = egui::Rect {
+    min: egui::Pos2::ZERO,
+    max: egui::pos2(1440.0, 780.0),
+};
+
 /// One turn of the wheel, in logical points of travel.
 ///
 /// egui's own note: a single notch on a Logitech wheel into a MacBook arrives
@@ -213,6 +233,78 @@ fn baseline_screen() -> egui::Rect {
     let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
     let (w, h) = boot.window_size();
     egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h))
+}
+
+/// **AC1's other half — the canvas draws no band of its own above the panes,
+/// and the document's name is on screen once.**
+///
+/// The contract this card is cut from says the panes carry the headers and
+/// there is no canvas head band above them. The band survived the first round:
+/// the drawn frame still had a full-width band at the head of the canvas
+/// carrying `california_housing_sample.csv`, under a locator band that already
+/// carries the same string.
+///
+/// Two readings, because either alone can be satisfied the wrong way. The
+/// **geometry** — a band pushes the panes down by `rail_selector_height`, so
+/// the panes starting flush with the canvas is what its absence looks like —
+/// could be met by a band painted behind them. The **ink** — the file name
+/// drawn exactly once across the whole window — could be met by a band that
+/// drew a different string. Together they are the claim.
+#[test]
+fn the_canvas_draws_no_band_of_its_own_above_the_panes() {
+    for screen in [baseline_screen(), SCREEN] {
+        let app = settled(screen);
+        let canvas = app
+            .region_rect(arrangement::CANVAS)
+            .expect("the canvas drew");
+        let group = app.canvas_panes();
+        assert_eq!(group.panes.len(), 3, "the group drew its three panes");
+        let top = group
+            .panes
+            .iter()
+            .map(|p| p.rect.top())
+            .fold(f32::INFINITY, f32::min);
+        let gap = top - canvas.top();
+        assert!(
+            gap < chrome::rail_selector_height(),
+            "at {screen:?} the group's panes start {gap} points below the \
+             canvas at {canvas:?} — the head band is back, and it is \
+             {} points of it",
+            chrome::rail_selector_height()
+        );
+    }
+
+    // …and the ink. The title band and the locator band above the canvas both
+    // carry the document's name — that pair is theirs and is not this card's.
+    // What went is the third one, inside the canvas.
+    let (mut app, ctx, raw) = settled_window();
+    let name = fixture()
+        .file_name()
+        .expect("the fixture has a name")
+        .to_string_lossy()
+        .to_string();
+    let canvas = app
+        .region_rect(arrangement::CANVAS)
+        .expect("the canvas drew");
+    let inside = drawn_text_in(&mut app, &ctx, &raw, canvas);
+    assert!(
+        !inside.contains(&name),
+        "the canvas drew {name:?} inside its own rect {canvas:?} — the locator \
+         band above it already carries that string, and the panes below each \
+         name themselves. Drawn there: {inside:?}"
+    );
+    let above = drawn_text_in(
+        &mut app,
+        &ctx,
+        &raw,
+        egui::Rect::from_min_max(SCREEN.min, egui::pos2(SCREEN.max.x, canvas.top())),
+    );
+    assert!(
+        above.contains(&name),
+        "the bands above the canvas do not name the document at all, so the \
+         assertion above holds for want of a name rather than for want of a \
+         band: {above:?}"
+    );
 }
 
 /// **AC1 — each pane of the group draws its own header band.**
@@ -999,7 +1091,7 @@ fn window() -> (MeridianApp, egui::Context, egui::RawInput) {
     let mut app = MeridianApp::headless(boot, Mode::Light);
     let ctx = egui::Context::default();
     let raw = egui::RawInput {
-        screen_rect: Some(SCREEN),
+        screen_rect: Some(GESTURE_SCREEN),
         ..Default::default()
     };
     // The rail reopened before the gesture, for the reason
@@ -1094,7 +1186,7 @@ fn button(pos: egui::Pos2, button: egui::PointerButton, pressed: bool) -> egui::
 fn a_brush_across_the_pane_boundary_commits_what_it_swept() {
     // The screen points, derived once from an unscrolled window and used
     // unchanged in both runs — so the two runs are literally the same gesture.
-    let reference = settled_scrollable(SCREEN);
+    let reference = settled_scrollable(GESTURE_SCREEN);
     let columns = reference
         .canvas_panes()
         .pane("columns")
@@ -1192,7 +1284,7 @@ fn a_brush_across_the_pane_boundary_commits_what_it_swept() {
 /// tile of the column moves under it.
 #[test]
 fn a_pan_across_the_pane_boundary_moves_by_what_the_hand_moved() {
-    let reference = settled_scrollable(SCREEN);
+    let reference = settled_scrollable(GESTURE_SCREEN);
     let columns = reference
         .canvas_panes()
         .pane("columns")
@@ -1364,7 +1456,7 @@ fn the_columns_scroll_stops_at_the_end_of_its_page() {
 /// nothing.
 #[test]
 fn a_sweep_on_the_column_panes_header_band_lands_on_no_tile() {
-    let reference = settled_scrollable(SCREEN);
+    let reference = settled_scrollable(GESTURE_SCREEN);
     let pane = reference
         .canvas_panes()
         .pane("columns")
@@ -1544,7 +1636,7 @@ fn landing_of(
 /// commits" would be satisfied by a mapping that refused the whole column.
 #[test]
 fn a_press_over_no_pane_of_the_group_is_over_no_page() {
-    let reference = settled_scrollable(SCREEN);
+    let reference = settled_scrollable(GESTURE_SCREEN);
     let panes = reference.canvas_panes();
     let map = *panes.pane("map").expect("the map pane drew");
     let columns = *panes.pane("columns").expect("the column pane drew");
@@ -1683,7 +1775,12 @@ fn a_press_over_no_pane_of_the_group_is_over_no_page() {
 
     // The boundary, from the other side: the tile drawn just inside the
     // column's content bottom is the tile that sweep lands on.
-    let scrolled = settled_after(SCREEN, Ledger::Reopened, Some(columns.body.center()), 12);
+    let scrolled = settled_after(
+        GESTURE_SCREEN,
+        Ledger::Reopened,
+        Some(columns.body.center()),
+        12,
+    );
     let at = egui::pos2(columns.body.center().x, columns.body.bottom() - 1.0);
     let tile = scrolled
         .composed_plot_rects()
@@ -1863,7 +1960,7 @@ fn a_held_click_on_a_scrolled_tile_clears_the_selection() {
 /// a device.
 #[test]
 fn the_brush_rectangle_stays_where_the_hand_is() {
-    let reference = settled_scrollable(SCREEN);
+    let reference = settled_scrollable(GESTURE_SCREEN);
     let columns = reference
         .canvas_panes()
         .pane("columns")
@@ -1957,7 +2054,7 @@ fn the_brush_rectangle_stays_where_the_hand_is() {
 /// gesture holding the page and not a wheel that went nowhere.
 #[test]
 fn a_wheel_during_a_drag_does_not_move_the_column() {
-    let reference = settled_scrollable(SCREEN);
+    let reference = settled_scrollable(GESTURE_SCREEN);
     let columns = reference
         .canvas_panes()
         .pane("columns")
@@ -2356,7 +2453,9 @@ fn drawn_rows(
     let mut by_row: std::collections::BTreeMap<i64, Vec<(usize, String)>> =
         std::collections::BTreeMap::new();
     for (pos, text) in cells {
-        let Some(col) = column_at(pos.x) else { continue };
+        let Some(col) = column_at(pos.x) else {
+            continue;
+        };
         by_row
             .entry((pos.y * 10.0).round() as i64)
             .or_default()
@@ -2364,7 +2463,10 @@ fn drawn_rows(
     }
     let names: std::collections::BTreeMap<usize, String> = by_row
         .values()
-        .find(|row| row.iter().all(|(_, t)| HOUSING_HEADERS.contains(&t.as_str())))
+        .find(|row| {
+            row.iter()
+                .all(|(_, t)| HOUSING_HEADERS.contains(&t.as_str()))
+        })
         .expect("the table drew its header row")
         .iter()
         .map(|(c, t)| (*c, t.clone()))
@@ -2372,7 +2474,10 @@ fn drawn_rows(
 
     by_row
         .into_values()
-        .filter(|row| !row.iter().all(|(_, t)| HOUSING_HEADERS.contains(&t.as_str())))
+        .filter(|row| {
+            !row.iter()
+                .all(|(_, t)| HOUSING_HEADERS.contains(&t.as_str()))
+        })
         .map(|row| {
             row.into_iter()
                 .filter_map(|(c, t)| names.get(&c).map(|n| (n.clone(), t)))
@@ -2550,13 +2655,18 @@ fn the_rows_pane_lists_the_rows_the_brush_selects() {
         .live_dashboard()
         .expect("the opened file has a live dashboard")
         .rows_mark();
-    assert_eq!(mark, 1, "the hero's ghost is mark 0 and its subset is mark 1");
+    assert_eq!(
+        mark, 1,
+        "the hero's ghost is mark 0 and its subset is mark 1"
+    );
     let session = doc
         .live_coordinator()
         .expect("the opened file has a live session")
         .session();
     assert_eq!(
-        session.step_rows_count(0, RowsAudience::Reader).expect("ghost"),
+        session
+            .step_rows_count(0, RowsAudience::Reader)
+            .expect("ghost"),
         240,
         "the ghost layer declares no `filterBy:`, so it holds the whole file \
          under any brush — a pane reading it lists 240 rows for ever"
@@ -2608,10 +2718,12 @@ fn the_rows_pane_lists_the_rows_the_brush_selects() {
     }
 
     // Clearing it puts the whole table back.
-    assert!(app.chart_doc_mut().apply_interaction(Interaction::ClearSelect {
-        name: brightfield_shell::dashboard::SELECTION.to_string(),
-        contributor: hero,
-    }));
+    assert!(app
+        .chart_doc_mut()
+        .apply_interaction(Interaction::ClearSelect {
+            name: brightfield_shell::dashboard::SELECTION.to_string(),
+            contributor: hero,
+        }));
     for _ in 0..3 {
         let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
     }

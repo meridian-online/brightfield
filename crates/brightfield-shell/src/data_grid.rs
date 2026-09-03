@@ -777,7 +777,12 @@ impl RowSource for EngineRows<'_> {
         if start >= end {
             return; // an empty materialisation has no window to fetch
         }
-        match fetch_page(self.session, self.mark_index, start..end, RowsAudience::Reader) {
+        match fetch_page(
+            self.session,
+            self.mark_index,
+            start..end,
+            RowsAudience::Reader,
+        ) {
             Ok(page) => {
                 self.cache.window = page.window;
                 self.cache.columns = page.columns;

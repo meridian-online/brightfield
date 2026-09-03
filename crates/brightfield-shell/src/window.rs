@@ -374,7 +374,7 @@ pub fn chart_window_size(composed: &Composed) -> (f32, f32) {
     let inset = chrome::pane_content_inset();
     // Every band and rail the window lays out before the canvas gets what is
     // left, read out of the arrangement rather than restated here.
-    let (across, down) = chrome_budget(false);
+    let (across, down) = chrome_budget(Surface::Chart);
 
     // The legend band is a term, not a bite: a dashboard whose scales call
     // for a margin legend gets the band's width beside the raster, and one
@@ -399,25 +399,41 @@ pub fn chart_window_size(composed: &Composed) -> (f32, f32) {
 /// of the chart. `the_window_it_asks_for_fits_the_raster_it_presents` lays a
 /// real frame out at this size and reads the box the canvas pane was handed.
 ///
-/// `hint` is whether this window draws the key-hint band — the surface with a
-/// bare-key grammar does, and the one without it does not, so it is a term of
-/// the caller rather than of the arrangement.
+/// `surface` is which occupant the window is being sized for, and it decides
+/// two terms rather than one. Both are properties of the occupant rather than
+/// of the arrangement, which is why they are the caller's to state:
 ///
-/// The canvas's head band is [`chrome::rail_selector_height`] because that is
-/// the split the canvas is drawn with: one measure, read from the function
-/// that performs the split rather than restated as a second number.
-fn chrome_budget(hint: bool) -> (f32, f32) {
+/// - the **key-hint band**, which the graph draws because it has a bare-key
+///   grammar and the chart projections do not;
+/// - the **canvas head band**, at [`chrome::rail_selector_height`] because that
+///   is the split the graph canvas is drawn with — one measure, read from the
+///   function that performs the split rather than restated as a second number.
+///   The chart canvas is drawn with no split and carries no such term: each
+///   pane of its group has its own header band, and the locator band above the
+///   canvas already carries the document's name.
+fn chrome_budget(surface: Surface) -> (f32, f32) {
     let plan = arrangement::default_arrangement();
     let across = rail_default(plan.expect_region(arrangement::NAVIGATOR_RAIL))
         + rail_default(plan.expect_region(arrangement::INSPECTOR_RAIL));
     let mut down = band_extent(plan.expect_region(arrangement::TITLE_BAND))
         + band_extent(plan.expect_region(arrangement::LOCATOR_BAND))
-        + rail_default(plan.expect_region(arrangement::LEDGER_RAIL))
-        + chrome::rail_selector_height();
-    if hint {
-        down += band_extent(plan.expect_region(arrangement::HINT_BAND));
+        + rail_default(plan.expect_region(arrangement::LEDGER_RAIL));
+    if surface == Surface::Graph {
+        down += band_extent(plan.expect_region(arrangement::HINT_BAND))
+            + chrome::rail_selector_height();
     }
     (across, down)
+}
+
+/// Which occupant a window is being sized for — read by [`chrome_budget`] and
+/// by nothing else.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Surface {
+    /// The canvas holds the chart: no key-hint band, and no head band of its
+    /// own above the panes.
+    Chart,
+    /// The canvas holds the asset graph: both.
+    Graph,
 }
 
 /// The height the chart pane's toolbar row consumes above the raster, in
@@ -448,10 +464,11 @@ pub fn chart_toolbar_band(composed: &Composed) -> f32 {
 /// outwards from the DAG exactly as [`chart_window_size`] is read outwards from
 /// the dashboard.
 ///
-/// One difference from the chart's, and it is a property of this surface
-/// rather than an adjustment: the graph has a bare-key grammar and the chart
-/// projections do not, so this window gives up the hint band as well — which
-/// is the `hint` term `chrome_budget` takes.
+/// Two differences from the chart's, and both are properties of this surface
+/// rather than adjustments: the graph has a bare-key grammar and the chart
+/// projections do not, so this window gives up the hint band as well; and the
+/// graph canvas draws a head band naming what is on it, which the chart canvas
+/// does not. Together they are the `Surface` term `chrome_budget` takes.
 ///
 /// Every other term is shared, because both windows are laid out by the same
 /// arrangement: the bands and rails come out of the axes first and the canvas
@@ -498,9 +515,7 @@ pub fn protocol_window_size(layout: &Layout) -> (f32, f32) {
 #[must_use]
 pub fn protocol_window_size_for(dag_w: f32, dag_h: f32) -> (f32, f32) {
     let inset = chrome::pane_content_inset();
-    // `true`: this window draws the key-hint band, because the graph is the
-    // surface with a bare-key grammar.
-    let (across, down) = chrome_budget(true);
+    let (across, down) = chrome_budget(Surface::Graph);
 
     let w = (dag_w + 2.0 * inset + across).ceil();
     let h = (dag_h + 2.0 * inset + down).ceil();
@@ -1425,10 +1440,6 @@ pub struct MeridianApp {
     ledger_panel: usize,
     /// Which of the inspector rail's panes is showing.
     inspector_panel: usize,
-    /// Where each segment of the canvas toggle was drawn, in window-space
-    /// logical points — the hook a test aims a click at, and counts to find a
-    /// third projection. Empty on a frame that drew no toggle.
-    canvas_toggle: Vec<egui::Rect>,
     /// What the canvas's pane group drew last frame — empty on a frame the
     /// canvas drew one pane instead. Read back through
     /// [`MeridianApp::canvas_panes`]; recorded for the reason [`Self::regions`]
@@ -1791,7 +1802,6 @@ impl MeridianApp {
             projection: 0,
             ledger_panel: 0,
             inspector_panel,
-            canvas_toggle: Vec::new(),
             canvas_panes: CanvasPanes::default(),
             canvas_scroll: 0.0,
             focus_return: None,
@@ -2289,17 +2299,6 @@ impl MeridianApp {
             .iter()
             .find(|(r, _)| *r == id)
             .and_then(|(_, strip)| strip.names.get(index).copied())
-    }
-
-    /// Where the canvas toggle drew each of its segments in the last frame,
-    /// left to right — empty on a frame that drew no toggle.
-    ///
-    /// The hook a test aims a click at, and the one it counts to find a third
-    /// projection: the toggle is built from the arrangement's declared
-    /// projections, so this is that list as it reached the screen.
-    #[must_use]
-    pub fn canvas_toggle_segments(&self) -> &[egui::Rect] {
-        &self.canvas_toggle
     }
 
     /// Where each of the composed dashboard's plots landed **on the screen**,
@@ -2842,7 +2841,6 @@ impl MeridianApp {
             let ledger_labels = self.pane_titles(ledger_panes);
             let navigator_labels = self.pane_titles(navigator_panes);
             let inspector_labels = self.pane_titles(inspector_panes);
-            let projection_labels: Vec<&str> = projections.iter().map(|p| p.label).collect();
             // What the canvas is showing, which is the leaf of the locator
             // rather than the pane's own kind: each pane of the group below
             // already carries its own title in its own header band, so a head
@@ -2854,7 +2852,6 @@ impl MeridianApp {
 
             let mut regions = std::mem::take(&mut self.regions);
             let mut strips = std::mem::take(&mut self.strips);
-            let mut canvas_toggle: Vec<egui::Rect> = Vec::new();
             let mut canvas_panes = CanvasPanes::default();
             let mut canvas_scroll = self.canvas_scroll;
             let mut picks = RegionPicks::default();
@@ -3130,9 +3127,22 @@ impl MeridianApp {
             let drawn = CentralPanel::default()
                 .frame(chrome::region_frame(canvas.frame, ui, mode))
                 .show(ui, |ui| {
-                    let (head, body) = chrome::rail_split(ui.max_rect());
+                    // **The chart canvas draws no band of its own.** Each pane
+                    // of the group below carries its own header band, and the
+                    // locator band above the canvas already carries the
+                    // document's name — so a head band here is that name a
+                    // second time, over panes that have each already said what
+                    // they are. It went with the
+                    // projection toggle it used to hold: with one projection
+                    // declared there is nothing to toggle, and a band whose
+                    // only content repeats the locator is a rule and a fill.
+                    //
+                    // The graph canvas keeps it. Its occupant is one pane
+                    // drawing a whole DAG, not a group of panes with headers,
+                    // so the band is the only thing naming what is on it.
                     if graph_on_canvas {
-                        canvas_head(ui, head, &canvas_name, None, mode);
+                        let (head, body) = chrome::rail_split(ui.max_rect());
+                        canvas_head(ui, head, &canvas_name, mode);
                         draw_protocol_pane(
                             ui,
                             body,
@@ -3146,17 +3156,7 @@ impl MeridianApp {
                             affordances,
                         );
                     } else {
-                        // A toggle where there is more than one reading to
-                        // toggle between, which today there is not — the
-                        // arrangement declares one projection and the rows
-                        // stand beside the picture rather than behind it.
-                        let offered = (projection_labels.len() > 1)
-                            .then_some((projection_labels.as_slice(), projection));
-                        let toggle = canvas_head(ui, head, &canvas_name, offered, mode);
-                        if let Some(toggle) = toggle {
-                            canvas_toggle = toggle.segments;
-                            picks.projection = toggle.picked;
-                        }
+                        let body = ui.max_rect();
                         let item = projections[projection].item;
                         // A generated dashboard is a hero beside a column, and
                         // the canvas draws it as the pane group that is. Any
@@ -3246,7 +3246,6 @@ impl MeridianApp {
 
             self.regions = regions;
             self.strips = strips;
-            self.canvas_toggle = canvas_toggle;
             self.canvas_panes = canvas_panes;
             self.canvas_scroll = canvas_scroll;
             if let Some(next) = picks.projection {
@@ -5767,27 +5766,28 @@ fn draw_chart_body(
     }
 }
 
-/// The canvas's head band: what is on the canvas at its left, the one toggle
-/// between the step's projections after it, and a rule under the lot.
+/// The **graph** canvas's head band: what is on the canvas at its left, and a
+/// rule under it.
 ///
-/// `toggle` is `None` on a canvas showing the graph, which has no second
-/// reading to offer — the toggle is drawn where there is something to toggle
-/// rather than drawn disabled, because a control that cannot act is a control
-/// a reader has to work out the state of.
-fn canvas_head(
-    ui: &mut egui::Ui,
-    head: egui::Rect,
-    name: &str,
-    toggle: Option<(&[&str], usize)>,
-    mode: Mode,
-) -> Option<chrome::ToggleDrawn> {
+/// One caller, and that is the whole of the change this is: the canvas showing
+/// a chart draws no band, because each pane of its group carries its own header
+/// and the locator band above already names the document. The graph canvas is
+/// one pane drawing a DAG, so this is the only thing on screen naming what is
+/// on it.
+///
+/// It carried a projection toggle until the arrangement came down to one
+/// projection. A control between one reading and no other is a control a reader
+/// has to work out the state of, and with the band gone from the chart canvas
+/// there is nowhere on that surface for one to be drawn —
+/// `the_canvas_declares_one_projection_and_draws_no_head_band` in
+/// `tests/arrangement.rs` reads both halves off a laid-out frame.
+fn canvas_head(ui: &mut egui::Ui, head: egui::Rect, name: &str, mode: Mode) {
     let sem = semantic(mode.is_dark());
     ui.painter()
         .rect_filled(head, radius::NONE, chrome::colour(sem.surfaces.header));
     let galley =
         ui.painter()
             .layout_no_wrap(name.to_owned(), ui_font(), chrome::colour(sem.text.primary));
-    let name_width = galley.size().x;
     ui.painter().galley(
         egui::pos2(
             head.left() + spacing::SPACE_4,
@@ -5796,23 +5796,10 @@ fn canvas_head(
         galley,
         chrome::colour(sem.text.primary),
     );
-    let drawn = toggle.map(|(labels, active)| {
-        chrome::projection_toggle(
-            ui,
-            egui::pos2(
-                head.left() + spacing::SPACE_4 + name_width + spacing::SPACE_6,
-                head.center().y,
-            ),
-            labels,
-            active,
-            mode,
-        )
-    });
     ui.painter().line_segment(
         [head.left_bottom(), head.right_bottom()],
         egui::Stroke::new(1.0, chrome::colour(sem.borders.subtle)),
     );
-    drawn
 }
 
 /// The locator band: where the subject sits, said as a breadcrumb, and where

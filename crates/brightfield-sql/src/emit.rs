@@ -1741,8 +1741,8 @@ plot:
         )];
 
         let chart = emit_query(&spec, 0, None, Some(&selections)).expect("chart emit");
-        let rows =
-            emit_rows_query(&spec, 0, None, Some(&selections), RowsAudience::Plot).expect("rows emit");
+        let rows = emit_rows_query(&spec, 0, None, Some(&selections), RowsAudience::Plot)
+            .expect("rows emit");
 
         // Both surfaces carry the identical predicate — pushed into DuckDB.
         assert!(

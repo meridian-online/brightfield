@@ -188,10 +188,10 @@ use brightfield_spec::parse::ParseWarning;
 use brightfield_spec::vocab::MarkKind;
 
 use brightfield_sql::binding::{Binding, EmittedQuery, ParamValues};
+pub use brightfield_sql::emit::RowsAudience;
 use brightfield_sql::emit::{
     collect_marks, emit_query_sampled, emit_rows_query, emit_sources, SourceKindTag,
 };
-pub use brightfield_sql::emit::RowsAudience;
 use brightfield_sql::ir::{Predicate, SampleRate, SelectionPredicate};
 use brightfield_sql::navigation_filter_pass::NavigationFilterPass;
 use brightfield_sql::passes::Pass;

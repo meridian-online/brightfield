@@ -224,7 +224,9 @@ fn a_chosen_csv_becomes_a_table_the_session_can_be_queried_for() {
     // data rows in, eight rows out.
     let session = live.coordinator().session();
     assert_eq!(
-        session.step_rows_count(0, RowsAudience::Plot).expect("the step counts"),
+        session
+            .step_rows_count(0, RowsAudience::Plot)
+            .expect("the step counts"),
         8,
         "every row of the file is in the table, unaggregated"
     );

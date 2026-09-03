@@ -380,8 +380,8 @@ fn worker_loop(
 mod tests {
     use super::*;
     use brightfield_spec::analysis::analyse_spec;
-    use brightfield_sql::emit::RowsAudience;
     use brightfield_spec::{parse_spec, Format};
+    use brightfield_sql::emit::RowsAudience;
     use duckdb::arrow::array::Array;
 
     fn coordinator_from(yaml: &str) -> Coordinator {
@@ -578,7 +578,12 @@ vconcat:
             let t = column_i64(&coord_structured.chart_rows(mark).expect("chart"), "x");
             assert_eq!(t, s, "mark {mark}: structured == string filtered rows");
             assert_eq!(t, vec![2, 3, 4], "x kept in {{2,3,4}}");
-            let g = column_i64(&coord_structured.grid_rows(mark, RowsAudience::Plot).expect("grid"), "x");
+            let g = column_i64(
+                &coord_structured
+                    .grid_rows(mark, RowsAudience::Plot)
+                    .expect("grid"),
+                "x",
+            );
             assert_eq!(g, t, "mark {mark}: grid agrees under the structured clause");
         }
 
