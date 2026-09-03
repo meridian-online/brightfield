@@ -406,11 +406,11 @@ pub enum Occupant {
     /// projection of a step is showing, and what stands there when the subject
     /// is the protocol rather than one of its steps.
     Canvas {
-        /// The step's projections. The head band's toggle is built from this
-        /// slice and drawn where there is more than one entry in it, so a
-        /// second projection declared here is a control on screen — which is
-        /// what `the_canvas_declares_one_projection_and_draws_no_toggle`
-        /// counts.
+        /// The step's projections. One entry today, and the shell draws no
+        /// toggle for a canvas that has one reading — a second projection
+        /// declared here is a control the shell would have to put back
+        /// somewhere, which is what
+        /// `the_canvas_declares_one_projection_and_draws_no_head_band` counts.
         projections: &'static [Projection],
         /// The asset graph, which stands at canvas size while there is no
         /// chart for the canvas to hold — the canvas's empty state rather
@@ -431,11 +431,12 @@ pub enum Occupant {
 /// is the dashboard's own name, which changes with the file — while this word
 /// names the *reading*, and stays put while the subject under it changes.
 ///
-/// The canvas declares one of these today, so the word is unread and the head
-/// band draws no toggle — `the_canvas_declares_one_projection_and_draws_no_toggle`.
-/// It stays declared because the label belongs beside the item whether or not
-/// a second reading is on offer, and a projection added back is a projection
-/// with a word already chosen for it.
+/// The canvas declares one of these today, so the word is unread and no toggle
+/// is drawn —
+/// `the_canvas_declares_one_projection_and_draws_no_head_band`. It stays
+/// declared because the label belongs beside the item whether or not a second
+/// reading is on offer, and a projection added back is a projection with a word
+/// already chosen for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Projection {
     /// The pane that draws this reading.
@@ -535,7 +536,8 @@ static INSPECTOR_PANES: &[ItemId] = &[
 static LEDGER_PANES: &[ItemId] = &[ItemId::new("protocol-steps"), ItemId::new("spec-editor")];
 
 /// The canvas's projections: the drawn reading of a step's output, one entry,
-/// so the head band draws no toggle — `the_canvas_declares_one_projection_and_draws_no_toggle`.
+/// so no toggle is drawn —
+/// `the_canvas_declares_one_projection_and_draws_no_head_band`.
 ///
 /// The tabular reading is not a projection of the canvas: a dashboard's rows
 /// are a pane of the canvas's own group, drawn through [`crate::chrome::pane_frame`]
@@ -828,11 +830,11 @@ mod tests {
 
     #[test]
     fn the_canvas_declares_one_projection() {
-        // The declaration half. The head band's toggle is built from this
-        // slice and drawn where there is more than one entry in it, so a
-        // second entry here is a control on screen; the shell's own
-        // `the_canvas_declares_one_projection_and_draws_no_toggle` is the
-        // half that searches a drawn frame for it.
+        // The declaration half. One entry means no toggle is drawn, so a
+        // second entry here is a control the shell would have to put back
+        // somewhere; the shell's own
+        // `the_canvas_declares_one_projection_and_draws_no_head_band` is the
+        // half that reads a drawn frame.
         let canvas = default_arrangement().expect_region(CANVAS);
         let Occupant::Canvas { projections, .. } = canvas.occupant else {
             panic!("the canvas region is occupied by the canvas");
