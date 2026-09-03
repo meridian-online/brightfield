@@ -570,6 +570,49 @@ fn the_pane_group_clips_the_page_to_the_panes_it_is_drawn_in() {
         &elsewhere[..elsewhere.len().min(5)]
     );
 
+    // …and each pane's own bottom frame survives the page laid out over it.
+    // This is the one the mark ink cannot see: what the page paints into a
+    // pane's inset is its BACKGROUND, and the chart surface and a pane's fill
+    // are the same token, so the only visible loss is the hairline the page
+    // covers. Measured: with the clip, the map pane's strip carries 1,092
+    // border pixels over two rows and the column's 650 over two; without it,
+    // 546 and 325 over one — the page paints over the upper row of a stroke
+    // that straddles the pane's edge.
+    let border = meridian_design::semantic(false).borders.subtle;
+    for pane in &panes {
+        let strip = pane.rect.bottom() - pane.body.bottom();
+        assert!(
+            strip > 1.0,
+            "the {} pane's content rect ends at its own bottom edge, so there \
+             is no frame below it to paint over and this claim is empty",
+            pane.name
+        );
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let rows = (0..(strip * SCALE).ceil() as u32 + 1)
+            .filter(|dy| {
+                let y = (pane.body.bottom() * SCALE) as u32 + dy;
+                let run = ((pane.body.left() * SCALE) as u32..(pane.body.right() * SCALE) as u32)
+                    .filter(|x| {
+                        y < still.height()
+                            && *x < still.width()
+                            && is_token(still.get_pixel(*x, y), border)
+                    })
+                    .count();
+                #[allow(clippy::cast_precision_loss)]
+                let across = run as f32 >= 0.9 * pane.body.width() * SCALE;
+                across
+            })
+            .count();
+        assert!(
+            rows >= 2,
+            "the {} pane's bottom frame runs the pane's full width on {rows} \
+             device rows below its content rect, where the hairline is one \
+             logical point straddling the edge and lands on two — the page is \
+             painting over the frame of the pane it is drawn in",
+            pane.name
+        );
+    }
+
     for (name, image) in [("still", &still), ("scrolled", &moved)] {
         let mut ink = 0usize;
         let mut stray: Vec<(u32, u32)> = Vec::new();
@@ -639,7 +682,12 @@ fn capture_short(script: Vec<Vec<egui::Event>>, name: &str) -> image::RgbaImage 
 /// interior is the flat fill, and antialiasing at its edge produces neighbours
 /// this deliberately does not count.
 fn is_mark_ink(p: &image::Rgba<u8>) -> bool {
-    let token = meridian_design::viz::CATEGORICAL_LIGHT[0];
+    is_token(p, meridian_design::viz::CATEGORICAL_LIGHT[0])
+}
+
+/// Whether `p` is exactly `token`, alpha ignored.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn is_token(p: &image::Rgba<u8>, token: meridian_design::colour::Rgba) -> bool {
     p.0[0] == (token.r * 255.0).round() as u8
         && p.0[1] == (token.g * 255.0).round() as u8
         && p.0[2] == (token.b * 255.0).round() as u8
