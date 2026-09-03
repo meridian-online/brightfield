@@ -759,7 +759,9 @@ pub fn unrestorable_under_sampling(
 /// Infer the shared scale set for a multi-mark plot: `infer_scales_multi` to
 /// union column domains, then each mark's `augment_scales` (regression extents,
 /// 1D-density perpendicular axis, the density-family Fill Sequential and half-bin
-/// widening), then the zero-baseline anchor, then the first entry's view extent.
+/// widening), then the zero-baseline anchor, then the first entry's view extent —
+/// and, for a plot asking for an equal-aspect frame, `augment_scales` again over
+/// the navigated domain (see the note on that last step).
 /// The inference half of [`build_multi_mark_scene`], extracted so a live rebuild
 /// can re-infer FRESH scales from the current batches and fold them against the
 /// launch set via [`crate::scale::anchor_scales`]. Callers guarantee `entries`
@@ -814,6 +816,40 @@ fn infer_multi_mark_scales(entries: &[&ChartData<'_>], ink: ChartInk) -> ScaleSe
                 let overridden = override_scale_domain(y_scale, y_min, y_max);
                 scales.insert(Channel::Y, overridden);
             }
+        }
+
+        // The override above writes the navigated (x_min, x_max) / (y_min,
+        // y_max) verbatim, at the current pixel range, without regard to
+        // aspect. For an equal-aspect mark (the point map's `aspectRatio: 1`)
+        // that leaves the two axes' px-per-unit free to disagree the moment
+        // the pane's pixel range stops matching the ratio the domain was fit
+        // to — the case a resize AFTER a pan or zoom lands in: the domain the
+        // analyst navigated to holds still (as it should — see
+        // `DotRenderer::augment_scales`'s own doc), the pixel range follows
+        // the new box, and the step that re-squares the two against each
+        // other is this one, run again over the navigated frame rather than
+        // skipped because a frame is already installed.
+        //
+        // Re-running `augment_scales` here re-fits THIS domain (now the
+        // navigated one, already installed above) to the current pixel
+        // range: a no-op for a mark that does not ask for equal aspect, per
+        // `augment_scales_without_the_flag_leaves_scales_untouched`, and for
+        // one that does, it widens the navigated domain's narrower axis just
+        // enough to match the other's px-per-unit — the same fit
+        // `DotRenderer::augment_scales` already computes at open, applied a
+        // second time over the frame the analyst chose rather than over the
+        // whole column. A navigation whose domain already matched the new
+        // aspect — an unnavigated resize, or a resize back to the box the
+        // extent was set at — comes out unchanged, since the fit of an
+        // already-fit domain maps back to itself.
+        for entry in entries {
+            entry.renderer.augment_scales(
+                &mut scales,
+                entry.batch,
+                entry.channel_map,
+                layout.x_range(),
+                layout.y_range(),
+            );
         }
     }
 
