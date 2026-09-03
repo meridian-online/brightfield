@@ -329,7 +329,7 @@ pub struct ChartItem {
     /// Where the last nearest-point read was **taken**, including the reads
     /// that found nothing.
     ///
-    /// [`Self::readout`] cannot carry this: a rest over empty space is a read
+    /// [`ChartDoc::hover_readout`] cannot carry this: a rest over empty space is a read
     /// that produced no readout, and without somewhere to record that it
     /// happened the rest would re-ask on every frame anything else caused. One
     /// query per rest is a property of this field, and

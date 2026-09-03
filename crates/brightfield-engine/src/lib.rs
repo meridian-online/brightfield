@@ -1627,10 +1627,10 @@ impl Session {
     /// Execute `sql` and return its Arrow batches **without touching either
     /// cache**, recording one DuckDB execute.
     ///
-    /// The production non-caching read. It differs from
-    /// [`Self::query_arrow_raw`] in exactly one thing — the execute is counted
-    /// — and from `execute_emitted` in two: nothing is looked up in
-    /// `sql_cache` on the way in and nothing is inserted on the way out.
+    /// The production non-caching read. It differs from the private
+    /// `query_arrow_raw` in exactly one thing — the execute is counted — and
+    /// from `execute_emitted` in two: nothing is looked up in `sql_cache` on
+    /// the way in and nothing is inserted on the way out.
     ///
     /// That combination is what a per-pointer-position read needs. Counting
     /// keeps a hover visible to anything measuring how much this session asks

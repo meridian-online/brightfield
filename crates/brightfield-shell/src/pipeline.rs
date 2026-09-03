@@ -1270,6 +1270,11 @@ impl LiveDashboard {
     /// # Errors
     ///
     /// As [`brightfield_engine::Session::nearest_row`].
+    // The Err variant is the engine's own error type, at the engine's own size,
+    // on the same terms as `data_grid::fetch_page`: boxing it at this one seam
+    // would make the hover the only consumer to receive it boxed, and the one
+    // caller unwraps it into an `Option` on the next line.
+    #[allow(clippy::result_large_err)]
     pub fn nearest_row(
         &mut self,
         mark: usize,
