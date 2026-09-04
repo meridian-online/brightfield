@@ -1492,7 +1492,12 @@ impl ProtocolModel {
     }
 
     /// Dispatch a single key press. Handles the `z a` fold chord.
-    fn feed_key(&mut self, key: egui::Key, mods: egui::Modifiers, canvas_node: Option<&AssetId>) -> bool {
+    fn feed_key(
+        &mut self,
+        key: egui::Key,
+        mods: egui::Modifiers,
+        canvas_node: Option<&AssetId>,
+    ) -> bool {
         // Resolve the `z a` chord: a pending `z` + `a` fires toggle-fold.
         if self.pending_z {
             self.pending_z = false;
@@ -3442,7 +3447,10 @@ mod tests {
         let (sx, sy) = centre(&m, &start);
 
         // j = down: the new selection sits strictly BELOW the start (a consumer).
-        assert!(m.feed_events(&[key(egui::Key::J)], None), "j moved down the flow");
+        assert!(
+            m.feed_events(&[key(egui::Key::J)], None),
+            "j moved down the flow"
+        );
         let down = m.selected().cloned().unwrap();
         assert_ne!(down, start, "the selection advanced");
         assert!(
@@ -3554,7 +3562,10 @@ mod tests {
         let before_gen = m.layout_gen();
 
         // Enter focuses the canvas on the selection's full transitive lineage.
-        assert!(m.feed_events(&[key(egui::Key::Enter)], None), "Enter drilled in");
+        assert!(
+            m.feed_events(&[key(egui::Key::Enter)], None),
+            "Enter drilled in"
+        );
         assert!(m.is_drilled(), "the canvas is now scoped");
         assert_eq!(m.breadcrumb().len(), 1);
         assert!(
@@ -3575,7 +3586,10 @@ mod tests {
         assert_eq!(m.breadcrumb().len(), 1, "no consecutive-duplicate crumb");
 
         // Esc widens back to the whole graph.
-        assert!(m.feed_events(&[key(egui::Key::Escape)], None), "Esc drilled out");
+        assert!(
+            m.feed_events(&[key(egui::Key::Escape)], None),
+            "Esc drilled out"
+        );
         assert!(!m.is_drilled());
         assert!(m.breadcrumb().is_empty());
     }
@@ -3924,7 +3938,10 @@ mod tests {
         assert!(!m.is_expanded());
         assert_eq!(m.layout_gen(), before_gen, "still no re-layout");
 
-        assert!(m.feed_events(&[key(egui::Key::Escape)], None), "widened back out");
+        assert!(
+            m.feed_events(&[key(egui::Key::Escape)], None),
+            "widened back out"
+        );
         assert!(!m.is_drilled());
         assert!(
             !m.is_expanded(),
@@ -3952,7 +3969,10 @@ mod tests {
         assert!(!ctes_on_canvas(&m));
         assert!(m.folds_are_on_screen());
 
-        assert!(m.feed_events(&[key(egui::Key::Escape)], None), "widened back out");
+        assert!(
+            m.feed_events(&[key(egui::Key::Escape)], None),
+            "widened back out"
+        );
         assert!(!m.is_drilled());
         assert!(
             !ctes_on_canvas(&m),
@@ -4214,10 +4234,7 @@ mod tests {
             !m.displayed_graph().nodes.contains_key(&id),
             "this fixture no longer absorbs the node the test is about"
         );
-        assert!(
-            m.has_selection(None),
-            "the inspector still answers for it"
-        );
+        assert!(m.has_selection(None), "the inspector still answers for it");
         let facts = m.inspector(None);
         assert!(
             facts.present,
@@ -4526,7 +4543,10 @@ steps:
         );
         let sel = m.selected().cloned().expect("a selection");
         let want = brightfield_protocol::graph::lineage(&m.graph_collapsed, &sel);
-        assert!(m.feed_events(&[key(egui::Key::Enter)], None), "Enter drilled in");
+        assert!(
+            m.feed_events(&[key(egui::Key::Enter)], None),
+            "Enter drilled in"
+        );
         // The drilled scope is exactly the induced lineage — every kept node is
         // a lineage member and the count matches.
         assert_eq!(
@@ -4546,7 +4566,10 @@ steps:
     fn t_key_transposes_the_flow() {
         let mut m = model();
         assert_eq!(m.flow(), Flow::Vertical);
-        assert!(m.feed_events(&[key(egui::Key::T)], None), "t flipped the axis");
+        assert!(
+            m.feed_events(&[key(egui::Key::T)], None),
+            "t flipped the axis"
+        );
         assert_eq!(m.flow(), Flow::Horizontal);
         assert!(m.feed_events(&[key(egui::Key::T)], None), "t flipped back");
         assert_eq!(m.flow(), Flow::Vertical);
@@ -4557,7 +4580,10 @@ steps:
     #[test]
     fn backspace_widens_like_esc() {
         let mut m = model();
-        assert!(m.feed_events(&[key(egui::Key::Enter)], None), "Enter drilled in");
+        assert!(
+            m.feed_events(&[key(egui::Key::Enter)], None),
+            "Enter drilled in"
+        );
         assert!(m.is_drilled());
         assert!(
             m.feed_events(&[key(egui::Key::Backspace)], None),
@@ -4583,7 +4609,10 @@ steps:
     fn keyboard_move_requests_a_reframe() {
         let mut m = model_flow(Flow::Vertical);
         let before = m.frame_gen();
-        assert!(m.feed_events(&[key(egui::Key::J)], None), "j moved the selection");
+        assert!(
+            m.feed_events(&[key(egui::Key::J)], None),
+            "j moved the selection"
+        );
         assert!(
             m.frame_gen() > before,
             "a keyboard move asks the canvas to reframe"
@@ -4600,7 +4629,6 @@ steps:
         assert_eq!(m.take_yank_request(), Some(sel.clone()));
         assert_eq!(m.yank_flash(), Some(&sel));
     }
-
 
     // -- Run-state: the data-honesty channel --------------------------------
 

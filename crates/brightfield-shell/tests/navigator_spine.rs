@@ -908,7 +908,9 @@ fn the_spines_measurements_hold_at_both_windows() {
                 if row.role != SpineRole::Column {
                     let drawn = painted
                         .iter()
-                        .find(|(text, rect, _)| *text == row.kind && kind.expand(0.5).contains_rect(*rect))
+                        .find(|(text, rect, _)| {
+                            *text == row.kind && kind.expand(0.5).contains_rect(*rect)
+                        })
                         .map(|(_, _, font)| font.clone());
                     assert_eq!(
                         drawn.as_ref(),
