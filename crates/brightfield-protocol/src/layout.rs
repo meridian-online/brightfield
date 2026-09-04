@@ -291,7 +291,7 @@ fn view_chip_row_width(labels: &[String]) -> f64 {
 ///
 /// The row is laid from the node's leading edge in by [`VIEW_CHIP_INSET`], and
 /// sits [`VIEW_CHIP_INSET`] above the node's bottom. `rect` is expected to be a
-/// rectangle this module sized for chips — [`node_height`] adds
+/// rectangle this module sized for chips — the private `node_height` adds
 /// [`VIEW_CHIP_BAND`] to it — and the caller that hands one that was not gets a
 /// row overlapping the node's label, which is a sizing bug rather than a case
 /// to handle here.

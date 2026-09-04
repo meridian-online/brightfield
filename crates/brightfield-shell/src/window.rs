@@ -2145,8 +2145,8 @@ impl MeridianApp {
     /// graph chip existed, and it could not stay that way: the chip puts the
     /// graph on a canvas whose documents include a chart, which is exactly the
     /// case that function answers `false` for. The two are still the same
-    /// answer wherever no chip has been clicked, because
-    /// [`Self::reconcile_canvas_holds`] initialises the latch from the derived
+    /// answer wherever no chip has been clicked, because the private
+    /// `reconcile_canvas_holds` initialises the latch from the derived
     /// answer and holds it there — `a_windows_latched_canvas_agrees_with_the_derived_answer`
     /// reads both off one frame on a fresh window of each kind, and then clicks
     /// the chip and holds the pair apart.
