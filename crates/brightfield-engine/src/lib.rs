@@ -1429,8 +1429,7 @@ impl Session {
 
     /// The Arrow schema this mark's own draw query reports, without needing a
     /// single matching row: DuckDB's `Arrow::get_schema` reads the prepared
-    /// statement's own result columns, which it can name whatever the row
-    /// count comes back as — so this is exact even when [`Self::execute_mark`]
+    /// statement's own result columns, so this is exact even when [`Self::execute_mark`]
     /// on the same query just returned zero batches for it.
     ///
     /// The one caller is the shell's empty-under-navigation fallback: a plot
