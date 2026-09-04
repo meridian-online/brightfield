@@ -298,7 +298,7 @@ fn contained_centre(position: f64, width: f64, tile_width: f64) -> Option<f64> {
 /// Whether the labels in `ticks` — each centred (`TextAnchor::Middle`) at its
 /// own tick's `position` at `size`, nudged by [`contained_centre`] to
 /// `tile_width` the way `render_x_axis` actually draws them — clear
-/// [`LABEL_CLEARANCE`] of their drawn neighbour's. A label
+/// [`LABEL_CLEARANCE`] of their drawn neighbour's. A label that
 /// [`contained_centre`] drops draws no pixel, so it clears trivially — it
 /// cannot collide with a neighbour it shares no pixel with.
 ///
