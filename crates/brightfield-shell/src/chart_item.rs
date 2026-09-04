@@ -504,10 +504,10 @@ impl ChartItem {
                     if handle.gesture.is_some() && doc.is_live() {
                         // A press inside the plot's own committed rectangle
                         // moves it instead of starting a fresh sweep. Gated on
-                        // `GestureClass::Interval` — the class the card's
-                        // "committed rectangle" names — so a point-toggle
-                        // binding, whose commitment is a set of categories and
-                        // never a rectangle to land inside, is untouched.
+                        // `GestureClass::Interval`, so a point-toggle binding —
+                        // whose commitment is a set of categories rather than
+                        // a rectangle a press can land inside — takes the
+                        // ordinary draw path below unchanged.
                         let move_from = handle
                             .gesture
                             .as_ref()
@@ -1397,9 +1397,9 @@ fn surface_rect_corners(r: brightfield_render::canvas_host::SurfaceRect) -> kurb
     kurbo::Rect::new(r.x, r.y, r.x + r.width, r.y + r.height)
 }
 
-/// Resolve a finished drag to the interaction it means, or `None` when it
-/// means nothing (no channel column, a degenerate scale, or a move the hand
-/// did not move).
+/// Resolve a finished drag to the interaction it means, or `None` when there
+/// is no interaction to push (no channel column, a degenerate scale, or a
+/// move the hand did not move).
 ///
 /// - An **interval** sweep becomes [`SqlPredicate::Interval`] per swept axis
 ///   (both, `And`-ed, for `intervalXY`), bounds inverted through the plot's

@@ -189,8 +189,9 @@ fn committed_window_rect(app: &MeridianApp, plot: usize) -> egui::Rect {
 /// The dashboard's one crossfilter selection, structured — the same
 /// `Predicate` `LiveDashboard::selection_sql` renders, read here unrendered
 /// so the comparisons below are over the numeric bounds rather than over a
-/// formatted string. `"sel"` is the name every chart kind's generator writes
-/// (`chart_kinds::point_map`, `dashboard`'s column-tile builder).
+/// formatted string. `"sel"` is the name this fixture's generators write:
+/// `chart_kinds::point_map` for the hero, `dashboard`'s column-tile builder
+/// for a tile.
 fn held(app: &MeridianApp) -> Option<SqlPredicate> {
     app.chart_doc()
         .live_dashboard()?
@@ -200,9 +201,9 @@ fn held(app: &MeridianApp) -> Option<SqlPredicate> {
         .map(|(_, p)| p)
 }
 
-/// `(column, lo, hi)` for every interval clause `p` holds, walking `And` the
+/// `(column, lo, hi)` for the interval clauses `p` holds, walking `And` the
 /// way `chart_item::gather_selected` does. Panics on a shape this file's
-/// gestures never produce (`Or`, `Point`) — a wrong shape here is a fixture
+/// gestures do not produce (`Or`, `Point`) — a wrong shape here is a fixture
 /// bug, not a case to tolerate quietly.
 fn intervals(p: &SqlPredicate) -> Vec<(String, f64, f64)> {
     match p {

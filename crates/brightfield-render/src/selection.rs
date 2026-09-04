@@ -130,12 +130,12 @@ fn spans(scale: &Scale, selected: &Selected) -> Vec<(f64, f64)> {
 /// same frame [`ChartLayout::plot_x_start`] answers in, and the box
 /// [`render_committed_selection`] washes.
 ///
-/// `None` when nothing is held, when a constrained channel has no scale, or
-/// when a constraint cannot be placed on the scale it names. And `None` for a
-/// channel constrained by [`Selected::Categories`]: a set of discontiguous
-/// bands is not a rectangle to hit-test or drag, and the caller this exists
-/// for — the shell's move gesture — only ever asks about a plot whose own
-/// binding is an interval, so that variant never actually reaches here for it.
+/// `None` when the selection is empty, when a constrained channel has no
+/// scale, or when a constraint cannot be placed on the scale it names. And
+/// `None` for a channel constrained by [`Selected::Categories`]: a set of
+/// discontiguous bands is not a rectangle to hit-test or drag, and the caller
+/// this exists for — the shell's move gesture — asks about a plot whose own
+/// binding is an interval, which is what keeps that variant off this path.
 #[must_use]
 pub fn committed_selection_rect(
     layout: &ChartLayout,

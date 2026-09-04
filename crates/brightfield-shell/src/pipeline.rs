@@ -89,14 +89,14 @@ pub struct PlotHandle {
     /// **This plot's own committed selection, as its raster-local pixel
     /// rectangle** — the same box [`ink_committed_selections`] washes,
     /// resolved through the *displayed* scales at compose time rather than
-    /// recomputed later, on the same standing as every other field here.
+    /// recomputed later, on the same standing as the rest of the fields here.
     ///
     /// `None` for a plot holding no selection, one whose constraint cannot be
     /// placed as a rectangle (a category pick), or a one-shot composition
-    /// with no session behind it — [`ink_committed_selections`] is the only
-    /// writer, and it runs from [`LiveDashboard::present`] alone. The
-    /// shell's move gesture is the one reader: a press inside this rect
-    /// moves it instead of starting a fresh sweep.
+    /// with no session behind it — [`ink_committed_selections`] writes it
+    /// alone, from [`LiveDashboard::present`]. The shell's move gesture is
+    /// the one reader: a press inside this rect moves it instead of starting
+    /// a fresh sweep.
     pub committed_rect: Option<SurfaceRect>,
     /// The x channel's column on this plot's first mark — the column a
     /// navigation extent over its x axis names. Carried here rather than
@@ -2102,9 +2102,9 @@ fn compose_from_results(
             sample: plot_sample,
             hover,
             navigated_empty,
-            // Set by `ink_committed_selections`, the only writer — a
-            // one-shot composition has no session to hold a selection and
-            // never calls it, so it stays `None` here.
+            // Set by `ink_committed_selections` alone — a one-shot
+            // composition has no session to hold a selection and does not
+            // call it, so it stays `None` here.
             committed_rect: None,
         });
     }
