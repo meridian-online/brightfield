@@ -594,6 +594,7 @@ fn clicking_a_view_row_moves_the_canvas_and_the_bar_with_it() {
     );
 
     let header = grid.header;
+    let body = grid.body;
     let shapes = win.shapes();
     let title = texts(&shapes)
         .into_iter()
@@ -603,6 +604,32 @@ fn clicking_a_view_row_moves_the_canvas_and_the_bar_with_it() {
         title.as_deref(),
         Some("Grid \u{b7} california_housing_sample"),
         "the pane's header band names the table the grid is of"
+    );
+
+    // **The grid actually drew the table, not just a correctly headed empty
+    // pane.** The header band names the table whether or not
+    // `draw_chart_body` is ever called under it — the two are painted by two
+    // different calls, and nothing above this line would notice the second
+    // one deleted. `california_housing_sample.csv`'s first row has a
+    // `population` of 3244, a value distinctive enough that its presence
+    // means the engine's own session, not a fixture string, put it on
+    // screen.
+    let in_body: Vec<String> = texts(&shapes)
+        .into_iter()
+        .filter(|(_, rect, _)| body.contains_rect(*rect))
+        .map(|(text, _, _)| text)
+        .collect();
+    assert!(
+        in_body.len() > 20,
+        "the grid pane's body drew {} galleys — a table of 240 rows by 9 \
+         columns draws far more cells than that: {in_body:?}",
+        in_body.len()
+    );
+    assert!(
+        in_body.iter().any(|t| t == "3244"),
+        "the grid pane's body drew no cell reading 3244 — the table's first \
+         row's population — so the pane drew a header with no table under \
+         it: {in_body:?}"
     );
 
     win.click_row("dashboard");
@@ -624,6 +651,64 @@ fn clicking_a_view_row_moves_the_canvas_and_the_bar_with_it() {
     assert!(
         win.row("dashboard").on_canvas.is_some(),
         "…and the bar with it"
+    );
+}
+
+/// **Opening a second data file while the canvas holds the first table's
+/// grid resets the latch to the new table's dashboard — by identity, not by
+/// "a View is already latched."**
+///
+/// `MeridianApp::reconcile_canvas_holds` keeps a latched `View` only when its
+/// node still names the CURRENT table (`*node == table`); drop that
+/// comparison for "any View counts as held" and this stays green with the
+/// bar sitting on the first table's `grid` row after a second, unrelated file
+/// has opened — exactly the state a reader would see the canvas keep showing
+/// a table that is no longer the one behind the rail.
+#[test]
+fn opening_a_second_file_over_a_grid_resets_the_latch_to_the_new_tables_dashboard() {
+    let mut win = Live::open(housing_boot());
+    win.settle();
+    win.click_row("grid");
+    assert_eq!(
+        win.app.canvas_holds().view(),
+        Some(NodeView::Grid),
+        "the fixture: the first table's grid is on the canvas before the \
+         second file opens"
+    );
+
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/point_map_baseline.csv");
+    let ctx = win.ctx.clone();
+    win.app
+        .open_data_file(&ctx, path.to_str().expect("utf-8 fixture path"));
+    win.settle();
+
+    let table = win
+        .app
+        .protocol_model()
+        .table()
+        .cloned()
+        .expect("the second file opened as a one-step Protocol with a table");
+    assert_eq!(
+        win.app.canvas_holds(),
+        &CanvasHolds::View {
+            node: table,
+            view: NodeView::Dashboard,
+        },
+        "the latch still names the first table's grid after a second, \
+         unrelated file opened"
+    );
+    let bar_row: Vec<String> = win
+        .rows()
+        .into_iter()
+        .filter(|row| row.on_canvas.is_some())
+        .map(|row| row.label)
+        .collect();
+    assert_eq!(
+        bar_row,
+        vec!["dashboard".to_string()],
+        "the on-canvas bar does not sit on the new table's dashboard row: \
+         {bar_row:?}"
     );
 }
 
