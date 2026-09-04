@@ -108,3 +108,36 @@ pub mod design {
     };
     pub use meridian_egui::Mode;
 }
+
+/// Apply the Meridian Design System theme and turn off egui's unaligned-widget debug marker,
+/// which only draws in dev builds and is not a committed feature.
+pub fn apply_theme_without_unaligned_marker(ctx: &egui::Context, mode: design::Mode) {
+    design::apply(ctx, mode);
+    // Disable the debug marker on both Light and Dark theme slots so a dev build
+    // draws no debug artifact behind the canvas.
+    ctx.style_mut_of(egui::Theme::Light, |style| {
+        style.debug.show_unaligned = false;
+    });
+    ctx.style_mut_of(egui::Theme::Dark, |style| {
+        style.debug.show_unaligned = false;
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_theme_without_unaligned_marker_disables_debug_marker() {
+        let ctx = egui::Context::default();
+        apply_theme_without_unaligned_marker(&ctx, design::Mode::Light);
+        assert!(
+            !ctx.style_of(egui::Theme::Light).debug.show_unaligned,
+            "Light theme should have unaligned marker disabled"
+        );
+        assert!(
+            !ctx.style_of(egui::Theme::Dark).debug.show_unaligned,
+            "Dark theme should have unaligned marker disabled"
+        );
+    }
+}

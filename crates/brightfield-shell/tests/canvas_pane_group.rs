@@ -1837,8 +1837,9 @@ fn tile_data_point(app: &MeridianApp, tile: usize, fx: f64) -> egui::Pos2 {
     at
 }
 
-/// **A held click on a scrolled tile clears the selection** — the value the
-/// press latches, held to the origin the frame drew rather than to a constant.
+/// **A held click past a scrolled tile's own selection clears it** — the
+/// value the press latches, held to the origin the frame drew rather than to
+/// a constant.
 ///
 /// A click is a drag that swept nothing, and "swept nothing" is `start` and
 /// `current` differing by less than the slop. Both are page-local points, so
@@ -1858,8 +1859,19 @@ fn tile_data_point(app: &MeridianApp, tile: usize, fx: f64) -> egui::Pos2 {
 /// Held for three frames with the button down, because the phantom travel is
 /// written by the frames between the press and the release. A press and a
 /// release in consecutive frames never re-read `current` at all.
+///
+/// **The click lands past the swept range, not inside it.** It used to land
+/// at its middle (`0.5`, between the sweep's `0.25` and `0.70`) — a click
+/// clears whatever it landed on either way, so the exact point never
+/// mattered before a press *inside* the committed rectangle started meaning
+/// something else: a still press there is now the shell's move gesture
+/// finding no displacement, which leaves the selection standing rather than
+/// retracting it. Moving the probe outside the rectangle keeps this test on
+/// the click-clears path it was written to guard, and
+/// `committed_brush_move.rs` is where a still press *inside* one is its own
+/// gate.
 #[test]
-fn a_held_click_on_a_scrolled_tile_clears_the_selection() {
+fn a_held_click_past_a_scrolled_tiles_selection_clears_it() {
     let (mut app, ctx, raw) = window();
     let frame = |app: &mut MeridianApp, events: Vec<egui::Event>| {
         let mut input = raw.clone();
@@ -1883,10 +1895,12 @@ fn a_held_click_on_a_scrolled_tile_clears_the_selection() {
          the slop it is not a sweep at all"
     );
 
-    // The last tile, reachable only because the column scrolled, and a click at
-    // the middle of its data area.
+    // The last tile, reachable only because the column scrolled, and a click
+    // past the far end of the range about to be swept — outside the
+    // committed rectangle, so this stays a click-clears gesture rather than
+    // the move gesture `committed_brush_move.rs` covers.
     let last = app.composed_plot_rects().len() - 1;
-    let at = tile_data_point(&app, last, 0.5);
+    let at = tile_data_point(&app, last, 0.90);
     assert!(
         columns.contains(at),
         "the click at {at:?} is outside the column pane's content rect \

@@ -81,7 +81,7 @@ use meridian_design::{radius, semantic, spacing};
 use crate::app::{chart_registry, ChartDoc, ChartFault, CHART, CONTROLS};
 use crate::canvas::EguiCanvasHost;
 use crate::data_grid::DATA;
-use crate::design::{self, Mode};
+use crate::design::Mode;
 use crate::editor::EDITOR;
 use crate::inspector::{ColumnTable, InspectorPane, Selection, TableHandle};
 use crate::overlays::{CommandPalette, HelpSheet, JumpTarget, JumpToNode};
@@ -2594,7 +2594,7 @@ impl MeridianApp {
     pub fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         if !self.fonts_installed {
-            design::apply(&ctx, self.mode);
+            crate::apply_theme_without_unaligned_marker(&ctx, self.mode);
             self.fonts_installed = true;
         }
         let mode = self.mode;
@@ -5251,6 +5251,11 @@ pub struct CanvasPanes {
     pub panes: Vec<CanvasPane>,
     /// The count overlay's rect inside the map pane, when one was drawn.
     pub count: Option<egui::Rect>,
+    /// The count overlay's own text, when one was drawn — `Some` and `None`
+    /// together with [`Self::count`], since both come off the one paint. What
+    /// says whether the hero read "N points" or "0 points" rather than only
+    /// where the chip landed.
+    pub count_text: Option<String>,
     /// The note at the trailing end of the rows pane's header band — what it
     /// said and where it drew — on a frame where some column of the table was
     /// off screen. `None` on a frame where the grid fitted.
@@ -5377,9 +5382,19 @@ fn grouped(n: u64) -> String {
 
 /// What the count overlay says: how many rows the hero draws, and over which
 /// columns.
-fn count_overlay_text(hero: Option<&crate::one_step::ColumnFacts>) -> Option<String> {
+///
+/// `facts.rows` is the column's own profile, taken once at file open — right
+/// for the ordinary picture, since no gesture has narrowed it yet, but wrong
+/// the moment the hero itself has: `hero_empty` is `true` exactly when
+/// [`crate::pipeline::PlotHandle::navigated_empty`] is, and says the picture
+/// beside the chip has zero points on it rather than the file's own total,
+/// which the axes would otherwise contradict.
+fn count_overlay_text(
+    hero: Option<&crate::one_step::ColumnFacts>,
+    hero_empty: bool,
+) -> Option<String> {
     let facts = hero?;
-    let rows = grouped(facts.rows);
+    let rows = grouped(if hero_empty { 0 } else { facts.rows });
     Some(match &facts.paired {
         Some(other) => format!(
             "{rows} points \u{b7} {other} \u{d7} {} \u{b7} equal aspect",
@@ -5598,9 +5613,21 @@ fn draw_canvas_pane_group(
     // The chip goes inside the hero's own frame, which is why this waits for
     // the page to have been drawn: the data area is a fact about the
     // composition's layout and the origin it landed at.
-    let count = count_overlay_text(hero.as_ref())
+    let hero_empty = charts
+        .doc
+        .composed
+        .plots
+        .first()
+        .is_some_and(|p| p.navigated_empty);
+    let (count_text, count) = match count_overlay_text(hero.as_ref(), hero_empty)
         .zip(hero_data_area(&charts.doc, map_body))
-        .map(|(text, within)| count_overlay(ui, within, &text, mode));
+    {
+        Some((text, within)) => (
+            Some(text.clone()),
+            Some(count_overlay(ui, within, &text, mode)),
+        ),
+        None => (None, None),
+    };
 
     // The rows: the same session read as rows rather than as marks, in a pane
     // of its own under the map.
@@ -5653,6 +5680,7 @@ fn draw_canvas_pane_group(
             },
         ],
         count,
+        count_text,
         rows_note,
         page: charts.doc.raster_rect,
     }

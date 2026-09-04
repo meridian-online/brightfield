@@ -1201,8 +1201,12 @@ fn a_pointer_sweep_on_one_tile_filters_the_others() {
     }
 
     // A press and release on one pixel is the other half of the same branch:
-    // the crossfilter convention retracts this plot's contribution.
-    win.click(0, 0.5);
+    // the crossfilter convention retracts this plot's contribution. At 0.9,
+    // past the swept [0.2, 0.7] range and outside the committed rectangle —
+    // a press *inside* one is the shell's move gesture and leaves a still
+    // press standing rather than retracting it (`committed_brush_move.rs`),
+    // which this click-clears claim is not about.
+    win.click(0, 0.9);
     assert!(
         win.app.chart_doc().selection_sql().is_none(),
         "a click on an interval binding did not retract the contribution: {:?}",

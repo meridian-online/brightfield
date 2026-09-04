@@ -126,6 +126,45 @@ fn spans(scale: &Scale, selected: &Selected) -> Vec<(f64, f64)> {
     }
 }
 
+/// The committed selection's own rectangle on this plot, **plot-local** — the
+/// same frame [`ChartLayout::plot_x_start`] answers in, and the box
+/// [`render_committed_selection`] washes.
+///
+/// `None` when the selection is empty, when a constrained channel has no
+/// scale, or when a constraint cannot be placed on the scale it names. And
+/// `None` for a channel constrained by [`Selected::Categories`]: a set of
+/// discontiguous bands is not a rectangle to hit-test or drag, and the caller
+/// this exists for — the shell's move gesture — asks about a plot whose own
+/// binding is an interval, which is what keeps that variant off this path.
+#[must_use]
+pub fn committed_selection_rect(
+    layout: &ChartLayout,
+    scales: &ScaleSet,
+    selection: &CommittedSelection,
+) -> Option<Rect> {
+    if selection.is_empty() {
+        return None;
+    }
+    let (px0, px1) = (layout.plot_x_start(), layout.plot_x_end());
+    let (py0, py1) = (layout.plot_y_start(), layout.plot_y_end());
+    if px1 <= px0 || py1 <= py0 {
+        return None;
+    }
+    let axis_span =
+        |channel: Channel, selected: &Option<Selected>, whole: (f64, f64)| match selected {
+            None => Some(whole),
+            Some(Selected::Interval(lo, hi)) => {
+                let scale = scales.get(channel)?;
+                let (a, b) = (scale.map_f64(*lo), scale.map_f64(*hi));
+                Some((a.min(b), a.max(b)))
+            }
+            Some(Selected::Categories(_)) => None,
+        };
+    let (x0, x1) = axis_span(Channel::X, &selection.x, (px0, px1))?;
+    let (y0, y1) = axis_span(Channel::Y, &selection.y, (py0, py1))?;
+    Some(Rect::new(x0, y0, x1, y1))
+}
+
 /// Draw the committed selection `selection` holds on this plot.
 ///
 /// A no-op when nothing is held, when the constrained channel has no scale, or
