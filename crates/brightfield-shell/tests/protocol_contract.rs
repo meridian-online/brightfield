@@ -134,7 +134,11 @@ fn each_pane_names_itself_once_and_binds_in_the_protocol_context() {
             (id, s.title)
         })
         .collect();
-    assert_eq!(names[&OUTLINE], "Outline");
+    // The item id is still `protocol-outline` — a saved layout files a pane
+    // under it — while the pane's name is what it draws: the Protocol, as a
+    // spine of what it reads, does and makes, with the outline's columns
+    // beneath.
+    assert_eq!(names[&OUTLINE], "Protocol");
     assert_eq!(names[&CANVAS], "Canvas");
     assert_eq!(names[&INSPECTOR], "Operator");
     assert_eq!(names[&STEPS], "Steps");
