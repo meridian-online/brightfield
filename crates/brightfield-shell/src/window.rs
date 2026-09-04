@@ -734,12 +734,17 @@ pub enum CanvasHolds {
 }
 
 impl CanvasHolds {
-    /// Whether `row` is the row whose content the canvas holds — the one row
-    /// that draws the on-canvas bar.
+    /// Whether `row` is the row whose content the canvas holds — the one row of
+    /// the **list** that draws the on-canvas bar.
     ///
-    /// A view row, and only a view row: the graph and a bare chart are not
-    /// listed in the spine — the graph is reached by a chip in the spine's
-    /// head, which is a later change — so on those two no row is marked.
+    /// A view row, and no other kind: the graph and a bare chart are not listed
+    /// in the spine, so neither can be a row this answers `true` for. The graph
+    /// is still marked, one row up — the spine's head row draws the bar while
+    /// the canvas holds the graph, because the head names the whole Protocol
+    /// and the graph is the whole Protocol. That decision is
+    /// `crate::protocol`'s `spine_head_row`'s and is made from this enum's
+    /// `Graph` arm directly, not through here: a head row is a caption and has
+    /// no [`SpineRow`] to pass in.
     #[must_use]
     pub fn shows(&self, row: &SpineRow) -> bool {
         match self {

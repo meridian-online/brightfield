@@ -20,7 +20,9 @@
 
 use brightfield_protocol::contract_graph::{AssetMeta, SeamStatus};
 use brightfield_shell::design::Mode;
-use brightfield_shell::protocol::{NodeView, SpineMarker, SpineRole, SpineRowDrawn};
+use brightfield_shell::protocol::{
+    GraphChipDrawn, NodeView, SpineMarker, SpineRole, SpineRowDrawn,
+};
 use brightfield_shell::window::{Boot, CanvasHolds, MeridianApp};
 use meridian_design::{control, semantic, spacing};
 
@@ -112,6 +114,46 @@ impl Live {
     /// Click where the last frame drew the row labelled `label`.
     fn click_row(&mut self, label: &str) {
         let at = self.row(label).rect.center();
+        self.run(vec![click_at(at), Vec::new(), Vec::new()]);
+    }
+
+    /// The graph chip the head row drew — panics if the head drew none, naming
+    /// what the first row was instead, so a chip dropped off the head fails
+    /// here with a sentence rather than with `unwrap` on a `None`.
+    fn chip(&self) -> GraphChipDrawn {
+        let rows = self.rows();
+        let head = rows.first().unwrap_or_else(|| {
+            panic!("the rail drew no rows at all, so it drew no head to carry a chip")
+        });
+        head.chip.unwrap_or_else(|| {
+            panic!(
+                "the spine's head row {:?} carries no graph chip",
+                head.label
+            )
+        })
+    }
+
+    /// Click where the last frame drew the graph chip.
+    fn click_chip(&mut self) {
+        let at = self.chip().rect.center();
+        self.run(vec![click_at(at), Vec::new(), Vec::new()]);
+    }
+
+    /// Click where the last frame drew the canvas chip for `view` on the node
+    /// the canvas is showing views of — panics naming what was drawn instead.
+    fn click_canvas_chip(&mut self, view: NodeView) {
+        let chips = self.app.canvas_chips().to_vec();
+        let chip = chips
+            .iter()
+            .find(|chip| chip.view == view)
+            .unwrap_or_else(|| {
+                let drawn: Vec<NodeView> = chips.iter().map(|chip| chip.view).collect();
+                panic!(
+                    "the canvas drew no chip for {:?}; it drew {drawn:?}",
+                    view.label()
+                )
+            });
+        let at = chip.rect.center();
         self.run(vec![click_at(at), Vec::new(), Vec::new()]);
     }
 }
@@ -867,10 +909,29 @@ fn a_windows_latched_canvas_agrees_with_the_derived_answer() {
         &CanvasHolds::Graph,
         "a Protocol with no chart beside it keeps the graph on the canvas"
     );
+    // The graph is not a row of the LIST, so no row of the list is marked for
+    // it — the head row is, which is where the chip that names the graph sits.
     assert!(
-        manifest.rows().iter().all(|row| row.on_canvas.is_none()),
-        "the graph is not a row of the spine, so no row is marked for it — the \
-         chip in the spine's head is a later change"
+        manifest
+            .rows()
+            .iter()
+            .skip(1)
+            .all(|row| row.on_canvas.is_none()),
+        "a row of the spine's list is marked for a graph that is not in it"
+    );
+    let head = manifest.rows().first().cloned().expect("a head row");
+    assert!(
+        head.on_canvas.is_some(),
+        "the spine's head carries no on-canvas bar on a window whose canvas \
+         holds nothing but the graph"
+    );
+    let chip = manifest.chip();
+    assert!(chip.filled, "…and its chip is not the state the canvas is in");
+    assert!(
+        !chip.live,
+        "the chip is a control on a Protocol whose canvas can only ever hold \
+         the graph — a click there would be undone by the next frame's \
+         reconciliation, so it must not offer one"
     );
 }
 
@@ -1178,9 +1239,16 @@ fn a_manifest_of_many_steps_puts_each_step_above_the_asset_it_produced() {
         "…and lists none"
     );
 
+    // The graph holds this canvas and the graph is not a row of the LIST, so
+    // the bar is on the head — the row that names the whole Protocol, which is
+    // what the graph is — and on nothing under it.
     assert!(
-        rows.iter().all(|row| row.on_canvas.is_none()),
-        "the graph is on this canvas and the graph is not a row of the spine"
+        rows.iter().skip(1).all(|row| row.on_canvas.is_none()),
+        "a row of the spine's list is marked for a graph that is not in it"
+    );
+    assert!(
+        rows.first().is_some_and(|head| head.on_canvas.is_some()),
+        "the spine's head carries no bar on a canvas holding the graph"
     );
     let washed = rows.iter().filter(|row| row.washed).count();
     assert_eq!(
@@ -1188,4 +1256,375 @@ fn a_manifest_of_many_steps_puts_each_step_above_the_asset_it_produced() {
         "a manifest-opened Protocol keeps its boot selection — one row washed, \
          not {washed}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The graph chip: the way from the picture to the map, and back
+// ---------------------------------------------------------------------------
+
+/// **AC1.** The spine's head carries a `graph` chip at its trailing end, and on
+/// a fresh open of a data file it is unfilled — because what the canvas holds
+/// is the table's dashboard, not the graph.
+///
+/// Every measure is read off the drawn frame: the chip's box off the head row's
+/// own record, the word and the caption off the galleys the frame painted. The
+/// caption's clearance is the one that would fail silently otherwise — a
+/// caption laid out over the chip is clipped by the row rather than refused, so
+/// what is asserted is where the galley *is*, which the record carries whether
+/// the clip cut it or not.
+#[test]
+fn the_spines_head_carries_an_unfilled_graph_chip_over_a_dashboard() {
+    let mut win = Live::open(housing_boot());
+    win.settle();
+
+    let head = win.rows().first().cloned().expect("a caption leads the pane");
+    assert_eq!(
+        head.role,
+        SpineRole::Caption,
+        "the chip belongs to the head row, and the head row is the caption"
+    );
+    let chip = win.chip();
+    assert!(
+        !chip.filled,
+        "a fresh open holds the table's dashboard, so the graph chip is not \
+         the state the canvas is in"
+    );
+    assert!(
+        chip.live,
+        "the fixture's Protocol has a table with views, so the chip has \
+         somewhere to take the canvas and back"
+    );
+    assert!(
+        (chip.rect.height() - control::HEIGHT_XS).abs() < 0.01,
+        "the chip is {} tall, not the HEIGHT_XS rung ({})",
+        chip.rect.height(),
+        control::HEIGHT_XS
+    );
+    assert!(
+        (head.rect.right() - chip.rect.right() - spacing::SPACE_4).abs() < 0.01,
+        "the chip sits {} from the head row's trailing edge, not SPACE_4",
+        head.rect.right() - chip.rect.right()
+    );
+    assert!(
+        (chip.rect.center().y - head.rect.center().y).abs() < 0.01,
+        "the chip's centre is {} off the row's",
+        chip.rect.center().y - head.rect.center().y
+    );
+
+    // The word, off the frame — a box with no `graph` in it is a box.
+    let shapes = win.shapes();
+    let painted = texts(&shapes);
+    let word = painted
+        .iter()
+        .find(|(text, rect, _)| text == "graph" && chip.rect.expand(0.5).contains_rect(*rect));
+    assert!(
+        word.is_some(),
+        "no galley reading \"graph\" landed inside the chip's box {:?}; the \
+         frame painted {:?}",
+        chip.rect,
+        painted
+            .iter()
+            .map(|(text, _, _)| text.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    // **The caption ends left of the chip.** `SPACE_4` of it, which is the
+    // clearance the head's clip rect is built from.
+    assert!(
+        head.name_rect.right() <= chip.rect.left() - spacing::SPACE_4 + 0.01,
+        "the head caption's galley ends at {} and the chip starts at {}, so \
+         the caption is running under the chip rather than stopping SPACE_4 \
+         short of it",
+        head.name_rect.right(),
+        chip.rect.left()
+    );
+}
+
+/// **AC2.** Clicking the chip puts the asset graph on the canvas, and clicking
+/// it again brings back exactly the view it left.
+///
+/// Six facts, each read off a drawn frame rather than off the model: what the
+/// latch holds, whether the pane group drew, where the on-canvas bar is, the
+/// chip's own fill, whether the key-hint band is there, and whether the title
+/// band offers the flow toggle. The band and the toggle are in here rather than
+/// in a test of their own because they are the reason `graph_on_canvas` had to
+/// stop being derived — a window drawing the graph with no hint band under it
+/// is a window whose chrome is describing the other document.
+#[test]
+fn clicking_the_graph_chip_puts_the_graph_on_the_canvas_and_a_second_click_brings_the_view_back() {
+    let mut win = Live::open(housing_boot());
+    win.settle();
+    assert_eq!(
+        win.app
+            .canvas_panes()
+            .panes
+            .iter()
+            .map(|p| p.name)
+            .collect::<Vec<_>>(),
+        vec!["map", "rows", "columns"],
+        "the fresh open draws the dashboard as the pane group"
+    );
+    assert!(
+        win.row("dashboard").on_canvas.is_some(),
+        "…with the bar on the dashboard row"
+    );
+
+    win.click_chip();
+
+    assert_eq!(
+        win.app.canvas_holds(),
+        &CanvasHolds::Graph,
+        "the chip put the graph on the canvas"
+    );
+    assert!(
+        win.app.graph_on_canvas(),
+        "…and the window's answer to \"is the graph on the canvas\" follows it, \
+         which is what every band below reads"
+    );
+    assert!(
+        win.app.canvas_panes().panes.is_empty(),
+        "the pane group is still drawn over the graph: {:?}",
+        win.app
+            .canvas_panes()
+            .panes
+            .iter()
+            .map(|p| p.name)
+            .collect::<Vec<_>>()
+    );
+    let canvas = win
+        .app
+        .region_rect(brightfield_workbench::arrangement::CANVAS)
+        .expect("the canvas region drew");
+    let pane = win
+        .app
+        .canvas_viewport()
+        .expect("the DAG canvas pane drew, so it recorded the box it was given");
+    assert!(
+        canvas.expand(0.5).contains_rect(pane),
+        "the DAG pane drew at {pane:?}, which is not inside the canvas region \
+         {canvas:?}"
+    );
+
+    assert!(win.chip().filled, "the chip is the state the canvas is in");
+    assert!(
+        win.rows().first().and_then(|row| row.on_canvas).is_some(),
+        "the spine's head carries the on-canvas bar while the graph is on it"
+    );
+    for view in NodeView::ALL {
+        assert!(
+            win.row(view.label()).on_canvas.is_none(),
+            "the {} row still carries the bar with the graph on the canvas",
+            view.label()
+        );
+    }
+
+    let shapes = win.shapes();
+    let painted = texts(&shapes);
+    assert!(
+        painted
+            .iter()
+            .any(|(text, _, _)| text.contains("producer\u{b7}consumer")),
+        "the key-hint band is not drawn over a graph that reached the canvas \
+         through the chip, so a reader is being given the DAG grammar with \
+         nothing telling them the keys: {:?}",
+        painted
+            .iter()
+            .map(|(text, _, _)| text.as_str())
+            .collect::<Vec<_>>()
+    );
+    let title = win
+        .app
+        .region_rect(brightfield_workbench::arrangement::TITLE_BAND)
+        .expect("the title band drew");
+    assert!(
+        painted
+            .iter()
+            .any(|(text, rect, _)| text.starts_with("flow: ") && title.contains_rect(*rect)),
+        "the title band offers no flow toggle over a graph the chip put on the \
+         canvas, though it offers one over every other graph"
+    );
+
+    win.click_chip();
+
+    assert_eq!(
+        win.app.canvas_holds().view(),
+        Some(NodeView::Dashboard),
+        "the second click gives the canvas back to the view the chip took it \
+         from"
+    );
+    assert!(!win.chip().filled, "…and the chip is unfilled again");
+    assert_eq!(
+        win.app
+            .canvas_panes()
+            .panes
+            .iter()
+            .map(|p| p.name)
+            .collect::<Vec<_>>(),
+        vec!["map", "rows", "columns"],
+        "…and the pane group is back"
+    );
+    assert!(
+        win.row("dashboard").on_canvas.is_some(),
+        "…and the bar with it"
+    );
+    assert!(
+        win.rows().first().and_then(|row| row.on_canvas).is_none(),
+        "…and off the head"
+    );
+}
+
+/// **AC2, the round trip is to where you were and not to a default.** The chip
+/// clicked off the `grid` comes back to the `grid`.
+///
+/// The pair with the test above matters: that one leaves from the dashboard,
+/// which is also what a fresh open holds, so a chip that always came back to
+/// the table's dashboard would pass it. This one leaves from somewhere else.
+#[test]
+fn the_graph_chip_comes_back_to_the_view_it_left_and_not_to_the_dashboard() {
+    let mut win = Live::open(housing_boot());
+    win.settle();
+    win.click_row("grid");
+    assert_eq!(win.app.canvas_holds().view(), Some(NodeView::Grid));
+
+    win.click_chip();
+    assert_eq!(win.app.canvas_holds(), &CanvasHolds::Graph);
+
+    win.click_chip();
+    assert_eq!(
+        win.app.canvas_holds().view(),
+        Some(NodeView::Grid),
+        "the chip came back to the table's dashboard from a canvas it took off \
+         the grid"
+    );
+    assert!(
+        win.row("grid").on_canvas.is_some(),
+        "…and the bar is back on the grid row"
+    );
+}
+
+/// **AC3, the click half.** A click on the `grid` chip in the table node's foot
+/// puts the grid on the canvas, with the bar on the `grid` row.
+///
+/// This is the assertion the chips exist for, and it is driven through the real
+/// pointer path: the click goes at the rect the canvas pane recorded, through
+/// the pane's own `Sense::click`, into `hit_test`. A chip that is drawn and not
+/// reachable fails here, and so does a `hit_test` that resolves the node under
+/// the chip first — which it would, because every point on a chip is a point on
+/// its node.
+#[test]
+fn clicking_a_view_chip_on_the_graph_puts_that_view_on_the_canvas() {
+    let mut win = Live::open(housing_boot());
+    win.settle();
+    win.click_chip();
+    assert_eq!(win.app.canvas_holds(), &CanvasHolds::Graph);
+
+    let chips = win.app.canvas_chips().to_vec();
+    let table = win
+        .app
+        .canvas_chips()
+        .first()
+        .map(|chip| chip.node.clone())
+        .expect("the graph drew the table node's chips");
+    assert_eq!(
+        chips
+            .iter()
+            .map(|chip| (chip.node.clone(), chip.view))
+            .collect::<Vec<_>>(),
+        vec![
+            (table.clone(), NodeView::Dashboard),
+            (table.clone(), NodeView::Grid),
+        ],
+        "the canvas drew a different set of chips than the table's two views"
+    );
+
+    win.click_canvas_chip(NodeView::Grid);
+
+    assert_eq!(
+        win.app.canvas_holds(),
+        &CanvasHolds::View {
+            node: table,
+            view: NodeView::Grid,
+        },
+        "the chip in the node's foot did not put the grid on the canvas"
+    );
+    assert!(
+        win.row("grid").on_canvas.is_some(),
+        "…and the bar did not follow it to the grid row"
+    );
+    assert!(
+        !win.chip().filled,
+        "…and the graph chip is still the state the canvas is in"
+    );
+}
+
+/// **Every view reads back from the word its chip carries.**
+///
+/// `brightfield_protocol::layout` lays the chips out from words — that crate
+/// has no view type and should not grow one — so a click resolved against a
+/// chip rectangle comes back holding a string, and `NodeView::from_label` is
+/// what turns it back into a view. A view whose word did not round-trip would
+/// draw a chip nothing could resolve: the chip would be there and the click
+/// would fall through to the node under it.
+#[test]
+fn every_view_reads_back_from_the_word_the_chip_carries() {
+    for view in NodeView::ALL {
+        assert_eq!(
+            NodeView::from_label(view.label()),
+            Some(view),
+            "{:?} does not read back from its own word",
+            view
+        );
+    }
+    assert_eq!(
+        NodeView::chip_labels(),
+        NodeView::ALL
+            .iter()
+            .map(|view| view.label().to_string())
+            .collect::<Vec<_>>(),
+        "the chips a node draws are a different list than the views it has"
+    );
+    assert_eq!(
+        NodeView::from_label("dashboards"),
+        None,
+        "a word that is not a view reads back as one"
+    );
+}
+
+/// **The layout the boot computes is the layout the canvas draws.**
+///
+/// Chips make the node that carries them taller and wider, so a layout computed
+/// without them places every card somewhere else. This view lays out in four
+/// places for four purposes, and they all go through one private
+/// `ProtocolModel::layout_config` — which is a claim about a private helper, so
+/// what is asserted here is the consequence: the two `Layout` values a reader
+/// meets first, whole, field for field. A second spelling of the configuration
+/// at either site fails this on `view_chips` and on every position with it.
+#[test]
+fn the_boot_layout_is_the_layout_the_canvas_draws() {
+    use brightfield_protocol::layout::Flow;
+    use brightfield_shell::protocol::ProtocolModel;
+
+    for flow in [Flow::Horizontal, Flow::Vertical] {
+        let booted = ProtocolModel::boot_layout(&housing_boot().protocol, flow);
+        let model = ProtocolModel::new(housing_boot().protocol, flow);
+        assert_eq!(
+            model.layout(),
+            &booted,
+            "at {flow:?} the boot's layout and the model's opening layout are \
+             two different arrangements of the same Protocol"
+        );
+        let table = housing_boot()
+            .protocol
+            .table
+            .clone()
+            .expect("the fixture has a table");
+        assert_eq!(
+            booted
+                .view_chips
+                .get(&table)
+                .map(|chips| chips.iter().map(|c| c.label.clone()).collect::<Vec<_>>()),
+            Some(NodeView::chip_labels()),
+            "the boot laid the table out without the chips it draws"
+        );
+    }
 }

@@ -717,7 +717,10 @@ pub fn render_asset_graph_with_status(
 mod tests {
     use super::*;
     use brightfield_protocol::graph::build_graph;
-    use brightfield_protocol::layout::{layout as compute_layout, LayoutConfig};
+    use brightfield_protocol::layout::{
+        layout as compute_layout, view_chip_rects, LayoutConfig, VIEW_CHIP_HEIGHT,
+        VIEW_CHIP_INSET,
+    };
     use brightfield_protocol::parse_manifest_str;
     use std::collections::BTreeMap;
 
@@ -1091,6 +1094,398 @@ steps:
             light.encoding().draw_data,
             dark.encoding().draw_data,
             "the two modes produced the same ink — the flag never reached the scene"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // View chips in a node's foot
+    // -----------------------------------------------------------------------
+
+    /// The graph a data file opens as, in miniature: a file on disk, one SQL
+    /// step that reads it, and the table that step makes.
+    fn one_step() -> AssetGraph {
+        let yaml = r"
+name: housing
+steps:
+  - name: load
+    sql: models/housing.sql
+    depends_on: [build/housing.csv]
+";
+        let manifest = parse_manifest_str(yaml).unwrap();
+        let mut sources = BTreeMap::new();
+        sources.insert(
+            "load".to_string(),
+            Ok("CREATE TABLE housing AS SELECT * FROM read_csv('build/housing.csv');".to_string()),
+        );
+        build_graph(&manifest, &sources)
+    }
+
+    /// The id of the one node of `kind` in `graph`, panicking with the list if
+    /// there is not exactly one — so a fixture that stopped producing a table
+    /// fails naming what it produced instead.
+    fn sole(graph: &AssetGraph, kind: AssetKind) -> brightfield_protocol::graph::AssetId {
+        let mut found: Vec<_> = graph
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.kind == kind)
+            .map(|(id, _)| id.clone())
+            .collect();
+        assert_eq!(
+            found.len(),
+            1,
+            "the fixture has {} nodes of kind {kind:?}, not one: {:?}",
+            found.len(),
+            graph.nodes.keys().collect::<Vec<_>>()
+        );
+        found.pop().expect("one")
+    }
+
+    /// The two words a table node's chips carry, as the shell hands them over.
+    fn views() -> Vec<String> {
+        vec!["dashboard".to_string(), "grid".to_string()]
+    }
+
+    /// A layout of `graph` with `table` carrying [`views`] in its foot.
+    fn laid_with_chips(
+        graph: &AssetGraph,
+        table: &brightfield_protocol::graph::AssetId,
+    ) -> brightfield_protocol::layout::Layout {
+        let mut cfg = LayoutConfig::default();
+        cfg.view_chips.insert(table.clone(), views());
+        compute_layout(graph, &cfg)
+    }
+
+    /// **Every coordinate pair the scene's path stream holds**, in canvas
+    /// coordinates.
+    ///
+    /// `Encoding::path_data` is a flat run of `f32` bits, two words per point,
+    /// and on this version of vello it carries shape geometry and nothing else:
+    /// a glyph is a run in `resources`, not an outline in here, which is what
+    /// makes a filter on a node's rectangle answer for the boxes drawn there
+    /// rather than for the letters inside them. `a_chip_reads_back_out_of_the_
+    /// scene_as_the_box_it_was_given` is the fixture-free proof of that shape.
+    fn points(scene: &Scene) -> Vec<(f64, f64)> {
+        scene
+            .encoding()
+            .path_data
+            .chunks_exact(2)
+            .map(|pair| {
+                (
+                    f64::from(f32::from_bits(pair[0])),
+                    f64::from(f32::from_bits(pair[1])),
+                )
+            })
+            .collect()
+    }
+
+    /// How many times `(x, y)` appears in the scene's path stream.
+    ///
+    /// A closed `RoundedRect` names its start point twice, so one encoded path
+    /// contributes two. That is what tells a **filled** chip from a hairline
+    /// one without reading a colour: the filled chip is encoded twice, once for
+    /// the fill and once for the stroke over it, and the hairline once.
+    fn corner_hits(scene: &Scene, x: f64, y: f64) -> usize {
+        points(scene)
+            .into_iter()
+            .filter(|(px, py)| (px - x).abs() < 0.01 && (py - y).abs() < 0.01)
+            .count()
+    }
+
+    /// The point on a chip's outline that [`corner_hits`] counts: where a
+    /// rounded rectangle's path begins, one corner radius down its leading edge.
+    fn corner_of(chip: &brightfield_protocol::layout::ViewChip) -> (f64, f64) {
+        (
+            chip.rect.x,
+            chip.rect.y + f64::from(meridian_design::radius::CHIP),
+        )
+    }
+
+    /// **A chip reads back out of the scene as the box it was given.**
+    ///
+    /// The premise every assertion below rests on, held on its own so a change
+    /// in how vello encodes a rounded rectangle fails here — naming the reader
+    /// — rather than in four tests at once naming the chips.
+    #[test]
+    fn a_chip_reads_back_out_of_the_scene_as_the_box_it_was_given() {
+        let mut scene = Scene::new();
+        let box_ = RoundedRect::new(100.0, 200.0, 175.0, 218.0, 3.0);
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            AssetInk::for_mode(false).chip_active_fill,
+            None,
+            &box_,
+        );
+        let drawn = points(&scene);
+        let xs: Vec<f64> = drawn.iter().map(|(x, _)| *x).collect();
+        let ys: Vec<f64> = drawn.iter().map(|(_, y)| *y).collect();
+        let lo = |v: &[f64]| v.iter().copied().fold(f64::INFINITY, f64::min);
+        let hi = |v: &[f64]| v.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        assert_eq!(
+            (lo(&xs), hi(&xs), lo(&ys), hi(&ys)),
+            (100.0, 175.0, 200.0, 218.0),
+            "the path stream does not bound the rectangle that was filled"
+        );
+        assert_eq!(
+            corner_hits(&scene, 100.0, 203.0),
+            2,
+            "one closed path does not name its start point twice, so the fill \
+             count below is measuring something else"
+        );
+
+        // …and text adds nothing to it. If it ever did, the filters below would
+        // be reading letters as boxes.
+        let before = scene.encoding().path_data.len();
+        draw_text(
+            &mut scene,
+            "grid",
+            137.0,
+            212.0,
+            LABEL_SIZE,
+            AssetInk::for_mode(false).chip_label,
+            TextAnchor::Middle,
+        );
+        assert_eq!(
+            scene.encoding().path_data.len(),
+            before,
+            "a glyph run reached the path stream, so a chip's box can no longer \
+             be told from the word inside it"
+        );
+        assert_eq!(
+            scene.encoding().resources.glyph_runs.len(),
+            1,
+            "the word was not drawn as a glyph run either, so it was not drawn"
+        );
+    }
+
+    /// **The table node carries one chip per view and the file node carries
+    /// none**, drawn where the layout placed them, the showing one filled.
+    ///
+    /// Read out of the scene rather than off the layout: the layout is the
+    /// arithmetic and the scene is what a reader is shown, and a `draw_node`
+    /// that computed the rectangles and painted none of them would satisfy the
+    /// first and none of the second.
+    #[test]
+    fn the_table_node_carries_a_chip_per_view() {
+        let graph = one_step();
+        let table = sole(&graph, AssetKind::Table);
+        let file = sole(&graph, AssetKind::File);
+        let l = laid_with_chips(&graph, &table);
+
+        let chips = l.view_chips.get(&table).expect("the table was given chips");
+        assert_eq!(
+            chips.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
+            vec!["dashboard", "grid"],
+            "the table's foot holds a different row than the views it was given"
+        );
+        assert!(
+            !l.view_chips.contains_key(&file),
+            "the file node was laid out with chips, and a file has no views"
+        );
+
+        let mut scene = Scene::new();
+        render_asset_graph_with_status(
+            &mut scene,
+            &l,
+            &graph,
+            &BTreeMap::new(),
+            Some((&table, "dashboard")),
+            false,
+        );
+
+        for chip in chips {
+            let r = &chip.rect;
+            let inside: Vec<(f64, f64)> = points(&scene)
+                .into_iter()
+                .filter(|(x, y)| {
+                    *x >= r.x - 0.01
+                        && *x <= r.x + r.width + 0.01
+                        && *y >= r.y - 0.01
+                        && *y <= r.y + r.height + 0.01
+                })
+                .collect();
+            assert!(
+                !inside.is_empty(),
+                "the scene painted nothing at all where the layout put the {:?} \
+                 chip ({r:?})",
+                chip.label
+            );
+            let lo = |sel: fn(&(f64, f64)) -> f64| {
+                inside.iter().map(sel).fold(f64::INFINITY, f64::min)
+            };
+            let hi = |sel: fn(&(f64, f64)) -> f64| {
+                inside.iter().map(sel).fold(f64::NEG_INFINITY, f64::max)
+            };
+            assert_eq!(
+                (lo(|p| p.0), hi(|p| p.0), lo(|p| p.1), hi(|p| p.1)),
+                (r.x, r.x + r.width, r.y, r.y + r.height),
+                "what the scene painted at the {:?} chip is not the box the \
+                 layout placed there",
+                chip.label
+            );
+        }
+
+        // **The showing chip is filled and its sibling is not** — counted off
+        // the encoding rather than off a colour, because a fill and a stroke of
+        // one box are two encoded paths and a stroke alone is one.
+        let dashboard = corner_of(&chips[0]);
+        let grid = corner_of(&chips[1]);
+        assert_eq!(
+            corner_hits(&scene, dashboard.0, dashboard.1),
+            4,
+            "the dashboard chip is the view the canvas returns to and is drawn \
+             as a hairline, not as a filled box under one"
+        );
+        assert_eq!(
+            corner_hits(&scene, grid.0, grid.1),
+            2,
+            "the grid chip is filled, though the canvas returns to the dashboard"
+        );
+
+        // …and the other way round, so neither count is passing for the shape
+        // of the drawing rather than for the state it was handed.
+        let mut other = Scene::new();
+        render_asset_graph_with_status(
+            &mut other,
+            &l,
+            &graph,
+            &BTreeMap::new(),
+            Some((&table, "grid")),
+            false,
+        );
+        assert_eq!(corner_hits(&other, dashboard.0, dashboard.1), 2);
+        assert_eq!(corner_hits(&other, grid.0, grid.1), 4);
+
+        // **Nothing is drawn where the file node's chips would be.** The
+        // rectangles are worked out for it by the same function that placed the
+        // table's, so this asks the scene about the exact page a chip row would
+        // have covered — not about a band of the card, which on a `File` also
+        // holds the corner fold's crease.
+        let file_rect = &l.positions[&file];
+        for would_be in view_chip_rects(file_rect, &views()) {
+            let r = &would_be.rect;
+            let intruders: Vec<(f64, f64)> = points(&scene)
+                .into_iter()
+                .filter(|(x, y)| {
+                    *x >= r.x - 0.01
+                        && *x <= r.x + r.width + 0.01
+                        && *y >= r.y - 0.01
+                        && *y <= r.y + r.height + 0.01
+                })
+                .collect();
+            assert!(
+                intruders.is_empty(),
+                "the file node has {} painted points at {intruders:?}, where a \
+                 {:?} chip would go ({r:?}) — a file has no views and must \
+                 carry no chip",
+                intruders.len(),
+                would_be.label
+            );
+        }
+    }
+
+    /// **A node's chips sit inside its card and below the last line of text on
+    /// it.**
+    ///
+    /// The reason the card grew: a chip row painted into a card sized without
+    /// one lands on the label. Both halves are read out of the scene — the boxes
+    /// from the path stream, the label's baseline from the glyph run that drew
+    /// it — so a `draw_node` that kept centring the label in the whole card
+    /// fails here even though every rectangle is still where the layout put it.
+    #[test]
+    fn the_table_nodes_chips_sit_below_its_label_inside_the_card() {
+        let graph = one_step();
+        let table = sole(&graph, AssetKind::Table);
+        let l = laid_with_chips(&graph, &table);
+        let card = &l.positions[&table];
+        let chips = l.view_chips.get(&table).expect("the table was given chips");
+
+        for chip in chips {
+            let r = &chip.rect;
+            assert!(
+                r.x >= card.x
+                    && r.x + r.width <= card.x + card.width
+                    && r.y >= card.y
+                    && r.y + r.height <= card.y + card.height,
+                "the {:?} chip ({r:?}) is not inside the card it belongs to \
+                 ({card:?})",
+                chip.label
+            );
+        }
+        let top = chips
+            .iter()
+            .map(|chip| chip.rect.y)
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            (card.y + card.height - top - VIEW_CHIP_INSET - VIEW_CHIP_HEIGHT).abs() < 0.01,
+            "the chip row's top is {top} against a card ending at {}",
+            card.y + card.height
+        );
+
+        let mut scene = Scene::new();
+        render_asset_graph_with_status(
+            &mut scene,
+            &l,
+            &graph,
+            &BTreeMap::new(),
+            Some((&table, "dashboard")),
+            false,
+        );
+
+        // The runs that landed on this card: the card's own label, and one per
+        // chip. Identified by where they were drawn, not by what they say —
+        // a glyph run carries glyph ids and a transform, and the ids are the
+        // font's rather than the alphabet's.
+        let runs: Vec<f64> = scene
+            .encoding()
+            .resources
+            .glyph_runs
+            .iter()
+            .map(|run| {
+                let t = run.transform.translation;
+                (f64::from(t[0]), f64::from(t[1]))
+            })
+            .filter(|(x, y)| {
+                *x >= card.x
+                    && *x <= card.x + card.width
+                    && *y >= card.y
+                    && *y <= card.y + card.height
+            })
+            .map(|(_, y)| y)
+            .collect();
+        assert_eq!(
+            runs.len(),
+            3,
+            "the card was drawn with {} text runs on it, not its label and its \
+             two chips' words",
+            runs.len()
+        );
+
+        // The card's own label is the one run that is not inside a chip.
+        let label_baseline = runs
+            .iter()
+            .copied()
+            .filter(|y| {
+                !chips
+                    .iter()
+                    .any(|chip| *y >= chip.rect.y && *y <= chip.rect.y + chip.rect.height)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            label_baseline.len(),
+            1,
+            "the card's label was not drawn outside the chip row"
+        );
+        // The label's em box, taken as `LABEL_SIZE` centred on the visual centre
+        // the baseline was nudged from. A generous bound on the descent — Inter
+        // descends about a quarter of an em — and it still has to clear the row.
+        let centre = label_baseline[0] - BASELINE_NUDGE;
+        assert!(
+            centre + f64::from(LABEL_SIZE) / 2.0 <= top + 0.01,
+            "the card's label is centred at {centre} and its em box reaches \
+             {}, which is past the chip row's top at {top} — the chips are \
+             being drawn over the label",
+            centre + f64::from(LABEL_SIZE) / 2.0
         );
     }
 }

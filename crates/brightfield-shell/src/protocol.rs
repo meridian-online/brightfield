@@ -846,9 +846,10 @@ impl ProtocolModel {
     /// every card differently — and this view lays out in four places for four
     /// purposes (the canvas raster, the nav's spatial geometry, the boot
     /// layout, the window's boot extent). Two spellings of the configuration
-    /// would mean the keyboard walked one arrangement while the reader looked
-    /// at another. `the_nav_walks_the_geometry_the_canvas_draws` holds the pair
-    /// that would drift first.
+    /// would mean the window was sized for one arrangement and the keyboard
+    /// walked another. `the_boot_layout_is_the_layout_the_canvas_draws` holds
+    /// the pair a reader meets first — the boot's and the drawn one — by
+    /// comparing the two whole `Layout` values rather than a measure off each.
     ///
     /// A Protocol with no table names no chips, so its `view_chips` is empty
     /// and `layout` returns exactly what it returned before chips existed —
@@ -2524,6 +2525,15 @@ fn caption_row(ui: &mut egui::Ui, text: &str, mode: Mode) -> SpineRowDrawn {
 /// `SPINE` and not among the rows. Every other row of the spine addresses one
 /// node, and a chip in one of those would be read as addressing that node.
 ///
+/// # The bar as well as the chip
+///
+/// The graph is not a row of the spine, so until the chip existed no row was
+/// marked while the canvas held it — and a spine with no bar anywhere is a
+/// spine that has stopped answering *what am I looking at*. It is this row's
+/// bar now: the head names the whole Protocol, and the graph is the whole
+/// Protocol. Drawn by the same two points of focus ink at the leading edge that
+/// [`spine_row`] draws, so the mark means one thing wherever it appears.
+///
 /// # The two states, and the third thing that is not a state
 ///
 /// Filled while the canvas holds the graph, hairline while it holds a view —
@@ -2570,6 +2580,14 @@ fn spine_head_row(
 
     let ink = chrome::colour(sem.text.muted);
     let painter = ui.painter();
+    let on_canvas = filled.then(|| {
+        let bar = egui::Rect::from_min_max(
+            rect.left_top(),
+            egui::pos2(rect.left() + ON_CANVAS_BAR_WIDTH, rect.bottom()),
+        );
+        painter.rect_filled(bar, 0.0, chrome::colour(sem.borders.focus));
+        bar
+    });
     let left = rect.left() + spacing::SPACE_4;
     let galley = painter.layout_no_wrap(text.to_owned(), caption_font(), ink);
     let name_rect = egui::Rect::from_min_size(
@@ -2598,7 +2616,7 @@ fn spine_head_row(
             rect,
             name_rect,
             kind_rect: None,
-            on_canvas: None,
+            on_canvas,
             washed: false,
             chip: Some(GraphChipDrawn {
                 rect: box_,
