@@ -60,6 +60,10 @@ pub struct Layout {
     /// The direction the DAG was laid out — the renderer routes edges (and
     /// points seam chevrons) along this axis.
     pub flow: Flow,
+    /// The view chips placed in each node's foot, for the nodes
+    /// [`LayoutConfig::view_chips`] named. Empty for every node that declared
+    /// no views, which is every node of a Protocol read from a manifest.
+    pub view_chips: BTreeMap<AssetId, Vec<ViewChip>>,
 }
 
 /// Which way the layers progress — the reading axis of the DAG.
@@ -137,6 +141,15 @@ pub struct LayoutConfig {
     pub row_gap: f64,
     /// The direction the DAG flows.
     pub flow: Flow,
+    /// Which nodes carry view chips in their foot, and the word on each chip,
+    /// in the order they are drawn.
+    ///
+    /// The node's ways of being looked at are the *shell's* fact — a manifest
+    /// declares relations, not views — so they arrive as words rather than as
+    /// a type this crate would have to know. A node named here is sized for its
+    /// chips; a node absent from the map keeps the card it always had, which is
+    /// what leaves a manifest Protocol's layout where it was.
+    pub view_chips: BTreeMap<AssetId, Vec<String>>,
 }
 
 impl Default for LayoutConfig {
@@ -171,31 +184,138 @@ impl Default for LayoutConfig {
             col_gap: f64::from(spacing::SPACE_8),
             row_gap: f64::from(spacing::SPACE_6),
             flow: Flow::Horizontal,
+            view_chips: BTreeMap::new(),
         }
     }
 }
 
-/// Card width from the label's char count (the Dagster trick: geometry
-/// before pixels; ~7px per char at the render module's 11px Inter).
-fn node_width(kind: AssetKind, label: &str) -> f64 {
+/// Pixels per character at the render module's 11px Inter — the Dagster trick,
+/// geometry before pixels, so this crate can size a card without measuring
+/// text and stays free of a font stack.
+///
+/// It sizes a node's label and the word on a view chip, and the two have to
+/// read the same figure or a chip laid out here would be drawn at a width the
+/// raster disagrees with.
+const PX_PER_CHAR: f64 = 7.0;
+
+/// Card width from the label's char count, widened where the node's foot has
+/// to hold a chip row.
+fn node_width(kind: AssetKind, label: &str, chips: &[String]) -> f64 {
     let chars = label.chars().count().min(28) as f64;
-    let base = (24.0 + chars * 7.0).clamp(64.0, 224.0);
-    match kind {
+    let base = (24.0 + chars * PX_PER_CHAR).clamp(64.0, 224.0);
+    let base = match kind {
         AssetKind::Family => base + 28.0, // room for the xN badge
         _ => base,
-    }
+    };
+    base.max(view_chip_row_width(chips))
 }
 
-/// Card height per node class (the distinguishable treatments).
-fn node_height(kind: AssetKind) -> f64 {
-    match kind {
+/// Card height per node class (the distinguishable treatments), plus the foot
+/// a chip row needs.
+fn node_height(kind: AssetKind, chips: bool) -> f64 {
+    let base = match kind {
         AssetKind::Source => 30.0,
         AssetKind::File => 34.0,
         AssetKind::Table => 36.0,
         AssetKind::Internal | AssetKind::Opaque => 26.0,
         AssetKind::Dataset => 42.0,
         AssetKind::Family => 46.0,
+    };
+    if chips {
+        base + VIEW_CHIP_BAND
+    } else {
+        base
     }
+}
+
+// ---------------------------------------------------------------------------
+// View chips: a node's ways of being looked at, drawn in its foot
+// ---------------------------------------------------------------------------
+
+/// A **view chip**: one way of looking at the table a node names, drawn as a
+/// small box in that node's foot.
+///
+/// Placed here rather than in the renderer because three readers need the same
+/// rectangle and a second derivation of it is how they would come to disagree:
+/// the raster draws it, the shell hit-tests a pointer against it, and this
+/// module sizes the node around it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ViewChip {
+    /// The word on the chip.
+    pub label: String,
+    /// Where it sits, in the same canvas coordinates a node's [`Rect`] is in.
+    pub rect: Rect,
+}
+
+/// A view chip's height — the design system's extra-small control rung.
+pub const VIEW_CHIP_HEIGHT: f64 = meridian_design::control::HEIGHT_XS as f64;
+
+/// How far a chip row sits from the node's leading edge, and from its bottom.
+pub const VIEW_CHIP_INSET: f64 = spacing::SPACE_4 as f64;
+
+/// The gap between two chips in one row.
+pub const VIEW_CHIP_GAP: f64 = spacing::SPACE_3 as f64;
+
+/// The room each side of a chip's word, inside its box.
+pub const VIEW_CHIP_PADDING_X: f64 = spacing::CHIP_PADDING_X as f64;
+
+/// What a chip row costs a node's height: the chip itself plus the inset that
+/// holds it off the bottom edge.
+///
+/// The node grows by exactly this so the chips sit **under** the node's lines
+/// rather than over them — the label is centred in what is left above the
+/// band, which is why the band is a term of the height rather than a place the
+/// renderer finds room in.
+pub const VIEW_CHIP_BAND: f64 = VIEW_CHIP_HEIGHT + VIEW_CHIP_INSET;
+
+/// The width of a chip carrying `label`.
+#[must_use]
+pub fn view_chip_width(label: &str) -> f64 {
+    2.0 * VIEW_CHIP_PADDING_X + label.chars().count() as f64 * PX_PER_CHAR
+}
+
+/// The room a row of `labels` needs across a node, insets included. Zero for a
+/// node with no views, which is what leaves every manifest Protocol's cards the
+/// width they were.
+fn view_chip_row_width(labels: &[String]) -> f64 {
+    if labels.is_empty() {
+        return 0.0;
+    }
+    let words: f64 = labels.iter().map(|label| view_chip_width(label)).sum();
+    let gaps = VIEW_CHIP_GAP * (labels.len() - 1) as f64;
+    2.0 * VIEW_CHIP_INSET + words + gaps
+}
+
+/// Where each of `labels` sits in the foot of the node at `rect` — the one
+/// piece of chip arithmetic, so the raster and the pointer read one answer.
+///
+/// The row is laid from the node's leading edge in by [`VIEW_CHIP_INSET`], and
+/// sits [`VIEW_CHIP_INSET`] above the node's bottom. `rect` is expected to be a
+/// rectangle this module sized for chips — [`node_height`] adds
+/// [`VIEW_CHIP_BAND`] to it — and the caller that hands one that was not gets a
+/// row overlapping the node's label, which is a sizing bug rather than a case
+/// to handle here.
+#[must_use]
+pub fn view_chip_rects(rect: &Rect, labels: &[String]) -> Vec<ViewChip> {
+    let y = rect.y + rect.height - VIEW_CHIP_INSET - VIEW_CHIP_HEIGHT;
+    let mut x = rect.x + VIEW_CHIP_INSET;
+    labels
+        .iter()
+        .map(|label| {
+            let width = view_chip_width(label);
+            let chip = ViewChip {
+                label: label.clone(),
+                rect: Rect {
+                    x,
+                    y,
+                    width,
+                    height: VIEW_CHIP_HEIGHT,
+                },
+            };
+            x += width + VIEW_CHIP_GAP;
+            chip
+        })
+        .collect()
 }
 
 /// Compute the deterministic layout for `graph`.
@@ -373,11 +493,21 @@ pub fn layout(graph: &AssetGraph, config: &LayoutConfig) -> Layout {
     // transposes to along→y, cross→x. The layering + crossing passes above are
     // untouched — only this assignment (and the renderer's routing) flips.
     let vertical = matches!(config.flow, Flow::Vertical);
+    // A node's chip words, or nothing where it declares no views. Looked up
+    // once per call site rather than cloned into the closure, so a node the
+    // config does not name costs an empty slice and no allocation.
+    let chips_of = |id: &AssetId| -> &[String] {
+        config.view_chips.get(id).map_or(&[], Vec::as_slice)
+    };
     let size_of = |slot: &Slot| -> (f64, f64) {
         match slot {
             Slot::Real(id) => {
                 let node = &graph.nodes[id];
-                (node_width(node.kind, &node.label), node_height(node.kind))
+                let chips = chips_of(id);
+                (
+                    node_width(node.kind, &node.label, chips),
+                    node_height(node.kind, !chips.is_empty()),
+                )
             }
             Slot::Dummy { .. } => (LANE_EXTENT, LANE_EXTENT),
         }
@@ -500,12 +630,24 @@ pub fn layout(graph: &AssetGraph, config: &LayoutConfig) -> Layout {
         })
         .collect();
 
+    // The chips, placed once the cards are. Driven off `positions` rather than
+    // off the config's keys, so a node the config names and the graph does not
+    // hold contributes nothing rather than a rectangle at no node.
+    let view_chips: BTreeMap<AssetId, Vec<ViewChip>> = positions
+        .iter()
+        .filter_map(|(id, rect)| {
+            let labels = config.view_chips.get(id)?;
+            (!labels.is_empty()).then(|| (id.clone(), view_chip_rects(rect, labels)))
+        })
+        .collect();
+
     Layout {
         width,
         height,
         positions,
         lanes,
         flow: config.flow,
+        view_chips,
     }
 }
 
@@ -727,7 +869,7 @@ steps:
         let l = layout(&diamond(), &cfg);
         for (rank, deepest) in ranks_of(&l, Flow::Vertical).into_iter().enumerate() {
             assert!(
-                deepest >= node_height(AssetKind::Internal),
+                deepest >= node_height(AssetKind::Internal, false),
                 "rank {rank} is {deepest}pt deep — shallower than the shortest \
                  card, so a lane-only rank is reachable after all and \
                  LANE_EXTENT is load-bearing rather than defensive"

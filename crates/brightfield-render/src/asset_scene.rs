@@ -24,8 +24,8 @@ use vello::Scene;
 use std::collections::BTreeMap;
 
 use brightfield_protocol::contract_graph::SeamStatus;
-use brightfield_protocol::graph::{AssetGraph, AssetKind, AssetNode, StepId};
-use brightfield_protocol::layout::{EdgeRoute, Flow, Layout};
+use brightfield_protocol::graph::{AssetGraph, AssetId, AssetKind, AssetNode, StepId};
+use brightfield_protocol::layout::{EdgeRoute, Flow, Layout, ViewChip};
 
 use crate::ink::ink;
 use crate::text::{draw_text, TextAnchor, LABEL_SIZE};
@@ -96,6 +96,23 @@ pub struct AssetInk {
     /// reserved status colour, and it must sit clearly above [`Self::edge`]
     /// (step 6) without becoming ink.
     pub skipped: Color,
+    /// The hairline round a **view chip** the canvas is not showing —
+    /// `borders.subtle`, the default hairline, because an unfilled chip is a
+    /// way to somewhere else rather than a control that must be found.
+    pub chip_border: Color,
+    /// The plane behind the view chip the canvas **is** showing —
+    /// `tabs.active_background`, which is the slot the design system already
+    /// uses for "this is the one you are on" in a set of peers. The chip row
+    /// in a node's foot is that set.
+    pub chip_active_fill: Color,
+    /// The hairline round the showing chip — `borders.default_`, one step up
+    /// from [`Self::chip_border`], so the filled chip has an edge as well as a
+    /// plane and does not read as a bare wash.
+    pub chip_active_border: Color,
+    /// The word on a chip the canvas is not showing — `tabs.foreground`.
+    pub chip_label: Color,
+    /// The word on the showing chip — `tabs.active_foreground`.
+    pub chip_active_label: Color,
 }
 
 /// Execution-status tints for a seam — the reserved Meridian status inks,
@@ -132,6 +149,11 @@ impl AssetInk {
             label: ink(sem.text.primary),
             muted_label: ink(sem.text.placeholder),
             skipped: ink(gray[6]),
+            chip_border: ink(sem.borders.subtle),
+            chip_active_fill: ink(sem.tabs.active_background),
+            chip_active_border: ink(sem.borders.default_),
+            chip_label: ink(sem.tabs.foreground),
+            chip_active_label: ink(sem.tabs.active_foreground),
         }
     }
 
@@ -333,10 +355,23 @@ fn draw_node(
     scene: &mut Scene,
     node: &AssetNode,
     rect: &brightfield_protocol::layout::Rect,
+    chips: &[ViewChip],
+    showing: Option<&str>,
     palette: AssetInk,
 ) {
     let (x, y, w, h) = (rect.x, rect.y, rect.width, rect.height);
-    let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+    // **The label is centred in what the chip row leaves, not in the card.**
+    // `layout::node_height` grew this card by `VIEW_CHIP_BAND` so the chips
+    // would have a foot of their own; centring the label in the whole card
+    // would spend that room on moving the label down onto them instead.
+    // `the_table_nodes_chips_sit_below_its_label_inside_the_card` reads both
+    // out of the scene and holds the label clear of the chip row.
+    let band = if chips.is_empty() {
+        0.0
+    } else {
+        brightfield_protocol::layout::VIEW_CHIP_BAND
+    };
+    let (cx, cy) = (x + w / 2.0, y + (h - band) / 2.0);
     let mut label_colour = palette.label;
     match node.kind {
         AssetKind::Source => {
@@ -507,7 +542,12 @@ fn draw_node(
                 palette.label,
                 TextAnchor::Middle,
             );
-            return; // family draws its own label (offset for the badge)
+            // Family draws its own label (offset for the badge) and returns —
+            // so the chip row is drawn here as well as at the foot of this
+            // function, or a family tile that declared views would be sized
+            // for chips and draw none.
+            draw_view_chips(scene, chips, showing, palette);
+            return;
         }
         AssetKind::Opaque => {
             // Issue-badged chip: dashed outline, amber badge.
@@ -545,6 +585,73 @@ fn draw_node(
         label_colour,
         TextAnchor::Middle,
     );
+    draw_view_chips(scene, chips, showing, palette);
+}
+
+/// Draw a node's **view chips** into its foot, the one the canvas is showing
+/// filled.
+///
+/// The rectangles are the layout's — `brightfield_protocol::layout`'s
+/// [`view_chip_rects`], which is also what the shell hit-tests a click
+/// against, so a chip that is drawn is a chip that can be clicked. The
+/// treatment is `brightfield_workbench::chrome`'s `chip`, drawn here in vello
+/// rather than in egui because a node's foot is inside a rasterised scene:
+/// both take the height, the corner radius and the padding from the same
+/// design tokens, and neither carries a measure of its own.
+///
+/// `showing` is the word on the chip whose view the canvas returns to. `None`
+/// draws every chip unfilled, which is what a node whose views are all
+/// elsewhere looks like.
+///
+/// [`view_chip_rects`]: brightfield_protocol::layout::view_chip_rects
+fn draw_view_chips(scene: &mut Scene, chips: &[ViewChip], showing: Option<&str>, palette: AssetInk) {
+    for chip in chips {
+        let r = &chip.rect;
+        let box_ = RoundedRect::new(
+            r.x,
+            r.y,
+            r.x + r.width,
+            r.y + r.height,
+            f64::from(meridian_design::radius::CHIP),
+        );
+        let on = showing == Some(chip.label.as_str());
+        if on {
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                palette.chip_active_fill,
+                None,
+                &box_,
+            );
+        }
+        scene.stroke(
+            &Stroke::new(1.0),
+            Affine::IDENTITY,
+            if on {
+                palette.chip_active_border
+            } else {
+                palette.chip_border
+            },
+            None,
+            &box_,
+        );
+        draw_text(
+            scene,
+            &chip.label,
+            r.x + r.width / 2.0,
+            // The chip's own centre plus the same baseline nudge a card's
+            // label takes, so a word in a chip sits on the line a word on a
+            // card does.
+            r.y + r.height / 2.0 + BASELINE_NUDGE,
+            LABEL_SIZE,
+            if on {
+                palette.chip_active_label
+            } else {
+                palette.chip_label
+            },
+            TextAnchor::Middle,
+        );
+    }
 }
 
 /// Draw the laid-out asset graph into `scene` with no execution-status tint —
@@ -555,7 +662,7 @@ fn draw_node(
 /// [`meridian_design::semantic()`] takes: callers holding a workbench `Mode` pass
 /// `mode.is_dark()`.
 pub fn render_asset_graph(scene: &mut Scene, layout: &Layout, graph: &AssetGraph, dark: bool) {
-    render_asset_graph_with_status(scene, layout, graph, &BTreeMap::new(), dark);
+    render_asset_graph_with_status(scene, layout, graph, &BTreeMap::new(), None, dark);
 }
 
 /// Draw the laid-out asset graph into `scene`, tinting each seam chevron by its
@@ -563,11 +670,18 @@ pub fn render_asset_graph(scene: &mut Scene, layout: &Layout, graph: &AssetGraph
 /// (matching a route's `via`); a seam with no entry falls back to
 /// [`SeamStatus::NotRun`] — the quiet edge ink, never green. Feed it
 /// [`ContractView::seam_statuses`](brightfield_protocol::contract_graph::ContractView::seam_statuses).
+///
+/// `showing` names the node and the word of the **view chip the canvas returns
+/// to**, which draws filled while its siblings draw as hairlines. It is a
+/// parameter rather than a field of the [`Layout`] because it moves on a
+/// click, and the layout is recomputed only when a fold, a drill or a flow
+/// change moves a card.
 pub fn render_asset_graph_with_status(
     scene: &mut Scene,
     layout: &Layout,
     graph: &AssetGraph,
     status: &BTreeMap<StepId, SeamStatus>,
+    showing: Option<(&AssetId, &str)>,
     dark: bool,
 ) {
     let palette = AssetInk::for_mode(dark);
@@ -590,7 +704,11 @@ pub fn render_asset_graph_with_status(
     }
     for (id, rect) in &layout.positions {
         if let Some(node) = graph.nodes.get(id) {
-            draw_node(scene, node, rect, palette);
+            let chips = layout.view_chips.get(id).map_or(&[][..], Vec::as_slice);
+            let on = showing
+                .filter(|(node, _)| *node == id)
+                .map(|(_, label)| label);
+            draw_node(scene, node, rect, chips, on, palette);
         }
     }
 }
@@ -686,7 +804,7 @@ steps:
         let mut plain = Scene::new();
         render_asset_graph(&mut plain, &l, &graph, false);
         let mut tinted = Scene::new();
-        render_asset_graph_with_status(&mut tinted, &l, &graph, &failed, false);
+        render_asset_graph_with_status(&mut tinted, &l, &graph, &failed, None, false);
 
         // Same number of draw ops (only colour changed), different draw data.
         assert_eq!(

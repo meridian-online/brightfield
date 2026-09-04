@@ -1555,6 +1555,20 @@ pub struct MeridianApp {
     /// [`MeridianApp::reconcile_canvas_holds`] writes it on a frame, and a
     /// click on a view row writes it between frames. See [`CanvasHolds`].
     canvas_holds: CanvasHolds,
+    /// **Where the canvas goes when the graph chip gives it back**: the node
+    /// whose view the chip took the canvas from, and which view that was.
+    ///
+    /// One field carrying three jobs, and they are one fact. It is what a
+    /// second click on the chip returns to; it is the node identity
+    /// [`MeridianApp::reconcile_canvas_holds`] tests a latched `Graph` against,
+    /// which `CanvasHolds::Graph` cannot carry itself; and, mirrored onto the
+    /// document each frame, it is the chip the raster draws filled in the
+    /// node's foot.
+    ///
+    /// `None` on a window whose canvas has never held a view — a Protocol read
+    /// from a manifest — and cleared whenever the reconciliation refuses the
+    /// latch, so it never names a table the documents have stopped holding.
+    graph_reached_from: Option<(AssetId, NodeView)>,
     /// Where focus was before the navigator rail's toggle took it, so pressing
     /// that toggle again puts it back. `None` when the rail does not hold
     /// focus — see [`MeridianApp::toggle_navigator_focus`].
@@ -1912,6 +1926,7 @@ impl MeridianApp {
             // right before the first frame — a test that asks what a fresh
             // window holds should not have to draw one first.
             canvas_holds: CanvasHolds::Graph,
+            graph_reached_from: None,
             focus_return: None,
             home_button: None,
             affordances: Vec::new(),
@@ -2117,17 +2132,28 @@ impl MeridianApp {
     }
 
     /// Whether the canvas is drawing the asset graph rather than a chart
-    /// projection — [`graph_takes_the_canvas`] over this window's documents.
+    /// projection — **the latch, read back**, and not a second derivation.
     ///
-    /// Recomputed on each call rather than latched, which is what makes it
-    /// the same answer [`MeridianApp::draw`] uses and the same answer
-    /// [`Boot::graph_on_canvas`] gave before the window existed.
+    /// It was [`graph_takes_the_canvas`] over this window's documents until the
+    /// graph chip existed, and it could not stay that way: the chip puts the
+    /// graph on a canvas whose documents include a chart, which is exactly the
+    /// case that function answers `false` for. The two are still the same
+    /// answer wherever no chip has been clicked, because
+    /// [`Self::reconcile_canvas_holds`] initialises the latch from the derived
+    /// answer and holds it there — `a_windows_latched_canvas_agrees_with_the_derived_answer`
+    /// reads both off one frame on a fresh window of each kind, and then clicks
+    /// the chip and holds the pair apart.
+    ///
+    /// Everything that follows the graph reads this and therefore follows the
+    /// chip: the bare-key grammar feed, the key-hint band, the status rail's
+    /// choice of which document's panes to report, the locator's drill trail,
+    /// the window title and the title band's flow toggle. That is the point —
+    /// the graph on the canvas is the graph on the canvas however it got there,
+    /// and a band that answered the old question would be describing the
+    /// document that is not being drawn.
     #[must_use]
     pub fn graph_on_canvas(&self) -> bool {
-        graph_takes_the_canvas(
-            self.protocol.doc.model.has_assets(),
-            !self.charts.doc.is_empty(),
-        )
+        matches!(self.canvas_holds, CanvasHolds::Graph)
     }
 
     /// **What the canvas holds** — the latch, read back.
@@ -2153,7 +2179,12 @@ impl MeridianApp {
     /// What it deliberately does **not** touch is a view of a node that is
     /// still there: that is the reader's choice, and a reconciliation that
     /// reset it every frame would make a click on `grid` last exactly one
-    /// frame.
+    /// frame. **A graph the chip put there is the same kind of choice**, and is
+    /// held by the same identity test — against
+    /// [`Self::graph_reached_from`], which is the only record of which table
+    /// the reader left, because `Graph` names no node and so cannot answer for
+    /// itself. Opening a second file therefore comes back to the new table's
+    /// dashboard from the graph exactly as it does from a grid.
     fn reconcile_canvas_holds(&mut self) {
         if graph_takes_the_canvas(
             self.protocol.doc.model.has_assets(),
@@ -2169,9 +2200,14 @@ impl MeridianApp {
         };
         let held = match &self.canvas_holds {
             CanvasHolds::View { node, .. } => *node == table,
-            CanvasHolds::Graph | CanvasHolds::Chart => false,
+            CanvasHolds::Graph => self
+                .graph_reached_from
+                .as_ref()
+                .is_some_and(|(node, _)| *node == table),
+            CanvasHolds::Chart => false,
         };
         if !held {
+            self.graph_reached_from = None;
             self.canvas_holds = CanvasHolds::View {
                 node: table,
                 view: NodeView::Dashboard,
@@ -2549,6 +2585,20 @@ impl MeridianApp {
         self.protocol.doc.spine_body
     }
 
+    /// **The view chips the DAG canvas drew in the last frame**, in screen
+    /// coordinates — which view of which node, and where a pointer has to go to
+    /// hit it.
+    ///
+    /// Empty on every frame the canvas did not draw the graph, and on a graph
+    /// whose nodes declare no views. Read off the frame for the reason
+    /// [`Self::spine_rows`] is; what it is *not* is evidence that the raster
+    /// painted a chip there, which is the render crate's own
+    /// `the_table_node_carries_a_chip_per_view` to say.
+    #[must_use]
+    pub fn canvas_chips(&self) -> &[crate::protocol::CanvasChipDrawn] {
+        &self.protocol.doc.canvas_chips
+    }
+
     /// Which of the canvas's projections is showing — an index into the
     /// declared projections.
     #[must_use]
@@ -2815,12 +2865,19 @@ impl MeridianApp {
         // calls, not through the UI — `Boot::open` takes exactly one spec,
         // and no shipped control opens a second document into a window that
         // already holds one.
-        let graph_on_canvas = self.graph_on_canvas();
         // The latch, before anything reads it: the panes are handed a copy and
         // the canvas branches on it, so it has to be right for this frame's
         // documents rather than for the previous frame's.
+        //
+        // `graph_on_canvas` is read AFTER it and not before, which it used to
+        // be. It is the latch now rather than a second derivation over the
+        // documents — see `MeridianApp::graph_on_canvas` — so reading it first
+        // would answer for the frame before this one, and on the frame a click
+        // on the graph chip lands that is the frame that drew the other thing.
         self.reconcile_canvas_holds();
         self.protocol.doc.canvas_holds = self.canvas_holds.clone();
+        self.protocol.doc.returns_to = self.graph_reached_from.clone();
+        let graph_on_canvas = self.graph_on_canvas();
         let canvas_holds = self.canvas_holds.clone();
         // …and the rail's record of what it drew, cleared here so the pane can
         // refill it. A frame that draws the front door, or a rail whose pane
@@ -2830,6 +2887,8 @@ impl MeridianApp {
         // per frame for.
         self.protocol.doc.spine_drawn.clear();
         self.protocol.doc.spine_body = None;
+        // …and the canvas's record of the chips it drew, for the same reason.
+        self.protocol.doc.canvas_chips.clear();
 
         // The overlay-opening keys, before the grammar feed so the frame that
         // opens an overlay is already under it.
@@ -4140,6 +4199,33 @@ impl MeridianApp {
         // documents no longer have — one rule for that, not two.
         if let Some((node, view)) = self.protocol.doc.take_view_pick() {
             self.canvas_holds = CanvasHolds::View { node, view };
+            ctx.request_repaint();
+        }
+        // …and the graph chip, which is the same shape again: the rail reports
+        // that it was clicked, and the window decides what that means.
+        //
+        // It is a toggle over one fact rather than two controls, because the
+        // way to the graph and the way back are the same gesture on the same
+        // chip. Off a view it records where the canvas was and takes the graph;
+        // off the graph it puts back exactly what it recorded — which is what
+        // makes a reader's trip to the map a round trip rather than a
+        // one-way door onto the table's dashboard. On `Chart` it does nothing:
+        // a bare chart has no Protocol behind it and the rail draws no spine to
+        // click, so this arm is unreachable through the UI and is spelled out
+        // rather than swept into a catch-all.
+        if self.protocol.doc.take_graph_pick() {
+            match &self.canvas_holds {
+                CanvasHolds::View { node, view } => {
+                    self.graph_reached_from = Some((node.clone(), *view));
+                    self.canvas_holds = CanvasHolds::Graph;
+                }
+                CanvasHolds::Graph => {
+                    if let Some((node, view)) = self.graph_reached_from.take() {
+                        self.canvas_holds = CanvasHolds::View { node, view };
+                    }
+                }
+                CanvasHolds::Chart => {}
+            }
             ctx.request_repaint();
         }
         let shown = self.charts.doc.selected_column().map(|c| c.column.clone());

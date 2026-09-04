@@ -474,6 +474,33 @@ impl NodeView {
             Self::Grid => "grid",
         }
     }
+
+    /// The view `label` names, or `None` for a word that is not one.
+    ///
+    /// [`Self::label`]'s inverse, and it exists because the graph's chips are
+    /// laid out by `brightfield_protocol::layout` from **words** — that crate
+    /// has no view type and should not grow one for two strings — so a click
+    /// resolved against a chip rectangle comes back holding the word and has to
+    /// be read back into a view here.
+    /// `every_view_reads_back_from_the_word_the_chip_carries` walks
+    /// [`Self::ALL`] through both directions.
+    #[must_use]
+    pub fn from_label(label: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|view| view.label() == label)
+    }
+
+    /// The words a node's chips carry, in the order they are drawn — the same
+    /// order the spine lists the view rows in.
+    ///
+    /// The one place the graph's chips and the rail's rows are declared from,
+    /// so a third view added to [`Self::ALL`] reaches both.
+    #[must_use]
+    pub fn chip_labels() -> Vec<String> {
+        Self::ALL
+            .into_iter()
+            .map(|view| view.label().to_string())
+            .collect()
+    }
 }
 
 /// What a spine row's marker says about the thing that row names.
@@ -810,6 +837,34 @@ impl ProtocolModel {
         model
     }
 
+    /// **The one layout configuration this view lays out through**: the flow,
+    /// and the chips the table node carries in its foot.
+    ///
+    /// Every call to `brightfield_protocol::layout` in this module goes through
+    /// it, and that is load-bearing rather than tidy. Chips make the node that
+    /// carries them taller and wider, so a layout computed without them places
+    /// every card differently — and this view lays out in four places for four
+    /// purposes (the canvas raster, the nav's spatial geometry, the boot
+    /// layout, the window's boot extent). Two spellings of the configuration
+    /// would mean the keyboard walked one arrangement while the reader looked
+    /// at another. `the_nav_walks_the_geometry_the_canvas_draws` holds the pair
+    /// that would drift first.
+    ///
+    /// A Protocol with no table names no chips, so its `view_chips` is empty
+    /// and `layout` returns exactly what it returned before chips existed —
+    /// which is what leaves every manifest Protocol's cards where they were.
+    fn layout_config(table: Option<&AssetId>, flow: Flow) -> LayoutConfig {
+        let mut view_chips = BTreeMap::new();
+        if let Some(table) = table {
+            view_chips.insert(table.clone(), NodeView::chip_labels());
+        }
+        LayoutConfig {
+            flow,
+            view_chips,
+            ..LayoutConfig::default()
+        }
+    }
+
     /// The layout the canvas opens on: the collapsed graph at `flow`, before any
     /// fold, drill or transpose.
     ///
@@ -820,10 +875,7 @@ impl ProtocolModel {
     /// 260px wide in one place and 24% of the window in another.
     #[must_use]
     pub fn boot_layout(inputs: &ProtocolInputs, flow: Flow) -> Layout {
-        let cfg = LayoutConfig {
-            flow,
-            ..LayoutConfig::default()
-        };
+        let cfg = Self::layout_config(inputs.table.as_ref(), flow);
         brightfield_protocol::layout(&inputs.graph_collapsed, &cfg)
     }
 
@@ -881,10 +933,7 @@ impl ProtocolModel {
     /// caps what is asked for against the monitor the window opens on.
     #[must_use]
     pub fn boot_extent(inputs: &ProtocolInputs, flow: Flow) -> (f64, f64) {
-        let cfg = LayoutConfig {
-            flow,
-            ..LayoutConfig::default()
-        };
+        let cfg = Self::layout_config(inputs.table.as_ref(), flow);
         [
             &inputs.graph_collapsed,
             &inputs.graph_exploded,
@@ -903,10 +952,7 @@ impl ProtocolModel {
     /// always walks the collapsed graph, so this is its geometry regardless of a
     /// fold or drill scope; only a flow change alters it.
     fn sync_nav_geometry(&mut self) {
-        let cfg = LayoutConfig {
-            flow: self.flow,
-            ..LayoutConfig::default()
-        };
+        let cfg = Self::layout_config(self.table.as_ref(), self.flow);
         let geom = brightfield_protocol::layout(&self.graph_collapsed, &cfg);
         self.nav.set_geometry(self.flow, &geom);
     }
@@ -1854,10 +1900,7 @@ impl ProtocolModel {
     /// set is exactly the kind of edit that reads as "the graph changed, so the
     /// canvas changed". It does not. Re-lay-out, or nothing moves.
     fn recompute_layout(&mut self) {
-        let cfg = LayoutConfig {
-            flow: self.flow,
-            ..LayoutConfig::default()
-        };
+        let cfg = Self::layout_config(self.table.as_ref(), self.flow);
         let laid = {
             let graph = self.displayed_graph();
             brightfield_protocol::layout(graph, &cfg)
@@ -1941,6 +1984,40 @@ pub struct ProtocolDoc {
     /// The view a reader clicked in the rail this frame, if one was clicked.
     /// Taken by the window, which owns what the canvas holds.
     view_pick: Option<(AssetId, NodeView)>,
+    /// Whether a reader clicked the graph chip in the spine's head this frame.
+    /// Taken by the window for the same reason [`ProtocolDoc::view_pick`] is.
+    graph_pick: bool,
+    /// **Which view of which node the canvas returns to** when the graph gives
+    /// it back — the chip that draws filled in the node's foot on the graph.
+    ///
+    /// Mirrored onto the document beside [`ProtocolDoc::canvas_holds`] and by
+    /// the same statement, because the raster needs it and the raster is built
+    /// from this document. `None` where nothing has been left: a manifest
+    /// Protocol whose canvas has always held the graph has no view behind it,
+    /// and every chip in it draws unfilled.
+    pub returns_to: Option<(AssetId, NodeView)>,
+    /// **Where the DAG canvas drew each node's view chips in the last frame**,
+    /// in screen coordinates.
+    ///
+    /// Read off the frame rather than re-derived from the layout, for the
+    /// reason [`ProtocolDoc::spine_drawn`] is: a test that asked the layout
+    /// again would be comparing the arithmetic with itself and would stay green
+    /// through a canvas that drew none of it. Cleared per frame by the window.
+    pub canvas_chips: Vec<CanvasChipDrawn>,
+}
+
+/// One **view chip on the graph** as it was drawn — which view of which node,
+/// and where a pointer would have to go to hit it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CanvasChipDrawn {
+    /// The node whose foot the chip sits in.
+    pub node: AssetId,
+    /// Which view a click on it puts on the canvas.
+    pub view: NodeView,
+    /// Where it was drawn, in screen coordinates — the canvas pane's own
+    /// origin plus the layout's rectangle, so a scrolled canvas reports where
+    /// the chip actually is rather than where it would be unscrolled.
+    pub rect: egui::Rect,
 }
 
 /// One row of the Protocol pane **as it was drawn** — the content and the
@@ -1971,6 +2048,22 @@ pub struct SpineRowDrawn {
     pub on_canvas: Option<egui::Rect>,
     /// Whether the selection wash was painted under this row.
     pub washed: bool,
+    /// The **graph chip** at the trailing end, on the spine's head row and no
+    /// other. `None` everywhere else, and on a head row drawn without one.
+    pub chip: Option<GraphChipDrawn>,
+}
+
+/// The graph chip in the spine's head **as it was drawn**.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GraphChipDrawn {
+    /// The chip's box.
+    pub rect: egui::Rect,
+    /// Whether it was filled — that is, whether the canvas holds the graph.
+    pub filled: bool,
+    /// Whether a click on it would move the canvas. False on a Protocol with
+    /// no node that has views: the graph is the only thing that canvas can
+    /// hold, so there is nowhere for a click to go.
+    pub live: bool,
 }
 
 /// Everything the DAG raster's pixels depend on.
@@ -1998,6 +2091,12 @@ pub struct CanvasKey {
     dev_width: u32,
     dev_height: u32,
     dark: bool,
+    /// Which view chip draws filled — a raster input like the others, because
+    /// leaving the graph for a view and coming back to it changes the fill and
+    /// moves no card. The **node** it belongs to is not carried: a document
+    /// swap goes through [`ProtocolDoc::open`], which invalidates the slot
+    /// outright, so no key survives the only change that could move it.
+    showing: Option<NodeView>,
 }
 
 impl CanvasKey {
@@ -2025,6 +2124,9 @@ impl ProtocolDoc {
             spine_drawn: Vec::new(),
             spine_body: None,
             view_pick: None,
+            graph_pick: false,
+            returns_to: None,
+            canvas_chips: Vec::new(),
         }
     }
 
@@ -2039,6 +2141,9 @@ impl ProtocolDoc {
             spine_drawn: Vec::new(),
             spine_body: None,
             view_pick: None,
+            graph_pick: false,
+            returns_to: None,
+            canvas_chips: Vec::new(),
         }
     }
 
@@ -2059,6 +2164,17 @@ impl ProtocolDoc {
     /// which is the same shape for the inspector's column.
     pub fn take_view_pick(&mut self) -> Option<(AssetId, NodeView)> {
         self.view_pick.take()
+    }
+
+    /// Take the graph chip's click, if the spine's head was clicked this frame.
+    ///
+    /// [`ProtocolDoc::take_view_pick`]'s twin, and separate from it because the
+    /// two gestures say different things: a view row names a view to go to,
+    /// and the chip toggles the canvas between the graph and whatever it left.
+    /// Folding them into one would mean spelling "the graph" as a `NodeView`
+    /// that no node has.
+    pub fn take_graph_pick(&mut self) -> bool {
+        std::mem::take(&mut self.graph_pick)
     }
 
     /// Replace the graph with a freshly built one, keeping the reading axis
@@ -2089,6 +2205,7 @@ impl ProtocolDoc {
                 dev_width: dev.width,
                 dev_height: dev.height,
                 dark: mode.is_dark(),
+                showing: self.returns_to.as_ref().map(|(_, view)| *view),
             },
             dev,
         )
@@ -2123,11 +2240,16 @@ impl ProtocolDoc {
         // Build the scene under an immutable borrow, then present (mutable host).
         let scene = {
             let mut s = vello::Scene::new();
+            let showing = self
+                .returns_to
+                .as_ref()
+                .map(|(node, view)| (node, view.label()));
             brightfield_render::asset_scene::render_asset_graph_with_status(
                 &mut s,
                 self.model.layout(),
                 self.model.displayed_graph(),
                 &self.model.statuses,
+                showing,
                 mode.is_dark(),
             );
             let mut scaled = vello::Scene::new();
@@ -2275,15 +2397,25 @@ impl Item<ProtocolDoc> for OutlinePane {
         let mut clicked: Option<AssetId> = None;
         let mut column: Option<String> = None;
         let mut view: Option<(AssetId, NodeView)> = None;
+        let mut graph_picked = false;
+        // Whether the chip is a control here. A Protocol with no node that has
+        // views — every Protocol read from a manifest — has nothing for the
+        // canvas to hold but the graph, so the chip there is a readout of that
+        // and not a way anywhere. See `spine_head_row`.
+        let chip_live = doc.model.table().is_some();
+        let holds_graph = matches!(holds, crate::window::CanvasHolds::Graph);
         doc.spine_body = Some(ui.max_rect());
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.add_space(spacing::SPACE_1);
-                // Both captions draw nothing at their trailing ends: the
-                // spine's is where the graph chip goes, and the room is left
-                // for it.
-                drawn.push(caption_row(ui, &spine_caption, cx.mode));
+                // The spine's caption shares its row with the graph chip at the
+                // trailing end; the outline's caption below has the row to
+                // itself.
+                let (record, picked) =
+                    spine_head_row(ui, &spine_caption, holds_graph, chip_live, cx.mode);
+                graph_picked = picked;
+                drawn.push(record);
                 for row in &spine {
                     let (record, response) = spine_row(ui, row, holds.shows(row), cx.mode);
                     drawn.push(record);
@@ -2323,6 +2455,10 @@ impl Item<ProtocolDoc> for OutlinePane {
         }
         if let Some(pick) = view {
             doc.view_pick = Some(pick);
+            cx.request_repaint();
+        }
+        if graph_picked {
+            doc.graph_pick = true;
             cx.request_repaint();
         }
     }
@@ -2373,8 +2509,109 @@ fn caption_row(ui: &mut egui::Ui, text: &str, mode: Mode) -> SpineRowDrawn {
         kind_rect: None,
         on_canvas: None,
         washed: false,
+        chip: None,
     }
 }
+
+/// The spine's **head row**: the caption, and the graph chip at its trailing
+/// end.
+///
+/// # Why the chip lives on the caption's row
+///
+/// It is the one row of the pane that names the whole list rather than a member
+/// of it, and the graph is the whole Protocol rather than one of its assets —
+/// so the chip that puts the graph on the canvas belongs beside the word
+/// `SPINE` and not among the rows. Every other row of the spine addresses one
+/// node, and a chip in one of those would be read as addressing that node.
+///
+/// # The two states, and the third thing that is not a state
+///
+/// Filled while the canvas holds the graph, hairline while it holds a view —
+/// [`chrome::chip`] draws both and this decides which. `live` is separate and
+/// is not a state of the chip: it is whether a click on it can move the canvas
+/// at all. On a Protocol whose canvas can only ever hold the graph — a manifest
+/// Protocol, where `graph_takes_the_canvas` is true over the documents and the
+/// window's reconciliation pins the latch to `Graph` every frame — a click
+/// would be undone before the next frame drew. So the chip senses hover there
+/// rather than pretending, which is the rule `spine_row` follows for a step
+/// row.
+///
+/// Returns the row as it was drawn and whether the chip was clicked.
+fn spine_head_row(
+    ui: &mut egui::Ui,
+    text: &str,
+    filled: bool,
+    live: bool,
+    mode: Mode,
+) -> (SpineRowDrawn, bool) {
+    let sem = semantic(mode.is_dark());
+    let b = control::binding(spacing::ROW_DENSE);
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), b.row),
+        egui::Sense::hover(),
+    );
+
+    // The chip first, because the caption's room is what the chip leaves.
+    let font = caption_font();
+    let width = chrome::chip_width(ui, GRAPH_CHIP, font.clone());
+    let box_ = egui::Rect::from_min_size(
+        egui::pos2(
+            rect.right() - spacing::SPACE_4 - width,
+            rect.center().y - control::HEIGHT_XS / 2.0,
+        ),
+        egui::vec2(width, control::HEIGHT_XS),
+    );
+    let sense = if live {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let response = chrome::chip(ui, box_, GRAPH_CHIP, font, filled, sense, mode);
+
+    let ink = chrome::colour(sem.text.muted);
+    let painter = ui.painter();
+    let left = rect.left() + spacing::SPACE_4;
+    let galley = painter.layout_no_wrap(text.to_owned(), caption_font(), ink);
+    let name_rect = egui::Rect::from_min_size(
+        egui::pos2(left, rect.center().y - galley.size().y / 2.0),
+        galley.size(),
+    );
+    // Clipped to the room the chip leaves, less one more `SPACE_4` — so a
+    // caption too long for a narrow rail is cut before it touches the chip
+    // rather than painted under it. The rect handed back is the galley's own,
+    // clip or no clip, which is what lets a test ask whether the caption fitted.
+    let room = egui::Rect::from_min_max(
+        rect.left_top(),
+        egui::pos2(box_.left() - spacing::SPACE_4, rect.bottom()),
+    );
+    painter
+        .with_clip_rect(room)
+        .galley(name_rect.min, galley, ink);
+
+    (
+        SpineRowDrawn {
+            label: text.to_string(),
+            kind: String::new(),
+            depth: 0,
+            marker: SpineMarker::None,
+            role: SpineRole::Caption,
+            rect,
+            name_rect,
+            kind_rect: None,
+            on_canvas: None,
+            washed: false,
+            chip: Some(GraphChipDrawn {
+                rect: box_,
+                filled,
+                live,
+            }),
+        },
+        response.clicked(),
+    )
+}
+
+/// The word on the chip in the spine's head.
+const GRAPH_CHIP: &str = "graph";
 
 /// One **spine row**: the marker, the name, and the kind at the trailing end —
 /// plus, on the one row whose content the canvas holds, the bar at its leading
@@ -2504,6 +2741,7 @@ fn spine_row(
             kind_rect: Some(kind_rect),
             on_canvas,
             washed: row.selected,
+            chip: None,
         },
         response,
     )
@@ -2576,6 +2814,7 @@ fn outline_row(ui: &mut egui::Ui, row: &OutlineRow, mode: Mode) -> (SpineRowDraw
             kind_rect: Some(kind_rect),
             on_canvas: None,
             washed: row.selected,
+            chip: None,
         },
         response,
     )
@@ -2661,24 +2900,44 @@ impl Item<ProtocolDoc> for CanvasPane {
         // a headless document still reports the box the dock gave this pane.
         // See `ProtocolDoc::viewport`.
         doc.viewport = Some(ui.max_rect());
-        let Some(texture) = doc.canvas.texture() else {
-            // No device behind this document. The pane is blank rather than
-            // apologetic: a headless document is a test fixture, never a state
-            // a user reaches, so a message here would be chrome nobody sees.
-            return;
-        };
+        // No device behind this document draws no image, and that is the whole
+        // of what a missing device costs: a headless document is a test
+        // fixture, and its pane is blank rather than apologetic because a
+        // message here would be chrome nobody sees. **Where the pane's content
+        // sits, and what a click on it resolves to, are facts about the layout
+        // and not about the device** — so they are worked out either way, which
+        // is what lets a headless frame be clicked.
+        let texture = doc.canvas.texture();
         let (w, h) = {
             let l = doc.model.layout();
             (l.width as f32, l.height as f32)
         };
+        let mut chips: Vec<CanvasChipDrawn> = Vec::new();
+        let mut hit: Option<CanvasHit> = None;
         egui::ScrollArea::both()
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let (rect, resp) =
                     ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click_and_drag());
-                egui::Image::new((texture, rect.size()))
-                    .tint(egui::Color32::WHITE)
-                    .paint_at(ui, rect);
+                if let Some(texture) = texture {
+                    egui::Image::new((texture, rect.size()))
+                        .tint(egui::Color32::WHITE)
+                        .paint_at(ui, rect);
+                }
+                // Where the raster's chips landed on screen, recorded from the
+                // origin this frame gave the image — so a scrolled canvas
+                // reports where a chip is rather than where it would be at rest.
+                for (id, drawn) in &doc.model.layout().view_chips {
+                    for chip in drawn {
+                        if let Some(view) = NodeView::from_label(&chip.label) {
+                            chips.push(CanvasChipDrawn {
+                                node: id.clone(),
+                                view,
+                                rect: node_rect(rect.min, &chip.rect),
+                            });
+                        }
+                    }
+                }
 
                 // The keyboard cursor, ringed with the design system's ONE
                 // focus ring — `meridian-egui`'s, the same primitive every
@@ -2699,17 +2958,29 @@ impl Item<ProtocolDoc> for CanvasPane {
                     }
                 }
 
-                // Click → select: hit-test canvas-local coords against the layout.
+                // Click → hit-test canvas-local coords against the layout. A
+                // chip moves the canvas and a card moves the selection, and
+                // which of the two this was is `hit_test`'s to say.
                 if resp.clicked() {
                     if let Some(p) = resp.interact_pointer_pos() {
                         let lx = f64::from(p.x - rect.min.x);
                         let ly = f64::from(p.y - rect.min.y);
-                        if let Some(id) = hit_test(doc.model.layout(), lx, ly) {
-                            doc.model.select_id(id);
-                        }
+                        hit = hit_test(doc.model.layout(), lx, ly);
                     }
                 }
             });
+        doc.canvas_chips = chips;
+        match hit {
+            Some(CanvasHit::Node(id)) => doc.model.select_id(id),
+            // The same channel a view row in the rail reports through, so the
+            // window has one writer of what the canvas holds however the
+            // gesture arrived.
+            Some(CanvasHit::Chip(node, view)) => {
+                doc.view_pick = Some((node, view));
+                cx.request_repaint();
+            }
+            None => {}
+        }
     }
 }
 
@@ -2781,10 +3052,14 @@ impl Item<ProtocolDoc> for InspectorPane {
         // hint band still reads `y yank` and this clause is still drawn while the
         // key goes to the overlay: the same exposure for both, kept deliberately so
         // the two say the same thing. `CanvasHolds::Graph` is the latched form of
-        // the graph-on-canvas condition, mirrored into the document by
-        // `reconcile_canvas_holds` at the head of a draw;
-        // `a_windows_latched_canvas_agrees_with_the_derived_answer` pins the latch
-        // against the derived answer on a manifest window and on a data-file window.
+        // the graph-on-canvas condition. `MeridianApp::draw` reconciles the latch
+        // at the head of a frame and then mirrors it onto this document, and the
+        // mirror is the assignment beside that call rather than anything
+        // `reconcile_canvas_holds` does — that method writes the window's field
+        // and nothing else, and an earlier version of this comment said
+        // otherwise. `a_windows_latched_canvas_agrees_with_the_derived_answer`
+        // pins the latch against the derived answer on a manifest window and on
+        // a data-file window.
         let key_grammar_fed = matches!(doc.canvas_holds, crate::window::CanvasHolds::Graph);
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -3078,14 +3353,50 @@ fn node_rect(origin: egui::Pos2, r: &Rect) -> egui::Rect {
     )
 }
 
-/// The topmost node rect containing `(lx, ly)` (id-descending tie-break).
-fn hit_test(layout: &Layout, lx: f64, ly: f64) -> Option<AssetId> {
+/// What a click on the DAG canvas landed on.
+#[derive(Clone, Debug, PartialEq)]
+enum CanvasHit {
+    /// A node's card — the click selects it.
+    Node(AssetId),
+    /// One of a node's **view chips**, which sits inside that node's card and
+    /// is resolved before it. The click moves the canvas rather than the
+    /// selection.
+    Chip(AssetId, NodeView),
+}
+
+/// Whether `(lx, ly)` is inside `r`.
+fn inside(r: &Rect, lx: f64, ly: f64) -> bool {
+    lx >= r.x && lx <= r.x + r.width && ly >= r.y && ly <= r.y + r.height
+}
+
+/// What the canvas has at `(lx, ly)`, in canvas-local coordinates.
+///
+/// **Chips before cards, and the order is the whole of it.** A chip is drawn
+/// inside the foot of the node it belongs to, so every point on a chip is also
+/// a point on that node — a walk that asked the cards first would answer
+/// `Node` for every chip there is, and the chips would draw perfectly and do
+/// nothing. `clicking_a_view_chip_on_the_graph_puts_that_view_on_the_canvas`
+/// is what holds the order: it clicks the middle of the `grid` chip and reads
+/// the canvas back.
+///
+/// Cards are id-descending, as they were, so the topmost of two overlapping
+/// cards wins.
+fn hit_test(layout: &Layout, lx: f64, ly: f64) -> Option<CanvasHit> {
+    for (id, chips) in &layout.view_chips {
+        for chip in chips {
+            if inside(&chip.rect, lx, ly) {
+                if let Some(view) = NodeView::from_label(&chip.label) {
+                    return Some(CanvasHit::Chip(id.clone(), view));
+                }
+            }
+        }
+    }
     layout
         .positions
         .iter()
         .rev()
-        .find(|(_, r)| lx >= r.x && lx <= r.x + r.width && ly >= r.y && ly <= r.y + r.height)
-        .map(|(id, _)| id.clone())
+        .find(|(_, r)| inside(r, lx, ly))
+        .map(|(id, _)| CanvasHit::Node(id.clone()))
 }
 
 /// A plain-language gloss of an [`AssetKind`] for the inspector subtitle.
