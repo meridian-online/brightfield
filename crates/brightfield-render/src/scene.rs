@@ -806,16 +806,39 @@ fn infer_multi_mark_scales(entries: &[&ChartData<'_>], ink: ChartInk) -> ScaleSe
     // Apply view extent from the first entry (shared navigation).
     if let Some(extent) = entries[0].view_extent {
         if let Some((x_min, x_max)) = extent.x {
-            if let Some(x_scale) = scales.get(Channel::X) {
-                let overridden = override_scale_domain(x_scale, x_min, x_max);
-                scales.insert(Channel::X, overridden);
-            }
+            // A batch with no rows under this extent (a mark queried clean
+            // and drew no rows — the empty-under-navigation fallback in
+            // `brightfield_shell::pipeline::compose_from_results`) infers no
+            // scale: `infer_column_scale` finds no value to read a domain
+            // off, whether the batch is empty by navigation or by
+            // construction. There is no existing scale to override in that
+            // case; the navigated bounds ARE the domain instead, at the
+            // plot's own pixel range — the same domain
+            // `override_scale_domain` would have produced from a real one.
+            let base = scales
+                .get(Channel::X)
+                .cloned()
+                .unwrap_or_else(|| Scale::Linear {
+                    domain_min: x_min,
+                    domain_max: x_max,
+                    range_start: layout.x_range().0,
+                    range_end: layout.x_range().1,
+                });
+            let overridden = override_scale_domain(&base, x_min, x_max);
+            scales.insert(Channel::X, overridden);
         }
         if let Some((y_min, y_max)) = extent.y {
-            if let Some(y_scale) = scales.get(Channel::Y) {
-                let overridden = override_scale_domain(y_scale, y_min, y_max);
-                scales.insert(Channel::Y, overridden);
-            }
+            let base = scales
+                .get(Channel::Y)
+                .cloned()
+                .unwrap_or_else(|| Scale::Linear {
+                    domain_min: y_min,
+                    domain_max: y_max,
+                    range_start: layout.y_range().0,
+                    range_end: layout.y_range().1,
+                });
+            let overridden = override_scale_domain(&base, y_min, y_max);
+            scales.insert(Channel::Y, overridden);
         }
 
         // The override above writes the navigated (x_min, x_max) / (y_min,

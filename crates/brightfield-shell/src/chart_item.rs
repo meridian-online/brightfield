@@ -1534,6 +1534,7 @@ mod tests {
                 mark: 0,
                 channels: vec![(Channel::X, "x".to_string()), (Channel::Y, "y".to_string())],
             }),
+            navigated_empty: false,
         }
     }
 

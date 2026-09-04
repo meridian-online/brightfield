@@ -103,6 +103,18 @@ pub struct PlotHandle {
     /// (a histogram's bars are bins, and there is no row under one), and for
     /// a plot whose positional channels are not both plain columns.
     pub hover: Option<HoverLayer>,
+    /// **This plot's navigated extent has no data beneath it** — its own
+    /// marks queried clean and drew zero rows apiece, and it stayed placed
+    /// (see the empty-under-navigation fallback in `compose_from_results`)
+    /// rather than being dropped. `false` for the overwhelming common case:
+    /// a plot with real marks drawn, whether navigated or not.
+    ///
+    /// The one reader is the map pane's count overlay
+    /// (`crate::window::count_overlay_text`): it says how many points the
+    /// hero draws, and a static per-file total would say something the
+    /// picture beside it does not — this is what tells it to say zero
+    /// instead.
+    pub navigated_empty: bool,
 }
 
 /// **Which of a plot's layers a hover reads, and what that layer encodes.**
@@ -780,8 +792,7 @@ fn compose(
     // A one-shot compose never navigates, so nothing can have declined; read it
     // through the same helper anyway rather than hard-coding the empty answer.
     let beyond = marks_beyond_frame(&session, &spec, results.len());
-    // Read BEFORE `results` is moved into `compose_from_results` below: this
-    // is the last line in this function that still reads `session`.
+    // Read BEFORE `results` is moved into `compose_from_results` below.
     let rows = compute_row_count(&session, &spec);
     Ok(compose_from_results(
         &spec,
@@ -792,6 +803,11 @@ fn compose(
         &mut PlotPins::new(),
         viewport,
         mode,
+        // A one-shot compose passes an empty `ViewExtents::new()` above, so
+        // the empty-under-navigation fallback below has no navigated plot to
+        // act on — passed anyway rather than `None`, so this path is
+        // exercised against a real session shape here, not just the live one.
+        Some(&session),
     )?
     .with_diagnostics(diagnostics)
     .with_row_count(rows))
@@ -1101,6 +1117,7 @@ impl LiveDashboard {
             &mut self.pins,
             self.viewport,
             self.mode,
+            Some(self.coordinator.session()),
         )?
         .with_diagnostics(self.diagnostics.clone())
         .with_row_count(rows);
@@ -1695,6 +1712,12 @@ fn compose_from_results(
     pins: &mut PlotPins,
     viewport: Rect,
     mode: Mode,
+    // The live session, for the one thing this function cannot get from its
+    // other arguments: a mark's real column TYPES when its query drew no
+    // rows to infer them from. `None` for a caller with no session behind it
+    // — every unit test below — which simply leaves the empty-under-navigation
+    // fallback unreachable, same as today.
+    session: Option<&Session>,
 ) -> Result<Composed, String> {
     // One canvas for the whole composition, resolved once here: every plot's
     // scene and the page they are placed on take the same answer, so a plot
@@ -1729,6 +1752,17 @@ fn compose_from_results(
         channel_maps.push(ChannelMap::from_mark(marks[i]));
         kinds.push(marks[i].kind);
     }
+    // Whether ANYTHING in this composition actually drew a row — the gate the
+    // empty-under-navigation fallback below reads before it keeps a plot
+    // placed on nothing. A composition with no real content anywhere (a
+    // single-plot spec panned or zoomed past its own data, say) must still
+    // fail with "no marks rendered successfully" and let the caller roll the
+    // gesture back, exactly as before: `a_settled_gesture_that_drew_nothing_rolls_the_query_store_back`
+    // (`tests/navigation_extent.rs`) is a single plot navigated to empty and
+    // depends on that failure to know to restore the picture it had. It is
+    // only a plot alongside OTHER plots that still drew something for which
+    // staying placed, empty, keeps `plots`/`groups` at one index apiece.
+    let any_real_batch = batches.iter().any(Option::is_some);
 
     let placed = placed_plots(spec, viewport);
     let groups = collect_plot_groups(spec);
@@ -1749,7 +1783,17 @@ fn compose_from_results(
         // describe different ranges.
         let plot_extent = extents.get(&plot.path);
 
+        // Backs `chart_data` in the empty-under-navigation fallback below —
+        // declared here, ahead of `chart_data`, so it outlives the borrows
+        // `chart_data` takes of it (Rust drops locals in reverse declaration
+        // order, and a `ChartData` is exactly as long-lived as the `&Scene`
+        // built from it needs).
+        let mut synthetic_batches: Vec<RecordBatch> = Vec::new();
         let mut chart_data: Vec<ChartData<'_>> = Vec::new();
+        // Set by the empty-under-navigation fallback below, and there alone,
+        // once it has actually populated `chart_data` rather than merely
+        // attempted to — see [`PlotHandle::navigated_empty`].
+        let mut navigated_empty = false;
         let mut plot_marks: Vec<MarkKind> = Vec::new();
         let mut plot_domains = UnsampledDomains::default();
         let mut plot_x_column: Option<String> = None;
@@ -1832,7 +1876,76 @@ fn compose_from_results(
             });
         }
         if chart_data.is_empty() {
-            continue;
+            // A plot whose marks each queried clean and came back with no
+            // rows — no engine refusal touched this group (`mark_faults`
+            // carries no entry for any of its marks) and the plot itself has
+            // a navigated extent in force. That second condition is what
+            // makes this the empty-under-NAVIGATION case rather than an
+            // ordinary empty result: an unnavigated plot with no marks to
+            // draw keeps today's behaviour (dropped below), because there is
+            // no "held frame" for it to stay honest about.
+            let no_faults = !group
+                .mark_indices
+                .iter()
+                .any(|mi| mark_faults.iter().any(|f| f.mark == *mi));
+            if let (true, Some(session)) = (
+                plot_extent.is_some() && no_faults && any_real_batch,
+                session,
+            ) {
+                // Fetch each mark's real column types first, with no
+                // `ChartData` borrowing `synthetic_batches` yet — the second
+                // pass below is what turns them into entries, once this
+                // plot's own marks have a home apiece. A schema miss on any
+                // of them (the source has since vanished, say) abandons the
+                // whole plot rather than drawing one layer's axes and not the
+                // other's, so `chart_data` stays empty and the plot is
+                // dropped exactly as it would be without this fallback.
+                let renderers: Vec<(usize, &(dyn MarkRenderer + Send + Sync))> = group
+                    .mark_indices
+                    .iter()
+                    .filter_map(|&mi| find_renderer(&registry, kinds[mi]).map(|r| (mi, r)))
+                    .collect();
+                if renderers.len() == group.mark_indices.len() {
+                    for &(mi, _) in &renderers {
+                        if let Ok(schema) = session.mark_schema(mi) {
+                            synthetic_batches.push(RecordBatch::new_empty(schema));
+                        }
+                    }
+                    if synthetic_batches.len() == renderers.len() {
+                        for (k, &(mi, renderer)) in renderers.iter().enumerate() {
+                            plot_marks.push(kinds[mi]);
+                            drawn.push(mi);
+                            if plot_x_column.is_none() {
+                                plot_x_column =
+                                    channel_maps[mi].get(Channel::X).map(str::to_string);
+                            }
+                            if plot_y_column.is_none() {
+                                plot_y_column =
+                                    channel_maps[mi].get(Channel::Y).map(str::to_string);
+                            }
+                            chart_data.push(ChartData {
+                                batch: &synthetic_batches[k],
+                                channel_map: &channel_maps[mi],
+                                renderer,
+                                layout: ChartLayout::new(plot.rect.width, plot.rect.height),
+                                view_extent: plot_extent,
+                                highlight: None,
+                                // Zero rows either way, and no sampling
+                                // clause dropped any of them — the frame is
+                                // empty because the reader navigated it there.
+                                sample: None,
+                                beyond_frame: beyond_frame.get(mi).copied().unwrap_or(false),
+                            });
+                        }
+                        navigated_empty = true;
+                    } else {
+                        synthetic_batches.clear();
+                    }
+                }
+            }
+            if chart_data.is_empty() {
+                continue;
+            }
         }
 
         // Axis + plot titles, then grow the margins to reserve their band.
@@ -1960,6 +2073,7 @@ fn compose_from_results(
             y_column: plot_y_column,
             sample: plot_sample,
             hover,
+            navigated_empty,
         });
     }
 
@@ -2458,6 +2572,7 @@ plot:
             &mut PlotPins::new(),
             Rect::zero(),
             Mode::Light,
+            None,
         )
         .expect("compose full");
 
@@ -2474,6 +2589,7 @@ plot:
             &mut PlotPins::new(),
             Rect::zero(),
             Mode::Light,
+            None,
         )
         .expect("compose first");
 
@@ -2497,6 +2613,7 @@ plot:
             &mut PlotPins::new(),
             Rect::zero(),
             Mode::Light,
+            None,
         )
         .expect("compose single");
         assert_eq!(
@@ -2555,6 +2672,7 @@ plot:
             &mut PlotPins::new(),
             Rect::zero(),
             Mode::Light,
+            None,
         )
         .err()
         .expect("must fail loudly");
