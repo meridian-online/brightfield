@@ -1570,9 +1570,11 @@ pub struct MeridianApp {
     /// document each frame, it is the chip the raster draws filled in the
     /// node's foot.
     ///
-    /// `None` on a window whose canvas has never held a view — a Protocol read
-    /// from a manifest — and cleared whenever the reconciliation refuses the
-    /// latch, so it never names a table the documents have stopped holding.
+    /// `None` on a window whose canvas has held no view — a Protocol read from
+    /// a manifest — and cleared where the reconciliation refuses the latch, so
+    /// it does not go on naming a table the documents have stopped holding;
+    /// `opening_a_second_file_over_the_graph_comes_back_to_the_new_tables_dashboard`
+    /// is what holds the clearing.
     graph_reached_from: Option<(AssetId, NodeView)>,
     /// Where focus was before the navigator rail's toggle took it, so pressing
     /// that toggle again puts it back. `None` when the rail does not hold
@@ -2223,9 +2225,9 @@ impl MeridianApp {
     /// **Both documents have just changed** — bring the latch into line with
     /// them here rather than waiting for the head of the next frame.
     ///
-    /// Called by every document swap this window has, and it is not
+    /// Called at each document swap this window has, and it is not
     /// belt-and-braces over [`MeridianApp::draw`]'s own reconciliation. Three
-    /// of those swaps read the latch before any frame is drawn: `open_start`
+    /// of those swaps read the latch before a frame is drawn: `open_start`
     /// records the opened Protocol's name through
     /// [`Self::subject_name`], `open_home` and `open_data_file` re-title
     /// through [`Self::title`], and both of those read
@@ -2237,8 +2239,8 @@ impl MeridianApp {
     ///
     /// The invariant it makes true is worth stating in one line, because
     /// `graph_on_canvas` being a latch rests on it: **the latch is reconciled
-    /// whenever the documents change**, and the head of a frame is one of those
-    /// moments rather than the only one.
+    /// where the documents change**, and the head of a frame is one such moment
+    /// rather than the whole set of them.
     fn documents_changed(&mut self) {
         self.reconcile_canvas_holds();
     }
@@ -4237,10 +4239,10 @@ impl MeridianApp {
         // chip. Off a view it records where the canvas was and takes the graph;
         // off the graph it puts back exactly what it recorded — which is what
         // makes a reader's trip to the map a round trip rather than a
-        // one-way door onto the table's dashboard. On `Chart` it does nothing:
-        // a bare chart has no Protocol behind it and the rail draws no spine to
-        // click, so this arm is unreachable through the UI and is spelled out
-        // rather than swept into a catch-all.
+        // one-way door onto the table's dashboard. The `Chart` arm is
+        // unreachable through the UI — a bare chart has no Protocol behind it
+        // and the rail draws no spine to click — and is spelled out rather than
+        // swept into a catch-all.
         if self.protocol.doc.take_graph_pick() {
             match &self.canvas_holds {
                 CanvasHolds::View { node, view } => {

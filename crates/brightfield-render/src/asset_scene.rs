@@ -600,8 +600,8 @@ fn draw_node(
 /// design tokens, and neither carries a measure of its own.
 ///
 /// `showing` is the word on the chip whose view the canvas returns to. `None`
-/// draws every chip unfilled, which is what a node whose views are all
-/// elsewhere looks like.
+/// leaves each chip a hairline, which is what a node whose views are elsewhere
+/// looks like.
 ///
 /// [`view_chip_rects`]: brightfield_protocol::layout::view_chip_rects
 fn draw_view_chips(scene: &mut Scene, chips: &[ViewChip], showing: Option<&str>, palette: AssetInk) {
@@ -674,8 +674,8 @@ pub fn render_asset_graph(scene: &mut Scene, layout: &Layout, graph: &AssetGraph
 /// `showing` names the node and the word of the **view chip the canvas returns
 /// to**, which draws filled while its siblings draw as hairlines. It is a
 /// parameter rather than a field of the [`Layout`] because it moves on a
-/// click, and the layout is recomputed only when a fold, a drill or a flow
-/// change moves a card.
+/// click, and the layout is recomputed on a fold, a drill or a flow change
+/// rather than on one.
 pub fn render_asset_graph_with_status(
     scene: &mut Scene,
     layout: &Layout,
@@ -1158,12 +1158,13 @@ steps:
     /// **Every coordinate pair the scene's path stream holds**, in canvas
     /// coordinates.
     ///
-    /// `Encoding::path_data` is a flat run of `f32` bits, two words per point,
-    /// and on this version of vello it carries shape geometry and nothing else:
-    /// a glyph is a run in `resources`, not an outline in here, which is what
+    /// `Encoding::path_data` is a flat run of `f32` bits, two words per point.
+    /// On this version of vello it carries shape geometry and nothing else — a
+    /// glyph is a run in `resources`, not an outline in here — which is what
     /// makes a filter on a node's rectangle answer for the boxes drawn there
-    /// rather than for the letters inside them. `a_chip_reads_back_out_of_the_
-    /// scene_as_the_box_it_was_given` is the fixture-free proof of that shape.
+    /// rather than for the letters inside them, and
+    /// `a_chip_reads_back_out_of_the_scene_as_the_box_it_was_given` is what
+    /// holds that.
     fn points(scene: &Scene) -> Vec<(f64, f64)> {
         scene
             .encoding()
@@ -1263,8 +1264,8 @@ steps:
     ///
     /// Read out of the scene rather than off the layout: the layout is the
     /// arithmetic and the scene is what a reader is shown, and a `draw_node`
-    /// that computed the rectangles and painted none of them would satisfy the
-    /// first and none of the second.
+    /// that worked the rectangles out and painted them nowhere would satisfy
+    /// the first while failing the second.
     #[test]
     fn the_table_node_carries_a_chip_per_view() {
         let graph = one_step();
@@ -1356,7 +1357,7 @@ steps:
         assert_eq!(corner_hits(&other, dashboard.0, dashboard.1), 2);
         assert_eq!(corner_hits(&other, grid.0, grid.1), 4);
 
-        // **Nothing is drawn where the file node's chips would be.** The
+        // **The file node's chip row is not on the page.** The
         // rectangles are worked out for it by the same function that placed the
         // table's, so this asks the scene about the exact page a chip row would
         // have covered — not about a band of the card, which on a `File` also
@@ -1391,7 +1392,7 @@ steps:
     /// one lands on the label. Both halves are read out of the scene — the boxes
     /// from the path stream, the label's baseline from the glyph run that drew
     /// it — so a `draw_node` that kept centring the label in the whole card
-    /// fails here even though every rectangle is still where the layout put it.
+    /// fails here with each rectangle still where the layout put it.
     #[test]
     fn the_table_nodes_chips_sit_below_its_label_inside_the_card() {
         let graph = one_step();

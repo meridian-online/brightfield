@@ -840,8 +840,8 @@ impl ProtocolModel {
     /// **The one layout configuration this view lays out through**: the flow,
     /// and the chips the table node carries in its foot.
     ///
-    /// Every call to `brightfield_protocol::layout` in this module goes through
-    /// it, and that is load-bearing rather than tidy. Chips make the node that
+    /// This module's calls to `brightfield_protocol::layout` go through it, and
+    /// that is load-bearing rather than tidy. Chips make the node that
     /// carries them taller and wider, so a layout computed without them places
     /// every card differently — and this view lays out in four places for four
     /// purposes (the canvas raster, the nav's spatial geometry, the boot
@@ -853,7 +853,7 @@ impl ProtocolModel {
     ///
     /// A Protocol with no table names no chips, so its `view_chips` is empty
     /// and `layout` returns exactly what it returned before chips existed —
-    /// which is what leaves every manifest Protocol's cards where they were.
+    /// which is what leaves a manifest Protocol's cards where they were.
     fn layout_config(table: Option<&AssetId>, flow: Flow) -> LayoutConfig {
         let mut view_chips = BTreeMap::new();
         if let Some(table) = table {
@@ -1993,9 +1993,9 @@ pub struct ProtocolDoc {
     ///
     /// Mirrored onto the document beside [`ProtocolDoc::canvas_holds`] and by
     /// the same statement, because the raster needs it and the raster is built
-    /// from this document. `None` where nothing has been left: a manifest
-    /// Protocol whose canvas has always held the graph has no view behind it,
-    /// and every chip in it draws unfilled.
+    /// from this document. `None` on a Protocol that has left no view behind —
+    /// one read from a manifest, whose canvas has held the graph since it
+    /// opened — where the chips in a node's foot draw as hairlines.
     pub returns_to: Option<(AssetId, NodeView)>,
     /// **Where the DAG canvas drew each node's view chips in the last frame**,
     /// in screen coordinates.
@@ -2096,7 +2096,7 @@ pub struct CanvasKey {
     /// leaving the graph for a view and coming back to it changes the fill and
     /// moves no card. The **node** it belongs to is not carried: a document
     /// swap goes through [`ProtocolDoc::open`], which invalidates the slot
-    /// outright, so no key survives the only change that could move it.
+    /// outright, so no key survives a change that could move it.
     showing: Option<NodeView>,
 }
 
@@ -2539,9 +2539,9 @@ fn caption_row(ui: &mut egui::Ui, text: &str, mode: Mode) -> SpineRowDrawn {
 /// Filled while the canvas holds the graph, hairline while it holds a view —
 /// [`chrome::chip`] draws both and this decides which. `live` is separate and
 /// is not a state of the chip: it is whether a click on it can move the canvas
-/// at all. On a Protocol whose canvas can only ever hold the graph — a manifest
-/// Protocol, where `graph_takes_the_canvas` is true over the documents and the
-/// window's reconciliation pins the latch to `Graph` every frame — a click
+/// at all. On a manifest Protocol — where `graph_takes_the_canvas` is true over
+/// the documents and the window's reconciliation pins the latch to `Graph` each
+/// frame, so the canvas has the graph and no second thing to give it to — a click
 /// would be undone before the next frame drew. So the chip senses hover there
 /// rather than pretending, which is the rule `spine_row` follows for a step
 /// row.
@@ -3072,10 +3072,9 @@ impl Item<ProtocolDoc> for InspectorPane {
         // the two say the same thing. `CanvasHolds::Graph` is the latched form of
         // the graph-on-canvas condition. `MeridianApp::draw` reconciles the latch
         // at the head of a frame and then mirrors it onto this document, and the
-        // mirror is the assignment beside that call rather than anything
-        // `reconcile_canvas_holds` does — that method writes the window's field
-        // and nothing else, and an earlier version of this comment said
-        // otherwise. `a_windows_latched_canvas_agrees_with_the_derived_answer`
+        // mirror is the assignment beside that call rather than something
+        // `reconcile_canvas_holds` does — that method writes the window's own
+        // field, and an earlier version of this comment said otherwise. `a_windows_latched_canvas_agrees_with_the_derived_answer`
         // pins the latch against the derived answer on a manifest window and on
         // a data-file window.
         let key_grammar_fed = matches!(doc.canvas_holds, crate::window::CanvasHolds::Graph);
@@ -3390,10 +3389,10 @@ fn inside(r: &Rect, lx: f64, ly: f64) -> bool {
 /// What the canvas has at `(lx, ly)`, in canvas-local coordinates.
 ///
 /// **Chips before cards, and the order is the whole of it.** A chip is drawn
-/// inside the foot of the node it belongs to, so every point on a chip is also
-/// a point on that node — a walk that asked the cards first would answer
-/// `Node` for every chip there is, and the chips would draw perfectly and do
-/// nothing. `clicking_a_view_chip_on_the_graph_puts_that_view_on_the_canvas`
+/// inside the foot of the node it belongs to, so a point on a chip is a point
+/// on that node too, and a walk that asked the cards first would resolve to
+/// `Node` for a click anywhere on a chip — the chips would draw perfectly and
+/// go dead. `clicking_a_view_chip_on_the_graph_puts_that_view_on_the_canvas`
 /// is what holds the order: it clicks the middle of the `grid` chip and reads
 /// the canvas back.
 ///

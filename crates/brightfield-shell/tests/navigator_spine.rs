@@ -117,9 +117,9 @@ impl Live {
         self.run(vec![click_at(at), Vec::new(), Vec::new()]);
     }
 
-    /// The graph chip the head row drew — panics if the head drew none, naming
-    /// what the first row was instead, so a chip dropped off the head fails
-    /// here with a sentence rather than with `unwrap` on a `None`.
+    /// The graph chip the head row drew — panics when the head drew no chip,
+    /// naming what the first row was instead, so a chip dropped off the head
+    /// fails here with a sentence rather than with `unwrap` on a `None`.
     fn chip(&self) -> GraphChipDrawn {
         let rows = self.rows();
         let head = rows.first().unwrap_or_else(|| {
@@ -1509,8 +1509,8 @@ fn the_graph_chip_comes_back_to_the_view_it_left_and_not_to_the_dashboard() {
 /// pointer path: the click goes at the rect the canvas pane recorded, through
 /// the pane's own `Sense::click`, into `hit_test`. A chip that is drawn and not
 /// reachable fails here, and so does a `hit_test` that resolves the node under
-/// the chip first — which it would, because every point on a chip is a point on
-/// its node.
+/// the chip first — which it would, a chip's page being page its node covers
+/// too.
 #[test]
 fn clicking_a_view_chip_on_the_graph_puts_that_view_on_the_canvas() {
     let mut win = Live::open(housing_boot());
@@ -1593,12 +1593,12 @@ fn every_view_reads_back_from_the_word_the_chip_carries() {
 /// **The layout the boot computes is the layout the canvas draws.**
 ///
 /// Chips make the node that carries them taller and wider, so a layout computed
-/// without them places every card somewhere else. This view lays out in four
-/// places for four purposes, and they all go through one private
+/// without them places the cards somewhere else. This view lays out in four
+/// places for four purposes, and they go through one private
 /// `ProtocolModel::layout_config` — which is a claim about a private helper, so
 /// what is asserted here is the consequence: the two `Layout` values a reader
 /// meets first, whole, field for field. A second spelling of the configuration
-/// at either site fails this on `view_chips` and on every position with it.
+/// at either site fails this on `view_chips`, and on the positions with it.
 #[test]
 fn the_boot_layout_is_the_layout_the_canvas_draws() {
     use brightfield_protocol::layout::Flow;
@@ -1627,4 +1627,70 @@ fn the_boot_layout_is_the_layout_the_canvas_draws() {
             "the boot laid the table out without the chips it draws"
         );
     }
+}
+
+/// **Opening a second data file while the canvas holds the GRAPH comes back to
+/// the new table's dashboard**, by the same identity rule a grid comes back by.
+///
+/// The sibling of
+/// `opening_a_second_file_over_a_grid_resets_the_latch_to_the_new_tables_dashboard`,
+/// and it needs its own test because `CanvasHolds::Graph` names no node and so
+/// cannot be compared against the current table the way a `View` is.
+/// `MeridianApp::graph_reached_from` is the record that carries the identity for
+/// it. Take the comparison out — let a latched `Graph` count as held on a
+/// window that has a table — and a second, unrelated file opens onto the first
+/// file's map, with the rail listing a Protocol the canvas is not drawing.
+#[test]
+fn opening_a_second_file_over_the_graph_comes_back_to_the_new_tables_dashboard() {
+    let mut win = Live::open(housing_boot());
+    win.settle();
+    win.click_chip();
+    assert_eq!(
+        win.app.canvas_holds(),
+        &CanvasHolds::Graph,
+        "the fixture: the first file's graph is on the canvas before the \
+         second file opens"
+    );
+
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/point_map_baseline.csv");
+    let ctx = win.ctx.clone();
+    win.app
+        .open_data_file(&ctx, path.to_str().expect("utf-8 fixture path"));
+    win.settle();
+
+    let table = win
+        .app
+        .protocol_model()
+        .table()
+        .cloned()
+        .expect("the second file opened as a one-step Protocol with a table");
+    assert_eq!(
+        win.app.canvas_holds(),
+        &CanvasHolds::View {
+            node: table,
+            view: NodeView::Dashboard,
+        },
+        "the latch still holds the graph after a second, unrelated file opened"
+    );
+    assert!(
+        !win.chip().filled,
+        "…and the chip still says the canvas holds the graph"
+    );
+
+    // …and the round trip is now the new file's. A `graph_reached_from` left
+    // pointing at the first file's table would send this click back to a node
+    // the rail no longer lists.
+    win.click_chip();
+    win.click_chip();
+    assert_eq!(
+        win.app.canvas_holds().view(),
+        Some(NodeView::Dashboard),
+        "the chip's round trip landed somewhere other than the new table's \
+         dashboard"
+    );
+    assert!(
+        win.row("dashboard").on_canvas.is_some(),
+        "…and the bar is not on the new table's dashboard row"
+    );
 }
