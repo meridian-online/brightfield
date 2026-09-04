@@ -2220,6 +2220,29 @@ impl MeridianApp {
         }
     }
 
+    /// **Both documents have just changed** — bring the latch into line with
+    /// them here rather than waiting for the head of the next frame.
+    ///
+    /// Called by every document swap this window has, and it is not
+    /// belt-and-braces over [`MeridianApp::draw`]'s own reconciliation. Three
+    /// of those swaps read the latch before any frame is drawn: `open_start`
+    /// records the opened Protocol's name through
+    /// [`Self::subject_name`], `open_home` and `open_data_file` re-title
+    /// through [`Self::title`], and both of those read
+    /// [`Self::graph_on_canvas`], which is the latch. Without this they answer
+    /// for the documents that were open a moment ago —
+    /// `what_open_start_records_is_what_the_opened_document_says` caught
+    /// exactly that, recording a crosswalk Protocol under the name
+    /// `Brightfield`, and is the pin.
+    ///
+    /// The invariant it makes true is worth stating in one line, because
+    /// `graph_on_canvas` being a latch rests on it: **the latch is reconciled
+    /// whenever the documents change**, and the head of a frame is one of those
+    /// moments rather than the only one.
+    fn documents_changed(&mut self) {
+        self.reconcile_canvas_holds();
+    }
+
     /// The pane the window's chrome is reading from, if any.
     ///
     /// One record for the window, because both documents' panes are drawn in
@@ -4278,6 +4301,7 @@ impl MeridianApp {
         }
         self.open_chart(Composed::empty());
         self.protocol.doc.open(ProtocolInputs::empty());
+        self.documents_changed();
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
         ctx.request_repaint();
     }
@@ -4368,6 +4392,7 @@ impl MeridianApp {
             }
             crate::starts::Opened::Protocol(inputs) => self.protocol.doc.open(*inputs),
         }
+        self.documents_changed();
         self.notifications.dismiss(banner);
         self.layout.live_mut().opened = Some(id.to_string());
         // …and remembered as a Protocol, which is the other half: `opened` is
@@ -4421,6 +4446,7 @@ impl MeridianApp {
         // one file's chart beside another file's Protocol is a state nothing
         // downstream is written for.
         self.protocol.doc.open(boot.protocol);
+        self.documents_changed();
         wire_columns(
             &mut self.charts.doc,
             &self.protocol.doc.model,
