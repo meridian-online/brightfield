@@ -720,6 +720,16 @@ pub enum CanvasHolds {
     /// A third variant rather than a `View` over an empty id, because an empty
     /// asset id is a sentinel a reader of this enum has to know about and is
     /// not told about by the type.
+    ///
+    /// **Kept distinct from `Graph`, not collapsed, though no method on this
+    /// type currently branches on the two separately** — `node`, `view` and
+    /// `shows` each read the pair as one `Graph | Chart` arm. The variant
+    /// still says something `Graph` cannot: this canvas holds no asset graph
+    /// at all, as opposed to holding one and showing it. A caller asking "is
+    /// this the DAG raster" would otherwise have to re-derive
+    /// `graph_takes_the_canvas` itself rather than read the latch that
+    /// already answered it — the same re-derivation this whole latch exists
+    /// to avoid for `View`.
     Chart,
 }
 
@@ -754,13 +764,15 @@ impl CanvasHolds {
     /// The node whose view the canvas holds, when one is on it.
     ///
     /// The fallback subject for a verb that needs one and finds no explicit
-    /// selection — `y` is the first: a fresh data-file open selects nothing
-    /// (the boot cursor is deliberately unwashed, see `ProtocolModel::new`),
-    /// but the canvas is never actually blank, and yanking the address of
-    /// whatever is on screen is the reading a reader gives that keystroke
-    /// with nothing highlighted. `None` on `Graph` and `Chart`: the graph
-    /// names no one node, and a bare chart has no Protocol asset behind it to
-    /// name at all.
+    /// selection — `y` is the first: a fresh data-file open selects no asset
+    /// (the boot cursor is deliberately unwashed, see `ProtocolModel::new`,
+    /// held by
+    /// `a_fresh_open_holds_the_dashboard_and_marks_the_row_that_says_so`),
+    /// but the canvas already shows the table's dashboard, and yanking the
+    /// address of what is on screen is the reading a reader gives that
+    /// keystroke with no row highlighted. `None` on `Graph` and `Chart`: the
+    /// graph names no one node, and a bare chart has no Protocol asset
+    /// behind it to name.
     #[must_use]
     pub const fn node(&self) -> Option<&AssetId> {
         match self {

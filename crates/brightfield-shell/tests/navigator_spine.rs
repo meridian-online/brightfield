@@ -130,10 +130,10 @@ fn click_at(pos: egui::Pos2) -> Vec<egui::Event> {
     events
 }
 
-/// Every text galley the frame painted, with the rect it landed in and the
-/// font its first (and, for every galley built here from `layout_no_wrap` or
+/// The text galleys the frame painted, with the rect each landed in and the
+/// font its first (and, for a galley built here from `layout_no_wrap` or
 /// `painter.text`, only) section was set in — the face a caller reads to
-/// catch a label drawn in the wrong one, which a rect alone cannot.
+/// catch a label drawn in the wrong one, which a rect alone does not show.
 ///
 /// Recursive, because a pane's chrome nests its shapes: a `Shape::Vec` holding
 /// a fill and a stroke is one row's wash, and the galley under it is a level
@@ -498,11 +498,14 @@ fn a_fresh_open_holds_the_dashboard_and_marks_the_row_that_says_so() {
 /// `Operator` (the Protocol's) and `Inspector` (the chart's), sharing
 /// `INSPECTOR_PANES` behind one selector — and a fresh data-file open leaves
 /// the chart's own tab active, but a reader can switch. `has_selection` and
-/// `inspector` both fall back to the node the canvas holds when nothing is
-/// explicitly picked, so switching to Operator there answers for the table
-/// rather than for nothing, and the "press y to copy it" copy sits beside a
-/// real address. Before that fallback existed, this tab read `Nothing
-/// selected` no matter which row was on the canvas.
+/// `inspector` both fall back to the node the canvas holds when no asset is
+/// explicitly picked, held by
+/// `switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table`
+/// (this test) — so switching to Operator there answers for the table
+/// rather than for an empty state, and the
+/// "press y to copy it" copy sits beside a real address. Before that
+/// fallback existed, this tab read `Nothing selected` regardless of which
+/// row the bar was on.
 #[test]
 fn switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table() {
     let mut win = Live::open(housing_boot());
@@ -609,11 +612,10 @@ fn clicking_a_view_row_moves_the_canvas_and_the_bar_with_it() {
     // **The grid actually drew the table, not just a correctly headed empty
     // pane.** The header band names the table whether or not
     // `draw_chart_body` is ever called under it — the two are painted by two
-    // different calls, and nothing above this line would notice the second
-    // one deleted. `california_housing_sample.csv`'s first row has a
-    // `population` of 3244, a value distinctive enough that its presence
-    // means the engine's own session, not a fixture string, put it on
-    // screen.
+    // different calls, and the assertions above this line pass either way.
+    // `california_housing_sample.csv`'s first row has a `population` of
+    // 3244, a value distinctive enough that its presence means the engine's
+    // own session, not a fixture string, put it on screen.
     let in_body: Vec<String> = texts(&shapes)
         .into_iter()
         .filter(|(_, rect, _)| body.contains_rect(*rect))
@@ -658,12 +660,14 @@ fn clicking_a_view_row_moves_the_canvas_and_the_bar_with_it() {
 /// grid resets the latch to the new table's dashboard — by identity, not by
 /// "a View is already latched."**
 ///
-/// `MeridianApp::reconcile_canvas_holds` keeps a latched `View` only when its
-/// node still names the CURRENT table (`*node == table`); drop that
-/// comparison for "any View counts as held" and this stays green with the
-/// bar sitting on the first table's `grid` row after a second, unrelated file
-/// has opened — exactly the state a reader would see the canvas keep showing
-/// a table that is no longer the one behind the rail.
+/// `MeridianApp::reconcile_canvas_holds` keeps a latched `View` when, and
+/// just when, its node still names the CURRENT table (`*node == table`) —
+/// held by
+/// `opening_a_second_file_over_a_grid_resets_the_latch_to_the_new_tables_dashboard`
+/// (this test). Drop that comparison for "any View counts as held" and it
+/// stays green with the bar sitting on the first table's `grid` row after a
+/// second, unrelated file has opened — the state a reader would see as the
+/// canvas showing a table that is no longer the one behind the rail.
 #[test]
 fn opening_a_second_file_over_a_grid_resets_the_latch_to_the_new_tables_dashboard() {
     let mut win = Live::open(housing_boot());
@@ -895,10 +899,11 @@ fn the_spines_measurements_hold_at_both_windows() {
                 );
                 // The face, not just the place. A column row keeps the
                 // outline's own `ui_font()` — that pre-dates this contract and
-                // is not what it governs — but every spine row's kind (the
+                // is not what it governs — but a spine row's kind (the
                 // step's or the asset's, at the trailing end) is the mono
-                // caption face in `text.muted`, so a run state reads as a
-                // value rather than as prose beside it.
+                // caption face in `text.muted`, held below for each row this
+                // loop reaches, so a run state reads as a value rather than
+                // as prose beside it.
                 if row.role != SpineRole::Column {
                     let drawn = painted
                         .iter()

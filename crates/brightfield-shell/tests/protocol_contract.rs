@@ -115,8 +115,8 @@ fn no_pane_is_empty_over_a_real_protocol() {
 /// Built with `ProtocolDoc::headless` directly rather than through a window,
 /// so `canvas_holds` stays at its unreconciled default (`Graph`) instead of
 /// the `View` a real housing-fixture window latches before its first frame —
-/// the one construction that leaves this pane's own fallback with nothing to
-/// fall back to, and so the one that still reaches this text at all. A real
+/// the one construction that leaves this pane's own fallback with no node to
+/// fall back to, and so the construction that still reaches this text. A real
 /// window over this same fixture never sees it: `navigator_spine.rs`'s
 /// `switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table` is
 /// the pin that a live window's fallback keeps this pane out of its empty

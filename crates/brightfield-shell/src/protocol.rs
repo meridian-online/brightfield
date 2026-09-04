@@ -1014,10 +1014,12 @@ impl ProtocolModel {
     ///
     /// `canvas_node` is [`crate::window::CanvasHolds::node`], the caller's to
     /// pass because the latch lives one level up (see
-    /// [`ProtocolDoc::canvas_holds`]). A fresh data-file open selects nothing
-    /// — [`ProtocolModel::new`] — but its canvas already holds a view of the
-    /// table it read, so the Operator pane has a subject to describe and
-    /// `y` has an address to yank even though nothing is washed in the rail.
+    /// [`ProtocolDoc::canvas_holds`]). A fresh data-file open selects no
+    /// asset — [`ProtocolModel::new`], held by
+    /// `a_fresh_open_holds_the_dashboard_and_marks_the_row_that_says_so` —
+    /// but its canvas already holds a view of the table it read, so the
+    /// Operator pane has a subject to describe and `y` has an address to
+    /// yank even with no row washed in the rail.
     #[must_use]
     pub fn has_selection(&self, canvas_node: Option<&AssetId>) -> bool {
         self.selected
@@ -1322,13 +1324,16 @@ impl ProtocolModel {
     /// The outline's caption: how many columns stand beneath it.
     ///
     /// **It does not name the table, and that is a measurement rather than a
-    /// preference.** `OUTLINE · california_housing_sample · 9 columns` is 47
-    /// characters; the mono caption face gives this pane about 30 inside a rail
-    /// at its declared 240 points. Drawn with the table in it, the caption
-    /// clipped mid-word and the count — the half a reader cannot get anywhere
-    /// else — was the half that ran off the edge. The table's own name is on
-    /// its own row three lines above, in full and unclipped, so the clause that
-    /// did not fit is also the only one that was already said.
+    /// preference.** `OUTLINE · california_housing_sample · 9 columns` does
+    /// not fit the mono caption face inside this pane's declared 240-point
+    /// rail — `the_spines_measurements_hold_at_both_windows` holds each
+    /// caption's galley rect inside the pane at two window sizes, so a
+    /// caption too wide fails there rather than being cropped quietly by the
+    /// clip rect, which is what naming the table did on its first render:
+    /// the caption clipped mid-word and took the count — the half a reader
+    /// cannot get anywhere else — off the edge with it. The table's own name
+    /// is on its own row three lines above, in full and unclipped, so the
+    /// clause that did not fit is also the only one that was already said.
     ///
     /// What is left has the shape [`ProtocolModel::spine_caption`] has, which
     /// is the other reason to prefer it: two captions in one grammar, both
@@ -1402,10 +1407,13 @@ impl ProtocolModel {
     }
 
     /// The inspector facts for the current selection, or for `canvas_node`
-    /// when nothing is explicitly selected — see [`ProtocolModel::has_selection`],
-    /// which this agrees with: the two are read together in
-    /// [`InspectorPane::empty_state`] and its `ui`, off the same subject, so
-    /// the pane cannot promise a field it then has nothing to show.
+    /// when no asset is explicitly selected — see
+    /// [`ProtocolModel::has_selection`], which this agrees with: the two are
+    /// read together in [`InspectorPane::empty_state`] and its `ui`, off the
+    /// same subject, so the pane cannot promise a field it then has no
+    /// content for —
+    /// `switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table`
+    /// reads both off one frame.
     #[must_use]
     pub fn inspector(&self, canvas_node: Option<&AssetId>) -> InspectorFacts {
         inspector_for(
@@ -1794,11 +1802,12 @@ impl ProtocolModel {
     /// performs the actual clipboard write) and flash a confirmation.
     ///
     /// **A verb that needs a subject.** `self.selected` is `None` on a fresh
-    /// data-file open by design — [`ProtocolModel::new`] — but the canvas is
-    /// never blank there: it already holds a view of the table the file
-    /// became. `canvas_node` is that fallback, so `y` copies the address of
-    /// what is on screen rather than refusing for want of an explicit click,
-    /// which is what it did before this fell back to anything.
+    /// data-file open by design — [`ProtocolModel::new`] — but the canvas
+    /// already holds a view of the table the file became, held by
+    /// `yanking_a_fresh_open_falls_back_to_the_tables_address`. `canvas_node`
+    /// is that fallback, so `y` copies the address of what is on screen
+    /// rather than refusing for want of an explicit click, which is what it
+    /// did before this fallback existed.
     fn yank(&mut self, canvas_node: Option<&AssetId>) -> bool {
         if let Some(id) = self.selected.clone().or_else(|| canvas_node.cloned()) {
             self.yank_request = Some(id.clone());
