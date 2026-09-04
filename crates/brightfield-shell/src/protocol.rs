@@ -1018,8 +1018,12 @@ impl ProtocolModel {
     /// asset — [`ProtocolModel::new`], held by
     /// `a_fresh_open_holds_the_dashboard_and_marks_the_row_that_says_so` —
     /// but its canvas already holds a view of the table it read, so the
-    /// Operator pane has a subject to describe and `y` has an address to
-    /// yank even with no row washed in the rail.
+    /// Operator pane has a subject to describe and its Address field an id to
+    /// show even with no row washed in the rail. That id is `yank`'s
+    /// fallback too, for the frames where the `y` keystroke reaches it. A
+    /// data-file window is not one of those frames today, which is why the
+    /// pane's own copy names the keystroke on a window where it is fed and
+    /// leaves the clause out where it is not.
     #[must_use]
     pub fn has_selection(&self, canvas_node: Option<&AssetId>) -> bool {
         self.selected
@@ -1810,9 +1814,13 @@ impl ProtocolModel {
     /// data-file open by design — [`ProtocolModel::new`] — but the canvas
     /// already holds a view of the table the file became, held by
     /// `yanking_a_fresh_open_falls_back_to_the_tables_address`. `canvas_node`
-    /// is that fallback, so `y` copies the address of what is on screen
-    /// rather than refusing for want of an explicit click, which is what it
-    /// did before this fallback existed.
+    /// is that fallback, so a caller that reaches this method with no
+    /// explicit selection still gets the address of what is on screen rather
+    /// than a refusal. **This method does not decide when `y` reaches it.**
+    /// [`ProtocolModel::feed_events`] runs while the graph is the thing on
+    /// the canvas. A data-file window does not feed this keystroke to the
+    /// model today, so the fallback above answers for a caller that does
+    /// reach this method rather than promising that every window's `y` does.
     fn yank(&mut self, canvas_node: Option<&AssetId>) -> bool {
         if let Some(id) = self.selected.clone().or_else(|| canvas_node.cloned()) {
             self.yank_request = Some(id.clone());
@@ -2767,9 +2775,17 @@ impl Item<ProtocolDoc> for InspectorPane {
     fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
         let facts = doc.model.inspector(doc.canvas_holds.node());
         let mode = cx.mode;
+        // The hint band draws while the graph is on the canvas, and that is
+        // exactly when `y` reaches the model too — both read
+        // `crate::window::MeridianApp::graph_on_canvas`. `CanvasHolds::Graph`
+        // is the same condition, reconciled from it every frame by
+        // `crate::window::MeridianApp::reconcile_canvas_holds`, so this pane
+        // asks its own document instead of reaching back up to the window
+        // for it.
+        let key_grammar_fed = matches!(doc.canvas_holds, crate::window::CanvasHolds::Graph);
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
-            .show(ui, |ui| inspector_body(ui, &facts, mode));
+            .show(ui, |ui| inspector_body(ui, &facts, mode, key_grammar_fed));
     }
 }
 
@@ -2778,7 +2794,13 @@ impl Item<ProtocolDoc> for InspectorPane {
 /// The asset's label used to be a `heading()` here — a second type size inside
 /// a pane whose header band is already its name. It is the pane's content now,
 /// at the one UI size, in primary ink.
-fn inspector_body(ui: &mut egui::Ui, facts: &InspectorFacts, mode: Mode) {
+///
+/// `key_grammar_fed` is whether this window feeds the Protocol key grammar
+/// this frame — see [`InspectorPane::ui`]. The Address field's explainer
+/// names `y` when it is fed, and drops the clause when it is not: this pane
+/// draws on a data-file window too, where no keystroke reaches the model,
+/// and a hint for a key that does nothing is worse than no hint.
+fn inspector_body(ui: &mut egui::Ui, facts: &InspectorFacts, mode: Mode, key_grammar_fed: bool) {
     let sem = semantic(mode.is_dark());
     ui.label(
         egui::RichText::new(&facts.label)
@@ -2796,7 +2818,11 @@ fn inspector_body(ui: &mut egui::Ui, facts: &InspectorFacts, mode: Mode) {
         mode,
         "Address",
         &facts.address,
-        "Stable dotted id for this asset — press y to copy it.",
+        if key_grammar_fed {
+            "Stable dotted id for this asset — press y to copy it."
+        } else {
+            "Stable dotted id for this asset."
+        },
         true,
     );
 

@@ -502,11 +502,17 @@ fn a_fresh_open_holds_the_dashboard_and_marks_the_row_that_says_so() {
 /// `inspector` both fall back to the node the canvas holds when no asset is
 /// explicitly picked, held by
 /// `switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table`
-/// (this test) — so switching to Operator there answers for the table
-/// rather than for an empty state, and the
-/// "press y to copy it" copy sits beside a real address. Before that
-/// fallback existed, this tab read `Nothing selected` regardless of which
-/// row the bar was on.
+/// (this test) — so switching to Operator there answers for the table rather
+/// than for an empty state. Before that fallback existed, this tab read
+/// `Nothing selected` regardless of which row the bar was on.
+///
+/// The Address field's own explainer is a separate claim from the fallback
+/// above, and this test holds it too. A data-file window does not feed the
+/// `y` keystroke to the model — `MeridianApp::draw` gates that on the graph
+/// being on the canvas, which it is not here — so the drawn copy names no
+/// keystroke. A round that widened this pane's reach on a fresh open once
+/// left the old "press y to copy it" clause on a window where `y` does
+/// nothing.
 #[test]
 fn switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table() {
     let mut win = Live::open(housing_boot());
@@ -532,6 +538,12 @@ fn switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table() {
         "the Operator pane drew no Address field for the table the canvas \
          holds: {drawn:?}"
     );
+    assert!(
+        !drawn.iter().any(|t| t.contains("press y")),
+        "the Address field names a keystroke on a window whose grammar is \
+         not fed — a data-file window never feeds `y` to the model, so \
+         pressing it here does nothing the copy just promised: {drawn:?}"
+    );
     let table = win
         .app
         .protocol_model()
@@ -542,6 +554,63 @@ fn switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table() {
         drawn.iter().any(|t| t == &table),
         "the Operator pane's Address field does not name the table the \
          canvas holds ({table}): {drawn:?}"
+    );
+}
+
+/// **A selected node on a manifest window draws the `y` hint, because that
+/// window is the one where the grammar reaches the model.**
+///
+/// The companion to `switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table`'s
+/// negative: gating the Address field's explainer on
+/// `CanvasHolds::Graph` has to still show the clause where it is true, or
+/// the fix would have swapped one wrong answer for the opposite wrong
+/// answer. `MeridianApp::draw` feeds `y` to the model only while the graph
+/// is on the canvas, and a manifest opened with no chart beside it keeps the
+/// graph there for its whole life — `a_windows_latched_canvas_agrees_with_the_derived_answer`
+/// holds that latch. Selecting an asset row and switching to Operator here
+/// is the frame the keystroke actually reaches.
+#[test]
+fn a_selected_node_on_a_manifest_window_draws_the_yank_hint() {
+    let spec = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/protocol/edgar_gleif/arcform.yaml");
+    let inputs = brightfield_shell::protocol::load_protocol_offline(
+        spec.to_str().expect("utf-8 fixture path"),
+    )
+    .unwrap_or_else(|e| panic!("load {}: {e}", spec.display()));
+    let mut win = Live::open(Boot::protocol(
+        inputs,
+        brightfield_protocol::layout::Flow::Vertical,
+        None,
+    ));
+    win.settle();
+    assert_eq!(
+        win.app.canvas_holds(),
+        &CanvasHolds::Graph,
+        "this test relies on the graph being on the canvas, which is what \
+         feeds `y` to the model"
+    );
+
+    let asset_row = win
+        .rows()
+        .into_iter()
+        .find(|row| row.role == SpineRole::Asset)
+        .expect("a manifest with steps draws at least one asset row");
+    win.click_row(&asset_row.label);
+
+    let shapes = win.shapes();
+    let operator = texts(&shapes)
+        .into_iter()
+        .find(|(text, _, _)| text == "Operator")
+        .map(|(_, rect, _)| rect)
+        .expect("the inspector rail's strip offers an Operator tab");
+    win.run(vec![click_at(operator.center()), Vec::new(), Vec::new()]);
+
+    let shapes = win.shapes();
+    let drawn: Vec<String> = texts(&shapes).into_iter().map(|(t, _, _)| t).collect();
+    assert!(
+        drawn.iter().any(|t| t.contains("press y to copy it")),
+        "a selected node on a window whose grammar IS fed dropped the \
+         keystroke hint it should carry: {drawn:?}"
     );
 }
 
