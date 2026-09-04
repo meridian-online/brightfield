@@ -512,7 +512,7 @@ impl ChartItem {
                             .gesture
                             .as_ref()
                             .filter(|g| gesture_for(g.kind) == GestureClass::Interval)
-                            .and_then(|_| handle.committed_rect)
+                            .and(handle.committed_rect)
                             .filter(|r| surface_rect_contains(*r, p))
                             .map(surface_rect_corners);
                         self.drag = Some(Drag {
@@ -1754,6 +1754,7 @@ mod tests {
             start: kurbo::Point::new(40.0, 40.0),
             current: kurbo::Point::new(41.0, 41.0),
             by: 0.0,
+            move_from: None,
         };
         let binding = interval.gesture.clone().expect("bound");
         assert!(matches!(
@@ -1767,6 +1768,7 @@ mod tests {
             start: kurbo::Point::new(10.0, 10.0),
             current: kurbo::Point::new(90.0, 90.0),
             by: 0.0,
+            move_from: None,
         };
         let binding = point.gesture.clone().expect("bound");
         assert_eq!(resolve_gesture(&binding, &point, sweep), None);
