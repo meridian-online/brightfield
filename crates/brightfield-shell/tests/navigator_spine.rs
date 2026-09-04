@@ -264,12 +264,13 @@ fn the_spine_lists_the_file_the_step_that_read_it_and_the_table_it_made() {
         ),
         (SpineRole::View, "dashboard", "view", 1, SpineMarker::None),
         (SpineRole::View, "grid", "view", 1, SpineMarker::None),
-        // Two ends, not one string: at 240 points the whole caption does not
-        // fit, and as one string it is the count that goes off the edge.
+        // No table clause: at 240 points the caption that named it clipped
+        // mid-word and took the count off the edge with it, and the table's own
+        // name is three rows above in full.
         (
             SpineRole::Caption,
-            "OUTLINE   \u{b7}   california_housing_sample",
-            "9 columns",
+            "OUTLINE   \u{b7}   9 columns",
+            "",
             0,
             SpineMarker::None,
         ),
@@ -699,35 +700,29 @@ fn the_spines_measurements_hold_at_both_windows() {
             }
         }
 
-        // The count the outline's caption exists to carry is on screen — the
-        // whole reason that caption is drawn as two ends rather than as one
-        // string. Read against the pane's own box, so a caption painted past
-        // the rail fails here rather than being cropped quietly by the clip
-        // rect.
-        let outline = rows
-            .iter()
-            .filter(|row| row.role == SpineRole::Caption)
-            .nth(1)
-            .expect("the outline's caption is drawn");
-        let count = outline
-            .kind_rect
-            .expect("the outline's caption carries its count at the trailing end");
-        assert_eq!(outline.kind, "9 columns");
-        assert!(
-            body.contains_rect(count),
-            "at {size:?} the outline's count drew at {count:?}, which is not \
-             inside the pane {body:?}"
-        );
+        // **Both captions fit the rail.** The rect is the galley's own whether
+        // the clip cut it or not, so a caption too wide for the pane fails here
+        // rather than being cropped quietly and shipped half-read — which is
+        // what the caption naming the table did on its first render.
+        for caption in rows.iter().filter(|row| row.role == SpineRole::Caption) {
+            assert!(
+                body.contains_rect(caption.name_rect),
+                "at {size:?} the caption {:?} drew at {:?}, which is not inside \
+                 the pane {body:?} — it is being cut by the clip rect",
+                caption.label,
+                caption.name_rect
+            );
+        }
 
         let table = win.row("california_housing_sample");
         for view in NodeView::ALL {
             let row = win.row(view.label());
             assert!(
-                (row.name_left - table.name_left - spacing::SPACE_5).abs() < 0.01,
+                (row.name_rect.left() - table.name_rect.left() - spacing::SPACE_5).abs() < 0.01,
                 "at {size:?} the {} row's name starts {} past the node's, not \
                  SPACE_5",
                 view.label(),
-                row.name_left - table.name_left
+                row.name_rect.left() - table.name_rect.left()
             );
         }
 
@@ -880,9 +875,8 @@ fn a_manifest_of_many_steps_puts_each_step_above_the_asset_it_produced() {
         .nth(1)
         .expect("the outline's caption is drawn too");
     assert_eq!(
-        (outline.label.as_str(), outline.kind.as_str()),
-        ("OUTLINE", "0 columns"),
-        "a manifest names no table and has no columns, and says so"
+        outline.label, "OUTLINE   \u{b7}   0 columns",
+        "a manifest profiles no table and has no columns, and says so"
     );
     assert!(
         rows.iter().all(|row| row.role != SpineRole::Column),
