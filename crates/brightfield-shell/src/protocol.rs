@@ -1211,7 +1211,14 @@ impl ProtocolModel {
         let mut rows = Vec::with_capacity(assets.len() * 2);
         for row in assets {
             let node = graph.nodes.get(&row.id);
-            let step = node.and_then(|n| n.step.as_ref());
+            // **`step` means "produced by" for every kind but `Source`.** On a
+            // source node it names the step that FETCHES FROM that host —
+            // `build_graph` hangs the fetch's own name on the URL it reads — so
+            // a step row above a source would draw the lineage backwards: the
+            // step is downstream of the host, not upstream of it.
+            let step = node
+                .and_then(|n| n.step.as_ref())
+                .filter(|_| row.kind != AssetKind::Source);
             if let Some(step) = step {
                 rows.push(SpineRow {
                     label: step.clone(),
@@ -1232,11 +1239,25 @@ impl ProtocolModel {
                     view: None,
                 });
             }
-            let exists = step.is_none()
-                || self
-                    .assets
-                    .get(&row.id)
-                    .is_some_and(|meta| meta.materialized);
+            let exists = match row.kind {
+                // A family tile stands for the assets a collapse absorbed. It
+                // is not one of them and nothing materialises it, so it is
+                // never a thing that is there.
+                AssetKind::Family => false,
+                // A host the run reads from: an external input, and the
+                // Protocol has it before the first step runs.
+                AssetKind::Source => true,
+                // Everything else exists when nothing in this Protocol
+                // produces it — an input off disk — or when a run recorded it
+                // materialised.
+                _ => {
+                    step.is_none()
+                        || self
+                            .assets
+                            .get(&row.id)
+                            .is_some_and(|meta| meta.materialized)
+                }
+            };
             let is_table = self.table.as_ref() == Some(&row.id);
             rows.push(SpineRow {
                 label: row.label,

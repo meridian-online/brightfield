@@ -756,3 +756,124 @@ fn the_navigator_rails_strip_names_the_pane_protocol() {
         "the navigator rail's strip names the pane it draws"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The other Protocols: a manifest of many steps gets the same spine
+// ---------------------------------------------------------------------------
+
+/// A window over the shipped crosswalk manifest — twelve steps, no profiled
+/// table, and the graph on the canvas.
+fn crosswalk() -> Live {
+    let spec = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/protocol/edgar_gleif/arcform.yaml");
+    let inputs = brightfield_shell::protocol::load_protocol_offline(
+        spec.to_str().expect("utf-8 fixture path"),
+    )
+    .unwrap_or_else(|e| panic!("load {}: {e}", spec.display()));
+    Live::open(Boot::protocol(
+        inputs,
+        brightfield_protocol::layout::Flow::Vertical,
+        None,
+    ))
+}
+
+/// **A Protocol of many steps gets the same spine.** Every step row stands
+/// above the asset it produces; the hosts the run reads from stand alone and
+/// filled; both captions are drawn and the outline names no table.
+///
+/// The step-above-its-asset rule is the one worth having a test for. It reads
+/// as an ordering claim and it is a **lineage** claim: `AssetNode::step` means
+/// *produced by* on every kind but `Source`, where it names the step that
+/// fetches from that host. Taking it at face value drew `fetch_edgar` above
+/// `openlake.meridian.online` — a row saying the fetch made the website.
+#[test]
+fn a_manifest_of_many_steps_puts_each_step_above_the_asset_it_produced() {
+    let mut win = crosswalk();
+    win.settle();
+    let rows = win.rows();
+
+    let first = rows.first().expect("a caption leads the pane");
+    assert_eq!(
+        first.label, "SPINE   \u{b7}   12 steps",
+        "the spine's caption counts the steps it lists"
+    );
+    let steps: std::collections::BTreeSet<&str> = rows
+        .iter()
+        .filter(|row| row.role == SpineRole::Step)
+        .map(|row| row.label.as_str())
+        .collect();
+    assert_eq!(
+        steps.len(),
+        12,
+        "the caption says twelve and the rail drew {} distinct steps: {steps:?}",
+        steps.len()
+    );
+
+    for pair in rows.windows(2) {
+        if pair[0].role == SpineRole::Step {
+            assert_eq!(
+                pair[1].role,
+                SpineRole::Asset,
+                "the step {:?} stands above {:?}, which is not an asset — a \
+                 step row is a claim that this asset came through this step",
+                pair[0].label,
+                pair[1].label
+            );
+        }
+    }
+
+    let hosts: Vec<&SpineRowDrawn> = rows.iter().filter(|row| row.kind == "source").collect();
+    assert!(
+        !hosts.is_empty(),
+        "the crosswalk reads from hosts; the rail listed none"
+    );
+    for host in &hosts {
+        assert_eq!(
+            host.marker,
+            SpineMarker::Filled,
+            "{:?} is a host the run reads from — an external input the \
+             Protocol has before it starts",
+            host.label
+        );
+    }
+    let above: Vec<&str> = rows
+        .windows(2)
+        .filter(|pair| pair[1].kind == "source" && pair[0].role == SpineRole::Step)
+        .map(|pair| pair[0].label.as_str())
+        .collect();
+    assert!(
+        above.is_empty(),
+        "{above:?} were drawn above a host, which says a fetch produced the \
+         website it reads from"
+    );
+
+    assert!(
+        rows.iter().all(|row| row.role != SpineRole::View),
+        "a manifest declares relations and profiles no table, so it has no \
+         views to list"
+    );
+    let outline = rows
+        .iter()
+        .filter(|row| row.role == SpineRole::Caption)
+        .nth(1)
+        .expect("the outline's caption is drawn too");
+    assert_eq!(
+        outline.label, "OUTLINE   \u{b7}   0 columns",
+        "a manifest names no table and has no columns, and says so"
+    );
+    assert!(
+        rows.iter().all(|row| row.role != SpineRole::Column),
+        "…and lists none"
+    );
+
+    assert!(
+        rows.iter().all(|row| row.on_canvas.is_none()),
+        "the graph is on this canvas and the graph is not a row of the spine"
+    );
+    let washed = rows.iter().filter(|row| row.washed).count();
+    assert_eq!(
+        washed, 1,
+        "a manifest-opened Protocol keeps its boot selection — one row washed, \
+         not {washed}"
+    );
+}
