@@ -2498,6 +2498,28 @@ impl MeridianApp {
         &self.canvas_panes
     }
 
+    /// **The rows the navigator rail's Protocol pane drew in the last frame**,
+    /// in draw order — the captions, the spine and the columns.
+    ///
+    /// Empty on a frame the pane drew its empty state, and on a frame the front
+    /// door replaced the rails. Read off the frame rather than re-derived, for
+    /// the reason [`Self::region_rect`] is: a test that asked
+    /// [`crate::protocol::ProtocolModel::spine`] again would be comparing the
+    /// derivation with itself and would stay green through a pane that drew
+    /// none of it.
+    #[must_use]
+    pub fn spine_rows(&self) -> &[crate::protocol::SpineRowDrawn] {
+        &self.protocol.doc.spine_drawn
+    }
+
+    /// The content box the Protocol pane was handed by the last frame this
+    /// window drew, or `None` if it has not drawn one — what the first caption
+    /// row's clearance is measured from.
+    #[must_use]
+    pub const fn spine_body(&self) -> Option<egui::Rect> {
+        self.protocol.doc.spine_body
+    }
+
     /// Which of the canvas's projections is showing — an index into the
     /// declared projections.
     #[must_use]
