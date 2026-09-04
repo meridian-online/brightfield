@@ -123,6 +123,15 @@ jobs:
       #         diffs against the committed assets/starts/*.png, so the
       #         gallery cannot show a picture of something the click no longer
       #         opens.
+      #     every_remote_start_still_renders_and_its_dark_thumbnail_is_current
+      #       - the same gate over the dark thumbnail, which is a second,
+      #         independently rendered and committed PNG rather than the light
+      #         one recoloured — so it needs its own render-and-diff pass, and
+      #         its own place in the floor below. Absent from this list until
+      #         the floor here still read 1 with both tests compiling and
+      #         passing: a `front_door` floor of 1 stayed green whether this
+      #         test ran, was deleted, or was renamed, which is exactly the
+      #         silent-omission failure the guard below exists to catch.
       #
       #   crates/brightfield-shell/tests/crosswalk_chart.rs
       #     the_published_crosswalk_is_still_past_the_drawn_primitive_ceiling
@@ -170,13 +179,13 @@ jobs:
 
           # label | cargo target selector | how many ignored tests must run
           targets=(
-            "front_door|-p brightfield-shell --test front_door|1"
+            "front_door|-p brightfield-shell --test front_door|2"
             "crosswalk_chart|-p brightfield-shell --test crosswalk_chart|2"
             "engine_httpfs|-p brightfield-engine --lib|2"
           )
           # The sum of the floors above, stated once as a number so a reader
           # and the log both see what this job expects to have executed.
-          expected_total=5
+          expected_total=6
 
           failed=0
           total=0

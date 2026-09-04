@@ -78,7 +78,7 @@ fn the_empty_document_has_nothing_in_it() {
     let doc = ProtocolDoc::empty();
     assert!(!doc.model.has_assets(), "an empty document declares assets");
     assert!(
-        !doc.model.has_selection(),
+        !doc.model.has_selection(doc.canvas_holds.node()),
         "an empty document has a selection"
     );
     assert!(doc.model.sheet().is_empty(), "an empty document has steps");
@@ -109,6 +109,51 @@ fn no_pane_is_empty_over_a_real_protocol() {
     }
 }
 
+/// **The Operator's empty-state body names no pane "the outline", and reads
+/// true whichever the canvas holds.**
+///
+/// Built with `ProtocolDoc::headless` directly rather than through a window,
+/// so `canvas_holds` stays at its unreconciled default (`Graph`) instead of
+/// the `View` a real housing-fixture window latches before its first frame —
+/// the one construction that leaves this pane's own fallback with no node to
+/// fall back to, and so the construction that still reaches this text. A real
+/// window over this same fixture never sees it: `navigator_spine.rs`'s
+/// `switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table` is
+/// the pin that a live window's fallback keeps this pane out of its empty
+/// state in the first place.
+#[test]
+fn the_operators_empty_state_over_the_housing_fixture_names_no_outline() {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/california_housing_sample.csv");
+    let opened =
+        brightfield_shell::data_file::open(&path.to_string_lossy()).expect("the CSV opens");
+    let inputs = opened.protocol.inputs().expect("the Protocol builds");
+    let doc = ProtocolDoc::headless(ProtocolModel::new(inputs, Flow::Vertical));
+
+    assert!(
+        !doc.model.has_selection(doc.canvas_holds.node()),
+        "this test is about the branch where nothing is selected and the \
+         canvas holds no node either — construct it differently if this \
+         starts failing"
+    );
+
+    let empty = subjects(&doc)[&INSPECTOR]
+        .empty_state
+        .clone()
+        .expect("the Operator has nothing to describe here");
+    assert!(
+        !empty.body.to_lowercase().contains("outline"),
+        "the Operator's empty state still names the pane \"outline\": {:?}",
+        empty.body
+    );
+    assert!(
+        empty.body.to_lowercase().contains("rail"),
+        "the Operator's empty state offers no way to reach content from the \
+         rail: {:?}",
+        empty.body
+    );
+}
+
 // ---------------------------------------------------------------------------
 // What the panes declare
 // ---------------------------------------------------------------------------
@@ -134,7 +179,11 @@ fn each_pane_names_itself_once_and_binds_in_the_protocol_context() {
             (id, s.title)
         })
         .collect();
-    assert_eq!(names[&OUTLINE], "Outline");
+    // The item id is still `protocol-outline` — a saved layout files a pane
+    // under it — while the pane's name is what it draws: the Protocol, as a
+    // spine of what it reads, does and makes, with the outline's columns
+    // beneath.
+    assert_eq!(names[&OUTLINE], "Protocol");
     assert_eq!(names[&CANVAS], "Canvas");
     assert_eq!(names[&INSPECTOR], "Operator");
     assert_eq!(names[&STEPS], "Steps");

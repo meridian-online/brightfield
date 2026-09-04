@@ -3,11 +3,11 @@
 //!
 //! Structure, folding in the review of the first (gpui) cut:
 //!
-//! - **Real dock panes.** Outline, the DAG canvas, the Inspector, and the S
-//!   steps sheet are independent [`egui_tiles`] panes in a resizable dock — not
-//!   three columns nailed inside one panel. Outline · (Canvas/Steps tabs) ·
-//!   Inspector is a horizontal split; `S` activates the Steps tab, `Esc` the
-//!   Canvas tab.
+//! - **Real dock panes.** Protocol, the DAG canvas, the Operator, and the
+//!   Steps sheet are independent [`egui_tiles`] panes in a resizable dock —
+//!   not three columns nailed inside one panel. Protocol · (Canvas/Steps
+//!   tabs) · Operator is a horizontal split; `S` activates the Steps tab,
+//!   `Esc` the Canvas tab.
 //! - **Vertical flow by default** (more readable in a dock pane), with a toggle
 //!   to the wide horizontal overview.
 //! - **The keystroke grammar actually dispatches.** Raw egui key events are
@@ -444,6 +444,133 @@ pub fn column_row_id(table: &AssetId, column: &str) -> AssetId {
     format!("column.{table}.{column}")
 }
 
+// ---------------------------------------------------------------------------
+// The spine: the Protocol as an ordered list of what it reads, does and makes
+// ---------------------------------------------------------------------------
+
+/// One way of looking at the table a node names.
+///
+/// Two today, in the order the spine lists them under a node. They are views of
+/// **one** table read through **one** engine session, not two documents: the
+/// dashboard is the composed page the canvas draws as a pane group, and the
+/// grid is that same session listed as rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NodeView {
+    /// The generated dashboard — the hero, the rows beneath it, the tiles beside.
+    Dashboard,
+    /// The table listed as rows.
+    Grid,
+}
+
+impl NodeView {
+    /// Every view a node has, in the order the spine lists them.
+    pub const ALL: [Self; 2] = [Self::Dashboard, Self::Grid];
+
+    /// The word the spine draws for this view.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Dashboard => "dashboard",
+            Self::Grid => "grid",
+        }
+    }
+}
+
+/// What a spine row's marker says about the thing that row names.
+///
+/// **Existence, not run status.** A step's run state is carried in words at the
+/// trailing end of its own row (`sql · not run`), so a marker that repeated it
+/// would be a second spelling of one fact. What the marker answers instead is
+/// the question a reader asks of a list like this — *is this thing there yet* —
+/// and its two answers are the two ways a Protocol can be part-built.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpineMarker {
+    /// The thing exists: an asset the Protocol reads off disk, an asset a run
+    /// materialised, or a step that ran to success.
+    Filled,
+    /// The thing does not exist yet: a step that has not run to success, or an
+    /// asset nothing has materialised.
+    Hollow,
+    /// No marker — a caption, a view of a node, a column of a table.
+    None,
+}
+
+/// Which band of the navigator rail's Protocol pane a row belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpineRole {
+    /// A caption naming the band under it.
+    Caption,
+    /// An asset the Protocol reads or makes.
+    Asset,
+    /// The step that stands between one asset and the next.
+    Step,
+    /// One view of the node above it.
+    View,
+    /// One column of the table.
+    Column,
+}
+
+/// One row of the Protocol pane's spine, before anything has drawn it.
+///
+/// Derived by [`ProtocolModel::spine`], which is where the ordering rule lives:
+/// the assets in outline order, each preceded by the step that produces it, and
+/// a node's views listed under it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpineRow {
+    /// What the row is called — an asset's label, a step's name, a view's word.
+    pub label: String,
+    /// The text at the row's trailing end: `file`, `table`, `sql · not run`,
+    /// `view`.
+    pub kind: String,
+    /// How far the row is indented: `0` for an asset or a step, `1` for a view
+    /// of the asset above it.
+    pub depth: u8,
+    /// The marker at the row's leading end.
+    pub marker: SpineMarker,
+    /// Which band the row belongs to.
+    pub role: SpineRole,
+    /// Whether this row is the current selection — the wash, and never the
+    /// on-canvas bar.
+    pub selected: bool,
+    /// The asset a click addresses: the asset itself on an asset row, the node
+    /// a view belongs to on a view row, `None` on a step row.
+    pub id: Option<AssetId>,
+    /// The view a click puts on the canvas, on a view row.
+    pub view: Option<NodeView>,
+}
+
+/// The separator a caption row puts between its clauses.
+///
+/// Wider than the separator a step row's kind uses, because a caption is read
+/// as a set of fields rather than as a phrase — the space is what makes the
+/// band's name and its count read as two things rather than as one run-on line.
+const CAPTION_SEPARATOR: &str = "   \u{b7}   ";
+
+/// A caption row's text: its clauses, separated.
+fn caption(clauses: &[&str]) -> String {
+    clauses.join(CAPTION_SEPARATOR)
+}
+
+/// `n` and its noun, pluralised — `1 step`, `9 columns`.
+fn counted(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("{n} {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
+/// The word a seam's kind is drawn as — the steps sheet's own vocabulary, so
+/// one step named in two places is named the same way twice.
+fn seam_kind_word(graph: &AssetGraph, step: &StepId) -> &'static str {
+    match graph.seams.get(step).map(|seam| &seam.kind) {
+        Some(SeamKind::Op { .. }) => "op",
+        Some(SeamKind::Sql { .. }) => "sql",
+        Some(SeamKind::Command) => "command",
+        Some(SeamKind::Opaque) | None => "?",
+    }
+}
+
 /// Synthesise the flat run-ordered step rows from the graph's seams — the S
 /// sheet's content on the offline path (no `ContractView`; status is unrun).
 fn synth_sheet_rows(graph: &AssetGraph) -> Vec<StepRow> {
@@ -612,7 +739,28 @@ impl ProtocolModel {
     #[must_use]
     pub fn new(inputs: ProtocolInputs, flow: Flow) -> Self {
         let nav = ProtocolNav::new(&inputs.graph_collapsed);
-        let selected = nav.cursor().cloned();
+        // **A data file opens with nothing selected.** The rail carries two
+        // marks — a bar on the row whose content is on the canvas, a wash on
+        // the row a reader picked — and a boot cursor washed into the spine
+        // puts the second one on a row nobody chose, next to the first. The
+        // keyboard cursor still starts where the nav puts it: `selected` is
+        // what the rails draw, `nav.cursor()` is where `hjkl` resume from, and
+        // the first keystroke seeds one from the other.
+        //
+        // `source` is what says this Protocol was opened as a data file — it
+        // carries the spec Save would write, and `OneStepProtocol::inputs` is
+        // what sets it. A Protocol read from a manifest keeps the boot
+        // selection it has had: there is no dashboard on its canvas for the bar
+        // to stand on, so the wash is the mark it draws.
+        //
+        // Both halves are read off a frame by
+        // `a_fresh_open_holds_the_dashboard_and_marks_the_row_that_says_so` and
+        // by `a_manifest_of_many_steps_puts_each_step_above_the_asset_it_produced`.
+        let selected = if inputs.source.is_some() {
+            None
+        } else {
+            nav.cursor().cloned()
+        };
         let layout = Self::boot_layout(&inputs, flow);
         let sheet = StepsSheet::from_rows(inputs.sheet_rows);
         let family_ids: Vec<AssetId> = inputs
@@ -856,16 +1004,31 @@ impl ProtocolModel {
         !self.graph_collapsed.nodes.is_empty()
     }
 
-    /// Whether the selection names an asset that is still in the graph.
+    /// Whether the selection — or, failing that, the node whose view the
+    /// canvas holds — names an asset that is still in the graph.
     ///
     /// The inspector's empty-state test, and deliberately stricter than
     /// `selected().is_some()`: a stale id would render an inspector with every
     /// field blank, which is the failure mode the empty state exists to
     /// replace.
+    ///
+    /// `canvas_node` is [`crate::window::CanvasHolds::node`], the caller's to
+    /// pass because the latch lives one level up (see
+    /// [`ProtocolDoc::canvas_holds`]). A fresh data-file open selects no
+    /// asset — [`ProtocolModel::new`], held by
+    /// `a_fresh_open_holds_the_dashboard_and_marks_the_row_that_says_so` —
+    /// but its canvas already holds a view of the table it read, so the
+    /// Operator pane has a subject to describe and its Address field an id to
+    /// show even with no row washed in the rail. That id is `yank`'s
+    /// fallback too, for the frames where the `y` keystroke reaches it. A
+    /// data-file window is not one of those frames today, which is why the
+    /// pane's own copy names the keystroke on a window where it is fed and
+    /// leaves the clause out where it is not.
     #[must_use]
-    pub fn has_selection(&self) -> bool {
+    pub fn has_selection(&self, canvas_node: Option<&AssetId>) -> bool {
         self.selected
             .as_ref()
+            .or(canvas_node)
             .is_some_and(|id| self.graph_collapsed.nodes.contains_key(id))
     }
 
@@ -936,8 +1099,8 @@ impl ProtocolModel {
     /// Where the selection's ring belongs on the canvas.
     ///
     /// Normally the selection itself. While the chain fold is open the selection
-    /// may name a node the fold absorbed — the outline still lists it, the nav
-    /// still walks to it, the inspector still answers for it, because all three
+    /// may name a node the fold absorbed — the rail still lists it, the nav
+    /// still walks to it, the Operator still answers for it, because all three
     /// read the uncollapsed graph — and there is no rectangle under that id to
     /// ring. This resolves it to the node it was folded **into**, so a keyboard
     /// walk through an absorbed run lights the asset that run produced rather
@@ -1033,6 +1196,174 @@ impl ProtocolModel {
         out
     }
 
+    /// The column rows the outline lists beneath the spine — the outline's rows
+    /// with the assets taken out, because the spine above already lists those.
+    ///
+    /// Filtered out of [`ProtocolModel::outline`] rather than derived beside it:
+    /// two derivations of one list is how the rail and the render proof would
+    /// come to disagree about which columns a table has.
+    #[must_use]
+    pub fn column_rows(&self) -> Vec<OutlineRow> {
+        self.outline()
+            .into_iter()
+            .filter(|row| row.depth > 0)
+            .collect()
+    }
+
+    /// **The spine**: the Protocol as an ordered list of what it reads, what it
+    /// does to it, and what that makes.
+    ///
+    /// The assets in [`outline_rows`]' order, each preceded by the step that
+    /// produces it, and — under the table a data file opened as — that node's
+    /// views. A step with two produced assets is drawn once before each of
+    /// them: the row says *this asset came through this step*, which is a fact
+    /// about the pair rather than about the step alone.
+    ///
+    /// The order is the outline's and is not re-derived here, for the reason
+    /// [`ProtocolModel::column_rows`] is a filter: the rail, the canvas and the
+    /// render proof read one topological order or they read two.
+    #[must_use]
+    pub fn spine(&self) -> Vec<SpineRow> {
+        let graph = &self.graph_collapsed;
+        let assets = outline_rows(graph, &self.statuses, self.selected.as_ref());
+        let mut rows = Vec::with_capacity(assets.len() * 2);
+        for row in assets {
+            let node = graph.nodes.get(&row.id);
+            // **`step` means "produced by" except on a `Source` node**, which
+            // `a_manifest_of_many_steps_puts_each_step_above_the_asset_it_produced`
+            // holds by walking the crosswalk's own rows. On a source node it
+            // names the step that FETCHES FROM that host —
+            // `build_graph` hangs the fetch's own name on the URL it reads — so
+            // a step row above a source would draw the lineage backwards: the
+            // step is downstream of the host, not upstream of it.
+            let step = node
+                .and_then(|n| n.step.as_ref())
+                .filter(|_| row.kind != AssetKind::Source);
+            if let Some(step) = step {
+                rows.push(SpineRow {
+                    label: step.clone(),
+                    kind: format!(
+                        "{} \u{b7} {}",
+                        seam_kind_word(graph, step),
+                        status_word(row.status)
+                    ),
+                    depth: 0,
+                    marker: if row.status == SeamStatus::Ok {
+                        SpineMarker::Filled
+                    } else {
+                        SpineMarker::Hollow
+                    },
+                    role: SpineRole::Step,
+                    selected: false,
+                    id: None,
+                    view: None,
+                });
+            }
+            let exists = match row.kind {
+                // A family tile stands for the assets a collapse absorbed. It
+                // is not one of them and nothing materialises it, so it is
+                // never a thing that is there.
+                AssetKind::Family => false,
+                // A host the run reads from: an external input, and the
+                // Protocol has it before the first step runs.
+                AssetKind::Source => true,
+                // Everything else exists when nothing in this Protocol
+                // produces it — an input off disk — or when a run recorded it
+                // materialised.
+                _ => {
+                    step.is_none()
+                        || self
+                            .assets
+                            .get(&row.id)
+                            .is_some_and(|meta| meta.materialized)
+                }
+            };
+            let is_table = self.table.as_ref() == Some(&row.id);
+            rows.push(SpineRow {
+                label: row.label,
+                kind: kind_label(row.kind).to_string(),
+                depth: 0,
+                marker: if exists {
+                    SpineMarker::Filled
+                } else {
+                    SpineMarker::Hollow
+                },
+                role: SpineRole::Asset,
+                selected: row.selected,
+                id: Some(row.id.clone()),
+                view: None,
+            });
+            if is_table {
+                rows.extend(NodeView::ALL.map(|view| SpineRow {
+                    label: view.label().to_string(),
+                    kind: "view".to_string(),
+                    depth: 1,
+                    marker: SpineMarker::None,
+                    role: SpineRole::View,
+                    selected: false,
+                    id: Some(row.id.clone()),
+                    view: Some(view),
+                }));
+            }
+        }
+        rows
+    }
+
+    /// The spine's caption: how many **steps** the spine lists.
+    ///
+    /// Counted over the spine's own step rows, deduplicated by step name, so
+    /// the caption answers for the list under it rather than for a step map the
+    /// collapsed graph may not draw every member of.
+    #[must_use]
+    pub fn spine_caption(&self) -> String {
+        let steps: BTreeSet<String> = self
+            .spine()
+            .into_iter()
+            .filter(|row| row.role == SpineRole::Step)
+            .map(|row| row.label)
+            .collect();
+        caption(&["SPINE", &counted(steps.len(), "step")])
+    }
+
+    /// The outline's caption: how many columns stand beneath it.
+    ///
+    /// **It does not name the table, and that is a measurement rather than a
+    /// preference.** `OUTLINE · california_housing_sample · 9 columns` does
+    /// not fit the mono caption face inside this pane's declared 240-point
+    /// rail — `the_spines_measurements_hold_at_both_windows` holds each
+    /// caption's galley rect inside the pane at two window sizes, so a
+    /// caption too wide fails there rather than being cropped quietly by the
+    /// clip rect, which is what naming the table did on its first render:
+    /// the caption clipped mid-word and took the count — the half a reader
+    /// cannot get anywhere else — off the edge with it. The table's own name
+    /// is on its own row three lines above, in full and unclipped, so the
+    /// clause that did not fit is also the only one that was already said.
+    ///
+    /// What is left has the shape [`ProtocolModel::spine_caption`] has, which
+    /// is the other reason to prefer it: two captions in one grammar, both
+    /// leaving their trailing ends clear — the spine's for the graph chip.
+    #[must_use]
+    pub fn outline_caption(&self) -> String {
+        caption(&["OUTLINE", &counted(self.columns.len(), "column")])
+    }
+
+    /// The label of the table this Protocol produces — what a view of it is
+    /// named after. `None` for a Protocol with no profiled table behind it.
+    #[must_use]
+    pub fn table_label(&self) -> Option<&str> {
+        let table = self.table.as_ref()?;
+        self.graph_collapsed
+            .nodes
+            .get(table)
+            .map(|node| node.label.as_str())
+    }
+
+    /// The asset id of the table this Protocol produces.
+    #[must_use]
+    pub fn table(&self) -> Option<&AssetId> {
+        self.table.as_ref()
+    }
+
     /// The columns of the table this Protocol produces, in the table's own
     /// order — empty for a Protocol with no profiled table behind it.
     #[must_use]
@@ -1079,15 +1410,22 @@ impl ProtocolModel {
         self.selected_column = Some(column.to_string());
     }
 
-    /// The inspector facts for the current selection.
+    /// The inspector facts for the current selection, or for `canvas_node`
+    /// when no asset is explicitly selected — see
+    /// [`ProtocolModel::has_selection`], which this agrees with: the two are
+    /// read together in `InspectorPane::empty_state` and its `ui`, off the
+    /// same subject, so the pane cannot promise a field it then has no
+    /// content for —
+    /// `switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table`
+    /// reads both off one frame.
     #[must_use]
-    pub fn inspector(&self) -> InspectorFacts {
+    pub fn inspector(&self, canvas_node: Option<&AssetId>) -> InspectorFacts {
         inspector_for(
             &self.graph_collapsed,
             &self.assets,
             &self.steps,
             &self.statuses,
-            self.selected.as_ref(),
+            self.selected.as_ref().or(canvas_node),
         )
     }
 
@@ -1135,7 +1473,13 @@ impl ProtocolModel {
 
     /// Feed one frame's egui events, dispatching key presses through the
     /// registry grammar. Returns whether anything changed (a repaint cue).
-    pub fn feed_events(&mut self, events: &[egui::Event]) -> bool {
+    ///
+    /// `canvas_node` is the node whose view the window's canvas holds —
+    /// [`crate::window::CanvasHolds::node`] — passed through to any verb that
+    /// needs a subject and finds no explicit selection. See
+    /// [`ProtocolModel::has_selection`] for why one can be missing on a window
+    /// with something plainly on screen.
+    pub fn feed_events(&mut self, events: &[egui::Event], canvas_node: Option<&AssetId>) -> bool {
         let mut changed = false;
         for event in events {
             if let egui::Event::Key {
@@ -1145,21 +1489,26 @@ impl ProtocolModel {
                 ..
             } = event
             {
-                changed |= self.feed_key(*key, *modifiers);
+                changed |= self.feed_key(*key, *modifiers, canvas_node);
             }
         }
         changed
     }
 
     /// Dispatch a single key press. Handles the `z a` fold chord.
-    fn feed_key(&mut self, key: egui::Key, mods: egui::Modifiers) -> bool {
+    fn feed_key(
+        &mut self,
+        key: egui::Key,
+        mods: egui::Modifiers,
+        canvas_node: Option<&AssetId>,
+    ) -> bool {
         // Resolve the `z a` chord: a pending `z` + `a` fires toggle-fold.
         if self.pending_z {
             self.pending_z = false;
             if key == egui::Key::A {
                 // Resolve the `z a` chord to its verb through the registry table.
                 return match self.key_table.get("z a").copied() {
-                    Some(verb) => self.dispatch(verb),
+                    Some(verb) => self.dispatch(verb, canvas_node),
                     None => false,
                 };
             }
@@ -1185,7 +1534,7 @@ impl ProtocolModel {
             return false;
         };
         match self.key_table.get(token).copied() {
-            Some(verb) => self.dispatch(verb),
+            Some(verb) => self.dispatch(verb, canvas_node),
             None => false,
         }
     }
@@ -1202,7 +1551,11 @@ impl ProtocolModel {
     /// [`Request::Verb`](brightfield_workbench::Request) the shell drains after
     /// the frame. Both land here, so a click and a keystroke cannot drift into
     /// two implementations of one verb.
-    pub fn dispatch(&mut self, verb: &str) -> bool {
+    ///
+    /// `canvas_node` is threaded through from [`ProtocolModel::feed_events`] /
+    /// the window's own `apply` for the one verb that reads it today,
+    /// `yank-address` — see `ProtocolModel::yank`.
+    pub fn dispatch(&mut self, verb: &str, canvas_node: Option<&AssetId>) -> bool {
         match verb {
             "protocol-producer" => self.move_dir(Dir::Left), // h
             "protocol-consumer" => self.move_dir(Dir::Right), // l
@@ -1230,7 +1583,7 @@ impl ProtocolModel {
                 self.show_sheet = !self.show_sheet;
                 true
             }
-            "yank-address" => self.yank(),
+            "yank-address" => self.yank(canvas_node),
             _ => false,
         }
     }
@@ -1456,8 +1809,21 @@ impl ProtocolModel {
 
     /// `y` — request the selected asset's dotted address be yanked (the shell
     /// performs the actual clipboard write) and flash a confirmation.
-    fn yank(&mut self) -> bool {
-        if let Some(id) = self.selected.clone() {
+    ///
+    /// **A verb that needs a subject.** `self.selected` is `None` on a fresh
+    /// data-file open by design — [`ProtocolModel::new`] — but the canvas
+    /// already holds a view of the table the file became, held by
+    /// `yanking_a_fresh_open_falls_back_to_the_tables_address`. `canvas_node`
+    /// is that fallback, so a caller that reaches this method with no
+    /// explicit selection still gets the address of what is on screen rather
+    /// than a refusal. **This method does not decide when `y` reaches it.**
+    /// [`ProtocolModel::feed_events`] runs while the graph is the thing on
+    /// the canvas and no overlay is open. A data-file window does not feed this
+    /// keystroke to the model today, so the fallback above answers for a caller
+    /// that does reach this method rather than promising that every window's `y`
+    /// does.
+    fn yank(&mut self, canvas_node: Option<&AssetId>) -> bool {
+        if let Some(id) = self.selected.clone().or_else(|| canvas_node.cloned()) {
             self.yank_request = Some(id.clone());
             self.yank_flash = Some(id);
             true
@@ -1524,7 +1890,7 @@ impl ProtocolModel {
 /// DAG rasters into.
 ///
 /// Every pane in the view reads this and two of them write it — clicking a node
-/// on the canvas selects it, and so does clicking an outline row. No
+/// on the canvas selects it, and so does clicking an asset row in the rail. No
 /// [`Item`] holds a handle to it: the shell hands out exactly one `&mut
 /// ProtocolDoc`, for the duration of one pane's draw. That is the aliasing rule
 /// the whole contract hangs off, and it is why the canvas host lives *here*
@@ -1548,6 +1914,63 @@ pub struct ProtocolDoc {
     /// window a hundred points short opens the graph part-scrolled and no
     /// baseline can tell that from a graph that is simply large.
     pub viewport: Option<egui::Rect>,
+    /// What the window's canvas holds this frame, mirrored here so the
+    /// navigator rail can mark the row whose content is on it.
+    ///
+    /// **Written by the window before the pane draws; the pane reads it and
+    /// does not set it.**
+    /// The canvas belongs to the window — [`crate::window::MeridianApp`] latches
+    /// it and reconciles it against the documents each frame — so a pane that
+    /// decided this for itself would be a second answer to a question the
+    /// window has already answered, which is the defect
+    /// [`crate::window::graph_takes_the_canvas`] exists to prevent one level up.
+    pub canvas_holds: crate::window::CanvasHolds,
+    /// The rows the Protocol pane drew in the last frame this document was
+    /// drawn in, in draw order — captions, spine rows and column rows alike.
+    ///
+    /// Recorded rather than re-derived, for the reason
+    /// [`crate::window::MeridianApp::region_rect`] is recorded: a claim about
+    /// what a reader sees in the rail has to come off the frame that drew it,
+    /// and a test that asked [`ProtocolModel::spine`] again would be comparing
+    /// the derivation with itself.
+    pub spine_drawn: Vec<SpineRowDrawn>,
+    /// The content box the Protocol pane was last handed — what the first
+    /// caption row's `SPACE_1` of clearance is measured from. `None` until a
+    /// frame has laid the pane out.
+    pub spine_body: Option<egui::Rect>,
+    /// The view a reader clicked in the rail this frame, if one was clicked.
+    /// Taken by the window, which owns what the canvas holds.
+    view_pick: Option<(AssetId, NodeView)>,
+}
+
+/// One row of the Protocol pane **as it was drawn** — the content and the
+/// geometry, together, off one frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpineRowDrawn {
+    /// What the row said at its leading end.
+    pub label: String,
+    /// What it said at its trailing end — empty on a caption row, which is one
+    /// string across the row.
+    pub kind: String,
+    /// How far it was indented.
+    pub depth: u8,
+    /// The marker it drew.
+    pub marker: SpineMarker,
+    /// Which band it belongs to.
+    pub role: SpineRole,
+    /// The whole row.
+    pub rect: egui::Rect,
+    /// The rect the leading text occupied — where an indent is read off, and
+    /// how wide the text was, which is how a caption too long for the rail is
+    /// caught rather than cropped quietly by the clip rect.
+    pub name_rect: egui::Rect,
+    /// The rect the trailing text occupied, `None` on a row with no trailing
+    /// text.
+    pub kind_rect: Option<egui::Rect>,
+    /// The on-canvas bar, on the one row whose content the canvas holds.
+    pub on_canvas: Option<egui::Rect>,
+    /// Whether the selection wash was painted under this row.
+    pub washed: bool,
 }
 
 /// Everything the DAG raster's pixels depend on.
@@ -1598,6 +2021,10 @@ impl ProtocolDoc {
             model,
             canvas: CanvasSlot::new(host),
             viewport: None,
+            canvas_holds: crate::window::CanvasHolds::Graph,
+            spine_drawn: Vec::new(),
+            spine_body: None,
+            view_pick: None,
         }
     }
 
@@ -1608,6 +2035,10 @@ impl ProtocolDoc {
             model,
             canvas: CanvasSlot::headless(),
             viewport: None,
+            canvas_holds: crate::window::CanvasHolds::Graph,
+            spine_drawn: Vec::new(),
+            spine_body: None,
+            view_pick: None,
         }
     }
 
@@ -1617,6 +2048,17 @@ impl ProtocolDoc {
     #[must_use]
     pub fn empty() -> Self {
         Self::headless(ProtocolModel::new(ProtocolInputs::empty(), Flow::Vertical))
+    }
+
+    /// Take the view a reader clicked in the rail this frame, if one was
+    /// clicked.
+    ///
+    /// The other half of [`ProtocolDoc::canvas_holds`]: the pane reports the
+    /// gesture and the window decides what the canvas holds, so what is on the
+    /// canvas has one writer. Mirrors [`ProtocolModel::take_column_pick`],
+    /// which is the same shape for the inspector's column.
+    pub fn take_view_pick(&mut self) -> Option<(AssetId, NodeView)> {
+        self.view_pick.take()
     }
 
     /// Replace the graph with a freshly built one, keeping the reading axis
@@ -1820,29 +2262,58 @@ impl Item<ProtocolDoc> for OutlinePane {
     }
 
     fn describe(&self, _doc: &ProtocolDoc) -> Subject {
-        Subject::new("Outline", ICON_OUTLINE, BindingContext::Protocol)
+        Subject::new("Protocol", ICON_OUTLINE, BindingContext::Protocol)
     }
 
     fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
-        let rows = doc.model.outline();
+        let spine = doc.model.spine();
+        let columns = doc.model.column_rows();
+        let spine_caption = doc.model.spine_caption();
+        let outline_caption = doc.model.outline_caption();
+        let holds = doc.canvas_holds.clone();
+        let mut drawn: Vec<SpineRowDrawn> = Vec::with_capacity(spine.len() + columns.len() + 2);
         let mut clicked: Option<AssetId> = None;
         let mut column: Option<String> = None;
+        let mut view: Option<(AssetId, NodeView)> = None;
+        doc.spine_body = Some(ui.max_rect());
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for row in &rows {
-                    if outline_row(ui, row, cx.mode).clicked() {
-                        // A column row addresses no node, so it cannot go
-                        // through `select_id` — the nav would be asked to
-                        // focus an id absent from its graph.
-                        if row.depth == 0 {
-                            clicked = Some(row.id.clone());
-                        } else {
-                            column = Some(row.label.clone());
+                ui.add_space(spacing::SPACE_1);
+                // Both captions draw nothing at their trailing ends: the
+                // spine's is where the graph chip goes, and the room is left
+                // for it.
+                drawn.push(caption_row(ui, &spine_caption, cx.mode));
+                for row in &spine {
+                    let (record, response) = spine_row(ui, row, holds.shows(row), cx.mode);
+                    drawn.push(record);
+                    if response.clicked() {
+                        match (row.role, row.id.as_ref(), row.view) {
+                            // A view row addresses no node the nav can focus —
+                            // it names one way of looking at the node above it,
+                            // and what it moves is the canvas.
+                            (SpineRole::View, Some(id), Some(v)) => {
+                                view = Some((id.clone(), v));
+                            }
+                            (SpineRole::Asset, Some(id), _) => clicked = Some(id.clone()),
+                            _ => {}
                         }
                     }
                 }
+                ui.add_space(spacing::SPACE_4);
+                drawn.push(caption_row(ui, &outline_caption, cx.mode));
+                for row in &columns {
+                    let (record, response) = outline_row(ui, row, cx.mode);
+                    drawn.push(record);
+                    if response.clicked() {
+                        // A column row addresses no node, so it cannot go
+                        // through `select_id` — the nav would be asked to
+                        // focus an id absent from its graph.
+                        column = Some(row.label.clone());
+                    }
+                }
             });
+        doc.spine_drawn = drawn;
         if let Some(id) = clicked {
             doc.model.select_id(id);
         }
@@ -1850,7 +2321,192 @@ impl Item<ProtocolDoc> for OutlinePane {
             doc.model.pick_column(&column);
             cx.request_repaint();
         }
+        if let Some(pick) = view {
+            doc.view_pick = Some(pick);
+            cx.request_repaint();
+        }
     }
+}
+
+/// A **caption row**: one dense row naming the band under it, in the mono face
+/// at the reduced size the chrome uses for a readout rather than a label.
+///
+/// Mono because a caption is read as fields — a word, a name, a count — and the
+/// mono face is what keeps the separators lining up between the two captions
+/// this pane draws. The size is [`crate::window`]'s count overlay's, which is
+/// the other place in this shell a line of muted chrome sits over content
+/// rather than labelling it.
+///
+/// It allocates a row and senses nothing: a caption is not a control, and a
+/// caption that swallowed a click would be a dead zone between two lists that
+/// both respond to one.
+fn caption_row(ui: &mut egui::Ui, text: &str, mode: Mode) -> SpineRowDrawn {
+    let sem = semantic(mode.is_dark());
+    let b = control::binding(spacing::ROW_DENSE);
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), b.row),
+        egui::Sense::hover(),
+    );
+    let ink = chrome::colour(sem.text.muted);
+    let painter = ui.painter();
+    let left = rect.left() + spacing::SPACE_4;
+    let galley = painter.layout_no_wrap(text.to_owned(), caption_font(), ink);
+    let name_rect = egui::Rect::from_min_size(
+        egui::pos2(left, rect.center().y - galley.size().y / 2.0),
+        galley.size(),
+    );
+    // Clipped to its own row, so a caption too long for a rail dragged narrow
+    // is cut at the pane rather than painted across the canvas beside it. The
+    // rect handed back is the galley's own, clip or no clip, which is what lets
+    // a test ask whether the caption fitted.
+    painter
+        .with_clip_rect(rect)
+        .galley(name_rect.min, galley, ink);
+    SpineRowDrawn {
+        label: text.to_string(),
+        kind: String::new(),
+        depth: 0,
+        marker: SpineMarker::None,
+        role: SpineRole::Caption,
+        rect,
+        name_rect,
+        kind_rect: None,
+        on_canvas: None,
+        washed: false,
+    }
+}
+
+/// One **spine row**: the marker, the name, and the kind at the trailing end —
+/// plus, on the one row whose content the canvas holds, the bar at its leading
+/// edge.
+///
+/// # The two marks
+///
+/// `on_canvas` and [`SpineRow::selected`] are two different facts and are drawn
+/// by two different mechanisms, deliberately. The wash is a fill under the whole
+/// row and says *this is what you picked*; the bar is two points of
+/// [`semantic()`]'s focus ink at the leading edge and says *this is what is on the
+/// canvas*. A reader who has picked a column while looking at the dashboard is
+/// being told two things at once, and one treatment could only tell them one.
+///
+/// # Why the marker is not the outline's status dot
+///
+/// [`outline_row`] tints its dot by the producing step's status. Here the run
+/// state is spelled in words at the trailing end of the step's own row, so the
+/// marker answers the other question — whether the thing exists — and answers
+/// it in shape rather than in colour: filled for a thing that is there, hollow
+/// for one that is not. See [`SpineMarker`].
+fn spine_row(
+    ui: &mut egui::Ui,
+    row: &SpineRow,
+    on_canvas: bool,
+    mode: Mode,
+) -> (SpineRowDrawn, egui::Response) {
+    let sem = semantic(mode.is_dark());
+    let b = control::binding(spacing::ROW_DENSE);
+    // A step row and a caption row are readouts rather than controls: no
+    // gesture acts on a step yet, and a row that senses a click it does not
+    // answer is a control that appears broken.
+    let sense = match row.role {
+        SpineRole::Asset | SpineRole::View => egui::Sense::click(),
+        _ => egui::Sense::hover(),
+    };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), b.row), sense);
+    if row.selected {
+        chrome::selection_wash(ui, rect, mode);
+    }
+
+    let painter = ui.painter();
+    let on_canvas = on_canvas.then(|| {
+        let bar = egui::Rect::from_min_max(
+            rect.left_top(),
+            egui::pos2(rect.left() + ON_CANVAS_BAR_WIDTH, rect.bottom()),
+        );
+        painter.rect_filled(bar, 0.0, chrome::colour(sem.borders.focus));
+        bar
+    });
+
+    // The marker's leading edge sits `SPACE_4` in, so its centre is one radius
+    // past that — and the name clears the whole marker whether one was drawn or
+    // not, so a view row and the node above it hang off one ladder.
+    let marker_left = rect.left() + spacing::SPACE_4;
+    let centre = egui::pos2(marker_left + SPINE_MARKER_RADIUS, rect.center().y);
+    match row.marker {
+        SpineMarker::Filled => {
+            painter.circle_filled(
+                centre,
+                SPINE_MARKER_RADIUS,
+                chrome::colour(sem.text.secondary),
+            );
+        }
+        SpineMarker::Hollow => {
+            painter.circle_stroke(
+                centre,
+                SPINE_MARKER_RADIUS,
+                egui::Stroke::new(1.0, chrome::colour(sem.text.muted)),
+            );
+        }
+        SpineMarker::None => {}
+    }
+    let name_left = marker_left
+        + 2.0 * SPINE_MARKER_RADIUS
+        + spacing::SPACE_5
+        + f32::from(row.depth) * spacing::SPACE_5;
+
+    // The kind is laid out first so the name knows what room is left: a long
+    // asset label clipped by the pane would otherwise run under it.
+    //
+    // The mono caption face, not `ui_font()` — the contract's own choice for
+    // this label, and the same face the two caption rows above it use, so a
+    // run state reads as a value rather than as prose. Held by
+    // `the_spines_measurements_hold_at_both_windows`, off the drawn galley's
+    // own font id rather than off this call site.
+    let kind = painter.layout_no_wrap(
+        row.kind.clone(),
+        caption_font(),
+        chrome::colour(sem.text.muted),
+    );
+    let kind_rect = egui::Rect::from_min_size(
+        egui::pos2(
+            rect.right() - spacing::SPACE_4 - kind.size().x,
+            rect.center().y - kind.size().y / 2.0,
+        ),
+        kind.size(),
+    );
+    painter.galley(kind_rect.min, kind, chrome::colour(sem.text.muted));
+
+    // Clipped, not truncated: the room left of the kind is a fact about the
+    // rail's width, and a character budget is a guess at it that goes wrong the
+    // moment somebody drags the rail narrower.
+    let ink = chrome::colour(sem.text.primary);
+    let name = painter.layout_no_wrap(row.label.clone(), ui_font(), ink);
+    let name_rect = egui::Rect::from_min_size(
+        egui::pos2(name_left, rect.center().y - name.size().y / 2.0),
+        name.size(),
+    );
+    let room = egui::Rect::from_min_max(
+        egui::pos2(name_left, rect.top()),
+        egui::pos2(kind_rect.left() - spacing::SPACE_3, rect.bottom()),
+    );
+    painter
+        .with_clip_rect(room)
+        .galley(name_rect.min, name, ink);
+
+    (
+        SpineRowDrawn {
+            label: row.label.clone(),
+            kind: row.kind.clone(),
+            depth: row.depth,
+            marker: row.marker,
+            role: row.role,
+            rect,
+            name_rect,
+            kind_rect: Some(kind_rect),
+            on_canvas,
+            washed: row.selected,
+        },
+        response,
+    )
 }
 
 /// One outline row: status dot, label, kind — and, when it is the selection,
@@ -1867,7 +2523,7 @@ impl Item<ProtocolDoc> for OutlinePane {
 /// status dot because it has no producing step of its own, and its right edge
 /// carries [`OutlineRow::note`] — the leaf of its type — where an asset row
 /// carries its kind.
-fn outline_row(ui: &mut egui::Ui, row: &OutlineRow, mode: Mode) -> egui::Response {
+fn outline_row(ui: &mut egui::Ui, row: &OutlineRow, mode: Mode) -> (SpineRowDrawn, egui::Response) {
     let sem = semantic(mode.is_dark());
     let b = control::binding(spacing::ROW_DENSE);
     let (rect, response) = ui.allocate_exact_size(
@@ -1889,7 +2545,7 @@ fn outline_row(ui: &mut egui::Ui, row: &OutlineRow, mode: Mode) -> egui::Respons
         );
     }
     x += b.icon + spacing::ICON_LABEL_GAP;
-    painter.text(
+    let name_rect = painter.text(
         egui::pos2(x, rect.center().y),
         egui::Align2::LEFT_CENTER,
         truncate(&row.label, 26),
@@ -1897,14 +2553,60 @@ fn outline_row(ui: &mut egui::Ui, row: &OutlineRow, mode: Mode) -> egui::Respons
         chrome::colour(sem.text.primary),
     );
     let right = row.note.as_deref().unwrap_or_else(|| kind_label(row.kind));
-    painter.text(
+    let kind_rect = painter.text(
         egui::pos2(rect.right() - b.pad_x, rect.center().y),
         egui::Align2::RIGHT_CENTER,
         truncate(right, 20),
         ui_font(),
         chrome::colour(sem.text.muted),
     );
-    response
+    (
+        SpineRowDrawn {
+            label: row.label.clone(),
+            kind: right.to_string(),
+            depth: row.depth,
+            marker: if row.depth == 0 {
+                SpineMarker::Filled
+            } else {
+                SpineMarker::None
+            },
+            role: SpineRole::Column,
+            rect,
+            name_rect,
+            kind_rect: Some(kind_rect),
+            on_canvas: None,
+            washed: row.selected,
+        },
+        response,
+    )
+}
+
+/// The **width of the on-canvas bar**, in logical points: two, at the leading
+/// edge of the row whose content the canvas holds.
+///
+/// Narrow on purpose. It marks a row without indenting one, so the rows above
+/// and below it stay on the same ladder — a wider rule would have to take its
+/// width out of the row's content and the list would step in and out as the
+/// canvas moved.
+const ON_CANVAS_BAR_WIDTH: f32 = 2.0;
+
+/// The radius of a spine row's marker, in logical points.
+///
+/// Smaller than [`outline_row`]'s status dot, and that is the point: the dot
+/// there carries a status in colour and has to be big enough to read a tint
+/// off, while this carries existence in shape — filled or hollow — which reads
+/// at a size a tint would not.
+const SPINE_MARKER_RADIUS: f32 = 2.5;
+
+/// The face a caption row is drawn in: the mono family at one step under the UI
+/// size.
+///
+/// One step down because a caption names the band under it rather than
+/// competing with it, and the same step the canvas count overlay takes for the
+/// same reason. Mono because a caption's clauses line up between the two
+/// captions this pane draws, and a proportional face lines nothing up.
+fn caption_font() -> egui::FontId {
+    egui::FontId::monospace(meridian_design::typography::UI_SIZE - 1.0)
 }
 
 /// The DAG canvas: the presented Vello raster in a scroll area, with the
@@ -1987,7 +2689,7 @@ impl Item<ProtocolDoc> for CanvasPane {
                 // in the product.
                 // `selection_site`, not `selected`: while the chain fold is open
                 // the selection can name a node the fold absorbed, which the
-                // outline and the inspector still answer for and the canvas has
+                // rail and the Operator still answer for and the canvas has
                 // no rectangle for. The ring goes on the node it folded into.
                 if let Some(sel) = doc.model.selection_site() {
                     if let Some(node) = doc.model.layout().positions.get(&sel).cloned() {
@@ -2044,12 +2746,21 @@ impl Item<ProtocolDoc> for InspectorPane {
     }
 
     fn empty_state(&self, doc: &ProtocolDoc) -> Option<EmptyState> {
-        (!doc.model.has_selection()).then(|| {
+        (!doc.model.has_selection(doc.canvas_holds.node())).then(|| {
             EmptyState::new(
                 ICON_INSPECTOR,
                 "Nothing selected",
-                "Click a node in the canvas or a row in the outline, or move the \
-                 cursor with h j k l.",
+                // True whichever the canvas holds. A manifest Protocol's
+                // canvas holds the graph, where a node is a real click
+                // target; a data-file Protocol's canvas holds a view of the
+                // one table (dashboard or grid), which has no node on it at
+                // all — an "or" rather than a "click both" leaves the second
+                // reader with one fewer option rather than a false one.
+                // Neither names "the outline": that word is the column list
+                // under the spine now, not this whole rail, whose own strip
+                // reads "Protocol".
+                "Click a node in the canvas, or an asset row in the rail, to \
+                 see its facts here.",
             )
         })
     }
@@ -2063,11 +2774,21 @@ impl Item<ProtocolDoc> for InspectorPane {
     }
 
     fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
-        let facts = doc.model.inspector();
+        let facts = doc.model.inspector(doc.canvas_holds.node());
         let mode = cx.mode;
+        // The hint band draws while the graph is on the canvas, and the key feed
+        // runs under that condition plus no overlay open. With an overlay open the
+        // hint band still reads `y yank` and this clause is still drawn while the
+        // key goes to the overlay: the same exposure for both, kept deliberately so
+        // the two say the same thing. `CanvasHolds::Graph` is the latched form of
+        // the graph-on-canvas condition, mirrored into the document by
+        // `reconcile_canvas_holds` at the head of a draw;
+        // `a_windows_latched_canvas_agrees_with_the_derived_answer` pins the latch
+        // against the derived answer on a manifest window and on a data-file window.
+        let key_grammar_fed = matches!(doc.canvas_holds, crate::window::CanvasHolds::Graph);
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
-            .show(ui, |ui| inspector_body(ui, &facts, mode));
+            .show(ui, |ui| inspector_body(ui, &facts, mode, key_grammar_fed));
     }
 }
 
@@ -2076,7 +2797,13 @@ impl Item<ProtocolDoc> for InspectorPane {
 /// The asset's label used to be a `heading()` here — a second type size inside
 /// a pane whose header band is already its name. It is the pane's content now,
 /// at the one UI size, in primary ink.
-fn inspector_body(ui: &mut egui::Ui, facts: &InspectorFacts, mode: Mode) {
+///
+/// `key_grammar_fed` is whether this window feeds the Protocol key grammar
+/// this frame — see [`InspectorPane::ui`]. The Address field's explainer
+/// names `y` when it is fed, and drops the clause when it is not: this pane
+/// draws on a data-file window too, where no keystroke reaches the model,
+/// and a hint for a key that does nothing is worse than no hint.
+fn inspector_body(ui: &mut egui::Ui, facts: &InspectorFacts, mode: Mode, key_grammar_fed: bool) {
     let sem = semantic(mode.is_dark());
     ui.label(
         egui::RichText::new(&facts.label)
@@ -2094,7 +2821,11 @@ fn inspector_body(ui: &mut egui::Ui, facts: &InspectorFacts, mode: Mode) {
         mode,
         "Address",
         &facts.address,
-        "Stable dotted id for this asset — press y to copy it.",
+        if key_grammar_fed {
+            "Stable dotted id for this asset — press y to copy it."
+        } else {
+            "Stable dotted id for this asset."
+        },
         true,
     );
 
@@ -2745,7 +3476,10 @@ mod tests {
         let (sx, sy) = centre(&m, &start);
 
         // j = down: the new selection sits strictly BELOW the start (a consumer).
-        assert!(m.feed_events(&[key(egui::Key::J)]), "j moved down the flow");
+        assert!(
+            m.feed_events(&[key(egui::Key::J)], None),
+            "j moved down the flow"
+        );
         let down = m.selected().cloned().unwrap();
         assert_ne!(down, start, "the selection advanced");
         assert!(
@@ -2760,7 +3494,7 @@ mod tests {
 
         // k = up from the top row: a wall (nothing above), else strictly above.
         let mut m = model_flow(Flow::Vertical);
-        if m.feed_events(&[key(egui::Key::K)]) {
+        if m.feed_events(&[key(egui::Key::K)], None) {
             let up = m.selected().cloned().unwrap();
             assert!(
                 centre(&m, &up).1 < sy - 0.5,
@@ -2771,7 +3505,7 @@ mod tests {
         // l = right: a same-row sibling strictly to the RIGHT.
         let mut m = model_flow(Flow::Vertical);
         assert!(
-            m.feed_events(&[key(egui::Key::L)]),
+            m.feed_events(&[key(egui::Key::L)], None),
             "l stepped a sibling right"
         );
         let right = m.selected().cloned().unwrap();
@@ -2783,7 +3517,7 @@ mod tests {
         // h = left: a same-row sibling strictly to the LEFT.
         let mut m = model_flow(Flow::Vertical);
         assert!(
-            m.feed_events(&[key(egui::Key::H)]),
+            m.feed_events(&[key(egui::Key::H)], None),
             "h stepped a sibling left"
         );
         let left = m.selected().cloned().unwrap();
@@ -2806,7 +3540,7 @@ mod tests {
 
         // l = right: a consumer down the flow, strictly to the RIGHT.
         assert!(
-            m.feed_events(&[key(egui::Key::L)]),
+            m.feed_events(&[key(egui::Key::L)], None),
             "l consumed down the flow"
         );
         let right = m.selected().cloned().unwrap();
@@ -2818,7 +3552,7 @@ mod tests {
         // j = down: a sibling across the flow, strictly BELOW.
         let mut m = model_flow(Flow::Horizontal);
         assert!(
-            m.feed_events(&[key(egui::Key::J)]),
+            m.feed_events(&[key(egui::Key::J)], None),
             "j stepped a sibling down"
         );
         let down = m.selected().cloned().unwrap();
@@ -2833,17 +3567,17 @@ mod tests {
     fn shift_s_opens_sheet_esc_closes() {
         let mut m = model();
         assert!(!m.show_sheet());
-        m.feed_events(&[key_shift(egui::Key::S)]);
+        m.feed_events(&[key_shift(egui::Key::S)], None);
         assert!(m.show_sheet(), "S opened the steps sheet");
         // S again toggles it closed (previously a no-op — the way back was mouse-only).
-        m.feed_events(&[key_shift(egui::Key::S)]);
+        m.feed_events(&[key_shift(egui::Key::S)], None);
         assert!(!m.show_sheet(), "S again toggled the steps sheet closed");
         // Esc and Backspace also close it (Backspace is the Hyperkey-independent path).
-        m.feed_events(&[key_shift(egui::Key::S)]);
-        m.feed_events(&[key(egui::Key::Escape)]);
+        m.feed_events(&[key_shift(egui::Key::S)], None);
+        m.feed_events(&[key(egui::Key::Escape)], None);
         assert!(!m.show_sheet(), "Esc closed the steps sheet");
-        m.feed_events(&[key_shift(egui::Key::S)]);
-        m.feed_events(&[key(egui::Key::Backspace)]);
+        m.feed_events(&[key_shift(egui::Key::S)], None);
+        m.feed_events(&[key(egui::Key::Backspace)], None);
         assert!(!m.show_sheet(), "Backspace closed the steps sheet");
     }
 
@@ -2857,7 +3591,10 @@ mod tests {
         let before_gen = m.layout_gen();
 
         // Enter focuses the canvas on the selection's full transitive lineage.
-        assert!(m.feed_events(&[key(egui::Key::Enter)]), "Enter drilled in");
+        assert!(
+            m.feed_events(&[key(egui::Key::Enter)], None),
+            "Enter drilled in"
+        );
         assert!(m.is_drilled(), "the canvas is now scoped");
         assert_eq!(m.breadcrumb().len(), 1);
         assert!(
@@ -2872,13 +3609,16 @@ mod tests {
 
         // A repeat Enter on the same node is a no-op — no duplicate crumb.
         assert!(
-            !m.feed_events(&[key(egui::Key::Enter)]),
+            !m.feed_events(&[key(egui::Key::Enter)], None),
             "a repeat Enter does nothing"
         );
         assert_eq!(m.breadcrumb().len(), 1, "no consecutive-duplicate crumb");
 
         // Esc widens back to the whole graph.
-        assert!(m.feed_events(&[key(egui::Key::Escape)]), "Esc drilled out");
+        assert!(
+            m.feed_events(&[key(egui::Key::Escape)], None),
+            "Esc drilled out"
+        );
         assert!(!m.is_drilled());
         assert!(m.breadcrumb().is_empty());
     }
@@ -2902,8 +3642,8 @@ mod tests {
         let before_key = m.layout_key();
 
         // The chord: z then a.
-        m.feed_events(&[key(egui::Key::Z)]);
-        let changed = m.feed_events(&[key(egui::Key::A)]);
+        m.feed_events(&[key(egui::Key::Z)], None);
+        let changed = m.feed_events(&[key(egui::Key::A)], None);
         assert!(changed, "za toggled the fold");
         assert!(m.is_expanded(), "the family is now expanded");
         assert_ne!(m.layout_key(), before_key, "the layout cache key changed");
@@ -2915,8 +3655,8 @@ mod tests {
         );
 
         // za again collapses back.
-        m.feed_events(&[key(egui::Key::Z)]);
-        m.feed_events(&[key(egui::Key::A)]);
+        m.feed_events(&[key(egui::Key::Z)], None);
+        m.feed_events(&[key(egui::Key::A)], None);
         assert!(!m.is_expanded(), "za again folded the family");
         assert_eq!(m.layout().positions.len(), before_nodes, "back to the tile");
     }
@@ -2949,8 +3689,8 @@ mod tests {
     /// Send the `z` then `a` of the chord, returning whether the second press
     /// changed anything.
     fn za(m: &mut ProtocolModel) -> bool {
-        m.feed_events(&[key(egui::Key::Z)]);
-        m.feed_events(&[key(egui::Key::A)])
+        m.feed_events(&[key(egui::Key::Z)], None);
+        m.feed_events(&[key(egui::Key::A)], None)
     }
 
     /// `za` with the cursor on a SQL-produced relation draws that statement's
@@ -3208,7 +3948,7 @@ mod tests {
     fn za_is_refused_inside_a_drill_scope() {
         let mut m = model();
         m.select_id(SQL_PRODUCED.to_string());
-        assert!(m.feed_events(&[key(egui::Key::Enter)]), "drilled in");
+        assert!(m.feed_events(&[key(egui::Key::Enter)], None), "drilled in");
         assert!(m.is_drilled());
 
         let scoped = node_ids(&m);
@@ -3227,7 +3967,10 @@ mod tests {
         assert!(!m.is_expanded());
         assert_eq!(m.layout_gen(), before_gen, "still no re-layout");
 
-        assert!(m.feed_events(&[key(egui::Key::Escape)]), "widened back out");
+        assert!(
+            m.feed_events(&[key(egui::Key::Escape)], None),
+            "widened back out"
+        );
         assert!(!m.is_drilled());
         assert!(
             !m.is_expanded(),
@@ -3250,12 +3993,15 @@ mod tests {
         assert!(za(&mut m), "the CTE fold opened");
         assert!(ctes_on_canvas(&m));
 
-        assert!(m.feed_events(&[key(egui::Key::Enter)]), "drilled in");
+        assert!(m.feed_events(&[key(egui::Key::Enter)], None), "drilled in");
         assert!(!m.is_cte_expanded(), "the fold closed with the drill");
         assert!(!ctes_on_canvas(&m));
         assert!(m.folds_are_on_screen());
 
-        assert!(m.feed_events(&[key(egui::Key::Escape)]), "widened back out");
+        assert!(
+            m.feed_events(&[key(egui::Key::Escape)], None),
+            "widened back out"
+        );
         assert!(!m.is_drilled());
         assert!(
             !ctes_on_canvas(&m),
@@ -3320,7 +4066,7 @@ mod tests {
                 m.select_id((*id).to_string());
             }
             for k in keys {
-                m.feed_events(&[key(*k)]);
+                m.feed_events(&[key(*k)], None);
                 assert!(
                     m.folds_are_on_screen(),
                     "step {step}: a canvas fold is armed but the canvas does not \
@@ -3494,10 +4240,11 @@ mod tests {
     /// the canvas its ring moves to the node it folded into.**
     ///
     /// This is the asymmetry already recorded against exploded CTEs, in reverse:
-    /// there, the canvas gained nodes the outline never listed. Here the canvas
-    /// loses nodes the outline still lists — and the outline, the nav and the
-    /// inspector all walk the *uncontracted* graph, so an absorbed asset is still
-    /// selectable, still walked to by `hjkl`, and still has an inspector.
+    /// there, the canvas gained nodes the rail never listed. Here the canvas
+    /// loses nodes the rail still lists — and the rail, the nav and the
+    /// Operator all walk the *uncontracted* graph, so an absorbed asset is still
+    /// selectable, still walked to by `hjkl`, and the Operator still answers
+    /// for it.
     ///
     /// What is **not** covered, said plainly rather than implied: an absorbed
     /// node has no rectangle of its own while the fold is open, so its selection
@@ -3516,8 +4263,8 @@ mod tests {
             !m.displayed_graph().nodes.contains_key(&id),
             "this fixture no longer absorbs the node the test is about"
         );
-        assert!(m.has_selection(), "the inspector still answers for it");
-        let facts = m.inspector();
+        assert!(m.has_selection(None), "the inspector still answers for it");
+        let facts = m.inspector(None);
         assert!(
             facts.present,
             "the inspector went empty on an absorbed node"
@@ -3820,12 +4567,15 @@ steps:
         // a consumer (so it is not the sink): step down once, then the lineage
         // must reach back up to the origin and forward to the dataset.
         assert!(
-            m.feed_events(&[key(egui::Key::J)]),
+            m.feed_events(&[key(egui::Key::J)], None),
             "j advanced off the top row"
         );
         let sel = m.selected().cloned().expect("a selection");
         let want = brightfield_protocol::graph::lineage(&m.graph_collapsed, &sel);
-        assert!(m.feed_events(&[key(egui::Key::Enter)]), "Enter drilled in");
+        assert!(
+            m.feed_events(&[key(egui::Key::Enter)], None),
+            "Enter drilled in"
+        );
         // The drilled scope is exactly the induced lineage — every kept node is
         // a lineage member and the count matches.
         assert_eq!(
@@ -3845,9 +4595,12 @@ steps:
     fn t_key_transposes_the_flow() {
         let mut m = model();
         assert_eq!(m.flow(), Flow::Vertical);
-        assert!(m.feed_events(&[key(egui::Key::T)]), "t flipped the axis");
+        assert!(
+            m.feed_events(&[key(egui::Key::T)], None),
+            "t flipped the axis"
+        );
         assert_eq!(m.flow(), Flow::Horizontal);
-        assert!(m.feed_events(&[key(egui::Key::T)]), "t flipped back");
+        assert!(m.feed_events(&[key(egui::Key::T)], None), "t flipped back");
         assert_eq!(m.flow(), Flow::Vertical);
     }
 
@@ -3856,10 +4609,13 @@ steps:
     #[test]
     fn backspace_widens_like_esc() {
         let mut m = model();
-        assert!(m.feed_events(&[key(egui::Key::Enter)]), "Enter drilled in");
+        assert!(
+            m.feed_events(&[key(egui::Key::Enter)], None),
+            "Enter drilled in"
+        );
         assert!(m.is_drilled());
         assert!(
-            m.feed_events(&[key(egui::Key::Backspace)]),
+            m.feed_events(&[key(egui::Key::Backspace)], None),
             "Backspace widened"
         );
         assert!(
@@ -3867,10 +4623,10 @@ steps:
             "Backspace popped the drill exactly as Esc does"
         );
         // And it still closes the steps sheet, matching Esc's dual role.
-        m.feed_events(&[key_shift(egui::Key::S)]);
+        m.feed_events(&[key_shift(egui::Key::S)], None);
         assert!(m.show_sheet());
         assert!(
-            m.feed_events(&[key(egui::Key::Backspace)]),
+            m.feed_events(&[key(egui::Key::Backspace)], None),
             "Backspace closed the sheet"
         );
         assert!(!m.show_sheet());
@@ -3882,7 +4638,10 @@ steps:
     fn keyboard_move_requests_a_reframe() {
         let mut m = model_flow(Flow::Vertical);
         let before = m.frame_gen();
-        assert!(m.feed_events(&[key(egui::Key::J)]), "j moved the selection");
+        assert!(
+            m.feed_events(&[key(egui::Key::J)], None),
+            "j moved the selection"
+        );
         assert!(
             m.frame_gen() > before,
             "a keyboard move asks the canvas to reframe"
@@ -3895,7 +4654,7 @@ steps:
     fn yank_requests_the_dotted_address() {
         let mut m = model();
         let sel = m.selected().cloned().expect("a boot selection");
-        m.feed_events(&[key(egui::Key::Y)]);
+        m.feed_events(&[key(egui::Key::Y)], None);
         assert_eq!(m.take_yank_request(), Some(sel.clone()));
         assert_eq!(m.yank_flash(), Some(&sel));
     }
