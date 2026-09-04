@@ -305,9 +305,9 @@ fn a_committed_brush_is_drawn_on_the_plot_that_produced_it_and_goes_when_it_is_c
     // committed rectangle now moves it (`committed_brush_move.rs`), which
     // this adjoining-sweep claim is not about. `interval_predicate` orders
     // its two corners with `min_max` regardless of which one was the press,
-    // so the committed interval — and every assertion below, which reads the
-    // rendered bounds by screen position rather than by press order — is
-    // unchanged by pressing from the far end.
+    // so the committed interval is unchanged by pressing from the far end —
+    // and so is what the assertions below read, since they compare rendered
+    // bounds by screen position rather than by press order.
     brush(&mut app, &ctx, 0, 0.85, 0.6);
     let second = rules(&raster(&renderer, app.chart_doc()));
     assert_eq!(
