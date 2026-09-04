@@ -1818,9 +1818,10 @@ impl ProtocolModel {
     /// explicit selection still gets the address of what is on screen rather
     /// than a refusal. **This method does not decide when `y` reaches it.**
     /// [`ProtocolModel::feed_events`] runs while the graph is the thing on
-    /// the canvas. A data-file window does not feed this keystroke to the
-    /// model today, so the fallback above answers for a caller that does
-    /// reach this method rather than promising that every window's `y` does.
+    /// the canvas and no overlay is open. A data-file window does not feed this
+    /// keystroke to the model today, so the fallback above answers for a caller
+    /// that does reach this method rather than promising that every window's `y`
+    /// does.
     fn yank(&mut self, canvas_node: Option<&AssetId>) -> bool {
         if let Some(id) = self.selected.clone().or_else(|| canvas_node.cloned()) {
             self.yank_request = Some(id.clone());
@@ -2775,13 +2776,14 @@ impl Item<ProtocolDoc> for InspectorPane {
     fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
         let facts = doc.model.inspector(doc.canvas_holds.node());
         let mode = cx.mode;
-        // The hint band draws while the graph is on the canvas, and that is
-        // exactly when `y` reaches the model too — both read
-        // `crate::window::MeridianApp::graph_on_canvas`. `CanvasHolds::Graph`
-        // is the same condition, reconciled from it every frame by
-        // `crate::window::MeridianApp::reconcile_canvas_holds`, so this pane
-        // asks its own document instead of reaching back up to the window
-        // for it.
+        // The hint band draws while the graph is on the canvas and no overlay
+        // is open — both read `crate::window::MeridianApp::graph_on_canvas`.
+        // This pane uses the hint band's condition, and both share the same
+        // exposure while an overlay is open. `CanvasHolds::Graph` reconciles
+        // from that condition by `crate::window::MeridianApp::reconcile_canvas_holds`
+        // (`clicking_a_view_row_moves_the_canvas_and_the_bar_with_it` holds that
+        // latch), so this pane asks its own document instead of reaching back up
+        // to the window for it.
         let key_grammar_fed = matches!(doc.canvas_holds, crate::window::CanvasHolds::Graph);
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])

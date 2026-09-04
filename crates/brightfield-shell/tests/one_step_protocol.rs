@@ -483,19 +483,20 @@ fn the_navigator_rail_lists_the_table_and_every_column_under_it() {
     );
 }
 
-/// **`y` on a fresh data-file open yanks the table it read, not nothing.**
+/// **The model's yank, given no selection, falls back to the table the canvas holds.**
 ///
 /// `ProtocolModel::new` boots a data-file Protocol with no asset selected —
 /// the wash stays off every row, held by `navigator_spine.rs`'s fresh-open
 /// test — but the window's canvas already holds the table's dashboard.
 /// `canvas_node` is the address the window passes through from that latch
 /// (`crate::window::CanvasHolds::node`), and a verb that needs a subject
-/// falls back to it when no asset is explicitly picked, so `y` copies the
-/// table's address instead of silently doing no more than the click it did
-/// not get. Before that fallback existed,
-/// `yanking_a_fresh_open_falls_back_to_the_tables_address` (this test) is
-/// what caught `feed_events` returning `false` and `take_yank_request`
-/// staying `None`.
+/// falls back to it when no asset is explicitly picked, so the model returns
+/// `true` from `feed_events` and fills `take_yank_request` with the table's
+/// address rather than leaving it `None`. The keystroke itself is not fed on a
+/// data-file window — that is a separate gate at the window level — but this
+/// test proves the model's side of the fallback: `yanking_a_fresh_open_falls_back_to_the_tables_address`
+/// holds that the model now keeps `feed_events` returning `true` even when
+/// `self.selected` is `None`.
 #[test]
 fn yanking_a_fresh_open_falls_back_to_the_tables_address() {
     let dir = TempDir::new("yank-fallback");
