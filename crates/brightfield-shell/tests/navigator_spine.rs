@@ -149,7 +149,7 @@ fn texts(shapes: &[egui::epaint::ClippedShape]) -> Vec<(String, egui::Rect, egui
                     .sections
                     .first()
                     .map(|section| section.format.font_id.clone())
-                    .unwrap_or_else(|| egui::FontId::default());
+                    .unwrap_or_else(egui::FontId::default);
                 out.push((
                     text.galley.text().to_string(),
                     egui::Rect::from_min_size(text.pos, text.galley.size()),

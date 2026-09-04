@@ -1409,7 +1409,7 @@ impl ProtocolModel {
     /// The inspector facts for the current selection, or for `canvas_node`
     /// when no asset is explicitly selected — see
     /// [`ProtocolModel::has_selection`], which this agrees with: the two are
-    /// read together in [`InspectorPane::empty_state`] and its `ui`, off the
+    /// read together in `InspectorPane::empty_state` and its `ui`, off the
     /// same subject, so the pane cannot promise a field it then has no
     /// content for —
     /// `switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table`
@@ -1550,7 +1550,7 @@ impl ProtocolModel {
     ///
     /// `canvas_node` is threaded through from [`ProtocolModel::feed_events`] /
     /// the window's own `apply` for the one verb that reads it today,
-    /// `yank-address` — see [`ProtocolModel::yank`].
+    /// `yank-address` — see `ProtocolModel::yank`.
     pub fn dispatch(&mut self, verb: &str, canvas_node: Option<&AssetId>) -> bool {
         match verb {
             "protocol-producer" => self.move_dir(Dir::Left), // h
