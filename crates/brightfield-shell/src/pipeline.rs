@@ -87,13 +87,13 @@ pub struct PlotHandle {
     /// The plot's brush/point gesture binding, when its spec declares one.
     pub gesture: Option<GestureBinding>,
     /// **This plot's own committed selection, as its raster-local pixel
-    /// rectangle** — the same box [`ink_committed_selections`] washes,
+    /// rectangle** — the same box `ink_committed_selections` washes,
     /// resolved through the *displayed* scales at compose time rather than
     /// recomputed later, on the same standing as the rest of the fields here.
     ///
     /// `None` for a plot holding no selection, one whose constraint cannot be
     /// placed as a rectangle (a category pick), or a one-shot composition
-    /// with no session behind it — [`ink_committed_selections`] writes it
+    /// with no session behind it — `ink_committed_selections` writes it
     /// alone, from [`LiveDashboard::present`]. The shell's move gesture is
     /// the one reader: a press inside this rect moves it instead of starting
     /// a fresh sweep.
