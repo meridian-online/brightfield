@@ -483,6 +483,54 @@ fn the_navigator_rail_lists_the_table_and_every_column_under_it() {
     );
 }
 
+/// **`y` on a fresh data-file open yanks the table it read, not nothing.**
+///
+/// `ProtocolModel::new` boots a data-file Protocol with nothing selected — the
+/// wash stays off every row, held by `navigator_spine.rs`'s fresh-open test —
+/// but the window's canvas is never blank: it already holds the table's
+/// dashboard. `canvas_node` is the address the window passes through from
+/// that latch (`crate::window::CanvasHolds::node`), and a verb that needs a
+/// subject falls back to it when nothing is explicitly picked, so `y` copies
+/// the table's address instead of silently doing nothing. Before that
+/// fallback existed, `feed_events` returned `false` here and
+/// `take_yank_request` stayed `None`.
+#[test]
+fn yanking_a_fresh_open_falls_back_to_the_tables_address() {
+    let dir = TempDir::new("yank-fallback");
+    let path = dir.write("harbour.csv", HARBOUR_CSV);
+    let opened = data_file::open(&path.to_string_lossy()).expect("an ordinary CSV opens");
+    let inputs = opened.protocol.inputs().expect("the Protocol builds");
+    let mut model = protocol::ProtocolModel::new(inputs, Flow::Vertical);
+
+    assert!(
+        model.selected().is_none(),
+        "a fresh data-file open selects nothing — this test is about the \
+         state that makes `y` need a fallback at all"
+    );
+    let table = model
+        .table()
+        .cloned()
+        .expect("a one-step Protocol names the table it read");
+
+    let y = egui::Event::Key {
+        key: egui::Key::Y,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::default(),
+    };
+    assert!(
+        model.feed_events(&[y], Some(&table)),
+        "y did nothing even with the canvas's own node offered as a fallback"
+    );
+    assert_eq!(
+        model.take_yank_request(),
+        Some(table.clone()),
+        "y yanked something other than the table the canvas holds"
+    );
+    assert_eq!(model.yank_flash(), Some(&table));
+}
+
 /// A coordinate pair: eight points around one city, plus a reading.
 ///
 /// `longitude` and `latitude` are drawn as ONE point map — the fixture

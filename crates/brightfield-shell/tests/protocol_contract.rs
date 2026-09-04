@@ -78,7 +78,7 @@ fn the_empty_document_has_nothing_in_it() {
     let doc = ProtocolDoc::empty();
     assert!(!doc.model.has_assets(), "an empty document declares assets");
     assert!(
-        !doc.model.has_selection(),
+        !doc.model.has_selection(doc.canvas_holds.node()),
         "an empty document has a selection"
     );
     assert!(doc.model.sheet().is_empty(), "an empty document has steps");

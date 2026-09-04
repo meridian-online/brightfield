@@ -1004,16 +1004,25 @@ impl ProtocolModel {
         !self.graph_collapsed.nodes.is_empty()
     }
 
-    /// Whether the selection names an asset that is still in the graph.
+    /// Whether the selection — or, failing that, the node whose view the
+    /// canvas holds — names an asset that is still in the graph.
     ///
     /// The inspector's empty-state test, and deliberately stricter than
     /// `selected().is_some()`: a stale id would render an inspector with every
     /// field blank, which is the failure mode the empty state exists to
     /// replace.
+    ///
+    /// `canvas_node` is [`crate::window::CanvasHolds::node`], the caller's to
+    /// pass because the latch lives one level up (see
+    /// [`ProtocolDoc::canvas_holds`]). A fresh data-file open selects nothing
+    /// — [`ProtocolModel::new`] — but its canvas already holds a view of the
+    /// table it read, so the Operator pane has a subject to describe and
+    /// `y` has an address to yank even though nothing is washed in the rail.
     #[must_use]
-    pub fn has_selection(&self) -> bool {
+    pub fn has_selection(&self, canvas_node: Option<&AssetId>) -> bool {
         self.selected
             .as_ref()
+            .or(canvas_node)
             .is_some_and(|id| self.graph_collapsed.nodes.contains_key(id))
     }
 
@@ -1392,15 +1401,19 @@ impl ProtocolModel {
         self.selected_column = Some(column.to_string());
     }
 
-    /// The inspector facts for the current selection.
+    /// The inspector facts for the current selection, or for `canvas_node`
+    /// when nothing is explicitly selected — see [`ProtocolModel::has_selection`],
+    /// which this agrees with: the two are read together in
+    /// [`InspectorPane::empty_state`] and its `ui`, off the same subject, so
+    /// the pane cannot promise a field it then has nothing to show.
     #[must_use]
-    pub fn inspector(&self) -> InspectorFacts {
+    pub fn inspector(&self, canvas_node: Option<&AssetId>) -> InspectorFacts {
         inspector_for(
             &self.graph_collapsed,
             &self.assets,
             &self.steps,
             &self.statuses,
-            self.selected.as_ref(),
+            self.selected.as_ref().or(canvas_node),
         )
     }
 
@@ -1448,7 +1461,13 @@ impl ProtocolModel {
 
     /// Feed one frame's egui events, dispatching key presses through the
     /// registry grammar. Returns whether anything changed (a repaint cue).
-    pub fn feed_events(&mut self, events: &[egui::Event]) -> bool {
+    ///
+    /// `canvas_node` is the node whose view the window's canvas holds —
+    /// [`crate::window::CanvasHolds::node`] — passed through to any verb that
+    /// needs a subject and finds no explicit selection. See
+    /// [`ProtocolModel::has_selection`] for why one can be missing on a window
+    /// with something plainly on screen.
+    pub fn feed_events(&mut self, events: &[egui::Event], canvas_node: Option<&AssetId>) -> bool {
         let mut changed = false;
         for event in events {
             if let egui::Event::Key {
@@ -1458,21 +1477,21 @@ impl ProtocolModel {
                 ..
             } = event
             {
-                changed |= self.feed_key(*key, *modifiers);
+                changed |= self.feed_key(*key, *modifiers, canvas_node);
             }
         }
         changed
     }
 
     /// Dispatch a single key press. Handles the `z a` fold chord.
-    fn feed_key(&mut self, key: egui::Key, mods: egui::Modifiers) -> bool {
+    fn feed_key(&mut self, key: egui::Key, mods: egui::Modifiers, canvas_node: Option<&AssetId>) -> bool {
         // Resolve the `z a` chord: a pending `z` + `a` fires toggle-fold.
         if self.pending_z {
             self.pending_z = false;
             if key == egui::Key::A {
                 // Resolve the `z a` chord to its verb through the registry table.
                 return match self.key_table.get("z a").copied() {
-                    Some(verb) => self.dispatch(verb),
+                    Some(verb) => self.dispatch(verb, canvas_node),
                     None => false,
                 };
             }
@@ -1498,7 +1517,7 @@ impl ProtocolModel {
             return false;
         };
         match self.key_table.get(token).copied() {
-            Some(verb) => self.dispatch(verb),
+            Some(verb) => self.dispatch(verb, canvas_node),
             None => false,
         }
     }
@@ -1515,7 +1534,11 @@ impl ProtocolModel {
     /// [`Request::Verb`](brightfield_workbench::Request) the shell drains after
     /// the frame. Both land here, so a click and a keystroke cannot drift into
     /// two implementations of one verb.
-    pub fn dispatch(&mut self, verb: &str) -> bool {
+    ///
+    /// `canvas_node` is threaded through from [`ProtocolModel::feed_events`] /
+    /// the window's own `apply` for the one verb that reads it today,
+    /// `yank-address` — see [`ProtocolModel::yank`].
+    pub fn dispatch(&mut self, verb: &str, canvas_node: Option<&AssetId>) -> bool {
         match verb {
             "protocol-producer" => self.move_dir(Dir::Left), // h
             "protocol-consumer" => self.move_dir(Dir::Right), // l
@@ -1543,7 +1566,7 @@ impl ProtocolModel {
                 self.show_sheet = !self.show_sheet;
                 true
             }
-            "yank-address" => self.yank(),
+            "yank-address" => self.yank(canvas_node),
             _ => false,
         }
     }
@@ -1769,8 +1792,15 @@ impl ProtocolModel {
 
     /// `y` — request the selected asset's dotted address be yanked (the shell
     /// performs the actual clipboard write) and flash a confirmation.
-    fn yank(&mut self) -> bool {
-        if let Some(id) = self.selected.clone() {
+    ///
+    /// **A verb that needs a subject.** `self.selected` is `None` on a fresh
+    /// data-file open by design — [`ProtocolModel::new`] — but the canvas is
+    /// never blank there: it already holds a view of the table the file
+    /// became. `canvas_node` is that fallback, so `y` copies the address of
+    /// what is on screen rather than refusing for want of an explicit click,
+    /// which is what it did before this fell back to anything.
+    fn yank(&mut self, canvas_node: Option<&AssetId>) -> bool {
+        if let Some(id) = self.selected.clone().or_else(|| canvas_node.cloned()) {
             self.yank_request = Some(id.clone());
             self.yank_flash = Some(id);
             true
@@ -2402,7 +2432,17 @@ fn spine_row(
 
     // The kind is laid out first so the name knows what room is left: a long
     // asset label clipped by the pane would otherwise run under it.
-    let kind = painter.layout_no_wrap(row.kind.clone(), ui_font(), chrome::colour(sem.text.muted));
+    //
+    // The mono caption face, not `ui_font()` — the contract's own choice for
+    // this label, and the same face the two caption rows above it use, so a
+    // run state reads as a value rather than as prose. Held by
+    // `the_spines_measurements_hold_at_both_windows`, off the drawn galley's
+    // own font id rather than off this call site.
+    let kind = painter.layout_no_wrap(
+        row.kind.clone(),
+        caption_font(),
+        chrome::colour(sem.text.muted),
+    );
     let kind_rect = egui::Rect::from_min_size(
         egui::pos2(
             rect.right() - spacing::SPACE_4 - kind.size().x,
@@ -2683,11 +2723,11 @@ impl Item<ProtocolDoc> for InspectorPane {
     }
 
     fn empty_state(&self, doc: &ProtocolDoc) -> Option<EmptyState> {
-        (!doc.model.has_selection()).then(|| {
+        (!doc.model.has_selection(doc.canvas_holds.node())).then(|| {
             EmptyState::new(
                 ICON_INSPECTOR,
                 "Nothing selected",
-                "Click a node in the canvas or a row in the outline, or move the \
+                "Click a node in the canvas or a row in the rail, or move the \
                  cursor with h j k l.",
             )
         })
@@ -2702,7 +2742,7 @@ impl Item<ProtocolDoc> for InspectorPane {
     }
 
     fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
-        let facts = doc.model.inspector();
+        let facts = doc.model.inspector(doc.canvas_holds.node());
         let mode = cx.mode;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -3384,7 +3424,7 @@ mod tests {
         let (sx, sy) = centre(&m, &start);
 
         // j = down: the new selection sits strictly BELOW the start (a consumer).
-        assert!(m.feed_events(&[key(egui::Key::J)]), "j moved down the flow");
+        assert!(m.feed_events(&[key(egui::Key::J)], None), "j moved down the flow");
         let down = m.selected().cloned().unwrap();
         assert_ne!(down, start, "the selection advanced");
         assert!(
@@ -3399,7 +3439,7 @@ mod tests {
 
         // k = up from the top row: a wall (nothing above), else strictly above.
         let mut m = model_flow(Flow::Vertical);
-        if m.feed_events(&[key(egui::Key::K)]) {
+        if m.feed_events(&[key(egui::Key::K)], None) {
             let up = m.selected().cloned().unwrap();
             assert!(
                 centre(&m, &up).1 < sy - 0.5,
@@ -3410,7 +3450,7 @@ mod tests {
         // l = right: a same-row sibling strictly to the RIGHT.
         let mut m = model_flow(Flow::Vertical);
         assert!(
-            m.feed_events(&[key(egui::Key::L)]),
+            m.feed_events(&[key(egui::Key::L)], None),
             "l stepped a sibling right"
         );
         let right = m.selected().cloned().unwrap();
@@ -3422,7 +3462,7 @@ mod tests {
         // h = left: a same-row sibling strictly to the LEFT.
         let mut m = model_flow(Flow::Vertical);
         assert!(
-            m.feed_events(&[key(egui::Key::H)]),
+            m.feed_events(&[key(egui::Key::H)], None),
             "h stepped a sibling left"
         );
         let left = m.selected().cloned().unwrap();
@@ -3445,7 +3485,7 @@ mod tests {
 
         // l = right: a consumer down the flow, strictly to the RIGHT.
         assert!(
-            m.feed_events(&[key(egui::Key::L)]),
+            m.feed_events(&[key(egui::Key::L)], None),
             "l consumed down the flow"
         );
         let right = m.selected().cloned().unwrap();
@@ -3457,7 +3497,7 @@ mod tests {
         // j = down: a sibling across the flow, strictly BELOW.
         let mut m = model_flow(Flow::Horizontal);
         assert!(
-            m.feed_events(&[key(egui::Key::J)]),
+            m.feed_events(&[key(egui::Key::J)], None),
             "j stepped a sibling down"
         );
         let down = m.selected().cloned().unwrap();
@@ -3472,17 +3512,17 @@ mod tests {
     fn shift_s_opens_sheet_esc_closes() {
         let mut m = model();
         assert!(!m.show_sheet());
-        m.feed_events(&[key_shift(egui::Key::S)]);
+        m.feed_events(&[key_shift(egui::Key::S)], None);
         assert!(m.show_sheet(), "S opened the steps sheet");
         // S again toggles it closed (previously a no-op — the way back was mouse-only).
-        m.feed_events(&[key_shift(egui::Key::S)]);
+        m.feed_events(&[key_shift(egui::Key::S)], None);
         assert!(!m.show_sheet(), "S again toggled the steps sheet closed");
         // Esc and Backspace also close it (Backspace is the Hyperkey-independent path).
-        m.feed_events(&[key_shift(egui::Key::S)]);
-        m.feed_events(&[key(egui::Key::Escape)]);
+        m.feed_events(&[key_shift(egui::Key::S)], None);
+        m.feed_events(&[key(egui::Key::Escape)], None);
         assert!(!m.show_sheet(), "Esc closed the steps sheet");
-        m.feed_events(&[key_shift(egui::Key::S)]);
-        m.feed_events(&[key(egui::Key::Backspace)]);
+        m.feed_events(&[key_shift(egui::Key::S)], None);
+        m.feed_events(&[key(egui::Key::Backspace)], None);
         assert!(!m.show_sheet(), "Backspace closed the steps sheet");
     }
 
@@ -3496,7 +3536,7 @@ mod tests {
         let before_gen = m.layout_gen();
 
         // Enter focuses the canvas on the selection's full transitive lineage.
-        assert!(m.feed_events(&[key(egui::Key::Enter)]), "Enter drilled in");
+        assert!(m.feed_events(&[key(egui::Key::Enter)], None), "Enter drilled in");
         assert!(m.is_drilled(), "the canvas is now scoped");
         assert_eq!(m.breadcrumb().len(), 1);
         assert!(
@@ -3511,13 +3551,13 @@ mod tests {
 
         // A repeat Enter on the same node is a no-op — no duplicate crumb.
         assert!(
-            !m.feed_events(&[key(egui::Key::Enter)]),
+            !m.feed_events(&[key(egui::Key::Enter)], None),
             "a repeat Enter does nothing"
         );
         assert_eq!(m.breadcrumb().len(), 1, "no consecutive-duplicate crumb");
 
         // Esc widens back to the whole graph.
-        assert!(m.feed_events(&[key(egui::Key::Escape)]), "Esc drilled out");
+        assert!(m.feed_events(&[key(egui::Key::Escape)], None), "Esc drilled out");
         assert!(!m.is_drilled());
         assert!(m.breadcrumb().is_empty());
     }
@@ -3541,8 +3581,8 @@ mod tests {
         let before_key = m.layout_key();
 
         // The chord: z then a.
-        m.feed_events(&[key(egui::Key::Z)]);
-        let changed = m.feed_events(&[key(egui::Key::A)]);
+        m.feed_events(&[key(egui::Key::Z)], None);
+        let changed = m.feed_events(&[key(egui::Key::A)], None);
         assert!(changed, "za toggled the fold");
         assert!(m.is_expanded(), "the family is now expanded");
         assert_ne!(m.layout_key(), before_key, "the layout cache key changed");
@@ -3554,8 +3594,8 @@ mod tests {
         );
 
         // za again collapses back.
-        m.feed_events(&[key(egui::Key::Z)]);
-        m.feed_events(&[key(egui::Key::A)]);
+        m.feed_events(&[key(egui::Key::Z)], None);
+        m.feed_events(&[key(egui::Key::A)], None);
         assert!(!m.is_expanded(), "za again folded the family");
         assert_eq!(m.layout().positions.len(), before_nodes, "back to the tile");
     }
@@ -3588,8 +3628,8 @@ mod tests {
     /// Send the `z` then `a` of the chord, returning whether the second press
     /// changed anything.
     fn za(m: &mut ProtocolModel) -> bool {
-        m.feed_events(&[key(egui::Key::Z)]);
-        m.feed_events(&[key(egui::Key::A)])
+        m.feed_events(&[key(egui::Key::Z)], None);
+        m.feed_events(&[key(egui::Key::A)], None)
     }
 
     /// `za` with the cursor on a SQL-produced relation draws that statement's
@@ -3847,7 +3887,7 @@ mod tests {
     fn za_is_refused_inside_a_drill_scope() {
         let mut m = model();
         m.select_id(SQL_PRODUCED.to_string());
-        assert!(m.feed_events(&[key(egui::Key::Enter)]), "drilled in");
+        assert!(m.feed_events(&[key(egui::Key::Enter)], None), "drilled in");
         assert!(m.is_drilled());
 
         let scoped = node_ids(&m);
@@ -3866,7 +3906,7 @@ mod tests {
         assert!(!m.is_expanded());
         assert_eq!(m.layout_gen(), before_gen, "still no re-layout");
 
-        assert!(m.feed_events(&[key(egui::Key::Escape)]), "widened back out");
+        assert!(m.feed_events(&[key(egui::Key::Escape)], None), "widened back out");
         assert!(!m.is_drilled());
         assert!(
             !m.is_expanded(),
@@ -3889,12 +3929,12 @@ mod tests {
         assert!(za(&mut m), "the CTE fold opened");
         assert!(ctes_on_canvas(&m));
 
-        assert!(m.feed_events(&[key(egui::Key::Enter)]), "drilled in");
+        assert!(m.feed_events(&[key(egui::Key::Enter)], None), "drilled in");
         assert!(!m.is_cte_expanded(), "the fold closed with the drill");
         assert!(!ctes_on_canvas(&m));
         assert!(m.folds_are_on_screen());
 
-        assert!(m.feed_events(&[key(egui::Key::Escape)]), "widened back out");
+        assert!(m.feed_events(&[key(egui::Key::Escape)], None), "widened back out");
         assert!(!m.is_drilled());
         assert!(
             !ctes_on_canvas(&m),
@@ -3959,7 +3999,7 @@ mod tests {
                 m.select_id((*id).to_string());
             }
             for k in keys {
-                m.feed_events(&[key(*k)]);
+                m.feed_events(&[key(*k)], None);
                 assert!(
                     m.folds_are_on_screen(),
                     "step {step}: a canvas fold is armed but the canvas does not \
@@ -4155,8 +4195,11 @@ mod tests {
             !m.displayed_graph().nodes.contains_key(&id),
             "this fixture no longer absorbs the node the test is about"
         );
-        assert!(m.has_selection(), "the inspector still answers for it");
-        let facts = m.inspector();
+        assert!(
+            m.has_selection(None),
+            "the inspector still answers for it"
+        );
+        let facts = m.inspector(None);
         assert!(
             facts.present,
             "the inspector went empty on an absorbed node"
@@ -4459,12 +4502,12 @@ steps:
         // a consumer (so it is not the sink): step down once, then the lineage
         // must reach back up to the origin and forward to the dataset.
         assert!(
-            m.feed_events(&[key(egui::Key::J)]),
+            m.feed_events(&[key(egui::Key::J)], None),
             "j advanced off the top row"
         );
         let sel = m.selected().cloned().expect("a selection");
         let want = brightfield_protocol::graph::lineage(&m.graph_collapsed, &sel);
-        assert!(m.feed_events(&[key(egui::Key::Enter)]), "Enter drilled in");
+        assert!(m.feed_events(&[key(egui::Key::Enter)], None), "Enter drilled in");
         // The drilled scope is exactly the induced lineage — every kept node is
         // a lineage member and the count matches.
         assert_eq!(
@@ -4484,9 +4527,9 @@ steps:
     fn t_key_transposes_the_flow() {
         let mut m = model();
         assert_eq!(m.flow(), Flow::Vertical);
-        assert!(m.feed_events(&[key(egui::Key::T)]), "t flipped the axis");
+        assert!(m.feed_events(&[key(egui::Key::T)], None), "t flipped the axis");
         assert_eq!(m.flow(), Flow::Horizontal);
-        assert!(m.feed_events(&[key(egui::Key::T)]), "t flipped back");
+        assert!(m.feed_events(&[key(egui::Key::T)], None), "t flipped back");
         assert_eq!(m.flow(), Flow::Vertical);
     }
 
@@ -4495,10 +4538,10 @@ steps:
     #[test]
     fn backspace_widens_like_esc() {
         let mut m = model();
-        assert!(m.feed_events(&[key(egui::Key::Enter)]), "Enter drilled in");
+        assert!(m.feed_events(&[key(egui::Key::Enter)], None), "Enter drilled in");
         assert!(m.is_drilled());
         assert!(
-            m.feed_events(&[key(egui::Key::Backspace)]),
+            m.feed_events(&[key(egui::Key::Backspace)], None),
             "Backspace widened"
         );
         assert!(
@@ -4506,10 +4549,10 @@ steps:
             "Backspace popped the drill exactly as Esc does"
         );
         // And it still closes the steps sheet, matching Esc's dual role.
-        m.feed_events(&[key_shift(egui::Key::S)]);
+        m.feed_events(&[key_shift(egui::Key::S)], None);
         assert!(m.show_sheet());
         assert!(
-            m.feed_events(&[key(egui::Key::Backspace)]),
+            m.feed_events(&[key(egui::Key::Backspace)], None),
             "Backspace closed the sheet"
         );
         assert!(!m.show_sheet());
@@ -4521,7 +4564,7 @@ steps:
     fn keyboard_move_requests_a_reframe() {
         let mut m = model_flow(Flow::Vertical);
         let before = m.frame_gen();
-        assert!(m.feed_events(&[key(egui::Key::J)]), "j moved the selection");
+        assert!(m.feed_events(&[key(egui::Key::J)], None), "j moved the selection");
         assert!(
             m.frame_gen() > before,
             "a keyboard move asks the canvas to reframe"
@@ -4534,10 +4577,11 @@ steps:
     fn yank_requests_the_dotted_address() {
         let mut m = model();
         let sel = m.selected().cloned().expect("a boot selection");
-        m.feed_events(&[key(egui::Key::Y)]);
+        m.feed_events(&[key(egui::Key::Y)], None);
         assert_eq!(m.take_yank_request(), Some(sel.clone()));
         assert_eq!(m.yank_flash(), Some(&sel));
     }
+
 
     // -- Run-state: the data-honesty channel --------------------------------
 

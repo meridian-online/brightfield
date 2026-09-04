@@ -750,6 +750,24 @@ impl CanvasHolds {
             Self::Graph | Self::Chart => None,
         }
     }
+
+    /// The node whose view the canvas holds, when one is on it.
+    ///
+    /// The fallback subject for a verb that needs one and finds no explicit
+    /// selection — `y` is the first: a fresh data-file open selects nothing
+    /// (the boot cursor is deliberately unwashed, see `ProtocolModel::new`),
+    /// but the canvas is never actually blank, and yanking the address of
+    /// whatever is on screen is the reading a reader gives that keystroke
+    /// with nothing highlighted. `None` on `Graph` and `Chart`: the graph
+    /// names no one node, and a bare chart has no Protocol asset behind it to
+    /// name at all.
+    #[must_use]
+    pub const fn node(&self) -> Option<&AssetId> {
+        match self {
+            Self::View { node, .. } => Some(node),
+            Self::Graph | Self::Chart => None,
+        }
+    }
 }
 
 /// What a window opens with: both documents' contents.
@@ -2845,7 +2863,11 @@ impl MeridianApp {
         if graph_on_canvas && !door {
             if self.overlay.is_none() {
                 let events = ctx.input(|i| i.events.clone());
-                self.protocol.doc.model.feed_events(&events);
+                let canvas_node = self.protocol.doc.canvas_holds.node().cloned();
+                self.protocol
+                    .doc
+                    .model
+                    .feed_events(&events, canvas_node.as_ref());
             }
             if let Some(addr) = self.protocol.doc.model.take_yank_request() {
                 ctx.copy_text(addr);
@@ -4057,7 +4079,11 @@ impl MeridianApp {
                     self.toggle_navigator_focus(ctx);
                 }
                 Request::Verb(verb) if graph_on_canvas => {
-                    self.protocol.doc.model.dispatch(verb.as_str());
+                    let canvas_node = self.protocol.doc.canvas_holds.node().cloned();
+                    self.protocol
+                        .doc
+                        .model
+                        .dispatch(verb.as_str(), canvas_node.as_ref());
                 }
                 Request::Verb(verb) => {
                     if verb.as_str() == "clear-selection" {

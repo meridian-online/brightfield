@@ -130,18 +130,29 @@ fn click_at(pos: egui::Pos2) -> Vec<egui::Event> {
     events
 }
 
-/// Every text galley the frame painted, with the rect it landed in.
+/// Every text galley the frame painted, with the rect it landed in and the
+/// font its first (and, for every galley built here from `layout_no_wrap` or
+/// `painter.text`, only) section was set in — the face a caller reads to
+/// catch a label drawn in the wrong one, which a rect alone cannot.
 ///
 /// Recursive, because a pane's chrome nests its shapes: a `Shape::Vec` holding
 /// a fill and a stroke is one row's wash, and the galley under it is a level
 /// down.
-fn texts(shapes: &[egui::epaint::ClippedShape]) -> Vec<(String, egui::Rect)> {
-    fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+fn texts(shapes: &[egui::epaint::ClippedShape]) -> Vec<(String, egui::Rect, egui::FontId)> {
+    fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect, egui::FontId)>) {
         match shape {
             egui::Shape::Text(text) => {
+                let font = text
+                    .galley
+                    .job
+                    .sections
+                    .first()
+                    .map(|section| section.format.font_id.clone())
+                    .unwrap_or_else(|| egui::FontId::default());
                 out.push((
                     text.galley.text().to_string(),
                     egui::Rect::from_min_size(text.pos, text.galley.size()),
+                    font,
                 ));
             }
             egui::Shape::Vec(shapes) => {
@@ -480,6 +491,56 @@ fn a_fresh_open_holds_the_dashboard_and_marks_the_row_that_says_so() {
     );
 }
 
+/// **The Operator tab, switched to on a fresh open, describes the table the
+/// canvas holds — it does not say "Nothing selected."**
+///
+/// The inspector rail's strip offers two tabs over one document each —
+/// `Operator` (the Protocol's) and `Inspector` (the chart's), sharing
+/// `INSPECTOR_PANES` behind one selector — and a fresh data-file open leaves
+/// the chart's own tab active, but a reader can switch. `has_selection` and
+/// `inspector` both fall back to the node the canvas holds when nothing is
+/// explicitly picked, so switching to Operator there answers for the table
+/// rather than for nothing, and the "press y to copy it" copy sits beside a
+/// real address. Before that fallback existed, this tab read `Nothing
+/// selected` no matter which row was on the canvas.
+#[test]
+fn switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table() {
+    let mut win = Live::open(housing_boot());
+    win.settle();
+
+    let shapes = win.shapes();
+    let operator = texts(&shapes)
+        .into_iter()
+        .find(|(text, _, _)| text == "Operator")
+        .map(|(_, rect, _)| rect)
+        .expect("the inspector rail's strip offers an Operator tab");
+    win.run(vec![click_at(operator.center()), Vec::new(), Vec::new()]);
+
+    let shapes = win.shapes();
+    let drawn: Vec<String> = texts(&shapes).into_iter().map(|(t, _, _)| t).collect();
+    assert!(
+        !drawn.iter().any(|t| t == "Nothing selected"),
+        "the Operator pane still shows its empty state after a fresh open, \
+         though the canvas holds the table's dashboard: {drawn:?}"
+    );
+    assert!(
+        drawn.iter().any(|t| t == "ADDRESS"),
+        "the Operator pane drew no Address field for the table the canvas \
+         holds: {drawn:?}"
+    );
+    let table = win
+        .app
+        .protocol_model()
+        .table()
+        .cloned()
+        .expect("the fixture opened as a one-step Protocol with a table");
+    assert!(
+        drawn.iter().any(|t| t == &table),
+        "the Operator pane's Address field does not name the table the \
+         canvas holds ({table}): {drawn:?}"
+    );
+}
+
 /// **AC2.** A click on `grid` puts the table's grid on the canvas: the bar
 /// moves to that row, the canvas body becomes one pane headed
 /// `Grid · california_housing_sample`, and a click on `dashboard` brings the
@@ -536,8 +597,8 @@ fn clicking_a_view_row_moves_the_canvas_and_the_bar_with_it() {
     let shapes = win.shapes();
     let title = texts(&shapes)
         .into_iter()
-        .find(|(_, rect)| header.contains_rect(*rect))
-        .map(|(text, _)| text);
+        .find(|(_, rect, _)| header.contains_rect(*rect))
+        .map(|(text, _, _)| text);
     assert_eq!(
         title.as_deref(),
         Some("Grid \u{b7} california_housing_sample"),
@@ -703,6 +764,17 @@ fn the_spines_measurements_hold_at_both_windows() {
             "at {size:?} the rail drew {} rows",
             rows.len()
         );
+        // One more settled frame, purely to read the fonts the galleys were
+        // built with — `SpineRowDrawn` carries the rect a kind label landed
+        // in, not the face it was set in, so that has to come off the shapes
+        // themselves.
+        let shapes = win.shapes();
+        let painted = texts(&shapes);
+        // The contract's mono caption face — one step under the UI size, the
+        // same construction `caption_font` makes in `protocol.rs`, restated
+        // here rather than called across the crate boundary a `tests/`
+        // binary sits on the far side of.
+        let mono_caption = egui::FontId::monospace(meridian_design::typography::UI_SIZE - 1.0);
 
         let body = win.app.spine_body().expect("the pane was laid out");
         let first = rows.first().expect("a caption leads the pane");
@@ -736,6 +808,25 @@ fn the_spines_measurements_hold_at_both_windows() {
                     row.label,
                     row.rect.right() - kind.right()
                 );
+                // The face, not just the place. A column row keeps the
+                // outline's own `ui_font()` — that pre-dates this contract and
+                // is not what it governs — but every spine row's kind (the
+                // step's or the asset's, at the trailing end) is the mono
+                // caption face in `text.muted`, so a run state reads as a
+                // value rather than as prose beside it.
+                if row.role != SpineRole::Column {
+                    let drawn = painted
+                        .iter()
+                        .find(|(text, rect, _)| *text == row.kind && kind.expand(0.5).contains_rect(*rect))
+                        .map(|(_, _, font)| font.clone());
+                    assert_eq!(
+                        drawn.as_ref(),
+                        Some(&mono_caption),
+                        "at {size:?} the kind on {:?} is drawn in {drawn:?}, not \
+                         the mono caption face {mono_caption:?}",
+                        row.label
+                    );
+                }
             }
         }
 
@@ -804,8 +895,8 @@ fn the_navigator_rails_strip_names_the_pane_protocol() {
     let shapes = win.shapes();
     let drawn = texts(&shapes)
         .into_iter()
-        .find(|(_, rect)| name.expand(2.0).contains_rect(*rect))
-        .map(|(text, _)| text);
+        .find(|(_, rect, _)| name.expand(2.0).contains_rect(*rect))
+        .map(|(text, _, _)| text);
     assert_eq!(
         drawn.as_deref(),
         Some("Protocol"),
