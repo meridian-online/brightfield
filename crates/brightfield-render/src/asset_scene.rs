@@ -604,7 +604,12 @@ fn draw_node(
 /// looks like.
 ///
 /// [`view_chip_rects`]: brightfield_protocol::layout::view_chip_rects
-fn draw_view_chips(scene: &mut Scene, chips: &[ViewChip], showing: Option<&str>, palette: AssetInk) {
+fn draw_view_chips(
+    scene: &mut Scene,
+    chips: &[ViewChip],
+    showing: Option<&str>,
+    palette: AssetInk,
+) {
     for chip in chips {
         let r = &chip.rect;
         let box_ = RoundedRect::new(
@@ -718,8 +723,7 @@ mod tests {
     use super::*;
     use brightfield_protocol::graph::build_graph;
     use brightfield_protocol::layout::{
-        layout as compute_layout, view_chip_rects, LayoutConfig, VIEW_CHIP_HEIGHT,
-        VIEW_CHIP_INSET,
+        layout as compute_layout, view_chip_rects, LayoutConfig, VIEW_CHIP_HEIGHT, VIEW_CHIP_INSET,
     };
     use brightfield_protocol::parse_manifest_str;
     use std::collections::BTreeMap;
@@ -1311,9 +1315,8 @@ steps:
                  chip ({r:?})",
                 chip.label
             );
-            let lo = |sel: fn(&(f64, f64)) -> f64| {
-                inside.iter().map(sel).fold(f64::INFINITY, f64::min)
-            };
+            let lo =
+                |sel: fn(&(f64, f64)) -> f64| inside.iter().map(sel).fold(f64::INFINITY, f64::min);
             let hi = |sel: fn(&(f64, f64)) -> f64| {
                 inside.iter().map(sel).fold(f64::NEG_INFINITY, f64::max)
             };

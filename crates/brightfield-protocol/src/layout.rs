@@ -496,9 +496,8 @@ pub fn layout(graph: &AssetGraph, config: &LayoutConfig) -> Layout {
     // A node's chip words, or nothing where it declares no views. Looked up
     // once per call site rather than cloned into the closure, so a node the
     // config does not name costs an empty slice and no allocation.
-    let chips_of = |id: &AssetId| -> &[String] {
-        config.view_chips.get(id).map_or(&[], Vec::as_slice)
-    };
+    let chips_of =
+        |id: &AssetId| -> &[String] { config.view_chips.get(id).map_or(&[], Vec::as_slice) };
     let size_of = |slot: &Slot| -> (f64, f64) {
         match slot {
             Slot::Real(id) => {

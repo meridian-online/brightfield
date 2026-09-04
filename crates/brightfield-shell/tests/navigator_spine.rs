@@ -926,7 +926,10 @@ fn a_windows_latched_canvas_agrees_with_the_derived_answer() {
          holds nothing but the graph"
     );
     let chip = manifest.chip();
-    assert!(chip.filled, "…and its chip is not the state the canvas is in");
+    assert!(
+        chip.filled,
+        "…and its chip is not the state the canvas is in"
+    );
     assert!(
         !chip.live,
         "the chip is a control on a Protocol whose canvas can only ever hold \
@@ -1277,7 +1280,11 @@ fn the_spines_head_carries_an_unfilled_graph_chip_over_a_dashboard() {
     let mut win = Live::open(housing_boot());
     win.settle();
 
-    let head = win.rows().first().cloned().expect("a caption leads the pane");
+    let head = win
+        .rows()
+        .first()
+        .cloned()
+        .expect("a caption leads the pane");
     assert_eq!(
         head.role,
         SpineRole::Caption,
