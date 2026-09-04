@@ -2776,14 +2776,15 @@ impl Item<ProtocolDoc> for InspectorPane {
     fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
         let facts = doc.model.inspector(doc.canvas_holds.node());
         let mode = cx.mode;
-        // The hint band draws while the graph is on the canvas and no overlay
-        // is open — both read `crate::window::MeridianApp::graph_on_canvas`.
-        // This pane uses the hint band's condition, and both share the same
-        // exposure while an overlay is open. `CanvasHolds::Graph` reconciles
-        // from that condition by `crate::window::MeridianApp::reconcile_canvas_holds`
-        // (`clicking_a_view_row_moves_the_canvas_and_the_bar_with_it` holds that
-        // latch), so this pane asks its own document instead of reaching back up
-        // to the window for it.
+        // The hint band draws while the graph is on the canvas, and the key feed
+        // runs under that condition plus no overlay open. With an overlay open the
+        // hint band still reads `y yank` and this clause is still drawn while the
+        // key goes to the overlay: the same exposure for both, kept deliberately so
+        // the two say the same thing. `CanvasHolds::Graph` is the latched form of
+        // the graph-on-canvas condition, mirrored into the document by
+        // `reconcile_canvas_holds` at the head of a draw;
+        // `a_windows_latched_canvas_agrees_with_the_derived_answer` pins the latch
+        // against the derived answer on a manifest window and on a data-file window.
         let key_grammar_fed = matches!(doc.canvas_holds, crate::window::CanvasHolds::Graph);
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
