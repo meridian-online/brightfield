@@ -724,8 +724,8 @@ pub enum CanvasHolds {
     /// **Kept distinct from `Graph`, not collapsed, though no method on this
     /// type currently branches on the two separately** — `node`, `view` and
     /// `shows` each read the pair as one `Graph | Chart` arm. The variant
-    /// still says something `Graph` cannot: this canvas holds no asset graph
-    /// at all, as opposed to holding one and showing it. A caller asking "is
+    /// still says something `Graph` cannot: this canvas holds no asset
+    /// graph, as opposed to holding one and showing it. A caller asking "is
     /// this the DAG raster" would otherwise have to re-derive
     /// `graph_takes_the_canvas` itself rather than read the latch that
     /// already answered it — the same re-derivation this whole latch exists

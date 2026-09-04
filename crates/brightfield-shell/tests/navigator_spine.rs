@@ -131,9 +131,10 @@ fn click_at(pos: egui::Pos2) -> Vec<egui::Event> {
 }
 
 /// The text galleys the frame painted, with the rect each landed in and the
-/// font its first (and, for a galley built here from `layout_no_wrap` or
-/// `painter.text`, only) section was set in — the face a caller reads to
-/// catch a label drawn in the wrong one, which a rect alone does not show.
+/// font its first section was set in — the sole section for a galley built
+/// here from `layout_no_wrap` or `painter.text` — which is the face a caller
+/// reads to catch a label drawn in the wrong one, a fact a rect alone does
+/// not show.
 ///
 /// Recursive, because a pane's chrome nests its shapes: a `Shape::Vec` holding
 /// a fill and a stroke is one row's wash, and the galley under it is a level
