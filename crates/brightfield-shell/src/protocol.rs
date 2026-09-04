@@ -444,6 +444,134 @@ pub fn column_row_id(table: &AssetId, column: &str) -> AssetId {
     format!("column.{table}.{column}")
 }
 
+// ---------------------------------------------------------------------------
+// The spine: the Protocol as an ordered list of what it reads, does and makes
+// ---------------------------------------------------------------------------
+
+/// One way of looking at the table a node names.
+///
+/// Two today, in the order the spine lists them under a node. They are views of
+/// **one** table read through **one** engine session, not two documents: the
+/// dashboard is the composed page the canvas draws as a pane group, and the
+/// grid is that same session listed as rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NodeView {
+    /// The generated dashboard — the hero, the rows beneath it, the tiles beside.
+    Dashboard,
+    /// The table listed as rows.
+    Grid,
+}
+
+impl NodeView {
+    /// Every view a node has, in the order the spine lists them.
+    pub const ALL: [Self; 2] = [Self::Dashboard, Self::Grid];
+
+    /// The word the spine draws for this view.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Dashboard => "dashboard",
+            Self::Grid => "grid",
+        }
+    }
+}
+
+/// What a spine row's marker says about the thing that row names.
+///
+/// **Existence, not run status.** A step's run state is carried in words at the
+/// trailing end of its own row (`sql · not run`), so a marker that repeated it
+/// would be a second spelling of one fact. What the marker answers instead is
+/// the question a reader asks of a list like this — *is this thing there yet* —
+/// and its two answers are the two ways a Protocol can be part-built.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpineMarker {
+    /// The thing exists: an asset the Protocol reads off disk, an asset a run
+    /// materialised, or a step that ran to success.
+    Filled,
+    /// The thing does not exist yet: a step that has not run to success, or an
+    /// asset nothing has materialised.
+    Hollow,
+    /// No marker — a caption, a view of a node, a column of a table.
+    None,
+}
+
+/// Which band of the navigator rail's Protocol pane a row belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpineRole {
+    /// A caption naming the band under it.
+    Caption,
+    /// An asset the Protocol reads or makes.
+    Asset,
+    /// The step that stands between one asset and the next.
+    Step,
+    /// One view of the node above it.
+    View,
+    /// One column of the table.
+    Column,
+}
+
+/// One row of the Protocol pane's spine, before anything has drawn it.
+///
+/// Derived by [`ProtocolModel::spine`], which is where the ordering rule lives:
+/// the assets in outline order, each preceded by the step that produces it, and
+/// a node's views listed under it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpineRow {
+    /// What the row is called — an asset's label, a step's name, a view's word.
+    pub label: String,
+    /// The text at the row's trailing end: `file`, `table`, `sql · not run`,
+    /// `view`.
+    pub kind: String,
+    /// How far the row is indented: `0` for an asset or a step, `1` for a view
+    /// of the asset above it.
+    pub depth: u8,
+    /// The marker at the row's leading end.
+    pub marker: SpineMarker,
+    /// Which band the row belongs to.
+    pub role: SpineRole,
+    /// Whether this row is the current selection — the wash, and never the
+    /// on-canvas bar.
+    pub selected: bool,
+    /// The asset a click addresses: the asset itself on an asset row, the node
+    /// a view belongs to on a view row, `None` on a step row.
+    pub id: Option<AssetId>,
+    /// The view a click puts on the canvas, on a view row.
+    pub view: Option<NodeView>,
+}
+
+/// The separator a caption row puts between its clauses.
+///
+/// Wider than the sentence separator the pane's own rows use, because a caption
+/// is read as a set of fields rather than as a phrase — the space is what makes
+/// `SPINE`, the count and (in the outline's caption) the table read as three
+/// things rather than one run-on line.
+const CAPTION_SEPARATOR: &str = "   \u{b7}   ";
+
+/// A caption row's text: its clauses, separated.
+fn caption(clauses: &[&str]) -> String {
+    clauses.join(CAPTION_SEPARATOR)
+}
+
+/// `n` and its noun, pluralised — `1 step`, `9 columns`.
+fn counted(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("{n} {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
+/// The word a seam's kind is drawn as — the steps sheet's own vocabulary, so
+/// one step named in two places is named the same way twice.
+fn seam_kind_word(graph: &AssetGraph, step: &StepId) -> &'static str {
+    match graph.seams.get(step).map(|seam| &seam.kind) {
+        Some(SeamKind::Op { .. }) => "op",
+        Some(SeamKind::Sql { .. }) => "sql",
+        Some(SeamKind::Command) => "command",
+        Some(SeamKind::Opaque) | None => "?",
+    }
+}
+
 /// Synthesise the flat run-ordered step rows from the graph's seams — the S
 /// sheet's content on the offline path (no `ContractView`; status is unrun).
 fn synth_sheet_rows(graph: &AssetGraph) -> Vec<StepRow> {
@@ -612,7 +740,24 @@ impl ProtocolModel {
     #[must_use]
     pub fn new(inputs: ProtocolInputs, flow: Flow) -> Self {
         let nav = ProtocolNav::new(&inputs.graph_collapsed);
-        let selected = nav.cursor().cloned();
+        // **A data file opens with nothing selected.** The rail carries two
+        // marks — a bar on the row whose content is on the canvas, a wash on
+        // the row a reader picked — and a boot cursor washed into the spine
+        // puts the second one on a row nobody chose, next to the first. The
+        // keyboard cursor still starts where the nav puts it: `selected` is
+        // what the rails draw, `nav.cursor()` is where `hjkl` resume from, and
+        // the first keystroke seeds one from the other.
+        //
+        // `source` is what says this Protocol was opened as a data file — it
+        // carries the spec Save would write, and only `OneStepProtocol::inputs`
+        // sets it. A Protocol read from a manifest keeps the boot selection it
+        // has always had: there is no dashboard on its canvas for the bar to
+        // stand on, so the wash is the only mark it draws.
+        let selected = if inputs.source.is_some() {
+            None
+        } else {
+            nav.cursor().cloned()
+        };
         let layout = Self::boot_layout(&inputs, flow);
         let sheet = StepsSheet::from_rows(inputs.sheet_rows);
         let family_ids: Vec<AssetId> = inputs
@@ -1031,6 +1176,144 @@ impl ProtocolModel {
             }
         }
         out
+    }
+
+    /// The column rows the outline lists beneath the spine — the outline's rows
+    /// with the assets taken out, because the spine above already lists those.
+    ///
+    /// Filtered out of [`ProtocolModel::outline`] rather than derived beside it:
+    /// two derivations of one list is how the rail and the render proof would
+    /// come to disagree about which columns a table has.
+    #[must_use]
+    pub fn column_rows(&self) -> Vec<OutlineRow> {
+        self.outline()
+            .into_iter()
+            .filter(|row| row.depth > 0)
+            .collect()
+    }
+
+    /// **The spine**: the Protocol as an ordered list of what it reads, what it
+    /// does to it, and what that makes.
+    ///
+    /// The assets in [`outline_rows`]' order, each preceded by the step that
+    /// produces it, and — under the table a data file opened as — that node's
+    /// views. A step with two produced assets is drawn once before each of
+    /// them: the row says *this asset came through this step*, which is a fact
+    /// about the pair rather than about the step alone.
+    ///
+    /// The order is the outline's and is not re-derived here, for the reason
+    /// [`ProtocolModel::column_rows`] is a filter: the rail, the canvas and the
+    /// render proof read one topological order or they read two.
+    #[must_use]
+    pub fn spine(&self) -> Vec<SpineRow> {
+        let graph = &self.graph_collapsed;
+        let assets = outline_rows(graph, &self.statuses, self.selected.as_ref());
+        let mut rows = Vec::with_capacity(assets.len() * 2);
+        for row in assets {
+            let node = graph.nodes.get(&row.id);
+            let step = node.and_then(|n| n.step.as_ref());
+            if let Some(step) = step {
+                rows.push(SpineRow {
+                    label: step.clone(),
+                    kind: format!(
+                        "{} \u{b7} {}",
+                        seam_kind_word(graph, step),
+                        status_word(row.status)
+                    ),
+                    depth: 0,
+                    marker: if row.status == SeamStatus::Ok {
+                        SpineMarker::Filled
+                    } else {
+                        SpineMarker::Hollow
+                    },
+                    role: SpineRole::Step,
+                    selected: false,
+                    id: None,
+                    view: None,
+                });
+            }
+            let exists = step.is_none()
+                || self
+                    .assets
+                    .get(&row.id)
+                    .is_some_and(|meta| meta.materialized);
+            let is_table = self.table.as_ref() == Some(&row.id);
+            rows.push(SpineRow {
+                label: row.label,
+                kind: kind_label(row.kind).to_string(),
+                depth: 0,
+                marker: if exists {
+                    SpineMarker::Filled
+                } else {
+                    SpineMarker::Hollow
+                },
+                role: SpineRole::Asset,
+                selected: row.selected,
+                id: Some(row.id.clone()),
+                view: None,
+            });
+            if is_table {
+                rows.extend(NodeView::ALL.map(|view| SpineRow {
+                    label: view.label().to_string(),
+                    kind: "view".to_string(),
+                    depth: 1,
+                    marker: SpineMarker::None,
+                    role: SpineRole::View,
+                    selected: false,
+                    id: Some(row.id.clone()),
+                    view: Some(view),
+                }));
+            }
+        }
+        rows
+    }
+
+    /// The spine's caption: how many **steps** the spine lists.
+    ///
+    /// Counted over the spine's own step rows, deduplicated by step name, so
+    /// the caption answers for the list under it rather than for a step map the
+    /// collapsed graph may not draw every member of.
+    #[must_use]
+    pub fn spine_caption(&self) -> String {
+        let steps: BTreeSet<String> = self
+            .spine()
+            .into_iter()
+            .filter(|row| row.role == SpineRole::Step)
+            .map(|row| row.label)
+            .collect();
+        caption(&["SPINE", &counted(steps.len(), "step")])
+    }
+
+    /// The outline's caption: the table the columns beneath belong to, and how
+    /// many there are.
+    ///
+    /// A Protocol read from a manifest has profiled no table, so it names none
+    /// — a manifest declares relations and a column list is what an engine
+    /// measured, which is the same separation [`ProtocolModel::outline`] keeps.
+    #[must_use]
+    pub fn outline_caption(&self) -> String {
+        let columns = counted(self.columns.len(), "column");
+        match self.table_label() {
+            Some(table) => caption(&["OUTLINE", table, &columns]),
+            None => caption(&["OUTLINE", &columns]),
+        }
+    }
+
+    /// The label of the table this Protocol produces — what a view of it is
+    /// named after. `None` for a Protocol with no profiled table behind it.
+    #[must_use]
+    pub fn table_label(&self) -> Option<&str> {
+        let table = self.table.as_ref()?;
+        self.graph_collapsed
+            .nodes
+            .get(table)
+            .map(|node| node.label.as_str())
+    }
+
+    /// The asset id of the table this Protocol produces.
+    #[must_use]
+    pub fn table(&self) -> Option<&AssetId> {
+        self.table.as_ref()
     }
 
     /// The columns of the table this Protocol produces, in the table's own
@@ -1548,6 +1831,59 @@ pub struct ProtocolDoc {
     /// window a hundred points short opens the graph part-scrolled and no
     /// baseline can tell that from a graph that is simply large.
     pub viewport: Option<egui::Rect>,
+    /// What the window's canvas holds this frame, mirrored here so the
+    /// navigator rail can mark the row whose content is on it.
+    ///
+    /// **Written by the window before the pane draws, and never by the pane.**
+    /// The canvas belongs to the window — [`crate::window::MeridianApp`] latches
+    /// it and reconciles it against the documents each frame — so a pane that
+    /// decided this for itself would be a second answer to a question the
+    /// window has already answered, which is the defect
+    /// [`crate::window::graph_takes_the_canvas`] exists to prevent one level up.
+    pub canvas_holds: crate::window::CanvasHolds,
+    /// The rows the Protocol pane drew in the last frame this document was
+    /// drawn in, in draw order — captions, spine rows and column rows alike.
+    ///
+    /// Recorded rather than re-derived, for the reason
+    /// [`crate::window::MeridianApp::region_rect`] is recorded: a claim about
+    /// what a reader sees in the rail has to come off the frame that drew it,
+    /// and a test that asked [`ProtocolModel::spine`] again would be comparing
+    /// the derivation with itself.
+    pub spine_drawn: Vec<SpineRowDrawn>,
+    /// The content box the Protocol pane was last handed — what the first
+    /// caption row's `SPACE_1` of clearance is measured from. `None` until a
+    /// frame has laid the pane out.
+    pub spine_body: Option<egui::Rect>,
+    /// The view a reader clicked in the rail this frame, if one was clicked.
+    /// Taken by the window, which owns what the canvas holds.
+    view_pick: Option<(AssetId, NodeView)>,
+}
+
+/// One row of the Protocol pane **as it was drawn** — the content and the
+/// geometry, together, off one frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpineRowDrawn {
+    /// What the row said at its leading end.
+    pub label: String,
+    /// What it said at its trailing end — empty on a caption row, which is one
+    /// string across the row.
+    pub kind: String,
+    /// How far it was indented.
+    pub depth: u8,
+    /// The marker it drew.
+    pub marker: SpineMarker,
+    /// Which band it belongs to.
+    pub role: SpineRole,
+    /// The whole row.
+    pub rect: egui::Rect,
+    /// Where the name galley started — the measure an indent is read off.
+    pub name_left: f32,
+    /// The rect the trailing text occupied, `None` on a row that drew none.
+    pub kind_rect: Option<egui::Rect>,
+    /// The on-canvas bar, on the one row whose content the canvas holds.
+    pub on_canvas: Option<egui::Rect>,
+    /// Whether the selection wash was painted under this row.
+    pub washed: bool,
 }
 
 /// Everything the DAG raster's pixels depend on.
@@ -1598,6 +1934,10 @@ impl ProtocolDoc {
             model,
             canvas: CanvasSlot::new(host),
             viewport: None,
+            canvas_holds: crate::window::CanvasHolds::Graph,
+            spine_drawn: Vec::new(),
+            spine_body: None,
+            view_pick: None,
         }
     }
 
@@ -1608,6 +1948,10 @@ impl ProtocolDoc {
             model,
             canvas: CanvasSlot::headless(),
             viewport: None,
+            canvas_holds: crate::window::CanvasHolds::Graph,
+            spine_drawn: Vec::new(),
+            spine_body: None,
+            view_pick: None,
         }
     }
 
@@ -1617,6 +1961,17 @@ impl ProtocolDoc {
     #[must_use]
     pub fn empty() -> Self {
         Self::headless(ProtocolModel::new(ProtocolInputs::empty(), Flow::Vertical))
+    }
+
+    /// Take the view a reader clicked in the rail this frame, if one was
+    /// clicked.
+    ///
+    /// The other half of [`ProtocolDoc::canvas_holds`]: the pane reports the
+    /// gesture and the window decides what the canvas holds, so what is on the
+    /// canvas has one writer. Mirrors [`ProtocolModel::take_column_pick`],
+    /// which is the same shape for the inspector's column.
+    pub fn take_view_pick(&mut self) -> Option<(AssetId, NodeView)> {
+        self.view_pick.take()
     }
 
     /// Replace the graph with a freshly built one, keeping the reading axis
@@ -1820,29 +2175,55 @@ impl Item<ProtocolDoc> for OutlinePane {
     }
 
     fn describe(&self, _doc: &ProtocolDoc) -> Subject {
-        Subject::new("Outline", ICON_OUTLINE, BindingContext::Protocol)
+        Subject::new("Protocol", ICON_OUTLINE, BindingContext::Protocol)
     }
 
     fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
-        let rows = doc.model.outline();
+        let spine = doc.model.spine();
+        let columns = doc.model.column_rows();
+        let spine_caption = doc.model.spine_caption();
+        let outline_caption = doc.model.outline_caption();
+        let holds = doc.canvas_holds.clone();
+        let mut drawn: Vec<SpineRowDrawn> = Vec::with_capacity(spine.len() + columns.len() + 2);
         let mut clicked: Option<AssetId> = None;
         let mut column: Option<String> = None;
+        let mut view: Option<(AssetId, NodeView)> = None;
+        doc.spine_body = Some(ui.max_rect());
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for row in &rows {
-                    if outline_row(ui, row, cx.mode).clicked() {
-                        // A column row addresses no node, so it cannot go
-                        // through `select_id` — the nav would be asked to
-                        // focus an id absent from its graph.
-                        if row.depth == 0 {
-                            clicked = Some(row.id.clone());
-                        } else {
-                            column = Some(row.label.clone());
+                ui.add_space(spacing::SPACE_1);
+                drawn.push(caption_row(ui, &spine_caption, cx.mode));
+                for row in &spine {
+                    let (record, response) = spine_row(ui, row, holds.shows(row), cx.mode);
+                    drawn.push(record);
+                    if response.clicked() {
+                        match (row.role, row.id.as_ref(), row.view) {
+                            // A view row addresses no node the nav can focus —
+                            // it names one way of looking at the node above it,
+                            // and what it moves is the canvas.
+                            (SpineRole::View, Some(id), Some(v)) => {
+                                view = Some((id.clone(), v));
+                            }
+                            (SpineRole::Asset, Some(id), _) => clicked = Some(id.clone()),
+                            _ => {}
                         }
                     }
                 }
+                ui.add_space(spacing::SPACE_4);
+                drawn.push(caption_row(ui, &outline_caption, cx.mode));
+                for row in &columns {
+                    let (record, response) = outline_row(ui, row, cx.mode);
+                    drawn.push(record);
+                    if response.clicked() {
+                        // A column row addresses no node, so it cannot go
+                        // through `select_id` — the nav would be asked to
+                        // focus an id absent from its graph.
+                        column = Some(row.label.clone());
+                    }
+                }
             });
+        doc.spine_drawn = drawn;
         if let Some(id) = clicked {
             doc.model.select_id(id);
         }
@@ -1850,7 +2231,174 @@ impl Item<ProtocolDoc> for OutlinePane {
             doc.model.pick_column(&column);
             cx.request_repaint();
         }
+        if let Some(pick) = view {
+            doc.view_pick = Some(pick);
+            cx.request_repaint();
+        }
     }
+}
+
+/// A **caption row**: one dense row naming the band under it, in the mono face
+/// at the reduced size the chrome uses for a readout rather than a label.
+///
+/// Mono because a caption is read as fields — a word, a name, a count — and the
+/// mono face is what keeps the separators lining up between the two captions
+/// this pane draws. The size is [`crate::window`]'s count overlay's, which is
+/// the other place in this shell a line of muted chrome sits over content
+/// rather than labelling it.
+///
+/// It allocates a row and senses nothing: a caption is not a control, and a
+/// caption that swallowed a click would be a dead zone between two lists that
+/// both respond to one.
+fn caption_row(ui: &mut egui::Ui, text: &str, mode: Mode) -> SpineRowDrawn {
+    let sem = semantic(mode.is_dark());
+    let b = control::binding(spacing::ROW_DENSE);
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), b.row),
+        egui::Sense::hover(),
+    );
+    let at = egui::pos2(rect.left() + spacing::SPACE_4, rect.center().y);
+    ui.painter().text(
+        at,
+        egui::Align2::LEFT_CENTER,
+        text,
+        caption_font(),
+        chrome::colour(sem.text.muted),
+    );
+    SpineRowDrawn {
+        label: text.to_string(),
+        kind: String::new(),
+        depth: 0,
+        marker: SpineMarker::None,
+        role: SpineRole::Caption,
+        rect,
+        name_left: at.x,
+        kind_rect: None,
+        on_canvas: None,
+        washed: false,
+    }
+}
+
+/// One **spine row**: the marker, the name, and the kind at the trailing end —
+/// plus, on the one row whose content the canvas holds, the bar at its leading
+/// edge.
+///
+/// # The two marks
+///
+/// `on_canvas` and [`SpineRow::selected`] are two different facts and are drawn
+/// by two different mechanisms, deliberately. The wash is a fill under the whole
+/// row and says *this is what you picked*; the bar is two points of
+/// [`semantic`]'s focus ink at the leading edge and says *this is what is on the
+/// canvas*. A reader who has picked a column while looking at the dashboard is
+/// being told two things at once, and one treatment could only tell them one.
+///
+/// # Why the marker is not the outline's status dot
+///
+/// [`outline_row`] tints its dot by the producing step's status. Here the run
+/// state is spelled in words at the trailing end of the step's own row, so the
+/// marker answers the other question — whether the thing exists — and answers
+/// it in shape rather than in colour: filled for a thing that is there, hollow
+/// for one that is not. See [`SpineMarker`].
+fn spine_row(
+    ui: &mut egui::Ui,
+    row: &SpineRow,
+    on_canvas: bool,
+    mode: Mode,
+) -> (SpineRowDrawn, egui::Response) {
+    let sem = semantic(mode.is_dark());
+    let b = control::binding(spacing::ROW_DENSE);
+    // A step row and a caption row are readouts rather than controls: nothing
+    // in this card acts on a step, and a row that senses a click it does not
+    // answer is a control that appears broken.
+    let sense = match row.role {
+        SpineRole::Asset | SpineRole::View => egui::Sense::click(),
+        _ => egui::Sense::hover(),
+    };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), b.row), sense);
+    if row.selected {
+        chrome::selection_wash(ui, rect, mode);
+    }
+
+    let painter = ui.painter();
+    let on_canvas = on_canvas.then(|| {
+        let bar = egui::Rect::from_min_max(
+            rect.left_top(),
+            egui::pos2(rect.left() + ON_CANVAS_BAR_WIDTH, rect.bottom()),
+        );
+        painter.rect_filled(bar, 0.0, chrome::colour(sem.borders.focus));
+        bar
+    });
+
+    // The marker's leading edge sits `SPACE_4` in, so its centre is one radius
+    // past that — and the name clears the whole marker whether one was drawn or
+    // not, so a view row and the node above it hang off one ladder.
+    let marker_left = rect.left() + spacing::SPACE_4;
+    let centre = egui::pos2(marker_left + SPINE_MARKER_RADIUS, rect.center().y);
+    match row.marker {
+        SpineMarker::Filled => {
+            painter.circle_filled(
+                centre,
+                SPINE_MARKER_RADIUS,
+                chrome::colour(sem.text.secondary),
+            );
+        }
+        SpineMarker::Hollow => {
+            painter.circle_stroke(
+                centre,
+                SPINE_MARKER_RADIUS,
+                egui::Stroke::new(1.0, chrome::colour(sem.text.muted)),
+            );
+        }
+        SpineMarker::None => {}
+    }
+    let name_left = marker_left
+        + 2.0 * SPINE_MARKER_RADIUS
+        + spacing::SPACE_5
+        + f32::from(row.depth) * spacing::SPACE_5;
+
+    // The kind is laid out first so the name knows what room is left: a long
+    // asset label clipped by the pane would otherwise run under it.
+    let kind = painter.layout_no_wrap(
+        row.kind.clone(),
+        ui_font(),
+        chrome::colour(sem.text.muted),
+    );
+    let kind_rect = egui::Rect::from_min_size(
+        egui::pos2(
+            rect.right() - spacing::SPACE_4 - kind.size().x,
+            rect.center().y - kind.size().y / 2.0,
+        ),
+        kind.size(),
+    );
+    painter.galley(kind_rect.min, kind, chrome::colour(sem.text.muted));
+
+    // Clipped, not truncated: the room left of the kind is a fact about the
+    // rail's width, and a character budget is a guess at it that goes wrong the
+    // moment somebody drags the rail narrower.
+    let ink = chrome::colour(sem.text.primary);
+    let name = painter.layout_no_wrap(row.label.clone(), ui_font(), ink);
+    let name_at = egui::pos2(name_left, rect.center().y - name.size().y / 2.0);
+    let room = egui::Rect::from_min_max(
+        egui::pos2(name_left, rect.top()),
+        egui::pos2(kind_rect.left() - spacing::SPACE_3, rect.bottom()),
+    );
+    painter.with_clip_rect(room).galley(name_at, name, ink);
+
+    (
+        SpineRowDrawn {
+            label: row.label.clone(),
+            kind: row.kind.clone(),
+            depth: row.depth,
+            marker: row.marker,
+            role: row.role,
+            rect,
+            name_left,
+            kind_rect: Some(kind_rect),
+            on_canvas,
+            washed: row.selected,
+        },
+        response,
+    )
 }
 
 /// One outline row: status dot, label, kind — and, when it is the selection,
@@ -1867,7 +2415,7 @@ impl Item<ProtocolDoc> for OutlinePane {
 /// status dot because it has no producing step of its own, and its right edge
 /// carries [`OutlineRow::note`] — the leaf of its type — where an asset row
 /// carries its kind.
-fn outline_row(ui: &mut egui::Ui, row: &OutlineRow, mode: Mode) -> egui::Response {
+fn outline_row(ui: &mut egui::Ui, row: &OutlineRow, mode: Mode) -> (SpineRowDrawn, egui::Response) {
     let sem = semantic(mode.is_dark());
     let b = control::binding(spacing::ROW_DENSE);
     let (rect, response) = ui.allocate_exact_size(
@@ -1897,14 +2445,60 @@ fn outline_row(ui: &mut egui::Ui, row: &OutlineRow, mode: Mode) -> egui::Respons
         chrome::colour(sem.text.primary),
     );
     let right = row.note.as_deref().unwrap_or_else(|| kind_label(row.kind));
-    painter.text(
+    let kind_rect = painter.text(
         egui::pos2(rect.right() - b.pad_x, rect.center().y),
         egui::Align2::RIGHT_CENTER,
         truncate(right, 20),
         ui_font(),
         chrome::colour(sem.text.muted),
     );
-    response
+    (
+        SpineRowDrawn {
+            label: row.label.clone(),
+            kind: right.to_string(),
+            depth: row.depth,
+            marker: if row.depth == 0 {
+                SpineMarker::Filled
+            } else {
+                SpineMarker::None
+            },
+            role: SpineRole::Column,
+            rect,
+            name_left: x,
+            kind_rect: Some(kind_rect),
+            on_canvas: None,
+            washed: row.selected,
+        },
+        response,
+    )
+}
+
+/// The **width of the on-canvas bar**, in logical points: two, at the leading
+/// edge of the row whose content the canvas holds.
+///
+/// Narrow on purpose. It marks a row without indenting one, so the rows above
+/// and below it stay on the same ladder — a wider rule would have to take its
+/// width out of the row's content and the list would step in and out as the
+/// canvas moved.
+const ON_CANVAS_BAR_WIDTH: f32 = 2.0;
+
+/// The radius of a spine row's marker, in logical points.
+///
+/// Smaller than [`outline_row`]'s status dot, and that is the point: the dot
+/// there carries a status in colour and has to be big enough to read a tint
+/// off, while this carries existence in shape — filled or hollow — which reads
+/// at a size a tint would not.
+const SPINE_MARKER_RADIUS: f32 = 2.5;
+
+/// The face a caption row is drawn in: the mono family at one step under the UI
+/// size.
+///
+/// One step down because a caption names the band under it rather than
+/// competing with it, and the same step the canvas count overlay takes for the
+/// same reason. Mono because a caption's clauses line up between the two
+/// captions this pane draws, and a proportional face lines nothing up.
+fn caption_font() -> egui::FontId {
+    egui::FontId::monospace(meridian_design::typography::UI_SIZE - 1.0)
 }
 
 /// The DAG canvas: the presented Vello raster in a scroll area, with the

@@ -62,6 +62,7 @@ use egui::containers::{CentralPanel, Panel};
 use egui_tiles::{Behavior, Container, Tile};
 
 use brightfield_keys::{Altitude, RecencyCounter};
+use brightfield_protocol::graph::AssetId;
 use brightfield_protocol::layout::{Flow, Layout};
 use brightfield_sql::ir::SampleRate;
 use brightfield_workbench::arrangement::{self, Occupant, Projection, Region, RegionId};
@@ -87,9 +88,9 @@ use crate::inspector::{ColumnTable, InspectorPane, Selection, TableHandle};
 use crate::overlays::{CommandPalette, HelpSheet, JumpTarget, JumpToNode};
 use crate::pipeline::Composed;
 use crate::protocol::{
-    hint_ui, load_protocol_offline, mono_font, protocol_registry, ui_font, ProtocolDoc,
-    ProtocolInputs, ProtocolModel, CANVAS as PROTOCOL_CANVAS, INSPECTOR as PROTOCOL_INSPECTOR,
-    OUTLINE, STEPS,
+    hint_ui, load_protocol_offline, mono_font, protocol_registry, ui_font, NodeView, ProtocolDoc,
+    ProtocolInputs, ProtocolModel, SpineRole, SpineRow, CANVAS as PROTOCOL_CANVAS,
+    INSPECTOR as PROTOCOL_INSPECTOR, OUTLINE, STEPS,
 };
 
 // ---------------------------------------------------------------------------
@@ -683,6 +684,72 @@ pub fn names_a_data_file(chosen: &str) -> bool {
 #[must_use]
 pub const fn graph_takes_the_canvas(has_graph: bool, has_chart: bool) -> bool {
     has_graph && !has_chart
+}
+
+/// **What the canvas holds** — latched by the window, and the one answer the
+/// navigator rail marks a row against.
+///
+/// [`graph_takes_the_canvas`] is derived and answers a coarser question: it
+/// says *which document* the canvas belongs to, from what each document has in
+/// it, and it has to stay derived because two callers ask it at two different
+/// moments (see its own note). What it cannot say is which of a node's views is
+/// on the canvas, because nothing in either document's contents decides that —
+/// a reader does, by clicking a view row.
+///
+/// So this is latched: [`MeridianApp::reconcile_canvas_holds`] initialises it
+/// from `graph_takes_the_canvas` and reconciles it against the documents at the
+/// head of every frame, and a click on a view row moves it between frames. The
+/// latch and the derived answer agree about the graph by construction —
+/// `a_windows_latched_canvas_agrees_with_the_derived_answer` reads both off one
+/// frame and holds them to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CanvasHolds {
+    /// The asset graph — a Protocol read from a manifest, with no chart to give
+    /// the canvas away to.
+    Graph,
+    /// One view of one node: the node's dotted asset id and which view.
+    View {
+        /// The node the view belongs to.
+        node: AssetId,
+        /// Which of that node's views.
+        view: NodeView,
+    },
+    /// A composed chart that is nobody's view — a spec opened on its own, with
+    /// no Protocol behind it naming the table it draws.
+    ///
+    /// A third variant rather than a `View` over an empty id, because an empty
+    /// asset id is a sentinel every reader of this enum would have to know
+    /// about and none of them would be told about by the type.
+    Chart,
+}
+
+impl CanvasHolds {
+    /// Whether `row` is the row whose content the canvas holds — the one row
+    /// that draws the on-canvas bar.
+    ///
+    /// A view row, and only a view row: the graph and a bare chart are not
+    /// listed in the spine (the graph gets a chip in the spine's head, which is
+    /// a later card), so on those two nothing in the rail is marked.
+    #[must_use]
+    pub fn shows(&self, row: &SpineRow) -> bool {
+        match self {
+            Self::View { node, view } => {
+                row.role == SpineRole::View
+                    && row.view == Some(*view)
+                    && row.id.as_ref() == Some(node)
+            }
+            Self::Graph | Self::Chart => false,
+        }
+    }
+
+    /// Which view is on the canvas, when one is.
+    #[must_use]
+    pub const fn view(&self) -> Option<NodeView> {
+        match self {
+            Self::View { view, .. } => Some(*view),
+            Self::Graph | Self::Chart => None,
+        }
+    }
 }
 
 /// What a window opens with: both documents' contents.
@@ -1450,6 +1517,15 @@ pub struct MeridianApp {
     /// Zero until the column's tiles reach their height floor and the page
     /// grows past the pane — see [`crate::dashboard::stack_extent`].
     canvas_scroll: f32,
+    /// **What the canvas holds** — the graph, one view of one node, or a chart
+    /// that is nobody's view.
+    ///
+    /// Latched rather than derived, because which of a node's views is on the
+    /// canvas is a reader's choice and nothing in either document records it.
+    /// [`MeridianApp::reconcile_canvas_holds`] is the only writer that runs on a
+    /// frame, and the only other writer is the view row a reader clicked. See
+    /// [`CanvasHolds`].
+    canvas_holds: CanvasHolds,
     /// Where focus was before the navigator rail's toggle took it, so pressing
     /// that toggle again puts it back. `None` when the rail does not hold
     /// focus — see [`MeridianApp::toggle_navigator_focus`].
@@ -1803,6 +1879,10 @@ impl MeridianApp {
             inspector_panel,
             canvas_panes: CanvasPanes::default(),
             canvas_scroll: 0.0,
+            // Reconciled from the documents on the next line, so the latch is
+            // right before the first frame — a test that asks what a fresh
+            // window holds should not have to draw one first.
+            canvas_holds: CanvasHolds::Graph,
             focus_return: None,
             home_button: None,
             affordances: Vec::new(),
@@ -1833,6 +1913,9 @@ impl MeridianApp {
             toasts: ToastLayer::new(),
             rail: chrome::StatusDrawn::default(),
         };
+        // What the canvas holds, before the first frame and from the same two
+        // documents the arrangement above was derived from.
+        app.reconcile_canvas_holds();
         // The ledger's state before the first frame, from the document this
         // window was built over — the same derivation `adopt_boot` runs when a
         // second document arrives.
@@ -2016,6 +2099,55 @@ impl MeridianApp {
             self.protocol.doc.model.has_assets(),
             !self.charts.doc.is_empty(),
         )
+    }
+
+    /// **What the canvas holds** — the latch, read back.
+    ///
+    /// A test hook, for the reason [`Self::chart_viewport`] is one: proving
+    /// that a click on a view row moved the canvas should not have to pay for a
+    /// pixel capture per view. It is also what the navigator rail marks a row
+    /// against, mirrored onto the document each frame.
+    #[must_use]
+    pub const fn canvas_holds(&self) -> &CanvasHolds {
+        &self.canvas_holds
+    }
+
+    /// Bring the latch back into line with the documents.
+    ///
+    /// Run at the head of every frame and once in the constructor, and it is
+    /// the only place [`graph_takes_the_canvas`] reaches the latch. Three cases,
+    /// and the third is the one worth naming: a latched view of a node the
+    /// current documents no longer have is a view of nothing, so opening a
+    /// second file while looking at the first one's grid comes back to the new
+    /// table's dashboard rather than to a stale node id.
+    ///
+    /// What it deliberately does **not** touch is a view of a node that is
+    /// still there: that is the reader's choice, and a reconciliation that
+    /// reset it every frame would make a click on `grid` last exactly one
+    /// frame.
+    fn reconcile_canvas_holds(&mut self) {
+        if graph_takes_the_canvas(
+            self.protocol.doc.model.has_assets(),
+            !self.charts.doc.is_empty(),
+        ) {
+            self.canvas_holds = CanvasHolds::Graph;
+            return;
+        }
+        let Some(table) = self.protocol.doc.model.table().cloned() else {
+            // A chart with no Protocol behind it: the picture is nobody's view.
+            self.canvas_holds = CanvasHolds::Chart;
+            return;
+        };
+        let held = match &self.canvas_holds {
+            CanvasHolds::View { node, .. } => *node == table,
+            CanvasHolds::Graph | CanvasHolds::Chart => false,
+        };
+        if !held {
+            self.canvas_holds = CanvasHolds::View {
+                node: table,
+                view: NodeView::Dashboard,
+            };
+        }
     }
 
     /// The pane the window's chrome is reading from, if any.
@@ -2633,6 +2765,12 @@ impl MeridianApp {
         // and no shipped control opens a second document into a window that
         // already holds one.
         let graph_on_canvas = self.graph_on_canvas();
+        // The latch, before anything reads it: the panes are handed a copy and
+        // the canvas branches on it, so it has to be right for this frame's
+        // documents rather than for the previous frame's.
+        self.reconcile_canvas_holds();
+        self.protocol.doc.canvas_holds = self.canvas_holds.clone();
+        let canvas_holds = self.canvas_holds.clone();
 
         // The overlay-opening keys, before the grammar feed so the frame that
         // opens an overlay is already under it.
@@ -2841,6 +2979,18 @@ impl MeridianApp {
                 .last()
                 .cloned()
                 .unwrap_or_else(|| self.pane_title_of(graph));
+            // What a view of a node is named after: the **table**, not the
+            // locator's leaf. The locator names the document — the file that
+            // was opened — and the grid on the canvas is a view of the relation
+            // that file loaded into, which is the name the spine's own row
+            // carries. Read here, before the borrows below take the documents
+            // apart, for the reason `canvas_name` is.
+            let grid_title = self
+                .protocol
+                .doc
+                .model
+                .table_label()
+                .map_or_else(|| "Grid".to_string(), |table| format!("Grid \u{b7} {table}"));
 
             let mut regions = std::mem::take(&mut self.regions);
             let mut strips = std::mem::take(&mut self.strips);
@@ -3144,6 +3294,33 @@ impl MeridianApp {
                             mode,
                             focused,
                             &headed,
+                            &mut requests,
+                            affordances,
+                        );
+                    } else if canvas_holds.view() == Some(NodeView::Grid) {
+                        // **The table's grid, as the canvas.** One pane filling
+                        // the canvas body, drawn through the same `pane_frame`
+                        // the group's three panes are drawn through — so this
+                        // is the same object the rows pane is, given the whole
+                        // room instead of a quarter of it.
+                        //
+                        // Everything the pane group sets up for a composed page
+                        // is unset here, because there is no page: no views to
+                        // clip it across, no height floor to grow it to, and no
+                        // wheel of the column's to take.
+                        let body = ui.max_rect();
+                        charts.doc.set_min_page_height(0.0);
+                        charts.doc.pane_views = None;
+                        charts.doc.wheel_taken = false;
+                        canvas_scroll = 0.0;
+                        canvas_panes = draw_canvas_grid_pane(
+                            ui,
+                            body,
+                            charts,
+                            ws,
+                            mode,
+                            focused,
+                            &grid_title,
                             &mut requests,
                             affordances,
                         );
@@ -3889,6 +4066,15 @@ impl MeridianApp {
         // the rail's highlight has to follow it too.
         if let Some(column) = self.protocol.doc.model.take_column_pick() {
             self.charts.doc.select_column(&column);
+            ctx.request_repaint();
+        }
+        // …and the same shape for a view row: the rail reports the gesture, the
+        // window decides what the canvas holds. It is applied unconditionally
+        // rather than only while a chart is on the canvas, because the next
+        // frame's `reconcile_canvas_holds` is what refuses a view of a node the
+        // documents no longer have — one rule for that, not two.
+        if let Some((node, view)) = self.protocol.doc.take_view_pick() {
+            self.canvas_holds = CanvasHolds::View { node, view };
             ctx.request_repaint();
         }
         let shown = self.charts.doc.selected_column().map(|c| c.column.clone());
@@ -5565,17 +5751,6 @@ fn draw_canvas_pane_group(
         );
         chrome::pane_frame(&mut pane, subject, true, mode).max_rect()
     };
-    // The band a pane actually drew, derived from the content rect
-    // `pane_frame` handed back rather than from the height it would have used:
-    // a pane drawn with `header: false` has a content rect that starts one
-    // inset below its own top, so this comes out zero-high and a test counting
-    // bands sees the band that is not there. Deriving it from
-    // `header_band_height` instead would report a band whatever was drawn.
-    let header_of = |rect: egui::Rect, body: egui::Rect| {
-        let bottom = (body.top() - chrome::pane_content_inset()).clamp(rect.top(), rect.bottom());
-        egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), bottom))
-    };
-
     let map_body = frame_of(ui, map_rect, &map_subject);
     let columns_body = frame_of(ui, columns_rect, &columns_subject);
     // The rows pane's frame comes after the page below, so its own fill and
@@ -5647,7 +5822,7 @@ fn draw_canvas_pane_group(
     // …and what the grid could not fit, said at the trailing end of that
     // pane's own header band. Read off the cells the table drew — this frame's
     // — rather than off the widths it was handed.
-    let rows_header = header_of(rows_rect, rows_body);
+    let rows_header = pane_header_of(rows_rect, rows_body);
     let rows_note = charts
         .doc
         .grid_drawn
@@ -5663,7 +5838,7 @@ fn draw_canvas_pane_group(
             CanvasPane {
                 name: "map",
                 rect: map_rect,
-                header: header_of(map_rect, map_body),
+                header: pane_header_of(map_rect, map_body),
                 body: map_body,
             },
             CanvasPane {
@@ -5675,7 +5850,7 @@ fn draw_canvas_pane_group(
             CanvasPane {
                 name: "columns",
                 rect: columns_rect,
-                header: header_of(columns_rect, columns_body),
+                header: pane_header_of(columns_rect, columns_body),
                 body: columns_body,
             },
         ],
@@ -5683,6 +5858,79 @@ fn draw_canvas_pane_group(
         count_text,
         rows_note,
         page: charts.doc.raster_rect,
+    }
+}
+
+/// The header band a pane actually drew, derived from the content rect
+/// [`brightfield_workbench::chrome::pane_frame`] handed back rather than from
+/// the height it would have used.
+///
+/// A pane drawn with `header: false` has a content rect that starts one inset
+/// below its own top, so this comes out zero-high and a test counting bands
+/// sees the band that is not there. Deriving it from `header_band_height`
+/// instead would report a band whatever was drawn.
+fn pane_header_of(rect: egui::Rect, body: egui::Rect) -> egui::Rect {
+    let bottom = (body.top() - chrome::pane_content_inset()).clamp(rect.top(), rect.bottom());
+    egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), bottom))
+}
+
+/// Draw the canvas as **one pane holding the table's grid**: the view a reader
+/// reaches by clicking `grid` under a node in the navigator rail.
+///
+/// The same `pane_frame` the group's three panes are drawn through, and the
+/// same [`DATA`] item the group's rows pane draws — so this is that pane given
+/// the whole canvas instead of a quarter of it, reading the same engine session
+/// at the same layer. It is not a second grid.
+///
+/// **What it deliberately does not carry**: the `N of M columns` note the rows
+/// pane paints at the trailing end of its own band. That note exists because
+/// the rows pane is a quarter of the canvas and usually cannot fit the table;
+/// a grid with the whole canvas usually can, and the band this pane wants is
+/// the column header band a later card gives it rather than a count of what is
+/// missing. The grid's own plain header is unchanged.
+#[allow(clippy::too_many_arguments)]
+fn draw_canvas_grid_pane(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    charts: &mut ChartView,
+    ws: &Workspace,
+    mode: Mode,
+    focused: Option<PaneKey>,
+    title: &str,
+    requests: &mut Vec<Request>,
+    affordances: &mut Vec<(PaneKey, egui::Rect)>,
+) -> CanvasPanes {
+    let subject = Subject::new(
+        title.to_string(),
+        brightfield_workbench::subject::Icon("table"),
+        brightfield_keys::BindingContext::Workspace,
+    );
+    let mut pane = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    let body = chrome::pane_frame(&mut pane, &subject, true, mode).max_rect();
+    draw_chart_body(
+        ui,
+        body,
+        body,
+        charts,
+        ws,
+        DATA,
+        mode,
+        focused,
+        requests,
+        affordances,
+    );
+    CanvasPanes {
+        panes: vec![CanvasPane {
+            name: "grid",
+            rect,
+            header: pane_header_of(rect, body),
+            body,
+        }],
+        ..CanvasPanes::default()
     }
 }
 
