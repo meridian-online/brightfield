@@ -24,8 +24,8 @@ use brightfield_shell::protocol::{NodeView, SpineMarker, SpineRole, SpineRowDraw
 use brightfield_shell::window::{Boot, CanvasHolds, MeridianApp};
 use meridian_design::{control, semantic, spacing};
 
-/// The committed table every window in this file is opened over — its nine
-/// columns are [`HOUSING_COLUMNS`], and two of them are a coordinate pair.
+/// The committed table this file's windows are opened over — its nine columns
+/// are [`HOUSING_COLUMNS`], and two of them are a coordinate pair.
 fn housing() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/data/california_housing_sample.csv")
@@ -653,9 +653,9 @@ fn a_windows_latched_canvas_agrees_with_the_derived_answer() {
 
 /// **A rail with no Protocol behind it reports no rows.**
 ///
-/// The pane draws its empty state instead, which means `OutlinePane::ui` is not
-/// reached at all — so the record has to be cleared by the frame rather than by
-/// the pane, or a row list from a previous document answers for a rail that is
+/// The pane draws its empty state instead, which means `OutlinePane::ui` does
+/// not run — so the record has to be cleared by the frame rather than by the
+/// pane, or a row list from a previous document answers for a rail that is
 /// drawing "No assets yet". That is the same failure the canvas's pane record
 /// is cleared per frame for, one rail over.
 #[test]

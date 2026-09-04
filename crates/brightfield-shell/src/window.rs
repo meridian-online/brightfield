@@ -2794,10 +2794,10 @@ impl MeridianApp {
         let canvas_holds = self.canvas_holds.clone();
         // …and the rail's record of what it drew, cleared here so the pane can
         // refill it. A frame that draws the front door, or a rail whose pane
-        // draws its empty state, reaches `OutlinePane::ui` not at all — and a
-        // row list left standing from the last frame would answer a test about
-        // a rail that is not there, which is the defect `canvas_panes` is
-        // cleared per frame for.
+        // draws its empty state, does not reach `OutlinePane::ui` — and a row
+        // list left standing from the last frame would answer a test about a
+        // rail that is not there, which is the defect `canvas_panes` is cleared
+        // per frame for.
         self.protocol.doc.spine_drawn.clear();
         self.protocol.doc.spine_body = None;
 
