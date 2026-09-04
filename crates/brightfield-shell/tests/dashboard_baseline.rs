@@ -882,8 +882,25 @@ fn drawn_x_axis_rects(
     let title_size = brightfield_render::text::TITLE_SIZE;
     let title_width = brightfield_render::text::measure_width(title_text, title_size);
 
-    let x_lo = plot.rect.x - 200.0;
-    let x_hi = plot.rect.x + plot.rect.width + 200.0;
+    // Wide enough to catch a label that has overflowed the tile — the
+    // defect this file's sweep test exists to catch — but derived from the
+    // labels themselves rather than a flat pad: a pad generous enough at
+    // one window width reached past the gutter into a NEIGHBOUR plot's own
+    // labels at a narrower one, measured on this build at an 888-point
+    // window — a flat 200-point pad swept up the map pane's own latitude
+    // row label, roughly 200 points left of day's own plot, and mismatched
+    // it against day's nearest tick candidate by position alone. `render_x_axis`
+    // centres a horizontal label on a tick position already inside the
+    // plot's own range, so an unclamped label can overflow by at most half
+    // its own width on either side, and a rotated one by at most half
+    // `size` — the widest label this axis actually draws already bounds
+    // both, with room to spare short of the next plot over.
+    let slack = ticks
+        .iter()
+        .map(|t| brightfield_render::text::measure_width(&t.label, size))
+        .fold(f64::from(size), f64::max);
+    let x_lo = plot.rect.x - slack;
+    let x_hi = plot.rect.x + plot.rect.width + slack;
     // Half a label's cap height below the axis line, not the line itself:
     // the y-axis's own occasional stray label (a y-tick landing exactly on
     // `plot_y_end` draws its row-label `LABEL_SIZE / 3` below the line) sits
@@ -1073,25 +1090,162 @@ fn site_readings_app_at(size: (f32, f32)) -> brightfield_shell::window::Meridian
     app
 }
 
+/// Sweep granularity, in logical points, for
+/// [`the_time_axis_never_overlaps_or_clips_across_real_window_widths`] — this
+/// is small enough to land inside a violation band as narrow as 48 points,
+/// which is what round 3's own hand sweep found (window widths 1064 to
+/// 1016, four points at a time: a real capture at 1024 sliced a date's last
+/// digit against the tile's own right edge, a width round 3's four FIXED
+/// samples missed). Doubled to eight rather than kept at
+/// four because this suite already carries a 60-minute CI ceiling other
+/// tiers spend more slowly than this one does; eight still lands several
+/// samples inside a band that width.
+const SWEEP_STEP: f32 = 8.0;
+
+/// The widest window [`the_time_axis_never_overlaps_or_clips_across_real_window_widths`]'s
+/// sweep starts from — chosen to sit above both
+/// [`site_readings_baseline_window`] and round 2/3's fixed samples.
+const SWEEP_START_WIDTH: f32 = 1600.0;
+
+/// A backstop on how far the sweep is allowed to descend before the test
+/// gives up looking for the app's own layout floor and fails outright,
+/// rather than looping toward zero. The sweep is expected to stop well
+/// above this — see
+/// [`the_time_axis_never_overlaps_or_clips_across_real_window_widths`].
+const SWEEP_MIN_WIDTH: f32 = 100.0;
+
+/// One width's worth of the sweep in
+/// [`the_time_axis_never_overlaps_or_clips_across_real_window_widths`]: drive
+/// the real pane group at `window_width`, read `day`'s own placed tile and
+/// its drawn axis rects back out of the composed scene, and assert
+/// containment in the tile, clearance from the axis title, and pairwise
+/// clearance between labels. Returns the tile width actually resolved, so
+/// the caller can tell a genuinely narrower sample from the app's layout
+/// floor repeating the last one.
+fn assert_day_axis_at_window_width(window_height: f32, window_width: f32) -> f64 {
+    let app = site_readings_app_at((window_width, window_height));
+    let composed = &app.chart_doc().composed;
+    let day_plot = plot_for_x_column(composed, "day");
+    let tile_width = day_plot.rect.width;
+    assert!(
+        tile_width > 0.0,
+        "fixture check: day's tile drew at a non-positive width at window \
+         width {window_width}"
+    );
+
+    let x_scale = day_plot
+        .scales
+        .get(brightfield_render::channel::Channel::X)
+        .expect("fixture check: day's placed plot carries an x scale");
+    let ticks = brightfield_render::axis::compute_ticks(x_scale, 5);
+    assert_eq!(
+        ticks.len(),
+        6,
+        "fixture check: site_readings_sample.csv's day column no longer \
+         carries six distinct dates"
+    );
+    let (label_rects, title_rect) = drawn_x_axis_rects(
+        &composed.scene,
+        day_plot,
+        &ticks,
+        "day",
+        brightfield_render::text::LABEL_SIZE,
+    );
+
+    // The narrowest of day's own six dates, on its own, at the size
+    // `render_x_axis` draws a horizontal label at — the width below which no
+    // centre keeps EVEN the narrowest label inside this tile, so the axis is
+    // expected to drop every one of them rather than draw one it cannot
+    // contain (tick marks and the title, when present, still draw). This is
+    // reachable at the live layout's narrowest resolved widths: measured on
+    // this build, a real date is roughly 65 points wide and the column tile
+    // shrinks past that.
+    let narrowest_label = ticks
+        .iter()
+        .map(|t| {
+            brightfield_render::text::measure_width(&t.label, brightfield_render::text::LABEL_SIZE)
+        })
+        .fold(f64::MAX, f64::min);
+    if narrowest_label > tile_width {
+        assert!(
+            label_rects.is_empty(),
+            "day's tile ({tile_width} points wide) cannot hold even its \
+             narrowest date label ({narrowest_label} points), so no \
+             tick-label rect should have drawn at window width \
+             {window_width} — {} drew instead",
+            label_rects.len()
+        );
+        return tile_width;
+    }
+    assert!(
+        !label_rects.is_empty(),
+        "no tick-label rect was drawn for day's x axis at window width \
+         {window_width} (its tile drew at {tile_width} points wide, wide \
+         enough to hold its narrowest date label at {narrowest_label} points)"
+    );
+
+    let tile: Rect4 = (
+        day_plot.rect.x,
+        day_plot.rect.y,
+        day_plot.rect.x + day_plot.rect.width,
+        day_plot.rect.y + day_plot.rect.height,
+    );
+    for rect in &label_rects {
+        assert!(
+            rect_inside(*rect, tile),
+            "a tick-label rect {rect:?} does not lie inside day's own \
+             tile rect {tile:?} at window width {window_width} (tile \
+             {tile_width} points wide)"
+        );
+        if let Some(title_rect) = title_rect {
+            assert!(
+                !rects_intersect(*rect, title_rect),
+                "a tick-label rect {rect:?} intersects the axis title's \
+                 rect {title_rect:?} at window width {window_width}"
+            );
+        }
+    }
+    for i in 0..label_rects.len() {
+        for other in &label_rects[i + 1..] {
+            assert!(
+                !rects_intersect(label_rects[i], *other),
+                "two of day's drawn tick-label rects intersect at window \
+                 width {window_width}: {:?} and {other:?}",
+                label_rects[i],
+            );
+        }
+    }
+
+    tile_width
+}
+
 /// **The counts_over_time tile's time axis never overlaps or clips at the
 /// widths the live app actually resolves for it** — read off the REAL pane
-/// group at four real window widths, not [`data_file::open`]'s one-shot
-/// unconstrained composition ([`site_readings_app_at`]'s doc names why
-/// round 2's own version of this test read the wrong quantity).
+/// group, swept across the whole range the live layout resolves for a
+/// column tile rather than sampled at a handful of fixed widths.
 ///
 /// [`site_readings`] gives the coordinate pair its own hero, so `day` earns
 /// an ordinary tile in the STACKED column ([`assert_site_readings`] pins
 /// that shape) rather than falling back into the map pane the way
-/// [`fixture`]'s `day` does. Four widths: the baseline window
-/// [`site_readings`]'s own baseline captures open at
-/// ([`site_readings_baseline_window`]), and 1400/1200/1000 — measured on
-/// round 2's build, the column tile these four resolve to was 380, 309, 233
-/// and 157 points wide, and at 157 the pre-fix axis rotated a real date past
-/// the tile's own bottom edge. At every width: [`drawn_x_axis_rects`] reads
-/// every tick-label rect straight out of the composed scene, and each must
-/// lie inside `day`'s own tile rect, clear of every other tick-label rect,
-/// and clear of the axis title's rect — whichever way `render_x_axis` chose
-/// to draw them.
+/// [`fixture`]'s `day` does. [`assert_day_axis_at_window_width`] is one
+/// width's worth of the sweep: it drives the pane group at that width, reads
+/// `day`'s own placed tile and [`drawn_x_axis_rects`]'s rects straight out
+/// of the composed scene, and asserts containment in the tile, clearance
+/// from the axis title, and pairwise clearance between the drawn labels —
+/// whichever way `render_x_axis` chose to draw them
+/// ([`site_readings_app_at`]'s own doc names why round 2's version of this
+/// test read the wrong quantity in the first place).
+///
+/// A fixed four-sample version of this test (the baseline window, 1400,
+/// 1200, 1000) passed while the property failed BETWEEN the samples: round
+/// 3's own hand sweep found a real capture at a 1024-point window slicing a
+/// date's last digit against the tile's own right edge, a width none of
+/// those four landed on. What follows sweeps [`SWEEP_STEP`]-point steps from
+/// [`SWEEP_START_WIDTH`] down to wherever the app's own layout stops moving
+/// `day`'s tile width — `brightfield_shell::window::canvas_pane_rects`'s own
+/// floor on the column pane, detected at runtime (two consecutive
+/// samples resolving the identical tile width) rather than restated as a
+/// constant, because a restated one would rot the moment that floor moved.
 #[test]
 fn the_time_axis_never_overlaps_or_clips_across_real_window_widths() {
     // Fixture check, once: the shape the whole sweep below assumes.
@@ -1102,75 +1256,41 @@ fn the_time_axis_never_overlaps_or_clips_across_real_window_widths() {
     drop(opened);
 
     let baseline = site_readings_baseline_window();
-    let widths = [baseline.0, 1400.0, 1200.0, 1000.0];
 
-    for width in widths {
-        let app = site_readings_app_at((width, baseline.1));
-        let composed = &app.chart_doc().composed;
-        let day_plot = plot_for_x_column(composed, "day");
-        let tile_width = day_plot.rect.width;
-        assert!(
-            tile_width > 0.0,
-            "fixture check: day's tile drew at a non-positive width at \
-             window width {width}"
-        );
+    // AC1's own width: the dashboard baseline's window, checked on its own
+    // so a failure here reads as "the baseline capture itself is wrong"
+    // rather than being buried inside the sweep below.
+    assert_day_axis_at_window_width(baseline.1, baseline.0);
 
-        let x_scale = day_plot
-            .scales
-            .get(brightfield_render::channel::Channel::X)
-            .expect("fixture check: day's placed plot carries an x scale");
-        let ticks = brightfield_render::axis::compute_ticks(x_scale, 5);
-        assert_eq!(
-            ticks.len(),
-            6,
-            "fixture check: site_readings_sample.csv's day column no longer \
-             carries six distinct dates"
-        );
-        let (label_rects, title_rect) = drawn_x_axis_rects(
-            &composed.scene,
-            day_plot,
-            &ticks,
-            "day",
-            brightfield_render::text::LABEL_SIZE,
-        );
-        assert!(
-            !label_rects.is_empty(),
-            "no tick-label rect was drawn for day's x axis at window width \
-             {width} (its tile drew at {tile_width} points wide)"
-        );
-
-        let tile: Rect4 = (
-            day_plot.rect.x,
-            day_plot.rect.y,
-            day_plot.rect.x + day_plot.rect.width,
-            day_plot.rect.y + day_plot.rect.height,
-        );
-        for rect in &label_rects {
-            assert!(
-                rect_inside(*rect, tile),
-                "a tick-label rect {rect:?} does not lie inside day's own \
-                 tile rect {tile:?} at window width {width} (tile \
-                 {tile_width} points wide)"
-            );
-            if let Some(title_rect) = title_rect {
-                assert!(
-                    !rects_intersect(*rect, title_rect),
-                    "a tick-label rect {rect:?} intersects the axis title's \
-                     rect {title_rect:?} at window width {width}"
-                );
+    let mut width = SWEEP_START_WIDTH;
+    let mut last_tile_width: Option<f64> = None;
+    let mut collapsed = false;
+    while width >= SWEEP_MIN_WIDTH {
+        let tile_width = assert_day_axis_at_window_width(baseline.1, width);
+        if let Some(prev) = last_tile_width {
+            if (tile_width - prev).abs() < 1e-6 {
+                // Two consecutive samples resolved the same tile width: the
+                // app's own layout has hit its floor on the column pane, and
+                // `width` was the narrowest sample still on the live side of
+                // it (the FIRST floored sample was tested at the step
+                // above — its own assertions already ran). Descending
+                // further would repeat this identical assertion for however
+                // many more steps SWEEP_MIN_WIDTH allowed, for no benefit.
+                collapsed = true;
+                break;
             }
         }
-        for i in 0..label_rects.len() {
-            for other in &label_rects[i + 1..] {
-                assert!(
-                    !rects_intersect(label_rects[i], *other),
-                    "two of day's drawn tick-label rects intersect at window \
-                     width {width}: {:?} and {other:?}",
-                    label_rects[i],
-                );
-            }
-        }
+        last_tile_width = Some(tile_width);
+        width -= SWEEP_STEP;
     }
+    assert!(
+        collapsed,
+        "fixture check: the sweep reached {SWEEP_MIN_WIDTH} points wide \
+         without the app's own layout ever resolving the same tile width \
+         twice in a row for day's column tile — either the column pane has \
+         no floor at this width any more, or SWEEP_MIN_WIDTH needs lowering \
+         to reach it"
+    );
 }
 
 /// **The same axis, at 240 and at 720 points wide** — so the claim above is a

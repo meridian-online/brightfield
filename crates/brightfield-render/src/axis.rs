@@ -263,38 +263,82 @@ fn rotated_label_room(layout: &ChartLayout, titled: bool) -> f64 {
     (floor - near_end).max(0.0)
 }
 
-/// Whether consecutive labels in `ticks` — each centred under its own tick's
-/// `position` at `size`, the anchor `render_x_axis` draws with — clear
-/// [`LABEL_CLEARANCE`] of their neighbour's.
+/// The horizontal centre a `width`-wide label drawn with `TextAnchor::Middle`
+/// at `position` is nudged to so both its drawn edges stay inside the tile's
+/// own `[0, tile_width]` span — [`ChartLayout::width`], the tile's full
+/// extent, not the inset-adjusted x-range a mark's own scale places its ticks
+/// in. A label draws in the tile's margin band below the plot area, so the
+/// plot's inner range is the wrong bound to clamp against: a label near the
+/// plot's own edge can already read as inside THAT narrower bound while its
+/// glyphs still run past the tile the frame actually clips to — a real date
+/// sliced at the tile's right edge at a real window width is what this
+/// closes.
 ///
-/// Reads `position` as a distance, not a direction — `compute_ticks` hands
-/// `ticks` back walking the domain low to high, which is ascending screen
-/// position on an x axis and descending on a y axis reused through this same
-/// path, and a neighbour gap is a collision risk either way.
-fn labels_clear_horizontally(ticks: &[&Tick], size: f32) -> bool {
-    ticks.windows(2).all(|pair| {
-        let gap = (pair[1].position - pair[0].position).abs();
-        let reach =
-            measure_width(&pair[0].label, size) / 2.0 + measure_width(&pair[1].label, size) / 2.0;
-        gap - reach >= LABEL_CLEARANCE
-    })
+/// `None` when `width` on its own exceeds `tile_width`: no centre keeps both
+/// edges inside a span narrower than the label itself, so the caller drops
+/// the label rather than draw one that overflows regardless of where it is
+/// placed — a single date wider than the whole tile, at the narrowest
+/// widths the live layout still resolves a column tile to, is reachable and
+/// is exactly this case. A dropped tick still draws its tick MARK
+/// (`render_x_axis` draws marks independently of labels); only the text is
+/// withheld.
+///
+/// A rotated label's footprint is [`LABEL_SIZE`] wide regardless of its text
+/// length (its own glyph-height run turns crosswise on rotation), so
+/// `render_x_axis`'s rotated branch calls this with that constant rather than
+/// with a measured text width — same function, a different `width`.
+fn contained_centre(position: f64, width: f64, tile_width: f64) -> Option<f64> {
+    if width > tile_width {
+        return None;
+    }
+    let half = width / 2.0;
+    Some(position.clamp(half, tile_width - half))
+}
+
+/// Whether the labels in `ticks` — each centred (`TextAnchor::Middle`) at its
+/// own tick's `position` at `size`, nudged by [`contained_centre`] to
+/// `tile_width` the way `render_x_axis` actually draws them — clear
+/// [`LABEL_CLEARANCE`] of their drawn neighbour's. A label
+/// [`contained_centre`] drops draws no pixel, so it clears trivially — it
+/// cannot collide with a neighbour it shares no pixel with.
+///
+/// Sorted by drawn span start rather than read pairwise off `ticks`' own
+/// order: the clamp can pull an end label in far enough that its nearest
+/// drawn neighbour is no longer the tick next to it in `ticks`.
+fn labels_clear_horizontally(ticks: &[&Tick], size: f32, tile_width: f64) -> bool {
+    let mut spans: Vec<(f64, f64)> = ticks
+        .iter()
+        .filter_map(|t| {
+            let width = measure_width(&t.label, size);
+            let centre = contained_centre(t.position, width, tile_width)?;
+            Some((centre - width / 2.0, centre + width / 2.0))
+        })
+        .collect();
+    if spans.len() < 2 {
+        return true;
+    }
+    spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    spans
+        .windows(2)
+        .all(|pair| pair[1].0 - pair[0].1 >= LABEL_CLEARANCE)
 }
 
 /// The widest evenly-strided subset of `ticks` whose labels clear each other
-/// horizontally ([`labels_clear_horizontally`]) at `size` — Observable Plot's
-/// own answer to a crowded axis: try drawing each label, then try dropping
-/// alternating ones, then try a wider stride still, and so on until a stride
-/// clears or the search has narrowed to the two end ticks. `render_x_axis`
-/// rotates the full set instead of drawing this candidate when even that pair
-/// collides AND there is room to rotate into; it degrades past this candidate
-/// instead when there is not — see [`rotated_label_room`].
-fn thinned_x_ticks(ticks: &[Tick], size: f32) -> Vec<&Tick> {
+/// horizontally ([`labels_clear_horizontally`], itself bounded to
+/// `tile_width`) at `size` — Observable Plot's own answer to a crowded axis:
+/// try drawing each label, then try dropping alternating ones, then try a
+/// wider stride still, and so on until a stride clears or the search has
+/// narrowed to the two end ticks. `render_x_axis` rotates the full set
+/// instead of drawing this candidate when even that pair collides AND there
+/// is room to rotate into; it degrades past this candidate instead when there
+/// is not — see [`rotated_label_room`].
+fn thinned_x_ticks(ticks: &[Tick], size: f32, tile_width: f64) -> Vec<&Tick> {
     if ticks.len() < 2 {
         return ticks.iter().collect();
     }
     for stride in 1..ticks.len() {
         let subset: Vec<&Tick> = ticks.iter().step_by(stride).collect();
-        if labels_clear_horizontally(&subset, size) {
+        if labels_clear_horizontally(&subset, size, tile_width) {
             return subset;
         }
     }
@@ -312,12 +356,23 @@ fn thinned_x_ticks(ticks: &[Tick], size: f32) -> Vec<&Tick> {
 /// says the run fits below the tick line, and degrades past the two end
 /// labels to a single one
 /// otherwise — a rotated run that does not fit reads as clipped digits under
-/// the title rather than as an axis, which is worse than one label. Three of
-/// this module's tests pin the three branches:
+/// the title rather than as an axis, which is worse than one label. This
+/// module's tests pin these branches:
 /// `thinning_keeps_labels_from_touching_at_various_widths`,
 /// `rotation_is_the_fallback_when_thinning_cannot_clear_the_labels_and_there_is_room_to_rotate`
 /// and
 /// `the_axis_degrades_to_one_label_rather_than_clip_a_rotated_band_past_a_title`.
+///
+/// [`contained_centre`] (private to this module) additionally nudges a label
+/// whose own drawn footprint would run past the tile's `[0, layout.width]`
+/// span back inside it, or drops it when even nudging cannot fit it — applied
+/// to the thinned candidate, the rotated band and the degraded single label
+/// alike, so a branch above cannot hand back a rect the tile does not hold. A
+/// real composed tile's own width is exercised one crate up, in the
+/// brightfield-shell crate's dashboard_baseline.rs test suite, since this
+/// crate carries no dependency on that composition;
+/// `label_clearance_rejects_a_gap_narrower_than_the_minimum` (this module)
+/// pins the neighbour-clearance floor the same nudge must not erase.
 pub fn render_x_axis(
     scene: &mut Scene,
     layout: &ChartLayout,
@@ -326,6 +381,7 @@ pub fn render_x_axis(
     ink: ChartInk,
 ) {
     let y = layout.plot_y_end();
+    let tile_width = layout.width;
     let stroke = kurbo::Stroke::new(1.0);
 
     // Axis line.
@@ -345,13 +401,20 @@ pub fn render_x_axis(
     }
 
     // Tick labels: thin before rotating.
-    let thinned = thinned_x_ticks(ticks, LABEL_SIZE);
-    if labels_clear_horizontally(&thinned, LABEL_SIZE) {
+    let thinned = thinned_x_ticks(ticks, LABEL_SIZE, tile_width);
+    if labels_clear_horizontally(&thinned, LABEL_SIZE, tile_width) {
         for tick in thinned {
+            let width = measure_width(&tick.label, LABEL_SIZE);
+            let Some(centre) = contained_centre(tick.position, width, tile_width) else {
+                // Wider than the tile on its own: no centre keeps both
+                // edges inside it, so this label is dropped rather than
+                // drawn overflowing. The tick mark above already drew.
+                continue;
+            };
             draw_text(
                 scene,
                 &tick.label,
-                tick.position,
+                centre,
                 y + TICK_LENGTH + f64::from(LABEL_SIZE),
                 LABEL_SIZE,
                 ink.label,
@@ -374,12 +437,22 @@ pub fn render_x_axis(
             // footprint is its font size rather than its text width,
             // anchored (`TextAnchor::End`) so the label's last character
             // sits nearest the tick and the rest reaches down into the
-            // margin instead of up into the plot.
+            // margin instead of up into the plot. The rotated footprint is
+            // `LABEL_SIZE` wide regardless of the text it carries, so it is
+            // the pivot itself — not a measured text width — that
+            // `contained_centre` nudges here; `LABEL_SIZE` fits comfortably
+            // inside any tile this axis draws into in practice, so the drop
+            // branch is defensive rather than reachable today.
             for tick in ticks {
+                let Some(pivot) =
+                    contained_centre(tick.position, f64::from(LABEL_SIZE), tile_width)
+                else {
+                    continue;
+                };
                 draw_text_rotated(
                     scene,
                     &tick.label,
-                    tick.position,
+                    pivot,
                     y + TICK_LENGTH + ROTATED_LABEL_GAP,
                     LABEL_SIZE,
                     ink.label,
@@ -395,15 +468,21 @@ pub fn render_x_axis(
             // itself, and that baseline is already proven clear of a title —
             // `axis_titles_render_and_clear_tick_labels`, this module.
             let solo = &ticks[0];
-            draw_text(
-                scene,
-                &solo.label,
-                solo.position,
-                y + TICK_LENGTH + f64::from(LABEL_SIZE),
-                LABEL_SIZE,
-                ink.label,
-                TextAnchor::Middle,
-            );
+            let width = measure_width(&solo.label, LABEL_SIZE);
+            if let Some(centre) = contained_centre(solo.position, width, tile_width) {
+                draw_text(
+                    scene,
+                    &solo.label,
+                    centre,
+                    y + TICK_LENGTH + f64::from(LABEL_SIZE),
+                    LABEL_SIZE,
+                    ink.label,
+                    TextAnchor::Middle,
+                );
+            }
+            // Wider than the tile on its own: dropped, same as the thinned
+            // branch above — the tick marks and (when present) the title
+            // still draw.
         }
     }
 
@@ -927,21 +1006,28 @@ mod tests {
         let unfitted = ChartLayout::new(130.0, 300.0);
         let scale = fixture_day_scale(&unfitted);
         let ticks = compute_ticks(&scale, 5);
-        let thinned = thinned_x_ticks(&ticks, LABEL_SIZE);
+        let thinned = thinned_x_ticks(&ticks, LABEL_SIZE, unfitted.width);
         assert!(
-            !labels_clear_horizontally(&thinned, LABEL_SIZE),
+            !labels_clear_horizontally(&thinned, LABEL_SIZE, unfitted.width),
             "fixture check: 130 points is meant to be a width where even the \
              two end dates collide, which is what forces the choice this \
              test is about"
         );
 
-        let titles = crate::title::ResolvedTitles {
-            x: Some("day".to_string()),
-            y: None,
-            plot: None,
+        // A bottom margin generous enough that an UNTITLED axis at this same
+        // width would have room to rotate a real date into — grown by hand
+        // rather than through `grow_margins`, because the point of what
+        // follows is to hold the width and the margin FIXED and vary only
+        // whether a title is present. Finding: a ten-character date used to
+        // overrun BOTH floors at once at the margin `grow_margins` actually
+        // produces for a titled axis here (bottom 50), which left the titled
+        // and untitled floors indistinguishable — this margin (bottom 100)
+        // is chosen so the fixture check below can tell them apart.
+        let margins = Margins {
+            bottom: 100.0,
+            ..Margins::default()
         };
-        let margins = crate::title::grow_margins(Margins::default(), &titles);
-        let layout = ChartLayout::with_margins_and_insets(130.0, 300.0, margins, Insets::default());
+        let layout = ChartLayout::with_margins(130.0, 300.0, margins);
         let scale = fixture_day_scale(&layout);
         let ticks = compute_ticks(&scale, 5);
         let widest = ticks
@@ -949,19 +1035,21 @@ mod tests {
             .map(|t| measure_width(&t.label, LABEL_SIZE))
             .fold(0.0_f64, f64::max);
         assert!(
+            widest <= rotated_label_room(&layout, false),
+            "fixture check: at this margin an UNTITLED axis is meant to have \
+             room to rotate a real date ({widest} points wide) into — the \
+             control this test needs so the degrade below reads as the \
+             title's doing rather than the layout being too narrow outright"
+        );
+        assert!(
             widest > rotated_label_room(&layout, true),
             "fixture check: a real date ({widest} points wide) is meant to \
-             overrun the room a title leaves"
+             overrun the room a title leaves, at the SAME margin the line \
+             above just proved has room without one"
         );
 
         let mut scene = Scene::new();
-        render_x_axis(
-            &mut scene,
-            &layout,
-            &ticks,
-            titles.x.as_deref(),
-            ChartInk::LIGHT,
-        );
+        render_x_axis(&mut scene, &layout, &ticks, Some("day"), ChartInk::LIGHT);
 
         assert!(
             !scene_has_quarter_turn(&scene),
@@ -1000,6 +1088,77 @@ mod tests {
         assert!(
             saw_label_row,
             "no run drew at the ordinary tick-label baseline {label_y}"
+        );
+
+        // The control the fixture checks above set up: the SAME width and
+        // margin, with no title, rotates. If this degraded too, the title
+        // would not be what forced the degrade above, and the two fixture
+        // checks at the top of this test would not actually have
+        // distinguished a titled floor from an untitled one.
+        let mut untitled_scene = Scene::new();
+        render_x_axis(&mut untitled_scene, &layout, &ticks, None, ChartInk::LIGHT);
+        assert!(
+            scene_has_quarter_turn(&untitled_scene),
+            "the same width and margin, with no title, should have rotated \
+             — a degrade here would mean the title above was not what forced \
+             the degrade, and this test would be pinning sheer narrowness \
+             rather than the claim its name makes"
+        );
+    }
+
+    /// **A gap inside [`LABEL_CLEARANCE`] reads as NOT clear, even though the
+    /// two labels do not yet overlap.** Containment alone cannot pin this —
+    /// a tile wide enough leaves both labels contained whatever the gap
+    /// between them — so this reads [`labels_clear_horizontally`] directly,
+    /// on two synthetic ticks placed so their reach (half of each label's
+    /// width) leaves exactly half of [`LABEL_CLEARANCE`] between them:
+    /// comfortably short of overlapping, and just as comfortably short of
+    /// the minimum. A mutation that zeroed `LABEL_CLEARANCE` would read this
+    /// pair as clear, which is the gap this test closes.
+    #[test]
+    fn label_clearance_rejects_a_gap_narrower_than_the_minimum() {
+        let label = "22";
+        let width = measure_width(label, LABEL_SIZE);
+        let reach = width; // two equal-width labels: half + half = the full width
+        let tile_width = 1000.0; // wide enough that containment moves neither label
+
+        let inside_minimum = LABEL_CLEARANCE / 2.0;
+        let too_close = [
+            Tick {
+                value: 0.0,
+                label: label.to_string(),
+                position: 100.0,
+            },
+            Tick {
+                value: 1.0,
+                label: label.to_string(),
+                position: 100.0 + reach + inside_minimum,
+            },
+        ];
+        let refs: Vec<&Tick> = too_close.iter().collect();
+        assert!(
+            !labels_clear_horizontally(&refs, LABEL_SIZE, tile_width),
+            "a {inside_minimum}px gap is half of LABEL_CLEARANCE and should \
+             not read as clear — a mutation that zeroed LABEL_CLEARANCE \
+             would accept this pair, which is what this test pins"
+        );
+
+        let at_minimum = [
+            Tick {
+                value: 0.0,
+                label: label.to_string(),
+                position: 100.0,
+            },
+            Tick {
+                value: 1.0,
+                label: label.to_string(),
+                position: 100.0 + reach + LABEL_CLEARANCE,
+            },
+        ];
+        let refs_ok: Vec<&Tick> = at_minimum.iter().collect();
+        assert!(
+            labels_clear_horizontally(&refs_ok, LABEL_SIZE, tile_width),
+            "a gap exactly at LABEL_CLEARANCE should read as clear"
         );
     }
 }
