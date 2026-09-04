@@ -1108,6 +1108,21 @@ fn a_drag_on_the_numeric_tile_commits_the_interval_the_reader_swept() {
         "the committed brush left the clear-selection control unable to act"
     );
 
+    // Retract the first sweep before drawing the next. [0.35, 0.50] nests
+    // entirely inside [0.25, 0.60] below, so there is no press point on that
+    // second sweep that could land outside the first rectangle — a still-live
+    // first selection would turn the second sweep's press into the shell's
+    // move gesture (`committed_brush_move.rs`) rather than the fresh, nested
+    // draw this test is about. 0.9 is well past the first sweep's own high
+    // bound of 0.60.
+    click(&mut app, &ctx, 0.9);
+    assert!(
+        app.chart_doc().selection_sql().is_none(),
+        "fixture check: the click at 0.9 did not retract the first sweep, so \
+         the next sweep's press would still land inside it: {:?}",
+        app.chart_doc().selection_sql()
+    );
+
     // The bounds are the sweep's, not a constant. A narrower sweep strictly
     // inside the first commits a strictly narrower interval.
     drag(&mut app, &ctx, 0.35, 0.50);
@@ -1127,8 +1142,10 @@ fn a_drag_on_the_numeric_tile_commits_the_interval_the_reader_swept() {
     );
 
     // A click with no sweep retracts this plot's contribution — the other half
-    // of the same `resolve_gesture` branch.
-    click(&mut app, &ctx, 0.5);
+    // of the same `resolve_gesture` branch. At 0.9 again, past the second
+    // sweep's own [0.35, 0.50] — the same reason the clearing click above
+    // is not at 0.5.
+    click(&mut app, &ctx, 0.9);
     assert!(
         app.chart_doc().selection_sql().is_none(),
         "a click on an interval binding did not retract the contribution: \
