@@ -5384,7 +5384,7 @@ fn grouped(n: u64) -> String {
 /// columns.
 ///
 /// `facts.rows` is the column's own profile, taken once at file open — right
-/// for the ordinary picture, since nothing else has narrowed it, but wrong
+/// for the ordinary picture, since no gesture has narrowed it yet, but wrong
 /// the moment the hero itself has: `hero_empty` is `true` exactly when
 /// [`crate::pipeline::PlotHandle::navigated_empty`] is, and says the picture
 /// beside the chip has zero points on it rather than the file's own total,

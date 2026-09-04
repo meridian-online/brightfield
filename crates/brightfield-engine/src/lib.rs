@@ -1434,20 +1434,19 @@ impl Session {
     /// on the same query just returned zero batches for it.
     ///
     /// The one caller is the shell's empty-under-navigation fallback: a plot
-    /// whose navigated extent excludes every row still needs its marks' real
-    /// column types to build a genuinely empty [`RecordBatch`] the render
-    /// path can lay axes out from — guessing a type would risk a renderer's
-    /// own downcast on a column it was never given.
+    /// whose navigated extent has no rows beneath it still needs its marks'
+    /// real column types to build a genuinely empty [`RecordBatch`] the
+    /// render path can lay axes out from — guessing a type would risk a
+    /// renderer's own downcast on a column the query did not supply.
     ///
-    /// Goes through [`Self::emit_for_mark`], so it carries the SAME
+    /// Goes through `emit_for_mark`, so it carries the SAME
     /// navigation passes, params and selections `execute_mark` would — the
     /// schema asked for here is the schema THAT query would have returned,
     /// not a second guess at it.
     ///
     /// `&self`, deliberately, as [`Self::step_rows_count`] and
     /// [`Self::distinct_values`]: it bypasses the plan cache and the
-    /// SQL→batches cache, so asking for a schema can never evict or poison a
-    /// cached draw.
+    /// SQL→batches cache, so asking for a schema does not touch either one.
     ///
     /// # Errors
     ///

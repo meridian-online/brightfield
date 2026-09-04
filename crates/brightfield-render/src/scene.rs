@@ -806,13 +806,14 @@ fn infer_multi_mark_scales(entries: &[&ChartData<'_>], ink: ChartInk) -> ScaleSe
     // Apply view extent from the first entry (shared navigation).
     if let Some(extent) = entries[0].view_extent {
         if let Some((x_min, x_max)) = extent.x {
-            // A batch with no rows under this extent (every mark queried
-            // clean and drew nothing — the empty-under-navigation fallback in
-            // `brightfield_shell::pipeline::compose_from_results`) infers NO
-            // scale at all: `infer_column_scale` finds no value to read a
-            // domain off, empty or not. There is nothing to override in that
-            // case, only a scale to found: the navigated bounds ARE the
-            // domain, at the plot's own pixel range, exactly what
+            // A batch with no rows under this extent (a mark queried clean
+            // and drew no rows — the empty-under-navigation fallback in
+            // `brightfield_shell::pipeline::compose_from_results`) infers no
+            // scale: `infer_column_scale` finds no value to read a domain
+            // off, whether the batch is empty by navigation or by
+            // construction. There is no existing scale to override in that
+            // case; the navigated bounds ARE the domain instead, at the
+            // plot's own pixel range — the same domain
             // `override_scale_domain` would have produced from a real one.
             let base = scales
                 .get(Channel::X)

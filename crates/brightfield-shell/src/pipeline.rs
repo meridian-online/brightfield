@@ -103,8 +103,8 @@ pub struct PlotHandle {
     /// (a histogram's bars are bins, and there is no row under one), and for
     /// a plot whose positional channels are not both plain columns.
     pub hover: Option<HoverLayer>,
-    /// **This plot's navigated extent holds none of its data** — every one
-    /// of its marks queried clean and drew zero rows, and it stayed placed
+    /// **This plot's navigated extent has no data beneath it** — its own
+    /// marks queried clean and drew zero rows apiece, and it stayed placed
     /// (see the empty-under-navigation fallback in `compose_from_results`)
     /// rather than being dropped. `false` for the overwhelming common case:
     /// a plot with real marks drawn, whether navigated or not.
@@ -803,10 +803,10 @@ fn compose(
         &mut PlotPins::new(),
         viewport,
         mode,
-        // A one-shot compose never navigates (`ViewExtents::new()` above), so
-        // the empty-under-navigation fallback below never reaches for this —
-        // passed anyway rather than `None`, so that path is exercised by
-        // every caller's real session shape and not only the live one.
+        // A one-shot compose passes an empty `ViewExtents::new()` above, so
+        // the empty-under-navigation fallback below has no navigated plot to
+        // act on — passed anyway rather than `None`, so this path is
+        // exercised against a real session shape here, not just the live one.
         Some(&session),
     )?
     .with_diagnostics(diagnostics)
@@ -1784,15 +1784,15 @@ fn compose_from_results(
         let plot_extent = extents.get(&plot.path);
 
         // Backs `chart_data` in the empty-under-navigation fallback below —
-        // declared here, ahead of `chart_data`, so it outlives every borrow
+        // declared here, ahead of `chart_data`, so it outlives the borrows
         // `chart_data` takes of it (Rust drops locals in reverse declaration
         // order, and a `ChartData` is exactly as long-lived as the `&Scene`
         // built from it needs).
         let mut synthetic_batches: Vec<RecordBatch> = Vec::new();
         let mut chart_data: Vec<ChartData<'_>> = Vec::new();
-        // Set only by the empty-under-navigation fallback below, once it has
-        // actually populated `chart_data` rather than merely attempted to —
-        // see [`PlotHandle::navigated_empty`].
+        // Set by the empty-under-navigation fallback below, and there alone,
+        // once it has actually populated `chart_data` rather than merely
+        // attempted to — see [`PlotHandle::navigated_empty`].
         let mut navigated_empty = false;
         let mut plot_marks: Vec<MarkKind> = Vec::new();
         let mut plot_domains = UnsampledDomains::default();
@@ -1876,14 +1876,14 @@ fn compose_from_results(
             });
         }
         if chart_data.is_empty() {
-            // A plot whose every mark queried clean and simply came back with
-            // no rows — not an engine refusal (`mark_faults` names none of
-            // this group's marks) and not a plot that was never navigated at
-            // all. That second condition is what makes this the empty-under-
-            // NAVIGATION case rather than an ordinary empty result: an
-            // unnavigated plot with nothing to draw keeps today's behaviour
-            // (dropped below), because there is no "held frame" for it to
-            // stay honest about.
+            // A plot whose marks each queried clean and came back with no
+            // rows — no engine refusal touched this group (`mark_faults`
+            // carries no entry for any of its marks) and the plot itself has
+            // a navigated extent in force. That second condition is what
+            // makes this the empty-under-NAVIGATION case rather than an
+            // ordinary empty result: an unnavigated plot with no marks to
+            // draw keeps today's behaviour (dropped below), because there is
+            // no "held frame" for it to stay honest about.
             let no_faults = !group
                 .mark_indices
                 .iter()
@@ -1892,11 +1892,11 @@ fn compose_from_results(
                 plot_extent.is_some() && no_faults && any_real_batch,
                 session,
             ) {
-                // Fetch every mark's real column types first, with no
+                // Fetch each mark's real column types first, with no
                 // `ChartData` borrowing `synthetic_batches` yet — the second
-                // pass below is what turns them into entries, once every one
-                // of this plot's marks has a home. A schema miss on ANY of
-                // them (the source has since vanished, say) abandons the
+                // pass below is what turns them into entries, once this
+                // plot's own marks have a home apiece. A schema miss on any
+                // of them (the source has since vanished, say) abandons the
                 // whole plot rather than drawing one layer's axes and not the
                 // other's, so `chart_data` stays empty and the plot is
                 // dropped exactly as it would be without this fallback.
@@ -1930,8 +1930,8 @@ fn compose_from_results(
                                 layout: ChartLayout::new(plot.rect.width, plot.rect.height),
                                 view_extent: plot_extent,
                                 highlight: None,
-                                // Zero rows either way, and nothing was
-                                // dropped by a sampling clause — the frame is
+                                // Zero rows either way, and no sampling
+                                // clause dropped any of them — the frame is
                                 // empty because the reader navigated it there.
                                 sample: None,
                                 beyond_frame: beyond_frame.get(mi).copied().unwrap_or(false),

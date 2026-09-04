@@ -1,21 +1,22 @@
-//! **A plot whose navigated extent holds none of its data stays placed** —
+//! **A plot whose navigated extent has no data beneath it stays placed** —
 //! panning or zooming the map pane past the cloud does not drop the hero out
 //! of the composition.
 //!
-//! Before this card, a plot whose every mark queried clean and drew zero rows
-//! under its navigated extent was silently `continue`d out of
+//! Before this card, a plot whose marks each queried clean and drew zero
+//! rows under its navigated extent was silently `continue`d out of
 //! `Composed::plots` and its scene out of `placements`
 //! (`compose_from_results`, `crates/brightfield-shell/src/pipeline.rs`). On a
 //! generated dashboard that is not "the picture goes blank" — it is a plot
 //! COUNT that drops by one while `Dashboard::tile_columns()` (set once, at
-//! file open, and never resized) keeps its own count, so every plot AFTER the
-//! dropped one reads one index low against the tile it is supposed to be. The
-//! map pane's count overlay reads `composed.plots.first()` for its own
-//! position (`crate::window::hero_data_area`) and finds the wrong plot there
-//! entirely, so it draws nowhere at all — measured as `canvas_panes().count`
-//! going `None`. And a press on the column's own top tile resolves through
-//! `composed.plots`' shifted index into the WRONG entry of
-//! `ChartDoc::tile_columns()`.
+//! file open, and left at that size from then on) keeps its own count, so
+//! each plot after the dropped one reads one index low against the tile it
+//! is supposed to be. The map pane's count overlay reads
+//! `composed.plots.first()` for its own position
+//! (`crate::window::hero_data_area`) and finds the wrong plot there
+//! entirely, so it draws in no pane whatsoever — measured as
+//! `canvas_panes().count` going `None`. And a press on the column's own top
+//! tile resolves through `composed.plots`' shifted index into the WRONG
+//! entry of `ChartDoc::tile_columns()`.
 //!
 //! Driven through the real shell, as `tests/canvas_pane_group.rs` and
 //! `tests/equal_aspect_resize.rs` are: [`MeridianApp::headless`] over
