@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 
 // Re-export duckdb's Arrow types so consumers don't need a separate arrow dep.
 pub use brightfield_sql::ir::Predicate as SqlPredicate;
+pub use duckdb::arrow::datatypes::SchemaRef;
 pub use duckdb::arrow::record_batch::RecordBatch;
 use duckdb::Connection;
 pub use profile::{ColumnProfile, ProfileOutcome, SourceProfile};
@@ -1424,6 +1425,58 @@ impl Session {
 
         let mark_kind = self.mark_kind_at(index);
         self.execute_emitted(index, &mark_kind, &emitted)
+    }
+
+    /// The Arrow schema this mark's own draw query reports, without needing a
+    /// single matching row: DuckDB's `Arrow::get_schema` reads the prepared
+    /// statement's own result columns, which it can name whatever the row
+    /// count comes back as — so this is exact even when [`Self::execute_mark`]
+    /// on the same query just returned zero batches for it.
+    ///
+    /// The one caller is the shell's empty-under-navigation fallback: a plot
+    /// whose navigated extent excludes every row still needs its marks' real
+    /// column types to build a genuinely empty [`RecordBatch`] the render
+    /// path can lay axes out from — guessing a type would risk a renderer's
+    /// own downcast on a column it was never given.
+    ///
+    /// Goes through [`Self::emit_for_mark`], so it carries the SAME
+    /// navigation passes, params and selections `execute_mark` would — the
+    /// schema asked for here is the schema THAT query would have returned,
+    /// not a second guess at it.
+    ///
+    /// `&self`, deliberately, as [`Self::step_rows_count`] and
+    /// [`Self::distinct_values`]: it bypasses the plan cache and the
+    /// SQL→batches cache, so asking for a schema can never evict or poison a
+    /// cached draw.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::execute_mark`]: emit failure for an inline/data-less mark,
+    /// or a classified [`EngineError`] if DuckDB rejects the query.
+    pub fn mark_schema(&self, index: usize) -> Result<SchemaRef, EngineError> {
+        let params = if self.param_state.is_empty() {
+            None
+        } else {
+            Some(&self.param_state)
+        };
+        let selections = self.selection_predicates_for_emit();
+        let selections_ref: Option<&[SelectionPredicate]> = if selections.is_empty() {
+            None
+        } else {
+            Some(selections.as_slice())
+        };
+        let emitted = self
+            .emit_for_mark(index, params, selections_ref)
+            .map_err(|e| EngineError::EmitFailed { cause: e })?;
+        let mark_kind = self.mark_kind_at(index);
+        let mut stmt = self
+            .conn
+            .prepare(&emitted.sql)
+            .map_err(|e| self.classify_query_failure(index, &mark_kind, emitted.sql.clone(), e))?;
+        let arrow = stmt
+            .query_arrow(duckdb::params![])
+            .map_err(|e| self.classify_query_failure(index, &mark_kind, emitted.sql.clone(), e))?;
+        Ok(arrow.get_schema())
     }
 
     /// Execute the ROW-LEVEL query for a mark's step — every column of the
