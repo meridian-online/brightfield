@@ -1,7 +1,7 @@
 //! **The navigator rail's pane is the Protocol** — a spine of what the file is,
 //! what read it, what that made, and how you can look at what it made.
 //!
-//! Every assertion here reads a **laid-out frame**: the rows come off
+//! Each assertion here reads a **laid-out frame**: the rows come off
 //! [`MeridianApp::spine_rows`], which the pane fills as it draws, and the
 //! markers and the header text come off the shapes the frame painted. Nothing
 //! here asks the model what it would have drawn — a test that did would stay
@@ -246,8 +246,8 @@ fn the_spine_lists_the_file_the_step_that_read_it_and_the_table_it_made() {
             0,
             SpineMarker::Filled,
         ),
-        // Brightfield writes the spec and runs nothing, so the step says so in
-        // the words `status_word` uses everywhere else.
+        // Brightfield writes the spec and runs no step, so this one says so
+        // in the words `status_word` uses elsewhere.
         (
             SpineRole::Step,
             "load",
@@ -361,8 +361,8 @@ fn the_step_rows_run_state_is_the_models_and_not_a_literal() {
 /// the frame's own circles rather than off the hook that records them.
 ///
 /// The hook is a record the pane writes; this is what the pane painted. Both,
-/// because a pane that recorded `Filled` and painted nothing would pass the
-/// list above.
+/// because a pane that recorded `Filled` and left the marker unpainted would
+/// pass the list above.
 #[test]
 fn the_spines_markers_are_a_filled_disc_and_a_hollow_ring_where_the_row_says() {
     let mut win = Live::open(housing_boot());
@@ -615,10 +615,10 @@ fn selecting_a_column_washes_that_row_and_leaves_the_bar_where_the_canvas_is() {
 
 /// **The latch and the derived answer agree about the graph.**
 ///
-/// [`CanvasHolds`] is latched and `graph_on_canvas` is derived, and the whole
-/// reason the second is allowed to stay derived is that the first is
-/// reconciled from it every frame. Two windows, one on each side of the
-/// question, read off a real frame.
+/// [`CanvasHolds`] is latched and `graph_on_canvas` is derived, and the reason
+/// the second is allowed to stay derived is that the first is reconciled from
+/// it each frame. Two windows, one on each side of the question, read off a
+/// real frame.
 #[test]
 fn a_windows_latched_canvas_agrees_with_the_derived_answer() {
     let mut data = Live::open(housing_boot());
@@ -693,9 +693,9 @@ fn the_spines_measurements_hold_at_both_windows() {
                 row.rect.height()
             );
             // The contract's SPACE_4 is the SPINE's measure. A column row is
-            // drawn as the outline has always drawn it — the dense binding's
-            // own `pad_x` — and is asserted against that rather than skipped,
-            // because "as today" is a claim like any other.
+            // drawn as the outline draws it — the dense binding's own `pad_x`
+            // — and is asserted against that rather than skipped, because "as
+            // today" is a claim like any other.
             let want = match row.role {
                 SpineRole::Column => control::binding(spacing::ROW_DENSE).pad_x,
                 _ => spacing::SPACE_4,
@@ -811,7 +811,7 @@ fn crosswalk() -> Live {
 ///
 /// The step-above-its-asset rule is the one worth having a test for. It reads
 /// as an ordering claim and it is a **lineage** claim: `AssetNode::step` means
-/// *produced by* on every kind but `Source`, where it names the step that
+/// *produced by* except on a `Source` node, where it names the step that
 /// fetches from that host. Taking it at face value drew `fetch_edgar` above
 /// `openlake.meridian.online` — a row saying the fetch made the website.
 #[test]

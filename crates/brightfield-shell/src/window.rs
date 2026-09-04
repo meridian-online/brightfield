@@ -696,10 +696,10 @@ pub const fn graph_takes_the_canvas(has_graph: bool, has_chart: bool) -> bool {
 /// on the canvas, because nothing in either document's contents decides that —
 /// a reader does, by clicking a view row.
 ///
-/// So this is latched: [`MeridianApp::reconcile_canvas_holds`] initialises it
-/// from `graph_takes_the_canvas` and reconciles it against the documents at the
-/// head of every frame, and a click on a view row moves it between frames. The
-/// latch and the derived answer agree about the graph by construction —
+/// So this is latched: the window's private `reconcile_canvas_holds` initialises
+/// it from `graph_takes_the_canvas` and reconciles it against the documents at
+/// the head of each frame, and a click on a view row moves it between frames.
+/// The latch and the derived answer agree about the graph —
 /// `a_windows_latched_canvas_agrees_with_the_derived_answer` reads both off one
 /// frame and holds them to it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -718,8 +718,8 @@ pub enum CanvasHolds {
     /// no Protocol behind it naming the table it draws.
     ///
     /// A third variant rather than a `View` over an empty id, because an empty
-    /// asset id is a sentinel every reader of this enum would have to know
-    /// about and none of them would be told about by the type.
+    /// asset id is a sentinel a reader of this enum has to know about and is
+    /// not told about by the type.
     Chart,
 }
 
@@ -1522,9 +1522,8 @@ pub struct MeridianApp {
     ///
     /// Latched rather than derived, because which of a node's views is on the
     /// canvas is a reader's choice and nothing in either document records it.
-    /// [`MeridianApp::reconcile_canvas_holds`] is the only writer that runs on a
-    /// frame, and the only other writer is the view row a reader clicked. See
-    /// [`CanvasHolds`].
+    /// [`MeridianApp::reconcile_canvas_holds`] writes it on a frame, and a
+    /// click on a view row writes it between frames. See [`CanvasHolds`].
     canvas_holds: CanvasHolds,
     /// Where focus was before the navigator rail's toggle took it, so pressing
     /// that toggle again puts it back. `None` when the rail does not hold
@@ -2114,8 +2113,8 @@ impl MeridianApp {
 
     /// Bring the latch back into line with the documents.
     ///
-    /// Run at the head of every frame and once in the constructor, and it is
-    /// the only place [`graph_takes_the_canvas`] reaches the latch. Three cases,
+    /// Run at the head of each frame and once in the constructor; it is where
+    /// [`graph_takes_the_canvas`] reaches the latch. Three cases,
     /// and the third is the one worth naming: a latched view of a node the
     /// current documents no longer have is a view of nothing, so opening a
     /// second file while looking at the first one's grid comes back to the new
@@ -4090,8 +4089,8 @@ impl MeridianApp {
         }
         // …and the same shape for a view row: the rail reports the gesture, the
         // window decides what the canvas holds. It is applied unconditionally
-        // rather than only while a chart is on the canvas, because the next
-        // frame's `reconcile_canvas_holds` is what refuses a view of a node the
+        // rather than while a chart is on the canvas, because the next frame's
+        // `reconcile_canvas_holds` is what refuses a view of a node the
         // documents no longer have — one rule for that, not two.
         if let Some((node, view)) = self.protocol.doc.take_view_pick() {
             self.canvas_holds = CanvasHolds::View { node, view };

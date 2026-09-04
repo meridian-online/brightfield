@@ -749,10 +749,14 @@ impl ProtocolModel {
         // the first keystroke seeds one from the other.
         //
         // `source` is what says this Protocol was opened as a data file — it
-        // carries the spec Save would write, and only `OneStepProtocol::inputs`
-        // sets it. A Protocol read from a manifest keeps the boot selection it
-        // has always had: there is no dashboard on its canvas for the bar to
-        // stand on, so the wash is the only mark it draws.
+        // carries the spec Save would write, and `OneStepProtocol::inputs` is
+        // what sets it. A Protocol read from a manifest keeps the boot
+        // selection it has had: there is no dashboard on its canvas for the bar
+        // to stand on, so the wash is the mark it draws.
+        //
+        // Both halves are read off a frame by
+        // `a_fresh_open_holds_the_dashboard_and_marks_the_row_that_says_so` and
+        // by `a_manifest_of_many_steps_puts_each_step_above_the_asset_it_produced`.
         let selected = if inputs.source.is_some() {
             None
         } else {
@@ -1211,8 +1215,10 @@ impl ProtocolModel {
         let mut rows = Vec::with_capacity(assets.len() * 2);
         for row in assets {
             let node = graph.nodes.get(&row.id);
-            // **`step` means "produced by" for every kind but `Source`.** On a
-            // source node it names the step that FETCHES FROM that host —
+            // **`step` means "produced by" except on a `Source` node**, which
+            // `a_manifest_of_many_steps_puts_each_step_above_the_asset_it_produced`
+            // holds by walking the crosswalk's own rows. On a source node it
+            // names the step that FETCHES FROM that host —
             // `build_graph` hangs the fetch's own name on the URL it reads — so
             // a step row above a source would draw the lineage backwards: the
             // step is downstream of the host, not upstream of it.
@@ -1859,7 +1865,8 @@ pub struct ProtocolDoc {
     /// What the window's canvas holds this frame, mirrored here so the
     /// navigator rail can mark the row whose content is on it.
     ///
-    /// **Written by the window before the pane draws, and never by the pane.**
+    /// **Written by the window before the pane draws; the pane reads it and
+    /// does not set it.**
     /// The canvas belongs to the window — [`crate::window::MeridianApp`] latches
     /// it and reconciles it against the documents each frame — so a pane that
     /// decided this for itself would be a second answer to a question the
@@ -1905,7 +1912,8 @@ pub struct SpineRowDrawn {
     /// how wide the text was, which is how a caption too long for the rail is
     /// caught rather than cropped quietly by the clip rect.
     pub name_rect: egui::Rect,
-    /// The rect the trailing text occupied, `None` on a row that drew none.
+    /// The rect the trailing text occupied, `None` on a row with no trailing
+    /// text.
     pub kind_rect: Option<egui::Rect>,
     /// The on-canvas bar, on the one row whose content the canvas holds.
     pub on_canvas: Option<egui::Rect>,
@@ -2325,7 +2333,7 @@ fn caption_row(ui: &mut egui::Ui, text: &str, mode: Mode) -> SpineRowDrawn {
 /// `on_canvas` and [`SpineRow::selected`] are two different facts and are drawn
 /// by two different mechanisms, deliberately. The wash is a fill under the whole
 /// row and says *this is what you picked*; the bar is two points of
-/// [`semantic`]'s focus ink at the leading edge and says *this is what is on the
+/// [`semantic()`]'s focus ink at the leading edge and says *this is what is on the
 /// canvas*. A reader who has picked a column while looking at the dashboard is
 /// being told two things at once, and one treatment could only tell them one.
 ///
