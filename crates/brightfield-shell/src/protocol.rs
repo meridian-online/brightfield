@@ -541,10 +541,9 @@ pub struct SpineRow {
 
 /// The separator a caption row puts between its clauses.
 ///
-/// Wider than the sentence separator the pane's own rows use, because a caption
-/// is read as a set of fields rather than as a phrase — the space is what makes
-/// `SPINE`, the count and (in the outline's caption) the table read as three
-/// things rather than one run-on line.
+/// Wider than the separator a step row's kind uses, because a caption is read
+/// as a set of fields rather than as a phrase — the space is what makes the
+/// band's name and its count read as two things rather than as one run-on line.
 const CAPTION_SEPARATOR: &str = "   \u{b7}   ";
 
 /// A caption row's text: its clauses, separated.
@@ -1314,7 +1313,7 @@ impl ProtocolModel {
     /// The outline's caption: how many columns stand beneath it.
     ///
     /// **It does not name the table, and that is a measurement rather than a
-    /// preference.** `OUTLINE . california_housing_sample . 9 columns` is 47
+    /// preference.** `OUTLINE · california_housing_sample · 9 columns` is 47
     /// characters; the mono caption face gives this pane about 30 inside a rail
     /// at its declared 240 points. Drawn with the table in it, the caption
     /// clipped mid-word and the count — the half a reader cannot get anywhere
@@ -2352,8 +2351,8 @@ fn spine_row(
 ) -> (SpineRowDrawn, egui::Response) {
     let sem = semantic(mode.is_dark());
     let b = control::binding(spacing::ROW_DENSE);
-    // A step row and a caption row are readouts rather than controls: nothing
-    // in this card acts on a step, and a row that senses a click it does not
+    // A step row and a caption row are readouts rather than controls: no
+    // gesture acts on a step yet, and a row that senses a click it does not
     // answer is a control that appears broken.
     let sense = match row.role {
         SpineRole::Asset | SpineRole::View => egui::Sense::click(),

@@ -12,11 +12,11 @@
 //!
 //! Covered: the rows and their order, the two marks and the one mechanism each,
 //! what a click on a view row moves, and the contract's measurements at two
-//! window sizes. Not covered here: the pixels. The four re-photographed
-//! baselines in `tests/surfaces.rs` and the two in `tests/dashboard_baseline.rs`
-//! are that half, and they are a different kind of evidence — an image reddens
-//! on a font bump as loudly as on a dropped row, which is why the structural
-//! half is here and reads in sentences.
+//! window sizes. Not covered here: the pixels. The re-photographed baselines in
+//! `tests/surfaces.rs` and `tests/dashboard_baseline.rs` are that half, and
+//! they are a different kind of evidence — an image reddens on a font bump as
+//! loudly as on a dropped row, which is why the structural half is here and
+//! reads in sentences.
 
 use brightfield_protocol::contract_graph::{AssetMeta, SeamStatus};
 use brightfield_shell::design::Mode;
@@ -24,8 +24,8 @@ use brightfield_shell::protocol::{NodeView, SpineMarker, SpineRole, SpineRowDraw
 use brightfield_shell::window::{Boot, CanvasHolds, MeridianApp};
 use meridian_design::{control, semantic, spacing};
 
-/// The committed table every window in this file is opened over: 240 rows, nine
-/// columns, one coordinate pair.
+/// The committed table every window in this file is opened over — its nine
+/// columns are [`HOUSING_COLUMNS`], and two of them are a coordinate pair.
 fn housing() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/data/california_housing_sample.csv")
@@ -647,7 +647,35 @@ fn a_windows_latched_canvas_agrees_with_the_derived_answer() {
     assert!(
         manifest.rows().iter().all(|row| row.on_canvas.is_none()),
         "the graph is not a row of the spine, so no row is marked for it — the \
-         chip in the spine's head is a later card"
+         chip in the spine's head is a later change"
+    );
+}
+
+/// **A rail with no Protocol behind it reports no rows.**
+///
+/// The pane draws its empty state instead, which means `OutlinePane::ui` is not
+/// reached at all — so the record has to be cleared by the frame rather than by
+/// the pane, or a row list from a previous document answers for a rail that is
+/// drawing "No assets yet". That is the same failure the canvas's pane record
+/// is cleared per frame for, one rail over.
+#[test]
+fn a_window_with_no_protocol_reports_no_spine_rows() {
+    let composed = brightfield_shell::pipeline::compose_spec("../../examples/dashboard.yaml")
+        .expect("compose the shipped dashboard");
+    let mut win = Live::open(Boot::charts(composed));
+    win.settle();
+    assert!(
+        win.app.spine_rows().is_empty(),
+        "a chart-only window drew {:?} in a rail whose pane is its empty state",
+        win.app
+            .spine_rows()
+            .iter()
+            .map(|row| row.label.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        win.app.spine_body().is_none(),
+        "…and reported a content box for a pane that laid none out"
     );
 }
 

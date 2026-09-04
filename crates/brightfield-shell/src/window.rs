@@ -728,8 +728,8 @@ impl CanvasHolds {
     /// that draws the on-canvas bar.
     ///
     /// A view row, and only a view row: the graph and a bare chart are not
-    /// listed in the spine (the graph gets a chip in the spine's head, which is
-    /// a later card), so on those two nothing in the rail is marked.
+    /// listed in the spine — the graph is reached by a chip in the spine's
+    /// head, which is a later change — so on those two no row is marked.
     #[must_use]
     pub fn shows(&self, row: &SpineRow) -> bool {
         match self {
@@ -2792,6 +2792,14 @@ impl MeridianApp {
         self.reconcile_canvas_holds();
         self.protocol.doc.canvas_holds = self.canvas_holds.clone();
         let canvas_holds = self.canvas_holds.clone();
+        // …and the rail's record of what it drew, cleared here so the pane can
+        // refill it. A frame that draws the front door, or a rail whose pane
+        // draws its empty state, reaches `OutlinePane::ui` not at all — and a
+        // row list left standing from the last frame would answer a test about
+        // a rail that is not there, which is the defect `canvas_panes` is
+        // cleared per frame for.
+        self.protocol.doc.spine_drawn.clear();
+        self.protocol.doc.spine_body = None;
 
         // The overlay-opening keys, before the grammar feed so the frame that
         // opens an overlay is already under it.
@@ -5432,7 +5440,8 @@ pub const CANVAS_PANE_GAP: f32 = brightfield_workbench::behavior::TILE_GAP;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CanvasPane {
     /// What the pane is, for a test and for a failure message: `"map"`,
-    /// `"rows"` or `"columns"`.
+    /// `"rows"` and `"columns"` for the three the group lays out, `"grid"` for
+    /// the one pane a canvas holding a node's grid view draws instead.
     pub name: &'static str,
     /// The pane's outer rect, in window-space logical points.
     pub rect: egui::Rect,
@@ -5443,16 +5452,19 @@ pub struct CanvasPane {
     pub body: egui::Rect,
 }
 
-/// What the canvas's pane group drew in one frame.
+/// What the canvas drew in one frame, as panes.
 ///
-/// Empty for a canvas showing one pane, which is what a document that is one
-/// picture gets. Recorded rather than declared: whether a pane drew a header
-/// band is a fact about a frame, and a test that read it off the arrangement
-/// would be asserting the declaration against itself.
+/// Three for the pane group a generated dashboard is drawn as, one for a canvas
+/// holding a node's grid view, and empty for a canvas drawing one picture
+/// through the item's own chrome — which is what a document that is one chart
+/// gets. Recorded rather than declared: whether a pane drew a header band is a
+/// fact about a frame, and a test that read it off the arrangement would be
+/// asserting the declaration against itself.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CanvasPanes {
-    /// The panes, in the order the group lays them out: the map pane, the rows
-    /// pane under it, then the column of tiles beside both.
+    /// The panes, in the order the frame laid them out: for the group, the map
+    /// pane, the rows pane under it, then the column of tiles beside both; for
+    /// a node's grid view, the one pane holding it.
     pub panes: Vec<CanvasPane>,
     /// The count overlay's rect inside the map pane, when one was drawn.
     pub count: Option<egui::Rect>,
@@ -5905,8 +5917,8 @@ fn pane_header_of(rect: egui::Rect, body: egui::Rect) -> egui::Rect {
 /// pane paints at the trailing end of its own band. That note exists because
 /// the rows pane is a quarter of the canvas and usually cannot fit the table;
 /// a grid with the whole canvas usually can, and the band this pane wants is
-/// the column header band a later card gives it rather than a count of what is
-/// missing. The grid's own plain header is unchanged.
+/// the column header band a later change gives it rather than a count of what
+/// is missing. The grid's own plain header is unchanged.
 #[allow(clippy::too_many_arguments)]
 fn draw_canvas_grid_pane(
     ui: &mut egui::Ui,
