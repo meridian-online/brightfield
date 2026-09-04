@@ -150,16 +150,16 @@ pub fn committed_selection_rect(
     if px1 <= px0 || py1 <= py0 {
         return None;
     }
-    let axis_span = |channel: Channel, selected: &Option<Selected>, whole: (f64, f64)| match selected
-    {
-        None => Some(whole),
-        Some(Selected::Interval(lo, hi)) => {
-            let scale = scales.get(channel)?;
-            let (a, b) = (scale.map_f64(*lo), scale.map_f64(*hi));
-            Some((a.min(b), a.max(b)))
-        }
-        Some(Selected::Categories(_)) => None,
-    };
+    let axis_span =
+        |channel: Channel, selected: &Option<Selected>, whole: (f64, f64)| match selected {
+            None => Some(whole),
+            Some(Selected::Interval(lo, hi)) => {
+                let scale = scales.get(channel)?;
+                let (a, b) = (scale.map_f64(*lo), scale.map_f64(*hi));
+                Some((a.min(b), a.max(b)))
+            }
+            Some(Selected::Categories(_)) => None,
+        };
     let (x0, x1) = axis_span(Channel::X, &selection.x, (px0, px1))?;
     let (y0, y1) = axis_span(Channel::Y, &selection.y, (py0, py1))?;
     Some(Rect::new(x0, y0, x1, y1))

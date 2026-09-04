@@ -27,6 +27,7 @@ use brightfield_engine::nearest::{NearestProbe, NearestRead};
 use brightfield_engine::{
     assemble_batches, DeclinedMark, Engine, NavigationExtent, RowsAudience, Session,
 };
+use brightfield_render::canvas_host::SurfaceRect;
 use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::ink::ChartInk;
 use brightfield_render::inset::{resolve_insets_for_marks, DEFAULT_SCALE_INSET};
@@ -39,7 +40,6 @@ use brightfield_render::scene::{
     build_multi_mark_scene_pinned, compose_dashboard, unrestorable_under_sampling, ChartData,
     UnsampledDomains,
 };
-use brightfield_render::canvas_host::SurfaceRect;
 use brightfield_render::selection::{
     committed_selection_rect, render_committed_selection, CommittedSelection, Selected,
 };
@@ -1483,9 +1483,15 @@ fn ink_committed_selections(composed: &mut Composed, session: &Session) {
         // test — `chart_item::drive_gestures` — can compare it directly
         // against a raw pointer point without knowing this plot's own
         // margin offset.
-        plot.committed_rect = committed_selection_rect(&plot.layout, &plot.scales, &held).map(
-            |r| SurfaceRect::new(r.x0 + plot.rect.x, r.y0 + plot.rect.y, r.width(), r.height()),
-        );
+        plot.committed_rect =
+            committed_selection_rect(&plot.layout, &plot.scales, &held).map(|r| {
+                SurfaceRect::new(
+                    r.x0 + plot.rect.x,
+                    r.y0 + plot.rect.y,
+                    r.width(),
+                    r.height(),
+                )
+            });
         if held.is_empty() {
             continue;
         }
