@@ -565,10 +565,10 @@ fn switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table() {
 /// `CanvasHolds::Graph` has to still show the clause where it is true, or
 /// the fix would have swapped one wrong answer for the opposite wrong
 /// answer. `MeridianApp::draw` feeds `y` to the model only while the graph
-/// is on the canvas. The latch test `a_windows_latched_canvas_agrees_with_the_derived_answer`
-/// confirms a manifest window over the housing fixture keeps the graph latched
-/// on one settled frame. Selecting an asset row and switching to Operator here
-/// is the frame the keystroke actually reaches on that same fixture.
+/// is on the canvas; `a_windows_latched_canvas_agrees_with_the_derived_answer` holds
+/// that a manifest window over the housing fixture keeps the graph latched on one
+/// settled frame. Selecting an asset row and switching to Operator here is the frame
+/// the keystroke actually reaches on that same fixture.
 #[test]
 fn a_selected_node_on_a_manifest_window_draws_the_yank_hint() {
     let spec = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
