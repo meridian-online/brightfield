@@ -264,10 +264,12 @@ fn the_spine_lists_the_file_the_step_that_read_it_and_the_table_it_made() {
         ),
         (SpineRole::View, "dashboard", "view", 1, SpineMarker::None),
         (SpineRole::View, "grid", "view", 1, SpineMarker::None),
+        // Two ends, not one string: at 240 points the whole caption does not
+        // fit, and as one string it is the count that goes off the edge.
         (
             SpineRole::Caption,
-            "OUTLINE   \u{b7}   california_housing_sample   \u{b7}   9 columns",
-            "",
+            "OUTLINE   \u{b7}   california_housing_sample",
+            "9 columns",
             0,
             SpineMarker::None,
         ),
@@ -697,6 +699,26 @@ fn the_spines_measurements_hold_at_both_windows() {
             }
         }
 
+        // The count the outline's caption exists to carry is on screen — the
+        // whole reason that caption is drawn as two ends rather than as one
+        // string. Read against the pane's own box, so a caption painted past
+        // the rail fails here rather than being cropped quietly by the clip
+        // rect.
+        let outline = rows
+            .iter()
+            .filter(|row| row.role == SpineRole::Caption)
+            .nth(1)
+            .expect("the outline's caption is drawn");
+        let count = outline
+            .kind_rect
+            .expect("the outline's caption carries its count at the trailing end");
+        assert_eq!(outline.kind, "9 columns");
+        assert!(
+            body.contains_rect(count),
+            "at {size:?} the outline's count drew at {count:?}, which is not \
+             inside the pane {body:?}"
+        );
+
         let table = win.row("california_housing_sample");
         for view in NodeView::ALL {
             let row = win.row(view.label());
@@ -858,7 +880,8 @@ fn a_manifest_of_many_steps_puts_each_step_above_the_asset_it_produced() {
         .nth(1)
         .expect("the outline's caption is drawn too");
     assert_eq!(
-        outline.label, "OUTLINE   \u{b7}   0 columns",
+        (outline.label.as_str(), outline.kind.as_str()),
+        ("OUTLINE", "0 columns"),
         "a manifest names no table and has no columns, and says so"
     );
     assert!(

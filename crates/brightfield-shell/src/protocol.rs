@@ -1305,19 +1305,33 @@ impl ProtocolModel {
         caption(&["SPINE", &counted(steps.len(), "step")])
     }
 
-    /// The outline's caption: the table the columns beneath belong to, and how
-    /// many there are.
+    /// The outline's caption, in two parts: the band and the table it belongs
+    /// to at the leading end, and how many columns at the trailing end.
+    ///
+    /// **Split because the rail is 240 points wide and the whole of it does not
+    /// fit.** `OUTLINE · california_housing_sample · 9 columns` is 47
+    /// characters; the mono face at this size gives the caption about 30 inside
+    /// a rail at its declared width and about 21 at its 160-point floor, so as
+    /// one string the count — the half a reader cannot get anywhere else — is
+    /// the half that goes off the edge. Split, the leading clause clips (the
+    /// table's own name is three rows above it in full) and the count is always
+    /// on screen. It is also the grammar every other row in this pane already
+    /// uses: name at the leading end, number at the trailing end.
+    ///
+    /// The spine's caption is deliberately **not** split the same way: its
+    /// trailing end is where the graph chip goes, and it fits as one string at
+    /// both widths.
     ///
     /// A Protocol read from a manifest has profiled no table, so it names none
     /// — a manifest declares relations and a column list is what an engine
     /// measured, which is the same separation [`ProtocolModel::outline`] keeps.
     #[must_use]
-    pub fn outline_caption(&self) -> String {
-        let columns = counted(self.columns.len(), "column");
-        match self.table_label() {
-            Some(table) => caption(&["OUTLINE", table, &columns]),
-            None => caption(&["OUTLINE", &columns]),
-        }
+    pub fn outline_caption(&self) -> (String, String) {
+        let leading = match self.table_label() {
+            Some(table) => caption(&["OUTLINE", table]),
+            None => "OUTLINE".to_string(),
+        };
+        (leading, counted(self.columns.len(), "column"))
     }
 
     /// The label of the table this Protocol produces — what a view of it is
@@ -2214,7 +2228,9 @@ impl Item<ProtocolDoc> for OutlinePane {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.add_space(spacing::SPACE_1);
-                drawn.push(caption_row(ui, &spine_caption, cx.mode));
+                // The spine's caption draws nothing at its trailing end: that
+                // is where the graph chip goes, and the room is left for it.
+                drawn.push(caption_row(ui, &spine_caption, None, cx.mode));
                 for row in &spine {
                     let (record, response) = spine_row(ui, row, holds.shows(row), cx.mode);
                     drawn.push(record);
@@ -2232,7 +2248,12 @@ impl Item<ProtocolDoc> for OutlinePane {
                     }
                 }
                 ui.add_space(spacing::SPACE_4);
-                drawn.push(caption_row(ui, &outline_caption, cx.mode));
+                drawn.push(caption_row(
+                    ui,
+                    &outline_caption.0,
+                    Some(&outline_caption.1),
+                    cx.mode,
+                ));
                 for row in &columns {
                     let (record, response) = outline_row(ui, row, cx.mode);
                     drawn.push(record);
@@ -2271,30 +2292,54 @@ impl Item<ProtocolDoc> for OutlinePane {
 /// It allocates a row and senses nothing: a caption is not a control, and a
 /// caption that swallowed a click would be a dead zone between two lists that
 /// both respond to one.
-fn caption_row(ui: &mut egui::Ui, text: &str, mode: Mode) -> SpineRowDrawn {
+fn caption_row(
+    ui: &mut egui::Ui,
+    leading: &str,
+    trailing: Option<&str>,
+    mode: Mode,
+) -> SpineRowDrawn {
     let sem = semantic(mode.is_dark());
     let b = control::binding(spacing::ROW_DENSE);
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), b.row),
         egui::Sense::hover(),
     );
-    let at = egui::pos2(rect.left() + spacing::SPACE_4, rect.center().y);
-    ui.painter().text(
-        at,
-        egui::Align2::LEFT_CENTER,
-        text,
-        caption_font(),
-        chrome::colour(sem.text.muted),
+    let ink = chrome::colour(sem.text.muted);
+    let painter = ui.painter();
+    // The trailing clause first, so the leading one knows what room is left —
+    // the order [`spine_row`] lays its two ends out in, and for the same reason.
+    let kind_rect = trailing.map(|text| {
+        let galley = painter.layout_no_wrap(text.to_owned(), caption_font(), ink);
+        let at = egui::Rect::from_min_size(
+            egui::pos2(
+                rect.right() - spacing::SPACE_4 - galley.size().x,
+                rect.center().y - galley.size().y / 2.0,
+            ),
+            galley.size(),
+        );
+        painter.galley(at.min, galley, ink);
+        at
+    });
+    let left = rect.left() + spacing::SPACE_4;
+    let galley = painter.layout_no_wrap(leading.to_owned(), caption_font(), ink);
+    let at = egui::pos2(left, rect.center().y - galley.size().y / 2.0);
+    let room = egui::Rect::from_min_max(
+        egui::pos2(left, rect.top()),
+        egui::pos2(
+            kind_rect.map_or_else(|| rect.right(), |k| k.left() - spacing::SPACE_3),
+            rect.bottom(),
+        ),
     );
+    painter.with_clip_rect(room).galley(at, galley, ink);
     SpineRowDrawn {
-        label: text.to_string(),
-        kind: String::new(),
+        label: leading.to_string(),
+        kind: trailing.unwrap_or_default().to_string(),
         depth: 0,
         marker: SpineMarker::None,
         role: SpineRole::Caption,
         rect,
-        name_left: at.x,
-        kind_rect: None,
+        name_left: left,
+        kind_rect,
         on_canvas: None,
         washed: false,
     }
