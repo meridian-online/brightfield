@@ -3,11 +3,11 @@
 //!
 //! Structure, folding in the review of the first (gpui) cut:
 //!
-//! - **Real dock panes.** Outline, the DAG canvas, the Inspector, and the S
-//!   steps sheet are independent [`egui_tiles`] panes in a resizable dock — not
-//!   three columns nailed inside one panel. Outline · (Canvas/Steps tabs) ·
-//!   Inspector is a horizontal split; `S` activates the Steps tab, `Esc` the
-//!   Canvas tab.
+//! - **Real dock panes.** Protocol, the DAG canvas, the Operator, and the
+//!   Steps sheet are independent [`egui_tiles`] panes in a resizable dock —
+//!   not three columns nailed inside one panel. Protocol · (Canvas/Steps
+//!   tabs) · Operator is a horizontal split; `S` activates the Steps tab,
+//!   `Esc` the Canvas tab.
 //! - **Vertical flow by default** (more readable in a dock pane), with a toggle
 //!   to the wide horizontal overview.
 //! - **The keystroke grammar actually dispatches.** Raw egui key events are
@@ -1093,8 +1093,8 @@ impl ProtocolModel {
     /// Where the selection's ring belongs on the canvas.
     ///
     /// Normally the selection itself. While the chain fold is open the selection
-    /// may name a node the fold absorbed — the outline still lists it, the nav
-    /// still walks to it, the inspector still answers for it, because all three
+    /// may name a node the fold absorbed — the rail still lists it, the nav
+    /// still walks to it, the Operator still answers for it, because all three
     /// read the uncollapsed graph — and there is no rectangle under that id to
     /// ring. This resolves it to the node it was folded **into**, so a keyboard
     /// walk through an absorbed run lights the asset that run produced rather
@@ -1867,7 +1867,7 @@ impl ProtocolModel {
 /// DAG rasters into.
 ///
 /// Every pane in the view reads this and two of them write it — clicking a node
-/// on the canvas selects it, and so does clicking an outline row. No
+/// on the canvas selects it, and so does clicking an asset row in the rail. No
 /// [`Item`] holds a handle to it: the shell hands out exactly one `&mut
 /// ProtocolDoc`, for the duration of one pane's draw. That is the aliasing rule
 /// the whole contract hangs off, and it is why the canvas host lives *here*
@@ -2666,7 +2666,7 @@ impl Item<ProtocolDoc> for CanvasPane {
                 // in the product.
                 // `selection_site`, not `selected`: while the chain fold is open
                 // the selection can name a node the fold absorbed, which the
-                // outline and the inspector still answer for and the canvas has
+                // rail and the Operator still answer for and the canvas has
                 // no rectangle for. The ring goes on the node it folded into.
                 if let Some(sel) = doc.model.selection_site() {
                     if let Some(node) = doc.model.layout().positions.get(&sel).cloned() {
@@ -2727,8 +2727,17 @@ impl Item<ProtocolDoc> for InspectorPane {
             EmptyState::new(
                 ICON_INSPECTOR,
                 "Nothing selected",
-                "Click a node in the canvas or a row in the rail, or move the \
-                 cursor with h j k l.",
+                // True whichever the canvas holds. A manifest Protocol's
+                // canvas holds the graph, where a node is a real click
+                // target; a data-file Protocol's canvas holds a view of the
+                // one table (dashboard or grid), which has no node on it at
+                // all — an "or" rather than a "click both" leaves the second
+                // reader with one fewer option rather than a false one.
+                // Neither names "the outline": that word is the column list
+                // under the spine now, not this whole rail, whose own strip
+                // reads "Protocol".
+                "Click a node in the canvas, or an asset row in the rail, to \
+                 see its facts here.",
             )
         })
     }
@@ -4173,10 +4182,11 @@ mod tests {
     /// the canvas its ring moves to the node it folded into.**
     ///
     /// This is the asymmetry already recorded against exploded CTEs, in reverse:
-    /// there, the canvas gained nodes the outline never listed. Here the canvas
-    /// loses nodes the outline still lists — and the outline, the nav and the
-    /// inspector all walk the *uncontracted* graph, so an absorbed asset is still
-    /// selectable, still walked to by `hjkl`, and still has an inspector.
+    /// there, the canvas gained nodes the rail never listed. Here the canvas
+    /// loses nodes the rail still lists — and the rail, the nav and the
+    /// Operator all walk the *uncontracted* graph, so an absorbed asset is still
+    /// selectable, still walked to by `hjkl`, and the Operator still answers
+    /// for it.
     ///
     /// What is **not** covered, said plainly rather than implied: an absorbed
     /// node has no rectangle of its own while the fold is open, so its selection

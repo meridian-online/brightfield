@@ -109,6 +109,51 @@ fn no_pane_is_empty_over_a_real_protocol() {
     }
 }
 
+/// **The Operator's empty-state body names no pane "the outline", and reads
+/// true whichever the canvas holds.**
+///
+/// Built with `ProtocolDoc::headless` directly rather than through a window,
+/// so `canvas_holds` stays at its unreconciled default (`Graph`) instead of
+/// the `View` a real housing-fixture window latches before its first frame —
+/// the one construction that leaves this pane's own fallback with nothing to
+/// fall back to, and so the one that still reaches this text at all. A real
+/// window over this same fixture never sees it: `navigator_spine.rs`'s
+/// `switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table` is
+/// the pin that a live window's fallback keeps this pane out of its empty
+/// state in the first place.
+#[test]
+fn the_operators_empty_state_over_the_housing_fixture_names_no_outline() {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/california_housing_sample.csv");
+    let opened =
+        brightfield_shell::data_file::open(&path.to_string_lossy()).expect("the CSV opens");
+    let inputs = opened.protocol.inputs().expect("the Protocol builds");
+    let doc = ProtocolDoc::headless(ProtocolModel::new(inputs, Flow::Vertical));
+
+    assert!(
+        !doc.model.has_selection(doc.canvas_holds.node()),
+        "this test is about the branch where nothing is selected and the \
+         canvas holds no node either — construct it differently if this \
+         starts failing"
+    );
+
+    let empty = subjects(&doc)[&INSPECTOR]
+        .empty_state
+        .clone()
+        .expect("the Operator has nothing to describe here");
+    assert!(
+        !empty.body.to_lowercase().contains("outline"),
+        "the Operator's empty state still names the pane \"outline\": {:?}",
+        empty.body
+    );
+    assert!(
+        empty.body.to_lowercase().contains("rail"),
+        "the Operator's empty state offers no way to reach content from the \
+         rail: {:?}",
+        empty.body
+    );
+}
+
 // ---------------------------------------------------------------------------
 // What the panes declare
 // ---------------------------------------------------------------------------
