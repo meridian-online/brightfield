@@ -1155,7 +1155,7 @@ fn assert_day_axis_at_window_width(window_height: f32, window_width: f32) -> f64
     // The narrowest of day's own six dates, on its own, at the size
     // `render_x_axis` draws a horizontal label at — the width below which no
     // centre keeps EVEN the narrowest label inside this tile, so the axis is
-    // expected to drop every one of them rather than draw one it cannot
+    // expected to drop each one of them rather than draw one it cannot
     // contain (tick marks and the title, when present, still draw). This is
     // reachable at the live layout's narrowest resolved widths: measured on
     // this build, a real date is roughly 65 points wide and the column tile

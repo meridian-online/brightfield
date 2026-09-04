@@ -363,7 +363,7 @@ fn thinned_x_ticks(ticks: &[Tick], size: f32, tile_width: f64) -> Vec<&Tick> {
 /// and
 /// `the_axis_degrades_to_one_label_rather_than_clip_a_rotated_band_past_a_title`.
 ///
-/// [`contained_centre`] (private to this module) additionally nudges a label
+/// `contained_centre` (private to this module) additionally nudges a label
 /// whose own drawn footprint would run past the tile's `[0, layout.width]`
 /// span back inside it, or drops it when even nudging cannot fit it — applied
 /// to the thinned candidate, the rotated band and the degraded single label
@@ -1017,7 +1017,7 @@ mod tests {
         // A bottom margin generous enough that an UNTITLED axis at this same
         // width would have room to rotate a real date into — grown by hand
         // rather than through `grow_margins`, because the point of what
-        // follows is to hold the width and the margin FIXED and vary only
+        // follows is to hold the width and the margin FIXED and change just
         // whether a title is present. Finding: a ten-character date used to
         // overrun BOTH floors at once at the margin `grow_margins` actually
         // produces for a titled axis here (bottom 50), which left the titled
