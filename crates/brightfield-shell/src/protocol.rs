@@ -2395,11 +2395,7 @@ fn spine_row(
 
     // The kind is laid out first so the name knows what room is left: a long
     // asset label clipped by the pane would otherwise run under it.
-    let kind = painter.layout_no_wrap(
-        row.kind.clone(),
-        ui_font(),
-        chrome::colour(sem.text.muted),
-    );
+    let kind = painter.layout_no_wrap(row.kind.clone(), ui_font(), chrome::colour(sem.text.muted));
     let kind_rect = egui::Rect::from_min_size(
         egui::pos2(
             rect.right() - spacing::SPACE_4 - kind.size().x,
@@ -2422,7 +2418,9 @@ fn spine_row(
         egui::pos2(name_left, rect.top()),
         egui::pos2(kind_rect.left() - spacing::SPACE_3, rect.bottom()),
     );
-    painter.with_clip_rect(room).galley(name_rect.min, name, ink);
+    painter
+        .with_clip_rect(room)
+        .galley(name_rect.min, name, ink);
 
     (
         SpineRowDrawn {

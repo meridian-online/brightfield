@@ -302,7 +302,11 @@ fn the_step_rows_run_state_is_the_models_and_not_a_literal() {
     // levels, moved independently, because a marker reading the wrong one of
     // them is invisible while they agree.
     let mut boot = housing_boot();
-    let table = boot.protocol.table.clone().expect("the fixture has a table");
+    let table = boot
+        .protocol
+        .table
+        .clone()
+        .expect("the fixture has a table");
     boot.protocol
         .statuses
         .insert("load".to_string(), SeamStatus::Ok);
@@ -372,7 +376,10 @@ fn the_spines_markers_are_a_filled_disc_and_a_hollow_ring_where_the_row_says() {
     // The marker's leading edge sits SPACE_4 in from the row's left, so its
     // centre is one radius past that.
     let at = |row: &SpineRowDrawn| {
-        egui::pos2(row.rect.left() + spacing::SPACE_4 + 2.5, row.rect.center().y)
+        egui::pos2(
+            row.rect.left() + spacing::SPACE_4 + 2.5,
+            row.rect.center().y,
+        )
     };
 
     let filled = circles
@@ -663,7 +670,11 @@ fn the_spines_measurements_hold_at_both_windows() {
         let mut win = Live::at(housing_boot(), size);
         win.settle();
         let rows = win.rows();
-        assert!(rows.len() > 6, "at {size:?} the rail drew {} rows", rows.len());
+        assert!(
+            rows.len() > 6,
+            "at {size:?} the rail drew {} rows",
+            rows.len()
+        );
 
         let body = win.app.spine_body().expect("the pane was laid out");
         let first = rows.first().expect("a caption leads the pane");

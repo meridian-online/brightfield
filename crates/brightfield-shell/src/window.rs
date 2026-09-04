@@ -3007,12 +3007,10 @@ impl MeridianApp {
             // that file loaded into, which is the name the spine's own row
             // carries. Read here, before the borrows below take the documents
             // apart, for the reason `canvas_name` is.
-            let grid_title = self
-                .protocol
-                .doc
-                .model
-                .table_label()
-                .map_or_else(|| "Grid".to_string(), |table| format!("Grid \u{b7} {table}"));
+            let grid_title = self.protocol.doc.model.table_label().map_or_else(
+                || "Grid".to_string(),
+                |table| format!("Grid \u{b7} {table}"),
+            );
 
             let mut regions = std::mem::take(&mut self.regions);
             let mut strips = std::mem::take(&mut self.strips);
