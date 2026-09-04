@@ -158,6 +158,69 @@ fn assert_housing(dash: &Dashboard) {
     );
 }
 
+/// **A table small like [`housing`], with a coordinate pair AND a date
+/// column** — the shape [`fixture`] does not have.
+///
+/// [`fixture`]'s `day` earns no picture of a real column tile: with no
+/// coordinate pair in that file, [`dashboard::Dashboard::hero_index`] falls
+/// back to the first tile, so `day` draws in the map pane at the hero's own
+/// (much wider) share of the page rather than at a column tile's width. This
+/// table gives the coordinate pair its own hero (`longitude`/`latitude`, one
+/// of three repeated sites) so `day` stacks beside it as an ordinary column
+/// tile instead — which is the width the counts_over_time axis actually
+/// draws at whenever a file's map takes the hero's place, the shape the
+/// time-axis collision was recorded against. `reading` earns the column's
+/// second tile so the width
+/// [`the_time_axis_never_overlaps_or_clips_across_real_window_widths`] reads
+/// is a real dashboard's, not a single-tile one.
+fn site_readings() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/site_readings_sample.csv")
+}
+
+/// The tiles [`site_readings`] earns, in the order the composition places
+/// them: the map first (named for its longitude column, [`assert_housing`]'s
+/// convention), then `day` and `reading` beside it in file order.
+const SITE_READINGS_PLOTS: &[&str] = &["longitude", "day", "reading"];
+
+/// **The structural half of the picture [`the_site_readings_dashboard_light_baseline`]
+/// and its dark twin capture**, [`assert_housing`]'s pattern read against
+/// [`site_readings`] instead: the map is the hero, `day` and `reading` stack
+/// beside it, and nothing was left out.
+fn assert_site_readings(dash: &Dashboard) {
+    let drawn: Vec<&str> = dash.plot_order().iter().map(|t| t.column()).collect();
+    assert_eq!(
+        drawn,
+        SITE_READINGS_PLOTS.to_vec(),
+        "the tiles this picture is of, or the order the composition places \
+         them in, have moved. The first is the hero the map pane holds and \
+         the rest are the column beside it."
+    );
+    let hero = &dash.plot_order()[0];
+    assert_eq!(
+        hero.kind(),
+        chart_kinds::POINT_MAP,
+        "the hero is not the point map, so the map pane is holding something \
+         else and day no longer draws as a column tile"
+    );
+    assert_eq!(
+        hero.paired_column(),
+        Some("latitude"),
+        "the map's paired column moved"
+    );
+    assert_eq!(
+        dash.column_tiles().len(),
+        2,
+        "the column holds {} tiles rather than the two (day, reading) the \
+         file earns",
+        dash.column_tiles().len()
+    );
+    assert!(
+        dash.omitted().is_empty(),
+        "a column was left out of this dashboard: {:?}",
+        dash.omitted()
+    );
+}
+
 /// Where the capture's intermediate PNG goes. Under the target dir, already
 /// git-ignored, so a concurrent test cannot race this one on a path.
 fn scratch(name: &str) -> PathBuf {
@@ -733,4 +796,607 @@ fn is_token(p: &image::Rgba<u8>, token: meridian_design::colour::Rgba) -> bool {
     p.0[0] == (token.r * 255.0).round() as u8
         && p.0[1] == (token.g * 255.0).round() as u8
         && p.0[2] == (token.b * 255.0).round() as u8
+}
+
+// ---------------------------------------------------------------------------
+// A time axis at a dashboard tile's real width
+// ---------------------------------------------------------------------------
+
+/// The `day` column's real dates, walked off the composed dashboard's own
+/// resolved `Scale::Band` for [`fixture`] rather than typed a second time —
+/// a change to the fixture's dates cannot leave this test checking a set the
+/// picture no longer draws.
+fn fixture_day_categories(composed: &brightfield_shell::pipeline::Composed) -> Vec<String> {
+    let day_plot = composed
+        .plots
+        .iter()
+        .find(|p| p.x_column.as_deref() == Some("day"))
+        .expect("fixture check: the day column earns a tile with x: day");
+    match day_plot.scales.get(brightfield_render::channel::Channel::X) {
+        Some(brightfield_render::scale::Scale::Band { categories, .. }) => categories.clone(),
+        other => panic!("fixture check: day's x scale is not a band scale: {other:?}"),
+    }
+}
+
+/// The plot `composed` placed whose x channel is bound to `column`, found by
+/// that binding rather than by position — a hero promotion or a column
+/// reorder must point this at a different plot, not silently keep reading the
+/// same index.
+fn plot_for_x_column<'a>(
+    composed: &'a brightfield_shell::pipeline::Composed,
+    column: &str,
+) -> &'a brightfield_shell::pipeline::PlotHandle {
+    composed
+        .plots
+        .iter()
+        .find(|p| p.x_column.as_deref() == Some(column))
+        .unwrap_or_else(|| panic!("fixture check: no placed plot binds x to {column}"))
+}
+
+/// `(x0, y0, x1, y1)` — an axis-aligned rect in the composed PAGE's own
+/// coordinate space, the same space [`brightfield_shell::pipeline::PlotHandle::rect`]
+/// lives in.
+type Rect4 = (f64, f64, f64, f64);
+
+/// Whether `a` and `b` share any interior point.
+fn rects_intersect(a: Rect4, b: Rect4) -> bool {
+    a.0 < b.2 && b.0 < a.2 && a.1 < b.3 && b.1 < a.3
+}
+
+/// Whether `inner` lies inside `outer`, both edges included up to float
+/// round-trip slop.
+fn rect_inside(inner: Rect4, outer: Rect4) -> bool {
+    inner.0 >= outer.0 - 0.5
+        && inner.2 <= outer.2 + 0.5
+        && inner.1 >= outer.1 - 0.5
+        && inner.3 <= outer.3 + 0.5
+}
+
+/// The rects `render_x_axis` (`brightfield-render`'s `axis` module) drew for
+/// `plot`'s x axis, read straight out of the real composed `scene` —
+/// [`Composed::scene`]'s glyph runs, not a second render — rather than
+/// assumed from which branch it is expected to have taken: the tick labels
+/// (whichever family `render_x_axis` chose — thinned, degraded to one, or
+/// rotated) as the first element, and the axis title's rect, when the tile
+/// draws one, as the second.
+///
+/// A run's own [`vello_encoding::GlyphRun::font_size`] is what tells a title
+/// apart from a tick label — the SAME field `render_x_axis` sets when it
+/// draws each (`TITLE_SIZE` for the title, `size` for a tick label,
+/// whichever way it drew them), rather than the two being told apart by
+/// where they landed. A ROTATED run's rect runs the other way from a
+/// horizontal one: its OWN glyph-height footprint (`size` wide) is centred on
+/// its pivot along x, and its measured text length runs DOWN from the pivot
+/// along y — the near end is nearest the tick
+/// (`draw_text_rotated`'s `TextAnchor::End`) — so a run that has clipped past
+/// the tile or under the title is exactly one whose far end has run past
+/// `plot.rect.height` or into the title's own rect, which
+/// `rect_inside`/`rects_intersect` read directly off the rects this returns.
+fn drawn_x_axis_rects(
+    scene: &vello::Scene,
+    plot: &brightfield_shell::pipeline::PlotHandle,
+    ticks: &[brightfield_render::axis::Tick],
+    title_text: &str,
+    size: f32,
+) -> (Vec<Rect4>, Option<Rect4>) {
+    let title_size = brightfield_render::text::TITLE_SIZE;
+    let title_width = brightfield_render::text::measure_width(title_text, title_size);
+
+    // Wide enough to catch a label that has overflowed the tile — the
+    // defect this file's sweep test exists to catch — but derived from the
+    // labels themselves rather than a flat pad: a pad generous enough at
+    // one window width reached past the gutter into a NEIGHBOUR plot's own
+    // labels at a narrower one, measured on this build at an 888-point
+    // window — a flat 200-point pad swept up the map pane's own latitude
+    // row label, roughly 200 points left of day's own plot, and mismatched
+    // it against day's nearest tick candidate by position alone. `render_x_axis`
+    // centres a horizontal label on a tick position already inside the
+    // plot's own range, so an unclamped label can overflow by at most half
+    // its own width on either side, and a rotated one by at most half
+    // `size` — the widest label this axis actually draws already bounds
+    // both, with room to spare short of the next plot over.
+    let slack = ticks
+        .iter()
+        .map(|t| brightfield_render::text::measure_width(&t.label, size))
+        .fold(f64::from(size), f64::max);
+    let x_lo = plot.rect.x - slack;
+    let x_hi = plot.rect.x + plot.rect.width + slack;
+    // Half a label's cap height below the axis line, not the line itself:
+    // the y-axis's own occasional stray label (a y-tick landing exactly on
+    // `plot_y_end` draws its row-label `LABEL_SIZE / 3` below the line) sits
+    // short of this floor, while the x-axis's tick-label row (`LABEL_SIZE`
+    // below the line, or the rotated pivots' `ROTATED_LABEL_GAP` short of
+    // that) clears it.
+    let y_lo = plot.rect.y + plot.layout.plot_y_end() + f64::from(size) / 2.0;
+    let y_hi = plot.rect.y + plot.rect.height;
+
+    // A horizontal draw (`TextAnchor::Middle`) anchors its LEFT edge at
+    // `position - width / 2`; a rotated one (`TextAnchor::End`) anchors its
+    // PIVOT exactly at `position` — two different predicted x0s for the same
+    // tick, so two candidate lists, matched against whichever family a given
+    // run turns out to belong to.
+    let horiz_candidates: Vec<(f64, &str)> = ticks
+        .iter()
+        .map(|t| {
+            (
+                plot.rect.x + t.position
+                    - brightfield_render::text::measure_width(&t.label, size) / 2.0,
+                t.label.as_str(),
+            )
+        })
+        .collect();
+    let rotated_candidates: Vec<(f64, &str)> = ticks
+        .iter()
+        .map(|t| (plot.rect.x + t.position, t.label.as_str()))
+        .collect();
+
+    let mut label_rects = Vec::new();
+    let mut title_rect = None;
+    for run in &scene.encoding().resources.glyph_runs {
+        let x0 = f64::from(run.transform.translation[0]);
+        let y0 = f64::from(run.transform.translation[1]);
+        if x0 < x_lo || x0 > x_hi || y0 < y_lo || y0 > y_hi {
+            continue;
+        }
+        if (run.font_size - title_size).abs() < 0.01 {
+            // The axis title itself: `TextAnchor::Middle`, so x0 is already
+            // its own left edge.
+            title_rect = Some((x0, y0 - f64::from(title_size), x0 + title_width, y0));
+            continue;
+        }
+        let m = run.transform.matrix;
+        let rotated = m[0].abs() < 1e-3 && m[3].abs() < 1e-3;
+        if rotated {
+            let (_, label) = rotated_candidates
+                .iter()
+                .min_by(|a, b| (a.0 - x0).abs().partial_cmp(&(b.0 - x0).abs()).unwrap())
+                .expect("fixture check: at least one candidate tick");
+            let run_len = brightfield_render::text::measure_width(label, size);
+            label_rects.push((
+                x0 - f64::from(size) / 2.0,
+                y0,
+                x0 + f64::from(size) / 2.0,
+                y0 + run_len,
+            ));
+        } else {
+            let (_, label) = horiz_candidates
+                .iter()
+                .min_by(|a, b| (a.0 - x0).abs().partial_cmp(&(b.0 - x0).abs()).unwrap())
+                .expect("fixture check: at least one candidate tick");
+            let width = brightfield_render::text::measure_width(label, size);
+            label_rects.push((x0, y0 - f64::from(size), x0 + width, y0));
+        }
+    }
+    (label_rects, title_rect)
+}
+
+/// A `day`-axis rendered in isolation at `width`, over `categories` — the same
+/// [`brightfield_render::axis::compute_ticks`] / `render_x_axis` path a
+/// counts_over_time tile's own scene draws its x axis through, at
+/// [`brightfield_render::layout::ChartLayout`]'s own inset-adjusted x range.
+fn day_axis_scene(
+    categories: &[String],
+    width: f64,
+) -> (vello::Scene, Vec<brightfield_render::axis::Tick>) {
+    let layout = brightfield_render::layout::ChartLayout::new(width, 300.0);
+    let (range_start, range_end) = layout.x_range();
+    let scale = brightfield_render::scale::Scale::Band {
+        categories: categories.to_vec(),
+        range_start,
+        range_end,
+        padding: 0.1,
+    };
+    let ticks = brightfield_render::axis::compute_ticks(&scale, 5);
+    let mut scene = vello::Scene::new();
+    brightfield_render::axis::render_x_axis(
+        &mut scene,
+        &layout,
+        &ticks,
+        None,
+        brightfield_render::ink::ChartInk::LIGHT,
+    );
+    (scene, ticks)
+}
+
+/// Matches each horizontal glyph run in `scene` back to whichever `ticks`
+/// entry its draw position (`TextAnchor::Middle`, `render_x_axis`'s own
+/// anchor) is nearest, then asserts no two runs' `[x, x + width]` intervals
+/// intersect — the width read with `measure_width`, the shaping
+/// `render_x_axis` measured it with, rather than estimated from the run's raw
+/// glyph count. A run whose transform carries a quarter turn is skipped: a
+/// rotated axis is a different claim, made in `brightfield-render`'s own
+/// `axis` tests.
+fn assert_no_tick_label_overlap(
+    scene: &vello::Scene,
+    ticks: &[brightfield_render::axis::Tick],
+    size: f32,
+) {
+    let candidates: Vec<(f64, &str)> = ticks
+        .iter()
+        .map(|t| {
+            (
+                t.position - brightfield_render::text::measure_width(&t.label, size) / 2.0,
+                t.label.as_str(),
+            )
+        })
+        .collect();
+    let mut spans: Vec<(f64, f64)> = Vec::new();
+    for run in &scene.encoding().resources.glyph_runs {
+        let m = run.transform.matrix;
+        let rotated = m[0].abs() < 1e-3 && m[3].abs() < 1e-3;
+        if rotated {
+            continue;
+        }
+        let x0 = f64::from(run.transform.translation[0]);
+        let (_, label) = candidates
+            .iter()
+            .min_by(|a, b| (a.0 - x0).abs().partial_cmp(&(b.0 - x0).abs()).unwrap())
+            .expect("fixture check: at least one candidate tick");
+        spans.push((
+            x0,
+            x0 + brightfield_render::text::measure_width(label, size),
+        ));
+    }
+    spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    for pair in spans.windows(2) {
+        assert!(
+            pair[0].1 <= pair[1].0,
+            "two drawn tick labels overlap: {pair:?} (all spans: {spans:?})"
+        );
+    }
+}
+
+/// The logical window [`site_readings`]'s own baseline captures
+/// ([`the_site_readings_dashboard_light_baseline`] and its dark twin) open
+/// at — [`Boot::window_size`], the natural size their `capture_png` call
+/// derives with no explicit size of its own.
+fn site_readings_baseline_window() -> (f32, f32) {
+    let path = site_readings();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    boot.window_size()
+}
+
+/// [`site_readings`] driven through the REAL pane group at a window `size` —
+/// the same `MeridianApp::headless` + `ctx.run_ui` settle loop [`pane_rects`]
+/// drives, three frames so a resizable panel's reported size is read back
+/// on the frame after (the same reason [`pane_rects`] settles before reading
+/// anything back). Returns the settled app so its `chart_doc().composed` can
+/// be read by reference: `day`'s tile at whatever width THIS window's
+/// constrained `hconcat` resolved for it, not [`data_file::open`]'s own
+/// one-shot, UNCONSTRAINED composition — which is what this card's round 2
+/// read, and which sits at `crate::dashboard::COLUMN_TILE_WIDTH` (380
+/// points) regardless of window, because an unconstrained `hconcat` sizes
+/// each item to its OWN declared weight rather than sharing a box out. The
+/// live app does not lay this dashboard out unconstrained — `ChartDoc::reflow_to`
+/// hands `LiveDashboard::set_viewport` a real box first, the box the window's
+/// own arrangement gave the chart pane.
+fn site_readings_app_at(size: (f32, f32)) -> brightfield_shell::window::MeridianApp {
+    let path = site_readings();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let mut app = brightfield_shell::window::MeridianApp::headless(boot, Mode::Light);
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(size.0, size.1),
+        )),
+        ..Default::default()
+    };
+    for _ in 0..3 {
+        let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
+    }
+    app
+}
+
+/// Sweep granularity, in logical points, for
+/// [`the_time_axis_never_overlaps_or_clips_across_real_window_widths`] — this
+/// is small enough to land inside a violation band as narrow as 48 points,
+/// which is what round 3's own hand sweep found (window widths 1064 to
+/// 1016, four points at a time: a real capture at 1024 sliced a date's last
+/// digit against the tile's own right edge, a width round 3's four FIXED
+/// samples missed). Doubled to eight rather than kept at
+/// four because this suite already carries a 60-minute CI ceiling other
+/// tiers spend more slowly than this one does; eight still lands several
+/// samples inside a band that width.
+const SWEEP_STEP: f32 = 8.0;
+
+/// The widest window [`the_time_axis_never_overlaps_or_clips_across_real_window_widths`]'s
+/// sweep starts from — chosen to sit above both
+/// [`site_readings_baseline_window`] and round 2/3's fixed samples.
+const SWEEP_START_WIDTH: f32 = 1600.0;
+
+/// A backstop on how far the sweep is allowed to descend before the test
+/// gives up looking for the app's own layout floor and fails outright,
+/// rather than looping toward zero. The sweep is expected to stop well
+/// above this — see
+/// [`the_time_axis_never_overlaps_or_clips_across_real_window_widths`].
+const SWEEP_MIN_WIDTH: f32 = 100.0;
+
+/// One width's worth of the sweep in
+/// [`the_time_axis_never_overlaps_or_clips_across_real_window_widths`]: drive
+/// the real pane group at `window_width`, read `day`'s own placed tile and
+/// its drawn axis rects back out of the composed scene, and assert
+/// containment in the tile, clearance from the axis title, and pairwise
+/// clearance between labels. Returns the tile width actually resolved, so
+/// the caller can tell a genuinely narrower sample from the app's layout
+/// floor repeating the last one.
+fn assert_day_axis_at_window_width(window_height: f32, window_width: f32) -> f64 {
+    let app = site_readings_app_at((window_width, window_height));
+    let composed = &app.chart_doc().composed;
+    let day_plot = plot_for_x_column(composed, "day");
+    let tile_width = day_plot.rect.width;
+    assert!(
+        tile_width > 0.0,
+        "fixture check: day's tile drew at a non-positive width at window \
+         width {window_width}"
+    );
+
+    let x_scale = day_plot
+        .scales
+        .get(brightfield_render::channel::Channel::X)
+        .expect("fixture check: day's placed plot carries an x scale");
+    let ticks = brightfield_render::axis::compute_ticks(x_scale, 5);
+    assert_eq!(
+        ticks.len(),
+        6,
+        "fixture check: site_readings_sample.csv's day column no longer \
+         carries six distinct dates"
+    );
+    let (label_rects, title_rect) = drawn_x_axis_rects(
+        &composed.scene,
+        day_plot,
+        &ticks,
+        "day",
+        brightfield_render::text::LABEL_SIZE,
+    );
+
+    // The narrowest of day's own six dates, on its own, at the size
+    // `render_x_axis` draws a horizontal label at — the width below which no
+    // centre keeps EVEN the narrowest label inside this tile, so the axis is
+    // expected to drop each one of them rather than draw one it cannot
+    // contain (tick marks and the title, when present, still draw). This is
+    // reachable at the live layout's narrowest resolved widths: measured on
+    // this build, a real date is roughly 65 points wide and the column tile
+    // shrinks past that.
+    let narrowest_label = ticks
+        .iter()
+        .map(|t| {
+            brightfield_render::text::measure_width(&t.label, brightfield_render::text::LABEL_SIZE)
+        })
+        .fold(f64::MAX, f64::min);
+    if narrowest_label > tile_width {
+        assert!(
+            label_rects.is_empty(),
+            "day's tile ({tile_width} points wide) cannot hold even its \
+             narrowest date label ({narrowest_label} points), so no \
+             tick-label rect should have drawn at window width \
+             {window_width} — {} drew instead",
+            label_rects.len()
+        );
+        return tile_width;
+    }
+    assert!(
+        !label_rects.is_empty(),
+        "no tick-label rect was drawn for day's x axis at window width \
+         {window_width} (its tile drew at {tile_width} points wide, wide \
+         enough to hold its narrowest date label at {narrowest_label} points)"
+    );
+
+    let tile: Rect4 = (
+        day_plot.rect.x,
+        day_plot.rect.y,
+        day_plot.rect.x + day_plot.rect.width,
+        day_plot.rect.y + day_plot.rect.height,
+    );
+    for rect in &label_rects {
+        assert!(
+            rect_inside(*rect, tile),
+            "a tick-label rect {rect:?} does not lie inside day's own \
+             tile rect {tile:?} at window width {window_width} (tile \
+             {tile_width} points wide)"
+        );
+        if let Some(title_rect) = title_rect {
+            assert!(
+                !rects_intersect(*rect, title_rect),
+                "a tick-label rect {rect:?} intersects the axis title's \
+                 rect {title_rect:?} at window width {window_width}"
+            );
+        }
+    }
+    for i in 0..label_rects.len() {
+        for other in &label_rects[i + 1..] {
+            assert!(
+                !rects_intersect(label_rects[i], *other),
+                "two of day's drawn tick-label rects intersect at window \
+                 width {window_width}: {:?} and {other:?}",
+                label_rects[i],
+            );
+        }
+    }
+
+    tile_width
+}
+
+/// **The counts_over_time tile's time axis never overlaps or clips at the
+/// widths the live app actually resolves for it** — read off the REAL pane
+/// group, swept across the whole range the live layout resolves for a
+/// column tile rather than sampled at a handful of fixed widths.
+///
+/// [`site_readings`] gives the coordinate pair its own hero, so `day` earns
+/// an ordinary tile in the STACKED column ([`assert_site_readings`] pins
+/// that shape) rather than falling back into the map pane the way
+/// [`fixture`]'s `day` does. [`assert_day_axis_at_window_width`] is one
+/// width's worth of the sweep: it drives the pane group at that width, reads
+/// `day`'s own placed tile and [`drawn_x_axis_rects`]'s rects straight out
+/// of the composed scene, and asserts containment in the tile, clearance
+/// from the axis title, and pairwise clearance between the drawn labels —
+/// whichever way `render_x_axis` chose to draw them
+/// ([`site_readings_app_at`]'s own doc names why round 2's version of this
+/// test read the wrong quantity in the first place).
+///
+/// A fixed four-sample version of this test (the baseline window, 1400,
+/// 1200, 1000) passed while the property failed BETWEEN the samples: round
+/// 3's own hand sweep found a real capture at a 1024-point window slicing a
+/// date's last digit against the tile's own right edge, a width none of
+/// those four landed on. What follows sweeps [`SWEEP_STEP`]-point steps from
+/// [`SWEEP_START_WIDTH`] down to wherever the app's own layout stops moving
+/// `day`'s tile width — `brightfield_shell::window::canvas_pane_rects`'s own
+/// floor on the column pane, detected at runtime (two consecutive
+/// samples resolving the identical tile width) rather than restated as a
+/// constant, because a restated one would rot the moment that floor moved.
+#[test]
+fn the_time_axis_never_overlaps_or_clips_across_real_window_widths() {
+    // Fixture check, once: the shape the whole sweep below assumes.
+    let path = site_readings();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let opened = data_file::open(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    assert_site_readings(&opened.dashboard);
+    drop(opened);
+
+    let baseline = site_readings_baseline_window();
+
+    // AC1's own width: the dashboard baseline's window, checked on its own
+    // so a failure here reads as "the baseline capture itself is wrong"
+    // rather than being buried inside the sweep below.
+    assert_day_axis_at_window_width(baseline.1, baseline.0);
+
+    let mut width = SWEEP_START_WIDTH;
+    let mut last_tile_width: Option<f64> = None;
+    let mut collapsed = false;
+    while width >= SWEEP_MIN_WIDTH {
+        let tile_width = assert_day_axis_at_window_width(baseline.1, width);
+        if let Some(prev) = last_tile_width {
+            if (tile_width - prev).abs() < 1e-6 {
+                // Two consecutive samples resolved the same tile width: the
+                // app's own layout has hit its floor on the column pane, and
+                // `width` was the narrowest sample still on the live side of
+                // it (the FIRST floored sample was tested at the step
+                // above — its own assertions already ran). Descending
+                // further would repeat this identical assertion for however
+                // many more steps SWEEP_MIN_WIDTH allowed, for no benefit.
+                collapsed = true;
+                break;
+            }
+        }
+        last_tile_width = Some(tile_width);
+        width -= SWEEP_STEP;
+    }
+    assert!(
+        collapsed,
+        "fixture check: the sweep reached {SWEEP_MIN_WIDTH} points wide \
+         without the app's own layout ever resolving the same tile width \
+         twice in a row for day's column tile — either the column pane has \
+         no floor at this width any more, or SWEEP_MIN_WIDTH needs lowering \
+         to reach it"
+    );
+}
+
+/// **The same axis, at 240 and at 720 points wide** — so the claim above is a
+/// rule about the render path rather than a fact about today's one measured
+/// column width.
+#[test]
+fn the_time_axis_does_not_collide_at_240_or_720_points() {
+    let path = fixture();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let opened = data_file::open(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let categories = fixture_day_categories(&opened.composed);
+
+    for width in [240.0_f64, 720.0_f64] {
+        let (scene, ticks) = day_axis_scene(&categories, width);
+        assert_no_tick_label_overlap(&scene, &ticks, brightfield_render::text::LABEL_SIZE);
+    }
+}
+
+/// **[`site_readings`]'s own generated dashboard, as pixels** — the pair
+/// [`the_generated_dashboard_light_baseline`] / `_dark_baseline` draw for
+/// [`housing`], drawn instead for the table whose `day` column is what this
+/// card's regression is about. Unlike the four-shapes fixture's own baseline
+/// pair (which this replaces — see `git log` for that pair's history), `day`
+/// draws in the STACKED COLUMN here, at a column tile's real width, rather
+/// than falling back into the map pane: a baseline that cannot redden on the
+/// time-axis defect is not a pin of it. [`assert_site_readings`] runs ahead of
+/// any capture, for the reason this file's header gives.
+#[test]
+fn the_site_readings_dashboard_light_baseline() {
+    let path = site_readings();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+
+    let opened = data_file::open(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    assert_site_readings(&opened.dashboard);
+    drop(opened);
+
+    std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let out = scratch("site_readings_dashboard_light");
+    let (w, h) = capture_png(boot, Mode::Light, SCALE, &out, Vec::new())
+        .unwrap_or_else(|e| panic!("capture site_readings_dashboard_light: {e}"));
+    assert!(
+        w > 0 && h > 0,
+        "site_readings_dashboard_light: empty capture"
+    );
+
+    let image = image::open(&out)
+        .unwrap_or_else(|e| panic!("read capture {}: {e}", out.display()))
+        .to_rgba8();
+    egui_kittest::image_snapshot(&image, "site_readings_dashboard_light");
+}
+
+/// The most pixels of a dark [`site_readings`] capture allowed to land
+/// exactly on the light chart surface's bytes before this test reads it as
+/// the white-slab regression `the_generated_dashboard_dark_baseline` guards
+/// against on [`housing`], rather than as antialiasing.
+///
+/// [`site_readings`]'s `reading` tile is a binned histogram, whose two
+/// `rectY` layers (the unfiltered ghost behind its filtered subset — see
+/// `histogram_tile`) meet at an antialiased edge inside the tile. Measured on
+/// this build, zero device pixels blend to the light surface's precise bytes
+/// even so — this fixture does not reproduce the coincidence the four-shapes
+/// fixture once measured (one pixel inside the `region` tile's ranked bars,
+/// beside its `"10"` value label, where THAT fixture's ranked-bars tile drew
+/// its own highlight-over-total pair; this fixture has no ranked-bars tile).
+/// The budget stays at what is actually measured here rather than carrying
+/// that figure over, so it still catches the defect this check exists for: a
+/// pane painted the light surface wholesale runs to thousands of pixels, nowhere
+/// near this floor.
+const DARK_CAPTURE_LIGHT_PIXEL_BUDGET: usize = 0;
+
+/// **The dark twin of [`the_site_readings_dashboard_light_baseline`]** — the
+/// same white-slab regression check `the_generated_dashboard_dark_baseline`
+/// runs for [`housing`], run here for [`site_readings`] instead, with the
+/// tolerance [`DARK_CAPTURE_LIGHT_PIXEL_BUDGET`] documents.
+#[test]
+fn the_site_readings_dashboard_dark_baseline() {
+    let path = site_readings();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+
+    std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let out = scratch("site_readings_dashboard_dark");
+    let (w, h) = capture_png(boot, Mode::Dark, SCALE, &out, Vec::new())
+        .unwrap_or_else(|e| panic!("capture site_readings_dashboard_dark: {e}"));
+    assert!(
+        w > 0 && h > 0,
+        "site_readings_dashboard_dark: empty capture"
+    );
+
+    let image = image::open(&out)
+        .unwrap_or_else(|e| panic!("read capture {}: {e}", out.display()))
+        .to_rgba8();
+
+    let light = pixels_of(&image, meridian_design::chrome::INK_LIGHT.surface);
+    assert_eq!(
+        light, DARK_CAPTURE_LIGHT_PIXEL_BUDGET,
+        "{light} pixels of this dark dashboard are the LIGHT chart surface \
+         (#fcfcfb), past the {DARK_CAPTURE_LIGHT_PIXEL_BUDGET}-pixel budget \
+         measured for this fixture — a pane is painting the light surface"
+    );
+    let dark = pixels_of(&image, meridian_design::chrome::INK_DARK.surface);
+    assert!(
+        dark > 0,
+        "no pixel of this dark dashboard is the dark chart surface (#161413)"
+    );
+
+    egui_kittest::image_snapshot(&image, "site_readings_dashboard_dark");
 }
