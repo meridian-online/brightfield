@@ -280,6 +280,38 @@ struct Drag {
     /// and a difference across two origins is not a distance. See
     /// `a_brush_across_the_pane_boundary_commits_what_it_swept`.
     by: f32,
+    /// **This is a move, not a draw** — `Some` with the committed rectangle
+    /// as it stood at the press edge, raster-local and in the same origin as
+    /// [`Self::start`], when the press landed inside it. `None` starts an
+    /// ordinary sweep, exactly as before this field existed.
+    ///
+    /// [`Self::start`] and [`Self::current`] stay the real pointer positions
+    /// either way — the click-vs-sweep slop in `resolve_gesture` reads the
+    /// hand's own travel, not the rectangle's — and [`Self::corners`] is
+    /// where the two modes diverge: this origin displaced by that travel for
+    /// a move, the two pointer points themselves for a draw.
+    move_from: Option<kurbo::Rect>,
+}
+
+impl Drag {
+    /// The two opposite corners `drag_rect` (paint) and `resolve_gesture`
+    /// (commit) resolve the rectangle against — the moved committed
+    /// rectangle for a move, the press and the pointer for a draw. Both
+    /// callers already take two corner points for a fresh sweep, so this is
+    /// the one seam that lets a move reuse them unchanged.
+    fn corners(&self) -> (kurbo::Point, kurbo::Point) {
+        match self.move_from {
+            Some(origin) => {
+                let dx = self.current.x - self.start.x;
+                let dy = self.current.y - self.start.y;
+                (
+                    kurbo::Point::new(origin.x0 + dx, origin.y0 + dy),
+                    kurbo::Point::new(origin.x1 + dx, origin.y1 + dy),
+                )
+            }
+            None => (self.start, self.current),
+        }
+    }
 }
 
 /// An in-progress secondary-button pan: the plot it started on, where the
@@ -468,12 +500,27 @@ impl ChartItem {
                     // the selection is left empty — see
                     // `ChartDoc::select_tile`.
                     doc.select_tile(plot);
-                    if doc.composed.plots[plot].gesture.is_some() && doc.is_live() {
+                    let handle = &doc.composed.plots[plot];
+                    if handle.gesture.is_some() && doc.is_live() {
+                        // A press inside the plot's own committed rectangle
+                        // moves it instead of starting a fresh sweep. Gated on
+                        // `GestureClass::Interval`, so a point-toggle binding —
+                        // whose commitment is a set of categories rather than
+                        // a rectangle a press can land inside — takes the
+                        // ordinary draw path below unchanged.
+                        let move_from = handle
+                            .gesture
+                            .as_ref()
+                            .filter(|g| gesture_for(g.kind) == GestureClass::Interval)
+                            .and(handle.committed_rect)
+                            .filter(|r| surface_rect_contains(*r, p))
+                            .map(surface_rect_corners);
                         self.drag = Some(Drag {
                             plot,
                             start: p,
                             current: p,
                             by,
+                            move_from,
                         });
                     }
                 }
@@ -1309,11 +1356,18 @@ fn crosshair_segments(
 /// The brush rectangle a drag paints, clamped to its plot and axis-locked to
 /// the binding's brush kind (an x-interval sweeps full plot height, a
 /// y-interval full width).
+///
+/// The two corners are [`Drag::corners`] — the press and the pointer for an
+/// ordinary sweep, the committed rectangle displaced by the pointer's travel
+/// for a move — so this reads identically for both and the axis lock applies
+/// the same way to either: an x-interval's rectangle is full plot height
+/// whether it was just swept or is being slid sideways.
 fn drag_rect(plot: &PlotHandle, drag: Drag) -> brightfield_render::canvas_host::SurfaceRect {
     use brightfield_render::canvas_host::SurfaceRect;
     let kind = plot.gesture.as_ref().map(|g| g.kind);
-    let (x0, x1) = min_max(drag.start.x, drag.current.x);
-    let (y0, y1) = min_max(drag.start.y, drag.current.y);
+    let (a, b) = drag.corners();
+    let (x0, x1) = min_max(a.x, b.x);
+    let (y0, y1) = min_max(a.y, b.y);
     let (px0, px1) = (plot.rect.x, plot.rect.x + plot.rect.width);
     let (py0, py1) = (plot.rect.y, plot.rect.y + plot.rect.height);
     let (x0, x1, y0, y1) = match kind {
@@ -1332,14 +1386,32 @@ fn min_max(a: f64, b: f64) -> (f64, f64) {
     }
 }
 
-/// Resolve a finished drag to the interaction it means, or `None` when it
-/// means nothing (no channel column, a degenerate scale).
+/// Whether raster-local point `p` falls inside `r` — the press-inside-the-
+/// committed-rectangle test the move gesture is gated on.
+fn surface_rect_contains(r: brightfield_render::canvas_host::SurfaceRect, p: kurbo::Point) -> bool {
+    p.x >= r.x && p.x <= r.x + r.width && p.y >= r.y && p.y <= r.y + r.height
+}
+
+/// `r`'s two opposite corners, as [`Drag::move_from`] stores them.
+fn surface_rect_corners(r: brightfield_render::canvas_host::SurfaceRect) -> kurbo::Rect {
+    kurbo::Rect::new(r.x, r.y, r.x + r.width, r.y + r.height)
+}
+
+/// Resolve a finished drag to the interaction it means, or `None` when there
+/// is no interaction to push (no channel column, a degenerate scale, or a
+/// move the hand did not move).
 ///
 /// - An **interval** sweep becomes [`SqlPredicate::Interval`] per swept axis
 ///   (both, `And`-ed, for `intervalXY`), bounds inverted through the plot's
-///   displayed scales.
-/// - An interval **click** (no sweep) retracts this plot's contribution —
-///   the click-clears convention.
+///   displayed scales — the same clause whether the two corners are a fresh
+///   sweep's or a moved committed rectangle's, since [`Drag::corners`] is
+///   where that distinction already resolved.
+/// - An interval **click** (no sweep) **on a plot with nothing committed**
+///   retracts this plot's contribution — the click-clears convention. The
+///   *same* click on a committed rectangle's own move — a press inside it
+///   the hand did not carry anywhere — leaves the selection exactly as it
+///   was: `None`, not a clear, because the press landed on a selection that
+///   is still there to leave alone.
 /// - A **point** click becomes [`SqlPredicate::Point`] over the category the
 ///   band scale places under the pointer.
 fn resolve_gesture(binding: &GestureBinding, plot: &PlotHandle, drag: Drag) -> Option<Interaction> {
@@ -1350,12 +1422,17 @@ fn resolve_gesture(binding: &GestureBinding, plot: &PlotHandle, drag: Drag) -> O
     match gesture_for(binding.kind) {
         GestureClass::Interval => {
             if !swept {
-                return Some(Interaction::ClearSelect {
-                    name: binding.selection.clone(),
-                    contributor: binding.contributor.clone(),
-                });
+                return if drag.move_from.is_some() {
+                    None
+                } else {
+                    Some(Interaction::ClearSelect {
+                        name: binding.selection.clone(),
+                        contributor: binding.contributor.clone(),
+                    })
+                };
             }
-            let predicate = interval_predicate(binding, plot, drag.start, drag.current)?;
+            let (a, b) = drag.corners();
+            let predicate = interval_predicate(binding, plot, a, b)?;
             Some(Interaction::Select {
                 name: binding.selection.clone(),
                 contributor: binding.contributor.clone(),
@@ -1535,6 +1612,7 @@ mod tests {
                 channels: vec![(Channel::X, "x".to_string()), (Channel::Y, "y".to_string())],
             }),
             navigated_empty: false,
+            committed_rect: None,
         }
     }
 
@@ -1676,6 +1754,7 @@ mod tests {
             start: kurbo::Point::new(40.0, 40.0),
             current: kurbo::Point::new(41.0, 41.0),
             by: 0.0,
+            move_from: None,
         };
         let binding = interval.gesture.clone().expect("bound");
         assert!(matches!(
@@ -1689,6 +1768,7 @@ mod tests {
             start: kurbo::Point::new(10.0, 10.0),
             current: kurbo::Point::new(90.0, 90.0),
             by: 0.0,
+            move_from: None,
         };
         let binding = point.gesture.clone().expect("bound");
         assert_eq!(resolve_gesture(&binding, &point, sweep), None);
