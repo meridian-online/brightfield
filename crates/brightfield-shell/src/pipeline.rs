@@ -39,7 +39,10 @@ use brightfield_render::scene::{
     build_multi_mark_scene_pinned, compose_dashboard, unrestorable_under_sampling, ChartData,
     UnsampledDomains,
 };
-use brightfield_render::selection::{render_committed_selection, CommittedSelection, Selected};
+use brightfield_render::canvas_host::SurfaceRect;
+use brightfield_render::selection::{
+    committed_selection_rect, render_committed_selection, CommittedSelection, Selected,
+};
 use brightfield_render::{grow_margins, resolve_titles};
 use brightfield_spec::analysis::{
     analyse_spec, build_brushable_bindings, BrushKind, ComponentPath,
@@ -83,6 +86,18 @@ pub struct PlotHandle {
     pub marks: Vec<MarkKind>,
     /// The plot's brush/point gesture binding, when its spec declares one.
     pub gesture: Option<GestureBinding>,
+    /// **This plot's own committed selection, as its raster-local pixel
+    /// rectangle** — the same box [`ink_committed_selections`] washes,
+    /// resolved through the *displayed* scales at compose time rather than
+    /// recomputed later, on the same standing as every other field here.
+    ///
+    /// `None` for a plot holding no selection, one whose constraint cannot be
+    /// placed as a rectangle (a category pick), or a one-shot composition
+    /// with no session behind it — [`ink_committed_selections`] is the only
+    /// writer, and it runs from [`LiveDashboard::present`] alone. The
+    /// shell's move gesture is the one reader: a press inside this rect
+    /// moves it instead of starting a fresh sweep.
+    pub committed_rect: Option<SurfaceRect>,
     /// The x channel's column on this plot's first mark — the column a
     /// navigation extent over its x axis names. Carried here rather than
     /// re-derived at gesture time because a plot with no brush interactor is
@@ -1462,8 +1477,15 @@ fn hero_bound_spacer(spec: &mut Spec) -> Option<&mut SpaceNode> {
 /// input the band needs — the placed rect, the layout, and the *displayed*
 /// scales the gesture inverted through.
 fn ink_committed_selections(composed: &mut Composed, session: &Session) {
-    for plot in &composed.plots {
+    for plot in &mut composed.plots {
         let held = plot_selection(session, plot);
+        // Raster-local, so the shell's press-inside-the-committed-rectangle
+        // test — `chart_item::drive_gestures` — can compare it directly
+        // against a raw pointer point without knowing this plot's own
+        // margin offset.
+        plot.committed_rect = committed_selection_rect(&plot.layout, &plot.scales, &held).map(
+            |r| SurfaceRect::new(r.x0 + plot.rect.x, r.y0 + plot.rect.y, r.width(), r.height()),
+        );
         if held.is_empty() {
             continue;
         }
@@ -2074,6 +2096,10 @@ fn compose_from_results(
             sample: plot_sample,
             hover,
             navigated_empty,
+            // Set by `ink_committed_selections`, the only writer — a
+            // one-shot composition has no session to hold a selection and
+            // never calls it, so it stays `None` here.
+            committed_rect: None,
         });
     }
 
