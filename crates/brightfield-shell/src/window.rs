@@ -205,9 +205,45 @@ pub const OPEN_FILE_PROMISE: &str = "A CSV or a Parquet on this machine. It open
 /// the default window can hold, which is a decision about the door rather than
 /// something for this constant to absorb silently.
 const DOOR_COLUMN_WIDTH: f32 = {
-    let cards = crate::starts::STARTS.len();
-    cards as f32 * CARD_WIDTH + (cards - 1) as f32 * spacing::SECTION_GAP
+    let cards = crate::starts::on_door_count();
+    let by_cards = cards as f32 * CARD_WIDTH + (cards - 1) as f32 * spacing::SECTION_GAP;
+    // The other thing the column has to hold is a Protocols row, whose three
+    // fields are placed against its two edges and a fixed measure between:
+    // narrower than this and the run state runs into the time. Taking the
+    // wider of the two is what lets the Datasets set shrink — which it did,
+    // when the generated starts left the door — without the section below it
+    // collapsing as a side effect nobody was looking at.
+    let by_rows = PROTOCOL_ROW_NAME_WIDTH + DOOR_ROW_TAIL;
+    if by_cards > by_rows {
+        by_cards
+    } else {
+        by_rows
+    }
 };
+
+/// What a Protocols row needs to the right of its name: the run state, the
+/// gap, and the relative time set against the column's right edge.
+const DOOR_ROW_TAIL: f32 = 2.0 * spacing::SPACE_9 + spacing::SPACE_8;
+
+/// The mark's side on the front door, beside the greeting.
+///
+/// Set against the greeting and the tagline together rather than against the
+/// heading alone — see the cluster in `MeridianApp::front_door_ui`.
+const DOOR_MARK_SIDE: f32 = spacing::SPACE_9;
+
+/// The mark's side in the title band, where it is the control that goes home.
+///
+/// One grid row, so the band's height is what decides it and the mark cannot
+/// grow the chrome.
+const TITLE_MARK_SIDE: f32 = spacing::ROW_GRID;
+
+/// What the title band's home control is called.
+///
+/// The control draws the mark and no words, so this is its whole name and it
+/// reaches a reader as hover text. A stranger reading the first screen has to
+/// be able to name every control on it, which is why an icon-only control
+/// carries its name here rather than relying on the picture.
+pub const HOME_CONTROL_NAME: &str = "Home";
 
 /// The curated section's heading: the datasets that ship with this build.
 ///
@@ -232,6 +268,21 @@ pub const PROTOCOLS_NOTE_EMPTY: &str = "your own work, once there is some";
 
 /// What the Protocols heading says once there is something under it.
 pub const PROTOCOLS_NOTE: &str = "pick up where you left off";
+
+/// What the door's navigator rail calls itself on its strip.
+///
+/// The region's own noun rather than a pane title: with no document open
+/// there is no pane, and the rail is standing to say what will be in it.
+pub const NAVIGATOR_DOOR_NAME: &str = "Protocol";
+
+/// The door navigator's first line: that there is no Protocol yet.
+pub const NAVIGATOR_DOOR_TITLE: &str = "No Protocol yet.";
+
+/// The door navigator's second line: what will be in the rail, in the order
+/// the rail will list it, so the shape is learned before there is one to read.
+pub const NAVIGATOR_DOOR_BODY: &str =
+    "Open a data file and its spine stands here: the file, the step that read it, \
+     the table, and the table's views.";
 
 /// The empty Protocols section's own words — the first-run half of the door,
 /// and the case the whole front door exists for: a section that is empty on
@@ -1602,6 +1653,14 @@ pub struct MeridianApp {
     /// life: a `TextureHandle` is an `Arc`, and four small thumbnails are not
     /// worth a re-decode if the user comes back to an emptied window.
     door_thumbs: Vec<(&'static str, egui::TextureHandle)>,
+    /// The Meridian mark, loaded into this window's context once.
+    ///
+    /// Held here rather than in a `static` because a texture handle belongs to
+    /// the context that loaded it — see [`crate::brand::image`]. `None` until
+    /// the first frame, and `None` for the life of the window if the design
+    /// system's path did not parse, in which case the two controls that draw
+    /// the mark draw nothing.
+    mark: Option<egui::TextureHandle>,
     /// Where the front door drew each start's gallery card, by start id —
     /// the test hook the door's clicks are aimed through, exactly as
     /// [`Self::affordances`] is for pane empty states. Cleared on frames the
@@ -1941,6 +2000,7 @@ impl MeridianApp {
             home_button: None,
             affordances: Vec::new(),
             door_thumbs: Vec::new(),
+            mark: None,
             door_cards: Vec::new(),
             door_sections: Vec::new(),
             door_rows: Vec::new(),
@@ -2862,6 +2922,12 @@ impl MeridianApp {
     /// tier-agnostic.
     pub fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        // The mark, once per window: both the controls that draw it are below
+        // this line and either can be the first to run, so neither owns the
+        // load.
+        if self.mark.is_none() {
+            self.mark = crate::brand::load(&ctx);
+        }
         if !self.fonts_installed {
             crate::apply_theme_without_unaligned_marker(&ctx, self.mode);
             self.fonts_installed = true;
@@ -3022,6 +3088,75 @@ impl MeridianApp {
 
         let mut requests: Vec<Request> = Vec::new();
         if door {
+            // ---- the navigator rail, on the door.
+            //
+            // The door replaces the canvas and the rails that read a document.
+            // This one is drawn anyway, and the reason is that an analyst
+            // arriving from an editor reads the left edge as the place a
+            // workspace keeps its shape: Zed and VS Code both stand their left
+            // dock up on a welcome screen, and a rail that appears only once a
+            // file is open makes opening a file reflow the whole window.
+            //
+            // The rail's earlier absence was argued from research that warned
+            // against "a window of empty instruments, each inviting the same
+            // first action from a different corner". That argument holds for
+            // the ledger and the inspector, which have nothing to say about a
+            // window with no document, and it does not hold here: this rail is
+            // the one region that can say what a Protocol *is* before there is
+            // one, and it invites nothing — it carries no button. Hugh's look
+            // of 2026-09-05, on the built app.
+            let navigator = plan.expect_region(arrangement::NAVIGATOR_RAIL);
+            let navigator_collapsed = self.collapsed.contains(&navigator.id);
+            let navigator_widget = if navigator_collapsed {
+                Panel::left(panel_id(navigator, true))
+                    .resizable(false)
+                    .exact_size(rail_collapsed(navigator))
+            } else {
+                Panel::left(panel_id(navigator, false))
+                    .default_size(rail_default(navigator))
+                    .min_size(rail_min(navigator))
+                    .resizable(true)
+            };
+            let mut door_strip = None;
+            let drawn = navigator_widget
+                .frame(chrome::region_frame(navigator.frame, ui, mode))
+                .show(ui, |ui| {
+                    let caret = collapse_caret(navigator.edge, navigator_collapsed);
+                    if navigator_collapsed {
+                        door_strip = Some(chrome::rail_stub(ui, ui.max_rect(), caret, mode));
+                        return;
+                    }
+                    ui.set_min_width(ui.available_width());
+                    let (strip, body) = chrome::rail_split(ui.max_rect());
+                    door_strip = Some(chrome::rail_selector(
+                        ui,
+                        strip,
+                        &[NAVIGATOR_DOOR_NAME],
+                        0,
+                        Some(caret),
+                        None,
+                        mode,
+                    ));
+                    door_empty_navigator(ui, body, semantic(mode.is_dark()));
+                });
+            let mut door_collapse = None;
+            if let Some(strip) = door_strip {
+                if strip.toggled {
+                    door_collapse = Some(navigator.id);
+                }
+                self.strips.push((navigator.id, strip));
+            }
+            self.regions.push((navigator.id, drawn.response.rect));
+            // Applied after the panel's closure has returned, exactly as the
+            // other branch applies `picks.collapse` — the set is read to decide
+            // which id and which size the panel draws under, so toggling it
+            // inside the closure would leave the two disagreeing for a frame.
+            if let Some(id) = door_collapse {
+                if !self.collapsed.remove(&id) {
+                    self.collapsed.insert(id);
+                }
+            }
+
             // The front door, instead of every region below the title band: a
             // window of empty instruments is the surface the research warned
             // against, and each of its regions would be inviting the same
@@ -3989,18 +4124,45 @@ impl MeridianApp {
         let door = self.front_door_is_live();
 
         let mut bar = TopBar::default();
+        let home_key = self.home_binding;
+        let mark = self.mark.clone();
         ui.horizontal_centered(|ui| {
-            ui.label(
-                egui::RichText::new("Meridian")
-                    .font(ui_font())
-                    .color(chrome::colour(sem.text.secondary)),
-            );
+            // The mark is the route home, and off the door it is the whole of
+            // what stands left of the title. The word *Meridian* used to lead
+            // the band and was spending the first thing a reader's eye lands
+            // on to name the application it is already looking at; the mark
+            // says the same thing in a quarter of the width and takes the
+            // click as well. Hugh's look of 2026-09-05.
             if !door {
-                let home = ui.button(egui::RichText::new("Home").font(ui_font()));
-                bar.home_rect = Some(home.rect);
-                if home.clicked() {
+                let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2(TITLE_MARK_SIDE, TITLE_MARK_SIDE),
+                    egui::Sense::click(),
+                );
+                let ink = if response.hovered() {
+                    sem.text.primary
+                } else {
+                    sem.text.secondary
+                };
+                crate::brand::paint(ui.painter(), mark.as_ref(), rect, chrome::colour(ink));
+                // The name reaches a reader through hover text and through the
+                // accessibility tree, because the control has no words of its
+                // own for either to read off.
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Button,
+                        ui.is_enabled(),
+                        HOME_CONTROL_NAME,
+                    )
+                });
+                let response = response.on_hover_text(match home_key {
+                    Some(key) => format!("{HOME_CONTROL_NAME}  {key}"),
+                    None => HOME_CONTROL_NAME.to_string(),
+                });
+                bar.home_rect = Some(rect);
+                if response.clicked() {
                     bar.home = true;
                 }
+                ui.add_space(spacing::SPACE_4);
             }
             ui.label(egui::RichText::new(title).color(chrome::colour(sem.text.primary)));
             // The renderer line is a developer diagnostic — a stranger's first
@@ -4639,6 +4801,10 @@ impl MeridianApp {
 
         let sem = semantic(self.mode.is_dark());
         let help_key = self.overlay_keys.help;
+        // Cloned out before the closure below borrows `self` mutably — a
+        // `TextureHandle` is a refcounted name, so this is a bump rather than
+        // a copy of the raster.
+        let mark = self.mark.clone();
         // The rows this door will draw, read out of the layout before the
         // closure below borrows `self` mutably — and filtered to what this
         // build can reopen. A recent naming a start this binary no longer
@@ -4668,18 +4834,37 @@ impl MeridianApp {
                         ui.set_width(width);
                         ui.add_space(spacing::SECTION_GAP);
 
-                        // Welcome — invariant, whatever the sections below do.
-                        ui.label(
-                            egui::RichText::new("Welcome")
-                                .text_style(egui::TextStyle::Heading)
-                                .color(chrome::colour(sem.text.primary)),
-                        );
-                        ui.add_space(spacing::SPACE_2);
-                        ui.label(
-                            egui::RichText::new(TAGLINE)
-                                .font(ui_font())
-                                .color(chrome::colour(sem.text.muted)),
-                        );
+                        // Welcome — invariant, whatever the sections below do
+                        // — with the mark to its left, on the baseline block
+                        // rather than above it: the greeting and the tagline
+                        // are one cluster and the mark is set against both,
+                        // which is what `DOOR_MARK_SIDE` is measured from.
+                        ui.horizontal(|ui| {
+                            let (mark_rect, _) = ui.allocate_exact_size(
+                                egui::vec2(DOOR_MARK_SIDE, DOOR_MARK_SIDE),
+                                egui::Sense::hover(),
+                            );
+                            crate::brand::paint(
+                                ui.painter(),
+                                mark.as_ref(),
+                                mark_rect,
+                                chrome::colour(sem.text.primary),
+                            );
+                            ui.add_space(spacing::SPACE_4);
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    egui::RichText::new("Welcome")
+                                        .text_style(egui::TextStyle::Heading)
+                                        .color(chrome::colour(sem.text.primary)),
+                                );
+                                ui.add_space(spacing::SPACE_2);
+                                ui.label(
+                                    egui::RichText::new(TAGLINE)
+                                        .font(ui_font())
+                                        .color(chrome::colour(sem.text.muted)),
+                                );
+                            });
+                        });
 
                         // Start — the verb spine. Only verbs that work from
                         // here: the help sheet opens on any view, and its
@@ -4767,7 +4952,7 @@ impl MeridianApp {
         self.door_section_heading(ui, DATASETS_SECTION, DATASETS_NOTE, width, sem);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(spacing::SECTION_GAP, spacing::SECTION_GAP);
-            for start in crate::starts::STARTS {
+            for start in crate::starts::on_door() {
                 self.door_card(ui, start, sem, requests);
             }
         });
@@ -5071,7 +5256,7 @@ impl MeridianApp {
         if !self.door_thumbs.is_empty() {
             return;
         }
-        for start in crate::starts::STARTS {
+        for start in crate::starts::on_door() {
             let Ok(decoded) = image::load_from_memory(start.thumbnail_for(self.mode)) else {
                 debug_assert!(false, "{}'s shipped thumbnail is not decodable", start.id);
                 continue;
@@ -5277,6 +5462,40 @@ fn door_empty_protocols(ui: &mut egui::Ui, width: f32, sem: &semantic::Semantic)
         egui::pos2(left, title_pos.y + title.size().y + spacing::SPACE_3),
         body,
         chrome::colour(sem.text.secondary),
+    );
+}
+
+/// The door navigator's body: the two lines, set at the rail's top rather
+/// than centred in it.
+///
+/// Top-set because the rail is a list everywhere else in this window and a
+/// list starts at the top; a centred block would read as a placeholder for the
+/// rail rather than as the rail with nothing in it yet.
+fn door_empty_navigator(ui: &egui::Ui, rect: egui::Rect, sem: &semantic::Semantic) {
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let painter = ui.painter().with_clip_rect(rect);
+    let left = rect.min.x + spacing::SPACE_5;
+    let wrap = (rect.width() - 2.0 * spacing::SPACE_5).max(0.0);
+    let title = painter.layout(
+        NAVIGATOR_DOOR_TITLE.to_string(),
+        ui_font(),
+        chrome::colour(sem.text.primary),
+        wrap,
+    );
+    let title_pos = egui::pos2(left, rect.min.y + spacing::SPACE_5);
+    painter.galley(title_pos, title.clone(), chrome::colour(sem.text.primary));
+    let body = painter.layout(
+        NAVIGATOR_DOOR_BODY.to_string(),
+        egui::TextStyle::Small.resolve(ui.style()),
+        chrome::colour(sem.text.muted),
+        wrap,
+    );
+    painter.galley(
+        egui::pos2(left, title_pos.y + title.size().y + spacing::SPACE_3),
+        body,
+        chrome::colour(sem.text.muted),
     );
 }
 

@@ -68,6 +68,7 @@
 //!   noticed by mtime poll and surfaced through `Subject::status`.
 
 pub mod app;
+pub mod brand;
 pub mod canvas;
 pub mod capture;
 pub mod chart_item;

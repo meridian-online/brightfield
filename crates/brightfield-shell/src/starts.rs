@@ -48,10 +48,18 @@
 //! design; and an id this build does not recognise resolves to `None`, which
 //! means the same thing as never having opened anything.
 //!
-//! # Why these five
+//! # Why these five, and why the door offers two of them
 //!
 //! The crosswalk is the anchor, and it appears twice — as the declaration and
-//! as the result.
+//! as the result. Those two are the Datasets section: see [`Start::on_door`],
+//! and [`on_door`] for the iterator the door reads.
+//!
+//! The other three are still here and still load; what they no longer do is
+//! stand on the first screen. They are generated data with nothing to do to
+//! it, and Hugh's look of 2026-09-05 was that a catalogue mostly made of
+//! those argues against the product rather than for it. The paragraphs below
+//! about the size of the set describe the set the binary carries, which has
+//! not changed.
 //!
 //! The **manifest** is the vendored EDGAR ↔ GLEIF Protocol under
 //! `examples/protocol/`, and it is the most legible thing this product
@@ -78,9 +86,9 @@
 //!
 //! The chart view's empty pane offers the first chart start; the protocol
 //! view's empty canvas offers the crosswalk manifest. Neither switches the
-//! view out from under the click, neither empty pane offers a start that
-//! needs the network, and the front door's gallery makes all five one click
-//! away.
+//! view out from under the click, and neither empty pane offers a start that
+//! needs the network. The front door's Datasets section offers the starts
+//! that declare [`Start::on_door`], which is the crosswalk pair.
 //!
 //! # The one thing the crosswalk MANIFEST has to say out loud
 //!
@@ -224,6 +232,28 @@ pub struct Start {
     /// hermetic pass asserts how many it skipped, so the exemption cannot
     /// swallow the whole set.
     pub remote: bool,
+    /// Whether the front door's Datasets section offers this start.
+    ///
+    /// **Not the same question as whether the build ships it.** A start that
+    /// clears this is still in [`STARTS`], still resolves through [`find`] and
+    /// [`for_pane`], still loads through [`load`], and still reopens out of a
+    /// recorded layout — so an empty pane's button and a restored session are
+    /// unaffected by clearing it. What it loses is a card on the first screen.
+    ///
+    /// Hugh's look of 2026-09-05 is why the flag exists: the three generated
+    /// chart starts draw a picture and offer nothing to do with it, over data
+    /// no analyst has a reason to care about, and a first screen whose
+    /// catalogue is mostly those is a first screen that argues against the
+    /// product. The Datasets section is therefore the real subject — the
+    /// crosswalk, in its two forms — and the generated starts stay in the
+    /// binary for the job they are actually good at: giving the chart pane's
+    /// empty state a button that works with no network, and giving the tests
+    /// a chart to compose without one.
+    ///
+    /// `the_door_offers_only_starts_that_declare_themselves_for_it` is what
+    /// holds the section to this field rather than to the length of
+    /// [`STARTS`].
+    pub on_door: bool,
     /// The chart spec this start opens — the bytes [`load`] composes — and
     /// `None` for a start that opens a Protocol manifest instead.
     ///
@@ -290,6 +320,7 @@ pub const STARTS: &[Start] = &[
         thumbnail_dark: include_bytes!("../assets/starts/edgar-gleif-crosswalk-dark.png"),
         run_less: true,
         remote: false,
+        on_door: true,
         // A Protocol manifest, not a chart spec — see `load`.
         spec: None,
     },
@@ -303,6 +334,7 @@ pub const STARTS: &[Start] = &[
         thumbnail_dark: include_bytes!("../assets/starts/signals-dashboard-dark.png"),
         run_less: false,
         remote: false,
+        on_door: false,
         spec: Some(DASHBOARD_SPEC),
     },
     Start {
@@ -315,6 +347,7 @@ pub const STARTS: &[Start] = &[
         thumbnail_dark: include_bytes!("../assets/starts/reading-distribution-dark.png"),
         run_less: false,
         remote: false,
+        on_door: false,
         spec: Some(DISTRIBUTION_SPEC),
     },
     Start {
@@ -326,6 +359,7 @@ pub const STARTS: &[Start] = &[
         thumbnail_dark: include_bytes!("../assets/starts/activity-breakdown-dark.png"),
         run_less: false,
         remote: false,
+        on_door: false,
         spec: Some(BREAKDOWN_SPEC),
     },
     // Last on purpose. `for_pane` hands an empty pane the FIRST start that
@@ -342,6 +376,7 @@ pub const STARTS: &[Start] = &[
         thumbnail_dark: include_bytes!("../assets/starts/edgar-gleif-crosswalk-chart-dark.png"),
         run_less: false,
         remote: true,
+        on_door: true,
         spec: Some(CROSSWALK_CHART_SPEC),
     },
 ];
@@ -353,11 +388,44 @@ pub fn find(id: &str) -> Option<&'static Start> {
 }
 
 /// The start that fills `pane`, if this build ships one — the first of that
-/// pane's starts, which is what its empty state's single button offers. The
-/// front door's gallery offers all of them.
+/// pane's starts, which is what its empty state's single button offers.
+///
+/// Reads [`STARTS`] and not [`on_door`]: an empty pane's button is a different
+/// surface from the front door's catalogue, and the property that button needs
+/// is that it opens with no network, which
+/// [`Start::remote`] is what says. The generated chart starts are off the door
+/// and are still the answer here.
 #[must_use]
 pub fn for_pane(pane: ItemId) -> Option<&'static Start> {
     STARTS.iter().find(|s| s.fills == pane)
+}
+
+/// The starts the front door's Datasets section offers, in [`STARTS`] order.
+///
+/// See [`Start::on_door`] for what clearing the flag does and does not take
+/// away.
+pub fn on_door() -> impl Iterator<Item = &'static Start> {
+    STARTS.iter().filter(|s| s.on_door)
+}
+
+/// How many starts [`on_door`] yields, at compile time.
+///
+/// The door's column is as wide as its Datasets row needs, and that width is a
+/// `const` because the window's own geometry is derived from it before any
+/// frame is drawn. A `const fn` over [`STARTS`] keeps the count and the flag
+/// the same fact; deriving the width from `STARTS.len()` is what made a
+/// two-card door lay out a five-card column.
+#[must_use]
+pub const fn on_door_count() -> usize {
+    let mut count = 0;
+    let mut i = 0;
+    while i < STARTS.len() {
+        if STARTS[i].on_door {
+            count += 1;
+        }
+        i += 1;
+    }
+    count
 }
 
 /// A loaded chart start: the first composition, and the session it came off.
