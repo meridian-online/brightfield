@@ -1038,9 +1038,10 @@ fn a_first_run_populates_datasets_and_states_what_protocols_will_hold() {
 ///
 /// The door's column is a `const`, read before any frame exists, so the room a
 /// row's three fields need is *stated* in `DOOR_ROW_STATE_WIDTH` and
-/// `DOOR_ROW_WHEN_WIDTH` rather than measured with a painter there is none of.
-/// A stated figure is a claim, and this is what turns a wrong one red instead
-/// of leaving it to someone looking at the screen.
+/// `DOOR_ROW_WHEN_WIDTH` rather than measured — at the point the width is
+/// read there is no painter to measure with. A stated figure is a claim, and
+/// this is what turns a wrong one red instead of leaving it to someone looking
+/// at the screen.
 ///
 /// It walks `RunState`'s own variants rather than a list retyped here, so a
 /// state added to the enum is measured by this the first time it is drawn.
@@ -1191,8 +1192,8 @@ fn a_door_with_recents_lists_every_one_of_them_most_recent_first() {
 /// Either route to the same subject leaves the window in the same state.
 ///
 /// The door owns no route of its own: a Protocols row and the Datasets card
-/// beside it raise the same `Request::Open` into the same `open_start`, so
-/// there is nothing for the two to disagree about.
+/// beside it raise the same `Request::Open` into the same `open_start`, which
+/// leaves the two no room to disagree.
 ///
 /// It walks the door's own set rather than one hand-picked start, because a
 /// route that diverges for one document kind and not the other is the

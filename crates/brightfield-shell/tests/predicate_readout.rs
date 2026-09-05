@@ -869,8 +869,8 @@ fn a_category_click_reads_back_as_the_clicked_values_own_equality() {
 /// that applied the filter is the gesture a reader reaches for to remove it,
 /// and until this it had no effect: the point arm of `resolve_gesture` built the
 /// clause and dispatched it whatever was already standing, so clicking the
-/// same bar twice republished the same predicate and the row set never came
-/// back. The interval arm had the retraction from the start — an unswept click
+/// same bar twice republished the same predicate and left the row set where
+/// the first click put it. The interval arm had the retraction from the start — an unswept click
 /// on a brush binding clears that plot's contribution — so this is the same
 /// convention arriving at the other gesture class rather than a new rule.
 ///
