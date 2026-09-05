@@ -222,8 +222,23 @@ const DOOR_COLUMN_WIDTH: f32 = {
 };
 
 /// What a Protocols row needs to the right of its name: the run state, the
-/// gap, and the relative time set against the column's right edge.
-const DOOR_ROW_TAIL: f32 = 2.0 * spacing::SPACE_9 + spacing::SPACE_8;
+/// gap between the two, and the relative time set against the column's right
+/// edge.
+///
+/// The two measures are the widest string each field ever draws, in the mono
+/// face they draw in: `RunState::label`'s longest is *stale · upstream
+/// edited* and `relative_time`'s is a day count. They are stated here rather
+/// than measured, because the door's column is a `const` read before any
+/// frame exists and there is no painter to measure with — and
+/// `the_longest_run_state_and_time_fit_the_doors_row` is the test that turns
+/// a wrong figure red instead of leaving it to a reader of the screen.
+const DOOR_ROW_TAIL: f32 = DOOR_ROW_STATE_WIDTH + spacing::SPACE_7 + DOOR_ROW_WHEN_WIDTH;
+
+/// Room for the widest run-state label.
+const DOOR_ROW_STATE_WIDTH: f32 = 180.0;
+
+/// Room for the widest relative time.
+const DOOR_ROW_WHEN_WIDTH: f32 = 84.0;
 
 /// The mark's side on the front door, beside the greeting.
 ///
@@ -5062,21 +5077,39 @@ impl MeridianApp {
             chrome::colour(sem.text.primary),
             PROTOCOL_ROW_NAME_WIDTH - spacing::SPACE_4,
         );
-        // The run state in the reader's own comparison face, and in
-        // `RunState::label`'s words rather than a second vocabulary coined
-        // here — `a_door_with_recents_lists_every_one_of_them_most_recent_first`
-        // compares this string against the enum's own label.
-        let state = ui.painter().layout(
-            recent.run.label().to_string(),
-            mono_font(),
-            tone,
-            PROTOCOL_ROW_NAME_WIDTH,
-        );
+        // The time is laid out first because it is the field set against the
+        // right edge, and the run state between the two gets what is left.
         let when = ui.painter().layout_no_wrap(
             relative_time(now, recent.opened_at),
             mono_font(),
             chrome::colour(sem.text.muted),
         );
+        // The run state in the reader's own comparison face, and in
+        // `RunState::label`'s words rather than a second vocabulary coined
+        // here — `a_door_with_recents_lists_every_one_of_them_most_recent_first`
+        // compares this string against the enum's own label.
+        //
+        // Wrapped to the room between the name's fixed measure and the time
+        // rather than to that measure again. The two were the same number
+        // while the column was five cards wide and the difference never
+        // showed; at a two-card column the longest state — the two-word one —
+        // ran under the time and the row read as one string. A width derived
+        // from the row is right at both.
+        //
+        // Truncated rather than wrapped. The row is one grid row tall and its
+        // three fields are set on one baseline, so a galley that wraps does
+        // not get shorter — it gets taller, and draws out through the bottom
+        // of the row and over the section beneath. `DOOR_ROW_STATE_WIDTH` is
+        // what makes the truncation unreachable for the labels this build has;
+        // this is what a label longer than those would do instead of spilling.
+        let state_room = (width - PROTOCOL_ROW_NAME_WIDTH - when.size().x - spacing::SPACE_7)
+            .max(spacing::SPACE_9);
+        let mut job = egui::text::LayoutJob::single_section(
+            recent.run.label().to_string(),
+            egui::TextFormat::simple(mono_font(), tone),
+        );
+        job.wrap = egui::text::TextWrapping::truncate_at_width(state_room);
+        let state = ui.painter().layout_job(job);
         // Off the galleys, not off `recent` — which is what makes [`DoorRow`]'s
         // claim about itself true. The strings a test reads back are the ones
         // handed to the painter at these three positions, so painting one
