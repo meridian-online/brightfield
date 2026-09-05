@@ -1330,9 +1330,9 @@ fn opening_a_data_file_over_an_open_protocol_retitles_for_the_file() {
 
     // Read the title and the canvas answer immediately after the call
     // returns, with no frame drawn in between: `MeridianApp::draw` runs its
-    // own reconciliation at the head of every frame, and settling first
-    // would launder a missing call inside `adopt_boot` through that one,
-    // hiding whether the call happened inside `adopt_boot` itself.
+    // own reconciliation at the frame's head; settling first would launder a
+    // missing call inside `adopt_boot` through that reconciliation, hiding
+    // whether the call happened inside `adopt_boot` itself.
     let ctx = win.ctx.clone();
     win.app
         .open_data_file(&ctx, csv.to_str().expect("utf-8 fixture path"));

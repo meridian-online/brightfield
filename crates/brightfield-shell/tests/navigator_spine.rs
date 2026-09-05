@@ -949,11 +949,11 @@ fn selecting_a_column_washes_that_row_and_leaves_the_bar_where_the_canvas_is() {
 
 /// **The latch and the derived answer agree about the graph.**
 ///
-/// `graph_on_canvas` reads [`CanvasHolds`], the latch, directly without
-/// deriving anything. The derived answer is `graph_takes_the_canvas`, and it is
-/// the latch that gets reconciled from that function each frame, not the
-/// other way around. Two windows, one on each side of the question, read off
-/// a real frame.
+/// `graph_on_canvas` reads [`CanvasHolds`], the latch, directly; it performs
+/// no derivation of its own. The derived answer is `graph_takes_the_canvas`,
+/// and it is the latch that gets reconciled from that function each frame,
+/// not the other way around. Two windows, one on each side of the question,
+/// read off a real frame.
 #[test]
 fn a_windows_latched_canvas_agrees_with_the_derived_answer() {
     let mut data = Live::open(housing_boot());
