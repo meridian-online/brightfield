@@ -102,12 +102,34 @@ impl Mark {
                 // A run of coordinates with no letter in front of it repeats
                 // the previous command, which is how this export writes its
                 // consecutive line segments.
-                None => (command?, false),
+                //
+                // Closepath is the one command with no implicit-repeat form:
+                // it takes no coordinates, so a bare pair after it advances
+                // nothing and the loop re-derives the same `Z` for ever. The
+                // SVG grammar agrees — a coordinate may not follow closepath
+                // without a command letter between them — so this refuses
+                // rather than guessing. `a_bare_pair_after_closepath_is_refused`
+                // is what holds it.
+                None => match command? {
+                    'Z' | 'z' => return None,
+                    repeated => (repeated, false),
+                },
                 Some(c) => (c, true),
             };
             if explicit {
                 lexer.take_command();
             }
+            // Where the cursor stood before this command consumed anything.
+            //
+            // With closepath refused above, this guard is unreachable through
+            // `parse` as it stands, and the invariant that makes it so is
+            // worth stating because it is what a new arm would break: an
+            // implicit repeat can now only be a moveto, a lineto or a curve,
+            // each of which calls `point`, which either advances the cursor or
+            // ends the parse. An arm added below that consumes no bytes would
+            // spin without this — which is the hang closepath had, arriving by
+            // a second route.
+            let before = lexer.at;
             command = Some(op);
             match op {
                 'M' | 'm' => {
@@ -146,6 +168,9 @@ impl Mark {
                     at = start;
                 }
                 _ => return None,
+            }
+            if lexer.at == before && !explicit {
+                return None;
             }
         }
         if current.len() > 2 {
@@ -400,5 +425,95 @@ impl<'a> Lexer<'a> {
             .ok()?
             .parse()
             .ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The viewbox the fixtures below are written against — a unit square, so
+    /// a parsed point reads back as the number that was typed.
+    const UNIT: f32 = 1.0;
+
+    /// A square, closed, in the two forms the export uses: absolute moveto and
+    /// relative linetos. The baseline the refusals below are refusals *from*.
+    #[test]
+    fn a_closed_square_parses_into_one_ring() {
+        let mark = Mark::parse("M0,0 l1,0 l0,1 l-1,0 Z", UNIT).expect("a square is a path");
+        assert_eq!(mark.subpath_count(), 1);
+    }
+
+    /// **The hang.** A coordinate pair with no command letter repeats the
+    /// previous command, and closepath consumes no coordinates — so before the
+    /// refusal this re-derived the same `Z` against an unmoved cursor for ever.
+    /// It is not merely unhandled input: the SVG grammar has no implicit-repeat
+    /// form for closepath, so there is nothing here to be permissive about.
+    #[test]
+    fn a_bare_pair_after_closepath_is_refused() {
+        assert!(Mark::parse("M0,0 l1,0 l0,1 Z 5,5", UNIT).is_none());
+    }
+
+    /// The same refusal for the lowercase spelling, which is a separate match
+    /// arm and would be a separate hang.
+    #[test]
+    fn a_bare_pair_after_a_lowercase_closepath_is_refused() {
+        assert!(Mark::parse("M0,0 l1,0 l0,1 z 5,5", UNIT).is_none());
+    }
+
+    /// A coordinate before any command has no command to repeat.
+    #[test]
+    fn a_path_that_opens_with_a_coordinate_is_refused() {
+        assert!(Mark::parse("5,5 l1,0", UNIT).is_none());
+    }
+
+    /// An arc is a real change to the artwork rather than something to
+    /// approximate, and the parser says so instead of drawing a straight line
+    /// where a curve belongs.
+    #[test]
+    fn an_unimplemented_command_is_refused() {
+        assert!(Mark::parse("M0,0 A1,1 0 0 1 1,1 Z", UNIT).is_none());
+    }
+
+    /// A command whose coordinates run out mid-pair.
+    #[test]
+    fn a_truncated_coordinate_pair_is_refused() {
+        assert!(Mark::parse("M0,0 l1,", UNIT).is_none());
+    }
+
+    /// Nothing to draw is not a mark.
+    #[test]
+    fn an_empty_path_is_refused() {
+        assert!(Mark::parse("", UNIT).is_none());
+        assert!(Mark::parse("   ", UNIT).is_none());
+    }
+
+    /// The export writes exponents and elides the separator before a leading
+    /// minus, so both reach `number` and neither may swallow the other.
+    #[test]
+    fn exponents_and_elided_separators_parse() {
+        let mark = Mark::parse("M0,0l1,0l0,1l-1,0Z", UNIT).expect("elided separators");
+        assert_eq!(mark.subpath_count(), 1);
+        let mark = Mark::parse("M4.9e-14,0 l1,0 l0,1 Z", UNIT).expect("an exponent");
+        assert_eq!(mark.subpath_count(), 1);
+    }
+
+    /// A relative moveto after closepath is measured from the subpath's start
+    /// and not from the last point drawn, which is what the export's five
+    /// `m` commands rely on. Read back off the second ring's first point.
+    #[test]
+    fn a_relative_moveto_after_closepath_starts_from_the_subpath_start() {
+        // Opens at (10,10), walks away, closes, then steps (1,1) — from
+        // (10,10), not from the far corner.
+        let mark =
+            Mark::parse("M10,10 l5,0 l0,5 Z m1,1 l2,0 l0,2 Z", UNIT).expect("two closed rings");
+        assert_eq!(mark.subpath_count(), 2);
+        assert_eq!(mark.subpaths[1][0], [11.0, 11.0]);
+    }
+
+    /// The viewbox divides, so a degenerate one cannot produce infinities.
+    #[test]
+    fn a_zero_viewbox_is_refused() {
+        assert!(Mark::parse("M0,0 l1,0 l0,1 Z", 0.0).is_none());
     }
 }

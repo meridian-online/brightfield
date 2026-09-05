@@ -20,9 +20,11 @@ use brightfield_shell::protocol::{
 };
 use brightfield_shell::window::{
     fit_window_to_display, protocol_window_size_for, window_size_on_display, Boot, DisplayFit,
-    MeridianApp,
+    MeridianApp, HOME_CONTROL_NAME,
 };
 use brightfield_workbench::{ItemId, PaneKey};
+use egui::accesskit::Role;
+use egui_kittest::kittest::Queryable;
 
 const DASHBOARD: &str = "../../examples/dashboard.yaml";
 const EDGAR: &str = "../../examples/protocol/edgar_gleif/arcform.yaml";
@@ -1033,6 +1035,93 @@ fn navigator_toggle() -> Vec<egui::Event> {
             modifiers,
         })
         .collect()
+}
+
+/// **The word *Meridian* is drawn nowhere in the chrome**, on the door and off
+/// it.
+///
+/// It used to lead the title band and it is gone; the mark took its place and
+/// took the click with it. Read off every galley the frame painted, because
+/// the claim is about what a person sees — and asserted on both states of the
+/// window, since the band draws different things on each and only one of them
+/// used to carry the word.
+///
+/// This is not what the pixel baselines already hold. Those would redden if it
+/// came back *in the paint tree*; the control's own name lives in hover text
+/// and in the accessibility tree, and neither is painted — so a regression that
+/// put the word back into the label would slip past a snapshot and is caught by
+/// `the_home_control_carries_its_name_where_a_reader_can_reach_it` instead.
+/// Between them the two cover both places the word could return.
+#[test]
+fn the_word_meridian_is_drawn_nowhere_in_the_chrome() {
+    let word = "Meridian";
+
+    let mut on_a_chart = Window::open(
+        Boot::charts(compose_spec(DASHBOARD).expect("the dashboard fixture composes")),
+        Mode::Light,
+    );
+    on_a_chart.settle();
+    let drawn = on_a_chart.drawn_text();
+    assert!(
+        drawn.iter().any(|text| !text.is_empty()),
+        "the window painted no text at all, so finding none proves nothing"
+    );
+    assert!(
+        !drawn.iter().any(|text| text.contains(word)),
+        "the chrome over a chart still draws {word:?}: {drawn:?}"
+    );
+
+    let mut on_the_door = Window::open(Boot::empty(), Mode::Light);
+    on_the_door.settle();
+    assert!(
+        on_the_door.app.front_door_is_live(),
+        "an empty boot did not land on the door"
+    );
+    let drawn = on_the_door.drawn_text();
+    assert!(
+        drawn.iter().any(|text| !text.is_empty()),
+        "the door painted no text at all, so finding none proves nothing"
+    );
+    assert!(
+        !drawn.iter().any(|text| text.contains(word)),
+        "the door still draws {word:?}: {drawn:?}"
+    );
+}
+
+/// **The home control says what it is to a reader who cannot see the mark.**
+///
+/// It draws a picture and no words, so its name reaches a person through hover
+/// text and through the accessibility tree and through nothing else. A rect is
+/// not a name: every other test of this control reads `home_rect` and clicks
+/// it, which passes just as well over an unlabelled square.
+///
+/// Read through the accessibility tree rather than by hovering, because that is
+/// the reading that also answers for a screen reader, and because a tooltip is
+/// a second frame's worth of state to drive for a weaker assertion.
+///
+/// Watched redden, one mutation: dropping the `widget_info` call from the
+/// control fails here at "the title band drew no button named".
+#[test]
+fn the_home_control_carries_its_name_where_a_reader_can_reach_it() {
+    let boot = Boot::charts(compose_spec(DASHBOARD).expect("the dashboard fixture composes"));
+    let (w, h) = boot.window_size();
+    let mut app = MeridianApp::headless(boot, Mode::Light);
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(w, h))
+        .with_pixels_per_point(1.0)
+        .build_ui(move |ui| app.draw(ui));
+    // Two frames: the first installs the font atlas and settles the layout, as
+    // every other window harness in this suite does.
+    harness.run();
+    harness.run();
+
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, HOME_CONTROL_NAME)
+            .is_some(),
+        "the title band drew no button named {HOME_CONTROL_NAME:?} — the mark \
+         is the only route home in the chrome and it says nothing about itself"
+    );
 }
 
 /// The top bar's Home button actually returns to the front door — clicked

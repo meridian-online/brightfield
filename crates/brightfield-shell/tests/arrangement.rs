@@ -535,6 +535,63 @@ fn the_navigator_rail_collapses_from_its_strip_and_reopens() {
     );
 }
 
+/// **The same round trip on the front door**, where the rail draws over no
+/// document at all.
+///
+/// The rail above is one a document filled. This one stands on the door to say
+/// what a Protocol will hold before there is one, and it is drawn by a
+/// different branch of `MeridianApp::draw` — a branch that reads the collapsed
+/// set to decide which panel id and which size to draw under, and applies a
+/// toggle after its closure has returned rather than through the `picks`
+/// machinery the other branch uses. Two branches, one behaviour, and until
+/// this only one of them was driven.
+///
+/// Watched redden, one mutation: applying the door branch's toggle *inside*
+/// the panel closure instead of after it fails at the collapsed measure,
+/// because the set the panel was drawn under and the set the frame ends with
+/// disagree for that frame.
+#[test]
+fn the_doors_navigator_rail_collapses_from_its_strip_and_reopens() {
+    let navigator = arrangement::default_arrangement().expect_region(arrangement::NAVIGATOR_RAIL);
+    let declared = navigator
+        .default_extent()
+        .expect("the navigator rail opens at a declared width");
+    let collapsed = navigator
+        .collapsed_extent()
+        .expect("the arrangement declares the navigator rail collapsible");
+
+    let mut win = Live::over(Boot::empty());
+    win.settle();
+    assert!(
+        win.app.front_door_is_live(),
+        "an empty boot did not land on the front door, so this is not the \
+         branch under test"
+    );
+
+    let open = win.extent(arrangement::NAVIGATOR_RAIL);
+    assert!(
+        (open - declared).abs() < 1e-3,
+        "the door's navigator rail opened at {open}pt against the {declared}pt \
+         declared"
+    );
+
+    win.click_collapse(arrangement::NAVIGATOR_RAIL);
+    let drawn = win.extent(arrangement::NAVIGATOR_RAIL);
+    assert!(
+        (drawn - collapsed).abs() < 1e-3,
+        "the door's collapsed navigator rail drew at {drawn}pt against the \
+         {collapsed}pt the arrangement declares it collapses to"
+    );
+
+    win.click_collapse(arrangement::NAVIGATOR_RAIL);
+    let reopened = win.extent(arrangement::NAVIGATOR_RAIL);
+    assert!(
+        (reopened - open).abs() < 1e-3,
+        "the door's navigator rail reopened at {reopened}pt rather than the \
+         {open}pt it was at"
+    );
+}
+
 /// AC1's numbers, in the one place they are spelled, measured off the drawn
 /// rect.
 ///

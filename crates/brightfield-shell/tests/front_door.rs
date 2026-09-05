@@ -1043,8 +1043,12 @@ fn a_first_run_populates_datasets_and_states_what_protocols_will_hold() {
 /// this is what turns a wrong one red instead of leaving it to someone looking
 /// at the screen.
 ///
-/// It walks `RunState`'s own variants rather than a list retyped here, so a
-/// state added to the enum is measured by this the first time it is drawn.
+/// The states below are typed out, and that is the weakness to know about:
+/// `RunState` derives no iterator, so a sixth variant would be drawn by the
+/// door and measured by nothing here. `every_run_state_is_measured_by_the_row
+/// _fit` is what closes that — it matches on a value exhaustively, so the enum
+/// growing is a compile error in this file rather than a silent gap.
+///
 /// The times are `relative_time`'s three shapes, taken off the fixture the
 /// returning door is photographed with.
 ///
@@ -1054,15 +1058,48 @@ fn a_first_run_populates_datasets_and_states_what_protocols_will_hold() {
 /// figures exist to prevent, and it is read off drawn galleys — a row that
 /// truncated its state to fit would pass a width comparison against the
 /// constants and fail here.
+/// **The list above is the whole enum**, enforced by the compiler rather than
+/// by a reader remembering.
+///
+/// A hand-typed array of variants does not grow when the enum does, so the
+/// row-fit measurement would silently stop covering a state the door draws.
+/// This matches exhaustively over a value: adding a variant to `RunState`
+/// stops this file compiling, which is the only mechanism that reddens for a
+/// change made in another crate.
+#[test]
+fn every_run_state_is_measured_by_the_row_fit() {
+    for state in ROW_FIT_STATES {
+        // The compiler's exhaustiveness check is the assertion. A new variant
+        // has no arm and this stops building; an arm added here without the
+        // variant reaching ROW_FIT_STATES fails the count below.
+        match state {
+            RunState::NeverRun
+            | RunState::Fresh
+            | RunState::StaleOwnEdit
+            | RunState::StaleUpstream
+            | RunState::Failed => {}
+        }
+    }
+    assert_eq!(
+        ROW_FIT_STATES.len(),
+        5,
+        "a variant reached the match above without reaching the measured set"
+    );
+}
+
+/// Every `RunState` the row-fit test measures — see
+/// `every_run_state_is_measured_by_the_row_fit` for what holds it complete.
+const ROW_FIT_STATES: [RunState; 5] = [
+    RunState::NeverRun,
+    RunState::Fresh,
+    RunState::StaleOwnEdit,
+    RunState::StaleUpstream,
+    RunState::Failed,
+];
+
 #[test]
 fn the_longest_run_state_and_time_fit_the_doors_row() {
-    let states = [
-        RunState::NeverRun,
-        RunState::Fresh,
-        RunState::StaleOwnEdit,
-        RunState::StaleUpstream,
-        RunState::Failed,
-    ];
+    let states = ROW_FIT_STATES;
     // Seconds before now, chosen to reach each shape `relative_time` renders:
     // minutes, "yesterday", and a day count.
     let ages = [150u64, 90_000, 4 * 86_400];
