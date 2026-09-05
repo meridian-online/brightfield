@@ -3719,7 +3719,7 @@ mod tests {
 
     /// Leaving the graph for a different view and coming back changes the
     /// raster key, because [`CanvasKey::showing`] is what tells the cache a
-    /// re-raster is owed — nothing else about the document moves.
+    /// re-raster is owed — the document's other fields don't affect the key.
     ///
     /// The same two-sided shape as
     /// `a_theme_switch_changes_the_canvas_key_and_nothing_else`, aimed at

@@ -242,14 +242,14 @@ fn texts(shapes: &[egui::epaint::ClippedShape]) -> Vec<(String, egui::Rect, egui
     out
 }
 
-/// [`texts`] with the one field its callers have never needed: the clip rect
-/// each galley was painted under.
+/// [`texts`] with the clip rect each galley was painted under — the one field
+/// that [`texts`] does not return.
 ///
 /// A clip narrows what reaches the screen without moving the galley's own
 /// rect — `spine_head_row`'s own doc says so, "the rect handed back is the
 /// galley's own, clip or no clip" — so a claim about what a *reader* sees has
-/// to read this, and `texts` alone would go on passing over a caption a clip
-/// never touched. Not recursive into `Shape::Vec`: a sub-painter's
+/// to read this. `texts` alone would miss a caption that falls outside its
+/// clip. Not recursive into `Shape::Vec`: a sub-painter's
 /// `with_clip_rect` call adds its shape as its own entry in the frame's list
 /// rather than nesting inside one, so the clip rect on each top-level
 /// `ClippedShape` already belongs to whatever galley is under it.
@@ -949,8 +949,8 @@ fn selecting_a_column_washes_that_row_and_leaves_the_bar_where_the_canvas_is() {
 
 /// **The latch and the derived answer agree about the graph.**
 ///
-/// `graph_on_canvas` reads [`CanvasHolds`], the latch, directly — it derives
-/// nothing itself. The derived answer is `graph_takes_the_canvas`, and it is
+/// `graph_on_canvas` reads [`CanvasHolds`], the latch, directly without
+/// deriving anything. The derived answer is `graph_takes_the_canvas`, and it is
 /// the latch that gets reconciled from that function each frame, not the
 /// other way around. Two windows, one on each side of the question, read off
 /// a real frame.
@@ -1417,12 +1417,12 @@ fn the_spines_head_carries_an_unfilled_graph_chip_over_a_dashboard() {
     );
 }
 
-/// **AC1, at the rail's floor rather than its default.** The test above never
-/// exercises `spine_head_row`'s `with_clip_rect(room)` call: at the default
-/// 240-point rail the caption's own galley already ends left of the chip, so
-/// its "ends left of the chip" assertion reads `name_rect` — which
+/// **AC1, at the rail's floor rather than its default.** The test above skips
+/// `spine_head_row`'s `with_clip_rect(room)` call: at the default
+/// 240-point rail the caption's own galley already ends left of the chip. Its
+/// "ends left of the chip" assertion reads `name_rect` — which
 /// `spine_head_row`'s own doc says is "the galley's own, clip or no clip" —
-/// and would pass exactly as well with the clip deleted.
+/// and would pass identically if the clip were deleted.
 ///
 /// Drag the rail to `NAVIGATOR_RAIL`'s declared floor, where the same
 /// caption's unclipped galley runs well past the chip, and read what the

@@ -1332,7 +1332,7 @@ fn opening_a_data_file_over_an_open_protocol_retitles_for_the_file() {
     // returns, with no frame drawn in between: `MeridianApp::draw` runs its
     // own reconciliation at the head of every frame, and settling first
     // would launder a missing call inside `adopt_boot` through that one,
-    // proving nothing about the call this test exists to pin.
+    // hiding whether the call happened inside `adopt_boot` itself.
     let ctx = win.ctx.clone();
     win.app
         .open_data_file(&ctx, csv.to_str().expect("utf-8 fixture path"));
@@ -1341,11 +1341,10 @@ fn opening_a_data_file_over_an_open_protocol_retitles_for_the_file() {
         !win.app.graph_on_canvas(),
         "the opened file did not replace the graph on the canvas"
     );
-    assert!(
-        win.app.title().contains("california_housing_sample"),
-        "the title still names the Protocol the file replaced rather than \
-         the file itself: {}",
-        win.app.title()
+    assert_eq!(
+        win.app.title(),
+        "california_housing_sample",
+        "the title should be retitled to the file name, not the Protocol"
     );
 }
 
