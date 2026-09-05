@@ -1343,7 +1343,7 @@ fn opening_a_data_file_over_an_open_protocol_retitles_for_the_file() {
     );
     assert_eq!(
         win.app.title(),
-        "california_housing_sample",
+        "california_housing_sample.csv",
         "the title should be retitled to the file name, not the Protocol"
     );
 }
