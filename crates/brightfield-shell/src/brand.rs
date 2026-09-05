@@ -8,9 +8,8 @@
 //! rasterised copy committed here would be a second artefact to keep in step
 //! with the first, and the first is a Cargo dependency this crate already
 //! takes. So the geometry comes from
-//! [`meridian_design::brand::mark_path`] at run time and nothing about the
-//! mark is restated in this repository: change the mark in the design system,
-//! rebuild, and this draws the new one.
+//! [`meridian_design::brand::mark_path`] at run time rather than from a copy:
+//! change the mark in the design system, rebuild, and this draws the new one.
 //!
 //! # Why it is rasterised here rather than tessellated
 //!
@@ -22,7 +21,7 @@
 //! failure anything catches. A scanline fill over the flattened outline has
 //! no such precondition: [`Mark::mask`] is an even-odd coverage raster, so a
 //! tooth that becomes concave, or an export that nests one subpath inside
-//! another, draws correctly without this module learning anything new.
+//! another, draws correctly with this module unchanged.
 //!
 //! The raster is an **alpha mask**, built once at [`MASK_SIZE`] and tinted at
 //! draw time. One texture therefore serves both modes and every size the mark
@@ -65,11 +64,11 @@ pub struct Mark {
 
 /// The mark, parsed and flattened once.
 ///
-/// Returns `None` only if the design system's SVG has lost its `d` attribute
-/// or carries a path command this parser does not implement, both of which are
-/// build-time facts about a vendored file rather than anything a user can
-/// reach. Callers draw nothing in that case; `the_shipped_mark_parses` is what
-/// turns it into a failing test instead of a missing picture.
+/// `None` says the design system's SVG has lost its `d` attribute, or carries
+/// a path command this parser does not implement. Both are build-time facts
+/// about a vendored file rather than a circumstance a user reaches, and
+/// `the_shipped_mark_parses` is what turns either into a failing test instead
+/// of a missing picture. A caller handed `None` draws no mark.
 pub fn mark() -> Option<&'static Mark> {
     static MARK: OnceLock<Option<Mark>> = OnceLock::new();
     MARK.get_or_init(|| {
@@ -83,10 +82,11 @@ impl Mark {
     /// Parse and flatten an SVG path over a square `viewbox`.
     ///
     /// Implements the commands the shipped export actually uses — `M`, `m`,
-    /// `l`, `c` and `Z` — plus their absolute counterparts `L` and `C`, and
-    /// returns `None` on anything else rather than guessing. An export that
-    /// starts emitting arcs is a real change to the artwork and should stop
-    /// this rather than approximate it.
+    /// `l`, `c` and `Z` — plus their absolute counterparts `L` and `C`. An
+    /// unimplemented command returns `None` rather than a guess: an export
+    /// that starts emitting arcs is a real change to the artwork and should
+    /// stop this rather than be approximated. `the_shipped_mark_parses` is
+    /// what reddens when the shipped path stops being one this understands.
     fn parse(path: &str, viewbox: f32) -> Option<Self> {
         let mut lexer = Lexer::new(path);
         let mut subpaths: Vec<Vec<[f32; 2]>> = Vec::new();
@@ -301,8 +301,8 @@ pub fn paint(
     );
 }
 
-/// Subdivide one cubic into [`CUBIC_SEGMENTS`] line segments, appending every
-/// point but the first — the caller already holds the current point.
+/// Subdivide one cubic into [`CUBIC_SEGMENTS`] line segments, appending each
+/// point after the first — the caller already holds the current point.
 fn flatten_cubic(
     from: [f32; 2],
     c1: [f32; 2],

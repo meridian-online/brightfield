@@ -867,7 +867,7 @@ fn a_category_click_reads_back_as_the_clicked_values_own_equality() {
 
 /// **A second click on the same bar takes the cross-filter off.** The gesture
 /// that applied the filter is the gesture a reader reaches for to remove it,
-/// and until this it did nothing: the point arm of `resolve_gesture` built the
+/// and until this it had no effect: the point arm of `resolve_gesture` built the
 /// clause and dispatched it whatever was already standing, so clicking the
 /// same bar twice republished the same predicate and the row set never came
 /// back. The interval arm had the retraction from the start — an unswept click

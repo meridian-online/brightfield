@@ -1007,13 +1007,35 @@ fn the_inspector_rail_draws_no_save_while_the_palette_offers_one() {
 /// reaches `save_protocol`, finds no source and returns.
 ///
 /// The start is `signals-dashboard`, one of the four shipped starts that open
-/// a chart spec.
+/// a chart spec. It is reached by its **Protocols** row rather than by a
+/// Datasets card: the generated chart starts are off the door's catalogue, so
+/// the layout is seeded with a record of this one and the row is what the
+/// third state is entered through. Which control raises the open changes
+/// nothing this test asks — `open_start` is the same either side, and
+/// `either_route_to_the_same_subject_leaves_the_same_window` is where that is
+/// held.
+///
+/// Watched redden, one mutation: `MeridianApp::has_protocol_to_save` widened
+/// to `source().is_some() || !self.charts.doc.is_empty()`, the plausible "the
+/// chart window can save its spec". The first two states are unmoved — the
+/// door's chart document is empty — and the third fails at "a shipped chart
+/// start has no Protocol behind it", which is the state the row route now
+/// reaches.
 #[test]
 fn going_home_takes_the_save_offer_with_the_start() {
     let dir = TempDir::new("home-then-start");
     let path = dir.write("harbour.csv", HARBOUR_CSV);
-    let mut win =
-        Window::over(Boot::data_file(&path.to_string_lossy()).expect("the file opens as a boot"));
+    let mut remembering = default_layout();
+    remembering.remember(
+        brightfield_shell::starts::DASHBOARD,
+        "signals-dashboard",
+        RunState::NeverRun,
+        1,
+    );
+    let mut win = Window::with_layout(
+        Boot::data_file(&path.to_string_lossy()).expect("the file opens as a boot"),
+        remembering,
+    );
 
     // 1. The data file: a Protocol, and the offer.
     assert!(win.app.has_protocol_to_save());
@@ -1060,21 +1082,24 @@ fn going_home_takes_the_save_offer_with_the_start() {
     );
     win.key(egui::Key::Escape);
 
-    // 3. A shipped chart start, off the door's own card.
-    let card = win
+    // 3. A shipped chart start, off the door's own Protocols row.
+    let row = win
         .app
-        .front_door_card_rect(brightfield_shell::starts::DASHBOARD)
-        .expect("the door draws a card for the signals dashboard")
+        .front_door_rows()
+        .iter()
+        .find(|r| r.id == brightfield_shell::starts::DASHBOARD)
+        .expect("the door draws a row for the remembered signals dashboard")
+        .rect
         .center();
     win.run(vec![
-        egui::Event::PointerMoved(card),
-        button_at(card, true),
-        button_at(card, false),
+        egui::Event::PointerMoved(row),
+        button_at(row, true),
+        button_at(row, false),
     ]);
     win.settle();
     assert!(
         !win.app.front_door_is_live(),
-        "the card click opened nothing"
+        "the row click opened nothing"
     );
     assert!(
         !win.app.has_protocol_to_save(),

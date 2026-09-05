@@ -22,7 +22,6 @@
 //! learning nothing slowly.
 
 use brightfield_protocol::layout::Flow;
-use brightfield_shell::app::CHART;
 use brightfield_shell::design::Mode;
 use brightfield_shell::protocol::{CANVAS, OUTLINE, STEPS};
 use brightfield_shell::startup::{default_layout, kept_window_geometry, opening_boot};
@@ -308,11 +307,19 @@ fn frames_nobody_rearranged_write_nothing() {
 ///
 /// Watched redden, one mutation: deleting the
 /// `self.layout.live_mut().opened = …` line from `MeridianApp::open_start`
-/// fails at "a changed layout armed no countdown" — which is the honest shape
-/// of that bug and not the one it was expected to take. Opening a document is
-/// not by itself a *layout* change; recording what was opened is the only
-/// thing about the second click that reaches the file at all, so without it
-/// there is nothing to save and nothing ever arms.
+/// fails at "the file did not record what was open".
+///
+/// It used to fail one assertion earlier, at "a changed layout armed no
+/// countdown", and the change is worth recording because it is a change in
+/// what the click does rather than in what the test asks. The click was the
+/// chart pane's way in, which opened a chart into the view already on screen:
+/// recording the id was then the whole of what that click put in the file, so
+/// deleting the line left nothing to save and nothing armed. The door stopped
+/// registering that pane when its start left the Datasets section, so this
+/// clicks the canvas pane's instead — and opening a Protocol carries the
+/// window across to the protocol view, which is itself an arrangement the file
+/// keeps. The countdown therefore arms either way, and the assertion that
+/// catches the deletion is the read-back at the end.
 #[test]
 fn a_layout_that_moved_is_written_and_reads_back() {
     let scratch = Scratch::new("moved");
@@ -333,13 +340,20 @@ fn a_layout_that_moved_is_written_and_reads_back() {
 
     // A change a user makes, made the way a user makes it: the front door's
     // own button, clicked where the last frame recorded it.
+    //
+    // The canvas pane's, not the chart pane's. What the door records a way in
+    // for is a pane whose start it drew a card for, and the chart pane's start
+    // is off the Datasets section — see
+    // `the_pane_way_in_is_the_doors_card_for_the_start_that_fills_it`. Which
+    // document this opens is incidental here; that it is a change reaching the
+    // file is the claim.
     let target = app
-        .affordance_rect(PaneKey::new(CHART))
-        .expect("the chart view's front door drew a way in");
+        .affordance_rect(PaneKey::new(CANVAS))
+        .expect("the front door drew a way in for the canvas pane");
     run(&mut app, &ctx, vec![click_at(target.center())]);
     settle(&mut app, &ctx, 2);
-    assert!(!app.graph_on_canvas());
-    assert!(!app.chart_doc().is_empty());
+    assert!(app.graph_on_canvas());
+    assert!(app.protocol_model().has_assets());
 
     // Armed, and not yet written: the debounce collapses a burst of changes
     // into one write at the end rather than one per frame.
@@ -364,7 +378,7 @@ fn a_layout_that_moved_is_written_and_reads_back() {
     assert_eq!(outcome, LoadOutcome::Restored, "{}", outcome.reason());
     assert_eq!(
         restored.opened.as_deref(),
-        Some(brightfield_shell::starts::DASHBOARD),
+        Some(brightfield_shell::starts::CROSSWALK),
         "the file did not record what was open, so the next launch restores an \
          arrangement around panes that are all still empty"
     );

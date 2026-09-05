@@ -1673,8 +1673,8 @@ pub struct MeridianApp {
     /// Held here rather than in a `static` because a texture handle belongs to
     /// the context that loaded it — see [`crate::brand::image`]. `None` until
     /// the first frame, and `None` for the life of the window if the design
-    /// system's path did not parse, in which case the two controls that draw
-    /// the mark draw nothing.
+    /// system's path did not parse, in which case the door's greeting and the
+    /// title band's home control each draw no mark.
     mark: Option<egui::TextureHandle>,
     /// Where the front door drew each start's gallery card, by start id —
     /// the test hook the door's clicks are aimed through, exactly as
@@ -5114,11 +5114,18 @@ impl MeridianApp {
         // claim about itself true. The strings a test reads back are the ones
         // handed to the painter at these three positions, so painting one
         // field and recording another is a difference the read-back can see.
+        //
+        // Off the galleys' **glyphs**, not their source text: `Galley::text`
+        // returns the job's string, which a truncated galley still holds in
+        // full, so a record built from it reports a state the reader cannot
+        // see. `the_longest_run_state_and_time_fit_the_doors_row` is the test
+        // that turns a state too wide for its room red, and it can only do so
+        // over what was drawn.
         self.door_rows.push(DoorRow {
             id: recent.id.clone(),
-            name: name.text().to_string(),
-            state: state.text().to_string(),
-            when: when.text().to_string(),
+            name: drawn_glyphs(&name),
+            state: drawn_glyphs(&state),
+            when: drawn_glyphs(&when),
             rect,
         });
         if ui.is_rect_visible(rect) {
@@ -5496,6 +5503,19 @@ fn door_empty_protocols(ui: &mut egui::Ui, width: f32, sem: &semantic::Semantic)
         body,
         chrome::colour(sem.text.secondary),
     );
+}
+
+/// The characters a galley actually placed, in order.
+///
+/// [`egui::Galley::text`] answers with the job's source string, which survives
+/// truncation intact — so a field clipped to its room reads back at its full
+/// length through it. The glyphs are what reached the screen.
+fn drawn_glyphs(galley: &egui::Galley) -> String {
+    galley
+        .rows
+        .iter()
+        .flat_map(|row| row.glyphs.iter().map(|glyph| glyph.chr))
+        .collect()
 }
 
 /// The door navigator's body: the two lines, set at the rail's top rather

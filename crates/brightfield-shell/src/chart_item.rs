@@ -1789,7 +1789,7 @@ mod tests {
         };
         let binding = interval.gesture.clone().expect("bound");
         assert!(matches!(
-            resolve_gesture(&binding, &interval, click),
+            resolve_gesture(&binding, &interval, click, None),
             Some(Interaction::ClearSelect { .. })
         ));
 
@@ -1802,7 +1802,7 @@ mod tests {
             move_from: None,
         };
         let binding = point.gesture.clone().expect("bound");
-        assert_eq!(resolve_gesture(&binding, &point, sweep), None);
+        assert_eq!(resolve_gesture(&binding, &point, sweep, None), None);
     }
 
     /// Two plots placed side by side on one raster, as a root `hconcat` of

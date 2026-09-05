@@ -857,9 +857,9 @@ impl ChartDoc {
 
     /// The clause `contributor` is currently holding in the selection `name`,
     /// if any — [`LiveDashboard::held_clause`], through the live session this
-    /// document was opened with. `None` on a document with no live session,
-    /// which is every still frame: a capture publishes no gesture, so there is
-    /// nothing for one to be repeating.
+    /// document was opened with. `None` on a document with no live
+    /// session — a still frame, where a capture publishes no gesture, so there
+    /// is no clause for one to be repeating.
     #[must_use]
     pub fn held_clause(
         &self,

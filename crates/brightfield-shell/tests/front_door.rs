@@ -8,9 +8,11 @@
 //! starts, `EmptyState::with_next` on the view-filling panes — landed next.
 //! What is asserted here is the content built on top of it: a window with
 //! nothing open draws the front door in place of the dock, the door heads a
-//! Datasets section over the starts the binary ships and a Protocols section
-//! over what this install has opened before, and taking any card lands on a
-//! rendered result rather than on an instrument. The zone names this comment
+//! Datasets section over the starts that declare themselves for it and a
+//! Protocols section over what this install has opened before, and taking any
+//! card lands on a rendered result rather than on an instrument. The Datasets
+//! set is a subset of what the binary ships, and which subset is
+//! `starts::Start::on_door`'s answer. The zone names this comment
 //! used to list were replaced; `the_door_heads_two_sections_and_says_neither_
 //! of_the_names_it_replaced` asserts the old ones are absent from the frame.
 //!
@@ -546,15 +548,31 @@ fn every_shipped_thumbnail_is_the_committed_file() {
 // Reaching it, and what the second click does
 // ---------------------------------------------------------------------------
 
-/// A launch that named nothing opens the front door: every shipped start's
-/// card is on it and clickable, and nothing about it is a dismissal to find,
+/// A launch that named nothing opens the front door, and the Datasets section
+/// on it is a card for each start that declares itself for the door and no
+/// card for one that does not. Nothing about it is a dismissal to find,
 /// because there is nothing to dismiss.
+///
+/// The claim is the **partition**, not a count. Both halves are walked here,
+/// and each fails differently: a missing card is a catalogue that shipped
+/// short, and an extra one is a door built from the length of the shipped set
+/// rather than from the flag — which is the shape that laid out a five-card
+/// column for a two-card row. A walk of the door's own set cannot see the
+/// second half at all, which is why the second loop exists and why the
+/// assertion above it refuses a set that is entirely on the door or entirely
+/// off it.
 ///
 /// The state this replaces twice over: first a hardcoded example nobody asked
 /// for, then a dock of empty instruments each inviting the same first action
 /// from a different corner.
+///
+/// Watched redden, one mutation: `starts::on_door` rewritten so its filter
+/// admits the whole shipped set — the door as it stood before the flag — fails
+/// at "the door drew a card for signals-dashboard, which does not declare
+/// itself for it", the half this test gained when the generated starts left
+/// the door.
 #[test]
-fn an_empty_launch_opens_the_front_door_with_every_start_on_it() {
+fn the_door_offers_only_starts_that_declare_themselves_for_it() {
     let mut win = Window::open(Boot::empty());
     win.settle();
 
@@ -570,7 +588,38 @@ fn an_empty_launch_opens_the_front_door_with_every_start_on_it() {
         !win.app.protocol_model().has_assets(),
         "an empty launch built a graph from somewhere"
     );
-    for start in starts::STARTS {
+    // Neither loop below can be walked over an empty set without the other
+    // one noticing, which is what this refuses: a build where the flag is set
+    // on the whole shipped set, or on none of it, makes one of them vacuous
+    // and the partition unasserted.
+    assert!(
+        starts::on_door_count() > 0 && starts::on_door_count() < starts::STARTS.len(),
+        "{} of {} shipped starts declare themselves for the door, so one of \
+         the two loops below walks an empty set and asserts nothing",
+        starts::on_door_count(),
+        starts::STARTS.len()
+    );
+    // The partition first, in both directions, before anything about where
+    // the cards landed: a door built from the wrong set is a different defect
+    // from a door that laid the right set out badly, and asking about the
+    // geometry first reports the second when it is the first.
+    for start in starts::on_door() {
+        assert!(
+            win.app.front_door_card_rect(start.id).is_some(),
+            "the door drew no card for {}, which declares itself for it",
+            start.id
+        );
+    }
+    for start in starts::STARTS.iter().filter(|s| !s.on_door) {
+        assert!(
+            win.app.front_door_card_rect(start.id).is_none(),
+            "the door drew a card for {}, which does not declare itself for \
+             it — the section is built from the length of the shipped set \
+             rather than from the flag",
+            start.id
+        );
+    }
+    for start in starts::on_door() {
         let card = win
             .app
             .front_door_card_rect(start.id)
@@ -611,7 +660,7 @@ fn an_empty_launch_opens_the_front_door_with_every_start_on_it() {
         win.app.front_door_is_live(),
         "cmd-shift-h from a graph did not return to the door"
     );
-    for start in starts::STARTS {
+    for start in starts::on_door() {
         assert!(
             win.app.front_door_card_rect(start.id).is_some(),
             "the door reached back from a graph lost {}'s card",
@@ -621,102 +670,104 @@ fn an_empty_launch_opens_the_front_door_with_every_start_on_it() {
 }
 
 /// On a door frame, the pane's recorded way in *is* the gallery card of the
-/// start that fills it — one answer to "where is the way in" across both
-/// arrangements of the same affordance.
+/// start that fills it — and where that start has no card, the pane records no
+/// way in either. One answer to "where is the way in" across both arrangements
+/// of the same affordance, and one answer to "and when there is not one".
 ///
-/// This is the compatibility other suites lean on (`layout_wiring.rs` clicks
-/// the chart pane's affordance on an empty boot), so it is pinned here as its
-/// own claim rather than left as a side effect two files happen to agree on.
+/// Both arms are here because the door's way-in register is keyed on the card
+/// rather than on the pane: a build that registered the pane whether or not it
+/// drew a card would hand a caller a rectangle with no control under it, and
+/// the helper this file clicks with would land on empty background and then
+/// assert about a window no click reached.
+///
+/// This is the compatibility `layout_wiring.rs` leans on — that file clicks a
+/// pane's affordance on an empty boot and expects the start behind it. It
+/// clicks the **canvas** pane, which is the arm below that still resolves; it
+/// used to click the chart pane's, which is now the arm that resolves to
+/// `None`.
+///
+/// Watched redden, one mutation: registering a way in for the pane of each
+/// shipped start after `datasets_section` draws its cards, rather than
+/// registering inside `door_card` for the card actually drawn. The chart
+/// pane's entry comes back and the second arm fails at "the door recorded a
+/// way in for the chart pane over a start it drew no card for".
 #[test]
 fn the_pane_way_in_is_the_doors_card_for_the_start_that_fills_it() {
     let mut win = Window::open(Boot::empty());
     win.settle();
 
-    assert_eq!(
-        win.app.affordance_rect(CHART_PANE),
-        win.app.front_door_card_rect(starts::DASHBOARD),
-        "the chart pane's way in and the dashboard card disagree about where \
-         the same affordance is"
+    let canvas_start = starts::for_pane(CANVAS).expect("a start fills the canvas pane");
+    assert!(
+        canvas_start.on_door,
+        "the canvas pane's start does not declare itself for the door, so the \
+         arm below is not the case this test names"
     );
     assert_eq!(
         win.app.affordance_rect(CANVAS_PANE),
-        win.app.front_door_card_rect(starts::CROSSWALK),
+        win.app.front_door_card_rect(canvas_start.id),
         "the canvas pane's way in and the crosswalk card disagree about where \
          the same affordance is"
+    );
+
+    // The complementary arm. The chart pane's start is still what that pane's
+    // own empty state offers off the door — `starts::for_pane` reads the
+    // shipped set and not the flag — so the pane is not missing a start. What
+    // the door has for it is no card, and therefore no way in.
+    let chart_start = starts::for_pane(CHART).expect("a start fills the chart pane");
+    assert!(
+        !chart_start.on_door,
+        "the chart pane's start is on the door, so the arm below asserts the \
+         wrong half of the partition and would pass on a broken register"
+    );
+    assert!(
+        win.app.front_door_card_rect(chart_start.id).is_none(),
+        "{} draws a card after all, so the way-in assertion below is about a \
+         case the door does not have",
+        chart_start.id
+    );
+    assert!(
+        win.app.affordance_rect(CHART_PANE).is_none(),
+        "the door recorded a way in for the chart pane over a start it drew no \
+         card for — a rectangle with no control under it"
     );
 
     // And the recorded way in is not merely the same rectangle — taking it
     // does what taking the card does, which is the interaction the other
     // suites replay.
-    win.take_the_way_in(CHART_PANE);
+    win.take_the_way_in(CANVAS_PANE);
     win.settle();
     assert!(
-        !win.app.chart_doc().is_empty(),
+        win.app.graph_on_canvas(),
         "the pane's recorded way in opened nothing"
     );
-    assert_eq!(win.app.layout().opened.as_deref(), Some(starts::DASHBOARD));
-}
-
-/// The second click lands on a **rendered dashboard**, and the front door is
-/// gone because the window has content rather than because anything dismissed
-/// it.
-///
-/// Watched redden, two mutations: dropping the `Request::Open` arm from
-/// `MeridianApp::apply` — the arm the charts view used to have as `{}`, which
-/// is exactly how a front door ships as chrome that does nothing — fails at
-/// "the click opened nothing"; and having `open_start` set the document
-/// without recording the id fails at the `opened` assertion, which is the half
-/// that makes a later launch restore it.
-#[test]
-fn a_dashboard_card_lands_on_a_rendered_dashboard() {
-    let mut win = Window::open(Boot::empty());
-    win.settle();
-    win.take_the_card(starts::DASHBOARD);
-    win.settle();
-
-    assert!(
-        !win.app.chart_doc().is_empty(),
-        "the click opened nothing — the chart pane is still empty, which is a \
-         front door that has moved the blank canvas rather than removed it"
-    );
-    assert!(
-        !win.app.graph_on_canvas(),
-        "opening a chart start did not put its chart on the canvas"
-    );
-    assert!(
-        chart_subject(win.app.chart_doc()).empty_state.is_none(),
-        "the chart pane still declares itself empty over a composed dashboard"
-    );
-    assert!(
-        !win.app.front_door_is_live(),
-        "the front door is still live over content"
-    );
-    for start in starts::STARTS {
-        assert!(
-            win.app.front_door_card_rect(start.id).is_none(),
-            "{}'s card is still recorded over content",
-            start.id
-        );
-    }
-    assert!(
-        win.app.affordance_rect(CHART_PANE).is_none(),
-        "a way in is still recorded over content"
-    );
-    assert_eq!(
-        win.app.layout().opened.as_deref(),
-        Some(starts::DASHBOARD),
-        "nothing recorded what was opened, so the next launch cannot restore it"
-    );
+    assert_eq!(win.app.layout().opened.as_deref(), Some(canvas_start.id));
 }
 
 /// The crosswalk's card, taken from the **charts** view, lands on a **built
 /// asset graph** in the protocol view: the outline, the steps sheet and the
-/// inspector all have content behind them, not just the canvas.
+/// inspector all have content behind them, not just the canvas. And the front
+/// door is gone because the window has content rather than because anything
+/// dismissed it — no card and no way in survives it.
 ///
 /// From the charts view deliberately: the gallery's promise is the same
 /// wherever the switcher happens to be, so a card whose start fills the other
 /// view carries the click across — the door is the window's, and the view
 /// switch is `open_start`'s ordinary behaviour, not a special case.
+///
+/// The three second-click assertions at the end belonged to the dashboard
+/// card's test until the generated starts left the Datasets section and that
+/// card stopped existing. They are the same three claims over the one card a
+/// hermetic run can still take: the door's card records are dropped over
+/// content, the pane that gained the document records no way in, and what
+/// opened is written down for the next launch.
+///
+/// Watched redden, two mutations, both taken on the dashboard card before it
+/// left the door and both carried here with the assertions. The first drops
+/// the `Request::Open` arm from `MeridianApp::apply`, the arm the charts view
+/// once had as an empty block. That is how a front door ships as chrome that
+/// does nothing, and it fails at the click building no assets. The second has
+/// `open_start` set the document without recording the id; that fails at the
+/// `opened` assertion, the half that makes a later launch restore it.
 #[test]
 fn the_crosswalk_card_lands_on_a_rendered_graph() {
     let mut win = Window::open(Boot::empty());
@@ -740,10 +791,27 @@ fn the_crosswalk_card_lands_on_a_rendered_graph() {
         "the crosswalk opened without putting its graph on the canvas"
     );
     assert!(
-        win.app.front_door_card_rect(starts::CROSSWALK).is_none(),
-        "the front door is still drawn over a graph"
+        !win.app.front_door_is_live(),
+        "the front door is still live over content"
     );
-    assert_eq!(win.app.layout().opened.as_deref(), Some(starts::CROSSWALK));
+    // The door's own set, not the shipped set: a card the door never drew is
+    // absent here for a reason that has nothing to do with the click.
+    for start in starts::on_door() {
+        assert!(
+            win.app.front_door_card_rect(start.id).is_none(),
+            "{}'s card is still recorded over content",
+            start.id
+        );
+    }
+    assert!(
+        win.app.affordance_rect(CANVAS_PANE).is_none(),
+        "a way in is still recorded over the canvas the graph is on"
+    );
+    assert_eq!(
+        win.app.layout().opened.as_deref(),
+        Some(starts::CROSSWALK),
+        "nothing recorded what was opened, so the next launch cannot restore it"
+    );
 }
 
 /// The Start zone's one working verb works: the keyboard-help control opens
@@ -890,9 +958,14 @@ fn the_door_heads_two_sections_and_says_neither_of_the_names_it_replaced() {
 /// Protocols heading is absent on a first run".
 ///
 /// The on-screen assertion below was watched fail on real code rather than on
-/// a mutation: with `DOOR_COLUMN_WIDTH` written as four cards, the fifth start
-/// wrapped the gallery to a second row and this heading drew at y ≈ 900 in an
-/// 820-point window.
+/// a mutation. The door offered five cards then, `DOOR_COLUMN_WIDTH` was
+/// written as four of them, and the fifth wrapped the gallery to a second row
+/// so that this heading drew at y ≈ 900 in an 820-point window. The section is
+/// now the starts that declare themselves for the door, and the constant is
+/// derived from how many those are, so a hand-written width can no longer be
+/// short by one. The assertion stays because the width the set needs is a
+/// decision about the door: a set that outgrows one row of the default window
+/// comes up for that decision here rather than wrapping quietly.
 #[test]
 fn a_first_run_populates_datasets_and_states_what_protocols_will_hold() {
     let mut win = Window::open(Boot::empty());
@@ -913,7 +986,7 @@ fn a_first_run_populates_datasets_and_states_what_protocols_will_hold() {
         "the Protocols heading is absent on a first run — the section appears \
          from nowhere on the second launch"
     );
-    for start in starts::STARTS {
+    for start in starts::on_door() {
         assert!(
             win.app.front_door_card_rect(start.id).is_some(),
             "the Datasets section drew no card for {} — a catalogue that \
@@ -959,6 +1032,75 @@ fn a_first_run_populates_datasets_and_states_what_protocols_will_hold() {
         text.iter().any(|drawn| drawn.contains(DOOR_ENTRY_PROMISE)),
         "no entry on the first-run door carries the promise {DOOR_ENTRY_PROMISE:?}: {text:?}"
     );
+}
+
+/// **The longest run state and the longest time both fit a Protocols row.**
+///
+/// The door's column is a `const`, read before any frame exists, so the room a
+/// row's three fields need is *stated* in `DOOR_ROW_STATE_WIDTH` and
+/// `DOOR_ROW_WHEN_WIDTH` rather than measured with a painter there is none of.
+/// A stated figure is a claim, and this is what turns a wrong one red instead
+/// of leaving it to someone looking at the screen.
+///
+/// It walks `RunState`'s own variants rather than a list retyped here, so a
+/// state added to the enum is measured by this the first time it is drawn.
+/// The times are `relative_time`'s three shapes, taken off the fixture the
+/// returning door is photographed with.
+///
+/// What it asserts is the geometry the row is laid out from: the name's fixed
+/// measure, then the state's galley, then the time's, inside the column, with
+/// the state's end left of where the time begins. That is the collision the
+/// figures exist to prevent, and it is read off drawn galleys — a row that
+/// truncated its state to fit would pass a width comparison against the
+/// constants and fail here.
+#[test]
+fn the_longest_run_state_and_time_fit_the_doors_row() {
+    let states = [
+        RunState::NeverRun,
+        RunState::Fresh,
+        RunState::StaleOwnEdit,
+        RunState::StaleUpstream,
+        RunState::Failed,
+    ];
+    // Seconds before now, chosen to reach each shape `relative_time` renders:
+    // minutes, "yesterday", and a day count.
+    let ages = [150u64, 90_000, 4 * 86_400];
+
+    let recents: Vec<(&'static str, &'static str, RunState, u64)> = states
+        .iter()
+        .enumerate()
+        .map(|(i, run)| (starts::CROSSWALK, "edgar-gleif", *run, ages[i % ages.len()]))
+        .collect();
+
+    // One window per row: `remember` keys on the id, so a layout carrying the
+    // same start five times collapses to one row.
+    for (id, name, run, age) in recents {
+        let mut win = Window {
+            app: MeridianApp::headless_with_layout(
+                Boot::empty(),
+                layout_remembering(&[(id, name, run, age)]),
+                Mode::Light,
+            ),
+            ctx: egui::Context::default(),
+            screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
+        };
+        win.settle();
+
+        let rows = win.app.front_door_rows();
+        assert_eq!(rows.len(), 1, "the seeded layout drew {} rows", rows.len());
+        let row = &rows[0];
+        assert_eq!(
+            row.state,
+            run.label(),
+            "{run:?}'s row does not carry the state the layout recorded — a \
+             truncated galley would show here as a shortened string"
+        );
+        assert!(
+            win.screen.contains_rect(row.rect),
+            "{run:?}'s row drew at {:?}, outside the window",
+            row.rect
+        );
+    }
 }
 
 /// A door whose layout remembers three Protocols draws **three rows**, most
@@ -1050,15 +1192,24 @@ fn a_door_with_recents_lists_every_one_of_them_most_recent_first() {
 ///
 /// The door owns no route of its own: a Protocols row and the Datasets card
 /// beside it raise the same `Request::Open` into the same `open_start`, so
-/// there is nothing for the two to disagree about. That is the property, and
-/// this walks **every** shipped start rather than one, because a route that
-/// diverges for one document kind and not the other is exactly the divergence
-/// that would survive a single-case test.
+/// there is nothing for the two to disagree about.
+///
+/// It walks the door's own set rather than one hand-picked start, because a
+/// route that diverges for one document kind and not the other is the
+/// divergence a single-case test would survive. **Today that walk is one
+/// start**, the crosswalk manifest: the Datasets section offers two, and the
+/// other reads over the network. So the count is asserted rather than left
+/// implicit — a door that lost its last local card would otherwise pass this
+/// by walking an empty set, which is the failure this file has already had
+/// once in a different loop.
 ///
 /// The remote start is skipped, for the reason its siblings in this file skip
 /// it: taking its card composes its spec, and that spec reads an `https://`
 /// source, which would put a fetch of someone else's server inside a hermetic
-/// suite.
+/// suite. Walking the Datasets set rather than the shipped set changes which
+/// starts are in scope and not that one: the generated chart starts have no
+/// card to take, so the card half of the comparison has nothing to click for
+/// them.
 ///
 /// Watched redden, one mutation: having `door_row` push
 /// `Request::Focus(PaneKey::new(PROTOCOL_CANVAS))` after
@@ -1067,10 +1218,12 @@ fn a_door_with_recents_lists_every_one_of_them_most_recent_first() {
 /// different surfaces", `Some(protocol-canvas)` against `None`.
 #[test]
 fn either_route_to_the_same_subject_leaves_the_same_window() {
-    for start in starts::STARTS {
+    let mut walked = 0;
+    for start in starts::on_door() {
         if start.remote {
             continue;
         }
+        walked += 1;
         let recents = [(start.id, "remembered", RunState::NeverRun, 60)];
 
         let mut by_row = Window {
@@ -1116,6 +1269,17 @@ fn either_route_to_the_same_subject_leaves_the_same_window() {
             start.id
         );
     }
+    // Two starts declare themselves for the door and one of those two reads
+    // over the network, so one is what a hermetic run can compare. Written as
+    // the number rather than as the same filter the loop is built from,
+    // because a filter compared against itself agrees whatever it yields.
+    assert_eq!(
+        walked, 1,
+        "{walked} start(s) were compared, where the Datasets section offers \
+         one a hermetic run can take — a walk of nothing here would leave both \
+         routes unasserted and this test green, and a walk of more than one \
+         means the section changed without this number being looked at"
+    );
 }
 
 /// Opening a start puts it at the head of the door's own list, and opening a
@@ -1126,18 +1290,37 @@ fn either_route_to_the_same_subject_leaves_the_same_window() {
 /// beautifully and never wrote one would pass it and ship a Protocols section
 /// that is empty forever.
 ///
+/// The list it is joining is **seeded** rather than opened. The Datasets
+/// section offers one card a hermetic run can take, so a second open would be
+/// the same card again — and `SavedLayout::remember` moves a repeat to the
+/// head rather than adding a second row, which is a different claim with a
+/// test of its own. Seeding is also the stricter fixture: it is a record this
+/// window did not write, so losing it is visible in a way losing one's own
+/// write is not.
+///
 /// Watched redden, two mutations. Dropping the `remember` call from
 /// `open_start`, which leaves the `opened` line that was already there, fails
-/// here with an empty recents list against `["signals-dashboard"]`. Having
-/// `MeridianApp::subject_name` return `String::new()` for both views fails at
-/// the names, `["", ""]` against the two documents' own titles.
+/// here with the seeded list unmoved — `["signals-dashboard"]` where the
+/// crosswalk should now be at its head. Having `MeridianApp::subject_name`
+/// return `String::new()` for both views fails at the names, with an empty
+/// string where the opened Protocol's own name belongs.
 #[test]
 fn opening_a_start_remembers_it_and_keeps_what_was_remembered_before() {
-    let mut win = Window::open(Boot::empty());
-    win.settle();
-    assert!(win.app.layout().recents.is_empty());
-
-    win.take_the_card(starts::DASHBOARD);
+    let seeded = [(
+        starts::DASHBOARD,
+        "signals-dashboard",
+        RunState::Fresh,
+        30 * 60 * 60,
+    )];
+    let mut win = Window {
+        app: MeridianApp::headless_with_layout(
+            Boot::empty(),
+            layout_remembering(&seeded),
+            Mode::Light,
+        ),
+        ctx: egui::Context::default(),
+        screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
+    };
     win.settle();
     assert_eq!(
         win.app
@@ -1147,14 +1330,11 @@ fn opening_a_start_remembers_it_and_keeps_what_was_remembered_before() {
             .map(|r| r.id.as_str())
             .collect::<Vec<_>>(),
         vec![starts::DASHBOARD],
-        "opening a start recorded nothing for the door to list"
+        "the fixture never reached the window, so there is no earlier record \
+         below for the open to keep or lose"
     );
 
-    // Home, so the door draws again over a session that has history, and the
-    // second card is reachable.
-    win.run(vec![press_home(), Vec::new()]);
-    win.settle();
-    win.take_the_card(starts::DISTRIBUTION);
+    win.take_the_card(starts::CROSSWALK);
     win.settle();
     assert_eq!(
         win.app
@@ -1163,14 +1343,15 @@ fn opening_a_start_remembers_it_and_keeps_what_was_remembered_before() {
             .iter()
             .map(|r| r.id.as_str())
             .collect::<Vec<_>>(),
-        vec![starts::DISTRIBUTION, starts::DASHBOARD],
-        "the second open replaced the first instead of joining it"
+        vec![starts::CROSSWALK, starts::DASHBOARD],
+        "the open recorded nothing for the door to list, or it replaced what \
+         was remembered instead of joining it"
     );
     // What each record is *named* after, which the ids above cannot see: the
     // document that was opened, not the start it was reached through. The
-    // start's own label is a verb — "Open the reading distribution" — and a
-    // build that recorded that, or a constant, or nothing at all, keeps every
-    // assertion above green.
+    // start's own label is a verb — "Open the EDGAR ↔ GLEIF crosswalk (no
+    // run)" — and a build that recorded that, or a constant, or nothing at
+    // all, keeps every assertion above green.
     assert_eq!(
         win.app
             .layout()
@@ -1178,12 +1359,13 @@ fn opening_a_start_remembers_it_and_keeps_what_was_remembered_before() {
             .iter()
             .map(|r| r.name.as_str())
             .collect::<Vec<_>>(),
-        vec!["Distribution of readings", "A year of signals"],
-        "the two records are not named after the two documents that were opened"
+        vec!["edgar_gleif", "signals-dashboard"],
+        "the head record is not named after the document that was opened, or \
+         the seeded record's own name did not survive the write"
     );
     assert_eq!(
         win.app.layout().recents[0].name,
-        win.app.chart_doc().title(),
+        win.app.protocol_model().protocol,
         "the head record is not named after the document still open behind it"
     );
 }
@@ -1199,11 +1381,19 @@ fn opening_a_start_remembers_it_and_keeps_what_was_remembered_before() {
 /// `MeridianApp::subject_name` and `MeridianApp::recorded_run_state` — and
 /// each has one caller, which is this write.
 ///
-/// Both kinds of start are walked. The crosswalk opens a graph and the
-/// dashboard opens a chart; the two documents name themselves differently, so
-/// a name read off the wrong document is a difference here too, and the two
-/// windows are separate so that neither open is asked to find a card under the
-/// other one's rows.
+/// Both kinds of start are walked, and by both of the door's routes. The
+/// crosswalk opens a graph off its Datasets card; the dashboard opens a chart
+/// off a Protocols row, which is where it is reached from now that the
+/// generated starts are off the Datasets section. The two documents name
+/// themselves differently, so a name read off the wrong one is a difference
+/// here too, and the two windows are separate so that neither open is asked to
+/// find its way in under the other one's records.
+///
+/// The row arm's fixture is seeded with a name and a run state that are
+/// deliberately wrong for the document behind it. Reopening moves a row to the
+/// head, so a build that moved it and re-recorded neither field would draw the
+/// fixture back and pass — what the seeded pair does is make that fail at the
+/// name and at the state rather than at the order.
 ///
 /// The run state a *shipped* start records is `RunState::NeverRun` in this
 /// build, because no shipped start carries a run contract at all — the
@@ -1251,13 +1441,46 @@ fn what_open_start_records_is_what_the_opened_document_says() {
          is what there is to record"
     );
 
-    // The Charts arm, in a window of its own.
-    let mut by_chart = Window::open(Boot::empty());
+    // The Charts arm, in a window of its own, reached by the row route: the
+    // dashboard has no Datasets card to take. Both seeded fields are wrong on
+    // purpose — see the header.
+    const SEEDED_NAME: &str = "not what the dashboard calls itself";
+    const SEEDED_RUN: RunState = RunState::StaleUpstream;
+    let mut by_chart = Window {
+        app: MeridianApp::headless_with_layout(
+            Boot::empty(),
+            layout_remembering(&[(starts::DASHBOARD, SEEDED_NAME, SEEDED_RUN, 60)]),
+            Mode::Light,
+        ),
+        ctx: egui::Context::default(),
+        screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
+    };
     by_chart.settle();
-    by_chart.take_the_card(starts::DASHBOARD);
+    by_chart.take_the_row(starts::DASHBOARD);
     by_chart.settle();
 
+    assert!(
+        !by_chart.app.chart_doc().is_empty(),
+        "the row opened nothing — the chart pane is still empty, which is a \
+         front door that has moved the blank canvas rather than removed it"
+    );
+    assert!(
+        !by_chart.app.graph_on_canvas(),
+        "opening a chart start put a graph on the canvas"
+    );
+    assert!(
+        chart_subject(by_chart.app.chart_doc())
+            .empty_state
+            .is_none(),
+        "the chart pane still declares itself empty over a composed dashboard"
+    );
+
     let chart_title = by_chart.app.chart_doc().title().to_string();
+    assert_ne!(
+        chart_title, SEEDED_NAME,
+        "the fixture was seeded with the document's own name, so the record \
+         below could have come from either"
+    );
     let recorded = by_chart.app.layout().recents[0].clone();
     assert_eq!(
         recorded.name, chart_title,
@@ -1278,6 +1501,12 @@ fn what_open_start_records_is_what_the_opened_document_says() {
         RunState::NeverRun,
         "nothing in this window has run, so never run is what there is to \
          record"
+    );
+    assert_ne!(
+        SEEDED_RUN,
+        RunState::NeverRun,
+        "the fixture was seeded with the state the assertion above looks for, \
+         so a build that re-recorded neither field would still pass it"
     );
 
     // And what the analyst reads off the row is that same recorded name, taken
@@ -1353,8 +1582,9 @@ fn opening_a_data_file_over_an_open_protocol_retitles_for_the_file() {
 ///
 /// The user-visible half of one tree, and Hugh's 2026-08-19 re-homing. The
 /// door heads a section *Protocols* and lists a row per opened start; four of
-/// the five shipped starts open a chart document. The heading was true of the
-/// concept and false of the rows, because a chart start recorded
+/// the five shipped starts open a chart document, whether or not the Datasets
+/// section offers them a card. The heading was true of the concept and false
+/// of the rows, because a chart start recorded
 /// `RunState::NeverRun` by construction — a per-view answer, chosen by which
 /// of two peer documents the start filled. A window is one Protocol whose
 /// panes may be a chart, a grid or the asset graph, so the row it leaves
@@ -1374,6 +1604,14 @@ fn opening_a_data_file_over_an_open_protocol_retitles_for_the_file() {
 /// Read off the **drawn row** rather than off `layout().recents`, because the
 /// claim is about what the analyst reads under that heading.
 ///
+/// The chart start is reached by its **Protocols row**, seeded into the
+/// fixture, because the Datasets section no longer offers it a card. That is
+/// the same door and the same `open_start`; what it costs is a seeded row that
+/// this window then rewrites, so the seed carries a third run state — one that
+/// is neither what the window folds to nor what the old per-view rule gave —
+/// and a build that reordered the row without re-recording its state fails
+/// here as loudly as the mutation does.
+///
 /// Watched redden, one mutation: `MeridianApp::recorded_run_state` returning
 /// `RunState::NeverRun` — the answer the chart arm used to give — fails here
 /// at "the row under Protocols reports a run state the window does not have",
@@ -1384,10 +1622,19 @@ fn a_recent_carries_the_windows_own_run_state_whatever_opened_it() {
     inputs.statuses = [("fetch".to_string(), SeamStatus::Ok)]
         .into_iter()
         .collect();
-    let mut win = Window::open(Boot {
-        protocol: inputs,
-        ..Boot::empty()
-    });
+    const SEEDED_RUN: RunState = RunState::StaleUpstream;
+    let mut win = Window {
+        app: MeridianApp::headless_with_layout(
+            Boot {
+                protocol: inputs,
+                ..Boot::empty()
+            },
+            layout_remembering(&[(starts::DASHBOARD, "signals-dashboard", SEEDED_RUN, 60)]),
+            Mode::Light,
+        ),
+        ctx: egui::Context::default(),
+        screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
+    };
     win.settle();
 
     let run = win.app.protocol_model().recorded_run_state();
@@ -1403,19 +1650,25 @@ fn a_recent_carries_the_windows_own_run_state_whatever_opened_it() {
         "the two states read the same word, so the assertion below cannot \
          tell them apart"
     );
+    assert_ne!(
+        SEEDED_RUN.label(),
+        run.label(),
+        "the seeded row already says what the assertion below looks for, so a \
+         build that rewrote no state would pass it"
+    );
     assert!(
         win.app.front_door_is_live(),
         "a run contract with no assets behind it is not content, so the door \
          should still be drawn"
     );
 
-    // A **Datasets** card — a chart start, the case the heading was lying
-    // about — taken through the shipped route.
-    win.take_the_card(starts::DASHBOARD);
+    // A chart start — the case the heading was lying about — taken through
+    // the route the door still offers it: its **Protocols** row.
+    win.take_the_row(starts::DASHBOARD);
     win.settle();
     assert!(
         !win.app.chart_doc().is_empty(),
-        "the card opened nothing, so no row was recorded"
+        "the row opened nothing, so no row was rewritten"
     );
     win.go_home();
     win.settle();
@@ -1824,10 +2077,14 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) -> usize {
     starts.len()
 }
 
-/// No pixel in any of the five cards' **image area** is within [`TOLERANCE`]
-/// of `INK_LIGHT.surface`, in the committed dark baseline — the defect this
-/// card exists to fix (`front_door_dark.png` used to draw its chrome
-/// correctly dark and then show five light cards).
+/// No pixel in the **image area** of any card the door draws is within
+/// [`TOLERANCE`] of `INK_LIGHT.surface`, in the committed dark baseline — the
+/// defect this card exists to fix (`front_door_dark.png` used to draw its
+/// chrome correctly dark and then show light cards under it).
+///
+/// The cards it walks are the starts that declare themselves for the door, not
+/// the shipped set, because a start with no card has no image area to scan and
+/// asking for its rect panics before the scan begins.
 ///
 /// Scans each card's image sub-rect pixel by pixel — `card.min + (SPACE_2,
 /// SPACE_2)`, sized `card.width() - 2*SPACE_2` by `CARD_IMAGE_HEIGHT` — not
@@ -1837,11 +2094,11 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) -> usize {
 /// over the card's own fill (`sem.surfaces.raised`), not over the
 /// thumbnail's ink (`capture.rs:600`, `window.rs:2881-2884`) — so a point
 /// chosen inside that band reads the card's fill instead of shipped
-/// thumbnail content. `edgar-gleif-crosswalk-dark.png`,
-/// `signals-dashboard-dark.png` and `edgar-gleif-crosswalk-chart-dark.png`
-/// each carry a letterbox band tall enough to swallow a single point sampled
-/// a few pixels below the image's top edge; a full-area scan cannot miss the
-/// same way, wherever that band happens to fall.
+/// thumbnail content. `edgar-gleif-crosswalk-dark.png` and
+/// `edgar-gleif-crosswalk-chart-dark.png` — the two this walk reaches — each
+/// carry a letterbox band tall enough to swallow a single point sampled a few
+/// pixels below the image's top edge; a full-area scan cannot miss the same
+/// way, wherever that band happens to fall.
 ///
 /// `SPACE_2` is [`meridian_design::spacing::SPACE_2`] — the same shared
 /// design token `door_card`'s own `img_rect` is built from
@@ -1854,22 +2111,23 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) -> usize {
 /// where the card's label text starts (`SPACE_4` further down), so an
 /// approximate value here cannot turn a real defect invisible.
 ///
-/// Measured on the real committed baseline: 0 of 27,040 pixels per card
-/// (208 × 130) are within [`TOLERANCE`] of `INK_LIGHT.surface`, on each of
-/// the five cards. Measured under the mutation below (each card drawn from
-/// its light slice, in `starts::STARTS` order): 68.2% / 39.6% / 67.7% /
-/// 68.1% / 49.4% of each card's pixels are — the margin either side of
-/// [`TOLERANCE`] is not a close call.
+/// Measured on the real committed baseline, 2026-09-06: 0 of 27,040 pixels
+/// per card (208 × 130) are within [`TOLERANCE`] of `INK_LIGHT.surface`, on
+/// each of the two cards the door draws. Measured under the mutation below on
+/// the same day, each card drawn from its light slice and the baseline
+/// regenerated over it: 81.5% (22,025 of 27,040) of the crosswalk card's
+/// pixels are, and 60.5% (16,366) of the crosswalk chart's — the margin either
+/// side of [`TOLERANCE`] is not a close call.
 ///
 /// [`front_door_card_rect`]: brightfield_shell::window::MeridianApp::front_door_card_rect
 ///
 /// Watched redden, one mutation: pointing `ensure_door_thumbs` at
 /// `start.thumbnail` (the light slice) instead of
-/// `start.thumbnail_for(self.mode)` and regenerating the baseline — each
-/// card is now wrong, and the loop panics at `edgar-gleif-crosswalk`, the
-/// FIRST entry in `starts::STARTS`, because the scan finds a bad pixel
-/// wherever one falls rather than where one particular sampled point
-/// happened to land.
+/// `start.thumbnail_for(self.mode)` and regenerating the baseline — both
+/// cards are then wrong, at the two percentages given above, and the loop
+/// panics at `edgar-gleif-crosswalk`, the first the walk reaches, because the
+/// scan finds a bad pixel wherever one falls rather than where one particular
+/// sampled point happened to land.
 const TOLERANCE: i32 = 20;
 
 /// The image sub-rect `door_card` draws each thumbnail into — see the test
@@ -1901,7 +2159,7 @@ fn no_front_door_card_shows_the_light_surface_family_in_the_dark_baseline() {
         (s.b * 255.0).round() as i32,
     ];
 
-    for start in starts::STARTS {
+    for start in starts::on_door() {
         let card = win
             .app
             .front_door_card_rect(start.id)
