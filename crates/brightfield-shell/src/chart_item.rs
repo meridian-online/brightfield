@@ -638,7 +638,9 @@ impl ChartItem {
         // Release: resolve the gesture to a structured predicate and push
         // it through the seam. A click (no sweep) on an interval binding
         // clears that plot's contribution instead — the crossfilter
-        // convention — and on a point binding toggles the category.
+        // convention — and on a point binding a click that would republish
+        // the clause already standing retracts it instead, which is the same
+        // convention arriving at the other gesture class.
         //
         // **This take now happens BEFORE the overlay is painted**, where it used
         // to happen after — the one shipped-rendering consequence of lifting
@@ -658,7 +660,14 @@ impl ChartItem {
             if let Some(drag) = self.drag.take() {
                 let plot = &doc.composed.plots[drag.plot];
                 if let Some(binding) = plot.gesture.clone() {
-                    if let Some(interaction) = resolve_gesture(&binding, plot, drag) {
+                    // What this contributor is holding right now, read out of
+                    // the live session rather than remembered here — see
+                    // `ChartDoc::held_clause`. Taken before `apply_interaction`
+                    // borrows the document mutably, and before the gesture
+                    // that is about to replace it.
+                    let held = doc.held_clause(&binding.selection, &binding.contributor);
+                    if let Some(interaction) = resolve_gesture(&binding, plot, drag, held.as_ref())
+                    {
                         doc.apply_interaction(interaction);
                         repaint = true;
                     }
@@ -1414,7 +1423,12 @@ fn surface_rect_corners(r: brightfield_render::canvas_host::SurfaceRect) -> kurb
 ///   is still there to leave alone.
 /// - A **point** click becomes [`SqlPredicate::Point`] over the category the
 ///   band scale places under the pointer.
-fn resolve_gesture(binding: &GestureBinding, plot: &PlotHandle, drag: Drag) -> Option<Interaction> {
+fn resolve_gesture(
+    binding: &GestureBinding,
+    plot: &PlotHandle,
+    drag: Drag,
+    held: Option<&SqlPredicate>,
+) -> Option<Interaction> {
     /// A drag shorter than this on both axes is a click, not a sweep.
     const CLICK_SLOP: f64 = 3.0;
     let swept = (drag.current.x - drag.start.x).abs() > CLICK_SLOP
@@ -1444,6 +1458,23 @@ fn resolve_gesture(binding: &GestureBinding, plot: &PlotHandle, drag: Drag) -> O
                 return None;
             }
             let predicate = point_predicate(binding, plot, drag.current)?;
+            // A click that would publish the clause this contributor is
+            // already holding retracts it instead. That is Mosaic's toggle,
+            // and it is what a reader who filtered by clicking reaches for
+            // first — the gesture that applied the filter is the gesture they
+            // try to take it off with. A click on a *different* member
+            // replaces, as it did.
+            //
+            // Compared against the live session's own slot rather than
+            // against a copy kept here, so a clause this plot's brush or the
+            // legend replaced is seen rather than mirrored — the same read
+            // `crossfilter`'s legend toggle makes for the same decision.
+            if held == Some(&predicate) {
+                return Some(Interaction::ClearSelect {
+                    name: binding.selection.clone(),
+                    contributor: binding.contributor.clone(),
+                });
+            }
             Some(Interaction::Select {
                 name: binding.selection.clone(),
                 contributor: binding.contributor.clone(),
