@@ -23,7 +23,7 @@
 //! tooth that becomes concave, or an export that nests one subpath inside
 //! another, draws correctly with this module unchanged.
 //!
-//! The raster is an **alpha mask**, built once at [`MASK_SIZE`] and tinted at
+//! The raster is an **alpha mask**, built once at a fixed `MASK_SIZE` and tinted at
 //! draw time. One texture therefore serves both modes and every size the mark
 //! is drawn at, and the ink is a semantic token read at the call site rather
 //! than a colour baked into a picture.
@@ -173,7 +173,7 @@ impl Mark {
         self.subpaths.len()
     }
 
-    /// The coverage mask: [`MASK_SIZE`] square, white, alpha carrying the
+    /// The coverage mask: `MASK_SIZE` square, white, alpha carrying the
     /// even-odd fill of the outline.
     ///
     /// Public so a test can read the coverage back rather than photograph a
