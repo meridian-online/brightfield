@@ -1052,6 +1052,89 @@ pub fn selection_wash_shape(rect: egui::Rect, mode: Mode) -> egui::Shape {
     ])
 }
 
+/// The **chip**: a short word in a small box, filled while it names the state
+/// the surface is already in.
+///
+/// One box in two states, and the states are what a chip says rather than a
+/// decoration on it. **Unfilled** — a hairline in `borders.subtle` — is a way
+/// to somewhere else. **Filled** — `tabs.active_background` behind a
+/// `borders.default_` hairline — is where the surface already is. Both are the
+/// same rectangle at [`control::HEIGHT_XS`] tall with [`radius::CHIP`] corners
+/// and [`spacing::CHIP_PADDING_X`] each side of the word, so the pair reads as
+/// one control changing state rather than as two controls.
+///
+/// The word is set in `font`, which the caller supplies because the two
+/// surfaces that draw a chip do not share a face: the navigator rail's head is
+/// mono, at the size the caption rows beside it take.
+///
+/// `rect` is where to draw it. The caller places it, because both call sites
+/// place a chip against an edge rather than in a flow — the rail's head puts it
+/// at the trailing end of a row, and a node's foot lays a row of them from the
+/// leading edge in.
+///
+/// **The DAG raster draws the same chip in vello and not through this
+/// function** — `brightfield_render::asset_scene`'s `draw_view_chips` — because
+/// a node's foot is inside a rasterised scene rather than an egui layout. The
+/// two are one treatment because both read the height, the corner radius and
+/// the padding from these three design tokens and neither carries a measure of
+/// its own; `brightfield_protocol::layout`'s `view_chip_rects` is the one place
+/// the node chips' rectangles are worked out.
+pub fn chip(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    label: &str,
+    font: egui::FontId,
+    filled: bool,
+    sense: egui::Sense,
+    mode: Mode,
+) -> egui::Response {
+    let sem = semantic(mode.is_dark());
+    let id = ui.id().with(("chip", label));
+    let response = ui.interact(rect, id, sense);
+    let painter = ui.painter();
+    if filled {
+        painter.rect_filled(rect, radius::CHIP, colour(sem.tabs.active_background));
+    }
+    painter.rect_stroke(
+        rect,
+        radius::CHIP,
+        egui::Stroke::new(
+            1.0,
+            colour(if filled {
+                sem.borders.default_
+            } else {
+                sem.borders.subtle
+            }),
+        ),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        font,
+        colour(if filled {
+            sem.tabs.active_foreground
+        } else {
+            sem.tabs.foreground
+        }),
+    );
+    response
+}
+
+/// How wide a chip carrying `label` in `font` needs to be — the word measured
+/// plus [`spacing::CHIP_PADDING_X`] each side.
+///
+/// Measured rather than counted, unlike the raster's twin: this side has a
+/// font stack in front of it, and a chip sized off a char count would be wrong
+/// by whatever the face's advance widths are not.
+pub fn chip_width(ui: &egui::Ui, label: &str, font: egui::FontId) -> f32 {
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), font, egui::Color32::PLACEHOLDER);
+    galley.size().x + 2.0 * spacing::CHIP_PADDING_X
+}
+
 // ---------------------------------------------------------------------------
 // Breadcrumb, toolbar, status rail
 // ---------------------------------------------------------------------------

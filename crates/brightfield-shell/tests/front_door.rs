@@ -1303,6 +1303,51 @@ fn what_open_start_records_is_what_the_opened_document_says() {
     }
 }
 
+/// **Opening a data file over an open Protocol re-titles for the file, not
+/// the Protocol it replaced.**
+///
+/// `open_data_file` reaches the latch through `adopt_boot`'s call to
+/// `documents_changed`, which is what brings `title()` into line with the
+/// just-adopted chart rather than the graph that was on the canvas a moment
+/// before. Open the crosswalk Protocol start, then open a CSV: the canvas
+/// leaves the graph, so the title has to follow it off — a title still
+/// reading `Protocol · <the crosswalk's name>` over the newly-opened file is
+/// `adopt_boot` answering for the document that just left.
+#[test]
+fn opening_a_data_file_over_an_open_protocol_retitles_for_the_file() {
+    let csv =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/california_housing_sample.csv");
+
+    let mut win = Window::open(Boot::empty());
+    win.settle();
+    win.take_the_card(starts::CROSSWALK);
+    win.settle();
+    assert!(
+        win.app.graph_on_canvas(),
+        "the crosswalk start does not put its graph on the canvas, so this \
+         test is not exercising the case it claims to"
+    );
+
+    // Read the title and the canvas answer immediately after the call
+    // returns, with no frame drawn in between: `MeridianApp::draw` runs its
+    // own reconciliation at the frame's head; settling first would launder a
+    // missing call inside `adopt_boot` through that reconciliation, hiding
+    // whether the call happened inside `adopt_boot` itself.
+    let ctx = win.ctx.clone();
+    win.app
+        .open_data_file(&ctx, csv.to_str().expect("utf-8 fixture path"));
+
+    assert!(
+        !win.app.graph_on_canvas(),
+        "the opened file did not replace the graph on the canvas"
+    );
+    assert_eq!(
+        win.app.title(),
+        "california_housing_sample.csv",
+        "the title should be retitled to the file name, not the Protocol"
+    );
+}
+
 /// A row under the **Protocols** heading carries the window's own run state,
 /// whatever kind of start put it there.
 ///
