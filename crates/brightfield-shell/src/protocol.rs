@@ -3074,7 +3074,7 @@ impl Item<ProtocolDoc> for InspectorPane {
         // at the head of a frame and then mirrors it onto this document, and the
         // mirror is the assignment beside that call rather than something
         // `reconcile_canvas_holds` does — that method writes the window's own
-        // field, and an earlier version of this comment said otherwise. `a_windows_latched_canvas_agrees_with_the_derived_answer`
+        // field. `a_windows_latched_canvas_agrees_with_the_derived_answer`
         // pins the latch against the derived answer on a manifest window and on
         // a data-file window.
         let key_grammar_fed = matches!(doc.canvas_holds, crate::window::CanvasHolds::Graph);
@@ -3715,6 +3715,35 @@ mod tests {
         // would pass the assertions above and cache a stale layout instead.
         let (finer, _) = doc.canvas_key(3.0, Mode::Light);
         assert_ne!(light, finer, "a scale change must re-raster too");
+    }
+
+    /// Leaving the graph for a different view and coming back changes the
+    /// raster key, because [`CanvasKey::showing`] is what tells the cache a
+    /// re-raster is owed — nothing else about the document moves.
+    ///
+    /// The same two-sided shape as
+    /// `a_theme_switch_changes_the_canvas_key_and_nothing_else`, aimed at
+    /// `showing` instead of the mode: a `canvas_key` blind to `returns_to`
+    /// would answer the same key for the dashboard chip and the grid chip,
+    /// and the cache would go on presenting the raster it built with the
+    /// dashboard chip filled after a reader had come back on the grid one.
+    #[test]
+    fn returning_to_the_graph_on_a_different_view_changes_the_canvas_key() {
+        let mut doc = ProtocolDoc::headless(model());
+        let node: AssetId = "whatever-node".to_string();
+
+        doc.returns_to = Some((node.clone(), NodeView::Dashboard));
+        let (dashboard_showing, _) = doc.canvas_key(2.0, Mode::Light);
+
+        doc.returns_to = Some((node, NodeView::Grid));
+        let (grid_showing, _) = doc.canvas_key(2.0, Mode::Light);
+
+        assert_ne!(
+            dashboard_showing, grid_showing,
+            "the raster key does not change when the chip that should draw \
+             filled changes from dashboard to grid, so the cache would go on \
+             serving the raster built for the dashboard chip"
+        );
     }
 
     /// The offline pipeline builds both graphs; the collapsed one has exactly one

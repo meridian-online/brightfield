@@ -42,8 +42,11 @@
 //! **Two documents is not two views.** The window is one Protocol: the spine
 //! in the navigator rail, the step list in the ledger rail and a chart on the
 //! canvas are regions of one arrangement, drawn in the same frame, and no
-//! control moves between them. What the canvas holds is derived from the
-//! documents rather than chosen — [`graph_takes_the_canvas`].
+//! control moves between them. What the canvas holds is [`CanvasHolds`], a
+//! latch reconciled each frame from the documents through
+//! [`graph_takes_the_canvas`] — except where a reader has chosen it
+//! directly, by clicking the graph chip, and the reconciliation holds that
+//! choice rather than overriding it.
 //!
 //! # Both documents are always loaded
 //!
@@ -2148,8 +2151,9 @@ impl MeridianApp {
     /// answer wherever no chip has been clicked, because the private
     /// `reconcile_canvas_holds` initialises the latch from the derived
     /// answer and holds it there — `a_windows_latched_canvas_agrees_with_the_derived_answer`
-    /// reads both off one frame on a fresh window of each kind, and then clicks
-    /// the chip and holds the pair apart.
+    /// reads both off one frame on a fresh window of each kind, and
+    /// `clicking_the_graph_chip_puts_the_graph_on_the_canvas_and_a_second_click_brings_the_view_back`
+    /// clicks the chip and holds the pair apart.
     ///
     /// Everything that follows the graph reads this and therefore follows the
     /// chip: the bare-key grammar feed, the key-hint band, the status rail's
@@ -2226,13 +2230,15 @@ impl MeridianApp {
     /// them here rather than waiting for the head of the next frame.
     ///
     /// Called at each document swap this window has, and it is not
-    /// belt-and-braces over [`MeridianApp::draw`]'s own reconciliation. Three
-    /// of those swaps read the latch before a frame is drawn: `open_start`
-    /// records the opened Protocol's name through
-    /// [`Self::subject_name`], `open_home` and `open_data_file` re-title
-    /// through [`Self::title`], and both of those read
-    /// [`Self::graph_on_canvas`], which is the latch. Without this they answer
-    /// for the documents that were open a moment ago —
+    /// belt-and-braces over [`MeridianApp::draw`]'s own reconciliation.
+    /// `open_start` reads the latch before a frame is drawn, through
+    /// [`Self::subject_name`]; so do `open_data_file` and
+    /// `open_protocol_path`, both of which re-title through [`Self::title`],
+    /// which reads [`Self::graph_on_canvas`]. `open_home` does not: it
+    /// empties both documents first, so its own call to [`Self::title`]
+    /// returns at the front-door guard before that check ever runs. Without
+    /// this the ones that do read it answer for the documents that were open
+    /// a moment ago —
     /// `what_open_start_records_is_what_the_opened_document_says` caught
     /// exactly that, recording a crosswalk Protocol under the name
     /// `Brightfield`, and is the pin.
