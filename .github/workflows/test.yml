@@ -260,7 +260,7 @@ jobs:
   # hdiutil, codesign and plutil are macOS tools; its own job because it runs
   # packaging four times — once intact and once per mutation it drives — and
   # should not queue behind the 60-minute suite. No cache and no real compile:
-  # `cargo` is stubbed with four lines of C, which is a genuine Mach-O for the
+  # `cargo` is stubbed with a short C program, which is a genuine Mach-O for the
   # linkage audit, the version floor and codesign, and which answers
   # `--check-type-source` so the read-back's run leg is actually reached.
   #

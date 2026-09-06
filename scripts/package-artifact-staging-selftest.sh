@@ -17,8 +17,8 @@
 # on a runner with no Rust. That ordering is deliberate and worth keeping. This
 # file is the other half — it runs packaging to completion, and pays for it.
 #
-# HOW IT AVOIDS A REAL BUILD. `cargo` is stubbed with a script that compiles four
-# lines of C to the path package.sh reads. That is a genuine Mach-O: `otool -L`
+# HOW IT AVOIDS A REAL BUILD. `cargo` is stubbed with a script that compiles a short
+# C program to the path package.sh reads. That is a genuine Mach-O: `otool -L`
 # lists libSystem for the linkage audit, `otool -l` carries the LC_BUILD_VERSION
 # the bundle's LSMinimumSystemVersion is read out of, and `codesign` signs it.
 # It answers `--check-type-source` with a marker and exit 0, so the read-back's

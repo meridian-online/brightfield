@@ -161,7 +161,7 @@ def _scalar(raw: str, where: str) -> str | bool:
     text = raw.strip()
     if text.startswith("#"):
         raise Unreadable(f"{where}: a comment where a value was expected")
-    # Trailing comment, only after a quoted or bare scalar with a space before `#`.
+    # Trailing comment, only after a bare scalar with a space before `#`.
     if " #" in text and not text.startswith(("'", '"')):
         text = text.split(" #", 1)[0].strip()
     if text in ("true", "false"):

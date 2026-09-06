@@ -147,7 +147,7 @@ TAG=$("${HERE}/finetype-pin.sh")
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/bf-artifact-typesource.XXXXXX")
 MOUNT=""
-# Nothing sets this but the last line of the file, and the trap below is why.
+# Nothing sets this until every check has run, and the trap below is why.
 COMPLETED=""
 # Detach before the temp tree goes: the mount point lives inside it, and
 # removing a directory an image is mounted on leaves the image attached.
