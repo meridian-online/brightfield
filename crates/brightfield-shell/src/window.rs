@@ -6078,9 +6078,13 @@ fn count_overlay_text(
     let facts = hero?;
     let rows = grouped(if hero_empty { 0 } else { facts.rows });
     Some(match &facts.paired {
+        // The projection by name, because that is what the tile now draws
+        // through and what the graticule behind it is a graticule of — the
+        // frame's own description, not a claim about the fit.
         Some(other) => format!(
-            "{rows} points \u{b7} {other} \u{d7} {} \u{b7} equal aspect",
-            facts.column
+            "{rows} points \u{b7} {other} \u{d7} {} \u{b7} {}",
+            facts.column,
+            crate::chart_kinds::POINT_MAP_PROJECTION
         ),
         None => format!("{rows} rows \u{b7} {}", facts.column),
     })
