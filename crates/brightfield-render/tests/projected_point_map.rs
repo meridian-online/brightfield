@@ -772,3 +772,107 @@ fn a_graticule_line_breaks_rather_than_chording_across_the_gap() {
         "a total projection's meridian is one unbroken run"
     );
 }
+
+/// **A mark whose kind cannot draw through the plot's projection contributes
+/// NOTHING** — not a wrong picture, not a partial one, nothing.
+///
+/// The plot's axes are in the projection's planar units. A `line` mark drawing
+/// its raw degrees against them is a second coordinate system laid over the
+/// first, and unlike a missing mark it looks like a mark. `scene::render_entry`
+/// is the one place that decides this, and the three `augment_scales` call sites
+/// skip such a mark for the same reason: its degree domain must not widen an
+/// axis that is in planar units.
+///
+/// Byte-compared rather than inspected: adding the undrawable entry to a
+/// composition must change the encoded scene not at all. The control is the same
+/// pair of entries on a plot that names no projection, where the line IS drawn
+/// and the two compositions differ.
+#[test]
+fn a_mark_that_cannot_project_contributes_no_geometry() {
+    use brightfield_render::layout::ChartLayout;
+    use brightfield_render::mark::LineRenderer;
+    use brightfield_render::scene::{build_multi_mark_scene, ChartData};
+    use brightfield_render::ResolvedTitles;
+    use brightfield_spec::ast::Component;
+    use brightfield_spec::{parse_spec, Format};
+
+    let spec_for = |attrs: &str| {
+        format!(
+            "data:\n  t:\n    - {{ lon: 1, lat: 2 }}\nplot:\n  \
+             - {{ mark: dot, data: {{ from: t }}, x: lon, y: lat }}\n  \
+             - {{ mark: line, data: {{ from: t }}, x: lon, y: lat }}\n{attrs}"
+        )
+    };
+    let batch = batch(FIXTURE);
+    let layout = ChartLayout::new(640.0, 480.0);
+
+    // `(scene bytes with the line, scene bytes without it)` for one spec.
+    let compose = |attrs: &str| {
+        let parsed = parse_spec(&spec_for(attrs), Format::Yaml).expect("parses");
+        let Some(Component::Plot(plot)) = parsed.spec.root.as_ref() else {
+            panic!("a plot root");
+        };
+        let marks: Vec<&brightfield_spec::ast::Mark> = plot
+            .items
+            .iter()
+            .filter_map(|c| match c {
+                Component::Mark(m) => Some(m),
+                _ => None,
+            })
+            .collect();
+        let dot_cm = ChannelMap::from_mark_in(marks[0], Some(plot));
+        let line_cm = ChannelMap::from_mark_in(marks[1], Some(plot));
+        fn entry<'a>(
+            batch: &'a RecordBatch,
+            cm: &'a ChannelMap,
+            renderer: &'a dyn MarkRenderer,
+            layout: ChartLayout,
+        ) -> ChartData<'a> {
+            ChartData {
+                batch,
+                channel_map: cm,
+                renderer,
+                layout,
+                view_extent: None,
+                highlight: None,
+                sample: None,
+                beyond_frame: false,
+            }
+        }
+        let dot = entry(&batch, &dot_cm, &DotRenderer, layout);
+        let line = entry(&batch, &line_cm, &LineRenderer, layout);
+        let both = build_multi_mark_scene(&[&dot, &line], false, &ResolvedTitles::default())
+            .0
+            .encoding()
+            .path_data
+            .to_vec();
+        let alone = build_multi_mark_scene(&[&dot], false, &ResolvedTitles::default())
+            .0
+            .encoding()
+            .path_data
+            .to_vec();
+        (both, alone, line_cm)
+    };
+
+    let (both, alone, line_cm) = compose("projectionType: mercator\n");
+    assert!(
+        line_cm.mark_projection().is_undrawable(),
+        "a line mark on a projected plot must be undrawable, or this test asserts nothing"
+    );
+    assert_eq!(
+        both, alone,
+        "an undrawable mark must contribute no geometry at all"
+    );
+
+    // The control: with no projection the same line IS drawn, so the equality
+    // above is the guard acting and not the line being empty.
+    let (both, alone, line_cm) = compose("");
+    assert!(
+        !line_cm.mark_projection().is_undrawable(),
+        "control: with no projection a line mark draws"
+    );
+    assert_ne!(
+        both, alone,
+        "control: an unprojected line mark contributes geometry"
+    );
+}
