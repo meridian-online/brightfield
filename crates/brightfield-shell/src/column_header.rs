@@ -513,6 +513,10 @@ pub struct ColumnBandDrawn {
     pub distinct: Option<u64>,
     /// The text [`Self::distinct`] was painted as.
     pub distinct_text: Option<String>,
+    /// Where [`Self::distinct_text`] was painted — the compact density's own
+    /// row, below the range and never over the rug. `None` under the same
+    /// conditions as [`Self::distinct`].
+    pub distinct_rect: Option<egui::Rect>,
 }
 
 // ---------------------------------------------------------------------------
@@ -863,10 +867,11 @@ pub fn draw_column_band(
     //    distinct count is already inside `stats`, painted above.
     let mut distinct = None;
     let mut distinct_text = None;
+    let mut distinct_rect = None;
     if !frame.density.is_full() {
         if let Some(moments) = facts.moments.as_ref() {
             let text = format!("{} distinct", thousands(moments.distinct));
-            painter.text(
+            let rect = painter.text(
                 egui::pos2(inner.left(), y + DISTINCT_ROW / 2.0),
                 egui::Align2::LEFT_CENTER,
                 &text,
@@ -875,6 +880,7 @@ pub fn draw_column_band(
             );
             distinct = Some(moments.distinct);
             distinct_text = Some(text);
+            distinct_rect = Some(rect);
         }
     }
 
@@ -902,6 +908,7 @@ pub fn draw_column_band(
         stats,
         distinct,
         distinct_text,
+        distinct_rect,
     }
 }
 

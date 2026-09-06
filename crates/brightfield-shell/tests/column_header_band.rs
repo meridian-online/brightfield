@@ -577,6 +577,68 @@ fn the_compact_bands_own_row_states_the_distinct_count() {
 }
 
 // ---------------------------------------------------------------------------
+// AC2 — the distinct count draws below the rug, never over it.
+// ---------------------------------------------------------------------------
+
+/// **AC2 — the compact band's distinct-count row is stacked below the range
+/// row and the rug, not painted over the rug's pixel columns.**
+///
+/// The record above only says a galley carrying the right text exists
+/// somewhere inside the cell — it says nothing about where, so a change that
+/// painted the distinct count at the top of the plot area, on top of the rug,
+/// would leave every other assertion in this file green while a reader saw
+/// the count sitting on the distribution it is meant to sit under. This reads
+/// the rects the frame actually drew and pins the stacking order: the
+/// distinct row starts no higher than the range row's own bottom edge, and it
+/// never overlaps the rug's rect at all.
+#[test]
+fn the_compact_bands_distinct_row_draws_below_the_range_and_never_over_the_rug() {
+    let win = Live::open();
+    let drawn = win.drawn();
+    let cell = drawn
+        .band_named("house_age")
+        .unwrap_or_else(|| panic!("the compact band drew no cell for house_age"));
+    assert_eq!(cell.density, GridDensity::Compact);
+
+    let rug = cell
+        .rug
+        .unwrap_or_else(|| panic!("house_age drew no rug: {cell:?}"));
+    let (range_lo, range_hi) = cell
+        .range_rects
+        .unwrap_or_else(|| panic!("house_age drew no range: {cell:?}"));
+    let distinct_rect = cell
+        .distinct_rect
+        .unwrap_or_else(|| panic!("house_age drew no distinct-count rect: {cell:?}"));
+
+    // Adjacent rows are packed tighter than a caption glyph's own ascent and
+    // descent, so a correctly-stacked pair's bounding boxes can still touch
+    // by a point at the seam — comparing bounding-box edges would read that
+    // as a failure. The center of each painted line is the row it belongs
+    // to, with none of that slop, so that is what stacking order is read
+    // from here.
+    let range_mid = (range_lo.center().y + range_hi.center().y) / 2.0;
+    assert!(
+        distinct_rect.center().y > range_mid,
+        "the distinct row at {distinct_rect:?} (center y {}) is not below \
+         the range row's own line (center y {range_mid}), so it is stacked \
+         ahead of the range instead of below it",
+        distinct_rect.center().y
+    );
+    assert!(
+        !distinct_rect.intersects(rug),
+        "the distinct row at {distinct_rect:?} overlaps the rug's rect \
+         {rug:?} — a reader would see the count painted on the rug's pixel \
+         columns instead of below them"
+    );
+    assert!(
+        cell.cell.contains_rect(distinct_rect),
+        "the distinct row at {distinct_rect:?} is not inside the band's own \
+         cell {:?}",
+        cell.cell
+    );
+}
+
+// ---------------------------------------------------------------------------
 // The grid view says how much of the table is across, like the rows pane.
 // ---------------------------------------------------------------------------
 
