@@ -88,7 +88,7 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 
-use brightfield_engine::{ColumnProfile, Engine, LoadOptions, ProfileOutcome};
+use brightfield_engine::{ColumnProfile, Engine, LoadOptions, ProfileOutcome, ScanTally};
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::{parse_spec, Format};
 
@@ -139,6 +139,26 @@ pub struct OpenedFile {
     /// `None` when the scratch write failed, which is not a reason to refuse a
     /// file that opened.
     pub spec_file: Option<PathBuf>,
+}
+
+/// What the wait inside [`open_traced`] was spent on: the first composition's
+/// clock, and how many times it read the table.
+///
+/// **The two terms of an open are the profile pass and the composition, and
+/// they are reported apart on purpose.** A single number for the whole open
+/// hides which of them moved, and the two are bounded by different things —
+/// the profile pass by [`brightfield_engine::profile::SCANS_PER_SOURCE`] and
+/// the composition by [`crate::pipeline::COMPOSITION_SCANS`].
+pub struct OpenTrace {
+    /// [`crate::pipeline::LiveDashboard::present`] alone, milliseconds — the
+    /// term the profile pass is not.
+    ///
+    /// **Inflated when [`open_traced`] was asked to count**, because counting
+    /// `EXPLAIN`s each statement before running it.
+    pub composition_ms: f64,
+    /// Leaves of DuckDB's physical plan for each statement the first
+    /// composition issued. Empty when [`open_traced`] was not asked to count.
+    pub composition: ScanTally,
 }
 
 // ---------------------------------------------------------------------------
@@ -381,6 +401,27 @@ pub(crate) fn file_label(path: &Path) -> String {
 /// the sentence names each column and why, because "nothing to draw" about a
 /// file the user can see the contents of is not an answer.
 pub fn open(chosen: &str) -> Result<OpenedFile, String> {
+    open_traced(chosen, false).map(|(opened, _)| opened)
+}
+
+/// [`open`], and what the wait inside it was spent on.
+///
+/// One route, not a second one — this **is** [`open`], and [`open`] is this
+/// with the counting switched off. A harness that reproduced the open
+/// sequence to time it would be timing a sequence the app does not perform,
+/// which is the way an open-cost measurement goes quietly wrong.
+///
+/// `count_scans` asks DuckDB to explain each statement the first composition
+/// issues before running it. That roughly doubles the statements and so
+/// inflates [`OpenTrace::composition_ms`] — take the clock from a run with it
+/// off and the count from a run with it on, as
+/// [`brightfield_engine::Session::profile_sources_counting_scans`] and
+/// `time_profile` already do for the profile pass.
+///
+/// # Errors
+///
+/// As [`open`].
+pub fn open_traced(chosen: &str, count_scans: bool) -> Result<(OpenedFile, OpenTrace), String> {
     let path = accept(chosen)?;
     let columns = columns_of(&path)?;
     let dashboard = Dashboard::of(&path, &columns);
@@ -404,21 +445,32 @@ pub fn open(chosen: &str) -> Result<OpenedFile, String> {
     let spec = dashboard.to_spec();
     let mut live =
         LiveDashboard::load_str(&spec, None).map_err(|e| format!("{}: {e}", path.display()))?;
-    let composed = live
-        .present()
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let at = std::time::Instant::now();
+    let (composed, composition) = if count_scans {
+        live.present_counting_scans()
+    } else {
+        live.present().map(|c| (c, ScanTally::default()))
+    }
+    .map_err(|e| format!("{}: {e}", path.display()))?;
+    let composition_ms = at.elapsed().as_secs_f64() * 1000.0;
     let spec_file = write_spec_file(&path, &spec);
     // The other document. Built from the same profile the dashboard was chosen
     // from, so the columns the rails list and the columns the tiles draw are
     // one walk over one table rather than two that could disagree.
     let protocol = crate::one_step::OneStepProtocol::of(&path, &columns, &dashboard);
-    Ok(OpenedFile {
-        live,
-        composed,
-        dashboard,
-        spec_file,
-        protocol,
-    })
+    Ok((
+        OpenedFile {
+            live,
+            composed,
+            dashboard,
+            spec_file,
+            protocol,
+        },
+        OpenTrace {
+            composition_ms,
+            composition,
+        },
+    ))
 }
 
 /// The directory generated specs are written to, per process.

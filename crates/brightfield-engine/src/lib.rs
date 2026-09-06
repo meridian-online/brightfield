@@ -882,13 +882,14 @@ pub struct Session {
     /// and refused" and "no bundle was asked for" — the two look identical
     /// from a column profile, and only one of them is a packaging bug.
     type_source_error: Option<String>,
-    /// Where [`Session::profile_sources_counting_scans`] collects what the
-    /// profiling statements cost. `None` — the state a caller that did not ask
-    /// to count leaves it in — means nobody is counting.
+    /// Where [`Session::profile_sources_counting_scans`] and
+    /// [`Session::begin_scan_tally`] collect what the statements they enclose
+    /// cost. `None` — the state a caller that did not ask to count leaves it
+    /// in — means nobody is counting.
     ///
     /// A cell rather than a parameter threaded through the pass because the
-    /// thing being counted is every statement the pass issues, and a parameter
-    /// is something a new statement can be written without.
+    /// thing being counted is every statement the session issues, and a
+    /// parameter is something a new statement can be written without.
     scan_tally: RefCell<Option<ScanTally>>,
 }
 
@@ -2068,6 +2069,7 @@ impl Session {
             unsampled.sql
         );
         self.preagg.log_sql(&sql);
+        self.record_scan(&sql);
         let mut out =
             match read_mark_facts(&self.conn, &sql, index, x_col.is_some(), y_col.is_some()) {
                 Ok(f) => f,
@@ -2098,6 +2100,7 @@ impl Session {
                 unsampled.sql
             );
             self.preagg.log_sql(&sql);
+            self.record_scan(&sql);
             match read_categories(&self.conn, &sql, index) {
                 Ok(cats) if !cats.is_empty() => out.categories.push((channel, cats)),
                 Ok(_) => {}
@@ -2140,6 +2143,7 @@ impl Session {
                 unsampled.sql
             );
             self.preagg.log_sql(&sql);
+            self.record_scan(&sql);
             match read_categories(&self.conn, &sql, index) {
                 Ok(cats) if !cats.is_empty() => out.band_categories.push((channel, cats)),
                 Ok(_) => {}
@@ -2481,6 +2485,7 @@ impl Session {
         if let Some(cube_sql) = self.preagg.serve_for(mark_index, &sql) {
             self.sql_cache.duckdb_execute_count += 1;
             self.preagg.log_sql(&cube_sql);
+            self.record_scan(&cube_sql);
             let served = self.conn.prepare(&cube_sql).and_then(|mut stmt| {
                 let arrow = stmt.query_arrow(duckdb::params![])?;
                 Ok(arrow.collect::<Vec<_>>())
@@ -2501,6 +2506,7 @@ impl Session {
         // Cache miss — execute the query and record one DuckDB execute.
         self.sql_cache.duckdb_execute_count += 1;
         self.preagg.log_sql(&sql);
+        self.record_scan(&sql);
         let batches = self
             .conn
             .prepare(&sql)
@@ -2673,10 +2679,38 @@ impl Session {
     /// open should not.
     #[must_use]
     pub fn profile_sources_counting_scans(&self) -> (Vec<SourceProfile>, ScanTally) {
-        *self.scan_tally.borrow_mut() = Some(ScanTally::default());
+        self.begin_scan_tally();
         let profiles = self.profile_sources();
-        let tally = self.scan_tally.borrow_mut().take().unwrap_or_default();
+        let tally = self.take_scan_tally();
         (profiles, tally)
+    }
+
+    /// Start counting how many times DuckDB reads a table, over **every**
+    /// statement this session issues from here until [`Session::take_scan_tally`].
+    ///
+    /// The pair exists because the thing worth counting is not always a call
+    /// this crate makes. A file's first composition is driven from the shell —
+    /// mark queries, the sample facts beside them and the status band's two
+    /// counts — so there is no single engine method to wrap the way
+    /// [`Session::profile_sources_counting_scans`] wraps the profile pass.
+    /// A caller brackets the work instead and gets the same tally.
+    ///
+    /// **Counting is not free and it is not what an open should pay**: each
+    /// statement is `EXPLAIN`ed before it runs, which roughly doubles the
+    /// statements issued. This is for a benchmark and for a test, and the
+    /// app's own open never turns it on.
+    ///
+    /// Starting a second tally discards the first. There is one cell, and a
+    /// session drives one composition at a time.
+    pub fn begin_scan_tally(&self) {
+        *self.scan_tally.borrow_mut() = Some(ScanTally::default());
+    }
+
+    /// Stop counting and take what was counted. An empty tally when nobody
+    /// called [`Session::begin_scan_tally`].
+    #[must_use]
+    pub fn take_scan_tally(&self) -> ScanTally {
+        self.scan_tally.borrow_mut().take().unwrap_or_default()
     }
 
     /// How many leaves DuckDB's physical plan for `sql` carries, or `None`
@@ -2980,22 +3014,36 @@ impl Session {
     /// counterpart to the mark path's cached `execute_emitted`, deliberately
     /// bypassing every cache so it never perturbs mark execution counts.
     fn query_arrow_raw(&self, sql: &str) -> Result<Vec<RecordBatch>, duckdb::Error> {
-        // Nobody is counting unless `profile_sources_counting_scans` is the
-        // caller, and then a statement this funnel issues is counted whether
-        // or not whoever wrote it knew about the tally — which is the reason
-        // the counting sits here and not at each call site.
-        if self.scan_tally.borrow().is_some() {
-            let scans = self.plan_scans(sql);
-            if let Some(tally) = self.scan_tally.borrow_mut().as_mut() {
-                tally.statements.push(StatementScans {
-                    sql: sql.to_string(),
-                    scans,
-                });
-            }
-        }
+        self.record_scan(sql);
         let mut stmt = self.conn.prepare(sql)?;
         let arrow = stmt.query_arrow(duckdb::params![])?;
         Ok(arrow.collect())
+    }
+
+    /// Charge `sql` to the open tally, explaining it first, and do nothing at
+    /// all when nobody is counting.
+    ///
+    /// **This is the whole of the counting, and every funnel that hands a
+    /// statement to the connection calls it.** Nobody is counting unless
+    /// [`Session::profile_sources_counting_scans`] or
+    /// [`Session::begin_scan_tally`] is the enclosing caller; when one of them
+    /// is, a statement is counted whether or not whoever wrote it knew about
+    /// the tally, which is why this sits at the funnels and not at each call
+    /// site.
+    ///
+    /// `EXPLAIN` plans and does not run, so counting roughly doubles the
+    /// statements a pass issues and does not double what it reads.
+    fn record_scan(&self, sql: &str) {
+        if self.scan_tally.borrow().is_none() {
+            return;
+        }
+        let scans = self.plan_scans(sql);
+        if let Some(tally) = self.scan_tally.borrow_mut().as_mut() {
+            tally.statements.push(StatementScans {
+                sql: sql.to_string(),
+                scans,
+            });
+        }
     }
 
     /// Look up the wire name of the mark at a given depth-first index.

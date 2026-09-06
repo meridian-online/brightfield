@@ -902,6 +902,11 @@ struct OpenScanReport {
     /// row's scan count is held to, and the number
     /// `a_wide_table_is_read_no_more_often_than_a_narrow_one` reads.
     scan_bound: u32,
+    /// [`brightfield_shell::pipeline::COMPOSITION_SCANS`] — the bound every
+    /// row's composition scan count is held to, and the number
+    /// `composing_a_wide_dashboard_reads_the_table_no_more_often_than_a_narrow_one`
+    /// reads.
+    composition_scan_bound: u32,
     /// Timed samples per quantity per shape.
     repeats: usize,
     methodology: Vec<String>,
@@ -953,6 +958,7 @@ fn run_open_scan(
         schema: OPEN_SCAN_SCHEMA,
         machine,
         scan_bound: brightfield_engine::profile::SCANS_PER_SOURCE,
+        composition_scan_bound: brightfield_shell::pipeline::COMPOSITION_SCANS,
         repeats: OPEN_SCAN_REPEATS,
         methodology: open_scan_methodology(),
         shapes,
@@ -986,8 +992,16 @@ fn open_scan_methodology() -> Vec<String> {
          than statements: a UNION ALL branch per column is one statement that reads the table \
          once per branch."
             .to_string(),
-        "`scans` covers the profile pass and nothing else. The first composition's queries are \
-         counted as `composition_queries` and timed only inside `open`."
+        "`scans` covers the profile pass and nothing else. `composition_scans` is the same \
+         leaf count over every statement the FIRST COMPOSITION issues, and it is the larger \
+         of the two. It is not `composition_queries`: that one counts the queries marks are \
+         drawn from, a mark's plan can read the table more than once, and the statements the \
+         composition issues beside the marks — the status band's two counts, the sample \
+         facts — are not mark executes at all."
+            .to_string(),
+        "`compose` times `LiveDashboard::present` alone, read off the same uncounted `open` \
+         run the `open` figure comes from rather than a second one, so the two cannot \
+         disagree about which open they describe."
             .to_string(),
         "`profile` times `Session::profile_sources` alone, on a session loaded for that sample. \
          The counting run is separate and untimed, because asking DuckDB to explain each \

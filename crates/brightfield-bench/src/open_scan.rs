@@ -32,6 +32,7 @@ use std::time::Instant;
 use serde::Serialize;
 
 use brightfield_engine::{profile, Engine, LoadOptions, ProfileOutcome, ScanTally};
+use brightfield_shell::pipeline;
 use brightfield_shell::data_file;
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::{parse_spec, Format};
@@ -145,11 +146,32 @@ pub struct Measured {
     pub profile: Option<Stats>,
     /// The whole of `data_file::open`, milliseconds.
     pub open: Option<Stats>,
-    /// Tiles the dashboard chose for the file — one query each on the first
-    /// composition, which is the rest of the wait.
+    /// Tiles the dashboard chose for the file.
     pub tiles: usize,
-    /// DuckDB executes the first composition performed.
+    /// DuckDB executes the first composition performed — the queries marks
+    /// are drawn from, which is **not** the number of times the table was
+    /// read. See [`Measured::composition_scans`].
     pub composition_queries: usize,
+    /// Scan leaves summed over every statement the first composition issued,
+    /// or `null` where any one of them went unexplained.
+    ///
+    /// The counterpart of [`Measured::scans`] for the other term of the wait,
+    /// taken through the same `EXPLAIN` and counted the same way. It is the
+    /// larger of the two numbers on this row and the one the wait tracks: a
+    /// mark query is one execute and its plan may read the table more than
+    /// once, and the queries the composition issues *beside* the marks — the
+    /// status band's two counts, the sample facts — are not executes at all.
+    pub composition_scans: Option<u32>,
+    /// The bound `composition_scans` is held to —
+    /// [`brightfield_shell::pipeline::COMPOSITION_SCANS`], carried into the
+    /// record so a reader is not comparing against a number they have to go
+    /// and look up.
+    pub composition_scan_bound: u32,
+    /// Statements the first composition issued, in order.
+    pub composition_statements: Vec<StatementRecord>,
+    /// `LiveDashboard::present` alone, milliseconds — the composition's own
+    /// clock, taken from the same uncounted open [`Measured::open`] is.
+    pub composition: Option<Stats>,
 }
 
 /// Write (or reuse) the CSV for `shape` under `dir`.
@@ -287,15 +309,25 @@ pub fn measure(
         ));
     }
 
+    // The composition's count, taken once and untimed for the same reason the
+    // profile pass's is: the `EXPLAIN` before each statement is what makes the
+    // count readable and is not what an open pays.
+    let (counted, composition_tally) =
+        data_file::open_traced(chosen, true).map_err(|e| format!("{}: {e}", shape.name))?;
+    let mut tiles = counted.dashboard.tiles().len();
+    let mut composition_queries = counted.live.executes();
+    drop(counted);
+
     let mut profile_ms = Vec::with_capacity(repeats);
     let mut open_ms = Vec::with_capacity(repeats);
-    let mut tiles = 0;
-    let mut composition_queries = 0;
+    let mut composition_ms = Vec::with_capacity(repeats);
     for _ in 0..repeats {
         profile_ms.push(time_profile(&path)?);
         let at = Instant::now();
-        let opened = data_file::open(chosen).map_err(|e| format!("{}: {e}", shape.name))?;
+        let (opened, trace) =
+            data_file::open_traced(chosen, false).map_err(|e| format!("{}: {e}", shape.name))?;
         open_ms.push(at.elapsed().as_secs_f64() * 1000.0);
+        composition_ms.push(trace.composition_ms);
         tiles = opened.dashboard.tiles().len();
         composition_queries = opened.live.executes();
     }
@@ -318,6 +350,18 @@ pub fn measure(
         open: Stats::from_ms(open_ms),
         tiles,
         composition_queries,
+        composition_scans: composition_tally.composition.scans(),
+        composition_scan_bound: pipeline::COMPOSITION_SCANS,
+        composition_statements: composition_tally
+            .composition
+            .statements
+            .iter()
+            .map(|s| StatementRecord {
+                scans: s.scans,
+                sql: s.sql.chars().take(SQL_RECORDED).collect(),
+            })
+            .collect(),
+        composition: Stats::from_ms(composition_ms),
     })
 }
 
@@ -326,29 +370,33 @@ pub fn measure(
 pub fn report(rows: &[Measured]) -> String {
     let mut out = String::new();
     out.push_str(
-        "shape   rows    cols  numeric  bytes      scans/bound  profile p50  open p50  tiles\n",
+        "shape   rows    cols  numeric  bytes      tiles  profile      profile p50  \
+         compose      compose p50  open p50\n",
     );
     for m in rows {
-        let scans = m.scans.map_or_else(|| "?".to_string(), |s| s.to_string());
-        let profile = m
-            .profile
-            .as_ref()
-            .map_or_else(|| "?".to_string(), |s| format!("{:.1} ms", s.p50_ms));
-        let open = m
-            .open
-            .as_ref()
-            .map_or_else(|| "?".to_string(), |s| format!("{:.1} ms", s.p50_ms));
+        let p50 = |s: &Option<Stats>| {
+            s.as_ref()
+                .map_or_else(|| "?".to_string(), |s| format!("{:.1} ms", s.p50_ms))
+        };
+        let bounded = |scans: Option<u32>, bound: u32| {
+            format!(
+                "{}/{bound}",
+                scans.map_or_else(|| "?".to_string(), |s| s.to_string())
+            )
+        };
         out.push_str(&format!(
-            "{:<7} {:<7} {:<5} {:<8} {:<10} {:<12} {:<12} {:<9} {}\n",
+            "{:<7} {:<7} {:<5} {:<8} {:<10} {:<6} {:<12} {:<12} {:<12} {:<12} {}\n",
             m.shape.name,
             m.shape.rows,
             m.columns,
             m.shape.numeric,
             m.bytes,
-            format!("{scans}/{}", m.scan_bound),
-            profile,
-            open,
-            m.tiles
+            m.tiles,
+            bounded(m.scans, m.scan_bound),
+            p50(&m.profile),
+            bounded(m.composition_scans, m.composition_scan_bound),
+            p50(&m.composition),
+            p50(&m.open)
         ));
     }
     out

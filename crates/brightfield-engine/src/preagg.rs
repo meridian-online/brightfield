@@ -478,6 +478,11 @@ impl Session {
         self.preagg.next_id += 1;
         let create = format!("CREATE TEMP TABLE \"{table}\" AS {build_sql}");
         self.preagg.log_sql(&create);
+        // The build reads the base table once, so it is charged like any other
+        // read. The `DROP`s above and below are not: they read nothing, and an
+        // unexplained DDL would carry an absence into `ScanTally::scans` and
+        // silence the whole count.
+        self.record_scan(&create);
         match self.conn.execute_batch(&create) {
             Ok(()) => {
                 self.preagg.stats.cubes_built += 1;

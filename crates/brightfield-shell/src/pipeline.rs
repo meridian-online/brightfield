@@ -25,7 +25,7 @@ use brightfield_engine::error::EngineError;
 use brightfield_engine::facts::MarkFacts;
 use brightfield_engine::nearest::{NearestProbe, NearestRead};
 use brightfield_engine::{
-    assemble_batches, DeclinedMark, Engine, NavigationExtent, RowsAudience, Session,
+    assemble_batches, DeclinedMark, Engine, NavigationExtent, RowsAudience, ScanTally, Session,
 };
 use brightfield_render::canvas_host::SurfaceRect;
 use brightfield_render::channel::{Channel, ChannelMap};
@@ -61,6 +61,11 @@ use brightfield_workbench::subject::RunState;
 use vello::Scene;
 
 use crate::design::Mode;
+
+/// The most times composing a dashboard's first screen reads its table.
+///
+/// PLACEHOLDER — set from the measurement.
+pub const COMPOSITION_SCANS: u32 = 1;
 
 /// One placed plot of the composed dashboard, carried beside the scene so the
 /// shell can act on the chart rather than merely picture it: the margin
@@ -1138,6 +1143,34 @@ impl LiveDashboard {
         .with_row_count(rows);
         ink_committed_selections(&mut composed, self.coordinator.session());
         Ok(composed)
+    }
+
+    /// [`LiveDashboard::present`], with DuckDB asked to explain each statement
+    /// the composition issues and the leaves of those plans counted.
+    ///
+    /// The composition is the same composition, performed by the same code —
+    /// this brackets that call rather than reimplementing it, so a statement
+    /// added to the composition path is counted without anybody remembering to
+    /// count it. That is the same shape, and the same reason, as
+    /// [`Session::profile_sources_counting_scans`](brightfield_engine::Session::profile_sources_counting_scans).
+    ///
+    /// **What is counted is leaves of the physical plan, not statements.** A
+    /// query per tile and a `UNION ALL` branch per tile both read the table
+    /// once per tile, and only a leaf count tells them apart from the one
+    /// statement that reads it once.
+    ///
+    /// The explaining roughly doubles the statements issued, which is why this
+    /// is a separate entry point: a benchmark and a test pay for it and a file
+    /// open does not.
+    ///
+    /// # Errors
+    ///
+    /// As [`LiveDashboard::present`].
+    pub fn present_counting_scans(&mut self) -> Result<(Composed, ScanTally), String> {
+        self.coordinator.session().begin_scan_tally();
+        let composed = self.present();
+        let tally = self.coordinator.session().take_scan_tally();
+        composed.map(|c| (c, tally))
     }
 
     /// Apply one interaction — push its predicate/param into DuckDB, re-query,
