@@ -240,3 +240,39 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.95.0
       - run: ./scripts/check-artifact-type-source-selftest.sh
+
+  # The other half, and the expensive one: a real scripts/package.sh run, read
+  # back with the real check.
+  #
+  # The job above drives the CHECK against fixtures somebody assembled. This one
+  # drives PACKAGING and then the check over what packaging produced, which is a
+  # different claim and the one no gate on a pull request could make before it
+  # existed: `stage_finetype` is called once into the tarball tree and once into
+  # `Contents/Resources` of the app bundle, and deleting either call — or
+  # reducing it to a `mkdir -p` — left every check in this repository green. The
+  # only thing that would have caught it is the read-back on a tag.
+  #
+  # scripts/package-finetype-selftest.sh cannot reach those calls: it stops
+  # before the compiler on purpose, so that it can run on a runner with no Rust.
+  #
+  # Its own job, on macOS, and both are forced. macOS because the app bundle and
+  # the disk image are darwin-only paths in scripts/package.sh and because
+  # hdiutil, codesign and plutil are macOS tools; its own job because it runs
+  # packaging four times — once intact and once per mutation it drives — and
+  # should not queue behind the 60-minute suite. No cache and no real compile:
+  # `cargo` is stubbed with four lines of C, which is a genuine Mach-O for the
+  # linkage audit, the version floor and codesign, and which answers
+  # `--check-type-source` so the read-back's run leg is actually reached.
+  #
+  # The toolchain step is explicit for the same reason it is explicit in the job
+  # above: `rustc -vV` is read by scripts/package.sh and by the check, and a
+  # rustc that is merely preinstalled on the runner image is a dependency
+  # nothing in this repository declares.
+  packaged-artifact-staging:
+    name: Packaging stages the type source into both artifacts
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - run: ./scripts/package-artifact-staging-selftest.sh

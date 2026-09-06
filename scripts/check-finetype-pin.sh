@@ -28,8 +28,12 @@
 # obtain its bundle through scripts/fetch-finetype-bundle.sh (which takes no
 # tag argument, so there is nowhere to pass a different one), it must read the
 # pin through scripts/finetype-pin.sh, and it must carry no FineType tag
-# literal. That is the weakest check in this file and the only one that could
-# be evaded by writing the mistake in a shape nobody predicted.
+# literal. Those readings establish that a name OCCURS, which is a low bar and
+# was for a while the only bar: four edits satisfied it while removing the
+# protection. What the release step DOES — which artefacts it hands to the
+# read-back, with which arguments, whether a refusal stops the job — is
+# scripts/check-release-readback.py, which drives the step rather than scanning
+# it and runs beside this one on every pull request. Read the two as a pair.
 #
 # WHAT THIS DOES NOT COVER: whether the bytes that were staged carry the pinned
 # version. Nothing textual can — the version stamp comes from FineType's build.
@@ -133,6 +137,10 @@ reads 'BRIGHTFIELD_FINETYPE_BUNDLE' \
   || fail "${WORKFLOW} never sets BRIGHTFIELD_FINETYPE_BUNDLE, so scripts/package.sh \
 returns at the first line of stage_finetype and the artifact ships with no type source"
 
+# Outright absence, and no more than that. A read-back that is present and
+# neutered — piped, trailed with `|| true`, marked continue-on-error, or handed
+# one artefact instead of two — satisfies this line, which is why
+# scripts/check-release-readback.py exists and runs in the same job.
 reads 'scripts/check-artifact-type-source.sh' \
   || fail "${WORKFLOW} never reads the packaged artifact back with \
 scripts/check-artifact-type-source.sh, so a release that staged nothing would publish green"
