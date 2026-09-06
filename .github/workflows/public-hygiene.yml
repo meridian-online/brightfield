@@ -159,6 +159,43 @@ jobs:
       - name: bundled-extension guard self-test
         run: ./scripts/check-bundled-extension-selftest.sh
 
+      # THE TYPE SOURCE, four self-tests, and every one of them is here for the
+      # same reason the two above are: the checks they exercise run on a tag and
+      # nowhere else. That is the shape that rots, and this repository has
+      # already paid for it once — a card recorded the FineType extension and
+      # its model as shipping in the artifact, three reviewers agreed having
+      # each assembled a bundle by hand, and the path a release takes was what
+      # nobody exercised. None of these needs a toolchain, a network beyond
+      # loopback, or a real 17 MB model.
+      #
+      # The pin, first: packaging/finetype-pin.env declares one tag and three
+      # things stage from it. This runs each of them and compares the answers,
+      # so a consumer that quietly kept a literal is caught while the pin still
+      # reads as reviewed.
+      - name: the FineType pin's consumers agree — self-test
+        run: ./scripts/check-finetype-pin-selftest.sh
+
+      - name: the FineType pin's consumers agree
+        run: ./scripts/check-finetype-pin.sh
+
+      # The fetch, against a loopback server holding fixture assets. Url
+      # construction, curl, sidecar parse, digest comparison, unpack and
+      # assembly all run; only the host differs from a release.
+      - name: FineType bundle fetch — self-test
+        run: ./scripts/fetch-finetype-bundle-selftest.sh
+
+      # Packaging, not the check inside it. A deliberate platform, ABI or
+      # version mismatch must fail the packaging RUN, before the compiler is
+      # invoked — which is also what lets this run on a runner with no Rust.
+      - name: packaging refuses a bundle that would not load — self-test
+        run: ./scripts/package-finetype-selftest.sh
+
+      # The packaged artifact. Its disk-image cases need hdiutil, so test.yml
+      # runs the same file on macos-15; what runs here is every tarball case,
+      # in seconds, ahead of the Rust suite.
+      - name: the packaged artifact carries a type source — self-test
+        run: ./scripts/check-artifact-type-source-selftest.sh
+
       # The formula-asset check is the odd one here: only its self-test can run
       # on a pull request, because the check itself addresses a published
       # release through the tap formula and there is no release on a branch. So

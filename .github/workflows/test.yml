@@ -207,3 +207,24 @@ jobs:
             crates/**/tests/snapshots/**/*.diff.png
           if-no-files-found: ignore
           retention-days: 7
+
+  # The disk-image half of scripts/check-artifact-type-source-selftest.sh.
+  #
+  # public-hygiene.yml runs the same file on ubuntu, where every tarball case
+  # runs in seconds and the image cases report as not applicable — `hdiutil`
+  # is macOS-only. This job is what keeps those three cases from being a branch
+  # nothing in CI ever takes: the `.dmg` is the artifact a download button
+  # hands a stranger, and its bundle sits at Contents/Resources/finetype rather
+  # than beside the executable, so it is a separate path through the check and
+  # a separate way to ship an application with no type source in it.
+  #
+  # Its own job rather than a step inside `test` because it needs no toolchain,
+  # no cache and no build: it should report in under a minute rather than
+  # behind a 60-minute suite.
+  artifact-type-source:
+    name: The packaged artifact carries a type source (disk image)
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/check-artifact-type-source-selftest.sh
