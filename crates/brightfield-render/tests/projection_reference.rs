@@ -535,8 +535,17 @@ fn an_unrepresentable_coordinate_has_no_position() {
 /// regions of the same size on the sphere must cover the same area on the page,
 /// or a cluster of events reads as denser than it is. Checked as the ratio of
 /// two projected cells that are equal on the sphere — one on the equator, one at
-/// 60°N — which is independent of the coefficients and would catch the
-/// `d3_geo_rs` A3 error if it had been copied.
+/// 60°N.
+///
+/// **It does NOT catch the `d3_geo_rs` A3 error, and it cannot.** The ratio is a
+/// finite-difference approximation over 2° cells, and its own error against the
+/// spherical `cos(lat)` is more than an order of magnitude larger than the
+/// coefficient defect's effect on it — so no tolerance separates the two, and
+/// the tolerance below is sized for the approximation rather than for the
+/// defect. `every_projection_lands_a_coordinate_where_d3_geo_lands_it` is what
+/// catches A3, by comparing the projected coordinate itself against the oracle.
+/// What this holds is narrower and still worth holding: that the projection is
+/// equal-area at all, which the plate-carrée control below is the contrast for.
 #[test]
 fn equal_earth_preserves_relative_area() {
     let cell = |lat: f64| {
