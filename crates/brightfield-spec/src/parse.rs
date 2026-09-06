@@ -3197,7 +3197,7 @@ plot:
 
         // An `aspectRatio` beside a projection this build cannot draw is not the
         // refusal — there is no projection to win, so the mark keeps its
-        // equal-aspect frame and hears only about the name.
+        // equal-aspect frame and hears about the name instead.
         let out = parse_spec(
             &mark("aspectRatio: 1, projectionType: mollweide"),
             Format::Yaml,
