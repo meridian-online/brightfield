@@ -883,8 +883,8 @@ pub struct Session {
     /// from a column profile, and only one of them is a packaging bug.
     type_source_error: Option<String>,
     /// Where [`Session::profile_sources_counting_scans`] collects what the
-    /// profiling statements cost, and `None` — the state every other caller
-    /// leaves it in — meaning nobody is counting.
+    /// profiling statements cost. `None` — the state a caller that did not ask
+    /// to count leaves it in — means nobody is counting.
     ///
     /// A cell rather than a parameter threaded through the pass because the
     /// thing being counted is every statement the pass issues, and a parameter
@@ -2669,7 +2669,8 @@ impl Session {
     ///
     /// The explaining is why this is a separate entry point and not something
     /// [`Session::profile_sources`] does anyway: it roughly doubles the
-    /// statements the pass issues, and nothing outside a benchmark wants that.
+    /// statements the pass issues, which a benchmark will pay for and a file
+    /// open should not.
     #[must_use]
     pub fn profile_sources_counting_scans(&self) -> (Vec<SourceProfile>, ScanTally) {
         *self.scan_tally.borrow_mut() = Some(ScanTally::default());
@@ -2732,8 +2733,8 @@ impl Session {
         outcome
     }
 
-    /// The one `GROUP BY` behind EVERY numeric column's distribution, or
-    /// `None` where no column asked for one.
+    /// The one `GROUP BY` behind the numeric columns' distributions, however
+    /// many of them there are — or `None` where no column asked for one.
     ///
     /// **One statement rather than one per column, and that is the whole
     /// point of its shape.** Each row of the source is expanded into one entry
@@ -2756,9 +2757,11 @@ impl Session {
     /// range [`ColumnMoments::min`] and `max` report and a reader's bar cannot
     /// sit outside the range printed under it.
     ///
-    /// A row where the column is NULL contributes no entry at all — the
-    /// `CASE` yields a NULL struct and the `WHERE` drops it — which is what
-    /// the per-column statement's `WHERE "col" IS NOT NULL` did.
+    /// A row where the column is NULL contributes no entry — the `CASE`
+    /// yields a NULL struct and the `WHERE` drops it — which is what the
+    /// per-column statement's `WHERE "col" IS NOT NULL` did, and what
+    /// `the_fixture_carries_a_bounded_column_and_a_wide_one` reads back by
+    /// comparing each column's counted rows to its non-null count.
     fn distributions_sql(source: &str, asks: &[DistributionAsk]) -> Option<String> {
         if asks.is_empty() {
             return None;
@@ -2975,9 +2978,9 @@ impl Session {
     /// bypassing every cache so it never perturbs mark execution counts.
     fn query_arrow_raw(&self, sql: &str) -> Result<Vec<RecordBatch>, duckdb::Error> {
         // Nobody is counting unless `profile_sources_counting_scans` is the
-        // caller, and then every statement this funnel issues is counted —
-        // which is the reason the counting sits here and not at each call
-        // site.
+        // caller, and then a statement this funnel issues is counted whether
+        // or not whoever wrote it knew about the tally — which is the reason
+        // the counting sits here and not at each call site.
         if self.scan_tally.borrow().is_some() {
             let scans = self.plan_scans(sql);
             if let Some(tally) = self.scan_tally.borrow_mut().as_mut() {

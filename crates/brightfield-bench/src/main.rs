@@ -925,7 +925,7 @@ const OPEN_SCAN_SCHEMA: &str = "brightfield-bench/open-scan/1";
 /// kind written to the top of `results/` reddens it.
 const OPEN_SCAN_SUBDIR: &str = "open-scan";
 
-/// Measure every shape in [`open_scan::SHAPES`] and write the record.
+/// Measure the shapes in [`open_scan::SHAPES`] and write the record.
 fn run_open_scan(
     conn: &duckdb::Connection,
     machine: MachineProfile,

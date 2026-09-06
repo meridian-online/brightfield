@@ -376,17 +376,16 @@ pub struct StatementScans {
     /// declined to explain it.
     ///
     /// `None` rather than zero, and [`ScanTally::scans`] carries the absence
-    /// all the way out, because a statement whose cost could not be read is
-    /// not a statement that cost nothing — and a gate handed a silent zero
-    /// passes over exactly the case it was written for.
+    /// out to its caller, because a statement whose cost could not be read is
+    /// not a statement that cost zero — and a gate handed a silent zero passes
+    /// over exactly the case it was written for.
     pub scans: Option<u32>,
 }
 
 /// How many times profiling read the table, statement by statement.
 ///
-/// Collected by [`Session::profile_sources_counting_scans`], which is the only
-/// thing that produces one; profiling otherwise issues no `EXPLAIN` and costs
-/// nothing for this.
+/// Collected by [`Session::profile_sources_counting_scans`]; a profile pass
+/// nobody asked to count issues no `EXPLAIN` and pays for none of this.
 ///
 /// [`Session::profile_sources_counting_scans`]: crate::Session::profile_sources_counting_scans
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -396,8 +395,8 @@ pub struct ScanTally {
 }
 
 impl ScanTally {
-    /// The total across every statement, or `None` if DuckDB declined to
-    /// explain any one of them.
+    /// The sum over the statements, or `None` if DuckDB declined to explain
+    /// one of them.
     #[must_use]
     pub fn scans(&self) -> Option<u32> {
         self.statements

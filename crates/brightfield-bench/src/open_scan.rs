@@ -6,7 +6,7 @@
 //! Everything else in this harness times a gesture on a table that is already
 //! open. This times the wait before the first picture — the one an analyst
 //! meets first — and it is dominated by a different thing. A `file:` source is
-//! a DuckDB view over `read_csv`, so **every statement issued over it reads and
+//! a DuckDB view over `read_csv`, so **a statement issued over it reads and
 //! re-parses the file**; the cost of an open is therefore a count of
 //! statements times the cost of one read, and the count is what this module
 //! reports.
@@ -22,7 +22,7 @@
 //!
 //! **The wall time** is the whole of `brightfield_shell::data_file::open` —
 //! the profile pass, the dashboard the profile chooses, and the first
-//! composition over it — and it needs the full row count to mean anything.
+//! composition over it — and it needs the full row count to be worth reading.
 //!
 //! [counting]: brightfield_engine::Session::profile_sources_counting_scans
 
@@ -96,9 +96,10 @@ pub const SHAPES: &[Shape] = &[NARROW, WIDE];
 /// How many distinct values the bounded numeric column takes.
 ///
 /// Under [`profile::VALUE_BAR_LIMIT`] on purpose: the distribution has two
-/// branches and a fixture that reached only one of them would leave the other
-/// unmeasured. Both branches now ride the same statement, which is precisely
-/// why a fixture has to carry both.
+/// branches, and `the_fixture_carries_a_bounded_column_and_a_wide_one` reads
+/// back that this fixture reaches both of them. Both branches ride the same
+/// statement now, which is why one that reached the binned branch alone would
+/// leave half of it unexercised.
 const BOUNDED_DISTINCT: u64 = 12;
 
 /// One statement the profile pass issued, as it goes into the record.
