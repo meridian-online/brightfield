@@ -72,6 +72,28 @@ jobs:
       - name: cargo clippy --workspace --all-targets -D warnings
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # The release profile, type-checked. Every other gate in this repo builds
+      # with `debug_assertions` on, so a reference to an item that only exists
+      # under it compiles here, passes CI, lands on `main`, and is discovered by
+      # whoever first runs `cargo build --release`.
+      #
+      # That is not hypothetical: `apply_theme_without_unaligned_marker` set
+      # `style.debug.show_unaligned`, and egui declares `Style::debug` under
+      # `#[cfg(debug_assertions)]` with a doc that says "Only available in debug
+      # builds". The release profile stopped compiling the day that landed and
+      # nothing said so, because `release.yml` is the only workflow that builds
+      # it and it runs on a version tag — so the next thing to notice would have
+      # been a release that could not be cut, or a person trying to run the
+      # application.
+      #
+      # `check` rather than `build`: the failure class is resolution and type
+      # checking, which `check` does in full, and codegen for wgpu and vello in
+      # release is minutes this gate does not need to spend. `--workspace` and
+      # not just the shell, because the hazard is a profile difference and any
+      # crate can carry one.
+      - name: cargo check --release (the profile the application ships as)
+        run: cargo check --release --workspace
+
       # rustdoc, for the one thing the four gates above cannot see: a doc link
       # that names something which does not exist. `cargo doc` resolves every
       # intra-doc link and warns on the ones it cannot; `-D warnings` in
