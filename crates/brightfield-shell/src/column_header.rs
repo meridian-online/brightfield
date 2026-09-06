@@ -514,8 +514,9 @@ pub struct ColumnBandDrawn {
     /// The text [`Self::distinct`] was painted as.
     pub distinct_text: Option<String>,
     /// Where [`Self::distinct_text`] was painted — the compact density's own
-    /// row, below the range and never over the rug. `None` under the same
-    /// conditions as [`Self::distinct`].
+    /// row, below the range and never over the rug, which
+    /// `the_compact_bands_distinct_row_draws_below_the_range_and_never_over_the_rug`
+    /// holds. `None` under the same conditions as [`Self::distinct`].
     pub distinct_rect: Option<egui::Rect>,
 }
 
