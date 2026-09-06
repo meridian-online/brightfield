@@ -444,7 +444,7 @@ pub enum ParseWarning {
     /// domain until a degree of longitude and a degree of latitude take the same
     /// number of pixels, which is a cartesian frame's best impersonation of a
     /// map, and a projection has already answered that question — correctly, and
-    /// differently at every latitude. The projection decides the frame and the
+    /// differently at each latitude. The projection decides the frame and the
     /// `aspectRatio` is dropped.
     ///
     /// `brightfield_render::channel::ChannelMap::equal_aspect` is what makes the
@@ -1547,8 +1547,8 @@ impl Walker {
     /// ONE function for the plot attribute and the mark option, asking
     /// [`crate::layout::ResolvedProjection::from_wire`] — the same question the
     /// renderer's resolution asks. A lifted `$param` is a recorded deferral and
-    /// not a bad name, so it does not warn; anything that is not a string cannot
-    /// name a projection at all.
+    /// not a bad name, so it does not warn; a value that is not a string cannot
+    /// name a projection.
     fn warn_unknown_projection(&mut self, value: &SpecValue) {
         let unsupported = match value {
             SpecValue::String(s) => crate::layout::ResolvedProjection::from_wire(s).is_none(),
@@ -3143,7 +3143,7 @@ plot:
         );
 
         // A name Mosaic does have is silent — and specifically raises no
-        // `UnconsumedMarkOption`, which is what an option nothing reads gets.
+        // `UnconsumedMarkOption`, which is what an unread option gets.
         for ok in ["mercator", "equal-earth", "orthographic", "albers-usa"] {
             let out =
                 parse_spec(&mark(&format!("projectionType: {ok}")), Format::Yaml).expect("parses");

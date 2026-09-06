@@ -1066,7 +1066,7 @@ pub fn infer_scales_multi_in(
 /// numbers — it draws at `Projection::project` of them — so its axes have to be
 /// in the projection's planar units or the points land off the scale entirely.
 /// Under Mercator a latitude of 64° is a `v` of 1.47, and a domain that spans
-/// both is a plot with everything in one corner.
+/// both is a plot with its marks crowded into one corner.
 ///
 /// The domains are **replaced** rather than unioned with the degree-unit ones
 /// for exactly that reason, and the union across `entries` happens here instead:

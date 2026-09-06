@@ -6,7 +6,7 @@
 //! graticule is drawn from the projection and the visible extent, and that
 //! `aspectRatio` and a projection are refused together rather than composed.
 //!
-//! It reads vello's `Encoding::path_data` — every coordinate the scene encoded,
+//! It reads vello's `Encoding::path_data` — the coordinates the scene encoded,
 //! as `f32` bits — rather than asking the renderer what it meant to draw. The
 //! reason is `tests/mode_blind_ink.rs`'s: a test that inspects the inputs of a
 //! draw call cannot see a draw call that never happened.
@@ -26,18 +26,18 @@ use brightfield_render::scale::{infer_scales, Scale, ScaleSet};
 
 /// The plot-area pixel box the fixture's scales map onto. `y_range` is
 /// `(bottom, top)` — inverted — which is what supplies the screen flip, so a
-/// projection never negates its own latitude.
+/// projection does not negate its own latitude.
 const X_RANGE: (f64, f64) = (40.0, 600.0);
 const Y_RANGE: (f64, f64) = (440.0, 40.0);
 
 /// The dot radius `DotRenderer` draws at. Private to that module, mirrored here
 /// because a circle's encoded geometry is what this file reads; the four
-/// cardinal points are all checked, so the value matters and the START angle
+/// cardinal points are each checked, so the value matters and the START angle
 /// does not.
 const DOT_RADIUS: f64 = 4.0;
 
 /// Reykjavík, Milan and Sydney: far from the equator, spread across three
-/// quadrants, and all three representable under every projection driven here.
+/// quadrants, and representable under each projection this file drives.
 const FIXTURE: &[(f64, f64)] = &[(-21.94, 64.15), (9.19, 45.46), (151.21, -33.87)];
 
 /// Reykjavík through d3-geo's spherical Mercator, in the projection's planar
@@ -107,8 +107,8 @@ fn near(a: (f64, f64), b: (f64, f64), tol: f64) -> bool {
     (a.0 - b.0).abs() < tol && (a.1 - b.1).abs() < tol
 }
 
-/// Whether a circle of [`DOT_RADIUS`] centred at `centre` was drawn: all four
-/// cardinal points of its outline are in the encoded geometry.
+/// Whether a circle of `DOT_RADIUS` centred at `centre` was drawn — its four
+/// cardinal points are in the encoded geometry.
 fn circle_drawn_at(points: &[(f64, f64)], centre: (f64, f64)) -> bool {
     [
         (centre.0 + DOT_RADIUS, centre.1),
@@ -317,8 +317,8 @@ fn an_unprojected_dot_mark_draws_no_graticule() {
 /// than both applying or both being dropped.
 ///
 /// The two controls are what make this a refusal rather than a coincidence: a
-/// mark with only `aspectRatio` still gets it, and a mark with only a projection
-/// never had it.
+/// mark carrying `aspectRatio` by itself still gets it, and a mark carrying a
+/// projection by itself had none to lose.
 #[test]
 fn equal_aspect_and_a_projection_cannot_both_apply() {
     let mut aspect_only = ChannelMap::new();

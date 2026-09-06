@@ -758,9 +758,9 @@ fn deemphasise(colour: Color, style: &HighlightStyle) -> Color {
 /// The pixel position of one dot — through the mark's projection when it has
 /// one, and through the scale directly when it does not.
 ///
-/// A projected dot reads its two coordinate columns as NUMBERS and never as
+/// A projected dot reads its two coordinate columns as NUMBERS rather than as
 /// strings: a longitude is not a category, and `resolve_position`'s band lookup
-/// has nothing to do on a projected axis. `None` means the row does not draw —
+/// has no work to do on a projected axis. `None` means the row does not draw —
 /// either a coordinate is missing, or the projection has no position for it (see
 /// [`Projection::project`]).
 #[allow(clippy::too_many_arguments)]
@@ -817,8 +817,8 @@ impl MarkRenderer for DotRenderer {
         // (`project_positional_domains`). Neither may be true of the other, and
         // `ChannelMap::equal_aspect` is what guarantees it: it answers `false`
         // whenever a projection is set, so a mark that wrote both takes this
-        // branch once, through the projection, and never widens degrees against
-        // projected units.
+        // branch once, through the projection, rather than widening degrees
+        // against projected units.
         if !(channel_map.equal_aspect() || channel_map.projection().is_some()) {
             return;
         }
@@ -3965,7 +3965,7 @@ fn resolve_stroke_colour(
 /// ([`brightfield_spec::layout::ResolvedProjection`], converted via `From`); the
 /// forward transform lives here.
 ///
-/// Every projection outputs "math-convention" coordinates (`v` increasing
+/// The projections here output "math-convention" coordinates (`v` increasing
 /// NORTHWARD). The renderer feeds them through the plot's inverted Y
 /// [`Scale::Linear`] (`ChartLayout::y_range` is `(bottom, top)`), which supplies
 /// the screen flip so north renders up — so, unlike a scale-free d3 projection,
@@ -3977,8 +3977,8 @@ fn resolve_stroke_colour(
 /// transcribed with d3's own default parameters, because Mosaic's
 /// `projectionType` vocabulary IS Observable Plot's, and Plot's projections are
 /// d3-geo's. `Projection::project` takes DEGREES where a d3 raw takes radians;
-/// the conversion is the only systematic divergence, and it is per-arm rather
-/// than global because [`Self::Identity`] and [`Self::ReflectY`] are planar
+/// that conversion is the systematic divergence, and it is per-arm rather than
+/// global because [`Self::Identity`] and [`Self::ReflectY`] are planar
 /// passthroughs that d3 does not convert either.
 ///
 /// The expected values in this crate's tests were produced by an oracle written
@@ -3988,13 +3988,13 @@ fn resolve_stroke_colour(
 /// # Scale and translation are NOT applied
 ///
 /// d3 composes a raw projection with `scale`/`translate`/`rotate`/`center`.
-/// Brightfield applies none of those: the renderer aspect-fits the projected
-/// bounding box into the plot rect ([`aspect_fit_domains`]), so a uniform scale
-/// and any translation are absorbed by the fit and cannot change the picture. A
-/// ROTATION is not absorbed, which is why `projectionRotate` remains unread and
-/// every projection here draws at d3's default rotation. [`Self::Albers`] is the
-/// exception and only because d3 bakes its `rotate([96, 0])` into the projection
-/// itself.
+/// Brightfield applies neither the scale nor the translation: the renderer
+/// aspect-fits the projected bounding box into the plot rect
+/// (`aspect_fit_domains`), so a uniform scale and any translation are absorbed
+/// by the fit and cannot change the picture. A ROTATION is not absorbed, which
+/// is why `projectionRotate` remains unread and each projection here draws at
+/// d3's default rotation — [`Self::Albers`] excepted, because d3 bakes its
+/// `rotate([96, 0])` into the projection itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Projection {
     /// `u = lon`, `v = lat` — the identity plate carrée, aspect-fit by the
@@ -4007,7 +4007,7 @@ pub enum Projection {
     Identity,
     /// [`Self::Identity`] with the latitude axis flipped (`v = -lat`).
     ReflectY,
-    /// Spherical Mercator. Conformal — local shape survives at every latitude,
+    /// Spherical Mercator. Conformal — local shape survives at each latitude,
     /// which is what an unprojected lon/lat scatter gets wrong away from the
     /// equator. Undefined at the poles: beyond [`MERCATOR_CLIP_LAT`] a
     /// coordinate has no position and `project` returns `None`.
@@ -4070,7 +4070,8 @@ impl From<brightfield_spec::layout::ResolvedProjection> for Projection {
 /// Degrees to radians.
 const D2R: f64 = std::f64::consts::PI / 180.0;
 
-/// d3-geo's Mercator clip latitude, `atan(sinh(π))` in degrees. Beyond it
+/// d3-geo's Mercator clip latitude, `atan(sinh(π))` in degrees, pinned by the
+/// test `the_mercator_clip_latitude_is_atan_sinh_pi`. Beyond it
 /// [`Projection::Mercator`] diverges, and d3 clips the geometry away rather than
 /// drawing it at an arbitrary distance; [`Projection::project`] returns `None`
 /// there for the same reason.
@@ -4092,8 +4093,10 @@ impl Projection {
     /// coordinate — the alternative is drawing it at a mirrored or effectively
     /// infinite position, which is a lie rather than an approximation. The
     /// projections that are total (equirectangular, identity, reflect-y, equal
-    /// earth, the conics, albers) never return `None`, so every spec that
-    /// predates the catalogue widening is unaffected.
+    /// earth, the conics, albers) return a position for each coordinate they are
+    /// given, so no spec that predates the catalogue widening loses a point —
+    /// the test `an_unrepresentable_coordinate_has_no_position` holds both
+    /// halves.
     #[must_use]
     pub fn project(self, lon: f64, lat: f64) -> Option<(f64, f64)> {
         match self {
@@ -4168,7 +4171,7 @@ fn near_side(lam: f64, phi: f64) -> bool {
 }
 
 /// d3's `azimuthalRaw(scale)` — the shared body of the two azimuthal arms.
-/// `None` at the antipode, where every `scale` diverges.
+/// Returns `None` at the antipode, where the scale factor diverges.
 fn azimuthal(lon: f64, lat: f64, scale: impl Fn(f64) -> f64) -> Option<(f64, f64)> {
     let (lam, phi) = (lon * D2R, lat * D2R);
     let (cx, cy) = (lam.cos(), phi.cos());
@@ -4207,8 +4210,8 @@ fn equal_earth_forward(lam: f64, phi: f64) -> (f64, f64) {
 ///
 /// The constants d3 closes over are derived here on each call rather than
 /// written down, for the reason [`albers_forward`] derives its own: a
-/// transcribed constant is a claim nothing reddens when it is wrong, and the
-/// trigonometry costs less than the mistake.
+/// transcribed constant is a claim no check reddens on, and the trigonometry
+/// costs less than the mistake.
 fn conic_equal_area_forward(lam: f64, phi: f64) -> (f64, f64) {
     let (y0, y1) = (0.0_f64, std::f64::consts::FRAC_PI_3);
     let sy0 = y0.sin();
@@ -4273,7 +4276,7 @@ fn tany(y: f64) -> f64 {
 /// reference longitude λ0=−96°, reference latitude φ0=23°. Returns `(x, y)` with
 /// `y` increasing north (see [`Projection`]). Unit sphere — the renderer's
 /// aspect-fit rescales, so the absolute radius is immaterial, and so is the
-/// choice of φ0, which only shifts `y` by a constant.
+/// choice of φ0, which shifts `y` by a constant and does no more than that.
 fn albers_forward(lon: f64, lat: f64) -> (f64, f64) {
     let d2r = std::f64::consts::PI / 180.0;
     let (phi1, phi2) = (29.5 * d2r, 45.5 * d2r);
@@ -4346,9 +4349,9 @@ impl GeoExtent {
     }
 }
 
-/// The narrowest span [`GeoExtent`] will represent — a single coordinate has no
+/// The narrowest span [`GeoExtent`] will represent. A single coordinate has no
 /// span to space a graticule across, and dividing by it produces either one line
-/// or every line.
+/// or an unbounded number of them.
 pub const MIN_EXTENT_DEGREES: f64 = 1e-4;
 
 fn widen(lo: f64, hi: f64, floor: f64, ceil: f64) -> (f64, f64) {
@@ -4405,8 +4408,14 @@ const GRATICULE_MIN_INTERVALS: f64 = 6.0;
 /// decides how smoothly it draws; a cylindrical projection would be exact at two.
 const GRATICULE_SAMPLES: usize = 33;
 
-/// The coarsest [`GRATICULE_STEPS`] entry that divides `span` into at least
-/// [`GRATICULE_MIN_INTERVALS`], or the finest entry when none does.
+/// The coarsest spacing that divides `span` into at least six intervals, or the
+/// finest the ladder offers when no coarser one manages it.
+///
+/// The ladder is whole degrees from 90° down to 0.01° (about a kilometre), so a
+/// map of a city and a map of the world both land on a number a reader
+/// recognises rather than on a computed spacing like 7.3°. Six intervals is
+/// seven lines on a fully spanned axis — dense enough to read a position off,
+/// sparse enough not to hatch the plot.
 #[must_use]
 pub fn graticule_step(span: f64) -> f64 {
     let span = span.abs();
@@ -4420,11 +4429,14 @@ pub fn graticule_step(span: f64) -> f64 {
 
 /// The meridians and parallels visible in `extent`, projected.
 ///
-/// Both halves of the answer come from the two arguments and nothing else: the
-/// EXTENT decides which whole-degree lines exist and how far apart they are
+/// Both halves of the answer come from the two arguments: the EXTENT decides
+/// which whole-degree lines exist and how far apart they are
 /// ([`graticule_step`]), and the PROJECTION decides where each sampled point
 /// lands. There is no data dependency and no network — this is the reason a
-/// graticule is what a projected mark draws behind itself rather than a basemap.
+/// graticule is what a projected mark draws behind itself rather than a basemap;
+/// the tests `the_graticule_lines_are_the_whole_degrees_the_extent_contains` and
+/// `narrowing_the_extent_changes_the_graticule_rather_than_redrawing_it` hold
+/// the extent's half of it.
 ///
 /// Meridians come first, then parallels, each in ascending degree order, so two
 /// runs over the same extent produce the same list in the same order.
@@ -4493,7 +4505,7 @@ fn samples(lo: f64, hi: f64) -> Vec<f64> {
         .collect()
 }
 
-/// Project each coordinate and append every contiguous run of at least two
+/// Project each coordinate and append each contiguous run of at least two
 /// representable points as its own [`GraticuleLine`].
 fn push_runs(
     out: &mut Vec<GraticuleLine>,
@@ -4567,8 +4579,8 @@ fn stroke_graticule(
 }
 
 /// The pixel rectangle two linear scales map onto, as `(x0, y0, x1, y1)` with
-/// `x0 <= x1` and `y0 <= y1`. `None` for a non-linear axis, which a projected
-/// mark never has.
+/// `x0 <= x1` and `y0 <= y1`. `None` for a non-linear axis, which is not a shape
+/// a projected mark takes.
 fn scale_rect(x_scale: &Scale, y_scale: &Scale) -> Option<(f64, f64, f64, f64)> {
     let (
         Scale::Linear {
@@ -4799,8 +4811,8 @@ impl MarkRenderer for GeoRenderer {
                 // for. Proper clipping — cutting the ring at the horizon and
                 // closing it along the rim — is d3's `clipCircle`, and this
                 // build has no equivalent, so it declines rather than
-                // approximates. Every projection that predates the catalogue
-                // widening is total, so no existing spec loses a ring.
+                // approximates. The projections that predate the catalogue
+                // widening are total, so no existing spec loses a ring.
                 let Some(pixels) = ring
                     .iter()
                     .map(|(lon, lat)| {
