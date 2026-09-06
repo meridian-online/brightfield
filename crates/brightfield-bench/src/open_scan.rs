@@ -623,8 +623,9 @@ mod tests {
     /// assertion above it even if this literal is raised to fit.
     ///
     /// The second witness is the one that keeps the first honest:
-    /// `composition_scans` — every leaf, not only the file ones — is asserted
-    /// to be *larger* on the wide shape than on the narrow one. The
+    /// `composition_scans` — the leaf count, rather than the file-read subset
+    /// of it — is asserted to be *larger* on the wide shape than on the
+    /// narrow one. The
     /// composition still issues a statement per tile and their plans still
     /// have leaves; what changed is what those leaves read. Without this the
     /// file-read count could read zero because the attribution had stopped
@@ -699,11 +700,11 @@ mod tests {
 
     /// **The file-read count is a real subset and not a constant zero.**
     ///
-    /// The bound above is zero, and a counter hard-wired to zero passes it on
-    /// every shape. This is the case that must NOT be zero: the profile pass
-    /// runs before anything is materialised, over a source that is still a
-    /// view on `read_csv`, so every one of its leaves is a read of the file
-    /// and the two counts have to agree.
+    /// The bound above is zero, and a counter hard-wired to zero would pass
+    /// it on both shapes. This is the case that must NOT be zero: the profile
+    /// pass runs before anything is materialised, over a source that is still
+    /// a view on `read_csv`, so its leaves are reads of the file and the two
+    /// counts have to agree.
     ///
     /// It is also what pins the exclusion rule. If DuckDB stopped carrying a
     /// `Table` key, every leaf would count as a file read and this test would

@@ -20,7 +20,7 @@
 //!
 //! # Why a small file is copied into DuckDB first, and a large one is not
 //!
-//! A view over `read_csv` is re-read and re-parsed by **every statement issued
+//! A view over `read_csv` is re-read and re-parsed by **each statement issued
 //! over it**, so the wait before the first picture is a count of statements
 //! times the cost of one read — and the dashboard [`crate::dashboard`] chooses
 //! is a tile per column, which makes that count grow with the table's width.
@@ -34,9 +34,11 @@
 //! `max` the profile pass has already taken.
 //!
 //! So [`open`] reads the file **once**, into a session-scoped table, and points
-//! the view at that ([`brightfield_engine::Session::materialise_source`]). Every
-//! tile's query is byte-identical and scans memory. The composition then reads
-//! the file no times at all, which is what
+//! the view at that ([`brightfield_engine::Session::materialise_source`]). A
+//! tile's query is byte-identical and scans memory — the rows it draws are
+//! compared down both branches by
+//! `every_mark_draws_the_same_rows_down_both_branches_of_the_threshold`. The
+//! composition then reads the file no times at all, which is what
 //! [`crate::pipeline::COMPOSITION_FILE_READS`] states and what the open-scan
 //! harness measures — the same file, the same machine, minutes later:
 //! 53.5 ms of a 1,007.3 ms open, in
@@ -140,8 +142,9 @@ use crate::pipeline::{Composed, LiveDashboard};
 pub const OPENABLE_EXTENSIONS: &[&str] = &["csv", "tsv", "parquet"];
 
 /// **The largest file [`open`] reads into memory before composing.** Above it
-/// the file stays a DuckDB view over `read_csv` / `read_parquet` and every
-/// statement re-reads it.
+/// the file stays a DuckDB view over `read_csv` / `read_parquet` and each
+/// statement re-reads it — `a_parquet_over_the_threshold_opens_without_being_copied`
+/// is what holds that branch open.
 ///
 /// 64 MiB, on the file's size on disk, and the number is a judgement rather
 /// than a measurement — what it is chosen against is stated here so a reader
@@ -205,7 +208,7 @@ pub struct OpenedFile {
 /// they are reported apart on purpose.** A single number for the whole open
 /// hides which of them moved, and the two are bounded by different things —
 /// the profile pass by [`brightfield_engine::profile::SCANS_PER_SOURCE`] and
-/// the composition by [`crate::pipeline::COMPOSITION_SCANS`].
+/// the composition by [`crate::pipeline::COMPOSITION_FILE_READS`].
 pub struct OpenTrace {
     /// [`crate::pipeline::LiveDashboard::present`] alone, milliseconds — the
     /// term the profile pass is not.
@@ -475,7 +478,7 @@ pub fn open(chosen: &str) -> Result<OpenedFile, String> {
 /// What [`open_traced`] may do differently from [`open`].
 ///
 /// [`OpenOptions::default`] **is** what [`open`] does, so a caller that wants
-/// the app's own open and a trace of it constructs nothing.
+/// the app's own open and a trace of it has no field to set.
 #[derive(Debug, Clone, Copy)]
 pub struct OpenOptions {
     /// Ask DuckDB to explain each statement the first composition issues
@@ -542,9 +545,9 @@ pub fn open_traced(chosen: &str, options: &OpenOptions) -> Result<(OpenedFile, O
     let spec = dashboard.to_spec();
     let mut live =
         LiveDashboard::load_str(&spec, None).map_err(|e| format!("{}: {e}", path.display()))?;
-    // The one read. Everything the composition issues after this scans a
-    // table, so the tile count stops multiplying the cost of a read — see the
-    // module header for the measurement that decided it, and
+    // The one read. What the composition issues after this scans a table, so
+    // the tile count stops multiplying the cost of a read — see the module
+    // header for the measurement that decided it, and
     // `MATERIALISE_UNDER_BYTES` for why a large file is left alone.
     //
     // A file DuckDB will not copy is not a file that failed to open: the view

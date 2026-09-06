@@ -479,9 +479,9 @@ impl Session {
         let create = format!("CREATE TEMP TABLE \"{table}\" AS {build_sql}");
         self.preagg.log_sql(&create);
         // The build reads the base table once, so it is charged like any other
-        // read. The `DROP`s above and below are not: they read nothing, and an
-        // unexplained DDL would carry an absence into `ScanTally::scans` and
-        // silence the whole count.
+        // read. The DROPs above and below are not: an unexplained DDL would
+        // carry an absence into `ScanTally::scans` and silence the whole
+        // count, and a statement that drops a table has no read to charge.
         self.record_scan(&create);
         match self.conn.execute_batch(&create) {
             Ok(()) => {

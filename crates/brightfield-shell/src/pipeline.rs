@@ -67,10 +67,10 @@ use crate::design::Mode;
 ///
 /// Zero, and it is zero rather than small for a reason worth stating: a
 /// composition that read the file *once* would still read it once per tile
-/// the moment somebody added a statement, because nothing about "once" says
-/// where the once comes from. `data_file::open` reads the file into a
-/// session-scoped table before the first composition, so a tile's query
-/// scans memory and the composition touches the file nowhere at all — see
+/// the moment somebody added a statement, because "once" does not say where
+/// the once comes from. `data_file::open` reads the file into a
+/// session-scoped table before the first composition, so a tile's query scans
+/// memory and the composition touches the file at no leaf of any plan — see
 /// [`brightfield_engine::Session::materialise_source`].
 ///
 /// **This is not a bound on statements or on leaves.** The composition still

@@ -2685,8 +2685,9 @@ impl Session {
         (profiles, tally)
     }
 
-    /// Start counting how many times DuckDB reads a table, over **every**
-    /// statement this session issues from here until [`Session::take_scan_tally`].
+    /// Start counting how many times DuckDB reads a table, over the
+    /// statements this session issues from here until
+    /// [`Session::take_scan_tally`].
     ///
     /// The pair exists because the thing worth counting is not always a call
     /// this crate makes. A file's first composition is driven from the shell —
@@ -2714,9 +2715,9 @@ impl Session {
     }
 }
 
-/// The suffix a materialised source's backing table takes. Reserved like
-/// every other `__bf_` name, and visible in a plan as the `Table` a
-/// composition's leaves scan.
+/// The suffix a materialised source's backing table takes. Reserved as the
+/// `__bf_` names are, and visible in a plan as the `Table` a composition's
+/// leaves scan.
 const MATERIALISED_SUFFIX: &str = "__bf_materialised";
 
 impl Session {
@@ -3091,8 +3092,10 @@ impl Session {
     /// Charge `sql` to the open tally, explaining it first, and do nothing at
     /// all when nobody is counting.
     ///
-    /// **This is the whole of the counting, and every funnel that hands a
-    /// statement to the connection calls it.** Nobody is counting unless
+    /// **This is the whole of the counting, and the funnels that hand a
+    /// statement to the connection call it** — the mark execute, the cube
+    /// serve, the unsampled facts, the two category reads, the cube build and
+    /// `query_arrow_raw`. Nobody is counting unless
     /// [`Session::profile_sources_counting_scans`] or
     /// [`Session::begin_scan_tally`] is the enclosing caller; when one of them
     /// is, a statement is counted whether or not whoever wrote it knew about

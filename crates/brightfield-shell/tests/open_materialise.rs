@@ -161,8 +161,8 @@ fn every_mark_draws_the_same_rows_down_both_branches_of_the_threshold() {
 ///
 /// The property the module header sells is that a Parquet larger than memory
 /// opens as readily as a small CSV, and the copy above is what could have
-/// taken it away. This is the branch that keeps it: nothing is copied, the
-/// view is still a view on `read_parquet`, and the dashboard composes.
+/// taken it away. This is the branch that keeps it: no copy is made, the view
+/// is still a view on `read_parquet`, and the dashboard composes.
 ///
 /// A Parquet rather than a CSV because that is the format the claim is made
 /// about, and it is the one whose on-disk size says least about its size in

@@ -387,10 +387,13 @@ pub struct StatementScans {
     /// this session holds in memory, or `None` where DuckDB declined to
     /// explain the statement.
     ///
-    /// Never more than [`StatementScans::scans`], and equal to it for every
+    /// It cannot exceed [`StatementScans::scans`], and it equals it for a
     /// statement over a source that is still a view on `read_csv` /
-    /// `read_parquet`. It is the smaller number exactly when a source has been
-    /// materialised, which is the only way this session acquires a base table.
+    /// `read_parquet` —
+    /// `the_profile_pass_reads_the_file_at_every_leaf_it_plans` in the
+    /// open-scan harness is what holds that. It is the smaller number when a
+    /// source has been materialised, which is how this session acquires a base
+    /// table.
     pub file_reads: Option<u32>,
 }
 
@@ -421,8 +424,8 @@ impl ScanTally {
     /// `None` if DuckDB declined to explain one of them.
     ///
     /// **This is the number the claim about opening a data file is made in.**
-    /// [`ScanTally::scans`] counts every leaf, which is the right instrument
-    /// when every leaf is a read of the file — as it is for the profile pass,
+    /// [`ScanTally::scans`] counts the leaves, which is the right instrument
+    /// while a leaf is a read of the file — as it is for the profile pass,
     /// where the source is a view over `read_csv`. It stops being the right
     /// instrument the moment a relation is materialised: a scan of a
     /// session-scoped table is a leaf and is not a read of the file, and the
@@ -488,9 +491,9 @@ fn count_leaves(node: &serde_json::Value) -> Option<u32> {
 /// | `Table` | a base table in this database | `SEQ_SCAN` over a materialised source |
 /// | `CTE Index` | a CTE materialised inside the same statement | `CTE_SCAN` under a repeated scalar subquery |
 ///
-/// An inclusion list would have to name every spelling DuckDB gives a file
+/// An inclusion list would have to name each spelling DuckDB gives a file
 /// reader — `READ_CSV`, `READ_PARQUET`, and the one it gains next release —
-/// and the spelling this code has never seen would go uncounted, which is the
+/// and a spelling this code has never seen would go uncounted, which is the
 /// direction that fails silently. Excluding what the plan names has the
 /// opposite bias: a leaf nobody anticipated makes the number go **up**, and a
 /// bound that reddens is a bound somebody reads. A `DUMMY_SCAN` and a
@@ -506,8 +509,10 @@ fn count_leaves(node: &serde_json::Value) -> Option<u32> {
 /// that is still a view on `read_csv`, so its file reads must equal its
 /// leaves.
 ///
-/// Never larger than [`plan_scans`] on the same plan, and equal to it for a
-/// plan whose leaves are all file readers.
+/// It cannot exceed [`plan_scans`] on the same plan, and it equals it for a
+/// plan whose leaves are file readers —
+/// `a_leaf_reads_a_file_unless_the_plan_names_a_table_or_a_cte` reads both
+/// directions off literal plans.
 pub(crate) fn plan_file_reads(explained: &str) -> Option<u32> {
     let plan: serde_json::Value = serde_json::from_str(explained).ok()?;
     let roots = plan.as_array()?;
@@ -621,7 +626,7 @@ mod tests {
     /// subqueries into one CTE, so the leaves are the rows' scan, the CTE's
     /// own scan, and two reads of the CTE. **Four leaves, no file read.**
     ///
-    /// The `extra_info` keys are DuckDB v1.5's, taken from a real
+    /// The extra-info keys are DuckDB v1.5's, taken from a real
     /// `EXPLAIN (FORMAT json)` rather than invented — a `SEQ_SCAN` carries
     /// `Table` and a `CTE_SCAN` carries `CTE Index`.
     const PLAN_MATERIALISED_HISTOGRAM: &str = r#"[
@@ -670,9 +675,9 @@ mod tests {
     /// exactly and disagrees with these.
     ///
     /// `PLAN_MATERIALISED_HISTOGRAM` is the other direction and the reason the
-    /// `CTE Index` arm exists at all: DuckDB plans the histogram's two
-    /// identical bin-scheme subqueries as one CTE read twice, and a rule that
-    /// excluded only `Table` counted those two reads of an in-statement CTE as
+    /// `CTE Index` arm is there: DuckDB plans the histogram's two identical
+    /// bin-scheme subqueries as one CTE read twice, and a rule excluding
+    /// `Table` alone counted those two reads of an in-statement CTE as
     /// reads of the file — two per histogram tile, which is a count that grows
     /// with the tile count and a bound that could never be met.
     #[test]

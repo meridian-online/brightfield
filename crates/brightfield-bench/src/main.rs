@@ -918,7 +918,8 @@ struct OpenScanReport {
     /// reads.
     composition_file_read_bound: u32,
     /// [`brightfield_shell::data_file::MATERIALISE_UNDER_BYTES`] — the size a
-    /// file has to be under for the bound above to apply to it at all.
+    /// file has to be under before it is read into memory, and therefore the
+    /// size the bound above is stated for.
     materialise_under_bytes: u64,
     /// Timed samples per quantity per shape.
     repeats: usize,
