@@ -172,6 +172,7 @@ pub struct ChannelMap {
     colours: HashMap<Channel, Color>,
     label: Option<LabelForm>,
     equal_aspect: bool,
+    projection: Option<crate::mark::Projection>,
 }
 
 impl ChannelMap {
@@ -245,9 +246,27 @@ impl ChannelMap {
         self.equal_aspect = on;
     }
 
+    /// Set the map projection this mark draws through — see
+    /// [`ChannelMap::projection`].
+    pub fn set_projection(&mut self, projection: crate::mark::Projection) {
+        self.projection = Some(projection);
+    }
+
+    /// The map projection this mark draws through, or `None` for a cartesian
+    /// mark.
+    ///
+    /// `crate::mark::DotRenderer` reads this in both halves of its work: its
+    /// `MarkRenderer::augment_scales` fits the PROJECTED coordinates rather than
+    /// the raw ones, and its `MarkRenderer::render` places each point through
+    /// the projection and draws a graticule behind them.
+    #[must_use]
+    pub fn projection(&self) -> Option<crate::mark::Projection> {
+        self.projection
+    }
+
     /// Whether this mark wrote `aspectRatio: 1`, asking the positional axes it
     /// binds to share one px-per-unit rather than each fitting its own domain
-    /// to the plot rect independently.
+    /// to the plot rect independently — **and is not also projected**.
     ///
     /// A mark option rather than a channel for the reason [`Self::label`]
     /// already is one: there is no column behind it, so `infer_scales` reads
@@ -256,9 +275,25 @@ impl ChannelMap {
     /// plain `dot` mark that does not write `aspectRatio: 1` draws exactly as
     /// before, held by `augment_scales_without_the_flag_leaves_scales_untouched`
     /// in that crate's test module.
+    ///
+    /// # Why a projection refuses it rather than composing with it
+    ///
+    /// Equal-aspect exists because a point map had no projection: it widens the
+    /// narrower of two positional domains until a degree of longitude and a
+    /// degree of latitude occupy the same number of pixels, which is the best a
+    /// cartesian frame can do at impersonating a map. A projection has already
+    /// answered that question — correctly, and differently at every latitude —
+    /// and the renderer aspect-fits its output, so widening on top of it would
+    /// stretch a map that was right. The two are alternatives, not layers.
+    ///
+    /// The refusal is HERE, in the accessor every reader goes through, rather
+    /// than in the setters or in the renderer. A setter-side refusal would
+    /// depend on which of the two was written first, and a renderer-side one
+    /// would have to be repeated by each renderer that grows a projection. This
+    /// is one line that no reader can go around.
     #[must_use]
     pub fn equal_aspect(&self) -> bool {
-        self.equal_aspect
+        self.equal_aspect && self.projection.is_none()
     }
 
     /// Extract a ChannelMap from a mark's options.
@@ -398,6 +433,23 @@ impl ChannelMap {
         };
         if asks_equal_aspect {
             cm.set_equal_aspect(true);
+        }
+        // `projectionType` — the map projection this mark draws through,
+        // resolved by the SAME `ResolvedProjection::from_wire` the plot-level
+        // attribute goes through, so a name means one thing wherever it is
+        // written and a name outside Mosaic's vocabulary is unrecognised in both
+        // places. Read per mark for the reason `aspectRatio` above it is:
+        // Observable Plot puts both on the plot, and a mark option reaches here
+        // with no further wiring while a plot attribute would have to be
+        // threaded through every renderer-construction call site. It has the
+        // second advantage that a point map's ghost and subset layers carry the
+        // same projection by construction rather than by two lookups agreeing.
+        if let Some(ValueOrParamRef::Value(SpecValue::String(name))) =
+            mark.options.get("projectionType")
+        {
+            if let Some(resolved) = brightfield_spec::layout::ResolvedProjection::from_wire(name) {
+                cm.set_projection(crate::mark::Projection::from(resolved));
+            }
         }
         cm
     }

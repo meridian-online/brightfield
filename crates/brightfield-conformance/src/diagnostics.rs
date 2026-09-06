@@ -233,6 +233,7 @@ fn warning_wire_name(warning: &ParseWarning) -> String {
         ParseWarning::NonNumericInset { attribute }
         | ParseWarning::NonStringLabel { attribute } => attribute.clone(),
         ParseWarning::UnknownProjection { value } => value.clone(),
+        ParseWarning::AspectRatioWithProjection { mark } => mark.clone(),
         // The widget the author asked for by name, so the banner names
         // something they can search their own file for.
         ParseWarning::IntervalSliderIncomplete { .. } => "slider".to_string(),
@@ -246,6 +247,7 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         ParseWarning::Unimplemented { surface, .. } => surface.label(),
         ParseWarning::UnconsumedMarkOption { .. }
         | ParseWarning::UnconsumedSort { .. }
+        | ParseWarning::AspectRatioWithProjection { .. }
         | ParseWarning::HighlightOnAggregate { .. } => "mark",
         ParseWarning::InteractorBindingMissing { .. }
         | ParseWarning::InteractorBindingNonSelection { .. }
@@ -260,8 +262,13 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         | ParseWarning::LegendBindingNonCrossfilter { .. } => "legend",
         ParseWarning::ParamTypeMismatch { .. } | ParseWarning::DeadParam { .. } => "param",
         ParseWarning::NonNumericInset { .. }
-        | ParseWarning::NonStringLabel { .. }
-        | ParseWarning::UnknownProjection { .. } => "plot",
+        // `projectionType` is a plot attribute in Mosaic, and brightfield reads
+        // it on a mark as well (see `CONSUMED_MARK_OPTION_KEYS`). The warning
+        // does not carry which node raised it, so a mark-level bad name is
+        // labelled "plot" here — the message names the offending VALUE, which is
+        // what an author searches their own file for.
+        | ParseWarning::UnknownProjection { .. }
+        | ParseWarning::NonStringLabel { .. } => "plot",
         ParseWarning::UnknownAggregate { .. }
         | ParseWarning::UnconsumedChannelTransform { .. }
         | ParseWarning::ColourNameShadowsColumn { .. } => "channel",
