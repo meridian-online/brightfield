@@ -11,12 +11,17 @@
 # something nobody looked at, and the two disagree silently because nothing
 # ever compares them.
 #
-# IT RUNS THE CONSUMERS RATHER THAN READING THEM. `scripts/package.sh
-# --print-finetype-pin` and `scripts/fetch-finetype-bundle.sh --print-tag` each
-# print the same variable their real path uses, so what is compared here is
-# behaviour and not source text. That distinction is the whole design: a scan
-# for a version literal is a guess about how somebody would write the mistake,
-# and it takes one rename, one shared helper or one indirection to walk past.
+# IT EXECUTES THE CONSUMERS, AND THAT IS LESS THAN IT SOUNDS. What it runs is
+# each consumer's `--print` mode, not the path that decides which bytes get
+# staged, so what is compared is "can this file read the pin" and not "does
+# this file stage what the pin says". A print mode can be right while the code
+# beside it reads a literal — measured, on this branch, in scripts/package.sh.
+#
+# The staging paths are pinned elsewhere and by running them:
+# scripts/package-finetype-selftest.sh overrides the pin with a tag its fixture
+# does not carry, and scripts/fetch-finetype-bundle-selftest.sh drives the real
+# fetch against a loopback registry. This file is the cheap cross-check that
+# the three readers agree, not the evidence that any of them is used.
 #
 # The workflow is the exception and it is named as one. A YAML file cannot be
 # executed here, so the release workflow is checked by reading it: it must

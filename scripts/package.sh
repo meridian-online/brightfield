@@ -93,10 +93,14 @@ export RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-1.95.0}"
 
 # scripts/check-finetype-pin.sh runs this to compare the tag THIS script would
 # stage against the declaration and against what the other consumers answer.
-# It prints the same reader's answer the staging path below uses, so the two
-# cannot diverge — a mode that re-read the pin its own way would be a second
-# implementation and would agree with the declaration while the real path did
-# not.
+#
+# WHAT IT ESTABLISHES IS NARROW. It shows this file can read the pin. It does
+# NOT show that the staging path below uses what it read — a review pass
+# changed that path to compare a literal and this mode went on printing the
+# right answer. What pins the staging path is
+# scripts/package-finetype-selftest.sh, which overrides the pin with a tag the
+# fixture deliberately does not carry: a package.sh comparing a literal passes
+# the fixture and fails that case.
 if [ "${1:-}" = "--print-finetype-pin" ]; then
   scripts/finetype-pin.sh
   exit 0
