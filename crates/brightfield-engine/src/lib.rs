@@ -15,6 +15,7 @@ pub mod preagg;
 pub mod profile;
 pub mod semantic;
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -24,7 +25,8 @@ pub use duckdb::arrow::datatypes::SchemaRef;
 pub use duckdb::arrow::record_batch::RecordBatch;
 use duckdb::Connection;
 pub use profile::{
-    Bars, ColumnMoments, ColumnProfile, Distribution, ProfileOutcome, SourceProfile,
+    Bars, ColumnMoments, ColumnProfile, Distribution, ProfileOutcome, ScanTally, SourceProfile,
+    StatementScans,
 };
 pub use semantic::{SemanticType, TypeSource, ValueCheck};
 
@@ -730,6 +732,7 @@ impl Engine {
             facts_cache: HashMap::new(),
             type_source,
             type_source_error,
+            scan_tally: RefCell::new(None),
         };
 
         Ok(LoadResult {
@@ -879,6 +882,14 @@ pub struct Session {
     /// and refused" and "no bundle was asked for" — the two look identical
     /// from a column profile, and only one of them is a packaging bug.
     type_source_error: Option<String>,
+    /// Where [`Session::profile_sources_counting_scans`] collects what the
+    /// profiling statements cost. `None` — the state a caller that did not ask
+    /// to count leaves it in — means nobody is counting.
+    ///
+    /// A cell rather than a parameter threaded through the pass because the
+    /// thing being counted is every statement the pass issues, and a parameter
+    /// is something a new statement can be written without.
+    scan_tally: RefCell<Option<ScanTally>>,
 }
 
 /// One navigable axis of a navigation extent: the column the gesture moved
@@ -2641,6 +2652,50 @@ impl Session {
             .collect()
     }
 
+    /// [`Session::profile_sources`], with a count of how many times DuckDB
+    /// reads a table doing it.
+    ///
+    /// The profiles are the same profiles, computed by the same code — this
+    /// wraps that call rather than reimplementing it, so a statement added to
+    /// the pass is counted without anybody remembering to count it.
+    ///
+    /// **What is counted is leaves of the physical plan, not statements.**
+    /// Before each statement runs, DuckDB is asked to explain it, and the
+    /// leaves of that plan are the places rows enter the query. A statement
+    /// per column and a `UNION ALL` branch per column both read the table
+    /// once per column, and only a leaf count tells them apart from the one
+    /// statement that reads it once. See [`profile::SCANS_PER_SOURCE`] for the
+    /// number a source is held to.
+    ///
+    /// The explaining is why this is a separate entry point and not something
+    /// [`Session::profile_sources`] does anyway: it roughly doubles the
+    /// statements the pass issues, which a benchmark will pay for and a file
+    /// open should not.
+    #[must_use]
+    pub fn profile_sources_counting_scans(&self) -> (Vec<SourceProfile>, ScanTally) {
+        *self.scan_tally.borrow_mut() = Some(ScanTally::default());
+        let profiles = self.profile_sources();
+        let tally = self.scan_tally.borrow_mut().take().unwrap_or_default();
+        (profiles, tally)
+    }
+
+    /// How many leaves DuckDB's physical plan for `sql` carries, or `None`
+    /// where it declined to explain it.
+    ///
+    /// `EXPLAIN` plans the statement; it does not run it, so the count is what
+    /// DuckDB was about to do rather than a second execution of it.
+    fn plan_scans(&self, sql: &str) -> Option<u32> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("EXPLAIN (FORMAT json) {sql}"))
+            .ok()?;
+        let batches: Vec<RecordBatch> = stmt.query_arrow(duckdb::params![]).ok()?.collect();
+        let batch = batches.into_iter().find(|b| b.num_rows() > 0)?;
+        let column = batch.num_columns().checked_sub(1)?;
+        let text = profile::read_text(&batch, column)?;
+        profile::plan_scans(&text)
+    }
+
     /// DESCRIBE + one aggregate pass for a single queryable view. Any DuckDB
     /// error (e.g. a source whose backing file vanished) becomes a
     /// [`ProfileOutcome::Failed`] so one bad source never takes the sidebar
@@ -2656,65 +2711,90 @@ impl Session {
         };
         // The second pass, and the reason it is a second one: which shape a
         // column's distribution takes is decided by the EXACT distinct count,
-        // which the aggregate above is what produces. One `GROUP BY` per
-        // numeric column, at the resolution both the bar chart and the rug are
-        // folded out of.
+        // which the aggregate above is what produces. ONE `GROUP BY` for every
+        // numeric column at once, at the resolution both the bar chart and the
+        // rug are folded out of — a statement per column read the table once
+        // per column, and a table has as many numeric columns as it likes.
         if let ProfileOutcome::Profiled { columns, .. } = &mut outcome {
-            for column in columns.iter_mut() {
-                let Some(moments) = column.moments.as_mut() else {
-                    continue;
-                };
-                // A column whose bounds are not finite has no range to lay
-                // buckets across, and keeps the empty distribution the
-                // aggregate pass gave it.
-                if let Some(sql) = Self::distribution_sql(name, &column.name, moments) {
-                    match self.query_arrow_raw(&sql) {
-                        Ok(batches) => {
-                            moments.distribution = read_distribution(&batches, moments);
+            let asks = distribution_asks(columns);
+            if let Some(sql) = Self::distributions_sql(name, &asks) {
+                match self.query_arrow_raw(&sql) {
+                    Ok(batches) => {
+                        for (ask, counted) in asks.iter().zip(read_distributions(&batches, &asks)) {
+                            if let Some(moments) = columns[ask.at].moments.as_mut() {
+                                moments.distribution = counted;
+                            }
                         }
-                        Err(e) => return ProfileOutcome::Failed(e.to_string()),
                     }
+                    Err(e) => return ProfileOutcome::Failed(e.to_string()),
                 }
             }
         }
         outcome
     }
 
-    /// The one `GROUP BY` behind a numeric column's distribution, or `None`
-    /// where its bounds cannot carry buckets.
+    /// The one `GROUP BY` behind the numeric columns' distributions, however
+    /// many of them there are — or `None` where no column asked for one.
     ///
-    /// Two shapes, chosen by the exact distinct count: the values themselves
-    /// where there are few enough to draw one bar each, and
-    /// [`profile::BIN_RESOLUTION`] equal-width buckets otherwise. The bucket
-    /// arithmetic is `floor((v - min) / (max - min) * n)` clamped to the last
-    /// bucket — the same arithmetic `brightfield-sql`'s `equiwidth_bin_centre`
-    /// writes for a histogram tile, because `width_bucket` is not in the
-    /// bundled libduckdb.
+    /// **One statement rather than one per column, and that is the whole
+    /// point of its shape.** Each row of the source is expanded into one entry
+    /// per counted column — `unnest` over a list of `{column, key}` structs —
+    /// and the single `GROUP BY` beneath counts the pairs. DuckDB reads the
+    /// table once for it, where a statement per column read it once per
+    /// column and a `UNION ALL` branch per column would read it once per
+    /// branch.
+    ///
+    /// Two shapes of key, chosen per column by its exact distinct count and
+    /// carried in the same DOUBLE: the value itself where there are few enough
+    /// to draw one bar each, and a [`profile::BIN_RESOLUTION`] equal-width
+    /// bucket index otherwise. The bucket arithmetic is
+    /// `floor((v - min) / (max - min) * n)` clamped to the last bucket — the
+    /// same arithmetic `brightfield-sql`'s `equiwidth_bin_centre` writes for a
+    /// histogram tile, because `width_bucket` is not in the bundled libduckdb.
     ///
     /// The bounds are written into the statement as double literals rather than
     /// re-derived by a subquery, so the buckets are laid across exactly the
     /// range [`ColumnMoments::min`] and `max` report and a reader's bar cannot
     /// sit outside the range printed under it.
-    fn distribution_sql(source: &str, column: &str, moments: &ColumnMoments) -> Option<String> {
-        if !moments.min.is_finite() || !moments.max.is_finite() {
+    ///
+    /// A row where the column is NULL contributes no entry — the `CASE`
+    /// yields a NULL struct and the `WHERE` drops it — which is what the
+    /// per-column statement's `WHERE "col" IS NOT NULL` did.
+    /// `profiles_mixed_types_nulls_and_gating` is what reads that back, and
+    /// the case it puts up is the one a combined statement can get wrong: a
+    /// numeric column carrying a NULL row beside a numeric column that does
+    /// not, both counted by the one statement, with each column's exact
+    /// distribution asserted.
+    fn distributions_sql(source: &str, asks: &[DistributionAsk]) -> Option<String> {
+        if asks.is_empty() {
             return None;
         }
-        let q = escape_ident(column);
         let src = escape_ident(source);
-        if moments.distinct <= profile::VALUE_BAR_LIMIT {
-            return Some(format!(
-                "SELECT CAST(\"{q}\" AS DOUBLE) AS v, CAST(count(*) AS BIGINT) AS n \
-                 FROM \"{src}\" WHERE \"{q}\" IS NOT NULL GROUP BY 1 ORDER BY 1"
-            ));
-        }
-        let (lo, hi) = (moments.min, moments.max);
         let bins = profile::BIN_RESOLUTION;
         let last = bins - 1;
+        let entries: Vec<String> = asks
+            .iter()
+            .enumerate()
+            .map(|(slot, ask)| {
+                let q = escape_ident(&ask.column);
+                let key = if ask.distinct <= profile::VALUE_BAR_LIMIT {
+                    format!("CAST(\"{q}\" AS DOUBLE)")
+                } else {
+                    let (lo, hi) = (ask.min, ask.max);
+                    format!(
+                        "coalesce(least(floor((CAST(\"{q}\" AS DOUBLE) - {lo:?}) \
+                         / nullif({hi:?} - {lo:?}, 0) * {bins}), {last}), 0)"
+                    )
+                };
+                format!("CASE WHEN \"{q}\" IS NULL THEN NULL ELSE {{'c': {slot}, 'k': {key}}} END")
+            })
+            .collect();
         Some(format!(
-            "SELECT CAST(coalesce(least(floor((CAST(\"{q}\" AS DOUBLE) - {lo:?}) \
-             / nullif({hi:?} - {lo:?}, 0) * {bins}), {last}), 0) AS BIGINT) AS b, \
+            "SELECT CAST(u.c AS BIGINT) AS c, CAST(u.k AS DOUBLE) AS k, \
              CAST(count(*) AS BIGINT) AS n \
-             FROM \"{src}\" WHERE \"{q}\" IS NOT NULL GROUP BY 1 ORDER BY 1"
+             FROM (SELECT unnest([{}]) AS u FROM \"{src}\") \
+             WHERE u IS NOT NULL GROUP BY 1, 2 ORDER BY 1, 2",
+            entries.join(", ")
         ))
     }
 
@@ -2900,6 +2980,19 @@ impl Session {
     /// counterpart to the mark path's cached `execute_emitted`, deliberately
     /// bypassing every cache so it never perturbs mark execution counts.
     fn query_arrow_raw(&self, sql: &str) -> Result<Vec<RecordBatch>, duckdb::Error> {
+        // Nobody is counting unless `profile_sources_counting_scans` is the
+        // caller, and then a statement this funnel issues is counted whether
+        // or not whoever wrote it knew about the tally — which is the reason
+        // the counting sits here and not at each call site.
+        if self.scan_tally.borrow().is_some() {
+            let scans = self.plan_scans(sql);
+            if let Some(tally) = self.scan_tally.borrow_mut().as_mut() {
+                tally.statements.push(StatementScans {
+                    sql: sql.to_string(),
+                    scans,
+                });
+            }
+        }
         let mut stmt = self.conn.prepare(sql)?;
         let arrow = stmt.query_arrow(duckdb::params![])?;
         Ok(arrow.collect())
@@ -3028,68 +3121,122 @@ fn collect_marks_with_path(
     }
 }
 
-/// Read the one `GROUP BY` a distribution pass issued into a
-/// [`Distribution`], choosing the variant the statement asked for.
+/// One numeric column the distribution pass counts, and everything the
+/// aggregate pass already learned that deciding its shape needs.
 ///
-/// The statement's shape is decided by `moments.distinct`, so this reads the
-/// same branch that wrote it: two columns either way — a value or a bucket
-/// index, and a count.
-fn read_distribution(batches: &[RecordBatch], moments: &ColumnMoments) -> Distribution {
+/// Gathered before the statement is written because the statement covers every
+/// counted column at once: the pass has to know which columns it is asking
+/// about, and in what order, before it can read the one answer back apart.
+struct DistributionAsk {
+    /// Where the column sits in [`ProfileOutcome::Profiled`]'s `columns`.
+    at: usize,
+    /// The column's name, unquoted.
+    column: String,
+    /// [`ColumnMoments::min`], the bottom of the range buckets span.
+    min: f64,
+    /// [`ColumnMoments::max`], the top of it.
+    max: f64,
+    /// [`ColumnMoments::distinct`] — the EXACT count, which is what chooses
+    /// between one bar per value and [`profile::BIN_RESOLUTION`] buckets.
+    distinct: u64,
+}
+
+/// The numeric columns of a profiled source that have a distribution to count,
+/// in profile order.
+///
+/// A column with no moments has no distribution defined over it. A column
+/// whose bounds are not finite has no range to lay buckets across, and keeps
+/// the empty distribution the aggregate pass gave it — the same two exclusions
+/// the per-column statement made, in one place instead of at the call site.
+fn distribution_asks(columns: &[ColumnProfile]) -> Vec<DistributionAsk> {
+    columns
+        .iter()
+        .enumerate()
+        .filter_map(|(at, column)| {
+            let moments = column.moments.as_ref()?;
+            (moments.min.is_finite() && moments.max.is_finite()).then(|| DistributionAsk {
+                at,
+                column: column.name.clone(),
+                min: moments.min,
+                max: moments.max,
+                distinct: moments.distinct,
+            })
+        })
+        .collect()
+}
+
+/// Read the one `GROUP BY` the distribution pass issued into one
+/// [`Distribution`] per ask, in the order of `asks`.
+///
+/// The statement emits `(column slot, key, count)`, where the slot is the
+/// ask's position in `asks` and the key is whichever of the two shapes that
+/// ask chose — so this reads back the same branch that wrote it, column by
+/// column.
+///
+/// A slot no ask claims is dropped rather than trusted: the statement is
+/// written from this same list, so an out-of-range slot means the statement
+/// and the read have come apart, and inventing a column for it would put
+/// counts on a band that never asked for them.
+fn read_distributions(batches: &[RecordBatch], asks: &[DistributionAsk]) -> Vec<Distribution> {
     use duckdb::arrow::array::Array;
 
-    if moments.distinct <= profile::VALUE_BAR_LIMIT {
-        let mut values: Vec<(f64, u64)> = Vec::new();
-        for batch in batches {
-            let Some(v) = batch
-                .column(0)
-                .as_any()
-                .downcast_ref::<duckdb::arrow::array::Float64Array>()
-            else {
-                continue;
-            };
-            let Some(n) = batch
-                .column(1)
-                .as_any()
-                .downcast_ref::<duckdb::arrow::array::Int64Array>()
-            else {
-                continue;
-            };
-            for row in 0..batch.num_rows() {
-                if v.is_null(row) || n.is_null(row) {
-                    continue;
-                }
-                values.push((v.value(row), n.value(row).max(0) as u64));
+    let mut out: Vec<Distribution> = asks
+        .iter()
+        .map(|ask| {
+            if ask.distinct <= profile::VALUE_BAR_LIMIT {
+                Distribution::Values(Vec::new())
+            } else {
+                Distribution::Bins(vec![0u64; profile::BIN_RESOLUTION])
             }
-        }
-        return Distribution::Values(values);
-    }
-    let mut bins = vec![0u64; profile::BIN_RESOLUTION];
+        })
+        .collect();
+
     for batch in batches {
-        let Some(b) = batch
+        let Some(slots) = batch
             .column(0)
             .as_any()
             .downcast_ref::<duckdb::arrow::array::Int64Array>()
         else {
             continue;
         };
-        let Some(n) = batch
+        let Some(keys) = batch
             .column(1)
+            .as_any()
+            .downcast_ref::<duckdb::arrow::array::Float64Array>()
+        else {
+            continue;
+        };
+        let Some(counts) = batch
+            .column(2)
             .as_any()
             .downcast_ref::<duckdb::arrow::array::Int64Array>()
         else {
             continue;
         };
         for row in 0..batch.num_rows() {
-            if b.is_null(row) || n.is_null(row) {
+            if slots.is_null(row) || keys.is_null(row) || counts.is_null(row) {
                 continue;
             }
-            let at = b.value(row).max(0) as usize;
-            if let Some(slot) = bins.get_mut(at) {
-                *slot = slot.saturating_add(n.value(row).max(0) as u64);
+            let Ok(slot) = usize::try_from(slots.value(row)) else {
+                continue;
+            };
+            let Some(distribution) = out.get_mut(slot) else {
+                continue;
+            };
+            let count = counts.value(row).max(0) as u64;
+            match distribution {
+                Distribution::Values(values) => values.push((keys.value(row), count)),
+                Distribution::Bins(bins) => {
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let at = keys.value(row).max(0.0) as usize;
+                    if let Some(bin) = bins.get_mut(at) {
+                        *bin = bin.saturating_add(count);
+                    }
+                }
             }
         }
     }
-    Distribution::Bins(bins)
+    out
 }
 
 #[cfg(test)]
@@ -3980,6 +4127,17 @@ plot:
         let fm = f.moments.as_ref().expect("a double column carries moments");
         assert_eq!(fm.sd, None, "one row has no sample deviation");
         assert_eq!(fm.distinct, 1);
+        // And its NULL row draws nothing. This is the cross-column case the
+        // ONE distribution statement can get wrong: `i` and `f` are counted
+        // together, and `f` alone carries a NULL. A NULL that reached the
+        // count would show up here as a second entry — at whatever value the
+        // statement had substituted for it — rather than as the one bar the
+        // column's one value earns.
+        assert_eq!(
+            fm.distribution,
+            crate::profile::Distribution::Values(vec![(1.5, 1)]),
+            "the column's one non-null row is its one bar, and the NULL row              beside it contributes none"
+        );
 
         // Neither a VARCHAR nor a temporal column carries a moment: an average
         // date is a number in a unit nobody asked about.
