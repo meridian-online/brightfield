@@ -153,11 +153,7 @@ pub struct Measured {
 /// # Errors
 ///
 /// The directory could not be created, or DuckDB would not write the file.
-pub fn ensure_csv(
-    conn: &duckdb::Connection,
-    dir: &Path,
-    shape: &Shape,
-) -> Result<PathBuf, String> {
+pub fn ensure_csv(conn: &duckdb::Connection, dir: &Path, shape: &Shape) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let path = dir.join(format!(
         "open_{}_{}x{}.csv",
@@ -323,9 +319,7 @@ pub fn report(rows: &[Measured]) -> String {
         "shape   rows    cols  numeric  bytes      scans/bound  profile p50  open p50  tiles\n",
     );
     for m in rows {
-        let scans = m
-            .scans
-            .map_or_else(|| "?".to_string(), |s| s.to_string());
+        let scans = m.scans.map_or_else(|| "?".to_string(), |s| s.to_string());
         let profile = m
             .profile
             .as_ref()
@@ -414,11 +408,7 @@ mod tests {
             "the {}-numeric-column table is read {:?} times and the \
              {}-numeric-column one {:?}, so the count tracks the columns: \
              {:#?}",
-            wide.shape.numeric,
-            wide.scans,
-            narrow.shape.numeric,
-            narrow.scans,
-            wide.statements
+            wide.shape.numeric, wide.scans, narrow.shape.numeric, narrow.scans, wide.statements
         );
         assert_eq!(
             narrow.scans,

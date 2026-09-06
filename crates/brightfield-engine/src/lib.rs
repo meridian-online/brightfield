@@ -2684,7 +2684,10 @@ impl Session {
     /// `EXPLAIN` plans the statement; it does not run it, so the count is what
     /// DuckDB was about to do rather than a second execution of it.
     fn plan_scans(&self, sql: &str) -> Option<u32> {
-        let mut stmt = self.conn.prepare(&format!("EXPLAIN (FORMAT json) {sql}")).ok()?;
+        let mut stmt = self
+            .conn
+            .prepare(&format!("EXPLAIN (FORMAT json) {sql}"))
+            .ok()?;
         let batches: Vec<RecordBatch> = stmt.query_arrow(duckdb::params![]).ok()?.collect();
         let batch = batches.into_iter().find(|b| b.num_rows() > 0)?;
         let column = batch.num_columns().checked_sub(1)?;
