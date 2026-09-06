@@ -48,8 +48,8 @@ const TOL: f64 = 1e-12;
 
 /// The fixture coordinates, in degrees. Chosen away from the equator and away
 /// from the prime meridian, because that is where a projection and an
-/// unprojected `(lon, lat)` scatter differ enough to tell apart — `origin` is
-/// the one control, where most of them agree at `(0, 0)`.
+/// unprojected scatter differ enough to tell apart — `origin` is the control,
+/// where most of them agree at the planar zero.
 const POINTS: &[(&str, f64, f64)] = &[
     ("reykjavik", -21.94, 64.15),
     ("milan", 9.19, 45.46),
@@ -59,9 +59,9 @@ const POINTS: &[(&str, f64, f64)] = &[
     ("north_cape", 25.78, 71.17),
 ];
 
-/// Every projection, its Mosaic wire name, and where the oracle says each
-/// [`POINTS`] entry lands. `None` is a coordinate the projection has no position
-/// for — the far hemisphere, the antipode, or past a Mercator clip.
+/// Each projection, its Mosaic wire name, and where the oracle says a `POINTS`
+/// entry lands. `None` is a coordinate the projection has no position for — the
+/// far hemisphere, the antipode, or past a Mercator clip.
 type Expectations = &'static [(
     Projection,
     &'static str,
@@ -313,10 +313,10 @@ const REFERENCE: Expectations = &[
     ),
 ];
 
-/// Every Mosaic `ProjectionName`, in the schema's own order. The vocabulary is
-/// fixed by upstream, so this is a closed list and not a growing one; a name
-/// missing from it is a name a Mosaic spec can write and this build has never
-/// been asked about.
+/// Mosaic's `ProjectionName` values, in the schema's own order. The vocabulary
+/// is fixed by upstream, so this is a closed list and not a growing one; a name
+/// missing from it is one a Mosaic spec can write and this build has not been
+/// asked about.
 const MOSAIC_PROJECTION_NAMES: [&str; 16] = [
     "albers-usa",
     "albers",
@@ -506,8 +506,8 @@ fn an_unrepresentable_coordinate_has_no_position() {
         );
     }
 
-    // The projections that are TOTAL stay total — this is what makes the
-    // `Option` safe for every spec that predates the catalogue.
+    // The projections that are TOTAL stay total — this is what keeps the
+    // `Option` safe for the specs that predate the catalogue.
     for projection in [
         Projection::Equirectangular,
         Projection::Identity,

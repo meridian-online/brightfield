@@ -286,11 +286,12 @@ impl ChannelMap {
     /// and the renderer aspect-fits its output, so widening on top of it would
     /// stretch a map that was right. The two are alternatives, not layers.
     ///
-    /// The refusal is HERE, in the accessor every reader goes through, rather
-    /// than in the setters or in the renderer. A setter-side refusal would
-    /// depend on which of the two was written first, and a renderer-side one
-    /// would have to be repeated by each renderer that grows a projection. This
-    /// is one line that no reader can go around.
+    /// The refusal is HERE, in the accessor a reader goes through, rather than in
+    /// the setters or in the renderer — the test
+    /// `equal_aspect_and_a_projection_cannot_both_apply` drives both write orders
+    /// against it. A setter-side refusal would depend on which of the two was
+    /// written first, and a renderer-side one would have to be repeated by each
+    /// renderer that grows a projection.
     #[must_use]
     pub fn equal_aspect(&self) -> bool {
         self.equal_aspect && self.projection.is_none()
@@ -441,7 +442,7 @@ impl ChannelMap {
         // places. Read per mark for the reason `aspectRatio` above it is:
         // Observable Plot puts both on the plot, and a mark option reaches here
         // with no further wiring while a plot attribute would have to be
-        // threaded through every renderer-construction call site. It has the
+        // threaded through each renderer-construction call site. It has the
         // second advantage that a point map's ghost and subset layers carry the
         // same projection by construction rather than by two lookups agreeing.
         if let Some(ValueOrParamRef::Value(SpecValue::String(name))) =

@@ -586,20 +586,22 @@ pub fn resolve_fixed_domains(plot: &PlotNode) -> FixedDomains {
 ///
 /// The catalogue is **Mosaic's `ProjectionName` enum**, which is Observable
 /// Plot's, which is d3-geo's — one list, so a name the spec language can ask
-/// for and a name this build can draw are the same vocabulary. All sixteen
-/// names are recognised here; [`ResolvedProjection::from_wire`] is the only
-/// place that maps a wire string to a variant, so a plot attribute and a mark
-/// option cannot come to disagree about what `mercator` means.
+/// for and a name this build can draw are the same vocabulary. Sixteen names
+/// are recognised, which the test
+/// `every_mosaic_projection_name_resolves_to_its_own_variant` enumerates against
+/// the schema; [`ResolvedProjection::from_wire`] is the single place that maps a
+/// wire string to a variant, so a plot attribute and a mark option cannot come
+/// to disagree about what `mercator` means.
 ///
 /// Two stated fidelity gaps, both unchanged by the catalogue widening:
 ///
 /// - `albers-usa`'s AK/HI composite insets are deferred — it maps to plain
 ///   [`ResolvedProjection::Albers`] (contiguous-US correct; AK/HI render in
 ///   true geographic position).
-/// - `projectionRotate` / `projectionParallels` are not read, so every
-///   projection here is drawn at d3's default rotation and, for the conics,
-///   d3's default standard parallels. `albers` is the exception and only
-///   because its rotation is baked into the transform.
+/// - `projectionRotate` / `projectionParallels` are not read, so a projection
+///   here is drawn at d3's default rotation and, for the conics, d3's default
+///   standard parallels. `albers` is the exception, because its rotation is
+///   baked into the transform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ResolvedProjection {
     /// `u = lon`, `v = lat` (north-up supplied by the inverted Y scale). The
@@ -614,7 +616,7 @@ pub enum ResolvedProjection {
     Identity,
     /// [`Self::Identity`] with the latitude axis flipped.
     ReflectY,
-    /// Spherical Mercator — conformal, so local shape survives at every
+    /// Spherical Mercator — conformal, so local shape survives at each
     /// latitude. Undefined at the poles: beyond d3's clip latitude
     /// (±85.05113°) a coordinate has no position.
     Mercator,
@@ -633,7 +635,7 @@ pub enum ResolvedProjection {
     /// Azimuthal equidistant.
     AzimuthalEquidistant,
     /// Equal Earth (Šavrič, Patterson & Jenny, 2018) — an equal-area
-    /// pseudocylindrical whole-world projection, defined at every latitude.
+    /// pseudocylindrical whole-world projection, defined at each latitude.
     EqualEarth,
     /// Albers conic equal-area at d3's default standard parallels (0°, 60°).
     ConicEqualArea,
@@ -653,8 +655,9 @@ impl ResolvedProjection {
     /// This is the ONE reader of a projection name in the build: the plot
     /// attribute ([`resolve_projection`]), the mark option
     /// (`brightfield_render::channel::ChannelMap::from_mark`) and the parser's
-    /// [`crate::parse::ParseWarning::UnknownProjection`] check all come
-    /// through here, so a name is recognised everywhere or nowhere.
+    /// [`crate::parse::ParseWarning::UnknownProjection`] check come through
+    /// here, so a name is recognised in both places or in neither — held by the
+    /// test `a_mark_level_projection_is_judged_by_the_same_vocabulary`.
     #[must_use]
     pub fn from_wire(name: &str) -> Option<Self> {
         match name {
@@ -2144,7 +2147,7 @@ hconcat:
             )])),
             ResolvedProjection::Albers
         );
-        // Every other Mosaic name resolves through the same attribute — the
+        // The rest of Mosaic's names resolve through the same attribute — the
         // catalogue widened without a second mechanism beside `resolve_projection`.
         assert_eq!(
             resolve_projection(&plot_with(&[(
@@ -2177,9 +2180,9 @@ hconcat:
 
     /// Mosaic's `ProjectionName` enum, verbatim from its published JSON schema
     /// (`idl.uw.edu/mosaic/schema/latest.json`, `definitions/ProjectionName`).
-    /// Every one of them resolves, and each to a DISTINCT variant except the two
-    /// pairs that are deliberately one — `albers`/`albers-usa`, whose composite
-    /// insets are deferred, and nothing else.
+    /// Each resolves, and to a DISTINCT variant apart from the one pair that is
+    /// deliberately shared: `albers`/`albers-usa`, whose composite insets are
+    /// deferred.
     #[test]
     fn every_mosaic_projection_name_resolves_to_its_own_variant() {
         let names = [
