@@ -2144,17 +2144,88 @@ hconcat:
             )])),
             ResolvedProjection::Albers
         );
-        // Unrecognised / non-string → default (no panic; the warning is parse-time).
+        // Every other Mosaic name resolves through the same attribute — the
+        // catalogue widened without a second mechanism beside `resolve_projection`.
         assert_eq!(
             resolve_projection(&plot_with(&[(
                 "projectionType",
                 SpecValue::String("mercator".into())
+            )])),
+            ResolvedProjection::Mercator
+        );
+        assert_eq!(
+            resolve_projection(&plot_with(&[(
+                "projectionType",
+                SpecValue::String("orthographic".into())
+            )])),
+            ResolvedProjection::Orthographic
+        );
+        // A name outside Mosaic's vocabulary → default (no panic; the warning is
+        // parse-time).
+        assert_eq!(
+            resolve_projection(&plot_with(&[(
+                "projectionType",
+                SpecValue::String("mollweide".into())
             )])),
             ResolvedProjection::Equirectangular
         );
         assert_eq!(
             resolve_projection(&plot_with(&[("projectionType", SpecValue::Integer(3))])),
             ResolvedProjection::Equirectangular
+        );
+    }
+
+    /// Mosaic's `ProjectionName` enum, verbatim from its published JSON schema
+    /// (`idl.uw.edu/mosaic/schema/latest.json`, `definitions/ProjectionName`).
+    /// Every one of them resolves, and each to a DISTINCT variant except the two
+    /// pairs that are deliberately one — `albers`/`albers-usa`, whose composite
+    /// insets are deferred, and nothing else.
+    #[test]
+    fn every_mosaic_projection_name_resolves_to_its_own_variant() {
+        let names = [
+            ("albers-usa", ResolvedProjection::Albers),
+            ("albers", ResolvedProjection::Albers),
+            (
+                "azimuthal-equal-area",
+                ResolvedProjection::AzimuthalEqualArea,
+            ),
+            (
+                "azimuthal-equidistant",
+                ResolvedProjection::AzimuthalEquidistant,
+            ),
+            ("conic-conformal", ResolvedProjection::ConicConformal),
+            ("conic-equal-area", ResolvedProjection::ConicEqualArea),
+            ("conic-equidistant", ResolvedProjection::ConicEquidistant),
+            ("equal-earth", ResolvedProjection::EqualEarth),
+            ("equirectangular", ResolvedProjection::Equirectangular),
+            ("gnomonic", ResolvedProjection::Gnomonic),
+            ("identity", ResolvedProjection::Identity),
+            ("reflect-y", ResolvedProjection::ReflectY),
+            ("mercator", ResolvedProjection::Mercator),
+            ("orthographic", ResolvedProjection::Orthographic),
+            ("stereographic", ResolvedProjection::Stereographic),
+            (
+                "transverse-mercator",
+                ResolvedProjection::TransverseMercator,
+            ),
+        ];
+        for (wire, expected) in names {
+            assert_eq!(
+                ResolvedProjection::from_wire(wire),
+                Some(expected),
+                "`{wire}` must resolve to {expected:?}"
+            );
+        }
+        // Distinctness, so a widening that mapped several names onto one variant
+        // could not pass the loop above: sixteen names, fifteen variants, and the
+        // one collision is the deferred composite.
+        let mut variants: Vec<ResolvedProjection> = names.iter().map(|(_, v)| *v).collect();
+        variants.sort_by_key(|v| format!("{v:?}"));
+        variants.dedup();
+        assert_eq!(
+            variants.len(),
+            names.len() - 1,
+            "only `albers`/`albers-usa` may share a variant; got {variants:?}"
         );
     }
 
