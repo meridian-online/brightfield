@@ -102,6 +102,7 @@ fn column(name: &str, type_name: &str, distinct: u64) -> ColumnProfile {
         min: None,
         max: None,
         semantic: brightfield_engine::SemanticType::NotAsked,
+        moments: None,
     }
 }
 

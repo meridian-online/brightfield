@@ -134,6 +134,7 @@ mod tests {
             min: min.map(str::to_string),
             max: max.map(str::to_string),
             semantic: SemanticType::NotAsked,
+            moments: None,
         }
     }
 

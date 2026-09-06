@@ -338,6 +338,7 @@ mod tests {
             min: Some(min.to_string()),
             max: Some(max.to_string()),
             semantic: SemanticType::NotAsked,
+            moments: None,
         }
     }
 

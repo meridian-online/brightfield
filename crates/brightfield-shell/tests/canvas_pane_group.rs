@@ -2452,27 +2452,37 @@ fn drawn_rows(
     rect: egui::Rect,
 ) -> Vec<std::collections::BTreeMap<String, String>> {
     let cells = drawn_cells_in(app, ctx, raw, rect);
-    let columns: Vec<egui::Rect> = app
+    let drawn = app
         .chart_doc()
         .grid_drawn
-        .as_ref()
-        .expect("the rows pane's grid laid a table out")
-        .header_cells
-        .iter()
-        .map(|(_, r, _)| *r)
-        .collect();
+        .clone()
+        .expect("the rows pane's grid laid a table out");
+    let columns: Vec<egui::Rect> = drawn.header_cells.iter().map(|(_, r, _)| *r).collect();
     let column_at = |x: f32| -> Option<usize> {
         columns
             .iter()
             .position(|r| x >= r.left() - 0.5 && x <= r.right() + 0.5)
     };
+    // **The header band is not a row.** Where the table draws the column
+    // header band, one header cell paints a name, a glyph, a missing count, a
+    // range and — at the full density — the statistics, each on its own line;
+    // bucketing those by y would read six rows of column facts as six rows of
+    // the table. The band's own cells say exactly where that text is, so this
+    // drops what falls inside them and keeps the body.
+    let band: Vec<egui::Rect> = drawn.band.iter().map(|cell| cell.cell).collect();
+    let in_the_band = |pos: egui::Pos2| band.iter().any(|r| r.contains(pos));
 
     // The header row names the columns; it is the row whose cells are drawn
     // from `HOUSING_HEADERS` rather than from the data. Found rather than
-    // assumed to be first: the sticky header is painted after the body.
+    // assumed to be first: the sticky header is painted after the body. Under
+    // the band the names come off the band's record instead, because the band
+    // is what drew them.
     let mut by_row: std::collections::BTreeMap<i64, Vec<(usize, String)>> =
         std::collections::BTreeMap::new();
     for (pos, text) in cells {
+        if in_the_band(pos) {
+            continue;
+        }
         let Some(col) = column_at(pos.x) else {
             continue;
         };
@@ -2481,16 +2491,24 @@ fn drawn_rows(
             .or_default()
             .push((col, text));
     }
-    let names: std::collections::BTreeMap<usize, String> = by_row
-        .values()
-        .find(|row| {
-            row.iter()
-                .all(|(_, t)| HOUSING_HEADERS.contains(&t.as_str()))
-        })
-        .expect("the table drew its header row")
-        .iter()
-        .map(|(c, t)| (*c, t.clone()))
-        .collect();
+    let names: std::collections::BTreeMap<usize, String> = if drawn.band.is_empty() {
+        by_row
+            .values()
+            .find(|row| {
+                row.iter()
+                    .all(|(_, t)| HOUSING_HEADERS.contains(&t.as_str()))
+            })
+            .expect("the table drew its header row")
+            .iter()
+            .map(|(c, t)| (*c, t.clone()))
+            .collect()
+    } else {
+        drawn
+            .band
+            .iter()
+            .map(|cell| (cell.column, cell.name.clone()))
+            .collect()
+    };
 
     by_row
         .into_values()
@@ -2760,4 +2778,304 @@ fn the_rows_pane_lists_the_rows_the_brush_selects() {
             total: 240
         }),
     );
+}
+
+// ---------------------------------------------------------------------------
+// The column header band, beneath the hero — the compact density.
+// ---------------------------------------------------------------------------
+
+/// **AC1 — the rows pane beneath the hero draws the band at the compact
+/// density.**
+///
+/// Per visible column: the finetype glyph and the name, the validity band with
+/// its missing count at the trailing end, the rug and the range — and none of
+/// the rows the full density adds. Read off the record the table left behind
+/// and then off the galleys the frame painted, because either alone can be
+/// satisfied the wrong way: a record filled in by a function that paints
+/// nothing, or a paint whose text lands somewhere the reader is not.
+///
+/// The counts are the fixture's own. Every cell of
+/// `tests/data/california_housing_sample.csv` parses as a number, so no column
+/// has a missing row and the count reads `0 missing` on all nine —
+/// [`fixture_rows`] is what says so, and it panics rather than skipping a cell
+/// it cannot parse.
+#[test]
+fn the_grid_beneath_the_hero_draws_the_compact_band() {
+    let (mut app, ctx, raw) = settled_window();
+    let drawn = app
+        .chart_doc()
+        .grid_drawn
+        .clone()
+        .expect("the rows pane's grid laid a table out");
+
+    assert!(
+        !drawn.band.is_empty(),
+        "the rows pane drew no band at all — the plain header is back, or the \
+         density never reached the item"
+    );
+    assert_eq!(
+        drawn.band.len(),
+        drawn.header_cells.len(),
+        "the band drew {} cells against {} header cells: the record is \
+         carrying `egui_table`'s several offers per cell rather than one \
+         reduced entry per column",
+        drawn.band.len(),
+        drawn.header_cells.len()
+    );
+
+    let rows = fixture_rows();
+    assert_eq!(rows.len(), 240, "the fixture's row count moved");
+    for cell in &drawn.band {
+        assert_eq!(
+            cell.density,
+            brightfield_shell::column_header::GridDensity::Compact,
+            "beneath the hero the band is compact: {cell:?}"
+        );
+        assert!(
+            HOUSING_HEADERS.contains(&cell.name.as_str()),
+            "the band names a column the fixture does not have: {}",
+            cell.name
+        );
+        assert!(
+            cell.glyph == "#" || cell.glyph == "\u{b0}",
+            "every column of this fixture is a number, and two of them are a \
+             coordinate pair, so the glyph is a hash or a degree sign — {} \
+             drew {:?}",
+            cell.name,
+            cell.glyph
+        );
+        assert_eq!(
+            cell.count_text, "0 missing",
+            "{} has no empty cell in the file, so its validity count reads \
+             `0 missing`",
+            cell.name
+        );
+        assert_eq!(cell.missing, 0, "{}", cell.name);
+        assert_eq!(cell.valid, 240, "{}", cell.name);
+        assert!(
+            cell.rug.is_some() && !cell.rug_alphas.is_empty(),
+            "the compact band draws a rug: {cell:?}"
+        );
+        assert!(
+            cell.rug_alphas.iter().any(|a| *a > 0.0),
+            "{}'s rug drew no inked column at all, so it is a rug-shaped \
+             rectangle of nothing: {:?}",
+            cell.name,
+            cell.rug_alphas
+        );
+        assert!(
+            cell.range.is_some(),
+            "the compact band states the range: {cell:?}"
+        );
+        assert!(
+            cell.leaf.is_none()
+                && cell.storage.is_none()
+                && cell.bars.is_empty()
+                && cell.stats.is_none(),
+            "the compact band has room for none of the rows the full density \
+             adds — no leaf, no storage, no bar distribution, no statistics: \
+             {cell:?}"
+        );
+    }
+
+    // …and the ink. The strings the record claims, found among the galleys the
+    // frame painted inside the band's own cells.
+    let cells: Vec<egui::Rect> = drawn.band.iter().map(|cell| cell.cell).collect();
+    let band_rect = cells
+        .iter()
+        .copied()
+        .reduce(|a, b| a.union(b))
+        .expect("the band drew cells");
+    let painted: Vec<String> = drawn_cells_in(&mut app, &ctx, &raw, band_rect)
+        .into_iter()
+        .filter(|(pos, _)| cells.iter().any(|r| r.contains(*pos)))
+        .map(|(_, text)| text)
+        .collect();
+    let first = drawn
+        .band
+        .first()
+        .expect("the band drew at least one column");
+    let (min, max) = first.range.clone().expect("the first column's range");
+    for wanted in [first.name.clone(), first.count_text.clone(), min, max] {
+        assert!(
+            painted.contains(&wanted),
+            "the record says the band drew {wanted:?} and no galley inside its \
+             cells carries it. Painted there: {painted:?}"
+        );
+    }
+}
+
+/// **AC4 — the band scrolls with its columns and not with its rows.**
+///
+/// A horizontal wheel over the rows pane moves the band's cells by exactly
+/// what it moves the body's cells by; a vertical wheel over the same pane
+/// moves the body and leaves the band where it is. Both halves read rects off
+/// laid-out frames, and each states its own guard: a horizontal scroll that
+/// moved nothing would satisfy "they moved together", and a vertical scroll
+/// that moved nothing would satisfy "the band stayed put".
+///
+/// Driven over the pane group rather than over the grid view because that is
+/// where a competitor for the wheel exists — with the pointer over the rows
+/// pane `over_columns` is false, so the page does not take the wheel and
+/// `egui_table` gets it.
+#[test]
+fn the_band_scrolls_with_its_columns_and_not_with_its_rows() {
+    let path = fixture();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let mut app = MeridianApp::headless(boot, Mode::Light);
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(baseline_screen()),
+        ..Default::default()
+    };
+    let frame = |app: &mut MeridianApp, events: Vec<egui::Event>| {
+        let mut input = raw.clone();
+        input.events = events;
+        let _ = ctx.run_ui(input, |ui| app.draw(ui));
+    };
+    for _ in 0..3 {
+        frame(&mut app, Vec::new());
+    }
+
+    /// Where each band cell the reader can see is, this frame.
+    ///
+    /// **Visible ones only.** A column scrolled entirely off the left is still
+    /// offered to the delegate, under a region whose clip shows nothing, and
+    /// the reduction that keeps the widest visible slice has nothing to choose
+    /// between two offers that both show zero — so it keeps the first, whose
+    /// rect is the untranslated one. That is the record behaving as designed
+    /// for a column nobody can see, and comparing it would be comparing two
+    /// frames' arbitrary tie-breaks rather than a scroll.
+    fn band_lefts(app: &MeridianApp) -> std::collections::BTreeMap<String, egui::Rect> {
+        app.chart_doc()
+            .grid_drawn
+            .as_ref()
+            .expect("the rows pane's grid laid a table out")
+            .band
+            .iter()
+            .filter(|cell| cell.clip.intersect(cell.cell).width() > 0.5)
+            .map(|cell| (cell.name.clone(), cell.cell))
+            .collect()
+    }
+
+    let pane = app
+        .canvas_panes()
+        .pane("rows")
+        .expect("the rows pane drew")
+        .body;
+    // The body's own cells, by the text they carry — the reference the band's
+    // movement is compared against. Read below the band so the band's own
+    // galleys are not in it.
+    let body_rect = egui::Rect::from_min_max(egui::pos2(pane.left(), pane.top() + 200.0), pane.max);
+    let body_cells = |app: &mut MeridianApp| -> std::collections::BTreeMap<String, egui::Pos2> {
+        drawn_cells_in(app, &ctx, &raw, body_rect)
+            .into_iter()
+            .map(|(pos, text)| (text, pos))
+            .collect()
+    };
+
+    let over = pane.center();
+    frame(&mut app, vec![egui::Event::PointerMoved(over)]);
+    let before_band = band_lefts(&app);
+    let before_body = body_cells(&mut app);
+    assert!(
+        !before_band.is_empty() && !before_body.is_empty(),
+        "nothing was laid out to compare: {before_band:?} / {before_body:?}"
+    );
+
+    // ----- sideways -----
+    for _ in 0..12 {
+        frame(
+            &mut app,
+            vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(-WHEEL_NOTCH, 0.0),
+                modifiers: egui::Modifiers::default(),
+                phase: egui::TouchPhase::Move,
+            }],
+        );
+    }
+    for _ in 0..6 {
+        frame(&mut app, Vec::new());
+    }
+    let after_band = band_lefts(&app);
+    let after_body = body_cells(&mut app);
+
+    let band_moved: Vec<(String, f32)> = before_band
+        .iter()
+        .filter_map(|(name, rect)| {
+            after_band
+                .get(name)
+                .map(|now| (name.clone(), now.left() - rect.left()))
+        })
+        .collect();
+    assert!(
+        !band_moved.is_empty(),
+        "no column of the band drew both before and after the sideways scroll, \
+         so there is nothing to compare"
+    );
+    let dx = band_moved[0].1;
+    assert!(
+        dx < -1.0,
+        "the sideways wheel moved the band by {dx} points, so nothing below is \
+         a claim about a scroll: {band_moved:?}"
+    );
+    assert!(
+        band_moved.iter().all(|(_, d)| (d - dx).abs() < 0.5),
+        "the band's cells moved by different amounts: {band_moved:?}"
+    );
+    let body_moved: Vec<(String, f32)> = before_body
+        .iter()
+        .filter_map(|(text, pos)| {
+            after_body
+                .get(text)
+                .map(|now| (text.clone(), now.x - pos.x))
+        })
+        .collect();
+    assert!(
+        !body_moved.is_empty(),
+        "no body cell drew both before and after the sideways scroll"
+    );
+    assert!(
+        body_moved.iter().all(|(_, d)| (d - dx).abs() < 0.5),
+        "the band moved {dx} points sideways and the body's cells moved \
+         {body_moved:?} — the header does not travel with its columns"
+    );
+
+    // ----- downwards -----
+    let before_band = band_lefts(&app);
+    let before_body = body_cells(&mut app);
+    for _ in 0..12 {
+        frame(
+            &mut app,
+            vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -WHEEL_NOTCH),
+                modifiers: egui::Modifiers::default(),
+                phase: egui::TouchPhase::Move,
+            }],
+        );
+    }
+    for _ in 0..6 {
+        frame(&mut app, Vec::new());
+    }
+    let after_band = band_lefts(&app);
+    let after_body = body_cells(&mut app);
+    assert_ne!(
+        before_body.keys().collect::<Vec<_>>(),
+        after_body.keys().collect::<Vec<_>>(),
+        "the vertical wheel listed the same rows before and after, so the \
+         table did not scroll and the claim below holds for want of a scroll"
+    );
+    for (name, rect) in &before_band {
+        let now = after_band
+            .get(name)
+            .unwrap_or_else(|| panic!("{name} left the band on a vertical scroll"));
+        assert!(
+            (now.left() - rect.left()).abs() < 0.5 && (now.top() - rect.top()).abs() < 0.5,
+            "the vertical scroll moved {name}'s band cell from {rect:?} to \
+             {now:?} — the band is scrolling with the rows"
+        );
+    }
 }

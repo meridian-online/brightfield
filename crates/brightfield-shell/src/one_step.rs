@@ -79,7 +79,12 @@ pub const MODEL_PATH: &str = "models/load.sql";
 /// columns the dashboard declined, because a column with no picture is still a
 /// column of the table and the navigator rail lists the table's columns rather
 /// than the dashboard's tiles.
-#[derive(Clone, Debug, PartialEq, Eq)]
+//
+// No `Eq`: [`ColumnFacts::moments`] carries `f64` fields, which have no total
+// equality. A grep over `HashSet`, `BTreeSet` and the map constructors under
+// `crates/` turns this type up in neither a key position nor a set element, so
+// dropping the derive costs no call site.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ColumnFacts {
     /// The column's name, as the table spells it.
     pub column: String,
@@ -113,6 +118,11 @@ pub struct ColumnFacts {
     pub min: Option<String>,
     /// The column's maximum. See [`Self::min`].
     pub max: Option<String>,
+    /// The mean, the median, the deviation, the exact distinct count and the
+    /// counted shape of a numeric column — what the grid pane's column header
+    /// band states and draws. `None` for a column the engine defines no moment
+    /// over: see [`ColumnMoments`](brightfield_engine::ColumnMoments).
+    pub moments: Option<brightfield_engine::ColumnMoments>,
 }
 
 impl ColumnFacts {
@@ -470,6 +480,7 @@ fn facts_for(profile: &ColumnProfile, dashboard: &Dashboard) -> ColumnFacts {
         nulls: profile.nulls,
         min: profile.min.clone(),
         max: profile.max.clone(),
+        moments: profile.moments.clone(),
     }
 }
 

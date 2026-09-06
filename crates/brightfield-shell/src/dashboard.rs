@@ -1344,6 +1344,7 @@ mod tests {
             min: None,
             max: None,
             semantic: SemanticType::NotAsked,
+            moments: None,
         }
     }
 
@@ -2491,6 +2492,7 @@ mod tests {
             min: values.first().cloned(),
             max: values.last().cloned(),
             semantic: SemanticType::NotAsked,
+            moments: None,
         };
         let source = Dashboard::of(&csv, std::slice::from_ref(&profile)).to_spec();
         let composed = crate::pipeline::compose_spec_str(&source, None)

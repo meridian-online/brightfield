@@ -373,6 +373,24 @@ pub struct ChartDoc {
     /// records and another reports has to pass through here. `None` on a frame
     /// where the grid drew no table.
     pub grid_drawn: Option<crate::data_grid::TableDrawn>,
+    /// **Which density the grid pane's column header band draws at**, or
+    /// `None` for the plain header this module drew before the band existed.
+    ///
+    /// The density follows where the pane is rather than what is in it, and
+    /// the pane cannot see where it is: the item is handed the document and
+    /// the workbench's per-draw context, and neither says whether this draw is
+    /// the rows pane under the hero or the grid as the canvas's whole view. So
+    /// the canvas writes it here before it draws, the way it writes
+    /// [`Self::pane_views`] and [`Self::wheel_taken`], and the item reads it
+    /// back.
+    ///
+    /// Written at **every** branch of the canvas that draws a chart body, not
+    /// only at the two that draw the grid — a density left standing from a
+    /// previous frame is a grid drawing full beneath the hero, or compact as
+    /// the view. `the_grid_beneath_the_hero_draws_the_compact_band` and
+    /// `the_grid_as_the_canvas_view_draws_the_full_band` read the two, and
+    /// `a_table_with_no_column_facts_draws_the_plain_header` reads the third.
+    pub grid_density: Option<crate::column_header::GridDensity>,
     /// **Whether a pointer gesture is holding a page origin**, as of the last
     /// frame the chart pane drew.
     ///
@@ -515,6 +533,14 @@ pub struct ChartDoc {
     /// that correspondence recorded once, at the point both are in scope,
     /// rather than re-derived from a plot's channel expression at click time.
     tile_columns: Vec<ColumnFacts>,
+    /// What every column of the opened table is, in the file's own order —
+    /// including the columns the dashboard declined, because the grid lists
+    /// the table's columns rather than the dashboard's tiles.
+    ///
+    /// Set from the same `wire_columns` call [`Self::tile_columns`] is, so a
+    /// window cannot move one without the other and the band cannot describe
+    /// the previous file's table.
+    column_facts: std::rc::Rc<crate::column_header::ColumnBandFacts>,
     /// Which of them the inspector is showing, by index into
     /// [`Self::tile_columns`]. Set by a click on a tile, cleared with the
     /// document.
@@ -558,6 +584,7 @@ impl ChartDoc {
             viewport: None,
             pane_views: None,
             grid_drawn: None,
+            grid_density: None,
             gesture_latched: false,
             gesture_ink: None,
             wheel_taken: false,
@@ -579,6 +606,7 @@ impl ChartDoc {
             nav_plot: 0,
             nav_notice: None,
             tile_columns: Vec::new(),
+            column_facts: std::rc::Rc::default(),
             selected_tile: None,
             canvas: CanvasSlot::new(host),
         }
@@ -593,6 +621,7 @@ impl ChartDoc {
             viewport: None,
             pane_views: None,
             grid_drawn: None,
+            grid_density: None,
             gesture_latched: false,
             gesture_ink: None,
             wheel_taken: false,
@@ -614,6 +643,7 @@ impl ChartDoc {
             nav_plot: 0,
             nav_notice: None,
             tile_columns: Vec::new(),
+            column_facts: std::rc::Rc::default(),
             selected_tile: None,
             canvas: CanvasSlot::headless(),
         }
@@ -664,6 +694,7 @@ impl ChartDoc {
         self.spec_path = None;
         // …and the columns described the replaced document's table.
         self.tile_columns = Vec::new();
+        self.column_facts = std::rc::Rc::default();
         self.selected_tile = None;
         // …and the pane group described the replaced document's layout. A
         // document that arrives as one picture must not be drawn in the
@@ -672,6 +703,7 @@ impl ChartDoc {
         self.min_page_height = 0.0;
         self.pane_views = None;
         self.grid_drawn = None;
+        self.grid_density = None;
         self.gesture_latched = false;
         self.gesture_ink = None;
         // …and the readout named a row of the replaced document's table. Left
@@ -1389,6 +1421,25 @@ impl ChartDoc {
     pub fn set_tile_columns(&mut self, columns: Vec<ColumnFacts>) {
         self.tile_columns = columns;
         self.selected_tile = None;
+    }
+
+    /// What every column of the table is, for the grid pane's header band.
+    pub fn set_column_facts(&mut self, columns: &[ColumnFacts]) {
+        self.column_facts = std::rc::Rc::new(crate::column_header::ColumnBandFacts::new(columns));
+    }
+
+    /// The band's facts about this document's columns.
+    ///
+    /// Handed back behind an [`std::rc::Rc`] rather than as a reference, and
+    /// that is load-bearing at exactly one call site: the grid item reads the
+    /// facts and the live coordinator off the one `&mut ChartDoc` a pane's
+    /// draw is handed, and the coordinator's accessor needs `&mut`. A cheap
+    /// handle satisfies both borrows; a reference satisfies neither, and a
+    /// clone would copy a column profile — the distribution's counts included
+    /// — once per frame.
+    #[must_use]
+    pub fn column_facts(&self) -> std::rc::Rc<crate::column_header::ColumnBandFacts> {
+        std::rc::Rc::clone(&self.column_facts)
     }
 
     /// What each tile is of, in plot order.

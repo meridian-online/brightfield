@@ -23,7 +23,9 @@ pub use brightfield_sql::ir::Predicate as SqlPredicate;
 pub use duckdb::arrow::datatypes::SchemaRef;
 pub use duckdb::arrow::record_batch::RecordBatch;
 use duckdb::Connection;
-pub use profile::{ColumnProfile, ProfileOutcome, SourceProfile};
+pub use profile::{
+    Bars, ColumnMoments, ColumnProfile, Distribution, ProfileOutcome, SourceProfile,
+};
 pub use semantic::{SemanticType, TypeSource, ValueCheck};
 
 /// A named, loud failure assembling a query's Arrow chunks into the single
@@ -2648,10 +2650,72 @@ impl Session {
             Ok(c) => c,
             Err(e) => return ProfileOutcome::Failed(e),
         };
-        match self.aggregate_source(name, &columns) {
+        let mut outcome = match self.aggregate_source(name, &columns) {
             Ok(outcome) => outcome,
-            Err(e) => ProfileOutcome::Failed(e),
+            Err(e) => return ProfileOutcome::Failed(e),
+        };
+        // The second pass, and the reason it is a second one: which shape a
+        // column's distribution takes is decided by the EXACT distinct count,
+        // which the aggregate above is what produces. One `GROUP BY` per
+        // numeric column, at the resolution both the bar chart and the rug are
+        // folded out of.
+        if let ProfileOutcome::Profiled { columns, .. } = &mut outcome {
+            for column in columns.iter_mut() {
+                let Some(moments) = column.moments.as_mut() else {
+                    continue;
+                };
+                // A column whose bounds are not finite has no range to lay
+                // buckets across, and keeps the empty distribution the
+                // aggregate pass gave it.
+                if let Some(sql) = Self::distribution_sql(name, &column.name, moments) {
+                    match self.query_arrow_raw(&sql) {
+                        Ok(batches) => {
+                            moments.distribution = read_distribution(&batches, moments);
+                        }
+                        Err(e) => return ProfileOutcome::Failed(e.to_string()),
+                    }
+                }
+            }
         }
+        outcome
+    }
+
+    /// The one `GROUP BY` behind a numeric column's distribution, or `None`
+    /// where its bounds cannot carry buckets.
+    ///
+    /// Two shapes, chosen by the exact distinct count: the values themselves
+    /// where there are few enough to draw one bar each, and
+    /// [`profile::BIN_RESOLUTION`] equal-width buckets otherwise. The bucket
+    /// arithmetic is `floor((v - min) / (max - min) * n)` clamped to the last
+    /// bucket — the same arithmetic `brightfield-sql`'s `equiwidth_bin_centre`
+    /// writes for a histogram tile, because `width_bucket` is not in the
+    /// bundled libduckdb.
+    ///
+    /// The bounds are written into the statement as double literals rather than
+    /// re-derived by a subquery, so the buckets are laid across exactly the
+    /// range [`ColumnMoments::min`] and `max` report and a reader's bar cannot
+    /// sit outside the range printed under it.
+    fn distribution_sql(source: &str, column: &str, moments: &ColumnMoments) -> Option<String> {
+        if !moments.min.is_finite() || !moments.max.is_finite() {
+            return None;
+        }
+        let q = escape_ident(column);
+        let src = escape_ident(source);
+        if moments.distinct <= profile::VALUE_BAR_LIMIT {
+            return Some(format!(
+                "SELECT CAST(\"{q}\" AS DOUBLE) AS v, CAST(count(*) AS BIGINT) AS n \
+                 FROM \"{src}\" WHERE \"{q}\" IS NOT NULL GROUP BY 1 ORDER BY 1"
+            ));
+        }
+        let (lo, hi) = (moments.min, moments.max);
+        let bins = profile::BIN_RESOLUTION;
+        let last = bins - 1;
+        Some(format!(
+            "SELECT CAST(coalesce(least(floor((CAST(\"{q}\" AS DOUBLE) - {lo:?}) \
+             / nullif({hi:?} - {lo:?}, 0) * {bins}), {last}), 0) AS BIGINT) AS b, \
+             CAST(count(*) AS BIGINT) AS n \
+             FROM \"{src}\" WHERE \"{q}\" IS NOT NULL GROUP BY 1 ORDER BY 1"
+        ))
     }
 
     /// The view's `(column_name, column_type)` pairs from DESCRIBE, internal
@@ -2697,6 +2761,8 @@ impl Session {
         // source asked for. Both drive the read back below, which walks the
         // one result row by position.
         let mut gated: Vec<bool> = Vec::with_capacity(columns.len());
+        // Per column: whether it contributed the six moment cells below.
+        let mut momented: Vec<bool> = Vec::with_capacity(columns.len());
         // `Ok(())` — this column contributed a typing cell to the SELECT.
         // `Err(reason)` — the type source declined it, or there is none.
         let mut typed: Vec<Result<(), SemanticType>> = Vec::with_capacity(columns.len());
@@ -2710,6 +2776,21 @@ impl Session {
                 selects.push(format!("CAST(max(\"{q}\") AS VARCHAR)"));
             }
             gated.push(g);
+            // The moments ride the same pass for the reason the semantic term
+            // does: six more accumulators over rows already being scanned. The
+            // exact `count(DISTINCT ...)` is deliberately a second count beside
+            // the estimate above — the tile choice reads the estimate, and the
+            // band draws a number a reader can check against the file.
+            let m = profile::is_moment_type(ty);
+            if m {
+                selects.push(format!("CAST(avg(\"{q}\") AS DOUBLE)"));
+                selects.push(format!("CAST(median(\"{q}\") AS DOUBLE)"));
+                selects.push(format!("CAST(stddev_samp(\"{q}\") AS DOUBLE)"));
+                selects.push(format!("CAST(count(DISTINCT \"{q}\") AS BIGINT)"));
+                selects.push(format!("CAST(min(\"{q}\") AS DOUBLE)"));
+                selects.push(format!("CAST(max(\"{q}\") AS DOUBLE)"));
+            }
+            momented.push(m);
             // The semantic pass rides HERE, in the aggregate that is already
             // being issued, rather than in a second scan beside it: FineType's
             // `ft_profile` is a true DuckDB aggregate, so one extra term per
@@ -2740,7 +2821,12 @@ impl Session {
         let row_count = profile::read_count(&batch, 0);
         let mut out = Vec::with_capacity(columns.len());
         let mut idx = 1usize;
-        for (((col, ty), &g), asked) in columns.iter().zip(gated.iter()).zip(typed) {
+        for ((((col, ty), &g), &m), asked) in columns
+            .iter()
+            .zip(gated.iter())
+            .zip(momented.iter())
+            .zip(typed)
+        {
             let non_null = profile::read_count(&batch, idx);
             idx += 1;
             let distinct = profile::read_count(&batch, idx);
@@ -2753,6 +2839,35 @@ impl Session {
                 (min, max)
             } else {
                 (None, None)
+            };
+            let moments = if m {
+                let mean = profile::read_double(&batch, idx);
+                let median = profile::read_double(&batch, idx + 1);
+                let sd = profile::read_double(&batch, idx + 2);
+                let distinct = profile::read_count(&batch, idx + 3);
+                let lo = profile::read_double(&batch, idx + 4);
+                let hi = profile::read_double(&batch, idx + 5);
+                idx += 6;
+                // An all-null column answers NULL to every one of them, and a
+                // band that printed `mean 0` over it would be inventing a
+                // number. The absence is the honest answer.
+                match (mean, median, lo, hi) {
+                    (Some(mean), Some(median), Some(min), Some(max)) => Some(ColumnMoments {
+                        mean,
+                        median,
+                        sd,
+                        distinct,
+                        min,
+                        max,
+                        // Filled by the second pass in `profile_one_source`,
+                        // which needs the exact distinct count above to know
+                        // which shape to ask for.
+                        distribution: profile::Distribution::Bins(Vec::new()),
+                    }),
+                    _ => None,
+                }
+            } else {
+                None
             };
             let semantic = match (asked, &self.type_source) {
                 (Err(answer), _) => answer,
@@ -2772,6 +2887,7 @@ impl Session {
                 min,
                 max,
                 semantic,
+                moments,
             });
         }
         Ok(ProfileOutcome::Profiled {
@@ -2910,6 +3026,70 @@ fn collect_marks_with_path(
         }
         _ => {}
     }
+}
+
+/// Read the one `GROUP BY` a distribution pass issued into a
+/// [`Distribution`], choosing the variant the statement asked for.
+///
+/// The statement's shape is decided by `moments.distinct`, so this reads the
+/// same branch that wrote it: two columns either way — a value or a bucket
+/// index, and a count.
+fn read_distribution(batches: &[RecordBatch], moments: &ColumnMoments) -> Distribution {
+    use duckdb::arrow::array::Array;
+
+    if moments.distinct <= profile::VALUE_BAR_LIMIT {
+        let mut values: Vec<(f64, u64)> = Vec::new();
+        for batch in batches {
+            let Some(v) = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<duckdb::arrow::array::Float64Array>()
+            else {
+                continue;
+            };
+            let Some(n) = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<duckdb::arrow::array::Int64Array>()
+            else {
+                continue;
+            };
+            for row in 0..batch.num_rows() {
+                if v.is_null(row) || n.is_null(row) {
+                    continue;
+                }
+                values.push((v.value(row), n.value(row).max(0) as u64));
+            }
+        }
+        return Distribution::Values(values);
+    }
+    let mut bins = vec![0u64; profile::BIN_RESOLUTION];
+    for batch in batches {
+        let Some(b) = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<duckdb::arrow::array::Int64Array>()
+        else {
+            continue;
+        };
+        let Some(n) = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<duckdb::arrow::array::Int64Array>()
+        else {
+            continue;
+        };
+        for row in 0..batch.num_rows() {
+            if b.is_null(row) || n.is_null(row) {
+                continue;
+            }
+            let at = b.value(row).max(0) as usize;
+            if let Some(slot) = bins.get_mut(at) {
+                *slot = slot.saturating_add(n.value(row).max(0) as u64);
+            }
+        }
+    }
+    Distribution::Bins(bins)
 }
 
 #[cfg(test)]
@@ -3764,6 +3944,143 @@ plot:
         let d = &cols[3];
         assert_eq!(d.min.as_deref(), Some("2020-01-01"));
         assert_eq!(d.max.as_deref(), Some("2020-06-01"));
+
+        // The moments, on the same pass. The integer column's two rows are 1
+        // and 2, so every figure here is arithmetic done by hand.
+        let m = i
+            .moments
+            .as_ref()
+            .expect("an integer column carries moments");
+        assert!(
+            (m.mean - 1.5).abs() < 1e-12,
+            "mean of 1 and 2, got {}",
+            m.mean
+        );
+        assert!(
+            (m.median - 1.5).abs() < 1e-12,
+            "DuckDB's median interpolates an even count, so 1 and 2 give 1.5 — got {}",
+            m.median
+        );
+        let sd = m.sd.expect("two rows have a sample deviation");
+        assert!(
+            (sd - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-12,
+            "sample deviation of 1 and 2 is 1/sqrt(2), got {sd}"
+        );
+        assert_eq!(m.distinct, 2, "the EXACT distinct count");
+        assert!((m.min - 1.0).abs() < 1e-12 && (m.max - 2.0).abs() < 1e-12);
+        assert_eq!(
+            m.distribution,
+            crate::profile::Distribution::Values(vec![(1.0, 1), (2.0, 1)]),
+            "two distinct values are under the per-value limit, so the shape is \
+             the values themselves"
+        );
+
+        // The float column has one non-null row, so the sample deviation is
+        // undefined and the band has nothing to print for it.
+        let fm = f.moments.as_ref().expect("a double column carries moments");
+        assert_eq!(fm.sd, None, "one row has no sample deviation");
+        assert_eq!(fm.distinct, 1);
+
+        // Neither a VARCHAR nor a temporal column carries a moment: an average
+        // date is a number in a unit nobody asked about.
+        assert_eq!(s.moments, None, "a varchar column carries no moments");
+        assert_eq!(d.moments, None, "a temporal column carries no moments");
+    }
+
+    /// **The distribution takes the binned branch above the per-value limit,
+    /// and the bars fold out of it exactly.**
+    ///
+    /// A hundred rows of a hundred distinct values: over
+    /// [`profile::VALUE_BAR_LIMIT`], so the pass counts
+    /// [`profile::BIN_RESOLUTION`] buckets, and the band's bars are that
+    /// folded to [`profile::DISPLAY_BINS`]. Every count is checked against the
+    /// row count the same source reports, so a bucket arithmetic that dropped
+    /// or double-counted a row shows up as a sum.
+    #[test]
+    fn a_wide_column_counts_into_bins_and_the_bars_fold_out_of_them() {
+        let yaml = r#"
+data:
+  t: "SELECT i AS v, i % 7 AS few FROM range(0, 100) AS r(i)"
+plot:
+  - mark: dot
+    data: { from: t }
+    x: v
+    y: v
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let session = Engine::new()
+            .load_spec(spec, analysis, None)
+            .unwrap()
+            .session;
+        let profiles = session.profile_sources();
+        let cols = profiled_columns(&profiles[0].outcome);
+
+        let v = cols
+            .iter()
+            .find(|c| c.name == "v")
+            .expect("the wide column")
+            .moments
+            .as_ref()
+            .expect("a numeric column carries moments");
+        assert_eq!(v.distinct, 100);
+        let crate::profile::Distribution::Bins(bins) = &v.distribution else {
+            panic!(
+                "100 distinct values is over the per-value limit, so the \
+                    shape should be buckets: {:?}",
+                v.distribution
+            )
+        };
+        assert_eq!(bins.len(), crate::profile::BIN_RESOLUTION);
+        assert_eq!(
+            bins.iter().sum::<u64>(),
+            100,
+            "every row lands in exactly one bucket"
+        );
+        let bars = v.bars();
+        assert_eq!(bars.len(), crate::profile::DISPLAY_BINS, "24 bars");
+        let crate::Bars::Binned(counts) = &bars else {
+            panic!("the binned branch folds to binned bars")
+        };
+        assert_eq!(counts.iter().sum::<u64>(), 100, "the fold loses no row");
+        // 0..99 laid across 24 equal bins: the first 23 hold four or five and
+        // the last holds the maximum too. Stated as the extremes rather than
+        // as a list, because the point is that the fold is even.
+        assert!(
+            counts.iter().all(|n| (4..=5).contains(n)),
+            "100 consecutive integers in 24 bins should be four or five deep \
+             each, got {counts:?}"
+        );
+
+        // …and the narrow column beside it, seven distinct values, takes the
+        // other branch — the one a column with as many distinct values as rows
+        // does not reach, which on the shell's fixture is `median_income`.
+        let few = cols
+            .iter()
+            .find(|c| c.name == "few")
+            .expect("the narrow column")
+            .moments
+            .as_ref()
+            .expect("a numeric column carries moments");
+        assert_eq!(few.distinct, 7);
+        let crate::profile::Distribution::Values(values) = &few.distribution else {
+            panic!(
+                "seven distinct values is under the per-value limit: {:?}",
+                few.distribution
+            )
+        };
+        assert_eq!(values.len(), 7);
+        assert_eq!(
+            values.iter().map(|(_, n)| *n).sum::<u64>(),
+            100,
+            "every row is counted against the value it carries"
+        );
+        assert_eq!(few.bars().len(), 7, "one bar per distinct value");
+
+        // The rug folds either shape into as many buckets as a cell has
+        // pixels, and folds nothing away.
+        assert_eq!(v.rug(96).len(), 96);
+        assert_eq!(v.rug(96).iter().sum::<u64>(), 100);
+        assert_eq!(few.rug(96).iter().sum::<u64>(), 100);
     }
 
     /// Declaration order + unconsumed: profiles come back in

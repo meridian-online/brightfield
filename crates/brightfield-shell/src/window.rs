@@ -84,6 +84,7 @@ use meridian_design::{radius, semantic, spacing};
 
 use crate::app::{chart_registry, ChartDoc, ChartFault, CHART, CONTROLS};
 use crate::canvas::EguiCanvasHost;
+use crate::column_header::GridDensity;
 use crate::data_grid::DATA;
 use crate::design::Mode;
 use crate::editor::EDITOR;
@@ -1529,6 +1530,12 @@ struct ChartView {
 /// Both are set from one call because they are one fact split across two
 /// documents, and a window that had moved one without the other would draw a
 /// column block naming the previous file's table.
+///
+/// The grid pane's column header band is wired here for the same reason and in
+/// the same breath, off `ProtocolModel::columns` rather than off the tiles:
+/// the band draws the table's columns, tiles and declined columns alike, while
+/// the tile list is one entry per plot. Two lists, one call, so a window
+/// cannot move one without the other.
 fn wire_columns(chart: &mut ChartDoc, model: &ProtocolModel, table: &TableHandle) {
     let tiles: Vec<crate::one_step::ColumnFacts> = model.tiles().to_vec();
     table.set((!tiles.is_empty()).then(|| ColumnTable {
@@ -1536,6 +1543,7 @@ fn wire_columns(chart: &mut ChartDoc, model: &ProtocolModel, table: &TableHandle
         step: crate::one_step::STEP_NAME.to_string(),
         kind: "sql",
     }));
+    chart.set_column_facts(model.columns());
     chart.set_tile_columns(tiles);
 }
 
@@ -2949,6 +2957,15 @@ impl MeridianApp {
         }
         let mode = self.mode;
 
+        // **The grid's density is a fact about this frame's layout, so it is
+        // cleared at the head of each frame.** The canvas branches below each
+        // say which density they mean, and the two that draw no grid say
+        // `None`;
+        // this is the third guard, for a frame where the canvas draws nothing
+        // at all and the grid pane is placed somewhere else. Without it the
+        // pane would draw whatever band the last canvas frame asked for.
+        self.charts.doc.grid_density = None;
+
         // The document's file watcher: poll on its own cadence, keep frames
         // coming while anything is watched (a poll nobody runs watches
         // nothing), and repaint immediately on news so the notice lands next
@@ -3589,6 +3606,10 @@ impl MeridianApp {
                     // drawing a whole DAG, not a group of panes with headers,
                     // so the band is the only thing naming what is on it.
                     if graph_on_canvas {
+                        // No grid is drawn on this branch, and a density left
+                        // standing from a previous frame is what a stale one
+                        // looks like.
+                        charts.doc.grid_density = None;
                         let (head, body) = chrome::rail_split(ui.max_rect());
                         canvas_head(ui, head, &canvas_name, mode);
                         draw_protocol_pane(
@@ -3618,6 +3639,9 @@ impl MeridianApp {
                         charts.doc.set_min_page_height(0.0);
                         charts.doc.pane_views = None;
                         charts.doc.wheel_taken = false;
+                        // The grid has the whole canvas here, so the band has
+                        // room for everything the contract gives it.
+                        charts.doc.grid_density = Some(GridDensity::Full);
                         canvas_scroll = 0.0;
                         canvas_panes = draw_canvas_grid_pane(
                             ui,
@@ -3642,6 +3666,12 @@ impl MeridianApp {
                         } else {
                             None
                         };
+                        // Beneath the hero the grid is a quarter of the
+                        // canvas, and the single-pane path draws no grid at
+                        // all. Both are written every frame rather than once,
+                        // so a document that moves from one to the other
+                        // cannot draw the band the previous shape wanted.
+                        charts.doc.grid_density = stacked.is_some().then_some(GridDensity::Compact);
                         if let Some(tiles) = stacked {
                             // The page's height floor, and the scroll that
                             // buys it: the column's tiles do not compress past
@@ -6348,12 +6378,20 @@ fn pane_header_of(rect: egui::Rect, body: egui::Rect) -> egui::Rect {
 /// the whole canvas instead of a quarter of it, reading the same engine session
 /// at the same layer. It is not a second grid.
 ///
-/// **What it deliberately does not carry**: the `N of M columns` note the rows
-/// pane paints at the trailing end of its own band. That note exists because
-/// the rows pane is a quarter of the canvas and usually cannot fit the table;
-/// a grid with the whole canvas usually can, and the band this pane wants is
-/// the column header band a later change gives it rather than a count of what
-/// is missing. The grid's own plain header is unchanged.
+/// **What it carries that the rows pane does not** is the column header band
+/// at its full density: the density follows the pane's place, and this is the
+/// place with room for the finetype leaf, the storage type, a bar distribution
+/// and the statistics. The density is written on the document before this is
+/// called, because the item cannot see where it is drawing.
+///
+/// **And what it now shares with the rows pane** is the `N of M columns` note
+/// at the trailing end of its own header band, through the same
+/// [`band_note`]. The premise for leaving it out was that a grid with the
+/// whole canvas usually fits the table; the full density's 128-point floor
+/// puts nine columns at 1152 points before the scrollbar, which a 1440-point
+/// window does not clear once the rails and the pane inset are taken out.
+/// Where the columns do fit, the note is not reached:
+/// `TableDrawn::some_column_is_off_screen` gates it.
 #[allow(clippy::too_many_arguments)]
 fn draw_canvas_grid_pane(
     ui: &mut egui::Ui,
@@ -6389,13 +6427,27 @@ fn draw_canvas_grid_pane(
         requests,
         affordances,
     );
+    let header = pane_header_of(rect, body);
+    // …and what the grid could not fit, at the trailing end of its own band.
+    // Read off the cells the table drew this frame, exactly as the rows pane
+    // reads it.
+    let rows_note = charts
+        .doc
+        .grid_drawn
+        .as_ref()
+        .filter(|drawn| drawn.some_column_is_off_screen())
+        .map(|drawn| {
+            let text = format!("{} of {} columns", drawn.on_screen(), drawn.columns);
+            (band_note(ui, header, &text, mode), text)
+        });
     CanvasPanes {
         panes: vec![CanvasPane {
             name: "grid",
             rect,
-            header: pane_header_of(rect, body),
+            header,
             body,
         }],
+        rows_note,
         ..CanvasPanes::default()
     }
 }
