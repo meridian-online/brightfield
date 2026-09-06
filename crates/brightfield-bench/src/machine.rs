@@ -1,6 +1,8 @@
 //! The fixed machine profile recorded beside every result. A number without
 //! its machine is not a result.
 
+use std::path::Path;
+
 use serde::Serialize;
 
 /// Where the numbers were produced: hardware, OS, GPU adapter, toolchain,
@@ -21,7 +23,17 @@ pub struct MachineProfile {
     pub rustc: String,
     /// Cargo build profile the harness ran under.
     pub build_profile: String,
-    /// `git rev-parse --short HEAD` of the tree the harness was built from.
+    /// The tree the harness ran from: `git rev-parse --short HEAD`, with
+    /// `-dirty` appended when the working tree carried uncommitted tracked
+    /// changes at capture.
+    ///
+    /// **The suffix is the point of the field.** A bare commit id says a
+    /// reader can check out that commit and get these bytes, and a record
+    /// captured from a dirty tree says that falsely — this repo has shipped
+    /// one, naming a commit that predated the flag the run was invoked with.
+    /// `a_clean_tree_and_a_dirty_one_are_not_recorded_the_same_way` in
+    /// `crates/brightfield-bench/src/machine.rs` drives both branches against
+    /// real repositories.
     pub commit: String,
     /// Capture timestamp, RFC 3339, local offset.
     pub captured_at: String,
@@ -54,7 +66,7 @@ impl MachineProfile {
             gpu_adapter: adapter_string(),
             rustc: sh("rustc", &["--version"]).unwrap_or_else(unknown),
             build_profile: profile,
-            commit: sh("git", &["rev-parse", "--short", "HEAD"]).unwrap_or_else(unknown),
+            commit: commit_id_at(Path::new(".")).unwrap_or_else(unknown),
             captured_at: chrono::Local::now().to_rfc3339(),
             duckdb: duckdb_version,
         }
@@ -63,6 +75,43 @@ impl MachineProfile {
 
 fn unknown() -> String {
     "unknown".to_string()
+}
+
+/// The short commit for the tree at `dir`, suffixed `-dirty` when tracked
+/// files differ from it.
+///
+/// `git status --porcelain --untracked-files=no` is the question, and
+/// untracked files are excluded deliberately: a scratch note beside the
+/// checkout does not change what the harness compiled.
+///
+/// **An unanswerable status question loses the whole field rather than
+/// reporting a clean id.** The suffix exists because a bare id is a promise
+/// that checking out that commit reproduces these bytes; an id recorded
+/// without knowing whether the tree was clean makes that promise on no
+/// evidence, which is the failure this replaced.
+fn commit_id_at(dir: &Path) -> Option<String> {
+    let head = git_at(dir, &["rev-parse", "--short", "HEAD"])?;
+    let status = git_at(dir, &["status", "--porcelain", "--untracked-files=no"])?;
+    Some(if status.trim().is_empty() {
+        head.trim().to_string()
+    } else {
+        format!("{}-dirty", head.trim())
+    })
+}
+
+/// `git` in `dir`, stdout as a string — `None` where it could not be run or
+/// exited non-zero. Empty stdout is a real answer here, which is why this does
+/// not go through [`sh`].
+fn git_at(dir: &Path, args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8(out.stdout).ok()
 }
 
 /// Run a command and return its trimmed stdout, `None` on any failure. Shared
@@ -189,5 +238,80 @@ Buffers:          123456 kB
             None
         );
         assert_eq!(parse_meminfo_total_gib(""), None);
+    }
+
+    /// **A dirty tree and a clean one at the same commit do not produce the
+    /// same `commit` field.**
+    ///
+    /// The record this replaced named a commit whose tree had no
+    /// `--open-scan-no-materialise` flag, from a run invoked with that flag —
+    /// the harness had been run from a working tree carrying the flag
+    /// uncommitted. The id was correct about `HEAD` and wrong about what ran,
+    /// and nothing in the record could tell the two apart.
+    ///
+    /// Two real repositories rather than a mocked `git`, because what is being
+    /// pinned is what `git status --porcelain` says, and a mock would pin this
+    /// test's opinion of that instead.
+    #[test]
+    fn a_clean_tree_and_a_dirty_one_are_not_recorded_the_same_way() {
+        let root = std::env::temp_dir().join(format!("bf-commit-id-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("scratch repo");
+
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .expect("git runs");
+            assert!(out.status.success(), "git {args:?}: {out:?}");
+        };
+        git(&["init", "--quiet"]);
+        git(&["config", "user.email", "harness@example.invalid"]);
+        git(&["config", "user.name", "harness"]);
+        std::fs::write(root.join("tracked.txt"), "one\n").expect("write");
+        git(&["add", "tracked.txt"]);
+        git(&["commit", "--quiet", "-m", "one"]);
+
+        let clean = commit_id_at(&root).expect("a committed tree has an id");
+        assert!(
+            !clean.ends_with("-dirty"),
+            "a tree with nothing modified was recorded as {clean}"
+        );
+
+        // An UNTRACKED file is deliberately not a modification: it does not
+        // change what was compiled, and treating it as one would mark every
+        // run with a scratch file beside it.
+        std::fs::write(root.join("scratch.log"), "noise\n").expect("write");
+        assert_eq!(
+            commit_id_at(&root).as_deref(),
+            Some(clean.as_str()),
+            "an untracked file changed the recorded commit"
+        );
+
+        std::fs::write(root.join("tracked.txt"), "two\n").expect("write");
+        let dirty = commit_id_at(&root).expect("a modified tree still has an id");
+        assert_eq!(
+            dirty,
+            format!("{clean}-dirty"),
+            "a tracked file was modified and the id did not say so"
+        );
+        assert_ne!(
+            dirty, clean,
+            "the same string was recorded for a clean tree and a dirty one"
+        );
+
+        // Not a repository at all: the field is lost rather than guessed.
+        let bare = std::env::temp_dir().join(format!("bf-commit-id-none-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&bare);
+        std::fs::create_dir_all(&bare).expect("scratch dir");
+        assert_eq!(
+            commit_id_at(&bare),
+            None,
+            "a directory with no repository above it reported a commit"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&bare);
     }
 }

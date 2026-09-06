@@ -13,10 +13,14 @@
 //! The file becomes a **DuckDB view in a live session**, exactly as a `file:`
 //! source in a hand-written spec would: [`open`] synthesises a spec whose one
 //! `data:` entry is the chosen path, loads it live, and hands back the session
-//! and its first composition. Nothing is read into Rust memory on the way — the
-//! Data pane beside the chart then reads `SELECT * FROM <view>` back through
-//! the engine's windowed row seam, so a Parquet larger than memory opens as
-//! readily as a small CSV.
+//! and its first composition. The rows do not come back into Rust on the way —
+//! the Data pane beside the chart reads `SELECT * FROM <view>` through the
+//! engine's windowed row seam, a page at a time.
+//!
+//! A small file is then copied into DuckDB before the first picture is drawn,
+//! and the section below is why. A file whose table does not fit the memory
+//! budget is not copied, and it opens off the view exactly as it did before
+//! any of this existed.
 //!
 //! # Why a small file is copied into DuckDB first, and a large one is not
 //!
@@ -46,14 +50,46 @@
 //! 53.5 ms of a 1,007.3 ms open, in
 //! `benchmarks/results/open-scan/2026-09-07-apple-m1-pro.json`.
 //!
-//! **The larger-than-memory property above is real and is kept**, which is why
-//! this is a threshold and not a policy: over
-//! [`MATERIALISE_UNDER_BYTES`] the file stays a view and opens exactly as it
-//! did, one read per statement and no copy. The two errors are not symmetric.
-//! Refusing to copy a file that would have fitted costs a slower open of a big
-//! table, which is what happened before and is survivable; copying one that
-//! does not fit costs the open entirely, on the table where a `file:` source
-//! was the whole point.
+//! # What decides whether a file is copied, and in which unit
+//!
+//! Two things decide it, and they are in two different units because they are
+//! answering two different questions.
+//!
+//! [`MATERIALISE_BUDGET_BYTES`] is the **memory** the copy may cost, and it is
+//! the guard. It is not a prediction: it is handed to DuckDB as a
+//! `memory_limit` for the duration of the copy, with spilling shut off, so a
+//! table that does not fit it comes back as an error rather than as a swap
+//! storm — [`brightfield_engine::Session::materialise_source`] carries the
+//! measurement, and `data_file::open` then leaves the source as a view and
+//! composes off the file. That branch is what a file too big to copy takes,
+//! and `a_file_whose_table_exceeds_the_budget_opens_off_the_view` drives it
+//! through a real open.
+//!
+//! [`MATERIALISE_UNDER_BYTES`] is the file's size **on disk**, and it decides
+//! only whether the copy is worth attempting. It makes no claim about memory,
+//! and it could not: measured on this build's DuckDB, a four-column ZSTD
+//! Parquet of 123,260 bytes on disk becomes a 511,031,296-byte table, which is
+//! 4,146 times its size on disk. What it does buy is the reading a doomed
+//! attempt would have done before the budget stopped it.
+//!
+//! The two errors are not symmetric, which is why one of these is generous and
+//! the other is not. Refusing to copy a file that would have fitted costs a
+//! slower open of a big table, which is what happened before and is
+//! survivable; copying one that does not fit costs the open entirely, on the
+//! table where a `file:` source was the whole point.
+//!
+//! # A `file:` session is a snapshot taken at open
+//!
+//! This is a real consequence of the copy and it is worth stating plainly. A
+//! file that was copied is read once, at open. Editing that file on disk
+//! afterwards changes nothing on screen — before the copy, a brush or a page
+//! turn re-read the view and picked the edit up (torn against the SQL cache,
+//! but picked it up). Reopening the file is what shows an edit now.
+//!
+//! [`crate::watch`] still raises its standing *data changed on disk* notice
+//! when the file's fingerprint moves, and that notice offers no reload action;
+//! it tells the reader the thing on screen is now behind the file, which is
+//! true, and reopening is the way forward.
 //!
 //! # The other half: what was opened, as a Protocol
 //!
@@ -143,30 +179,61 @@ use crate::pipeline::{Composed, LiveDashboard};
 /// this one-view path has no answer for.
 pub const OPENABLE_EXTENSIONS: &[&str] = &["csv", "tsv", "parquet"];
 
-/// **The largest file [`open`] reads into memory before composing.** Above it
-/// the file stays a DuckDB view over `read_csv` / `read_parquet` and each
-/// statement re-reads it — `a_parquet_over_the_threshold_opens_without_being_copied`
-/// is what holds that branch open.
+/// **The largest file [`open`] will attempt to read into memory before
+/// composing**, measured on disk. Above it the file stays a DuckDB view over
+/// `read_csv` / `read_parquet` and each statement re-reads it —
+/// `a_parquet_over_the_threshold_opens_without_being_copied` holds that branch
+/// open and `the_shipped_threshold_is_what_decides_an_ordinary_open` is what
+/// reads this number.
 ///
-/// 64 MiB, on the file's size on disk, and the number is a judgement rather
-/// than a measurement — what it is chosen against is stated here so a reader
-/// can disagree with it on the same terms.
+/// 64 MiB. **This is a judgement about time, not about memory**, and the
+/// distinction is the whole reason there are two constants. On-disk size does
+/// not predict a table's width in memory and cannot be made to: measured on
+/// this build's DuckDB, a four-column ZSTD Parquet of 123,260 bytes on disk
+/// becomes a 511,031,296-byte table. Bounding memory is
+/// [`MATERIALISE_BUDGET_BYTES`]'s job, and it is enforced rather than
+/// estimated.
 ///
-/// The lower end is not in doubt. A dashboard over that 2,967,637-byte CSV
-/// issued 46 reads of it and spent 8,269.6 ms doing so — about 180 ms a read —
-/// so anything in that range is worth copying many times over. The upper end
-/// is where the judgement is: **on disk is not in memory.** A CSV widens
-/// somewhat when it is parsed into typed columns; a Parquet is compressed and
-/// can widen several-fold. 64 MiB is chosen to leave the worst of those inside
-/// a few hundred megabytes — an amount a laptop gives up without noticing —
-/// while covering the files this route is actually pointed at.
+/// What this bounds is the reading a copy that will be refused does before it
+/// is refused. The budget stops an over-large copy once the copy has grown
+/// past it, so the wasted work is real but paid in file reads; declining to
+/// start on a file this size keeps that off the biggest files, where it is
+/// most expensive and least likely to be worth it.
 ///
-/// It is deliberately not derived from the machine's free memory. A threshold
+/// The lower end is not in doubt. A dashboard over the 2,967,637-byte CSV in
+/// the open-scan harness issued 46 reads of it and spent 8,269.6 ms doing so —
+/// about 180 ms a read — so anything in that range is worth copying many times
+/// over.
+///
+/// It is deliberately not derived from the machine's free memory: a threshold
 /// that moved with the host would make an open fast on one machine and slow on
-/// another with nothing to read that off, and the failure it would prevent —
-/// a copy that does not fit — is already prevented by being this far under any
-/// modern machine's memory.
+/// another with nothing to read that off.
 pub const MATERIALISE_UNDER_BYTES: u64 = 64 * 1024 * 1024;
+
+/// **The memory one copy may cost.** A file whose table does not fit this is
+/// not copied: the source stays a view on the file, the open costs what it
+/// cost before any of this existed, and the rows served are the same rows.
+///
+/// 512 MiB, and unlike [`MATERIALISE_UNDER_BYTES`] this one is a bound and not
+/// a guess. It is imposed on DuckDB as a `memory_limit` around the copy, with
+/// spilling shut off so that exceeding it is an error instead of a write to
+/// disk — [`brightfield_engine::Session::materialise_source`] holds the
+/// mechanism and the measurements behind it, and
+/// `a_file_whose_table_exceeds_the_budget_opens_off_the_view` drives the
+/// refusal through a real open.
+///
+/// **Why 512 MiB rather than a number tied to the host.** It has to be far
+/// enough above what an ordinary open costs that no ordinary open is refused,
+/// and far enough below a laptop's memory that spending it is unremarkable.
+/// The first half is measured rather than asserted: the open-scan harness
+/// records the copy's footprint per shape as `materialise_bytes`, so
+/// `benchmarks/results/open-scan/` says what an ordinary open of its widest
+/// shape actually costs, and
+/// `the_wide_shapes_table_is_far_inside_the_shipped_budget` reads that
+/// footprint back out of a live open and asserts it is under a thirty-second
+/// of this constant. The second half is the judgement, and it is the same one
+/// the old prose here made about a threshold that could not keep it.
+pub const MATERIALISE_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
 
 /// The `data:` key the chosen file is declared under, and therefore the name of
 /// the DuckDB view it becomes.
@@ -221,17 +288,33 @@ pub struct OpenTrace {
     /// Leaves of DuckDB's physical plan for each statement the first
     /// composition issued. Empty when [`open_traced`] was not asked to count.
     pub composition: ScanTally,
-    /// Whether the file was read into a session-scoped table before composing
-    /// — `false` for a file over [`MATERIALISE_UNDER_BYTES`], which composes
-    /// off the view exactly as it did before.
+    /// Whether the file was read into a session-scoped table before composing.
+    ///
+    /// `false` down two branches: a file over [`MATERIALISE_UNDER_BYTES`] on
+    /// disk, where no copy was attempted, and a copy DuckDB refused because
+    /// the table did not fit [`MATERIALISE_BUDGET_BYTES`]. Both compose off
+    /// the view exactly as they did before this existed.
     pub materialised: bool,
-    /// The one read of the file, milliseconds. `0.0` when it was not
-    /// materialised.
+    /// The one read of the file, milliseconds — the clock around the copy, and
+    /// `0.0` when there was no copy to time.
+    ///
+    /// It is a measurement and not a placeholder in the materialised case:
+    /// `a_materialised_open_reports_the_time_the_copy_took` reads it back and
+    /// reddens on a hard-wired zero.
     pub materialise_ms: f64,
     /// The chosen file's size on disk, bytes — what the threshold was applied
     /// to, carried out so a reader is not re-stat-ing the file to find out
     /// which side of it this open fell.
     pub bytes: u64,
+    /// **What the copy actually cost in memory**, bytes, read back out of
+    /// DuckDB after the fact — see
+    /// [`brightfield_engine::Session::in_memory_table_bytes`].
+    ///
+    /// `None` when there was no copy. This is the figure
+    /// [`MATERIALISE_BUDGET_BYTES`] is denominated in, so an open reports what
+    /// it spent beside what it was allowed to spend, and neither number has to
+    /// be inferred from the file's size on disk.
+    pub materialise_bytes: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -493,15 +576,30 @@ pub struct OpenOptions {
     /// [`brightfield_engine::Session::profile_sources_counting_scans`] and the
     /// harness's `time_profile` already do for the profile pass.
     pub count_scans: bool,
-    /// The size a file has to be under to be read into memory before
-    /// composing — [`MATERIALISE_UNDER_BYTES`] by default.
+    /// The largest size on disk a file may have for a copy to be attempted at
+    /// all — [`MATERIALISE_UNDER_BYTES`] by default. A file of exactly this
+    /// many bytes is still copied, which is the `<=` in [`open_traced`]; the
+    /// constant's name reads as the rule rather than the boundary.
     ///
     /// **It is a parameter and not only a constant so that the other branch
     /// is reachable.** A file over the threshold composes off the view, one
-    /// read per statement, and that is the path a Parquet larger than memory
-    /// takes; a test that could not ask for it would be left asserting in
-    /// prose that it still works. Passing `0` takes it on any file.
+    /// read per statement; a test that could not ask for that would be left
+    /// asserting in prose that it still works. Passing `0` takes it on any
+    /// file.
     pub materialise_under_bytes: u64,
+    /// The memory one copy may cost — [`MATERIALISE_BUDGET_BYTES`] by
+    /// default, and enforced by DuckDB rather than estimated here.
+    ///
+    /// A parameter for the same reason as the field above and a sharper one:
+    /// the refusal branch is the one the larger-than-memory claim rests on,
+    /// and a fixture big enough to exceed the shipped 512 MiB would make the
+    /// suite pay half a gigabyte to find out. A small budget and a small
+    /// fixture drive the same code.
+    ///
+    /// Values under [`brightfield_engine::MATERIALISE_BUDGET_FLOOR_BYTES`] are
+    /// raised to it, because a small enough `memory_limit` stops DuckDB being
+    /// able to lift it again.
+    pub materialise_budget_bytes: u64,
 }
 
 impl Default for OpenOptions {
@@ -509,6 +607,7 @@ impl Default for OpenOptions {
         Self {
             count_scans: false,
             materialise_under_bytes: MATERIALISE_UNDER_BYTES,
+            materialise_budget_bytes: MATERIALISE_BUDGET_BYTES,
         }
     }
 }
@@ -549,28 +648,42 @@ pub fn open_traced(chosen: &str, options: &OpenOptions) -> Result<(OpenedFile, O
         LiveDashboard::load_str(&spec, None).map_err(|e| format!("{}: {e}", path.display()))?;
     // The one read. What the composition issues after this scans a table, so
     // the tile count stops multiplying the cost of a read — see the module
-    // header for the measurement that decided it, and
-    // `MATERIALISE_UNDER_BYTES` for why a large file is left alone.
+    // header for the measurement that decided it.
+    //
+    // TWO conditions, in two units, and they are not interchangeable.
+    // `materialise_under_bytes` is on disk and decides whether the copy is
+    // worth attempting; `materialise_budget_bytes` is the memory the copy may
+    // cost and is enforced inside `materialise_source`, which returns `Err`
+    // when the table does not fit it.
     //
     // A file DuckDB will not copy is not a file that failed to open: the view
     // is still there and still correct, so a refusal here costs the old slow
-    // open and nothing else.
+    // open and nothing else. That is the branch a table larger than the budget
+    // takes, and `a_file_whose_table_exceeds_the_budget_opens_off_the_view`
+    // drives it.
+    //
+    // A path that cannot be stat-ed reads as `u64::MAX`, which is over any
+    // threshold, so an unreadable size declines the copy rather than assuming
+    // one is safe.
     let bytes = std::fs::metadata(&path)
         .map(|m| m.len())
         .unwrap_or(u64::MAX);
     let mut materialised = false;
     let mut materialise_ms = 0.0;
+    let mut materialise_bytes = None;
     if bytes <= options.materialise_under_bytes {
         let at = std::time::Instant::now();
-        match live.materialise_source(SOURCE) {
+        match live.materialise_source(SOURCE, options.materialise_budget_bytes) {
             Ok(()) => {
                 materialised = true;
                 materialise_ms = at.elapsed().as_secs_f64() * 1000.0;
+                materialise_bytes = live.coordinator().session().in_memory_table_bytes();
             }
             Err(e) => eprintln!(
                 "warning: {}: composing from the file directly, because it \
-                 could not be read into memory: {e}",
-                path.display()
+                 could not be read into memory within {} bytes: {e}",
+                path.display(),
+                options.materialise_budget_bytes
             ),
         }
     }
@@ -602,6 +715,7 @@ pub fn open_traced(chosen: &str, options: &OpenOptions) -> Result<(OpenedFile, O
             materialised,
             materialise_ms,
             bytes,
+            materialise_bytes,
         },
     ))
 }

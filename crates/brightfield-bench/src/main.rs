@@ -917,10 +917,16 @@ struct OpenScanReport {
     /// `composing_a_wide_dashboard_reads_the_file_no_more_often_than_a_narrow_one`
     /// reads.
     composition_file_read_bound: u32,
-    /// [`brightfield_shell::data_file::MATERIALISE_UNDER_BYTES`] — the size a
-    /// file has to be under before it is read into memory, and therefore the
-    /// size the bound above is stated for.
+    /// [`brightfield_shell::data_file::MATERIALISE_UNDER_BYTES`] — the size on
+    /// disk a file has to be under before a copy is attempted, and therefore
+    /// the size the bound above is stated for.
     materialise_under_bytes: u64,
+    /// [`brightfield_shell::data_file::MATERIALISE_BUDGET_BYTES`] — the memory
+    /// one copy may cost. The other half of the pair, in the other unit:
+    /// `materialise_under_bytes` decides whether the copy is attempted and
+    /// this decides whether it is kept. Each shape's `materialise_bytes` is
+    /// what it actually spent against this.
+    materialise_budget_bytes: u64,
     /// Timed samples per quantity per shape.
     repeats: usize,
     methodology: Vec<String>,
@@ -975,6 +981,7 @@ fn run_open_scan(
         scan_bound: brightfield_engine::profile::SCANS_PER_SOURCE,
         composition_file_read_bound: brightfield_shell::pipeline::COMPOSITION_FILE_READS,
         materialise_under_bytes: brightfield_shell::data_file::MATERIALISE_UNDER_BYTES,
+        materialise_budget_bytes: brightfield_shell::data_file::MATERIALISE_BUDGET_BYTES,
         repeats: OPEN_SCAN_REPEATS,
         methodology: open_scan_methodology(),
         shapes,

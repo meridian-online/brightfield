@@ -436,6 +436,27 @@ impl Engine {
         }
         .map_err(|e| EngineError::ConnectionFailed { cause: e })?;
 
+        // Where DuckDB is allowed to put what will not fit in memory, chosen
+        // rather than inherited. An in-memory database defaults
+        // `temp_directory` to `.tmp` RESOLVED AGAINST THE PROCESS'S WORKING
+        // DIRECTORY, so a spill during a sort or a copy writes a directory
+        // into whatever folder the app happened to be launched from — which
+        // for a desktop app opening someone's data file is their folder, not
+        // ours. The system temp directory is where that belongs.
+        //
+        // It has to be here, before any statement runs: measured on this
+        // build's DuckDB, `SET temp_directory` after the current one has been
+        // used fails with "Cannot switch temporary directory", so there is no
+        // later point at which this decision can still be made.
+        //
+        // A failure to set it is not a reason to refuse the spec — the old
+        // behaviour is the fallback, and it is where this build was until now.
+        let temp_directory = std::env::temp_dir();
+        let quoted_temp = temp_directory.to_string_lossy().replace('\'', "''");
+        if let Err(e) = conn.execute_batch(&format!("SET temp_directory='{quoted_temp}';")) {
+            eprintln!("warning: DuckDB kept its default temporary directory: {e}");
+        }
+
         let emit_output =
             emit_sources(&spec, base_dir).map_err(|e| EngineError::EmitFailed { cause: e })?;
 
@@ -2720,10 +2741,28 @@ impl Session {
 /// leaves scan.
 const MATERIALISED_SUFFIX: &str = "__bf_materialised";
 
+/// The smallest memory budget [`Session::materialise_source`] imposes on
+/// itself, however little it is asked for.
+///
+/// 8 MiB, and the reason is that a budget can be small enough to take the
+/// connection down with it. Measured on this build's DuckDB (`SELECT
+/// version()` reports `v1.5.2`), `SET memory_limit='1B'` leaves the session
+/// answering `Out of Memory Error` to `RESET memory_limit` itself — so the
+/// budget could not be lifted afterwards and the next ordinary query failed
+/// too. 8 MiB is the smallest value measured to refuse an over-budget copy
+/// and still restore afterwards.
+///
+/// A caller asking for less gets this instead;
+/// `a_budget_below_the_floor_is_raised_to_it_rather_than_breaking_the_session`
+/// in `crates/brightfield-engine/tests/materialise_budget.rs` drives that
+/// branch.
+pub const MATERIALISE_BUDGET_FLOOR_BYTES: u64 = 8 * 1024 * 1024;
+
 impl Session {
     /// **Read `name` once into a session-scoped table and point the view at
-    /// it**, so every later statement over that name scans memory instead of
-    /// re-reading and re-parsing the file.
+    /// it**, so a later statement over that name scans memory instead of
+    /// re-reading and re-parsing the file — and refuse the copy, leaving the
+    /// view exactly as it was, when it does not fit in `budget_bytes`.
     ///
     /// A `file:` source is a DuckDB view over `read_csv` / `read_parquet`, so
     /// a statement issued over it reads and re-parses the whole file. The cost
@@ -2732,42 +2771,114 @@ impl Session {
     /// picture. This collapses the second factor: the file is read once, here,
     /// and the count stops mattering.
     ///
-    /// **It is not free and it is not always right.** The copy is the table's
-    /// decompressed width in memory, which for a Parquet is several times its
-    /// size on disk, and a table larger than memory is the case a `file:`
-    /// source exists to open at all. Whoever calls this owns that judgement —
-    /// this seam holds no threshold, and nothing calls it during an ordinary
-    /// spec load. `brightfield_shell::data_file` is the one caller and states
-    /// its own.
+    /// # Why the budget is enforced rather than predicted
+    ///
+    /// The copy costs the table's width in memory, and the source does not say
+    /// what that will be. Measured on this build's DuckDB on an Apple M1 Pro:
+    /// a four-column ZSTD Parquet occupying 123,260 bytes on disk becomes a
+    /// 511,031,296-byte table, and that file's own footer — the sum of
+    /// `total_uncompressed_size` over its row groups, which is the cheapest
+    /// better estimate there is — reports 13,651,713 bytes. On-disk size is
+    /// 4,146 times under the answer and the footer is 37 times under it. A
+    /// guard set against either is a guard in a different unit from the thing
+    /// it guards.
+    ///
+    /// So the question is put to the component that can answer it.
+    /// `memory_limit` is set to `budget_bytes` for the duration of the copy,
+    /// with `max_temp_directory_size` at zero beside it — because a
+    /// `memory_limit` on its own does not refuse an over-budget copy, it
+    /// spills it. Measured on the same build, a copy under a 50 MB limit wrote
+    /// 68,780,032 bytes into `temp_directory` and returned success. With
+    /// spilling shut off, the same copy returns `Out of Memory Error`, the
+    /// backing table is not left behind and the view still reads the file.
+    ///
+    /// **A budget that cannot be established is a refusal, not a licence.**
+    /// `SET max_temp_directory_size` fails outright when the session has
+    /// already spilled more than the new limit, so pressing on after a failed
+    /// `SET` would perform the very unbounded copy the budget is here to
+    /// prevent. Both settings are put back before this returns, down the
+    /// refusing branch as well as the copying one.
     ///
     /// The view is replaced rather than dropped, so `name` still resolves and
-    /// every emitted query is byte-identical to what it was. What changes is
-    /// what the plan reads: a `Table` leaf rather than a file one, which is
-    /// the difference [`ScanTally::file_reads`] reports.
+    /// an emitted query is byte-identical to what it was. What changes is what
+    /// the plan reads: a `Table` leaf rather than a file one, which is the
+    /// difference [`ScanTally::file_reads`] reports.
     ///
-    /// Derived state goes with it — the SQL cache, the fact cache and any
-    /// cube — because a source that has been re-read is a source whose answers
-    /// were computed against something else.
+    /// Derived state goes with it — the SQL cache, the fact cache and any cube
+    /// — because a source that has been re-read is a source whose answers were
+    /// computed against something else.
+    ///
+    /// The branches are driven by `crates/brightfield-engine/tests/materialise_budget.rs`.
     ///
     /// # Errors
     ///
-    /// DuckDB refused the copy or the view replacement, with its own words.
-    /// The source is unchanged in that case: the copy runs first, and a
-    /// failure there leaves the original view in place.
-    pub fn materialise_source(&mut self, name: &str) -> Result<(), EngineError> {
+    /// DuckDB would not establish the budget; or refused the copy, because it
+    /// did not fit `budget_bytes` or for its own reasons; or would not replace
+    /// the view. In the first two cases the source is untouched — the budget
+    /// and the copy both run before the view does.
+    pub fn materialise_source(&mut self, name: &str, budget_bytes: u64) -> Result<(), EngineError> {
         let quoted = name.replace('"', "\"\"");
         let table = format!("{name}{MATERIALISED_SUFFIX}").replace('"', "\"\"");
         let copy = format!("CREATE TEMP TABLE \"{table}\" AS SELECT * FROM \"{quoted}\"");
         self.record_scan(&copy);
-        self.conn
-            .execute_batch(&copy)
+
+        // `B` is not decoration: DuckDB's parser rejects a bare byte count
+        // ("Unknown unit for memory"), so a budget written without a unit
+        // would fail the SET and, by the rule above, refuse every copy.
+        let budget = budget_bytes.max(MATERIALISE_BUDGET_FLOOR_BYTES);
+        if let Err(cause) = self.conn.execute_batch(&format!(
+            "SET memory_limit='{budget}B'; SET max_temp_directory_size='0B';"
+        )) {
+            // Half of it may have applied: `execute_batch` stops at the
+            // statement that failed, and the failure observed here is the
+            // second one.
+            let _ = self.clear_copy_budget();
+            return Err(EngineError::ConnectionFailed { cause });
+        }
+        let copied = self.conn.execute_batch(&copy);
+        // Restoring is reported ahead of a copy failure when both fail. A copy
+        // that did not fit costs a slower open and nothing else; a session
+        // left at the budget cannot run the next query at all, and that is the
+        // condition the caller has to hear about.
+        self.clear_copy_budget()
             .map_err(|cause| EngineError::ConnectionFailed { cause })?;
+        copied.map_err(|cause| EngineError::ConnectionFailed { cause })?;
+
         let repoint = format!("CREATE OR REPLACE VIEW \"{quoted}\" AS SELECT * FROM \"{table}\"");
         self.conn
             .execute_batch(&repoint)
             .map_err(|cause| EngineError::ConnectionFailed { cause })?;
         self.invalidate_derived_state();
         Ok(())
+    }
+
+    /// Put `memory_limit` and `max_temp_directory_size` back to what this
+    /// session was started with, after
+    /// [`Session::materialise_source`] narrowed them for one copy.
+    fn clear_copy_budget(&self) -> Result<(), duckdb::Error> {
+        self.conn
+            .execute_batch("RESET memory_limit; RESET max_temp_directory_size;")
+    }
+
+    /// **What the copies this session has made are costing it**, in bytes —
+    /// DuckDB's own accounting, the `IN_MEMORY_TABLE` row of
+    /// `duckdb_memory()`.
+    ///
+    /// This is the figure [`Session::materialise_source`]'s budget is
+    /// denominated in, read back after the fact, so a caller can say what an
+    /// open actually spent rather than what it was allowed to spend. `0`
+    /// before anything is copied; `None` where DuckDB declined the question.
+    #[must_use]
+    pub fn in_memory_table_bytes(&self) -> Option<u64> {
+        self.conn
+            .query_row(
+                "SELECT memory_usage_bytes FROM duckdb_memory() \
+                 WHERE tag = 'IN_MEMORY_TABLE'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .ok()
+            .and_then(|n| u64::try_from(n).ok())
     }
 }
 
@@ -3092,15 +3203,25 @@ impl Session {
     /// Charge `sql` to the open tally, explaining it first, and do nothing at
     /// all when nobody is counting.
     ///
-    /// **This is the whole of the counting, and the funnels that hand a
-    /// statement to the connection call it** — the mark execute, the cube
-    /// serve, the unsampled facts, the two category reads, the cube build and
-    /// `query_arrow_raw`. Nobody is counting unless
-    /// [`Session::profile_sources_counting_scans`] or
+    /// **The funnels that hand a statement to the connection call it** — the
+    /// mark execute, the cube serve, the unsampled facts, the two category
+    /// reads, the cube build, `query_arrow_raw`, and the copy
+    /// [`Session::materialise_source`] makes. Each of those seven is driven
+    /// once, and its contribution to the tally asserted, by
+    /// `crates/brightfield-engine/tests/scan_tally_funnels.rs`. Nobody is
+    /// counting unless [`Session::profile_sources_counting_scans`] or
     /// [`Session::begin_scan_tally`] is the enclosing caller; when one of them
     /// is, a statement is counted whether or not whoever wrote it knew about
     /// the tally, which is why this sits at the funnels and not at each call
     /// site.
+    ///
+    /// **One statement-issuing path is deliberately outside this**, and saying
+    /// so is the point of naming it: `FinetypeBundle::count_failures` issues a
+    /// read per labelled column from inside the profile pass and does not come
+    /// through here, so a profile taken with a FineType bundle configured
+    /// reads the source more times than the tally reports. No bundle is
+    /// configured in CI or by an ordinary file open, which is why the profile
+    /// pass meets [`profile::SCANS_PER_SOURCE`] today.
     ///
     /// `EXPLAIN` plans and does not run, so counting roughly doubles the
     /// statements a pass issues and does not double what it reads.

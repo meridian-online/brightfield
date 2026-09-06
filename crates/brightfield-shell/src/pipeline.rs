@@ -81,9 +81,11 @@ use crate::design::Mode;
 /// `composing_a_wide_dashboard_reads_the_file_no_more_often_than_a_narrow_one`
 /// in the open-scan harness is what holds them apart.
 ///
-/// A file too large to copy is not materialised — see
-/// [`crate::data_file::MATERIALISE_UNDER_BYTES`] — and then this bound does
-/// not apply and the harness does not measure it.
+/// A file that was not copied is not bounded by this, and the harness does not
+/// measure it there. Two branches leave a file uncopied: one too large on disk
+/// to attempt ([`crate::data_file::MATERIALISE_UNDER_BYTES`]) and one whose
+/// table would not fit the memory budget
+/// ([`crate::data_file::MATERIALISE_BUDGET_BYTES`]).
 pub const COMPOSITION_FILE_READS: u32 = 0;
 
 /// One placed plot of the composed dashboard, carried beside the scene so the
@@ -1164,6 +1166,24 @@ impl LiveDashboard {
         Ok(composed)
     }
 
+    /// Read `name` once into a session-scoped table and point the view at it,
+    /// spending at most `budget_bytes` of memory on the copy —
+    /// [`brightfield_engine::Session::materialise_source`] on this dashboard's
+    /// session, which is where the budget is imposed and what the two units
+    /// mean.
+    ///
+    /// # Errors
+    ///
+    /// DuckDB's own words when it refuses the copy, including the refusal that
+    /// is the budget doing its job: a table that does not fit `budget_bytes`.
+    /// The source is left as it was, serving the file.
+    pub fn materialise_source(&mut self, name: &str, budget_bytes: u64) -> Result<(), String> {
+        self.coordinator
+            .session_mut()
+            .materialise_source(name, budget_bytes)
+            .map_err(|e| e.to_string())
+    }
+
     /// [`LiveDashboard::present`], with DuckDB asked to explain each statement
     /// the composition issues and the leaves of those plans counted.
     ///
@@ -1185,20 +1205,6 @@ impl LiveDashboard {
     /// # Errors
     ///
     /// As [`LiveDashboard::present`].
-    /// Read `name` once into a session-scoped table and point the view at it
-    /// — [`brightfield_engine::Session::materialise_source`] on this
-    /// dashboard's session.
-    ///
-    /// # Errors
-    ///
-    /// DuckDB's own words when it refuses the copy.
-    pub fn materialise_source(&mut self, name: &str) -> Result<(), String> {
-        self.coordinator
-            .session_mut()
-            .materialise_source(name)
-            .map_err(|e| e.to_string())
-    }
-
     pub fn present_counting_scans(&mut self) -> Result<(Composed, ScanTally), String> {
         self.coordinator.session().begin_scan_tally();
         let composed = self.present();

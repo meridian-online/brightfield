@@ -177,13 +177,22 @@ pub struct Measured {
     /// go and look up.
     pub composition_file_read_bound: u32,
     /// Whether the file was read into memory before composing — `false` above
-    /// [`brightfield_shell::data_file::MATERIALISE_UNDER_BYTES`], and then
+    /// [`brightfield_shell::data_file::MATERIALISE_UNDER_BYTES`] on disk and
+    /// `false` again where the copy did not fit
+    /// [`brightfield_shell::data_file::MATERIALISE_BUDGET_BYTES`], and then
     /// `composition_file_reads` is under no bound.
     pub materialised: bool,
     /// The one read of the file, milliseconds — the term
     /// [`Measured::composition`] no longer carries. `null` when the file was
     /// not materialised.
     pub materialise: Option<Stats>,
+    /// **What the copy cost in memory**, bytes, as DuckDB accounts for it —
+    /// the figure the budget is denominated in, so this record says what an
+    /// ordinary open of this shape spends rather than leaving it to be
+    /// inferred from `bytes`, which is the file on disk and a different unit.
+    /// `null` when the file was not materialised, or where DuckDB declined the
+    /// question.
+    pub materialise_bytes: Option<u64>,
     /// Statements the first composition issued, in order.
     pub composition_statements: Vec<StatementRecord>,
     /// `LiveDashboard::present` alone, milliseconds — the composition's own
@@ -368,6 +377,7 @@ pub fn measure(
     let mut open_ms = Vec::with_capacity(repeats);
     let mut composition_ms = Vec::with_capacity(repeats);
     let mut materialise_ms = Vec::with_capacity(repeats);
+    let mut materialise_bytes = None;
     for _ in 0..repeats {
         profile_ms.push(time_profile(&path)?);
         let at = Instant::now();
@@ -378,6 +388,11 @@ pub fn measure(
         if trace.materialised {
             materialise_ms.push(trace.materialise_ms);
         }
+        // Read off the LAST repeat rather than averaged: it is a size, not a
+        // duration, and DuckDB's accounting of the same table built the same
+        // way does not move between repeats. `trace` carries it out of the
+        // open so this does not re-ask a session that has since composed.
+        materialise_bytes = trace.materialise_bytes;
         tiles = opened.dashboard.tiles().len();
         composition_queries = opened.live.executes();
     }
@@ -405,6 +420,7 @@ pub fn measure(
         composition_file_read_bound: pipeline::COMPOSITION_FILE_READS,
         materialised: composition_tally.materialised,
         materialise: Stats::from_ms(materialise_ms),
+        materialise_bytes,
         composition_statements: composition_tally
             .composition
             .statements
