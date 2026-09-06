@@ -62,6 +62,10 @@ cat > "$GOOD_WORKFLOW" <<'YML'
       - run: |
           TAG=$(scripts/finetype-pin.sh)
           scripts/fetch-finetype-bundle.sh "${{ matrix.target }}" "$RUNNER_TEMP/finetype"
+      - env:
+          BRIGHTFIELD_FINETYPE_BUNDLE: ${{ runner.temp }}/finetype
+        run: scripts/package.sh "$GITHUB_REF_NAME" "${{ matrix.target }}"
+      - run: scripts/check-artifact-type-source.sh --run dist/x.tar.gz "${{ matrix.target }}"
 YML
 
 pin_file() { printf '%s\n' "$1" > "$2"; }
@@ -112,9 +116,56 @@ expect_fail "a workflow that never calls the fetch script" \
 
 cat > "$TMP/no-pin-read.yml" <<'YML'
       - run: scripts/fetch-finetype-bundle.sh "${{ matrix.target }}" "$RUNNER_TEMP/finetype"
+        env:
+          BRIGHTFIELD_FINETYPE_BUNDLE: x
+      - run: scripts/check-artifact-type-source.sh dist/x.tar.gz t
 YML
 expect_fail "a workflow that never reads the pin" \
   "does not read packaging/finetype-pin.env" --workflow "$TMP/no-pin-read.yml"
+
+# Each of the four release-path assertions dropped on its own, because the
+# other three stay green when one goes. The variable is the sharp one: a
+# workflow can fetch a bundle correctly, package, and hand packaging nothing.
+grep -v 'BRIGHTFIELD_FINETYPE_BUNDLE' "$GOOD_WORKFLOW" > "$TMP/no-variable.yml"
+expect_fail "a workflow that fetches a bundle and never hands it to packaging" \
+  "never sets BRIGHTFIELD_FINETYPE_BUNDLE" --workflow "$TMP/no-variable.yml"
+
+grep -v 'check-artifact-type-source' "$GOOD_WORKFLOW" > "$TMP/no-readback.yml"
+expect_fail "a workflow that never reads the packaged artifact back" \
+  "never reads the packaged artifact back" --workflow "$TMP/no-readback.yml"
+
+# ---------------------------------------------------------------------------
+# THE SAME FOUR, EXPLAINED IN A COMMENT AND NOT DONE. This is the shape that
+# beat the first version of the check: the release workflow documents its own
+# mechanism, so every scan for the mechanism's name was satisfied by the
+# paragraph above the step. Deleting the BRIGHTFIELD_FINETYPE_BUNDLE setting
+# left the check green because the comment explaining it stayed.
+#
+# One fixture per assertion, each naming its subject in a YAML comment and
+# doing none of it. A check that passes these is reading its own documentation.
+# ---------------------------------------------------------------------------
+described_only() { # described_only FILE DROP
+  {
+    printf '      # This step used to run %s. The comment stayed; the step did not.\n' "$2"
+    grep -v -- "$2" "$GOOD_WORKFLOW"
+  } > "$1"
+}
+
+described_only "$TMP/described-variable.yml" "BRIGHTFIELD_FINETYPE_BUNDLE"
+expect_fail "the variable named in a comment and never set" \
+  "never sets BRIGHTFIELD_FINETYPE_BUNDLE" --workflow "$TMP/described-variable.yml"
+
+described_only "$TMP/described-readback.yml" "scripts/check-artifact-type-source.sh"
+expect_fail "the read-back named in a comment and never run" \
+  "never reads the packaged artifact back" --workflow "$TMP/described-readback.yml"
+
+described_only "$TMP/described-fetch.yml" "scripts/fetch-finetype-bundle.sh"
+expect_fail "the fetch named in a comment and never called" \
+  "does not obtain its FineType bundle" --workflow "$TMP/described-fetch.yml"
+
+described_only "$TMP/described-pin.yml" "scripts/finetype-pin.sh"
+expect_fail "the pin reader named in a comment and never run" \
+  "does not read packaging/finetype-pin.env" --workflow "$TMP/described-pin.yml"
 
 # The literal cases use the tag the real pin declares, because that is the one
 # a copy-paste produces and the one a scan for "some version somewhere" would

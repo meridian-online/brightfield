@@ -81,17 +81,48 @@ consumer "scripts/package.sh" "$PACKAGE_CMD"
 
 [ -f "$WORKFLOW" ] || fail "no workflow at ${WORKFLOW}"
 
-grep -q 'scripts/fetch-finetype-bundle.sh' "$WORKFLOW" \
+# COMMENT LINES ARE STRIPPED FIRST, and that is not tidiness. The first version
+# of this grepped the whole file, and deleting the `BRIGHTFIELD_FINETYPE_BUNDLE`
+# setting from the Package step left the check GREEN — because the comment
+# above that step explains what the variable is for and mentions it by name. A
+# file that documents its own mechanism satisfies every scan for the mechanism's
+# name. All five readings below run against code only for that reason, and
+# scripts/check-finetype-pin-selftest.sh drives each of them with a fixture that
+# names the thing in a comment and does not do it.
+#
+# A YAML comment is a line whose first non-space character is `#`. A `#` inside
+# a `run:` block is shell, not YAML, and is deliberately still read: a shell
+# comment in a release step is a line that runs.
+CODE="$(grep -vE '^[[:space:]]*#' "$WORKFLOW")"
+
+reads() { printf '%s\n' "$CODE" | grep -q -- "$1"; }
+
+# The four things the release path has to do, in the order it does them. They
+# are read rather than run for the reason above, and they are HERE rather than
+# in four files because they are one claim: the release stages the pinned
+# bundle and then proves it did. Deleting any one of them leaves the other
+# three green — the variable is the one that stings, because a workflow that
+# fetches a bundle correctly and never hands it to packaging produces exactly
+# the empty artifact this whole change exists to stop.
+reads 'scripts/fetch-finetype-bundle.sh' \
   || fail "${WORKFLOW} does not obtain its FineType bundle through \
 scripts/fetch-finetype-bundle.sh, so what it stages is not the pinned release"
 
-grep -q 'scripts/finetype-pin.sh' "$WORKFLOW" \
+reads 'scripts/finetype-pin.sh' \
   || fail "${WORKFLOW} does not read packaging/finetype-pin.env through \
 scripts/finetype-pin.sh"
 
+reads 'BRIGHTFIELD_FINETYPE_BUNDLE' \
+  || fail "${WORKFLOW} never sets BRIGHTFIELD_FINETYPE_BUNDLE, so scripts/package.sh \
+returns at the first line of stage_finetype and the artifact ships with no type source"
+
+reads 'scripts/check-artifact-type-source.sh' \
+  || fail "${WORKFLOW} never reads the packaged artifact back with \
+scripts/check-artifact-type-source.sh, so a release that staged nothing would publish green"
+
 # A FineType tag written into the workflow. Both spellings a release would use:
 # the asset-name form the fetch script builds, and the pinned tag on its own.
-if literal=$(grep -nE "finetype-v[0-9]+\.[0-9]+\.[0-9]+|${TAG}" "$WORKFLOW"); then
+if literal=$(printf '%s\n' "$CODE" | grep -nE "finetype-v[0-9]+\.[0-9]+\.[0-9]+|${TAG}"); then
   echo "$literal" | sed 's/^/     /' >&2
   fail "${WORKFLOW} names a FineType version literally on the lines above; it must \
 read scripts/finetype-pin.sh instead"
