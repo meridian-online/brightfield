@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Every consumer of the FineType pin answers with the pinned tag.
+# Every consumer of the FineType pin answers with what the pin declares.
 #
 #   scripts/check-finetype-pin.sh
 #   scripts/check-finetype-pin.sh --pin FILE --fetch CMD --package CMD --workflow FILE
 #
-# packaging/finetype-pin.env declares one tag and three things stage from it.
+# packaging/finetype-pin.env declares a FineType tag and a model registry
+# revision, and three things stage from them.
 # The failure this exists to catch is one of them quietly carrying a literal
 # instead — the pin then reads as reviewed while the release builds against
 # something nobody looked at, and the two disagree silently because nothing
@@ -61,8 +62,18 @@ export BRIGHTFIELD_FINETYPE_PIN="$PIN"
 # The declaration itself, through the one reader. Its own refusals — no file,
 # no FINETYPE_TAG, a tag that is not a v<major>.<minor>.<patch> — are what
 # fires here.
-TAG=$("${HERE}/finetype-pin.sh") || fail "the pin does not read: ${PIN}"
-echo "   declared: ${TAG}  (${PIN})"
+TAG=$("${HERE}/finetype-pin.sh" --tag) || fail "the pin does not read: ${PIN}"
+
+# The registry revision, on the same footing as the tag. The bundle has two
+# sources and only one of them is the tag: a FineType release attaches the
+# extension and the catalogue, and the model comes from the registry, so a pin
+# that declared only the tag would leave the model bytes decided on the day.
+# `finetype-pin.sh --revision` is where a branch name is refused; this is what
+# makes that refusal run on a pull request rather than on a release.
+REVISION=$("${HERE}/finetype-pin.sh" --revision) \
+  || fail "the pin's model revision does not read: ${PIN}"
+
+echo "   declared: ${TAG} at ${REVISION}  (${PIN})"
 
 # consumer NAME COMMAND — run it and require the pinned tag back.
 consumer() {
@@ -128,4 +139,4 @@ if literal=$(printf '%s\n' "$CODE" | grep -nE "finetype-v[0-9]+\.[0-9]+\.[0-9]+|
 read scripts/finetype-pin.sh instead"
 fi
 
-echo "check-finetype-pin: ${TAG} — the declaration and every consumer agree."
+echo "check-finetype-pin: ${TAG} at ${REVISION} — the declaration and every consumer agree."

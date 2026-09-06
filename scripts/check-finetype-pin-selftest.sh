@@ -68,30 +68,58 @@ cat > "$GOOD_WORKFLOW" <<'YML'
       - run: scripts/check-artifact-type-source.sh --run dist/x.tar.gz "${{ matrix.target }}"
 YML
 
-pin_file() { printf '%s\n' "$1" > "$2"; }
+# A well-formed pin is two lines: the tag and the registry revision. Every
+# fixture below starts from that and breaks one thing, so a case cannot pass
+# because the fixture was malformed in some other way.
+REAL_REVISION=$("${HERE}/finetype-pin.sh" --revision)
+pin_with() { # pin_with FILE TAG_LINE REVISION_LINE
+  printf '%s\n%s\n' "$2" "$3" > "$1"
+}
 
 echo "== the real repository"
 expect_pass "the pin, both consumers and the release workflow agree"
 
 echo "== a declaration that does not read"
-pin_file "FINETYPE_RELEASE=v0.6.58" "$TMP/no-tag.env"
+pin_with "$TMP/no-tag.env" "FINETYPE_RELEASE=v0.6.58" "FINETYPE_MODEL_REVISION=$REAL_REVISION"
 expect_fail "a pin declaring no FINETYPE_TAG" "declares no FINETYPE_TAG" \
   --pin "$TMP/no-tag.env" --workflow "$GOOD_WORKFLOW"
 
-pin_file "FINETYPE_TAG=0.6.58" "$TMP/no-v.env"
+pin_with "$TMP/no-v.env" "FINETYPE_TAG=0.6.58" "FINETYPE_MODEL_REVISION=$REAL_REVISION"
 expect_fail "a tag with no leading v" "is not a v<major>.<minor>.<patch> tag" \
   --pin "$TMP/no-v.env" --workflow "$GOOD_WORKFLOW"
 
-pin_file "FINETYPE_TAG=latest" "$TMP/floating.env"
+pin_with "$TMP/floating.env" "FINETYPE_TAG=latest" "FINETYPE_MODEL_REVISION=$REAL_REVISION"
 expect_fail "a floating tag" "is not a v<major>.<minor>.<patch> tag" \
   --pin "$TMP/floating.env" --workflow "$GOOD_WORKFLOW"
 
-pin_file "FINETYPE_TAG=v0.6" "$TMP/minor.env"
+pin_with "$TMP/minor.env" "FINETYPE_TAG=v0.6" "FINETYPE_MODEL_REVISION=$REAL_REVISION"
 expect_fail "a two-part version" "is not a v<major>.<minor>.<patch> tag" \
   --pin "$TMP/minor.env" --workflow "$GOOD_WORKFLOW"
 
 expect_fail "a pin file that is not there" "no pin file at" \
   --pin "$TMP/absent.env" --workflow "$GOOD_WORKFLOW"
+
+# THE REGISTRY REVISION, on the same footing as the tag. The bundle has two
+# sources and the model's bytes are decided by this line; a pin naming only a
+# tag would leave them decided on the day of the build. A branch name is the
+# case that matters, because it RESOLVES — nothing downstream notices that the
+# model it staged is whatever the registry held that morning.
+pin_with "$TMP/no-rev.env" "FINETYPE_TAG=v0.6.58" "# no revision here"
+expect_fail "a pin declaring no model revision" "declares no FINETYPE_MODEL_REVISION" \
+  --pin "$TMP/no-rev.env" --workflow "$GOOD_WORKFLOW"
+
+pin_with "$TMP/branch-rev.env" "FINETYPE_TAG=v0.6.58" "FINETYPE_MODEL_REVISION=main"
+expect_fail "a branch name where the revision goes" "is not a 40-character commit sha" \
+  --pin "$TMP/branch-rev.env" --workflow "$GOOD_WORKFLOW"
+
+pin_with "$TMP/short-rev.env" "FINETYPE_TAG=v0.6.58" "FINETYPE_MODEL_REVISION=${REAL_REVISION:0:7}"
+expect_fail "an abbreviated commit sha" "is not a 40-character commit sha" \
+  --pin "$TMP/short-rev.env" --workflow "$GOOD_WORKFLOW"
+
+pin_with "$TMP/upper-rev.env" "FINETYPE_TAG=v0.6.58" \
+  "FINETYPE_MODEL_REVISION=$(printf '%s' "$REAL_REVISION" | tr 'a-f' 'A-F')"
+expect_fail "a revision that is not lowercase hex" "is not a 40-character commit sha" \
+  --pin "$TMP/upper-rev.env" --workflow "$GOOD_WORKFLOW"
 
 echo "== a consumer that stages something else"
 # The tag here is well-formed and simply not the pinned one, which is the
@@ -190,7 +218,7 @@ echo "== the check is not simply always red"
 # through BRIGHTFIELD_FINETYPE_PIN. If this failed, every case above would be
 # passing because the check refuses any overridden input rather than because it
 # read the disagreement.
-pin_file "FINETYPE_TAG=v1.2.3" "$TMP/other.env"
+pin_with "$TMP/other.env" "FINETYPE_TAG=v1.2.3" "FINETYPE_MODEL_REVISION=$REAL_REVISION"
 expect_pass "another well-formed pin every consumer reads" \
   --pin "$TMP/other.env" --workflow "$GOOD_WORKFLOW"
 
