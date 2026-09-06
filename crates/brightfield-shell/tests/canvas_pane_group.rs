@@ -2658,8 +2658,14 @@ fn the_rows_pane_lists_the_rows_the_brush_selects() {
         .expect("the rows pane drew")
         .body;
     let before = drawn_rows(&mut app, &ctx, &raw, pane);
+    // 9, not 10: the compact column header band gained a 13-point row of its
+    // own (a distinct-count caption below the range), and the rows pane's own
+    // rect is a fixed share of the canvas's height regardless of the band's
+    // extent — so the same window now leaves the body one row of the dense
+    // 20-point rung shorter. Still comfortably enough to read a narrowing off,
+    // which is what the assertion below exists to guard.
     assert!(
-        before.len() >= 10,
+        before.len() >= 9,
         "the rows pane drew {} rows at {SCREEN:?}, too few to read a change off",
         before.len()
     );
