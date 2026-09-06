@@ -35,11 +35,17 @@
 #   consistent. Do not read a green run here as the model being checksummed
 #   the way the release assets are.
 #
-# WHICH ASSET NAMES ARE ASSUMED AND WHICH ARE MEASURED. The three release asset
-# names are the ones FineType's release now publishes. The registry layout was
-# read off the registry itself at the pinned revision. What no test reaches is
-# the live release and the live registry together; the self-test drives this
-# whole file against a loopback server standing in for both.
+# WHICH ASSET NAMES ARE ASSUMED AND WHICH ARE MEASURED, stated precisely
+# because the difference is the whole risk here. THE THREE RELEASE ASSETS DO
+# NOT EXIST YET: `gh release view v0.6.58 --json assets` lists five CLI
+# archives and their `.sha256` sidecars and nothing else. The names below are
+# the ones a FineType change is adding, in the form those five already use, and
+# the first release that carries them is where they are confirmed. A wrong name
+# fails as a 404 during a release, loudly, which is the failure direction to
+# want. The registry layout, by contrast, was read off the registry itself at
+# the pinned revision. What no test reaches is the live release and the live
+# registry together; the self-test drives this whole file against a loopback
+# server standing in for both.
 #
 # BRIGHTFIELD_FINETYPE_ASSET_BASE replaces the release url and
 # BRIGHTFIELD_FINETYPE_MODEL_ORIGIN the registry's. The self-test sets both; a
@@ -166,97 +172,150 @@ EOF
 pin declares '${TAG}' — this is not the release packaging/finetype-pin.env names"
 
 # ---------------------------------------------------------------------------
-# The model. Named by the release, resolved at the pinned registry revision.
+# THE MODEL. Named by the release, resolved at the pinned registry revision.
+#
+# THE FILE SET COMES FROM THE REGISTRY, NOT FROM A LIST IN THIS SCRIPT, and
+# that is the correction of a defect rather than a preference. An earlier
+# revision enumerated five filenames worked out from the model's own
+# config.json. It missed `model2vec/`, which FineType's model loader opens
+# unconditionally and which the config never mentions, and it missed two more
+# files beside it — so the bundle assembled, satisfied every file check, and
+# would not load. A longer hand-written list reproduces the same blindness one
+# filename later.
+#
+# So both subtrees the revision publishes are mirrored whole:
+#
+#   <MODEL>/…      the classifier: weights, config, label map, and the optional
+#                  second encoder when the model declares one
+#   model2vec/…    at the REPOSITORY ROOT, not under the model — the encoder
+#                  every model loads, published once and shared between them
+#
+# Nothing here decides which files those are. If the revision publishes another
+# file under either prefix, it is fetched, verified and staged.
 # ---------------------------------------------------------------------------
 echo "== model: ${MODEL} at ${REVISION}"
 echo "   from ${MODEL_ORIGIN}/${MODEL_REPO}"
 
-TREE="${WORK}/tree.json"
-curl -sSfL --retry 3 --retry-delay 2 -o "$TREE" \
-  "${MODEL_ORIGIN}/api/models/${MODEL_REPO}/tree/${REVISION}/${MODEL}?recursive=true" \
-  || fail "the registry listed no files for ${MODEL} at ${REVISION} — either the revision does \
-not carry that model, or the pin's revision and the release's model name have drifted apart"
-
-mkdir -p "${WORK}/model"
-model_get() { # model_get RELATIVE_PATH
-  local rel="$1"
-  mkdir -p "$(dirname "${WORK}/model/${rel}")"
-  curl -sSfL --retry 3 --retry-delay 2 -o "${WORK}/model/${rel}" \
-    "${MODEL_ORIGIN}/${MODEL_REPO}/resolve/${REVISION}/${MODEL}/${rel}" \
-    || fail "could not fetch ${MODEL}/${rel} at ${REVISION}"
+tree_of() { # tree_of PREFIX OUT — the registry's listing for one subtree
+  curl -sSfL --retry 3 --retry-delay 2 -o "$2" \
+    "${MODEL_ORIGIN}/api/models/${MODEL_REPO}/tree/${REVISION}/$1?recursive=true" \
+    || fail "the registry listed no files for $1 at ${REVISION} — either the revision does not
+  carry it, or the pin's revision and the release's model name have drifted apart"
 }
 
-model_get config.json
-model_get label_map.json
-model_get model.safetensors
+tree_of "$MODEL" "${WORK}/tree-model.json"
+tree_of model2vec "${WORK}/tree-m2v.json"
 
-# The value-embedding directory is named by the model's own config, not by this
-# script. scripts/check-bundled-extension.sh reads the same field, so the file
-# that decides which directory is fetched is the file that decides which one is
-# required.
-EMBED=$(sed -n 's/.*"value_embed_model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-  "${WORK}/model/config.json" | head -1)
-[ -n "$EMBED" ] || fail "${MODEL}/config.json declares no value_embed_model, so there is no name \
-for the directory the extension embeds values with"
-case "$EMBED" in
-  */*|..|.) fail "${MODEL}/config.json declares value_embed_model '${EMBED}', which is a path \
-rather than a directory name beside the model" ;;
-esac
-model_get "${EMBED}/model.safetensors"
-model_get "${EMBED}/tokenizer.json"
+# The plan: one line per file, `dest<TAB>remote<TAB>kind<TAB>digest`. Built from
+# the two listings, so the download loop and the verification below cannot
+# disagree about which files there are — they read the same plan.
+#
+# `model2vec/` from the root is staged at `model/model2vec/`, where the loader
+# looks. A model publishing its own `model2vec/` inside its directory wins:
+# that is the one the loader would open, and staging the shared copy over it
+# would replace a deliberate choice with a default.
+PLAN="${WORK}/plan.tsv"
+python3 - "${WORK}/tree-model.json" "${WORK}/tree-m2v.json" "$MODEL" "$PLAN" <<'PLANPY'
+import json, sys
 
-# Every downloaded file against the digest the registry's listing carries for
-# it at this revision. Read the header above for exactly what this establishes
-# and what it does not.
-python3 - "$TREE" "${WORK}/model" "$MODEL" <<'PY' || exit 1
-import hashlib, json, os, sys
+model_tree, m2v_tree, model, out = sys.argv[1:5]
 
-tree_path, root, model = sys.argv[1:4]
-try:
-    entries = json.load(open(tree_path))
-except Exception as e:
-    sys.exit(f"fetch-finetype-bundle: the registry listing did not parse: {e}")
-if not isinstance(entries, list) or not entries:
-    sys.exit(f"fetch-finetype-bundle: the registry listed no files for {model}")
 
-prefix = model + "/"
-declared = {}
-for entry in entries:
-    if entry.get("type") != "file":
-        continue
-    path = entry.get("path", "")
-    rel = path[len(prefix):] if path.startswith(prefix) else path
-    lfs = entry.get("lfs")
-    if lfs and lfs.get("oid"):
-        declared[rel] = ("sha256", lfs["oid"])
-    elif entry.get("oid"):
-        declared[rel] = ("gitblob", entry["oid"])
+def files(path, strip):
+    try:
+        entries = json.load(open(path))
+    except Exception as e:
+        sys.exit(f"fetch-finetype-bundle: the registry listing did not parse: {e}")
+    if not isinstance(entries, list):
+        sys.exit("fetch-finetype-bundle: the registry listing is not a list of entries")
+    found = []
+    for e in entries:
+        if e.get("type") != "file":
+            continue
+        remote = e.get("path", "")
+        rel = remote[len(strip):] if strip and remote.startswith(strip) else remote
+        lfs = e.get("lfs")
+        if lfs and lfs.get("oid"):
+            kind, digest = "sha256", lfs["oid"]
+        elif e.get("oid"):
+            kind, digest = "gitblob", e["oid"]
+        else:
+            sys.exit(f"fetch-finetype-bundle: the registry declares no digest for {remote}")
+        found.append((rel, remote, kind, digest))
+    return found
 
-checked = 0
+
+plan = {}
+# The shared encoder first, so a model carrying its own overwrites it below.
+for rel, remote, kind, digest in files(m2v_tree, ""):
+    plan[rel] = (remote, kind, digest)
+for rel, remote, kind, digest in files(model_tree, model + "/"):
+    plan[rel] = (remote, kind, digest)
+
+if not plan:
+    sys.exit(f"fetch-finetype-bundle: the registry listed no files for {model} or model2vec")
+for required in ("config.json", "label_map.json", "model.safetensors"):
+    if required not in plan:
+        sys.exit(f"fetch-finetype-bundle: the revision publishes no {model}/{required}")
+if not any(r.startswith("model2vec/") for r in plan):
+    sys.exit("fetch-finetype-bundle: the revision publishes no model2vec/ — FineType's loader "
+             "opens that directory unconditionally, so a bundle without it cannot load")
+
+with open(out, "w") as fh:
+    for rel in sorted(plan):
+        remote, kind, digest = plan[rel]
+        fh.write(f"{rel}\t{remote}\t{kind}\t{digest}\n")
+PLANPY
+
+mkdir -p "${WORK}/model"
+while IFS="$(printf '\t')" read -r rel remote _kind _digest; do
+  mkdir -p "$(dirname "${WORK}/model/${rel}")"
+  curl -sSfL --retry 3 --retry-delay 2 -o "${WORK}/model/${rel}" \
+    "${MODEL_ORIGIN}/${MODEL_REPO}/resolve/${REVISION}/${remote}" \
+    || fail "could not fetch ${remote} at ${REVISION}"
+done < "$PLAN"
+
+# Every planned file present, every present file planned, and every digest
+# matching. Read the header for what this establishes and what it does not.
+python3 - "$PLAN" "${WORK}/model" <<'VERIFYPY' || exit 1
+import hashlib, os, sys
+
+plan_path, root = sys.argv[1:3]
+plan = {}
+for line in open(plan_path):
+    rel, _remote, kind, digest = line.rstrip("\n").split("\t")
+    plan[rel] = (kind, digest)
+
+# Reading zero files is a failure, not a pass. An empty plan over an empty
+# download directory would otherwise satisfy every comparison below by making
+# none of them.
+if not plan:
+    sys.exit("fetch-finetype-bundle: no model files were planned, so nothing was verified")
+
+on_disk = set()
 for dirpath, _, names in os.walk(root):
     for name in names:
-        full = os.path.join(dirpath, name)
-        rel = os.path.relpath(full, root)
-        if rel not in declared:
-            sys.exit(f"fetch-finetype-bundle: {model}/{rel} is not in the registry's listing "
-                     f"for revision — it is not a file this revision publishes")
-        kind, want = declared[rel]
-        data = open(full, "rb").read()
-        if kind == "sha256":
-            got = hashlib.sha256(data).hexdigest()
-        else:
-            got = hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
-        if got != want:
-            sys.exit(f"fetch-finetype-bundle: {model}/{rel} does not match the registry's "
-                     f"{kind} for it at this revision —\n  declared {want}\n  actual   {got}")
-        checked += 1
+        on_disk.add(os.path.relpath(os.path.join(dirpath, name), root))
 
-# Reading zero files is a failure, not a pass. An empty download directory
-# would otherwise satisfy every comparison above by making none of them.
-if checked == 0:
-    sys.exit("fetch-finetype-bundle: no model files were downloaded, so nothing was verified")
-print(f"   {checked} model files match the registry's digests at this revision")
-PY
+missing = sorted(set(plan) - on_disk)
+if missing:
+    sys.exit(f"fetch-finetype-bundle: the plan names {len(missing)} file(s) that were not "
+             f"downloaded, first {missing[0]}")
+extra = sorted(on_disk - set(plan))
+if extra:
+    sys.exit(f"fetch-finetype-bundle: {extra[0]} was downloaded and the revision does not "
+             f"publish it")
+
+for rel, (kind, want) in sorted(plan.items()):
+    data = open(os.path.join(root, rel), "rb").read()
+    got = (hashlib.sha256(data).hexdigest() if kind == "sha256"
+           else hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest())
+    if got != want:
+        sys.exit(f"fetch-finetype-bundle: {rel} does not match the registry's {kind} for it "
+                 f"at this revision —\n  declared {want}\n  actual   {got}")
+
+print(f"   {len(plan)} model files match the registry's digests at this revision")
+VERIFYPY
 
 # Assembled only now that every byte has been verified.
 mkdir -p "$DEST"
@@ -269,4 +328,6 @@ cp "${WORK}/${CATALOGUE_ASSET}" "${DEST}/taxonomy-schemas.json"
 cp -RL "${WORK}/model" "${DEST}/model"
 
 echo "== bundle: ${DEST}"
-echo "   FineType ${TAG}, ${TARGET}, model ${MODEL} (${EMBED}) at ${REVISION}"
+echo "   FineType ${TAG}, ${TARGET}, model ${MODEL} at ${REVISION}"
+echo "   the bundle is assembled, which is not the same as loadable — that is"
+echo "   scripts/check-artifact-type-source.sh's question, and it runs the binary"

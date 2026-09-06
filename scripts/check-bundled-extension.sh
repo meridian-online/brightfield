@@ -7,9 +7,20 @@
 #
 #   finetype.duckdb_extension   the DuckDB loadable extension
 #   model/                      what FINETYPE_MODEL_DIR is pointed at, including
-#                               the value-embedding directory model/config.json
-#                               names in `value_embed_model`
+#                               model2vec/ (loaded unconditionally) and, when
+#                               the config names one, the optional second
+#                               encoder in `value_embed_model`
 #   taxonomy-schemas.json       one JSON Schema per label, for value checking
+#
+# THIS IS A PRE-FLIGHT AND NOT THE EVIDENCE. It reads a file tree and a
+# metadata trailer; it never asks whether the bundle LOADS, and a file list
+# cannot be made to. The evidence that a release carries a working type source
+# is scripts/check-artifact-type-source.sh running the packaged binary's
+# `--check-type-source` against the unpacked artefact, which loads the
+# extension, loads the model and puts a label on a column. That distinction is
+# not academic: a bundle assembled to satisfy an earlier version of the list
+# below passed here and then failed to load. Do not add a filename here and
+# conclude the bundle works.
 #
 # Two callers, one reading. scripts/package.sh runs it over the bundle it is
 # about to stage, with the DuckDB platform name for the target being packaged;
@@ -95,38 +106,56 @@ fail() { echo "check-bundled-extension: $*" >&2; exit 1; }
 [ -d "$BUNDLE" ] || fail "no such directory: ${BUNDLE}"
 
 EXT="${BUNDLE}/finetype.duckdb_extension"
+
+# WHAT THE LOADER OPENS, NOT WHAT THE CONFIG DECLARES, and the difference cost
+# a review round. `model2vec/` is loaded unconditionally by FineType's model
+# loader — it is not named anywhere in the model's config and it is not
+# optional — while `value_embed_model` names a SECOND, optional encoder that a
+# single-encoder model does not have at all.
+#
+# A previous revision of this file had it exactly backwards: it dropped the
+# mandatory directory from this list because the config does not mention it,
+# and required the optional one because the config does. A bundle assembled to
+# satisfy that check passed here and then failed to load, with the loader
+# reporting `Model2Vec resources not found. Checked: model_dir/model2vec/,
+# models/model2vec/`. Measured by an independent review pass against a real
+# extension, a real model and a real catalogue.
+#
+# The lesson is not the two filenames. It is that a required-file list derived
+# from a model's own declaration cannot see what the code that consumes it
+# opens, and a list is the wrong primary evidence either way — see the note at
+# the foot of this comment block and scripts/check-artifact-type-source.sh,
+# which runs the binary.
 for required in \
   finetype.duckdb_extension \
   model/model.safetensors \
   model/config.json \
   model/label_map.json \
+  model/model2vec/model.safetensors \
+  model/model2vec/tokenizer.json \
   taxonomy-schemas.json
 do
   [ -f "${BUNDLE}/${required}" ] || fail "${BUNDLE} carries no ${required}"
 done
 
-# THE VALUE-EMBEDDING MODEL IS NAMED BY THE MODEL'S OWN CONFIG, not by this
-# file. `model/config.json` carries `value_embed_model`, a directory name
-# relative to the model directory, and that is what the extension opens.
-#
-# This used to require `model/model2vec/…` as a literal. The published model
-# names its directory `value_model2vec`, so the literal was a requirement no
-# real bundle could satisfy and every bundle that did satisfy it was one
-# somebody had built by hand to match the check. Reading the config asks the
-# question the extension asks.
+# The optional second encoder. ABSENT IS VALID — FineType's loader returns
+# "no value encoder" for a model whose config does not name one, so refusing
+# that would be this check asserting a property the product does not have. Named
+# and missing is not valid: the loader would go looking for a directory the
+# bundle does not carry.
 embed=$(sed -n 's/.*"value_embed_model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
   "${BUNDLE}/model/config.json" | head -1)
-[ -n "$embed" ] || fail "${BUNDLE}/model/config.json declares no value_embed_model, so the \
-extension has no name for the directory it embeds values with"
-case "$embed" in
-  */*|..|.) fail "${BUNDLE}/model/config.json declares value_embed_model '${embed}', which is \
+if [ -n "$embed" ]; then
+  case "$embed" in
+    */*|..|.) fail "${BUNDLE}/model/config.json declares value_embed_model '${embed}', which is \
 a path rather than a directory name beside the model" ;;
-esac
-for required in model.safetensors tokenizer.json; do
-  [ -f "${BUNDLE}/model/${embed}/${required}" ] \
-    || fail "${BUNDLE} carries no model/${embed}/${required}, which model/config.json names \
+  esac
+  for required in model.safetensors tokenizer.json; do
+    [ -f "${BUNDLE}/model/${embed}/${required}" ] \
+      || fail "${BUNDLE} carries no model/${embed}/${required}, which model/config.json names \
 through value_embed_model"
-done
+  done
+fi
 
 # Self-containedness. -type l finds symlinks whether or not they resolve, so a
 # link that happens to work on this machine still fails.

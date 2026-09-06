@@ -70,7 +70,9 @@ trap cleanup EXIT
 SERVE="$TMP/serve"
 RELEASE_DIR="$SERVE/release"
 TREE_DIR="$SERVE/api/models/$MODEL_REPO/tree/$REVISION"
-FILES_DIR="$SERVE/$MODEL_REPO/resolve/$REVISION/$MODEL"
+RESOLVE="$SERVE/$MODEL_REPO/resolve/$REVISION"
+FILES_DIR="$RESOLVE/$MODEL"
+M2V_DIR="$RESOLVE/model2vec"
 DEST="$TMP/bundle"
 out="$TMP/out"
 
@@ -95,26 +97,31 @@ sidecar() { printf '%s  %s\n' "$(digest_of "$RELEASE_DIR/$1")" "$1" >"$RELEASE_D
 # The two .safetensors are declared as LFS objects (sha256 of the content, the
 # way the real registry declares them) and the JSON files by their git blob id,
 # so both comparison paths in the script under test are exercised.
-write_tree() {
-	python3 - "$FILES_DIR" "$TREE_DIR/$MODEL" "$MODEL" <<'PY'
+write_tree() { # write_tree ROOT OUT PREFIX
+	python3 - "$1" "$2" "$3" <<'TREEPY'
 import hashlib, json, os, sys
-root, out, model = sys.argv[1:4]
+root, out, prefix = sys.argv[1:4]
 entries = []
 for dirpath, _, names in os.walk(root):
     for name in sorted(names):
         full = os.path.join(dirpath, name)
         rel = os.path.relpath(full, root)
         data = open(full, "rb").read()
-        entry = {"type": "file", "path": f"{model}/{rel}", "size": len(data)}
+        entries.append(entry := {"type": "file", "path": f"{prefix}/{rel}", "size": len(data)})
         if rel.endswith(".safetensors"):
             entry["oid"] = "a" * 40
             entry["lfs"] = {"oid": hashlib.sha256(data).hexdigest(), "size": len(data)}
         else:
             entry["oid"] = hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
-        entries.append(entry)
 os.makedirs(os.path.dirname(out), exist_ok=True)
 json.dump(entries, open(out, "w"))
-PY
+TREEPY
+}
+
+# Both subtrees the revision publishes, because the fetch mirrors both.
+write_trees() {
+	write_tree "$FILES_DIR" "$TREE_DIR/$MODEL" "$MODEL"
+	write_tree "$M2V_DIR" "$TREE_DIR/model2vec" "model2vec"
 }
 
 # ---------------------------------------------------------------------------
@@ -129,7 +136,7 @@ PY
 make_fixture() {
 	mkdir -p "$SERVE"
 	find "$SERVE" -mindepth 1 -delete
-	mkdir -p "$RELEASE_DIR" "$TREE_DIR" "$FILES_DIR/$EMBED"
+	mkdir -p "$RELEASE_DIR" "$TREE_DIR" "$FILES_DIR/$EMBED" "$M2V_DIR"
 
 	"$HERE/fixture-extension.py" "$RELEASE_DIR/$EXT_ASSET" "$PLATFORM" v1.2.0 "${TAG#v}" C_STRUCT
 	printf '[{"x-finetype-label": "identity.person.email", "pattern": "^[^@]+@[^@]+$"}]\n' \
@@ -145,7 +152,17 @@ make_fixture() {
 	printf 'fixture weights\n' >"$FILES_DIR/model.safetensors"
 	printf 'fixture embed weights\n' >"$FILES_DIR/$EMBED/model.safetensors"
 	printf '{"fixture": "tokenizer"}\n' >"$FILES_DIR/$EMBED/tokenizer.json"
-	write_tree
+
+	# The shared encoder, at the registry ROOT rather than under the model. Four
+	# files, because the real revision publishes four — and two of them are ones
+	# a list derived from the model's config would never have mentioned, which is
+	# why the fetch mirrors the listing instead of naming files.
+	printf 'fixture m2v weights\n' >"$M2V_DIR/model.safetensors"
+	printf '{"fixture": "m2v tokenizer"}\n' >"$M2V_DIR/tokenizer.json"
+	printf '{"fixture": "label index"}\n' >"$M2V_DIR/label_index.json"
+	printf 'fixture type embeddings\n' >"$M2V_DIR/type_embeddings.safetensors"
+
+	write_trees
 }
 
 cat >"$TMP/serve.py" <<'PY'
@@ -360,19 +377,61 @@ expect_fail "a file the listing names and the registry does not serve" "could no
 
 make_fixture
 printf '[]' >"$TREE_DIR/$MODEL"
-expect_fail "an empty listing" "the registry listed no files"
+expect_fail "an empty listing for the model" "publishes no ${MODEL}/config.json"
 
-echo "== a model whose config does not name its value embeddings"
+echo "== the shared encoder the model's config never mentions"
+# THE DEFECT THIS FILE WAS REWRITTEN FOR. `model2vec/` is opened unconditionally
+# by FineType's loader, is published at the registry ROOT rather than under the
+# model, and is named in no config anywhere. A fetch that worked its file list
+# out from the model's own config could not see it, produced a bundle that
+# satisfied every file check, and would not load.
+make_fixture
+find "$M2V_DIR" -mindepth 1 -delete
+rm -f "$TREE_DIR/model2vec"
+expect_fail "a revision publishing no model2vec/ at all" "the registry listed no files"
+
+make_fixture
+printf '[]' >"$TREE_DIR/model2vec"
+expect_fail "an empty model2vec/ listing" "publishes no model2vec/"
+
+# The whole subtree is mirrored, not a list of names somebody wrote down. The
+# real revision publishes four files under model2vec/ and two of them —
+# label_index.json and type_embeddings.safetensors — appear in no config and in
+# no loader call site anybody would think to grep for.
+make_fixture
+expect_pass "every file the revision publishes under both prefixes is staged"
+for f in model2vec/model.safetensors model2vec/tokenizer.json \
+	model2vec/label_index.json model2vec/type_embeddings.safetensors; do
+	if [[ -f "$DEST/model/$f" ]]; then
+		echo "  ok   model/$f is in the bundle"
+	else
+		echo "  FAIL model/$f is missing from the bundle:"
+		find "$DEST/model" | sed 's/^/       /'
+		failures=$((failures + 1))
+	fi
+done
+
+make_fixture
+corrupt "$M2V_DIR/tokenizer.json"
+expect_fail "a substituted shared-encoder tokenizer" "does not match the registry's gitblob"
+
+echo "== a single-encoder model"
+# A config naming no value_embed_model is VALID: FineType's loader treats the
+# second encoder as optional. The fetch mirrors what the revision publishes and
+# has no opinion; scripts/check-bundled-extension.sh is where absence is
+# accepted and a NAMED-but-missing encoder is refused.
 make_fixture
 printf '{"n_classes": 1}\n' >"$FILES_DIR/config.json"
-write_tree
-expect_fail "config.json with no value_embed_model" "declares no value_embed_model"
-
-make_fixture
-printf '{"value_embed_model": "../elsewhere"}\n' >"$FILES_DIR/config.json"
-write_tree
-expect_fail "value_embed_model pointing out of the model directory" \
-	"which is a path rather than a directory name"
+find "$FILES_DIR/$EMBED" -mindepth 1 -delete
+write_trees
+expect_pass "a model whose config names no second encoder"
+if "$CHECK" "$DEST" "$PLATFORM" "$TAG" >"$TMP/checked" 2>&1; then
+	echo "  ok   and check-bundled-extension.sh accepts it"
+else
+	echo "  FAIL check-bundled-extension.sh refused a valid single-encoder model:"
+	sed 's/^/       /' "$TMP/checked"
+	failures=$((failures + 1))
+fi
 
 echo "== a destination left over from an earlier run"
 make_fixture

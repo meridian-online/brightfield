@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
 # Refuse a PACKAGED ARTIFACT that carries no working type source.
 #
-#   scripts/check-artifact-type-source.sh [--run] ARTIFACT RUST_TARGET
+#   scripts/check-artifact-type-source.sh ARTIFACT RUST_TARGET
+#   scripts/check-artifact-type-source.sh --print-host-target
 #
 #   ARTIFACT      dist/brightfield-<version>-<target>.tar.gz, or the .dmg
 #   RUST_TARGET   the triple that artifact was packaged for
-#   --run         also execute the packaged binary's --check-type-source
+#
+# THERE IS NO FLAG FOR THE RUN, AND THAT IS THE POINT. Whether the packaged
+# binary can be executed is decided here, from the target argument and the
+# machine — it runs when they are the same triple and cannot when they are not.
+# It used to be `--run`, supplied by the caller, and a review pass mutated the
+# release workflow to pass nothing: every check in this repository stayed
+# green while a release stopped ever loading the bundle it shipped. A caller
+# cannot get wrong a decision it does not make.
 #
 # WHY THIS IS NOT scripts/check-bundled-extension.sh, AND WHY IT IS NOT
 # scripts/verify-airgapped.sh. check-bundled-extension.sh reads a directory
@@ -38,10 +46,20 @@
 #      the one that matters for a cross-compiled leg the runner cannot execute,
 #      and it verifies the manifest scripts/package.sh wrote over the staged
 #      copy.
-#   3. With --run, the packaged binary's own `--check-type-source`: it loads
+#   3. THE EVIDENCE: the packaged binary's own `--check-type-source`. It loads
 #      that extension with its own DuckDB, loads the model beside it and puts a
-#      label on a column, reporting as an exit code. Only for a native leg — a
-#      cross-compiled artifact cannot be executed on the runner that built it.
+#      label on a column, reporting as an exit code. Steps 1 and 2 read a file
+#      tree and a metadata trailer, and a bundle can satisfy both and still not
+#      load — measured, on a bundle missing the `model2vec/` directory
+#      FineType's loader opens unconditionally: seven files, every check green,
+#      and `Model2Vec resources not found` at run time. A file list is a
+#      pre-flight. This is the check.
+#
+#      It is skipped only where it CANNOT run: a cross-compiled artifact on a
+#      runner of another architecture. The release matrix builds x86_64 on an
+#      arm64 runner, so that leg is asset-verified and execution-unverified and
+#      says so, which is the same position the workflow already records for the
+#      Intel install path.
 #
 # THE PIN COMPARISON ASSUMES THE CHECKOUT BUILT THE ARTIFACT, which is true of
 # its caller (release.yml, same job) and not of somebody running this over a
@@ -51,10 +69,29 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-RUN=0
-if [ "${1:-}" = "--run" ]; then
-  RUN=1
-  shift
+# The triple this machine can execute. One table, and an unknown host is a hard
+# failure rather than a silent skip: a host nobody mapped would otherwise turn
+# the run leg off everywhere at once and look exactly like a cross-compile.
+host_target() {
+  case "$(uname -s)/$(uname -m)" in
+    Darwin/arm64)   echo aarch64-apple-darwin ;;
+    Darwin/x86_64)  echo x86_64-apple-darwin ;;
+    Linux/aarch64)  echo aarch64-unknown-linux-gnu ;;
+    Linux/x86_64)   echo x86_64-unknown-linux-gnu ;;
+    *)
+      echo "check-artifact-type-source: no Rust target triple known for $(uname -s)/$(uname -m)." >&2
+      echo "  Add the mapping; a host nobody mapped must not silently skip the run." >&2
+      exit 1 ;;
+  esac
+}
+
+# scripts/check-artifact-type-source-selftest.sh reads this so its fixtures are
+# always for the machine running them, which is what keeps the run leg
+# exercised on every runner rather than only on the one the fixture was written
+# for.
+if [ "${1:-}" = "--print-host-target" ]; then
+  host_target
+  exit 0
 fi
 
 ARTIFACT="${1:?usage: scripts/check-artifact-type-source.sh [--run] ARTIFACT RUST_TARGET}"
@@ -129,7 +166,8 @@ esac
 echo "== type source: ${BUNDLE_REL}"
 "${HERE}/check-bundled-extension.sh" "$PKG/$BUNDLE_REL" "$PLATFORM" "$TAG" | sed 's/^/   /'
 
-if [ "$RUN" -eq 1 ]; then
+HOST=$(host_target)
+if [ "$TARGET" = "$HOST" ]; then
   echo "== run: the packaged binary types a column"
   ts_status=0
   ( cd "$PKG" && "$EXE" --check-type-source ) > "$TMP/typesource.log" 2>&1 || ts_status=$?
@@ -138,10 +176,15 @@ if [ "$RUN" -eq 1 ]; then
     0) echo "   ok: the packaged binary loaded the bundled extension and labelled a column" ;;
     2) fail "the binary reports no bundle beside it, but ${BUNDLE_REL} is in this artifact —
   it is staged somewhere the executable does not look. See scripts/package.sh." ;;
-    *) fail "the packaged binary's type source did not come up (exit ${ts_status})" ;;
+    *) fail "the packaged binary's type source did not come up (exit ${ts_status}).
+  The bundle is present and well shaped and it does not LOAD. Read the message above:
+  a missing directory the loader opens, an ABI the linked DuckDB refuses, or a model
+  the canary could not classify. This is the failure a file check cannot see." ;;
   esac
 else
-  echo "== not run: --run was not given, so the extension was read and not loaded"
+  echo "== not run: this artifact is for ${TARGET} and this machine is ${HOST},"
+  echo "   so the packaged binary cannot be executed here. The bundle was read"
+  echo "   and NOT loaded; nothing below establishes that it would load."
 fi
 
 echo "check-artifact-type-source: ${ARTIFACT} carries FineType ${TAG} for ${PLATFORM}."

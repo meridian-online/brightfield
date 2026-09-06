@@ -27,21 +27,27 @@ make_extension() {
   "${HERE}/fixture-extension.py" "$@"
 }
 
-# The value-embedding directory the published model names in its own
-# config.json. Deliberately NOT "model2vec": the check used to require that
-# literal, which no real bundle carries, so every fixture that satisfied it was
-# one built to match the check rather than to match a model.
+# The optional second encoder the published model names in its own config.json.
+# It sits BESIDE model2vec/ and does not replace it: FineType's loader opens
+# model2vec/ unconditionally and never reads its name from the config, while
+# value_embed_model names an extra encoder a single-encoder model does without.
+# A revision of the check that swapped the two — dropping the mandatory
+# directory because the config is silent about it, requiring the optional one
+# because the config names it — produced a bundle that passed every file check
+# and would not load.
 EMBED=value_model2vec
 
 # A complete, well-formed bundle at $1.
 make_bundle() {
   local dir="$1" platform="${2:-osx_arm64}" abi="${3:-C_STRUCT}" ext_version="${4:-0.6.56}"
   rm -rf "$dir"
-  mkdir -p "$dir/model/$EMBED"
+  mkdir -p "$dir/model/model2vec" "$dir/model/$EMBED"
   make_extension "$dir/finetype.duckdb_extension" "$platform" v1.2.0 "$ext_version" "$abi"
   printf 'safetensors'   > "$dir/model/model.safetensors"
   printf '{"value_embed_model": "%s"}' "$EMBED" > "$dir/model/config.json"
   printf '{}'            > "$dir/model/label_map.json"
+  printf 'safetensors'   > "$dir/model/model2vec/model.safetensors"
+  printf '{}'            > "$dir/model/model2vec/tokenizer.json"
   printf 'safetensors'   > "$dir/model/$EMBED/model.safetensors"
   printf '{}'            > "$dir/model/$EMBED/tokenizer.json"
   printf '[]'            > "$dir/taxonomy-schemas.json"
@@ -84,7 +90,8 @@ expect_pass "and passes against its own platform" "$TMP/good" osx_arm64
 
 echo "== a bundle that is missing a piece"
 for missing in finetype.duckdb_extension model/model.safetensors model/config.json \
-               model/label_map.json taxonomy-schemas.json; do
+               model/label_map.json model/model2vec/model.safetensors \
+               model/model2vec/tokenizer.json taxonomy-schemas.json; do
   make_bundle "$TMP/missing"
   rm "$TMP/missing/$missing"
   expect_fail "without ${missing}" "carries no ${missing}" "$TMP/missing"
@@ -96,18 +103,31 @@ echo "== a bundle whose value-embedding directory is not the one its config name
 # the extension cannot use, and it is what a fetch that renamed the directory
 # to suit a hardcoded check would produce.
 make_bundle "$TMP/renamed"
-mv "$TMP/renamed/model/$EMBED" "$TMP/renamed/model/model2vec"
-expect_fail "the embeddings under a name the config does not give" \
-  "carries no model/${EMBED}/model.safetensors" "$TMP/renamed"
+rm -rf "$TMP/renamed/model/$EMBED"
+mv "$TMP/renamed/model/model2vec" "$TMP/renamed/model/$EMBED"
+expect_fail "the mandatory encoder renamed to the one the config names" \
+  "carries no model/model2vec/model.safetensors" "$TMP/renamed"
 
 make_bundle "$TMP/halfembed"
 rm "$TMP/halfembed/model/$EMBED/tokenizer.json"
 expect_fail "the embedding tokenizer missing" \
   "carries no model/${EMBED}/tokenizer.json" "$TMP/halfembed"
 
+# ABSENT IS VALID and this case is a correction. FineType's loader returns "no
+# value encoder" for a model whose config does not name one, so a check that
+# refused it was asserting a property the product does not have — and would
+# have refused every single-encoder model FineType ever ships.
 make_bundle "$TMP/noembed"
 printf '{"n_classes": 1}' > "$TMP/noembed/model/config.json"
-expect_fail "a config naming no value_embed_model" "declares no value_embed_model" "$TMP/noembed"
+rm -rf "$TMP/noembed/model/$EMBED"
+expect_pass "a single-encoder model, whose config names no value_embed_model" "$TMP/noembed"
+
+# Named and missing is not valid: the loader goes looking for what the config
+# names.
+make_bundle "$TMP/named-absent"
+rm -rf "$TMP/named-absent/model/$EMBED"
+expect_fail "a config naming an encoder the bundle does not carry" \
+  "carries no model/${EMBED}/model.safetensors" "$TMP/named-absent"
 
 make_bundle "$TMP/escape"
 printf '{"value_embed_model": "../elsewhere"}' > "$TMP/escape/model/config.json"

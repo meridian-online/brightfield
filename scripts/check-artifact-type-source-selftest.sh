@@ -28,8 +28,22 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHECK="$HERE/check-artifact-type-source.sh"
 
 TAG="$("$HERE/finetype-pin.sh")"
-TARGET="aarch64-apple-darwin"
+
+# The fixtures are built for THIS machine, so the run leg is exercised on every
+# runner rather than only on the architecture a hard-coded triple happened to
+# name. The check decides whether to run the binary by comparing its target
+# argument against the host, so a fixture for another triple would silently
+# turn the most important case in this file into a no-op.
+TARGET="$("$CHECK" --print-host-target)"
 PLATFORM="$("$HERE/duckdb-platform.sh" "$TARGET")"
+
+# A target this machine is definitely not, for the cross-compile case.
+if [ "$TARGET" = "aarch64-apple-darwin" ]; then
+	FOREIGN="x86_64-apple-darwin"
+else
+	FOREIGN="aarch64-apple-darwin"
+fi
+FOREIGN_PLATFORM="$("$HERE/duckdb-platform.sh" "$FOREIGN")"
 
 failures=0
 TMP="$(mktemp -d)" || exit 1
@@ -43,13 +57,18 @@ out="$TMP/out"
 make_bundle() { # make_bundle DIR [PLATFORM] [VERSION]
 	local dir="$1" platform="${2:-$PLATFORM}" version="${3:-${TAG#v}}"
 	rm -rf "$dir"
-	# value_model2vec, the name the published model's own config.json gives the
-	# directory — not the "model2vec" literal the check used to require.
-	mkdir -p "$dir/model/value_model2vec"
+	# BOTH encoder directories, and they are not interchangeable. model2vec/ is
+	# opened unconditionally by FineType's loader and is named nowhere in the
+	# model's config; value_model2vec/ is the optional second encoder the config
+	# does name. A fixture carrying only the second is one that assembles and
+	# does not load.
+	mkdir -p "$dir/model/model2vec" "$dir/model/value_model2vec"
 	"$HERE/fixture-extension.py" "$dir/finetype.duckdb_extension" "$platform" v1.2.0 "$version" C_STRUCT
 	printf 'weights' >"$dir/model/model.safetensors"
 	printf '{"value_embed_model": "value_model2vec"}' >"$dir/model/config.json"
 	printf '{}' >"$dir/model/label_map.json"
+	printf 'weights' >"$dir/model/model2vec/model.safetensors"
+	printf '{}' >"$dir/model/model2vec/tokenizer.json"
 	printf 'weights' >"$dir/model/value_model2vec/model.safetensors"
 	printf '{}' >"$dir/model/value_model2vec/tokenizer.json"
 	printf '[]' >"$dir/taxonomy-schemas.json"
@@ -64,7 +83,7 @@ make_exe() { # make_exe PATH EXITCODE
 	cat >"$1" <<SH
 #!/bin/sh
 [ "\$1" = "--check-type-source" ] || { echo "unexpected argument: \$1" >&2; exit 64; }
-echo "stub type source, exit ${2}"
+echo "STUB-RAN-THE-BINARY: --check-type-source, exit ${2}"
 exit ${2}
 SH
 	chmod +x "$1"
@@ -131,16 +150,29 @@ expect_fail() {
 
 echo "== a tarball that carries a working type source"
 good="$(make_tarball good)"
-expect_pass "the bundle is read off the unpacked artifact" "$good" "$TARGET"
-expect_pass "and the packaged binary answers --check-type-source" --run "$good" "$TARGET"
+expect_pass "the bundle is read off the unpacked artifact and the binary loads it" \
+	"$good" "$TARGET"
+
+# THE STRUCTURAL PIN OF THIS WHOLE FILE. Nothing above asked for the binary to
+# be run; the check decided to, because the artifact's target is this machine's.
+# If it ever stops deciding that, every "the binary reports X" case below turns
+# into a silent no-op that still reports ok — which is exactly what happened
+# when the run was a caller-supplied flag and a review pass mutated it away.
+if grep -q 'STUB-RAN-THE-BINARY' "$out"; then
+	echo "  ok   the packaged binary was executed without anything asking for it"
+else
+	echo "  FAIL the binary was never run, so every run case below proves nothing:"
+	sed 's/^/       /' "$out"
+	failures=$((failures + 1))
+fi
 
 echo "== a tarball that carries none"
 # THE CASE THAT SHIPPED. Everything else in this file is a variation on it.
 none="$(make_tarball none --no-bundle)"
 expect_fail "no type source in the artifact at all" "carries no type source at finetype" \
 	"$none" "$TARGET"
-expect_fail "and --run does not make it pass either" "carries no type source at finetype" \
-	--run "$none" "$TARGET"
+expect_fail "and running the binary does not make it pass either" \
+	"carries no type source at finetype" "$none" "$TARGET"
 
 echo "== a tarball whose bundle is not where the binary looks"
 # `semantic::bundle_beside` consults <exe dir>/finetype and
@@ -185,11 +217,30 @@ echo "== what the packaged binary itself reports"
 # it is the one failure a person would otherwise chase in the wrong file.
 saysnone="$(make_tarball saysnone --exit 2)"
 expect_fail "the binary reports no bundle while the artifact carries one" \
-	"staged somewhere the executable does not look" --run "$saysnone" "$TARGET"
+	"staged somewhere the executable does not look" "$saysnone" "$TARGET"
 
 broken="$(make_tarball broken --exit 1)"
 expect_fail "the bundled type source does not come up" "did not come up (exit 1)" \
-	--run "$broken" "$TARGET"
+	"$broken" "$TARGET"
+
+echo "== an artifact for a machine that cannot execute it"
+# The release matrix cross-compiles x86_64 on an arm64 runner. The check must
+# read the bundle and DECLINE to run the binary, saying which two triples
+# disagree — and a stub that would fail if run must not fail the case, which is
+# what proves the decline is real rather than the run quietly passing.
+foreign="$(make_tarball foreign --platform "$FOREIGN_PLATFORM" --exit 1)"
+expect_pass "a cross-compiled artifact is read and not executed" "$foreign" "$FOREIGN"
+if grep -q 'STUB-RAN-THE-BINARY' "$out"; then
+	echo "  FAIL the binary was executed for a target this machine is not:"
+	sed 's/^/       /' "$out"
+	failures=$((failures + 1))
+elif grep -q "this machine is ${TARGET}" "$out"; then
+	echo "  ok   it declines to run and names both triples"
+else
+	echo "  FAIL it neither ran nor said why it did not:"
+	sed 's/^/       /' "$out"
+	failures=$((failures + 1))
+fi
 
 echo "== an artifact of a shape this check does not know"
 printf 'not an artifact' >"$TMP/thing.zip"
@@ -225,8 +276,15 @@ else
 	}
 
 	img_good="$(make_image good)"
-	expect_pass "the app bundle's Contents/Resources/finetype is read" "$img_good" "$TARGET"
-	expect_pass "and the bundled binary answers --check-type-source" --run "$img_good" "$TARGET"
+	expect_pass "the app bundle's Contents/Resources/finetype is read and loaded" \
+		"$img_good" "$TARGET"
+	if grep -q 'STUB-RAN-THE-BINARY' "$out"; then
+		echo "  ok   the bundled binary was executed off the mounted image"
+	else
+		echo "  FAIL the image's binary was never run:"
+		sed 's/^/       /' "$out"
+		failures=$((failures + 1))
+	fi
 
 	img_none="$(make_image none --no-bundle)"
 	expect_fail "an image whose app carries no type source" \

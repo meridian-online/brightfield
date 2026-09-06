@@ -147,17 +147,24 @@ jobs:
       # tarball and once into Contents/Resources of the app bundle — and one of
       # those two going wrong is exactly the shape of defect this catches.
       #
-      # --run only on the native leg, and only for the tarball. The x86_64
-      # artifact is a cross-compile from an arm64 runner and cannot be executed
-      # here at all; the disk image's binary is loaded by the `verify` job's
-      # air-gapped run, which attaches the image and runs --check-type-source
-      # inside its jail. So the image is read here and executed there.
-      - name: The packaged artifacts carry the type source
-        env:
-          RUN: ${{ matrix.native && '--run' || '' }}
+      # THE BINARY IS RUN, and this workflow does not get a say in it. The check
+      # decides from the target and the machine: on the native leg it loads the
+      # bundle with the packaged binary's own --check-type-source, and on the
+      # x86_64 leg — a cross-compile from an arm64 runner — it cannot, and says
+      # so. There is no flag here to leave off.
+      #
+      # That used to be `--run`, passed from this file, and a review pass
+      # mutated it away: every check in the repository stayed green while the
+      # release stopped ever loading the bundle it shipped. Which matters
+      # because a bundle can be complete, correctly stamped, matching its
+      # manifest — and still not load. Measured on one missing the `model2vec/`
+      # directory FineType's loader opens unconditionally: seven files, every
+      # file check green, `Model2Vec resources not found` at run time, and the
+      # canary classifying three email addresses as unknown.
+      - name: The packaged artifacts carry a type source that loads
         run: |
           NAME="brightfield-${GITHUB_REF_NAME}-${{ matrix.target }}"
-          scripts/check-artifact-type-source.sh $RUN "dist/${NAME}.tar.gz" "${{ matrix.target }}"
+          scripts/check-artifact-type-source.sh "dist/${NAME}.tar.gz" "${{ matrix.target }}"
           scripts/check-artifact-type-source.sh "dist/${NAME}.dmg" "${{ matrix.target }}"
 
       - uses: actions/upload-artifact@v4
