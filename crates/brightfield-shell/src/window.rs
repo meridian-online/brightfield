@@ -6390,7 +6390,7 @@ fn pane_header_of(rect: egui::Rect, body: egui::Rect) -> egui::Rect {
 /// whole canvas usually fits the table; the full density's 128-point floor
 /// puts nine columns at 1152 points before the scrollbar, which a 1440-point
 /// window does not clear once the rails and the pane inset are taken out.
-/// Where the columns do fit, the note is not reached at all:
+/// Where the columns do fit, the note is not reached:
 /// `TableDrawn::some_column_is_off_screen` gates it.
 #[allow(clippy::too_many_arguments)]
 fn draw_canvas_grid_pane(
