@@ -3303,6 +3303,10 @@ impl Item<ProtocolDoc> for StepsPane {
             cx.mode,
             &mut source,
             crate::data_grid::ColumnWidths::Declared,
+            // The plain header: this sheet's columns are a fixed vocabulary of
+            // step metadata rather than a table's own, and no profile stands
+            // behind them for a band to draw.
+            crate::data_grid::HeaderStyle::Plain,
         );
     }
 }

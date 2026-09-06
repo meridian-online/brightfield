@@ -829,6 +829,7 @@ mod tests {
             min: None,
             max: None,
             semantic: brightfield_engine::SemanticType::NotAsked,
+            moments: None,
         }
     }
 

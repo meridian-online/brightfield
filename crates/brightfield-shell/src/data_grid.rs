@@ -113,6 +113,10 @@ use meridian_design::{control, semantic, spacing};
 
 use crate::app::ChartDoc;
 use crate::chart_item::run_state_pill;
+use crate::column_header::{
+    band_content_width, column_header_frame, draw_column_band, ColumnBandDrawn, ColumnBandFacts,
+    ColumnHeaderFrame, GridDensity,
+};
 use crate::design::Mode;
 use crate::pipeline::LiveDashboard;
 
@@ -252,6 +256,45 @@ pub enum ColumnWidths {
     Natural,
 }
 
+/// What a table draws for a header row.
+///
+/// Two shapes, and which one a table gets is the caller's to say. The Steps
+/// sheet has a fixed vocabulary of columns and no profile behind them, so it
+/// asks for [`HeaderStyle::Plain`] and gets what this module has always drawn;
+/// the rows pane of a data file has the whole column profile and asks for the
+/// band.
+#[derive(Clone, Copy, Debug)]
+pub enum HeaderStyle<'a> {
+    /// The column's name in muted ink, one dense row tall.
+    Plain,
+    /// The column header band — see [`crate::column_header`] — at a density,
+    /// over the facts of the table's own columns.
+    Band {
+        /// How much of each column's profile the band has room to state.
+        density: GridDensity,
+        /// The profile of each column, looked up by the name the table spells.
+        facts: &'a ColumnBandFacts,
+    },
+}
+
+impl HeaderStyle<'_> {
+    /// The band's style, or `None` for the plain header.
+    fn frame(&self, mode: Mode) -> Option<ColumnHeaderFrame> {
+        match self {
+            Self::Plain => None,
+            Self::Band { density, .. } => Some(column_header_frame(*density, mode)),
+        }
+    }
+
+    /// The facts of the table's columns, or `None` for the plain header.
+    const fn facts(&self) -> Option<&ColumnBandFacts> {
+        match self {
+            Self::Plain => None,
+            Self::Band { facts, .. } => Some(facts),
+        }
+    }
+}
+
 /// A column's floor in logical points under [`ColumnWidths::Natural`]: the
 /// cell padding either side of one icon slot, which is the room a header of
 /// one character still has to reserve. Derived from the dense rung's binding,
@@ -284,6 +327,16 @@ pub struct TableDrawn {
     pub header_cells: Vec<(usize, egui::Rect, egui::Rect)>,
     /// The table's own column count — how many there are to fit.
     pub columns: usize,
+    /// The height the table told the widget its header row is, in logical
+    /// points — the dense rung for the plain header, and the band's summed
+    /// extent for the band. Read rather than restated: this is the number
+    /// `egui_table` was handed, not the one a style function computed.
+    pub header_height: f32,
+    /// One entry per column the band drew, in column order — empty for a table
+    /// drawn under [`HeaderStyle::Plain`]. Reduced per column by
+    /// `widest_band_per_column` in this module, for the reason
+    /// `widest_per_column` reduces the header cells.
+    pub band: Vec<ColumnBandDrawn>,
 }
 
 impl TableDrawn {
@@ -295,6 +348,18 @@ impl TableDrawn {
             .iter()
             .filter(|(_, rect, clip)| clip.contains_rect(rect.shrink(CLIP_SLACK)))
             .count()
+    }
+
+    /// The band cell the table drew for column `col`, if it drew one.
+    #[must_use]
+    pub fn band_cell(&self, col: usize) -> Option<&ColumnBandDrawn> {
+        self.band.iter().find(|cell| cell.column == col)
+    }
+
+    /// The band cell the table drew for the column named `name`.
+    #[must_use]
+    pub fn band_named(&self, name: &str) -> Option<&ColumnBandDrawn> {
+        self.band.iter().find(|cell| cell.name == name)
     }
 
     /// Whether some column of the table is off screen or cut off by the edge
@@ -323,8 +388,15 @@ pub fn show_table(
     mode: Mode,
     source: &mut dyn RowSource,
     widths: ColumnWidths,
+    header: HeaderStyle<'_>,
 ) -> TableDrawn {
     let binding = control::binding(spacing::ROW_DENSE);
+    let frame = header.frame(mode);
+    // The one place the widget is told how tall its header is. The dense rung
+    // for the plain header; the band's own summed extent otherwise.
+    let header_height = frame
+        .as_ref()
+        .map_or(binding.row, ColumnHeaderFrame::extent);
     let num_rows = source.total_rows();
     let num_columns = source.columns().len();
     if num_columns == 0 {
@@ -341,7 +413,7 @@ pub fn show_table(
                     .resizable(true)
             })
             .collect(),
-        ColumnWidths::Natural => natural_widths(ui, source, binding)
+        ColumnWidths::Natural => natural_widths(ui, source, binding, &header, frame.as_ref())
             .into_iter()
             .map(|w| {
                 // Pinned rather than seeded, and **the column-resize drag is
@@ -367,19 +439,48 @@ pub fn show_table(
         source,
         mode,
         binding,
+        header,
+        frame,
         drawn: TableDrawn {
             header_cells: Vec::new(),
             columns: num_columns,
+            header_height,
+            band: Vec::new(),
         },
     };
     let _ = egui_table::Table::new()
         .id_salt(salt)
         .num_rows(num_rows)
-        .headers([egui_table::HeaderRow::new(binding.row)])
+        .headers([egui_table::HeaderRow::new(header_height)])
         .columns(columns)
         .show(ui, &mut delegate);
     delegate.drawn.header_cells = widest_per_column(&delegate.drawn.header_cells);
+    delegate.drawn.band = widest_band_per_column(&delegate.drawn.band);
     delegate.drawn
+}
+
+/// One entry per column out of the several the band is painted under, keeping
+/// the one that shows most of it — `widest_per_column`'s rule, over the band's
+/// own record.
+///
+/// A header cell is offered to the delegate once per scrolling region it falls
+/// in, and once more on the invisible sizing pass the widget runs before it
+/// lays anything out. A record that kept every offer would carry two or three
+/// entries per column per frame, and a test counting the band's cells would
+/// read duplicates as a drawing fault.
+fn widest_band_per_column(cells: &[ColumnBandDrawn]) -> Vec<ColumnBandDrawn> {
+    let mut best: std::collections::BTreeMap<usize, ColumnBandDrawn> =
+        std::collections::BTreeMap::new();
+    for cell in cells {
+        let seen = cell.clip.intersect(cell.cell).width().max(0.0);
+        match best.get(&cell.column) {
+            Some(held) if held.clip.intersect(held.cell).width().max(0.0) >= seen => {}
+            _ => {
+                best.insert(cell.column, cell.clone());
+            }
+        }
+    }
+    best.into_values().collect()
 }
 
 /// One entry per column out of the several `egui_table` draws each header cell
@@ -418,7 +519,13 @@ fn widest_per_column(
 /// face the cells draw in, so the answer is the width the glyphs take rather
 /// than an estimate from the character count. Repeated strings cost one layout
 /// between them — egui caches a laid-out galley by its job.
-fn natural_widths(ui: &egui::Ui, source: &dyn RowSource, binding: control::Binding) -> Vec<f32> {
+fn natural_widths(
+    ui: &egui::Ui,
+    source: &dyn RowSource,
+    binding: control::Binding,
+    header: &HeaderStyle<'_>,
+    frame: Option<&ColumnHeaderFrame>,
+) -> Vec<f32> {
     let font = cell_font();
     let width_of = |text: &str| -> f32 {
         ui.painter()
@@ -440,6 +547,18 @@ fn natural_widths(ui: &egui::Ui, source: &dyn RowSource, binding: control::Bindi
             .mul_add(binding.pad_x, *width)
             .clamp(min_column_width(), MAX_COLUMN_WIDTH);
     }
+    // The band's own claim on the width, and the density's floor. A band cell
+    // stacks more than a name, so a column narrow enough for its values can
+    // still be too narrow for its header; and the floor is what stops a column
+    // of one-character values drawing a rug two points across.
+    if let (Some(frame), Some(facts)) = (frame, header.facts()) {
+        for (column, width) in source.columns().iter().zip(widths.iter_mut()) {
+            if let Some(column_facts) = facts.get(&column.name) {
+                *width = width.max(band_content_width(ui.painter(), column_facts, frame));
+            }
+            *width = width.max(frame.floor()).min(MAX_COLUMN_WIDTH);
+        }
+    }
     widths
 }
 
@@ -449,6 +568,12 @@ struct MeridianTableDelegate<'a> {
     source: &'a mut dyn RowSource,
     mode: Mode,
     binding: control::Binding,
+    /// Which header this table draws.
+    header: HeaderStyle<'a>,
+    /// The band's style, resolved once per table draw so two columns of one
+    /// band cannot answer a token differently. `None` under
+    /// [`HeaderStyle::Plain`].
+    frame: Option<ColumnHeaderFrame>,
     /// What this frame laid out, filled in as the header cells draw.
     drawn: TableDrawn,
 }
@@ -493,6 +618,24 @@ impl egui_table::TableDelegate for MeridianTableDelegate<'_> {
             return;
         };
         let (name, numeric) = (column.name.clone(), column.numeric);
+        // The band, where this table has one and the table's column is one the
+        // profile knows. Painted against the cell's own box rather than laid
+        // out, because `egui_table` gives a header cell a centred
+        // left-to-right layout and the band is a stack of rows.
+        if let (Some(frame), Some(facts)) = (self.frame.as_ref(), self.header.facts()) {
+            if let Some(column_facts) = facts.get(&name) {
+                let drawn = draw_column_band(
+                    ui.painter(),
+                    ui.max_rect(),
+                    cell.col_range.start,
+                    column_facts,
+                    facts.tint_index(column_facts),
+                    frame,
+                );
+                self.drawn.band.push(drawn);
+                return;
+            }
+        }
         let sem = semantic(self.mode.is_dark());
         self.cell_layout(ui, numeric, |ui| {
             ui.label(
@@ -1061,6 +1204,19 @@ impl Item<ChartDoc> for DataGridItem {
         // cue), begun and ended around the borrow so the seam is already
         // marked when this read moves off the UI thread.
         let mark = doc.live_dashboard().map_or(0, LiveDashboard::rows_mark);
+        // **Which header this draw gets.** The band needs two things and draws
+        // the plain header without either: a density, which the canvas writes
+        // before it draws because the item cannot see where it is; and the
+        // profile of the table's columns, which a document composed from an
+        // authored spec rather than opened from a data file does not carry.
+        let facts = doc.column_facts();
+        let header = match doc.grid_density {
+            Some(density) if !facts.is_empty() => HeaderStyle::Band {
+                density,
+                facts: &facts,
+            },
+            _ => HeaderStyle::Plain,
+        };
         doc.activity.begin(Activity::EngineQuery);
         let mut drawn = None;
         if let Some(coordinator) = doc.live_coordinator() {
@@ -1073,6 +1229,7 @@ impl Item<ChartDoc> for DataGridItem {
                 mode,
                 &mut source,
                 ColumnWidths::Natural,
+                header,
             ));
         }
         doc.activity.end(Activity::EngineQuery);

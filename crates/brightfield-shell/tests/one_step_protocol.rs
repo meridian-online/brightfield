@@ -839,6 +839,7 @@ fn a_labelled_column_sends_its_leaf_to_the_rail_and_its_whole_label_to_the_inspe
                 failed: 0,
             },
         },
+        moments: None,
     };
     let path = Path::new("/data/california_housing.parquet");
     let dashboard = Dashboard::of(path, std::slice::from_ref(&profile));

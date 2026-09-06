@@ -246,6 +246,14 @@ impl InspectorPane {
 /// draws the leaf because 240 logical points do not hold
 /// `representation.numeric.decimal_number` beside an eighteen-character column
 /// name; this rail is the place the reader can read the rest.
+///
+/// The `VALUES` block below reads the rows, the bounds and the null count that
+/// the grid pane's column header band now also draws, and it stays. The band
+/// answers *what shape is this column* for every column at once, on sight; this
+/// answers *tell me about this one column* for the column a click selected, and
+/// it is the surface carrying the whole label, the tile and the reason the tile
+/// was chosen. Neither is the other's abbreviation, so removing this would take
+/// the answer to a question the band does not ask.
 fn column_body(ui: &mut egui::Ui, column: &ColumnFacts, table: Option<&ColumnTable>, mode: Mode) {
     let sem = semantic(mode.is_dark());
     ui.label(
