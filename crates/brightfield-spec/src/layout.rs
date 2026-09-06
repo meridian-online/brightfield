@@ -2162,99 +2162,112 @@ hconcat:
 
     #[test]
     fn resolve_projection_reads_projection_type() {
-        // Absent → default equirectangular.
-        assert_eq!(
-            resolve_projection(&plot_with(&[])),
-            ResolvedProjection::Equirectangular
-        );
+        let named = |name: &str| {
+            resolve_projection(&plot_with(&[(
+                "projectionType",
+                SpecValue::String(name.into()),
+            )]))
+        };
+        // Absent → the plot names NO projection. Not "equirectangular": a plot
+        // that names nothing is a cartesian plot, and its dot marks draw a
+        // scatter with no graticule behind it.
+        assert_eq!(resolve_projection(&plot_with(&[])), None);
         // Recognised names.
         assert_eq!(
-            resolve_projection(&plot_with(&[(
-                "projectionType",
-                SpecValue::String("equirectangular".into())
-            )])),
-            ResolvedProjection::Equirectangular
+            named("equirectangular"),
+            Some(ResolvedProjection::Equirectangular)
         );
-        assert_eq!(
-            resolve_projection(&plot_with(&[(
-                "projectionType",
-                SpecValue::String("albers".into())
-            )])),
-            ResolvedProjection::Albers
-        );
+        assert_eq!(named("albers"), Some(ResolvedProjection::Albers));
         // albers-usa → plain Albers (composite deferred, a stated gap).
-        assert_eq!(
-            resolve_projection(&plot_with(&[(
-                "projectionType",
-                SpecValue::String("albers-usa".into())
-            )])),
-            ResolvedProjection::Albers
-        );
+        assert_eq!(named("albers-usa"), Some(ResolvedProjection::Albers));
         // The rest of Mosaic's names resolve through the same attribute — the
         // catalogue widened without a second mechanism beside `resolve_projection`.
+        assert_eq!(named("mercator"), Some(ResolvedProjection::Mercator));
         assert_eq!(
-            resolve_projection(&plot_with(&[(
-                "projectionType",
-                SpecValue::String("mercator".into())
-            )])),
-            ResolvedProjection::Mercator
+            named("orthographic"),
+            Some(ResolvedProjection::Orthographic)
         );
-        assert_eq!(
-            resolve_projection(&plot_with(&[(
-                "projectionType",
-                SpecValue::String("orthographic".into())
-            )])),
-            ResolvedProjection::Orthographic
-        );
-        // A name outside Mosaic's vocabulary → default (no panic; the warning is
-        // parse-time).
-        assert_eq!(
-            resolve_projection(&plot_with(&[(
-                "projectionType",
-                SpecValue::String("mollweide".into())
-            )])),
-            ResolvedProjection::Equirectangular
-        );
+        // A name outside Mosaic's vocabulary, and a non-string → no projection
+        // (no panic; the warning is parse-time).
+        assert_eq!(named("mollweide"), None);
         assert_eq!(
             resolve_projection(&plot_with(&[("projectionType", SpecValue::Integer(3))])),
-            ResolvedProjection::Equirectangular
+            None
+        );
+    }
+
+    /// **The separability claim and the inverses that keep it, over the whole
+    /// catalogue.** `ResolvedProjection::axes_invert_separately` is a spec-side
+    /// assertion about render-side behaviour: `build_brushable_bindings` reads it
+    /// to decide whether an interval brush is installed at all, and
+    /// `brightfield-shell`'s `axis_interval` then relies on the inverses
+    /// existing. Two ways for that to be wrong, and this rules out both — a
+    /// projection declared separable whose inverses are missing is a brush that
+    /// silently stops filtering, and one declared curved whose inverses exist is
+    /// a brush refused for nothing.
+    ///
+    /// The render-side half lives in `brightfield-render`'s
+    /// `separability_is_the_claim_the_inverses_keep`, which drives the same
+    /// sixteen names through `Projection::invert_lon` / `invert_lat`; this half
+    /// pins WHICH names the claim covers, so the list cannot quietly widen.
+    #[test]
+    fn four_of_mosaics_names_invert_per_axis() {
+        let mut separable: Vec<&str> = MOSAIC_PROJECTION_NAMES
+            .iter()
+            .map(|(n, _)| *n)
+            .filter(|n| {
+                ResolvedProjection::from_wire(n)
+                    .expect("a Mosaic name resolves")
+                    .axes_invert_separately()
+            })
+            .collect();
+        separable.sort_unstable();
+        assert_eq!(
+            separable,
+            vec!["equirectangular", "identity", "mercator", "reflect-y"],
+            "the separable set is the four whose u depends on the longitude \
+             alone and whose v depends on the latitude alone"
         );
     }
 
     /// Mosaic's `ProjectionName` enum, verbatim from its published JSON schema
     /// (`idl.uw.edu/mosaic/schema/latest.json`, `definitions/ProjectionName`).
-    /// Each resolves, and to a DISTINCT variant apart from the one pair that is
-    /// deliberately shared: `albers`/`albers-usa`, whose composite insets are
-    /// deferred.
+    /// Sixteen names; ONE enumeration, so a test about the vocabulary and a test
+    /// about what the vocabulary can do cannot be about different lists.
+    const MOSAIC_PROJECTION_NAMES: [(&str, ResolvedProjection); 16] = [
+        ("albers-usa", ResolvedProjection::Albers),
+        ("albers", ResolvedProjection::Albers),
+        (
+            "azimuthal-equal-area",
+            ResolvedProjection::AzimuthalEqualArea,
+        ),
+        (
+            "azimuthal-equidistant",
+            ResolvedProjection::AzimuthalEquidistant,
+        ),
+        ("conic-conformal", ResolvedProjection::ConicConformal),
+        ("conic-equal-area", ResolvedProjection::ConicEqualArea),
+        ("conic-equidistant", ResolvedProjection::ConicEquidistant),
+        ("equal-earth", ResolvedProjection::EqualEarth),
+        ("equirectangular", ResolvedProjection::Equirectangular),
+        ("gnomonic", ResolvedProjection::Gnomonic),
+        ("identity", ResolvedProjection::Identity),
+        ("reflect-y", ResolvedProjection::ReflectY),
+        ("mercator", ResolvedProjection::Mercator),
+        ("orthographic", ResolvedProjection::Orthographic),
+        ("stereographic", ResolvedProjection::Stereographic),
+        (
+            "transverse-mercator",
+            ResolvedProjection::TransverseMercator,
+        ),
+    ];
+
+    /// Each of Mosaic's sixteen names resolves, and to a DISTINCT variant apart
+    /// from the one pair that is deliberately shared: `albers`/`albers-usa`,
+    /// whose composite insets are deferred.
     #[test]
     fn every_mosaic_projection_name_resolves_to_its_own_variant() {
-        let names = [
-            ("albers-usa", ResolvedProjection::Albers),
-            ("albers", ResolvedProjection::Albers),
-            (
-                "azimuthal-equal-area",
-                ResolvedProjection::AzimuthalEqualArea,
-            ),
-            (
-                "azimuthal-equidistant",
-                ResolvedProjection::AzimuthalEquidistant,
-            ),
-            ("conic-conformal", ResolvedProjection::ConicConformal),
-            ("conic-equal-area", ResolvedProjection::ConicEqualArea),
-            ("conic-equidistant", ResolvedProjection::ConicEquidistant),
-            ("equal-earth", ResolvedProjection::EqualEarth),
-            ("equirectangular", ResolvedProjection::Equirectangular),
-            ("gnomonic", ResolvedProjection::Gnomonic),
-            ("identity", ResolvedProjection::Identity),
-            ("reflect-y", ResolvedProjection::ReflectY),
-            ("mercator", ResolvedProjection::Mercator),
-            ("orthographic", ResolvedProjection::Orthographic),
-            ("stereographic", ResolvedProjection::Stereographic),
-            (
-                "transverse-mercator",
-                ResolvedProjection::TransverseMercator,
-            ),
-        ];
+        let names = MOSAIC_PROJECTION_NAMES;
         for (wire, expected) in names {
             assert_eq!(
                 ResolvedProjection::from_wire(wire),

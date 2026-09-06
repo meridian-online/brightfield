@@ -1628,7 +1628,7 @@ mod tests {
     use super::*;
     use crate::brush::commit_brush_release_multi;
     use crate::chart_state::ChartState;
-    use brightfield_render::mark::configured_renderer;
+    use brightfield_render::mark::{configured_renderer, Projection};
     use brightfield_render::scale::{anchor_scales, SequentialScheme};
     use brightfield_render::scene::build_multi_mark_scene;
 
@@ -1762,7 +1762,7 @@ mod tests {
         let layout = ChartLayout::new(400.0, 300.0);
 
         let fingerprint = |kind: MarkKind| -> (Vec<u32>, Vec<u32>) {
-            let ro = configured_renderer(kind, SequentialScheme::default(), None, None, None, None);
+            let ro = configured_renderer(kind, SequentialScheme::default(), None, None, None);
             let renderer: &dyn MarkRenderer = ro
                 .as_deref()
                 .or_else(|| find_renderer(&renderers, kind))
@@ -1964,11 +1964,11 @@ projectionType: albers
         let spec = parse_spec(geo, Format::Yaml).expect("parse").spec;
         let nodes = collect_plot_nodes(&spec);
         let (path, node) = nodes.first().expect("one plot");
-        let (hl, proj) = plot_render_context(path, node, &[]);
+        let hl = plot_highlight_style(path, &[]);
         assert_eq!(
-            proj,
-            Projection::Albers,
-            "projectionType: albers resolves to Albers"
+            MarkProjection::of(MarkKind::Geo, Some(node)).drawn(),
+            Some(Projection::Albers),
+            "projectionType: albers reaches a geo mark on the plot as Albers"
         );
         assert!(hl.is_none(), "no highlight binding on this plot → no style");
 
@@ -1997,15 +1997,15 @@ plot:
                 stroke_opacity: None,
             },
         }];
-        let (hl, proj) = plot_render_context(path, node, &bindings);
+        let hl = plot_highlight_style(path, &bindings);
         assert!(
             hl.is_some(),
             "a highlight binding on this plot yields a render style"
         );
         assert_eq!(
-            proj,
-            Projection::Equirectangular,
-            "no projectionType → the default fit"
+            MarkProjection::of(MarkKind::Dot, Some(node)),
+            MarkProjection::None,
+            "no projectionType → a dot mark draws cartesian, not a defaulted map"
         );
     }
 
@@ -2017,6 +2017,7 @@ plot:
     fn findings124_build_fresh_mark_input_gates_by_kind() {
         use brightfield_spec::ast::Mark;
         use brightfield_spec::vocab::MarkKind as K;
+        use brightfield_spec::{parse_spec, Format};
         let mk = |kind: K| Mark {
             kind,
             status: kind.status(),
@@ -2027,68 +2028,81 @@ plot:
             opacity: Some(0.2),
             ..Default::default()
         };
+        // A plot naming `albers`, and one naming nothing — the two contexts a
+        // rebuilt mark can land in.
+        let albers_spec = parse_spec(
+            "data:\n  t: SELECT 1 AS a\nplot:\n  - mark: geo\n    data: { from: t }\nprojectionType: albers\n",
+            Format::Yaml,
+        )
+        .expect("parse")
+        .spec;
+        let albers_nodes = collect_plot_nodes(&albers_spec);
+        let albers = albers_nodes.first().expect("one plot").1;
+        let bare_spec = parse_spec(
+            "data:\n  t: SELECT 1 AS a\nplot:\n  - mark: geo\n    data: { from: t }\n",
+            Format::Yaml,
+        )
+        .expect("parse")
+        .spec;
+        let bare_nodes = collect_plot_nodes(&bare_spec);
+        let bare = bare_nodes.first().expect("one plot").1;
 
-        // A honouring dot with a plot highlight style → the mark dims.
+        // A honouring dot with a plot highlight style → the mark dims, and it
+        // draws through the plot's projection like every other positional mark.
         let dot = build_fresh_mark_input(
             &mk(K::Dot),
+            albers,
             SequentialScheme::default(),
             Some(&style),
-            Projection::Albers,
         );
         assert!(
             dot.highlight_style.is_some(),
             "a honouring mark carries the plot highlight style"
         );
-        assert!(
-            dot.renderer_override.is_none(),
-            "a non-geo dot ignores the projection (registry renderer)"
+        assert_eq!(
+            dot.channels.projection(),
+            Some(Projection::Albers),
+            "a dot on an albers plot draws through albers"
         );
 
         // A non-honouring line with the SAME plot style → no highlight (the 12
-        // non-honouring families never dim).
+        // non-honouring families never dim), and it cannot draw through the
+        // projection at all.
         let line = build_fresh_mark_input(
             &mk(K::Line),
+            albers,
             SequentialScheme::default(),
             Some(&style),
-            Projection::Albers,
         );
         assert!(
             line.highlight_style.is_none(),
             "a non-honouring mark never carries a highlight style"
         );
-
-        // A geo mark threads the projection into its configured renderer — and
-        // it must be the ALBERS we passed, not the equirectangular default: the
-        // finding-1/2/4 regression was the rebuild dropping the projection, which
-        // `unwrap_or_default()` silently masks as equirectangular. Read it back
-        // through the renderer's `projection()` seam so the guard has teeth.
-        let geo = build_fresh_mark_input(
-            &mk(K::Geo),
-            SequentialScheme::default(),
-            None,
-            Projection::Albers,
-        );
         assert_eq!(
-            geo.renderer_override.as_ref().and_then(|r| r.projection()),
+            line.channels.mark_projection(),
+            MarkProjection::Undrawable(Projection::Albers),
+            "a line mark cannot draw through a projection, so it is not drawn"
+        );
+
+        // A geo mark carries the plot's projection on its channel map — and it
+        // must be the ALBERS the plot named, not the equirectangular default:
+        // the finding-1/2/4 regression was a rebuild dropping the projection,
+        // which `unwrap_or_default()` silently masks as equirectangular.
+        let geo = build_fresh_mark_input(&mk(K::Geo), albers, SequentialScheme::default(), None);
+        assert_eq!(
+            geo.channels.projection(),
             Some(Projection::Albers),
-            "a geo mark carries the ALBERS projection through the rebuilt renderer (distinct from the default)"
+            "a geo mark carries the ALBERS projection through the rebuild (distinct from the default)"
         );
 
-        // And the equirectangular default threads through as itself (a sanity
-        // pin that `projection()` is not hardwired to Albers).
-        let geo_default = build_fresh_mark_input(
-            &mk(K::Geo),
-            SequentialScheme::default(),
-            None,
-            Projection::Equirectangular,
-        );
+        // And a geo mark on a plot naming nothing draws the plate carrée — the
+        // one kind that projects regardless, since its column is geometry.
+        let geo_default =
+            build_fresh_mark_input(&mk(K::Geo), bare, SequentialScheme::default(), None);
         assert_eq!(
-            geo_default
-                .renderer_override
-                .as_ref()
-                .and_then(|r| r.projection()),
+            geo_default.channels.projection(),
             Some(Projection::Equirectangular),
-            "the equirectangular default threads through unchanged"
+            "a geo mark on an unprojected plot still draws the plate carrée"
         );
     }
 
@@ -2215,7 +2229,7 @@ projectionType: albers
             rebuild_flat_index_space(&plot_meta, old_marks, &spec, &[], &path);
         for &mi in &new_indices[&path] {
             assert_eq!(
-                new_marks[mi].renderer_override.as_ref().and_then(|r| r.projection()),
+                new_marks[mi].channels.projection(),
                 Some(Projection::Albers),
                 "the affected geo plot's rebuilt marks keep the ALBERS projection (survives the rebuild, not reverted to equirectangular)"
             );
@@ -2369,14 +2383,7 @@ projectionType: albers
                 batch: Some(batch.clone()),
                 channels: channels.clone(),
                 kind: MarkKind::Raster,
-                renderer_override: configured_renderer(
-                    MarkKind::Raster,
-                    scheme,
-                    None,
-                    None,
-                    None,
-                    None,
-                ),
+                renderer_override: configured_renderer(MarkKind::Raster, scheme, None, None, None),
                 bandwidth: None,
                 thresholds: None,
                 bin_width: None,
@@ -2421,7 +2428,6 @@ projectionType: albers
                 None,
                 None,
                 None,
-                None,
             ),
             bandwidth: None,
             thresholds: None,
@@ -2448,7 +2454,6 @@ projectionType: albers
             renderer_override: configured_renderer(
                 MarkKind::Raster,
                 SequentialScheme::Blues,
-                None,
                 None,
                 None,
                 None,
@@ -2956,7 +2961,6 @@ plot:
                     None,
                     None,
                     None,
-                    None,
                 ),
                 bandwidth: None,
                 thresholds: None,
@@ -3072,7 +3076,6 @@ plot:
                     Some(0.8),
                     None,
                     None,
-                    None,
                 )
             };
             let marks_for = |batch: RecordBatch| {
@@ -3161,7 +3164,6 @@ plot:
                 None,
                 None,
                 None,
-                None,
             ),
             bandwidth: None,
             thresholds: None,
@@ -3197,7 +3199,6 @@ plot:
                     MarkKind::Heatmap,
                     SequentialScheme::default(),
                     bandwidth,
-                    None,
                     None,
                     None,
                 ),
@@ -3249,7 +3250,6 @@ plot:
                     SequentialScheme::default(),
                     None,
                     thresholds,
-                    None,
                     None,
                 ),
                 bandwidth: None,
@@ -3487,7 +3487,6 @@ plot:
                 renderer_override: configured_renderer(
                     MarkKind::Raster,
                     SequentialScheme::Blues,
-                    None,
                     None,
                     None,
                     None,

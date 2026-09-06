@@ -18,7 +18,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use vello::Scene;
 
-use brightfield_render::channel::{Channel, ChannelMap};
+use brightfield_render::channel::{Channel, ChannelMap, MarkProjection};
 use brightfield_render::mark::{
     graticule, graticule_step, DotRenderer, GeoExtent, GraticuleKind, MarkRenderer, Projection,
 };
@@ -69,7 +69,7 @@ fn channels(projection: Option<Projection>) -> ChannelMap {
     cm.insert(Channel::X, "lon".to_string());
     cm.insert(Channel::Y, "lat".to_string());
     if let Some(p) = projection {
-        cm.set_projection(p);
+        cm.set_projection(MarkProjection::Through(p));
     }
     cm
 }
@@ -331,7 +331,7 @@ fn equal_aspect_and_a_projection_cannot_both_apply() {
     assert_eq!(aspect_only.projection(), None);
 
     let mut projection_only = ChannelMap::new();
-    projection_only.set_projection(Projection::Mercator);
+    projection_only.set_projection(MarkProjection::Through(Projection::Mercator));
     assert!(
         !projection_only.equal_aspect(),
         "control: a projected mark never had equal-aspect to lose"
@@ -344,12 +344,12 @@ fn equal_aspect_and_a_projection_cannot_both_apply() {
         {
             let mut cm = ChannelMap::new();
             cm.set_equal_aspect(true);
-            cm.set_projection(Projection::Mercator);
+            cm.set_projection(MarkProjection::Through(Projection::Mercator));
             cm
         },
         {
             let mut cm = ChannelMap::new();
-            cm.set_projection(Projection::Mercator);
+            cm.set_projection(MarkProjection::Through(Projection::Mercator));
             cm.set_equal_aspect(true);
             cm
         },
