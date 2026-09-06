@@ -6910,15 +6910,9 @@ mod tests {
     fn configured_renderer_rebuild_parity() {
         let batch = hexbin_batch(DENSITY_COUNT_COL, vec![1.0, 100.0]);
         let cm = hexbin_cm(DENSITY_COUNT_COL);
-        let renderer = configured_renderer(
-            MarkKind::Hexbin,
-            SequentialScheme::Turbo,
-            None,
-            None,
-            None,
-            None,
-        )
-        .expect("hexbin has a configured renderer");
+        let renderer =
+            configured_renderer(MarkKind::Hexbin, SequentialScheme::Turbo, None, None, None)
+                .expect("hexbin has a configured renderer");
         let mut scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
         renderer.augment_scales(&mut scales, &batch, &cm, (40.0, 600.0), (450.0, 20.0));
 

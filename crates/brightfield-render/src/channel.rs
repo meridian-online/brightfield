@@ -681,8 +681,7 @@ mod tests {
     /// quantitative scale on it.
     #[test]
     fn from_mark_synthesises_the_interval_pair_for_a_positional_bin() {
-        use brightfield_spec::ast::{AggregateFunc, Mark, PlotNode, SpecValue, ValueOrParamRef};
-        use brightfield_spec::vocab::MarkKind;
+        use brightfield_spec::ast::{AggregateFunc, Mark, SpecValue, ValueOrParamRef};
         use brightfield_spec::vocab::{ImplStatus, MarkKind};
 
         let mut options: indexmap::IndexMap<String, ValueOrParamRef<SpecValue>> =
