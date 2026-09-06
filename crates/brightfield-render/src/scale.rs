@@ -980,6 +980,7 @@ pub fn infer_scales_in(
     }
 
     extend_scales_with_literals(&mut set, channel_map.literals_iter(), x_range, y_range);
+    project_positional_domains(&mut set, &[(batch, channel_map)], x_range, y_range);
     set
 }
 
@@ -1053,7 +1054,84 @@ pub fn infer_scales_multi_in(
     for (_, cm) in entries {
         extend_scales_with_literals(&mut set, cm.literals_iter(), x_range, y_range);
     }
+    project_positional_domains(&mut set, entries, x_range, y_range);
     set
+}
+
+/// Replace the X/Y linear domains with the PROJECTED extent of the coordinates,
+/// when the marks carry a map projection.
+///
+/// The column pass above reads `x`/`y` as plain numbers and leaves domains in
+/// degrees of longitude and latitude. A projected mark does not draw at those
+/// numbers — it draws at `Projection::project` of them — so its axes have to be
+/// in the projection's planar units or the points land off the scale entirely.
+/// Under Mercator a latitude of 64° is a `v` of 1.47, and a domain that spans
+/// both is a plot with its marks crowded into one corner.
+///
+/// The domains are **replaced** rather than unioned with the degree-unit ones
+/// for exactly that reason, and the union across `entries` happens here instead:
+/// a point map's ghost and subset layers are two entries, and the extent that
+/// has to reach the axes is the wider of the two, or the ghost is drawn outside
+/// its own frame.
+///
+/// A plot that mixes projected and unprojected positional marks is not a
+/// supported spec — it asks for two coordinate systems on one pair of axes — and
+/// the projected marks decide the domains.
+fn project_positional_domains(
+    set: &mut ScaleSet,
+    entries: &[(&RecordBatch, &ChannelMap)],
+    x_range: (f64, f64),
+    y_range: (f64, f64),
+) {
+    let (mut umin, mut umax) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut vmin, mut vmax) = (f64::INFINITY, f64::NEG_INFINITY);
+    for (batch, cm) in entries {
+        let Some(projection) = cm.projection() else {
+            continue;
+        };
+        let (Some(lon_col), Some(lat_col)) = (cm.get(Channel::X), cm.get(Channel::Y)) else {
+            continue;
+        };
+        let (Some(lons), Some(lats)) = (
+            crate::mark::column_as_f64(batch, lon_col),
+            crate::mark::column_as_f64(batch, lat_col),
+        ) else {
+            continue;
+        };
+        for (lon, lat) in lons.iter().zip(lats.iter()) {
+            let (Some(lon), Some(lat)) = (lon, lat) else {
+                continue;
+            };
+            let Some((u, v)) = projection.project(*lon, *lat) else {
+                continue;
+            };
+            umin = umin.min(u);
+            umax = umax.max(u);
+            vmin = vmin.min(v);
+            vmax = vmax.max(v);
+        }
+    }
+    if !(umin.is_finite() && umax.is_finite() && vmin.is_finite() && vmax.is_finite()) {
+        return;
+    }
+    set.insert(
+        Channel::X,
+        Scale::Linear {
+            domain_min: umin,
+            domain_max: umax,
+            range_start: x_range.0,
+            range_end: x_range.1,
+        },
+    );
+    set.insert(
+        Channel::Y,
+        Scale::Linear {
+            domain_min: vmin,
+            domain_max: vmax,
+            range_start: y_range.0,
+            range_end: y_range.1,
+        },
+    );
 }
 
 /// Union a list of scales of the same type into a single scale.

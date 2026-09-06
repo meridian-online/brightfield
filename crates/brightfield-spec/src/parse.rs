@@ -424,14 +424,35 @@ pub enum ParseWarning {
         attribute: String,
     },
 
-    /// A plot-level `projectionType` carried a value that is not a supported
-    /// projection (v1: `equirectangular`, `albers`, `albers-usa`). The plot
-    /// degrades to the default equirectangular fit, and this names the value so
-    /// an author sees the unsupported projection rather than silently getting a
-    /// different map (geo mark).
+    /// A `projectionType` — on a plot or on a mark — carried a value outside
+    /// Mosaic's `ProjectionName` vocabulary, or a non-string value. The
+    /// projection degrades to the default equirectangular fit, and this names
+    /// the value so an author sees the unsupported projection rather than
+    /// silently getting a different map.
+    ///
+    /// [`crate::layout::ResolvedProjection::from_wire`] is the sole judge of
+    /// what is recognised, so widening the catalogue narrows this warning in
+    /// both places at once and cannot leave one of them warning about a name the
+    /// other draws.
     UnknownProjection {
         /// The unrecognised projection value (or `<non-string>` for a non-string).
         value: String,
+    },
+
+    /// A mark asked for BOTH `aspectRatio: 1` and a `projectionType`. The two
+    /// are alternatives, not layers: equal-aspect widens the narrower positional
+    /// domain until a degree of longitude and a degree of latitude take the same
+    /// number of pixels, which is a cartesian frame's best impersonation of a
+    /// map, and a projection has already answered that question — correctly, and
+    /// differently at each latitude. The projection decides the frame and the
+    /// `aspectRatio` is dropped.
+    ///
+    /// `brightfield_render::channel::ChannelMap::equal_aspect` is what makes the
+    /// refusal true rather than merely announced; this is what tells the author
+    /// it happened.
+    AspectRatioWithProjection {
+        /// The mark that asked for both.
+        mark: String,
     },
 
     /// A mark carried an option key that **no lowerer and no renderer reads**
@@ -629,6 +650,10 @@ impl fmt::Display for ParseWarning {
             Self::UnknownProjection { value } => write!(
                 f,
                 "projection `{value}` is not supported — the plot falls back to equirectangular"
+            ),
+            Self::AspectRatioWithProjection { mark } => write!(
+                f,
+                "mark `{mark}` sets both `aspectRatio` and `projectionType` — the projection decides the frame and `aspectRatio` is dropped"
             ),
             Self::UnconsumedMarkOption { mark, key } => write!(
                 f,
@@ -1218,21 +1243,7 @@ impl Walker {
             // default equirectangular fit — name it so the author sees the
             // unsupported projection. A lifted `$param` is a recorded deferral.
             if key == "projectionType" {
-                let unsupported = match &value {
-                    SpecValue::String(s) => {
-                        crate::layout::ResolvedProjection::from_wire(s).is_none()
-                    }
-                    SpecValue::Param(_) => false,
-                    _ => true,
-                };
-                if unsupported {
-                    let shown = match &value {
-                        SpecValue::String(s) => s.clone(),
-                        _ => "<non-string>".to_string(),
-                    };
-                    self.warnings
-                        .push(ParseWarning::UnknownProjection { value: shown });
-                }
+                self.warn_unknown_projection(&value);
             }
             attributes.insert(key, value);
         }
@@ -1427,6 +1438,31 @@ impl Walker {
         }
         if status == ImplStatus::Implemented {
             self.warn_unconsumed_mark_options(name, parent);
+            // The mark-level `projectionType` is judged by the same function the
+            // plot-level attribute is, so a name is recognised in both places or
+            // in neither.
+            if let Some(ValueOrParamRef::Value(v)) = options.get("projectionType") {
+                self.warn_unknown_projection(v);
+                // `aspectRatio` alongside a projection is refused rather than
+                // composed — see `ParseWarning::AspectRatioWithProjection`.
+                let asks_aspect = matches!(
+                    options.get("aspectRatio"),
+                    Some(ValueOrParamRef::Value(SpecValue::Integer(1)))
+                ) || matches!(
+                    options.get("aspectRatio"),
+                    Some(ValueOrParamRef::Value(SpecValue::Float(f))) if (*f - 1.0).abs() < f64::EPSILON
+                );
+                if asks_aspect
+                    && crate::layout::ResolvedProjection::from_wire(match v {
+                        SpecValue::String(s) => s,
+                        _ => "",
+                    })
+                    .is_some()
+                {
+                    self.warnings
+                        .push(ParseWarning::AspectRatioWithProjection { mark: name.into() });
+                }
+            }
             if sort.is_none() && parent.contains_key(serde_yaml::Value::String("sort".into())) {
                 self.warnings
                     .push(ParseWarning::UnconsumedSort { mark: name.into() });
@@ -1503,6 +1539,31 @@ impl Walker {
                 channel: field.to_string(),
                 transform: key.to_string(),
             });
+    }
+
+    /// Raise [`ParseWarning::UnknownProjection`] when `value` is a
+    /// `projectionType` this build cannot draw.
+    ///
+    /// ONE function for the plot attribute and the mark option, asking
+    /// [`crate::layout::ResolvedProjection::from_wire`] — the same question the
+    /// renderer's resolution asks. A lifted `$param` is a recorded deferral and
+    /// not a bad name, so it does not warn; a value that is not a string cannot
+    /// name a projection.
+    fn warn_unknown_projection(&mut self, value: &SpecValue) {
+        let unsupported = match value {
+            SpecValue::String(s) => crate::layout::ResolvedProjection::from_wire(s).is_none(),
+            SpecValue::Param(_) => false,
+            _ => true,
+        };
+        if !unsupported {
+            return;
+        }
+        let shown = match value {
+            SpecValue::String(s) => s.clone(),
+            _ => "<non-string>".to_string(),
+        };
+        self.warnings
+            .push(ParseWarning::UnknownProjection { value: shown });
     }
 
     /// Name every option key on `mark_name`'s node that no lowerer and no
@@ -3021,15 +3082,18 @@ plot:
 
     #[test]
     fn unknown_projection_warns_but_supported_defer() {
-        // An unsupported projection degrades to the default equirectangular fit
-        // AND names itself (geo) — mirroring the NonStringLabel check.
-        let bad = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\nprojectionType: mercator\n";
+        // A name outside Mosaic's `ProjectionName` vocabulary degrades to the
+        // default equirectangular fit AND names itself — mirroring the
+        // NonStringLabel check. `mollweide` is a real d3 EXTENSION projection
+        // rather than a typo, which is the case worth naming: it is the shape of
+        // request this warning exists to answer.
+        let bad = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\nprojectionType: mollweide\n";
         let out = parse_spec(bad, Format::Yaml).expect("parses despite unsupported projection");
         assert!(
             out.warnings.iter().any(
-                |w| matches!(w, ParseWarning::UnknownProjection { value } if value == "mercator")
+                |w| matches!(w, ParseWarning::UnknownProjection { value } if value == "mollweide")
             ),
-            "one UnknownProjection naming `mercator`; got {:?}",
+            "one UnknownProjection naming `mollweide`; got {:?}",
             out.warnings
         );
 
@@ -3038,6 +3102,10 @@ plot:
             "projectionType: albers",
             "projectionType: albers-usa",
             "projectionType: equirectangular",
+            "projectionType: mercator",
+            "projectionType: orthographic",
+            "projectionType: equal-earth",
+            "projectionType: transverse-mercator",
             "projectionType: $p",
         ] {
             let src = format!(
@@ -3052,6 +3120,96 @@ plot:
                 o.warnings
             );
         }
+    }
+
+    /// A `projectionType` on a MARK is judged by the same function the plot
+    /// attribute is judged by, so a name is recognised in both places or in
+    /// neither — the half of the catalogue claim that stops a mark option
+    /// becoming a second vocabulary beside the plot one.
+    #[test]
+    fn a_mark_level_projection_is_judged_by_the_same_vocabulary() {
+        let mark = |opts: &str| {
+            format!("data:\n  t:\n    - {{ x: 1, y: 2 }}\nplot:\n  - {{ mark: dot, data: {{ from: t }}, x: x, y: y, {opts} }}\n")
+        };
+
+        // A name Mosaic does not have warns wherever it is written.
+        let out = parse_spec(&mark("projectionType: mollweide"), Format::Yaml).expect("parses");
+        assert!(
+            out.warnings.iter().any(
+                |w| matches!(w, ParseWarning::UnknownProjection { value } if value == "mollweide")
+            ),
+            "a mark-level unknown projection warns; got {:?}",
+            out.warnings
+        );
+
+        // A name Mosaic does have is silent — and specifically raises no
+        // `UnconsumedMarkOption`, which is what an unread option gets.
+        for ok in ["mercator", "equal-earth", "orthographic", "albers-usa"] {
+            let out =
+                parse_spec(&mark(&format!("projectionType: {ok}")), Format::Yaml).expect("parses");
+            assert!(
+                !out.warnings.iter().any(|w| matches!(
+                    w,
+                    ParseWarning::UnknownProjection { .. }
+                        | ParseWarning::UnconsumedMarkOption { .. }
+                )),
+                "`{ok}` on a mark must be recognised and consumed; got {:?}",
+                out.warnings
+            );
+        }
+    }
+
+    /// `aspectRatio` and a projection on one mark are refused together. The
+    /// warning is what tells the author; `ChannelMap::equal_aspect` is what makes
+    /// it true, and `crates/brightfield-render/tests/projected_point_map.rs`
+    /// holds that half.
+    #[test]
+    fn aspect_ratio_alongside_a_projection_warns() {
+        let mark = |opts: &str| {
+            format!("data:\n  t:\n    - {{ x: 1, y: 2 }}\nplot:\n  - {{ mark: dot, data: {{ from: t }}, x: x, y: y, {opts} }}\n")
+        };
+        let out = parse_spec(
+            &mark("aspectRatio: 1, projectionType: mercator"),
+            Format::Yaml,
+        )
+        .expect("parses");
+        assert!(
+            out.warnings.iter().any(
+                |w| matches!(w, ParseWarning::AspectRatioWithProjection { mark } if mark == "dot")
+            ),
+            "asking for both warns naming the mark; got {:?}",
+            out.warnings
+        );
+
+        // Each alone is silent — the warning is about the COMBINATION, and
+        // without these two a warning that fired on `aspectRatio` alone would
+        // pass the assertion above.
+        for alone in ["aspectRatio: 1", "projectionType: mercator"] {
+            let out = parse_spec(&mark(alone), Format::Yaml).expect("parses");
+            assert!(
+                !out.warnings
+                    .iter()
+                    .any(|w| matches!(w, ParseWarning::AspectRatioWithProjection { .. })),
+                "`{alone}` alone must not warn; got {:?}",
+                out.warnings
+            );
+        }
+
+        // An `aspectRatio` beside a projection this build cannot draw is not the
+        // refusal — there is no projection to win, so the mark keeps its
+        // equal-aspect frame and hears about the name instead.
+        let out = parse_spec(
+            &mark("aspectRatio: 1, projectionType: mollweide"),
+            Format::Yaml,
+        )
+        .expect("parses");
+        assert!(
+            !out.warnings
+                .iter()
+                .any(|w| matches!(w, ParseWarning::AspectRatioWithProjection { .. })),
+            "an unrecognised projection does not displace `aspectRatio`; got {:?}",
+            out.warnings
+        );
     }
 
     #[test]

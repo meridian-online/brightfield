@@ -538,7 +538,7 @@ const DENSITY_COUNT_COL: &str = "__bf_count";
 // Helpers: extract f64 values from columns regardless of source type
 // ---------------------------------------------------------------------------
 
-fn column_as_f64(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<f64>>> {
+pub(crate) fn column_as_f64(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<f64>>> {
     use arrow::array::{
         Float32Array, Int16Array, Int32Array, Int8Array, UInt16Array, UInt32Array, UInt64Array,
         UInt8Array,
@@ -755,6 +755,34 @@ fn deemphasise(colour: Color, style: &HighlightStyle) -> Color {
 // DotRenderer
 // ---------------------------------------------------------------------------
 
+/// The pixel position of one dot — through the mark's projection when it has
+/// one, and through the scale directly when it does not.
+///
+/// A projected dot reads its two coordinate columns as NUMBERS rather than as
+/// strings: a longitude is not a category, and `resolve_position`'s band lookup
+/// has no work to do on a projected axis. `None` means the row does not draw —
+/// either a coordinate is missing, or the projection has no position for it (see
+/// [`Projection::project`]).
+#[allow(clippy::too_many_arguments)]
+fn dot_position(
+    projection: Option<Projection>,
+    x_scale: &Scale,
+    y_scale: &Scale,
+    xf: Option<f64>,
+    xs: Option<&str>,
+    yf: Option<f64>,
+    ys: Option<&str>,
+) -> Option<(f64, f64)> {
+    if let Some(projection) = projection {
+        let (u, v) = projection.project(xf?, yf?)?;
+        return Some((x_scale.map_f64(u), y_scale.map_f64(v)));
+    }
+    Some((
+        resolve_position(x_scale, xf, xs)?,
+        resolve_position(y_scale, yf, ys)?,
+    ))
+}
+
 /// Renders dot/scatter marks as circles at x/y positions.
 pub struct DotRenderer;
 
@@ -782,7 +810,16 @@ impl MarkRenderer for DotRenderer {
         x_range: (f64, f64),
         y_range: (f64, f64),
     ) {
-        if !channel_map.equal_aspect() {
+        // A projected mark aspect-fits for the same reason an equal-aspect one
+        // does, and by the same arithmetic: the difference is the UNITS its
+        // domains are already in, which `infer_scales` decided — degrees for an
+        // equal-aspect mark, the projection's planar units for a projected one
+        // (`project_positional_domains`). Neither may be true of the other, and
+        // `ChannelMap::equal_aspect` is what guarantees it: it answers `false`
+        // whenever a projection is set, so a mark that wrote both takes this
+        // branch once, through the projection, rather than widening degrees
+        // against projected units.
+        if !(channel_map.equal_aspect() || channel_map.projection().is_some()) {
             return;
         }
         let (
@@ -833,6 +870,19 @@ impl MarkRenderer for DotRenderer {
             None => return,
         };
 
+        // The graticule first, so the points sit on top of it: it is
+        // scaffolding under the data, not data. It is drawn only by a projected
+        // mark, and it is drawn ONCE per mark — a point map's ghost and subset
+        // layers both draw one, which is two coincident sets of hairlines in the
+        // same ink rather than two different pictures.
+        let projection = channel_map.projection();
+        if let Some(projection) = projection {
+            if let Some(extent) = geo_extent_of(batch, x_col, y_col) {
+                let lines = graticule(projection, extent);
+                stroke_graticule(scene, &lines, x_scale, y_scale, scales.ink().grid);
+            }
+        }
+
         let x_f64 = column_as_f64(batch, x_col);
         let x_str = column_as_string(batch, x_col);
         let y_f64 = column_as_f64(batch, y_col);
@@ -845,13 +895,8 @@ impl MarkRenderer for DotRenderer {
             let yf = y_f64.as_ref().and_then(|v| v[i]);
             let ys = y_str.as_ref().and_then(|v| v[i].as_deref());
 
-            let px = match resolve_position(x_scale, xf, xs) {
-                Some(p) => p,
-                None => continue,
-            };
-            let py = match resolve_position(y_scale, yf, ys) {
-                Some(p) => p,
-                None => continue,
+            let Some((px, py)) = dot_position(projection, x_scale, y_scale, xf, xs, yf, ys) else {
+                continue;
             };
 
             let colour = resolve_colour(scales, channel_map, batch, i);
@@ -900,13 +945,10 @@ impl MarkRenderer for DotRenderer {
             let yf = y_f64.as_ref().and_then(|v| v[i]);
             let ys = y_str.as_ref().and_then(|v| v[i].as_deref());
 
-            let target_px = match resolve_position(x_scale, xf, xs) {
-                Some(p) => p,
-                None => continue,
-            };
-            let target_py = match resolve_position(y_scale, yf, ys) {
-                Some(p) => p,
-                None => continue,
+            let Some((target_px, target_py)) =
+                dot_position(channel_map.projection(), x_scale, y_scale, xf, xs, yf, ys)
+            else {
+                continue;
             };
 
             // Lerp from prev to current
@@ -3923,17 +3965,78 @@ fn resolve_stroke_colour(
 /// ([`brightfield_spec::layout::ResolvedProjection`], converted via `From`); the
 /// forward transform lives here.
 ///
-/// Both projections output "math-convention" coordinates (`v` increasing
+/// The projections here output "math-convention" coordinates (`v` increasing
 /// NORTHWARD). The renderer feeds them through the plot's inverted Y
 /// [`Scale::Linear`] (`ChartLayout::y_range` is `(bottom, top)`), which supplies
 /// the screen flip so north renders up — so, unlike a scale-free d3 projection,
 /// there is NO `-lat` negation here (it would double-flip).
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+///
+/// # Where the formulas come from
+///
+/// Each arm is d3-geo's raw projection (`d3-geo/src/projection/*.js`, ISC),
+/// transcribed with d3's own default parameters, because Mosaic's
+/// `projectionType` vocabulary IS Observable Plot's, and Plot's projections are
+/// d3-geo's. `Projection::project` takes DEGREES where a d3 raw takes radians;
+/// that conversion is the systematic divergence, and it is per-arm rather than
+/// global because [`Self::Identity`] and [`Self::ReflectY`] are planar
+/// passthroughs that d3 does not convert either.
+///
+/// The expected values in this crate's tests were produced by an oracle written
+/// independently of this code and cross-checked two ways — see
+/// `tests/projection_reference.rs` for the provenance of every literal.
+///
+/// # Scale and translation are NOT applied
+///
+/// d3 composes a raw projection with `scale`/`translate`/`rotate`/`center`.
+/// Brightfield applies neither the scale nor the translation: the renderer
+/// aspect-fits the projected bounding box into the plot rect
+/// (`aspect_fit_domains`), so a uniform scale and any translation are absorbed
+/// by the fit and cannot change the picture. A ROTATION is not absorbed, which
+/// is why `projectionRotate` remains unread and each projection here draws at
+/// d3's default rotation — [`Self::Albers`] excepted, because d3 bakes its
+/// `rotate([96, 0])` into the projection itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Projection {
-    /// `u = lon`, `v = lat` — the identity plate carrée, aspect-fit by the geo
+    /// `u = lon`, `v = lat` — the identity plate carrée, aspect-fit by the
     /// renderer. The default when `projectionType` is absent / unrecognised.
     #[default]
     Equirectangular,
+    /// d3's `geoIdentity` — a planar passthrough, `u = lon`, `v = lat`. Draws
+    /// the same picture as [`Self::Equirectangular`] under the fit; a separate
+    /// variant because it is a separate name in the spec language.
+    Identity,
+    /// [`Self::Identity`] with the latitude axis flipped (`v = -lat`).
+    ReflectY,
+    /// Spherical Mercator. Conformal — local shape survives at each latitude,
+    /// which is what an unprojected lon/lat scatter gets wrong away from the
+    /// equator. Undefined at the poles: beyond [`MERCATOR_CLIP_LAT`] a
+    /// coordinate has no position and `project` returns `None`.
+    Mercator,
+    /// Transverse spherical Mercator at d3's default `rotate([0, 0, 90])` —
+    /// conformal about the prime meridian rather than about the equator.
+    TransverseMercator,
+    /// Orthographic — the globe seen from infinitely far away. The far
+    /// hemisphere has no position.
+    Orthographic,
+    /// Stereographic — conformal azimuthal. The antipode has no position.
+    Stereographic,
+    /// Gnomonic — great circles draw straight. Only the near hemisphere has a
+    /// position, and it diverges towards the rim.
+    Gnomonic,
+    /// Lambert azimuthal equal-area.
+    AzimuthalEqualArea,
+    /// Azimuthal equidistant.
+    AzimuthalEquidistant,
+    /// Equal Earth (Šavrič, Patterson & Jenny, 2018) — equal-area and
+    /// pseudocylindrical, defined at every latitude, so a world point map keeps
+    /// its clustering honest without dropping polar rows.
+    EqualEarth,
+    /// Albers conic equal-area at d3's default standard parallels (0°, 60°).
+    ConicEqualArea,
+    /// Lambert conic conformal at d3's default standard parallels (30°, 30°).
+    ConicConformal,
+    /// Conic equidistant at d3's default standard parallels (0°, 60°).
+    ConicEquidistant,
     /// US-tuned Albers equal-area conic (fixed standard parallels 29.5°N/45.5°N,
     /// reference (−96°, 23°) — d3-geo's `geoAlbers` US defaults). Contiguous-US
     /// correct; AK/HI render in true geographic position (the albers-usa
@@ -3946,27 +4049,234 @@ impl From<brightfield_spec::layout::ResolvedProjection> for Projection {
         use brightfield_spec::layout::ResolvedProjection as R;
         match p {
             R::Equirectangular => Self::Equirectangular,
+            R::Identity => Self::Identity,
+            R::ReflectY => Self::ReflectY,
+            R::Mercator => Self::Mercator,
+            R::TransverseMercator => Self::TransverseMercator,
+            R::Orthographic => Self::Orthographic,
+            R::Stereographic => Self::Stereographic,
+            R::Gnomonic => Self::Gnomonic,
+            R::AzimuthalEqualArea => Self::AzimuthalEqualArea,
+            R::AzimuthalEquidistant => Self::AzimuthalEquidistant,
+            R::EqualEarth => Self::EqualEarth,
+            R::ConicEqualArea => Self::ConicEqualArea,
+            R::ConicConformal => Self::ConicConformal,
+            R::ConicEquidistant => Self::ConicEquidistant,
             R::Albers => Self::Albers,
         }
     }
 }
 
+/// Degrees to radians.
+const D2R: f64 = std::f64::consts::PI / 180.0;
+
+/// d3-geo's Mercator clip latitude, `atan(sinh(π))` in degrees, pinned by the
+/// test `the_mercator_clip_latitude_is_atan_sinh_pi`. Beyond it
+/// [`Projection::Mercator`] diverges, and d3 clips the geometry away rather than
+/// drawing it at an arbitrary distance; [`Projection::project`] returns `None`
+/// there for the same reason.
+pub const MERCATOR_CLIP_LAT: f64 = 85.051_128_779_806_6;
+
+/// The margin by which a coordinate must be on the near side of the horizon for
+/// an azimuthal projection to give it a position. Guards the divide-by-zero at
+/// the rim (gnomonic) and at the antipode (stereographic, azimuthal).
+const HORIZON_EPS: f64 = 1e-6;
+
 impl Projection {
-    /// Project `(lon, lat)` in degrees to planar `(u, v)`, with `v` increasing
-    /// north. Pure — no allocation, no clipping.
+    /// Project `(lon, lat)` in DEGREES to planar `(u, v)`, with `v` increasing
+    /// north. Pure — no allocation.
+    ///
+    /// `None` means this projection has no position for that coordinate: the far
+    /// hemisphere under [`Self::Orthographic`] / [`Self::Gnomonic`], the antipode
+    /// under [`Self::Stereographic`] / the azimuthals, or a latitude past
+    /// [`MERCATOR_CLIP_LAT`] under either Mercator. The caller SKIPS such a
+    /// coordinate — the alternative is drawing it at a mirrored or effectively
+    /// infinite position, which is a lie rather than an approximation. The
+    /// projections that are total (equirectangular, identity, reflect-y, equal
+    /// earth, the conics, albers) return a position for each coordinate they are
+    /// given, so no spec that predates the catalogue widening loses a point —
+    /// the test `an_unrepresentable_coordinate_has_no_position` holds both
+    /// halves.
     #[must_use]
-    pub fn project(self, lon: f64, lat: f64) -> (f64, f64) {
+    pub fn project(self, lon: f64, lat: f64) -> Option<(f64, f64)> {
         match self {
-            Self::Equirectangular => (lon, lat),
-            Self::Albers => albers_forward(lon, lat),
+            Self::Equirectangular | Self::Identity => Some((lon, lat)),
+            Self::ReflectY => Some((lon, -lat)),
+            Self::Mercator => {
+                (lat.abs() < MERCATOR_CLIP_LAT).then(|| (lon * D2R, mercator_y(lat * D2R)))
+            }
+            Self::TransverseMercator => {
+                // d3's geoTransverseMercator is the raw `[log(tan((π/2+φ)/2)), -λ]`
+                // under a default `rotate([0, 0, 90])`. Composing the two gives
+                // Snyder's closed form for the spherical transverse Mercator,
+                // which is what this computes: it is the same map with no
+                // rotation machinery, and `tests/projection_reference.rs` pins
+                // the two against each other.
+                let (lam, phi) = (lon * D2R, lat * D2R);
+                // `b` is the sine of the ROTATED latitude, which is the one
+                // Mercator's clip applies to — d3 clips the rotated sphere, not
+                // the input coordinate, so a point on the equator at ±90°
+                // longitude is what falls off here rather than a polar one.
+                let b = phi.cos() * lam.sin();
+                (b.abs() < (MERCATOR_CLIP_LAT * D2R).sin()).then(|| {
+                    (
+                        0.5 * ((1.0 + b) / (1.0 - b)).ln(),
+                        phi.tan().atan2(lam.cos()),
+                    )
+                })
+            }
+            Self::Orthographic => {
+                let (lam, phi) = (lon * D2R, lat * D2R);
+                near_side(lam, phi).then(|| (phi.cos() * lam.sin(), phi.sin()))
+            }
+            Self::Gnomonic => {
+                let (lam, phi) = (lon * D2R, lat * D2R);
+                let (cy, k) = (phi.cos(), lam.cos() * phi.cos());
+                (k > HORIZON_EPS).then(|| (cy * lam.sin() / k, phi.sin() / k))
+            }
+            Self::Stereographic => {
+                let (lam, phi) = (lon * D2R, lat * D2R);
+                let cy = phi.cos();
+                let k = 1.0 + lam.cos() * cy;
+                (k > HORIZON_EPS).then(|| (cy * lam.sin() / k, phi.sin() / k))
+            }
+            Self::AzimuthalEqualArea => azimuthal(lon, lat, |cxcy| (2.0 / (1.0 + cxcy)).sqrt()),
+            Self::AzimuthalEquidistant => azimuthal(lon, lat, |cxcy| {
+                let c = cxcy.clamp(-1.0, 1.0).acos();
+                if c == 0.0 {
+                    1.0
+                } else {
+                    c / c.sin()
+                }
+            }),
+            Self::EqualEarth => Some(equal_earth_forward(lon * D2R, lat * D2R)),
+            Self::ConicEqualArea => Some(conic_equal_area_forward(lon * D2R, lat * D2R)),
+            Self::ConicConformal => Some(conic_conformal_forward(lon * D2R, lat * D2R)),
+            Self::ConicEquidistant => Some(conic_equidistant_forward(lon * D2R, lat * D2R)),
+            Self::Albers => Some(albers_forward(lon, lat)),
         }
     }
 }
 
+/// d3's `mercatorRaw` y half: `log(tan((π/2 + φ) / 2))`, φ in radians.
+fn mercator_y(phi: f64) -> f64 {
+    ((std::f64::consts::FRAC_PI_2 + phi) / 2.0).tan().ln()
+}
+
+/// Whether `(λ, φ)` in radians is on the visible hemisphere of an azimuthal
+/// projection centred at (0, 0) — d3 clips the far side away rather than drawing
+/// it mirrored.
+fn near_side(lam: f64, phi: f64) -> bool {
+    lam.cos() * phi.cos() > HORIZON_EPS
+}
+
+/// d3's `azimuthalRaw(scale)` — the shared body of the two azimuthal arms.
+/// Returns `None` at the antipode, where the scale factor diverges.
+fn azimuthal(lon: f64, lat: f64, scale: impl Fn(f64) -> f64) -> Option<(f64, f64)> {
+    let (lam, phi) = (lon * D2R, lat * D2R);
+    let (cx, cy) = (lam.cos(), phi.cos());
+    if 1.0 + cx * cy <= HORIZON_EPS {
+        return None;
+    }
+    let k = scale(cx * cy);
+    k.is_finite().then(|| (k * cy * lam.sin(), k * phi.sin()))
+}
+
+/// d3's `equalEarthRaw` — the Šavrič, Patterson & Jenny (2018) polynomial, λ/φ
+/// in radians.
+///
+/// `A3` is `0.000893`, the coefficient the paper publishes and d3-geo carries.
+/// Noted because the `d3_geo_rs` port (3.2.4) writes `0.008_93` here, which
+/// moves a projected coordinate in the third decimal place; that discrepancy is
+/// what `tests/projection_reference.rs` records, and it is why these formulas
+/// are transcribed from d3-geo rather than taken from the port.
+fn equal_earth_forward(lam: f64, phi: f64) -> (f64, f64) {
+    const A1: f64 = 1.340_264;
+    const A2: f64 = -0.081_106;
+    const A3: f64 = 0.000_893;
+    const A4: f64 = 0.003_796;
+    let m = 3.0_f64.sqrt() / 2.0;
+    let l = (m * phi.sin()).asin();
+    let l2 = l * l;
+    let l6 = l2 * l2 * l2;
+    (
+        lam * l.cos() / (m * (A1 + 3.0 * A2 * l2 + l6 * (7.0 * A3 + 9.0 * A4 * l2))),
+        l * (A1 + A2 * l2 + l6 * (A3 + A4 * l2)),
+    )
+}
+
+/// d3's `conicEqualAreaRaw(y0, y1)` at `conicProjection`'s default standard
+/// parallels (0°, 60°), λ/φ in radians.
+///
+/// The constants d3 closes over are derived here on each call rather than
+/// written down, for the reason [`albers_forward`] derives its own: a
+/// transcribed constant is a claim no check reddens on, and the trigonometry
+/// costs less than the mistake.
+fn conic_equal_area_forward(lam: f64, phi: f64) -> (f64, f64) {
+    let (y0, y1) = (0.0_f64, std::f64::consts::FRAC_PI_3);
+    let sy0 = y0.sin();
+    let n = (sy0 + y1.sin()) / 2.0;
+    if n.abs() < 1e-12 {
+        // d3 degrades to cylindrical equal area when the parallels are
+        // symmetric about the equator. Unreachable at these fixed parallels,
+        // and kept so the math is total rather than dividing by zero.
+        let c = y0.cos();
+        return (lam * c, phi.sin() / c);
+    }
+    let c = 1.0 + sy0 * (2.0 * n - sy0);
+    let r0 = c.sqrt() / n;
+    let r = (c - 2.0 * n * phi.sin()).max(0.0).sqrt() / n;
+    let nx = n * lam;
+    (r * nx.sin(), r0 - r * nx.cos())
+}
+
+/// d3's `conicEquidistantRaw(y0, y1)` at `conicProjection`'s default standard
+/// parallels (0°, 60°), λ/φ in radians.
+fn conic_equidistant_forward(lam: f64, phi: f64) -> (f64, f64) {
+    let (y0, y1) = (0.0_f64, std::f64::consts::FRAC_PI_3);
+    let cy0 = y0.cos();
+    let n = (cy0 - y1.cos()) / (y1 - y0);
+    if n.abs() < 1e-12 {
+        return (lam, phi); // d3 degrades to equirectangular.
+    }
+    let g = cy0 / n + y0;
+    let gy = g - phi;
+    let nx = n * lam;
+    (gy * nx.sin(), g - gy * nx.cos())
+}
+
+/// d3's `conicConformalRaw(y0, y1)` at `geoConicConformal`'s default standard
+/// parallels (30°, 30°), λ/φ in radians.
+fn conic_conformal_forward(lam: f64, phi: f64) -> (f64, f64) {
+    let y0 = 30.0 * D2R;
+    // The parallels are equal, so d3 takes `n = sin(y0)` rather than the log
+    // ratio its unequal-parallel branch computes.
+    let n = y0.sin();
+    let f = y0.cos() * tany(y0).powf(n) / n;
+    // d3 clamps the latitude off one pole rather than dividing by zero, picking
+    // which by the sign of `f`. `f` is positive at these parallels, so it is the
+    // south pole; the branch is written out because the sign is a property of
+    // the parallels and not of this projection.
+    let phi = if f > 0.0 {
+        phi.max(-std::f64::consts::FRAC_PI_2 + 1e-6)
+    } else {
+        phi.min(std::f64::consts::FRAC_PI_2 - 1e-6)
+    };
+    let r = f / tany(phi).powf(n);
+    let nx = n * lam;
+    (r * nx.sin(), f - r * nx.cos())
+}
+
+/// d3's `tany`: `tan((π/2 + y) / 2)`.
+fn tany(y: f64) -> f64 {
+    ((std::f64::consts::FRAC_PI_2 + y) / 2.0).tan()
+}
+
 /// US Albers equal-area conic forward. Standard parallels φ1=29.5°, φ2=45.5°,
 /// reference longitude λ0=−96°, reference latitude φ0=23°. Returns `(x, y)` with
-/// `y` increasing north (see [`Projection`]). Unit sphere — the geo renderer's
-/// aspect-fit rescales, so the absolute radius is immaterial.
+/// `y` increasing north (see [`Projection`]). Unit sphere — the renderer's
+/// aspect-fit rescales, so the absolute radius is immaterial, and so is the
+/// choice of φ0, which shifts `y` by a constant and does no more than that.
 fn albers_forward(lon: f64, lat: f64) -> (f64, f64) {
     let d2r = std::f64::consts::PI / 180.0;
     let (phi1, phi2) = (29.5 * d2r, 45.5 * d2r);
@@ -3984,6 +4294,415 @@ fn albers_forward(lon: f64, lat: f64) -> (f64, f64) {
     let rho0 = (c - 2.0 * n * lat0.sin()).max(0.0).sqrt() / n;
     let theta = n * (lam - lon0);
     (rho * theta.sin(), rho0 - rho * theta.cos())
+}
+
+// ---------------------------------------------------------------------------
+// Graticule — the meridians and parallels a projected mark draws behind itself
+// ---------------------------------------------------------------------------
+
+/// The geographic rectangle a projected mark is showing, in DEGREES.
+///
+/// This is the graticule's whole input besides the projection: which lines exist
+/// and how finely they are spaced is decided from the span, and where they land
+/// is decided by the projection. Constructed by
+/// [`GeoRenderer`]/[`DotRenderer`] from the coordinates they are about to draw,
+/// so a mark showing one country gets that country's graticule and not the
+/// world's.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GeoExtent {
+    /// West edge, degrees.
+    pub lon_min: f64,
+    /// East edge, degrees.
+    pub lon_max: f64,
+    /// South edge, degrees.
+    pub lat_min: f64,
+    /// North edge, degrees.
+    pub lat_max: f64,
+}
+
+impl GeoExtent {
+    /// Order the bounds and clamp them to the sphere. A degenerate span (one
+    /// coordinate, or a column of constants) is widened to
+    /// [`MIN_EXTENT_DEGREES`] so the step ladder has something to divide.
+    #[must_use]
+    pub fn new(lon_a: f64, lon_b: f64, lat_a: f64, lat_b: f64) -> Self {
+        let (lon_min, lon_max) = widen(lon_a.min(lon_b), lon_a.max(lon_b), -180.0, 180.0);
+        let (lat_min, lat_max) = widen(lat_a.min(lat_b), lat_a.max(lat_b), -90.0, 90.0);
+        Self {
+            lon_min,
+            lon_max,
+            lat_min,
+            lat_max,
+        }
+    }
+
+    /// East–west span in degrees.
+    #[must_use]
+    pub fn lon_span(&self) -> f64 {
+        self.lon_max - self.lon_min
+    }
+
+    /// North–south span in degrees.
+    #[must_use]
+    pub fn lat_span(&self) -> f64 {
+        self.lat_max - self.lat_min
+    }
+}
+
+/// The narrowest span [`GeoExtent`] will represent. A single coordinate has no
+/// span to space a graticule across, and dividing by it produces either one line
+/// or an unbounded number of them.
+pub const MIN_EXTENT_DEGREES: f64 = 1e-4;
+
+fn widen(lo: f64, hi: f64, floor: f64, ceil: f64) -> (f64, f64) {
+    let (lo, hi) = (lo.clamp(floor, ceil), hi.clamp(floor, ceil));
+    if hi - lo >= MIN_EXTENT_DEGREES {
+        return (lo, hi);
+    }
+    let mid = (lo + hi) / 2.0;
+    let half = MIN_EXTENT_DEGREES / 2.0;
+    ((mid - half).max(floor), (mid + half).min(ceil))
+}
+
+/// Whether a graticule line holds a constant longitude or a constant latitude.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraticuleKind {
+    /// Constant longitude, running north–south.
+    Meridian,
+    /// Constant latitude, running east–west.
+    Parallel,
+}
+
+/// One graticule line: the degree it stands at, and its projected polyline.
+///
+/// A line the projection cannot represent along its whole length comes back as
+/// SEVERAL entries at the same `degrees` — one per contiguous run — rather than
+/// as one polyline with a chord jumping the gap, which is what joining the runs
+/// would draw.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraticuleLine {
+    /// Meridian or parallel.
+    pub kind: GraticuleKind,
+    /// The longitude (meridian) or latitude (parallel) it stands at, in degrees.
+    pub degrees: f64,
+    /// The projected `(u, v)` polyline, in the same planar units
+    /// [`Projection::project`] returns, at least two points long.
+    pub points: Vec<(f64, f64)>,
+}
+
+/// The spacings a graticule may take, coarsest first. Whole degrees down to
+/// 0.01° (about a kilometre), so a map of a city and a map of the world both
+/// land on a number a reader recognises rather than on a computed spacing like
+/// 7.3°.
+const GRATICULE_STEPS: [f64; 15] = [
+    90.0, 45.0, 30.0, 20.0, 15.0, 10.0, 5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01,
+];
+
+/// How many intervals a span must be divided into before a step is fine enough.
+/// Six intervals is seven lines on the axis that is fully spanned, which is
+/// dense enough to read a position off and sparse enough not to hatch the plot.
+const GRATICULE_MIN_INTERVALS: f64 = 6.0;
+
+/// How many points each graticule line is sampled at before projection. A
+/// meridian under a conic or azimuthal projection is a curve, and this is what
+/// decides how smoothly it draws; a cylindrical projection would be exact at two.
+const GRATICULE_SAMPLES: usize = 33;
+
+/// The coarsest spacing that divides `span` into at least six intervals, or the
+/// finest the ladder offers when no coarser one manages it.
+///
+/// The ladder is whole degrees from 90° down to 0.01° (about a kilometre), so a
+/// map of a city and a map of the world both land on a number a reader
+/// recognises rather than on a computed spacing like 7.3°. Six intervals is
+/// seven lines on a fully spanned axis — dense enough to read a position off,
+/// sparse enough not to hatch the plot.
+#[must_use]
+pub fn graticule_step(span: f64) -> f64 {
+    let span = span.abs();
+    for step in GRATICULE_STEPS {
+        if span / step >= GRATICULE_MIN_INTERVALS {
+            return step;
+        }
+    }
+    GRATICULE_STEPS[GRATICULE_STEPS.len() - 1]
+}
+
+/// The meridians and parallels visible in `extent`, projected.
+///
+/// Both halves of the answer come from the two arguments: the EXTENT decides
+/// which whole-degree lines exist and how far apart they are
+/// ([`graticule_step`]), and the PROJECTION decides where each sampled point
+/// lands. There is no data dependency and no network — this is the reason a
+/// graticule is what a projected mark draws behind itself rather than a basemap;
+/// the tests `the_graticule_lines_are_the_whole_degrees_the_extent_contains` and
+/// `narrowing_the_extent_changes_the_graticule_rather_than_redrawing_it` hold
+/// the extent's half of it.
+///
+/// Meridians come first, then parallels, each in ascending degree order, so two
+/// runs over the same extent produce the same list in the same order.
+#[must_use]
+pub fn graticule(projection: Projection, extent: GeoExtent) -> Vec<GraticuleLine> {
+    let mut out = Vec::new();
+    let lat_samples = samples(extent.lat_min, extent.lat_max);
+    let lon_samples = samples(extent.lon_min, extent.lon_max);
+    for lon in ticks(
+        extent.lon_min,
+        extent.lon_max,
+        graticule_step(extent.lon_span()),
+    ) {
+        push_runs(
+            &mut out,
+            GraticuleKind::Meridian,
+            lon,
+            projection,
+            lat_samples.iter().map(|lat| (lon, *lat)),
+        );
+    }
+    for lat in ticks(
+        extent.lat_min,
+        extent.lat_max,
+        graticule_step(extent.lat_span()),
+    ) {
+        push_runs(
+            &mut out,
+            GraticuleKind::Parallel,
+            lat,
+            projection,
+            lon_samples.iter().map(|lon| (*lon, lat)),
+        );
+    }
+    out
+}
+
+/// The multiples of `step` inside `[lo, hi]`, ascending. Snapped to the step so
+/// the lines a reader sees are whole numbers of degrees.
+fn ticks(lo: f64, hi: f64, step: f64) -> Vec<f64> {
+    let first = (lo / step).ceil();
+    let last = (hi / step).floor();
+    let mut out = Vec::new();
+    let mut i = first;
+    while i <= last {
+        // Multiplied back rather than accumulated, so the hundredth tick is not
+        // the hundredth rounding error.
+        out.push(i * step);
+        i += 1.0;
+    }
+    out
+}
+
+/// [`GRATICULE_SAMPLES`] evenly spaced values across `[lo, hi]`, endpoints
+/// included.
+fn samples(lo: f64, hi: f64) -> Vec<f64> {
+    let n = GRATICULE_SAMPLES;
+    #[allow(clippy::cast_precision_loss)]
+    let last = (n - 1) as f64;
+    (0..n)
+        .map(|i| {
+            #[allow(clippy::cast_precision_loss)]
+            let t = i as f64 / last;
+            lo + (hi - lo) * t
+        })
+        .collect()
+}
+
+/// Project each coordinate and append each contiguous run of at least two
+/// representable points as its own [`GraticuleLine`].
+fn push_runs(
+    out: &mut Vec<GraticuleLine>,
+    kind: GraticuleKind,
+    degrees: f64,
+    projection: Projection,
+    coords: impl Iterator<Item = (f64, f64)>,
+) {
+    let mut run: Vec<(f64, f64)> = Vec::new();
+    let flush = |run: &mut Vec<(f64, f64)>, out: &mut Vec<GraticuleLine>| {
+        if run.len() >= 2 {
+            out.push(GraticuleLine {
+                kind,
+                degrees,
+                points: std::mem::take(run),
+            });
+        } else {
+            run.clear();
+        }
+    };
+    for (lon, lat) in coords {
+        match projection.project(lon, lat) {
+            Some(p) => run.push(p),
+            None => flush(&mut run, out),
+        }
+    }
+    flush(&mut run, out);
+}
+
+/// Graticule hairline width in pixels — thinner than a gridline's mark, because
+/// it is scaffolding under the data and there are more of them.
+const GRATICULE_STROKE_WIDTH: f64 = 0.5;
+
+/// Stroke `lines` through the plot's two scales in the grid ink, clipped to the
+/// pixel rect those scales map onto.
+///
+/// The clip is what keeps a graticule inside its plot: the lines are generated
+/// over a geographic rectangle, and the projection of that rectangle's corners
+/// can fall outside the projection of the DATA the scales were fitted to — a
+/// conic bulges its corners outward. Clipping here rather than in [`graticule`]
+/// keeps that function about geography and this one about drawing.
+fn stroke_graticule(
+    scene: &mut Scene,
+    lines: &[GraticuleLine],
+    x_scale: &Scale,
+    y_scale: &Scale,
+    ink: Color,
+) {
+    let Some(rect) = scale_rect(x_scale, y_scale) else {
+        return;
+    };
+    let stroke = kurbo::Stroke::new(GRATICULE_STROKE_WIDTH);
+    for line in lines {
+        let pixels: Vec<(f64, f64)> = line
+            .points
+            .iter()
+            .map(|(u, v)| (x_scale.map_f64(*u), y_scale.map_f64(*v)))
+            .collect();
+        for run in clip_polyline(&pixels, rect) {
+            let mut path = BezPath::new();
+            let mut pts = run.into_iter();
+            if let Some((x0, y0)) = pts.next() {
+                path.move_to((x0, y0));
+                for (x, y) in pts {
+                    path.line_to((x, y));
+                }
+            }
+            scene.stroke(&stroke, Affine::IDENTITY, ink, None, &path);
+        }
+    }
+}
+
+/// The pixel rectangle two linear scales map onto, as `(x0, y0, x1, y1)` with
+/// `x0 <= x1` and `y0 <= y1`. `None` for a non-linear axis, which is not a shape
+/// a projected mark takes.
+fn scale_rect(x_scale: &Scale, y_scale: &Scale) -> Option<(f64, f64, f64, f64)> {
+    let (
+        Scale::Linear {
+            range_start: xs,
+            range_end: xe,
+            ..
+        },
+        Scale::Linear {
+            range_start: ys,
+            range_end: ye,
+            ..
+        },
+    ) = (x_scale, y_scale)
+    else {
+        return None;
+    };
+    Some((xs.min(*xe), ys.min(*ye), xs.max(*xe), ys.max(*ye)))
+}
+
+/// Split a pixel polyline into the runs that lie inside `rect`, interpolating a
+/// crossing segment to the boundary. Liang–Barsky per segment.
+fn clip_polyline(points: &[(f64, f64)], rect: (f64, f64, f64, f64)) -> Vec<Vec<(f64, f64)>> {
+    let mut runs: Vec<Vec<(f64, f64)>> = Vec::new();
+    let mut run: Vec<(f64, f64)> = Vec::new();
+    for pair in points.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let Some((ca, cb)) = clip_segment(a, b, rect) else {
+            if run.len() >= 2 {
+                runs.push(std::mem::take(&mut run));
+            } else {
+                run.clear();
+            }
+            continue;
+        };
+        // A segment that re-enters the rect starts a new run; one that continues
+        // the last extends it.
+        match run.last() {
+            Some(last) if same_point(*last, ca) => run.push(cb),
+            _ => {
+                if run.len() >= 2 {
+                    runs.push(std::mem::take(&mut run));
+                } else {
+                    run.clear();
+                }
+                run.push(ca);
+                run.push(cb);
+            }
+        }
+    }
+    if run.len() >= 2 {
+        runs.push(run);
+    }
+    runs
+}
+
+fn same_point(a: (f64, f64), b: (f64, f64)) -> bool {
+    (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9
+}
+
+/// Liang–Barsky: the portion of segment `a`→`b` inside `rect`, or `None`.
+fn clip_segment(
+    a: (f64, f64),
+    b: (f64, f64),
+    rect: (f64, f64, f64, f64),
+) -> Option<((f64, f64), (f64, f64))> {
+    let (x0, y0, x1, y1) = rect;
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let (mut t0, mut t1) = (0.0_f64, 1.0_f64);
+    for (p, q) in [
+        (-dx, a.0 - x0),
+        (dx, x1 - a.0),
+        (-dy, a.1 - y0),
+        (dy, y1 - a.1),
+    ] {
+        if p == 0.0 {
+            if q < 0.0 {
+                return None; // parallel to this edge and outside it
+            }
+            continue;
+        }
+        let r = q / p;
+        if p < 0.0 {
+            if r > t1 {
+                return None;
+            }
+            t0 = t0.max(r);
+        } else {
+            if r < t0 {
+                return None;
+            }
+            t1 = t1.min(r);
+        }
+    }
+    if t0 > t1 {
+        return None;
+    }
+    Some((
+        (a.0 + t0 * dx, a.1 + t0 * dy),
+        (a.0 + t1 * dx, a.1 + t1 * dy),
+    ))
+}
+
+/// The geographic extent of a mark's two coordinate columns, or `None` when
+/// either is absent or holds no finite value.
+fn geo_extent_of(batch: &RecordBatch, lon_col: &str, lat_col: &str) -> Option<GeoExtent> {
+    let lons = column_as_f64(batch, lon_col)?;
+    let lats = column_as_f64(batch, lat_col)?;
+    let (mut lon0, mut lon1) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut lat0, mut lat1) = (f64::INFINITY, f64::NEG_INFINITY);
+    for (lon, lat) in lons.iter().zip(lats.iter()) {
+        let (Some(lon), Some(lat)) = (lon, lat) else {
+            continue;
+        };
+        if !(lon.is_finite() && lat.is_finite()) {
+            continue;
+        }
+        lon0 = lon0.min(*lon);
+        lon1 = lon1.max(*lon);
+        lat0 = lat0.min(*lat);
+        lat1 = lat1.max(*lat);
+    }
+    (lon0.is_finite() && lat0.is_finite()).then(|| GeoExtent::new(lon0, lon1, lat0, lat1))
 }
 
 /// Basemap outline width for a stroke-only (no-fill) geo mark. The COLOUR is
@@ -4030,7 +4749,9 @@ impl GeoRenderer {
         for geom in geoms.iter().flatten() {
             for ring in parse_geojson_rings(geom) {
                 for (lon, lat) in ring {
-                    let (u, v) = self.projection.project(lon, lat);
+                    let Some((u, v)) = self.projection.project(lon, lat) else {
+                        continue;
+                    };
                     umin = umin.min(u);
                     umax = umax.max(u);
                     vmin = vmin.min(v);
@@ -4083,10 +4804,27 @@ impl MarkRenderer for GeoRenderer {
             }
             let mut path = BezPath::new();
             for ring in &rings {
-                let mut pts = ring.iter().map(|(lon, lat)| {
-                    let (u, v) = self.projection.project(*lon, *lat);
-                    (x_scale.map_f64(u), y_scale.map_f64(v))
-                });
+                // A ring is drawn whole or not at all. A projection with a
+                // horizon (orthographic, gnomonic) has no position for a vertex
+                // on the far side, and joining the vertices that remain draws a
+                // chord across the globe rather than the shape that was asked
+                // for. Proper clipping — cutting the ring at the horizon and
+                // closing it along the rim — is d3's `clipCircle`, and this
+                // build has no equivalent, so it declines rather than
+                // approximates. The projections that predate the catalogue
+                // widening are total, so no existing spec loses a ring.
+                let Some(pixels) = ring
+                    .iter()
+                    .map(|(lon, lat)| {
+                        self.projection
+                            .project(*lon, *lat)
+                            .map(|(u, v)| (x_scale.map_f64(u), y_scale.map_f64(v)))
+                    })
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    continue;
+                };
+                let mut pts = pixels.into_iter();
                 if let Some((x0, y0)) = pts.next() {
                     path.move_to((x0, y0));
                     for (x, y) in pts {
@@ -6202,13 +6940,15 @@ mod tests {
         // Equirectangular is the identity (u=lon, v=lat).
         assert_eq!(
             Projection::Equirectangular.project(12.0, -34.0),
-            (12.0, -34.0)
+            Some((12.0, -34.0))
         );
 
         // Albers reference point (−96°, 23°) projects to ≈ (0, 0): λ=λ0 → θ=0 → x=0;
         // φ=φ0 → ρ=ρ0 → y=0. (Structurally insensitive to the parallels on its
         // own — the non-reference point below pins the conic constants.)
-        let (rx, ry) = Projection::Albers.project(-96.0, 23.0);
+        let (rx, ry) = Projection::Albers
+            .project(-96.0, 23.0)
+            .expect("albers is total");
         assert!(
             rx.abs() < 1e-9 && ry.abs() < 1e-9,
             "reference point ≈ origin: ({rx}, {ry})"
@@ -6221,15 +6961,21 @@ mod tests {
         // to 20°/60°) fails here. For (lon −80°, lat 40°):
         //   n=0.6028370, C=1.3512237, ρ0=1.5562005, ρ=1.2591903, θ=0.1683544
         //   x=ρ·sinθ=0.211010, y=ρ0−ρ·cosθ=0.314810.
-        let (ax, ay) = Projection::Albers.project(-80.0, 40.0);
+        let (ax, ay) = Projection::Albers
+            .project(-80.0, 40.0)
+            .expect("albers is total");
         assert!(
             (ax - 0.211010).abs() < 1e-4 && (ay - 0.314810).abs() < 1e-4,
             "albers(−80,40) must match the independent conic value (0.211010, 0.314810); got ({ax}, {ay})"
         );
 
         // North is up in math coords: a more-northern point has a LARGER v.
-        let (_, y_south) = Projection::Albers.project(-96.0, 30.0);
-        let (_, y_north) = Projection::Albers.project(-96.0, 45.0);
+        let (_, y_south) = Projection::Albers
+            .project(-96.0, 30.0)
+            .expect("albers is total");
+        let (_, y_north) = Projection::Albers
+            .project(-96.0, 45.0)
+            .expect("albers is total");
         assert!(
             y_north > y_south,
             "albers v increases north: {y_north} !> {y_south}"

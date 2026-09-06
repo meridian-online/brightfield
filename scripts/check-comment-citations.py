@@ -230,6 +230,14 @@ ACKNOWLEDGED: dict[str, Ack] = {
         "absent from Cargo.lock; the comparison is in "
         "crates/brightfield-shell/src/editor.rs",
     ),
+    "d3_geo_rs": Ack(
+        "package",
+        "the Rust port of d3-geo, evaluated as a dependency for the projection "
+        "catalogue and rejected, so it is deliberately absent from Cargo.lock; it "
+        "is used instead as a numeric ORACLE, and the comparison and its one "
+        "disagreement are recorded in "
+        "crates/brightfield-render/tests/projection_reference.rs",
+    ),
 }
 
 
