@@ -54,6 +54,7 @@ use brightfield_engine::SqlPredicate;
 use brightfield_keys::BindingContext;
 use brightfield_render::canvas_host::{Color, OverlayPainter, SurfaceCursor};
 use brightfield_render::channel::Channel;
+use brightfield_render::mark::Projection;
 use brightfield_render::scale::Scale;
 use brightfield_spec::analysis::BrushKind;
 use brightfield_spec::vocab::MarkKind;
@@ -1500,6 +1501,8 @@ fn interval_predicate(
         clauses.push(axis_interval(
             column,
             scale,
+            plot.scales.projection(),
+            Channel::X,
             a.x - plot.rect.x,
             b.x - plot.rect.x,
         )?);
@@ -1510,6 +1513,8 @@ fn interval_predicate(
         clauses.push(axis_interval(
             column,
             scale,
+            plot.scales.projection(),
+            Channel::Y,
             a.y - plot.rect.y,
             b.y - plot.rect.y,
         )?);
@@ -1529,8 +1534,38 @@ fn interval_predicate(
 /// `point_predicate` below for the failure that made it matter. Both clause
 /// producers on this path quote, because a file column named with a space is as
 /// legal in an interval as in a point.
-fn axis_interval(column: &str, scale: &Scale, p0: f64, p1: f64) -> Option<SqlPredicate> {
+///
+/// # The second inversion a projected plot needs
+///
+/// A projected plot's axes are in the projection's planar units, so
+/// `Scale::inverse_f64` hands back a `u` or a `v` — under Mercator a latitude of
+/// 64° is a `v` of 1.47 — while the column this clause names holds degrees.
+/// `projection` closes that gap through the per-axis inverse `axis` selects, and
+/// is `None` for a cartesian plot, where there is no gap.
+///
+/// It is exact wherever it answers: `build_brushable_bindings` installs no
+/// interval brush on a projection whose axes do not invert separately, so a
+/// conic or an azimuthal should never arrive here. If one does, the inverse
+/// answers `None` and this returns no clause — a brush that filters nothing,
+/// rather than one that filters on numbers nobody swept.
+///
+/// The inversion runs BEFORE the bounds are ordered, because `reflect-y`'s
+/// inverse decreases: ordering first would name a `lo` above its `hi`.
+fn axis_interval(
+    column: &str,
+    scale: &Scale,
+    projection: Option<Projection>,
+    axis: Channel,
+    p0: f64,
+    p1: f64,
+) -> Option<SqlPredicate> {
     let (v0, v1) = (scale.inverse_f64(p0)?, scale.inverse_f64(p1)?);
+    let unproject = |v: f64| match (projection, axis) {
+        (None, _) => Some(v),
+        (Some(p), Channel::Y) => p.invert_lat(v),
+        (Some(p), _) => p.invert_lon(v),
+    };
+    let (v0, v1) = (unproject(v0)?, unproject(v1)?);
     let (lo, hi) = min_max(v0, v1);
     let bound = |v: f64| match scale {
         Scale::Time { .. } => ScalarValue::TimestampMicros(v.round() as i64),

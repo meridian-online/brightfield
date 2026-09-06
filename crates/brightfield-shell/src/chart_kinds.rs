@@ -411,20 +411,37 @@ pub fn scatter_tile(x: &str, y: &str, indent: usize) -> String {
     out
 }
 
-/// A coordinate pair plotted as points, **ghosted and equal-aspect**: the
-/// unfiltered cloud behind the filtered subset, on a frame where one
-/// px-per-unit is shared by both axes.
+/// A coordinate pair plotted as points, **ghosted and projected**: the
+/// unfiltered cloud behind the filtered subset, drawn through a named map
+/// projection with a graticule behind it.
 ///
 /// [`scatter`] with two differences: the columns are longitude and latitude
 /// rather than the table's first two measures, chosen by
-/// [`crate::dashboard::coordinate_pair`] and not by this registry; and both
-/// layers write `aspectRatio: 1`, which `brightfield_render::mark`'s
-/// `DotRenderer` reads (through its `MarkRenderer::augment_scales`
-/// implementation) to widen the narrower axis's domain until a degree of
-/// longitude and a degree of latitude cover the same number of pixels — see
-/// that implementation for why the fit needs no map projection: at this
-/// scale a plate-carrée identity (`u = lon, v = lat`) and an equal-aspect
-/// cartesian frame draw the same picture.
+/// [`crate::dashboard::coordinate_pair`] and not by this registry; and the plot
+/// writes `projectionType: equirectangular`, so the shape a reader takes off it
+/// is the world rather than a scatter that happens to be shaped like one.
+///
+/// # Why equirectangular, and why no `aspectRatio`
+///
+/// The plate carrée is the projection that says the least: `u = lon`,
+/// `v = lat`, so the picture is the one the tile already drew and the numbers on
+/// the axes are still degrees. What it adds is a graticule — meridians and
+/// parallels at whole degrees, drawn from the projection and the visible extent
+/// — and the frame that says the thing being looked at is a map.
+///
+/// `aspectRatio: 1` is gone because a projection refuses it
+/// (`ChannelMap::equal_aspect`, `ParseWarning::AspectRatioWithProjection`): a
+/// projection has already answered which way the frame should stretch. Under
+/// this projection the two answers coincide — the renderer aspect-fits the
+/// projected bbox, and a degree of longitude and a degree of latitude are the
+/// same planar unit — so the change to the drawing is the graticule and nothing
+/// else.
+///
+/// A projection with a curved inverse is not a drop-in replacement here: the
+/// `intervalXY` below inverts each axis's pixel independently to build its
+/// filter, which is exact for this projection and for the other three
+/// `ResolvedProjection::axes_invert_separately` names, and not defined for the
+/// conics and azimuthals.
 ///
 /// # Why two layers and a brush, same as the scatter
 ///
@@ -433,13 +450,15 @@ pub fn scatter_tile(x: &str, y: &str, indent: usize) -> String {
 /// plot's scales, so a brushed map reads as a subset of the points behind it,
 /// and a rectangle swept over the cloud narrows whatever else subscribes to
 /// [`SELECTION`]. `tests/point_map_kind.rs`'s gesture tier drives a real sweep
-/// through `MeridianApp` the way `tests/scatter_kind.rs`'s does.
+/// through `MeridianApp` the way `tests/scatter_kind.rs`'s does. The two layers
+/// draw ONE graticule between them, because its extent comes off the shared
+/// scale set rather than off each layer's own batch.
 fn point_map() -> ChartKind<String> {
     ChartKind {
         id: POINT_MAP,
         icon: Icon("map-pin"),
         description:
-            "Plots a coordinate pair on an equal-aspect map, the whole cloud behind the selection",
+            "Plots a coordinate pair on a projected map, the whole cloud behind the selection",
         slots: POINT_MAP_SLOTS,
         controls: Vec::new,
         build: |bound, _options| {
@@ -472,6 +491,16 @@ pub fn point_map_tile(lon: &str, lat: &str, indent: usize) -> String {
     )
 }
 
+/// The projection the generated point-map tile draws through, as it is written
+/// into the spec and as the count overlay names it.
+///
+/// The plate carrée: `u = lon`, `v = lat`, so the axes still read degrees, the
+/// `intervalXY` brush's per-axis inverse is exact, and the graticule's whole
+/// degrees land on round numbers. Any other name here is a product decision
+/// about what an analyst opening a file with coordinates in it should be shown,
+/// not a threading job — the delivery takes all sixteen.
+pub const POINT_MAP_PROJECTION: &str = "equirectangular";
+
 /// [`point_map_tile`] at a declared size — the weight a constrained concat
 /// shares its box out by. See [`crate::dashboard::HERO_WIDTH`].
 #[must_use]
@@ -493,7 +522,6 @@ pub fn point_map_tile_sized(
     let _ = writeln!(out, "{pad}    x: {xq}");
     let _ = writeln!(out, "{pad}    y: {yq}");
     let _ = writeln!(out, "{pad}    fill: \"{}\"", GHOST_INK.hex());
-    let _ = writeln!(out, "{pad}    aspectRatio: 1");
     // The subset: the same pair of columns, through the selection, in the mark
     // ink a layer binding no colour channel takes.
     let _ = writeln!(out, "{pad}  - mark: dot");
@@ -503,7 +531,6 @@ pub fn point_map_tile_sized(
     );
     let _ = writeln!(out, "{pad}    x: {xq}");
     let _ = writeln!(out, "{pad}    y: {yq}");
-    let _ = writeln!(out, "{pad}    aspectRatio: 1");
     // The producer: a rectangle swept over the cloud publishes an interval on
     // each axis into the shared selection — the same two-dimensional device
     // the scatter's own tile writes.
@@ -514,6 +541,10 @@ pub fn point_map_tile_sized(
     // is a spec that parses and does something else.
     let _ = writeln!(out, "{pad}  xLabel: {xq}");
     let _ = writeln!(out, "{pad}  yLabel: {yq}");
+    // The projection, at PLOT level — Mosaic's own vocabulary and the only
+    // level it exists at. Every mark on the plot draws through it, so the ghost
+    // and the subset cannot come to be in different coordinate systems.
+    let _ = writeln!(out, "{pad}  projectionType: {POINT_MAP_PROJECTION}");
     let _ = writeln!(out, "{pad}  width: {width}");
     let _ = writeln!(out, "{pad}  height: {height}");
     out
