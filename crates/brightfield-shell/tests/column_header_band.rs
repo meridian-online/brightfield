@@ -515,3 +515,55 @@ fn the_same_table_draws_two_densities_by_where_its_pane_is() {
         "one of the two frames drew no columns"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The grid view says how much of the table is across, like the rows pane.
+// ---------------------------------------------------------------------------
+
+/// **The grid as the canvas's view carries the `N of M columns` readout too.**
+///
+/// It did not, and the reason its doc gave was that a grid with the whole
+/// canvas usually fits the table. The full density's floor moves that premise:
+/// nine columns at 128 points is 1152 before the scrollbar, and at 1440 by 900
+/// the pane's content rect is not that wide once the rails and the pane inset
+/// are taken out. This measures the pane rather than restating a number, and
+/// then reads the note off the frame.
+#[test]
+fn the_grid_view_says_how_many_of_the_tables_columns_are_across() {
+    let mut win = Live::open();
+    win.click_row("grid");
+    let panes = win.app.canvas_panes().clone();
+    let grid = panes
+        .panes
+        .iter()
+        .find(|p| p.name == "grid")
+        .expect("the grid pane drew");
+    let drawn = win.drawn();
+    assert!(
+        drawn.on_screen() < drawn.columns,
+        "all {} columns fit the grid pane's {} points at {SCREEN:?}, so there \
+         is no readout due and this test would hold with it deleted",
+        drawn.columns,
+        grid.body.width()
+    );
+    assert!(
+        drawn.on_screen() > 0,
+        "no column drew whole, so the record the readout is built from says \
+         the grid put nothing on screen"
+    );
+    let (rect, note) = panes
+        .rows_note
+        .clone()
+        .expect("the grid pane drew its readout");
+    assert_eq!(
+        note,
+        format!("{} of {} columns", drawn.on_screen(), drawn.columns),
+        "the readout does not say what the frame laid out"
+    );
+    assert!(
+        grid.header.contains_rect(rect),
+        "the readout at {rect:?} is not inside the grid pane's own header band \
+         {:?}",
+        grid.header
+    );
+}

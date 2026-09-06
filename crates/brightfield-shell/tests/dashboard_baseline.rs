@@ -1400,3 +1400,171 @@ fn the_site_readings_dashboard_dark_baseline() {
 
     egui_kittest::image_snapshot(&image, "site_readings_dashboard_dark");
 }
+
+// ---------------------------------------------------------------------------
+// The grid as the canvas's view of the node — the full column header band.
+// ---------------------------------------------------------------------------
+
+/// Where the navigator rail drew its `grid` row at [`SHORT_WINDOW`] — the
+/// point the captures below click.
+///
+/// Read off a settled headless window rather than typed, for the reason
+/// [`pane_rects`] reads the ledger control off one: a click at a coordinate
+/// that missed would photograph the dashboard again and the pair below would
+/// pin the wrong picture. Read in light mode and used for both captures,
+/// because the rail's layout does not depend on the mode — the assertion in
+/// each test that the grid took the canvas is what says the click landed.
+fn grid_row_centre() -> egui::Pos2 {
+    let path = housing();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let mut app = brightfield_shell::window::MeridianApp::headless(boot, Mode::Light);
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(SHORT_WINDOW.0, SHORT_WINDOW.1),
+        )),
+        ..Default::default()
+    };
+    for _ in 0..3 {
+        let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
+    }
+    let rows = app.spine_rows().to_vec();
+    rows.iter()
+        .find(|row| row.label == "grid")
+        .unwrap_or_else(|| {
+            let drawn: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
+            panic!("the navigator rail drew no `grid` row; it drew {drawn:?}")
+        })
+        .rect
+        .center()
+}
+
+/// The frames that put the grid on the canvas: the pointer onto the rail's
+/// `grid` row, the press and release, then three to settle.
+fn open_the_grid_view(at: egui::Pos2) -> Vec<Vec<egui::Event>> {
+    let button = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    };
+    vec![
+        vec![egui::Event::PointerMoved(at)],
+        vec![button(true), button(false)],
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    ]
+}
+
+/// The structural guard the two captures below run first.
+///
+/// `UPDATE_SNAPSHOTS=1` writes whatever `image_snapshot` is handed, so a
+/// regeneration of a window that never opened the grid view would commit a
+/// photograph of the dashboard under the grid view's name and every later run
+/// would agree with it. This settles the same window under the same script and
+/// says what the frame holds: the grid on the canvas as one pane, and a full
+/// band over the fixture's nine columns.
+fn assert_grid_view_is_what_is_being_photographed(at: egui::Pos2) {
+    let path = housing();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let mut app = brightfield_shell::window::MeridianApp::headless(boot, Mode::Light);
+    let ctx = egui::Context::default();
+    let screen =
+        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SHORT_WINDOW.0, SHORT_WINDOW.1));
+    for _ in 0..3 {
+        let raw = egui::RawInput {
+            screen_rect: Some(screen),
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(raw, |ui| app.draw(ui));
+    }
+    for events in open_the_grid_view(at) {
+        let raw = egui::RawInput {
+            screen_rect: Some(screen),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(raw, |ui| app.draw(ui));
+    }
+    let panes: Vec<&str> = app.canvas_panes().panes.iter().map(|p| p.name).collect();
+    assert_eq!(
+        panes,
+        vec!["grid"],
+        "the click at {at:?} did not put the grid on the canvas — the capture \
+         below would photograph whatever is there instead"
+    );
+    let drawn = app
+        .chart_doc()
+        .grid_drawn
+        .clone()
+        .expect("the grid pane laid a table out");
+    assert_eq!(
+        drawn.columns, HOUSING_COLUMN_COUNT,
+        "the grid is of a table with {} columns, not the {HOUSING_COLUMN_COUNT} \
+         this pair is photographed over",
+        drawn.columns
+    );
+    assert!(
+        drawn.band.iter().all(|cell| cell.density
+            == brightfield_shell::column_header::GridDensity::Full
+            && cell.stats.is_some()
+            && !cell.bars.is_empty()),
+        "the band in the frame being photographed is not the full one: {:?}",
+        drawn.band
+    );
+}
+
+/// How many columns the housing fixture has.
+const HOUSING_COLUMN_COUNT: usize = 9;
+
+/// **The grid as the canvas's view of the table, as pixels** — the full column
+/// header band over the file's nine columns, at 1440 by 900.
+///
+/// The companion to [`the_generated_dashboard_light_baseline`], which
+/// photographs the same file with the grid as a quarter of the canvas and the
+/// band at its compact density. Between them the pair pins both densities, and
+/// each reddens when the rows its own density draws go missing.
+#[test]
+fn the_grid_view_light_baseline() {
+    let at = grid_row_centre();
+    assert_grid_view_is_what_is_being_photographed(at);
+    let image = capture_grid_view(Mode::Light, at, "grid_view_light");
+    egui_kittest::image_snapshot(&image, "grid_view_light");
+}
+
+/// **The dark twin of [`the_grid_view_light_baseline`]** — the same frame, the
+/// same script, the ink moved.
+#[test]
+fn the_grid_view_dark_baseline() {
+    let at = grid_row_centre();
+    assert_grid_view_is_what_is_being_photographed(at);
+    let image = capture_grid_view(Mode::Dark, at, "grid_view_dark");
+    egui_kittest::image_snapshot(&image, "grid_view_dark");
+}
+
+/// [`housing`] at [`SHORT_WINDOW`] with the grid put on the canvas, read back
+/// as pixels.
+fn capture_grid_view(mode: Mode, at: egui::Pos2, name: &str) -> image::RgbaImage {
+    let path = housing();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let out = scratch(name);
+    let (w, h) = brightfield_shell::capture::capture_png_at(
+        boot,
+        mode,
+        SCALE,
+        SHORT_WINDOW,
+        &out,
+        open_the_grid_view(at),
+    )
+    .unwrap_or_else(|e| panic!("capture {name}: {e}"));
+    assert!(w > 0 && h > 0, "{name}: empty capture");
+    image::open(&out)
+        .unwrap_or_else(|e| panic!("read capture {}: {e}", out.display()))
+        .to_rgba8()
+}
