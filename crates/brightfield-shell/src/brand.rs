@@ -103,9 +103,11 @@ impl Mark {
                 // the previous command, which is how this export writes its
                 // consecutive line segments.
                 //
-                // Closepath is the one command with no implicit-repeat form:
-                // it takes no coordinates, so a bare pair after it advances
-                // nothing and the loop re-derives the same `Z` for ever. The
+                // Closepath is the one command with no implicit-repeat form.
+                // It takes no coordinates, so a bare pair after it leaves the
+                // cursor where it was and the loop re-derives the same `Z`
+                // for ever — `a_bare_pair_after_closepath_is_refused` is the
+                // test that hung before this refusal existed. The
                 // SVG grammar agrees — a coordinate may not follow closepath
                 // without a command letter between them — so this refuses
                 // rather than guessing. `a_bare_pair_after_closepath_is_refused`
@@ -123,10 +125,10 @@ impl Mark {
             //
             // With closepath refused above, this guard is unreachable through
             // `parse` as it stands, and the invariant that makes it so is
-            // worth stating because it is what a new arm would break: an
-            // implicit repeat can now only be a moveto, a lineto or a curve,
-            // each of which calls `point`, which either advances the cursor or
-            // ends the parse. An arm added below that consumes no bytes would
+            // worth stating because it is what a new arm would break. Past
+            // the refusal above, an implicit repeat is a moveto, a lineto or a
+            // curve, and each of those calls `point`, which either advances
+            // the cursor or ends the parse. An arm added below that consumes no bytes would
             // spin without this — which is the hang closepath had, arriving by
             // a second route.
             let before = lexer.at;

@@ -1045,9 +1045,10 @@ fn a_first_run_populates_datasets_and_states_what_protocols_will_hold() {
 ///
 /// The states below are typed out, and that is the weakness to know about:
 /// `RunState` derives no iterator, so a sixth variant would be drawn by the
-/// door and measured by nothing here. `every_run_state_is_measured_by_the_row
-/// _fit` is what closes that — it matches on a value exhaustively, so the enum
-/// growing is a compile error in this file rather than a silent gap.
+/// door and would escape this measurement — which is what
+/// `every_run_state_is_measured_by_the_row_fit` closes, by matching on a value
+/// exhaustively, so the enum growing is a compile error in this file rather
+/// than a silent gap.
 ///
 /// The times are `relative_time`'s three shapes, taken off the fixture the
 /// returning door is photographed with.
@@ -1064,8 +1065,8 @@ fn a_first_run_populates_datasets_and_states_what_protocols_will_hold() {
 /// A hand-typed array of variants does not grow when the enum does, so the
 /// row-fit measurement would silently stop covering a state the door draws.
 /// This matches exhaustively over a value: adding a variant to `RunState`
-/// stops this file compiling, which is the only mechanism that reddens for a
-/// change made in another crate.
+/// stops this file compiling. A compile error is what reddens for a change
+/// made in another crate, where a runtime assertion here would not run at all.
 #[test]
 fn every_run_state_is_measured_by_the_row_fit() {
     for state in ROW_FIT_STATES {

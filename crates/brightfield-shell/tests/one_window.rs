@@ -1061,10 +1061,17 @@ fn the_word_meridian_is_drawn_nowhere_in_the_chrome() {
         Mode::Light,
     );
     on_a_chart.settle();
+    let titled = on_a_chart.app.title();
     let drawn = on_a_chart.drawn_text();
+    // The guard is the *band's* own string and not merely that the window
+    // painted something: a title band that silently stopped drawing at all
+    // contains no "Meridian" either, and the panes around it would keep a
+    // some-text-was-drawn check green. Watched: blanking the band's label
+    // leaves a weaker guard passing.
     assert!(
-        drawn.iter().any(|text| !text.is_empty()),
-        "the window painted no text at all, so finding none proves nothing"
+        drawn.iter().any(|text| text.contains(&titled)),
+        "the title band drew nothing it is supposed to — {titled:?} is absent, \
+         so finding no {word:?} says nothing about the band: {drawn:?}"
     );
     assert!(
         !drawn.iter().any(|text| text.contains(word)),
@@ -1077,10 +1084,12 @@ fn the_word_meridian_is_drawn_nowhere_in_the_chrome() {
         on_the_door.app.front_door_is_live(),
         "an empty boot did not land on the door"
     );
+    let titled = on_the_door.app.title();
     let drawn = on_the_door.drawn_text();
     assert!(
-        drawn.iter().any(|text| !text.is_empty()),
-        "the door painted no text at all, so finding none proves nothing"
+        drawn.iter().any(|text| text.contains(&titled)),
+        "the door's title band drew nothing it is supposed to — {titled:?} is \
+         absent, so finding no {word:?} says nothing about the band: {drawn:?}"
     );
     assert!(
         !drawn.iter().any(|text| text.contains(word)),
@@ -1091,9 +1100,10 @@ fn the_word_meridian_is_drawn_nowhere_in_the_chrome() {
 /// **The home control says what it is to a reader who cannot see the mark.**
 ///
 /// It draws a picture and no words, so its name reaches a person through hover
-/// text and through the accessibility tree and through nothing else. A rect is
-/// not a name: every other test of this control reads `home_rect` and clicks
-/// it, which passes just as well over an unlabelled square.
+/// text and through the accessibility tree, and through neither of those does
+/// it reach the paint tree. A rect is not a name: the tests of this control
+/// that came before it read `home_rect` and clicked it, which passes just as
+/// well over an unlabelled square.
 ///
 /// Read through the accessibility tree rather than by hovering, because that is
 /// the reading that also answers for a screen reader, and because a tooltip is
