@@ -14,6 +14,7 @@
 //! cargo run --release -p brightfield-bench                # the full baseline
 //! cargo run --release -p brightfield-bench -- --quick     # a fast smoke pass
 //! cargo run --release -p brightfield-bench -- --skip-frames   # engine only, no GPU
+//! cargo run --release -p brightfield-bench -- --open-scan    # the cost of opening a file
 //! ```
 //!
 //! Results land in `benchmarks/results/` as a JSON record and a generated
@@ -27,6 +28,7 @@ mod frame_ink;
 mod frames;
 mod machine;
 mod mem;
+mod open_scan;
 mod scenario;
 mod stats;
 
@@ -268,6 +270,12 @@ struct Args {
     /// Opt-in: a local copy of the published crosswalk parquet; when present
     /// the fixed-scale crosswalk scenario runs against it.
     crosswalk_parquet: Option<PathBuf>,
+    /// Run the file-open suite INSTEAD of the interaction baseline.
+    ///
+    /// Instead rather than beside, because the two answer different questions
+    /// and write different records: this one is the wait before the first
+    /// picture, and it needs neither a GPU nor the scaling datasets.
+    open_scan: bool,
 }
 
 impl Args {
@@ -284,6 +292,7 @@ impl Args {
             data_dir: root.join("benchmarks/.data"),
             label: None,
             crosswalk_parquet: None,
+            open_scan: false,
         };
         let mut it = std::env::args().skip(1);
         while let Some(a) = it.next() {
@@ -316,6 +325,7 @@ impl Args {
                 "--crosswalk-parquet" => {
                     args.crosswalk_parquet = Some(PathBuf::from(val("--crosswalk-parquet")?));
                 }
+                "--open-scan" => args.open_scan = true,
                 "--skip-frames" => args.skip_frames = true,
                 "--skip-corpus" => args.skip_corpus = true,
                 "--quick" => {
@@ -554,6 +564,7 @@ fn main() -> ExitCode {
             eprintln!(
                 "usage: brightfield-bench [--rows N,N,..] [--iterations N] [--frames N] \
                  [--warmup-frames N] [--skip-frames] [--skip-corpus] [--quick] \
+                 [--open-scan] \
                  [--out-dir D] [--data-dir D] [--label NAME] \
                  [--crosswalk-parquet FILE]"
             );
@@ -639,6 +650,10 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
         "machine: {} | {} | {}",
         machine.cpu, machine.os, machine.gpu_adapter
     );
+
+    if args.open_scan {
+        return run_open_scan(&gen_conn, machine, args);
+    }
 
     let mut scaling = Vec::new();
     for &rows in &args.rows {
@@ -867,6 +882,118 @@ fn run(root: &Path, args: &Args) -> Result<Vec<PathBuf>, String> {
         .map_err(|e| format!("write markdown: {e}"))?;
 
     Ok(vec![json_path, md_path])
+}
+
+/// How many timed samples the open suite takes of each quantity.
+///
+/// Small on purpose: an open of the wide shape is seconds, not milliseconds,
+/// and the spread between runs on a warm page cache is a fraction of a percent
+/// of it. The number that matters here is the scan count, and that one is read
+/// off the plan rather than off the clock.
+const OPEN_SCAN_REPEATS: usize = 3;
+
+/// The file-open record: how many times opening a file reads it, and how long
+/// the wait is.
+#[derive(Debug, Serialize)]
+struct OpenScanReport {
+    schema: &'static str,
+    machine: MachineProfile,
+    /// [`brightfield_engine::profile::SCANS_PER_SOURCE`] — the bound every
+    /// row's scan count is held to, and the number
+    /// `a_wide_table_is_read_no_more_often_than_a_narrow_one` reads.
+    scan_bound: u32,
+    /// Timed samples per quantity per shape.
+    repeats: usize,
+    methodology: Vec<String>,
+    shapes: Vec<open_scan::Measured>,
+}
+
+/// The open-suite schema tag, separate from the interaction baseline's because
+/// the two records share no fields.
+const OPEN_SCAN_SCHEMA: &str = "brightfield-bench/open-scan/1";
+
+/// Measure every shape in [`open_scan::SHAPES`] and write the record.
+fn run_open_scan(
+    conn: &duckdb::Connection,
+    machine: MachineProfile,
+    args: &Args,
+) -> Result<Vec<PathBuf>, String> {
+    let mut shapes = Vec::with_capacity(open_scan::SHAPES.len());
+    for shape in open_scan::SHAPES {
+        eprintln!(
+            "opening {} — {} rows, {} columns of which {} numeric ...",
+            shape.name,
+            shape.rows,
+            shape.columns(),
+            shape.numeric
+        );
+        shapes.push(open_scan::measure(
+            conn,
+            &args.data_dir,
+            shape,
+            OPEN_SCAN_REPEATS,
+        )?);
+    }
+    print!("{}", open_scan::report(&shapes));
+
+    let report = OpenScanReport {
+        schema: OPEN_SCAN_SCHEMA,
+        machine,
+        scan_bound: brightfield_engine::profile::SCANS_PER_SOURCE,
+        repeats: OPEN_SCAN_REPEATS,
+        methodology: open_scan_methodology(),
+        shapes,
+    };
+
+    std::fs::create_dir_all(&args.out_dir)
+        .map_err(|e| format!("create {}: {e}", args.out_dir.display()))?;
+    let date = report
+        .machine
+        .captured_at
+        .split('T')
+        .next()
+        .unwrap_or("undated")
+        .to_string();
+    let slug = args
+        .label
+        .clone()
+        .unwrap_or_else(|| slugify(&report.machine.cpu));
+    let path = args
+        .out_dir
+        .join(format!("{date}-open-scan-{slug}"))
+        .with_extension("json");
+    let json = serde_json::to_string_pretty(&report).map_err(|e| format!("serialise: {e}"))?;
+    std::fs::write(&path, json + "\n").map_err(|e| format!("write json: {e}"))?;
+    Ok(vec![path])
+}
+
+/// What the open suite measured and what it did not, carried in the record so
+/// a reader is not reconstructing it from the field names.
+fn open_scan_methodology() -> Vec<String> {
+    vec![
+        "`scans` is the sum over the statements `Session::profile_sources` issues of the leaves \
+         in DuckDB's physical plan for each — the places rows enter the query. Leaves rather \
+         than statements: a UNION ALL branch per column is one statement that reads the table \
+         once per branch."
+            .to_string(),
+        "`scans` covers the profile pass and nothing else. The first composition's queries are \
+         counted as `composition_queries` and timed only inside `open`."
+            .to_string(),
+        "`profile` times `Session::profile_sources` alone, on a session loaded for that sample. \
+         The counting run is separate and untimed, because asking DuckDB to explain each \
+         statement roughly doubles what the pass issues."
+            .to_string(),
+        "`open` times the whole of `brightfield_shell::data_file::open`: the profile pass, the \
+         dashboard chosen from it, and the first composition over the tiles it chose."
+            .to_string(),
+        "Fixtures are CSV, written once and reused. A `file:` source is a DuckDB view over \
+         `read_csv`, so each statement over it re-reads and re-parses the file — which is why \
+         a count of statements is the shape of the wait."
+            .to_string(),
+        "The page cache is warm after the first sample and is not dropped between them, so \
+         these are warm-cache figures."
+            .to_string(),
+    ]
 }
 
 fn slugify(s: &str) -> String {
