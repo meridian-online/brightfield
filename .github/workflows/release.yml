@@ -156,16 +156,38 @@ jobs:
       # That used to be `--run`, passed from this file, and a review pass
       # mutated it away: every check in the repository stayed green while the
       # release stopped ever loading the bundle it shipped. Which matters
-      # because a bundle can be complete, correctly stamped, matching its
-      # manifest — and still not load. Measured on one missing the `model2vec/`
-      # directory FineType's loader opens unconditionally: seven files, every
-      # file check green, `Model2Vec resources not found` at run time, and the
-      # canary classifying three email addresses as unknown.
-      - name: The packaged artifacts carry a type source that loads
+      # because a bundle can carry every required file, be correctly stamped,
+      # match its own manifest — and still not load. Measured on one whose
+      # model.safetensors was 200 KB of random bytes under the right name:
+      # scripts/check-bundled-extension.sh exit 0, and the packaged binary exit
+      # 1 with its canary classifying three email addresses as unknown. No file
+      # list can see that.
+      #
+      # HALF THE RELEASE IS READ AND NOT LOADED, and the step below is named
+      # for what it does on the leg that can. Both darwin targets build on
+      # `macos-15`, which is arm64 here, so the x86_64 artefact is a
+      # cross-compile nothing on this runner can execute: its bundle is
+      # checked for shape, platform stamp and manifest, and never loaded.
+      # Closing that needs an Intel runner leg or Rosetta on this one, and
+      # neither is in this change. The step emits a warning and a
+      # step-summary line naming the artefact, so a green release does not
+      # read as both artefacts having been loaded — which is the same standard
+      # the `update-homebrew` job already applies to the Intel install path.
+      - name: The packaged artifacts carry a type source (loaded on the native leg)
         run: |
           NAME="brightfield-${GITHUB_REF_NAME}-${{ matrix.target }}"
           scripts/check-artifact-type-source.sh "dist/${NAME}.tar.gz" "${{ matrix.target }}"
           scripts/check-artifact-type-source.sh "dist/${NAME}.dmg" "${{ matrix.target }}"
+          if [ "${{ matrix.native }}" != "true" ]; then
+            echo "::warning title=Type source read but not loaded::${NAME} is a cross-compile for ${{ matrix.target }}; this runner is arm64, so its bundle was checked for shape, platform and manifest and the packaged binary was never executed. The Intel artefact ships execution-unverified."
+            {
+              echo "### ${{ matrix.target }}: type source read, NOT loaded"
+              echo ""
+              echo "\`${NAME}\` is a cross-compile and this runner is arm64, so its bundle's"
+              echo "shape, platform stamp and manifest were checked and the packaged binary was"
+              echo "never run. Only the aarch64 artefact had its type source loaded."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - uses: actions/upload-artifact@v4
         with:

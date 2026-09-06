@@ -396,8 +396,8 @@ expect_fail "an empty model2vec/ listing" "publishes no model2vec/"
 
 # BOTH listings empty. This is the only input that reaches the empty-plan
 # refusal — with either one populated, a more specific guard fires first — and
-# it is the guard that stands in for the plan-versus-disk comparison the
-# verifier deliberately does not make.
+# it is the one guard in the fetch's verification that a set comparison over
+# the downloaded files could not have made reachable.
 make_fixture
 printf '[]' >"$TREE_DIR/$MODEL"
 printf '[]' >"$TREE_DIR/model2vec"

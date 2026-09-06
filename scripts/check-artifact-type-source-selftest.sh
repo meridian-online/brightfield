@@ -34,7 +34,24 @@ TAG="$("$HERE/finetype-pin.sh")"
 # name. The check decides whether to run the binary by comparing its target
 # argument against the host, so a fixture for another triple would silently
 # turn the most important case in this file into a no-op.
-TARGET="$("$CHECK" --print-host-target)"
+#
+# THE EXPECTATION COMES FROM rustc, NOT FROM THE CHECK. Asking the code under
+# test what the host is makes every case below agree with whatever it says: a
+# review pass changed one arm of its uname table and this whole file stayed
+# green, including the structural pin, while a real release would have printed
+# `== not run` for the artefact people download. So the triple is read here
+# from `rustc -vV` — the same line scripts/package.sh reads — and the check is
+# required to agree with it before anything else runs.
+command -v rustc >/dev/null 2>&1 || {
+	echo "selftest: rustc is required — it is the independent source this file checks" >&2
+	echo "  scripts/check-artifact-type-source.sh's host answer against" >&2
+	exit 1
+}
+TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+[ -n "$TARGET" ] || {
+	echo "selftest: rustc -vV printed no 'host:' line" >&2
+	exit 1
+}
 PLATFORM="$("$HERE/duckdb-platform.sh" "$TARGET")"
 
 # A target this machine is definitely not, for the cross-compile case.
@@ -147,6 +164,55 @@ expect_fail() {
 	fi
 	echo "  ok   ${name}"
 }
+
+echo "== the host the check will decide by"
+# Before any fixture. If this disagrees, every "the binary was run" case below
+# is measuring the wrong machine and the "cross-compiled" case is measuring
+# nothing — and the check would be skipping the run on a real release.
+if reported="$("$CHECK" --print-host-target 2>&1)" && [ "$reported" = "$TARGET" ]; then
+	echo "  ok   the check and rustc agree the host is ${TARGET}"
+else
+	echo "  FAIL the check reports host '${reported}' and rustc says '${TARGET}'"
+	failures=$((failures + 1))
+fi
+
+# The disagreement refusal, forced. On a healthy machine the two sources agree,
+# so deleting the comparison between them changes nothing observable and stays
+# green — the guard against a future typo would itself be unpinned. A stub
+# rustc reporting another triple is the only way to reach it.
+HOSTSTUB="$TMP/hoststub"
+mkdir -p "$HOSTSTUB"
+printf '#!/bin/sh\necho "host: some-other-unknown-triple"\n' >"$HOSTSTUB/rustc"
+chmod +x "$HOSTSTUB/rustc"
+if out="$(PATH="$HOSTSTUB:$PATH" "$CHECK" --print-host-target 2>&1)"; then
+	echo "  FAIL the two host sources disagreed and it answered '${out}' anyway"
+	failures=$((failures + 1))
+elif printf '%s' "$out" | grep -q "own two answers disagree"; then
+	echo "  ok   two sources disagreeing is a refusal, not a coin toss"
+else
+	echo "  FAIL it refused without naming the disagreement: ${out}"
+	failures=$((failures + 1))
+fi
+
+printf '#!/bin/sh\necho "release: 1.95.0"\n' >"$HOSTSTUB/rustc"
+if out="$(PATH="$HOSTSTUB:$PATH" "$CHECK" --print-host-target 2>&1)"; then
+	echo "  FAIL rustc printed no host line and it answered '${out}' anyway"
+	failures=$((failures + 1))
+else
+	echo "  ok   a rustc with no host line is a refusal"
+fi
+
+# No rustc at all. The run leg would otherwise have one source and nothing to
+# catch it being wrong, which is the state this whole block exists to end.
+if out="$(PATH="/usr/bin:/bin" "$CHECK" --print-host-target 2>&1)"; then
+	echo "  FAIL with no rustc on PATH it still answered '${out}'"
+	failures=$((failures + 1))
+elif printf '%s' "$out" | grep -q "rustc is not on PATH"; then
+	echo "  ok   no rustc is a refusal rather than a single-source answer"
+else
+	echo "  FAIL it refused for some other reason: ${out}"
+	failures=$((failures + 1))
+fi
 
 echo "== a tarball that carries a working type source"
 good="$(make_tarball good)"

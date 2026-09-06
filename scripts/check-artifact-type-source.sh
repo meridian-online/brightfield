@@ -50,10 +50,14 @@
 #      that extension with its own DuckDB, loads the model beside it and puts a
 #      label on a column, reporting as an exit code. Steps 1 and 2 read a file
 #      tree and a metadata trailer, and a bundle can satisfy both and still not
-#      load — measured, on a bundle missing the `model2vec/` directory
-#      FineType's loader opens unconditionally: seven files, every check green,
-#      and `Model2Vec resources not found` at run time. A file list is a
-#      pre-flight. This is the check.
+#      load — measured, on a bundle whose model.safetensors is 200 KB of random
+#      bytes under the right name: all seven required files present,
+#      check-bundled-extension.sh exit 0, and the packaged binary exit 1 with
+#      the canary classifying three email addresses as unknown. Measured on
+#      2026-09-06 against the installed FineType extension (ft_version reports
+#      0.6.57; its metadata trailer says 0.6.23, which is a FineType defect
+#      carded separately) and the real model at the pinned revision.
+#      A file list is a pre-flight. This is the check.
 #
 #      It is skipped only where it CANNOT run: a cross-compiled artifact on a
 #      runner of another architecture. The release matrix builds x86_64 on an
@@ -69,20 +73,51 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-# The triple this machine can execute. One table, and an unknown host is a hard
-# failure rather than a silent skip: a host nobody mapped would otherwise turn
-# the run leg off everywhere at once and look exactly like a cross-compile.
+# The triple this machine can execute — READ FROM TWO SOURCES THAT MUST AGREE,
+# because this one value decides whether the bundle is ever loaded and a wrong
+# answer turns the whole run leg off while every check stays green.
+#
+# `rustc -vV` is authoritative: it is the compiler that would build for this
+# machine, it needs no table, and this is a Rust repository — scripts/package.sh
+# already reads the same line. The uname table beside it exists to disagree. A
+# single source cannot catch a typo in itself, and a self-test that asks the
+# code under test what the host is cannot either: changing one arm of the table
+# below used to leave every case in this repository green while a real release
+# printed `== not run` for the artefact people download.
+#
+# An unknown host is a hard failure rather than a silent skip. So is a missing
+# rustc: the two callers of this file are a release job that installs the
+# toolchain and a self-test that runs beside the Rust suite, so absence means
+# something is wrong rather than something is unavailable.
 host_target() {
+  local from_rustc from_uname
+  command -v rustc >/dev/null 2>&1 || {
+    echo "check-artifact-type-source: rustc is not on PATH, so the host triple has only one" >&2
+    echo "  source and nothing would catch it being wrong. Install the toolchain." >&2
+    exit 1; }
+  from_rustc=$(rustc -vV | sed -n 's/^host: //p')
+  [ -n "$from_rustc" ] || {
+    echo "check-artifact-type-source: rustc -vV printed no 'host:' line." >&2; exit 1; }
+
   case "$(uname -s)/$(uname -m)" in
-    Darwin/arm64)   echo aarch64-apple-darwin ;;
-    Darwin/x86_64)  echo x86_64-apple-darwin ;;
-    Linux/aarch64)  echo aarch64-unknown-linux-gnu ;;
-    Linux/x86_64)   echo x86_64-unknown-linux-gnu ;;
+    Darwin/arm64)   from_uname=aarch64-apple-darwin ;;
+    Darwin/x86_64)  from_uname=x86_64-apple-darwin ;;
+    Linux/aarch64)  from_uname=aarch64-unknown-linux-gnu ;;
+    Linux/x86_64)   from_uname=x86_64-unknown-linux-gnu ;;
     *)
       echo "check-artifact-type-source: no Rust target triple known for $(uname -s)/$(uname -m)." >&2
       echo "  Add the mapping; a host nobody mapped must not silently skip the run." >&2
       exit 1 ;;
   esac
+
+  [ "$from_rustc" = "$from_uname" ] || {
+    echo "check-artifact-type-source: this machine's own two answers disagree — rustc says" >&2
+    echo "  '${from_rustc}' and $(uname -s)/$(uname -m) maps to '${from_uname}'. One of them is" >&2
+    echo "  wrong, and until it is fixed nothing here can decide whether an artefact is" >&2
+    echo "  native, so nothing here may decide to skip loading it." >&2
+    exit 1; }
+
+  printf '%s\n' "$from_rustc"
 }
 
 # scripts/check-artifact-type-source-selftest.sh reads this so its fixtures are

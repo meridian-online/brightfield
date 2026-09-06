@@ -16,11 +16,12 @@
 #
 # TWO SOURCES, AND THE ASYMMETRY BETWEEN THEM IS THE THING TO UNDERSTAND.
 #
-#   The FineType release, addressed by the pinned tag, attaches the extension,
-#   the taxonomy catalogue and `finetype-model.json`. Each has a `.sha256`
-#   published beside it by the publisher, and each is refused unless the bytes
-#   hash to it. That is an attestation: the checksum was written by the party
-#   that built the artefact.
+#   The FineType release, addressed by the pinned tag, is to carry the
+#   extension, the taxonomy catalogue and `finetype-model.json` — IT DOES NOT
+#   YET, and the paragraph below says what that means. Each is to have a
+#   `.sha256` published beside it, and each is refused unless the bytes hash to
+#   it. That is an attestation: the checksum is written by the party that built
+#   the artefact.
 #
 #   The model registry, addressed by the pinned revision, holds the weights.
 #   The FineType tag does not attach them and publishes no checksum for them,
@@ -275,8 +276,16 @@ while IFS="$(printf '\t')" read -r rel remote _kind _digest; do
     || fail "could not fetch ${remote} at ${REVISION}"
 done < "$PLAN"
 
-# Every planned file present, every present file planned, and every digest
-# matching. Read the header for what this establishes and what it does not.
+# Every planned file against the digest the registry declares for it. Read the
+# header for what this establishes and what it does not.
+#
+# THERE IS NO PLAN-VERSUS-DISK SET COMPARISON, and its absence is deliberate.
+# One was written and mutating it away left this self-test green: the download
+# loop above writes exactly the plan into a fresh temp directory or calls
+# `fail`, so nothing can reach the disk that the plan does not name, or fail to
+# reach it. A comparison that cannot fail reads exactly like one that works.
+# The guard that CAN fail is the empty-plan refusal in the plan builder above,
+# and the self-test drives it by emptying both registry listings.
 python3 - "$PLAN" "${WORK}/model" <<'VERIFYPY' || exit 1
 import hashlib, os, sys
 
@@ -285,26 +294,6 @@ plan = {}
 for line in open(plan_path):
     rel, _remote, kind, digest = line.rstrip("\n").split("\t")
     plan[rel] = (kind, digest)
-
-# Reading zero files is a failure, not a pass. An empty plan over an empty
-# download directory would otherwise satisfy every comparison below by making
-# none of them.
-if not plan:
-    sys.exit("fetch-finetype-bundle: no model files were planned, so nothing was verified")
-
-on_disk = set()
-for dirpath, _, names in os.walk(root):
-    for name in names:
-        on_disk.add(os.path.relpath(os.path.join(dirpath, name), root))
-
-missing = sorted(set(plan) - on_disk)
-if missing:
-    sys.exit(f"fetch-finetype-bundle: the plan names {len(missing)} file(s) that were not "
-             f"downloaded, first {missing[0]}")
-extra = sorted(on_disk - set(plan))
-if extra:
-    sys.exit(f"fetch-finetype-bundle: {extra[0]} was downloaded and the revision does not "
-             f"publish it")
 
 for rel, (kind, want) in sorted(plan.items()):
     data = open(os.path.join(root, rel), "rb").read()
