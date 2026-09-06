@@ -465,9 +465,9 @@ mod tests {
     // The leaf counter, against literal plans rather than against DuckDB.
     //
     // [`SCANS_PER_SOURCE`] is a bound on what these two functions return, so a
-    // counter that had stopped counting would take the bound with it — every
-    // guard over it would pass over a table being read once per column, which
-    // is the defect the bound exists for. Pinning it against DuckDB's answer
+    // counter that had stopped counting would take the bound with it: a guard
+    // over it would pass over a table being read once per column, which is the
+    // defect the bound exists for. Pinning it against DuckDB's answer
     // for the statement the pass writes today cannot catch that, because that
     // statement genuinely plans to one leaf: a counter hard-wired to 1 agrees
     // with it. So the cases below are literals, and each names the wrong

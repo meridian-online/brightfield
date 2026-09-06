@@ -49,8 +49,9 @@ pub struct Shape {
     pub name: &'static str,
     /// Rows in the file.
     pub rows: u64,
-    /// Numeric columns. The first takes only [`BOUNDED_DISTINCT`] distinct
-    /// values, so both branches of the distribution are counted.
+    /// Numeric columns. The first takes [`BOUNDED_DISTINCT`] distinct values
+    /// and no more, so both branches of the distribution are counted —
+    /// `the_fixture_carries_a_bounded_column_and_a_wide_one` reads that back.
     pub numeric: usize,
     /// VARCHAR columns.
     pub text: usize,
