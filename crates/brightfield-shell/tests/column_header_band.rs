@@ -313,9 +313,11 @@ fn the_grid_as_the_canvas_view_draws_the_full_band() {
     );
     // The leaf-and-storage row (13), the bar chart over the rug (28 less 12),
     // two more points of range row (11 less 9), and three caption rows (13
-    // each). The frames the contract came from carry the two totals as 57 and
-    // 127, and 127 less 57 is this sum.
-    let added = 13.0 + (28.0 - 12.0) + (11.0 - 9.0) + 3.0 * 13.0;
+    // each) — less the one row the compact density carries and the full one
+    // does not, its own solo distinct-count row (13). The frames the contract
+    // came from carry the two totals as 70 and 127, and 127 less 70 is this
+    // sum.
+    let added = 13.0 + (28.0 - 12.0) + (11.0 - 9.0) + 3.0 * 13.0 - 13.0;
     assert!(
         (full_extent - compact_extent - added).abs() < f32::EPSILON,
         "the full band is {full_extent} points and the compact one \
@@ -513,6 +515,63 @@ fn the_same_table_draws_two_densities_by_where_its_pane_is() {
     assert!(
         !names(&compact).is_empty() && !names(&full).is_empty(),
         "one of the two frames drew no columns"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// AC2 — the compact band's own row states the distinct count.
+// ---------------------------------------------------------------------------
+
+/// **AC2 — the compact band draws the distinct count, off the file's own
+/// numbers.**
+///
+/// `house_age` has 52 distinct values across 240 rows with no nulls, so a
+/// regression that counted rows instead of distinct values reads 240 here,
+/// not 52 — the two are asserted unequal first, so this pins nothing if a
+/// future fixture swap makes them coincide. Checked against
+/// [`fixture_stats`], which reads the CSV directly rather than through a
+/// second query.
+#[test]
+fn the_compact_bands_own_row_states_the_distinct_count() {
+    let mut win = Live::open();
+    let drawn = win.drawn();
+    let oracle = fixture_stats();
+    let want = oracle.get("house_age").expect("the fixture has house_age");
+    assert_ne!(
+        want.distinct, want.rows,
+        "this test pins nothing if house_age's distinct count and its row \
+         count happen to be the same number"
+    );
+
+    let cell = drawn
+        .band_named("house_age")
+        .unwrap_or_else(|| panic!("the compact band drew no cell for house_age"));
+    assert_eq!(cell.density, GridDensity::Compact);
+    #[allow(clippy::cast_possible_truncation)]
+    let want_distinct = want.distinct as u64;
+    assert_eq!(
+        cell.distinct,
+        Some(want_distinct),
+        "the compact band's distinct count is {:?} and the file has {}",
+        cell.distinct,
+        want.distinct
+    );
+    let text = cell
+        .distinct_text
+        .clone()
+        .unwrap_or_else(|| panic!("house_age drew no distinct-count text: {cell:?}"));
+    assert_eq!(text, format!("{} distinct", want.distinct));
+
+    // …and it is on screen, not merely in the record.
+    let painted: Vec<String> = texts(&win.shapes())
+        .into_iter()
+        .filter(|(pos, _)| cell.cell.contains(*pos))
+        .map(|(_, text)| text)
+        .collect();
+    assert!(
+        painted.contains(&text),
+        "the record says the compact band drew {text:?} and no galley inside \
+         the cell carries it. Painted there: {painted:?}"
     );
 }
 
