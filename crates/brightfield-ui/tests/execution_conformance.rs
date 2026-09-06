@@ -22,7 +22,7 @@ use brightfield_render::scale::infer_scales_multi;
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, Format};
-use brightfield_sql::collect_marks;
+use brightfield_sql::{collect_marks, plot_of_each_mark};
 use vello::Scene;
 
 /// Drive the full pipeline for a plot spec and return the rendered MARK
@@ -41,6 +41,7 @@ fn render_spec(yaml: &str) -> (usize, usize) {
 
     let results = session.execute_all();
     let marks = collect_marks(&parsed.spec);
+    let plots = plot_of_each_mark(&parsed.spec);
     let registry = default_renderers();
     let layout = ChartLayout::new(640.0, 480.0);
 
@@ -49,7 +50,14 @@ fn render_spec(yaml: &str) -> (usize, usize) {
     for (i, res) in results.into_iter().enumerate() {
         if let Ok(batches) = res {
             if let Some(batch) = concat_batches(batches) {
-                metas.push((ChannelMap::from_mark(marks[i]), marks[i].kind, batch));
+                metas.push((
+                    // Through the plot the mark sits in, like every production
+                    // composition path: a plot-level `projectionType` is
+                    // delivered here or nowhere.
+                    ChannelMap::from_mark_in(marks[i], plots.get(i).copied().flatten()),
+                    marks[i].kind,
+                    batch,
+                ));
             }
         }
     }
