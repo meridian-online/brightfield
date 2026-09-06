@@ -448,6 +448,17 @@ vocab_enum! {
 ///   renderer-construction call site. The value `1` is the one read; any
 ///   other value is left unbound, the same silence an unrecognised `label:`
 ///   value gets.
+/// - `projectionType` — the map projection a mark draws through, resolved by
+///   `brightfield_spec::layout::ResolvedProjection::from_wire` (the same
+///   function the plot-level attribute of this name goes through) into
+///   `brightfield_render::channel::ChannelMap::projection`, and honoured by
+///   `brightfield_render::mark::DotRenderer`, which places each point through
+///   it and draws a graticule behind them. Read per mark for the reason
+///   `aspectRatio` above it is: Mosaic and Observable Plot both put it on the
+///   plot, and a mark option reaches `ChannelMap::from_mark` with no further
+///   wiring. A name outside Mosaic's `ProjectionName` vocabulary raises
+///   [`ParseWarning::UnknownProjection`](crate::parse::ParseWarning::UnknownProjection)
+///   here as it does at plot level, rather than being silently ignored.
 pub const CONSUMED_MARK_OPTION_KEYS: &[&str] = &[
     "x",
     "y",
@@ -469,6 +480,7 @@ pub const CONSUMED_MARK_OPTION_KEYS: &[&str] = &[
     "sort",
     "label",
     "aspectRatio",
+    "projectionType",
 ];
 
 /// Whether a mark option key reaches a lowerer or a renderer.

@@ -424,14 +424,35 @@ pub enum ParseWarning {
         attribute: String,
     },
 
-    /// A plot-level `projectionType` carried a value that is not a supported
-    /// projection (v1: `equirectangular`, `albers`, `albers-usa`). The plot
-    /// degrades to the default equirectangular fit, and this names the value so
-    /// an author sees the unsupported projection rather than silently getting a
-    /// different map (geo mark).
+    /// A `projectionType` — on a plot or on a mark — carried a value outside
+    /// Mosaic's `ProjectionName` vocabulary, or a non-string value. The
+    /// projection degrades to the default equirectangular fit, and this names
+    /// the value so an author sees the unsupported projection rather than
+    /// silently getting a different map.
+    ///
+    /// [`crate::layout::ResolvedProjection::from_wire`] is the sole judge of
+    /// what is recognised, so widening the catalogue narrows this warning in
+    /// both places at once and cannot leave one of them warning about a name the
+    /// other draws.
     UnknownProjection {
         /// The unrecognised projection value (or `<non-string>` for a non-string).
         value: String,
+    },
+
+    /// A mark asked for BOTH `aspectRatio: 1` and a `projectionType`. The two
+    /// are alternatives, not layers: equal-aspect widens the narrower positional
+    /// domain until a degree of longitude and a degree of latitude take the same
+    /// number of pixels, which is a cartesian frame's best impersonation of a
+    /// map, and a projection has already answered that question — correctly, and
+    /// differently at every latitude. The projection decides the frame and the
+    /// `aspectRatio` is dropped.
+    ///
+    /// `brightfield_render::channel::ChannelMap::equal_aspect` is what makes the
+    /// refusal true rather than merely announced; this is what tells the author
+    /// it happened.
+    AspectRatioWithProjection {
+        /// The mark that asked for both.
+        mark: String,
     },
 
     /// A mark carried an option key that **no lowerer and no renderer reads**
@@ -629,6 +650,10 @@ impl fmt::Display for ParseWarning {
             Self::UnknownProjection { value } => write!(
                 f,
                 "projection `{value}` is not supported — the plot falls back to equirectangular"
+            ),
+            Self::AspectRatioWithProjection { mark } => write!(
+                f,
+                "mark `{mark}` sets both `aspectRatio` and `projectionType` — the projection decides the frame and `aspectRatio` is dropped"
             ),
             Self::UnconsumedMarkOption { mark, key } => write!(
                 f,
@@ -1218,21 +1243,7 @@ impl Walker {
             // default equirectangular fit — name it so the author sees the
             // unsupported projection. A lifted `$param` is a recorded deferral.
             if key == "projectionType" {
-                let unsupported = match &value {
-                    SpecValue::String(s) => {
-                        crate::layout::ResolvedProjection::from_wire(s).is_none()
-                    }
-                    SpecValue::Param(_) => false,
-                    _ => true,
-                };
-                if unsupported {
-                    let shown = match &value {
-                        SpecValue::String(s) => s.clone(),
-                        _ => "<non-string>".to_string(),
-                    };
-                    self.warnings
-                        .push(ParseWarning::UnknownProjection { value: shown });
-                }
+                self.warn_unknown_projection(&value);
             }
             attributes.insert(key, value);
         }
@@ -1427,6 +1438,31 @@ impl Walker {
         }
         if status == ImplStatus::Implemented {
             self.warn_unconsumed_mark_options(name, parent);
+            // The mark-level `projectionType` is judged by the same function the
+            // plot-level attribute is, so a name is recognised in both places or
+            // in neither.
+            if let Some(ValueOrParamRef::Value(v)) = options.get("projectionType") {
+                self.warn_unknown_projection(v);
+                // `aspectRatio` alongside a projection is refused rather than
+                // composed — see `ParseWarning::AspectRatioWithProjection`.
+                let asks_aspect = matches!(
+                    options.get("aspectRatio"),
+                    Some(ValueOrParamRef::Value(SpecValue::Integer(1)))
+                ) || matches!(
+                    options.get("aspectRatio"),
+                    Some(ValueOrParamRef::Value(SpecValue::Float(f))) if (*f - 1.0).abs() < f64::EPSILON
+                );
+                if asks_aspect
+                    && crate::layout::ResolvedProjection::from_wire(match v {
+                        SpecValue::String(s) => s,
+                        _ => "",
+                    })
+                    .is_some()
+                {
+                    self.warnings
+                        .push(ParseWarning::AspectRatioWithProjection { mark: name.into() });
+                }
+            }
             if sort.is_none() && parent.contains_key(serde_yaml::Value::String("sort".into())) {
                 self.warnings
                     .push(ParseWarning::UnconsumedSort { mark: name.into() });
@@ -1503,6 +1539,31 @@ impl Walker {
                 channel: field.to_string(),
                 transform: key.to_string(),
             });
+    }
+
+    /// Raise [`ParseWarning::UnknownProjection`] when `value` is a
+    /// `projectionType` this build cannot draw.
+    ///
+    /// ONE function for the plot attribute and the mark option, asking
+    /// [`crate::layout::ResolvedProjection::from_wire`] — the same question the
+    /// renderer's resolution asks. A lifted `$param` is a recorded deferral and
+    /// not a bad name, so it does not warn; anything that is not a string cannot
+    /// name a projection at all.
+    fn warn_unknown_projection(&mut self, value: &SpecValue) {
+        let unsupported = match value {
+            SpecValue::String(s) => crate::layout::ResolvedProjection::from_wire(s).is_none(),
+            SpecValue::Param(_) => false,
+            _ => true,
+        };
+        if !unsupported {
+            return;
+        }
+        let shown = match value {
+            SpecValue::String(s) => s.clone(),
+            _ => "<non-string>".to_string(),
+        };
+        self.warnings
+            .push(ParseWarning::UnknownProjection { value: shown });
     }
 
     /// Name every option key on `mark_name`'s node that no lowerer and no
