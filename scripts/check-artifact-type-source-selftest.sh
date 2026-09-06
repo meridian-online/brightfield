@@ -74,9 +74,11 @@ FOREIGN_PLATFORM="$("$HERE/duckdb-platform.sh" "$FOREIGN")"
 failures=0
 TMP="$(mktemp -d)" || exit 1
 trap 'rm -rf "$TMP"' EXIT
-# A PATH, and the only thing in this file that is one. Every expect_pass and
-# expect_fail redirects into it and every structural pin greps it, so a case
-# that binds this name to something else moves where the whole file writes.
+# A PATH, and the SHARED one. Every expect_pass and expect_fail redirects into
+# it and every structural pin greps it. The fixture names further down hold
+# paths too, but each is read where it is set; this one is read by the whole
+# file, so a case that binds it to something else moves where everything after
+# that case writes.
 out="$TMP/out"
 
 # A bundle of the shape scripts/check-bundled-extension.sh accepts, with the
@@ -394,10 +396,11 @@ echo "== the run leaves nothing in the directory it was run from"
 #
 # It re-runs this whole file rather than a chosen part of it, because the next
 # stray will not be written by the line the last one was. The inner run is the
-# same script with BRIGHTFIELD_ARTIFACT_SELFTEST_INNER set; that variable is
-# the recursion guard and has no other effect, and the inner run's marker below
-# is REQUIRED in its log — an inner run that died before writing anything would
-# otherwise leave an empty directory and read as a pass.
+# same script with BRIGHTFIELD_ARTIFACT_SELFTEST_INNER set, and the `if` on the
+# next line is where that variable is read — it is the recursion guard and is
+# put to no other use. The inner run's marker is REQUIRED in its log: an inner
+# run that died before writing anything would otherwise leave an empty
+# directory and read as a pass.
 if [ -n "${BRIGHTFIELD_ARTIFACT_SELFTEST_INNER:-}" ]; then
 	echo "  --   inner run: the outer run is what reads this directory"
 else

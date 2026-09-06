@@ -227,9 +227,10 @@ jobs:
   # AND from a uname table and refuses when they disagree, so it exits rather
   # than run with one source. Its self-test then reads `rustc -vV` itself, so
   # that the triple its fixtures are built for is not the triple the code under
-  # test chose: changing one arm of that table used to leave every case in this
-  # repository green while a real release printed `== not run` for the artefact
-  # people download. rustc is load-bearing on both sides and neither side has a
+  # test chose: changing one arm of that table used to leave every case in that
+  # self-test green, the structural pins included, while a real release printed
+  # `== not run` for the artefact people download. rustc is load-bearing on
+  # both sides and neither side has a
   # toolchain-free substitute, which is why this job exists rather than the step
   # staying in the scan above.
   #
