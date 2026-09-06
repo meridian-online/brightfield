@@ -33,6 +33,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
 CHECK="$HERE/check-artifact-type-source.sh"
 SELF="$HERE/$(basename "${BASH_SOURCE[0]}")"
 
@@ -336,6 +337,78 @@ else
 	failures=$((failures + 1))
 fi
 
+echo "== the record of which artefacts were load-verified"
+# READ, NOT ASSERTED. Which targets a release load-verifies and which it only
+# reads is a fact a person meets in the run summary, and the way that fact goes
+# wrong is not that somebody deletes it — it is that it keeps being emitted
+# while the branch it describes stops being the branch that ran. release.yml
+# used to emit it from `matrix.native` while the check decided from `rustc -vV`;
+# nothing compared the two. So these cases point $GITHUB_STEP_SUMMARY at a file
+# and read the bytes that land in it, on both branches, in both directions.
+#
+# Both directions matter and the second is the sharp one. "the summary says NOT
+# LOADED for the cross-compiled artefact" is satisfied by a check that writes
+# that line unconditionally; what makes the line worth reading is that the
+# native artefact's record does NOT carry it.
+SUMMARY="$TMP/step-summary.md"
+
+record_run() { # record_run ARTIFACT TARGET — leaves the log in $out, the record in $SUMMARY
+	: >"$SUMMARY"
+	GITHUB_STEP_SUMMARY="$SUMMARY" "$CHECK" "$1" "$2" >"$out" 2>&1
+}
+
+expect_record() { # expect_record NAME PRESENT ABSENT
+	local name="$1" present="$2" absent="$3"
+	if ! grep -qF -- "$present" "$SUMMARY"; then
+		echo "  FAIL ${name}: the run summary does not say ${present}"
+		sed 's/^/       /' "$SUMMARY"
+		failures=$((failures + 1))
+		return
+	fi
+	if grep -qF -- "$absent" "$SUMMARY"; then
+		echo "  FAIL ${name}: the run summary also says ${absent}, which is the other branch"
+		sed 's/^/       /' "$SUMMARY"
+		failures=$((failures + 1))
+		return
+	fi
+	echo "  ok   ${name}"
+}
+
+recorded="$(make_tarball recorded)"
+record_run "$recorded" "$TARGET"
+expect_record "the loaded artefact is recorded as loaded, and not as unloaded" \
+	"type source LOADED by the packaged binary: \`recorded.tar.gz\` (${TARGET})" \
+	"READ BUT NOT LOADED"
+
+# The same fixture the cross-compile case above uses: a stub that would FAIL if
+# it ran. So a record saying the binary was never run is a record of what
+# happened rather than a line printed beside a run that did.
+record_run "$foreign" "$FOREIGN"
+expect_record "the cross-compiled artefact is recorded as read and not loaded" \
+	"type source READ BUT NOT LOADED: \`foreign.tar.gz\` (packaged for ${FOREIGN}, this runner is ${TARGET})" \
+	"LOADED by the packaged binary"
+
+# The warning is the other half: a run summary is a page somebody opens, and an
+# annotation is what appears against the run without opening anything.
+if grep -qF '::warning title=Type source read but not loaded::foreign.tar.gz is packaged for '"${FOREIGN}"' and this machine is '"${TARGET}" "$out"; then
+	echo "  ok   the unloaded artefact also raises a workflow annotation naming both triples"
+else
+	echo "  FAIL no ::warning naming the artefact and both triples:"
+	sed 's/^/       /' "$out"
+	failures=$((failures + 1))
+fi
+
+# Outside Actions there is no summary file to write to, and the check must not
+# invent one. The litter case at the foot of this file is what would catch a
+# stray; this is what catches the check failing rather than skipping.
+if ( unset GITHUB_STEP_SUMMARY; "$CHECK" "$recorded" "$TARGET" >"$out" 2>&1 ); then
+	echo "  ok   with no \$GITHUB_STEP_SUMMARY the check still passes and writes no record"
+else
+	echo "  FAIL the check needs \$GITHUB_STEP_SUMMARY to be set:"
+	sed 's/^/       /' "$out"
+	failures=$((failures + 1))
+fi
+
 echo "== an artifact of a shape this check does not know"
 printf 'not an artifact' >"$TMP/thing.zip"
 expect_fail "a .zip" "not an artifact this script knows" "$TMP/thing.zip" "$TARGET"
@@ -408,8 +481,30 @@ else
 	rm -rf "$pen"
 	mkdir -p "$pen"
 	innerlog="$TMP/inner.log"
+	# THE EMPTY DIRECTORY IS ONLY HALF OF IT, and the title of this section says
+	# so: a stray written by ABSOLUTE path lands wherever the path names, and
+	# the working directory is not it. The checkout is the place that matters —
+	# a file dropped into the repository by a self-test is committed by the next
+	# `git add`. So the tracked tree is read on both sides of the inner run and
+	# required not to have moved. It is a comparison rather than a "clean tree"
+	# assertion because a developer's checkout is dirty most of the time.
+	tracked_before=""
+	if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+		tracked_before="$(git -C "$ROOT" status --porcelain)"
+	fi
 	(cd "$pen" && BRIGHTFIELD_ARTIFACT_SELFTEST_INNER=1 "$SELF") >"$innerlog" 2>&1
 	innerstatus=$?
+	if [ -n "$tracked_before" ] || git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+		tracked_after="$(git -C "$ROOT" status --porcelain)"
+		if [ "$tracked_after" != "$tracked_before" ]; then
+			echo "  FAIL a run changed the checkout it was started from:"
+			diff <(printf '%s\n' "$tracked_before") <(printf '%s\n' "$tracked_after") |
+				sed 's/^/       /'
+			failures=$((failures + 1))
+		else
+			echo "  ok   a whole run leaves the checkout's tracked tree exactly as it found it"
+		fi
+	fi
 	strays="$(cd "$pen" && ls -A)"
 	if [ -n "$strays" ]; then
 		echo "  FAIL a run wrote into its working directory (inner run exit ${innerstatus}):"
