@@ -855,6 +855,20 @@ impl ChartDoc {
         !self.active_selections.is_empty()
     }
 
+    /// The clause `contributor` is currently holding in the selection `name`,
+    /// if any — [`LiveDashboard::held_clause`], through the live session this
+    /// document was opened with. `None` on a document with no live
+    /// session — a still frame, where a capture publishes no gesture, so there
+    /// is no clause for one to be repeating.
+    #[must_use]
+    pub fn held_clause(
+        &self,
+        name: &str,
+        contributor: &ComponentPath,
+    ) -> Option<brightfield_engine::SqlPredicate> {
+        self.live.as_ref()?.held_clause(name, contributor).cloned()
+    }
+
     /// **The SQL the gestures on this chart are currently holding**, as one
     /// line — `$brush = ("temp" >= 8.6 AND "temp" <= 15.2)`, several selections
     /// joined by ` · `. `None` when nothing is held, which is what makes a

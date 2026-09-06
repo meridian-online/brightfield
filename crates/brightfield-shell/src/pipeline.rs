@@ -1432,6 +1432,24 @@ impl LiveDashboard {
         held
     }
 
+    /// The clause `contributor` is currently holding in the selection `name`,
+    /// if any.
+    ///
+    /// The live per-contributor slot, read through
+    /// [`Session::contributor_predicate`](brightfield_engine::Session::contributor_predicate)
+    /// rather than through a copy this crate keeps: an interactor writing the
+    /// same `(selection, contributor)` identity writes this slot, so a gesture
+    /// that replaces or retracts the clause is observed here instead of
+    /// desynchronising a mirror. The legend toggle already decides
+    /// dispatch-versus-clear from it; this is the same read for a plot's own
+    /// point gesture.
+    #[must_use]
+    pub fn held_clause(&self, name: &str, contributor: &ComponentPath) -> Option<&Predicate> {
+        self.coordinator
+            .session()
+            .contributor_predicate(name, &contributor.0)
+    }
+
     /// The local files this dashboard's spec reads through `file:` data
     /// sources — see [`spec_data_files`], which this delegates to over the
     /// held spec.

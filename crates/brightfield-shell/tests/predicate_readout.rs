@@ -865,6 +865,102 @@ fn a_category_click_reads_back_as_the_clicked_values_own_equality() {
     );
 }
 
+/// **A second click on the same bar takes the cross-filter off.** The gesture
+/// that applied the filter is the gesture a reader reaches for to remove it,
+/// and until this it had no effect: the point arm of `resolve_gesture` built the
+/// clause and dispatched it whatever was already standing, so clicking the
+/// same bar twice republished the same predicate and left the row set where
+/// the first click put it. The interval arm had the retraction from the start — an unswept click
+/// on a brush binding clears that plot's contribution — so this is the same
+/// convention arriving at the other gesture class rather than a new rule.
+///
+/// The row set is what is asserted rather than the readout alone, because the
+/// readout could be cleared by a build that left the clause in the store: the
+/// count before, during and after is what makes "the filter came off" mean the
+/// engine and not the rail.
+///
+/// Watched redden, one mutation: deleting the `held == Some(&predicate)` arm
+/// from `resolve_gesture`'s point branch fails here at "a second click on the
+/// same bar left the cross-filter standing".
+#[test]
+fn a_second_click_on_the_same_bar_releases_the_cross_filter() {
+    let path = example("point-select-categorical.yaml");
+    let mut app = live_window(&path);
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, Vec::new());
+    frame(&mut app, &ctx, Vec::new());
+    assert!(
+        readout(app.chart_doc()).is_none(),
+        "at rest nothing is held"
+    );
+    let at_rest = mark_rows(app.chart_doc_mut(), 1);
+
+    click_x(&mut app, &ctx, 0, 0.25);
+    let filtered = mark_rows(app.chart_doc_mut(), 1);
+    assert_eq!(
+        readout(app.chart_doc()).as_deref(),
+        Some("$pick = (\"region\" = 'North')"),
+        "the first click published nothing, so there is no filter to release"
+    );
+    assert_ne!(
+        filtered, at_rest,
+        "fixture check: the click did not change the row set, so a release \
+         could not be told from a no-op"
+    );
+
+    // The same bar, a second time.
+    click_x(&mut app, &ctx, 0, 0.25);
+    assert!(
+        readout(app.chart_doc()).is_none(),
+        "a second click on the same bar left the cross-filter standing"
+    );
+    assert_eq!(
+        mark_rows(app.chart_doc_mut(), 1),
+        at_rest,
+        "the readout cleared but the engine is still filtering, so the clause \
+         is still in the store"
+    );
+    assert!(
+        !app.chart_doc().selection_active(),
+        "the document still reports a committed gesture after the release"
+    );
+}
+
+/// **A click on a different bar replaces rather than releases.** The other half
+/// of the toggle, and the one a release implemented as "any second click
+/// clears" would break: moving the filter from one category to the next is the
+/// commonest thing anyone does with a categorical cross-filter, and it has to
+/// stay one click.
+///
+/// Watched redden, one mutation: widening the retraction arm to fire whenever
+/// anything is held — dropping the comparison against the clause — fails here
+/// at "a click on a second bar released the filter instead of moving it".
+#[test]
+fn a_click_on_a_different_bar_moves_the_cross_filter_rather_than_releasing_it() {
+    let path = example("point-select-categorical.yaml");
+    let mut app = live_window(&path);
+    let ctx = egui::Context::default();
+    frame(&mut app, &ctx, Vec::new());
+    frame(&mut app, &ctx, Vec::new());
+
+    click_x(&mut app, &ctx, 0, 0.25);
+    assert_eq!(
+        readout(app.chart_doc()).as_deref(),
+        Some("$pick = (\"region\" = 'North')")
+    );
+
+    click_x(&mut app, &ctx, 0, 0.85);
+    assert_eq!(
+        readout(app.chart_doc()).as_deref(),
+        Some("$pick = (\"region\" = 'East')"),
+        "a click on a second bar released the filter instead of moving it"
+    );
+    assert!(
+        app.chart_doc().selection_active(),
+        "the document reports nothing committed while a clause is shown"
+    );
+}
+
 /// **Several values in one point clause read back as the OR chain.** A
 /// `Point`'s rendering is cardinality-dependent, and the readout shows whatever
 /// the store holds because that is the string the emitters interpolate — so
