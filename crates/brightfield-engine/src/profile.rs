@@ -493,8 +493,8 @@ fn count_leaves(node: &serde_json::Value) -> Option<u32> {
 ///
 /// An inclusion list would have to name each spelling DuckDB gives a file
 /// reader — `READ_CSV`, `READ_PARQUET`, and the one it gains next release —
-/// and a spelling this code has never seen would go uncounted, which is the
-/// direction that fails silently. Excluding what the plan names has the
+/// and a spelling this code did not anticipate would go uncounted, which is
+/// the direction that fails silently. Excluding what the plan names has the
 /// opposite bias: a leaf nobody anticipated makes the number go **up**, and a
 /// bound that reddens is a bound somebody reads. A `DUMMY_SCAN` and a
 /// `COLUMN_DATA_SCAN` are therefore counted as file reads, which over-counts a
@@ -668,11 +668,11 @@ mod tests {
     /// **A leaf is a file read unless the plan says what else it reads, and
     /// the two things it can say are a table and a CTE.**
     ///
-    /// The bound this feeds is **zero**, and a function returning zero passes
-    /// that bound on every plan there is. So the cases that matter most here
+    /// The bound this feeds is **zero**, and a function returning zero would
+    /// pass that bound on any plan at all. So the cases that matter most here
     /// are the ones that must NOT be zero: a rule that had inverted, or a walk
     /// that had stopped finding leaves, agrees with the shipped composition
-    /// exactly and disagrees with these.
+    /// and disagrees with these.
     ///
     /// `PLAN_MATERIALISED_HISTOGRAM` is the other direction and the reason the
     /// `CTE Index` arm is there: DuckDB plans the histogram's two identical

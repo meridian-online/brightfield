@@ -38,9 +38,11 @@
 //! tile's query is byte-identical and scans memory — the rows it draws are
 //! compared down both branches by
 //! `every_mark_draws_the_same_rows_down_both_branches_of_the_threshold`. The
-//! composition then reads the file no times at all, which is what
-//! [`crate::pipeline::COMPOSITION_FILE_READS`] states and what the open-scan
-//! harness measures — the same file, the same machine, minutes later:
+//! composition then reads the file no times, which is what
+//! [`crate::pipeline::COMPOSITION_FILE_READS`] states,
+//! `composing_a_wide_dashboard_reads_the_file_no_more_often_than_a_narrow_one`
+//! holds, and the open-scan harness measures — the same file, the same
+//! machine, minutes later:
 //! 53.5 ms of a 1,007.3 ms open, in
 //! `benchmarks/results/open-scan/2026-09-07-apple-m1-pro.json`.
 //!
