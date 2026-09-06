@@ -424,22 +424,22 @@ pub enum ParseWarning {
         attribute: String,
     },
 
-    /// A `projectionType` — on a plot or on a mark — carried a value outside
-    /// Mosaic's `ProjectionName` vocabulary, or a non-string value. The
-    /// projection degrades to the default equirectangular fit, and this names
-    /// the value so an author sees the unsupported projection rather than
-    /// silently getting a different map.
+    /// A plot's `projectionType` carried a value outside Mosaic's
+    /// `ProjectionName` vocabulary, or a non-string value. The plot then names
+    /// no projection at all — it draws as a cartesian plot — and this names the
+    /// value so an author sees the unsupported projection rather than silently
+    /// getting a different picture.
     ///
     /// [`crate::layout::ResolvedProjection::from_wire`] is the sole judge of
-    /// what is recognised, so widening the catalogue narrows this warning in
-    /// both places at once and cannot leave one of them warning about a name the
-    /// other draws.
+    /// what is recognised, so widening the catalogue narrows this warning and
+    /// widens [`crate::layout::resolve_projection`] in the same edit.
     UnknownProjection {
         /// The unrecognised projection value (or `<non-string>` for a non-string).
         value: String,
     },
 
-    /// A mark asked for BOTH `aspectRatio: 1` and a `projectionType`. The two
+    /// A mark asked for `aspectRatio: 1` on a plot that names a
+    /// `projectionType`. The two
     /// are alternatives, not layers: equal-aspect widens the narrower positional
     /// domain until a degree of longitude and a degree of latitude take the same
     /// number of pixels, which is a cartesian frame's best impersonation of a
@@ -453,6 +453,38 @@ pub enum ParseWarning {
     AspectRatioWithProjection {
         /// The mark that asked for both.
         mark: String,
+    },
+
+    /// A plot names a `projectionType` and carries a mark whose kind cannot
+    /// draw through it — see
+    /// [`crate::vocab::MarkKind::draws_through_a_projection`].
+    ///
+    /// The plot's axes are in the projection's planar units, so this mark's raw
+    /// column numbers would land somewhere arbitrary on them: a second
+    /// coordinate system drawn over the first, which reads as a picture rather
+    /// than as an error. **The mark is not drawn**, and this is what says so.
+    MarkCannotProject {
+        /// The mark kind's wire name.
+        mark: String,
+        /// The `projectionType` the plot named.
+        projection: String,
+    },
+
+    /// A plot names a `projectionType` whose two axes do not invert separately,
+    /// and carries an `intervalX` / `intervalY` / `intervalXY` interactor.
+    ///
+    /// A rectangle swept in pixels has a rectangle of longitudes and latitudes
+    /// behind it only when the planar `u` depends on the longitude alone and the
+    /// planar `v` on the latitude alone — see
+    /// [`crate::layout::ResolvedProjection::axes_invert_separately`]. Under a
+    /// conic or an azimuthal it does not, so the `column BETWEEN lo AND hi`
+    /// clause the brush would build names bounds the reader never swept.
+    /// **The interactor is not installed**, and this is what says so.
+    IntervalBrushUnderCurvedProjection {
+        /// The interactor kind's wire name.
+        interactor: String,
+        /// The `projectionType` the plot named.
+        projection: String,
     },
 
     /// A mark carried an option key that **no lowerer and no renderer reads**
@@ -649,11 +681,22 @@ impl fmt::Display for ParseWarning {
             ),
             Self::UnknownProjection { value } => write!(
                 f,
-                "projection `{value}` is not supported — the plot falls back to equirectangular"
+                "projection `{value}` is not supported — the plot draws unprojected"
             ),
             Self::AspectRatioWithProjection { mark } => write!(
                 f,
-                "mark `{mark}` sets both `aspectRatio` and `projectionType` — the projection decides the frame and `aspectRatio` is dropped"
+                "mark `{mark}` sets `aspectRatio` on a plot with a `projectionType` — the projection decides the frame and `aspectRatio` is dropped"
+            ),
+            Self::MarkCannotProject { mark, projection } => write!(
+                f,
+                "mark `{mark}` cannot draw through the plot's `{projection}` projection — it is not drawn, because its coordinates are not in the units the plot's axes are in"
+            ),
+            Self::IntervalBrushUnderCurvedProjection {
+                interactor,
+                projection,
+            } => write!(
+                f,
+                "`{interactor}` cannot filter under the plot's `{projection}` projection — the axes do not invert separately, so no interval brush is installed"
             ),
             Self::UnconsumedMarkOption { mark, key } => write!(
                 f,
@@ -1247,10 +1290,85 @@ impl Walker {
             }
             attributes.insert(key, value);
         }
-        Ok(PlotNode {
+        let node = PlotNode {
             items: plot_items,
             attributes,
-        })
+        };
+        self.warn_plot_projection(&node);
+        Ok(node)
+    }
+
+    /// Name what a plot's `projectionType` costs the items inside it.
+    ///
+    /// A projection is a PLOT attribute and it replaces the plot's x and y
+    /// scales, so it is not a per-mark decision and the marks cannot each answer
+    /// it differently. Three consequences, and an author is told about each
+    /// rather than shown a picture that quietly means something else:
+    ///
+    /// - a mark whose kind cannot project ([`MarkKind::draws_through_a_projection`])
+    ///   is not drawn, because its degrees would land arbitrarily on axes in the
+    ///   projection's planar units;
+    /// - a mark asking for `aspectRatio: 1` has already had that question
+    ///   answered, better, by the projection;
+    /// - an interval brush over a projection whose axes do not invert
+    ///   separately is not installed, because its `BETWEEN` bounds would be
+    ///   bounds nobody swept.
+    ///
+    /// Runs over the built [`PlotNode`] rather than over the YAML, so it asks
+    /// [`crate::layout::resolve_projection`] — the same function the renderer
+    /// asks — instead of re-reading the attribute here.
+    fn warn_plot_projection(&mut self, node: &PlotNode) {
+        let Some(projection) = crate::layout::resolve_projection(node) else {
+            return;
+        };
+        let name = match node.attributes.get("projectionType") {
+            Some(SpecValue::String(s)) => s.clone(),
+            _ => String::new(),
+        };
+        for item in &node.items {
+            match item {
+                Component::Mark(mark) => {
+                    if mark.status != ImplStatus::Implemented {
+                        continue;
+                    }
+                    if !mark.kind.draws_through_a_projection() {
+                        self.warnings.push(ParseWarning::MarkCannotProject {
+                            mark: mark.kind.wire_name().to_string(),
+                            projection: name.clone(),
+                        });
+                        continue;
+                    }
+                    let asks_aspect = matches!(
+                        mark.options.get("aspectRatio"),
+                        Some(ValueOrParamRef::Value(SpecValue::Integer(1)))
+                    ) || matches!(
+                        mark.options.get("aspectRatio"),
+                        Some(ValueOrParamRef::Value(SpecValue::Float(f))) if (*f - 1.0).abs() < f64::EPSILON
+                    );
+                    if asks_aspect {
+                        self.warnings.push(ParseWarning::AspectRatioWithProjection {
+                            mark: mark.kind.wire_name().to_string(),
+                        });
+                    }
+                }
+                Component::Interactor(interactor) => {
+                    let is_interval = matches!(
+                        interactor.kind,
+                        InteractorKind::IntervalX
+                            | InteractorKind::IntervalY
+                            | InteractorKind::IntervalXY
+                    );
+                    if is_interval && !projection.axes_invert_separately() {
+                        self.warnings
+                            .push(ParseWarning::IntervalBrushUnderCurvedProjection {
+                                interactor: interactor.kind.wire_name().to_string(),
+                                projection: name.clone(),
+                            });
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     fn walk_concat(&mut self, items: &serde_yaml::Value) -> Result<ConcatNode, ParseError> {
@@ -1438,31 +1556,6 @@ impl Walker {
         }
         if status == ImplStatus::Implemented {
             self.warn_unconsumed_mark_options(name, parent);
-            // The mark-level `projectionType` is judged by the same function the
-            // plot-level attribute is, so a name is recognised in both places or
-            // in neither.
-            if let Some(ValueOrParamRef::Value(v)) = options.get("projectionType") {
-                self.warn_unknown_projection(v);
-                // `aspectRatio` alongside a projection is refused rather than
-                // composed — see `ParseWarning::AspectRatioWithProjection`.
-                let asks_aspect = matches!(
-                    options.get("aspectRatio"),
-                    Some(ValueOrParamRef::Value(SpecValue::Integer(1)))
-                ) || matches!(
-                    options.get("aspectRatio"),
-                    Some(ValueOrParamRef::Value(SpecValue::Float(f))) if (*f - 1.0).abs() < f64::EPSILON
-                );
-                if asks_aspect
-                    && crate::layout::ResolvedProjection::from_wire(match v {
-                        SpecValue::String(s) => s,
-                        _ => "",
-                    })
-                    .is_some()
-                {
-                    self.warnings
-                        .push(ParseWarning::AspectRatioWithProjection { mark: name.into() });
-                }
-            }
             if sort.is_none() && parent.contains_key(serde_yaml::Value::String("sort".into())) {
                 self.warnings
                     .push(ParseWarning::UnconsumedSort { mark: name.into() });

@@ -1634,6 +1634,16 @@ fn collect_brushable_bindings(
             // Channels are shared across all brushable interactors in this
             // plot — they describe the plot's data axes, not the interactor's.
             let channels = first_mark_channels(&p.items);
+            // A projection whose two axes do not invert separately gets no
+            // interval brush. `axis_interval` (brightfield-shell) inverts each
+            // axis's pixel independently to build `column BETWEEN lo AND hi`;
+            // under a conic or an azimuthal the planar `u` depends on the
+            // latitude and the planar `v` on the longitude, so there is no pair
+            // of column bounds that means what the reader swept. The parser has
+            // already said so — `ParseWarning::IntervalBrushUnderCurvedProjection`
+            // — and this is what makes it true.
+            let curved = crate::layout::resolve_projection(p)
+                .is_some_and(|proj| !proj.axes_invert_separately());
             // Mirror `collect_interactor_bindings`'s convention: each item
             // position contributes `/plot[i]` to the path, then the matched
             // Interactor branch appends `/interactor[kind]`. The synthetic
@@ -1646,6 +1656,14 @@ fn collect_brushable_bindings(
                         let Some(kind) = BrushKind::from_interactor_kind(intc.kind) else {
                             continue;
                         };
+                        if curved
+                            && matches!(
+                                kind,
+                                BrushKind::IntervalX | BrushKind::IntervalY | BrushKind::IntervalXY
+                            )
+                        {
+                            continue;
+                        }
                         let Some(ValueOrParamRef::Param(pr)) = intc.options.get("as") else {
                             continue;
                         };

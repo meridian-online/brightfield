@@ -590,8 +590,14 @@ pub fn resolve_fixed_domains(plot: &PlotNode) -> FixedDomains {
 /// are recognised, which the test
 /// `every_mosaic_projection_name_resolves_to_its_own_variant` enumerates against
 /// the schema; [`ResolvedProjection::from_wire`] is the single place that maps a
-/// wire string to a variant, so a plot attribute and a mark option cannot come
-/// to disagree about what `mercator` means.
+/// wire string to a variant.
+///
+/// **A projection is a PLOT attribute and nothing else**, which is Observable
+/// Plot's rule and therefore Mosaic's: `projection` replaces the plot's x and y
+/// scales, so every mark on the plot whose position channels are longitude and
+/// latitude draws through it and no mark draws through a different one. The one
+/// delivery is `brightfield_render::channel::ChannelMap::from_mark_in`, which
+/// takes the plot the mark sits in.
 ///
 /// Two stated fidelity gaps, both unchanged by the catalogue widening:
 ///
@@ -653,11 +659,13 @@ impl ResolvedProjection {
     /// plain `Albers` — the composite is deferred (a stated fidelity gap).
     ///
     /// This is the ONE reader of a projection name in the build: the plot
-    /// attribute ([`resolve_projection`]), the mark option
-    /// (`brightfield_render::channel::ChannelMap::from_mark`) and the parser's
+    /// attribute ([`resolve_projection`]) and the parser's
     /// [`crate::parse::ParseWarning::UnknownProjection`] check come through
-    /// here, so a name is recognised in both places or in neither — held by the
-    /// test `a_mark_level_projection_is_judged_by_the_same_vocabulary`.
+    /// here, so a name the spec language accepts and a name the renderer draws
+    /// cannot come apart. There is no mark-level projection key: Mosaic has
+    /// none, and `projectionType` written on a mark reaches
+    /// [`crate::parse::ParseWarning::UnconsumedMarkOption`] like any other key
+    /// nothing reads.
     #[must_use]
     pub fn from_wire(name: &str) -> Option<Self> {
         match name {
@@ -679,18 +687,53 @@ impl ResolvedProjection {
             _ => None,
         }
     }
+
+    /// Whether a pixel on the x axis inverts to a longitude without knowing the
+    /// y pixel, and a pixel on the y axis to a latitude without knowing the x
+    /// pixel.
+    ///
+    /// True exactly for the four projections whose planar `u` is a function of
+    /// longitude alone and whose `v` is a function of latitude alone —
+    /// equirectangular, identity, reflect-y and Mercator. For every other name
+    /// in the catalogue the two are entangled (a conic's `u` depends on the
+    /// latitude, an azimuthal's on both), so a rectangle swept in pixels has no
+    /// rectangle of longitudes and latitudes behind it and an `intervalX` /
+    /// `intervalY` / `intervalXY` filter over it would name bounds the reader
+    /// did not sweep.
+    ///
+    /// `brightfield_render::mark::Projection` implements the two inverses this
+    /// predicate is a claim about; the test
+    /// `separability_is_the_claim_the_inverses_keep` drives all sixteen names
+    /// through both and fails if either side moves alone.
+    #[must_use]
+    pub fn axes_invert_separately(self) -> bool {
+        matches!(
+            self,
+            Self::Equirectangular | Self::Identity | Self::ReflectY | Self::Mercator
+        )
+    }
 }
 
-/// Resolve a plot's map projection from its `projectionType` attribute — a PURE
-/// resolver beside [`resolve_plot_insets`] / [`resolve_axis_titles`]. Absent, a
-/// `$param`, or an unrecognised value → the default [`ResolvedProjection`]
-/// (equirectangular fit); the unrecognised-value warning is raised at PARSE time
-/// in `walk_plot` (like `NonNumericInset` / `NonStringLabel`), never here.
+/// The map projection a plot's `projectionType` attribute names, or `None` when
+/// the plot names none — a PURE resolver beside [`resolve_plot_insets`] /
+/// [`resolve_axis_titles`].
+///
+/// **The absence is meaningful and is why this returns an `Option`.** A plot
+/// that names no projection is a cartesian plot: its `dot` marks draw a scatter
+/// at raw column numbers and no graticule goes behind them. A plot that names
+/// `equirectangular` is a map that happens to use the plate carrée, and it draws
+/// a graticule. Collapsing the two — which is what returning a defaulted
+/// `ResolvedProjection` did — makes every scatter in the build indistinguishable
+/// from a world map.
+///
+/// A `$param` and an unrecognised name both read as absent; the
+/// unrecognised-value warning is raised at PARSE time in `walk_plot` (like
+/// `NonNumericInset` / `NonStringLabel`), never here.
 #[must_use]
-pub fn resolve_projection(plot: &PlotNode) -> ResolvedProjection {
+pub fn resolve_projection(plot: &PlotNode) -> Option<ResolvedProjection> {
     match plot.attributes.get("projectionType") {
-        Some(SpecValue::String(s)) => ResolvedProjection::from_wire(s).unwrap_or_default(),
-        _ => ResolvedProjection::default(),
+        Some(SpecValue::String(s)) => ResolvedProjection::from_wire(s),
+        _ => None,
     }
 }
 

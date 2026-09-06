@@ -6,8 +6,9 @@
 
 use std::collections::HashMap;
 
-use brightfield_spec::ast::{AggregateFunc, Mark, SpecValue, ValueOrParamRef};
+use brightfield_spec::ast::{AggregateFunc, Mark, PlotNode, SpecValue, ValueOrParamRef};
 use brightfield_spec::vocab::is_colour_literal;
+use brightfield_spec::vocab::MarkKind;
 use peniko::Color;
 
 /// Reserved output column the density / hexbin / cell lowerers alias their
@@ -172,7 +173,100 @@ pub struct ChannelMap {
     colours: HashMap<Channel, Color>,
     label: Option<LabelForm>,
     equal_aspect: bool,
-    projection: Option<crate::mark::Projection>,
+    projection: MarkProjection,
+}
+
+/// What the plot's map projection means for one mark on it.
+///
+/// A projection is a plot attribute in Mosaic, as it is in Observable Plot, and
+/// it replaces the plot's x and y scales. So the question is never "which
+/// projection did this mark ask for" — it is "what does the plot's projection do
+/// to this mark", and there are exactly three answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MarkProjection {
+    /// The plot names no projection. The mark draws at its raw column numbers
+    /// on cartesian axes — every scatter, bar and line in the build.
+    #[default]
+    None,
+    /// The plot names a projection and this mark draws through it.
+    Through(crate::mark::Projection),
+    /// The plot names a projection and this mark's kind cannot draw through it
+    /// ([`MarkKind::draws_through_a_projection`](brightfield_spec::vocab::MarkKind::draws_through_a_projection)).
+    ///
+    /// **The mark is not drawn.** The plot's axes are in the projection's planar
+    /// units — a Mercator `v` of 1.47 where the column says 64 — so drawing this
+    /// mark's degrees against them puts a second coordinate system on top of the
+    /// first, which reads as a picture rather than as an error. `render_entry`
+    /// (`crate::scene`) is the one place that acts on this, and
+    /// `ParseWarning::MarkCannotProject` is what tells the author.
+    Undrawable(crate::mark::Projection),
+}
+
+impl MarkProjection {
+    /// What `plot`'s projection means for a mark of kind `kind`.
+    ///
+    /// **The one delivery of a projection to a mark in the build.** `plot` is
+    /// `None` for a mark with no owning plot node.
+    ///
+    /// A `geo` mark is the one kind that projects even when the plot names
+    /// nothing: its column holds longitude/latitude geometry and there is no
+    /// cartesian reading of it, so an unnamed projection means the plate carrée
+    /// rather than no projection at all — which is what this build has always
+    /// drawn for a `geo` mark on a bare plot.
+    #[must_use]
+    pub fn of(kind: MarkKind, plot: Option<&PlotNode>) -> Self {
+        Self::of_resolved(
+            kind,
+            plot.and_then(brightfield_spec::layout::resolve_projection),
+        )
+    }
+
+    /// [`MarkProjection::of`] when the plot's projection has already been
+    /// resolved — the live-rebuild path, which reads the plot node before it
+    /// swaps the spec and cannot hold the borrow across it. The one decision
+    /// lives here; `of` is a thin wrapper that resolves first.
+    #[must_use]
+    pub fn of_resolved(
+        kind: MarkKind,
+        named: Option<brightfield_spec::layout::ResolvedProjection>,
+    ) -> Self {
+        match (kind, named) {
+            (MarkKind::Geo, named) => {
+                Self::Through(named.map(crate::mark::Projection::from).unwrap_or_default())
+            }
+            (_, None) => Self::None,
+            (kind, Some(named)) if kind.draws_through_a_projection() => {
+                Self::Through(crate::mark::Projection::from(named))
+            }
+            (_, Some(named)) => Self::Undrawable(crate::mark::Projection::from(named)),
+        }
+    }
+
+    /// The projection this mark DRAWS through, or `None` when it draws
+    /// cartesian or is not drawn at all.
+    #[must_use]
+    pub fn drawn(self) -> Option<crate::mark::Projection> {
+        match self {
+            Self::Through(p) => Some(p),
+            Self::None | Self::Undrawable(_) => None,
+        }
+    }
+
+    /// Whether the plot's projection leaves this mark undrawable.
+    #[must_use]
+    pub fn is_undrawable(self) -> bool {
+        matches!(self, Self::Undrawable(_))
+    }
+
+    /// The projection the PLOT names, whether or not this mark can draw through
+    /// it. What the plot's axes are in.
+    #[must_use]
+    pub fn on_the_plot(self) -> Option<crate::mark::Projection> {
+        match self {
+            Self::Through(p) | Self::Undrawable(p) => Some(p),
+            Self::None => None,
+        }
+    }
 }
 
 impl ChannelMap {
@@ -246,14 +340,15 @@ impl ChannelMap {
         self.equal_aspect = on;
     }
 
-    /// Set the map projection this mark draws through — see
-    /// [`ChannelMap::projection`].
-    pub fn set_projection(&mut self, projection: crate::mark::Projection) {
-        self.projection = Some(projection);
+    /// Set what the plot's projection means for this mark — see
+    /// [`MarkProjection`]. Called by [`ChannelMap::from_mark_in`] and by tests
+    /// that build a map without a spec behind it.
+    pub fn set_projection(&mut self, projection: MarkProjection) {
+        self.projection = projection;
     }
 
     /// The map projection this mark draws through, or `None` for a cartesian
-    /// mark.
+    /// mark and for one the plot's projection leaves undrawable.
     ///
     /// `crate::mark::DotRenderer` reads this in both halves of its work: its
     /// `MarkRenderer::augment_scales` fits the PROJECTED coordinates rather than
@@ -261,6 +356,12 @@ impl ChannelMap {
     /// the projection and draws a graticule behind them.
     #[must_use]
     pub fn projection(&self) -> Option<crate::mark::Projection> {
+        self.projection.drawn()
+    }
+
+    /// What the plot's projection means for this mark, undrawability included.
+    #[must_use]
+    pub fn mark_projection(&self) -> MarkProjection {
         self.projection
     }
 
@@ -294,7 +395,7 @@ impl ChannelMap {
     /// renderer that grows a projection.
     #[must_use]
     pub fn equal_aspect(&self) -> bool {
-        self.equal_aspect && self.projection.is_none()
+        self.equal_aspect && self.projection.on_the_plot().is_none()
     }
 
     /// Extract a ChannelMap from a mark's options.
@@ -435,23 +536,22 @@ impl ChannelMap {
         if asks_equal_aspect {
             cm.set_equal_aspect(true);
         }
-        // `projectionType` — the map projection this mark draws through,
-        // resolved by the SAME `ResolvedProjection::from_wire` the plot-level
-        // attribute goes through, so a name means one thing wherever it is
-        // written and a name outside Mosaic's vocabulary is unrecognised in both
-        // places. Read per mark for the reason `aspectRatio` above it is:
-        // Observable Plot puts both on the plot, and a mark option reaches here
-        // with no further wiring while a plot attribute would have to be
-        // threaded through each renderer-construction call site. It has the
-        // second advantage that a point map's ghost and subset layers carry the
-        // same projection by construction rather than by two lookups agreeing.
-        if let Some(ValueOrParamRef::Value(SpecValue::String(name))) =
-            mark.options.get("projectionType")
-        {
-            if let Some(resolved) = brightfield_spec::layout::ResolvedProjection::from_wire(name) {
-                cm.set_projection(crate::mark::Projection::from(resolved));
-            }
-        }
+        cm
+    }
+
+    /// [`ChannelMap::from_mark`] for a mark inside a plot — the plot's map
+    /// projection applied to it.
+    ///
+    /// **This is the delivery seam.** `from_mark` alone cannot see the plot, and
+    /// a projection is a plot attribute: the mark's own options never mention
+    /// one, and Mosaic has no key with which they could. Every composition path
+    /// that has a plot node calls this; a caller with no plot (a bare
+    /// composition-level mark, a unit test with no spec) calls `from_mark` and
+    /// gets the cartesian reading, which is what such a mark has.
+    #[must_use]
+    pub fn from_mark_in(mark: &Mark, plot: Option<&PlotNode>) -> Self {
+        let mut cm = Self::from_mark(mark);
+        cm.set_projection(MarkProjection::of(mark.kind, plot));
         cm
     }
 
@@ -581,7 +681,8 @@ mod tests {
     /// quantitative scale on it.
     #[test]
     fn from_mark_synthesises_the_interval_pair_for_a_positional_bin() {
-        use brightfield_spec::ast::{AggregateFunc, Mark, SpecValue, ValueOrParamRef};
+        use brightfield_spec::ast::{AggregateFunc, Mark, PlotNode, SpecValue, ValueOrParamRef};
+        use brightfield_spec::vocab::MarkKind;
         use brightfield_spec::vocab::{ImplStatus, MarkKind};
 
         let mut options: indexmap::IndexMap<String, ValueOrParamRef<SpecValue>> =

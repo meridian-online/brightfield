@@ -56,7 +56,7 @@ use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, Spec};
 use brightfield_sql::emit::as_bound_selection_default;
 use brightfield_sql::ir::{Predicate, SampleRate, ScalarValue};
 use brightfield_sql::lower::{compile_selection, NO_SELF_EXCLUDE};
-use brightfield_sql::{collect_marks, collect_plot_groups};
+use brightfield_sql::{collect_marks, collect_plot_groups, plot_of_each_mark};
 use brightfield_workbench::subject::RunState;
 use vello::Scene;
 
@@ -1770,6 +1770,9 @@ fn compose_from_results(
     // cannot end up a different mode from the dashboard behind it.
     let ink = ChartInk::for_mode(mode.is_dark());
     let marks = collect_marks(spec);
+    // The plot each mark sits in — the only thing a plot-level attribute needs
+    // to reach the mark drawing under it. `projectionType` is that attribute.
+    let mark_plots = plot_of_each_mark(spec);
     let mut batches: Vec<Option<RecordBatch>> = Vec::with_capacity(marks.len());
     let mut channel_maps: Vec<ChannelMap> = Vec::with_capacity(marks.len());
     let mut kinds = Vec::with_capacity(marks.len());
@@ -1795,7 +1798,10 @@ fn compose_from_results(
             }
         };
         batches.push(batch);
-        channel_maps.push(ChannelMap::from_mark(marks[i]));
+        channel_maps.push(ChannelMap::from_mark_in(
+            marks[i],
+            mark_plots.get(i).copied().flatten(),
+        ));
         kinds.push(marks[i].kind);
     }
     // Whether ANYTHING in this composition actually drew a row — the gate the

@@ -331,6 +331,8 @@ pub struct ViewExtent {
 pub struct ScaleSet {
     scales: HashMap<Channel, Scale>,
     ink: ChartInk,
+    projection: Option<crate::mark::Projection>,
+    geo_extent: Option<crate::mark::GeoExtent>,
 }
 
 impl ScaleSet {
@@ -345,7 +347,48 @@ impl ScaleSet {
         Self {
             scales: HashMap::new(),
             ink,
+            projection: None,
+            geo_extent: None,
         }
+    }
+
+    /// The map projection the PLOT these scales belong to names, if any.
+    ///
+    /// **The x and y domains are in this projection's planar units**, not in
+    /// degrees — that is what a projection means for a plot in Observable Plot
+    /// and therefore in Mosaic, and it is why this rides on the scale set rather
+    /// than on each mark. Two readers today: `DotRenderer::render` takes the
+    /// graticule's extent from here so a plot's layers draw ONE graticule rather
+    /// than one apiece, and `brightfield-shell`'s `axis_interval` inverts a
+    /// brush pixel back to a longitude or a latitude through it.
+    #[must_use]
+    pub fn projection(&self) -> Option<crate::mark::Projection> {
+        self.projection
+    }
+
+    /// The geographic rectangle every projected mark on the plot covers between
+    /// them, in DEGREES — the graticule's extent.
+    ///
+    /// Accumulated where the projected domains are ([`project_positional_domains`]),
+    /// from the same pass over the same coordinates, so a plot's ghost layer and
+    /// its brushed subset get the same answer. Deriving it per mark from that
+    /// mark's own batch is what made a brushed point map draw a second, finer
+    /// graticule over the selection.
+    #[must_use]
+    pub fn geo_extent(&self) -> Option<crate::mark::GeoExtent> {
+        self.geo_extent
+    }
+
+    /// Record the plot's projection and the geographic extent its projected
+    /// marks cover. Called by [`project_positional_domains`]; also by tests
+    /// that assemble a scale set by hand.
+    pub fn set_projection(
+        &mut self,
+        projection: crate::mark::Projection,
+        extent: Option<crate::mark::GeoExtent>,
+    ) {
+        self.projection = Some(projection);
+        self.geo_extent = extent;
     }
 
     /// The canvas palette this set's scales were resolved against.
@@ -392,6 +435,17 @@ pub fn anchor_scales(launch: &ScaleSet, fresh: ScaleSet) -> ScaleSet {
     // The launch set's canvas, not the fresh one's: the anchor exists so the
     // frame of reference holds still, and the mode is part of that frame.
     let mut anchored = ScaleSet::in_ink(launch.ink());
+    // The projection and its extent belong to the launch frame for the same
+    // reason the canvas does: they ARE the frame of reference, and a rebuild
+    // that dropped them would leave a map's axes in planar units with nothing
+    // saying which projection produced them. `fresh` wins only where launch has
+    // nothing, which is the mark-arrived-late case the domains take too.
+    if let Some(projection) = launch.projection().or_else(|| fresh.projection()) {
+        anchored.set_projection(
+            projection,
+            launch.geo_extent().or_else(|| fresh.geo_extent()),
+        );
+    }
     for &ch in Channel::all() {
         let scale = match (launch.get(ch), fresh.get(ch)) {
             (Some(l), Some(f)) => anchor_scale(l, f),
@@ -1074,17 +1128,30 @@ pub fn infer_scales_multi_in(
 /// has to reach the axes is the wider of the two, or the ghost is drawn outside
 /// its own frame.
 ///
-/// A plot that mixes projected and unprojected positional marks is not a
-/// supported spec — it asks for two coordinate systems on one pair of axes — and
-/// the projected marks decide the domains.
+/// A mark the plot's projection leaves undrawable contributes nothing here and
+/// is not drawn either (`crate::scene::render_entry`), so its degrees can never
+/// widen an axis in planar units.
+///
+/// The plot's projection and the geographic extent of everything projected are
+/// recorded on the set as they are computed — the graticule and the brush both
+/// need them, and re-deriving either from one mark's batch is what made a
+/// brushed point map draw a second graticule over its selection.
 fn project_positional_domains(
     set: &mut ScaleSet,
     entries: &[(&RecordBatch, &ChannelMap)],
     x_range: (f64, f64),
     y_range: (f64, f64),
 ) {
+    let Some(projection) = entries
+        .iter()
+        .find_map(|(_, cm)| cm.mark_projection().on_the_plot())
+    else {
+        return;
+    };
     let (mut umin, mut umax) = (f64::INFINITY, f64::NEG_INFINITY);
     let (mut vmin, mut vmax) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut lon0, mut lon1) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut lat0, mut lat1) = (f64::INFINITY, f64::NEG_INFINITY);
     for (batch, cm) in entries {
         let Some(projection) = cm.projection() else {
             continue;
@@ -1109,8 +1176,15 @@ fn project_positional_domains(
             umax = umax.max(u);
             vmin = vmin.min(v);
             vmax = vmax.max(v);
+            lon0 = lon0.min(*lon);
+            lon1 = lon1.max(*lon);
+            lat0 = lat0.min(*lat);
+            lat1 = lat1.max(*lat);
         }
     }
+    let extent = (lon0.is_finite() && lat0.is_finite())
+        .then(|| crate::mark::GeoExtent::new(lon0, lon1, lat0, lat1));
+    set.set_projection(projection, extent);
     if !(umin.is_finite() && umax.is_finite() && vmin.is_finite() && vmax.is_finite()) {
         return;
     }
