@@ -111,18 +111,29 @@ pub mod design {
     pub use meridian_egui::Mode;
 }
 
-/// Apply the Meridian Design System theme and turn off egui's unaligned-widget debug marker,
-/// which only draws in dev builds and is not a committed feature.
+/// Apply the Meridian Design System theme and turn off egui's unaligned-widget
+/// debug marker, which draws in dev builds and is not a committed feature.
+///
+/// **The marker's own switch does not exist in a release build.** egui declares
+/// `Style::debug` under `#[cfg(debug_assertions)]` and says in its own doc that
+/// it is "Only available in debug builds", so naming the field at all is a
+/// compile error where `debug_assertions` is off — which is every `--release`
+/// build, including the one the packaged application is cut from. The
+/// suppression is therefore a debug-build concern end to end, and the guard
+/// below is what makes the release profile compile rather than a tidiness.
 pub fn apply_theme_without_unaligned_marker(ctx: &egui::Context, mode: design::Mode) {
     design::apply(ctx, mode);
-    // Disable the debug marker on both Light and Dark theme slots so a dev build
-    // draws no debug artifact behind the canvas.
-    ctx.style_mut_of(egui::Theme::Light, |style| {
-        style.debug.show_unaligned = false;
-    });
-    ctx.style_mut_of(egui::Theme::Dark, |style| {
-        style.debug.show_unaligned = false;
-    });
+    // Both theme slots, so a dev build draws no debug artefact behind the
+    // canvas whichever mode it installs.
+    #[cfg(debug_assertions)]
+    {
+        ctx.style_mut_of(egui::Theme::Light, |style| {
+            style.debug.show_unaligned = false;
+        });
+        ctx.style_mut_of(egui::Theme::Dark, |style| {
+            style.debug.show_unaligned = false;
+        });
+    }
 }
 
 #[cfg(test)]
