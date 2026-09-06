@@ -2712,13 +2712,84 @@ impl Session {
     pub fn take_scan_tally(&self) -> ScanTally {
         self.scan_tally.borrow_mut().take().unwrap_or_default()
     }
+}
 
-    /// How many leaves DuckDB's physical plan for `sql` carries, or `None`
-    /// where it declined to explain it.
+/// The suffix a materialised source's backing table takes. Reserved like
+/// every other `__bf_` name, and visible in a plan as the `Table` a
+/// composition's leaves scan.
+const MATERIALISED_SUFFIX: &str = "__bf_materialised";
+
+impl Session {
+    /// **Read `name` once into a session-scoped table and point the view at
+    /// it**, so every later statement over that name scans memory instead of
+    /// re-reading and re-parsing the file.
     ///
-    /// `EXPLAIN` plans the statement; it does not run it, so the count is what
-    /// DuckDB was about to do rather than a second execution of it.
-    fn plan_scans(&self, sql: &str) -> Option<u32> {
+    /// A `file:` source is a DuckDB view over `read_csv` / `read_parquet`, so
+    /// a statement issued over it reads and re-parses the whole file. The cost
+    /// of drawing anything is therefore a count of statements times the cost
+    /// of one read, and that product is the wait before a file's first
+    /// picture. This collapses the second factor: the file is read once, here,
+    /// and the count stops mattering.
+    ///
+    /// **It is not free and it is not always right.** The copy is the table's
+    /// decompressed width in memory, which for a Parquet is several times its
+    /// size on disk, and a table larger than memory is the case a `file:`
+    /// source exists to open at all. Whoever calls this owns that judgement —
+    /// this seam holds no threshold, and nothing calls it during an ordinary
+    /// spec load. `brightfield_shell::data_file` is the one caller and states
+    /// its own.
+    ///
+    /// The view is replaced rather than dropped, so `name` still resolves and
+    /// every emitted query is byte-identical to what it was. What changes is
+    /// what the plan reads: a `Table` leaf rather than a file one, which is
+    /// the difference [`ScanTally::file_reads`] reports.
+    ///
+    /// Derived state goes with it — the SQL cache, the fact cache and any
+    /// cube — because a source that has been re-read is a source whose answers
+    /// were computed against something else.
+    ///
+    /// # Errors
+    ///
+    /// DuckDB refused the copy or the view replacement, with its own words.
+    /// The source is unchanged in that case: the copy runs first, and a
+    /// failure there leaves the original view in place.
+    pub fn materialise_source(&mut self, name: &str) -> Result<(), EngineError> {
+        let quoted = name.replace('"', "\"\"");
+        let table = format!("{name}{MATERIALISED_SUFFIX}").replace('"', "\"\"");
+        let copy = format!("CREATE TEMP TABLE \"{table}\" AS SELECT * FROM \"{quoted}\"");
+        self.record_scan(&copy);
+        self.conn
+            .execute_batch(&copy)
+            .map_err(|cause| EngineError::ConnectionFailed { cause })?;
+        let repoint =
+            format!("CREATE OR REPLACE VIEW \"{quoted}\" AS SELECT * FROM \"{table}\"");
+        self.conn
+            .execute_batch(&repoint)
+            .map_err(|cause| EngineError::ConnectionFailed { cause })?;
+        self.invalidate_derived_state();
+        Ok(())
+    }
+}
+
+impl Session {
+
+    /// How many leaves DuckDB's physical plan for `sql` carries, and how many
+    /// of them read a file — `(None, None)` where it declined to explain it.
+    ///
+    /// `EXPLAIN` plans the statement; it does not run it, so the counts are
+    /// what DuckDB was about to do rather than a second execution of it. One
+    /// `EXPLAIN` answers both, because they are two readings of one plan and
+    /// asking twice would let them describe different ones.
+    fn plan_counts(&self, sql: &str) -> (Option<u32>, Option<u32>) {
+        let Some(text) = self.explain_json(sql) else {
+            return (None, None);
+        };
+        (profile::plan_scans(&text), profile::plan_file_reads(&text))
+    }
+
+    /// DuckDB's `EXPLAIN (FORMAT json)` text for `sql`, or `None` where it
+    /// declined.
+    fn explain_json(&self, sql: &str) -> Option<String> {
         let mut stmt = self
             .conn
             .prepare(&format!("EXPLAIN (FORMAT json) {sql}"))
@@ -2726,8 +2797,7 @@ impl Session {
         let batches: Vec<RecordBatch> = stmt.query_arrow(duckdb::params![]).ok()?.collect();
         let batch = batches.into_iter().find(|b| b.num_rows() > 0)?;
         let column = batch.num_columns().checked_sub(1)?;
-        let text = profile::read_text(&batch, column)?;
-        profile::plan_scans(&text)
+        profile::read_text(&batch, column)
     }
 
     /// DESCRIBE + one aggregate pass for a single queryable view. Any DuckDB
@@ -3037,11 +3107,12 @@ impl Session {
         if self.scan_tally.borrow().is_none() {
             return;
         }
-        let scans = self.plan_scans(sql);
+        let (scans, file_reads) = self.plan_counts(sql);
         if let Some(tally) = self.scan_tally.borrow_mut().as_mut() {
             tally.statements.push(StatementScans {
                 sql: sql.to_string(),
                 scans,
+                file_reads,
             });
         }
     }

@@ -162,11 +162,28 @@ pub struct Measured {
     /// once, and the queries the composition issues *beside* the marks — the
     /// status band's two counts, the sample facts — are not executes at all.
     pub composition_scans: Option<u32>,
-    /// The bound `composition_scans` is held to —
-    /// [`brightfield_shell::pipeline::COMPOSITION_SCANS`], carried into the
-    /// record so a reader is not comparing against a number they have to go
-    /// and look up.
-    pub composition_scan_bound: u32,
+    /// Of those leaves, how many read the **file** rather than a relation the
+    /// session holds in memory.
+    ///
+    /// **This is the number the claim about opening a data file is made in,
+    /// and it is the one held to a bound.** A leaf is a leaf whatever it
+    /// scans, and after [`brightfield_shell::data_file::open`] has read the
+    /// file into a session-scoped table the composition's leaves are scans of
+    /// that table — the same count, three orders of magnitude apart in cost.
+    pub composition_file_reads: Option<u32>,
+    /// The bound `composition_file_reads` is held to —
+    /// [`brightfield_shell::pipeline::COMPOSITION_FILE_READS`], carried into
+    /// the record so a reader is not comparing against a number they have to
+    /// go and look up.
+    pub composition_file_read_bound: u32,
+    /// Whether the file was read into memory before composing — `false` above
+    /// [`brightfield_shell::data_file::MATERIALISE_UNDER_BYTES`], and then
+    /// `composition_file_reads` is under no bound.
+    pub materialised: bool,
+    /// The one read of the file, milliseconds — the term
+    /// [`Measured::composition`] no longer carries. `null` when the file was
+    /// not materialised.
+    pub materialise: Option<Stats>,
     /// Statements the first composition issued, in order.
     pub composition_statements: Vec<StatementRecord>,
     /// `LiveDashboard::present` alone, milliseconds — the composition's own
@@ -321,6 +338,7 @@ pub fn measure(
     let mut profile_ms = Vec::with_capacity(repeats);
     let mut open_ms = Vec::with_capacity(repeats);
     let mut composition_ms = Vec::with_capacity(repeats);
+    let mut materialise_ms = Vec::with_capacity(repeats);
     for _ in 0..repeats {
         profile_ms.push(time_profile(&path)?);
         let at = Instant::now();
@@ -328,6 +346,9 @@ pub fn measure(
             data_file::open_traced(chosen, false).map_err(|e| format!("{}: {e}", shape.name))?;
         open_ms.push(at.elapsed().as_secs_f64() * 1000.0);
         composition_ms.push(trace.composition_ms);
+        if trace.materialised {
+            materialise_ms.push(trace.materialise_ms);
+        }
         tiles = opened.dashboard.tiles().len();
         composition_queries = opened.live.executes();
     }
@@ -351,7 +372,10 @@ pub fn measure(
         tiles,
         composition_queries,
         composition_scans: composition_tally.composition.scans(),
-        composition_scan_bound: pipeline::COMPOSITION_SCANS,
+        composition_file_reads: composition_tally.composition.file_reads(),
+        composition_file_read_bound: pipeline::COMPOSITION_FILE_READS,
+        materialised: composition_tally.materialised,
+        materialise: Stats::from_ms(materialise_ms),
         composition_statements: composition_tally
             .composition
             .statements
@@ -371,7 +395,7 @@ pub fn report(rows: &[Measured]) -> String {
     let mut out = String::new();
     out.push_str(
         "shape   rows    cols  numeric  bytes      tiles  profile      profile p50  \
-         compose      compose p50  open p50\n",
+         compose  reads/bound  compose p50  open p50\n",
     );
     for m in rows {
         let p50 = |s: &Option<Stats>| {
@@ -385,7 +409,7 @@ pub fn report(rows: &[Measured]) -> String {
             )
         };
         out.push_str(&format!(
-            "{:<7} {:<7} {:<5} {:<8} {:<10} {:<6} {:<12} {:<12} {:<12} {:<12} {}\n",
+            "{:<7} {:<7} {:<5} {:<8} {:<10} {:<6} {:<12} {:<12} {:<8} {:<12} {:<12} {}\n",
             m.shape.name,
             m.shape.rows,
             m.columns,
@@ -394,7 +418,9 @@ pub fn report(rows: &[Measured]) -> String {
             m.tiles,
             bounded(m.scans, m.scan_bound),
             p50(&m.profile),
-            bounded(m.composition_scans, m.composition_scan_bound),
+            m.composition_scans
+                .map_or_else(|| "?".to_string(), |s| s.to_string()),
+            bounded(m.composition_file_reads, m.composition_file_read_bound),
             p50(&m.composition),
             p50(&m.open)
         ));

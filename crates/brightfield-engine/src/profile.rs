@@ -383,6 +383,15 @@ pub struct StatementScans {
     /// not a statement that cost zero — and a gate handed a silent zero passes
     /// over exactly the case it was written for.
     pub scans: Option<u32>,
+    /// Leaves of the same plan that read a **file** rather than a relation
+    /// this session holds in memory, or `None` where DuckDB declined to
+    /// explain the statement.
+    ///
+    /// Never more than [`StatementScans::scans`], and equal to it for every
+    /// statement over a source that is still a view on `read_csv` /
+    /// `read_parquet`. It is the smaller number exactly when a source has been
+    /// materialised, which is the only way this session acquires a base table.
+    pub file_reads: Option<u32>,
 }
 
 /// How many times profiling read the table, statement by statement.
@@ -406,6 +415,23 @@ impl ScanTally {
         self.statements
             .iter()
             .try_fold(0u32, |acc, s| Some(acc.saturating_add(s.scans?)))
+    }
+
+    /// The sum over the statements of the leaves that read a **file**, or
+    /// `None` if DuckDB declined to explain one of them.
+    ///
+    /// **This is the number the claim about opening a data file is made in.**
+    /// [`ScanTally::scans`] counts every leaf, which is the right instrument
+    /// when every leaf is a read of the file — as it is for the profile pass,
+    /// where the source is a view over `read_csv`. It stops being the right
+    /// instrument the moment a relation is materialised: a scan of a
+    /// session-scoped table is a leaf and is not a read of the file, and the
+    /// two cost different orders of magnitude.
+    #[must_use]
+    pub fn file_reads(&self) -> Option<u32> {
+        self.statements
+            .iter()
+            .try_fold(0u32, |acc, s| Some(acc.saturating_add(s.file_reads?)))
     }
 
     /// The statements DuckDB declined to explain — empty when
@@ -445,13 +471,51 @@ pub(crate) fn plan_scans(explained: &str) -> Option<u32> {
 
 /// Leaves under `node`, counting `node` itself when it has none.
 fn count_leaves(node: &serde_json::Value) -> Option<u32> {
+    count_matching_leaves(node, &|_| true)
+}
+
+/// How many of the plan's leaves read a **file** rather than a relation held
+/// in memory, or `None` where the text is not a plan.
+///
+/// **The rule is stated as an exclusion and that is the whole of its
+/// robustness.** A leaf counts as a file read *unless* DuckDB's plan says it
+/// scans a named table — the `Table` key `SEQ_SCAN` and its relatives carry.
+/// An inclusion list would have to name every spelling DuckDB gives a file
+/// reader (`READ_CSV`, `READ_PARQUET`, and the one it gains next release),
+/// and the spelling this code has never seen would go uncounted, which is the
+/// direction that fails silently. Excluding named tables has the opposite
+/// bias: a leaf nobody anticipated makes the number go up, and a bound that
+/// reddens is a bound somebody reads.
+///
+/// Never larger than [`plan_scans`] on the same plan, and equal to it for a
+/// plan with no base table under it.
+pub(crate) fn plan_file_reads(explained: &str) -> Option<u32> {
+    let plan: serde_json::Value = serde_json::from_str(explained).ok()?;
+    let roots = plan.as_array()?;
+    let mut total = 0u32;
+    for root in roots {
+        total = total.saturating_add(count_matching_leaves(root, &|leaf| {
+            leaf.get("extra_info")
+                .and_then(|info| info.get("Table"))
+                .is_none()
+        })?);
+    }
+    Some(total)
+}
+
+/// Leaves under `node` that `keep` accepts, counting `node` itself when it has
+/// no children.
+fn count_matching_leaves(
+    node: &serde_json::Value,
+    keep: &dyn Fn(&serde_json::Value) -> bool,
+) -> Option<u32> {
     let children = node.get("children")?.as_array()?;
     if children.is_empty() {
-        return Some(1);
+        return Some(u32::from(keep(node)));
     }
     let mut total = 0u32;
     for child in children {
-        total = total.saturating_add(count_leaves(child)?);
+        total = total.saturating_add(count_matching_leaves(child, keep)?);
     }
     Some(total)
 }

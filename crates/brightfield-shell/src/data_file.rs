@@ -18,6 +18,35 @@
 //! the engine's windowed row seam, so a Parquet larger than memory opens as
 //! readily as a small CSV.
 //!
+//! # Why a small file is copied into DuckDB first, and a large one is not
+//!
+//! A view over `read_csv` is re-read and re-parsed by **every statement issued
+//! over it**, so the wait before the first picture is a count of statements
+//! times the cost of one read — and the dashboard [`crate::dashboard`] chooses
+//! is a tile per column, which makes that count grow with the table's width.
+//! Measured on an Apple M1 Pro against this build's DuckDB, on a 2,967,637-byte
+//! CSV of 14,133 rows and 22 columns: the first composition read the file 46
+//! times and took 8,231 ms of a 9,066 ms open. Fourteen of those tiles are
+//! histograms and each costs three reads — one for the rows and two more for
+//! the bin extent, which is a `min` and a `max` the profile pass has already
+//! taken.
+//!
+//! So [`open`] reads the file **once**, into a session-scoped table, and points
+//! the view at that ([`brightfield_engine::Session::materialise_source`]). Every
+//! tile's query is byte-identical and scans memory. The composition then reads
+//! the file no times at all, which is what
+//! [`crate::pipeline::COMPOSITION_FILE_READS`] states and what the open-scan
+//! harness measures.
+//!
+//! **The larger-than-memory property above is real and is kept**, which is why
+//! this is a threshold and not a policy: over
+//! [`MATERIALISE_UNDER_BYTES`] the file stays a view and opens exactly as it
+//! did, one read per statement and no copy. The two errors are not symmetric.
+//! Refusing to copy a file that would have fitted costs a slower open of a big
+//! table, which is what happened before and is survivable; copying one that
+//! does not fit costs the open entirely, on the table where a `file:` source
+//! was the whole point.
+//!
 //! # The other half: what was opened, as a Protocol
 //!
 //! [`open`] also builds the **spec** that says what was opened — one SQL step
@@ -106,6 +135,30 @@ use crate::pipeline::{Composed, LiveDashboard};
 /// this one-view path has no answer for.
 pub const OPENABLE_EXTENSIONS: &[&str] = &["csv", "tsv", "parquet"];
 
+/// **The largest file [`open`] reads into memory before composing.** Above it
+/// the file stays a DuckDB view over `read_csv` / `read_parquet` and every
+/// statement re-reads it.
+///
+/// 64 MiB, on the file's size on disk, and the number is a judgement rather
+/// than a measurement — what it is chosen against is stated here so a reader
+/// can disagree with it on the same terms.
+///
+/// The lower end is not in doubt. One read of a 2,967,637-byte CSV costs about
+/// 180 ms on an Apple M1 Pro, and a dashboard of 22 columns issues 46 of them,
+/// so anything in that range is worth copying many times over. The upper end
+/// is where the judgement is: **on disk is not in memory.** A CSV widens
+/// somewhat when it is parsed into typed columns; a Parquet is compressed and
+/// can widen several-fold. 64 MiB is chosen to leave the worst of those inside
+/// a few hundred megabytes — an amount a laptop gives up without noticing —
+/// while covering the files this route is actually pointed at.
+///
+/// It is deliberately not derived from the machine's free memory. A threshold
+/// that moved with the host would make an open fast on one machine and slow on
+/// another with nothing to read that off, and the failure it would prevent —
+/// a copy that does not fit — is already prevented by being this far under any
+/// modern machine's memory.
+pub const MATERIALISE_UNDER_BYTES: u64 = 64 * 1024 * 1024;
+
 /// The `data:` key the chosen file is declared under, and therefore the name of
 /// the DuckDB view it becomes.
 ///
@@ -159,6 +212,17 @@ pub struct OpenTrace {
     /// Leaves of DuckDB's physical plan for each statement the first
     /// composition issued. Empty when [`open_traced`] was not asked to count.
     pub composition: ScanTally,
+    /// Whether the file was read into a session-scoped table before composing
+    /// — `false` for a file over [`MATERIALISE_UNDER_BYTES`], which composes
+    /// off the view exactly as it did before.
+    pub materialised: bool,
+    /// The one read of the file, milliseconds. `0.0` when it was not
+    /// materialised.
+    pub materialise_ms: f64,
+    /// The chosen file's size on disk, bytes — what the threshold was applied
+    /// to, carried out so a reader is not re-stat-ing the file to find out
+    /// which side of it this open fell.
+    pub bytes: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -445,6 +509,32 @@ pub fn open_traced(chosen: &str, count_scans: bool) -> Result<(OpenedFile, OpenT
     let spec = dashboard.to_spec();
     let mut live =
         LiveDashboard::load_str(&spec, None).map_err(|e| format!("{}: {e}", path.display()))?;
+    // The one read. Everything the composition issues after this scans a
+    // table, so the tile count stops multiplying the cost of a read — see the
+    // module header for the measurement that decided it, and
+    // `MATERIALISE_UNDER_BYTES` for why a large file is left alone.
+    //
+    // A file DuckDB will not copy is not a file that failed to open: the view
+    // is still there and still correct, so a refusal here costs the old slow
+    // open and nothing else.
+    let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(u64::MAX);
+    let mut materialised = false;
+    let mut materialise_ms = 0.0;
+    if bytes <= MATERIALISE_UNDER_BYTES {
+        let at = std::time::Instant::now();
+        match live.materialise_source(SOURCE) {
+            Ok(()) => {
+                materialised = true;
+                materialise_ms = at.elapsed().as_secs_f64() * 1000.0;
+            }
+            Err(e) => eprintln!(
+                "warning: {}: composing from the file directly, because it \
+                 could not be read into memory: {e}",
+                path.display()
+            ),
+        }
+    }
+
     let at = std::time::Instant::now();
     let (composed, composition) = if count_scans {
         live.present_counting_scans()
@@ -469,6 +559,9 @@ pub fn open_traced(chosen: &str, count_scans: bool) -> Result<(OpenedFile, OpenT
         OpenTrace {
             composition_ms,
             composition,
+            materialised,
+            materialise_ms,
+            bytes,
         },
     ))
 }

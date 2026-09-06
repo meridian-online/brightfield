@@ -62,10 +62,29 @@ use vello::Scene;
 
 use crate::design::Mode;
 
-/// The most times composing a dashboard's first screen reads its table.
+/// **The most times composing a dashboard's first screen reads the data
+/// file** — whatever the file, and whatever the tile count.
 ///
-/// PLACEHOLDER — set from the measurement.
-pub const COMPOSITION_SCANS: u32 = 1;
+/// Zero, and it is zero rather than small for a reason worth stating: a
+/// composition that read the file *once* would still read it once per tile
+/// the moment somebody added a statement, because nothing about "once" says
+/// where the once comes from. `data_file::open` reads the file into a
+/// session-scoped table before the first composition, so a tile's query
+/// scans memory and the composition touches the file nowhere at all — see
+/// [`brightfield_engine::Session::materialise_source`].
+///
+/// **This is not a bound on statements or on leaves.** The composition still
+/// issues one query per tile and the status band's two counts beside them,
+/// and their plans still have leaves; what those leaves read is a table this
+/// session built. `ScanTally::file_reads` is the number, `ScanTally::scans`
+/// is the other one, and
+/// `composing_a_wide_dashboard_reads_the_file_no_more_often_than_a_narrow_one`
+/// in the open-scan harness is what holds them apart.
+///
+/// A file too large to copy is not materialised — see
+/// [`crate::data_file::MATERIALISE_UNDER_BYTES`] — and then this bound does
+/// not apply and the harness does not measure it.
+pub const COMPOSITION_FILE_READS: u32 = 0;
 
 /// One placed plot of the composed dashboard, carried beside the scene so the
 /// shell can act on the chart rather than merely picture it: the margin
@@ -1166,6 +1185,20 @@ impl LiveDashboard {
     /// # Errors
     ///
     /// As [`LiveDashboard::present`].
+    /// Read `name` once into a session-scoped table and point the view at it
+    /// — [`brightfield_engine::Session::materialise_source`] on this
+    /// dashboard's session.
+    ///
+    /// # Errors
+    ///
+    /// DuckDB's own words when it refuses the copy.
+    pub fn materialise_source(&mut self, name: &str) -> Result<(), String> {
+        self.coordinator
+            .session_mut()
+            .materialise_source(name)
+            .map_err(|e| e.to_string())
+    }
+
     pub fn present_counting_scans(&mut self) -> Result<(Composed, ScanTally), String> {
         self.coordinator.session().begin_scan_tally();
         let composed = self.present();

@@ -902,11 +902,14 @@ struct OpenScanReport {
     /// row's scan count is held to, and the number
     /// `a_wide_table_is_read_no_more_often_than_a_narrow_one` reads.
     scan_bound: u32,
-    /// [`brightfield_shell::pipeline::COMPOSITION_SCANS`] — the bound every
-    /// row's composition scan count is held to, and the number
-    /// `composing_a_wide_dashboard_reads_the_table_no_more_often_than_a_narrow_one`
+    /// [`brightfield_shell::pipeline::COMPOSITION_FILE_READS`] — the bound
+    /// every row's composition FILE-read count is held to, and the number
+    /// `composing_a_wide_dashboard_reads_the_file_no_more_often_than_a_narrow_one`
     /// reads.
-    composition_scan_bound: u32,
+    composition_file_read_bound: u32,
+    /// [`brightfield_shell::data_file::MATERIALISE_UNDER_BYTES`] — the size a
+    /// file has to be under for the bound above to apply to it at all.
+    materialise_under_bytes: u64,
     /// Timed samples per quantity per shape.
     repeats: usize,
     methodology: Vec<String>,
@@ -958,7 +961,8 @@ fn run_open_scan(
         schema: OPEN_SCAN_SCHEMA,
         machine,
         scan_bound: brightfield_engine::profile::SCANS_PER_SOURCE,
-        composition_scan_bound: brightfield_shell::pipeline::COMPOSITION_SCANS,
+        composition_file_read_bound: brightfield_shell::pipeline::COMPOSITION_FILE_READS,
+        materialise_under_bytes: brightfield_shell::data_file::MATERIALISE_UNDER_BYTES,
         repeats: OPEN_SCAN_REPEATS,
         methodology: open_scan_methodology(),
         shapes,
@@ -993,11 +997,24 @@ fn open_scan_methodology() -> Vec<String> {
          once per branch."
             .to_string(),
         "`scans` covers the profile pass and nothing else. `composition_scans` is the same \
-         leaf count over every statement the FIRST COMPOSITION issues, and it is the larger \
-         of the two. It is not `composition_queries`: that one counts the queries marks are \
-         drawn from, a mark's plan can read the table more than once, and the statements the \
-         composition issues beside the marks — the status band's two counts, the sample \
-         facts — are not mark executes at all."
+         leaf count over every statement the FIRST COMPOSITION issues. It is not \
+         `composition_queries`: that one counts the queries marks are drawn from, a mark's \
+         plan can read the table more than once — a binned histogram's plan reads it three \
+         times, once for the rows and twice for the bin extent — and the statements the \
+         composition issues beside the marks, the status band's two counts and the sample \
+         facts, are not mark executes at all."
+            .to_string(),
+        "`composition_file_reads` is the subset of `composition_scans` that reads the FILE \
+         rather than a relation the session holds in memory, and it is the number under a \
+         bound. A leaf counts as a file read unless DuckDB's plan says it scans a named \
+         table; the rule is an exclusion rather than a list of reader operators, so a leaf \
+         nobody anticipated makes the number go up rather than quietly vanish."
+            .to_string(),
+        "`materialised` says whether `data_file::open` read the file into a session-scoped \
+         table before composing, which it does for a file under \
+         `MATERIALISE_UNDER_BYTES`. `materialise` times that one read. Above the threshold \
+         the file stays a view, nothing is copied, and `composition_file_reads` is under no \
+         bound."
             .to_string(),
         "`compose` times `LiveDashboard::present` alone, read off the same uncounted `open` \
          run the `open` figure comes from rather than a second one, so the two cannot \
