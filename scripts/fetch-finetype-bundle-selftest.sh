@@ -394,6 +394,16 @@ make_fixture
 printf '[]' >"$TREE_DIR/model2vec"
 expect_fail "an empty model2vec/ listing" "publishes no model2vec/"
 
+# BOTH listings empty. This is the only input that reaches the empty-plan
+# refusal — with either one populated, a more specific guard fires first — and
+# it is the guard that stands in for the plan-versus-disk comparison the
+# verifier deliberately does not make.
+make_fixture
+printf '[]' >"$TREE_DIR/$MODEL"
+printf '[]' >"$TREE_DIR/model2vec"
+expect_fail "both listings empty, so the plan names nothing" \
+	"the registry listed no files for ${MODEL} or model2vec"
+
 # The whole subtree is mirrored, not a list of names somebody wrote down. The
 # real revision publishes four files under model2vec/ and two of them —
 # label_index.json and type_embeddings.safetensors — appear in no config and in
