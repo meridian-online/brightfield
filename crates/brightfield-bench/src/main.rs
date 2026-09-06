@@ -912,6 +912,19 @@ struct OpenScanReport {
 /// the two records share no fields.
 const OPEN_SCAN_SCHEMA: &str = "brightfield-bench/open-scan/1";
 
+/// The directory under `--out-dir` this suite's records go in.
+///
+/// A subdirectory rather than beside the interaction baselines, and the reason
+/// is a gate: `the_readme_marks_the_newest_record_as_current` requires the
+/// newest `.json` sitting directly in `benchmarks/results/` to be the one the
+/// README marks current, and the README's list is the interaction baseline's.
+/// An open-scan record is a different measurement with no fields in common; it
+/// has no business being marked as the current baseline, and dropping it
+/// beside them would make that gate red for a record neither list should
+/// carry. That gate now also enforces this rule for free — a record of this
+/// kind written to the top of `results/` reddens it.
+const OPEN_SCAN_SUBDIR: &str = "open-scan";
+
 /// Measure every shape in [`open_scan::SHAPES`] and write the record.
 fn run_open_scan(
     conn: &duckdb::Connection,
@@ -945,8 +958,8 @@ fn run_open_scan(
         shapes,
     };
 
-    std::fs::create_dir_all(&args.out_dir)
-        .map_err(|e| format!("create {}: {e}", args.out_dir.display()))?;
+    let dir = args.out_dir.join(OPEN_SCAN_SUBDIR);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let date = report
         .machine
         .captured_at
@@ -958,10 +971,7 @@ fn run_open_scan(
         .label
         .clone()
         .unwrap_or_else(|| slugify(&report.machine.cpu));
-    let path = args
-        .out_dir
-        .join(format!("{date}-open-scan-{slug}"))
-        .with_extension("json");
+    let path = dir.join(format!("{date}-{slug}")).with_extension("json");
     let json = serde_json::to_string_pretty(&report).map_err(|e| format!("serialise: {e}"))?;
     std::fs::write(&path, json + "\n").map_err(|e| format!("write json: {e}"))?;
     Ok(vec![path])

@@ -1,0 +1,117 @@
+{
+  "schema": "brightfield-bench/open-scan/1",
+  "machine": {
+    "cpu": "Apple M1 Pro",
+    "logical_cpus": "8",
+    "memory_gib": "16",
+    "os": "macOS 26.1",
+    "gpu_adapter": "Apple M1 Pro (Metal, IntegratedGpu)",
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "build_profile": "release",
+    "commit": "2940fdf",
+    "captured_at": "2026-09-06T17:34:14.382595+10:00",
+    "duckdb": "v1.5.2"
+  },
+  "scan_bound": 3,
+  "repeats": 3,
+  "methodology": [
+    "`scans` is the sum over the statements `Session::profile_sources` issues of the leaves in DuckDB's physical plan for each — the places rows enter the query. Leaves rather than statements: a UNION ALL branch per column is one statement that reads the table once per branch.",
+    "`scans` covers the profile pass and nothing else. The first composition's queries are counted as `composition_queries` and timed only inside `open`.",
+    "`profile` times `Session::profile_sources` alone, on a session loaded for that sample. The counting run is separate and untimed, because asking DuckDB to explain each statement roughly doubles what the pass issues.",
+    "`open` times the whole of `brightfield_shell::data_file::open`: the profile pass, the dashboard chosen from it, and the first composition over the tiles it chose.",
+    "Fixtures are CSV, written once and reused. A `file:` source is a DuckDB view over `read_csv`, so each statement over it re-reads and re-parses the file — which is why a count of statements is the shape of the wait.",
+    "The page cache is warm after the first sample and is not dropped between them, so these are warm-cache figures."
+  ],
+  "shapes": [
+    {
+      "shape": {
+        "name": "narrow",
+        "rows": 14133,
+        "numeric": 2,
+        "text": 1,
+        "timestamps": 0
+      },
+      "columns": 3,
+      "bytes": 321025,
+      "scans": 3,
+      "scan_bound": 3,
+      "statements": [
+        {
+          "scans": 1,
+          "sql": "DESCRIBE \"opened\""
+        },
+        {
+          "scans": 1,
+          "sql": "SELECT CAST(count(*) AS BIGINT), CAST(count(\"measure_0\") AS BIGINT), CAST(approx_count_distinct(\"measure_0\") AS BIGINT), CAST(min(\"measure_0\") AS VARCHAR), CAST"
+        },
+        {
+          "scans": 1,
+          "sql": "SELECT CAST(u.c AS BIGINT) AS c, CAST(u.k AS DOUBLE) AS k, CAST(count(*) AS BIGINT) AS n FROM (SELECT unnest([CASE WHEN \"measure_0\" IS NULL THEN NULL ELSE {'c':"
+        }
+      ],
+      "profile": {
+        "n": 3,
+        "min_ms": 95.239,
+        "mean_ms": 96.698,
+        "p50_ms": 97.242,
+        "p95_ms": 97.612,
+        "max_ms": 97.612
+      },
+      "open": {
+        "n": 3,
+        "min_ms": 387.89,
+        "mean_ms": 391.183,
+        "p50_ms": 392.763,
+        "p95_ms": 392.897,
+        "max_ms": 392.897
+      },
+      "tiles": 2,
+      "composition_queries": 2
+    },
+    {
+      "shape": {
+        "name": "wide",
+        "rows": 14133,
+        "numeric": 14,
+        "text": 6,
+        "timestamps": 2
+      },
+      "columns": 22,
+      "bytes": 2967637,
+      "scans": 3,
+      "scan_bound": 3,
+      "statements": [
+        {
+          "scans": 1,
+          "sql": "DESCRIBE \"opened\""
+        },
+        {
+          "scans": 1,
+          "sql": "SELECT CAST(count(*) AS BIGINT), CAST(count(\"measure_0\") AS BIGINT), CAST(approx_count_distinct(\"measure_0\") AS BIGINT), CAST(min(\"measure_0\") AS VARCHAR), CAST"
+        },
+        {
+          "scans": 1,
+          "sql": "SELECT CAST(u.c AS BIGINT) AS c, CAST(u.k AS DOUBLE) AS k, CAST(count(*) AS BIGINT) AS n FROM (SELECT unnest([CASE WHEN \"measure_0\" IS NULL THEN NULL ELSE {'c':"
+        }
+      ],
+      "profile": {
+        "n": 3,
+        "min_ms": 558.411,
+        "mean_ms": 559.532,
+        "p50_ms": 558.924,
+        "p95_ms": 561.259,
+        "max_ms": 561.259
+      },
+      "open": {
+        "n": 3,
+        "min_ms": 8992.426,
+        "mean_ms": 9005.604,
+        "p50_ms": 8999.269,
+        "p95_ms": 9025.116,
+        "max_ms": 9025.116
+      },
+      "tiles": 16,
+      "composition_queries": 16
+    }
+  ]
+}

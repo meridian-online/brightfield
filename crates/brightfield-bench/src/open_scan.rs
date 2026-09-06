@@ -406,6 +406,20 @@ mod tests {
             narrow.shape.numeric
         );
 
+        // The class first, the number second. This one holds however the
+        // bound is written, so raising the bound to cover a count that has
+        // gone proportional again does not buy the raise anything.
+        assert_eq!(
+            wide.scans, narrow.scans,
+            "the {}-numeric-column table is read {:?} times and the \
+             {}-numeric-column one {:?}, so the count tracks the columns: \
+             {:#?}",
+            wide.shape.numeric,
+            wide.scans,
+            narrow.shape.numeric,
+            narrow.scans,
+            wide.statements
+        );
         assert_eq!(
             narrow.scans,
             Some(profile::SCANS_PER_SOURCE),
@@ -425,12 +439,6 @@ mod tests {
             wide.scans,
             profile::SCANS_PER_SOURCE,
             wide.statements
-        );
-        assert_eq!(
-            wide.scans, narrow.scans,
-            "the wide table is read {:?} times and the narrow one {:?}, so the \
-             count tracks the columns",
-            wide.scans, narrow.scans
         );
     }
 
@@ -458,11 +466,15 @@ mod tests {
             unexplained.len(),
             wide.statements.len()
         );
-        assert_eq!(
+        // Every statement carries at least one leaf, so the statement count
+        // can never exceed the scan count — `<=` rather than `==` because
+        // folding two of these statements into one would be a good change and
+        // this is not the test that should refuse it.
+        assert!(
+            wide.statements.len() <= profile::SCANS_PER_SOURCE as usize,
+            "the pass issued {} statements against a bound of {} reads: {:#?}",
             wide.statements.len(),
-            profile::SCANS_PER_SOURCE as usize,
-            "the pass issued {} statements: {:#?}",
-            wide.statements.len(),
+            profile::SCANS_PER_SOURCE,
             wide.statements
         );
     }
