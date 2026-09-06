@@ -316,9 +316,10 @@ fn an_unprojected_dot_mark_draws_no_graticule() {
 /// refused the combination, and the refusal is the PROJECTION winning rather
 /// than both applying or both being dropped.
 ///
-/// The two controls are what make this a refusal rather than a coincidence: a
-/// mark carrying `aspectRatio` by itself still gets it, and a mark carrying a
-/// projection by itself never had it to lose.
+/// The two controls inside `equal_aspect_and_a_projection_cannot_both_apply` are
+/// what make this a refusal rather than a coincidence: a mark carrying
+/// `aspectRatio` by itself still gets it, and a mark carrying a projection by
+/// itself never had it to lose.
 #[test]
 fn equal_aspect_and_a_projection_cannot_both_apply() {
     let mut aspect_only = ChannelMap::new();
