@@ -260,7 +260,8 @@ pub enum ColumnWidths {
 ///
 /// Two shapes, and which one a table gets is the caller's to say. The Steps
 /// sheet has a fixed vocabulary of columns and no profile behind them, so it
-/// asks for [`HeaderStyle::Plain`] and gets what this module has always drawn;
+/// asks for [`HeaderStyle::Plain`] and gets the header this module drew before
+/// the band existed;
 /// the rows pane of a data file has the whole column profile and asks for the
 /// band.
 #[derive(Clone, Copy, Debug)]

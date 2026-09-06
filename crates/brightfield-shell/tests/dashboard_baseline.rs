@@ -1462,8 +1462,8 @@ fn open_the_grid_view(at: egui::Pos2) -> Vec<Vec<egui::Event>> {
 /// The structural guard the two captures below run first.
 ///
 /// `UPDATE_SNAPSHOTS=1` writes whatever `image_snapshot` is handed, so a
-/// regeneration of a window that never opened the grid view would commit a
-/// photograph of the dashboard under the grid view's name and every later run
+/// regeneration of a window whose click missed the grid row would commit a
+/// photograph of the dashboard under the grid view's name, and each later run
 /// would agree with it. This settles the same window under the same script and
 /// says what the frame holds: the grid on the canvas as one pane, and a full
 /// band over the fixture's nine columns.

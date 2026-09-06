@@ -374,7 +374,7 @@ pub struct ChartDoc {
     /// where the grid drew no table.
     pub grid_drawn: Option<crate::data_grid::TableDrawn>,
     /// **Which density the grid pane's column header band draws at**, or
-    /// `None` for the plain header the table has always drawn.
+    /// `None` for the plain header this module drew before the band existed.
     ///
     /// The density follows where the pane is rather than what is in it, and
     /// the pane cannot see where it is: the item is handed the document and

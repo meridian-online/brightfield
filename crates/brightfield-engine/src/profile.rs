@@ -71,7 +71,7 @@ pub struct ColumnProfile {
     pub semantic: SemanticType,
     /// The moments and the counted shape of a numeric column — see
     /// [`ColumnMoments`]. `None` for a column with no moment defined over it:
-    /// a VARCHAR, a temporal column, or a numeric one whose rows are all null.
+    /// a VARCHAR, a temporal column, or a numeric one with no non-null row.
     pub moments: Option<ColumnMoments>,
 }
 

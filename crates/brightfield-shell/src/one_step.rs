@@ -81,9 +81,9 @@ pub const MODEL_PATH: &str = "models/load.sql";
 /// than the dashboard's tiles.
 //
 // No `Eq`: [`ColumnFacts::moments`] carries `f64` fields, which have no total
-// equality. Nothing under `crates/` keys a set or a map on this type — checked
-// by grep over `HashSet`, `BTreeSet` and the map constructors — so dropping it
-// costs no call site.
+// equality. A grep over `HashSet`, `BTreeSet` and the map constructors under
+// `crates/` turns this type up in neither a key position nor a set element, so
+// dropping the derive costs no call site.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ColumnFacts {
     /// The column's name, as the table spells it.

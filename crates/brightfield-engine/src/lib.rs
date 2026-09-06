@@ -4052,8 +4052,8 @@ plot:
         );
 
         // …and the narrow column beside it, seven distinct values, takes the
-        // other branch — the branch `median_income` on the shell's fixture
-        // never reaches.
+        // other branch — the one a column with as many distinct values as rows
+        // does not reach, which on the shell's fixture is `median_income`.
         let few = cols
             .iter()
             .find(|c| c.name == "few")

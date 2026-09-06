@@ -368,7 +368,7 @@ fn the_grid_as_the_canvas_view_draws_the_full_band() {
 ///
 /// `median_income` is the column the contract names, and it has 240 distinct
 /// values in 240 rows — so it exercises the binned branch of the distribution
-/// and never the per-value one. `house_age` has 52, which is under the
+/// rather than the per-value one. `house_age` has 52, which is under the
 /// per-value limit, so the two together cover both branches. Every figure is
 /// compared against [`fixture_stats`], which reads the CSV.
 #[test]

@@ -10,16 +10,19 @@
 //!
 //! # Two densities, one style function
 //!
-//! [`column_header_frame`] is the whole of the band's style: every colour it
-//! paints and every row it stacks, resolved from the token set for a
-//! [`GridDensity`] and a [`Mode`]. Nothing in this module reaches past it for
-//! an ink, which is what makes `the_shell_spells_no_colour_or_box_model_as_a_raw_literal`
-//! able to answer "is this band on the token set?" by reading one function.
+//! [`column_header_frame`] is the whole of the band's ink and geometry,
+//! resolved from the token set for a [`GridDensity`] and a [`Mode`]. Every
+//! colour the band paints comes off it, which
+//! `the_shell_spells_no_colour_or_box_model_as_a_raw_literal` is what holds;
+//! every row it stacks is summed into the band's extent, which
+//! `the_band_extents_are_the_sums_of_the_rows_each_density_stacks` is what
+//! holds. So "is this band on the token set?" is answered by reading one
+//! function.
 //!
 //! Which density a pane draws at follows where the pane is rather than what is
 //! in it: [`GridDensity::Compact`] under the hero in the canvas's pane group,
 //! where the grid has a quarter of the canvas, and [`GridDensity::Full`] where
-//! the grid IS the canvas's view of the node and has all of it.
+//! the grid IS the canvas's view of the node and has the whole of it.
 //!
 //! # The extents are summed, never stated
 //!

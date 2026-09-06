@@ -2957,9 +2957,10 @@ impl MeridianApp {
         }
         let mode = self.mode;
 
-        // **The grid's density is a fact about this frame's layout, so it
-        // starts every frame at nothing.** The canvas branches below each say
-        // which density they mean, and the two that draw no grid say `None`;
+        // **The grid's density is a fact about this frame's layout, so it is
+        // cleared at the head of each frame.** The canvas branches below each
+        // say which density they mean, and the two that draw no grid say
+        // `None`;
         // this is the third guard, for a frame where the canvas draws nothing
         // at all and the grid pane is placed somewhere else. Without it the
         // pane would draw whatever band the last canvas frame asked for.
@@ -6388,9 +6389,9 @@ fn pane_header_of(rect: egui::Rect, body: egui::Rect) -> egui::Rect {
 /// [`band_note`]. The premise for leaving it out was that a grid with the
 /// whole canvas usually fits the table; the full density's 128-point floor
 /// puts nine columns at 1152 points before the scrollbar, which a 1440-point
-/// window does not clear once the rails and the pane inset are taken out. The
-/// note costs nothing where everything fits, because
-/// `TableDrawn::some_column_is_off_screen` is what reaches it.
+/// window does not clear once the rails and the pane inset are taken out.
+/// Where the columns do fit, the note is not reached at all:
+/// `TableDrawn::some_column_is_off_screen` gates it.
 #[allow(clippy::too_many_arguments)]
 fn draw_canvas_grid_pane(
     ui: &mut egui::Ui,
