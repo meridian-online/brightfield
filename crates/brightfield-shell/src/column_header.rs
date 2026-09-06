@@ -306,7 +306,8 @@ impl ColumnHeaderFrame {
     /// bucket's count.
     ///
     /// Square-rooted so a long tail is visible beside a mode, and floored at
-    /// [`RUG_ALPHA_FLOOR`] so a bucket holding a single row is not invisible.
+    /// this module's private `RUG_ALPHA_FLOOR` so a bucket holding a single row
+    /// is not invisible.
     #[must_use]
     pub fn rug_ink(&self, share: f32) -> egui::Color32 {
         chrome::colour(Rgba::new(
@@ -501,7 +502,7 @@ pub fn thousands(n: u64) -> String {
     let digits = n.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, ch) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(ch);
