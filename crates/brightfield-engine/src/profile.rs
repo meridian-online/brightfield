@@ -95,13 +95,12 @@ pub const DISPLAY_BINS: usize = 24;
 /// Three, and each one is a statement: the DESCRIBE that names the columns,
 /// the one aggregate SELECT that counts and measures every one of them, and
 /// the one `GROUP BY` that counts every numeric column's distribution
-/// together. The third used to be one statement per numeric column, which is
-/// what this number exists to keep it from becoming again — on the twenty-two
-/// column fixture `brightfield-bench` opens, that was fourteen reads for the
-/// distributions alone, one per numeric column.
-/// `the_fixture_carries_a_bounded_column_and_a_wide_one` is what holds that
-/// fixture at fourteen numeric columns, so the figure moves with the fixture
-/// rather than sitting here going stale.
+/// together. The third used to be one statement per numeric column — a read
+/// apiece, so a table's distributions cost whatever its numeric column count
+/// happened to be — and this number is what keeps it from becoming that
+/// again. No count is quoted here on purpose: the figure would be a property
+/// of whichever table somebody had in mind, and a `pub const`'s documentation
+/// is the wrong place to keep one true.
 ///
 /// A *read* here is a leaf of DuckDB's physical plan: an operator with no
 /// children, which is where rows enter a query. Counting leaves rather than

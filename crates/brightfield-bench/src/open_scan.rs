@@ -365,6 +365,59 @@ mod tests {
     /// scan count is a property of the statement the pass writes and the
     /// statement is written from the columns. A test that needed the full
     /// fourteen thousand rows to see the defect would be a test nobody runs.
+    /// **The declared shapes are fixed here, against literals, and this is
+    /// the only place they are.**
+    ///
+    /// Every other test in this module is written in terms of `shape.numeric`
+    /// and `shape.columns()` — `moments.len() == shape.numeric`,
+    /// `binned == shape.numeric - 1` — so each of them holds the profiled
+    /// output against the DECLARED shape and would pass at any declaration.
+    /// Checking a declaration against itself is not a pin, and a test that
+    /// re-derives a number from the number is one an author can cite as
+    /// though it were.
+    ///
+    /// What the pin is for: `WIDE` is not an arbitrary big table. Its row and
+    /// column counts are the ones from the file this whole measurement
+    /// started at, and the committed record, the harness's printed table and
+    /// the pull request all quote them. A shape that drifted would leave all
+    /// of those describing a file nobody opened, with nothing red.
+    ///
+    /// `NARROW` is pinned for a nearer reason: the guard's vacuity check
+    /// compares the two shapes' numeric counts, and raising the narrow shape
+    /// is the cheapest wrong way to quiet a red guard.
+    #[test]
+    fn the_two_shapes_are_fixed_at_the_counts_they_were_chosen_for() {
+        assert_eq!(
+            WIDE.rows, 14_133,
+            "the wide fixture's row count is the motivating file's and is \
+             quoted in the committed record"
+        );
+        assert_eq!(
+            WIDE.numeric, 14,
+            "the wide fixture's numeric column count is what the distribution \
+             pass scales with, so it is the count every figure about this \
+             measurement rests on"
+        );
+        assert_eq!(WIDE.text, 6, "the wide fixture's VARCHAR column count");
+        assert_eq!(
+            WIDE.timestamps, 2,
+            "the wide fixture's temporal column count — the columns that carry \
+             bounds and must add no distribution"
+        );
+        assert_eq!(
+            WIDE.columns(),
+            22,
+            "the wide fixture's column count is the motivating file's, and the \
+             three counts above have to add up to it"
+        );
+        assert_eq!(
+            NARROW.numeric, 2,
+            "the narrow fixture's numeric column count, which the guard's \
+             vacuity check is stated against"
+        );
+        assert_eq!(NARROW.columns(), 3, "the narrow fixture's column count");
+    }
+
     fn small(shape: &Shape) -> Shape {
         Shape {
             rows: 240,
