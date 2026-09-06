@@ -21,34 +21,18 @@ trap 'rm -rf "$TMP"' EXIT
 
 fails=0
 
-# Write a 512-byte DuckDB metadata trailer onto stdout, appended to some
-# plausible library body. Field order is LAST-FIRST: fields 8..6 empty, then
-# ABI, extension version, DuckDB version, platform, magic — then 256 zero bytes
-# where a signature would go on a signed build.
-#
-# Built with python3 rather than printf/dd because the fields are NUL-padded
-# and shell cannot carry a NUL through a variable.
+# The 512-byte DuckDB metadata trailer, written by the shared fixture maker so
+# these offsets live in one file rather than in each self-test that needs them.
 make_extension() {
-  local out="$1" platform="$2" duckdb_version="$3" ext_version="$4" abi="$5"
-  python3 - "$out" "$platform" "$duckdb_version" "$ext_version" "$abi" <<'PY'
-import sys
-out, platform, duckdb_version, ext_version, abi = sys.argv[1:6]
-pad = lambda s: s.encode().ljust(32, b"\0")
-body = b"a plausible shared library body" * 40
-trailer = b"\0" * 96
-trailer += pad(abi) + pad(ext_version) + pad(duckdb_version) + pad(platform) + pad("4")
-trailer += b"\0" * 256
-assert len(trailer) == 512, len(trailer)
-open(out, "wb").write(body + trailer)
-PY
+  "${HERE}/fixture-extension.py" "$@"
 }
 
 # A complete, well-formed bundle at $1.
 make_bundle() {
-  local dir="$1" platform="${2:-osx_arm64}" abi="${3:-C_STRUCT}"
+  local dir="$1" platform="${2:-osx_arm64}" abi="${3:-C_STRUCT}" ext_version="${4:-0.6.56}"
   rm -rf "$dir"
   mkdir -p "$dir/model/model2vec"
-  make_extension "$dir/finetype.duckdb_extension" "$platform" v1.2.0 0.6.56 "$abi"
+  make_extension "$dir/finetype.duckdb_extension" "$platform" v1.2.0 "$ext_version" "$abi"
   printf 'safetensors'   > "$dir/model/model.safetensors"
   printf '{}'            > "$dir/model/config.json"
   printf '{}'            > "$dir/model/label_map.json"
@@ -148,6 +132,23 @@ make_bundle "$TMP/wrongarch" linux_amd64
 expect_fail "an extension for another platform" "built for 'linux_amd64'" \
   "$TMP/wrongarch" osx_arm64
 expect_pass "the same extension against its own platform" "$TMP/wrongarch" linux_amd64
+
+echo "== an extension that is not the pinned FineType release"
+# The third argument is what scripts/package.sh passes from
+# packaging/finetype-pin.env. Without this comparison the pin is a string two
+# scripts agree about while the staged bytes come from wherever, which is the
+# defect a declaration nothing measures always has.
+make_bundle "$TMP/pinned" osx_arm64 C_STRUCT 0.6.58
+expect_pass "the pinned version, tag spelling" "$TMP/pinned" osx_arm64 v0.6.58
+expect_pass "the pinned version, bare spelling" "$TMP/pinned" osx_arm64 0.6.58
+expect_fail "one patch release behind the pin" "is stamped version '0.6.58'" \
+  "$TMP/pinned" osx_arm64 v0.6.59
+expect_fail "a different minor entirely" "packaging/finetype-pin.env declares 'v0.7.0'" \
+  "$TMP/pinned" osx_arm64 v0.7.0
+# No version argument is still a pass: scripts/verify-airgapped.sh passes none,
+# because the checkout reading a built artifact is not necessarily the checkout
+# whose pin built it.
+expect_pass "no version declared at all" "$TMP/pinned" osx_arm64
 
 echo
 if [ "$fails" -ne 0 ]; then

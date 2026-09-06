@@ -54,6 +54,17 @@ BASE="${BRIGHTFIELD_FINETYPE_ASSET_BASE:-https://github.com/meridian-online/fine
 
 fail() { echo "fetch-finetype-bundle: $*" >&2; exit 1; }
 
+# The destination is cleared HERE, before a single byte is fetched, so a run
+# that fails for any reason leaves nothing behind. The alternative — clearing
+# it at assembly time — leaves a bundle from an earlier run sitting where the
+# next scripts/package.sh invocation would find it and stage it, which is
+# precisely the silent substitution the checksums below exist to prevent.
+case "$DEST" in
+  ""|"/") fail "refusing to use '${DEST}' as a bundle directory" ;;
+esac
+[ ! -e "$DEST" ] || [ -d "$DEST" ] || fail "${DEST} exists and is not a directory"
+rm -rf "$DEST"
+
 # The three assets, named once. A release that names them differently is one
 # edit here and one in the self-test's fixture.
 EXT_ASSET="finetype-${TAG}-${TARGET}.duckdb_extension"
@@ -76,9 +87,10 @@ trap 'rm -rf "$WORK"' EXIT
 #
 # THE VERIFICATION IS WHY THE DESTINATION IS BUILT LAST. Everything lands in
 # $WORK, every digest is compared there, and only then is $DEST created — so a
-# substituted or truncated download cannot reach the staged tree, cannot reach
-# the manifest scripts/package.sh writes over it, and cannot be half-there for
-# the next run to find and believe.
+# substituted or truncated download cannot reach the staged tree and cannot
+# reach the manifest scripts/package.sh writes over it. Together with the
+# clearing above, a failed fetch leaves no bundle at all rather than a partial
+# one that looks like a bundle.
 get() {
   local asset="$1"
   local url="${BASE}/${asset}"
@@ -133,10 +145,7 @@ for required in model.safetensors config.json label_map.json \
     || fail "${MODEL_ASSET} carries no ${required} — it is not the model directory a bundle needs"
 done
 
-# Assembled only now that every byte has been verified. `rm -rf` first so a
-# destination left over from a previous run cannot contribute files nobody
-# downloaded.
-rm -rf "$DEST"
+# Assembled only now that every byte has been verified.
 mkdir -p "$DEST"
 cp "${WORK}/${EXT_ASSET}" "${DEST}/finetype.duckdb_extension"
 cp "${WORK}/${CATALOGUE_ASSET}" "${DEST}/taxonomy-schemas.json"

@@ -88,7 +88,35 @@ jobs:
         with:
           key: release-${{ matrix.target }}
 
+      # THE SEMANTIC TYPE SOURCE. Until this landed no workflow set
+      # BRIGHTFIELD_FINETYPE_BUNDLE, so `stage_finetype` in scripts/package.sh
+      # returned at its first line and every artifact this workflow ever built
+      # shipped without a type source — reporting storage types for every
+      # column, which is the one thing the application exists not to do.
+      #
+      # The tag is pinned in packaging/finetype-pin.env and read here through
+      # the one reader every consumer uses, so two builds of the same
+      # brightfield tag stage the same bytes and a bump is a line somebody
+      # reviewed. No tag is passed to the fetch script: it reads the same pin,
+      # so there is nowhere for this workflow and the pin to disagree.
+      #
+      # THIS STEP FAILS TODAY AND THAT IS DELIBERATE. A FineType tag publishes
+      # CLI tarballs and their checksums; the extension, the model and the
+      # taxonomy catalogue are not release assets yet. Until they are, tagging
+      # a brightfield release stops here rather than publishing an artifact
+      # whose whole differentiator is missing. See
+      # scripts/fetch-finetype-bundle.sh for the asset names it expects.
+      - name: Read the pinned FineType release
+        run: |
+          TAG=$(scripts/finetype-pin.sh)
+          echo "FineType pin: \`${TAG}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fetch the FineType bundle for this target
+        run: scripts/fetch-finetype-bundle.sh "${{ matrix.target }}" "${RUNNER_TEMP}/finetype-bundle"
+
       - name: Package
+        env:
+          BRIGHTFIELD_FINETYPE_BUNDLE: ${{ runner.temp }}/finetype-bundle
         run: scripts/package.sh "${GITHUB_REF_NAME}" "${{ matrix.target }}"
 
       # Per-target, per-path, and NOT a glob. `if-no-files-found: error` below
@@ -105,6 +133,32 @@ jobs:
           test -f "dist/${NAME}.dmg"
           test -f "dist/${NAME}.dmg.sha256"
           ls -l "dist/${NAME}.tar.gz" "dist/${NAME}.dmg"
+
+      # Read back what was PACKAGED, which is the reading nothing here has ever
+      # done. scripts/check-bundled-extension.sh runs inside package.sh over the
+      # bundle it was handed — the staging input, before packaging — so it
+      # cannot see a staging step that dropped it. verify-airgapped.sh does read
+      # the artifact, but it SKIPS its type-source legs when the artifact
+      # carries no bundle (a build without one is supported) and it does not
+      # gate this release. A release that stages nothing therefore passed every
+      # check this workflow had.
+      #
+      # Both artifacts, because stage_finetype is called twice — once into the
+      # tarball and once into Contents/Resources of the app bundle — and one of
+      # those two going wrong is exactly the shape of defect this catches.
+      #
+      # --run only on the native leg, and only for the tarball. The x86_64
+      # artifact is a cross-compile from an arm64 runner and cannot be executed
+      # here at all; the disk image's binary is loaded by the `verify` job's
+      # air-gapped run, which attaches the image and runs --check-type-source
+      # inside its jail. So the image is read here and executed there.
+      - name: The packaged artifacts carry the type source
+        env:
+          RUN: ${{ matrix.native && '--run' || '' }}
+        run: |
+          NAME="brightfield-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          scripts/check-artifact-type-source.sh $RUN "dist/${NAME}.tar.gz" "${{ matrix.target }}"
+          scripts/check-artifact-type-source.sh "dist/${NAME}.dmg" "${{ matrix.target }}"
 
       - uses: actions/upload-artifact@v4
         with:
