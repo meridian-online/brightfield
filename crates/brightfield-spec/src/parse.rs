@@ -3215,54 +3215,56 @@ plot:
         }
     }
 
-    /// A `projectionType` on a MARK is judged by the same function the plot
-    /// attribute is judged by, so a name is recognised in both places or in
-    /// neither — the half of the catalogue claim that stops a mark option
-    /// becoming a second vocabulary beside the plot one.
+    /// **`projectionType` on a MARK is a key nothing reads.** Mosaic has no
+    /// mark-level projection: a projection is a plot attribute and it replaces
+    /// the plot's x and y scales, so a mark cannot ask for a different one. This
+    /// build read one for a while, which made the mark option and the plot
+    /// attribute two mechanisms with nothing arbitrating between them.
+    ///
+    /// It now reports as `UnconsumedMarkOption` like `curve` or any other key
+    /// nothing consumes — including when the value IS one of Mosaic's names,
+    /// which is the case a reader would otherwise expect to work.
     #[test]
-    fn a_mark_level_projection_is_judged_by_the_same_vocabulary() {
+    fn a_mark_level_projection_is_a_key_nothing_reads() {
         let mark = |opts: &str| {
             format!("data:\n  t:\n    - {{ x: 1, y: 2 }}\nplot:\n  - {{ mark: dot, data: {{ from: t }}, x: x, y: y, {opts} }}\n")
         };
-
-        // A name Mosaic does not have warns wherever it is written.
-        let out = parse_spec(&mark("projectionType: mollweide"), Format::Yaml).expect("parses");
-        assert!(
-            out.warnings.iter().any(
-                |w| matches!(w, ParseWarning::UnknownProjection { value } if value == "mollweide")
-            ),
-            "a mark-level unknown projection warns; got {:?}",
-            out.warnings
-        );
-
-        // A name Mosaic does have is silent — and specifically raises no
-        // `UnconsumedMarkOption`, which is what an unread option gets.
-        for ok in ["mercator", "equal-earth", "orthographic", "albers-usa"] {
-            let out =
-                parse_spec(&mark(&format!("projectionType: {ok}")), Format::Yaml).expect("parses");
+        for value in ["mercator", "equal-earth", "mollweide"] {
+            let out = parse_spec(&mark(&format!("projectionType: {value}")), Format::Yaml)
+                .expect("parses");
             assert!(
-                !out.warnings.iter().any(|w| matches!(
+                out.warnings.iter().any(|w| matches!(
                     w,
-                    ParseWarning::UnknownProjection { .. }
-                        | ParseWarning::UnconsumedMarkOption { .. }
+                    ParseWarning::UnconsumedMarkOption { mark, key }
+                        if mark == "dot" && key == "projectionType"
                 )),
-                "`{ok}` on a mark must be recognised and consumed; got {:?}",
+                "`projectionType: {value}` on a mark must report as unconsumed; got {:?}",
+                out.warnings
+            );
+            // And it is NOT judged as a projection name — the vocabulary check
+            // is the plot attribute's alone, so a mark-level name neither
+            // resolves nor warns about resolving.
+            assert!(
+                !out.warnings
+                    .iter()
+                    .any(|w| matches!(w, ParseWarning::UnknownProjection { .. })),
+                "a mark-level value is not judged as a projection name; got {:?}",
                 out.warnings
             );
         }
     }
 
-    /// `aspectRatio` and a projection on one mark are refused together. The
-    /// warning is what tells the author; `ChannelMap::equal_aspect` is what makes
-    /// it true, and `crates/brightfield-render/tests/projected_point_map.rs`
-    /// holds that half.
+    /// A mark that asks for `aspectRatio: 1` on a plot that names a
+    /// `projectionType` is refused the combination. The warning is what tells the
+    /// author; `ChannelMap::equal_aspect` is what makes it true, and
+    /// `crates/brightfield-render/tests/projected_point_map.rs` holds that half.
     #[test]
     fn aspect_ratio_alongside_a_projection_warns() {
-        let mark = |opts: &str| {
-            format!("data:\n  t:\n    - {{ x: 1, y: 2 }}\nplot:\n  - {{ mark: dot, data: {{ from: t }}, x: x, y: y, {opts} }}\n")
+        let plot = |mark_opts: &str, attrs: &str| {
+            format!("data:\n  t:\n    - {{ x: 1, y: 2 }}\nplot:\n  - {{ mark: dot, data: {{ from: t }}, x: x, y: y{mark_opts} }}\n{attrs}")
         };
         let out = parse_spec(
-            &mark("aspectRatio: 1, projectionType: mercator"),
+            &plot(", aspectRatio: 1", "projectionType: mercator\n"),
             Format::Yaml,
         )
         .expect("parses");
@@ -3277,22 +3279,22 @@ plot:
         // Each alone is silent — the warning is about the COMBINATION, and
         // without these two a warning that fired on `aspectRatio` alone would
         // pass the assertion above.
-        for alone in ["aspectRatio: 1", "projectionType: mercator"] {
-            let out = parse_spec(&mark(alone), Format::Yaml).expect("parses");
+        for (mark_opts, attrs) in [(", aspectRatio: 1", ""), ("", "projectionType: mercator\n")] {
+            let out = parse_spec(&plot(mark_opts, attrs), Format::Yaml).expect("parses");
             assert!(
                 !out.warnings
                     .iter()
                     .any(|w| matches!(w, ParseWarning::AspectRatioWithProjection { .. })),
-                "`{alone}` alone must not warn; got {:?}",
+                "`{mark_opts}` / `{attrs}` alone must not warn; got {:?}",
                 out.warnings
             );
         }
 
-        // An `aspectRatio` beside a projection this build cannot draw is not the
-        // refusal — there is no projection to win, so the mark keeps its
-        // equal-aspect frame and hears about the name instead.
+        // An `aspectRatio` on a plot naming a projection this build cannot draw
+        // is not the refusal — the plot names no projection at all, so the mark
+        // keeps its equal-aspect frame and hears about the name instead.
         let out = parse_spec(
-            &mark("aspectRatio: 1, projectionType: mollweide"),
+            &plot(", aspectRatio: 1", "projectionType: mollweide\n"),
             Format::Yaml,
         )
         .expect("parses");
@@ -3303,6 +3305,105 @@ plot:
             "an unrecognised projection does not displace `aspectRatio`; got {:?}",
             out.warnings
         );
+        assert!(
+            out.warnings.iter().any(
+                |w| matches!(w, ParseWarning::UnknownProjection { value } if value == "mollweide")
+            ),
+            "the unrecognised name is what the author hears about; got {:?}",
+            out.warnings
+        );
+    }
+
+    /// **A mark whose kind cannot project is not drawn, and is named.** A plot
+    /// that carries a projection has axes in the projection's planar units; a
+    /// `barY` or a `line` on it would draw its raw columns against those axes,
+    /// which is a second coordinate system laid over the first.
+    ///
+    /// `crates/brightfield-render`'s `scene::render_entry` is what makes the
+    /// "not drawn" half true; this is the half that tells the author.
+    #[test]
+    fn a_mark_that_cannot_project_is_named_rather_than_drawn() {
+        let plot = |kind: &str, attrs: &str| {
+            format!("data:\n  t:\n    - {{ x: 1, y: 2 }}\nplot:\n  - {{ mark: {kind}, data: {{ from: t }}, x: x, y: y }}\n{attrs}")
+        };
+        // `dot` and `geo` draw through a projection; nothing else does.
+        for kind in ["dot", "geo"] {
+            let out = parse_spec(&plot(kind, "projectionType: orthographic\n"), Format::Yaml)
+                .expect("parses");
+            assert!(
+                !out.warnings
+                    .iter()
+                    .any(|w| matches!(w, ParseWarning::MarkCannotProject { .. })),
+                "`{kind}` draws through a projection; got {:?}",
+                out.warnings
+            );
+        }
+        for kind in ["line", "barY", "rectY", "text"] {
+            let out = parse_spec(&plot(kind, "projectionType: orthographic\n"), Format::Yaml)
+                .expect("parses");
+            assert!(
+                out.warnings.iter().any(|w| matches!(
+                    w,
+                    ParseWarning::MarkCannotProject { mark, projection }
+                        if mark == kind && projection == "orthographic"
+                )),
+                "`{kind}` cannot project and must be named; got {:?}",
+                out.warnings
+            );
+            // The control: the SAME mark on a plot naming no projection is
+            // silent, so the warning is about the projection and not the kind.
+            let bare = parse_spec(&plot(kind, ""), Format::Yaml).expect("parses");
+            assert!(
+                !bare
+                    .warnings
+                    .iter()
+                    .any(|w| matches!(w, ParseWarning::MarkCannotProject { .. })),
+                "`{kind}` on an unprojected plot is fine; got {:?}",
+                bare.warnings
+            );
+        }
+    }
+
+    /// **An interval brush over a curved projection is refused, and named.** The
+    /// warning is here; `analysis::build_brushable_bindings` is what stops the
+    /// interactor being installed, held by
+    /// `an_interval_brush_is_not_installed_over_a_curved_projection`.
+    #[test]
+    fn an_interval_brush_over_a_curved_projection_warns() {
+        let plot = |interactor: &str, projection: &str| {
+            format!(
+                "params:\n  sel: {{ select: crossfilter }}\ndata:\n  t:\n    - {{ x: 1, y: 2 }}\n\
+                 plot:\n  - {{ mark: dot, data: {{ from: t }}, x: x, y: y }}\n  \
+                 - {{ select: {interactor}, as: $sel }}\nprojectionType: {projection}\n"
+            )
+        };
+        for interactor in ["intervalX", "intervalY", "intervalXY"] {
+            // Separable: the per-axis inverse is exact, so the brush stands.
+            for ok in ["equirectangular", "mercator", "identity", "reflect-y"] {
+                let out = parse_spec(&plot(interactor, ok), Format::Yaml).expect("parses");
+                assert!(
+                    !out.warnings.iter().any(|w| matches!(
+                        w,
+                        ParseWarning::IntervalBrushUnderCurvedProjection { .. }
+                    )),
+                    "`{interactor}` under `{ok}` inverts per axis; got {:?}",
+                    out.warnings
+                );
+            }
+            // Curved: no rectangle of degrees stands behind the swept pixels.
+            for curved in ["orthographic", "albers", "equal-earth", "conic-conformal"] {
+                let out = parse_spec(&plot(interactor, curved), Format::Yaml).expect("parses");
+                assert!(
+                    out.warnings.iter().any(|w| matches!(
+                        w,
+                        ParseWarning::IntervalBrushUnderCurvedProjection { interactor: i, projection: p }
+                            if i == interactor && p == curved
+                    )),
+                    "`{interactor}` under `{curved}` must be refused; got {:?}",
+                    out.warnings
+                );
+            }
+        }
     }
 
     #[test]

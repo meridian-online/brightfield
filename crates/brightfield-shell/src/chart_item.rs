@@ -1764,6 +1764,101 @@ mod tests {
         assert!((hi - 45.0).abs() < 1e-9, "hi inverted to {hi}");
     }
 
+    /// **A brush over a PROJECTED plot names degrees, not planar units.**
+    ///
+    /// The plot's axes are in the projection's units — under Mercator a latitude
+    /// of 60° is a `v` of about 1.317 — while the column the clause names holds
+    /// degrees. Without the second inversion the filter reads
+    /// `latitude BETWEEN 0.55 AND 1.32`, which selects a band around the equator
+    /// and looks exactly like a brush that worked.
+    ///
+    /// The expected numbers come from the Gudermannian written out here,
+    /// `2·atan(e^v) − π/2`, not from `Projection::invert_lat`.
+    #[test]
+    fn a_brush_over_a_projected_plot_names_degrees_not_planar_units() {
+        let gudermannian =
+            |v: f64| (2.0 * v.exp().atan() - std::f64::consts::FRAC_PI_2).to_degrees();
+        // The y axis spans Mercator's `v` for 0°..70°N over 100 pixels, top-down.
+        let v_top = (std::f64::consts::FRAC_PI_2 / 2.0 + 70.0_f64.to_radians() / 2.0)
+            .tan()
+            .ln();
+        let mut scales = ScaleSet::new();
+        scales.insert(Channel::X, linear((0.0, 100.0), (0.0, 10.0)));
+        scales.insert(Channel::Y, linear((100.0, 0.0), (0.0, v_top)));
+        scales.set_projection(Projection::Mercator, None);
+        let plot = plot(scales, BrushKind::IntervalY);
+        let binding = plot.gesture.clone().expect("bound");
+        let SqlPredicate::Interval { lo, hi, .. } = interval_predicate(
+            &binding,
+            &plot,
+            kurbo::Point::new(0.0, 20.0),
+            kurbo::Point::new(0.0, 80.0),
+        )
+        .expect("a sweep over a separable projection inverts") else {
+            panic!("structured clause");
+        };
+        let (ScalarValue::Float(lo), ScalarValue::Float(hi)) = (lo, hi) else {
+            panic!("linear bounds are floats");
+        };
+        // Pixels 80 and 20 on a flipped 100→0 range are `v = 0.2·v_top` and
+        // `v = 0.8·v_top`; through the Gudermannian those are latitudes.
+        let (want_lo, want_hi) = (gudermannian(0.2 * v_top), gudermannian(0.8 * v_top));
+        assert!(
+            (lo - want_lo).abs() < 1e-9 && (hi - want_hi).abs() < 1e-9,
+            "the clause must name latitudes [{want_lo}, {want_hi}]; got [{lo}, {hi}]"
+        );
+        // And the control that makes this a real inversion rather than a
+        // coincidence: the raw planar bounds are an order of magnitude smaller,
+        // so a clause that skipped the inverse could not pass the assertion above.
+        assert!(
+            hi > 4.0 * (0.8 * v_top),
+            "the planar `v` and the latitude must be far apart at this span"
+        );
+    }
+
+    /// A brush over a plot whose axes do NOT invert separately builds no clause
+    /// at all, rather than one naming planar units as if they were degrees.
+    ///
+    /// `build_brushable_bindings` should never install such a brush — this is the
+    /// second guard behind that, and the one that decides what happens if the
+    /// first is ever wrong.
+    #[test]
+    fn a_brush_over_a_curved_projection_builds_no_clause() {
+        let mut scales = ScaleSet::new();
+        scales.insert(Channel::X, linear((0.0, 100.0), (-1.0, 1.0)));
+        scales.insert(Channel::Y, linear((100.0, 0.0), (-1.0, 1.0)));
+        scales.set_projection(Projection::Orthographic, None);
+        let curved = plot(scales, BrushKind::IntervalXY);
+        let binding = curved.gesture.clone().expect("bound");
+        assert!(
+            interval_predicate(
+                &binding,
+                &curved,
+                kurbo::Point::new(10.0, 10.0),
+                kurbo::Point::new(90.0, 90.0),
+            )
+            .is_none(),
+            "an orthographic plot's brush has no per-axis inverse, so it names nothing"
+        );
+        // The control: the SAME sweep on the same scales with no projection does
+        // build a clause, so the refusal is about the projection.
+        let mut cartesian = ScaleSet::new();
+        cartesian.insert(Channel::X, linear((0.0, 100.0), (-1.0, 1.0)));
+        cartesian.insert(Channel::Y, linear((100.0, 0.0), (-1.0, 1.0)));
+        let unprojected = plot(cartesian, BrushKind::IntervalXY);
+        let binding = unprojected.gesture.clone().expect("bound");
+        assert!(
+            interval_predicate(
+                &binding,
+                &unprojected,
+                kurbo::Point::new(10.0, 10.0),
+                kurbo::Point::new(90.0, 90.0),
+            )
+            .is_some(),
+            "control: an unprojected plot's brush still filters"
+        );
+    }
+
     /// A click on a band axis resolves the category under the pointer to a
     /// structured Point clause — a quoted equality, not a between.
     #[test]
