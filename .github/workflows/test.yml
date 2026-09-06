@@ -73,8 +73,9 @@ jobs:
       # `rust-version = "1.95"` is a *floor* (the oldest toolchain allowed to
       # compile the workspace); this line instead nails CI to the one patch
       # release the local loop uses (`cargo +1.95.0 ...`), so a CI failure is
-      # reproducible on a dev machine. There is no rust-toolchain.toml in the
-      # repo; this is the pin.
+      # reproducible on a dev machine. rust-toolchain.toml at the repo root
+      # carries the same 1.95.0 for a bare `cargo` in a fresh checkout; this
+      # step is the CI half and the two are meant to move together.
       #
       # The consequence, stated plainly: nothing here ever compiles on current
       # stable, so a regression introduced by a newer rustc goes unnoticed until
@@ -218,13 +219,24 @@ jobs:
   # than beside the executable, so it is a separate path through the check and
   # a separate way to ship an application with no type source in it.
   #
-  # Its own job rather than a step inside `test` because it needs no toolchain,
-  # no cache and no build: it should report in under a minute rather than
-  # behind a 60-minute suite.
+  # Its own job rather than a step inside `test` because it needs no cache and
+  # no build: it should report in a couple of minutes rather than behind a
+  # 60-minute suite.
+  #
+  # It does need a toolchain, which is new and is not free.
+  # scripts/check-artifact-type-source.sh refuses to guess the host triple from
+  # one source, so it exits without `rustc`; the self-test then reads
+  # `rustc -vV` itself rather than asking the code under test what the host is,
+  # which is what makes its fixtures independent of the uname table they are
+  # checking. The step is explicit rather than left to the runner image's rust:
+  # rust-toolchain.toml pins 1.95.0, so a bare `rustc` here would sync that
+  # toolchain mid-run anyway, undeclared. public-hygiene.yml's job of the same
+  # name carries the same step and the longer argument.
   artifact-type-source:
     name: The packaged artifact carries a type source (disk image)
     runs-on: macos-15
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
       - run: ./scripts/check-artifact-type-source-selftest.sh

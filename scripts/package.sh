@@ -84,11 +84,13 @@ cd "$(dirname "$0")/.."
 SIGN_IDENTITY="${BRIGHTFIELD_SIGN_IDENTITY:-}"
 NOTARY_PROFILE="${BRIGHTFIELD_NOTARY_PROFILE:-}"
 
-# The repo's exact toolchain pin (the same one CI nails via its toolchain
-# action; there is no rust-toolchain.toml). Overridable, but the default must
-# not be "whatever cargo the shell finds" — the workspace floor is above some
-# installed defaults, and a release artifact should be built by the pinned
-# compiler, not by luck.
+# The repo's exact toolchain pin — the same one CI nails via its toolchain
+# action and the same one rust-toolchain.toml carries for a bare `cargo`.
+# RUSTUP_TOOLCHAIN is read ahead of that file, so this line is what decides if
+# the two ever disagree. Overridable, but the default must not be "whatever
+# cargo the shell finds" — the workspace floor is above some installed
+# defaults, and a release artifact should be built by the pinned compiler, not
+# by luck.
 export RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-1.95.0}"
 
 # scripts/check-finetype-pin.sh runs this to compare the tag THIS script would

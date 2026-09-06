@@ -8,11 +8,17 @@ on:
 # Deliberately a workflow of its own rather than a job inside `test`:
 #
 # * `test` runs on `macos-15` with a 60-minute ceiling and a cold-ish build.
-#   This gate needs no toolchain, no cache and no build — it is `git grep` over
-#   tracked files and finishes in seconds. It should be the first thing to go
-#   red, and it should still report when the Rust suite is queued or cancelled.
-# * `test` cancels in-progress runs per ref. This gate is cheap enough that it
+#   The `planning-identifiers` job below needs no toolchain, no cache and no
+#   build — it is `git grep` over tracked files and finishes in seconds. It
+#   should be the first thing to go red, and it should still report when the
+#   Rust suite is queued or cancelled.
+# * `test` cancels in-progress runs per ref. That job is cheap enough that it
 #   never needs cancelling, and a leak must be reported on every pushed commit.
+#
+# The `artifact-type-source` job at the foot of this file is the exception and
+# is a separate job for exactly that reason: it installs a Rust toolchain,
+# which the scan above must not have to wait behind. Its own comment argues
+# why it needs one.
 jobs:
   planning-identifiers:
     runs-on: ubuntu-latest
@@ -24,7 +30,7 @@ jobs:
       # creates `refs/remotes/origin/<base>`, so the range step would hit its
       # own "does not resolve to anything" error on every pull request — loud
       # rather than silent, but still a gate that never ran. Full history here
-      # is seconds, not minutes: this workflow needs no toolchain and no build.
+      # is seconds, not minutes: this job needs no toolchain and no build.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -142,8 +148,8 @@ jobs:
       # Release-packaging honesty, same cheap-shell shape: package.sh must
       # refuse to build an artifact whose tag disagrees with the crate version.
       # The self-test exercises both directions and runs no compiler (the guard
-      # fails before rustc/cargo; the pass path stubs them), so it belongs on
-      # this toolchain-free runner rather than in the tagged release workflow —
+      # fails before rustc/cargo; the pass path stubs them), so it belongs in
+      # this toolchain-free job rather than in the tagged release workflow —
       # where it would only ever run after a tag, too late to catch the mismatch.
       - name: package version-guard self-test
         run: ./scripts/package-version-guard-selftest.sh
@@ -159,14 +165,15 @@ jobs:
       - name: bundled-extension guard self-test
         run: ./scripts/check-bundled-extension-selftest.sh
 
-      # THE TYPE SOURCE, four self-tests, and every one of them is here for the
-      # same reason the two above are: the checks they exercise run on a tag and
-      # nowhere else. That is the shape that rots, and this repository has
-      # already paid for it once — a card recorded the FineType extension and
-      # its model as shipping in the artifact, three reviewers agreed having
-      # each assembled a bundle by hand, and the path a release takes was what
-      # nobody exercised. None of these needs a toolchain, a network beyond
-      # loopback, or a real 17 MB model.
+      # THE TYPE SOURCE. These are here for the same reason the two above are:
+      # the checks they exercise run on a tag and nowhere else. That is the
+      # shape that rots, and this repository has already paid for it once — a
+      # card recorded the FineType extension and its model as shipping in the
+      # artifact, three reviewers agreed having each assembled a bundle by hand,
+      # and the path a release takes was what nobody exercised. None of the
+      # three below needs a toolchain, a network beyond loopback, or a real
+      # 17 MB model; the fourth does need a toolchain and is a job of its own at
+      # the foot of this file.
       #
       # The pin, first: packaging/finetype-pin.env declares one tag and three
       # things stage from it. This runs each of them and compares the answers,
@@ -190,12 +197,6 @@ jobs:
       - name: packaging refuses a bundle that would not load — self-test
         run: ./scripts/package-finetype-selftest.sh
 
-      # The packaged artifact. Its disk-image cases need hdiutil, so test.yml
-      # runs the same file on macos-15; what runs here is every tarball case,
-      # in seconds, ahead of the Rust suite.
-      - name: the packaged artifact carries a type source — self-test
-        run: ./scripts/check-artifact-type-source-selftest.sh
-
       # The tap formula's install block, on the generator that writes it. The
       # release workflow rewrites Formula/brightfield.rb wholesale on every tag
       # and the tap has no CI, so a correct formula written into the tap by hand
@@ -218,3 +219,34 @@ jobs:
       # unresolvable url each still turn it red.
       - name: formula-asset check self-test
         run: ./scripts/check-formula-asset-selftest.sh
+
+  # THE ONE GATE IN THIS WORKFLOW THAT NEEDS A RUST TOOLCHAIN, and it is a job
+  # of its own so that the scan above keeps the property its comment claims.
+  #
+  # scripts/check-artifact-type-source.sh reads the host triple from `rustc -vV`
+  # AND from a uname table and refuses when they disagree, so it exits rather
+  # than run with one source. Its self-test then reads `rustc -vV` itself, so
+  # that the triple its fixtures are built for is not the triple the code under
+  # test chose: changing one arm of that table used to leave every case in this
+  # repository green while a real release printed `== not run` for the artefact
+  # people download. rustc is load-bearing on both sides and neither side has a
+  # toolchain-free substitute, which is why this job exists rather than the step
+  # staying in the scan above.
+  #
+  # THE TOOLCHAIN STEP IS EXPLICIT, not inherited. A `rustc` that is merely
+  # preinstalled on the runner image is a dependency nothing in this repository
+  # declares, and rust-toolchain.toml pins 1.95.0, so the first bare `rustc` in
+  # this checkout would sync that toolchain mid-step instead — undeclared, and
+  # inside whichever step happened to be first. Same pin as test.yml, lint.yml
+  # and release.yml.
+  #
+  # The disk-image cases need hdiutil and report as not applicable here;
+  # test.yml runs the same file on macos-15, where they run.
+  artifact-type-source:
+    name: The packaged artifact carries a type source (tarball)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - run: ./scripts/check-artifact-type-source-selftest.sh

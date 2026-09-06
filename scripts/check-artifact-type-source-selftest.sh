@@ -17,15 +17,24 @@
 # absent, and the case next to it, which is the bundle being present one
 # directory away from where the executable looks.
 #
-# WHERE EACH CASE RUNS. The tarball cases need only tar and run everywhere,
-# including the toolchain-free hygiene runner. The disk image cases need
-# `hdiutil` and therefore macOS; test.yml runs this file on macos-15 for
-# exactly that reason, so no case here is left unexercised in CI. On Linux the
-# image cases are reported as not applicable rather than counted as passes.
+# WHERE EACH CASE RUNS, AND WHAT IT NEEDS. A Rust toolchain, for the reason the
+# block below sets out: the host triple has to come from somewhere other than
+# the code under test, and `rustc -vV` is that somewhere. Both CI jobs that run
+# this file install the pinned toolchain for it, and neither did before —
+# public-hygiene.yml gives it a job of its own so the scan it sits beside stays
+# toolchain-free, and test.yml's job installs the same pin. It is no longer a
+# file that runs on a runner without one, and the sentences that said otherwise
+# went with the change rather than after it.
+#
+# The disk image cases need `hdiutil` as well and therefore macOS; test.yml runs
+# this file on macos-15 for exactly that reason, so no case here is left
+# unexercised in CI. On Linux the image cases are reported as not applicable
+# rather than counted as passes.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHECK="$HERE/check-artifact-type-source.sh"
+SELF="$HERE/$(basename "${BASH_SOURCE[0]}")"
 
 TAG="$("$HERE/finetype-pin.sh")"
 
@@ -65,6 +74,9 @@ FOREIGN_PLATFORM="$("$HERE/duckdb-platform.sh" "$FOREIGN")"
 failures=0
 TMP="$(mktemp -d)" || exit 1
 trap 'rm -rf "$TMP"' EXIT
+# A PATH, and the only thing in this file that is one. Every expect_pass and
+# expect_fail redirects into it and every structural pin greps it, so a case
+# that binds this name to something else moves where the whole file writes.
 out="$TMP/out"
 
 # A bundle of the shape scripts/check-bundled-extension.sh accepts, with the
@@ -180,23 +192,32 @@ fi
 # so deleting the comparison between them changes nothing observable and stays
 # green — the guard against a future typo would itself be unpinned. A stub
 # rustc reporting another triple is the only way to reach it.
+#
+# THE CAPTURED MESSAGE IS `answer`, NOT `out`. These three cases hold what the
+# check printed; `out` above holds where the cases below write. They were
+# written with the one name, and from the first case after this block the
+# redirect target was a filename made of the check's last error message,
+# resolved against the working directory. Nothing went red: the run reported
+# every case ok, exited 0, and dropped a file named after a rustc error into
+# whichever directory it had been started in. The case at the foot of this file
+# is what now catches that, and this is the name that stops it happening.
 HOSTSTUB="$TMP/hoststub"
 mkdir -p "$HOSTSTUB"
 printf '#!/bin/sh\necho "host: some-other-unknown-triple"\n' >"$HOSTSTUB/rustc"
 chmod +x "$HOSTSTUB/rustc"
-if out="$(PATH="$HOSTSTUB:$PATH" "$CHECK" --print-host-target 2>&1)"; then
-	echo "  FAIL the two host sources disagreed and it answered '${out}' anyway"
+if answer="$(PATH="$HOSTSTUB:$PATH" "$CHECK" --print-host-target 2>&1)"; then
+	echo "  FAIL the two host sources disagreed and it answered '${answer}' anyway"
 	failures=$((failures + 1))
-elif printf '%s' "$out" | grep -q "own two answers disagree"; then
+elif printf '%s' "$answer" | grep -q "own two answers disagree"; then
 	echo "  ok   two sources disagreeing is a refusal, not a coin toss"
 else
-	echo "  FAIL it refused without naming the disagreement: ${out}"
+	echo "  FAIL it refused without naming the disagreement: ${answer}"
 	failures=$((failures + 1))
 fi
 
 printf '#!/bin/sh\necho "release: 1.95.0"\n' >"$HOSTSTUB/rustc"
-if out="$(PATH="$HOSTSTUB:$PATH" "$CHECK" --print-host-target 2>&1)"; then
-	echo "  FAIL rustc printed no host line and it answered '${out}' anyway"
+if answer="$(PATH="$HOSTSTUB:$PATH" "$CHECK" --print-host-target 2>&1)"; then
+	echo "  FAIL rustc printed no host line and it answered '${answer}' anyway"
 	failures=$((failures + 1))
 else
 	echo "  ok   a rustc with no host line is a refusal"
@@ -204,13 +225,13 @@ fi
 
 # No rustc at all. The run leg would otherwise have one source and nothing to
 # catch it being wrong, which is the state this whole block exists to end.
-if out="$(PATH="/usr/bin:/bin" "$CHECK" --print-host-target 2>&1)"; then
-	echo "  FAIL with no rustc on PATH it still answered '${out}'"
+if answer="$(PATH="/usr/bin:/bin" "$CHECK" --print-host-target 2>&1)"; then
+	echo "  FAIL with no rustc on PATH it still answered '${answer}'"
 	failures=$((failures + 1))
-elif printf '%s' "$out" | grep -q "rustc is not on PATH"; then
+elif printf '%s' "$answer" | grep -q "rustc is not on PATH"; then
 	echo "  ok   no rustc is a refusal rather than a single-source answer"
 else
-	echo "  FAIL it refused for some other reason: ${out}"
+	echo "  FAIL it refused for some other reason: ${answer}"
 	failures=$((failures + 1))
 fi
 
@@ -361,6 +382,45 @@ else
 	expect_fail "an image whose app carries no type source" \
 		"carries no type source at Brightfield.app/Contents/Resources/finetype" \
 		"$img_none" "$TARGET"
+fi
+
+echo "== the run leaves nothing in the directory it was run from"
+# WHY THIS IS A CASE AND NOT A COMMENT. `out` is a path and three cases above
+# once bound that name to a captured message, so every redirect after them
+# landed on a filename made of the check's last error. The suite reported every
+# case ok and exited 0 while dropping that file into the working directory —
+# a developer's checkout, and the hygiene runner's. Reading the file did not
+# find it. Running it in an empty directory did, so that is what this does.
+#
+# It re-runs this whole file rather than a chosen part of it, because the next
+# stray will not be written by the line the last one was. The inner run is the
+# same script with BRIGHTFIELD_ARTIFACT_SELFTEST_INNER set; that variable is
+# the recursion guard and has no other effect, and the inner run's marker below
+# is REQUIRED in its log — an inner run that died before writing anything would
+# otherwise leave an empty directory and read as a pass.
+if [ -n "${BRIGHTFIELD_ARTIFACT_SELFTEST_INNER:-}" ]; then
+	echo "  --   inner run: the outer run is what reads this directory"
+else
+	pen="$TMP/pen"
+	rm -rf "$pen"
+	mkdir -p "$pen"
+	innerlog="$TMP/inner.log"
+	(cd "$pen" && BRIGHTFIELD_ARTIFACT_SELFTEST_INNER=1 "$SELF") >"$innerlog" 2>&1
+	innerstatus=$?
+	strays="$(cd "$pen" && ls -A)"
+	if [ -n "$strays" ]; then
+		echo "  FAIL a run wrote into its working directory (inner run exit ${innerstatus}):"
+		(cd "$pen" && ls -Ab) | sed 's/^/       /'
+		failures=$((failures + 1))
+	elif ! grep -qF 'inner run: the outer run is what reads this directory' "$innerlog"; then
+		echo "  FAIL the inner run stopped before the end (exit ${innerstatus}), so an empty"
+		echo "       directory is not evidence of anything. What it printed:"
+		sed 's/^/       /' "$innerlog"
+		failures=$((failures + 1))
+	else
+		echo "  ok   a whole run in an empty directory writes nothing into it"
+	fi
+	rm -rf "$pen"
 fi
 
 echo

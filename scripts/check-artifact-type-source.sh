@@ -86,9 +86,14 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # printed `== not run` for the artefact people download.
 #
 # An unknown host is a hard failure rather than a silent skip. So is a missing
-# rustc: the two callers of this file are a release job that installs the
-# toolchain and a self-test that runs beside the Rust suite, so absence means
-# something is wrong rather than something is unavailable.
+# rustc, and the callers are why. This file is invoked by release.yml's build
+# job, which installs the pinned toolchain to compile the binary it is checking,
+# and by scripts/check-artifact-type-source-selftest.sh, which public-hygiene.yml
+# and test.yml each now install that same pin for — a step they gained because
+# of this line, rather than a property of the runner image they happened to
+# have. So there is no caller for which a missing rustc means unavailable; it
+# means a broken runner. The alternative, falling back to the uname table on its
+# own, is the single source this cross-check exists to end.
 host_target() {
   local from_rustc from_uname
   command -v rustc >/dev/null 2>&1 || {

@@ -6,8 +6,11 @@
 Not an extension anything can LOAD — the body is filler. It carries a real
 trailer, which is what `scripts/check-bundled-extension.sh` and
 `brightfield_engine::semantic::read_stamp` read, so the guards over a bundle
-can be exercised on every pull request with no toolchain, no network and no
-17 MB model.
+can be exercised on every pull request with no network and no 17 MB model.
+Nothing here needs a compiler either, though
+scripts/check-artifact-type-source-selftest.sh — one of the two self-tests
+building fixtures with this — does, for its own reason: it reads the host
+triple from `rustc -vV` so as not to ask the code under test what the host is.
 
 The trailer is the last 512 bytes: eight 32-byte NUL-padded ASCII fields
 written LAST-FIRST, then 256 bytes of signature space. Field order therefore
