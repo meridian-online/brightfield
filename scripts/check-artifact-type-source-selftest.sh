@@ -73,6 +73,14 @@ fi
 FOREIGN_PLATFORM="$("$HERE/duckdb-platform.sh" "$FOREIGN")"
 
 failures=0
+# BEFORE THE FIRST CASE. The litter section at the foot of this file compares
+# against this, and taking the reading later would mean comparing the checkout
+# against itself after the strays had already landed.
+TRACKED_AT_START=""
+if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+	TRACKED_AT_START="$(git -C "$ROOT" status --porcelain)"
+	[ -n "$TRACKED_AT_START" ] || TRACKED_AT_START="<clean>"
+fi
 TMP="$(mktemp -d)" || exit 1
 trap 'rm -rf "$TMP"' EXIT
 # A PATH, and the SHARED one. Every expect_pass and expect_fail redirects into
@@ -409,6 +417,44 @@ else
 	failures=$((failures + 1))
 fi
 
+echo "== a run that stops halfway does not report a pass"
+# THE ONE FAILURE `$?` CANNOT SEE. A `fail` and a `set -e` abort both reach the
+# check's EXIT trap with a non-zero status, and the trap hands it back. An
+# unbound variable expanded inside a function does not: bash enters the trap
+# with `$?` of 0, measured on this machine, so `return "$rc"` reports a pass for
+# a script that died before it checked anything — and for this file a pass is a
+# release publishing an artefact nothing opened. The COMPLETED sentinel is what
+# tells "finished" from "stopped", and this is what shows it firing.
+#
+# INJECTED INTO A COPY, never into the tracked file. Nothing outside the script
+# can force an unbound expansion inside it, and a self-test that edits a file
+# another job may be reading is one interrupted process away from leaving the
+# mutation on disk. The copy takes the two siblings the check reads before the
+# trap is installed; the pin is handed to it by path.
+ABORT="$TMP/abort"
+mkdir -p "$ABORT"
+cp "$HERE/duckdb-platform.sh" "$HERE/finetype-pin.sh" "$ABORT/"
+awk '{ print }
+	/^trap cleanup EXIT$/ { print ": \"$THIS_VARIABLE_IS_DELIBERATELY_UNSET\"" }' \
+	"$CHECK" >"$ABORT/check-artifact-type-source.sh"
+chmod +x "$ABORT/check-artifact-type-source.sh"
+if [ "$(grep -c 'THIS_VARIABLE_IS_DELIBERATELY_UNSET' "$ABORT/check-artifact-type-source.sh")" -ne 1 ]; then
+	echo "  FAIL the abort could not be injected — the \`trap cleanup EXIT\` line has moved,"
+	echo "       so this case is testing an unmodified copy and would pass either way"
+	failures=$((failures + 1))
+elif BRIGHTFIELD_FINETYPE_PIN="$ROOT/packaging/finetype-pin.env" \
+	"$ABORT/check-artifact-type-source.sh" "$good" "$TARGET" >"$out" 2>&1; then
+	echo "  FAIL a run that died before checking anything exited 0:"
+	sed 's/^/       /' "$out"
+	failures=$((failures + 1))
+elif ! grep -q 'unbound variable' "$out"; then
+	echo "  FAIL it exited non-zero for some other reason than the abort:"
+	sed 's/^/       /' "$out"
+	failures=$((failures + 1))
+else
+	echo "  ok   a run that died mid-way exits non-zero rather than reporting a pass"
+fi
+
 echo "== an artifact of a shape this check does not know"
 printf 'not an artifact' >"$TMP/thing.zip"
 expect_fail "a .zip" "not an artifact this script knows" "$TMP/thing.zip" "$TARGET"
@@ -484,27 +530,35 @@ else
 	# THE EMPTY DIRECTORY IS ONLY HALF OF IT, and the title of this section says
 	# so: a stray written by ABSOLUTE path lands wherever the path names, and
 	# the working directory is not it. The checkout is the place that matters —
-	# a file dropped into the repository by a self-test is committed by the next
-	# `git add`. So the tracked tree is read on both sides of the inner run and
-	# required not to have moved. It is a comparison rather than a "clean tree"
-	# assertion because a developer's checkout is dirty most of the time.
-	tracked_before=""
-	if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-		tracked_before="$(git -C "$ROOT" status --porcelain)"
-	fi
-	(cd "$pen" && BRIGHTFIELD_ARTIFACT_SELFTEST_INNER=1 "$SELF") >"$innerlog" 2>&1
-	innerstatus=$?
-	if [ -n "$tracked_before" ] || git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-		tracked_after="$(git -C "$ROOT" status --porcelain)"
-		if [ "$tracked_after" != "$tracked_before" ]; then
-			echo "  FAIL a run changed the checkout it was started from:"
-			diff <(printf '%s\n' "$tracked_before") <(printf '%s\n' "$tracked_after") |
+	# a file dropped into the repository is committed by the next `git add`.
+	#
+	# The reading it is compared against was taken at the TOP of this file,
+	# before the first case ran, and that is the whole point of taking it there:
+	# a stray written by every invocation is already present by the time the
+	# inner run starts, so a before/after pair taken around the inner run alone
+	# sees no change and reports ok. Measured — that is exactly what an earlier
+	# version of this case did.
+	#
+	# A comparison rather than a clean-tree assertion, because a developer's
+	# checkout is dirty most of the time.
+	if [ -n "$TRACKED_AT_START" ]; then
+		tracked_now="$(git -C "$ROOT" status --porcelain)"
+		# The same stand-in the reading at the top uses, so a clean tree on both
+		# sides compares equal rather than empty-against-sentinel.
+		[ -n "$tracked_now" ] || tracked_now="<clean>"
+		if [ "$tracked_now" != "$TRACKED_AT_START" ]; then
+			echo "  FAIL this run changed the checkout it was started from:"
+			diff <(printf '%s\n' "$TRACKED_AT_START") <(printf '%s\n' "$tracked_now") |
 				sed 's/^/       /'
 			failures=$((failures + 1))
 		else
 			echo "  ok   a whole run leaves the checkout's tracked tree exactly as it found it"
 		fi
+	else
+		echo "  --   not a git work tree: the checkout comparison needs one"
 	fi
+	(cd "$pen" && BRIGHTFIELD_ARTIFACT_SELFTEST_INNER=1 "$SELF") >"$innerlog" 2>&1
+	innerstatus=$?
 	strays="$(cd "$pen" && ls -A)"
 	if [ -n "$strays" ]; then
 		echo "  FAIL a run wrote into its working directory (inner run exit ${innerstatus}):"

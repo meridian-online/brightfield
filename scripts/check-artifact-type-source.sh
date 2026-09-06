@@ -147,6 +147,8 @@ TAG=$("${HERE}/finetype-pin.sh")
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/bf-artifact-typesource.XXXXXX")
 MOUNT=""
+# Nothing sets this but the last line of the file, and the trap below is why.
+COMPLETED=""
 # Detach before the temp tree goes: the mount point lives inside it, and
 # removing a directory an image is mounted on leaves the image attached.
 #
@@ -155,7 +157,15 @@ MOUNT=""
 # the kernel has not finished releasing the executable's vnode — and the
 # `rm -rf` then hits a read-only mount, fails, and takes the script's exit
 # status with it. That reported a PASSING check as a failure. So: a few
-# attempts, then force, and cleanup can never decide the exit status.
+# attempts, then force, and cleanup restores the status it was entered with.
+#
+# AND THAT RESTORE HAS ONE HOLE, WHICH IS WHY THE SENTINEL EXISTS. A `set -u`
+# abort — an unbound variable expanded inside a function — reaches an EXIT trap
+# with `$?` set to 0, measured on this machine's bash. So `return "$rc"` would
+# hand back 0 for a script that died halfway through, and this check reporting
+# 0 is a release publishing an artefact nothing opened. `$?` cannot tell
+# "finished" from "stopped"; COMPLETED can, because the only line that sets it
+# is the one after the last check.
 cleanup() {
   local rc=$?
   if [ -n "$MOUNT" ]; then
@@ -167,6 +177,11 @@ cleanup() {
     done
   fi
   rm -rf "$TMP" 2>/dev/null || true
+  if [ -z "$COMPLETED" ] && [ "$rc" -eq 0 ]; then
+    echo "check-artifact-type-source: stopped before reaching the end and reported no reason." >&2
+    echo "  Exiting 1: a check that did not finish has established nothing." >&2
+    return 1
+  fi
   return "$rc"
 }
 trap cleanup EXIT
@@ -250,4 +265,5 @@ else
   summary "- type source READ BUT NOT LOADED: \`${ARTIFACT_NAME}\` (packaged for ${TARGET}, this runner is ${HOST}) — shape, platform stamp and manifest were checked and the packaged binary was never run"
 fi
 
+COMPLETED=1
 echo "check-artifact-type-source: ${ARTIFACT} carries FineType ${TAG} for ${PLATFORM}."
