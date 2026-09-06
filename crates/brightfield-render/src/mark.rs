@@ -381,17 +381,6 @@ pub trait MarkRenderer {
     fn suppresses_frame(&self) -> bool {
         false
     }
-
-    /// The map projection this renderer applies, if it is a projecting (geo)
-    /// mark; `None` for every cartesian mark (the default). Lets a caller
-    /// confirm the resolved projection a rebuilt geo mark carries WITHOUT
-    /// downcasting the boxed renderer — the seam the crossfilter rebuild's
-    /// survival test reads to distinguish Albers from the equirectangular
-    /// default (mirrors [`Self::suppresses_frame`]'s introspection-default
-    /// shape; zero impact on existing renderers).
-    fn projection(&self) -> Option<Projection> {
-        None
-    }
 }
 
 /// Default dot radius in pixels.
@@ -871,13 +860,17 @@ impl MarkRenderer for DotRenderer {
         };
 
         // The graticule first, so the points sit on top of it: it is
-        // scaffolding under the data, not data. It is drawn only by a projected
-        // mark, and it is drawn ONCE per mark — a point map's ghost and subset
-        // layers both draw one, which is two coincident sets of hairlines in the
-        // same ink rather than two different pictures.
+        // scaffolding under the data, not data.
+        //
+        // Its extent comes off the SCALE SET, not off this mark's batch. The
+        // scales are the plot's — one set shared by every layer — so a point
+        // map's ghost and its brushed subset compute the same lines and lay them
+        // down on top of each other. Read per batch, the brushed layer's extent
+        // is the selection's, so it picks a finer step off the ladder and draws
+        // a second, denser graticule over the region the reader swept.
         let projection = channel_map.projection();
         if let Some(projection) = projection {
-            if let Some(extent) = geo_extent_of(batch, x_col, y_col) {
+            if let Some(extent) = scales.geo_extent() {
                 let lines = graticule(projection, extent);
                 stroke_graticule(scene, &lines, x_scale, y_scale, scales.ink().grid);
             }
@@ -4094,9 +4087,15 @@ impl Projection {
     /// infinite position, which is a lie rather than an approximation. The
     /// projections that are total (equirectangular, identity, reflect-y, equal
     /// earth, the conics, albers) return a position for each coordinate they are
-    /// given, so no spec that predates the catalogue widening loses a point —
-    /// the test `an_unrepresentable_coordinate_has_no_position` holds both
-    /// halves.
+    /// given, and the test `an_unrepresentable_coordinate_has_no_position` holds
+    /// both halves.
+    ///
+    /// **A spec that predates this can still lose a point**, because a spec that
+    /// names `orthographic` was drawing the plate carrée before the catalogue
+    /// widened and draws an orthographic now — the vendored
+    /// `earthquakes-globe.yaml` is exactly that spec. What is true is narrower:
+    /// no spec whose `projectionType` this build ALREADY recognised changes what
+    /// it draws, because those three names are all total.
     #[must_use]
     pub fn project(self, lon: f64, lat: f64) -> Option<(f64, f64)> {
         match self {
@@ -4155,6 +4154,52 @@ impl Projection {
             Self::ConicEquidistant => Some(conic_equidistant_forward(lon * D2R, lat * D2R)),
             Self::Albers => Some(albers_forward(lon, lat)),
         }
+    }
+}
+
+impl Projection {
+    /// The longitude an x-axis planar `u` came from, WITHOUT knowing `v`.
+    ///
+    /// `None` for a projection whose `u` depends on the latitude as well — every
+    /// conic and every azimuthal, and Equal Earth. See
+    /// [`Self::axes_invert_separately`] for what that costs a brush.
+    #[must_use]
+    pub fn invert_lon(self, u: f64) -> Option<f64> {
+        match self {
+            Self::Equirectangular | Self::Identity | Self::ReflectY => Some(u),
+            // The forward is `lon * D2R`.
+            Self::Mercator => Some(u / D2R),
+            _ => None,
+        }
+    }
+
+    /// The latitude a y-axis planar `v` came from, WITHOUT knowing `u`.
+    ///
+    /// `None` for a projection whose `v` depends on the longitude as well.
+    #[must_use]
+    pub fn invert_lat(self, v: f64) -> Option<f64> {
+        match self {
+            Self::Equirectangular | Self::Identity => Some(v),
+            Self::ReflectY => Some(-v),
+            // The forward is `log(tan((π/2 + φ)/2))`, whose inverse is the
+            // Gudermannian `2·atan(e^v) - π/2`.
+            Self::Mercator => Some((2.0 * v.exp().atan() - std::f64::consts::FRAC_PI_2) / D2R),
+            _ => None,
+        }
+    }
+
+    /// Whether both per-axis inverses exist — the render-side half of
+    /// [`brightfield_spec::layout::ResolvedProjection::axes_invert_separately`],
+    /// which is the claim the parser and `build_brushable_bindings` act on.
+    ///
+    /// The two are pinned against each other over the whole catalogue by
+    /// `separability_is_the_claim_the_inverses_keep`, so neither can move
+    /// alone: a projection declared separable whose inverses are missing is a
+    /// brush that silently stops filtering, and one declared curved whose
+    /// inverses exist is a brush needlessly refused.
+    #[must_use]
+    pub fn axes_invert_separately(self) -> bool {
+        self.invert_lon(0.0).is_some() && self.invert_lat(0.0).is_some()
     }
 }
 
@@ -4390,10 +4435,10 @@ pub struct GraticuleLine {
     pub points: Vec<(f64, f64)>,
 }
 
-/// The spacings a graticule may take, coarsest first. Whole degrees down to
-/// 0.01° (about a kilometre), so a map of a city and a map of the world both
-/// land on a number a reader recognises rather than on a computed spacing like
-/// 7.3°.
+/// The spacings a graticule may take, coarsest first — nine whole-degree rungs
+/// from 90° to 1°, then six fractional ones down to 0.01° (about a kilometre),
+/// so a map of a city and a map of the world both land on a number a reader
+/// recognises rather than on a computed spacing like 7.3°.
 const GRATICULE_STEPS: [f64; 15] = [
     90.0, 45.0, 30.0, 20.0, 15.0, 10.0, 5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01,
 ];
@@ -4411,7 +4456,8 @@ const GRATICULE_SAMPLES: usize = 33;
 /// The coarsest spacing that divides `span` into at least six intervals, or the
 /// finest the ladder offers when no coarser one manages it.
 ///
-/// The ladder is whole degrees from 90° down to 0.01° (about a kilometre), so a
+/// The ladder runs 90° down to 0.01° (about a kilometre) — nine whole-degree
+/// rungs and six fractional ones (0.5°, 0.2°, 0.1°, 0.05°, 0.02°, 0.01°) — so a
 /// map of a city and a map of the world both land on a number a reader
 /// recognises rather than on a computed spacing like 7.3°. Six intervals is
 /// seven lines on a fully spanned axis — dense enough to read a position off,
@@ -4683,28 +4729,6 @@ fn clip_segment(
     ))
 }
 
-/// The geographic extent of a mark's two coordinate columns, or `None` when
-/// either is absent or holds no finite value.
-fn geo_extent_of(batch: &RecordBatch, lon_col: &str, lat_col: &str) -> Option<GeoExtent> {
-    let lons = column_as_f64(batch, lon_col)?;
-    let lats = column_as_f64(batch, lat_col)?;
-    let (mut lon0, mut lon1) = (f64::INFINITY, f64::NEG_INFINITY);
-    let (mut lat0, mut lat1) = (f64::INFINITY, f64::NEG_INFINITY);
-    for (lon, lat) in lons.iter().zip(lats.iter()) {
-        let (Some(lon), Some(lat)) = (lon, lat) else {
-            continue;
-        };
-        if !(lon.is_finite() && lat.is_finite()) {
-            continue;
-        }
-        lon0 = lon0.min(*lon);
-        lon1 = lon1.max(*lon);
-        lat0 = lat0.min(*lat);
-        lat1 = lat1.max(*lat);
-    }
-    (lon0.is_finite() && lat0.is_finite()).then(|| GeoExtent::new(lon0, lon1, lat0, lat1))
-}
-
 /// Basemap outline width for a stroke-only (no-fill) geo mark. The COLOUR is
 /// [`ChartInk::geo_stroke`](crate::ink::ChartInk::geo_stroke), read off the
 /// `ScaleSet`, so a basemap drawn in dark is drawn in dark ink.
@@ -4726,14 +4750,19 @@ const GEO_STROKE_WIDTH: f64 = 0.75;
 /// each feature — a numeric fill through the sequential ramp (choropleth), else
 /// the categorical colour path; a mark with NO fill strokes a basemap outline.
 ///
-/// v1 draws Polygon / MultiPolygon only (LineString / Point deferred). The
-/// projection reaches here through the `configured_renderer` / renderer_override
-/// seam, fixed at launch (like `colorScheme`). Geo is a STATIC, sole-in-plot
-/// mark (the `highlight` arg is ignored — no cross-filter dimming).
+/// v1 draws Polygon / MultiPolygon only (LineString / Point deferred). Geo is a
+/// STATIC, sole-in-plot mark (the `highlight` arg is ignored — no cross-filter
+/// dimming).
+///
+/// **The projection is not a field here.** It reaches this renderer the way it
+/// reaches every other projected mark — on the [`ChannelMap`], put there by
+/// `ChannelMap::from_mark_in` from the owning plot's `projectionType`. A geo
+/// mark on a plot naming nothing draws the plate carrée, which
+/// `MarkProjection::of` supplies; there is no second path by which a name could
+/// arrive, and so no way for a geo mark and a dot mark on one plot to draw in
+/// different coordinate systems.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GeoRenderer {
-    /// The resolved projection (equirectangular default, or US Albers).
-    pub projection: Projection,
     /// Sequential scheme for a numeric `fill:` choropleth (default viridis).
     pub scheme: SequentialScheme,
 }
@@ -4742,14 +4771,18 @@ impl GeoRenderer {
     /// The projected bounding box `(u_min, u_max, v_min, v_max)` over every
     /// vertex of every feature, or `None` when the geometry column is absent /
     /// empty / unparseable (the caller then synthesizes no scales).
-    fn projected_bbox(&self, batch: &RecordBatch) -> Option<(f64, f64, f64, f64)> {
+    fn projected_bbox(
+        &self,
+        batch: &RecordBatch,
+        projection: Projection,
+    ) -> Option<(f64, f64, f64, f64)> {
         let geoms = column_as_string(batch, DEFAULT_GEOMETRY_COLUMN)?;
         let (mut umin, mut umax) = (f64::INFINITY, f64::NEG_INFINITY);
         let (mut vmin, mut vmax) = (f64::INFINITY, f64::NEG_INFINITY);
         for geom in geoms.iter().flatten() {
             for ring in parse_geojson_rings(geom) {
                 for (lon, lat) in ring {
-                    let Some((u, v)) = self.projection.project(lon, lat) else {
+                    let Some((u, v)) = projection.project(lon, lat) else {
                         continue;
                     };
                     umin = umin.min(u);
@@ -4780,6 +4813,7 @@ impl MarkRenderer for GeoRenderer {
         let Some(geoms) = column_as_string(batch, DEFAULT_GEOMETRY_COLUMN) else {
             return;
         };
+        let projection = channel_map.projection().unwrap_or_default();
 
         // A `fill:` channel fills each feature (numeric → the ramp built by
         // augment_scales; else the categorical colour path). No fill → a
@@ -4811,12 +4845,15 @@ impl MarkRenderer for GeoRenderer {
                 // for. Proper clipping — cutting the ring at the horizon and
                 // closing it along the rim — is d3's `clipCircle`, and this
                 // build has no equivalent, so it declines rather than
-                // approximates. The projections that predate the catalogue
-                // widening are total, so no existing spec loses a ring.
+                // approximates. The three names this build recognised before the
+                // catalogue widened are total, so a spec naming one of those
+                // loses no ring; a spec naming `orthographic` was getting a
+                // plate carrée and now gets a globe, which is a changed picture
+                // and is the point of the change.
                 let Some(pixels) = ring
                     .iter()
                     .map(|(lon, lat)| {
-                        self.projection
+                        projection
                             .project(*lon, *lat)
                             .map(|(u, v)| (x_scale.map_f64(u), y_scale.map_f64(v)))
                     })
@@ -4867,7 +4904,8 @@ impl MarkRenderer for GeoRenderer {
         x_range: (f64, f64),
         y_range: (f64, f64),
     ) {
-        if let Some(bbox) = self.projected_bbox(batch) {
+        if let Some(bbox) = self.projected_bbox(batch, channel_map.projection().unwrap_or_default())
+        {
             let ((x0, x1), (y0, y1)) = aspect_fit_domains(bbox, x_range, y_range);
             merge_linear_scale(scales, Channel::X, x0, x1, x_range);
             merge_linear_scale(scales, Channel::Y, y0, y1, y_range);
@@ -4879,10 +4917,6 @@ impl MarkRenderer for GeoRenderer {
     /// reads as a map. The scene builders skip grid + axes for it.
     fn suppresses_frame(&self) -> bool {
         true
-    }
-
-    fn projection(&self) -> Option<Projection> {
-        Some(self.projection)
     }
 }
 
@@ -5094,8 +5128,9 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
             MarkKind::RegressionX,
             Box::new(RegressionRenderer::default()),
         ),
-        // Geo — projected GeoJSON basemap / choropleth. The default (equirectangular)
-        // projection; `configured_renderer` swaps in the plot's resolved projection.
+        // Geo — projected GeoJSON basemap / choropleth. Its projection comes off
+        // the mark's `ChannelMap`, so the registry default carries the whole
+        // behaviour and only the colour scheme needs configuring.
         (MarkKind::Geo, Box::new(GeoRenderer::default())),
     ]
 }
@@ -5108,18 +5143,23 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
 /// coordinator's live rebuild dispatch through (renderer seam):
 /// raster/heatmap/cell/hexbin carry the plot's `colorScheme`, heatmap/contour
 /// carry the mark's `bandwidth`, contour carries its iso-level `thresholds`,
-/// hexgrid carries its `binWidth`, and geo carries the plot's resolved
-/// `projection` (plus the `colorScheme` for a choropleth ramp). A mark rebuilt
-/// through the same configured renderer its first render used keeps its scheme,
-/// bandwidth, thresholds, binWidth, and projection across every gesture. The
-/// match must stay identical to the app-assembly resolution that feeds it.
+/// hexgrid carries its `binWidth`, and geo carries the `colorScheme` for a
+/// choropleth ramp. A mark rebuilt through the same configured renderer its
+/// first render used keeps its scheme, bandwidth, thresholds and binWidth across
+/// every gesture. The match must stay identical to the app-assembly resolution
+/// that feeds it.
+///
+/// **A projection is deliberately not among these.** It rides on the
+/// [`ChannelMap`], which every rebuild path constructs from the mark and its
+/// plot, so it cannot be dropped by a rebuild that forgets to thread it — which
+/// is what a colour cycle over a geo choropleth used to do, reverting an Albers
+/// basemap to the plate carrée until restart.
 pub fn configured_renderer(
     kind: MarkKind,
     scheme: SequentialScheme,
     bandwidth: Option<f64>,
     thresholds: Option<usize>,
     bin_width: Option<f64>,
-    projection: Option<Projection>,
 ) -> Option<Box<dyn MarkRenderer + Send + Sync>> {
     match kind {
         MarkKind::Raster => Some(Box::new(RasterRenderer { scheme })),
@@ -5133,10 +5173,7 @@ pub fn configured_renderer(
             thresholds,
             bandwidth,
         })),
-        MarkKind::Geo => Some(Box::new(GeoRenderer {
-            projection: projection.unwrap_or_default(),
-            scheme,
-        })),
+        MarkKind::Geo => Some(Box::new(GeoRenderer { scheme })),
         _ => None,
     }
 }
@@ -5214,10 +5251,6 @@ impl MarkRenderer for ColourOverrideRenderer {
 
     fn suppresses_frame(&self) -> bool {
         self.inner.suppresses_frame()
-    }
-
-    fn projection(&self) -> Option<Projection> {
-        self.inner.projection()
     }
 }
 

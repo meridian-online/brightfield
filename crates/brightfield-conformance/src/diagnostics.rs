@@ -233,7 +233,9 @@ fn warning_wire_name(warning: &ParseWarning) -> String {
         ParseWarning::NonNumericInset { attribute }
         | ParseWarning::NonStringLabel { attribute } => attribute.clone(),
         ParseWarning::UnknownProjection { value } => value.clone(),
-        ParseWarning::AspectRatioWithProjection { mark } => mark.clone(),
+        ParseWarning::AspectRatioWithProjection { mark }
+        | ParseWarning::MarkCannotProject { mark, .. } => mark.clone(),
+        ParseWarning::IntervalBrushUnderCurvedProjection { interactor, .. } => interactor.clone(),
         // The widget the author asked for by name, so the banner names
         // something they can search their own file for.
         ParseWarning::IntervalSliderIncomplete { .. } => "slider".to_string(),
@@ -248,9 +250,11 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         ParseWarning::UnconsumedMarkOption { .. }
         | ParseWarning::UnconsumedSort { .. }
         | ParseWarning::AspectRatioWithProjection { .. }
+        | ParseWarning::MarkCannotProject { .. }
         | ParseWarning::HighlightOnAggregate { .. } => "mark",
         ParseWarning::InteractorBindingMissing { .. }
         | ParseWarning::InteractorBindingNonSelection { .. }
+        | ParseWarning::IntervalBrushUnderCurvedProjection { .. }
         | ParseWarning::HighlightBindingMissing { .. }
         | ParseWarning::HighlightBindingNonSelection { .. } => "interactor",
         // The node parses as an interactor (`select:` wins the discriminator)
@@ -262,11 +266,8 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         | ParseWarning::LegendBindingNonCrossfilter { .. } => "legend",
         ParseWarning::ParamTypeMismatch { .. } | ParseWarning::DeadParam { .. } => "param",
         ParseWarning::NonNumericInset { .. }
-        // `projectionType` is a plot attribute in Mosaic, and brightfield reads
-        // it on a mark as well (see `CONSUMED_MARK_OPTION_KEYS`). The warning
-        // does not carry which node raised it, so a mark-level bad name is
-        // labelled "plot" here — the message names the offending VALUE, which is
-        // what an author searches their own file for.
+        // `projectionType` is a plot attribute in Mosaic and this build reads it
+        // nowhere else, so an unrecognised name is always the plot's.
         | ParseWarning::UnknownProjection { .. }
         | ParseWarning::NonStringLabel { .. } => "plot",
         ParseWarning::UnknownAggregate { .. }

@@ -8,7 +8,7 @@ use brightfield_spec::ast::{DataSourceKind, ParamNode, SelectionNode, Spec, Spec
 use brightfield_spec::parse::ParseWarning;
 use indexmap::IndexMap;
 
-use brightfield_spec::ast::{Component, Mark, ValueOrParamRef};
+use brightfield_spec::ast::{Component, Mark, PlotNode, ValueOrParamRef};
 use brightfield_spec::vocab::{ImplStatus, InteractorKind, SelectionResolution};
 
 use crate::binding::{Binding, EmittedQuery, ParamValues};
@@ -433,6 +433,35 @@ fn collect_marks_from_component<'a>(component: &'a Component, marks: &mut Vec<&'
         // Legends, interactors, inputs, spacers don't contain marks
         _ => {}
     }
+}
+
+/// The plot node each mark sits in, indexed like [`collect_marks`].
+///
+/// **The one join a renderer needs and the AST does not carry.** A `Mark` has no
+/// back-pointer to its plot, and a plot-level attribute — `projectionType` above
+/// all — has to reach the mark that draws under it. Built from
+/// [`collect_plot_groups`] and `collect_plot_nodes` rather than by a third walk
+/// of the tree, so the mark ordering here is the same ordering the engine
+/// returns results in by construction and not by two traversals agreeing.
+///
+/// `None` for a bare mark that is not inside any plot (degenerate; Mosaic marks
+/// normally live in a plot), which reads as "this mark's plot names no
+/// projection".
+#[must_use]
+pub fn plot_of_each_mark(spec: &Spec) -> Vec<Option<&PlotNode>> {
+    let nodes = brightfield_spec::layout::collect_plot_nodes(spec);
+    let mut out: Vec<Option<&PlotNode>> = vec![None; collect_marks(spec).len()];
+    for group in collect_plot_groups(spec) {
+        let Some((_, node)) = nodes.iter().find(|(path, _)| *path == group.plot_path) else {
+            continue;
+        };
+        for mi in group.mark_indices {
+            if let Some(slot) = out.get_mut(mi) {
+                *slot = Some(*node);
+            }
+        }
+    }
+    out
 }
 
 /// Collect marks paired with their depth-first component paths.
