@@ -185,6 +185,27 @@ jobs:
       - name: the FineType pin's consumers agree
         run: ./scripts/check-finetype-pin.sh
 
+      # The step above establishes that the read-back script is NAMED in
+      # release.yml. Four edits satisfy that and remove the protection — a
+      # `continue-on-error:` on the step, a dropped `.dmg` argument, a pipe, a
+      # `|| true` — so what the release step DOES is a separate gate, and this
+      # is it. It drives the step's own `run:` block against a fixture `dist/`
+      # with a recorder in place of the check, once per matrix leg, and reads
+      # which artefacts were opened, with which arguments, and whether a refusal
+      # stops the job.
+      #
+      # Toolchain-free, which is why it belongs in this job: it asks
+      # scripts/check-artifact-type-source.sh which artefact shapes it can open,
+      # and that answer comes from a `case` on the filename, before the script
+      # reads a host triple from rustc. The `.dmg` cases report "a .dmg can only
+      # be attached on macOS" here and are still classified as artefacts the
+      # release must load-verify, which is the answer that matters.
+      - name: the release reads back what it publishes — self-test
+        run: ./scripts/check-release-readback.py --self-test
+
+      - name: the release reads back what it publishes
+        run: ./scripts/check-release-readback.py
+
       # The fetch, against a loopback server holding fixture assets. Url
       # construction, curl, sidecar parse, digest comparison, unpack and
       # assembly all run; only the host differs from a release.
