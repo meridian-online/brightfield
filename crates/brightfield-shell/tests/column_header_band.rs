@@ -527,10 +527,11 @@ fn the_same_table_draws_two_densities_by_where_its_pane_is() {
 ///
 /// `house_age` has 52 distinct values across 240 rows with no nulls, so a
 /// regression that counted rows instead of distinct values reads 240 here,
-/// not 52 — the two are asserted unequal first, so this pins nothing if a
-/// future fixture swap makes them coincide. Checked against
-/// [`fixture_stats`], which reads the CSV directly rather than through a
-/// second query.
+/// not 52. The assertion above the read guards that: if a future fixture
+/// swap ever gave `house_age` a distinct count equal to its row count, this
+/// test would stop being able to tell the two apart, and that assertion is
+/// what would say so. Checked against [`fixture_stats`], which reads the
+/// CSV directly rather than through a second query.
 #[test]
 fn the_compact_bands_own_row_states_the_distinct_count() {
     let mut win = Live::open();
