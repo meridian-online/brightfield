@@ -514,9 +514,9 @@ pub(crate) fn plan_file_reads(explained: &str) -> Option<u32> {
     let mut total = 0u32;
     for root in roots {
         total = total.saturating_add(count_matching_leaves(root, &|leaf| {
-            let named = leaf.get("extra_info").is_some_and(|info| {
-                info.get("Table").is_some() || info.get("CTE Index").is_some()
-            });
+            let named = leaf
+                .get("extra_info")
+                .is_some_and(|info| info.get("Table").is_some() || info.get("CTE Index").is_some());
             !named
         })?);
     }

@@ -2761,8 +2761,7 @@ impl Session {
         self.conn
             .execute_batch(&copy)
             .map_err(|cause| EngineError::ConnectionFailed { cause })?;
-        let repoint =
-            format!("CREATE OR REPLACE VIEW \"{quoted}\" AS SELECT * FROM \"{table}\"");
+        let repoint = format!("CREATE OR REPLACE VIEW \"{quoted}\" AS SELECT * FROM \"{table}\"");
         self.conn
             .execute_batch(&repoint)
             .map_err(|cause| EngineError::ConnectionFailed { cause })?;
@@ -2772,7 +2771,6 @@ impl Session {
 }
 
 impl Session {
-
     /// How many leaves DuckDB's physical plan for `sql` carries, and how many
     /// of them read a file — `(None, None)` where it declined to explain it.
     ///

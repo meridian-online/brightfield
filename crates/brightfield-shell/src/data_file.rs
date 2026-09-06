@@ -24,19 +24,23 @@
 //! over it**, so the wait before the first picture is a count of statements
 //! times the cost of one read — and the dashboard [`crate::dashboard`] chooses
 //! is a tile per column, which makes that count grow with the table's width.
-//! Measured on an Apple M1 Pro against this build's DuckDB, on a 2,967,637-byte
-//! CSV of 14,133 rows and 22 columns: the first composition read the file 46
-//! times and took 8,231 ms of a 9,066 ms open. Fourteen of those tiles are
-//! histograms and each costs three reads — one for the rows and two more for
-//! the bin extent, which is a `min` and a `max` the profile pass has already
-//! taken.
+//! Measured on an Apple M1 Pro against this build's DuckDB v1.5.2, on a
+//! 2,967,637-byte CSV of 14,133 rows and 22 columns: the first composition read
+//! the file 46 times and took 8,269.6 ms of a 9,183.8 ms open — the record is
+//! `benchmarks/results/open-scan/2026-09-07-apple-m1-pro-from-the-file.json`,
+//! and `--open-scan-no-materialise` is how the harness measures that branch
+//! again. Fourteen of those tiles are histograms and each costs three reads:
+//! one for the rows and two more for the bin extent, which is a `min` and a
+//! `max` the profile pass has already taken.
 //!
 //! So [`open`] reads the file **once**, into a session-scoped table, and points
 //! the view at that ([`brightfield_engine::Session::materialise_source`]). Every
 //! tile's query is byte-identical and scans memory. The composition then reads
 //! the file no times at all, which is what
 //! [`crate::pipeline::COMPOSITION_FILE_READS`] states and what the open-scan
-//! harness measures.
+//! harness measures — the same file, the same machine, minutes later:
+//! 53.5 ms of a 1,007.3 ms open, in
+//! `benchmarks/results/open-scan/2026-09-07-apple-m1-pro.json`.
 //!
 //! **The larger-than-memory property above is real and is kept**, which is why
 //! this is a threshold and not a policy: over
@@ -143,8 +147,8 @@ pub const OPENABLE_EXTENSIONS: &[&str] = &["csv", "tsv", "parquet"];
 /// than a measurement — what it is chosen against is stated here so a reader
 /// can disagree with it on the same terms.
 ///
-/// The lower end is not in doubt. One read of a 2,967,637-byte CSV costs about
-/// 180 ms on an Apple M1 Pro, and a dashboard of 22 columns issues 46 of them,
+/// The lower end is not in doubt. A dashboard over that 2,967,637-byte CSV
+/// issued 46 reads of it and spent 8,269.6 ms doing so — about 180 ms a read —
 /// so anything in that range is worth copying many times over. The upper end
 /// is where the judgement is: **on disk is not in memory.** A CSV widens
 /// somewhat when it is parsed into typed columns; a Parquet is compressed and
@@ -514,10 +518,7 @@ impl Default for OpenOptions {
 /// # Errors
 ///
 /// As [`open`].
-pub fn open_traced(
-    chosen: &str,
-    options: &OpenOptions,
-) -> Result<(OpenedFile, OpenTrace), String> {
+pub fn open_traced(chosen: &str, options: &OpenOptions) -> Result<(OpenedFile, OpenTrace), String> {
     let path = accept(chosen)?;
     let columns = columns_of(&path)?;
     let dashboard = Dashboard::of(&path, &columns);
@@ -549,7 +550,9 @@ pub fn open_traced(
     // A file DuckDB will not copy is not a file that failed to open: the view
     // is still there and still correct, so a refusal here costs the old slow
     // open and nothing else.
-    let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(u64::MAX);
+    let bytes = std::fs::metadata(&path)
+        .map(|m| m.len())
+        .unwrap_or(u64::MAX);
     let mut materialised = false;
     let mut materialise_ms = 0.0;
     if bytes <= options.materialise_under_bytes {

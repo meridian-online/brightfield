@@ -32,8 +32,8 @@ use std::time::Instant;
 use serde::Serialize;
 
 use brightfield_engine::{profile, Engine, LoadOptions, ProfileOutcome, ScanTally};
-use brightfield_shell::pipeline;
 use brightfield_shell::data_file;
+use brightfield_shell::pipeline;
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::{parse_spec, Format};
 
@@ -250,6 +250,26 @@ pub fn ensure_csv(conn: &duckdb::Connection, dir: &Path, shape: &Shape) -> Resul
     Ok(path)
 }
 
+/// The open this run is measuring: the app's own, or the one a file too large
+/// to copy takes.
+///
+/// **The second is here so the before-and-after is one binary run twice.**
+/// Reading the file into memory is what the composition figures are about, and
+/// comparing them against a number measured on another day, on another build,
+/// under another machine's load is how a speed-up gets claimed that the change
+/// did not produce. `--open-scan-no-materialise` measures the other branch,
+/// minutes apart, on the same machine.
+fn options(materialise: bool) -> data_file::OpenOptions {
+    if materialise {
+        data_file::OpenOptions::default()
+    } else {
+        data_file::OpenOptions {
+            materialise_under_bytes: 0,
+            ..data_file::OpenOptions::default()
+        }
+    }
+}
+
 /// The scan tally for one file, and the columns the profile found.
 ///
 /// Runs the profile pass with counting on, which asks DuckDB to explain each
@@ -302,6 +322,10 @@ fn time_profile(path: &Path) -> Result<f64, String> {
 /// number on a 240-row fixture as on a 14,133-row one, and opening the wide
 /// shape for real is seconds of tile queries that say nothing about it.
 ///
+/// `materialise` is the open being measured — see [`options`]. `false` is the
+/// branch a file too large to copy takes, and it is what the before-and-after
+/// of reading the file into memory is measured against.
+///
 /// # Errors
 ///
 /// The fixture could not be written, or the file would not open.
@@ -310,6 +334,7 @@ pub fn measure(
     dir: &Path,
     shape: &Shape,
     repeats: usize,
+    materialise: bool,
 ) -> Result<Measured, String> {
     let path = ensure_csv(conn, dir, shape)?;
     let bytes = std::fs::metadata(&path)
@@ -329,15 +354,12 @@ pub fn measure(
     // The composition's count, taken once and untimed for the same reason the
     // profile pass's is: the `EXPLAIN` before each statement is what makes the
     // count readable and is not what an open pays.
+    let counting = data_file::OpenOptions {
+        count_scans: true,
+        ..options(materialise)
+    };
     let (counted, composition_tally) =
-        data_file::open_traced(
-        chosen,
-        &data_file::OpenOptions {
-            count_scans: true,
-            ..data_file::OpenOptions::default()
-        },
-    )
-    .map_err(|e| format!("{}: {e}", shape.name))?;
+        data_file::open_traced(chosen, &counting).map_err(|e| format!("{}: {e}", shape.name))?;
     let mut tiles = counted.dashboard.tiles().len();
     let mut composition_queries = counted.live.executes();
     drop(counted);
@@ -349,9 +371,8 @@ pub fn measure(
     for _ in 0..repeats {
         profile_ms.push(time_profile(&path)?);
         let at = Instant::now();
-        let (opened, trace) =
-            data_file::open_traced(chosen, &data_file::OpenOptions::default())
-                .map_err(|e| format!("{}: {e}", shape.name))?;
+        let (opened, trace) = data_file::open_traced(chosen, &options(materialise))
+            .map_err(|e| format!("{}: {e}", shape.name))?;
         open_ms.push(at.elapsed().as_secs_f64() * 1000.0);
         composition_ms.push(trace.composition_ms);
         if trace.materialised {
@@ -403,7 +424,7 @@ pub fn report(rows: &[Measured]) -> String {
     let mut out = String::new();
     out.push_str(
         "shape   rows    cols  numeric  bytes      tiles  profile      profile p50  \
-         compose  reads/bound  compose p50  open p50\n",
+         compose  reads/bound  in-memory  compose p50  open p50\n",
     );
     for m in rows {
         let p50 = |s: &Option<Stats>| {
@@ -417,7 +438,7 @@ pub fn report(rows: &[Measured]) -> String {
             )
         };
         out.push_str(&format!(
-            "{:<7} {:<7} {:<5} {:<8} {:<10} {:<6} {:<12} {:<12} {:<8} {:<12} {:<12} {}\n",
+            "{:<7} {:<7} {:<5} {:<8} {:<10} {:<6} {:<12} {:<12} {:<8} {:<12} {:<10} {:<12} {}\n",
             m.shape.name,
             m.shape.rows,
             m.columns,
@@ -429,6 +450,7 @@ pub fn report(rows: &[Measured]) -> String {
             m.composition_scans
                 .map_or_else(|| "?".to_string(), |s| s.to_string()),
             bounded(m.composition_file_reads, m.composition_file_read_bound),
+            if m.materialised { "yes" } else { "no" },
             p50(&m.composition),
             p50(&m.open)
         ));
@@ -516,7 +538,7 @@ mod tests {
             shape.name
         ));
         let conn = duckdb::Connection::open_in_memory().expect("duckdb");
-        measure(&conn, &dir, shape, 0).expect("measure")
+        measure(&conn, &dir, shape, 0, true).expect("measure")
     }
 
     /// **Opening a file reads it a bounded number of times, and the bound does
@@ -657,7 +679,8 @@ mod tests {
         // The witness. The statements are still there and still have leaves;
         // a file-read count of zero that came from counting nothing would sit
         // beside a leaf count of zero, and this is what tells them apart.
-        let (Some(wide_scans), Some(narrow_scans)) = (wide.composition_scans, narrow.composition_scans)
+        let (Some(wide_scans), Some(narrow_scans)) =
+            (wide.composition_scans, narrow.composition_scans)
         else {
             panic!(
                 "a composition statement went unexplained, so the file-read                  count above is reading past a hole: {:#?}",
@@ -833,7 +856,7 @@ mod tests {
     fn the_timed_half_of_the_harness_opens_a_file_and_reports() {
         let dir = std::env::temp_dir().join(format!("bf-open-timed-{}", std::process::id()));
         let conn = duckdb::Connection::open_in_memory().expect("duckdb");
-        let m = measure(&conn, &dir, &small(&NARROW), 1).expect("measure");
+        let m = measure(&conn, &dir, &small(&NARROW), 1, true).expect("measure");
 
         let profile = m.profile.as_ref().expect("a timed profile sample");
         let open = m.open.as_ref().expect("a timed open sample");

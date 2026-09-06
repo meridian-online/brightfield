@@ -1,0 +1,254 @@
+{
+  "schema": "brightfield-bench/open-scan/1",
+  "machine": {
+    "cpu": "Apple M1 Pro",
+    "logical_cpus": "8",
+    "memory_gib": "16",
+    "os": "macOS 26.1",
+    "gpu_adapter": "Apple M1 Pro (Metal, IntegratedGpu)",
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "build_profile": "release",
+    "commit": "1477563",
+    "captured_at": "2026-09-07T01:41:23.761530+10:00",
+    "duckdb": "v1.5.2"
+  },
+  "scan_bound": 3,
+  "composition_file_read_bound": 0,
+  "materialise_under_bytes": 67108864,
+  "repeats": 3,
+  "methodology": [
+    "`scans` is the sum over the statements `Session::profile_sources` issues of the leaves in DuckDB's physical plan for each — the places rows enter the query. Leaves rather than statements: a UNION ALL branch per column is one statement that reads the table once per branch.",
+    "`scans` covers the profile pass and nothing else. `composition_scans` is the same leaf count over every statement the FIRST COMPOSITION issues. It is not `composition_queries`: that one counts the queries marks are drawn from, a mark's plan can read the table more than once — a binned histogram's plan reads it three times, once for the rows and twice for the bin extent — and the statements the composition issues beside the marks, the status band's two counts and the sample facts, are not mark executes at all.",
+    "`composition_file_reads` is the subset of `composition_scans` that reads the FILE rather than a relation the session holds in memory, and it is the number under a bound. A leaf counts as a file read unless DuckDB's plan says it scans a named table; the rule is an exclusion rather than a list of reader operators, so a leaf nobody anticipated makes the number go up rather than quietly vanish.",
+    "`materialised` says whether `data_file::open` read the file into a session-scoped table before composing, which it does for a file under `MATERIALISE_UNDER_BYTES`. `materialise` times that one read. Above the threshold the file stays a view, nothing is copied, and `composition_file_reads` is under no bound.",
+    "`compose` times `LiveDashboard::present` alone, read off the same uncounted `open` run the `open` figure comes from rather than a second one, so the two cannot disagree about which open they describe.",
+    "`profile` times `Session::profile_sources` alone, on a session loaded for that sample. The counting run is separate and untimed, because asking DuckDB to explain each statement roughly doubles what the pass issues.",
+    "`open` times the whole of `brightfield_shell::data_file::open`: the profile pass, the dashboard chosen from it, and the first composition over the tiles it chose.",
+    "Fixtures are CSV, written once and reused. A `file:` source is a DuckDB view over `read_csv`, so each statement over it re-reads and re-parses the file — which is why a count of statements is the shape of the wait.",
+    "The page cache is warm after the first sample and is not dropped between them, so these are warm-cache figures."
+  ],
+  "shapes": [
+    {
+      "shape": {
+        "name": "narrow",
+        "rows": 14133,
+        "numeric": 2,
+        "text": 1,
+        "timestamps": 0
+      },
+      "columns": 3,
+      "bytes": 321025,
+      "scans": 3,
+      "scan_bound": 3,
+      "statements": [
+        {
+          "scans": 1,
+          "sql": "DESCRIBE \"opened\""
+        },
+        {
+          "scans": 1,
+          "sql": "SELECT CAST(count(*) AS BIGINT), CAST(count(\"measure_0\") AS BIGINT), CAST(approx_count_distinct(\"measure_0\") AS BIGINT), CAST(min(\"measure_0\") AS VARCHAR), CAST"
+        },
+        {
+          "scans": 1,
+          "sql": "SELECT CAST(u.c AS BIGINT) AS c, CAST(u.k AS DOUBLE) AS k, CAST(count(*) AS BIGINT) AS n FROM (SELECT unnest([CASE WHEN \"measure_0\" IS NULL THEN NULL ELSE {'c':"
+        }
+      ],
+      "profile": {
+        "n": 3,
+        "min_ms": 94.95,
+        "mean_ms": 96.183,
+        "p50_ms": 96.638,
+        "p95_ms": 96.96,
+        "max_ms": 96.96
+      },
+      "open": {
+        "n": 3,
+        "min_ms": 160.061,
+        "mean_ms": 161.008,
+        "p50_ms": 161.406,
+        "p95_ms": 161.557,
+        "max_ms": 161.557
+      },
+      "tiles": 2,
+      "composition_queries": 2,
+      "composition_scans": 10,
+      "composition_file_reads": 0,
+      "composition_file_read_bound": 0,
+      "materialised": true,
+      "materialise": {
+        "n": 3,
+        "min_ms": 18.062,
+        "mean_ms": 18.212,
+        "p50_ms": 18.227,
+        "p95_ms": 18.348,
+        "max_ms": 18.348
+      },
+      "composition_statements": [
+        {
+          "scans": 4,
+          "sql": "SELECT * FROM (SELECT CAST(__bf_bin_lo + __bf_bin_step * floor((\"measure_0\" - __bf_bin_lo) / CAST(__bf_bin_step AS DOUBLE)) AS DOUBLE) AS \"measure_0\", CAST(__bf"
+        },
+        {
+          "scans": 4,
+          "sql": "SELECT * FROM (SELECT CAST(__bf_bin_lo + __bf_bin_step * floor((\"measure_1\" - __bf_bin_lo) / CAST(__bf_bin_step AS DOUBLE)) AS DOUBLE) AS \"measure_1\", CAST(__bf"
+        },
+        {
+          "scans": 1,
+          "sql": "SELECT count(*) AS n FROM (SELECT * FROM \"opened\") AS bf_step_rows"
+        },
+        {
+          "scans": 1,
+          "sql": "SELECT count(*) AS n FROM (SELECT * FROM \"opened\") AS bf_step_rows"
+        }
+      ],
+      "composition": {
+        "n": 3,
+        "min_ms": 6.758,
+        "mean_ms": 6.854,
+        "p50_ms": 6.84,
+        "p95_ms": 6.963,
+        "max_ms": 6.963
+      }
+    },
+    {
+      "shape": {
+        "name": "wide",
+        "rows": 14133,
+        "numeric": 14,
+        "text": 6,
+        "timestamps": 2
+      },
+      "columns": 22,
+      "bytes": 2967637,
+      "scans": 3,
+      "scan_bound": 3,
+      "statements": [
+        {
+          "scans": 1,
+          "sql": "DESCRIBE \"opened\""
+        },
+        {
+          "scans": 1,
+          "sql": "SELECT CAST(count(*) AS BIGINT), CAST(count(\"measure_0\") AS BIGINT), CAST(approx_count_distinct(\"measure_0\") AS BIGINT), CAST(min(\"measure_0\") AS VARCHAR), CAST"
+        },
+        {
+          "scans": 1,
+          "sql": "SELECT CAST(u.c AS BIGINT) AS c, CAST(u.k AS DOUBLE) AS k, CAST(count(*) AS BIGINT) AS n FROM (SELECT unnest([CASE WHEN \"measure_0\" IS NULL THEN NULL ELSE {'c':"
+        }
+      ],
+      "profile": {
+        "n": 3,
+        "min_ms": 566.96,
+        "mean_ms": 569.281,
+        "p50_ms": 568.785,
+        "p95_ms": 572.097,
+        "max_ms": 572.097
+      },
+      "open": {
+        "n": 3,
+        "min_ms": 1003.932,
+        "mean_ms": 1009.323,
+        "p50_ms": 1007.257,
+        "p95_ms": 1016.78,
+        "max_ms": 1016.78
+      },
+      "tiles": 16,
+      "composition_queries": 16,
+      "composition_scans": 60,
+      "composition_file_reads": 0,
+      "composition_file_read_bound": 0,
+      "materialised": true,
+      "materialise": {
+        "n": 3,
+        "min_ms": 111.158,
+        "mean_ms": 112.42,
+        "p50_ms": 112.336,
+        "p95_ms": 113.768,
+        "max_ms": 113.768
+      },
+      "composition_statements": [
+        {
+          "scans": 4,
+          "sql": "SELECT * FROM (SELECT CAST(__bf_bin_lo + __bf_bin_step * floor((\"measure_0\" - __bf_bin_lo) / CAST(__bf_bin_step AS DOUBLE)) AS DOUBLE) AS \"measure_0\", CAST(__bf"
+        },
+        {
+          "scans": 4,
+          "sql": "SELECT * FROM (SELECT CAST(__bf_bin_lo + __bf_bin_step * floor((\"measure_1\" - __bf_bin_lo) / CAST(__bf_bin_step AS DOUBLE)) AS DOUBLE) AS \"measure_1\", CAST(__bf"
+        },
+        {
+          "scans": 4,
+          "sql": "SELECT * FROM (SELECT CAST(__bf_bin_lo + __bf_bin_step * floor((\"measure_2\" - __bf_bin_lo) / CAST(__bf_bin_step AS DOUBLE)) AS DOUBLE) AS \"measure_2\", CAST(__bf"
+        },
+        {
+          "scans": 4,
+          "sql": "SELECT * FROM (SELECT CAST(__bf_bin_lo + __bf_bin_step * floor((\"measure_3\" - __bf_bin_lo) / CAST(__bf_bin_step AS DOUBLE)) AS DOUBLE) AS \"measure_3\", CAST(__bf"
+        },
+        {
+          "scans": 4,
+          "sql": "SELECT * FROM (SELECT CAST(__bf_bin_lo + __bf_bin_step * floor((\"measure_4\" - __bf_bin_lo) / CAST(__bf_bin_step AS DOUBLE)) AS DOUBLE) AS \"measure_4\", CAST(__bf"
+        },
+        {
+          "scans": 4,
+          "sql": "SELECT * FROM (SELECT CAST(__bf_bin_lo + __bf_bin_step * floor((\"measure_5\" - __bf_bin_lo) / CAST(__bf_bin_step AS DOUBLE)) AS DOUBLE) AS \"measure_5\", CAST(__bf"
+        },
+        {
+          "scans": 4,
+          "sql": "SELECT * FROM (SELECT CAST(__bf_bin_lo + __bf_bin_step * floor((\"measure_6\" - __bf_bin_lo) / CAST(__bf_bin_step AS DOUBLE)) AS DOUBLE) AS \"measure_6\", CAST(__bf"
+        },
+        {
+          "scans": 4,
+          "sql": "SELECT * FROM (SELECT CAST(__bf_bin_lo + __bf_bin_step * floor((\"measure_7\" - __bf_bin_lo) / CAST(__bf_bin_step AS DOUBLE)) AS DOUBLE) AS \"measure_7\", CAST(__bf"
+        },
+        {
+          "scans": 4,
+          "sql": "SELECT * FROM (SELECT CAST(__bf_bin_lo + __bf_bin_step * floor((\"measure_8\" - __bf_bin_lo) / CAST(__bf_bin_step AS DOUBLE)) AS DOUBLE) AS \"measure_8\", CAST(__bf"
+        },
+        {
+          "scans": 4,
+          "sql": "SELECT * FROM (SELECT CAST(__bf_bin_lo + __bf_bin_step * floor((\"measure_9\" - __bf_bin_lo) / CAST(__bf_bin_step AS DOUBLE)) AS DOUBLE) AS \"measure_9\", CAST(__bf"
+        },
+        {
+          "scans": 4,
+          "sql": "SELECT * FROM (SELECT CAST(__bf_bin_lo + __bf_bin_step * floor((\"measure_10\" - __bf_bin_lo) / CAST(__bf_bin_step AS DOUBLE)) AS DOUBLE) AS \"measure_10\", CAST(__"
+        },
+        {
+          "scans": 4,
+          "sql": "SELECT * FROM (SELECT CAST(__bf_bin_lo + __bf_bin_step * floor((\"measure_11\" - __bf_bin_lo) / CAST(__bf_bin_step AS DOUBLE)) AS DOUBLE) AS \"measure_11\", CAST(__"
+        },
+        {
+          "scans": 4,
+          "sql": "SELECT * FROM (SELECT CAST(__bf_bin_lo + __bf_bin_step * floor((\"measure_12\" - __bf_bin_lo) / CAST(__bf_bin_step AS DOUBLE)) AS DOUBLE) AS \"measure_12\", CAST(__"
+        },
+        {
+          "scans": 4,
+          "sql": "SELECT * FROM (SELECT CAST(__bf_bin_lo + __bf_bin_step * floor((\"measure_13\" - __bf_bin_lo) / CAST(__bf_bin_step AS DOUBLE)) AS DOUBLE) AS \"measure_13\", CAST(__"
+        },
+        {
+          "scans": 1,
+          "sql": "SELECT * FROM (SELECT \"at_0 by minute\", CAST(COUNT(*) AS DOUBLE) AS __bf_count FROM (SELECT * FROM (SELECT * FROM \"opened\") AS _f WHERE \"at_0 by minute\" IS NOT "
+        },
+        {
+          "scans": 1,
+          "sql": "SELECT * FROM (SELECT \"at_1 by minute\", CAST(COUNT(*) AS DOUBLE) AS __bf_count FROM (SELECT * FROM (SELECT * FROM \"opened\") AS _f WHERE \"at_1 by minute\" IS NOT "
+        },
+        {
+          "scans": 1,
+          "sql": "SELECT count(*) AS n FROM (SELECT * FROM \"opened\") AS bf_step_rows"
+        },
+        {
+          "scans": 1,
+          "sql": "SELECT count(*) AS n FROM (SELECT * FROM \"opened\") AS bf_step_rows"
+        }
+      ],
+      "composition": {
+        "n": 3,
+        "min_ms": 52.384,
+        "mean_ms": 53.299,
+        "p50_ms": 53.5,
+        "p95_ms": 54.012,
+        "max_ms": 54.012
+      }
+    }
+  ]
+}

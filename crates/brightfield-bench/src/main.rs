@@ -276,6 +276,11 @@ struct Args {
     /// and write different records: this one is the wait before the first
     /// picture, and it needs neither a GPU nor the scaling datasets.
     open_scan: bool,
+    /// Measure the open a file too large to copy takes — the branch where the
+    /// source stays a view and every statement re-reads it. See
+    /// [`open_scan::measure`]'s `materialise` argument for why the harness can
+    /// ask for it.
+    open_scan_no_materialise: bool,
 }
 
 impl Args {
@@ -293,6 +298,7 @@ impl Args {
             label: None,
             crosswalk_parquet: None,
             open_scan: false,
+            open_scan_no_materialise: false,
         };
         let mut it = std::env::args().skip(1);
         while let Some(a) = it.next() {
@@ -326,6 +332,10 @@ impl Args {
                     args.crosswalk_parquet = Some(PathBuf::from(val("--crosswalk-parquet")?));
                 }
                 "--open-scan" => args.open_scan = true,
+                "--open-scan-no-materialise" => {
+                    args.open_scan = true;
+                    args.open_scan_no_materialise = true;
+                }
                 "--skip-frames" => args.skip_frames = true,
                 "--skip-corpus" => args.skip_corpus = true,
                 "--quick" => {
@@ -953,6 +963,7 @@ fn run_open_scan(
             &args.data_dir,
             shape,
             OPEN_SCAN_REPEATS,
+            !args.open_scan_no_materialise,
         )?);
     }
     print!("{}", open_scan::report(&shapes));
