@@ -679,7 +679,7 @@ mod tests {
     /// bin-scheme subqueries as one CTE read twice, and a rule excluding
     /// `Table` alone counted those two reads of an in-statement CTE as
     /// reads of the file — two per histogram tile, which is a count that grows
-    /// with the tile count and a bound that could never be met.
+    /// with the tile count and a bound no composition could meet.
     #[test]
     fn a_leaf_reads_a_file_unless_the_plan_names_a_table_or_a_cte() {
         assert_eq!(
