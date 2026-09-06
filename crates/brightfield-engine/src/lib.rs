@@ -2759,9 +2759,12 @@ impl Session {
     ///
     /// A row where the column is NULL contributes no entry — the `CASE`
     /// yields a NULL struct and the `WHERE` drops it — which is what the
-    /// per-column statement's `WHERE "col" IS NOT NULL` did, and what
-    /// `the_fixture_carries_a_bounded_column_and_a_wide_one` reads back by
-    /// comparing each column's counted rows to its non-null count.
+    /// per-column statement's `WHERE "col" IS NOT NULL` did.
+    /// `profiles_mixed_types_nulls_and_gating` is what reads that back, and
+    /// the case it puts up is the one a combined statement can get wrong: a
+    /// numeric column carrying a NULL row beside a numeric column that does
+    /// not, both counted by the one statement, with each column's exact
+    /// distribution asserted.
     fn distributions_sql(source: &str, asks: &[DistributionAsk]) -> Option<String> {
         if asks.is_empty() {
             return None;
@@ -4124,6 +4127,17 @@ plot:
         let fm = f.moments.as_ref().expect("a double column carries moments");
         assert_eq!(fm.sd, None, "one row has no sample deviation");
         assert_eq!(fm.distinct, 1);
+        // And its NULL row draws nothing. This is the cross-column case the
+        // ONE distribution statement can get wrong: `i` and `f` are counted
+        // together, and `f` alone carries a NULL. A NULL that reached the
+        // count would show up here as a second entry — at whatever value the
+        // statement had substituted for it — rather than as the one bar the
+        // column's one value earns.
+        assert_eq!(
+            fm.distribution,
+            crate::profile::Distribution::Values(vec![(1.5, 1)]),
+            "the column's one non-null row is its one bar, and the NULL row              beside it contributes none"
+        );
 
         // Neither a VARCHAR nor a temporal column carries a moment: an average
         // date is a number in a unit nobody asked about.

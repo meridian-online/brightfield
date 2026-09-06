@@ -49,8 +49,8 @@ pub struct Shape {
     pub name: &'static str,
     /// Rows in the file.
     pub rows: u64,
-    /// Numeric columns. The first is deliberately bounded — see
-    /// [`Shape::columns`] — so both branches of the distribution are counted.
+    /// Numeric columns. The first takes only [`BOUNDED_DISTINCT`] distinct
+    /// values, so both branches of the distribution are counted.
     pub numeric: usize,
     /// VARCHAR columns.
     pub text: usize,
@@ -76,12 +76,18 @@ pub const NARROW: Shape = Shape {
     timestamps: 0,
 };
 
-/// The wide table, at the shape of the file that motivated this measurement:
-/// fourteen thousand rows and twenty-two columns, about 2.6 MB of CSV.
+/// The wide table, at the row and column count of the file that motivated
+/// this measurement: fourteen thousand rows and twenty-two columns.
 ///
-/// The type split is an earthquake feed's — fourteen measurements, six labels
-/// and two times — because that is what a public data file of this shape holds
-/// and because it is the numeric count that drives the pass.
+/// **The row and column counts are the motivating file's; the type split is
+/// not, and nothing here can check that it is.** Fourteen numeric, six text
+/// and two temporal is a plausible split for a public measurement feed and it
+/// is chosen for what it exercises: the numeric count is what the distribution
+/// pass scales with, and the two temporal columns are the case that carries
+/// bounds and must add no distribution at all. The fixture's size on disk is
+/// not stated here either — [`Measured::bytes`] carries what the generator
+/// actually wrote, so the record answers it and this sentence cannot go stale
+/// against it.
 pub const WIDE: Shape = Shape {
     name: "wide",
     rows: 14_133,
@@ -147,9 +153,11 @@ pub struct Measured {
 
 /// Write (or reuse) the CSV for `shape` under `dir`.
 ///
-/// Every column is a pure function of the row index through DuckDB's `hash()`,
-/// as the interaction harness's datasets are, so a present file IS the fixture
-/// and regeneration could only reproduce it.
+/// Each column is a pure function of the row index — the numeric and text
+/// ones through DuckDB's `hash()`, as the interaction harness's datasets are,
+/// and the temporal ones as the index counted in seconds from a fixed
+/// timestamp. So a present file IS the fixture, and regeneration could only
+/// reproduce it.
 ///
 /// # Errors
 ///

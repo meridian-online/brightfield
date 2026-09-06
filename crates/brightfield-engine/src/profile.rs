@@ -96,8 +96,12 @@ pub const DISPLAY_BINS: usize = 24;
 /// the one aggregate SELECT that counts and measures every one of them, and
 /// the one `GROUP BY` that counts every numeric column's distribution
 /// together. The third used to be one statement per numeric column, which is
-/// what this number exists to keep it from becoming again — a twenty-two
-/// column table paid nineteen reads for the distributions alone.
+/// what this number exists to keep it from becoming again — on the twenty-two
+/// column fixture `brightfield-bench` opens, that was fourteen reads for the
+/// distributions alone, one per numeric column.
+/// `the_fixture_carries_a_bounded_column_and_a_wide_one` is what holds that
+/// fixture at fourteen numeric columns, so the figure moves with the fixture
+/// rather than sitting here going stale.
 ///
 /// A *read* here is a leaf of DuckDB's physical plan: an operator with no
 /// children, which is where rows enter a query. Counting leaves rather than
@@ -456,6 +460,187 @@ fn count_leaves(node: &serde_json::Value) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---------------------------------------------------------------------
+    // The leaf counter, against literal plans rather than against DuckDB.
+    //
+    // [`SCANS_PER_SOURCE`] is a bound on what these two functions return, so a
+    // counter that had stopped counting would take the bound with it — every
+    // guard over it would pass over a table being read once per column, which
+    // is the defect the bound exists for. Pinning it against DuckDB's answer
+    // for the statement the pass writes today cannot catch that, because that
+    // statement genuinely plans to one leaf: a counter hard-wired to 1 agrees
+    // with it. So the cases below are literals, and each names the wrong
+    // counter it rules out.
+    //
+    // The shapes are `EXPLAIN (FORMAT json)`'s: a top-level array of roots,
+    // each node an object with `name` and `children`.
+    // ---------------------------------------------------------------------
+
+    /// One root, three deep, one leaf — an aggregate over a projection over a
+    /// scan, which is what the profile pass's aggregate SELECT plans to.
+    ///
+    /// Rules out a counter that counts NODES: this plan has three of them and
+    /// one leaf.
+    const PLAN_ONE_LEAF_THREE_DEEP: &str = r#"[
+      { "name": "UNGROUPED_AGGREGATE", "children": [
+        { "name": "PROJECTION", "children": [
+          { "name": "READ_CSV", "children": [] }
+        ] }
+      ] }
+    ]"#;
+
+    /// One root over a UNION of three scans.
+    ///
+    /// **The shape the bound exists for.** A `UNION ALL` branch per column is
+    /// ONE statement that reads the table once per branch, so this is what
+    /// tells a leaf count apart from a statement count. Rules out a counter
+    /// that returns the root's immediate child count: that is 1 here and the
+    /// answer is 3.
+    const PLAN_UNION_OF_THREE_SCANS: &str = r#"[
+      { "name": "UNGROUPED_AGGREGATE", "children": [
+        { "name": "UNION", "children": [
+          { "name": "READ_CSV", "children": [] },
+          { "name": "READ_CSV", "children": [] },
+          { "name": "READ_CSV", "children": [] }
+        ] }
+      ] }
+    ]"#;
+
+    /// A leaf sitting beside a non-leaf, with two leaves under the non-leaf.
+    ///
+    /// Rules out the same immediate-child counter from the other direction —
+    /// the root has two children and three leaves — and rules out a counter
+    /// that walks only the first child, which would answer 1.
+    const PLAN_LEAF_BESIDE_A_SUBTREE: &str = r#"[
+      { "name": "HASH_JOIN", "children": [
+        { "name": "READ_CSV", "children": [] },
+        { "name": "PROJECTION", "children": [
+          { "name": "UNION", "children": [
+            { "name": "READ_PARQUET", "children": [] },
+            { "name": "SEQ_SCAN", "children": [] }
+          ] }
+        ] }
+      ] }
+    ]"#;
+
+    /// Two roots in the array. Rules out a counter that reads the first and
+    /// stops.
+    const PLAN_TWO_ROOTS: &str = r#"[
+      { "name": "PROJECTION", "children": [
+        { "name": "READ_CSV", "children": [] }
+      ] },
+      { "name": "COLUMN_DATA_SCAN", "children": [] }
+    ]"#;
+
+    /// **The counter counts leaves, and each case rules out a different
+    /// counter that would agree with the shipped statement.**
+    ///
+    /// The shipped distribution statement plans to one leaf, so a counter that
+    /// answers 1 passes every guard in the repository while the file is read
+    /// once per column. These four literals are what stands between that and a
+    /// green suite.
+    #[test]
+    fn the_leaf_count_is_the_leaves_and_not_the_nodes_or_the_children() {
+        assert_eq!(
+            plan_scans(PLAN_ONE_LEAF_THREE_DEEP),
+            Some(1),
+            "three nested operators with one scan under them is one leaf"
+        );
+        assert_eq!(
+            plan_scans(PLAN_UNION_OF_THREE_SCANS),
+            Some(3),
+            "a UNION of three scans is three leaves — one statement, three \
+             reads, which is the whole reason this counts leaves"
+        );
+        assert_eq!(
+            plan_scans(PLAN_LEAF_BESIDE_A_SUBTREE),
+            Some(3),
+            "a leaf beside a subtree holding two more is three leaves, not the \
+             root's two children"
+        );
+        assert_eq!(
+            plan_scans(PLAN_TWO_ROOTS),
+            Some(2),
+            "both roots in the array are counted"
+        );
+
+        // Three different answers on purpose: a counter returning any single
+        // constant fails at least two of them, and a constant satisfying all
+        // three would have to be three values at once.
+        let answers = [
+            plan_scans(PLAN_ONE_LEAF_THREE_DEEP),
+            plan_scans(PLAN_UNION_OF_THREE_SCANS),
+            plan_scans(PLAN_TWO_ROOTS),
+        ];
+        assert!(
+            answers[0] != answers[1] && answers[1] != answers[2] && answers[0] != answers[2],
+            "the cases answer {answers:?} — two that agree cannot both be \
+             ruling out a constant"
+        );
+    }
+
+    /// **A plan this cannot read is an absence, not a zero.**
+    ///
+    /// [`ScanTally::scans`] carries the `None` out and the guards compare
+    /// against `Some(_)`, so this is where the absence is decided. A zero here
+    /// would let a statement whose plan went unread pass a bound it was never
+    /// measured against.
+    #[test]
+    fn a_plan_that_cannot_be_read_answers_none_rather_than_zero() {
+        for (what, text) in [
+            ("not JSON at all", "a drawn plan tree, not JSON"),
+            (
+                "an object rather than the array of roots",
+                r#"{"name":"READ_CSV"}"#,
+            ),
+            ("a node with no children key", r#"[{"name":"READ_CSV"}]"#),
+            (
+                "a node whose children is not an array",
+                r#"[{"name":"READ_CSV","children":"none"}]"#,
+            ),
+            (
+                "a node deep in the tree with no children key",
+                r#"[{"name":"PROJECTION","children":[{"name":"READ_CSV"}]}]"#,
+            ),
+        ] {
+            assert_eq!(plan_scans(text), None, "{what} should answer None");
+        }
+    }
+
+    /// **The tally refuses to total a statement it could not read.**
+    ///
+    /// The pair to the test above, one level up: an unreadable plan reaches
+    /// [`ScanTally`] as a `None` on one statement, and the total has to go
+    /// with it rather than quietly summing the rest.
+    #[test]
+    fn a_tally_holding_one_unexplained_statement_has_no_total() {
+        let readable = StatementScans {
+            sql: "SELECT count(*) FROM t".to_string(),
+            scans: Some(1),
+        };
+        let unreadable = StatementScans {
+            sql: "DESCRIBE t".to_string(),
+            scans: None,
+        };
+
+        let whole = ScanTally {
+            statements: vec![readable.clone(), readable.clone()],
+        };
+        assert_eq!(whole.scans(), Some(2));
+        assert!(whole.unexplained().is_empty());
+
+        let holed = ScanTally {
+            statements: vec![readable, unreadable],
+        };
+        assert_eq!(
+            holed.scans(),
+            None,
+            "one unread statement beside a read one totalled to a number, so a \
+             bound would be compared against a partial sum"
+        );
+        assert_eq!(holed.unexplained(), vec!["DESCRIBE t"]);
+    }
 
     #[test]
     fn is_min_max_type_gates_numeric_and_temporal() {
