@@ -89,6 +89,25 @@ pub const BIN_RESOLUTION: usize = 480;
 /// How many bars the binned branch of the distribution draws.
 pub const DISPLAY_BINS: usize = 24;
 
+/// The most times DuckDB reads a source while [`Session::profile_sources`]
+/// profiles it, whatever the source's column count.
+///
+/// Three, and each one is a statement: the DESCRIBE that names the columns,
+/// the one aggregate SELECT that counts and measures every one of them, and
+/// the one `GROUP BY` that counts every numeric column's distribution
+/// together. The third used to be one statement per numeric column, which is
+/// what this number exists to keep it from becoming again — a twenty-two
+/// column table paid nineteen reads for the distributions alone.
+///
+/// A *read* here is a leaf of DuckDB's physical plan: an operator with no
+/// children, which is where rows enter a query. Counting leaves rather than
+/// statements is deliberate, because the shape most likely to be reached for
+/// — a `UNION ALL` branch per column — is one statement that reads the table
+/// once per branch, and a statement count would call that free.
+///
+/// [`Session::profile_sources`]: crate::Session::profile_sources
+pub const SCANS_PER_SOURCE: u32 = 3;
+
 /// At or below this many distinct values a column's distribution is one bar
 /// per value; above it, [`DISPLAY_BINS`] equal-width bins.
 pub const VALUE_BAR_LIMIT: u64 = 64;
@@ -345,6 +364,93 @@ pub(crate) fn read_text(batch: &RecordBatch, col: usize) -> Option<String> {
     } else {
         Some(arr.value(0).to_string())
     }
+}
+
+/// One statement a profiling pass issued, and how many times DuckDB's plan
+/// for it reads a table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatementScans {
+    /// The statement, verbatim.
+    pub sql: String,
+    /// Leaves in the statement's physical plan, or `None` where DuckDB
+    /// declined to explain it.
+    ///
+    /// `None` rather than zero, and [`ScanTally::scans`] carries the absence
+    /// all the way out, because a statement whose cost could not be read is
+    /// not a statement that cost nothing — and a gate handed a silent zero
+    /// passes over exactly the case it was written for.
+    pub scans: Option<u32>,
+}
+
+/// How many times profiling read the table, statement by statement.
+///
+/// Collected by [`Session::profile_sources_counting_scans`], which is the only
+/// thing that produces one; profiling otherwise issues no `EXPLAIN` and costs
+/// nothing for this.
+///
+/// [`Session::profile_sources_counting_scans`]: crate::Session::profile_sources_counting_scans
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScanTally {
+    /// Every statement the pass issued, in the order it issued them.
+    pub statements: Vec<StatementScans>,
+}
+
+impl ScanTally {
+    /// The total across every statement, or `None` if DuckDB declined to
+    /// explain any one of them.
+    #[must_use]
+    pub fn scans(&self) -> Option<u32> {
+        self.statements
+            .iter()
+            .try_fold(0u32, |acc, s| Some(acc.saturating_add(s.scans?)))
+    }
+
+    /// The statements DuckDB declined to explain — empty when
+    /// [`ScanTally::scans`] answers.
+    #[must_use]
+    pub fn unexplained(&self) -> Vec<&str> {
+        self.statements
+            .iter()
+            .filter(|s| s.scans.is_none())
+            .map(|s| s.sql.as_str())
+            .collect()
+    }
+}
+
+/// How many leaves DuckDB's `EXPLAIN (FORMAT json)` tree carries, or `None`
+/// where the text is not a plan.
+///
+/// A leaf is a node with no children, which in a physical plan is where rows
+/// enter it — a `READ_CSV`, a `READ_PARQUET`, a `SEQ_SCAN` over a table, the
+/// `COLUMN_DATA_SCAN` a DESCRIBE reads its answer out of.
+///
+/// **Every leaf counts, and no operator name is enumerated here.** An
+/// inclusion list would have to name each spelling DuckDB gives a scan, and
+/// the one it gains next release is the one that would go uncounted — which is
+/// the direction that fails silently. Counting leaves has the opposite bias: a
+/// leaf this code has never seen makes the number go up, and a bound that
+/// reddens is a bound somebody reads.
+pub(crate) fn plan_scans(explained: &str) -> Option<u32> {
+    let plan: serde_json::Value = serde_json::from_str(explained).ok()?;
+    let roots = plan.as_array()?;
+    let mut total = 0u32;
+    for root in roots {
+        total = total.saturating_add(count_leaves(root)?);
+    }
+    Some(total)
+}
+
+/// Leaves under `node`, counting `node` itself when it has none.
+fn count_leaves(node: &serde_json::Value) -> Option<u32> {
+    let children = node.get("children")?.as_array()?;
+    if children.is_empty() {
+        return Some(1);
+    }
+    let mut total = 0u32;
+    for child in children {
+        total = total.saturating_add(count_leaves(child)?);
+    }
+    Some(total)
 }
 
 #[cfg(test)]
