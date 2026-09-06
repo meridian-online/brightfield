@@ -84,12 +84,29 @@ cd "$(dirname "$0")/.."
 SIGN_IDENTITY="${BRIGHTFIELD_SIGN_IDENTITY:-}"
 NOTARY_PROFILE="${BRIGHTFIELD_NOTARY_PROFILE:-}"
 
-# The repo's exact toolchain pin (the same one CI nails via its toolchain
-# action; there is no rust-toolchain.toml). Overridable, but the default must
-# not be "whatever cargo the shell finds" — the workspace floor is above some
-# installed defaults, and a release artifact should be built by the pinned
-# compiler, not by luck.
+# The repo's exact toolchain pin — the same one CI nails via its toolchain
+# action and the same one rust-toolchain.toml carries for a bare `cargo`.
+# RUSTUP_TOOLCHAIN is read ahead of that file, so this line is what decides if
+# the two ever disagree. Overridable, but the default must not be "whatever
+# cargo the shell finds" — the workspace floor is above some installed
+# defaults, and a release artifact should be built by the pinned compiler, not
+# by luck.
 export RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-1.95.0}"
+
+# scripts/check-finetype-pin.sh runs this to compare the tag THIS script would
+# stage against the declaration and against what the other consumers answer.
+#
+# WHAT IT ESTABLISHES IS NARROW. It shows this file can read the pin. It does
+# NOT show that the staging path below uses what it read — a review pass
+# changed that path to compare a literal and this mode went on printing the
+# right answer. What pins the staging path is
+# scripts/package-finetype-selftest.sh, which overrides the pin with a tag the
+# fixture deliberately does not carry: a package.sh comparing a literal passes
+# the fixture and fails that case.
+if [ "${1:-}" = "--print-finetype-pin" ]; then
+  scripts/finetype-pin.sh
+  exit 0
+fi
 
 CRATE_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/brightfield-shell/Cargo.toml | head -1)
 VERSION="${1:-v${CRATE_VERSION}-local}"
@@ -120,6 +137,54 @@ TARGET="${2:-$HOST}"
 
 NAME="brightfield-${VERSION}-${TARGET}"
 STAGE="dist/${NAME}"
+
+# ---------------------------------------------------------------------------
+# THE SEMANTIC TYPE SOURCE — the FineType extension, its model and its schema
+# catalogue, staged into the artifact so a packaged Brightfield can ask what a
+# column MEANS with no network and no cache.
+#
+# It is not built here. This repository does not build FineType and must not
+# start: the extension is a cdylib from another workspace with its own
+# toolchain pin, and the model is a ~17 MB artifact from a model registry.
+# BRIGHTFIELD_FINETYPE_BUNDLE names a directory somebody else assembled —
+# scripts/fetch-finetype-bundle.sh on a release, a hand-built one locally — and
+# everything below is about refusing a bad one rather than making a good one.
+#
+# With the variable unset the artifact ships WITHOUT a type source and the
+# application reports every column as NotAsked. That is a supported build, not
+# a degraded one — it is what a contributor's local `scripts/package.sh` run
+# produces — so this is a message, not a failure. A RELEASE is where absence is
+# a failure, and .github/workflows/release.yml is where that is decided: it
+# fetches a bundle, sets this variable, and then reads the packaged artifact
+# back with scripts/check-artifact-type-source.sh.
+#
+# What makes a bundle acceptable is scripts/check-bundled-extension.sh, which
+# is also what scripts/verify-airgapped.sh runs over the bundle inside a built
+# artifact — one reading of the metadata trailer, not three that can drift.
+#
+# IT RUNS BEFORE THE BUILD, and that ordering is load-bearing twice over. A bad
+# bundle costs a second rather than a ten-minute release compile; and
+# scripts/package-finetype-selftest.sh can drive this refusal on every pull
+# request with a stubbed compiler, which is the only reason a check that
+# otherwise runs a handful of times a year is exercised at all.
+# ---------------------------------------------------------------------------
+FINETYPE_BUNDLE="${BRIGHTFIELD_FINETYPE_BUNDLE:-}"
+if [ -z "$FINETYPE_BUNDLE" ]; then
+  echo "== type source: none (BRIGHTFIELD_FINETYPE_BUNDLE unset)"
+  echo "   the artifact ships without one; columns report no semantic label"
+else
+  # The pinned tag, read through the one reader every consumer uses. It is
+  # passed to the check below so the bundle's own version stamp is compared
+  # against the declaration — a pin nothing compares against the staged bytes
+  # is a pin that can silently disagree with what shipped.
+  FINETYPE_TAG=$(scripts/finetype-pin.sh)
+  echo "== type source: ${FINETYPE_BUNDLE} (FineType ${FINETYPE_TAG})"
+  # The DuckDB platform name for the target being PACKAGED, which is not
+  # necessarily the host's.
+  want_platform=$(scripts/duckdb-platform.sh "$TARGET")
+  scripts/check-bundled-extension.sh "$FINETYPE_BUNDLE" "$want_platform" "$FINETYPE_TAG" \
+    || { echo "package.sh: refusing to stage a bundle that would not load." >&2; exit 1; }
+fi
 
 echo "== build (release, locked): ${TARGET}"
 BUILD=(cargo build --release --locked -p brightfield-shell --bin brightfield-shell)
@@ -189,51 +254,6 @@ if [ -n "$audit_rule" ]; then
     echo "audit FAILED: ${audit_rule} listed no linked libraries for ${BIN}"; exit 1; }
   [ "$audit_ok" -eq 1 ] || { echo "audit FAILED: the binary links non-OS libraries"; exit 1; }
   echo "   clean: OS libraries only (${audit_lines} entries read)"
-fi
-
-# ---------------------------------------------------------------------------
-# THE SEMANTIC TYPE SOURCE — the FineType extension, its model and its schema
-# catalogue, staged into the artifact so a packaged Brightfield can ask what a
-# column MEANS with no network and no cache.
-#
-# It is not built here. This repository does not build FineType and must not
-# start: the extension is a cdylib from another workspace with its own
-# toolchain pin, and the model is a ~17 MB artifact from a model registry.
-# BRIGHTFIELD_FINETYPE_BUNDLE names a directory somebody else assembled, and
-# everything below is about refusing a bad one rather than making a good one.
-#
-# With the variable unset the artifact ships WITHOUT a type source and the
-# application reports every column as NotAsked. That is a supported build, not
-# a degraded one — it is what a contributor's local `scripts/package.sh` run
-# produces — so this is a message, not a failure.
-#
-# What makes a bundle acceptable is scripts/check-bundled-extension.sh, which
-# is also what scripts/verify-airgapped.sh runs over the bundle inside a built
-# artifact — one reading of the metadata trailer, not two that can drift. Its
-# own self-test runs on every pull request; this call and the airgap one happen
-# only on a release.
-# ---------------------------------------------------------------------------
-FINETYPE_BUNDLE="${BRIGHTFIELD_FINETYPE_BUNDLE:-}"
-if [ -z "$FINETYPE_BUNDLE" ]; then
-  echo "== type source: none (BRIGHTFIELD_FINETYPE_BUNDLE unset)"
-  echo "   the artifact ships without one; columns report no semantic label"
-else
-  echo "== type source: ${FINETYPE_BUNDLE}"
-  # The DuckDB platform name for the target being PACKAGED, which is not
-  # necessarily the host's. An unknown target is a hard failure rather than an
-  # unchecked pass: a mapping nobody added is a bundle nobody checked.
-  case "$TARGET" in
-    aarch64-apple-darwin)      want_platform=osx_arm64 ;;
-    x86_64-apple-darwin)       want_platform=osx_amd64 ;;
-    aarch64-unknown-linux-gnu) want_platform=linux_arm64 ;;
-    x86_64-unknown-linux-gnu)  want_platform=linux_amd64 ;;
-    *)
-      echo "package.sh: no DuckDB platform name known for target ${TARGET}, so the" >&2
-      echo "  bundled extension cannot be checked against it. Add the mapping." >&2
-      exit 1 ;;
-  esac
-  scripts/check-bundled-extension.sh "$FINETYPE_BUNDLE" "$want_platform" \
-    || { echo "package.sh: refusing to stage a bundle that would not load." >&2; exit 1; }
 fi
 
 # stage_finetype DEST — copy the bundle in and record what was copied.

@@ -21,39 +21,35 @@ trap 'rm -rf "$TMP"' EXIT
 
 fails=0
 
-# Write a 512-byte DuckDB metadata trailer onto stdout, appended to some
-# plausible library body. Field order is LAST-FIRST: fields 8..6 empty, then
-# ABI, extension version, DuckDB version, platform, magic — then 256 zero bytes
-# where a signature would go on a signed build.
-#
-# Built with python3 rather than printf/dd because the fields are NUL-padded
-# and shell cannot carry a NUL through a variable.
+# The 512-byte DuckDB metadata trailer, written by the shared fixture maker so
+# these offsets live in one file rather than in each self-test that needs them.
 make_extension() {
-  local out="$1" platform="$2" duckdb_version="$3" ext_version="$4" abi="$5"
-  python3 - "$out" "$platform" "$duckdb_version" "$ext_version" "$abi" <<'PY'
-import sys
-out, platform, duckdb_version, ext_version, abi = sys.argv[1:6]
-pad = lambda s: s.encode().ljust(32, b"\0")
-body = b"a plausible shared library body" * 40
-trailer = b"\0" * 96
-trailer += pad(abi) + pad(ext_version) + pad(duckdb_version) + pad(platform) + pad("4")
-trailer += b"\0" * 256
-assert len(trailer) == 512, len(trailer)
-open(out, "wb").write(body + trailer)
-PY
+  "${HERE}/fixture-extension.py" "$@"
 }
+
+# The optional second encoder the published model names in its own config.json.
+# It sits BESIDE model2vec/ and does not replace it: FineType's loader opens
+# model2vec/ unconditionally and never reads its name from the config, while
+# value_embed_model names an extra encoder a single-encoder model does without.
+# A revision of the check that swapped the two — dropping the mandatory
+# directory because the config is silent about it, requiring the optional one
+# because the config names it — produced a bundle that passed every file check
+# and would not load.
+EMBED=value_model2vec
 
 # A complete, well-formed bundle at $1.
 make_bundle() {
-  local dir="$1" platform="${2:-osx_arm64}" abi="${3:-C_STRUCT}"
+  local dir="$1" platform="${2:-osx_arm64}" abi="${3:-C_STRUCT}" ext_version="${4:-0.6.56}"
   rm -rf "$dir"
-  mkdir -p "$dir/model/model2vec"
-  make_extension "$dir/finetype.duckdb_extension" "$platform" v1.2.0 0.6.56 "$abi"
+  mkdir -p "$dir/model/model2vec" "$dir/model/$EMBED"
+  make_extension "$dir/finetype.duckdb_extension" "$platform" v1.2.0 "$ext_version" "$abi"
   printf 'safetensors'   > "$dir/model/model.safetensors"
-  printf '{}'            > "$dir/model/config.json"
+  printf '{"value_embed_model": "%s"}' "$EMBED" > "$dir/model/config.json"
   printf '{}'            > "$dir/model/label_map.json"
   printf 'safetensors'   > "$dir/model/model2vec/model.safetensors"
   printf '{}'            > "$dir/model/model2vec/tokenizer.json"
+  printf 'safetensors'   > "$dir/model/$EMBED/model.safetensors"
+  printf '{}'            > "$dir/model/$EMBED/tokenizer.json"
   printf '[]'            > "$dir/taxonomy-schemas.json"
 }
 
@@ -94,11 +90,49 @@ expect_pass "and passes against its own platform" "$TMP/good" osx_arm64
 
 echo "== a bundle that is missing a piece"
 for missing in finetype.duckdb_extension model/model.safetensors model/config.json \
-               model/label_map.json model/model2vec/tokenizer.json taxonomy-schemas.json; do
+               model/label_map.json model/model2vec/model.safetensors \
+               model/model2vec/tokenizer.json taxonomy-schemas.json; do
   make_bundle "$TMP/missing"
   rm "$TMP/missing/$missing"
   expect_fail "without ${missing}" "carries no ${missing}" "$TMP/missing"
 done
+
+echo "== a bundle whose value-embedding directory is not the one its config names"
+# The extension opens the directory model/config.json names in
+# `value_embed_model`. A bundle carrying the files under some other name is one
+# the extension cannot use, and it is what a fetch that renamed the directory
+# to suit a hardcoded check would produce.
+make_bundle "$TMP/renamed"
+rm -rf "$TMP/renamed/model/$EMBED"
+mv "$TMP/renamed/model/model2vec" "$TMP/renamed/model/$EMBED"
+expect_fail "the mandatory encoder renamed to the one the config names" \
+  "carries no model/model2vec/model.safetensors" "$TMP/renamed"
+
+make_bundle "$TMP/halfembed"
+rm "$TMP/halfembed/model/$EMBED/tokenizer.json"
+expect_fail "the embedding tokenizer missing" \
+  "carries no model/${EMBED}/tokenizer.json" "$TMP/halfembed"
+
+# ABSENT IS VALID and this case is a correction. FineType's loader returns "no
+# value encoder" for a model whose config does not name one, so a check that
+# refused it was asserting a property the product does not have — and would
+# have refused every single-encoder model FineType ever ships.
+make_bundle "$TMP/noembed"
+printf '{"n_classes": 1}' > "$TMP/noembed/model/config.json"
+rm -rf "$TMP/noembed/model/$EMBED"
+expect_pass "a single-encoder model, whose config names no value_embed_model" "$TMP/noembed"
+
+# Named and missing is not valid: the loader goes looking for what the config
+# names.
+make_bundle "$TMP/named-absent"
+rm -rf "$TMP/named-absent/model/$EMBED"
+expect_fail "a config naming an encoder the bundle does not carry" \
+  "carries no model/${EMBED}/model.safetensors" "$TMP/named-absent"
+
+make_bundle "$TMP/escape"
+printf '{"value_embed_model": "../elsewhere"}' > "$TMP/escape/model/config.json"
+expect_fail "a value_embed_model that is a path" "which is
+a path rather than a directory name" "$TMP/escape"
 expect_fail "a directory that does not exist" "no such directory" "$TMP/absent"
 
 echo "== a bundle that is not self-contained"
@@ -116,7 +150,10 @@ make_bundle "$TMP/manifest"
 ( cd "$TMP/manifest" && find . -type f ! -name bundle-manifest.sha256 | sed 's|^\./||' | LC_ALL=C sort \
     | xargs shasum -a 256 > bundle-manifest.sha256 )
 expect_pass "a bundle matching its manifest" "$TMP/manifest"
-printf 'different bytes entirely' > "$TMP/manifest/model/config.json"
+# label_map.json and not config.json: the value_embed_model read happens before
+# the manifest comparison, so a scrambled config is refused for naming no
+# embedding directory and this case would pass on the wrong message.
+printf 'different bytes entirely' > "$TMP/manifest/model/label_map.json"
 expect_fail "one file changed after packaging" "does not match its own manifest" "$TMP/manifest"
 
 make_bundle "$TMP/manifest2"
@@ -148,6 +185,23 @@ make_bundle "$TMP/wrongarch" linux_amd64
 expect_fail "an extension for another platform" "built for 'linux_amd64'" \
   "$TMP/wrongarch" osx_arm64
 expect_pass "the same extension against its own platform" "$TMP/wrongarch" linux_amd64
+
+echo "== an extension that is not the pinned FineType release"
+# The third argument is what scripts/package.sh passes from
+# packaging/finetype-pin.env. Without this comparison the pin is a string two
+# scripts agree about while the staged bytes come from wherever, which is the
+# defect a declaration nothing measures always has.
+make_bundle "$TMP/pinned" osx_arm64 C_STRUCT 0.6.58
+expect_pass "the pinned version, tag spelling" "$TMP/pinned" osx_arm64 v0.6.58
+expect_pass "the pinned version, bare spelling" "$TMP/pinned" osx_arm64 0.6.58
+expect_fail "one patch release behind the pin" "is stamped version '0.6.58'" \
+  "$TMP/pinned" osx_arm64 v0.6.59
+expect_fail "a different minor entirely" "packaging/finetype-pin.env declares 'v0.7.0'" \
+  "$TMP/pinned" osx_arm64 v0.7.0
+# No version argument is still a pass: scripts/verify-airgapped.sh passes none,
+# because the checkout reading a built artifact is not necessarily the checkout
+# whose pin built it.
+expect_pass "no version declared at all" "$TMP/pinned" osx_arm64
 
 echo
 if [ "$fails" -ne 0 ]; then

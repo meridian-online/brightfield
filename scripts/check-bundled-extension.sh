@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
 # Refuse a FineType bundle that would not load.
 #
-#   scripts/check-bundled-extension.sh BUNDLE_DIR [EXPECTED_PLATFORM]
+#   scripts/check-bundled-extension.sh BUNDLE_DIR [EXPECTED_PLATFORM] [EXPECTED_VERSION]
 #
 # A bundle is three things and this reads all of them:
 #
 #   finetype.duckdb_extension   the DuckDB loadable extension
-#   model/                      what FINETYPE_MODEL_DIR is pointed at
+#   model/                      what FINETYPE_MODEL_DIR is pointed at, including
+#                               model2vec/ (loaded unconditionally) and, when
+#                               the config names one, the optional second
+#                               encoder in `value_embed_model`
 #   taxonomy-schemas.json       one JSON Schema per label, for value checking
+#
+# THIS IS A PRE-FLIGHT AND NOT THE EVIDENCE. It reads a file tree and a
+# metadata trailer; it never asks whether the bundle LOADS, and a file list
+# cannot be made to. The evidence that a release carries a working type source
+# is scripts/check-artifact-type-source.sh running the packaged binary's
+# `--check-type-source` against the unpacked artefact, which loads the
+# extension, loads the model and puts a label on a column. That distinction is
+# not academic: a bundle assembled to satisfy an earlier version of the list
+# below passed here and then failed to load. Do not add a filename here and
+# conclude the bundle works.
 #
 # Two callers, one reading. scripts/package.sh runs it over the bundle it is
 # about to stage, with the DuckDB platform name for the target being packaged;
@@ -32,6 +45,16 @@
 #   arm64 machine that produces the x86_64 artifact with an arm64 extension in
 #   it yields a tarball that fails on every machine it was built FOR and works
 #   on the one machine it will never be tested on.
+#
+#   The version, when the caller declares one. scripts/package.sh passes the
+#   tag from packaging/finetype-pin.env, so the extension's own version stamp
+#   — written by FineType's build, not by anything in this repository — is
+#   compared against the pin. Without that the pin is a string two scripts
+#   agree about, and a bundle assembled from some other release stages happily
+#   under a declaration that says otherwise. scripts/verify-airgapped.sh
+#   passes no version: it reads a bundle inside a built artifact and the
+#   packaging run already made that comparison against the pin of the commit
+#   that built it, which is not necessarily the pin of the checkout reading it.
 #
 #   Symlinks. A model fetched through a content-addressed cache is a tree of
 #   links into that cache. `cp -R` copies the links; the artifact then works
@@ -74,14 +97,35 @@
 # comparison lives in `semantic::check_abi`.
 set -euo pipefail
 
-BUNDLE="${1:?usage: scripts/check-bundled-extension.sh BUNDLE_DIR [EXPECTED_PLATFORM]}"
+BUNDLE="${1:?usage: scripts/check-bundled-extension.sh BUNDLE_DIR [EXPECTED_PLATFORM] [EXPECTED_VERSION]}"
 WANT_PLATFORM="${2:-}"
+WANT_VERSION="${3:-}"
 
 fail() { echo "check-bundled-extension: $*" >&2; exit 1; }
 
 [ -d "$BUNDLE" ] || fail "no such directory: ${BUNDLE}"
 
 EXT="${BUNDLE}/finetype.duckdb_extension"
+
+# WHAT THE LOADER OPENS, NOT WHAT THE CONFIG DECLARES, and the difference cost
+# a review round. `model2vec/` is loaded unconditionally by FineType's model
+# loader — it is not named anywhere in the model's config and it is not
+# optional — while `value_embed_model` names a SECOND, optional encoder that a
+# single-encoder model does not have at all.
+#
+# A previous revision of this file had it exactly backwards: it dropped the
+# mandatory directory from this list because the config does not mention it,
+# and required the optional one because the config does. A bundle assembled to
+# satisfy that check passed here and then failed to load, with the loader
+# reporting `Model2Vec resources not found. Checked: model_dir/model2vec/,
+# models/model2vec/`. Measured by an independent review pass against a real
+# extension, a real model and a real catalogue.
+#
+# The lesson is not the two filenames. It is that a required-file list derived
+# from a model's own declaration cannot see what the code that consumes it
+# opens, and a list is the wrong primary evidence either way — see the note at
+# the foot of this comment block and scripts/check-artifact-type-source.sh,
+# which runs the binary.
 for required in \
   finetype.duckdb_extension \
   model/model.safetensors \
@@ -93,6 +137,25 @@ for required in \
 do
   [ -f "${BUNDLE}/${required}" ] || fail "${BUNDLE} carries no ${required}"
 done
+
+# The optional second encoder. ABSENT IS VALID — FineType's loader returns
+# "no value encoder" for a model whose config does not name one, so refusing
+# that would be this check asserting a property the product does not have. Named
+# and missing is not valid: the loader would go looking for a directory the
+# bundle does not carry.
+embed=$(sed -n 's/.*"value_embed_model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+  "${BUNDLE}/model/config.json" | head -1)
+if [ -n "$embed" ]; then
+  case "$embed" in
+    */*|..|.) fail "${BUNDLE}/model/config.json declares value_embed_model '${embed}', which is \
+a path rather than a directory name beside the model" ;;
+  esac
+  for required in model.safetensors tokenizer.json; do
+    [ -f "${BUNDLE}/model/${embed}/${required}" ] \
+      || fail "${BUNDLE} carries no model/${embed}/${required}, which model/config.json names \
+through value_embed_model"
+  done
+fi
 
 # Self-containedness. -type l finds symlinks whether or not they resolve, so a
 # link that happens to work on this machine still fails.
@@ -143,6 +206,18 @@ fi
 if [ -n "$WANT_PLATFORM" ] && [ "$platform" != "$WANT_PLATFORM" ]; then
   fail "${EXT} is built for '${platform}' and this artifact needs '${WANT_PLATFORM}' — \
 DuckDB would refuse to load it on every machine the artifact is for"
+fi
+
+# Compared with a leading `v` stripped from both sides, because a git tag
+# carries one and a DuckDB extension version stamp does not have to. Nothing
+# else is normalised: a stamp of `0.6.57` under a pin of `v0.6.58` is the
+# defect this exists to catch, and a tolerant comparison would let it through.
+if [ -n "$WANT_VERSION" ]; then
+  want_core="${WANT_VERSION#v}"
+  have_core="${version#v}"
+  [ "$want_core" = "$have_core" ] || fail "${EXT} is stamped version '${version}' and the pin in \
+packaging/finetype-pin.env declares '${WANT_VERSION}' — this bundle is not the FineType release \
+this repository says it stages"
 fi
 
 echo "check-bundled-extension: finetype ${version}, ${abi}, ${platform}, DuckDB floor ${duckdb_floor}, no symlinks, ${manifest_note}."

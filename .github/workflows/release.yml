@@ -88,7 +88,35 @@ jobs:
         with:
           key: release-${{ matrix.target }}
 
+      # THE SEMANTIC TYPE SOURCE. Until this landed no workflow set
+      # BRIGHTFIELD_FINETYPE_BUNDLE, so `stage_finetype` in scripts/package.sh
+      # returned at its first line and every artifact this workflow ever built
+      # shipped without a type source — reporting storage types for every
+      # column, which is the one thing the application exists not to do.
+      #
+      # The tag is pinned in packaging/finetype-pin.env and read here through
+      # the one reader every consumer uses, so two builds of the same
+      # brightfield tag stage the same bytes and a bump is a line somebody
+      # reviewed. No tag is passed to the fetch script: it reads the same pin,
+      # so there is nowhere for this workflow and the pin to disagree.
+      #
+      # THIS STEP FAILS TODAY AND THAT IS DELIBERATE. A FineType tag publishes
+      # CLI tarballs and their checksums; the extension, the model and the
+      # taxonomy catalogue are not release assets yet. Until they are, tagging
+      # a brightfield release stops here rather than publishing an artifact
+      # whose whole differentiator is missing. See
+      # scripts/fetch-finetype-bundle.sh for the asset names it expects.
+      - name: Read the pinned FineType release
+        run: |
+          TAG=$(scripts/finetype-pin.sh)
+          echo "FineType pin: \`${TAG}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fetch the FineType bundle for this target
+        run: scripts/fetch-finetype-bundle.sh "${{ matrix.target }}" "${RUNNER_TEMP}/finetype-bundle"
+
       - name: Package
+        env:
+          BRIGHTFIELD_FINETYPE_BUNDLE: ${{ runner.temp }}/finetype-bundle
         run: scripts/package.sh "${GITHUB_REF_NAME}" "${{ matrix.target }}"
 
       # Per-target, per-path, and NOT a glob. `if-no-files-found: error` below
@@ -105,6 +133,61 @@ jobs:
           test -f "dist/${NAME}.dmg"
           test -f "dist/${NAME}.dmg.sha256"
           ls -l "dist/${NAME}.tar.gz" "dist/${NAME}.dmg"
+
+      # Read back what was PACKAGED, which is the reading nothing here has ever
+      # done. scripts/check-bundled-extension.sh runs inside package.sh over the
+      # bundle it was handed — the staging input, before packaging — so it
+      # cannot see a staging step that dropped it. verify-airgapped.sh does read
+      # the artifact, but it SKIPS its type-source legs when the artifact
+      # carries no bundle (a build without one is supported) and it does not
+      # gate this release. A release that stages nothing therefore passed every
+      # check this workflow had.
+      #
+      # Both artifacts, because stage_finetype is called twice — once into the
+      # tarball and once into Contents/Resources of the app bundle — and one of
+      # those two going wrong is exactly the shape of defect this catches.
+      #
+      # THE BINARY IS RUN, and this workflow does not get a say in it. The check
+      # decides from the target and the machine: on the native leg it loads the
+      # bundle with the packaged binary's own --check-type-source, and on the
+      # x86_64 leg — a cross-compile from an arm64 runner — it cannot, and says
+      # so. There is no flag here to leave off.
+      #
+      # That used to be `--run`, passed from this file, and a review pass
+      # mutated it away: every check in the repository stayed green while the
+      # release stopped ever loading the bundle it shipped. Which matters
+      # because a bundle can carry every required file, be correctly stamped,
+      # match its own manifest — and still not load. Measured on one whose
+      # model.safetensors was 200 KB of random bytes under the right name:
+      # scripts/check-bundled-extension.sh exit 0, and the packaged binary exit
+      # 1 with its canary classifying three email addresses as unknown. No file
+      # list can see that.
+      #
+      # HALF THE RELEASE IS READ AND NOT LOADED, and the step below is named
+      # for what it does on the leg that can. Both darwin targets build on
+      # `macos-15`, which is arm64 here, so the x86_64 artefact is a
+      # cross-compile nothing on this runner can execute: its bundle is
+      # checked for shape, platform stamp and manifest, and never loaded.
+      # Closing that needs an Intel runner leg or Rosetta on this one, and
+      # neither is in this change. The step emits a warning and a
+      # step-summary line naming the artefact, so a green release does not
+      # read as both artefacts having been loaded — which is the same standard
+      # the `update-homebrew` job already applies to the Intel install path.
+      - name: The packaged artifacts carry a type source (loaded on the native leg)
+        run: |
+          NAME="brightfield-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          scripts/check-artifact-type-source.sh "dist/${NAME}.tar.gz" "${{ matrix.target }}"
+          scripts/check-artifact-type-source.sh "dist/${NAME}.dmg" "${{ matrix.target }}"
+          if [ "${{ matrix.native }}" != "true" ]; then
+            echo "::warning title=Type source read but not loaded::${NAME} is a cross-compile for ${{ matrix.target }}; this runner is arm64, so its bundle was checked for shape, platform and manifest and the packaged binary was never executed. The Intel artefact ships execution-unverified."
+            {
+              echo "### ${{ matrix.target }}: type source read, NOT loaded"
+              echo ""
+              echo "\`${NAME}\` is a cross-compile and this runner is arm64, so its bundle's"
+              echo "shape, platform stamp and manifest were checked and the packaged binary was"
+              echo "never run. Only the aarch64 artefact had its type source loaded."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -344,40 +427,38 @@ jobs:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
 
-      # Regenerated wholesale, which makes this file the source of truth for the
-      # formula: a hand edit to Formula/brightfield.rb in the tap is overwritten
-      # by the next release, so changes to it belong in the heredoc below.
+      # Regenerated wholesale, which makes this repository the source of truth
+      # for the formula: a hand edit to Formula/brightfield.rb in the tap is
+      # overwritten by the next release, so changes to it belong in
+      # scripts/write-brightfield-formula.sh.
+      #
+      # THE FORMULA USED TO BE A HEREDOC RIGHT HERE, and moving it out is not
+      # tidying. A heredoc in YAML can only be exercised by pushing a tag, so
+      # anything wrong with the formula was discovered on a release, in a
+      # repository with no CI of its own, by a stranger's `brew install`. As a
+      # script it is generated and read by
+      # scripts/check-formula-layout-selftest.sh on every pull request.
+      #
+      # What was wrong with it: `bin.install "brightfield"` took the executable
+      # and discarded the tarball's `finetype/` beside it, so every installed
+      # brightfield reported the storage type of every column.
       - name: Rewrite the formula
+        env:
+          ARM_SHA: ${{ steps.sha.outputs.aarch64_apple_darwin }}
+          INTEL_SHA: ${{ steps.sha.outputs.x86_64_apple_darwin }}
         run: |
           TAG="${GITHUB_REF_NAME}"
           BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
-          cat > homebrew-tap/Formula/brightfield.rb << FORMULA
-          class Brightfield < Formula
-            desc "Grammar-of-graphics renderer for Meridian data (macOS)"
-            homepage "https://github.com/meridian-online/brightfield"
-            license "MIT"
+          scripts/write-brightfield-formula.sh "$TAG" "$BASE" "$ARM_SHA" "$INTEL_SHA" \
+            > homebrew-tap/Formula/brightfield.rb
+          cat homebrew-tap/Formula/brightfield.rb
 
-            depends_on :macos
-
-            on_macos do
-              if Hardware::CPU.arm?
-                url "${BASE}/brightfield-${TAG}-aarch64-apple-darwin.tar.gz"
-                sha256 "${{ steps.sha.outputs.aarch64_apple_darwin }}"
-              else
-                url "${BASE}/brightfield-${TAG}-x86_64-apple-darwin.tar.gz"
-                sha256 "${{ steps.sha.outputs.x86_64_apple_darwin }}"
-              end
-            end
-
-            def install
-              bin.install "brightfield"
-            end
-
-            test do
-              assert_match "brightfield", shell_output("#{bin}/brightfield --version")
-            end
-          end
-          FORMULA
+      # The install block, read on the file that is about to be pushed. The
+      # generator and this check are separate on purpose: a check that only ever
+      # read the generator's output would be satisfied by the generator, and
+      # this file is what the tap receives.
+      - name: The formula installs the tarball's tree, not the binary alone
+        run: scripts/check-formula-layout.sh homebrew-tap/Formula/brightfield.rb
 
       - name: Check the formula addresses this tag
         run: |
