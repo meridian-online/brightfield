@@ -196,6 +196,15 @@ jobs:
       - name: the packaged artifact carries a type source — self-test
         run: ./scripts/check-artifact-type-source-selftest.sh
 
+      # The tap formula's install block, on the generator that writes it. The
+      # release workflow rewrites Formula/brightfield.rb wholesale on every tag
+      # and the tap has no CI, so a correct formula written into the tap by hand
+      # is reverted by the next release with nothing to notice. This runs the
+      # generator, requires the check to accept what it wrote, and requires it
+      # to refuse both of the ways the install block can be wrong.
+      - name: the tap formula installs the tarball's tree — self-test
+        run: ./scripts/check-formula-layout-selftest.sh
+
       # The formula-asset check is the odd one here: only its self-test can run
       # on a pull request, because the check itself addresses a published
       # release through the tap formula and there is no release on a branch. So

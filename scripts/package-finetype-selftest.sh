@@ -52,13 +52,15 @@ chmod +x "$STUB/rustc" "$STUB/cargo"
 make_bundle() {
 	local dir="$1" platform="${2:-osx_arm64}" version="${3:-${TAG#v}}" abi="${4:-C_STRUCT}"
 	rm -rf "$dir"
-	mkdir -p "$dir/model/model2vec"
+	# value_model2vec, the name the published model's own config.json gives the
+	# directory — not the "model2vec" literal the check used to require.
+	mkdir -p "$dir/model/value_model2vec"
 	"$HERE/fixture-extension.py" "$dir/finetype.duckdb_extension" "$platform" v1.2.0 "$version" "$abi"
 	printf 'weights' >"$dir/model/model.safetensors"
-	printf '{}' >"$dir/model/config.json"
+	printf '{"value_embed_model": "value_model2vec"}' >"$dir/model/config.json"
 	printf '{}' >"$dir/model/label_map.json"
-	printf 'weights' >"$dir/model/model2vec/model.safetensors"
-	printf '{}' >"$dir/model/model2vec/tokenizer.json"
+	printf 'weights' >"$dir/model/value_model2vec/model.safetensors"
+	printf '{}' >"$dir/model/value_model2vec/tokenizer.json"
 	printf '[]' >"$dir/taxonomy-schemas.json"
 }
 

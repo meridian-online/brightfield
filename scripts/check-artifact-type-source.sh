@@ -69,9 +69,27 @@ TAG=$("${HERE}/finetype-pin.sh")
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/bf-artifact-typesource.XXXXXX")
 MOUNT=""
+# Detach before the temp tree goes: the mount point lives inside it, and
+# removing a directory an image is mounted on leaves the image attached.
+#
+# THE RETRY IS NOT DEFENSIVE PADDING. A plain detach immediately after running
+# a binary out of the image fails with "resource busy" often enough to matter —
+# the kernel has not finished releasing the executable's vnode — and the
+# `rm -rf` then hits a read-only mount, fails, and takes the script's exit
+# status with it. That reported a PASSING check as a failure. So: a few
+# attempts, then force, and cleanup can never decide the exit status.
 cleanup() {
-  if [ -n "$MOUNT" ]; then hdiutil detach "$MOUNT" -quiet >/dev/null 2>&1 || true; fi
-  rm -rf "$TMP"
+  local rc=$?
+  if [ -n "$MOUNT" ]; then
+    local n=0
+    until hdiutil detach "$MOUNT" -quiet >/dev/null 2>&1; do
+      n=$((n + 1))
+      [ "$n" -lt 5 ] || { hdiutil detach "$MOUNT" -force -quiet >/dev/null 2>&1 || true; break; }
+      sleep 1
+    done
+  fi
+  rm -rf "$TMP" 2>/dev/null || true
+  return "$rc"
 }
 trap cleanup EXIT
 

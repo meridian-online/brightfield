@@ -6,7 +6,9 @@
 # A bundle is three things and this reads all of them:
 #
 #   finetype.duckdb_extension   the DuckDB loadable extension
-#   model/                      what FINETYPE_MODEL_DIR is pointed at
+#   model/                      what FINETYPE_MODEL_DIR is pointed at, including
+#                               the value-embedding directory model/config.json
+#                               names in `value_embed_model`
 #   taxonomy-schemas.json       one JSON Schema per label, for value checking
 #
 # Two callers, one reading. scripts/package.sh runs it over the bundle it is
@@ -98,11 +100,32 @@ for required in \
   model/model.safetensors \
   model/config.json \
   model/label_map.json \
-  model/model2vec/model.safetensors \
-  model/model2vec/tokenizer.json \
   taxonomy-schemas.json
 do
   [ -f "${BUNDLE}/${required}" ] || fail "${BUNDLE} carries no ${required}"
+done
+
+# THE VALUE-EMBEDDING MODEL IS NAMED BY THE MODEL'S OWN CONFIG, not by this
+# file. `model/config.json` carries `value_embed_model`, a directory name
+# relative to the model directory, and that is what the extension opens.
+#
+# This used to require `model/model2vec/…` as a literal. The published model
+# names its directory `value_model2vec`, so the literal was a requirement no
+# real bundle could satisfy and every bundle that did satisfy it was one
+# somebody had built by hand to match the check. Reading the config asks the
+# question the extension asks.
+embed=$(sed -n 's/.*"value_embed_model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+  "${BUNDLE}/model/config.json" | head -1)
+[ -n "$embed" ] || fail "${BUNDLE}/model/config.json declares no value_embed_model, so the \
+extension has no name for the directory it embeds values with"
+case "$embed" in
+  */*|..|.) fail "${BUNDLE}/model/config.json declares value_embed_model '${embed}', which is \
+a path rather than a directory name beside the model" ;;
+esac
+for required in model.safetensors tokenizer.json; do
+  [ -f "${BUNDLE}/model/${embed}/${required}" ] \
+    || fail "${BUNDLE} carries no model/${embed}/${required}, which model/config.json names \
+through value_embed_model"
 done
 
 # Self-containedness. -type l finds symlinks whether or not they resolve, so a

@@ -398,40 +398,38 @@ jobs:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
 
-      # Regenerated wholesale, which makes this file the source of truth for the
-      # formula: a hand edit to Formula/brightfield.rb in the tap is overwritten
-      # by the next release, so changes to it belong in the heredoc below.
+      # Regenerated wholesale, which makes this repository the source of truth
+      # for the formula: a hand edit to Formula/brightfield.rb in the tap is
+      # overwritten by the next release, so changes to it belong in
+      # scripts/write-brightfield-formula.sh.
+      #
+      # THE FORMULA USED TO BE A HEREDOC RIGHT HERE, and moving it out is not
+      # tidying. A heredoc in YAML can only be exercised by pushing a tag, so
+      # anything wrong with the formula was discovered on a release, in a
+      # repository with no CI of its own, by a stranger's `brew install`. As a
+      # script it is generated and read by
+      # scripts/check-formula-layout-selftest.sh on every pull request.
+      #
+      # What was wrong with it: `bin.install "brightfield"` took the executable
+      # and discarded the tarball's `finetype/` beside it, so every installed
+      # brightfield reported the storage type of every column.
       - name: Rewrite the formula
+        env:
+          ARM_SHA: ${{ steps.sha.outputs.aarch64_apple_darwin }}
+          INTEL_SHA: ${{ steps.sha.outputs.x86_64_apple_darwin }}
         run: |
           TAG="${GITHUB_REF_NAME}"
           BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
-          cat > homebrew-tap/Formula/brightfield.rb << FORMULA
-          class Brightfield < Formula
-            desc "Grammar-of-graphics renderer for Meridian data (macOS)"
-            homepage "https://github.com/meridian-online/brightfield"
-            license "MIT"
+          scripts/write-brightfield-formula.sh "$TAG" "$BASE" "$ARM_SHA" "$INTEL_SHA" \
+            > homebrew-tap/Formula/brightfield.rb
+          cat homebrew-tap/Formula/brightfield.rb
 
-            depends_on :macos
-
-            on_macos do
-              if Hardware::CPU.arm?
-                url "${BASE}/brightfield-${TAG}-aarch64-apple-darwin.tar.gz"
-                sha256 "${{ steps.sha.outputs.aarch64_apple_darwin }}"
-              else
-                url "${BASE}/brightfield-${TAG}-x86_64-apple-darwin.tar.gz"
-                sha256 "${{ steps.sha.outputs.x86_64_apple_darwin }}"
-              end
-            end
-
-            def install
-              bin.install "brightfield"
-            end
-
-            test do
-              assert_match "brightfield", shell_output("#{bin}/brightfield --version")
-            end
-          end
-          FORMULA
+      # The install block, read on the file that is about to be pushed. The
+      # generator and this check are separate on purpose: a check that only ever
+      # read the generator's output would be satisfied by the generator, and
+      # this file is what the tap receives.
+      - name: The formula installs the tarball's tree, not the binary alone
+        run: scripts/check-formula-layout.sh homebrew-tap/Formula/brightfield.rb
 
       - name: Check the formula addresses this tag
         run: |

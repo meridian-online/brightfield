@@ -1,43 +1,58 @@
 #!/usr/bin/env bash
-# Assemble a FineType bundle from FineType's own release assets.
+# Assemble a FineType bundle from the FineType release and the model registry.
 #
 #   scripts/fetch-finetype-bundle.sh RUST_TARGET DEST_DIR
 #   scripts/fetch-finetype-bundle.sh --print-tag
 #
-# Input: the pinned tag (scripts/finetype-pin.sh, which reads
-# packaging/finetype-pin.env) and a Rust target triple. Output: a directory of
-# the shape scripts/check-bundled-extension.sh accepts and
+# Input: the pin (scripts/finetype-pin.sh, reading packaging/finetype-pin.env)
+# and a Rust target triple. Output: a directory of the shape
+# scripts/check-bundled-extension.sh accepts and
 # `brightfield_engine::semantic::bundle_beside` looks for —
 #
 #   finetype.duckdb_extension
-#   model/…
+#   model/…                     including the directory model/config.json names
+#                               in `value_embed_model`
 #   taxonomy-schemas.json
 #
-# THE SOURCE IS THE RELEASE AND NOT A CHECKOUT. Not a sibling working tree, not
-# the DuckDB community registry, not an expiring Actions artefact: a release
-# asset is durable, checksummed, and addressed by the tag the pin already
-# names, so the pin resolves to bytes without a second lookup and two builds of
-# the same brightfield tag stage the same bytes.
+# TWO SOURCES, AND THE ASYMMETRY BETWEEN THEM IS THE THING TO UNDERSTAND.
 #
-# WHAT IS EXERCISED AND WHAT IS NOT — read this before trusting a green run.
-# scripts/fetch-finetype-bundle-selftest.sh drives this whole file against a
-# loopback HTTP server holding fixture assets, so the url construction, the
-# fetch, the checksum comparison, the unpack and the assembly all run on every
-# pull request. What no test here reaches is a REAL FineType release: at the
-# time this was written a FineType tag published CLI tarballs and their
-# checksums and nothing else, and the assets named below did not exist. The
-# names are therefore an assumed shape — the same form as the CLI tarballs
-# (`finetype-<tag>-<target>…` with a `.sha256` beside each) — and the first
-# real release is where they are confirmed. A wrong name fails as a 404 during
-# a release, loudly, which is the failure direction to want.
+#   The FineType release, addressed by the pinned tag, attaches the extension,
+#   the taxonomy catalogue and `finetype-model.json`. Each has a `.sha256`
+#   published beside it by the publisher, and each is refused unless the bytes
+#   hash to it. That is an attestation: the checksum was written by the party
+#   that built the artefact.
 #
-# BRIGHTFIELD_FINETYPE_ASSET_BASE replaces the release url with any base curl
-# can fetch from. The self-test uses it; a release does not set it.
+#   The model registry, addressed by the pinned revision, holds the weights.
+#   The FineType tag does not attach them and publishes no checksum for them,
+#   so there is nothing here to compare against a second party. What IS done:
+#   the registry's own file listing at the pinned revision is fetched once and
+#   every downloaded file is checked against the digest it carries there —
+#   sha256 for the large files it stores as LFS objects, the git blob id for
+#   the small ones. That catches a truncated or corrupted transfer and it
+#   catches a file that is not the one the revision names. It does NOT
+#   independently attest the bytes: the listing and the files come from the
+#   same server, so a registry serving different content would be self-
+#   consistent. Do not read a green run here as the model being checksummed
+#   the way the release assets are.
+#
+# WHICH ASSET NAMES ARE ASSUMED AND WHICH ARE MEASURED. The three release asset
+# names are the ones FineType's release now publishes. The registry layout was
+# read off the registry itself at the pinned revision. What no test reaches is
+# the live release and the live registry together; the self-test drives this
+# whole file against a loopback server standing in for both.
+#
+# BRIGHTFIELD_FINETYPE_ASSET_BASE replaces the release url and
+# BRIGHTFIELD_FINETYPE_MODEL_ORIGIN the registry's. The self-test sets both; a
+# release sets neither.
+#
+# Needs python3 for JSON. The release runner has it and so does every developer
+# machine here; it is a hard failure rather than a fallback, because the
+# alternative is parsing a registry listing with sed.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
-TAG=$("${HERE}/finetype-pin.sh")
+TAG=$("${HERE}/finetype-pin.sh" --tag)
 
 # The pin check runs this to compare what this script would use against the
 # declaration and against what the other consumers answer. It is the same
@@ -50,9 +65,15 @@ fi
 TARGET="${1:?usage: scripts/fetch-finetype-bundle.sh RUST_TARGET DEST_DIR}"
 DEST="${2:?usage: scripts/fetch-finetype-bundle.sh RUST_TARGET DEST_DIR}"
 
-BASE="${BRIGHTFIELD_FINETYPE_ASSET_BASE:-https://github.com/meridian-online/finetype/releases/download/${TAG}}"
+REVISION=$("${HERE}/finetype-pin.sh" --revision)
+
+RELEASE_BASE="${BRIGHTFIELD_FINETYPE_ASSET_BASE:-https://github.com/meridian-online/finetype/releases/download/${TAG}}"
+MODEL_ORIGIN="${BRIGHTFIELD_FINETYPE_MODEL_ORIGIN:-https://huggingface.co}"
+MODEL_REPO="meridian-online/finetype-model"
 
 fail() { echo "fetch-finetype-bundle: $*" >&2; exit 1; }
+
+command -v python3 >/dev/null 2>&1 || fail "python3 is required to read the release metadata"
 
 # The destination is cleared HERE, before a single byte is fetched, so a run
 # that fails for any reason leaves nothing behind. The alternative — clearing
@@ -65,11 +86,10 @@ esac
 [ ! -e "$DEST" ] || [ -d "$DEST" ] || fail "${DEST} exists and is not a directory"
 rm -rf "$DEST"
 
-# The three assets, named once. A release that names them differently is one
-# edit here and one in the self-test's fixture.
+# The three release assets, named once. Only the extension is per-target.
 EXT_ASSET="finetype-${TAG}-${TARGET}.duckdb_extension"
-CATALOGUE_ASSET="finetype-${TAG}-taxonomy-schemas.json"
-MODEL_ASSET="finetype-${TAG}-model.tar.gz"
+CATALOGUE_ASSET="taxonomy-schemas.json"
+METADATA_ASSET="finetype-model.json"
 
 digest_of() {
   if command -v shasum >/dev/null 2>&1; then
@@ -88,12 +108,10 @@ trap 'rm -rf "$WORK"' EXIT
 # THE VERIFICATION IS WHY THE DESTINATION IS BUILT LAST. Everything lands in
 # $WORK, every digest is compared there, and only then is $DEST created — so a
 # substituted or truncated download cannot reach the staged tree and cannot
-# reach the manifest scripts/package.sh writes over it. Together with the
-# clearing above, a failed fetch leaves no bundle at all rather than a partial
-# one that looks like a bundle.
+# reach the manifest scripts/package.sh writes over it.
 get() {
   local asset="$1"
-  local url="${BASE}/${asset}"
+  local url="${RELEASE_BASE}/${asset}"
 
   curl -sSfL --retry 3 --retry-delay 2 -o "${WORK}/${asset}" "$url" \
     || fail "could not fetch ${url}"
@@ -117,49 +135,138 @@ get() {
   echo "   ${asset}  ${actual}"
 }
 
-echo "== fetch: FineType ${TAG} for ${TARGET}"
-echo "   from ${BASE}"
+echo "== release: FineType ${TAG} for ${TARGET}"
+echo "   from ${RELEASE_BASE}"
 get "$EXT_ASSET"
 get "$CATALOGUE_ASSET"
-get "$MODEL_ASSET"
+get "$METADATA_ASSET"
 
-# The model tarball's top-level shape is the one thing about these assets that
-# a name cannot settle: an archive built with `tar -czf … model` carries a
-# `model/` directory and one built with `-C model .` does not. Both are
-# unpacked here and the required files are then looked for at one known place,
-# so a third shape fails by name rather than producing a bundle missing its
-# weights.
-mkdir -p "${WORK}/unpacked"
-tar -xzf "${WORK}/${MODEL_ASSET}" -C "${WORK}/unpacked" \
-  || fail "${MODEL_ASSET} did not unpack"
-MODEL_ROOT="${WORK}/unpacked"
-if [ ! -f "${MODEL_ROOT}/model.safetensors" ]; then
-  only=$(find "${WORK}/unpacked" -mindepth 1 -maxdepth 1 -type d)
-  if [ "$(printf '%s\n' "$only" | grep -c .)" = "1" ] && [ -f "${only}/model.safetensors" ]; then
-    MODEL_ROOT="$only"
-  fi
-fi
-for required in model.safetensors config.json label_map.json \
-                model2vec/model.safetensors model2vec/tokenizer.json; do
-  [ -f "${MODEL_ROOT}/${required}" ] \
-    || fail "${MODEL_ASSET} carries no ${required} — it is not the model directory a bundle needs"
-done
+# The release's own record of what it is. Its `tag` field is compared against
+# the pin, which is a cross-check the extension's trailer cannot give: it says
+# the RELEASE we fetched from is the one the pin names, independently of what
+# any single asset was stamped with.
+read -r META_TAG MODEL <<EOF
+$(python3 - "${WORK}/${METADATA_ASSET}" <<'PY'
+import json, sys
+try:
+    meta = json.load(open(sys.argv[1]))
+except Exception as e:
+    sys.exit(f"finetype-model.json did not parse: {e}")
+tag, model = meta.get("tag"), meta.get("model")
+if not tag or not model:
+    sys.exit("finetype-model.json carries no 'tag' and 'model' pair")
+if "/" in model or model in ("", ".", ".."):
+    sys.exit(f"finetype-model.json names model {model!r}, which is not a directory name")
+print(tag, model)
+PY
+)
+EOF
+[ -n "${MODEL:-}" ] || fail "could not read the model name from ${METADATA_ASSET}"
+[ "$META_TAG" = "$TAG" ] || fail "${METADATA_ASSET} says it was built for '${META_TAG}' and the \
+pin declares '${TAG}' — this is not the release packaging/finetype-pin.env names"
+
+# ---------------------------------------------------------------------------
+# The model. Named by the release, resolved at the pinned registry revision.
+# ---------------------------------------------------------------------------
+echo "== model: ${MODEL} at ${REVISION}"
+echo "   from ${MODEL_ORIGIN}/${MODEL_REPO}"
+
+TREE="${WORK}/tree.json"
+curl -sSfL --retry 3 --retry-delay 2 -o "$TREE" \
+  "${MODEL_ORIGIN}/api/models/${MODEL_REPO}/tree/${REVISION}/${MODEL}?recursive=true" \
+  || fail "the registry listed no files for ${MODEL} at ${REVISION} — either the revision does \
+not carry that model, or the pin's revision and the release's model name have drifted apart"
+
+mkdir -p "${WORK}/model"
+model_get() { # model_get RELATIVE_PATH
+  local rel="$1"
+  mkdir -p "$(dirname "${WORK}/model/${rel}")"
+  curl -sSfL --retry 3 --retry-delay 2 -o "${WORK}/model/${rel}" \
+    "${MODEL_ORIGIN}/${MODEL_REPO}/resolve/${REVISION}/${MODEL}/${rel}" \
+    || fail "could not fetch ${MODEL}/${rel} at ${REVISION}"
+}
+
+model_get config.json
+model_get label_map.json
+model_get model.safetensors
+
+# The value-embedding directory is named by the model's own config, not by this
+# script. scripts/check-bundled-extension.sh reads the same field, so the file
+# that decides which directory is fetched is the file that decides which one is
+# required.
+EMBED=$(sed -n 's/.*"value_embed_model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+  "${WORK}/model/config.json" | head -1)
+[ -n "$EMBED" ] || fail "${MODEL}/config.json declares no value_embed_model, so there is no name \
+for the directory the extension embeds values with"
+case "$EMBED" in
+  */*|..|.) fail "${MODEL}/config.json declares value_embed_model '${EMBED}', which is a path \
+rather than a directory name beside the model" ;;
+esac
+model_get "${EMBED}/model.safetensors"
+model_get "${EMBED}/tokenizer.json"
+
+# Every downloaded file against the digest the registry's listing carries for
+# it at this revision. Read the header above for exactly what this establishes
+# and what it does not.
+python3 - "$TREE" "${WORK}/model" "$MODEL" <<'PY' || exit 1
+import hashlib, json, os, sys
+
+tree_path, root, model = sys.argv[1:4]
+try:
+    entries = json.load(open(tree_path))
+except Exception as e:
+    sys.exit(f"fetch-finetype-bundle: the registry listing did not parse: {e}")
+if not isinstance(entries, list) or not entries:
+    sys.exit(f"fetch-finetype-bundle: the registry listed no files for {model}")
+
+prefix = model + "/"
+declared = {}
+for entry in entries:
+    if entry.get("type") != "file":
+        continue
+    path = entry.get("path", "")
+    rel = path[len(prefix):] if path.startswith(prefix) else path
+    lfs = entry.get("lfs")
+    if lfs and lfs.get("oid"):
+        declared[rel] = ("sha256", lfs["oid"])
+    elif entry.get("oid"):
+        declared[rel] = ("gitblob", entry["oid"])
+
+checked = 0
+for dirpath, _, names in os.walk(root):
+    for name in names:
+        full = os.path.join(dirpath, name)
+        rel = os.path.relpath(full, root)
+        if rel not in declared:
+            sys.exit(f"fetch-finetype-bundle: {model}/{rel} is not in the registry's listing "
+                     f"for revision — it is not a file this revision publishes")
+        kind, want = declared[rel]
+        data = open(full, "rb").read()
+        if kind == "sha256":
+            got = hashlib.sha256(data).hexdigest()
+        else:
+            got = hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+        if got != want:
+            sys.exit(f"fetch-finetype-bundle: {model}/{rel} does not match the registry's "
+                     f"{kind} for it at this revision —\n  declared {want}\n  actual   {got}")
+        checked += 1
+
+# Reading zero files is a failure, not a pass. An empty download directory
+# would otherwise satisfy every comparison above by making none of them.
+if checked == 0:
+    sys.exit("fetch-finetype-bundle: no model files were downloaded, so nothing was verified")
+print(f"   {checked} model files match the registry's digests at this revision")
+PY
 
 # Assembled only now that every byte has been verified.
 mkdir -p "$DEST"
 cp "${WORK}/${EXT_ASSET}" "${DEST}/finetype.duckdb_extension"
 cp "${WORK}/${CATALOGUE_ASSET}" "${DEST}/taxonomy-schemas.json"
-# -L dereferences: a model archive holding links would otherwise produce a
-# bundle that works only where those links resolve. check-bundled-extension.sh
-# refuses a bundle with any symlink left in it, so this is the copy that has to
-# not make one.
-cp -RL "$MODEL_ROOT" "${DEST}/model"
+# -L dereferences: an archive holding links would otherwise produce a bundle
+# that works only where those links resolve. check-bundled-extension.sh refuses
+# a bundle with any symlink left in it, so this is the copy that has to not
+# make one.
+cp -RL "${WORK}/model" "${DEST}/model"
 
-# What model rode in that release, read out of the bytes rather than declared
-# anywhere here. Printed, not asserted: the pin names a FineType tag and the
-# tag decides the model, so a second declaration would be a pin nobody compares
-# against anything.
-model_name=$(sed -n 's/.*"value_embed_model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
-  "${DEST}/model/config.json" | head -1)
 echo "== bundle: ${DEST}"
-echo "   FineType ${TAG}, ${TARGET}, model ${model_name:-unnamed in config.json}"
+echo "   FineType ${TAG}, ${TARGET}, model ${MODEL} (${EMBED}) at ${REVISION}"

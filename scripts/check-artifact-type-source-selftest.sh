@@ -43,13 +43,15 @@ out="$TMP/out"
 make_bundle() { # make_bundle DIR [PLATFORM] [VERSION]
 	local dir="$1" platform="${2:-$PLATFORM}" version="${3:-${TAG#v}}"
 	rm -rf "$dir"
-	mkdir -p "$dir/model/model2vec"
+	# value_model2vec, the name the published model's own config.json gives the
+	# directory — not the "model2vec" literal the check used to require.
+	mkdir -p "$dir/model/value_model2vec"
 	"$HERE/fixture-extension.py" "$dir/finetype.duckdb_extension" "$platform" v1.2.0 "$version" C_STRUCT
 	printf 'weights' >"$dir/model/model.safetensors"
-	printf '{}' >"$dir/model/config.json"
+	printf '{"value_embed_model": "value_model2vec"}' >"$dir/model/config.json"
 	printf '{}' >"$dir/model/label_map.json"
-	printf 'weights' >"$dir/model/model2vec/model.safetensors"
-	printf '{}' >"$dir/model/model2vec/tokenizer.json"
+	printf 'weights' >"$dir/model/value_model2vec/model.safetensors"
+	printf '{}' >"$dir/model/value_model2vec/tokenizer.json"
 	printf '[]' >"$dir/taxonomy-schemas.json"
 	(cd "$dir" && find . -type f ! -name bundle-manifest.sha256 | sed 's|^\./||' | LC_ALL=C sort |
 		xargs shasum -a 256 >bundle-manifest.sha256)
@@ -168,7 +170,7 @@ expect_fail "a bundle from a release the pin does not name" \
 tampered="$(make_tarball tampered)"
 rm -rf "$TMP/untar" && mkdir -p "$TMP/untar"
 tar -xzf "$tampered" -C "$TMP/untar"
-printf 'different bytes entirely' >"$TMP/untar/brightfield-v9.9.9-$TARGET/finetype/model/config.json"
+printf 'different bytes entirely' >"$TMP/untar/brightfield-v9.9.9-$TARGET/finetype/model/label_map.json"
 tar -czf "$tampered" -C "$TMP/untar" "brightfield-v9.9.9-$TARGET"
 expect_fail "a bundle that changed after packaging" "does not match its own manifest" \
 	"$tampered" "$TARGET"
