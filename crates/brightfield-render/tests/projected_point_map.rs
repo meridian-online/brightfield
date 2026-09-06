@@ -396,3 +396,379 @@ fn a_mark_asking_for_both_is_fitted_in_projected_units() {
          [{domain_min}, {domain_max}]"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The seams between a resolved NAME and a renderer drawing with it
+// ---------------------------------------------------------------------------
+
+/// **Every arm of `From<ResolvedProjection> for Projection`, by name.**
+///
+/// The conversion is the one place a spec-side decision becomes a render-side
+/// transform, and it is fifteen hand-written arms. Two of them being exercised
+/// by the tests above is not a reason to trust the other thirteen: a swapped
+/// pair maps `mercator` onto the orthographic and every test that does not
+/// mention Mercator keeps passing.
+///
+/// Driven from Mosaic's wire names rather than from the `ResolvedProjection`
+/// variants, so the assertion is what an author writes in a spec, and each name
+/// is checked to land on a projection that produces the value the name's OWN
+/// formula produces at a fixed coordinate. The reference values are
+/// `Projection`'s own, which makes this a permutation check and not a maths
+/// check — the maths is `tests/projection_reference.rs`'s job against an oracle
+/// that is not this code, and stating which of the two each file does is the
+/// point.
+#[test]
+fn every_wire_name_converts_to_the_projection_of_that_name() {
+    use brightfield_spec::layout::ResolvedProjection as R;
+    // (wire name, the variant it resolves to, the variant it must convert to).
+    let table: [(&str, R, Projection); 16] = [
+        (
+            "equirectangular",
+            R::Equirectangular,
+            Projection::Equirectangular,
+        ),
+        ("identity", R::Identity, Projection::Identity),
+        ("reflect-y", R::ReflectY, Projection::ReflectY),
+        ("mercator", R::Mercator, Projection::Mercator),
+        (
+            "transverse-mercator",
+            R::TransverseMercator,
+            Projection::TransverseMercator,
+        ),
+        ("orthographic", R::Orthographic, Projection::Orthographic),
+        ("stereographic", R::Stereographic, Projection::Stereographic),
+        ("gnomonic", R::Gnomonic, Projection::Gnomonic),
+        (
+            "azimuthal-equal-area",
+            R::AzimuthalEqualArea,
+            Projection::AzimuthalEqualArea,
+        ),
+        (
+            "azimuthal-equidistant",
+            R::AzimuthalEquidistant,
+            Projection::AzimuthalEquidistant,
+        ),
+        ("equal-earth", R::EqualEarth, Projection::EqualEarth),
+        (
+            "conic-equal-area",
+            R::ConicEqualArea,
+            Projection::ConicEqualArea,
+        ),
+        (
+            "conic-conformal",
+            R::ConicConformal,
+            Projection::ConicConformal,
+        ),
+        (
+            "conic-equidistant",
+            R::ConicEquidistant,
+            Projection::ConicEquidistant,
+        ),
+        ("albers", R::Albers, Projection::Albers),
+        ("albers-usa", R::Albers, Projection::Albers),
+    ];
+    for (wire, resolved, projection) in table {
+        assert_eq!(
+            R::from_wire(wire),
+            Some(resolved),
+            "`{wire}` must resolve to {resolved:?}"
+        );
+        assert_eq!(
+            Projection::from(resolved),
+            projection,
+            "{resolved:?} must convert to {projection:?}"
+        );
+    }
+
+    // The permutation guard: fifteen distinct variants must come out of the
+    // fifteen distinct inputs. Equality above would pass a conversion that
+    // collapsed several arms onto one only if the expectations collapsed too,
+    // and this is what stops the expectations being edited to match a defect.
+    let mut out: Vec<String> = table
+        .iter()
+        .map(|(_, r, _)| format!("{:?}", Projection::from(*r)))
+        .collect();
+    out.sort();
+    out.dedup();
+    assert_eq!(
+        out.len(),
+        15,
+        "the conversion must be injective over the catalogue; got {out:?}"
+    );
+
+    // And each converted projection actually PROJECTS differently — a permutation
+    // that swapped two arms would be caught above only if the two variants are
+    // distinguishable, which this shows they are at one coordinate.
+    let mut positions: Vec<String> = table
+        .iter()
+        .filter_map(|(_, r, _)| Projection::from(*r).project(30.0, 40.0))
+        .map(|(u, v)| format!("{u:.9},{v:.9}"))
+        .collect();
+    positions.sort();
+    let distinct = {
+        let mut p = positions.clone();
+        p.dedup();
+        p.len()
+    };
+    assert!(
+        distinct >= 13,
+        "at (30, 40) the catalogue must land in at least 13 distinct places \
+         (equirectangular and identity coincide there by definition); got {distinct}"
+    );
+}
+
+/// **The separability claim and the inverses that keep it, render side.**
+///
+/// `ResolvedProjection::axes_invert_separately` is a spec-side assertion that
+/// `build_brushable_bindings` acts on and `axis_interval` relies on. Here is the
+/// other half: for every name in the catalogue, the claim and the two inverses
+/// agree, and where they answer they are the true inverse of the forward
+/// transform.
+///
+/// Both directions matter. A projection declared separable whose inverses are
+/// missing is a brush that silently stops filtering; one declared curved whose
+/// inverses exist is a brush refused for nothing.
+#[test]
+fn separability_is_the_claim_the_inverses_keep() {
+    use brightfield_spec::layout::ResolvedProjection as R;
+    let names = [
+        "equirectangular",
+        "identity",
+        "reflect-y",
+        "mercator",
+        "transverse-mercator",
+        "orthographic",
+        "stereographic",
+        "gnomonic",
+        "azimuthal-equal-area",
+        "azimuthal-equidistant",
+        "equal-earth",
+        "conic-equal-area",
+        "conic-conformal",
+        "conic-equidistant",
+        "albers",
+        "albers-usa",
+    ];
+    let mut separable = 0;
+    for name in names {
+        let resolved = R::from_wire(name).expect("a Mosaic name");
+        let projection = Projection::from(resolved);
+        assert_eq!(
+            resolved.axes_invert_separately(),
+            projection.axes_invert_separately(),
+            "`{name}`: the spec-side claim and the render-side capability disagree"
+        );
+        if !resolved.axes_invert_separately() {
+            assert!(
+                projection.invert_lon(0.5).is_none() || projection.invert_lat(0.5).is_none(),
+                "`{name}` is declared curved, so at least one axis must have no inverse"
+            );
+            continue;
+        }
+        separable += 1;
+        // Round-trip: forward then per-axis inverse returns the coordinate.
+        for (lon, lat) in [(0.0, 0.0), (-21.94, 64.15), (151.21, -33.87), (9.19, 45.46)] {
+            let (u, v) = projection
+                .project(lon, lat)
+                .expect("a separable projection is total here");
+            let back_lon = projection.invert_lon(u).expect("declared separable");
+            let back_lat = projection.invert_lat(v).expect("declared separable");
+            assert!(
+                (back_lon - lon).abs() < 1e-9 && (back_lat - lat).abs() < 1e-9,
+                "`{name}` does not round-trip ({lon}, {lat}): got ({back_lon}, {back_lat})"
+            );
+        }
+    }
+    assert_eq!(
+        separable, 4,
+        "exactly four of Mosaic's sixteen names invert per axis"
+    );
+}
+
+/// **The cross-mark union.** A point map's ghost layer and its brushed subset
+/// are two entries sharing one set of scales, and the domains have to cover
+/// BOTH — or the ghost is drawn outside its own frame.
+///
+/// Stated as coverage of two disjoint fixtures rather than as "the domain is
+/// wide", because a union that took only the first entry, or only the last,
+/// still produces a domain that looks like a domain.
+#[test]
+fn the_projected_domain_covers_every_marks_coordinates() {
+    use brightfield_render::scale::infer_scales_multi;
+
+    // Two marks with disjoint coordinates: a northern pair and a southern one.
+    let north = batch(&[(-21.94, 64.15), (9.19, 60.0)]);
+    let south = batch(&[(151.21, -33.87), (120.0, -40.0)]);
+    let cm = channels(Some(Projection::Mercator));
+    let entries = [(&north, &cm), (&south, &cm)];
+    let set = infer_scales_multi(&entries, X_RANGE, Y_RANGE);
+
+    let Some(Scale::Linear {
+        domain_min: y0,
+        domain_max: y1,
+        ..
+    }) = set.get(Channel::Y)
+    else {
+        panic!("a projected plot has a linear y scale");
+    };
+    let Some(Scale::Linear {
+        domain_min: x0,
+        domain_max: x1,
+        ..
+    }) = set.get(Channel::X)
+    else {
+        panic!("a projected plot has a linear x scale");
+    };
+    for (lon, lat) in [
+        (-21.94, 64.15),
+        (9.19, 60.0),
+        (151.21, -33.87),
+        (120.0, -40.0),
+    ] {
+        let (u, v) = Projection::Mercator
+            .project(lon, lat)
+            .expect("all four are inside Mercator's clip");
+        assert!(
+            u >= *x0 - 1e-9 && u <= *x1 + 1e-9,
+            "({lon}, {lat}) projects to u = {u}, outside [{x0}, {x1}]"
+        );
+        assert!(
+            v >= *y0 - 1e-9 && v <= *y1 + 1e-9,
+            "({lon}, {lat}) projects to v = {v}, outside [{y0}, {y1}]"
+        );
+    }
+    // The two marks' extents must be far enough apart that a domain built from
+    // either one alone could not contain the other — otherwise the assertions
+    // above would pass on a first-entry-only union.
+    let only_north = infer_scales_multi(&[(&north, &cm)], X_RANGE, Y_RANGE);
+    let Some(Scale::Linear {
+        domain_min: n0,
+        domain_max: n1,
+        ..
+    }) = only_north.get(Channel::Y)
+    else {
+        panic!("linear");
+    };
+    let (_, south_v) = Projection::Mercator
+        .project(151.21, -33.87)
+        .expect("inside");
+    assert!(
+        south_v < *n0 || south_v > *n1,
+        "the fixtures must be disjoint for this test to hold anything: \
+         {south_v} is inside [{n0}, {n1}]"
+    );
+}
+
+/// **The graticule's extent is the PLOT's, not each mark's batch.**
+///
+/// A point map's ghost layer and its brushed subset both draw a graticule. Read
+/// from each mark's own coordinates, the brushed layer's extent is narrower, so
+/// it lands on a finer rung of the step ladder and lays a second, denser
+/// graticule over the region the reader swept. Read from the shared scale set,
+/// both layers compute the same lines and draw them on top of each other.
+///
+/// The assertion is the STEP, because that is what changes: it is the extent's
+/// only visible consequence.
+#[test]
+fn a_brushed_layer_draws_the_same_graticule_as_the_ghost_behind_it() {
+    use brightfield_render::scale::infer_scales_multi;
+
+    let ghost = batch(FIXTURE);
+    // The subset: one point, so its own extent is degenerate and its own step
+    // would be the finest rung on the ladder.
+    let subset = batch(&FIXTURE[1..2]);
+    let cm = channels(Some(Projection::Mercator));
+    let entries = [(&ghost, &cm), (&subset, &cm)];
+    let set = infer_scales_multi(&entries, X_RANGE, Y_RANGE);
+
+    let extent = set
+        .geo_extent()
+        .expect("a projected plot's scales carry the geographic extent");
+    // The shared extent spans the ghost, not the subset.
+    assert!(
+        extent.lon_span() > 100.0,
+        "the shared extent must span the whole cloud; got {}°",
+        extent.lon_span()
+    );
+
+    // Both layers draw the same lines, because both read this one extent.
+    let ghost_lines = graticule(Projection::Mercator, extent);
+    let subset_lines = graticule(Projection::Mercator, extent);
+    assert_eq!(ghost_lines, subset_lines);
+
+    // The control that makes it a fix rather than a tautology: the subset's OWN
+    // extent gives a different step, which is the second graticule this avoids.
+    let subset_only = infer_scales_multi(&[(&subset, &cm)], X_RANGE, Y_RANGE);
+    let narrow = subset_only.geo_extent().expect("still an extent");
+    assert_ne!(
+        graticule_step(narrow.lon_span()),
+        graticule_step(extent.lon_span()),
+        "the subset's own extent must pick a different step, or this test holds nothing"
+    );
+}
+
+/// **A graticule line breaks where the projection has no position for it**,
+/// rather than joining what remains into a polyline with a chord across the gap.
+///
+/// The projection has to be one whose unrepresentable set is not a single
+/// contiguous stretch of the sampled line, or there is nothing to break. Under
+/// the orthographic it IS contiguous — a meridian is wholly on the near side or
+/// wholly off it, and a parallel leaves the horizon once and does not come back
+/// — so an orthographic graticule exercises the break not at all, which is why
+/// this uses the transverse Mercator instead. There the clip applies to the
+/// ROTATED latitude, `cos φ · sin λ`, so the 90°E meridian is visible at both
+/// ends and hidden across the equator: two runs with a gap between them.
+///
+/// Two assertions, and both are needed. That the line comes back as several
+/// entries is the break happening; that the gap between consecutive runs dwarfs
+/// the largest step inside one is what makes the break worth doing, and it is
+/// the segment a non-breaking `push_runs` would draw.
+#[test]
+fn a_graticule_line_breaks_rather_than_chording_across_the_gap() {
+    let extent = GeoExtent::new(-180.0, 180.0, -60.0, 60.0);
+    let lines = graticule(Projection::TransverseMercator, extent);
+
+    // The 90°E meridian: representable at both ends, unrepresentable across the
+    // equator, so it must arrive as more than one run.
+    let runs: Vec<&brightfield_render::mark::GraticuleLine> = lines
+        .iter()
+        .filter(|l| l.kind == GraticuleKind::Meridian && (l.degrees - 90.0).abs() < 1e-9)
+        .collect();
+    assert!(
+        runs.len() > 1,
+        "the 90°E meridian must come back as several runs; got {}",
+        runs.len()
+    );
+
+    // The largest step WITHIN a run, against the gap BETWEEN two runs.
+    let within = runs
+        .iter()
+        .flat_map(|l| {
+            l.points
+                .windows(2)
+                .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))
+        })
+        .fold(0.0_f64, f64::max);
+    let across = {
+        let a = *runs[0].points.last().expect("a run has points");
+        let b = runs[1].points[0];
+        (b.0 - a.0).hypot(b.1 - a.1)
+    };
+    assert!(
+        across > 5.0 * within,
+        "the gap a non-breaking push_runs would chord across ({across:.3}) must dwarf \
+         the largest step inside a run ({within:.3}), or the break buys nothing"
+    );
+
+    // The control: an unrepresentable vertex is genuinely what splits it. The
+    // same meridian under a total projection is one run.
+    let total = graticule(Projection::Equirectangular, extent);
+    assert_eq!(
+        total
+            .iter()
+            .filter(|l| l.kind == GraticuleKind::Meridian && (l.degrees - 90.0).abs() < 1e-9)
+            .count(),
+        1,
+        "a total projection's meridian is one unbroken run"
+    );
+}
