@@ -330,7 +330,14 @@ pub fn measure(
     // profile pass's is: the `EXPLAIN` before each statement is what makes the
     // count readable and is not what an open pays.
     let (counted, composition_tally) =
-        data_file::open_traced(chosen, true).map_err(|e| format!("{}: {e}", shape.name))?;
+        data_file::open_traced(
+        chosen,
+        &data_file::OpenOptions {
+            count_scans: true,
+            ..data_file::OpenOptions::default()
+        },
+    )
+    .map_err(|e| format!("{}: {e}", shape.name))?;
     let mut tiles = counted.dashboard.tiles().len();
     let mut composition_queries = counted.live.executes();
     drop(counted);
@@ -343,7 +350,8 @@ pub fn measure(
         profile_ms.push(time_profile(&path)?);
         let at = Instant::now();
         let (opened, trace) =
-            data_file::open_traced(chosen, false).map_err(|e| format!("{}: {e}", shape.name))?;
+            data_file::open_traced(chosen, &data_file::OpenOptions::default())
+                .map_err(|e| format!("{}: {e}", shape.name))?;
         open_ms.push(at.elapsed().as_secs_f64() * 1000.0);
         composition_ms.push(trace.composition_ms);
         if trace.materialised {
@@ -566,6 +574,140 @@ mod tests {
             wide.scans,
             profile::SCANS_PER_SOURCE,
             wide.statements
+        );
+    }
+
+    /// **Composing the first screen reads the data file the same number of
+    /// times whatever the tile count, and that number is
+    /// [`pipeline::COMPOSITION_FILE_READS`].**
+    ///
+    /// Three assertions in a deliberate order, and they fail for different
+    /// reasons.
+    ///
+    /// The **vacuity guard** comes first: the wide shape has to draw
+    /// materially more tiles than the narrow one, or "they agree" is a
+    /// sentence about one dashboard written twice. It is stated on the tiles
+    /// rather than on the columns because tiles are what the composition
+    /// issues statements for — a table of twenty columns that drew two tiles
+    /// would satisfy a column-count guard and prove nothing.
+    ///
+    /// The **class** comes second: the two shapes agree. This holds however
+    /// the bound is written, so raising the bound to cover a count that has
+    /// gone proportional again does not buy the raise anything. It is the
+    /// assertion that catches a composition reading the file once per tile,
+    /// which is the defect the whole measurement started at.
+    ///
+    /// The **number** comes last. Restoring the per-tile shape reddens the
+    /// assertion above it even if this literal is raised to fit.
+    ///
+    /// The second witness is the one that keeps the first honest:
+    /// `composition_scans` — every leaf, not only the file ones — is asserted
+    /// to be *larger* on the wide shape than on the narrow one. The
+    /// composition still issues a statement per tile and their plans still
+    /// have leaves; what changed is what those leaves read. Without this the
+    /// file-read count could read zero because the attribution had stopped
+    /// working, and a test that cannot tell "reads nothing" from "counts
+    /// nothing" is testing nothing.
+    #[test]
+    fn composing_a_wide_dashboard_reads_the_file_no_more_often_than_a_narrow_one() {
+        let narrow = counted(&small(&NARROW));
+        let wide = counted(&small(&WIDE));
+
+        assert!(
+            wide.materialised && narrow.materialised,
+            "the fixtures were not read into memory (narrow {}, wide {}), so              the bound below is not the thing this test is about",
+            narrow.materialised,
+            wide.materialised
+        );
+        assert!(
+            wide.tiles >= narrow.tiles * 5,
+            "the wide dashboard draws {} tiles against the narrow one's {} —              too close for their agreeing to mean anything",
+            wide.tiles,
+            narrow.tiles
+        );
+
+        // The class first, the number second.
+        assert_eq!(
+            wide.composition_file_reads, narrow.composition_file_reads,
+            "composing {} tiles read the file {:?} times and composing {} read              it {:?}, so the count tracks the tiles: {:#?}",
+            wide.tiles,
+            wide.composition_file_reads,
+            narrow.tiles,
+            narrow.composition_file_reads,
+            wide.composition_statements
+        );
+        assert_eq!(
+            narrow.composition_file_reads,
+            Some(pipeline::COMPOSITION_FILE_READS),
+            "the narrow dashboard's composition read the file {:?} times              against a bound of {}: {:#?}",
+            narrow.composition_file_reads,
+            pipeline::COMPOSITION_FILE_READS,
+            narrow.composition_statements
+        );
+        assert_eq!(
+            wide.composition_file_reads,
+            Some(pipeline::COMPOSITION_FILE_READS),
+            "the {}-tile dashboard's composition read the file {:?} times              against a bound of {} — a read per tile is what this bound exists              to catch: {:#?}",
+            wide.tiles,
+            wide.composition_file_reads,
+            pipeline::COMPOSITION_FILE_READS,
+            wide.composition_statements
+        );
+
+        // The witness. The statements are still there and still have leaves;
+        // a file-read count of zero that came from counting nothing would sit
+        // beside a leaf count of zero, and this is what tells them apart.
+        let (Some(wide_scans), Some(narrow_scans)) = (wide.composition_scans, narrow.composition_scans)
+        else {
+            panic!(
+                "a composition statement went unexplained, so the file-read                  count above is reading past a hole: {:#?}",
+                wide.composition_statements
+            );
+        };
+        assert!(
+            wide_scans > narrow_scans,
+            "the wide composition planned {wide_scans} leaves and the narrow              one {narrow_scans}. The composition still issues a statement per              tile, so the wide one must plan more leaves than the narrow one —              equal counts here mean the leaf counter has stopped counting, and              then the file-read count above is zero for the wrong reason"
+        );
+        assert!(
+            narrow_scans > 0,
+            "the narrow composition planned no leaves at all, so both counts              above are about a composition that issued nothing"
+        );
+    }
+
+    /// **The file-read count is a real subset and not a constant zero.**
+    ///
+    /// The bound above is zero, and a counter hard-wired to zero passes it on
+    /// every shape. This is the case that must NOT be zero: the profile pass
+    /// runs before anything is materialised, over a source that is still a
+    /// view on `read_csv`, so every one of its leaves is a read of the file
+    /// and the two counts have to agree.
+    ///
+    /// It is also what pins the exclusion rule. If DuckDB stopped carrying a
+    /// `Table` key, every leaf would count as a file read and this test would
+    /// still pass — that is the safe direction. If the rule inverted, or the
+    /// walk stopped finding leaves, this is where it goes red.
+    #[test]
+    fn the_profile_pass_reads_the_file_at_every_leaf_it_plans() {
+        let shape = small(&WIDE);
+        let dir = std::env::temp_dir().join(format!("bf-open-attrib-{}", std::process::id()));
+        let conn = duckdb::Connection::open_in_memory().expect("duckdb");
+        let path = ensure_csv(&conn, &dir, &shape).expect("fixture");
+        let (tally, _) = tally(&path).expect("tally");
+
+        assert_eq!(
+            tally.file_reads(),
+            tally.scans(),
+            "the profile pass runs before anything is materialised, so every              leaf it plans is a read of the file — {:?} of {:?} were counted              as one: {:#?}",
+            tally.file_reads(),
+            tally.scans(),
+            tally.statements
+        );
+        assert_eq!(
+            tally.file_reads(),
+            Some(profile::SCANS_PER_SOURCE),
+            "the profile pass read the file {:?} times against its own bound              of {}",
+            tally.file_reads(),
+            profile::SCANS_PER_SOURCE
         );
     }
 

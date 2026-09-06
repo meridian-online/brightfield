@@ -465,27 +465,59 @@ pub(crate) fn file_label(path: &Path) -> String {
 /// the sentence names each column and why, because "nothing to draw" about a
 /// file the user can see the contents of is not an answer.
 pub fn open(chosen: &str) -> Result<OpenedFile, String> {
-    open_traced(chosen, false).map(|(opened, _)| opened)
+    open_traced(chosen, &OpenOptions::default()).map(|(opened, _)| opened)
+}
+
+/// What [`open_traced`] may do differently from [`open`].
+///
+/// [`OpenOptions::default`] **is** what [`open`] does, so a caller that wants
+/// the app's own open and a trace of it constructs nothing.
+#[derive(Debug, Clone, Copy)]
+pub struct OpenOptions {
+    /// Ask DuckDB to explain each statement the first composition issues
+    /// before running it, and count the leaves of those plans into
+    /// [`OpenTrace::composition`].
+    ///
+    /// Counting roughly doubles the statements issued and so inflates
+    /// [`OpenTrace::composition_ms`]. Take the clock from a run with this off
+    /// and the count from a run with it on, as
+    /// [`brightfield_engine::Session::profile_sources_counting_scans`] and the
+    /// harness's `time_profile` already do for the profile pass.
+    pub count_scans: bool,
+    /// The size a file has to be under to be read into memory before
+    /// composing — [`MATERIALISE_UNDER_BYTES`] by default.
+    ///
+    /// **It is a parameter and not only a constant so that the other branch
+    /// is reachable.** A file over the threshold composes off the view, one
+    /// read per statement, and that is the path a Parquet larger than memory
+    /// takes; a test that could not ask for it would be left asserting in
+    /// prose that it still works. Passing `0` takes it on any file.
+    pub materialise_under_bytes: u64,
+}
+
+impl Default for OpenOptions {
+    fn default() -> Self {
+        Self {
+            count_scans: false,
+            materialise_under_bytes: MATERIALISE_UNDER_BYTES,
+        }
+    }
 }
 
 /// [`open`], and what the wait inside it was spent on.
 ///
 /// One route, not a second one — this **is** [`open`], and [`open`] is this
-/// with the counting switched off. A harness that reproduced the open
+/// under [`OpenOptions::default`]. A harness that reproduced the open
 /// sequence to time it would be timing a sequence the app does not perform,
 /// which is the way an open-cost measurement goes quietly wrong.
-///
-/// `count_scans` asks DuckDB to explain each statement the first composition
-/// issues before running it. That roughly doubles the statements and so
-/// inflates [`OpenTrace::composition_ms`] — take the clock from a run with it
-/// off and the count from a run with it on, as
-/// [`brightfield_engine::Session::profile_sources_counting_scans`] and
-/// `time_profile` already do for the profile pass.
 ///
 /// # Errors
 ///
 /// As [`open`].
-pub fn open_traced(chosen: &str, count_scans: bool) -> Result<(OpenedFile, OpenTrace), String> {
+pub fn open_traced(
+    chosen: &str,
+    options: &OpenOptions,
+) -> Result<(OpenedFile, OpenTrace), String> {
     let path = accept(chosen)?;
     let columns = columns_of(&path)?;
     let dashboard = Dashboard::of(&path, &columns);
@@ -520,7 +552,7 @@ pub fn open_traced(chosen: &str, count_scans: bool) -> Result<(OpenedFile, OpenT
     let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(u64::MAX);
     let mut materialised = false;
     let mut materialise_ms = 0.0;
-    if bytes <= MATERIALISE_UNDER_BYTES {
+    if bytes <= options.materialise_under_bytes {
         let at = std::time::Instant::now();
         match live.materialise_source(SOURCE) {
             Ok(()) => {
@@ -536,7 +568,7 @@ pub fn open_traced(chosen: &str, count_scans: bool) -> Result<(OpenedFile, OpenT
     }
 
     let at = std::time::Instant::now();
-    let (composed, composition) = if count_scans {
+    let (composed, composition) = if options.count_scans {
         live.present_counting_scans()
     } else {
         live.present().map(|c| (c, ScanTally::default()))
