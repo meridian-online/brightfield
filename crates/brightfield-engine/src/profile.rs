@@ -384,8 +384,9 @@ pub struct StatementScans {
 
 /// How many times profiling read the table, statement by statement.
 ///
-/// Collected by [`Session::profile_sources_counting_scans`]. A profile pass
-/// nobody asked to count issues no `EXPLAIN`, so it pays nothing for this.
+/// Collected by [`Session::profile_sources_counting_scans`], which is what
+/// turns the `EXPLAIN` behind these numbers on; a profile pass nobody asked to
+/// count leaves it off.
 ///
 /// [`Session::profile_sources_counting_scans`]: crate::Session::profile_sources_counting_scans
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
