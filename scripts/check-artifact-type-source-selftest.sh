@@ -188,9 +188,14 @@ expect_fail "the bundle staged under examples/" "carries no type source at finet
 	"$nested" "$TARGET"
 
 echo "== a tarball whose bundle would not load"
-crossbuilt="$(make_tarball crossbuilt --platform linux_amd64)"
+# The wrong platform is DERIVED from the host, not written down. It was
+# `linux_amd64`, which is another platform on a Mac and is the host's own on
+# the ubuntu runner this file also runs on — so the case passed locally and
+# passed in CI for opposite reasons, proving the mismatch on one and nothing on
+# the other.
+crossbuilt="$(make_tarball crossbuilt --platform "$FOREIGN_PLATFORM")"
 expect_fail "an extension for another platform, inside the packaged artifact" \
-	"built for 'linux_amd64'" "$crossbuilt" "$TARGET"
+	"built for '${FOREIGN_PLATFORM}'" "$crossbuilt" "$TARGET"
 
 stale="$(make_tarball stale --version 0.0.1)"
 expect_fail "a bundle from a release the pin does not name" \
