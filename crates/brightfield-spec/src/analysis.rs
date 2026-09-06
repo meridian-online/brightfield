@@ -3481,6 +3481,68 @@ plot:
     // cfs3 — brushable_bindings derived view (v3)
     // -----------------------------------------------------------------------
 
+    /// **An interval brush is not installed over a curved projection.** The
+    /// parser warns (`IntervalBrushUnderCurvedProjection`); this is the half
+    /// that makes the warning true, because a binding that exists is a binding
+    /// the shell hosts a gesture for.
+    ///
+    /// A rectangle swept in pixels has a rectangle of longitudes and latitudes
+    /// behind it only when `u` depends on the longitude alone and `v` on the
+    /// latitude alone. Under a conic or an azimuthal the `BETWEEN` bounds the
+    /// brush would build name a region nobody swept — and it would look exactly
+    /// like a brush that worked.
+    #[test]
+    fn an_interval_brush_is_not_installed_over_a_curved_projection() {
+        let spec_with = |projection: &str| {
+            let attrs = if projection.is_empty() {
+                String::new()
+            } else {
+                format!("projectionType: {projection}\n")
+            };
+            let yaml = format!(
+                "params:\n  brush: {{ select: crossfilter }}\nplot:\n  \
+                 - select: intervalXY\n    as: $brush\n  \
+                 - mark: dot\n    data: {{ from: t }}\n    x: lon\n    y: lat\n{attrs}"
+            );
+            build_brushable_bindings(&parse_spec(&yaml, Format::Yaml).expect("parses").spec)
+        };
+        // No projection, and the four whose axes invert separately: the brush
+        // stands, because its per-axis inverse is exact.
+        for keeps in ["", "equirectangular", "identity", "reflect-y", "mercator"] {
+            assert_eq!(
+                spec_with(keeps).len(),
+                1,
+                "`{keeps}` must keep its intervalXY binding"
+            );
+        }
+        // The curved ones: no binding at all, so no gesture is hosted.
+        for refuses in [
+            "orthographic",
+            "albers",
+            "equal-earth",
+            "conic-conformal",
+            "stereographic",
+            "transverse-mercator",
+        ] {
+            assert!(
+                spec_with(refuses).is_empty(),
+                "`{refuses}` must install no interval brush"
+            );
+        }
+        // And the refusal is about the INTERVAL kinds specifically: a toggle on
+        // the same curved plot is untouched, because a category click has no
+        // axis to invert.
+        let toggle = "params:\n  sel: { select: crossfilter }\nplot:\n  \
+                      - select: toggleX\n    as: $sel\n  \
+                      - mark: dot\n    data: { from: t }\n    x: lon\n    y: lat\n\
+                      projectionType: orthographic\n";
+        assert_eq!(
+            build_brushable_bindings(&parse_spec(toggle, Format::Yaml).expect("parses").spec).len(),
+            1,
+            "a toggle over a curved projection is untouched"
+        );
+    }
+
     /// build_brushable_bindings filters interactor_bindings to
     /// brush-compatible kinds (IntervalX/Y/XY) and pairs each with the
     /// parent plot's resolved channel columns. Non-brushable interactors
