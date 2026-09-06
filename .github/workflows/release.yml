@@ -163,31 +163,31 @@ jobs:
       # 1 with its canary classifying three email addresses as unknown. No file
       # list can see that.
       #
-      # HALF THE RELEASE IS READ AND NOT LOADED, and the step below is named
-      # for what it does on the leg that can. Both darwin targets build on
-      # `macos-15`, which is arm64 here, so the x86_64 artefact is a
-      # cross-compile nothing on this runner can execute: its bundle is
-      # checked for shape, platform stamp and manifest, and never loaded.
-      # Closing that needs an Intel runner leg or Rosetta on this one, and
-      # neither is in this change. The step emits a warning and a
-      # step-summary line naming the artefact, so a green release does not
-      # read as both artefacts having been loaded — which is the same standard
-      # the `update-homebrew` job already applies to the Intel install path.
+      # HALF THE RELEASE IS READ AND NOT LOADED, and the step is named for what
+      # it does on the leg that can. Both darwin targets build on `macos-15`,
+      # which is arm64 here, so the x86_64 artefact is a cross-compile nothing
+      # on this runner can execute: its bundle is checked for shape, platform
+      # stamp and manifest, and never loaded. Closing that needs an Intel runner
+      # leg or Rosetta on this one, and neither is in this change.
+      #
+      # WHICH ARTEFACTS WERE LOADED IS RECORDED BY THE CHECK, NOT HERE. This
+      # step used to carry an `if [ "${{ matrix.native }}" != "true" ]` block
+      # emitting that warning itself — a second copy of a decision the check
+      # makes from `rustc -vV`, free to disagree with it and checked by nothing.
+      # The check now writes the warning and the run-summary line from the
+      # branch it took, and scripts/check-artifact-type-source-selftest.sh reads
+      # what lands in `$GITHUB_STEP_SUMMARY` rather than asserting it in prose.
+      #
+      # WHAT THIS STEP IS, STRUCTURALLY, is pinned by
+      # scripts/check-release-readback.py on every pull request: which artefacts
+      # it is run on, with which arguments, whether a refusal stops the job, and
+      # whether the record reaches the run. A `continue-on-error:`, a dropped
+      # `.dmg` argument, an `if:`, a pipe or a `|| true` each turn that gate red.
       - name: The packaged artifacts carry a type source (loaded on the native leg)
         run: |
           NAME="brightfield-${GITHUB_REF_NAME}-${{ matrix.target }}"
           scripts/check-artifact-type-source.sh "dist/${NAME}.tar.gz" "${{ matrix.target }}"
           scripts/check-artifact-type-source.sh "dist/${NAME}.dmg" "${{ matrix.target }}"
-          if [ "${{ matrix.native }}" != "true" ]; then
-            echo "::warning title=Type source read but not loaded::${NAME} is a cross-compile for ${{ matrix.target }}; this runner is arm64, so its bundle was checked for shape, platform and manifest and the packaged binary was never executed. The Intel artefact ships execution-unverified."
-            {
-              echo "### ${{ matrix.target }}: type source read, NOT loaded"
-              echo ""
-              echo "\`${NAME}\` is a cross-compile and this runner is arm64, so its bundle's"
-              echo "shape, platform stamp and manifest were checked and the packaged binary was"
-              echo "never run. Only the aarch64 artefact had its type source loaded."
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
 
       - uses: actions/upload-artifact@v4
         with:

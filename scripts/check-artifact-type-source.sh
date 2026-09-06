@@ -61,9 +61,10 @@
 #
 #      It is skipped only where it CANNOT run: a cross-compiled artifact on a
 #      runner of another architecture. The release matrix builds x86_64 on an
-#      arm64 runner, so that leg is asset-verified and execution-unverified and
-#      says so, which is the same position the workflow already records for the
-#      Intel install path.
+#      arm64 runner, so that leg is asset-verified and execution-unverified —
+#      and it says so where a person reading the release run meets it, in the
+#      run summary and as a workflow warning, written from the branch that made
+#      the decision rather than by a caller repeating it.
 #
 # THE PIN COMPARISON ASSUMES THE CHECKOUT BUILT THE ARTIFACT, which is true of
 # its caller (release.yml, same job) and not of somebody running this over a
@@ -146,6 +147,8 @@ TAG=$("${HERE}/finetype-pin.sh")
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/bf-artifact-typesource.XXXXXX")
 MOUNT=""
+# Nothing sets this until every check has run, and the trap below is why.
+COMPLETED=""
 # Detach before the temp tree goes: the mount point lives inside it, and
 # removing a directory an image is mounted on leaves the image attached.
 #
@@ -154,7 +157,15 @@ MOUNT=""
 # the kernel has not finished releasing the executable's vnode — and the
 # `rm -rf` then hits a read-only mount, fails, and takes the script's exit
 # status with it. That reported a PASSING check as a failure. So: a few
-# attempts, then force, and cleanup can never decide the exit status.
+# attempts, then force, and cleanup restores the status it was entered with.
+#
+# AND THAT RESTORE HAS ONE HOLE, WHICH IS WHY THE SENTINEL EXISTS. A `set -u`
+# abort — an unbound variable expanded inside a function — reaches an EXIT trap
+# with `$?` set to 0, measured on this machine's bash. So `return "$rc"` would
+# hand back 0 for a script that died halfway through, and this check reporting
+# 0 is a release publishing an artefact nothing opened. `$?` cannot tell
+# "finished" from "stopped"; COMPLETED can, because the only line that sets it
+# is the one after the last check.
 cleanup() {
   local rc=$?
   if [ -n "$MOUNT" ]; then
@@ -166,6 +177,11 @@ cleanup() {
     done
   fi
   rm -rf "$TMP" 2>/dev/null || true
+  if [ -z "$COMPLETED" ] && [ "$rc" -eq 0 ]; then
+    echo "check-artifact-type-source: stopped before reaching the end and reported no reason." >&2
+    echo "  Exiting 1: a check that did not finish has established nothing." >&2
+    return 1
+  fi
   return "$rc"
 }
 trap cleanup EXIT
@@ -206,6 +222,25 @@ esac
 echo "== type source: ${BUNDLE_REL}"
 "${HERE}/check-bundled-extension.sh" "$PKG/$BUNDLE_REL" "$PLATFORM" "$TAG" | sed 's/^/   /'
 
+# THE RECORD IS WRITTEN HERE BECAUSE THE DECISION IS MADE HERE. Which artefacts
+# a release load-verifies is decided three lines below, from the target argument
+# and the machine — so anything else that announced it would be a second copy of
+# that decision, free to disagree with the one that ran. The release workflow
+# used to carry exactly that: an `if [ "${{ matrix.native }}" != "true" ]` block
+# beside the call, emitting the warning from the matrix's idea of native while
+# the check used rustc's. Two deciders, one record, and no check between them.
+#
+# `$GITHUB_STEP_SUMMARY` is the run summary — the page a person reading a
+# release run meets before any step log. Unset outside Actions, in which case
+# the stdout line is the whole record and nothing is written anywhere.
+# scripts/check-artifact-type-source-selftest.sh sets it to a file and reads
+# what lands in it.
+ARTIFACT_NAME=$(basename "$ARTIFACT")
+summary() {
+  [ -n "${GITHUB_STEP_SUMMARY:-}" ] || return 0
+  printf '%s\n' "$1" >> "$GITHUB_STEP_SUMMARY"
+}
+
 HOST=$(host_target)
 if [ "$TARGET" = "$HOST" ]; then
   echo "== run: the packaged binary types a column"
@@ -213,7 +248,8 @@ if [ "$TARGET" = "$HOST" ]; then
   ( cd "$PKG" && "$EXE" --check-type-source ) > "$TMP/typesource.log" 2>&1 || ts_status=$?
   sed 's/^/   /' "$TMP/typesource.log"
   case "$ts_status" in
-    0) echo "   ok: the packaged binary loaded the bundled extension and labelled a column" ;;
+    0) echo "   ok: the packaged binary loaded the bundled extension and labelled a column"
+       summary "- type source LOADED by the packaged binary: \`${ARTIFACT_NAME}\` (${TARGET})" ;;
     2) fail "the binary reports no bundle beside it, but ${BUNDLE_REL} is in this artifact —
   it is staged somewhere the executable does not look. See scripts/package.sh." ;;
     *) fail "the packaged binary's type source did not come up (exit ${ts_status}).
@@ -225,6 +261,9 @@ else
   echo "== not run: this artifact is for ${TARGET} and this machine is ${HOST},"
   echo "   so the packaged binary cannot be executed here. The bundle was read"
   echo "   and NOT loaded; nothing below establishes that it would load."
+  echo "::warning title=Type source read but not loaded::${ARTIFACT_NAME} is packaged for ${TARGET} and this machine is ${HOST}, so the packaged binary was never executed. Its bundle was checked for shape, platform stamp and manifest only. This artefact ships execution-unverified."
+  summary "- type source READ BUT NOT LOADED: \`${ARTIFACT_NAME}\` (packaged for ${TARGET}, this runner is ${HOST}) — shape, platform stamp and manifest were checked and the packaged binary was never run"
 fi
 
+COMPLETED=1
 echo "check-artifact-type-source: ${ARTIFACT} carries FineType ${TAG} for ${PLATFORM}."

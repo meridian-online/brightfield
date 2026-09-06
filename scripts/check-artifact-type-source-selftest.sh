@@ -33,6 +33,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
 CHECK="$HERE/check-artifact-type-source.sh"
 SELF="$HERE/$(basename "${BASH_SOURCE[0]}")"
 
@@ -72,6 +73,14 @@ fi
 FOREIGN_PLATFORM="$("$HERE/duckdb-platform.sh" "$FOREIGN")"
 
 failures=0
+# BEFORE THE FIRST CASE. The litter section at the foot of this file compares
+# against this, and taking the reading later would mean comparing the checkout
+# against itself after the strays had already landed.
+TRACKED_AT_START=""
+if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+	TRACKED_AT_START="$(git -C "$ROOT" status --porcelain)"
+	[ -n "$TRACKED_AT_START" ] || TRACKED_AT_START="<clean>"
+fi
 TMP="$(mktemp -d)" || exit 1
 trap 'rm -rf "$TMP"' EXIT
 # A PATH, and the SHARED one. Every expect_pass and expect_fail redirects into
@@ -336,6 +345,116 @@ else
 	failures=$((failures + 1))
 fi
 
+echo "== the record of which artefacts were load-verified"
+# READ, NOT ASSERTED. Which targets a release load-verifies and which it only
+# reads is a fact a person meets in the run summary, and the way that fact goes
+# wrong is not that somebody deletes it — it is that it keeps being emitted
+# while the branch it describes stops being the branch that ran. release.yml
+# used to emit it from `matrix.native` while the check decided from `rustc -vV`;
+# nothing compared the two. So these cases point $GITHUB_STEP_SUMMARY at a file
+# and read the bytes that land in it, on both branches, in both directions.
+#
+# Both directions matter and the second is the sharp one. "the summary says NOT
+# LOADED for the cross-compiled artefact" is satisfied by a check that writes
+# that line unconditionally; what makes the line worth reading is that the
+# native artefact's record does NOT carry it.
+SUMMARY="$TMP/step-summary.md"
+
+record_run() { # record_run ARTIFACT TARGET — leaves the log in $out, the record in $SUMMARY
+	: >"$SUMMARY"
+	GITHUB_STEP_SUMMARY="$SUMMARY" "$CHECK" "$1" "$2" >"$out" 2>&1
+}
+
+expect_record() { # expect_record NAME PRESENT ABSENT
+	local name="$1" present="$2" absent="$3"
+	if ! grep -qF -- "$present" "$SUMMARY"; then
+		echo "  FAIL ${name}: the run summary does not say ${present}"
+		sed 's/^/       /' "$SUMMARY"
+		failures=$((failures + 1))
+		return
+	fi
+	if grep -qF -- "$absent" "$SUMMARY"; then
+		echo "  FAIL ${name}: the run summary also says ${absent}, which is the other branch"
+		sed 's/^/       /' "$SUMMARY"
+		failures=$((failures + 1))
+		return
+	fi
+	echo "  ok   ${name}"
+}
+
+recorded="$(make_tarball recorded)"
+record_run "$recorded" "$TARGET"
+expect_record "the loaded artefact is recorded as loaded, and not as unloaded" \
+	"type source LOADED by the packaged binary: \`recorded.tar.gz\` (${TARGET})" \
+	"READ BUT NOT LOADED"
+
+# The same fixture the cross-compile case above uses: a stub that would FAIL if
+# it ran. So a record saying the binary was never run is a record of what
+# happened rather than a line printed beside a run that did.
+record_run "$foreign" "$FOREIGN"
+expect_record "the cross-compiled artefact is recorded as read and not loaded" \
+	"type source READ BUT NOT LOADED: \`foreign.tar.gz\` (packaged for ${FOREIGN}, this runner is ${TARGET})" \
+	"LOADED by the packaged binary"
+
+# The warning is the other half: a run summary is a page somebody opens, and an
+# annotation is what appears against the run without opening anything.
+if grep -qF '::warning title=Type source read but not loaded::foreign.tar.gz is packaged for '"${FOREIGN}"' and this machine is '"${TARGET}" "$out"; then
+	echo "  ok   the unloaded artefact also raises a workflow annotation naming both triples"
+else
+	echo "  FAIL no ::warning naming the artefact and both triples:"
+	sed 's/^/       /' "$out"
+	failures=$((failures + 1))
+fi
+
+# Outside Actions there is no summary file to write to, and the check must not
+# invent one. The litter case at the foot of this file is what would catch a
+# stray; this is what catches the check failing rather than skipping.
+if ( unset GITHUB_STEP_SUMMARY; "$CHECK" "$recorded" "$TARGET" >"$out" 2>&1 ); then
+	echo "  ok   with no \$GITHUB_STEP_SUMMARY the check still passes and writes no record"
+else
+	echo "  FAIL the check needs \$GITHUB_STEP_SUMMARY to be set:"
+	sed 's/^/       /' "$out"
+	failures=$((failures + 1))
+fi
+
+echo "== a run that stops halfway does not report a pass"
+# THE ONE FAILURE `$?` CANNOT SEE. A `fail` and a `set -e` abort both reach the
+# check's EXIT trap with a non-zero status, and the trap hands it back. An
+# unbound variable expanded inside a function does not: bash enters the trap
+# with `$?` of 0, measured on this machine, so `return "$rc"` reports a pass for
+# a script that died before it checked anything — and for this file a pass is a
+# release publishing an artefact nothing opened. The COMPLETED sentinel is what
+# tells "finished" from "stopped", and this is what shows it firing.
+#
+# INJECTED INTO A COPY, never into the tracked file. Nothing outside the script
+# can force an unbound expansion inside it, and a self-test that edits a file
+# another job may be reading is one interrupted process away from leaving the
+# mutation on disk. The copy takes the two siblings the check reads before the
+# trap is installed; the pin is handed to it by path.
+ABORT="$TMP/abort"
+mkdir -p "$ABORT"
+cp "$HERE/duckdb-platform.sh" "$HERE/finetype-pin.sh" "$ABORT/"
+awk '{ print }
+	/^trap cleanup EXIT$/ { print ": \"$THIS_VARIABLE_IS_DELIBERATELY_UNSET\"" }' \
+	"$CHECK" >"$ABORT/check-artifact-type-source.sh"
+chmod +x "$ABORT/check-artifact-type-source.sh"
+if [ "$(grep -c 'THIS_VARIABLE_IS_DELIBERATELY_UNSET' "$ABORT/check-artifact-type-source.sh")" -ne 1 ]; then
+	echo "  FAIL the abort could not be injected — the \`trap cleanup EXIT\` line has moved,"
+	echo "       so this case is testing an unmodified copy and would pass either way"
+	failures=$((failures + 1))
+elif BRIGHTFIELD_FINETYPE_PIN="$ROOT/packaging/finetype-pin.env" \
+	"$ABORT/check-artifact-type-source.sh" "$good" "$TARGET" >"$out" 2>&1; then
+	echo "  FAIL a run that died before checking anything exited 0:"
+	sed 's/^/       /' "$out"
+	failures=$((failures + 1))
+elif ! grep -q 'unbound variable' "$out"; then
+	echo "  FAIL it exited non-zero for some other reason than the abort:"
+	sed 's/^/       /' "$out"
+	failures=$((failures + 1))
+else
+	echo "  ok   a run that died mid-way exits non-zero rather than reporting a pass"
+fi
+
 echo "== an artifact of a shape this check does not know"
 printf 'not an artifact' >"$TMP/thing.zip"
 expect_fail "a .zip" "not an artifact this script knows" "$TMP/thing.zip" "$TARGET"
@@ -408,6 +527,36 @@ else
 	rm -rf "$pen"
 	mkdir -p "$pen"
 	innerlog="$TMP/inner.log"
+	# THE EMPTY DIRECTORY IS ONLY HALF OF IT, and the title of this section says
+	# so: a stray written by ABSOLUTE path lands wherever the path names, and
+	# the working directory is not it. The checkout is the place that matters —
+	# a file dropped into the repository is committed by the next `git add`.
+	#
+	# The reading it is compared against was taken at the TOP of this file,
+	# before the first case ran, and that is the whole point of taking it there:
+	# a stray written by every invocation is already present by the time the
+	# inner run starts, so a before/after pair taken around the inner run alone
+	# sees no change and reports ok. Measured — that is exactly what an earlier
+	# version of this case did.
+	#
+	# A comparison rather than a clean-tree assertion, because a developer's
+	# checkout is dirty most of the time.
+	if [ -n "$TRACKED_AT_START" ]; then
+		tracked_now="$(git -C "$ROOT" status --porcelain)"
+		# The same stand-in the reading at the top uses, so a clean tree on both
+		# sides compares equal rather than empty-against-sentinel.
+		[ -n "$tracked_now" ] || tracked_now="<clean>"
+		if [ "$tracked_now" != "$TRACKED_AT_START" ]; then
+			echo "  FAIL this run changed the checkout it was started from:"
+			diff <(printf '%s\n' "$TRACKED_AT_START") <(printf '%s\n' "$tracked_now") |
+				sed 's/^/       /'
+			failures=$((failures + 1))
+		else
+			echo "  ok   a whole run leaves the checkout's tracked tree exactly as it found it"
+		fi
+	else
+		echo "  --   not a git work tree: the checkout comparison needs one"
+	fi
 	(cd "$pen" && BRIGHTFIELD_ARTIFACT_SELFTEST_INNER=1 "$SELF") >"$innerlog" 2>&1
 	innerstatus=$?
 	strays="$(cd "$pen" && ls -A)"
