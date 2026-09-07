@@ -369,7 +369,8 @@ impl ScaleSet {
     /// The geographic rectangle every projected mark on the plot covers between
     /// them, in DEGREES — the graticule's extent.
     ///
-    /// Accumulated where the projected domains are ([`project_positional_domains`]),
+    /// Accumulated where the projected domains are (`project_positional_domains`,
+    /// private to this module),
     /// from the same pass over the same coordinates, so a plot's ghost layer and
     /// its brushed subset get the same answer. Deriving it per mark from that
     /// mark's own batch is what made a brushed point map draw a second, finer
@@ -380,7 +381,7 @@ impl ScaleSet {
     }
 
     /// Record the plot's projection and the geographic extent its projected
-    /// marks cover. Called by [`project_positional_domains`]; also by tests
+    /// marks cover. Called by the private `project_positional_domains`; also by tests
     /// that assemble a scale set by hand.
     pub fn set_projection(
         &mut self,
@@ -1128,8 +1129,9 @@ pub fn infer_scales_multi_in(
 /// has to reach the axes is the wider of the two, or the ghost is drawn outside
 /// its own frame.
 ///
-/// A mark the plot's projection leaves undrawable contributes nothing here and
-/// is not drawn either (`crate::scene::render_entry`), so its degrees can never
+/// A mark the plot's projection leaves undrawable contributes no coordinates
+/// here and is not drawn either (`crate::scene::render_entry`, held by
+/// `a_mark_that_cannot_project_contributes_no_geometry`), so its degrees do not
 /// widen an axis in planar units.
 ///
 /// The plot's projection and the geographic extent of everything projected are

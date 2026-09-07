@@ -51,8 +51,8 @@ fn render_spec(yaml: &str) -> (usize, usize) {
         if let Ok(batches) = res {
             if let Some(batch) = concat_batches(batches) {
                 metas.push((
-                    // Through the plot the mark sits in, like every production
-                    // composition path: a plot-level `projectionType` is
+                    // Through the plot the mark sits in, as the shell's
+                    // composition path does: a plot-level `projectionType` is
                     // delivered here or nowhere.
                     ChannelMap::from_mark_in(marks[i], plots.get(i).copied().flatten()),
                     marks[i].kind,

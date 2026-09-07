@@ -38,7 +38,7 @@ use arrow::record_batch::RecordBatch;
 
 use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::layout::ChartLayout;
-use brightfield_render::mark::{default_renderers, find_renderer, MarkRenderer};
+use brightfield_render::mark::{default_renderers, find_renderer};
 use brightfield_render::scale::{Scale, ScaleSet};
 use brightfield_render::scene::{build_multi_mark_scene, ChartData};
 use brightfield_render::ResolvedTitles;

@@ -1428,9 +1428,11 @@ fn plot_highlight_style(
 }
 
 /// Build a fresh [`MarkInput`] from a spec mark, its owning plot node, and the
-/// plot's scheme + highlight style. `highlight_style` is applied only to the
-/// honouring families (`mark_honours_highlight`); the plot's projection is
-/// gated by mark kind inside `ChannelMap::from_mark_in`. Used by the
+/// plot's scheme + highlight style. `highlight_style` is applied to the
+/// honouring families (`mark_honours_highlight`) and to no others; the plot's
+/// projection is gated by mark kind inside `ChannelMap::from_mark_in`. Both
+/// gates are held by `findings124_build_fresh_mark_input_gates_by_kind`. Used by
+/// the
 /// count-changing rebuild + the undo full-reload path.
 fn build_fresh_mark_input(
     mark: &Mark,

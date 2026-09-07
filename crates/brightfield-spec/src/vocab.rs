@@ -268,11 +268,13 @@ impl MarkKind {
     /// **A kind that is NOT here does not silently draw beside them.** A plot
     /// that names a projection has axes in the projection's planar units, and a
     /// mark drawing raw degrees against those axes is a picture in a second
-    /// coordinate system laid over the first. Such a mark is not drawn at all,
-    /// and the author is told by
-    /// [`ParseWarning::MarkCannotProject`](crate::parse::ParseWarning::MarkCannotProject).
-    /// The same contract as [`Self::bins_positionally`]: a kind belongs here
-    /// only once a renderer actually projects what it produces.
+    /// coordinate system laid over the first. Such a mark is not drawn — held by
+    /// `a_mark_that_cannot_project_contributes_no_geometry` (brightfield-render)
+    /// — and the author is told by
+    /// [`ParseWarning::MarkCannotProject`](crate::parse::ParseWarning::MarkCannotProject),
+    /// which `a_mark_that_cannot_project_is_named_rather_than_drawn` holds. The
+    /// same contract as [`Self::bins_positionally`]: a kind belongs here once a
+    /// renderer projects what it produces, and not before.
     #[must_use]
     pub fn draws_through_a_projection(self) -> bool {
         matches!(self, Self::Dot | Self::Geo)
@@ -471,10 +473,11 @@ vocab_enum! {
 ///
 /// **`projectionType` is deliberately absent.** Mosaic has no mark-level
 /// projection key: a projection is a plot attribute, and it replaces the plot's
-/// x and y scales for every mark on it. Written on a mark it is therefore a key
-/// nothing reads, and it reports as
-/// [`ParseWarning::UnconsumedMarkOption`](crate::parse::ParseWarning::UnconsumedMarkOption)
-/// like any other. The plot attribute is delivered to each mark by
+/// x and y scales. Written on a mark it is therefore a key no lowerer and no
+/// renderer reads, and it reports as
+/// [`ParseWarning::UnconsumedMarkOption`](crate::parse::ParseWarning::UnconsumedMarkOption),
+/// which `a_mark_level_projection_is_a_key_nothing_reads` holds. The plot
+/// attribute is delivered to each mark by
 /// `brightfield_render::channel::ChannelMap::from_mark_in`.
 pub const CONSUMED_MARK_OPTION_KEYS: &[&str] = &[
     "x",

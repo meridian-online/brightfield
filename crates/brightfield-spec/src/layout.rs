@@ -662,10 +662,10 @@ impl ResolvedProjection {
     /// attribute ([`resolve_projection`]) and the parser's
     /// [`crate::parse::ParseWarning::UnknownProjection`] check come through
     /// here, so a name the spec language accepts and a name the renderer draws
-    /// cannot come apart. There is no mark-level projection key: Mosaic has
-    /// none, and `projectionType` written on a mark reaches
-    /// [`crate::parse::ParseWarning::UnconsumedMarkOption`] like any other key
-    /// nothing reads.
+    /// cannot come apart. There is no mark-level projection key — Mosaic has no
+    /// such key, and `projectionType` written on a mark reaches
+    /// [`crate::parse::ParseWarning::UnconsumedMarkOption`], which
+    /// `a_mark_level_projection_is_a_key_nothing_reads` holds.
     #[must_use]
     pub fn from_wire(name: &str) -> Option<Self> {
         match name {
@@ -694,8 +694,9 @@ impl ResolvedProjection {
     ///
     /// True exactly for the four projections whose planar `u` is a function of
     /// longitude alone and whose `v` is a function of latitude alone —
-    /// equirectangular, identity, reflect-y and Mercator. For every other name
-    /// in the catalogue the two are entangled (a conic's `u` depends on the
+    /// equirectangular, identity, reflect-y and Mercator —
+    /// `four_of_mosaics_names_invert_per_axis` enumerates them against the
+    /// catalogue. Elsewhere the two are entangled (a conic's `u` depends on the
     /// latitude, an azimuthal's on both), so a rectangle swept in pixels has no
     /// rectangle of longitudes and latitudes behind it and an `intervalX` /
     /// `intervalY` / `intervalXY` filter over it would name bounds the reader
@@ -714,21 +715,22 @@ impl ResolvedProjection {
     }
 }
 
-/// The map projection a plot's `projectionType` attribute names, or `None` when
-/// the plot names none — a PURE resolver beside [`resolve_plot_insets`] /
-/// [`resolve_axis_titles`].
+/// The map projection a plot's `projectionType` attribute names, or `None` for a
+/// plot that does not name one — a PURE resolver beside [`resolve_plot_insets`] /
+/// [`resolve_axis_titles`], held by `resolve_projection_reads_projection_type`.
 ///
 /// **The absence is meaningful and is why this returns an `Option`.** A plot
 /// that names no projection is a cartesian plot: its `dot` marks draw a scatter
 /// at raw column numbers and no graticule goes behind them. A plot that names
 /// `equirectangular` is a map that happens to use the plate carrée, and it draws
 /// a graticule. Collapsing the two — which is what returning a defaulted
-/// `ResolvedProjection` did — makes every scatter in the build indistinguishable
-/// from a world map.
+/// `ResolvedProjection` did — makes a scatter indistinguishable from a world
+/// map, which `an_unprojected_dot_mark_draws_no_graticule` is the contrast for.
 ///
-/// A `$param` and an unrecognised name both read as absent; the
-/// unrecognised-value warning is raised at PARSE time in `walk_plot` (like
-/// `NonNumericInset` / `NonStringLabel`), never here.
+/// A `$param` and an unrecognised name both read as absent — the last two cases
+/// of `resolve_projection_reads_projection_type`. The unrecognised-value warning
+/// is raised at PARSE time in `walk_plot` (like `NonNumericInset` /
+/// `NonStringLabel`) rather than here.
 #[must_use]
 pub fn resolve_projection(plot: &PlotNode) -> Option<ResolvedProjection> {
     match plot.attributes.get("projectionType") {
@@ -2201,7 +2203,7 @@ hconcat:
     /// assertion about render-side behaviour: `build_brushable_bindings` reads it
     /// to decide whether an interval brush is installed at all, and
     /// `brightfield-shell`'s `axis_interval` then relies on the inverses
-    /// existing. Two ways for that to be wrong, and this rules out both — a
+    /// existing. Two ways for that to be wrong, and this test rules out both — a
     /// projection declared separable whose inverses are missing is a brush that
     /// silently stops filtering, and one declared curved whose inverses exist is
     /// a brush refused for nothing.
