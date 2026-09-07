@@ -691,10 +691,9 @@ mod tests {
     /// [`Rule::NotVisible`] unreachable — a galley the clip took shares an
     /// empty box with whatever it is compared to, so [`Rule::Adjacent`]
     /// excused it first and
-    /// `NotVisible` never decided a single pair. Each row now names the
-    /// visibility it applies at as well as the geometry, and this test holds
-    /// them apart: for each case, the rows that excuse it are exactly the one
-    /// named.
+    /// `NotVisible` decided no pair at all. Each row now names the visibility
+    /// it applies at as well as the geometry, and this test holds them apart:
+    /// for each case, the rows that excuse it are exactly the one named.
     #[test]
     fn every_exemption_excuses_a_case_and_no_other() {
         // The pair `Rule::NamedPair`'s case is written against, passed in
