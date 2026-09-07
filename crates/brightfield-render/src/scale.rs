@@ -1149,8 +1149,7 @@ fn project_positional_domains(
     // two differ for a plot whose positional marks cannot project: the plot
     // names a projection, no mark applied it, so the domains below stay in the
     // degrees column inference produced, and a scale set describing those as
-    // planar units would have `axis_interval` unproject a value that was never
-    // projected.
+    // planar units would have `axis_interval` unproject a raw degree.
     let Some(projection) = entries.iter().find_map(|(_, cm)| cm.projection()) else {
         return;
     };
