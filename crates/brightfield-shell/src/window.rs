@@ -387,9 +387,15 @@ pub struct DoorRow {
 /// A remote start whose sources are being moved to local files while the
 /// window keeps drawing.
 ///
-/// `id` says which card wears the readout and which start to compose when the
-/// bytes land; `sources` is what the start's spec declared; `fetch` is the
-/// worker, and it is **`None` until the frame after the click**.
+/// `spec` is the whole of what this fetch is about: the sources come from it
+/// and the composition is of it, so a fetch of one spec cannot land as a
+/// composition of another. It used to be an id and a source list, and the two
+/// could disagree — a caller supplying a list from one spec and an id naming
+/// another got a fetch of the first and, one frame later, an eager bind of
+/// whatever the second declared. `id` is what is left over: which card wears
+/// the readout, which banner an failure replaces, and what goes in the layout.
+/// `fetch` is the worker, and it is **`None` until the frame after the
+/// click**.
 ///
 /// That last part is the same latch this window's private `pick_requested` and
 /// `door_open_protocol` fields use, for a related reason and one of its own. The related one: a click is resolved while the door's `Ui` borrow is
@@ -403,7 +409,11 @@ pub struct DoorRow {
 pub struct PendingStart {
     /// The start this fetch is for.
     id: &'static str,
-    /// The sources its spec declared, in declaration order.
+    /// The spec whose sources are being fetched, and which will be composed
+    /// against the local files when they land.
+    spec: String,
+    /// The sources that spec declared, in declaration order — derived from
+    /// `spec` by `crate::remote::remote_sources` and never handed in.
     sources: Vec<String>,
     /// The worker moving them — `None` on the frame the click landed on, and
     /// `Some` from the next frame until the bytes land.
@@ -1757,7 +1767,10 @@ pub struct MeridianApp {
     /// The remote start whose sources are being fetched right now, if any.
     ///
     /// A window in this state is still on the front door and still drawing:
-    /// the click has been taken and nothing has been opened yet. The card the
+    /// the click has been taken and nothing has been opened yet. That sentence
+    /// is true because [`Self::documents_changed`] clears this — a window that
+    /// has opened something is a window with no fetch outstanding, so a latch
+    /// can never be read against a document it was not for. The card the
     /// click landed on reads [`crate::remote::Fetch::readout`] at its foot in
     /// place of [`DOOR_ENTRY_PROMISE`], and [`MeridianApp::draw`] polls this
     /// once a frame — see [`MeridianApp::open_start`] for why the fetch is not
@@ -2402,6 +2415,27 @@ impl MeridianApp {
     /// where the documents change**, and the head of a frame is one such moment
     /// rather than the whole set of them.
     fn documents_changed(&mut self) {
+        // **An outstanding fetch belongs to the document that was on its way
+        // in, and this is the moment a different one arrived.** Cleared here
+        // rather than at each opener, because a latch cleared at a list of call
+        // sites is a hole waiting for the next route: the verifier reached it
+        // by clicking the remote card and then taking a local start, and when
+        // the abandoned fetch landed the window swapped to a chart the reader
+        // had given up on, over a document they had begun reading. Every route
+        // that replaces a document passes through here — `land_start`,
+        // `adopt_boot` (which is the file picker, a dropped file and the
+        // palette) and `open_home` — so closing it here closes it for the route
+        // added next.
+        //
+        // Dropping the `PendingStart` drops its `Fetch`, which drops the
+        // channel; the worker's send then fails and the `Fetched` it built is
+        // dropped on that thread, taking its temporary directory with it. A
+        // landed fetch with no latch is discarded, files and all.
+        //
+        // `self.remote_files` is deliberately NOT cleared here: `land_start`
+        // assigns it immediately before this call, and the engine is reading
+        // those files for the life of the document that just arrived.
+        self.fetching = None;
         self.reconcile_canvas_holds();
     }
 
@@ -4626,11 +4660,10 @@ impl MeridianApp {
         self.open_chart(Composed::empty());
         self.protocol.doc.open(ProtocolInputs::empty());
         // Going Home is a document swap, so the fetched files go with the
-        // document that was reading them, and an outstanding fetch stops being
-        // this window's business — dropping the `Fetch` discards the worker's
-        // answer and, with it, the directory it wrote.
+        // document that was reading them. The outstanding fetch, if any, is
+        // dropped by `documents_changed` — which is where every document swap
+        // drops one, rather than here and at each of the other openers.
         self.remote_files = None;
-        self.fetching = None;
         self.documents_changed();
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
         ctx.request_repaint();
@@ -4706,14 +4739,13 @@ impl MeridianApp {
         // the card the click landed on wears the readout, and `draw` composes
         // when they land — over a local file, which is the engine doing
         // exactly what it did before at local-file speed.
-        match crate::starts::network_sources(id) {
-            Ok(sources) if !sources.is_empty() => {
-                self.open_remote_start(ctx, id, sources);
-                return;
-            }
-            Ok(_) => {}
-            Err(e) => {
-                self.refuse_start(ctx, id, &e);
+        //
+        // The start's own `spec:` is what is handed over, and nothing else:
+        // `open_remote_start` derives the sources from it and `poll_fetch`
+        // composes the same bytes, so there is no second value to disagree
+        // with it.
+        if let Some(spec) = crate::starts::find(id).and_then(|start| start.spec) {
+            if self.open_remote_start(ctx, id, spec) {
                 return;
             }
         }
@@ -4727,49 +4759,64 @@ impl MeridianApp {
         self.land_start(ctx, id, opened);
     }
 
-    /// Open the start `id`, whose spec reads `sources` over the network,
-    /// **without blocking the frame**: the bytes move on a worker and the
-    /// window goes on drawing until they land.
+    /// Open a start whose `spec` reads a source over the network **without
+    /// blocking the frame**: the bytes move on a worker and the window goes on
+    /// drawing until they land. Answers whether it took the start.
     ///
-    /// Public, and taking the sources rather than reading them, because the
-    /// sources are data — [`crate::starts::network_sources`] reads them off
-    /// the start's own spec and this window's private `open_start` is the one
-    /// caller that does. A caller handing in a different list is aiming the same machinery
-    /// at a different server, which is what
-    /// `crates/brightfield-shell/tests/remote_start.rs` does to hold this
-    /// behaviour against a stub on localhost rather than against the published
-    /// lake: a suite that fetched the real thing would be green or red for
-    /// reasons that have nothing to do with this repository.
+    /// **Public, and taking the spec rather than reading it off `id`.** The
+    /// spec is the whole input: [`crate::remote::remote_sources`] derives what
+    /// to fetch from it and `poll_fetch` composes it, so what is fetched and
+    /// what is drawn cannot be two different documents. It used to take a
+    /// source list beside the id and read the spec back out of the id at
+    /// composition time, and the two could disagree — which is exactly what
+    /// `crates/brightfield-shell/tests/remote_start.rs` did: it handed a stub's
+    /// URL with the shipped start's id, so the fetch went to localhost, the
+    /// repoint matched nothing, and the composition bound the published lake on
+    /// every run of a suite that must not leave the machine.
     ///
-    /// What it leaves behind is a window still on the front door, with
+    /// So a caller substituting a spec is aiming the whole path at it, which is
+    /// what those tests do now — a hermetic suite cannot fetch the real thing,
+    /// because it would be green or red for reasons that have nothing to do
+    /// with this repository.
+    ///
+    /// `false`, and nothing latched, for a spec that names no fetchable source
+    /// — and for one that will not parse, because the caller's next move
+    /// composes it and raises the parse error as the banner, which is the same
+    /// message this would have raised from one fewer place.
+    ///
+    /// What `true` leaves behind is a window still on the front door, with
     /// [`Self::fetching_start`] naming this start and its gallery card reading
     /// [`crate::remote::Fetch::readout`] at its foot. The private `poll_fetch`,
     /// run at the head of [`MeridianApp::draw`] on each frame, is what finishes
     /// it.
-    pub fn open_remote_start(
-        &mut self,
-        ctx: &egui::Context,
-        id: &'static str,
-        sources: Vec<String>,
-    ) {
+    pub fn open_remote_start(&mut self, ctx: &egui::Context, id: &'static str, spec: &str) -> bool {
+        let Ok(sources) = crate::remote::remote_sources(spec) else {
+            return false;
+        };
+        if sources.is_empty() {
+            return false;
+        }
         // A second click on a card already fetching is not a second fetch. It
         // is the same click, and the readout is already saying so.
         if self.fetching.as_ref().is_some_and(|p| p.id == id) {
-            return;
+            return true;
         }
         self.fetching = Some(PendingStart {
             id,
+            spec: spec.to_string(),
             sources,
             fetch: None,
         });
         ctx.request_repaint();
+        true
     }
 
     /// The sources this window is fetching, or is about to.
     ///
-    /// What the click recorded, which is what the worker will be given — read
-    /// before the worker exists, so a test can hold the shipped start's click
-    /// to the URL its shipped spec names without a connection.
+    /// What the click derived from the spec it resolved, which is what the
+    /// worker will be given — read before the worker exists, so a test can hold
+    /// the shipped start's click to the URL its shipped spec names without a
+    /// connection.
     #[must_use]
     pub fn fetching_sources(&self) -> &[String] {
         self.fetching
@@ -4890,15 +4937,14 @@ impl MeridianApp {
             return;
         };
         let id = pending.id;
+        // **The spec the fetch was of**, taken off the latch rather than read
+        // back out of the id. Reading it back is what let the tests fetch a
+        // stub and compose the published lake: the fetched map is keyed on the
+        // URLs the fetch was given, so composing a spec that names a different
+        // one repoints nothing and the engine binds the network.
+        let spec = std::mem::take(&mut pending.spec);
         self.fetching = None;
-        let spec = match crate::starts::find(id).and_then(|start| start.spec) {
-            Some(spec) => spec,
-            None => {
-                self.refuse_start(ctx, id, "the start whose sources were fetched has no spec");
-                return;
-            }
-        };
-        match result.and_then(|files| crate::starts::compose(spec, Some(files))) {
+        match result.and_then(|files| crate::starts::compose(&spec, Some(files))) {
             Ok(opened) => self.land_start(ctx, id, opened),
             Err(e) => self.refuse_start(ctx, id, &e),
         }

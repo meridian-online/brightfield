@@ -29,11 +29,11 @@
 //! `crates/brightfield-shell/tests/remote_start.rs` holds the second case
 //! against a server that sends no `Content-Length`.
 //!
-//! `Content-Length` is read only where the response arrives unencoded. Under
-//! `Content-Encoding: gzip` the header measures the compressed body while the
-//! reader below yields the decompressed one, so the two are counts of
-//! different things and pairing them would draw a readout that overshoots its
-//! own total.
+//! `Content-Length` is taken as the denominator wherever the response carries
+//! one, and the pinned `ureq 2.12.1` is what makes that safe: when it
+//! decompresses a body it removes `Content-Encoding` **and** `Content-Length`
+//! from the response first (`response.rs:607`), so a header that survives to
+//! be read here measures the bytes this module is about to count.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -45,9 +45,15 @@ use std::time::Duration;
 use brightfield_spec::ast::{DataSourceKind, SpecValue};
 use brightfield_spec::{parse_spec, Format, ParseOutput};
 
-/// The scheme this module fetches. A source naming any other scheme is left
-/// alone for the engine to resolve as it always has.
-pub const HTTPS: &str = "https://";
+/// The schemes this module can fetch, and therefore the ones a `file:` source
+/// is moved off the frame for.
+///
+/// Both, not `https://` alone: DuckDB's httpfs binds either eagerly, so a
+/// plain-`http://` source freezes the frame exactly as a TLS one does. A
+/// source naming any **other** scheme — `s3://`, `ducklake:` — is left alone,
+/// because this fetcher cannot serve it and handing the engine a failure where
+/// it had a route would be a worse answer than the wait.
+pub const FETCHED_SCHEMES: [&str; 2] = ["https://", "http://"];
 
 /// How much of the body is moved between the socket and the file at a time.
 ///
@@ -280,7 +286,15 @@ pub fn readout(received: u64, declared: Option<u64>) -> String {
     }
 }
 
-/// Every `https://` source `spec` declares, in declaration order.
+/// Every source `spec` declares under a scheme in [`FETCHED_SCHEMES`], in
+/// declaration order.
+///
+/// **The one derivation.** [`crate::window::MeridianApp`]'s
+/// `open_remote_start` calls this on the spec it is about to compose, so the
+/// list that is fetched and the document that is composed come off the same
+/// bytes. They used to be two parameters — an id and a source list — and a
+/// caller that supplied a list from one spec and an id naming another got a
+/// fetch of the first and a composition of the second.
 ///
 /// Both shapes a spec can name a file in are read: the `file:` key that parses
 /// to [`DataSourceKind::File`], and the `file:` that rides in `extras` under a
@@ -292,7 +306,7 @@ pub fn readout(received: u64, declared: Option<u64>) -> String {
 /// # Errors
 ///
 /// If `spec` does not parse.
-pub fn https_sources(spec: &str) -> Result<Vec<String>, String> {
+pub fn remote_sources(spec: &str) -> Result<Vec<String>, String> {
     let parsed = parse_spec(spec, Format::Yaml).map_err(|e| format!("parse error: {e}"))?;
     let mut out = Vec::new();
     for source in parsed.spec.data.values() {
@@ -304,7 +318,10 @@ pub fn https_sources(spec: &str) -> Result<Vec<String>, String> {
             },
         };
         if let Some(path) = named {
-            if path.starts_with(HTTPS) && !out.contains(&path) {
+            let fetchable = FETCHED_SCHEMES
+                .iter()
+                .any(|scheme| path.starts_with(scheme));
+            if fetchable && !out.contains(&path) {
                 out.push(path);
             }
         }
@@ -316,9 +333,10 @@ pub fn https_sources(spec: &str) -> Result<Vec<String>, String> {
 /// stands in for it.
 ///
 /// Rewritten through the parsed spec rather than by substituting text: the
-/// thing that has to change is the value of one `file:` key, and a string
-/// replacement over the document would also hit the same URL written in a
-/// comment — which `examples/remote/edgar-gleif-crosswalk.yaml` does, twice.
+/// thing that has to change is the value of a `file:` key, and only the parse
+/// knows which occurrence of a string is one. A substitution over the document
+/// rewrites the URL wherever it appears — in a comment, in `meta.description`,
+/// in a SQL literal — and none of those is a source.
 ///
 /// # Errors
 ///
@@ -395,17 +413,14 @@ fn fetch_one(
         .get(url)
         .call()
         .map_err(|e| format!("could not read {url} over the network: {e}"))?;
-    // Only where the body arrives as it was measured — see the module header.
-    let encoded = response
-        .header("Content-Encoding")
-        .is_some_and(|e| !e.trim().eq_ignore_ascii_case("identity"));
-    if !encoded {
-        if let Some(total) = response
-            .header("Content-Length")
-            .and_then(|v| v.trim().parse::<u64>().ok())
-        {
-            meter.declare(total);
-        }
+    // `ureq` has already removed this header if it decompressed the body, so
+    // what survives measures the bytes the loop below counts — see the module
+    // header.
+    if let Some(total) = response
+        .header("Content-Length")
+        .and_then(|v| v.trim().parse::<u64>().ok())
+    {
+        meter.declare(total);
     }
     let mut body = response.into_reader();
     let mut file = std::fs::File::create(target)

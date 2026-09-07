@@ -622,7 +622,7 @@ pub fn load(id: &str) -> Result<Opened, String> {
         // a remote start (see `MeridianApp::open_start`), and the callers that
         // do — the network-gated tests, the thumbnail regeneration, a launch
         // restoring a recorded start — have no frame to keep drawing.
-        let sources = crate::remote::https_sources(spec)?;
+        let sources = crate::remote::remote_sources(spec)?;
         if sources.is_empty() {
             return compose(spec, None);
         }
@@ -667,30 +667,4 @@ pub fn compose(spec: &str, fetched: Option<crate::remote::Fetched>) -> Result<Op
         composed,
         fetched,
     })))
-}
-
-/// The `https://` sources the start `id` reads — what a window has to move
-/// off the frame before it composes this start, and empty for every start
-/// that reads none.
-///
-/// Read off [`Start::spec`], which is the bytes [`compose`] is handed, so the
-/// list a window fetches cannot be a list some other copy of the spec
-/// declares. A start with no `spec:` opens a Protocol **manifest**, whose
-/// `https://` inputs are graph nodes rather than sources: `load_protocol_str`
-/// derives the graph from the declared steps without reading any of them, so
-/// there is nothing here for a window to move —
-/// `only_the_remote_start_has_anything_to_fetch` walks the shipped set and
-/// holds each start's list against its `remote` flag.
-///
-/// # Errors
-///
-/// If the start is not one this build ships, or its spec does not parse.
-pub fn network_sources(id: &str) -> Result<Vec<String>, String> {
-    let Some(start) = find(id) else {
-        return Err(format!("no shipped starting point named {id:?}"));
-    };
-    match start.spec {
-        Some(spec) => crate::remote::https_sources(spec),
-        None => Ok(Vec::new()),
-    }
 }
