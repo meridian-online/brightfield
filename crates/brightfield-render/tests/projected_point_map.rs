@@ -876,3 +876,128 @@ fn a_mark_that_cannot_project_contributes_no_geometry() {
         "control: an unprojected line mark contributes geometry"
     );
 }
+
+/// **A projected dot mark draws no cartesian frame** — no axis line, no ticks,
+/// no tick labels — and an unprojected one still draws all three.
+///
+/// A map draws its own scaffolding behind itself, and the graticule is at whole
+/// degrees off the step ladder while `compute_ticks` puts axis ticks at its own
+/// round numbers. Both at once is two grids at two spacings over one picture,
+/// which is what the tile drew before this.
+///
+/// Read as GLYPHS rather than as paths. The frame's tick labels are the only
+/// text a bare dot plot draws, so a glyph count separates the frame from the
+/// graticule cleanly; counting paths could not, because suppressing the frame
+/// removes gridline paths while the graticule adds them.
+#[test]
+fn a_projected_dot_mark_draws_no_axis_labels() {
+    use brightfield_render::layout::ChartLayout;
+    use brightfield_render::mark::count_scene_glyphs;
+    use brightfield_render::scene::{build_multi_mark_scene, ChartData};
+    use brightfield_render::ResolvedTitles;
+
+    let batch = batch(FIXTURE);
+    let layout = ChartLayout::new(640.0, 480.0);
+    let glyphs = |cm: &ChannelMap| {
+        let entry = ChartData {
+            batch: &batch,
+            channel_map: cm,
+            renderer: &DotRenderer,
+            layout,
+            view_extent: None,
+            highlight: None,
+            sample: None,
+            beyond_frame: false,
+        };
+        let (scene, _) = build_multi_mark_scene(&[&entry], false, &ResolvedTitles::default());
+        count_scene_glyphs(&scene)
+    };
+
+    let plain = glyphs(&channels(None));
+    assert!(
+        plain > 0,
+        "control: an unprojected scatter draws its tick labels; got {plain} glyphs"
+    );
+    let projected = glyphs(&channels(Some(Projection::Mercator)));
+    assert_eq!(
+        projected, 0,
+        "a projected dot mark must draw no tick labels; got {projected} glyphs"
+    );
+
+    // The renderer's own answer, at the seam the scene builders read, so the
+    // count above cannot pass for some other reason.
+    assert!(
+        DotRenderer.suppresses_frame(&channels(Some(Projection::Mercator))),
+        "a projected dot mark suppresses the frame"
+    );
+    assert!(
+        !DotRenderer.suppresses_frame(&channels(None)),
+        "control: an unprojected dot mark keeps it"
+    );
+}
+
+/// **The scale set carries a projection when a mark DRAWS through one**, and not
+/// merely because the plot names one.
+///
+/// The two come apart for a plot whose positional marks are all undrawable. The
+/// plot names a projection, nothing projected anything, so the x/y domains are
+/// still the degrees column inference produced — and `axis_interval`
+/// (`brightfield-shell`) reads `ScaleSet::projection` to decide whether to
+/// unproject a brush pixel. Set from the plot's name, it would unproject a value
+/// that was never projected: under Mercator a longitude of 151.21 would be
+/// divided by π/180 and the clause would name 8,663 degrees.
+#[test]
+fn the_scales_carry_a_projection_only_when_something_drew_through_it() {
+    use brightfield_render::scale::infer_scales_multi;
+    use brightfield_spec::ast::Component;
+    use brightfield_spec::{parse_spec, Format};
+
+    let batch = batch(FIXTURE);
+    // A plot that NAMES mercator over a mark whose kind cannot draw through it.
+    let spec = parse_spec(
+        "data:\n  t:\n    - { lon: 1, lat: 2 }\nplot:\n  \
+         - { mark: line, data: { from: t }, x: lon, y: lat }\n\
+         projectionType: mercator\n",
+        Format::Yaml,
+    )
+    .expect("parses");
+    let Some(Component::Plot(plot)) = spec.spec.root.as_ref() else {
+        panic!("a plot root");
+    };
+    let Some(Component::Mark(line)) = plot.items.first() else {
+        panic!("a mark item");
+    };
+    let undrawable = ChannelMap::from_mark_in(line, Some(plot));
+    assert!(
+        undrawable.mark_projection().is_undrawable(),
+        "the fixture must be undrawable, or this test asserts nothing"
+    );
+
+    let set = infer_scales_multi(&[(&batch, &undrawable)], X_RANGE, Y_RANGE);
+    assert_eq!(
+        set.projection(),
+        None,
+        "nothing drew through the plot's projection, so the axes are still in \
+         degrees and the scale set must not claim otherwise"
+    );
+    // And the domains ARE in degrees, which is what makes the claim above the
+    // load-bearing one rather than a naming preference.
+    let Some(Scale::Linear { domain_max, .. }) = set.get(Channel::X) else {
+        panic!("a linear x scale");
+    };
+    assert!(
+        *domain_max > 100.0,
+        "the x domain must be the degree domain (the fixture reaches 151.21°); \
+         got {domain_max}"
+    );
+
+    // The control: add a mark that DOES draw through it, and the scale set says
+    // so — same plot, same projection, one more mark.
+    let drawn = channels(Some(Projection::Mercator));
+    let both = infer_scales_multi(&[(&batch, &undrawable), (&batch, &drawn)], X_RANGE, Y_RANGE);
+    assert_eq!(
+        both.projection(),
+        Some(Projection::Mercator),
+        "a mark drawing through the projection puts it on the scale set"
+    );
+}
