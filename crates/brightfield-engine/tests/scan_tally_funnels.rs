@@ -108,7 +108,7 @@ fn the_mark_execute_funnel_counts() {
 }
 
 /// **The copy counts.** `materialise_source` reads the source once, and that
-/// read is the one an open pays so that its composition pays nothing.
+/// read is what an open pays so that its composition need not.
 #[test]
 fn the_materialise_copy_funnel_counts() {
     let mut live = session(CATEGORICAL);

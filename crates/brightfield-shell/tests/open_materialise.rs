@@ -240,9 +240,9 @@ fn sized_csv_bytes(rows: u64) -> u64 {
 /// The other tests on this branch reach it by passing
 /// `materialise_under_bytes` explicitly, which is what makes the branch
 /// reachable and also what leaves the shipped constant unread: setting
-/// `MATERIALISE_UNDER_BYTES` to `u64::MAX` left all of them green. This one
-/// goes through `OpenOptions::default()` on two files one row apart, either
-/// side of the constant, so the number itself decides the outcome.
+/// `MATERIALISE_UNDER_BYTES` to `u64::MAX` left them green. This one goes
+/// through `OpenOptions::default()` on two files one row apart, either side of
+/// the constant, so the number itself decides the outcome.
 #[test]
 fn the_shipped_threshold_is_what_decides_an_ordinary_open() {
     // The bounds are the test's own affordability, and they redden loudly for
