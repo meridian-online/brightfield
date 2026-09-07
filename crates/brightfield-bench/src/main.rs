@@ -276,6 +276,11 @@ struct Args {
     /// and write different records: this one is the wait before the first
     /// picture, and it needs neither a GPU nor the scaling datasets.
     open_scan: bool,
+    /// Measure the open a file too large to copy takes — the branch where the
+    /// source stays a view and every statement re-reads it. See
+    /// [`open_scan::measure`]'s `materialise` argument for why the harness can
+    /// ask for it.
+    open_scan_no_materialise: bool,
 }
 
 impl Args {
@@ -293,6 +298,7 @@ impl Args {
             label: None,
             crosswalk_parquet: None,
             open_scan: false,
+            open_scan_no_materialise: false,
         };
         let mut it = std::env::args().skip(1);
         while let Some(a) = it.next() {
@@ -326,6 +332,10 @@ impl Args {
                     args.crosswalk_parquet = Some(PathBuf::from(val("--crosswalk-parquet")?));
                 }
                 "--open-scan" => args.open_scan = true,
+                "--open-scan-no-materialise" => {
+                    args.open_scan = true;
+                    args.open_scan_no_materialise = true;
+                }
                 "--skip-frames" => args.skip_frames = true,
                 "--skip-corpus" => args.skip_corpus = true,
                 "--quick" => {
@@ -902,6 +912,21 @@ struct OpenScanReport {
     /// row's scan count is held to, and the number
     /// `a_wide_table_is_read_no_more_often_than_a_narrow_one` reads.
     scan_bound: u32,
+    /// [`brightfield_shell::pipeline::COMPOSITION_FILE_READS`] — the bound
+    /// every row's composition FILE-read count is held to, and the number
+    /// `composing_a_wide_dashboard_reads_the_file_no_more_often_than_a_narrow_one`
+    /// reads.
+    composition_file_read_bound: u32,
+    /// [`brightfield_shell::data_file::MATERIALISE_UNDER_BYTES`] — the size on
+    /// disk a file has to be under before a copy is attempted, and therefore
+    /// the size the bound above is stated for.
+    materialise_under_bytes: u64,
+    /// [`brightfield_shell::data_file::MATERIALISE_BUDGET_BYTES`] — the memory
+    /// one copy may cost. The other half of the pair, in the other unit:
+    /// `materialise_under_bytes` decides whether the copy is attempted and
+    /// this decides whether it is kept. Each shape's `materialise_bytes` is
+    /// what it actually spent against this.
+    materialise_budget_bytes: u64,
     /// Timed samples per quantity per shape.
     repeats: usize,
     methodology: Vec<String>,
@@ -945,6 +970,7 @@ fn run_open_scan(
             &args.data_dir,
             shape,
             OPEN_SCAN_REPEATS,
+            !args.open_scan_no_materialise,
         )?);
     }
     print!("{}", open_scan::report(&shapes));
@@ -953,6 +979,9 @@ fn run_open_scan(
         schema: OPEN_SCAN_SCHEMA,
         machine,
         scan_bound: brightfield_engine::profile::SCANS_PER_SOURCE,
+        composition_file_read_bound: brightfield_shell::pipeline::COMPOSITION_FILE_READS,
+        materialise_under_bytes: brightfield_shell::data_file::MATERIALISE_UNDER_BYTES,
+        materialise_budget_bytes: brightfield_shell::data_file::MATERIALISE_BUDGET_BYTES,
         repeats: OPEN_SCAN_REPEATS,
         methodology: open_scan_methodology(),
         shapes,
@@ -986,8 +1015,29 @@ fn open_scan_methodology() -> Vec<String> {
          than statements: a UNION ALL branch per column is one statement that reads the table \
          once per branch."
             .to_string(),
-        "`scans` covers the profile pass and nothing else. The first composition's queries are \
-         counted as `composition_queries` and timed only inside `open`."
+        "`scans` covers the profile pass and nothing else. `composition_scans` is the same \
+         leaf count over every statement the FIRST COMPOSITION issues. It is not \
+         `composition_queries`: that one counts the queries marks are drawn from, a mark's \
+         plan can read the table more than once — a binned histogram's plan reads it three \
+         times, once for the rows and twice for the bin extent — and the statements the \
+         composition issues beside the marks, the status band's two counts and the sample \
+         facts, are not mark executes at all."
+            .to_string(),
+        "`composition_file_reads` is the subset of `composition_scans` that reads the FILE \
+         rather than a relation the session holds in memory, and it is the number under a \
+         bound. A leaf counts as a file read unless DuckDB's plan says it scans a named \
+         table; the rule is an exclusion rather than a list of reader operators, so a leaf \
+         nobody anticipated makes the number go up rather than quietly vanish."
+            .to_string(),
+        "`materialised` says whether `data_file::open` read the file into a session-scoped \
+         table before composing, which it does for a file under \
+         `MATERIALISE_UNDER_BYTES`. `materialise` times that one read. Above the threshold \
+         the file stays a view, nothing is copied, and `composition_file_reads` is under no \
+         bound."
+            .to_string(),
+        "`compose` times `LiveDashboard::present` alone, read off the same uncounted `open` \
+         run the `open` figure comes from rather than a second one, so the two cannot \
+         disagree about which open they describe."
             .to_string(),
         "`profile` times `Session::profile_sources` alone, on a session loaded for that sample. \
          The counting run is separate and untimed, because asking DuckDB to explain each \
@@ -2261,6 +2311,7 @@ mod tests {
                 rustc: field("rustc test"),
                 build_profile: field("release"),
                 commit: field("0000000"),
+                load_average: field("0.00"),
                 captured_at: field("2026-07-25T00:00:00+00:00"),
                 duckdb: field("v1.5.2"),
             },
@@ -2689,6 +2740,88 @@ mod tests {
                  record it was measured from is unstated"
             );
         }
+    }
+
+    /// **What an ordinary open actually spends is far inside the budget it is
+    /// allowed to spend**, read off the committed records rather than asserted
+    /// in prose.
+    ///
+    /// `MATERIALISE_BUDGET_BYTES` is the memory one copy may cost, and the
+    /// rustdoc on it makes two claims: that it sits far above what an ordinary
+    /// open costs, and far enough below a laptop's memory that
+    /// spending it is unremarkable. The second is a judgement. The first is a
+    /// measurement, and this is where it is held — every materialised shape in
+    /// every committed open-scan record has to have spent less than a
+    /// thirty-second of the budget.
+    ///
+    /// A thirty-second rather than "less than": a copy that only just fitted
+    /// would satisfy a bare inequality while making the rustdoc's sentence
+    /// false, and the margin is what the sentence is about. Measured on an
+    /// Apple M1 Pro, the widest shape leaves about eighty-six times the room.
+    ///
+    /// This reddens from either side — a budget cut to a value ordinary opens
+    /// crowd, or a shape whose copy grew — which is what a claim about a
+    /// relationship between two numbers needs.
+    #[test]
+    fn every_recorded_open_spends_far_less_than_the_budget_allows() {
+        const MARGIN: u64 = 32;
+        let budget = brightfield_shell::data_file::MATERIALISE_BUDGET_BYTES;
+        let dir = repo_root()
+            .join("benchmarks/results")
+            .join(OPEN_SCAN_SUBDIR);
+        let mut records: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("{} is readable: {e}", dir.display()))
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "json"))
+            .collect();
+        records.sort();
+        assert!(
+            !records.is_empty(),
+            "{} holds no record, so this test read nothing",
+            dir.display()
+        );
+
+        let mut checked = 0usize;
+        for record in &records {
+            let text = std::fs::read_to_string(record).expect("the record reads");
+            let json: serde_json::Value = serde_json::from_str(&text).expect("the record is JSON");
+            let stated = json["materialise_budget_bytes"].as_u64();
+            if let Some(stated) = stated {
+                assert_eq!(
+                    stated,
+                    budget,
+                    "{} was captured against a budget of {stated} bytes and the \
+                     build now ships {budget} — regenerate it, or the figures \
+                     in it are about a different guard",
+                    record.display()
+                );
+            }
+            for shape in json["shapes"].as_array().into_iter().flatten() {
+                let Some(spent) = shape["materialise_bytes"].as_u64() else {
+                    continue;
+                };
+                let name = shape["shape"]["name"].as_str().unwrap_or("?");
+                assert!(
+                    spent > 0,
+                    "{}: shape {name} records a zero-byte copy, so this row \
+                     measures nothing",
+                    record.display()
+                );
+                assert!(
+                    spent * MARGIN <= budget,
+                    "{}: shape {name} spent {spent} bytes of a {budget}-byte \
+                     budget, less than {MARGIN}x of room — the budget is no \
+                     longer far above what an ordinary open costs",
+                    record.display()
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked > 0,
+            "no committed open-scan record carries a materialise_bytes for any \
+             shape, so nothing here compared a spend against the budget"
+        );
     }
 
     /// The record the README's list marks `(current)` must be the newest one in

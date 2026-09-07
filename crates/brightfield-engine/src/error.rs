@@ -23,6 +23,21 @@ pub enum EngineError {
         cause: duckdb::Error,
     },
 
+    /// A source was not read into memory because the copy could not be
+    /// **bounded**, and an unbounded copy is not something this engine makes.
+    ///
+    /// Distinct from a copy DuckDB refused, which arrives as
+    /// [`Self::ConnectionFailed`] carrying DuckDB's own words: this one means
+    /// the guard could not be put in place, so the copy was not attempted.
+    /// The source is untouched down both routes and still serves the file.
+    #[error("'{source_name}' was not read into memory: {reason}")]
+    CopyUnbounded {
+        /// The source that stayed a view.
+        source_name: String,
+        /// Why the budget could not be established.
+        reason: String,
+    },
+
     /// A per-mark query failed to execute.
     #[error("query failed for mark {mark_index} ({mark_kind}): {cause}\n  SQL: {sql}")]
     QueryFailed {
