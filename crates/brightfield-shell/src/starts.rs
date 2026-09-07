@@ -48,11 +48,12 @@
 //! design; and an id this build does not recognise resolves to `None`, which
 //! means the same thing as never having opened anything.
 //!
-//! # Why these five, and why the door offers two of them
+//! # Why these six, and why the door offers three of them
 //!
-//! The crosswalk is the anchor, and it appears twice — as the declaration and
-//! as the result. Those two are the Datasets section: see [`Start::on_door`],
-//! and [`on_door`] for the iterator the door reads.
+//! The crosswalk is the anchor, and it appears three times — as the
+//! declaration, as a run of it, and as the result. Those three are the Datasets
+//! section: see [`Start::on_door`], and [`on_door`] for the iterator the door
+//! reads.
 //!
 //! The other three are still here and still load; what they no longer do is
 //! stand on the first screen. They are generated data with nothing to do to
@@ -69,6 +70,20 @@
 //! declared steps, so the `https://` inputs in the manifest are graph nodes
 //! that are never fetched.
 //!
+//! The **run** is [`CROSSWALK_RUN`], and it is the manifest's other state:
+//! an emitted Protocol+Run contract for the same Protocol, so every step on it
+//! carries the state a run recorded and the ledger's strip says what that run
+//! came to. It is not an execution — brightfield runs no step, and running a
+//! Protocol belongs to `arc` — it is the *artefact* a run emits, read the way
+//! this view was built to read one. Until it shipped, every Protocol this
+//! binary could open was a declaration, so every surface that exists to report
+//! a run reported the same nothing on every screen a stranger could reach.
+//!
+//! It does not retire the run-less start: the declaration and the result are
+//! the pair the door is built around, and a Protocol with no run behind it is a
+//! real state an analyst meets on their own first manifest — the state the
+//! `(no run)` disclosure exists for.
+//!
 //! The **chart** is what that Protocol produces, once someone has run it and
 //! published the Parquet: the whole crosswalk, read live over httpfs and drawn
 //! as two aggregating marks. It is the only start whose data is not inside the
@@ -80,12 +95,14 @@
 //! The three generated chart starts each land on a different drawn answer — a
 //! two-plot dashboard, a histogram, a ranked bar chart — and each is a
 //! self-contained proof of the same architecture: the spec declares queries,
-//! the engine holds the tables, the chart reads the result. Between three and
-//! five is the deliberate size of this set — few enough to choose from at a
-//! glance, enough that the gallery reads as a gallery.
+//! the engine holds the tables, the chart reads the result. Between two and
+//! five is the deliberate size of the **gallery** — few enough to choose from
+//! at a glance, enough that it reads as a gallery — and the gallery is what
+//! [`Start::on_door`] answers, not the length of [`STARTS`].
 //!
 //! The chart view's empty pane offers the first chart start; the protocol
-//! view's empty canvas offers the crosswalk manifest. Neither switches the
+//! view's empty canvas offers the crosswalk manifest — [`for_pane`] hands a
+//! pane the FIRST start that fills it, and the manifest is still first. Neither switches the
 //! view out from under the click, and neither empty pane offers a start that
 //! needs the network. The front door's Datasets section offers the starts
 //! that declare [`Start::on_door`], which is the crosswalk pair.
@@ -164,10 +181,17 @@ use brightfield_workbench::ItemId;
 
 use crate::design::Mode;
 use crate::pipeline::{Composed, LiveDashboard};
-use crate::protocol::{load_protocol_str, ProtocolInputs};
+use crate::protocol::{load_contract_str, load_protocol_str, ProtocolInputs};
 
 /// The EDGAR ↔ GLEIF crosswalk Protocol — the anchor of the set.
 pub const CROSSWALK: &str = "edgar-gleif-crosswalk";
+/// The EDGAR ↔ GLEIF crosswalk as a Protocol that **has run** — the same
+/// subject as [`CROSSWALK`] with a run behind it.
+///
+/// The pair is the point, and it is why this does not replace the run-less
+/// start beside it: a declaration and a result are two states an analyst meets,
+/// the second on their own first manifest, and the door offers both.
+pub const CROSSWALK_RUN: &str = "edgar-gleif-crosswalk-run";
 /// The published EDGAR ↔ GLEIF crosswalk, charted: the same subject as
 /// [`CROSSWALK`] on the far side of a run and a publish. The one start whose
 /// data is fetched rather than shipped — see [`Start::remote`].
@@ -334,6 +358,25 @@ pub const STARTS: &[Start] = &[
         spec: None,
     },
     Start {
+        id: CROSSWALK_RUN,
+        label: "Open a run of the EDGAR ↔ GLEIF crosswalk",
+        summary: "The same protocol on the far side of a run: every step's \
+                  recorded state, and the run it came from.",
+        fills: crate::protocol::CANVAS,
+        thumbnail: include_bytes!("../assets/starts/edgar-gleif-crosswalk-run.png"),
+        thumbnail_dark: include_bytes!("../assets/starts/edgar-gleif-crosswalk-run-dark.png"),
+        // **Not run-less**, which is the whole of what this start adds: its
+        // graph carries the states a run recorded, so nothing about it needs
+        // the disclosure [`RUN_LESS_MARK`] makes, and
+        // `a_start_that_opens_a_run_less_manifest_says_so_on_its_own_button`
+        // would fail if the label carried it anyway.
+        run_less: false,
+        remote: false,
+        on_door: true,
+        // A Protocol+Run contract, not a chart spec — see `load`.
+        spec: None,
+    },
+    Start {
         id: DASHBOARD,
         label: "Open the signals dashboard",
         summary: "A year of generated daily readings beside their weekday \
@@ -479,6 +522,22 @@ const BREAKDOWN_SPEC: &str = include_str!("../assets/starts/activity-breakdown.y
 const CROSSWALK_MANIFEST: &str =
     include_str!("../../../examples/protocol/edgar_gleif/arcform.yaml");
 
+/// The emitted Protocol+Run contract [`CROSSWALK_RUN`] opens.
+///
+/// **The artefact itself, not a copy of it.** `include_bytes!` reaches across
+/// into `brightfield-protocol`'s own fixture directory rather than duplicating
+/// the JSON under `assets/starts/`, on the same argument
+/// [`CROSSWALK_CHART_SPEC`] makes for reaching into `examples/`: one file, so
+/// what a reader inspects and what the button opens cannot drift.
+/// `the_run_start_draws_the_contract_it_ships` compares the graph this composes
+/// against the steps in these very bytes.
+///
+/// Bytes rather than a string because that is what
+/// [`brightfield_protocol::view_from_contract_bytes`] takes — the contract is
+/// JSON on a wire, not source anybody edits.
+const CROSSWALK_RUN_CONTRACT: &[u8] =
+    include_bytes!("../../brightfield-protocol/fixtures/edgar_gleif.contract.json");
+
 /// The crosswalk chart, included from `examples/` rather than copied into
 /// `assets/starts/` — the same arrangement the private `CROSSWALK_MANIFEST`
 /// has, and for the same reason: one file, so the spec a reader runs from the
@@ -567,6 +626,8 @@ pub fn load(id: &str) -> Result<Opened, String> {
     }
     match id {
         CROSSWALK => load_protocol_str(CROSSWALK_MANIFEST, CROSSWALK_MODELS)
+            .map(|inputs| Opened::Protocol(Box::new(inputs))),
+        CROSSWALK_RUN => load_contract_str(CROSSWALK_RUN_CONTRACT)
             .map(|inputs| Opened::Protocol(Box::new(inputs))),
         other => Err(format!(
             "the shipped starting point {other:?} declares neither a chart spec \

@@ -333,11 +333,22 @@ fn canvas_subject(doc: &ProtocolDoc) -> Subject {
 /// start's load gate runs on demand, not on every push.
 #[test]
 fn every_shipped_start_loads_into_a_document_with_something_in_it() {
+    // The recorded size is the **gallery's**, which is what a stranger
+    // chooses from, and the gallery is `Start::on_door`'s answer rather than
+    // the length of the shipped set. The two were one number while every start
+    // was on the door; they stopped being one when the generated charts came
+    // off it, and this assertion went on reading the wrong one until the door
+    // grew a third card and the shipped set a sixth entry.
     assert!(
-        (3..=5).contains(&starts::STARTS.len()),
-        "the curated set is {} starts — few enough to choose from at a \
-         glance, enough to read as a gallery, is the recorded size",
-        starts::STARTS.len()
+        (2..=5).contains(&starts::on_door_count()),
+        "the door offers {} card(s) — few enough to choose from at a glance, \
+         enough to read as a gallery, is the recorded size",
+        starts::on_door_count()
+    );
+    assert!(
+        starts::on_door_count() < starts::STARTS.len(),
+        "every shipped start is on the door, so `on_door` has stopped being a \
+         choice and this assertion has stopped measuring one"
     );
     assert!(
         starts::find(starts::CROSSWALK).is_some(),

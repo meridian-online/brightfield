@@ -2533,16 +2533,33 @@ impl MeridianApp {
         items.iter().map(|item| self.pane_title_of(*item)).collect()
     }
 
-    /// **What the ledger rail's strip says at its trailing end**: the one step,
-    /// as its name, its kind and its run status.
+    /// **What the ledger rail's strip says at its trailing end**: the run this
+    /// Protocol came off, or — where there is no run — the one step.
     ///
-    /// A Protocol of one step is what a data file opens as, and the rail's
-    /// list of it is one row — so the rail opens closed
-    /// ([`Self::ledger_opens_collapsed`]) and this line is the whole of what
-    /// the list would have said. `None` for a Protocol of two steps or more,
-    /// where the rail opens at its declared height and a summary of one step
-    /// would be a summary of the wrong thing.
+    /// The two arms answer for two different documents, and the order between
+    /// them is the point.
+    ///
+    /// A Protocol with a **run** behind it says what the run came to, whatever
+    /// its step count: the strip is where the reader is told the whole
+    /// Protocol's answer, and the rail below it lists the steps. That arm did
+    /// not exist while every input this build could open was a declaration —
+    /// see [`crate::protocol::load_contract_str`] — so the strip said *not run*
+    /// on every screen a stranger could reach, which is the one thing this
+    /// product claims no other tool does.
+    ///
+    /// A Protocol with **no run** and exactly one step is what a data file
+    /// opens as, and the rail's list of it is one row — so the rail opens
+    /// closed ([`Self::ledger_opens_collapsed`]) and this line is the whole of
+    /// what the list would have said. `None` for a run-less Protocol of two
+    /// steps or more, where the rail opens at its declared height and a summary
+    /// of one step would be a summary of the wrong thing.
     fn ledger_summary(&self) -> Option<String> {
+        if let Some(run) = self.protocol.doc.model.run() {
+            return Some(format!(
+                "last run \u{b7} {}",
+                crate::protocol::outcome_word(run.outcome)
+            ));
+        }
         let [step] = self.protocol.doc.model.sheet().rows() else {
             return None;
         };
