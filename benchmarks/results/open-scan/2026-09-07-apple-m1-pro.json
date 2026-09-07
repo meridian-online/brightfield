@@ -8,13 +8,15 @@
     "gpu_adapter": "Apple M1 Pro (Metal, IntegratedGpu)",
     "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
     "build_profile": "release",
-    "commit": "1477563",
-    "captured_at": "2026-09-07T01:41:23.761530+10:00",
+    "commit": "b802f1d",
+    "load_average": "10.38",
+    "captured_at": "2026-09-07T10:27:34.016126+10:00",
     "duckdb": "v1.5.2"
   },
   "scan_bound": 3,
   "composition_file_read_bound": 0,
   "materialise_under_bytes": 67108864,
+  "materialise_budget_bytes": 536870912,
   "repeats": 3,
   "methodology": [
     "`scans` is the sum over the statements `Session::profile_sources` issues of the leaves in DuckDB's physical plan for each — the places rows enter the query. Leaves rather than statements: a UNION ALL branch per column is one statement that reads the table once per branch.",
@@ -56,19 +58,19 @@
       ],
       "profile": {
         "n": 3,
-        "min_ms": 94.95,
-        "mean_ms": 96.183,
-        "p50_ms": 96.638,
-        "p95_ms": 96.96,
-        "max_ms": 96.96
+        "min_ms": 95.647,
+        "mean_ms": 96.239,
+        "p50_ms": 96.508,
+        "p95_ms": 96.564,
+        "max_ms": 96.564
       },
       "open": {
         "n": 3,
-        "min_ms": 160.061,
-        "mean_ms": 161.008,
-        "p50_ms": 161.406,
-        "p95_ms": 161.557,
-        "max_ms": 161.557
+        "min_ms": 160.949,
+        "mean_ms": 161.561,
+        "p50_ms": 161.57,
+        "p95_ms": 162.165,
+        "max_ms": 162.165
       },
       "tiles": 2,
       "composition_queries": 2,
@@ -78,12 +80,13 @@
       "materialised": true,
       "materialise": {
         "n": 3,
-        "min_ms": 18.062,
-        "mean_ms": 18.212,
-        "p50_ms": 18.227,
-        "p95_ms": 18.348,
-        "max_ms": 18.348
+        "min_ms": 18.088,
+        "mean_ms": 18.422,
+        "p50_ms": 18.464,
+        "p95_ms": 18.715,
+        "max_ms": 18.715
       },
+      "materialise_bytes": 858112,
       "composition_statements": [
         {
           "scans": 4,
@@ -104,11 +107,11 @@
       ],
       "composition": {
         "n": 3,
-        "min_ms": 6.758,
-        "mean_ms": 6.854,
-        "p50_ms": 6.84,
-        "p95_ms": 6.963,
-        "max_ms": 6.963
+        "min_ms": 6.589,
+        "mean_ms": 6.823,
+        "p50_ms": 6.834,
+        "p95_ms": 7.046,
+        "max_ms": 7.046
       }
     },
     {
@@ -139,19 +142,19 @@
       ],
       "profile": {
         "n": 3,
-        "min_ms": 566.96,
-        "mean_ms": 569.281,
-        "p50_ms": 568.785,
-        "p95_ms": 572.097,
-        "max_ms": 572.097
+        "min_ms": 565.68,
+        "mean_ms": 566.273,
+        "p50_ms": 565.945,
+        "p95_ms": 567.194,
+        "max_ms": 567.194
       },
       "open": {
         "n": 3,
-        "min_ms": 1003.932,
-        "mean_ms": 1009.323,
-        "p50_ms": 1007.257,
-        "p95_ms": 1016.78,
-        "max_ms": 1016.78
+        "min_ms": 997.437,
+        "mean_ms": 999.873,
+        "p50_ms": 998.454,
+        "p95_ms": 1003.729,
+        "max_ms": 1003.729
       },
       "tiles": 16,
       "composition_queries": 16,
@@ -161,12 +164,13 @@
       "materialised": true,
       "materialise": {
         "n": 3,
-        "min_ms": 111.158,
-        "mean_ms": 112.42,
-        "p50_ms": 112.336,
-        "p95_ms": 113.768,
-        "max_ms": 113.768
+        "min_ms": 110.107,
+        "mean_ms": 110.802,
+        "p50_ms": 111.099,
+        "p95_ms": 111.199,
+        "max_ms": 111.199
       },
+      "materialise_bytes": 6864896,
       "composition_statements": [
         {
           "scans": 4,
@@ -243,11 +247,11 @@
       ],
       "composition": {
         "n": 3,
-        "min_ms": 52.384,
-        "mean_ms": 53.299,
-        "p50_ms": 53.5,
-        "p95_ms": 54.012,
-        "max_ms": 54.012
+        "min_ms": 51.908,
+        "mean_ms": 52.48,
+        "p50_ms": 52.692,
+        "p95_ms": 52.839,
+        "max_ms": 52.839
       }
     }
   ]
