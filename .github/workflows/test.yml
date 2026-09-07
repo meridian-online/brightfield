@@ -108,6 +108,118 @@ jobs:
       - name: cargo test --workspace
         run: cargo test --locked --workspace -- --test-threads=1
 
+      # ---------------------------------------------------------------------
+      # THE BUNDLE-PRESENT CONFIGURATION, which nothing in CI used to run.
+      #
+      # brightfield's differentiating claim is that the grid states what a
+      # column MEANS rather than how DuckDB stored it, and the whole of that
+      # depends on a FineType bundle being there. Every test above runs without
+      # one: `LoadOptions::packaged` looks beside the running executable, a test
+      # binary has nothing there, and so the labelled branch of
+      # `crates/brightfield-shell/src/column_header.rs` was reachable by a
+      # shipped binary and by nothing this workflow executed. The release
+      # workflow stages a bundle and reads it back, but that runs on a tag —
+      # after review, not before it.
+      #
+      # WHY THIS IS IN `test` AND NOT IN `nightly-network.yml`, because that
+      # file argues network-dependent tests do not belong on the push path and
+      # the argument is a good one. What it argues against is depending on
+      # SOMEBODY ELSE'S published data, which can move under us and go red for
+      # reasons that say nothing about the commit: "host down, DNS, a slow
+      # object store". Neither host here is that. The extension and the
+      # catalogue come from this organisation's own FineType release, on the
+      # same host this run already clones itself from; the model comes from
+      # this organisation's own registry namespace at a revision
+      # packaging/finetype-pin.env pins. Both are addressed by a reviewed pin
+      # and every byte is compared against a published digest by
+      # scripts/fetch-finetype-bundle.sh, so they cannot change under a green
+      # run — they can only fail it, loudly. This job already fetches
+      # first-party pinned artefacts over the network for the same reason: the
+      # design-system and `arc` dependencies are git pins that cargo resolves
+      # remotely, which is what the rust-cache step above exists to amortise.
+      #
+      # The cache is what keeps the cost off the ordinary pull request. It is
+      # keyed on the pin file, so the fetch happens once per bump rather than
+      # once per push, and a bump is the commit where you WANT the fetch
+      # exercised.
+      # ---------------------------------------------------------------------
+      - name: cache the pinned FineType bundle
+        id: finetype-bundle
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/finetype-bundle
+          key: finetype-bundle-aarch64-apple-darwin-${{ hashFiles('packaging/finetype-pin.env') }}
+
+      - name: fetch the pinned FineType bundle
+        if: steps.finetype-bundle.outputs.cache-hit != 'true'
+        run: ./scripts/fetch-finetype-bundle.sh aarch64-apple-darwin "${RUNNER_TEMP}/finetype-bundle"
+
+      # Read the bundle before trusting it, restored or freshly fetched alike.
+      # A cache entry is not an attestation: it is whatever a previous run put
+      # under that key, and a partial one would otherwise reach the tests below
+      # as a directory that is simply missing a label. This is the same
+      # pre-flight scripts/package.sh runs over the bundle it stages, with the
+      # pinned tag, so a restored bundle from a different release is refused by
+      # name rather than by a puzzling assertion three steps later.
+      - name: the restored bundle is the pinned one
+        run: |
+          ./scripts/check-bundled-extension.sh \
+            "${RUNNER_TEMP}/finetype-bundle" \
+            "$(./scripts/duckdb-platform.sh aarch64-apple-darwin)" \
+            "$(./scripts/finetype-pin.sh --tag)"
+
+      # The tests themselves, and the floor is the point of the step's shape.
+      #
+      # They are `#[ignore]`d, because a contributor with no bundle should see
+      # them skipped rather than failed — and `cargo test -- --ignored` with a
+      # filter that matches nothing exits 0 and prints "0 passed", so a green
+      # step here would otherwise prove exactly nothing. libtest's executed
+      # count is parsed back out of the summary and held to a floor of 2: the
+      # two `#[ignore]`d tests in that target. A floor rather than an equality,
+      # so a third added there does not redden this at review time; what it
+      # catches is one of them renamed, deleted, or filtered away to nothing.
+      #
+      # The exit code is never masked — no pipe into head or tail, output to a
+      # file, the code kept in a variable and the file printed afterwards.
+      - name: the grid names what a column means
+        shell: bash
+        env:
+          BRIGHTFIELD_FINETYPE_BUNDLE: ${{ runner.temp }}/finetype-bundle
+        run: |
+          set -u
+
+          floor=2
+          log="${RUNNER_TEMP}/column-header-band-typed.log"
+
+          code=0
+          cargo test --locked -p brightfield-shell --test column_header_band \
+            -- --ignored --test-threads=1 --nocapture >"$log" 2>&1 || code=$?
+          cat "$log"
+
+          # The number before the literal "passed;" on libtest's summary line
+          # is what EXECUTED, as opposed to what was compiled or filtered out.
+          # Anchored to the start of a line so the phrase occurring inside a
+          # test's own output does not add to the count.
+          ran=$(awk '/^test result:/ { for (i = 1; i <= NF; i++) if ($i == "passed;") n += $(i - 1) } END { print n + 0 }' "$log")
+          echo "--- column_header_band --ignored: cargo exited ${code}, ${ran} test(s) executed (floor ${floor})"
+
+          failed=0
+          if [ "$code" -ne 0 ]; then
+            echo "::error title=the grid does not name what a column means::cargo test exited ${code} over a real FineType bundle. The failure above names the column and quotes what the band drew; a header reading the storage type in both halves of its leaf-and-storage row is the regression this covers."
+            failed=1
+          fi
+
+          if [ "$ran" -lt "$floor" ]; then
+            echo "::error title=executed too few tests::expected at least ${floor} ignored test(s) to execute in column_header_band, ${ran} executed — the filter matched nothing, or a covered test was renamed, deleted or un-ignored. A green run here would prove nothing."
+            failed=1
+          fi
+
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
+
+          echo "${ran} bundle-present band test(s) executed and passed (floor ${floor})"
+
       # THE PIN-STALENESS CHECK. Its own step with its own pass/fail, for the
       # same reason the conformance scoreboard below is one: the number that
       # matters — how many shipped Protocols the pinned `arc` could load — is

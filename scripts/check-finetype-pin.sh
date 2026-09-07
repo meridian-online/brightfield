@@ -74,10 +74,9 @@ export BRIGHTFIELD_FINETYPE_PIN="$PIN"
 TAG=$("${HERE}/finetype-pin.sh" --tag) || fail "the pin does not read: ${PIN}"
 
 # The registry revision, on the same footing as the tag. The bundle has two
-# sources and only one of them is the tag: a FineType release is to carry the
-# extension and the catalogue — it does not yet, see packaging/finetype-pin.env
-# — and the model comes from the registry either way, so a pin declaring only
-# the tag would leave the model bytes decided on the day.
+# sources and only one of them is the tag: the release carries the extension and
+# the catalogue, the model comes from the registry, and a pin declaring only the
+# tag would leave the model bytes decided on the day.
 # `finetype-pin.sh --revision` is where a branch name is refused; this is what
 # makes that refusal run on a pull request rather than on a release.
 REVISION=$("${HERE}/finetype-pin.sh" --revision) \
