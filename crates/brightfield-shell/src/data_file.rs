@@ -30,7 +30,7 @@
 //! is a tile per column, which makes that count grow with the table's width.
 //! Measured on an Apple M1 Pro against this build's DuckDB v1.5.2, on a
 //! 2,967,637-byte CSV of 14,133 rows and 22 columns: the first composition read
-//! the file 46 times and took 8,269.6 ms of a 9,183.8 ms open — the record is
+//! the file 46 times and took 8,199.1 ms of a 9,033.6 ms open — the record is
 //! `benchmarks/results/open-scan/2026-09-07-apple-m1-pro-from-the-file.json`,
 //! and `--open-scan-no-materialise` is how the harness measures that branch
 //! again. Fourteen of those tiles are histograms and each costs three reads:
@@ -46,9 +46,10 @@
 //! [`crate::pipeline::COMPOSITION_FILE_READS`] states,
 //! `composing_a_wide_dashboard_reads_the_file_no_more_often_than_a_narrow_one`
 //! holds, and the open-scan harness measures — the same file, the same
-//! machine, minutes later:
-//! 53.5 ms of a 1,007.3 ms open, in
-//! `benchmarks/results/open-scan/2026-09-07-apple-m1-pro.json`.
+//! machine, eight seconds earlier: 52.7 ms of a 998.5 ms open, in
+//! `benchmarks/results/open-scan/2026-09-07-apple-m1-pro.json`. Both records
+//! carry the load average they were taken under, because these are wall times
+//! and the machine was not idle.
 //!
 //! # What decides whether a file is copied, and in which unit
 //!
@@ -201,9 +202,10 @@ pub const OPENABLE_EXTENSIONS: &[&str] = &["csv", "tsv", "parquet"];
 /// most expensive and least likely to be worth it.
 ///
 /// The lower end is not in doubt. A dashboard over the 2,967,637-byte CSV in
-/// the open-scan harness issued 46 reads of it and spent 8,269.6 ms doing so —
-/// about 180 ms a read — so anything in that range is worth copying many times
-/// over.
+/// the open-scan harness issued 46 reads of it and spent 8,199.1 ms doing so —
+/// about 178 ms a read — so anything in that range is worth copying many times
+/// over. The figures are the committed
+/// `benchmarks/results/open-scan/2026-09-07-apple-m1-pro-from-the-file.json`.
 ///
 /// It is deliberately not derived from the machine's free memory: a threshold
 /// that moved with the host would make an open fast on one machine and slow on
