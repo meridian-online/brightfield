@@ -740,6 +740,32 @@ plot:
         return 2;
     };
 
+    // THE APPLICATION'S OWN DEFAULT, held against the bundle this function has
+    // just located by hand.
+    //
+    // Opening a data file does not build a `LoadOptions`: it takes
+    // `data_file::OpenOptions::type_source`, whose default is
+    // `LoadOptions::packaged`'s answer. Nothing else in this repository reads
+    // that default with a bundle in place — the options built below are this
+    // function's own, because it needs the seal, and every test binary runs
+    // with nothing beside it to find. So a default changed to `None` would
+    // leave this check green, leave the artifact read-back that runs it green,
+    // and leave every file opened in the window stating its storage type where
+    // its meaning belongs. This is the one process that can tell the
+    // difference, which is why the question is asked here.
+    match brightfield_shell::data_file::OpenOptions::default().type_source {
+        Some(TypeSourceSpec::Bundle(ref dir)) if *dir == bundle => {}
+        other => {
+            eprintln!(
+                "check-type-source: a bundle is at {} and \
+                 data_file::OpenOptions::default() resolves {other:?} — opening a file in \
+                 this build would ask nobody what its columns mean",
+                bundle.display()
+            );
+            return 1;
+        }
+    }
+
     let Ok(parsed) = parse_spec(FIXTURE, Format::Yaml) else {
         eprintln!("check-type-source: the built-in fixture does not parse");
         return 1;
