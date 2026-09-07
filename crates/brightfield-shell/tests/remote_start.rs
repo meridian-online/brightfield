@@ -254,7 +254,7 @@ fn spec_reading(url: &str) -> String {
 /// What the landed document is holding: the local files its spec now reads.
 ///
 /// Read off the composed document's own spec through
-/// [`brightfield_shell::pipeline::spec_data_files`], which skips anything with
+/// [`brightfield_shell::pipeline::spec_data_files`], which skips a source with
 /// a `://` in it — so a document that bound the network answers with an **empty
 /// list**, and one that bound the fetched file answers with the path. That is
 /// the two-sided reading; `is_empty()` is the failure.
@@ -854,10 +854,11 @@ fn the_fetch_writes_what_it_was_served_and_repoints_only_the_source() {
 ///
 /// It was reachable because the latch was cleared at a list of call sites —
 /// `poll_fetch` and `open_home` — and `land_start` was not one of them. So it is
-/// cleared in `documents_changed` instead, which is the one place every route
-/// that replaces a document passes through: this test walks the front door's
-/// own card, and the file picker, a dropped file and the palette are closed by
-/// the same line without a test each.
+/// cleared in `documents_changed` instead, which is where the three openers
+/// this shell has — `land_start`, `adopt_boot` and `open_home` — meet. This
+/// test walks the front door's own card; the file picker, a dropped file and
+/// the palette reach `adopt_boot` and are closed by the same line without a
+/// test each.
 ///
 /// The stub is asked for its hit count afterwards for the second half of the
 /// claim: the abandoned worker is not cancelled mid-flight — nothing here can

@@ -413,7 +413,8 @@ pub struct PendingStart {
     /// against the local files when they land.
     spec: String,
     /// The sources that spec declared, in declaration order — derived from
-    /// `spec` by `crate::remote::remote_sources` and never handed in.
+    /// `spec` by `crate::remote::remote_sources` at the one site that builds
+    /// this struct.
     sources: Vec<String>,
     /// The worker moving them — `None` on the frame the click landed on, and
     /// `Some` from the next frame until the bytes land.
@@ -1769,8 +1770,10 @@ pub struct MeridianApp {
     /// A window in this state is still on the front door and still drawing:
     /// the click has been taken and nothing has been opened yet. That sentence
     /// is true because [`Self::documents_changed`] clears this — a window that
-    /// has opened something is a window with no fetch outstanding, so a latch
-    /// can never be read against a document it was not for. The card the
+    /// has opened something is a window with no fetch outstanding, which is
+    /// what stops a latch being read against a document it was not for, and
+    /// what `a_fetch_the_reader_gave_up_on_does_not_arrive_and_take_the_window`
+    /// in `tests/remote_start.rs` walks. The card the
     /// click landed on reads [`crate::remote::Fetch::readout`] at its foot in
     /// place of [`DOOR_ENTRY_PROMISE`], and [`MeridianApp::draw`] polls this
     /// once a frame — see [`MeridianApp::open_start`] for why the fetch is not
@@ -2421,11 +2424,12 @@ impl MeridianApp {
         // sites is a hole waiting for the next route: the verifier reached it
         // by clicking the remote card and then taking a local start, and when
         // the abandoned fetch landed the window swapped to a chart the reader
-        // had given up on, over a document they had begun reading. Every route
-        // that replaces a document passes through here — `land_start`,
-        // `adopt_boot` (which is the file picker, a dropped file and the
-        // palette) and `open_home` — so closing it here closes it for the route
-        // added next.
+        // had given up on, over a document they had begun reading. The three
+        // openers this shell has meet here — `land_start`, `adopt_boot` (which
+        // is the file picker, a dropped file and the palette) and `open_home` —
+        // so closing it here closes it for the route added next.
+        // `a_fetch_the_reader_gave_up_on_does_not_arrive_and_take_the_window`
+        // is what walks it.
         //
         // Dropping the `PendingStart` drops its `Fetch`, which drops the
         // channel; the worker's send then fails and the `Fetched` it built is
@@ -4661,8 +4665,8 @@ impl MeridianApp {
         self.protocol.doc.open(ProtocolInputs::empty());
         // Going Home is a document swap, so the fetched files go with the
         // document that was reading them. The outstanding fetch, if any, is
-        // dropped by `documents_changed` — which is where every document swap
-        // drops one, rather than here and at each of the other openers.
+        // dropped by `documents_changed`, which is where a document swap drops
+        // one, rather than here and at each of the other openers.
         self.remote_files = None;
         self.documents_changed();
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
@@ -4740,7 +4744,7 @@ impl MeridianApp {
         // when they land — over a local file, which is the engine doing
         // exactly what it did before at local-file speed.
         //
-        // The start's own `spec:` is what is handed over, and nothing else:
+        // The start's own `spec:` is the whole of what is handed over:
         // `open_remote_start` derives the sources from it and `poll_fetch`
         // composes the same bytes, so there is no second value to disagree
         // with it.

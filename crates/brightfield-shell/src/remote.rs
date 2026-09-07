@@ -286,7 +286,7 @@ pub fn readout(received: u64, declared: Option<u64>) -> String {
     }
 }
 
-/// Every source `spec` declares under a scheme in [`FETCHED_SCHEMES`], in
+/// The sources `spec` declares under a scheme in [`FETCHED_SCHEMES`], in
 /// declaration order.
 ///
 /// **The one derivation.** [`crate::window::MeridianApp`]'s
