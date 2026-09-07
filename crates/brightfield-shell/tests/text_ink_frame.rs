@@ -178,7 +178,7 @@ fn states() -> Vec<State> {
 
 /// **No two texts the shell paints land in the same pixels.**
 ///
-/// The card's AC1, over each window state above, each layer and each galley.
+/// AC1, over each window state above, each layer and each galley.
 /// The judgement about what is not a defect lives in `text_ink::EXEMPTIONS`
 /// and `every_exemption_excuses_a_case_and_no_other` drives it, so there is
 /// no tolerance here to widen and no predicate here to soften.
@@ -251,7 +251,7 @@ fn rail_rows(live: &Live) -> Vec<(String, egui::Rect, egui::Rect)> {
 /// **The rail's name and the type beside it do not touch, at the width this
 /// rail has.**
 ///
-/// The card's AC2, half of it. Read off `SpineRowDrawn::name_rect` and
+/// AC2, half of it. Read off `SpineRowDrawn::name_rect` and
 /// `kind_rect` — the boxes the painter handed back — rather than off a
 /// screenshot or off the layout constants the drawing used, because a rect
 /// recomputed from the constants agrees with a wrong drawing.
@@ -288,7 +288,7 @@ fn the_rails_name_and_type_stay_apart_at_this_width() {
 /// **The band's lower and upper bound do not touch, at the width the compact
 /// density gives them.**
 ///
-/// The card's AC2, the other half, read off `ColumnBandDrawn::range_rects`.
+/// AC2, the other half, read off `ColumnBandDrawn::range_rects`.
 /// Driven over both fixtures because the two produce different shapes of
 /// collision: dates as wide as the column on one, signed seven-figure decimals
 /// on the other.
