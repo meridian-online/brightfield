@@ -940,7 +940,7 @@ fn a_projected_dot_mark_draws_no_axis_labels() {
 /// merely because the plot names one.
 ///
 /// The two come apart for a plot whose positional marks cannot project. The plot
-/// names a projection, none was applied, so the x/y domains are still the
+/// names a projection, no mark applied it, so the x/y domains are still the
 /// degrees column inference produced — and `axis_interval`
 /// (`brightfield-shell`) reads `ScaleSet::projection` to decide whether to
 /// unproject a brush pixel. Set from the plot's name, it would unproject a value
