@@ -864,29 +864,29 @@ plot:
 /// between them is where two defects sat at once.
 ///
 /// The first is what the options say. The check above builds its own
-/// `LoadOptions` because it needs the seal, so nothing read what
-/// `data_file::OpenOptions::default` resolves or what `data_file::open` passes.
-/// Measured with `open` passing `type_source: None`: 839 shell tests green,
-/// both bundle-present band tests green, this binary exit 0 — over a build in
-/// which every file a reader opens draws its storage type where its meaning
-/// belongs.
+/// `LoadOptions` because it needs the seal, and what
+/// `data_file::OpenOptions::default` resolves or what `data_file::open` passes
+/// went unread. Measured with `open` passing `type_source: None`: 839 shell
+/// tests green, both bundle-present band tests green, this binary exit 0 — over
+/// a build in which a file a reader opens draws its storage type where its
+/// meaning belongs.
 ///
 /// The second is the cache. The check above runs `NetworkPolicy::Disabled`,
 /// which switches autoloading off; `data_file::open` leaves it on, which is
 /// what a Parquet needs. So this leg is the one that runs the type source up
 /// with autoload live — and it runs it here, under the sealed `HOME` this
 /// process made itself, which is empty. That is the condition a fresh machine
-/// is in and the condition a developer's laptop never is: the same code
-/// aborted with `SIGABRT` on a cold `HOME` and passed on a warm one, and no
-/// check in this repository ran cold.
+/// is in and a developer's laptop is not: the same code aborted with `SIGABRT`
+/// on a cold `HOME` and passed on a warm one, and the checks that existed ran
+/// warm.
 ///
 /// The fixture is written here rather than shipped, because a packaged
 /// artefact carries no test data and the sealed working directory is this
 /// run's own.
 fn opened_file_names_what_its_column_means() -> i32 {
-    // Two columns, and the second is not decoration: a table whose only column
-    // is identifying gets no tile, and `data_file::open` refuses a table it can
-    // draw nothing from.
+    // Two columns, and the second is not decoration: an identifying column gets
+    // no tile, so a table of just that one leaves the dashboard empty and
+    // `data_file::open` refuses it.
     const CSV: &str = "reply_to,messages\n\
                        alice.a00@example.com,3\n\
                        bob.b01@example.org,10\n\

@@ -497,9 +497,9 @@ impl Engine {
             //
             // `autoload_known_extensions` is deliberately NOT touched, and the
             // difference matters: it is how DuckDB resolves `read_parquet`, so
-            // a session with it off cannot open a Parquet file at all. An
-            // earlier form of this restriction switched it off and did exactly
-            // that. What holds it now is
+            // a session with it off cannot open a Parquet file. An earlier form
+            // of this restriction switched it off and did exactly that. What
+            // holds it now is
             // `a_native_type_source_costs_the_session_acquisition_but_not_autoload`,
             // which reads the setting off a live session — NOT the data_file
             // suite, which has no bundle beside its test binary and so never
@@ -563,10 +563,10 @@ impl Engine {
             // NOT for the session, which is the difference from
             // `NetworkPolicy::Disabled` and from the restriction above.
             // Autoload is how DuckDB resolves `read_parquet`, so a session with
-            // it off cannot open a Parquet file at all: measured with this
-            // scoped to the session instead, `Table Function with name
-            // "read_parquet" is not in the catalog, but it exists in the
-            // parquet extension`, on a machine whose cache HAS parquet. That is
+            // it off cannot open a Parquet file: measured with this scoped to
+            // the session instead, `Table Function with name "read_parquet" is
+            // not in the catalog, but it exists in the parquet extension`, on a
+            // machine whose cache HAS parquet. That is
             // what `a_native_type_source_costs_the_session_acquisition_but_not_autoload`
             // holds by reading the setting back off the finished session, and
             // what `a_chosen_parquet_opens_on_the_same_path` in
