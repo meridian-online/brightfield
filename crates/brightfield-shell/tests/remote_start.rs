@@ -209,7 +209,7 @@ impl Window {
     /// the real route into `MeridianApp::open_start`.
     ///
     /// **One frame, and no settling frame after it.** `open_start` runs in that
-    /// frame's request drain, so everything it decided is readable when this
+    /// frame's request drain, so what it decided is readable when this
     /// returns; a second frame would start the worker, which for a remote start
     /// is a connection this suite must not make.
     fn take_the_card(&mut self, id: &str) {
@@ -334,8 +334,9 @@ fn the_window_keeps_drawing_while_a_remote_start_is_fetching() {
 /// reader sees at the foot of the card they just clicked.
 ///
 /// Watched redden, one mutation: `door_card`'s `foot` bound to
-/// `DOOR_ENTRY_PROMISE` unconditionally — every frame then reads the promise
-/// and no frame carries `of`, so both assertions below fail.
+/// `DOOR_ENTRY_PROMISE` unconditionally. The card then reads the resting
+/// promise while the fetch is outstanding, no frame carries ` of `, and both
+/// assertions below fail.
 #[test]
 fn the_card_reads_what_has_arrived_against_the_declared_length() {
     const TOTAL: usize = 512 * 1024;
@@ -390,8 +391,8 @@ fn the_card_reads_what_has_arrived_against_the_declared_length() {
 /// no total, and no invented one.
 ///
 /// Watched redden, one mutation: `remote::readout` returning the two-number
-/// form with `received` as the denominator when `declared` is `None` — every
-/// frame then carries ` of `, against the assertion below.
+/// form with `received` as the denominator when `declared` is `None`. The
+/// readout then carries ` of `, against the assertion below.
 #[test]
 fn the_card_reads_the_count_alone_when_no_length_was_declared() {
     let stub = Stub::silent_about_length(body(512 * 1024));
@@ -523,14 +524,14 @@ fn only_the_remote_start_has_anything_to_fetch() {
 /// Clicking the remote start's real card records a fetch of the URL its
 /// shipped spec names, and leaves the window on the door.
 ///
-/// **The join this file could not otherwise reach.** Every other test here
-/// hands `open_remote_start` a stub's URL, which says nothing about whether the
-/// card click gets there or about which URL it would carry. This drives the
+/// **The join this file could not otherwise reach.** The tests above hand
+/// `open_remote_start` a stub's URL, which leaves open whether the card click
+/// gets there and which URL it would carry. This drives the
 /// real `MeridianApp::open_start` through the real gallery card and reads back
 /// what it decided — and it can, without a connection, because the click
 /// *latches* the fetch and `draw` starts the worker on the next frame. No
 /// second frame is drawn, so no socket is opened; dropping the window drops a
-/// `PendingStart` whose worker never existed.
+/// `PendingStart` with no worker behind it.
 ///
 /// Watched redden, two mutations. `open_start` passing `Vec::new()` in place of
 /// the sources it resolved: the second assertion reads an empty list. And
@@ -579,9 +580,9 @@ fn taking_the_remote_card_records_the_url_its_spec_names() {
 /// arm the mutation below moves.
 ///
 /// Watched redden, one mutation: `open_start`'s `Ok(sources) if
-/// !sources.is_empty()` guard relaxed to `Ok(sources)`, so every start takes
-/// the fetch arm — the crosswalk then never opens and `fetching_start()` is
-/// `Some`, failing the first two assertions.
+/// !sources.is_empty()` guard relaxed to `Ok(sources)`, which sends a start
+/// with an empty source list down the fetch arm. The crosswalk then does not
+/// open and `fetching_start()` is `Some`, failing the first two assertions.
 #[test]
 fn a_start_that_declares_no_network_never_enters_the_fetch_path() {
     let stub = Stub::declaring_length(body(1024));

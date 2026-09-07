@@ -116,10 +116,10 @@ pub struct ProtocolInputs {
     /// The run behind this Protocol, when there is one.
     ///
     /// `None` for a **declaration** — a manifest, or the Protocol brightfield
-    /// writes for a data file — which is every input this build had before
-    /// [`load_contract_str`]. That is the state the whole of the ledger, the
-    /// spine's status column and the per-step quality output report *not run*
-    /// for, honestly and with nothing behind them to report instead.
+    /// writes for a data file — which is the kind of input this build had
+    /// before [`load_contract_str`]. That is the state the whole of the ledger,
+    /// the spine's status column and the per-step quality output report *not
+    /// run* for, honestly and with no record behind them to report instead.
     ///
     /// `Some` for an emitted Protocol+Run contract, and then it is the run
     /// header the contract carried: the outcome, the id, and the timestamps.
@@ -396,15 +396,15 @@ pub fn load_protocol_str(text: &str, models: &[(&str, &str)]) -> Result<Protocol
 ///
 /// It is not an execution engine and it does not make a manifest runnable.
 /// Brightfield runs no step — a search of `crates/` for `Command::new` or
-/// `std::process` finds temporary-file naming and nothing that invokes an
+/// `std::process` turns up temporary-file naming, and no site that invokes an
 /// operator — and running a Protocol belongs to `arc`. What brightfield has
 /// always been able to *read* is the artefact a run emits, and until this
 /// existed nothing in the shell built a document from one: `statuses`,
 /// `assets` and `steps` were empty on every input the binary could open, so
 /// every surface that exists to report a run reported the same nothing.
 ///
-/// The four derived graphs are built exactly as [`inputs_from`] builds them
-/// from a manifest, in the same order and for the same reasons — the explode
+/// The four derived graphs are built exactly as the private `inputs_from` builds
+/// them from a manifest, in the same order and for the same reasons — the explode
 /// before the collapse, the contraction last — because the fold rules are
 /// about the graph's shape and not about where the graph came from. What
 /// differs is the source of the SQL the CTE explode reads: a manifest has
@@ -422,8 +422,8 @@ pub fn load_contract_str(bytes: &[u8]) -> Result<ProtocolInputs, String> {
     let graph_collapsed = collapse_families(&graph_full);
     // The SQL each step ran, off the contract's own step records — the input
     // `manifest_sql` derives from a manifest's model files. A step with no SQL
-    // (an `op`, a `command`) contributes nothing, which is what the manifest
-    // path's `filter_map` over `step.sql` does too.
+    // (an `op`, a `command`) is skipped, which is what the manifest path's
+    // `filter_map` over `step.sql` does too.
     let sql_by_step: BTreeMap<StepId, String> = view
         .steps
         .iter()
@@ -442,8 +442,10 @@ pub fn load_contract_str(bytes: &[u8]) -> Result<ProtocolInputs, String> {
         steps: view.steps.clone(),
         run: Some(view.run.clone()),
         // From the view, not synthesised from the seams: `StepsSheet::from_view`
-        // carries the status and live columns a run recorded, and
-        // `synth_sheet_rows` — the manifest path's — has nothing to put in them.
+        // carries the status and live columns a run recorded, where the manifest
+        // path's `synth_sheet_rows` leaves both at their unrun default.
+        // `the_run_start_draws_the_contract_it_ships` compares this column with
+        // the contract's own states.
         sheet_rows: StepsSheet::from_view(&view).rows().to_vec(),
         columns: Vec::new(),
         tiles: Vec::new(),
@@ -1226,9 +1228,9 @@ impl ProtocolModel {
     /// Each step this Protocol declares, and the run state recorded for it.
     ///
     /// Over the **seams of the full graph**, not over the recorded map, and
-    /// defaulting a step with nothing recorded to [`SeamStatus::NotRun`] — the
-    /// same defaulting `brightfield_protocol::panel::outline_rows` applies when
-    /// it tints a row. Reading the map alone would answer *no steps* for a
+    /// defaulting an unrecorded step to [`SeamStatus::NotRun`] — the same
+    /// defaulting `brightfield_protocol::panel::outline_rows` applies when it
+    /// tints a row. Reading the map alone would answer *no steps* for a
     /// declaration, where the truth is *every step, and none of them has run*,
     /// and a test asking "does any step report never-run" would then pass over
     /// the very document that made the question worth asking.

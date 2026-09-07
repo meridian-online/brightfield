@@ -391,9 +391,8 @@ pub struct DoorRow {
 /// bytes land; `sources` is what the start's spec declared; `fetch` is the
 /// worker, and it is **`None` until the frame after the click**.
 ///
-/// That last part is the same latch [`MeridianApp::pick_requested`] and
-/// [`MeridianApp::door_open_protocol`] use, for a related reason and one of its
-/// own. The related one: a click is resolved while the door's `Ui` borrow is
+/// That last part is the same latch this window's private `pick_requested` and
+/// `door_open_protocol` fields use, for a related reason and one of its own. The related one: a click is resolved while the door's `Ui` borrow is
 /// live, and the less that happens there the better. The one of its own is what
 /// makes this checkable — a click that spawned a worker inside the click could
 /// only be observed by letting the worker run, which for the shipped start
@@ -932,12 +931,12 @@ pub struct Boot {
     pub protocol: ProtocolInputs,
     /// The files a remote start's sources were fetched into — see
     /// [`crate::starts::OpenedChart::fetched`], whose lifetime this carries
-    /// through the boot into [`MeridianApp::remote_files`].
+    /// through the boot into [`MeridianApp`]'s own `remote_files`.
     ///
-    /// `None` for every other boot. It rides here rather than being dropped at
-    /// the end of the load because the engine binds a view over the fetched
-    /// path: a boot that let it fall would delete the Parquet before the first
-    /// frame queried it.
+    /// `None` on a boot with no fetch behind it. It rides here rather than
+    /// being dropped at the end of the load because the engine binds a view
+    /// over the fetched path: a boot that let it fall would delete the Parquet
+    /// before the first frame queried it.
     pub fetched: Option<crate::remote::Fetched>,
     /// The protocol document's reading axis.
     pub flow: Flow,
@@ -1729,9 +1728,11 @@ pub struct MeridianApp {
     /// [`Self::affordances`] is for pane empty states. Cleared on frames the
     /// door did not draw.
     door_cards: Vec<(&'static str, egui::Rect)>,
-    /// What each gallery card drew at its **foot**, by start id — the promise
-    /// every card carries, or, on the card of a start whose sources are being
-    /// fetched, [`crate::remote::Fetch::readout`].
+    /// What a gallery card drew at its **foot**, by start id — the resting
+    /// promise, or, on the card of a start whose sources are being fetched,
+    /// [`crate::remote::Fetch::readout`]. Both readings are held off a drawn
+    /// frame by `the_card_reads_what_has_arrived_against_the_declared_length`
+    /// in `tests/remote_start.rs`.
     ///
     /// Recorded off the galley's own glyphs for the reason [`DoorRow`]'s
     /// fields are: the foot is the one line on a card whose text depends on
@@ -2542,10 +2543,10 @@ impl MeridianApp {
     /// A Protocol with a **run** behind it says what the run came to, whatever
     /// its step count: the strip is where the reader is told the whole
     /// Protocol's answer, and the rail below it lists the steps. That arm did
-    /// not exist while every input this build could open was a declaration —
-    /// see [`crate::protocol::load_contract_str`] — so the strip said *not run*
-    /// on every screen a stranger could reach, which is the one thing this
-    /// product claims no other tool does.
+    /// not exist while a declaration was what this build opened — see
+    /// [`crate::protocol::load_contract_str`] — so the strip said *not run* on
+    /// the screens a stranger could reach, which is the one thing this product
+    /// claims no other tool does.
     ///
     /// A Protocol with **no run** and exactly one step is what a data file
     /// opens as, and the rail's list of it is one row — so the rail opens
@@ -4732,8 +4733,8 @@ impl MeridianApp {
     ///
     /// Public, and taking the sources rather than reading them, because the
     /// sources are data — [`crate::starts::network_sources`] reads them off
-    /// the start's own spec and [`Self::open_start`] is the one caller that
-    /// does. A caller handing in a different list is aiming the same machinery
+    /// the start's own spec and this window's private `open_start` is the one
+    /// caller that does. A caller handing in a different list is aiming the same machinery
     /// at a different server, which is what
     /// `crates/brightfield-shell/tests/remote_start.rs` does to hold this
     /// behaviour against a stub on localhost rather than against the published
@@ -4742,8 +4743,9 @@ impl MeridianApp {
     ///
     /// What it leaves behind is a window still on the front door, with
     /// [`Self::fetching_start`] naming this start and its gallery card reading
-    /// [`crate::remote::Fetch::readout`] at its foot. [`Self::poll_fetch`] is
-    /// what finishes it.
+    /// [`crate::remote::Fetch::readout`] at its foot. The private `poll_fetch`,
+    /// run at the head of [`MeridianApp::draw`] on each frame, is what finishes
+    /// it.
     pub fn open_remote_start(
         &mut self,
         ctx: &egui::Context,
@@ -4866,8 +4868,9 @@ impl MeridianApp {
     /// Ask this frame's outstanding fetch whether it has finished, and open
     /// the start when it has.
     ///
-    /// Called at the head of every [`MeridianApp::draw`], which is what makes
-    /// the fetch a thing the window checks rather than a thing it waits for.
+    /// Called at the head of [`MeridianApp::draw`], on each frame, which is
+    /// what makes the fetch a thing the window checks rather than a thing it
+    /// waits for.
     /// The composition happens **here**, on the UI thread, over the local files
     /// the worker wrote: `crate::pipeline`'s session holds a `duckdb::Connection`
     /// beside statements borrowed from it, so it is not a value a worker could
@@ -4878,7 +4881,7 @@ impl MeridianApp {
         };
         // The worker starts here rather than in the click — see
         // [`PendingStart`] — so the first frame after the click is also the
-        // first frame the readout has anything to say on.
+        // first frame with a readout to draw.
         let fetch = pending.fetch.get_or_insert_with(|| {
             let repaint = ctx.clone();
             crate::remote::Fetch::begin(pending.sources.clone(), move || repaint.request_repaint())

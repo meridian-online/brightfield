@@ -71,9 +71,11 @@
 //! that are never fetched.
 //!
 //! The **run** is [`CROSSWALK_RUN`], and it is the manifest's other state:
-//! an emitted Protocol+Run contract for the same Protocol, so every step on it
-//! carries the state a run recorded and the ledger's strip says what that run
-//! came to. It is not an execution — brightfield runs no step, and running a
+//! an emitted Protocol+Run contract for the same Protocol, so the steps on it
+//! carry the states a run recorded and the ledger's strip says what that run
+//! came to —
+//! `crates/brightfield-shell/tests/protocol_run_start.rs`'s
+//! `the_run_start_lands_on_a_graph_where_no_step_reports_never_run` walks them. It is not an execution — brightfield runs no step, and running a
 //! Protocol belongs to `arc` — it is the *artefact* a run emits, read the way
 //! this view was built to read one. Until it shipped, every Protocol this
 //! binary could open was a declaration, so every surface that exists to report
@@ -495,7 +497,7 @@ pub struct OpenedChart {
     /// The files a [`Start::remote`] start's sources were fetched into, for
     /// the life of the document that reads them.
     ///
-    /// `None` for every start that reads no network. Carried rather than
+    /// `None` for a start that reads no network. Carried rather than
     /// dropped for the same reason `live` is, and a sharper one: the engine
     /// binds a **view** over the fetched path, so every query re-reads the
     /// file. Dropping this at the end of the open would delete the Parquet out
@@ -585,9 +587,9 @@ const CROSSWALK_MODELS: &[(&str, &str)] = &[
 /// [`Start::remote`] declares and what the label discloses.
 ///
 /// **This entry point waits for that fetch**, and the window does not call it
-/// for a start that has one. [`crate::window::MeridianApp::open_start`] starts
-/// the fetch on a worker and composes on a later frame, so the click leaves the
-/// window drawing; what is left here is for callers with no frames to keep —
+/// for a start that has one. `open_start` in
+/// [`MeridianApp`](crate::window::MeridianApp) starts the fetch on a worker and
+/// composes on a later frame, so the click leaves the window drawing; what is left here is for callers with no frames to keep —
 /// the network-gated tests, the thumbnail regeneration, a launch restoring a
 /// recorded start. Both routes end at [`compose`], so a difference between what
 /// a test opens and what a click opens would have to be a difference in the
@@ -646,10 +648,10 @@ pub fn load(id: &str) -> Result<Opened, String> {
 /// start is decided the same way a file opened from the command line is.
 ///
 /// `fetched` repoints the spec's `https://` sources at the local files a
-/// [`crate::remote::Fetch`] wrote, and is `None` for a start that declares
-/// none. **Both callers land here** — [`load`], which waits for the fetch, and
-/// [`crate::window::MeridianApp`], which polls one across frames — so what the
-/// network-gated test opens and what a click opens are composed by one
+/// [`crate::remote::Fetch`] wrote, and is `None` for a start with no such
+/// source. **Both callers land here** — [`load`], which waits for the fetch,
+/// and [`crate::window::MeridianApp`], which polls one across frames — so what
+/// the network-gated test opens and what a click opens are composed by one
 /// function rather than by two that agree today.
 pub fn compose(spec: &str, fetched: Option<crate::remote::Fetched>) -> Result<Opened, String> {
     let mut live = match &fetched {
@@ -675,8 +677,10 @@ pub fn compose(spec: &str, fetched: Option<crate::remote::Fetched>) -> Result<Op
 /// list a window fetches cannot be a list some other copy of the spec
 /// declares. A start with no `spec:` opens a Protocol **manifest**, whose
 /// `https://` inputs are graph nodes rather than sources: `load_protocol_str`
-/// derives the graph from the declared steps and fetches none of them, so
-/// there is nothing here for a window to move.
+/// derives the graph from the declared steps without reading any of them, so
+/// there is nothing here for a window to move —
+/// `only_the_remote_start_has_anything_to_fetch` walks the shipped set and
+/// holds each start's list against its `remote` flag.
 ///
 /// # Errors
 ///

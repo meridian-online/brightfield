@@ -22,9 +22,12 @@
 //!
 //! [`Fetch::readout`] is the card's foot while a fetch is outstanding: the
 //! bytes received against the length the server declared, and the bytes
-//! received **alone** where it declared none. A denominator this module does
-//! not have is not invented — a bar that fills at a rate nothing measured is
-//! worse than a number that only counts up.
+//! received **alone** where the server declared no length. A denominator this
+//! module does not have is not invented — a bar that fills at an unmeasured
+//! rate is worse than a number that counts up.
+//! `the_card_reads_the_count_alone_when_no_length_was_declared` in
+//! `crates/brightfield-shell/tests/remote_start.rs` holds the second case
+//! against a server that sends no `Content-Length`.
 //!
 //! `Content-Length` is read only where the response arrives unencoded. Under
 //! `Content-Encoding: gzip` the header measures the compressed body while the
@@ -64,11 +67,11 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// How far one fetch has got: what has arrived, and what was promised.
 ///
-/// Written by the worker and read by the frame, so every field is an atomic
-/// and every access is [`Ordering::Relaxed`]. Relaxed is right rather than
-/// merely cheap: nothing downstream of these numbers is ordered against them —
-/// the frame draws a string, and the *completion* of the fetch travels on the
-/// channel in [`Fetch`], which carries its own ordering.
+/// Written by the worker and read by the frame, so the fields are atomics read
+/// and written at [`Ordering::Relaxed`]. Relaxed is right rather than merely
+/// cheap: what these numbers order is a string on a card, and the *completion*
+/// of the fetch travels on the channel in [`Fetch`], which carries its own
+/// ordering.
 #[derive(Debug, Default)]
 pub struct Meter {
     received: AtomicU64,
@@ -152,8 +155,8 @@ impl Drop for Fetched {
 /// The window holds one of these while a remote start is opening. It polls
 /// [`Fetch::take`] once a frame and draws [`Fetch::readout`] on the card in
 /// between; the worker wakes the event loop through the callback handed to
-/// [`Fetch::begin`], so the readout moves without anything else touching the
-/// window.
+/// [`Fetch::begin`], which is what keeps the readout moving on a window nobody
+/// is typing into.
 pub struct Fetch {
     urls: Vec<String>,
     meter: Arc<Meter>,
@@ -178,11 +181,11 @@ impl Fetch {
         let worker_urls = urls.clone();
         std::thread::spawn(move || {
             let result = fetch_all(&worker_urls, &worker_meter, &wake);
-            // The send can only fail when the window has already dropped this
+            // A failed send means the window has already dropped this
             // `Fetch` — someone went Home, or opened something else, while the
-            // bytes were still moving. Nothing to report to and nothing to
-            // clean up: `Fetched`'s own `Drop` removes the directory when the
-            // undelivered message is dropped with the channel.
+            // bytes were still moving. There is no one to report to and no
+            // clean-up to do: `Fetched`'s own `Drop` removes the directory when
+            // the undelivered message is dropped with the channel.
             tx.send(result).ok();
             wake();
         });
@@ -282,9 +285,9 @@ pub fn readout(received: u64, declared: Option<u64>) -> String {
 /// Both shapes a spec can name a file in are read: the `file:` key that parses
 /// to [`DataSourceKind::File`], and the `file:` that rides in `extras` under a
 /// `type:`-discriminated source. `brightfield_sql::source::emit_file_typed`
-/// resolves the second exactly as it resolves the first, so a fetch that read
-/// only the first would leave a typed remote source to be bound eagerly on the
-/// UI thread — the freeze this module exists to end, one source over.
+/// resolves the second the way it resolves the first, so a fetch that read the
+/// first and stopped would leave a typed remote source to be bound eagerly on
+/// the UI thread — the freeze this module exists to end, one source over.
 ///
 /// # Errors
 ///
@@ -342,7 +345,7 @@ pub fn repointed(spec: &str, fetched: &Fetched) -> Result<ParseOutput, String> {
     Ok(parsed)
 }
 
-/// Fetch every URL into a fresh directory, bumping `meter` as the bytes land.
+/// Fetch the URLs into a fresh directory, bumping `meter` as the bytes land.
 fn fetch_all(
     urls: &[String],
     meter: &Meter,
@@ -357,7 +360,7 @@ fn fetch_all(
         .map_err(|e| format!("could not make a place to fetch into: {e}"))?;
     // Built before the loop so a `Fetched` exists from the first failure
     // onwards: returning `Err` out of the middle of a multi-source fetch would
-    // otherwise leave the files written so far on disk with nothing owning
+    // otherwise leave the files written so far on disk with no owner to remove
     // them.
     let mut fetched = Fetched {
         dir: dir.clone(),
@@ -376,7 +379,7 @@ fn fetch_all(
 
 /// One URL to one file.
 ///
-/// Every failure names the network and the URL, because that is what the
+/// A failure here names the network and the URL, because that is what the
 /// eager bind this replaced said and it is what the window raises as a banner:
 /// `brightfield_engine::EngineError::RemoteSourceFailed` renders to a sentence
 /// carrying both, and a fetch that failed with a bare io error would have moved

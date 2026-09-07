@@ -132,8 +132,8 @@ fn collect_placed_text(shape: &egui::epaint::Shape, into: &mut Vec<(egui::Rect, 
 /// and would still be the defect.
 ///
 /// Watched redden, one mutation: `protocol::load_contract_str` building with
-/// `statuses: BTreeMap::new()` — the manifest path's value — reports all four
-/// steps as `NotRun`.
+/// `statuses: BTreeMap::new()`, which is the manifest path's value. The
+/// assertion below then reports 4 of 4 steps as never-run.
 #[test]
 fn the_run_start_lands_on_a_graph_where_no_step_reports_never_run() {
     assert!(
@@ -213,10 +213,10 @@ fn the_run_less_start_still_reports_every_step_as_never_run() {
 /// say nothing about the strip.
 ///
 /// Watched redden, two mutations. `MeridianApp::ledger_summary`'s run arm
-/// deleted: the strip's rect then holds nothing, and the last assertion fails
-/// naming what it found there. `SpineRow`'s step arm built with
-/// `status_word(SeamStatus::NotRun)`: every step row then trails `not run` and
-/// the first assertion fails.
+/// deleted: the strip then draws no summary, and the expect on
+/// `rail_summary_rect` fails. `SpineRow`'s step arm built with
+/// `status_word(SeamStatus::NotRun)`, so a step row trails `not run` whatever
+/// the run recorded: the first assertion fails, reporting 4 of 4 rows.
 #[test]
 fn the_spine_and_the_ledger_strip_read_the_run_off_the_frame() {
     let mut win = Window::on(starts::CROSSWALK_RUN);
@@ -313,16 +313,16 @@ fn a_protocol_with_no_run_still_summarises_its_one_step() {
 /// canvas tint from. The **sheet** comparison holds what the ledger's Steps
 /// pane lists, which is a second reading of the same contract built by a
 /// different call — and until it was here, swapping that call for the manifest
-/// path's seam synthesis left all six tests in this file green while every row
-/// in the Steps pane read `not run`.
+/// path's seam synthesis left the six tests in this file green while the Steps
+/// pane read `not run` down its status column.
 ///
 /// Watched redden, three mutations. `starts::CROSSWALK_RUN_CONTRACT` pointed at
 /// a copy with one step's state edited: the byte assertion fails.
 /// `load_contract_str` building with `statuses: BTreeMap::new()`: the seam
 /// comparison fails on the first step. `load_contract_str` building its sheet
 /// with `synth_sheet_rows` (the manifest path's) instead of
-/// `StepsSheet::from_view`: every row's status is then `not run` and the
-/// sheet comparison fails.
+/// `StepsSheet::from_view`, which puts `not run` in the status column: the
+/// sheet comparison fails at `fetch_cik_lookup`.
 #[test]
 fn the_run_start_draws_the_contract_it_ships() {
     let on_disk = std::fs::read(contract_on_disk()).expect("the fixture is where starts.rs says");

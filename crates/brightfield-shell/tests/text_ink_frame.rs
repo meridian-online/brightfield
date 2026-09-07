@@ -71,11 +71,10 @@ impl Live {
 
     /// A window over `boot`, settled.
     ///
-    /// The half [`Self::open`] does not reach: a data file is one of the
-    /// documents this shell holds and not the only one, and the surfaces that
-    /// have no file behind them — the front door, a Protocol read off a
-    /// contract — were outside this check entirely until they were named in
-    /// [`states`].
+    /// The half [`Self::open`] does not reach. A data file is one of the
+    /// documents this shell holds; the surfaces with no file behind them — the
+    /// front door, a Protocol read off a manifest or a contract — were outside
+    /// this check until they were named in [`states`].
     fn boot(boot: Boot) -> Self {
         let mut live = Self {
             app: MeridianApp::headless(boot, Mode::Light),
@@ -161,13 +160,14 @@ type State = (&'static str, fn() -> Live);
 /// case: a timestamp column, so the rail draws a long type name beside a
 /// column name, and readings whose bounds are wide against a narrow column.
 ///
-/// **And two windows with no file behind them**, which is a gap this list had
-/// rather than a decision it made. Every state above is `Boot::data_file`, so
-/// the front door — the first screen anyone sees, and a row of cards each
-/// carrying a label, a summary and a line at its foot — was outside a check
-/// written to cover "the pane written next". So was a Protocol window, whose
-/// ledger strip sets a summary against the trailing end of a row of pane
-/// names. Both are surfaces where two texts have room to meet.
+/// **And three windows with no file behind them**, which is a gap this list
+/// had rather than a decision it made. The states here were reached through
+/// `Boot::data_file` alone, so the front door — the first screen anyone sees,
+/// and a row of cards each carrying a label, a summary and a line at its foot
+/// — was outside a check written to cover "the pane written next". So was a
+/// Protocol window, whose spine lists many more rows than the one-step
+/// Protocol a data file opens as. Both are surfaces where two texts have room
+/// to meet.
 fn states() -> Vec<State> {
     vec![
         ("the front door", || Live::boot(Boot::empty())),
