@@ -237,8 +237,8 @@ fn a_materialised_source_serves_no_answer_computed_before_the_copy() {
 /// **A copy that FITTED also leaves the budget lifted.**
 ///
 /// The twin of the refusal test above, and it is a separate test because the
-/// two branches restore from different places in `materialise_source` and
-/// green on one says nothing about the other. Skipping the restore on the
+/// two branches restore from different places in `materialise_source`, so a
+/// green on one is no evidence about the other. Skipping the restore on the
 /// success path left every test in this workspace green while an ordinary open
 /// finished with the session pinned at the budget and spilling shut off — the
 /// exact state in which the next heavy query fails with `Out of Memory`, on

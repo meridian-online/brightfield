@@ -9,8 +9,8 @@
 //! by not counting.
 //!
 //! Before this file existed that was not hypothetical. The suite's fixtures
-//! reach the mark execute and `query_arrow_raw`; a review removed `record_scan`
-//! from funnels the fixtures never drove and the whole suite stayed green.
+//! reach the mark execute and `query_arrow_raw`; a review removed the counting
+//! from funnels those fixtures do not drive, and the whole suite stayed green.
 //!
 //! One test per funnel, each asserting that the statement that funnel issues
 //! is present in the tally, matched on a fragment of its own SQL rather than
