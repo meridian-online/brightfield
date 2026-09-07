@@ -387,13 +387,28 @@ pub struct DoorRow {
 /// A remote start whose sources are being moved to local files while the
 /// window keeps drawing.
 ///
-/// The pair is what the frame needs: `id` says which card wears the readout
-/// and which start to compose when the bytes land, and `fetch` is the worker.
+/// `id` says which card wears the readout and which start to compose when the
+/// bytes land; `sources` is what the start's spec declared; `fetch` is the
+/// worker, and it is **`None` until the frame after the click**.
+///
+/// That last part is the same latch [`MeridianApp::pick_requested`] and
+/// [`MeridianApp::door_open_protocol`] use, for a related reason and one of its
+/// own. The related one: a click is resolved while the door's `Ui` borrow is
+/// live, and the less that happens there the better. The one of its own is what
+/// makes this checkable — a click that spawned a worker inside the click could
+/// only be observed by letting the worker run, which for the shipped start
+/// means fetching ten megabytes off someone else's server. Latched, the click
+/// leaves a value a test can read: `taking_the_remote_card_records_the_url_its_
+/// spec_names` in `tests/remote_start.rs` clicks the real card, reads this back
+/// and stops, and no socket is ever opened.
 pub struct PendingStart {
     /// The start this fetch is for.
     id: &'static str,
-    /// The worker moving its sources.
-    fetch: crate::remote::Fetch,
+    /// The sources its spec declared, in declaration order.
+    sources: Vec<String>,
+    /// The worker moving them — `None` on the frame the click landed on, and
+    /// `Some` from the next frame until the bytes land.
+    fetch: Option<crate::remote::Fetch>,
 }
 
 /// One gallery card's outer width.
@@ -4723,12 +4738,24 @@ impl MeridianApp {
         if self.fetching.as_ref().is_some_and(|p| p.id == id) {
             return;
         }
-        let repaint = ctx.clone();
         self.fetching = Some(PendingStart {
             id,
-            fetch: crate::remote::Fetch::begin(sources, move || repaint.request_repaint()),
+            sources,
+            fetch: None,
         });
         ctx.request_repaint();
+    }
+
+    /// The sources this window is fetching, or is about to.
+    ///
+    /// What the click recorded, which is what the worker will be given — read
+    /// before the worker exists, so a test can hold the shipped start's click
+    /// to the URL its shipped spec names without a connection.
+    #[must_use]
+    pub fn fetching_sources(&self) -> &[String] {
+        self.fetching
+            .as_ref()
+            .map_or(&[], |pending| pending.sources.as_slice())
     }
 
     /// The start whose sources this window is fetching, if it is fetching.
@@ -4832,7 +4859,14 @@ impl MeridianApp {
         let Some(pending) = self.fetching.as_mut() else {
             return;
         };
-        let Some(result) = pending.fetch.take() else {
+        // The worker starts here rather than in the click — see
+        // [`PendingStart`] — so the first frame after the click is also the
+        // first frame the readout has anything to say on.
+        let fetch = pending.fetch.get_or_insert_with(|| {
+            let repaint = ctx.clone();
+            crate::remote::Fetch::begin(pending.sources.clone(), move || repaint.request_repaint())
+        });
+        let Some(result) = fetch.take() else {
             return;
         };
         let id = pending.id;
@@ -5463,9 +5497,10 @@ impl MeridianApp {
             .fetching
             .as_ref()
             .filter(|pending| pending.id == start.id)
+            .and_then(|pending| pending.fetch.as_ref())
             .map_or_else(
                 || DOOR_ENTRY_PROMISE.to_string(),
-                |pending| pending.fetch.readout(),
+                crate::remote::Fetch::readout,
             );
         // Laid out ahead of the visibility test, for the reason `door_row`
         // lays its three galleys out there: a card scrolled past the bottom of

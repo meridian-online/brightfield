@@ -193,6 +193,11 @@ impl Window {
 
     /// Click the door's gallery card for `id`, where the last frame drew it —
     /// the real route into `MeridianApp::open_start`.
+    ///
+    /// **One frame, and no settling frame after it.** `open_start` runs in that
+    /// frame's request drain, so everything it decided is readable when this
+    /// returns; a second frame would start the worker, which for a remote start
+    /// is a connection this suite must not make.
     fn take_the_card(&mut self, id: &str) {
         let target = self
             .app
@@ -219,7 +224,6 @@ impl Window {
             ..Default::default()
         };
         let _ = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
-        self.frame();
     }
 
     fn frame(&mut self) {
@@ -494,6 +498,52 @@ fn only_the_remote_start_has_anything_to_fetch() {
         vec!["https://openlake.meridian.online/edgar_gleif.parquet".to_string()],
         "the crosswalk chart fetches something other than the URL its shipped \
          spec reads"
+    );
+}
+
+/// Clicking the remote start's real card records a fetch of the URL its
+/// shipped spec names, and leaves the window on the door.
+///
+/// **The join this file could not otherwise reach.** Every other test here
+/// hands `open_remote_start` a stub's URL, which says nothing about whether the
+/// card click gets there or about which URL it would carry. This drives the
+/// real `MeridianApp::open_start` through the real gallery card and reads back
+/// what it decided — and it can, without a connection, because the click
+/// *latches* the fetch and `draw` starts the worker on the next frame. No
+/// second frame is drawn, so no socket is opened; dropping the window drops a
+/// `PendingStart` whose worker never existed.
+///
+/// Watched redden, two mutations. `open_start` passing `Vec::new()` in place of
+/// the sources it resolved: the second assertion reads an empty list. And
+/// `open_start`'s fetch arm deleted, so a remote start falls through to the
+/// eager `starts::load`: `fetching_start()` is then `None` and the first
+/// assertion fails — that one does reach the network while it is applied, which
+/// is why it is not the mutation kept in the file.
+#[test]
+fn taking_the_remote_card_records_the_url_its_spec_names() {
+    let mut win = Window::open();
+    win.frame();
+    win.take_the_card(starts::CROSSWALK_CHART);
+    assert_eq!(
+        win.app.fetching_start(),
+        Some(starts::CROSSWALK_CHART),
+        "the card click did not start a fetch — the window either opened the \
+         start synchronously or did nothing"
+    );
+    assert_eq!(
+        win.app.fetching_sources(),
+        ["https://openlake.meridian.online/edgar_gleif.parquet".to_string()],
+        "the click fetches something other than what the shipped spec reads"
+    );
+    assert!(
+        win.app.front_door_is_live(),
+        "the window left the door while the fetch was still only latched"
+    );
+    assert_eq!(
+        win.app.front_door_card_foot(starts::CROSSWALK_CHART),
+        Some(DOOR_ENTRY_PROMISE),
+        "the frame the click landed on drew its card before the click was \
+         resolved, so its foot is still the resting promise"
     );
 }
 
