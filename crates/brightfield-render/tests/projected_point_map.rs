@@ -939,9 +939,9 @@ fn a_projected_dot_mark_draws_no_axis_labels() {
 /// **The scale set carries a projection when a mark DRAWS through one**, and not
 /// merely because the plot names one.
 ///
-/// The two come apart for a plot whose positional marks are all undrawable. The
-/// plot names a projection, nothing projected anything, so the x/y domains are
-/// still the degrees column inference produced — and `axis_interval`
+/// The two come apart for a plot whose positional marks cannot project. The plot
+/// names a projection, none was applied, so the x/y domains are still the
+/// degrees column inference produced — and `axis_interval`
 /// (`brightfield-shell`) reads `ScaleSet::projection` to decide whether to
 /// unproject a brush pixel. Set from the plot's name, it would unproject a value
 /// that was never projected: under Mercator a longitude of 151.21 would be

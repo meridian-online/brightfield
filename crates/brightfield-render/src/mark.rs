@@ -380,11 +380,11 @@ pub trait MarkRenderer {
     /// [`Self::zero_baseline_channel`]: zero impact on existing renderers); the
     /// scene builders skip the frame when any entry returns `true`.
     ///
-    /// It takes the mark's [`ChannelMap`] because for every kind except `geo`
-    /// the answer is a property of the MARK and not of the renderer: one
-    /// `DotRenderer` draws both a scatter, which needs its axes, and a point
-    /// map, which does not, and the two are distinguished only by the plot
-    /// projection the channel map carries.
+    /// It takes the mark's [`ChannelMap`] because outside `geo` the answer is a
+    /// property of the MARK rather than of the renderer: one `DotRenderer` draws
+    /// both a scatter, which needs its axes, and a point map, which does not,
+    /// and the plot projection the channel map carries is what distinguishes
+    /// them — `a_projected_dot_mark_draws_no_axis_labels` drives both cases.
     fn suppresses_frame(&self, _channel_map: &ChannelMap) -> bool {
         false
     }
