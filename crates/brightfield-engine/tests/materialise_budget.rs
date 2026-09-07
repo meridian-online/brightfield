@@ -36,7 +36,7 @@ const GENEROUS: u64 = 512 * 1024 * 1024;
 /// The restore is the part of `materialise_source` most able to fail
 /// invisibly — on this build's DuckDB, `RESET memory_limit` reports success
 /// and reads back correctly while the buffer pool goes on enforcing the
-/// narrowed limit — and the only thing that notices is work that does not fit.
+/// narrowed limit — and what notices is work that does not fit in it.
 const HEAVY_QUERY: &str = "SELECT count(*) FROM (SELECT a, count(*) FROM \
      (SELECT repeat('x', 120) || (i % 400000)::VARCHAR AS a \
       FROM range(500000) r(i)) GROUP BY 1) AS counted";

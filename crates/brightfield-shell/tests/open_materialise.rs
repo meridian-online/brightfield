@@ -237,9 +237,9 @@ fn sized_csv_bytes(rows: u64) -> u64 {
 
 /// **The threshold the build ships is the one an ordinary open applies.**
 ///
-/// Every other test on this branch reaches it by passing
+/// The other tests on this branch reach it by passing
 /// `materialise_under_bytes` explicitly, which is what makes the branch
-/// reachable and also what makes the shipped constant unread: setting
+/// reachable and also what leaves the shipped constant unread: setting
 /// `MATERIALISE_UNDER_BYTES` to `u64::MAX` left all of them green. This one
 /// goes through `OpenOptions::default()` on two files one row apart, either
 /// side of the constant, so the number itself decides the outcome.
@@ -405,8 +405,9 @@ fn copy_cost(path: &Path) -> u64 {
 /// copy reports none.**
 ///
 /// `OpenTrace::materialise_ms` is the term the composition's clock no longer
-/// carries, and it is written into every committed record. Hard-wiring it to
-/// zero left the suite green, so it is read back here on both branches.
+/// carries, and it is what the committed records report as `materialise`.
+/// Hard-wiring it to zero left the suite green, so it is read back here on
+/// both branches.
 #[test]
 fn a_materialised_open_reports_the_time_the_copy_took() {
     let path = fixture("rows");

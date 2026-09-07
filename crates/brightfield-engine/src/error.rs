@@ -28,9 +28,8 @@ pub enum EngineError {
     ///
     /// Distinct from a copy DuckDB refused, which arrives as
     /// [`Self::ConnectionFailed`] carrying DuckDB's own words: this one means
-    /// the guard could not be put in place at all, so the copy was never
-    /// attempted. Either way the source is untouched and still serves the
-    /// file.
+    /// the guard could not be put in place, so the copy was not attempted.
+    /// The source is untouched down both routes and still serves the file.
     #[error("'{source_name}' was not read into memory: {reason}")]
     CopyUnbounded {
         /// The source that stayed a view.

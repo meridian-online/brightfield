@@ -932,9 +932,8 @@ pub struct Session {
     /// to `12.5 GiB` over three cycles, which for an application that opens
     /// many files is memory quietly disappearing.
     ///
-    /// `None` where DuckDB would not answer, and then no copy is attempted at
-    /// all: a budget that cannot be lifted afterwards is worse than a slow
-    /// open.
+    /// `None` where DuckDB would not answer, and then the copy is declined: a
+    /// budget that cannot be lifted afterwards is worse than a slow open.
     copy_budget_baseline: Option<(String, String)>,
 }
 
@@ -2871,7 +2870,7 @@ impl Session {
 
         // `B` is not decoration: DuckDB's parser rejects a bare byte count
         // ("Unknown unit for memory"), so a budget written without a unit
-        // would fail the SET and, by the rule above, refuse every copy.
+        // would fail the SET and, by the rule above, decline the copy.
         let budget = budget_bytes.max(MATERIALISE_BUDGET_FLOOR_BYTES);
         if let Err(cause) = self.conn.execute_batch(&format!(
             "SET memory_limit='{budget}B'; SET max_temp_directory_size='0B';"

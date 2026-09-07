@@ -65,9 +65,9 @@
 //! and `a_file_whose_table_exceeds_the_budget_opens_off_the_view` drives it
 //! through a real open.
 //!
-//! [`MATERIALISE_UNDER_BYTES`] is the file's size **on disk**, and it decides
-//! only whether the copy is worth attempting. It makes no claim about memory,
-//! and it could not: measured on this build's DuckDB, a four-column ZSTD
+//! [`MATERIALISE_UNDER_BYTES`] is the file's size **on disk**, and what it
+//! decides is whether the copy is worth attempting. It makes no claim about
+//! memory, and it could not: measured on this build's DuckDB, a four-column ZSTD
 //! Parquet of 123,260 bytes on disk becomes a 511,031,296-byte table, which is
 //! 4,146 times its size on disk. What it does buy is the reading a doomed
 //! attempt would have done before the budget stopped it.
@@ -576,10 +576,10 @@ pub struct OpenOptions {
     /// [`brightfield_engine::Session::profile_sources_counting_scans`] and the
     /// harness's `time_profile` already do for the profile pass.
     pub count_scans: bool,
-    /// The largest size on disk a file may have for a copy to be attempted at
-    /// all — [`MATERIALISE_UNDER_BYTES`] by default. A file of exactly this
-    /// many bytes is still copied, which is the `<=` in [`open_traced`]; the
-    /// constant's name reads as the rule rather than the boundary.
+    /// The largest size on disk a file may have for a copy to be attempted —
+    /// [`MATERIALISE_UNDER_BYTES`] by default. A file of exactly this many
+    /// bytes is still copied, which is the `<=` in [`open_traced`]; the
+    /// constant's name reads as the rule rather than as the boundary.
     ///
     /// **It is a parameter and not only a constant so that the other branch
     /// is reachable.** A file over the threshold composes off the view, one

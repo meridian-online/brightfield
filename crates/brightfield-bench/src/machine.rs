@@ -319,7 +319,7 @@ Buffers:          123456 kB
     /// `--open-scan-no-materialise` flag, from a run invoked with that flag —
     /// the harness had been run from a working tree carrying the flag
     /// uncommitted. The id was correct about `HEAD` and wrong about what ran,
-    /// and nothing in the record could tell the two apart.
+    /// and the record had no field that told the two apart.
     ///
     /// Two real repositories rather than a mocked `git`, because what is being
     /// pinned is what `git status --porcelain` says, and a mock would pin this

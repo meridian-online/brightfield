@@ -2747,8 +2747,8 @@ mod tests {
     /// in prose.
     ///
     /// `MATERIALISE_BUDGET_BYTES` is the memory one copy may cost, and the
-    /// rustdoc on it makes two claims: that it is far enough above an ordinary
-    /// open that none is refused, and far enough below a laptop's memory that
+    /// rustdoc on it makes two claims: that it sits far above what an ordinary
+    /// open costs, and far enough below a laptop's memory that
     /// spending it is unremarkable. The second is a judgement. The first is a
     /// measurement, and this is where it is held — every materialised shape in
     /// every committed open-scan record has to have spent less than a

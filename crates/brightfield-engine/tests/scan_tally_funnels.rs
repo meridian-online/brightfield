@@ -1,5 +1,5 @@
-//! Every funnel `Session::record_scan`'s rustdoc enumerates is driven here,
-//! and its contribution to the tally is read back.
+//! Each funnel the `record_scan` rustdoc enumerates is driven here, and its
+//! contribution to the tally is read back.
 //!
 //! **The tally is only as complete as the set of places that call into it**,
 //! and a funnel that stopped counting would report a smaller number rather
@@ -20,10 +20,11 @@
 //! # What this does not cover
 //!
 //! A funnel added after this file was written. The set below is the set named
-//! in the rustdoc, checked against it by hand; nothing here notices an eighth
-//! place that hands a statement to the connection. `FinetypeBundle` reads a
-//! column per label from inside the profile pass and deliberately does not
-//! come through `record_scan` at all — that gap is stated on the rustdoc.
+//! in the rustdoc, checked against it by hand, and an eighth place that
+//! handed a statement to the connection would go unnoticed here.
+//!
+//! `FinetypeBundle` reads a column per label from inside the profile pass and
+//! is deliberately outside `record_scan` — that gap is stated on the rustdoc.
 
 use brightfield_engine::{Engine, ScanTally, Session};
 use brightfield_spec::analysis::{analyse_spec, ComponentPath};
@@ -107,7 +108,7 @@ fn the_mark_execute_funnel_counts() {
 }
 
 /// **The copy counts.** `materialise_source` reads the source once, and that
-/// read is the one an open pays before the composition pays none.
+/// read is the one an open pays so that its composition pays nothing.
 #[test]
 fn the_materialise_copy_funnel_counts() {
     let mut live = session(CATEGORICAL);
