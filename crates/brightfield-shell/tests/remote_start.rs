@@ -866,9 +866,11 @@ fn the_fetch_writes_what_it_was_served_and_repoints_only_the_source() {
 /// files and all.
 ///
 /// Watched redden, one mutation: `documents_changed`'s `self.fetching = None`
-/// removed. The window then holds `signals-dashboard` for two frames and the
-/// crosswalk chart after that, and the assertions below fail at the document's
-/// own title.
+/// removed, which is the whole of the fix. It fails at the first assertion
+/// after the card is taken — *opening a document left the abandoned fetch
+/// latched* — which is the right place for it to fail: the window is wrong the
+/// moment the local start lands, and everything after that is the consequence
+/// rather than the defect.
 #[test]
 fn a_fetch_the_reader_gave_up_on_does_not_arrive_and_take_the_window() {
     let stub = Stub::declaring_length(parquet_body(40_000));
@@ -944,9 +946,11 @@ fn a_fetch_the_reader_gave_up_on_does_not_arrive_and_take_the_window() {
 /// first.
 ///
 /// Watched redden, one mutation: `land_start`'s `self.remote_files =
-/// chart.fetched;` replaced with `= None;`. The fetched directory is removed at
-/// the end of the open, the file assertion below fails, and with that line
-/// relaxed the re-composite fails too.
+/// chart.fetched;` replaced with `= None;` and the guard dropped. The fetched
+/// directory is removed at the end of the open, and this fails inside
+/// `assert_landed_locally` — *the landed document reads
+/// …/0-table.parquet, which is not on disk* — before the re-query is reached,
+/// which is the honest order: a file that is gone cannot be re-read.
 #[test]
 fn the_fetched_file_outlives_the_open_and_a_re_query_still_answers() {
     let stub = Stub::declaring_length(parquet_body(40_000));
