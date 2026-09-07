@@ -17,7 +17,7 @@
 //!
 //! # What it reads, and what it therefore cannot see
 //!
-//! The ink box, not the line box. [`epaint::Galley::mesh_bounds`] is the
+//! The ink box, not the line box. [`egui::Galley::mesh_bounds`] is the
 //! bounding box of the glyph meshes; `Galley::rect` is the font's line box,
 //! which is as tall as the face whatever the string sets. Vertically the ink
 //! box is the tighter of the two — `the_ink_box_is_the_glyph_quads_not_the_line_box`
@@ -32,7 +32,7 @@
 //! zero.
 //!
 //! Text the egui pass painted. The Vello canvas draws through an
-//! [`epaint::Shape::Callback`], so a mark's own labels are not in these lists
+//! [`egui::epaint::Shape::Callback`], so a mark's own labels are not in these lists
 //! and this module does not see them. What is outside the canvas rect — the
 //! rails, the grid, the header band, the inspector, the sheet, the top bar —
 //! is.
@@ -74,7 +74,7 @@ pub struct DrawnText {
     /// galley elided to `TIMESTA…` still answers `TIMESTAMP WITH TIME ZONE`
     /// there, so a report built from it would name text nobody drew and an
     /// [`ExemptPair`] written against it would excuse a string that is not on
-    /// the screen. This is read off [`epaint::text::PlacedRow`], which is the
+    /// the screen. This is read off [`egui::epaint::text::PlacedRow`], which is the
     /// glyphs.
     pub text: String,
     /// Whether the layout dropped part of the string to fit the room it was
