@@ -15,13 +15,19 @@
 //!
 //! # What it reads, and what it therefore cannot see
 //!
-//! The ink box, not the line box. [`epaint::Galley::mesh_bounds`] is the tight
+//! The ink box, not the line box. [`epaint::Galley::mesh_bounds`] is the
 //! bounding box of the glyph meshes; `Galley::rect` is the font's line box,
-//! which is taller than its glyphs by the leading and wider than them by the
-//! side bearing. Two rows of captions a row apart share a fraction of a point
-//! of *line box* and no pixel of ink, so a check reading `rect` would have to
-//! be given a tolerance big enough to hide a real one-line collision. Reading
-//! `mesh_bounds` is what makes [`MIN_OVERLAP`] small enough to be honest.
+//! which is as tall as the face whatever the string sets. Vertically the ink
+//! box is the tighter of the two — `the_ink_box_is_the_glyph_quads_not_the_line_box`
+//! measures both — which is what lets two rows a row apart be read as two
+//! rows rather than as a collision.
+//!
+//! **Horizontally it is the looser of the two**, and that is the surprise
+//! worth carrying: epaint snaps each glyph quad out to the pixel grid, so a
+//! mesh box can stand a fraction of a point wider than the line box that
+//! produced it. Two labels set exactly flush therefore share a sliver of ink
+//! box, and [`MIN_OVERLAP`] is sized from that measurement rather than from
+//! zero.
 //!
 //! Text the egui pass painted. The Vello canvas draws through an
 //! [`epaint::Shape::Callback`], so a mark's own labels are not in these lists
@@ -34,12 +40,16 @@ use egui::epaint::{ClippedShape, Shape};
 /// The overlap, in logical points on both axes, at or under which two ink
 /// boxes are called adjacent rather than collided.
 ///
-/// Small because the boxes are tight: at 0.5 points a collision has to put
-/// ink into ink, not a line box into a line box. It is not zero because a
-/// glyph mesh carries the anti-aliasing skirt epaint tessellates around it,
-/// and two labels set flush against each other would otherwise read as a
-/// defect at the shared edge.
-pub const MIN_OVERLAP: f32 = 0.5;
+/// Not zero, and the reason is measured rather than assumed: epaint rounds
+/// each glyph quad out to the pixel grid, so a galley's mesh box can stand up
+/// to a point wider than its own line box at one point per pixel, and two
+/// labels set flush against one another share that rounding at the seam.
+/// `flush_labels_share_less_than_the_tolerance` lays a flush pair out through
+/// the real font and measures what they share; `a_one_character_overlap_is_over_the_tolerance`
+/// lays out the smallest overlap a reader would call one and measures that it
+/// clears this. The value has to sit between those two numbers, and both
+/// tests print theirs when they fail.
+pub const MIN_OVERLAP: f32 = 2.0;
 
 // ---------------------------------------------------------------------------
 // What the frame drew.
@@ -48,8 +58,18 @@ pub const MIN_OVERLAP: f32 = 0.5;
 /// One galley a pass painted, with everything the rule needs to judge it.
 #[derive(Clone, Debug)]
 pub struct DrawnText {
-    /// The string, as laid out — an elided galley carries its ellipsis.
+    /// The string the reader sees: the glyphs the layout placed, in order.
+    ///
+    /// **Not `Galley::text()`**, which returns the job's source string — a
+    /// galley elided to `TIMESTA…` still answers `TIMESTAMP WITH TIME ZONE`
+    /// there, so a report built from it would name text nobody drew and an
+    /// [`ExemptPair`] written against it would excuse a string that is not on
+    /// the screen. This is read off [`epaint::text::PlacedRow`], which is the
+    /// glyphs.
     pub text: String,
+    /// Whether the layout dropped part of the string to fit the room it was
+    /// given. [`Self::text`] is the part that survived.
+    pub elided: bool,
     /// The layer it was painted into. Text in a tooltip, a popup or a modal
     /// is in a different layer from the surface under it, which is what a
     /// layer is for.
@@ -112,12 +132,43 @@ impl std::fmt::Display for TextCollision {
 pub enum Rule {
     /// The two are in different layers.
     DifferentLayer,
-    /// One of them is clipped away.
+    /// At least one of them is clipped away entirely.
     NotVisible,
-    /// They share less than [`MIN_OVERLAP`] on an axis.
+    /// Both reach the screen and their ink boxes overlap, but the parts that
+    /// reach it do not: a clip stands between them.
+    ClippedApart,
+    /// Their ink boxes share no more than [`MIN_OVERLAP`] on an axis, so they
+    /// never overlapped to begin with.
     Adjacent,
     /// The pair is named in [`EXEMPT_PAIRS`].
     NamedPair,
+}
+
+/// How much of a box two galleys share, on the two readings the rules need.
+///
+/// Split out so each row of [`EXEMPTIONS`] is written against the geometry it
+/// is actually about — the ink boxes for whether they were ever in the same
+/// place, the visible boxes for whether the reader sees them there.
+#[derive(Clone, Copy, Debug)]
+struct Shared {
+    /// What the two ink boxes share, clip ignored.
+    ink: egui::Rect,
+    /// What the two boxes share after each is clipped.
+    visible: egui::Rect,
+}
+
+impl Shared {
+    fn of(a: &DrawnText, b: &DrawnText) -> Self {
+        Self {
+            ink: a.ink.intersect(b.ink),
+            visible: a.visible.intersect(b.visible),
+        }
+    }
+}
+
+/// Whether `overlap` is more than a rounding seam on both axes.
+fn is_shared(overlap: egui::Rect) -> bool {
+    !overlap.is_negative() && overlap.width() > MIN_OVERLAP && overlap.height() > MIN_OVERLAP
 }
 
 /// An exemption, and the reason it is one.
@@ -154,11 +205,22 @@ pub const EXEMPTIONS: &[Exemption] = &[
                   would fail a pane for text no reader can see.",
     },
     Exemption {
+        rule: Rule::ClippedApart,
+        because: "a pane that clips its own content can hold two overlapping \
+                  galleys apart on the screen. A table cell clips its column's \
+                  text to the cell, so a name too long for its cell lays ink \
+                  into the next one and is cut off at the edge before it \
+                  arrives — the ink boxes overlap and the reader sees two \
+                  separate labels, which is what the clip is for.",
+    },
+    Exemption {
         rule: Rule::Adjacent,
-        because: "a glyph mesh is tessellated with an anti-aliasing skirt \
-                  around its outline, so two labels set flush against one \
-                  another share a sliver of box at the seam. MIN_OVERLAP says \
-                  how much sharing is the seam rather than a collision.",
+        because: "epaint rounds every glyph quad out to the pixel grid, so a \
+                  mesh box stands a fraction of a point wider than the line \
+                  box it came from and two labels set flush share that \
+                  rounding at the seam. MIN_OVERLAP is measured off a flush \
+                  pair rather than guessed, so this row excuses the rounding \
+                  and not a character of it more.",
     },
     Exemption {
         rule: Rule::NamedPair,
@@ -189,17 +251,24 @@ pub struct ExemptPair {
 pub const EXEMPT_PAIRS: &[ExemptPair] = &[];
 
 impl Rule {
-    /// Whether this rule excuses `a` overlapping `b` by `overlap`.
-    fn excuses(self, a: &DrawnText, b: &DrawnText, overlap: egui::Rect) -> bool {
+    /// Whether this rule excuses `a` and `b` sharing `shared`, with `pairs`
+    /// standing in for [`EXEMPT_PAIRS`].
+    ///
+    /// **The rows are disjoint on purpose.** Each geometric row states the
+    /// visibility it applies at as well as the geometry, so exactly one of
+    /// them speaks to any given pair and the reason a pair was let through is
+    /// a single row rather than whichever one happened to be walked first.
+    /// `every_exemption_excuses_a_case_and_no_other` is what holds that.
+    fn excuses(self, a: &DrawnText, b: &DrawnText, shared: Shared, pairs: &[ExemptPair]) -> bool {
+        let both_visible = a.is_visible() && b.is_visible();
         match self {
             Self::DifferentLayer => a.layer != b.layer,
-            Self::NotVisible => !a.is_visible() || !b.is_visible(),
-            Self::Adjacent => {
-                overlap.is_negative()
-                    || overlap.width() <= MIN_OVERLAP
-                    || overlap.height() <= MIN_OVERLAP
+            Self::NotVisible => !both_visible,
+            Self::ClippedApart => {
+                both_visible && is_shared(shared.ink) && !is_shared(shared.visible)
             }
-            Self::NamedPair => EXEMPT_PAIRS.iter().any(|pair| {
+            Self::Adjacent => both_visible && !is_shared(shared.ink),
+            Self::NamedPair => pairs.iter().any(|pair| {
                 (pair.a == a.text && pair.b == b.text) || (pair.a == b.text && pair.b == a.text)
             }),
         }
@@ -212,10 +281,23 @@ impl Rule {
 /// nobody has written a row for excuses nothing.
 #[must_use]
 pub fn is_collision(a: &DrawnText, b: &DrawnText) -> bool {
-    let overlap = a.visible.intersect(b.visible);
+    let shared = Shared::of(a, b);
     !EXEMPTIONS
         .iter()
-        .any(|exemption| exemption.rule.excuses(a, b, overlap))
+        .any(|exemption| exemption.rule.excuses(a, b, shared, EXEMPT_PAIRS))
+}
+
+/// Which row of [`EXEMPTIONS`] let this pair through, if one did.
+///
+/// The rows are disjoint, so there is at most one — and a report that says
+/// *why* a pair was allowed is how a silenced collision stays auditable.
+#[must_use]
+pub fn excused_by(a: &DrawnText, b: &DrawnText) -> Option<Rule> {
+    let shared = Shared::of(a, b);
+    EXEMPTIONS
+        .iter()
+        .map(|exemption| exemption.rule)
+        .find(|rule| rule.excuses(a, b, shared, EXEMPT_PAIRS))
 }
 
 // ---------------------------------------------------------------------------
@@ -238,13 +320,30 @@ fn ink_box(text: &egui::epaint::TextShape) -> egui::Rect {
     }
     let (sin, cos) = text.angle.sin_cos();
     let mut turned = egui::Rect::NOTHING;
-    for corner in [local.left_top(), local.right_top(), local.left_bottom(), local.right_bottom()] {
+    for corner in [
+        local.left_top(),
+        local.right_top(),
+        local.left_bottom(),
+        local.right_bottom(),
+    ] {
         turned.extend_with(egui::pos2(
             cos.mul_add(corner.x, -(sin * corner.y)) + at.x,
             sin.mul_add(corner.x, cos * corner.y) + at.y,
         ));
     }
     turned
+}
+
+/// The glyphs a layout placed, in order — what the reader sees.
+///
+/// `Galley::text()` would be the string somebody asked for, which is a
+/// different string whenever the layout elided one; see [`DrawnText::text`].
+fn drawn_string(galley: &egui::Galley) -> String {
+    let mut out = String::new();
+    for row in &galley.rows {
+        out.push_str(&row.text());
+    }
+    out
 }
 
 /// Every galley in `shapes`, read as painted into `layer`.
@@ -262,7 +361,8 @@ fn texts_of(layer: egui::LayerId, shapes: &[ClippedShape], into: &mut Vec<DrawnT
                     return;
                 }
                 into.push(DrawnText {
-                    text: text.galley.text().to_owned(),
+                    text: drawn_string(&text.galley),
+                    elided: text.galley.elided,
                     layer,
                     ink,
                     clip,
@@ -308,6 +408,27 @@ pub fn frame_text(ctx: &egui::Context) -> Vec<DrawnText> {
             }
         });
     }
+    out
+}
+
+/// Every galley in an already-flattened shape list, read as one layer.
+///
+/// **Not the check's route in, and a caller reaching for it should read
+/// [`frame_text`] instead.** egui flattens its paint lists when the pass ends
+/// and the layer is not in the flattened list, so everything this returns
+/// claims to be in the background layer whatever it was drawn into — which is
+/// exactly the confusion [`frame_text`] exists to avoid.
+///
+/// It is here so that a test can ask the one question [`frame_text`] cannot
+/// answer about itself: whether walking the layers found every galley the pass
+/// painted. `frame_text` enumerates layers through `Memory::layer_ids`, and a
+/// layer missing from that list would be a whole pane this check silently
+/// never looked at. Comparing the two counts is what turns that from a hope
+/// into a measurement — `the_check_reads_every_galley_the_pass_painted`.
+#[must_use]
+pub fn flattened_text(shapes: &[ClippedShape]) -> Vec<DrawnText> {
+    let mut out = Vec::new();
+    texts_of(egui::LayerId::background(), shapes, &mut out);
     out
 }
 
@@ -415,11 +536,20 @@ mod tests {
         let clip = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 1000.0));
         DrawnText {
             text: text.to_owned(),
+            elided: false,
             layer,
             ink,
             clip,
             visible: ink.intersect(clip),
         }
+    }
+
+    /// The same, under a clip that takes all of it.
+    fn clipped_away(layer: egui::LayerId, x: f32, y: f32, w: f32, h: f32, text: &str) -> DrawnText {
+        let mut drawn = at(layer, x, y, w, h, text);
+        drawn.clip = egui::Rect::from_min_size(egui::pos2(900.0, 900.0), egui::vec2(9.0, 9.0));
+        drawn.visible = drawn.ink.intersect(drawn.clip);
+        drawn
     }
 
     fn base() -> egui::LayerId {
@@ -438,7 +568,14 @@ mod tests {
     #[test]
     fn two_texts_in_one_layer_sharing_pixels_are_a_collision() {
         let name = at(base(), 10.0, 100.0, 44.0, 9.0, "updated");
-        let kind = at(base(), 48.0, 100.0, 60.0, 9.0, "TIMESTAMP WITH TIME\u{2026}");
+        let kind = at(
+            base(),
+            48.0,
+            100.0,
+            60.0,
+            9.0,
+            "TIMESTAMP WITH TIME\u{2026}",
+        );
         assert!(is_collision(&name, &kind));
         let found = collisions(&[name, kind]);
         assert_eq!(found.len(), 1, "{found:?}");
@@ -452,103 +589,116 @@ mod tests {
     /// **Each exemption excuses its own case and no other one's.**
     ///
     /// The table is the whole of the check's judgement, so a row that excuses
-    /// nothing is a row that reads as a decision and is not one. Each case
-    /// here is a pair that collides on geometry and is let through by exactly
-    /// the row named — which is checked both ways: the row excuses its case,
-    /// and no other row does.
+    /// nothing another row already excuses is a row that reads as a decision
+    /// and is not one. That is not hypothetical: the first draft of this
+    /// module measured every rule against the *clipped* boxes, which made
+    /// [`Rule::NotVisible`] unreachable — a galley the clip took shares an
+    /// empty box with everything, so [`Rule::Adjacent`] excused it first and
+    /// `NotVisible` never decided a single pair. Each row now names the
+    /// visibility it applies at as well as the geometry, and this test holds
+    /// them apart: for each case, the rows that excuse it are exactly the one
+    /// named.
     #[test]
     fn every_exemption_excuses_a_case_and_no_other() {
-        // Geometry every case shares: a five-point overlap in both axes,
-        // which is a collision on its own.
-        let collided = |a: DrawnText, b: DrawnText| -> (DrawnText, DrawnText) {
-            let overlap = a.visible.intersect(b.visible);
-            assert!(
-                overlap.width() > MIN_OVERLAP && overlap.height() > MIN_OVERLAP,
-                "the case has to collide on geometry or it tests nothing: {overlap:?}"
-            );
-            (a, b)
+        // The pair `Rule::NamedPair`'s case is written against, passed in
+        // rather than read off `EXEMPT_PAIRS` — which is empty, and the row
+        // has to be shown doing its job without a live exemption being added
+        // to the shell so that a test can pass.
+        let pairs = [ExemptPair {
+            a: "drawn over",
+            b: "on purpose",
+            because: "the case `every_exemption_excuses_a_case_and_no_other` \
+                      drives this row with, and the only pair written anywhere: \
+                      EXEMPT_PAIRS itself is empty.",
+        }];
+
+        // Both visible, ink and visible boxes shared by forty points: a
+        // collision but for the one thing each case changes.
+        let collides = |layer, a_text: &str, b_text: &str| {
+            (
+                at(base(), 10.0, 10.0, 50.0, 9.0, a_text),
+                at(layer, 20.0, 10.0, 50.0, 9.0, b_text),
+            )
         };
 
-        let mut clipped_away = at(base(), 10.0, 10.0, 20.0, 9.0, "scrolled out");
-        clipped_away.clip = egui::Rect::from_min_size(egui::pos2(500.0, 500.0), egui::vec2(9.0, 9.0));
-        clipped_away.visible = clipped_away.ink.intersect(clipped_away.clip);
+        // Ink boxes overlapping by forty points, held apart by two clips: the
+        // reader sees one label in each pane and no overlap between them.
+        let mut left = at(
+            base(),
+            10.0,
+            10.0,
+            50.0,
+            9.0,
+            "a long name in a nar\u{2026}",
+        );
+        left.clip = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(30.0, 100.0));
+        left.visible = left.ink.intersect(left.clip);
+        let mut right = at(base(), 20.0, 10.0, 50.0, 9.0, "the next cell");
+        right.clip = egui::Rect::from_min_size(egui::pos2(40.0, 0.0), egui::vec2(60.0, 100.0));
+        right.visible = right.ink.intersect(right.clip);
 
         let cases: Vec<(Rule, (DrawnText, DrawnText))> = vec![
-            (
-                Rule::DifferentLayer,
-                collided(
-                    at(base(), 10.0, 10.0, 20.0, 9.0, "under"),
-                    at(above(), 25.0, 10.0, 20.0, 9.0, "over"),
-                ),
-            ),
+            (Rule::DifferentLayer, collides(above(), "under", "over")),
             (
                 Rule::NotVisible,
-                collided(
-                    at(base(), 10.0, 10.0, 20.0, 9.0, "in view"),
-                    clipped_away.clone(),
+                (
+                    at(base(), 10.0, 10.0, 50.0, 9.0, "in view"),
+                    clipped_away(base(), 20.0, 10.0, 50.0, 9.0, "scrolled out"),
                 ),
             ),
+            (Rule::ClippedApart, (left, right)),
             (
                 Rule::Adjacent,
                 (
                     at(base(), 10.0, 10.0, 20.0, 9.0, "flush"),
-                    at(base(), 29.7, 10.0, 20.0, 9.0, "against"),
+                    // Sharing half a point: the pixel-grid rounding at the
+                    // seam, which is under MIN_OVERLAP by construction.
+                    at(base(), 29.5, 10.0, 20.0, 9.0, "against"),
                 ),
             ),
             (
                 Rule::NamedPair,
-                collided(
-                    at(base(), 10.0, 10.0, 20.0, 9.0, "one"),
-                    at(base(), 25.0, 10.0, 20.0, 9.0, "other"),
-                ),
+                collides(base(), "drawn over", "on purpose"),
             ),
         ];
 
         for (rule, (a, b)) in &cases {
-            let overlap = a.visible.intersect(b.visible);
+            let shared = Shared::of(a, b);
             let excusing: Vec<Rule> = EXEMPTIONS
                 .iter()
                 .map(|e| e.rule)
-                .filter(|r| r.excuses(a, b, overlap))
+                .filter(|r| r.excuses(a, b, shared, &pairs))
                 .collect();
-            if *rule == Rule::NamedPair {
-                // EXEMPT_PAIRS is empty, so this case is a collision today.
-                // What is checked is that nothing ELSE excuses it — the row is
-                // reachable, and the moment somebody adds a pair it is the row
-                // that lets it through.
-                assert!(
-                    excusing.is_empty(),
-                    "{:?} and {:?} are excused by {excusing:?} and should be a \
-                     defect while EXEMPT_PAIRS is empty",
-                    a.text,
-                    b.text
-                );
-                assert!(is_collision(a, b));
-                let named = ExemptPair {
-                    a: "one",
-                    b: "other",
-                    because: "the case this row is here for",
-                };
-                assert!(
-                    Rule::NamedPair.excuses(
-                        &DrawnText { text: named.a.to_owned(), ..a.clone() },
-                        &DrawnText { text: named.b.to_owned(), ..b.clone() },
-                        overlap,
-                    ) == EXEMPT_PAIRS
-                        .iter()
-                        .any(|p| p.a == named.a && p.b == named.b),
-                    "the row reads EXEMPT_PAIRS and nothing else"
-                );
-                continue;
-            }
             assert_eq!(
                 excusing,
                 vec![*rule],
-                "{:?} and {:?} should be excused by {rule:?} alone",
+                "{:?} and {:?} should be excused by {rule:?} and by nothing \
+                 else; they share {:?} of ink box and {:?} of visible box",
                 a.text,
-                b.text
+                b.text,
+                shared.ink,
+                shared.visible,
             );
-            assert!(!is_collision(a, b), "{rule:?} did not excuse its own case");
+        }
+
+        // …and the same cases through the entry point the shell uses, which
+        // reads the real `EXEMPT_PAIRS`. Every case but the named pair is
+        // excused, and the named pair is a defect — because that list is
+        // empty and nothing in the shell has yet earned a row in it.
+        for (rule, (a, b)) in &cases {
+            if *rule == Rule::NamedPair {
+                assert!(
+                    is_collision(a, b),
+                    "EXEMPT_PAIRS is empty, so {:?} over {:?} is a defect until \
+                     somebody writes the row",
+                    a.text,
+                    b.text,
+                );
+                assert_eq!(excused_by(a, b), None);
+            } else {
+                assert!(!is_collision(a, b), "{rule:?} did not excuse its own case");
+                assert_eq!(excused_by(a, b), Some(*rule));
+            }
         }
 
         assert_eq!(
@@ -578,27 +728,121 @@ mod tests {
         }
     }
 
-    /// **The ink box is the glyphs, not the line box.**
+    /// **The ink box is the glyph quads: tighter than the line box down the
+    /// page, and looser across it.**
     ///
-    /// The claim [`MIN_OVERLAP`] rests on. If this module read `Galley::rect`
-    /// instead, two rows a row apart would overlap and the tolerance would
-    /// have to grow past the size of a real collision.
+    /// Both halves are load-bearing and only the first was expected. The line
+    /// box is as tall as the face whatever the string sets, so reading it
+    /// would make two rows a row apart overlap and the tolerance would have to
+    /// grow past the size of a real collision — that is why this module reads
+    /// `mesh_bounds`.
+    ///
+    /// The second half is why [`MIN_OVERLAP`] is not near zero. epaint rounds
+    /// each glyph quad out to the pixel grid, so a mesh box can stand *wider*
+    /// than the line box that produced it, and two labels set flush share that
+    /// rounding.
     #[test]
-    fn the_ink_box_is_tighter_than_the_line_box() {
+    fn the_ink_box_is_the_glyph_quads_not_the_line_box() {
         let ctx = ctx();
         let painter = painter(&ctx);
-        let galley = painter.layout_no_wrap(
-            "median 1,425".to_owned(),
-            egui::FontId::monospace(8.0),
-            egui::Color32::WHITE,
-        );
+        let font = egui::FontId::monospace(8.0);
+
+        // Down the page: a string of caps and no descender does not reach the
+        // bottom of its own line box.
+        let caps =
+            painter.layout_no_wrap("TIMESTAMP".to_owned(), font.clone(), egui::Color32::WHITE);
         assert!(
-            galley.mesh_bounds.height() < galley.rect.height(),
-            "the ink box {:?} is not tighter than the line box {:?}",
-            galley.mesh_bounds,
-            galley.rect
+            caps.mesh_bounds.height() < caps.rect.height(),
+            "the ink box {:?} is not shorter than the line box {:?}",
+            caps.mesh_bounds,
+            caps.rect
         );
-        assert!(galley.mesh_bounds.height() > 0.0);
+        assert!(caps.mesh_bounds.height() > 0.0);
+
+        // Across it: at least one of these stands wider than its line box.
+        // Stated as *some string does* rather than as a figure, because the
+        // amount is the pixel grid's and moves with `pixels_per_point`.
+        let widened: Vec<(&str, f32)> = ["xxx", "median 1,425", "Ay"]
+            .into_iter()
+            .map(|text| {
+                let galley =
+                    painter.layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::WHITE);
+                (text, galley.mesh_bounds.width() - galley.rect.width())
+            })
+            .collect();
+        assert!(
+            widened.iter().any(|(_, grown)| *grown > 0.0),
+            "no ink box stood wider than its line box, so MIN_OVERLAP is \
+             carrying a tolerance for a rounding that no longer happens and \
+             should come down: {widened:?}"
+        );
+    }
+
+    /// **Two labels set flush share less than the tolerance.**
+    ///
+    /// One of the two measurements [`MIN_OVERLAP`] sits between. Laid out
+    /// through a real font and placed edge to edge — the arrangement a row
+    /// with a label at each end reaches when it *just* fits — so what is
+    /// measured is the pixel-grid rounding rather than a number somebody
+    /// chose.
+    #[test]
+    fn flush_labels_share_less_than_the_tolerance() {
+        let ctx = ctx();
+        let painter = painter(&ctx);
+        let font = egui::FontId::monospace(8.0);
+        let mut worst = 0.0_f32;
+        for (left, right) in [
+            ("updated", "TIMESTAMP"),
+            ("xxx", "median 1,425"),
+            ("Ay", "gjpqy"),
+        ] {
+            let a = painter.layout_no_wrap(left.to_owned(), font.clone(), egui::Color32::WHITE);
+            let b = painter.layout_no_wrap(right.to_owned(), font.clone(), egui::Color32::WHITE);
+            // b starts exactly where a's line box ends.
+            let a_ink = a.mesh_bounds.translate(egui::vec2(0.0, 0.0));
+            let b_ink = b.mesh_bounds.translate(egui::vec2(a.rect.width(), 0.0));
+            let shared = a_ink.intersect(b_ink);
+            let width = if shared.is_negative() {
+                0.0
+            } else {
+                shared.width()
+            };
+            worst = worst.max(width);
+        }
+        assert!(
+            worst <= MIN_OVERLAP,
+            "flush labels share {worst} points of ink box, which is over \
+             MIN_OVERLAP ({MIN_OVERLAP}) — every row with a label at each end \
+             will report a collision it does not have"
+        );
+    }
+
+    /// **One character of overlap is over the tolerance.**
+    ///
+    /// The other measurement. A tolerance is only honest if it sits under the
+    /// smallest overlap a reader would call one, and the smallest this module
+    /// is asked to catch is one character of a caption face landing on
+    /// another.
+    #[test]
+    fn a_one_character_overlap_is_over_the_tolerance() {
+        let ctx = ctx();
+        let painter = painter(&ctx);
+        let font = egui::FontId::monospace(8.0);
+        let a = painter.layout_no_wrap("updated".to_owned(), font.clone(), egui::Color32::WHITE);
+        let b = painter.layout_no_wrap("TIMESTAMP".to_owned(), font, egui::Color32::WHITE);
+        let one_character = a.rect.width() / 7.0;
+        let a_ink = a.mesh_bounds;
+        let b_ink = b
+            .mesh_bounds
+            .translate(egui::vec2(a.rect.width() - one_character, 0.0));
+        let shared = a_ink.intersect(b_ink);
+        assert!(
+            !shared.is_negative() && shared.width() > MIN_OVERLAP,
+            "one character of overlap is {} points, which MIN_OVERLAP \
+             ({MIN_OVERLAP}) would excuse — the tolerance is wider than the \
+             defect it is meant to let through the net",
+            shared.width()
+        );
     }
 
     /// A galley of nothing but spaces has no mesh, and a box with no ink in it
@@ -612,7 +856,8 @@ mod tests {
             egui::FontId::monospace(8.0),
             egui::Color32::WHITE,
         );
-        let shape = egui::epaint::TextShape::new(egui::pos2(5.0, 5.0), galley, egui::Color32::WHITE);
+        let shape =
+            egui::epaint::TextShape::new(egui::pos2(5.0, 5.0), galley, egui::Color32::WHITE);
         assert!(
             ink_box(&shape).is_negative(),
             "a galley of spaces reported an ink box: {:?}",
@@ -672,8 +917,19 @@ mod tests {
         let ctx = ctx();
         let painter = painter(&ctx);
         let font = egui::FontId::monospace(8.0);
-        let whole = fit(&painter, "updated", font.clone(), 400.0, egui::Color32::WHITE);
-        assert_eq!(whole.text(), "updated", "room to spare should not elide");
+        let whole = fit(
+            &painter,
+            "updated",
+            font.clone(),
+            400.0,
+            egui::Color32::WHITE,
+        );
+        assert_eq!(
+            drawn_string(&whole),
+            "updated",
+            "room to spare should not elide"
+        );
+        assert!(!whole.elided);
 
         let room = 40.0;
         let cut = fit(
@@ -684,16 +940,17 @@ mod tests {
             egui::Color32::WHITE,
         );
         assert!(cut.size().x <= room, "fitted to {} of {room}", cut.size().x);
+        // Read off the glyphs. `Galley::text()` answers the string that was
+        // asked for — this galley still says "TIMESTAMP WITH TIME ZONE"
+        // there — so a check written against it would pass over a fitter that
+        // elided nothing at all.
+        let drawn = drawn_string(&cut);
+        assert!(cut.elided, "the galley did not elide: {drawn:?}");
         assert!(
-            cut.text().ends_with('\u{2026}'),
-            "an elided galley says so: {:?}",
-            cut.text()
+            drawn.ends_with('\u{2026}'),
+            "an elided galley carries its ellipsis: {drawn:?}"
         );
-        assert!(
-            cut.text().len() < "TIMESTAMP WITH TIME ZONE".len(),
-            "{:?}",
-            cut.text()
-        );
+        assert!(drawn.len() < "TIMESTAMP WITH TIME ZONE".len(), "{drawn:?}");
 
         // The character-budget answer this replaces: twenty characters of
         // this string is still wider than the room, which is how it came to
