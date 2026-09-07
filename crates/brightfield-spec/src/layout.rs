@@ -2201,7 +2201,7 @@ hconcat:
     /// **The separability claim, over Mosaic's sixteen names.**
     /// `ResolvedProjection::axes_invert_separately` is a spec-side
     /// assertion about render-side behaviour: `build_brushable_bindings` reads it
-    /// to decide whether an interval brush is installed at all, and
+    /// to decide whether an interval brush is installed, and
     /// `brightfield-shell`'s `axis_interval` then relies on the inverses
     /// existing. Two ways for that to be wrong, and this test rules out both — a
     /// projection declared separable whose inverses are missing is a brush that
