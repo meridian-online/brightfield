@@ -1046,6 +1046,28 @@ impl Boot {
         Ok(Self::of_opened_file(crate::data_file::open(chosen)?))
     }
 
+    /// [`Boot::data_file`], with the open's options named rather than taken
+    /// from [`crate::data_file::OpenOptions::default`].
+    ///
+    /// The reason this exists is
+    /// [`OpenOptions::type_source`](crate::data_file::OpenOptions::type_source):
+    /// a packaged build finds its FineType bundle beside its own executable,
+    /// and a test binary has none there to find — so without a way to name one
+    /// the whole labelled branch of the grid's header band would be reachable
+    /// by a shipped binary and by nothing a suite can drive.
+    ///
+    /// # Errors
+    ///
+    /// As [`Boot::data_file`].
+    pub fn data_file_with(
+        chosen: &str,
+        options: &crate::data_file::OpenOptions,
+    ) -> Result<Self, String> {
+        Ok(Self::of_opened_file(
+            crate::data_file::open_traced(chosen, options)?.0,
+        ))
+    }
+
     /// What an opened data file becomes, for **both** routes that open one.
     ///
     /// The document, the session behind it, the generated spec the editor pane

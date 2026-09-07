@@ -165,6 +165,7 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 
+use brightfield_engine::semantic::TypeSourceSpec;
 use brightfield_engine::{ColumnProfile, Engine, LoadOptions, ProfileOutcome, ScanTally};
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::{parse_spec, Format};
@@ -572,7 +573,7 @@ pub fn open(chosen: &str) -> Result<OpenedFile, String> {
 ///
 /// [`OpenOptions::default`] **is** what [`open`] does, so a caller that wants
 /// the app's own open and a trace of it has no field to set.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct OpenOptions {
     /// Ask DuckDB to explain each statement the first composition issues
     /// before running it, and count the leaves of those plans into
@@ -612,6 +613,34 @@ pub struct OpenOptions {
     /// raised to it, because a small enough `memory_limit` stops DuckDB being
     /// able to lift it again.
     pub materialise_budget_bytes: u64,
+    /// Where an answer to "what does this column MEAN" comes from, as opposed
+    /// to what DuckDB stored it as — [`LoadOptions::type_source`], handed to
+    /// the profile pass in `columns_of` and to nothing else.
+    ///
+    /// The default is [`LoadOptions::packaged`]'s: the FineType bundle a
+    /// packaged build carries beside its own executable, and `None` for a
+    /// build without one. So [`open`] does what it did when this was written
+    /// inline, and a caller that wants the app's own open still has no field
+    /// to set.
+    ///
+    /// **A field rather than a call, and the difference is what a test can
+    /// reach.** [`LoadOptions::packaged`] resolves the bundle from
+    /// `current_exe` behind a process-wide `OnceLock`, so a test binary — with
+    /// no bundle beside it and no way to move its own executable — could not
+    /// drive the labelled branch at all. Setting the once-cell instead would
+    /// let the first case in a suite decide for every case after it. This is
+    /// per call: two opens in one process carry two sources and get two
+    /// answers, which
+    /// `one_process_opens_one_file_with_a_type_source_and_without_one` in
+    /// `crates/brightfield-shell/tests/column_header_band.rs` drives over the
+    /// same file.
+    ///
+    /// It reaches the profile load and not the composition load beside it.
+    /// The labels the rails and the grid's header band draw come off the
+    /// profile — see `columns_of` and [`crate::one_step::ColumnFacts`] — so
+    /// bringing a native extension up a second time would cost the open twice
+    /// for an answer nothing reads.
+    pub type_source: Option<TypeSourceSpec>,
 }
 
 impl Default for OpenOptions {
@@ -620,6 +649,7 @@ impl Default for OpenOptions {
             count_scans: false,
             materialise_under_bytes: MATERIALISE_UNDER_BYTES,
             materialise_budget_bytes: MATERIALISE_BUDGET_BYTES,
+            type_source: LoadOptions::packaged().type_source,
         }
     }
 }
@@ -636,7 +666,7 @@ impl Default for OpenOptions {
 /// As [`open`].
 pub fn open_traced(chosen: &str, options: &OpenOptions) -> Result<(OpenedFile, OpenTrace), String> {
     let path = accept(chosen)?;
-    let columns = columns_of(&path)?;
+    let columns = columns_of(&path, options.type_source.as_ref())?;
     let dashboard = Dashboard::of(&path, &columns);
     if dashboard.tiles().is_empty() {
         let left: Vec<String> = dashboard
@@ -805,21 +835,40 @@ fn write_spec_file(data: &Path, spec: &str) -> Option<PathBuf> {
     Some(path)
 }
 
-/// The profiled columns of `path`, read through a root-less spec.
+/// The profiled columns of `path`, read through a root-less spec, with
+/// `type_source` deciding where each column's MEANING is answered from.
+///
+/// The two answers a profile carries are made here and they come from
+/// different places: `ColumnProfile::type_name` is what DuckDB stored the
+/// column as, and `ColumnProfile::semantic` is what `type_source` said it
+/// means. With no source the second is `SemanticType::NotAsked` and the grid's
+/// header band falls back to the first, which is the `VARCHAR   VARCHAR` a
+/// build carrying no bundle draws — see
+/// [`crate::one_step::ColumnFacts::leaf`].
 ///
 /// # Errors
 ///
 /// The engine's own words, prefixed with the path — this is where a file that
 /// is not really a Parquet, or a CSV whose rows do not line up, is caught, and
 /// DuckDB's message is the whole of what the reader needs.
-fn columns_of(path: &Path) -> Result<Vec<ColumnProfile>, String> {
+fn columns_of(
+    path: &Path,
+    type_source: Option<&TypeSourceSpec>,
+) -> Result<Vec<ColumnProfile>, String> {
     let spec = source_spec(path);
     let parsed = parse_spec(&spec, Format::Yaml)
         .map_err(|e| format!("{}: parse error: {e}", path.display()))?;
     let analysis = analyse_spec(&parsed.spec)
         .map_err(|e| format!("{}: analysis error: {e}", path.display()))?;
+    // The one load in this crate that carries a type source, which is why
+    // `OpenOptions::type_source` documents itself as reaching this and not the
+    // composition load below.
+    let options = LoadOptions {
+        type_source: type_source.cloned(),
+        ..LoadOptions::default()
+    };
     let load = Engine::new()
-        .load_spec_with(parsed.spec, analysis, None, &LoadOptions::packaged())
+        .load_spec_with(parsed.spec, analysis, None, &options)
         .map_err(|e| format!("{}: {e}", path.display()))?;
     let profile = load
         .session

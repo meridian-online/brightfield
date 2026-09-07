@@ -24,7 +24,9 @@
 //! this is the case every column here exercises. The deviation is the SAMPLE
 //! deviation, `stddev_samp`, over `n - 1`.
 
+use brightfield_engine::semantic::TypeSourceSpec;
 use brightfield_shell::column_header::GridDensity;
+use brightfield_shell::data_file::OpenOptions;
 use brightfield_shell::design::Mode;
 use brightfield_shell::protocol::NodeView;
 use brightfield_shell::window::{Boot, MeridianApp};
@@ -52,6 +54,14 @@ impl Live {
         let chosen = path.to_str().expect("utf-8 fixture path");
         let boot =
             Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+        Self::around(boot)
+    }
+
+    /// A settled window over `boot`, at [`SCREEN`].
+    ///
+    /// The tail of [`Live::open`], shared with [`Live::open_typed`] so the two
+    /// routes into a window cannot settle differently.
+    fn around(boot: Boot) -> Self {
         let mut live = Self {
             app: MeridianApp::headless(boot, Mode::Light),
             ctx: egui::Context::default(),
@@ -59,6 +69,24 @@ impl Live {
         };
         live.settle();
         live
+    }
+
+    /// A window over `path`, opened with `type_source` deciding where a
+    /// column's meaning is answered from.
+    ///
+    /// `None` is a build with no FineType bundle, stated rather than inherited:
+    /// `OpenOptions::default` looks for one beside the running executable, and
+    /// what sits beside a test binary is whatever `target/debug/deps` happens
+    /// to hold.
+    fn open_typed(path: &std::path::Path, type_source: Option<TypeSourceSpec>) -> Self {
+        let chosen = path.to_str().expect("utf-8 fixture path");
+        let options = OpenOptions {
+            type_source,
+            ..OpenOptions::default()
+        };
+        let boot = Boot::data_file_with(chosen, &options)
+            .unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+        Self::around(boot)
     }
 
     fn run(&mut self, frames: Vec<Vec<egui::Event>>) {
@@ -693,5 +721,217 @@ fn the_grid_view_says_how_many_of_the_tables_columns_are_across() {
         "the readout at {rect:?} is not inside the grid pane's own header band \
          {:?}",
         grid.header
+    );
+}
+
+// ---------------------------------------------------------------------------
+// What a column MEANS, in the full band's own row.
+// ---------------------------------------------------------------------------
+//
+// The band's leaf-and-storage row is drawn either way, and until a type source
+// reached this pane both halves of it said the same word: with no label to
+// state, `ColumnFacts::leaf` falls back to the storage type and the full
+// header read `VARCHAR   VARCHAR`. The three tests below are the two branches
+// and the pair of them in one process.
+//
+// THE FIXTURE IS A COLUMN NO DATABASE TYPE COULD HAVE CLASSIFIED, which is the
+// whole of why it is not the housing sample the rest of this file uses.
+// `reply_addresses_sample.csv` holds email addresses under a column named
+// `reply_to` — a name carrying no clue, so the label follows from the values —
+// and DuckDB reads it as `VARCHAR`, which is what every text column in every
+// file it has ever opened is. `identity.person.email` is what the product adds
+// on top of that, and the two are different strings, so a regression to
+// storage types reddens rather than passing on a coincidence.
+
+/// The table whose one text column means something.
+fn reply_addresses() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/reply_addresses_sample.csv")
+}
+
+/// The column of that table this section is about, and the two strings it is
+/// held to.
+const MEANT: &str = "reply_to";
+const STORAGE: &str = "VARCHAR";
+const LEAF: &str = "email";
+
+/// A real FineType bundle, from `BRIGHTFIELD_FINETYPE_BUNDLE`.
+///
+/// Assembled by `scripts/fetch-finetype-bundle.sh` from the release
+/// `packaging/finetype-pin.env` pins — a real extension and a real model, not
+/// a synthesised trailer, because a stub that answered `identity.person.email`
+/// would be this test asking itself a question. The tests that need one are
+/// `#[ignore]`d so a plain `cargo test` on a machine with no bundle reports
+/// them as skipped rather than failed; the workflow step named
+/// `the grid names what a column means` in `.github/workflows/test.yml` fetches
+/// one, runs them by name and holds libtest's executed count to a floor, which
+/// is what stops "ignored in CI" being what this section quietly settles for.
+fn bundle() -> TypeSourceSpec {
+    let dir = std::path::PathBuf::from(
+        std::env::var_os("BRIGHTFIELD_FINETYPE_BUNDLE")
+            .expect("BRIGHTFIELD_FINETYPE_BUNDLE is not set"),
+    );
+    assert!(
+        dir.join("finetype.duckdb_extension").is_file(),
+        "BRIGHTFIELD_FINETYPE_BUNDLE={} carries no finetype.duckdb_extension, so it is \
+         not a bundle",
+        dir.display()
+    );
+    TypeSourceSpec::Bundle(dir)
+}
+
+/// One column's cell of the band the grid drew, by the name the table spells.
+fn cell(
+    drawn: &brightfield_shell::data_grid::TableDrawn,
+    name: &str,
+) -> brightfield_shell::column_header::ColumnBandDrawn {
+    drawn
+        .band
+        .iter()
+        .find(|cell| cell.name == name)
+        .unwrap_or_else(|| {
+            let drew: Vec<&str> = drawn.band.iter().map(|c| c.name.as_str()).collect();
+            panic!("the band drew no cell for {name:?}; it drew {drew:?}")
+        })
+        .clone()
+}
+
+/// **AC1 and AC2 — the full header names what the column means, not how it is
+/// stored.**
+///
+/// Read off `ColumnBandDrawn`, which is recorded from the expressions that
+/// paint, and then confirmed against the galleys the same frame put inside that
+/// cell's own rect — so a record that says `email` while the pane draws
+/// something else fails here rather than reading as a pass.
+///
+/// The two strings are asserted separately and then asserted to differ. Either
+/// one alone is satisfiable by the bug: a header that had regressed to storage
+/// types would draw `VARCHAR` in both halves of the row and still carry a
+/// storage type where one is expected.
+#[test]
+#[ignore = "needs a FineType bundle: set BRIGHTFIELD_FINETYPE_BUNDLE"]
+fn the_full_band_names_what_a_varchar_column_means() {
+    let mut win = Live::open_typed(&reply_addresses(), Some(bundle()));
+    win.click_row("grid");
+    assert_eq!(
+        win.app.canvas_holds().view(),
+        Some(NodeView::Grid),
+        "clicking the grid row puts the grid on the canvas"
+    );
+    let drawn = win.drawn();
+    let cell = cell(&drawn, MEANT);
+    assert_eq!(
+        cell.density,
+        GridDensity::Full,
+        "the leaf-and-storage row is the full density's, so a cell drawn at the \
+         compact one would state neither: {cell:?}"
+    );
+    assert_eq!(
+        cell.storage.as_deref(),
+        Some(STORAGE),
+        "DuckDB stored {MEANT} as {STORAGE} and the band's storage half has to \
+         say so: {cell:?}"
+    );
+    assert_eq!(
+        cell.leaf.as_deref(),
+        Some(LEAF),
+        "{MEANT} holds email addresses and a build carrying a type source knows \
+         it; the band's finetype half drew {:?}: {cell:?}",
+        cell.leaf
+    );
+    assert_ne!(
+        cell.leaf, cell.storage,
+        "the two halves of the row drew the same word, which is the header \
+         reading {STORAGE} twice — the state this fixture exists to fail on"
+    );
+
+    // …and on screen, inside this column's own cell.
+    let painted: Vec<String> = texts(&win.shapes())
+        .into_iter()
+        .filter(|(pos, _)| cell.cell.contains(*pos))
+        .map(|(_, text)| text)
+        .collect();
+    assert!(
+        painted.iter().any(|t| t == LEAF),
+        "the record says the band drew {LEAF:?} and no galley inside \
+         {MEANT}'s cell {:?} carries it. Painted there: {painted:?}",
+        cell.cell
+    );
+}
+
+/// **AC3 — with no type source the header still states the storage type.**
+///
+/// The behaviour a build with no bundle has always had, held as a test rather
+/// than assumed: the row is drawn, both halves say `VARCHAR`, and the window
+/// settles without a panic or a blank.
+///
+/// `None` is passed rather than left to `OpenOptions::default`, which looks for
+/// a bundle beside the running executable — and what sits beside a test binary
+/// is `target/debug/deps`, whose contents this test does not control.
+#[test]
+fn a_varchar_column_with_no_type_source_draws_its_storage_type() {
+    let mut win = Live::open_typed(&reply_addresses(), None);
+    win.click_row("grid");
+    let drawn = win.drawn();
+    let cell = cell(&drawn, MEANT);
+    assert_eq!(cell.density, GridDensity::Full);
+    assert_eq!(
+        cell.storage.as_deref(),
+        Some(STORAGE),
+        "with nobody to ask, the storage half is still DuckDB's answer: {cell:?}"
+    );
+    assert_eq!(
+        cell.leaf.as_deref(),
+        Some(STORAGE),
+        "with nobody to ask, the finetype half falls back to the storage type — \
+         it does not go empty, and it does not go missing: {cell:?}"
+    );
+    let painted: Vec<String> = texts(&win.shapes())
+        .into_iter()
+        .filter(|(pos, _)| cell.cell.contains(*pos))
+        .map(|(_, text)| text)
+        .collect();
+    assert!(
+        painted.iter().any(|t| t == STORAGE),
+        "no galley inside {MEANT}'s cell {:?} carries {STORAGE}, so the row the \
+         record claims is drawn is not on screen. Painted there: {painted:?}",
+        cell.cell
+    );
+}
+
+/// **AC4 — two type sources, one file, one process.**
+///
+/// The `OnceLock` inside `LoadOptions::packaged` resolves the bundle location
+/// once per process, so a seam that had merely set it would let the first case
+/// in a suite decide for every case after it — and a suite that can hold one
+/// type source cannot compare two. This opens the same file twice in one
+/// process and each open answers its own way.
+///
+/// The order is deliberate: the bundle first, so the second open is the one
+/// that would inherit a cached answer if anything cached one.
+#[test]
+#[ignore = "needs a FineType bundle: set BRIGHTFIELD_FINETYPE_BUNDLE"]
+fn one_process_opens_one_file_with_a_type_source_and_without_one() {
+    let path = reply_addresses();
+
+    let mut labelled = Live::open_typed(&path, Some(bundle()));
+    labelled.click_row("grid");
+    let with = cell(&labelled.drawn(), MEANT);
+
+    let mut plain = Live::open_typed(&path, None);
+    plain.click_row("grid");
+    let without = cell(&plain.drawn(), MEANT);
+
+    assert_eq!(with.storage, without.storage, "one file, one storage type");
+    assert_eq!(
+        with.leaf.as_deref(),
+        Some(LEAF),
+        "the first open carried a bundle: {with:?}"
+    );
+    assert_eq!(
+        without.leaf.as_deref(),
+        Some(STORAGE),
+        "the second open carried none, and got the first one's answer instead \
+         of its own: {without:?}"
     );
 }
