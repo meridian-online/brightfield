@@ -154,6 +154,20 @@ fn answer(mut stream: TcpStream, body: &[u8], declare_length: bool) {
     }
 }
 
+/// The distinct strings in `readouts`, in first-seen order.
+///
+/// A failure here would otherwise print one entry per frame — several hundred
+/// of them, nearly all identical — and bury the one line a reader needs.
+fn distinct(readouts: &[String]) -> Vec<&str> {
+    let mut seen: Vec<&str> = Vec::new();
+    for r in readouts {
+        if !seen.contains(&r.as_str()) {
+            seen.push(r);
+        }
+    }
+    seen
+}
+
 /// A body big enough that the readout has something to count, and made of
 /// bytes rather than of a Parquet: what is under test here is the fetch, and
 /// nothing in these tests hands the result to the engine.
@@ -353,19 +367,22 @@ fn the_card_reads_what_has_arrived_against_the_declared_length() {
         .to_string();
     assert!(
         readouts.iter().any(|r| r.contains(" of ")),
-        "no frame's card carried a received-against-declared readout: {readouts:?}"
+        "no frame's card carried a received-against-declared readout: {:?}",
+        distinct(&readouts)
     );
     assert!(
         readouts
             .iter()
             .all(|r| !r.contains(" of ") || r.ends_with(&denominator)),
         "a readout named a total that is not the {denominator} the server \
-         declared: {readouts:?}"
+         declared: {:?}",
+        distinct(&readouts)
     );
     assert!(
         readouts.iter().all(|r| r != DOOR_ENTRY_PROMISE),
         "a frame with the fetch outstanding still drew the resting promise: \
-         {readouts:?}"
+         {:?}",
+        distinct(&readouts)
     );
 }
 
@@ -399,11 +416,13 @@ fn the_card_reads_the_count_alone_when_no_length_was_declared() {
     );
     assert!(
         readouts.iter().all(|r| !r.contains(" of ")),
-        "the readout named a total the server never declared: {readouts:?}"
+        "the readout named a total the server never declared: {:?}",
+        distinct(&readouts)
     );
     assert!(
         readouts.iter().any(|r| r != DOOR_ENTRY_PROMISE),
-        "no frame's card said anything about the fetch: {readouts:?}"
+        "no frame's card said anything about the fetch: {:?}",
+        distinct(&readouts)
     );
 }
 
