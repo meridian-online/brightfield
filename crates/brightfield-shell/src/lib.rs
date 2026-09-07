@@ -60,6 +60,9 @@
 //!   framework-free corpora in `brightfield-keys` / `brightfield-model`.
 //!   The chrome they render through is `meridian-egui`'s one `Picker` inside
 //!   its one `ModalLayer`.
+//! - [`text_ink`] — what text a frame put on the screen and whether any two
+//!   of it landed in the same pixels, plus the measured fitter a row uses
+//!   to stay out of its neighbour's way.
 //! - [`startup`] — where the layout file lives, and the one order it can be
 //!   read in.
 //! - [`starts`] — the starting points that ship inside the binary, which are
@@ -93,6 +96,7 @@ pub mod resample;
 mod sql_ident;
 pub mod starts;
 pub mod startup;
+pub mod text_ink;
 pub mod watch;
 pub mod window;
 
