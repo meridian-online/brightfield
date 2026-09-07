@@ -1547,8 +1547,9 @@ fn interval_predicate(
 /// interval brush on a projection whose axes do not invert separately — held by
 /// `an_interval_brush_is_not_installed_over_a_curved_projection` — so a conic or
 /// an azimuthal does not arrive here. If one did, the inverse answers `None` and
-/// this returns no clause, which is a brush that filters nothing rather than one
-/// filtering on numbers nobody swept.
+/// this returns no clause, which is a brush that filters no rows rather than one
+/// filtering on numbers nobody swept —
+/// `a_brush_over_a_curved_projection_builds_no_clause` drives that case.
 ///
 /// The inversion runs BEFORE the bounds are ordered, because `reflect-y`'s
 /// inverse decreases: ordering first would name a `lo` above its `hi`.
