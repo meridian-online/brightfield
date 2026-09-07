@@ -691,7 +691,7 @@ mod tests {
     /// [`Rule::NotVisible`] unreachable — a galley the clip took shares an
     /// empty box with whatever it is compared to, so [`Rule::Adjacent`]
     /// excused it first and
-    /// `NotVisible` decided no pair at all. Each row now names the visibility
+    /// `NotVisible` was dead weight in the table. Each row now names the visibility
     /// it applies at as well as the geometry, and this test holds them apart:
     /// for each case, the rows that excuse it are exactly the one named.
     #[test]
