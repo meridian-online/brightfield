@@ -2741,6 +2741,87 @@ mod tests {
         }
     }
 
+    /// **What an ordinary open actually spends is far inside the budget it is
+    /// allowed to spend**, read off the committed records rather than asserted
+    /// in prose.
+    ///
+    /// `MATERIALISE_BUDGET_BYTES` is the memory one copy may cost, and the
+    /// rustdoc on it makes two claims: that it is far enough above an ordinary
+    /// open that none is refused, and far enough below a laptop's memory that
+    /// spending it is unremarkable. The second is a judgement. The first is a
+    /// measurement, and this is where it is held — every materialised shape in
+    /// every committed open-scan record has to have spent less than a
+    /// thirty-second of the budget.
+    ///
+    /// A thirty-second rather than "less than": a copy that only just fitted
+    /// would satisfy a bare inequality while making the rustdoc's sentence
+    /// false, and the margin is what the sentence is about. Measured on an
+    /// Apple M1 Pro, the widest shape leaves about eighty-six times the room.
+    ///
+    /// This reddens from either side — a budget cut to a value ordinary opens
+    /// crowd, or a shape whose copy grew — which is what a claim about a
+    /// relationship between two numbers needs.
+    #[test]
+    fn every_recorded_open_spends_far_less_than_the_budget_allows() {
+        const MARGIN: u64 = 32;
+        let budget = brightfield_shell::data_file::MATERIALISE_BUDGET_BYTES;
+        let dir = repo_root().join("benchmarks/results").join(OPEN_SCAN_SUBDIR);
+        let mut records: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("{} is readable: {e}", dir.display()))
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "json"))
+            .collect();
+        records.sort();
+        assert!(
+            !records.is_empty(),
+            "{} holds no record, so this test read nothing",
+            dir.display()
+        );
+
+        let mut checked = 0usize;
+        for record in &records {
+            let text = std::fs::read_to_string(record).expect("the record reads");
+            let json: serde_json::Value =
+                serde_json::from_str(&text).expect("the record is JSON");
+            let stated = json["materialise_budget_bytes"].as_u64();
+            if let Some(stated) = stated {
+                assert_eq!(
+                    stated,
+                    budget,
+                    "{} was captured against a budget of {stated} bytes and the \
+                     build now ships {budget} — regenerate it, or the figures \
+                     in it are about a different guard",
+                    record.display()
+                );
+            }
+            for shape in json["shapes"].as_array().into_iter().flatten() {
+                let Some(spent) = shape["materialise_bytes"].as_u64() else {
+                    continue;
+                };
+                let name = shape["shape"]["name"].as_str().unwrap_or("?");
+                assert!(
+                    spent > 0,
+                    "{}: shape {name} records a zero-byte copy, so this row \
+                     measures nothing",
+                    record.display()
+                );
+                assert!(
+                    spent * MARGIN <= budget,
+                    "{}: shape {name} spent {spent} bytes of a {budget}-byte \
+                     budget, less than {MARGIN}x of room — the budget is no \
+                     longer far above what an ordinary open costs",
+                    record.display()
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked > 0,
+            "no committed open-scan record carries a materialise_bytes for any \
+             shape, so nothing here compared a spend against the budget"
+        );
+    }
+
     /// The record the README's list marks `(current)` must be the newest one in
     /// `benchmarks/results/`. Landing a record and leaving the label on the one
     /// before it is how a reader ends up quoting a superseded file, and the

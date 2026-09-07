@@ -457,6 +457,13 @@ impl Engine {
             eprintln!("warning: DuckDB kept its default temporary directory: {e}");
         }
 
+        // What the memory settings were before anything of ours touched them.
+        // `Session::materialise_source` narrows both for the duration of one
+        // copy and puts these back; see the field for why they are read here,
+        // once, rather than at the moment of restoring.
+        let copy_budget_baseline = current_setting(&conn, "memory_limit")
+            .zip(current_setting(&conn, "max_temp_directory_size"));
+
         let emit_output =
             emit_sources(&spec, base_dir).map_err(|e| EngineError::EmitFailed { cause: e })?;
 
@@ -754,6 +761,7 @@ impl Engine {
             type_source,
             type_source_error,
             scan_tally: RefCell::new(None),
+            copy_budget_baseline,
         };
 
         Ok(LoadResult {
@@ -912,6 +920,22 @@ pub struct Session {
     /// thing being counted is every statement the session issues, and a
     /// parameter is something a new statement can be written without.
     scan_tally: RefCell<Option<ScanTally>>,
+    /// The `memory_limit` and `max_temp_directory_size` this connection was
+    /// created with, as DuckDB's own words for them, so
+    /// [`Session::materialise_source`] can put them back after narrowing them
+    /// for one copy.
+    ///
+    /// **Captured once at load and never re-read**, and that is the whole
+    /// design. Restoring from a value read back at restore time ratchets the
+    /// limit down: measured on this build's DuckDB, `current_setting` renders
+    /// the limit rounded, so capture-and-restore ran `12.7 GiB` to `12.6 GiB`
+    /// to `12.5 GiB` over three cycles, which for an application that opens
+    /// many files is memory quietly disappearing.
+    ///
+    /// `None` where DuckDB would not answer, and then no copy is attempted at
+    /// all: a budget that cannot be lifted afterwards is worse than a slow
+    /// open.
+    copy_budget_baseline: Option<(String, String)>,
 }
 
 /// One navigable axis of a navigation extent: the column the gesture moved
@@ -2741,6 +2765,17 @@ impl Session {
 /// leaves scan.
 const MATERIALISED_SUFFIX: &str = "__bf_materialised";
 
+/// DuckDB's own rendering of one of its settings, or `None` where it would not
+/// answer.
+fn current_setting(conn: &Connection, name: &str) -> Option<String> {
+    conn.query_row(
+        &format!("SELECT current_setting('{name}')::VARCHAR"),
+        [],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+}
+
 /// The smallest memory budget [`Session::materialise_source`] imposes on
 /// itself, however little it is asked for.
 ///
@@ -2822,6 +2857,18 @@ impl Session {
         let copy = format!("CREATE TEMP TABLE \"{table}\" AS SELECT * FROM \"{quoted}\"");
         self.record_scan(&copy);
 
+        // No baseline, no copy. Narrowing a limit this session cannot put back
+        // would leave every later query running under the budget, which costs
+        // far more than the slow open declining here costs.
+        let Some((memory_limit, temp_size)) = self.copy_budget_baseline.clone() else {
+            return Err(EngineError::CopyUnbounded {
+                source_name: name.to_string(),
+                reason: "this session could not read back the memory settings \
+                         it would have to put back afterwards"
+                    .to_string(),
+            });
+        };
+
         // `B` is not decoration: DuckDB's parser rejects a bare byte count
         // ("Unknown unit for memory"), so a budget written without a unit
         // would fail the SET and, by the rule above, refuse every copy.
@@ -2832,7 +2879,7 @@ impl Session {
             // Half of it may have applied: `execute_batch` stops at the
             // statement that failed, and the failure observed here is the
             // second one.
-            let _ = self.clear_copy_budget();
+            let _ = self.restore_copy_budget(&memory_limit, &temp_size);
             return Err(EngineError::ConnectionFailed { cause });
         }
         let copied = self.conn.execute_batch(&copy);
@@ -2840,7 +2887,7 @@ impl Session {
         // that did not fit costs a slower open and nothing else; a session
         // left at the budget cannot run the next query at all, and that is the
         // condition the caller has to hear about.
-        self.clear_copy_budget()
+        self.restore_copy_budget(&memory_limit, &temp_size)
             .map_err(|cause| EngineError::ConnectionFailed { cause })?;
         copied.map_err(|cause| EngineError::ConnectionFailed { cause })?;
 
@@ -2853,11 +2900,30 @@ impl Session {
     }
 
     /// Put `memory_limit` and `max_temp_directory_size` back to what this
-    /// session was started with, after
-    /// [`Session::materialise_source`] narrowed them for one copy.
-    fn clear_copy_budget(&self) -> Result<(), duckdb::Error> {
-        self.conn
-            .execute_batch("RESET memory_limit; RESET max_temp_directory_size;")
+    /// session was started with, after [`Session::materialise_source`]
+    /// narrowed them for one copy.
+    ///
+    /// **`SET` to the captured values, and deliberately not `RESET`.** On this
+    /// build's DuckDB `RESET memory_limit` returns success and leaves
+    /// `current_setting('memory_limit')` reading the default again **while the
+    /// buffer pool goes on enforcing the narrowed limit** — measured, a query
+    /// needing 8 MiB after a `RESET` from an 8 MiB budget still failed with
+    /// `(7.8 MiB/8.0 MiB used)`, and the same query after a `SET` back
+    /// succeeded. A restore that reads back correct and is not in force is the
+    /// worst shape a restore can have, because nothing downstream can detect
+    /// it; `a_refused_copy_leaves_the_session_able_to_run_a_query_far_larger_than_the_budget`
+    /// is what holds it.
+    fn restore_copy_budget(
+        &self,
+        memory_limit: &str,
+        temp_size: &str,
+    ) -> Result<(), duckdb::Error> {
+        let quoted_memory = memory_limit.replace('\'', "''");
+        let quoted_temp = temp_size.replace('\'', "''");
+        self.conn.execute_batch(&format!(
+            "SET memory_limit='{quoted_memory}'; \
+             SET max_temp_directory_size='{quoted_temp}';"
+        ))
     }
 
     /// **What the copies this session has made are costing it**, in bytes —

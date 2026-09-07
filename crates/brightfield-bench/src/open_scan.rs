@@ -377,7 +377,6 @@ pub fn measure(
     let mut open_ms = Vec::with_capacity(repeats);
     let mut composition_ms = Vec::with_capacity(repeats);
     let mut materialise_ms = Vec::with_capacity(repeats);
-    let mut materialise_bytes = None;
     for _ in 0..repeats {
         profile_ms.push(time_profile(&path)?);
         let at = Instant::now();
@@ -388,11 +387,6 @@ pub fn measure(
         if trace.materialised {
             materialise_ms.push(trace.materialise_ms);
         }
-        // Read off the LAST repeat rather than averaged: it is a size, not a
-        // duration, and DuckDB's accounting of the same table built the same
-        // way does not move between repeats. `trace` carries it out of the
-        // open so this does not re-ask a session that has since composed.
-        materialise_bytes = trace.materialise_bytes;
         tiles = opened.dashboard.tiles().len();
         composition_queries = opened.live.executes();
     }
@@ -420,7 +414,12 @@ pub fn measure(
         composition_file_read_bound: pipeline::COMPOSITION_FILE_READS,
         materialised: composition_tally.materialised,
         materialise: Stats::from_ms(materialise_ms),
-        materialise_bytes,
+        // Taken from the counted open rather than from a timed repeat, for two
+        // reasons: it is a size and not a duration, so the `EXPLAIN`ing that
+        // makes the counted open the wrong place to read a clock does not
+        // touch it; and `--repeats 0` is a legitimate way to run this suite
+        // for its counts alone, and the loop above does not execute then.
+        materialise_bytes: composition_tally.materialise_bytes,
         composition_statements: composition_tally
             .composition
             .statements
