@@ -126,15 +126,24 @@
 //! the flag and the label from drifting apart — exactly the strut
 //! [`Start::run_less`] already has.
 //!
-//! **What it does with no network is stated, not assumed.** The load fails —
-//! DuckDB binds a view over an `https://` Parquet eagerly, so the failure
-//! happens at open rather than at draw — and it fails as a structured
-//! `EngineError` naming the network and the URL, which
+//! **What it does with no network is stated, not assumed.** The load fails,
+//! and it fails naming the network and the URL, which
 //! [`MeridianApp::open_start`](crate::window::MeridianApp) raises as an error
 //! banner over a window that stays up. It is not a blank chart and not a
-//! silent partial one. `crates/brightfield-shell/tests/crosswalk_chart.rs`
-//! holds that offline, hermetically, by denying the engine the httpfs
-//! extension rather than by unplugging anything.
+//! silent partial one.
+//!
+//! *Which* code says so moved when the fetch did. DuckDB binds a view over an
+//! `https://` Parquet **eagerly**, so the whole download used to happen inside
+//! the frame that took the click and the refusal was the engine's
+//! `EngineError::RemoteSourceFailed`. [`crate::remote`] now moves the bytes to
+//! a local file on a worker first, so what the engine is handed is a `file:`
+//! source it can read at local speed and the refusal a user meets is the
+//! fetch's — worded to name the same two things, because the banner is the
+//! same banner. Both are still true and both are held: the engine's is held
+//! hermetically by `crates/brightfield-shell/tests/crosswalk_chart.rs`, which
+//! denies it the httpfs extension rather than unplugging anything, and the
+//! fetch's by `crates/brightfield-shell/tests/remote_start.rs`, over a port on
+//! localhost with nothing listening on it.
 //!
 //! # The thumbnails are shipped product surface
 //!
@@ -440,6 +449,15 @@ pub struct OpenedChart {
     pub live: LiveDashboard,
     /// The composition the load produced, at the spec's own declared size.
     pub composed: Composed,
+    /// The files a [`Start::remote`] start's sources were fetched into, for
+    /// the life of the document that reads them.
+    ///
+    /// `None` for every start that reads no network. Carried rather than
+    /// dropped for the same reason `live` is, and a sharper one: the engine
+    /// binds a **view** over the fetched path, so every query re-reads the
+    /// file. Dropping this at the end of the open would delete the Parquet out
+    /// from under the session that is about to be brushed.
+    pub fetched: Option<crate::remote::Fetched>,
 }
 
 /// A loaded start: the document it produced.
@@ -504,6 +522,15 @@ const CROSSWALK_MODELS: &[(&str, &str)] = &[
 /// is an `https://` URL, so composing it fetches. That is what
 /// [`Start::remote`] declares and what the label discloses.
 ///
+/// **This entry point waits for that fetch**, and the window does not call it
+/// for a start that has one. [`crate::window::MeridianApp::open_start`] starts
+/// the fetch on a worker and composes on a later frame, so the click leaves the
+/// window drawing; what is left here is for callers with no frames to keep —
+/// the network-gated tests, the thumbnail regeneration, a launch restoring a
+/// recorded start. Both routes end at [`compose`], so a difference between what
+/// a test opens and what a click opens would have to be a difference in the
+/// bytes fetched.
+///
 /// # Errors
 ///
 /// If `id` is not a start this build ships, or if the embedded fixture fails
@@ -524,7 +551,19 @@ pub fn load(id: &str) -> Result<Opened, String> {
     // added with no `spec:` must fail loudly here, not silently open the
     // crosswalk's lineage graph.
     if let Some(spec) = start.spec {
-        return chart(spec);
+        // The sources this spec reads over the network, moved to local files
+        // BEFORE the engine sees the spec — which is what makes the composition
+        // below a local one whether the start is remote or not. This waits,
+        // because `load` is the blocking entry: the window does not call it for
+        // a remote start (see `MeridianApp::open_start`), and the callers that
+        // do — the network-gated tests, the thumbnail regeneration, a launch
+        // restoring a recorded start — have no frame to keep drawing.
+        let sources = crate::remote::https_sources(spec)?;
+        if sources.is_empty() {
+            return compose(spec, None);
+        }
+        let fetched = crate::remote::Fetch::begin(sources, || {}).wait()?;
+        return compose(spec, Some(fetched));
     }
     match id {
         CROSSWALK => load_protocol_str(CROSSWALK_MANIFEST, CROSSWALK_MODELS)
@@ -541,8 +580,49 @@ pub fn load(id: &str) -> Result<Opened, String> {
 ///
 /// The sampling policy is applied by [`LiveDashboard`]'s own constructor, so a
 /// start is decided the same way a file opened from the command line is.
-fn chart(spec: &str) -> Result<Opened, String> {
-    let mut live = LiveDashboard::load_str(spec, None)?;
+///
+/// `fetched` repoints the spec's `https://` sources at the local files a
+/// [`crate::remote::Fetch`] wrote, and is `None` for a start that declares
+/// none. **Both callers land here** — [`load`], which waits for the fetch, and
+/// [`crate::window::MeridianApp`], which polls one across frames — so what the
+/// network-gated test opens and what a click opens are composed by one
+/// function rather than by two that agree today.
+pub fn compose(spec: &str, fetched: Option<crate::remote::Fetched>) -> Result<Opened, String> {
+    let mut live = match &fetched {
+        Some(files) => {
+            let parsed = crate::remote::repointed(spec, files)?;
+            LiveDashboard::load_parsed(parsed, None, None)?
+        }
+        None => LiveDashboard::load_str(spec, None)?,
+    };
     let composed = live.present()?;
-    Ok(Opened::Charts(Box::new(OpenedChart { live, composed })))
+    Ok(Opened::Charts(Box::new(OpenedChart {
+        live,
+        composed,
+        fetched,
+    })))
+}
+
+/// The `https://` sources the start `id` reads — what a window has to move
+/// off the frame before it composes this start, and empty for every start
+/// that reads none.
+///
+/// Read off [`Start::spec`], which is the bytes [`compose`] is handed, so the
+/// list a window fetches cannot be a list some other copy of the spec
+/// declares. A start with no `spec:` opens a Protocol **manifest**, whose
+/// `https://` inputs are graph nodes rather than sources: `load_protocol_str`
+/// derives the graph from the declared steps and fetches none of them, so
+/// there is nothing here for a window to move.
+///
+/// # Errors
+///
+/// If the start is not one this build ships, or its spec does not parse.
+pub fn network_sources(id: &str) -> Result<Vec<String>, String> {
+    let Some(start) = find(id) else {
+        return Err(format!("no shipped starting point named {id:?}"));
+    };
+    match start.spec {
+        Some(spec) => crate::remote::https_sources(spec),
+        None => Ok(Vec::new()),
+    }
 }

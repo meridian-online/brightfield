@@ -384,6 +384,18 @@ pub struct DoorRow {
     pub rect: egui::Rect,
 }
 
+/// A remote start whose sources are being moved to local files while the
+/// window keeps drawing.
+///
+/// The pair is what the frame needs: `id` says which card wears the readout
+/// and which start to compose when the bytes land, and `fetch` is the worker.
+pub struct PendingStart {
+    /// The start this fetch is for.
+    id: &'static str,
+    /// The worker moving its sources.
+    fetch: crate::remote::Fetch,
+}
+
 /// One gallery card's outer width.
 const CARD_WIDTH: f32 = 216.0;
 
@@ -903,6 +915,15 @@ pub struct Boot {
     pub stacked_tiles: Option<usize>,
     /// The protocol document's graph and steps.
     pub protocol: ProtocolInputs,
+    /// The files a remote start's sources were fetched into — see
+    /// [`crate::starts::OpenedChart::fetched`], whose lifetime this carries
+    /// through the boot into [`MeridianApp::remote_files`].
+    ///
+    /// `None` for every other boot. It rides here rather than being dropped at
+    /// the end of the load because the engine binds a view over the fetched
+    /// path: a boot that let it fall would delete the Parquet before the first
+    /// frame queried it.
+    pub fetched: Option<crate::remote::Fetched>,
     /// The protocol document's reading axis.
     pub flow: Flow,
     /// A dotted asset id to select before the first frame, for a scripted
@@ -921,6 +942,7 @@ impl Boot {
             authored: None,
             stacked_tiles: None,
             protocol: ProtocolInputs::empty(),
+            fetched: None,
             flow: Flow::Vertical,
             focus: None,
         }
@@ -936,6 +958,7 @@ impl Boot {
             authored: None,
             stacked_tiles: None,
             protocol: inputs,
+            fetched: None,
             flow,
             focus,
         }
@@ -964,6 +987,7 @@ impl Boot {
             authored: None,
             stacked_tiles: None,
             protocol: ProtocolInputs::empty(),
+            fetched: None,
             flow: Flow::Vertical,
             focus: None,
         }
@@ -981,6 +1005,7 @@ impl Boot {
             // box the dock gives it. See [`crate::starts::OpenedChart`].
             crate::starts::Opened::Charts(chart) => Self {
                 live: Some(chart.live),
+                fetched: chart.fetched,
                 ..Self::charts(chart.composed)
             },
             crate::starts::Opened::Protocol(inputs) => Self::protocol(*inputs, flow, None),
@@ -1689,6 +1714,16 @@ pub struct MeridianApp {
     /// [`Self::affordances`] is for pane empty states. Cleared on frames the
     /// door did not draw.
     door_cards: Vec<(&'static str, egui::Rect)>,
+    /// What each gallery card drew at its **foot**, by start id — the promise
+    /// every card carries, or, on the card of a start whose sources are being
+    /// fetched, [`crate::remote::Fetch::readout`].
+    ///
+    /// Recorded off the galley's own glyphs for the reason [`DoorRow`]'s
+    /// fields are: the foot is the one line on a card whose text depends on
+    /// what the window is doing rather than on the start, so a card recording
+    /// one string and painting another is exactly the defect worth being able
+    /// to see. Cleared on frames the door did not draw.
+    door_card_feet: Vec<(&'static str, String)>,
     /// Which sections the front door drew, in the order it drew them, and
     /// where each one's heading landed.
     ///
@@ -1703,6 +1738,23 @@ pub struct MeridianApp {
     door_rows: Vec<DoorRow>,
     /// Where the front door drew the Start zone's keyboard-help control.
     door_help: Option<egui::Rect>,
+    /// The remote start whose sources are being fetched right now, if any.
+    ///
+    /// A window in this state is still on the front door and still drawing:
+    /// the click has been taken and nothing has been opened yet. The card the
+    /// click landed on reads [`crate::remote::Fetch::readout`] at its foot in
+    /// place of [`DOOR_ENTRY_PROMISE`], and [`MeridianApp::draw`] polls this
+    /// once a frame — see [`MeridianApp::open_start`] for why the fetch is not
+    /// simply done inside the click.
+    fetching: Option<PendingStart>,
+    /// The files the **open document's** remote sources were fetched into.
+    ///
+    /// Held for the life of the document rather than the life of the open: the
+    /// engine binds a view over each path, so a query re-reads the file and a
+    /// guard dropped at the end of the open would delete the Parquet under the
+    /// session. Replaced whenever a document is — dropping the old value is
+    /// what removes the previous fetch's directory.
+    remote_files: Option<crate::remote::Fetched>,
     /// Where the front door drew the Start zone's open-a-file control —
     /// recorded for the reason [`Self::door_cards`] is, so the test that proves
     /// the verb is reachable clicks it where it was actually laid out.
@@ -2025,9 +2077,12 @@ impl MeridianApp {
             door_thumbs: Vec::new(),
             mark: None,
             door_cards: Vec::new(),
+            door_card_feet: Vec::new(),
             door_sections: Vec::new(),
             door_rows: Vec::new(),
             door_help: None,
+            fetching: None,
+            remote_files: None,
             door_open_file: None,
             pick_requested: false,
             door_open_protocol: None,
@@ -2778,6 +2833,21 @@ impl MeridianApp {
             .map(|(_, r)| *r)
     }
 
+    /// What the front door drew at the foot of the card for the start `id`,
+    /// in the last frame this window drew.
+    ///
+    /// [`DOOR_ENTRY_PROMISE`] for a card at rest, and the fetch readout for a
+    /// card whose start is opening over the network — the glyphs the painter
+    /// was handed, so a readout that was computed and not drawn is not
+    /// reported here as though it had been.
+    #[must_use]
+    pub fn front_door_card_foot(&self, id: &str) -> Option<&str> {
+        self.door_card_feet
+            .iter()
+            .find(|(card, _)| *card == id)
+            .map(|(_, text)| text.as_str())
+    }
+
     /// Which sections the last frame's front door drew, in the order it drew
     /// them, and where each heading landed.
     ///
@@ -2945,6 +3015,11 @@ impl MeridianApp {
     /// tier-agnostic.
     pub fn draw(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        // Before anything is laid out: a fetch that finished since the last
+        // frame replaces the documents, and a frame that drew the door first
+        // and adopted the document after would draw one frame of a door for a
+        // window that is no longer on it.
+        self.poll_fetch(&ctx);
         // The mark, once per window: both the controls that draw it are below
         // this line and either can be the first to run, so neither owns the
         // load.
@@ -3219,6 +3294,7 @@ impl MeridianApp {
             // test that asks where a card was after the door has gone must
             // hear "nowhere", exactly as `affordances` answers for panes.
             self.door_cards.clear();
+            self.door_card_feet.clear();
             self.door_sections.clear();
             self.door_rows.clear();
             self.door_help = None;
@@ -4516,6 +4592,12 @@ impl MeridianApp {
         }
         self.open_chart(Composed::empty());
         self.protocol.doc.open(ProtocolInputs::empty());
+        // Going Home is a document swap, so the fetched files go with the
+        // document that was reading them, and an outstanding fetch stops being
+        // this window's business — dropping the `Fetch` discards the worker's
+        // answer and, with it, the directory it wrote.
+        self.remote_files = None;
+        self.fetching = None;
         self.documents_changed();
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
         ctx.request_repaint();
@@ -4582,19 +4664,93 @@ impl MeridianApp {
     /// `what_open_start_records_is_what_the_opened_document_says` reads both
     /// back against the opened document itself.
     fn open_start(&mut self, ctx: &egui::Context, id: &'static str) {
-        let banner = NotificationId::composite("open-start", id);
+        // **The sources this start reads over the network go first, and they
+        // go off the frame.** DuckDB binds a view over an `https://` Parquet
+        // eagerly, so the composition below used to carry the whole download
+        // inside one frame: the click that opens the only start reading real
+        // published data was the one click that stopped the window answering.
+        // `crate::remote` moves the bytes on a worker; the door keeps drawing,
+        // the card the click landed on wears the readout, and `draw` composes
+        // when they land — over a local file, which is the engine doing
+        // exactly what it did before at local-file speed.
+        match crate::starts::network_sources(id) {
+            Ok(sources) if !sources.is_empty() => {
+                self.open_remote_start(ctx, id, sources);
+                return;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                self.refuse_start(ctx, id, &e);
+                return;
+            }
+        }
         let opened = match crate::starts::load(id) {
             Ok(opened) => opened,
             Err(e) => {
-                eprintln!("could not open {id}: {e}");
-                self.notifications.raise(
-                    Notification::new(banner, Severity::Error, "Could not open the starting point")
-                        .body(format!("{id}: {e}")),
-                );
-                ctx.request_repaint();
+                self.refuse_start(ctx, id, &e);
                 return;
             }
         };
+        self.land_start(ctx, id, opened);
+    }
+
+    /// Open the start `id`, whose spec reads `sources` over the network,
+    /// **without blocking the frame**: the bytes move on a worker and the
+    /// window goes on drawing until they land.
+    ///
+    /// Public, and taking the sources rather than reading them, because the
+    /// sources are data — [`crate::starts::network_sources`] reads them off
+    /// the start's own spec and [`Self::open_start`] is the one caller that
+    /// does. A caller handing in a different list is aiming the same machinery
+    /// at a different server, which is what
+    /// `crates/brightfield-shell/tests/remote_start.rs` does to hold this
+    /// behaviour against a stub on localhost rather than against the published
+    /// lake: a suite that fetched the real thing would be green or red for
+    /// reasons that have nothing to do with this repository.
+    ///
+    /// What it leaves behind is a window still on the front door, with
+    /// [`Self::fetching_start`] naming this start and its gallery card reading
+    /// [`crate::remote::Fetch::readout`] at its foot. [`Self::poll_fetch`] is
+    /// what finishes it.
+    pub fn open_remote_start(
+        &mut self,
+        ctx: &egui::Context,
+        id: &'static str,
+        sources: Vec<String>,
+    ) {
+        // A second click on a card already fetching is not a second fetch. It
+        // is the same click, and the readout is already saying so.
+        if self.fetching.as_ref().is_some_and(|p| p.id == id) {
+            return;
+        }
+        let repaint = ctx.clone();
+        self.fetching = Some(PendingStart {
+            id,
+            fetch: crate::remote::Fetch::begin(sources, move || repaint.request_repaint()),
+        });
+        ctx.request_repaint();
+    }
+
+    /// The start whose sources this window is fetching, if it is fetching.
+    ///
+    /// `None` both before a remote start is taken and after its bytes have
+    /// landed — the state is the fetch, not the start, so a window holding an
+    /// opened remote document answers `None` here.
+    #[must_use]
+    pub fn fetching_start(&self) -> Option<&'static str> {
+        self.fetching.as_ref().map(|pending| pending.id)
+    }
+
+    /// Take the document a start loaded into this window, and record the pick.
+    ///
+    /// Split out of [`Self::open_start`] because a remote start lands here a
+    /// frame or a hundred later, from [`Self::poll_fetch`], and the two must
+    /// leave the window in the same state — a start that opened over a fetch
+    /// is not a different kind of document, and
+    /// `either_route_to_the_same_subject_leaves_the_same_window` is the claim
+    /// that would quietly stop being true if there were two tails.
+    fn land_start(&mut self, ctx: &egui::Context, id: &'static str, opened: crate::starts::Opened) {
+        let banner = NotificationId::composite("open-start", id);
         match opened {
             // A new chart document is a new set of things to say, and a
             // reason to stop saying the last one's.
@@ -4604,8 +4760,18 @@ impl MeridianApp {
             crate::starts::Opened::Charts(chart) => {
                 self.open_chart(chart.composed);
                 self.charts.doc.attach_live(chart.live);
+                // After the swap, not before: `open_chart` drops the outgoing
+                // session, and the outgoing session is the thing that was
+                // reading the outgoing fetch's files. Assigning here is also
+                // what deletes them — `Fetched` removes its directory on drop
+                // — and assigning `None` for a local start is the same
+                // sentence, which is why it is one line rather than an arm.
+                self.remote_files = chart.fetched;
             }
-            crate::starts::Opened::Protocol(inputs) => self.protocol.doc.open(*inputs),
+            crate::starts::Opened::Protocol(inputs) => {
+                self.protocol.doc.open(*inputs);
+                self.remote_files = None;
+            }
         }
         self.documents_changed();
         self.notifications.dismiss(banner);
@@ -4625,6 +4791,63 @@ impl MeridianApp {
         ));
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
         ctx.request_repaint();
+    }
+
+    /// Raise the banner a start that will not open gets, over a window that
+    /// stays up.
+    ///
+    /// One site for both refusals — a build-time defect in a bundled fixture,
+    /// and a fetch that could not reach what it was told to read — because the
+    /// second is the first's replacement for the remote start: what the eager
+    /// bind used to say, naming the network and the URL, is what
+    /// [`crate::remote`] says now, and it has to arrive as the same banner or
+    /// the offline answer would have changed shape when the work moved off the
+    /// frame.
+    ///
+    /// The banner's id is composite over the start, so the same start failing
+    /// again replaces its banner rather than stacking a second.
+    fn refuse_start(&mut self, ctx: &egui::Context, id: &'static str, why: &str) {
+        eprintln!("could not open {id}: {why}");
+        self.notifications.raise(
+            Notification::new(
+                NotificationId::composite("open-start", id),
+                Severity::Error,
+                "Could not open the starting point",
+            )
+            .body(format!("{id}: {why}")),
+        );
+        ctx.request_repaint();
+    }
+
+    /// Ask this frame's outstanding fetch whether it has finished, and open
+    /// the start when it has.
+    ///
+    /// Called at the head of every [`MeridianApp::draw`], which is what makes
+    /// the fetch a thing the window checks rather than a thing it waits for.
+    /// The composition happens **here**, on the UI thread, over the local files
+    /// the worker wrote: `crate::pipeline`'s session holds a `duckdb::Connection`
+    /// beside statements borrowed from it, so it is not a value a worker could
+    /// have built and sent over.
+    fn poll_fetch(&mut self, ctx: &egui::Context) {
+        let Some(pending) = self.fetching.as_mut() else {
+            return;
+        };
+        let Some(result) = pending.fetch.take() else {
+            return;
+        };
+        let id = pending.id;
+        self.fetching = None;
+        let spec = match crate::starts::find(id).and_then(|start| start.spec) {
+            Some(spec) => spec,
+            None => {
+                self.refuse_start(ctx, id, "the start whose sources were fetched has no spec");
+                return;
+            }
+        };
+        match result.and_then(|files| crate::starts::compose(spec, Some(files))) {
+            Ok(opened) => self.land_start(ctx, id, opened),
+            Err(e) => self.refuse_start(ctx, id, &e),
+        }
     }
 
     /// Take `boot` — both its documents — into a window that already exists.
@@ -4661,6 +4884,9 @@ impl MeridianApp {
         // one file's chart beside another file's Protocol is a state nothing
         // downstream is written for.
         self.protocol.doc.open(boot.protocol);
+        // …and the files its remote sources were fetched into, for the life of
+        // the document that reads them — see [`Boot::fetched`].
+        self.remote_files = boot.fetched;
         self.documents_changed();
         wire_columns(
             &mut self.charts.doc,
@@ -4836,6 +5062,7 @@ impl MeridianApp {
     /// [`SavedLayout::recents`]: brightfield_workbench::SavedLayout::recents
     fn front_door_ui(&mut self, ui: &mut egui::Ui, requests: &mut Vec<Request>) {
         self.door_cards.clear();
+        self.door_card_feet.clear();
         self.door_sections.clear();
         self.door_rows.clear();
         self.door_open_protocol = None;
@@ -5224,6 +5451,37 @@ impl MeridianApp {
     ) {
         let (rect, response) =
             ui.allocate_exact_size(egui::vec2(CARD_WIDTH, CARD_HEIGHT), egui::Sense::click());
+        // **The foot's words, decided before the card is drawn.** A card at
+        // rest carries the promise; the card whose start is fetching carries
+        // what has arrived, which is the one line on this surface that is
+        // about the window rather than about the start. It replaces the
+        // promise rather than being added under it: the card's height is
+        // `CARD_HEIGHT`, one grid row of which is this line, so a second line
+        // here would draw over the card below it — and
+        // `no_two_texts_are_drawn_into_one_place` is what would say so.
+        let foot = self
+            .fetching
+            .as_ref()
+            .filter(|pending| pending.id == start.id)
+            .map_or_else(
+                || DOOR_ENTRY_PROMISE.to_string(),
+                |pending| pending.fetch.readout(),
+            );
+        // Laid out ahead of the visibility test, for the reason `door_row`
+        // lays its three galleys out there: a card scrolled past the bottom of
+        // the column still has to answer
+        // [`MeridianApp::front_door_card_foot`] with the text it put on the
+        // screen, and a galley built inside the branch would leave that answer
+        // to whichever string the push below happened to name.
+        let promise = ui.painter().layout_no_wrap(
+            foot,
+            egui::FontId::monospace(meridian_design::typography::CHART_LABEL_SIZE),
+            chrome::colour(sem.text.muted),
+        );
+        // Off the galley's glyphs rather than off `foot`, for the reason
+        // `door_row` records its three fields that way: what is answered is
+        // what the painter was handed at this position.
+        self.door_card_feet.push((start.id, drawn_glyphs(&promise)));
         if ui.is_rect_visible(rect) {
             let painter = ui.painter().with_clip_rect(rect);
             painter.rect_filled(rect, radius::CONTROL, chrome::colour(sem.surfaces.raised));
@@ -5281,11 +5539,6 @@ impl MeridianApp {
             // The promise, at the card's foot: one constant, shared with the
             // Protocols section, so a reader comparing the two sections is
             // comparing one sentence with itself.
-            let promise = painter.layout_no_wrap(
-                DOOR_ENTRY_PROMISE.to_string(),
-                egui::FontId::monospace(meridian_design::typography::CHART_LABEL_SIZE),
-                chrome::colour(sem.text.muted),
-            );
             painter.galley(
                 egui::pos2(text_left, rect.max.y - spacing::SPACE_4 - promise.size().y),
                 promise,

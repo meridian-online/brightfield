@@ -92,6 +92,7 @@ pub mod overlays;
 pub mod pipeline;
 pub mod protocol;
 pub mod ranked_bars;
+pub mod remote;
 pub mod resample;
 mod sql_ident;
 pub mod starts;

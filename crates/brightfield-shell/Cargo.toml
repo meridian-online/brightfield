@@ -93,6 +93,13 @@ egui_table = "0.9"
 # does not build for today (release.yml packages the two darwin targets, and
 # both CI suites run on macos-15) but which `cargo deny` resolves anyway.
 rfd = "0.17"
+# The HTTP client behind the remote start's fetch — `crate::remote`, which
+# moves an `https://` source to a local file on a worker so the engine binds a
+# local one on the frame. NOT a new crate in this binary's graph: `arc` (through
+# `brightfield-protocol`, with `http-fetch` on) already resolves the same 2.x
+# line, so this declaration adds a direct edge and no build. Cargo unifies the
+# features, which is also where the TLS comes from.
+ureq = "2"
 
 [dev-dependencies]
 # Tier-1 real-UI snapshot loop: egui_kittest renders the real app headlessly on

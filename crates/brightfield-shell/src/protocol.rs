@@ -3585,7 +3585,12 @@ fn run_state_field(ui: &mut egui::Ui, mode: Mode, state: RunState) {
 }
 
 /// Human-readable byte size (1 KiB steps), for the inspector's measured Size.
-fn human_bytes(b: u64) -> String {
+///
+/// Crate-visible so [`crate::remote`]'s fetch readout counts in the same
+/// units and the same words the inspector's Size does — a card saying
+/// `4.1 MB` and an inspector saying `4.2 MB` about one file is a difference a
+/// reader has to explain to themselves.
+pub(crate) fn human_bytes(b: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     if b < 1024 {
         return format!("{b} B");
