@@ -805,12 +805,14 @@ pub fn draw_column_band(
                 egui::pos2(inner.left(), y),
                 egui::pos2(inner.right(), y + TYPES_ROW),
             ),
-            &facts.leaf,
-            &facts.storage,
-            &detail_font(),
-            RANGE_GAP,
-            frame.leaf,
-            frame.storage,
+            &text_ink::TwoEndedRow {
+                leading: &facts.leaf,
+                trailing: &facts.storage,
+                font: detail_font(),
+                gap: RANGE_GAP,
+                leading_ink: frame.leaf,
+                trailing_ink: frame.storage,
+            },
         );
         y += TYPES_ROW;
         (Some(facts.leaf.clone()), Some(facts.storage.clone()))
@@ -860,12 +862,14 @@ pub fn draw_column_band(
                     egui::pos2(inner.left(), y),
                     egui::pos2(inner.right(), y + frame.range_row()),
                 ),
-                min,
-                max,
-                &detail_font(),
-                RANGE_GAP,
-                frame.range,
-                frame.range,
+                &text_ink::TwoEndedRow {
+                    leading: min,
+                    trailing: max,
+                    font: detail_font(),
+                    gap: RANGE_GAP,
+                    leading_ink: frame.range,
+                    trailing_ink: frame.range,
+                },
             );
             (
                 Some((min.clone(), max.clone())),
@@ -920,12 +924,14 @@ pub fn draw_column_band(
                     text_ink::row_ends(
                         painter,
                         row,
-                        left,
-                        right,
-                        &detail_font(),
-                        RANGE_GAP,
-                        frame.caption,
-                        frame.caption,
+                        &text_ink::TwoEndedRow {
+                            leading: left,
+                            trailing: right,
+                            font: detail_font(),
+                            gap: RANGE_GAP,
+                            leading_ink: frame.caption,
+                            trailing_ink: frame.caption,
+                        },
                     );
                 }
                 y += CAPTION_ROW;

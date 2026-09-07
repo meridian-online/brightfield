@@ -525,6 +525,28 @@ pub fn fit(
     painter.layout_job(job)
 }
 
+/// What a row with a label at each end is made of.
+///
+/// A struct rather than six arguments, because two of the six are colours and
+/// two are strings: at a call site that passes the same ink to both ends —
+/// which the header band's range row does — an argument list is an ordering
+/// nobody can check by reading it.
+#[derive(Clone, Debug)]
+pub struct TwoEndedRow<'a> {
+    /// The label at the leading edge. This is the one that gives way.
+    pub leading: &'a str,
+    /// The label at the trailing edge, laid out first.
+    pub trailing: &'a str,
+    /// The face both are set in.
+    pub font: egui::FontId,
+    /// The clear space kept between them.
+    pub gap: f32,
+    /// The leading label's ink.
+    pub leading_ink: egui::Color32,
+    /// The trailing label's ink.
+    pub trailing_ink: egui::Color32,
+}
+
 /// Where [`row_ends`] put the two labels it drew.
 #[derive(Clone, Copy, Debug)]
 pub struct RowEnds {
@@ -561,16 +583,16 @@ pub struct RowEnds {
 ///
 /// Returns where each landed, so a test can read the two rects rather than a
 /// screenshot.
-pub fn row_ends(
-    painter: &egui::Painter,
-    row: egui::Rect,
-    leading: &str,
-    trailing: &str,
-    font: &egui::FontId,
-    gap: f32,
-    leading_ink: egui::Color32,
-    trailing_ink: egui::Color32,
-) -> RowEnds {
+pub fn row_ends(painter: &egui::Painter, row: egui::Rect, spec: &TwoEndedRow<'_>) -> RowEnds {
+    let TwoEndedRow {
+        leading,
+        trailing,
+        font,
+        gap,
+        leading_ink,
+        trailing_ink,
+    } = spec;
+    let (gap, leading_ink, trailing_ink) = (*gap, *leading_ink, *trailing_ink);
     // The narrowest thing this can draw, and therefore the width that has to
     // be kept back from the trailing label for the leading one.
     let ellipsis = painter
@@ -1014,12 +1036,14 @@ mod tests {
         row_ends(
             painter,
             egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(width, 13.0)),
-            leading,
-            trailing,
-            &egui::FontId::monospace(8.0),
-            6.0,
-            egui::Color32::WHITE,
-            egui::Color32::WHITE,
+            &TwoEndedRow {
+                leading,
+                trailing,
+                font: egui::FontId::monospace(8.0),
+                gap: 6.0,
+                leading_ink: egui::Color32::WHITE,
+                trailing_ink: egui::Color32::WHITE,
+            },
         )
     }
 

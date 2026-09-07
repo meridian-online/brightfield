@@ -2817,12 +2817,14 @@ fn outline_row(ui: &mut egui::Ui, row: &OutlineRow, mode: Mode) -> (SpineRowDraw
             egui::pos2(x, rect.top()),
             egui::pos2(rect.right() - b.pad_x, rect.bottom()),
         ),
-        &row.label,
-        right,
-        &ui_font(),
-        spacing::SPACE_3,
-        chrome::colour(sem.text.primary),
-        chrome::colour(sem.text.muted),
+        &text_ink::TwoEndedRow {
+            leading: &row.label,
+            trailing: right,
+            font: ui_font(),
+            gap: spacing::SPACE_3,
+            leading_ink: chrome::colour(sem.text.primary),
+            trailing_ink: chrome::colour(sem.text.muted),
+        },
     );
     let name_rect = ends.leading;
     let kind_rect = ends.trailing;

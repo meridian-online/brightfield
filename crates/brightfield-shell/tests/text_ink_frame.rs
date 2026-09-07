@@ -24,7 +24,6 @@
 //! list comes back empty.
 
 use brightfield_shell::design::Mode;
-use brightfield_shell::protocol::NodeView;
 use brightfield_shell::text_ink;
 use brightfield_shell::window::{Boot, MeridianApp};
 
@@ -138,13 +137,17 @@ impl Live {
     }
 }
 
+/// One window state: what to call it in a failure message, and how to reach
+/// it.
+type State = (&'static str, fn() -> Live);
+
 /// Every window state this check is driven over, named for the failure
 /// message.
 ///
 /// Two fixtures and two densities. `site_readings_sample.csv` is the narrow
 /// case: a timestamp column, so the rail draws a long type name beside a
 /// column name, and readings whose bounds are wide against a narrow column.
-fn states() -> Vec<(&'static str, fn() -> Live)> {
+fn states() -> Vec<State> {
     vec![
         ("the housing table, as opened", || {
             Live::open("california_housing_sample.csv")
