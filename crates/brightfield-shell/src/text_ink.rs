@@ -993,6 +993,107 @@ mod tests {
         assert_eq!(out[0].text, "nested");
     }
 
+    /// The row a two-ended draw is given, and what it drew there.
+    fn ends(painter: &egui::Painter, width: f32, leading: &str, trailing: &str) -> RowEnds {
+        row_ends(
+            painter,
+            egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(width, 13.0)),
+            leading,
+            trailing,
+            &egui::FontId::monospace(8.0),
+            6.0,
+            egui::Color32::WHITE,
+            egui::Color32::WHITE,
+        )
+    }
+
+    /// **A row with a label at each end keeps them apart at every width.**
+    ///
+    /// The whole point of the helper, driven across the widths a column band
+    /// and a rail actually reach and then some. The pair is the one that
+    /// collided in the shell: a column name and the longest type name DuckDB
+    /// hands this rail.
+    #[test]
+    fn a_two_ended_row_keeps_its_two_ends_apart() {
+        let ctx = ctx();
+        let painter = painter(&ctx);
+        for width in [20.0_f32, 40.0, 80.0, 96.0, 140.0, 240.0, 400.0] {
+            let drawn = ends(&painter, width, "updated", "TIMESTAMP WITH TIME ZONE");
+            assert!(
+                !drawn.trailing.is_negative(),
+                "at {width} points the trailing end was not drawn at all"
+            );
+            assert!(
+                drawn.trailing.right() <= 10.0 + width + 0.01,
+                "at {width} points the trailing end runs past the row: {:?}",
+                drawn.trailing
+            );
+            if drawn.leading.is_negative() {
+                continue;
+            }
+            assert!(
+                drawn.leading.right() <= drawn.trailing.left(),
+                "at {width} points the leading end ends at {} and the trailing \
+                 one begins at {}",
+                drawn.leading.right(),
+                drawn.trailing.left(),
+            );
+            assert!(
+                drawn.leading.left() >= 10.0 - 0.01,
+                "at {width} points the leading end starts left of the row: {:?}",
+                drawn.leading
+            );
+        }
+    }
+
+    /// **A row wide enough for both draws both, whole.**
+    ///
+    /// The other side of the previous test: a helper that always elided would
+    /// pass that one and be useless.
+    #[test]
+    fn a_wide_row_draws_both_ends_whole() {
+        let ctx = ctx();
+        let painter = painter(&ctx);
+        let drawn = ends(&painter, 400.0, "updated", "TIMESTAMP WITH TIME ZONE");
+        let whole = painter
+            .layout_no_wrap(
+                "updated".to_owned(),
+                egui::FontId::monospace(8.0),
+                egui::Color32::WHITE,
+            )
+            .size()
+            .x;
+        assert!(
+            (drawn.leading.width() - whole).abs() < 0.01,
+            "the leading end was elided in a row with room to spare: {} \
+             against {whole}",
+            drawn.leading.width(),
+        );
+    }
+
+    /// **A row too narrow for both ends drops the leading one rather than
+    /// stacking two ellipses.**
+    ///
+    /// The case [`RowEnds::leading`] is negative for. Under about sixteen
+    /// points there is not room for an ellipsis at each end and a gap between
+    /// them, and two ellipses in one place is the defect this module exists to
+    /// stop — so the row states the end whose width it could not predict and
+    /// says nothing where the other one would have gone.
+    #[test]
+    fn a_row_too_narrow_for_both_ends_drops_the_leading_one() {
+        let ctx = ctx();
+        let painter = painter(&ctx);
+        let drawn = ends(&painter, 8.0, "updated", "TIMESTAMP WITH TIME ZONE");
+        assert!(
+            drawn.leading.is_negative(),
+            "an eight-point row drew a leading label at {:?}, which cannot be \
+             clear of the trailing one at {:?}",
+            drawn.leading,
+            drawn.trailing,
+        );
+        assert!(!drawn.trailing.is_negative());
+    }
+
     /// **What is fitted is measured against the font, not counted in
     /// characters.**
     ///

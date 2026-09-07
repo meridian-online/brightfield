@@ -226,3 +226,146 @@ fn the_check_reads_every_galley_the_pass_painted() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The two live defects, read off the rects the painter returned.
+// ---------------------------------------------------------------------------
+
+/// Every row of the rail that carries a name and a type, as the frame drew
+/// them.
+fn rail_rows(live: &Live) -> Vec<(String, egui::Rect, egui::Rect)> {
+    live.app
+        .spine_rows()
+        .iter()
+        .filter_map(|row| {
+            row.kind_rect
+                .map(|kind| (row.label.clone(), row.name_rect, kind))
+        })
+        .collect()
+}
+
+/// **The rail's name and the type beside it do not touch, at the width this
+/// rail has.**
+///
+/// The card's AC2, half of it. Read off `SpineRowDrawn::name_rect` and
+/// `kind_rect` — the boxes the painter handed back — rather than off a
+/// screenshot or off the layout constants the drawing used, because a rect
+/// recomputed from the constants agrees with a wrong drawing.
+///
+/// The fixture is the point: `updated` is a `TIMESTAMP WITH TIME ZONE`, which
+/// is the longest type name DuckDB hands this rail and the one the two
+/// budgeted-character calls this replaces could not fit.
+#[test]
+fn the_rails_name_and_type_stay_apart_at_this_width() {
+    let live = Live::open("wide_labels_sample.csv");
+    let rows = rail_rows(&live);
+    assert!(
+        rows.iter().any(|(label, ..)| label == "updated"),
+        "the rail drew no row for the timestamp column, so this test is not \
+         driving the case it was written for: {:?}",
+        rows.iter().map(|(l, ..)| l).collect::<Vec<_>>()
+    );
+    for (label, name, kind) in &rows {
+        assert!(
+            !name.is_negative(),
+            "{label}: the rail had no room for a name at all"
+        );
+        assert!(
+            name.right() <= kind.left(),
+            "{label}: the name ends at {} and the type begins at {} — {} \
+             points of the two are in the same place",
+            name.right(),
+            kind.left(),
+            name.right() - kind.left(),
+        );
+    }
+}
+
+/// **The band's lower and upper bound do not touch, at the width the compact
+/// density gives them.**
+///
+/// The card's AC2, the other half, read off `ColumnBandDrawn::range_rects`.
+/// Driven over both fixtures because the two produce different shapes of
+/// collision: dates as wide as the column on one, signed seven-figure decimals
+/// on the other.
+#[test]
+fn the_bands_two_bounds_stay_apart_at_this_width() {
+    for fixture in ["site_readings_sample.csv", "wide_labels_sample.csv"] {
+        for grid in [false, true] {
+            let mut live = Live::open(fixture);
+            if grid {
+                live.click_row("grid");
+            }
+            let drawn = live
+                .app
+                .chart_doc()
+                .grid_drawn
+                .clone()
+                .expect("the grid pane laid a table out");
+            let mut ranges = 0;
+            for cell in &drawn.band {
+                let Some((lo, hi)) = cell.range_rects else {
+                    continue;
+                };
+                ranges += 1;
+                assert!(
+                    !lo.is_negative(),
+                    "{fixture} {}: the cell had no room for a lower bound at all",
+                    cell.name
+                );
+                assert!(
+                    lo.right() <= hi.left(),
+                    "{fixture} {} (grid on canvas: {grid}): the lower bound \
+                     ends at {} and the upper begins at {} — {} points of the \
+                     two are in the same place",
+                    cell.name,
+                    lo.right(),
+                    hi.left(),
+                    lo.right() - hi.left(),
+                );
+            }
+            assert!(
+                ranges > 0,
+                "{fixture} (grid on canvas: {grid}): no cell drew a range, so \
+                 this test passed over a band with nothing in it"
+            );
+        }
+    }
+}
+
+/// **The rows stack to the height the frame claims.**
+///
+/// `ColumnHeaderFrame::extent` states the sum; `ColumnBandDrawn::stacked` is
+/// what the drawing reached. They are two derivations of one number, and the
+/// distinct row painting without advancing past itself is the shape that puts
+/// them out of step — a block that draws a row and leaves the cursor where it
+/// was, so the row after it lands on top.
+#[test]
+fn the_rows_stack_to_the_extent_the_frame_claims() {
+    for grid in [false, true] {
+        let mut live = Live::open("wide_labels_sample.csv");
+        if grid {
+            live.click_row("grid");
+        }
+        let drawn = live
+            .app
+            .chart_doc()
+            .grid_drawn
+            .clone()
+            .expect("the grid pane laid a table out");
+        assert!(!drawn.band.is_empty(), "the pane drew no band");
+        for cell in &drawn.band {
+            // The extent carries the two insets; `stacked` is measured from
+            // the top of the content box, so it is the extent less both.
+            let want = cell.extent - 2.0 * brightfield_shell::column_header::INSET_Y;
+            assert!(
+                (cell.stacked - want).abs() < 0.01,
+                "{} (grid on canvas: {grid}): the rows stacked to {} and the \
+                 frame claims {want} — a block painted a row and left the \
+                 cursor where it was",
+                cell.name,
+                cell.stacked,
+            );
+        }
+    }
+}

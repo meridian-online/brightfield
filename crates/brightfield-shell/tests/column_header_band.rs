@@ -314,9 +314,7 @@ fn the_grid_as_the_canvas_view_draws_the_full_band() {
     // The leaf-and-storage row (13), the bar chart over the rug (28 less 12),
     // two more points of range row (11 less 9), and three caption rows (13
     // each) — less the one row the compact density carries and the full one
-    // does not, its own solo distinct-count row (13). The frames the contract
-    // came from carry the two totals as 70 and 127, and 127 less 70 is this
-    // sum.
+    // does not, its own solo distinct-count row (13).
     let added = 13.0 + (28.0 - 12.0) + (11.0 - 9.0) + 3.0 * 13.0 - 13.0;
     assert!(
         (full_extent - compact_extent - added).abs() < f32::EPSILON,
@@ -495,16 +493,23 @@ fn the_same_table_draws_two_densities_by_where_its_pane_is() {
                 && c.leaf.is_none()
                 && c.stats.is_none()
                 && c.bars.is_empty()
-                && c.rug.is_some()),
-        "beneath the hero the band draws the compact rows and no others: {:?}",
+                && c.rug.is_some()
+                && c.distinct.is_some()),
+        "beneath the hero the band draws the compact rows — the distinct \
+         count among them — and no others: {:?}",
         compact.band
     );
 
     win.click_row("grid");
     let full = win.drawn();
     assert!(
-        full.band.iter().all(|c| c.density == GridDensity::Full),
-        "as the canvas's view the band draws at the full density"
+        full.band
+            .iter()
+            .all(|c| c.density == GridDensity::Full && c.distinct.is_none()),
+        "as the canvas's view the band draws at the full density, where the \
+         distinct count is a clause of the caption rows rather than a row of \
+         its own: {:?}",
+        full.band
     );
 
     let names = |drawn: &brightfield_shell::data_grid::TableDrawn| -> Vec<String> {
@@ -588,9 +593,10 @@ fn the_compact_bands_own_row_states_the_distinct_count() {
 /// painted the distinct count at the top of the plot area, on top of the rug,
 /// would leave every other assertion in this file green while a reader saw
 /// the count sitting on the distribution it is meant to sit under. This reads
-/// the rects the frame actually drew and pins the stacking order: the
-/// distinct row starts no higher than the range row's own bottom edge, and it
-/// never overlaps the rug's rect at all.
+/// the rects the frame actually drew and pins the stacking order: the centre
+/// of the distinct row's line sits below the centre of the range row's, and
+/// its box never overlaps the rug's at all. Centres, not edges — the comment
+/// in the body says why.
 #[test]
 fn the_compact_bands_distinct_row_draws_below_the_range_and_never_over_the_rug() {
     let win = Live::open();

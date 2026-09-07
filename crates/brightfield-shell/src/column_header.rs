@@ -27,13 +27,13 @@
 //!
 //! # The extents are summed, never stated
 //!
-//! [`ColumnHeaderFrame::extent`] adds the rows the density stacks. The frames
-//! the contract was drawn from carry the two totals as constants — 70 and 127
-//! at 1440 by 900 — and this file reproduces them by addition, so a row that
-//! changes height moves the band with it instead of leaving the widget a
-//! height nothing fills. The compact total moved from 57 to 70 when the
-//! compact band gained its own distinct-count row — see
-//! [`GridDensity::Compact`].
+//! [`ColumnHeaderFrame::extent`] adds the rows the density stacks, so a row
+//! that changes height moves the band with it instead of leaving the widget a
+//! height nothing fills. The frames the contract was drawn from carry the two
+//! totals as constants at 1440 by 900: **57 and 127**. This file reproduces
+//! the full density's by addition and no longer reproduces the compact one —
+//! it stacks to 70, because the compact band gained its own distinct-count row
+//! after those frames were drawn. See [`GridDensity::Compact`].
 
 use meridian_design::colour::Rgba;
 use meridian_design::{semantic, spacing, typography, viz};
@@ -79,7 +79,12 @@ impl GridDensity {
 // ---------------------------------------------------------------------------
 
 /// The band's own vertical inset, above the first row and below the last.
-const INSET_Y: f32 = spacing::SPACE_2;
+///
+/// Public because [`ColumnBandDrawn::stacked`] is measured from the top of the
+/// content box while [`ColumnHeaderFrame::extent`] states the whole cell, and
+/// a test comparing the two has to subtract this. Naming it is what keeps that
+/// test from carrying the number as a literal.
+pub const INSET_Y: f32 = spacing::SPACE_2;
 
 /// The band's horizontal inset either side of a cell's content.
 const INSET_X: f32 = spacing::SPACE_4;
@@ -642,7 +647,16 @@ pub fn validity_segments(
 /// and the cells beneath it are considered.
 ///
 /// The header's own claim on the column's width: the glyph and the name on one
-/// row, and at the full density the leaf and the storage type on another.
+/// row, at the full density the leaf and the storage type on another, and at
+/// the compact density the distinct count on its own.
+///
+/// **Every row that can be wider than the name has to be in this sum**, or the
+/// column is sized for a header it does not have. The distinct row was not:
+/// `1,234,567 distinct` lays out at 97 points against the 80 of content a
+/// column at the compact floor has, so a seven-figure count ran into the
+/// column beside it. It is the one row here with nothing to give way to — the
+/// two-ended rows elide through [`text_ink::row_ends`] when the column is
+/// narrow, and a lone left-aligned label just keeps going.
 #[must_use]
 pub fn band_content_width(
     painter: &egui::Painter,
@@ -671,7 +685,19 @@ pub fn band_content_width(
     } else {
         0.0
     };
-    2.0f32.mul_add(INSET_X, name.max(types))
+    let distinct = if frame.density.is_full() {
+        // The full density states its distinct count inside the caption rows,
+        // which are two-ended and elide.
+        0.0
+    } else {
+        facts.moments.as_ref().map_or(0.0, |moments| {
+            width_of(
+                &format!("{} distinct", thousands(moments.distinct)),
+                detail_font(),
+            )
+        })
+    };
+    2.0f32.mul_add(INSET_X, name.max(types).max(distinct))
 }
 
 /// Paint one column's band cell into `cell`, and report what it drew.
@@ -764,18 +790,22 @@ pub fn draw_column_band(
 
     // 3. The finetype leaf and the storage type — the full density's alone.
     let (leaf, storage) = if frame.density.is_full() {
-        painter.text(
-            egui::pos2(inner.left(), y + TYPES_ROW / 2.0),
-            egui::Align2::LEFT_CENTER,
+        // The same two-ended row as the range and the statistics below it. No
+        // fixture in this repository makes these two collide — a full-density
+        // cell is wide — but the shape is the one that collided at three other
+        // sites, and a narrow column with a long storage type is the case
+        // nobody has opened yet.
+        text_ink::row_ends(
+            painter,
+            egui::Rect::from_min_max(
+                egui::pos2(inner.left(), y),
+                egui::pos2(inner.right(), y + TYPES_ROW),
+            ),
             &facts.leaf,
-            detail_font(),
-            frame.leaf,
-        );
-        painter.text(
-            egui::pos2(inner.right(), y + TYPES_ROW / 2.0),
-            egui::Align2::RIGHT_CENTER,
             &facts.storage,
-            detail_font(),
+            &detail_font(),
+            RANGE_GAP,
+            frame.leaf,
             frame.storage,
         );
         y += TYPES_ROW;
@@ -844,7 +874,7 @@ pub fn draw_column_band(
 
     // 6. The statistics — the full density's alone.
     let stats = if frame.density.is_full() {
-        facts.moments.as_ref().map(|moments| {
+        let stats = facts.moments.as_ref().map(|moments| {
             let stats = BandStats {
                 mean: moments.mean,
                 mean_text: format!("mean {}", format_statistic(moments.mean)),
@@ -897,7 +927,18 @@ pub fn draw_column_band(
                 y += CAPTION_ROW;
             }
             stats
-        })
+        });
+        if stats.is_none() {
+            // The rows belong to the frame, not to the column. A column with
+            // no moments states nothing in them and the band still reserves
+            // them, so the cursor moves whether or not anything was painted —
+            // otherwise the next row lands on top of this one the day a row is
+            // added below.
+            #[allow(clippy::cast_precision_loss)]
+            let reserved = CAPTION_ROWS as f32 * CAPTION_ROW;
+            y += reserved;
+        }
+        stats
     } else {
         None
     };
@@ -921,8 +962,10 @@ pub fn draw_column_band(
             distinct = Some(moments.distinct);
             distinct_text = Some(text);
             distinct_rect = Some(rect);
-            y += DISTINCT_ROW;
         }
+        // Reserved by the frame, so advanced past whether or not this column
+        // had a count to put in it.
+        y += DISTINCT_ROW;
     }
 
     ColumnBandDrawn {
@@ -1044,22 +1087,112 @@ fn draw_rug(
 mod tests {
     use super::*;
 
-    /// **The two extents are the rows the density stacks** — summed here and
-    /// stated in the ratified frames as 70 and 127.
+    /// A context with a font system behind it, so a measurement here is the
+    /// measurement the shell takes.
+    fn painter() -> egui::Painter {
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(egui::RawInput::default(), |_ui| {});
+        egui::Painter::new(
+            ctx,
+            egui::LayerId::background(),
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 1000.0)),
+        )
+    }
+
+    /// One column, with `distinct` distinct values and a name short enough
+    /// that the name row cannot be what decides the width.
+    fn facts(distinct: u64) -> ColumnFacts {
+        ColumnFacts {
+            column: "n".to_owned(),
+            label: None,
+            leaf: "BIGINT".to_owned(),
+            storage: "BIGINT".to_owned(),
+            tile: None,
+            because: String::new(),
+            paired: None,
+            rows: distinct,
+            nulls: 0,
+            min: Some("0".to_owned()),
+            max: Some("1".to_owned()),
+            moments: Some(ColumnMoments {
+                mean: 0.0,
+                median: 0.0,
+                sd: None,
+                distinct,
+                min: 0.0,
+                max: 1.0,
+                distribution: brightfield_engine::Distribution::Bins(Vec::new()),
+            }),
+        }
+    }
+
+    /// **The width a column claims covers the distinct row it draws.**
     ///
-    /// The frames hard-code those two numbers; this file adds its rows up. The
-    /// assertion is what keeps the two answers the same one, and it is why a
-    /// row changing height is a change this reports rather than one it
-    /// absorbs. The compact total is 70, not the original contract's 57: this
-    /// card gave the compact density its own distinct-count row, and 57 + 13
-    /// (`DISTINCT_ROW`) is 70.
+    /// The compact band states the distinct count on a row of its own, and
+    /// that row is a lone left-aligned label: the two-ended rows elide when
+    /// the column is narrow and this one just keeps going into the column
+    /// beside it. So the count has to be in the width claim, and it was not —
+    /// `1,234,567 distinct` needs 97 points against the 80 of content a column
+    /// at the compact floor has.
+    ///
+    /// Driven through the width function rather than through a frame, because
+    /// reaching a seven-figure count in a frame means a fixture with a million
+    /// rows in it.
+    #[test]
+    fn the_width_a_column_claims_covers_its_distinct_row() {
+        let painter = painter();
+        let compact = column_header_frame(GridDensity::Compact, Mode::Light);
+        let facts = facts(1_234_567);
+        let text = format!("{} distinct", thousands(1_234_567));
+        let wanted = painter
+            .layout_no_wrap(text.clone(), detail_font(), egui::Color32::PLACEHOLDER)
+            .size()
+            .x;
+
+        // The case has to be one the floor does not already cover, or this
+        // test passes on a width nothing claimed.
+        assert!(
+            2.0f32.mul_add(INSET_X, wanted) > compact.floor(),
+            "{text:?} lays out at {wanted} points, which fits inside the \
+             compact floor of {} — this test is not driving a column the \
+             claim has to widen",
+            compact.floor()
+        );
+
+        let claimed = band_content_width(&painter, &facts, &compact);
+        assert!(
+            claimed - 2.0 * INSET_X >= wanted,
+            "the column claims {claimed} points, which leaves {} of content \
+             for a distinct row that needs {wanted}",
+            claimed - 2.0 * INSET_X,
+        );
+
+        // …and the full density does not pay for it, because there the count
+        // is a clause of a caption row that elides.
+        let full = column_header_frame(GridDensity::Full, Mode::Light);
+        assert!(
+            band_content_width(&painter, &facts, &full) < claimed,
+            "the full density claimed as much width for the distinct count as \
+             the compact one, where it has no row of its own"
+        );
+    }
+
+    /// **The two extents are the rows the density stacks**, added up here.
+    ///
+    /// The ratified frames hard-code 57 and 127. This file adds its rows up
+    /// and reaches 70 and 127 — the full density still agrees with its frame,
+    /// and the compact one deliberately does not: it gained its own
+    /// distinct-count row after the frames were drawn, and 57 + 13
+    /// (`DISTINCT_ROW`) is 70. The assertion is what makes a row changing
+    /// height a change this reports rather than one it absorbs.
     #[test]
     fn the_band_extents_are_the_sums_of_the_rows_each_density_stacks() {
         let compact = column_header_frame(GridDensity::Compact, Mode::Light);
         let full = column_header_frame(GridDensity::Full, Mode::Light);
         assert!(
             (compact.extent() - 70.0).abs() < f32::EPSILON,
-            "the compact band is {} points, and the ratified frame is 70",
+            "the compact band is {} points, where the rows this file stacks \
+             come to 70",
             compact.extent()
         );
         assert!(
