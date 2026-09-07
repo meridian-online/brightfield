@@ -306,18 +306,23 @@ fn a_protocol_with_no_run_still_summarises_its_one_step() {
 /// The contract the start ships is the file in `brightfield-protocol`'s
 /// fixtures, byte for byte, and what the start draws is what that file says.
 ///
-/// Two assertions, and both are needed. The byte comparison is what makes
-/// *one artefact* a fact rather than a hope: a copy under `assets/starts/`
-/// would pass every other test here for exactly as long as the two agreed. The
-/// step comparison is what makes the bytes matter — it walks the contract's own
-/// step names and states and finds each of them on the loaded document, so a
-/// loader that read the right file and threw half of it away fails too.
+/// Three assertions, and each holds something the others do not. The byte
+/// comparison is what makes *one artefact* a fact rather than a hope: a copy
+/// under `assets/starts/` would pass every other test here for exactly as long
+/// as the two agreed. The **seam** comparison holds what the spine and the
+/// canvas tint from. The **sheet** comparison holds what the ledger's Steps
+/// pane lists, which is a second reading of the same contract built by a
+/// different call — and until it was here, swapping that call for the manifest
+/// path's seam synthesis left all six tests in this file green while every row
+/// in the Steps pane read `not run`.
 ///
-/// Watched redden, two mutations. `starts::CROSSWALK_RUN_CONTRACT` pointed at
-/// a copy with one step's state edited: the byte assertion fails. And
-/// `load_contract_str` building its sheet with `synth_sheet_rows` (the manifest
-/// path's) instead of `StepsSheet::from_view`: every row's status is then `?`
-/// and the state comparison fails on the first step.
+/// Watched redden, three mutations. `starts::CROSSWALK_RUN_CONTRACT` pointed at
+/// a copy with one step's state edited: the byte assertion fails.
+/// `load_contract_str` building with `statuses: BTreeMap::new()`: the seam
+/// comparison fails on the first step. `load_contract_str` building its sheet
+/// with `synth_sheet_rows` (the manifest path's) instead of
+/// `StepsSheet::from_view`: every row's status is then `not run` and the
+/// sheet comparison fails.
 #[test]
 fn the_run_start_draws_the_contract_it_ships() {
     let on_disk = std::fs::read(contract_on_disk()).expect("the fixture is where starts.rs says");
@@ -374,6 +379,37 @@ fn the_run_start_draws_the_contract_it_ships() {
             *got, want,
             "the contract records {name} as {state:?} and the document draws \
              it as {got:?}"
+        );
+    }
+
+    // …and the ledger's Steps pane, which is a second reading of the same
+    // contract built by a different call. The status column here is the one a
+    // reader sees listed under the strip.
+    let sheet = model.sheet();
+    assert_eq!(
+        sheet.rows().len(),
+        declared.len(),
+        "the steps sheet lists {} row(s) for a contract of {} step(s)",
+        sheet.rows().len(),
+        declared.len()
+    );
+    for (name, state) in &declared {
+        let row = sheet
+            .rows()
+            .iter()
+            .find(|r| r.name == *name)
+            .unwrap_or_else(|| panic!("the steps sheet lost the step {name:?}"));
+        let want = match state.as_str() {
+            "success" => "ok",
+            "failed" => "failed",
+            "skipped" => "skipped",
+            other => panic!("the fixture carries a state {other:?} this test does not map"),
+        };
+        assert_eq!(
+            row.status, want,
+            "the contract records {name} as {state:?} and the steps sheet \
+             lists it as {:?}",
+            row.status
         );
     }
 }
