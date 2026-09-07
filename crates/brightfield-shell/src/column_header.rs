@@ -43,6 +43,7 @@ use brightfield_workbench::chrome;
 
 use crate::design::Mode;
 use crate::one_step::ColumnFacts;
+use crate::text_ink;
 
 // ---------------------------------------------------------------------------
 // The two densities.
@@ -84,6 +85,16 @@ const INSET_Y: f32 = spacing::SPACE_2;
 const INSET_X: f32 = spacing::SPACE_4;
 
 /// The row carrying the glyph and the column's name.
+/// The clear space kept between the two ends of a row that carries a label at
+/// each end — the range row and the statistics rows.
+///
+/// One step of the scale, the same gap [`crate::protocol`]'s rail keeps
+/// between a name and the type beside it. It is what the two labels are held
+/// apart BY, so it is also the amount by which the leading one is elided
+/// earlier than it strictly has to be: a row where two clauses touch reads as
+/// one clause, which is the defect one step short of the collision.
+const RANGE_GAP: f32 = spacing::SPACE_3;
+
 const NAME_ROW: f32 = 16.0;
 
 /// The row carrying the validity band and its count.
@@ -506,6 +517,16 @@ pub struct ColumnBandDrawn {
     pub bars: Vec<egui::Rect>,
     /// The statistics rows, at the full density.
     pub stats: Option<BandStats>,
+    /// How far down the cell the rows actually stacked, from the top of the
+    /// content box to the bottom of the last row that painted.
+    ///
+    /// The band's own arithmetic, read back off the drawing rather than off
+    /// [`ColumnHeaderFrame::extent`], which is where the same sum is stated.
+    /// A block that paints a row and forgets to advance past it leaves the
+    /// two disagreeing, and `the_rows_stack_to_the_extent_the_frame_claims`
+    /// is what notices — the distinct row was that block, and nothing could
+    /// have failed for it.
+    pub stacked: f32,
     /// The distinct count, at the compact density's own row. `None` for a
     /// column with no moments, and `None` at the full density too, whose
     /// [`Self::stats`] carries the same number on its own `distinct` field
@@ -794,21 +815,28 @@ pub fn draw_column_band(
     let range = facts.min.as_ref().zip(facts.max.as_ref());
     let (range_texts, range_rects) = match range {
         Some((min, max)) => {
-            let lo = painter.text(
-                egui::pos2(inner.left(), y + frame.range_row() / 2.0),
-                egui::Align2::LEFT_CENTER,
+            // The upper bound is laid out first and the lower one fitted to
+            // what is left. Drawn at fixed anchors this row put
+            // `2026-02-02` on top of `2026-02-07` on a date column at the
+            // compact width, which `no_two_texts_are_drawn_into_one_place`
+            // measured at 28 points of shared ink.
+            let ends = text_ink::row_ends(
+                painter,
+                egui::Rect::from_min_max(
+                    egui::pos2(inner.left(), y),
+                    egui::pos2(inner.right(), y + frame.range_row()),
+                ),
                 min,
-                detail_font(),
-                frame.range,
-            );
-            let hi = painter.text(
-                egui::pos2(inner.right(), y + frame.range_row() / 2.0),
-                egui::Align2::RIGHT_CENTER,
                 max,
-                detail_font(),
+                &detail_font(),
+                RANGE_GAP,
+                frame.range,
                 frame.range,
             );
-            (Some((min.clone(), max.clone())), Some((lo, hi)))
+            (
+                Some((min.clone(), max.clone())),
+                Some((ends.leading, ends.trailing)),
+            )
         }
         None => (None, None),
     };
@@ -834,24 +862,35 @@ pub fn draw_column_band(
                 distinct: moments.distinct,
                 distinct_text: format!("{} distinct", thousands(moments.distinct)),
             };
+            // Two clauses to a row, and the same measured shape the range
+            // row above uses: `median 859,702` and `sd 5,634,890` at fixed
+            // anchors shared 28 points of ink on this file's own numbers.
             for (left, right) in [
                 (stats.mean_text.as_str(), stats.nulls_text.as_str()),
                 (stats.median_text.as_str(), stats.sd_text.as_str()),
                 (stats.distinct_text.as_str(), ""),
             ] {
-                painter.text(
-                    egui::pos2(inner.left(), y + CAPTION_ROW / 2.0),
-                    egui::Align2::LEFT_CENTER,
-                    left,
-                    detail_font(),
-                    frame.caption,
+                let row = egui::Rect::from_min_max(
+                    egui::pos2(inner.left(), y),
+                    egui::pos2(inner.right(), y + CAPTION_ROW),
                 );
-                if !right.is_empty() {
+                if right.is_empty() {
                     painter.text(
-                        egui::pos2(inner.right(), y + CAPTION_ROW / 2.0),
-                        egui::Align2::RIGHT_CENTER,
-                        right,
+                        egui::pos2(inner.left(), y + CAPTION_ROW / 2.0),
+                        egui::Align2::LEFT_CENTER,
+                        left,
                         detail_font(),
+                        frame.caption,
+                    );
+                } else {
+                    text_ink::row_ends(
+                        painter,
+                        row,
+                        left,
+                        right,
+                        &detail_font(),
+                        RANGE_GAP,
+                        frame.caption,
                         frame.caption,
                     );
                 }
@@ -882,6 +921,7 @@ pub fn draw_column_band(
             distinct = Some(moments.distinct);
             distinct_text = Some(text);
             distinct_rect = Some(rect);
+            y += DISTINCT_ROW;
         }
     }
 
@@ -910,6 +950,7 @@ pub fn draw_column_band(
         distinct,
         distinct_text,
         distinct_rect,
+        stacked: y - inner.top(),
     }
 }
 

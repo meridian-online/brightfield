@@ -74,6 +74,7 @@ use crate::canvas::{CanvasSlot, EguiCanvasHost};
 use crate::design::Mode;
 use crate::one_step::{ColumnFacts, OneStepProtocol};
 use crate::starts;
+use crate::text_ink;
 
 // ---------------------------------------------------------------------------
 // Offline pipeline: arcform manifest -> asset graph + steps.
@@ -2801,21 +2802,30 @@ fn outline_row(ui: &mut egui::Ui, row: &OutlineRow, mode: Mode) -> (SpineRowDraw
         );
     }
     x += b.icon + spacing::ICON_LABEL_GAP;
-    let name_rect = painter.text(
-        egui::pos2(x, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        truncate(&row.label, 26),
-        ui_font(),
-        chrome::colour(sem.text.primary),
-    );
     let right = row.note.as_deref().unwrap_or_else(|| kind_label(row.kind));
-    let kind_rect = painter.text(
-        egui::pos2(rect.right() - b.pad_x, rect.center().y),
-        egui::Align2::RIGHT_CENTER,
-        truncate(right, 20),
-        ui_font(),
+    // The type is laid out first and the name fitted to what is left — the
+    // shape [`spine_row`] above already uses, and the shape this row did not.
+    // It budgeted characters at both ends (`truncate(.., 26)` and
+    // `truncate(.., 20)`) and drew them at opposite anchors, so `updated` and
+    // `TIMESTAMP WITH TIME ZONE` arrived on top of one another in a rail this
+    // width: `no_two_texts_are_drawn_into_one_place` measured 18 points of
+    // shared ink. A character budget is a guess at a width, and twenty
+    // characters of that type name is wider than the room this rail leaves.
+    let ends = text_ink::row_ends(
+        painter,
+        egui::Rect::from_min_max(
+            egui::pos2(x, rect.top()),
+            egui::pos2(rect.right() - b.pad_x, rect.bottom()),
+        ),
+        &row.label,
+        right,
+        &ui_font(),
+        spacing::SPACE_3,
+        chrome::colour(sem.text.primary),
         chrome::colour(sem.text.muted),
     );
+    let name_rect = ends.leading;
+    let kind_rect = ends.trailing;
     (
         SpineRowDrawn {
             label: row.label.clone(),
@@ -3585,15 +3595,6 @@ fn human_bytes(b: u64) -> String {
         i += 1;
     }
     format!("{v:.1} {}", UNITS[i])
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
-    out.push('…');
-    out
 }
 
 /// The bottom key-hint bar + a flow/state indicator (read-only — no model

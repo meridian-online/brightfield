@@ -509,6 +509,94 @@ pub fn fit(
     painter.layout_job(job)
 }
 
+/// Where [`row_ends`] put the two labels it drew.
+#[derive(Clone, Copy, Debug)]
+pub struct RowEnds {
+    /// The label at the leading edge, or [`egui::Rect::NOTHING`] where the row
+    /// was too narrow to draw one at all.
+    ///
+    /// Negative rather than absent so that a caller recording *where the row
+    /// drew its two ends* records the same shape either way. A row this narrow
+    /// is under two ellipses and a gap — about sixteen points — which is
+    /// narrower than any floor the shell imposes;
+    /// `a_row_too_narrow_for_both_ends_drops_the_leading_one` is what drives
+    /// it, and what says that dropping it beats stacking two ellipses.
+    pub leading: egui::Rect,
+    /// The label at the trailing edge. Always drawn: it is the one the row
+    /// gives its width to first.
+    pub trailing: egui::Rect,
+}
+
+/// **Draw two labels at the two ends of one row, so that they cannot touch.**
+///
+/// The one shape four sites in this shell were each writing by hand, three of
+/// them wrong. A row with a label at each end and no measurement between them
+/// collides the moment the row is narrower than the two strings — which is not
+/// an edge case but the ordinary state of a column band at its width floor and
+/// a rail at its own. Every one of those three drew both labels at fixed
+/// anchors and hoped: `updated` and `TIMESTAMP WITH TIME ZONE` arriving as
+/// `updateTIMESTAMP WITH TIME…` is what hoping looks like.
+///
+/// The trailing label is laid out first and the leading one is fitted to what
+/// is left, because the trailing end is the one whose width the row cannot
+/// predict — a type name, a bound, a deviation. Both are fitted, so the
+/// trailing one cannot take the whole row either, and `gap` of clear space is
+/// kept between them.
+///
+/// Returns where each landed, so a test can read the two rects rather than a
+/// screenshot.
+pub fn row_ends(
+    painter: &egui::Painter,
+    row: egui::Rect,
+    leading: &str,
+    trailing: &str,
+    font: &egui::FontId,
+    gap: f32,
+    leading_ink: egui::Color32,
+    trailing_ink: egui::Color32,
+) -> RowEnds {
+    // The narrowest thing this can draw, and therefore the width that has to
+    // be kept back from the trailing label for the leading one.
+    let ellipsis = painter
+        .layout_no_wrap("\u{2026}".to_owned(), font.clone(), trailing_ink)
+        .size()
+        .x;
+
+    let trailing_galley = fit(
+        painter,
+        trailing,
+        font.clone(),
+        row.width() - ellipsis - gap,
+        trailing_ink,
+    );
+    let trailing_rect = egui::Rect::from_min_size(
+        egui::pos2(
+            row.right() - trailing_galley.size().x,
+            row.center().y - trailing_galley.size().y / 2.0,
+        ),
+        trailing_galley.size(),
+    );
+
+    let room = trailing_rect.left() - gap - row.left();
+    let leading_rect = if room < ellipsis {
+        egui::Rect::NOTHING
+    } else {
+        let galley = fit(painter, leading, font.clone(), room, leading_ink);
+        let at = egui::Rect::from_min_size(
+            egui::pos2(row.left(), row.center().y - galley.size().y / 2.0),
+            galley.size(),
+        );
+        painter.galley(at.min, galley, leading_ink);
+        at
+    };
+    painter.galley(trailing_rect.min, trailing_galley, trailing_ink);
+
+    RowEnds {
+        leading: leading_rect,
+        trailing: trailing_rect,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
