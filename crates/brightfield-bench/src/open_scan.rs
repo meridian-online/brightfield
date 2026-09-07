@@ -33,6 +33,7 @@ use serde::Serialize;
 
 use brightfield_engine::{profile, Engine, LoadOptions, ProfileOutcome, ScanTally};
 use brightfield_shell::data_file;
+use brightfield_shell::pipeline;
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::{parse_spec, Format};
 
@@ -145,11 +146,58 @@ pub struct Measured {
     pub profile: Option<Stats>,
     /// The whole of `data_file::open`, milliseconds.
     pub open: Option<Stats>,
-    /// Tiles the dashboard chose for the file — one query each on the first
-    /// composition, which is the rest of the wait.
+    /// Tiles the dashboard chose for the file.
     pub tiles: usize,
-    /// DuckDB executes the first composition performed.
+    /// DuckDB executes the first composition performed — the queries marks
+    /// are drawn from, which is **not** the number of times the table was
+    /// read. See [`Measured::composition_scans`].
     pub composition_queries: usize,
+    /// Scan leaves summed over every statement the first composition issued,
+    /// or `null` where any one of them went unexplained.
+    ///
+    /// The counterpart of [`Measured::scans`] for the other term of the wait,
+    /// taken through the same `EXPLAIN` and counted the same way. It is the
+    /// larger of the two numbers on this row and the one the wait tracks: a
+    /// mark query is one execute and its plan may read the table more than
+    /// once, and the queries the composition issues *beside* the marks — the
+    /// status band's two counts, the sample facts — are not executes at all.
+    pub composition_scans: Option<u32>,
+    /// Of those leaves, how many read the **file** rather than a relation the
+    /// session holds in memory.
+    ///
+    /// **This is the number the claim about opening a data file is made in,
+    /// and it is the one held to a bound.** A leaf is a leaf whatever it
+    /// scans, and after [`brightfield_shell::data_file::open`] has read the
+    /// file into a session-scoped table the composition's leaves are scans of
+    /// that table — the same count, three orders of magnitude apart in cost.
+    pub composition_file_reads: Option<u32>,
+    /// The bound `composition_file_reads` is held to —
+    /// [`brightfield_shell::pipeline::COMPOSITION_FILE_READS`], carried into
+    /// the record so a reader is not comparing against a number they have to
+    /// go and look up.
+    pub composition_file_read_bound: u32,
+    /// Whether the file was read into memory before composing — `false` above
+    /// [`brightfield_shell::data_file::MATERIALISE_UNDER_BYTES`] on disk and
+    /// `false` again where the copy did not fit
+    /// [`brightfield_shell::data_file::MATERIALISE_BUDGET_BYTES`], and then
+    /// `composition_file_reads` is under no bound.
+    pub materialised: bool,
+    /// The one read of the file, milliseconds — the term
+    /// [`Measured::composition`] no longer carries. `null` when the file was
+    /// not materialised.
+    pub materialise: Option<Stats>,
+    /// **What the copy cost in memory**, bytes, as DuckDB accounts for it —
+    /// the figure the budget is denominated in, so this record says what an
+    /// ordinary open of this shape spends rather than leaving it to be
+    /// inferred from `bytes`, which is the file on disk and a different unit.
+    /// `null` when the file was not materialised, or where DuckDB declined the
+    /// question.
+    pub materialise_bytes: Option<u64>,
+    /// Statements the first composition issued, in order.
+    pub composition_statements: Vec<StatementRecord>,
+    /// `LiveDashboard::present` alone, milliseconds — the composition's own
+    /// clock, taken from the same uncounted open [`Measured::open`] is.
+    pub composition: Option<Stats>,
 }
 
 /// Write (or reuse) the CSV for `shape` under `dir`.
@@ -211,6 +259,26 @@ pub fn ensure_csv(conn: &duckdb::Connection, dir: &Path, shape: &Shape) -> Resul
     Ok(path)
 }
 
+/// The open this run is measuring: the app's own, or the one a file too large
+/// to copy takes.
+///
+/// **The second is here so the before-and-after is one binary run twice.**
+/// Reading the file into memory is what the composition figures are about, and
+/// comparing them against a number measured on another day, on another build,
+/// under another machine's load is how a speed-up gets claimed that the change
+/// did not produce. `--open-scan-no-materialise` measures the other branch,
+/// minutes apart, on the same machine.
+fn options(materialise: bool) -> data_file::OpenOptions {
+    if materialise {
+        data_file::OpenOptions::default()
+    } else {
+        data_file::OpenOptions {
+            materialise_under_bytes: 0,
+            ..data_file::OpenOptions::default()
+        }
+    }
+}
+
 /// The scan tally for one file, and the columns the profile found.
 ///
 /// Runs the profile pass with counting on, which asks DuckDB to explain each
@@ -263,6 +331,10 @@ fn time_profile(path: &Path) -> Result<f64, String> {
 /// number on a 240-row fixture as on a 14,133-row one, and opening the wide
 /// shape for real is seconds of tile queries that say nothing about it.
 ///
+/// `materialise` is the open being measured — see [`options`]. `false` is the
+/// branch a file too large to copy takes, and it is what the before-and-after
+/// of reading the file into memory is measured against.
+///
 /// # Errors
 ///
 /// The fixture could not be written, or the file would not open.
@@ -271,6 +343,7 @@ pub fn measure(
     dir: &Path,
     shape: &Shape,
     repeats: usize,
+    materialise: bool,
 ) -> Result<Measured, String> {
     let path = ensure_csv(conn, dir, shape)?;
     let bytes = std::fs::metadata(&path)
@@ -287,15 +360,33 @@ pub fn measure(
         ));
     }
 
+    // The composition's count, taken once and untimed for the same reason the
+    // profile pass's is: the `EXPLAIN` before each statement is what makes the
+    // count readable and is not what an open pays.
+    let counting = data_file::OpenOptions {
+        count_scans: true,
+        ..options(materialise)
+    };
+    let (counted, composition_tally) =
+        data_file::open_traced(chosen, &counting).map_err(|e| format!("{}: {e}", shape.name))?;
+    let mut tiles = counted.dashboard.tiles().len();
+    let mut composition_queries = counted.live.executes();
+    drop(counted);
+
     let mut profile_ms = Vec::with_capacity(repeats);
     let mut open_ms = Vec::with_capacity(repeats);
-    let mut tiles = 0;
-    let mut composition_queries = 0;
+    let mut composition_ms = Vec::with_capacity(repeats);
+    let mut materialise_ms = Vec::with_capacity(repeats);
     for _ in 0..repeats {
         profile_ms.push(time_profile(&path)?);
         let at = Instant::now();
-        let opened = data_file::open(chosen).map_err(|e| format!("{}: {e}", shape.name))?;
+        let (opened, trace) = data_file::open_traced(chosen, &options(materialise))
+            .map_err(|e| format!("{}: {e}", shape.name))?;
         open_ms.push(at.elapsed().as_secs_f64() * 1000.0);
+        composition_ms.push(trace.composition_ms);
+        if trace.materialised {
+            materialise_ms.push(trace.materialise_ms);
+        }
         tiles = opened.dashboard.tiles().len();
         composition_queries = opened.live.executes();
     }
@@ -318,6 +409,27 @@ pub fn measure(
         open: Stats::from_ms(open_ms),
         tiles,
         composition_queries,
+        composition_scans: composition_tally.composition.scans(),
+        composition_file_reads: composition_tally.composition.file_reads(),
+        composition_file_read_bound: pipeline::COMPOSITION_FILE_READS,
+        materialised: composition_tally.materialised,
+        materialise: Stats::from_ms(materialise_ms),
+        // Taken from the counted open rather than from a timed repeat, for two
+        // reasons: it is a size and not a duration, so the `EXPLAIN`ing that
+        // makes the counted open the wrong place to read a clock does not
+        // touch it; and `--repeats 0` is a legitimate way to run this suite
+        // for its counts alone, and the loop above does not execute then.
+        materialise_bytes: composition_tally.materialise_bytes,
+        composition_statements: composition_tally
+            .composition
+            .statements
+            .iter()
+            .map(|s| StatementRecord {
+                scans: s.scans,
+                sql: s.sql.chars().take(SQL_RECORDED).collect(),
+            })
+            .collect(),
+        composition: Stats::from_ms(composition_ms),
     })
 }
 
@@ -326,29 +438,36 @@ pub fn measure(
 pub fn report(rows: &[Measured]) -> String {
     let mut out = String::new();
     out.push_str(
-        "shape   rows    cols  numeric  bytes      scans/bound  profile p50  open p50  tiles\n",
+        "shape   rows    cols  numeric  bytes      tiles  profile      profile p50  \
+         compose  reads/bound  in-memory  compose p50  open p50\n",
     );
     for m in rows {
-        let scans = m.scans.map_or_else(|| "?".to_string(), |s| s.to_string());
-        let profile = m
-            .profile
-            .as_ref()
-            .map_or_else(|| "?".to_string(), |s| format!("{:.1} ms", s.p50_ms));
-        let open = m
-            .open
-            .as_ref()
-            .map_or_else(|| "?".to_string(), |s| format!("{:.1} ms", s.p50_ms));
+        let p50 = |s: &Option<Stats>| {
+            s.as_ref()
+                .map_or_else(|| "?".to_string(), |s| format!("{:.1} ms", s.p50_ms))
+        };
+        let bounded = |scans: Option<u32>, bound: u32| {
+            format!(
+                "{}/{bound}",
+                scans.map_or_else(|| "?".to_string(), |s| s.to_string())
+            )
+        };
         out.push_str(&format!(
-            "{:<7} {:<7} {:<5} {:<8} {:<10} {:<12} {:<12} {:<9} {}\n",
+            "{:<7} {:<7} {:<5} {:<8} {:<10} {:<6} {:<12} {:<12} {:<8} {:<12} {:<10} {:<12} {}\n",
             m.shape.name,
             m.shape.rows,
             m.columns,
             m.shape.numeric,
             m.bytes,
-            format!("{scans}/{}", m.scan_bound),
-            profile,
-            open,
-            m.tiles
+            m.tiles,
+            bounded(m.scans, m.scan_bound),
+            p50(&m.profile),
+            m.composition_scans
+                .map_or_else(|| "?".to_string(), |s| s.to_string()),
+            bounded(m.composition_file_reads, m.composition_file_read_bound),
+            if m.materialised { "yes" } else { "no" },
+            p50(&m.composition),
+            p50(&m.open)
         ));
     }
     out
@@ -434,7 +553,7 @@ mod tests {
             shape.name
         ));
         let conn = duckdb::Connection::open_in_memory().expect("duckdb");
-        measure(&conn, &dir, shape, 0).expect("measure")
+        measure(&conn, &dir, shape, 0, true).expect("measure")
     }
 
     /// **Opening a file reads it a bounded number of times, and the bound does
@@ -492,6 +611,142 @@ mod tests {
             wide.scans,
             profile::SCANS_PER_SOURCE,
             wide.statements
+        );
+    }
+
+    /// **Composing the first screen reads the data file the same number of
+    /// times whatever the tile count, and that number is
+    /// [`pipeline::COMPOSITION_FILE_READS`].**
+    ///
+    /// Three assertions in a deliberate order, and they fail for different
+    /// reasons.
+    ///
+    /// The **vacuity guard** comes first: the wide shape has to draw
+    /// materially more tiles than the narrow one, or "they agree" is a
+    /// sentence about one dashboard written twice. It is stated on the tiles
+    /// rather than on the columns because tiles are what the composition
+    /// issues statements for — a table of twenty columns that drew two tiles
+    /// would satisfy a column-count guard and prove nothing.
+    ///
+    /// The **class** comes second: the two shapes agree. This holds however
+    /// the bound is written, so raising the bound to cover a count that has
+    /// gone proportional again does not buy the raise anything. It is the
+    /// assertion that catches a composition reading the file once per tile,
+    /// which is the defect the whole measurement started at.
+    ///
+    /// The **number** comes last. Restoring the per-tile shape reddens the
+    /// assertion above it even if this literal is raised to fit.
+    ///
+    /// The second witness is the one that keeps the first honest:
+    /// `composition_scans` — the leaf count, rather than the file-read subset
+    /// of it — is asserted to be *larger* on the wide shape than on the
+    /// narrow one. The
+    /// composition still issues a statement per tile and their plans still
+    /// have leaves; what changed is what those leaves read. Without this the
+    /// file-read count could read zero because the attribution had stopped
+    /// working, and a test that cannot tell "reads nothing" from "counts
+    /// nothing" is testing nothing.
+    #[test]
+    fn composing_a_wide_dashboard_reads_the_file_no_more_often_than_a_narrow_one() {
+        let narrow = counted(&small(&NARROW));
+        let wide = counted(&small(&WIDE));
+
+        assert!(
+            wide.materialised && narrow.materialised,
+            "the fixtures were not read into memory (narrow {}, wide {}), so              the bound below is not the thing this test is about",
+            narrow.materialised,
+            wide.materialised
+        );
+        assert!(
+            wide.tiles >= narrow.tiles * 5,
+            "the wide dashboard draws {} tiles against the narrow one's {} —              too close for their agreeing to mean anything",
+            wide.tiles,
+            narrow.tiles
+        );
+
+        // The class first, the number second.
+        assert_eq!(
+            wide.composition_file_reads, narrow.composition_file_reads,
+            "composing {} tiles read the file {:?} times and composing {} read              it {:?}, so the count tracks the tiles: {:#?}",
+            wide.tiles,
+            wide.composition_file_reads,
+            narrow.tiles,
+            narrow.composition_file_reads,
+            wide.composition_statements
+        );
+        assert_eq!(
+            narrow.composition_file_reads,
+            Some(pipeline::COMPOSITION_FILE_READS),
+            "the narrow dashboard's composition read the file {:?} times              against a bound of {}: {:#?}",
+            narrow.composition_file_reads,
+            pipeline::COMPOSITION_FILE_READS,
+            narrow.composition_statements
+        );
+        assert_eq!(
+            wide.composition_file_reads,
+            Some(pipeline::COMPOSITION_FILE_READS),
+            "the {}-tile dashboard's composition read the file {:?} times              against a bound of {} — a read per tile is what this bound exists              to catch: {:#?}",
+            wide.tiles,
+            wide.composition_file_reads,
+            pipeline::COMPOSITION_FILE_READS,
+            wide.composition_statements
+        );
+
+        // The witness. The statements are still there and still have leaves;
+        // a file-read count of zero that came from counting nothing would sit
+        // beside a leaf count of zero, and this is what tells them apart.
+        let (Some(wide_scans), Some(narrow_scans)) =
+            (wide.composition_scans, narrow.composition_scans)
+        else {
+            panic!(
+                "a composition statement went unexplained, so the file-read                  count above is reading past a hole: {:#?}",
+                wide.composition_statements
+            );
+        };
+        assert!(
+            wide_scans > narrow_scans,
+            "the wide composition planned {wide_scans} leaves and the narrow              one {narrow_scans}. The composition still issues a statement per              tile, so the wide one must plan more leaves than the narrow one —              equal counts here mean the leaf counter has stopped counting, and              then the file-read count above is zero for the wrong reason"
+        );
+        assert!(
+            narrow_scans > 0,
+            "the narrow composition planned no leaves at all, so both counts              above are about a composition that issued nothing"
+        );
+    }
+
+    /// **The file-read count is a real subset and not a constant zero.**
+    ///
+    /// The bound above is zero, and a counter hard-wired to zero would pass
+    /// it on both shapes. This is the case that must NOT be zero: the profile
+    /// pass runs before the source has been materialised, over a view on
+    /// `read_csv`, so its leaves are reads of the file and the two counts have
+    /// to agree.
+    ///
+    /// It is also what pins the exclusion rule. If DuckDB stopped carrying a
+    /// `Table` key, every leaf would count as a file read and this test would
+    /// still pass — that is the safe direction. If the rule inverted, or the
+    /// walk stopped finding leaves, this is where it goes red.
+    #[test]
+    fn the_profile_pass_reads_the_file_at_every_leaf_it_plans() {
+        let shape = small(&WIDE);
+        let dir = std::env::temp_dir().join(format!("bf-open-attrib-{}", std::process::id()));
+        let conn = duckdb::Connection::open_in_memory().expect("duckdb");
+        let path = ensure_csv(&conn, &dir, &shape).expect("fixture");
+        let (tally, _) = tally(&path).expect("tally");
+
+        assert_eq!(
+            tally.file_reads(),
+            tally.scans(),
+            "the profile pass runs before anything is materialised, so every              leaf it plans is a read of the file — {:?} of {:?} were counted              as one: {:#?}",
+            tally.file_reads(),
+            tally.scans(),
+            tally.statements
+        );
+        assert_eq!(
+            tally.file_reads(),
+            Some(profile::SCANS_PER_SOURCE),
+            "the profile pass read the file {:?} times against its own bound              of {}",
+            tally.file_reads(),
+            profile::SCANS_PER_SOURCE
         );
     }
 
@@ -617,7 +872,7 @@ mod tests {
     fn the_timed_half_of_the_harness_opens_a_file_and_reports() {
         let dir = std::env::temp_dir().join(format!("bf-open-timed-{}", std::process::id()));
         let conn = duckdb::Connection::open_in_memory().expect("duckdb");
-        let m = measure(&conn, &dir, &small(&NARROW), 1).expect("measure");
+        let m = measure(&conn, &dir, &small(&NARROW), 1, true).expect("measure");
 
         let profile = m.profile.as_ref().expect("a timed profile sample");
         let open = m.open.as_ref().expect("a timed open sample");

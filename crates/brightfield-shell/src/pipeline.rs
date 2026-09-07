@@ -25,7 +25,7 @@ use brightfield_engine::error::EngineError;
 use brightfield_engine::facts::MarkFacts;
 use brightfield_engine::nearest::{NearestProbe, NearestRead};
 use brightfield_engine::{
-    assemble_batches, DeclinedMark, Engine, NavigationExtent, RowsAudience, Session,
+    assemble_batches, DeclinedMark, Engine, NavigationExtent, RowsAudience, ScanTally, Session,
 };
 use brightfield_render::canvas_host::SurfaceRect;
 use brightfield_render::channel::{Channel, ChannelMap};
@@ -61,6 +61,32 @@ use brightfield_workbench::subject::RunState;
 use vello::Scene;
 
 use crate::design::Mode;
+
+/// **The most times composing a dashboard's first screen reads the data
+/// file** — whatever the file, and whatever the tile count.
+///
+/// Zero, and it is zero rather than small for a reason worth stating: a
+/// composition that read the file *once* would still read it once per tile
+/// the moment somebody added a statement, because "once" does not say where
+/// the once comes from. `data_file::open` reads the file into a
+/// session-scoped table before the first composition, so a tile's query scans
+/// memory and the composition touches the file at no leaf of any plan — see
+/// [`brightfield_engine::Session::materialise_source`].
+///
+/// **This is not a bound on statements or on leaves.** The composition still
+/// issues one query per tile and the status band's two counts beside them,
+/// and their plans still have leaves; what those leaves read is a table this
+/// session built. `ScanTally::file_reads` is the number, `ScanTally::scans`
+/// is the other one, and
+/// `composing_a_wide_dashboard_reads_the_file_no_more_often_than_a_narrow_one`
+/// in the open-scan harness is what holds them apart.
+///
+/// A file that was not copied is not bounded by this, and the harness does not
+/// measure it there. Two branches leave a file uncopied: one too large on disk
+/// to attempt ([`crate::data_file::MATERIALISE_UNDER_BYTES`]) and one whose
+/// table would not fit the memory budget
+/// ([`crate::data_file::MATERIALISE_BUDGET_BYTES`]).
+pub const COMPOSITION_FILE_READS: u32 = 0;
 
 /// One placed plot of the composed dashboard, carried beside the scene so the
 /// shell can act on the chart rather than merely picture it: the margin
@@ -1138,6 +1164,52 @@ impl LiveDashboard {
         .with_row_count(rows);
         ink_committed_selections(&mut composed, self.coordinator.session());
         Ok(composed)
+    }
+
+    /// Read `name` once into a session-scoped table and point the view at it,
+    /// spending at most `budget_bytes` of memory on the copy —
+    /// [`brightfield_engine::Session::materialise_source`] on this dashboard's
+    /// session, which is where the budget is imposed and what the two units
+    /// mean.
+    ///
+    /// # Errors
+    ///
+    /// DuckDB's own words when it refuses the copy, including the refusal that
+    /// is the budget doing its job: a table that does not fit `budget_bytes`.
+    /// The source is left as it was, serving the file.
+    pub fn materialise_source(&mut self, name: &str, budget_bytes: u64) -> Result<(), String> {
+        self.coordinator
+            .session_mut()
+            .materialise_source(name, budget_bytes)
+            .map_err(|e| e.to_string())
+    }
+
+    /// [`LiveDashboard::present`], with DuckDB asked to explain each statement
+    /// the composition issues and the leaves of those plans counted.
+    ///
+    /// The composition is the same composition, performed by the same code —
+    /// this brackets that call rather than reimplementing it, so a statement
+    /// added to the composition path is counted without anybody remembering to
+    /// count it. That is the same shape, and the same reason, as
+    /// [`Session::profile_sources_counting_scans`](brightfield_engine::Session::profile_sources_counting_scans).
+    ///
+    /// **What is counted is leaves of the physical plan, not statements.** A
+    /// query per tile and a `UNION ALL` branch per tile both read the table
+    /// once per tile, and only a leaf count tells them apart from the one
+    /// statement that reads it once.
+    ///
+    /// The explaining roughly doubles the statements issued, which is why this
+    /// is a separate entry point: a benchmark and a test pay for it and a file
+    /// open does not.
+    ///
+    /// # Errors
+    ///
+    /// As [`LiveDashboard::present`].
+    pub fn present_counting_scans(&mut self) -> Result<(Composed, ScanTally), String> {
+        self.coordinator.session().begin_scan_tally();
+        let composed = self.present();
+        let tally = self.coordinator.session().take_scan_tally();
+        composed.map(|c| (c, tally))
     }
 
     /// Apply one interaction — push its predicate/param into DuckDB, re-query,

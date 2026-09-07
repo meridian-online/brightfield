@@ -383,6 +383,18 @@ pub struct StatementScans {
     /// not a statement that cost zero — and a gate handed a silent zero passes
     /// over exactly the case it was written for.
     pub scans: Option<u32>,
+    /// Leaves of the same plan that read a **file** rather than a relation
+    /// this session holds in memory, or `None` where DuckDB declined to
+    /// explain the statement.
+    ///
+    /// It cannot exceed [`StatementScans::scans`], and it equals it for a
+    /// statement over a source that is still a view on `read_csv` /
+    /// `read_parquet` —
+    /// `the_profile_pass_reads_the_file_at_every_leaf_it_plans` in the
+    /// open-scan harness is what holds that. It is the smaller number when a
+    /// source has been materialised, which is how this session acquires a base
+    /// table.
+    pub file_reads: Option<u32>,
 }
 
 /// How many times profiling read the table, statement by statement.
@@ -406,6 +418,23 @@ impl ScanTally {
         self.statements
             .iter()
             .try_fold(0u32, |acc, s| Some(acc.saturating_add(s.scans?)))
+    }
+
+    /// The sum over the statements of the leaves that read a **file**, or
+    /// `None` if DuckDB declined to explain one of them.
+    ///
+    /// **This is the number the claim about opening a data file is made in.**
+    /// [`ScanTally::scans`] counts the leaves, which is the right instrument
+    /// while a leaf is a read of the file — as it is for the profile pass,
+    /// where the source is a view over `read_csv`. It stops being the right
+    /// instrument the moment a relation is materialised: a scan of a
+    /// session-scoped table is a leaf and is not a read of the file, and the
+    /// two cost different orders of magnitude.
+    #[must_use]
+    pub fn file_reads(&self) -> Option<u32> {
+        self.statements
+            .iter()
+            .try_fold(0u32, |acc, s| Some(acc.saturating_add(s.file_reads?)))
     }
 
     /// The statements DuckDB declined to explain — empty when
@@ -445,13 +474,73 @@ pub(crate) fn plan_scans(explained: &str) -> Option<u32> {
 
 /// Leaves under `node`, counting `node` itself when it has none.
 fn count_leaves(node: &serde_json::Value) -> Option<u32> {
+    count_matching_leaves(node, &|_| true)
+}
+
+/// How many of the plan's leaves read a **file** rather than a relation held
+/// in memory, or `None` where the text is not a plan.
+///
+/// **The rule is stated as an exclusion and that is the whole of its
+/// robustness.** A leaf counts as a file read *unless* DuckDB's own plan says
+/// what else it reads. There are two such statements and they are both
+/// positive claims the plan makes about the leaf, not names this code has
+/// guessed:
+///
+/// | key in `extra_info` | what the leaf reads | example |
+/// |---|---|---|
+/// | `Table` | a base table in this database | `SEQ_SCAN` over a materialised source |
+/// | `CTE Index` | a CTE materialised inside the same statement | `CTE_SCAN` under a repeated scalar subquery |
+///
+/// An inclusion list would have to name each spelling DuckDB gives a file
+/// reader — `READ_CSV`, `READ_PARQUET`, and the one it gains next release —
+/// and a spelling this code did not anticipate would go uncounted, which is
+/// the direction that fails silently. Excluding what the plan names has the
+/// opposite bias: a leaf nobody anticipated makes the number go **up**, and a
+/// bound that reddens is a bound somebody reads. A `DUMMY_SCAN` and a
+/// `COLUMN_DATA_SCAN` are therefore counted as file reads, which over-counts a
+/// constant SELECT and is correct for the `DESCRIBE` of a `read_csv` view.
+///
+/// **The unsafe direction is closed by a test rather than by this rule.** If
+/// DuckDB stopped carrying `Table`, every leaf would count and nothing would
+/// be hidden. If it stopped carrying `CTE Index` the same. The failure that
+/// would matter is this function returning zero when the file *is* being read,
+/// and `the_profile_pass_reads_the_file_at_every_leaf_it_plans` in the
+/// open-scan harness is what refuses it: the profile pass runs over a source
+/// that is still a view on `read_csv`, so its file reads must equal its
+/// leaves.
+///
+/// It cannot exceed [`plan_scans`] on the same plan, and it equals it for a
+/// plan whose leaves are file readers —
+/// `a_leaf_reads_a_file_unless_the_plan_names_a_table_or_a_cte` reads both
+/// directions off literal plans.
+pub(crate) fn plan_file_reads(explained: &str) -> Option<u32> {
+    let plan: serde_json::Value = serde_json::from_str(explained).ok()?;
+    let roots = plan.as_array()?;
+    let mut total = 0u32;
+    for root in roots {
+        total = total.saturating_add(count_matching_leaves(root, &|leaf| {
+            let named = leaf
+                .get("extra_info")
+                .is_some_and(|info| info.get("Table").is_some() || info.get("CTE Index").is_some());
+            !named
+        })?);
+    }
+    Some(total)
+}
+
+/// Leaves under `node` that `keep` accepts, counting `node` itself when it has
+/// no children.
+fn count_matching_leaves(
+    node: &serde_json::Value,
+    keep: &dyn Fn(&serde_json::Value) -> bool,
+) -> Option<u32> {
     let children = node.get("children")?.as_array()?;
     if children.is_empty() {
-        return Some(1);
+        return Some(u32::from(keep(node)));
     }
     let mut total = 0u32;
     for child in children {
-        total = total.saturating_add(count_leaves(child)?);
+        total = total.saturating_add(count_matching_leaves(child, keep)?);
     }
     Some(total)
 }
@@ -531,6 +620,112 @@ mod tests {
       ] },
       { "name": "COLUMN_DATA_SCAN", "children": [] }
     ]"#;
+
+    /// The plan a composition takes once its source has been read into a
+    /// session-scoped table: DuckDB folds the two identical bin-scheme
+    /// subqueries into one CTE, so the leaves are the rows' scan, the CTE's
+    /// own scan, and two reads of the CTE. **Four leaves, no file read.**
+    ///
+    /// The extra-info keys are DuckDB v1.5's, taken from a real
+    /// `EXPLAIN (FORMAT json)` rather than invented — a `SEQ_SCAN` carries
+    /// `Table` and a `CTE_SCAN` carries `CTE Index`.
+    const PLAN_MATERIALISED_HISTOGRAM: &str = r#"[
+      { "name": "ORDER_BY", "children": [
+        { "name": "HASH_GROUP_BY", "children": [
+          { "name": "SEQ_SCAN", "extra_info": { "Table": "\"temp\".main.opened__bf_materialised" }, "children": [] },
+          { "name": "PROJECTION", "children": [
+            { "name": "SEQ_SCAN", "extra_info": { "Table": "\"temp\".main.opened__bf_materialised" }, "children": [] }
+          ] },
+          { "name": "CTE_SCAN", "extra_info": { "CTE Index": "174" }, "children": [] },
+          { "name": "CTE_SCAN", "extra_info": { "CTE Index": "174" }, "children": [] }
+        ] }
+      ] }
+    ]"#;
+
+    /// The same statement before the source was materialised: the reads are
+    /// `READ_CSV`, which carry a `Function` and no `Table`. **Three leaves,
+    /// all three file reads.**
+    const PLAN_FILE_BACKED_HISTOGRAM: &str = r#"[
+      { "name": "ORDER_BY", "children": [
+        { "name": "HASH_GROUP_BY", "children": [
+          { "name": "READ_CSV", "extra_info": { "Function": "READ_CSV" }, "children": [] },
+          { "name": "READ_CSV", "extra_info": { "Function": "READ_CSV" }, "children": [] },
+          { "name": "READ_CSV", "extra_info": { "Function": "READ_CSV" }, "children": [] }
+        ] }
+      ] }
+    ]"#;
+
+    /// A file read beside a table read under one root — the shape a
+    /// half-materialised session would produce, and the one a rule that
+    /// answered per *statement* rather than per *leaf* would get wrong.
+    const PLAN_ONE_FILE_ONE_TABLE: &str = r#"[
+      { "name": "HASH_JOIN", "children": [
+        { "name": "READ_PARQUET", "extra_info": { "Function": "READ_PARQUET" }, "children": [] },
+        { "name": "SEQ_SCAN", "extra_info": { "Table": "\"temp\".main.mat" }, "children": [] }
+      ] }
+    ]"#;
+
+    /// **A leaf is a file read unless the plan says what else it reads, and
+    /// the two things it can say are a table and a CTE.**
+    ///
+    /// The bound this feeds is **zero**, and a function returning zero would
+    /// pass that bound on any plan at all. So the cases that matter most here
+    /// are the ones that must NOT be zero: a rule that had inverted, or a walk
+    /// that had stopped finding leaves, agrees with the shipped composition
+    /// and disagrees with these.
+    ///
+    /// `PLAN_MATERIALISED_HISTOGRAM` is the other direction and the reason the
+    /// `CTE Index` arm is there: DuckDB plans the histogram's two identical
+    /// bin-scheme subqueries as one CTE read twice, and a rule excluding
+    /// `Table` alone counted those two reads of an in-statement CTE as
+    /// reads of the file — two per histogram tile, which is a count that grows
+    /// with the tile count and a bound no composition could meet.
+    #[test]
+    fn a_leaf_reads_a_file_unless_the_plan_names_a_table_or_a_cte() {
+        assert_eq!(
+            plan_file_reads(PLAN_FILE_BACKED_HISTOGRAM),
+            Some(3),
+            "three READ_CSV leaves are three reads of the file — a rule that              answered zero here would meet the composition's bound by              measuring nothing"
+        );
+        assert_eq!(
+            plan_scans(PLAN_FILE_BACKED_HISTOGRAM),
+            Some(3),
+            "and every one of them is a leaf, so the two counts agree while              nothing is materialised"
+        );
+
+        assert_eq!(
+            plan_file_reads(PLAN_MATERIALISED_HISTOGRAM),
+            Some(0),
+            "a scan of a table and a read of an in-statement CTE are not reads              of the file"
+        );
+        assert_eq!(
+            plan_scans(PLAN_MATERIALISED_HISTOGRAM),
+            Some(4),
+            "the leaves are still there — the composition still issues the              statement, and only what it reads has changed. A leaf count that              fell to zero here would mean the walk had stopped walking"
+        );
+
+        assert_eq!(
+            plan_file_reads(PLAN_ONE_FILE_ONE_TABLE),
+            Some(1),
+            "one of the two leaves reads a file, so the answer is per leaf and              not per statement"
+        );
+
+        assert_eq!(
+            plan_file_reads(PLAN_ONE_LEAF_THREE_DEEP),
+            Some(1),
+            "a leaf carrying no extra_info at all is counted as a file read —              the unknown leaf makes the number go up, which is the direction a              bound can catch"
+        );
+        assert_eq!(
+            plan_file_reads(PLAN_TWO_ROOTS),
+            Some(2),
+            "both roots are walked, as they are for the leaf count"
+        );
+        assert_eq!(
+            plan_file_reads("not a plan"),
+            None,
+            "text that is not a plan is an absence, not a zero"
+        );
+    }
 
     /// **The counter counts leaves, and each case rules out a different
     /// counter that would agree with the shipped statement.**
@@ -617,16 +812,19 @@ mod tests {
         let readable = StatementScans {
             sql: "SELECT count(*) FROM t".to_string(),
             scans: Some(1),
+            file_reads: Some(1),
         };
         let unreadable = StatementScans {
             sql: "DESCRIBE t".to_string(),
             scans: None,
+            file_reads: None,
         };
 
         let whole = ScanTally {
             statements: vec![readable.clone(), readable.clone()],
         };
         assert_eq!(whole.scans(), Some(2));
+        assert_eq!(whole.file_reads(), Some(2));
         assert!(whole.unexplained().is_empty());
 
         let holed = ScanTally {
@@ -638,7 +836,49 @@ mod tests {
             "one unread statement beside a read one totalled to a number, so a \
              bound would be compared against a partial sum"
         );
+        assert_eq!(
+            holed.file_reads(),
+            None,
+            "the file-read total is the one under a bound of zero, so an \
+             unread statement summing to zero beside it is the exact shape of \
+             a bound met by not looking"
+        );
         assert_eq!(holed.unexplained(), vec!["DESCRIBE t"]);
+    }
+
+    /// **The two totals are read off the same statements and are not the same
+    /// number.**
+    ///
+    /// A composition over a materialised source plans leaves and reads no
+    /// file, which is the case a single total cannot express — so a
+    /// [`ScanTally`] whose `file_reads` merely echoed `scans` would report a
+    /// bound of zero as unreachable and one of "a read per tile" as met.
+    #[test]
+    fn a_tally_totals_leaves_and_file_reads_apart() {
+        let tally = ScanTally {
+            statements: vec![
+                StatementScans {
+                    sql: "SELECT * FROM opened".to_string(),
+                    scans: Some(4),
+                    file_reads: Some(0),
+                },
+                StatementScans {
+                    sql: "SELECT count(*) FROM opened".to_string(),
+                    scans: Some(1),
+                    file_reads: Some(0),
+                },
+            ],
+        };
+        assert_eq!(
+            tally.scans(),
+            Some(5),
+            "five leaves were planned across the two statements"
+        );
+        assert_eq!(
+            tally.file_reads(),
+            Some(0),
+            "and none of them read the file"
+        );
     }
 
     #[test]
