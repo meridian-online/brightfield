@@ -68,10 +68,13 @@
 //!
 //! [`MATERIALISE_UNDER_BYTES`] is the file's size **on disk**, and what it
 //! decides is whether the copy is worth attempting. It makes no claim about
-//! memory, and it could not: measured on this build's DuckDB, a four-column ZSTD
-//! Parquet of 123,260 bytes on disk becomes a 511,031,296-byte table, which is
-//! 4,146 times its size on disk. What it does buy is the reading a doomed
-//! attempt would have done before the budget stopped it.
+//! memory, and it could not. The fixture that shows why is committed —
+//! `widening_parquet` in `crates/brightfield-shell/tests/open_materialise.rs`,
+//! four low-cardinality columns over 500,000 rows written as ZSTD — and
+//! `the_size_on_disk_and_the_footer_both_understate_what_the_copy_costs`
+//! measures it: 12,419 bytes on disk, 24,649,728 bytes as a table, which is
+//! 1,985 times its size on disk. What the threshold does buy is the reading a
+//! doomed attempt would have done before the budget stopped it.
 //!
 //! The two errors are not symmetric, which is why one of these is generous and
 //! the other is not. Refusing to copy a file that would have fitted costs a
@@ -189,11 +192,12 @@ pub const OPENABLE_EXTENSIONS: &[&str] = &["csv", "tsv", "parquet"];
 ///
 /// 64 MiB. **This is a judgement about time, not about memory**, and the
 /// distinction is the whole reason there are two constants. On-disk size does
-/// not predict a table's width in memory and cannot be made to: measured on
-/// this build's DuckDB, a four-column ZSTD Parquet of 123,260 bytes on disk
-/// becomes a 511,031,296-byte table. Bounding memory is
-/// [`MATERIALISE_BUDGET_BYTES`]'s job, and it is enforced rather than
-/// estimated.
+/// not predict a table's width in memory and cannot be made to: the committed
+/// `widening_parquet` fixture is 12,419 bytes on disk and 24,649,728 bytes as
+/// a table, and
+/// `the_size_on_disk_and_the_footer_both_understate_what_the_copy_costs`
+/// measures both. Bounding memory is [`MATERIALISE_BUDGET_BYTES`]'s job, and
+/// it is enforced rather than estimated.
 ///
 /// What this bounds is the reading a copy that will be refused does before it
 /// is refused. The budget stops an over-large copy once the copy has grown
@@ -224,17 +228,19 @@ pub const MATERIALISE_UNDER_BYTES: u64 = 64 * 1024 * 1024;
 /// `a_file_whose_table_exceeds_the_budget_opens_off_the_view` drives the
 /// refusal through a real open.
 ///
-/// **Why 512 MiB rather than a number tied to the host.** It has to be far
-/// enough above what an ordinary open costs that no ordinary open is refused,
-/// and far enough below a laptop's memory that spending it is unremarkable.
-/// The first half is measured rather than asserted: the open-scan harness
-/// records the copy's footprint per shape as `materialise_bytes`, so
-/// `benchmarks/results/open-scan/` says what an ordinary open of its widest
-/// shape actually costs, and
-/// `the_wide_shapes_table_is_far_inside_the_shipped_budget` reads that
-/// footprint back out of a live open and asserts it is under a thirty-second
-/// of this constant. The second half is the judgement, and it is the same one
-/// the old prose here made about a threshold that could not keep it.
+/// **Why 512 MiB rather than a number tied to the host.** It has to sit far
+/// above what an ordinary open costs, so that an ordinary open is not refused,
+/// and far below a laptop's memory, so that spending it is unremarkable. The
+/// first is measured rather than asserted: the open-scan harness records each
+/// shape's copy as `materialise_bytes`, and
+/// `every_recorded_open_spends_far_less_than_the_budget_allows` reads those
+/// committed records and holds each of them to a thirty-second of this
+/// number. The second is the judgement, and it is the same one the old prose
+/// here made about a threshold that could not keep it.
+///
+/// `the_shipped_budget_is_what_decides_an_ordinary_open` is what reads this
+/// constant: two Parquets either side of it, both opened through
+/// [`OpenOptions::default`].
 pub const MATERIALISE_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
 
 /// The `data:` key the chosen file is declared under, and therefore the name of
@@ -580,8 +586,10 @@ pub struct OpenOptions {
     pub count_scans: bool,
     /// The largest size on disk a file may have for a copy to be attempted —
     /// [`MATERIALISE_UNDER_BYTES`] by default. A file of exactly this many
-    /// bytes is still copied, which is the `<=` in [`open_traced`]; the
-    /// constant's name reads as the rule rather than as the boundary.
+    /// bytes is still copied, which is the `<=` in [`open_traced`] and what
+    /// `a_file_of_exactly_the_threshold_is_copied_and_one_byte_under_it_is_not`
+    /// drives from both sides; the constant's name reads as the rule rather
+    /// than as the boundary.
     ///
     /// **It is a parameter and not only a constant so that the other branch
     /// is reachable.** A file over the threshold composes off the view, one
@@ -592,11 +600,13 @@ pub struct OpenOptions {
     /// The memory one copy may cost — [`MATERIALISE_BUDGET_BYTES`] by
     /// default, and enforced by DuckDB rather than estimated here.
     ///
-    /// A parameter for the same reason as the field above and a sharper one:
-    /// the refusal branch is the one the larger-than-memory claim rests on,
-    /// and a fixture big enough to exceed the shipped 512 MiB would make the
-    /// suite pay half a gigabyte to find out. A small budget and a small
-    /// fixture drive the same code.
+    /// A parameter for the same reason as the field above: the refusal branch
+    /// is the one the larger-than-memory claim rests on, and a small budget
+    /// with a small fixture drives the same code far more cheaply than a
+    /// large one. It is not the *only* thing that drives it —
+    /// `the_shipped_budget_is_what_decides_an_ordinary_open` puts a fixture
+    /// over the shipped 512 MiB through [`OpenOptions::default`], because a
+    /// branch reached only by a parameter leaves the constant read by nothing.
     ///
     /// Values under [`brightfield_engine::MATERIALISE_BUDGET_FLOOR_BYTES`] are
     /// raised to it, because a small enough `memory_limit` stops DuckDB being

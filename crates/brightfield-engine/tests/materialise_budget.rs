@@ -4,9 +4,10 @@
 //! [`Session::materialise_source`] reads a source once into a session-scoped
 //! table so that later statements scan memory instead of re-parsing a file.
 //! What it costs is the table's width in memory, and **the source does not say
-//! what that will be** — a four-column ZSTD Parquet of 123,260 bytes on disk
-//! materialises to a 511,031,296-byte table on this build. So the size is not
-//! predicted from the file. A `memory_limit` is imposed for the duration of
+//! what that will be** — the committed `widening_parquet` fixture is 12,419
+//! bytes on disk and 24,649,728 bytes as a table, 1,985 times over, and
+//! `the_size_on_disk_and_the_footer_both_understate_what_the_copy_costs`
+//! measures it. So the size is not predicted from the file. A `memory_limit` is imposed for the duration of
 //! the copy, spilling is shut off beside it, and a table that does not fit
 //! comes back as an error.
 //!
@@ -28,6 +29,23 @@ use duckdb::arrow::array::{Array, Int64Array};
 /// A generous budget: far above anything these fixtures cost, so a refusal
 /// under it would mean the mechanism refuses everything.
 const GENEROUS: u64 = 512 * 1024 * 1024;
+
+/// A budget that comfortably admits these fixtures and comfortably refuses
+/// [`HEAVY_QUERY`], which is what makes it useful for testing the restore on
+/// the branch where the copy SUCCEEDED.
+///
+/// **512 MiB would not do**, and that is the point. `HEAVY_QUERY` fits inside
+/// 512 MiB, so a session left pinned at the shipped budget after a successful
+/// copy still runs it — the restore would go untested on the branch an
+/// ordinary open actually takes. Measured on this build's DuckDB with spilling
+/// off, `HEAVY_QUERY` fails at a 64-MiB limit and succeeds at 128 MiB, while
+/// the 50,000-row fixture below copies inside 16 MiB.
+///
+/// **A copy needs far more than its table.** The same measurement put a
+/// 400,000-row copy of that fixture over this budget even though its table is
+/// a few megabytes, which is why the fixture here is small: the headroom being
+/// relied on is the copy's, not the table's.
+const GENEROUS_BUT_UNDER_THE_HEAVY_QUERY: u64 = 64 * 1024 * 1024;
 
 /// A query that cannot run inside [`MATERIALISE_BUDGET_FLOOR_BYTES`]: a
 /// `GROUP BY` over half a million distinct 120-character strings.
@@ -213,5 +231,67 @@ fn a_materialised_source_serves_no_answer_computed_before_the_copy() {
         live.duckdb_execute_count() > before,
         "the mark was served from a cache filled before the copy — its answer \
          was computed against the view, not the table"
+    );
+}
+
+/// **A copy that FITTED also leaves the budget lifted.**
+///
+/// The twin of the refusal test above, and it is a separate test because the
+/// two branches restore from different places in `materialise_source` and
+/// green on one says nothing about the other. Skipping the restore on the
+/// success path left every test in this workspace green while an ordinary open
+/// finished with the session pinned at the budget and spilling shut off — the
+/// exact state in which the next heavy query fails with `Out of Memory`, on
+/// the branch a user is on every time a file is small enough to copy.
+///
+/// Both settings are asserted, and differently, because only one of them can
+/// be read back honestly. `memory_limit` is checked by running work that does
+/// not fit the budget, since `current_setting` reports it restored whether or
+/// not it is in force. `max_temp_directory_size` is checked by reading it,
+/// because on this build a `SET` of that one does take effect and the read is
+/// evidence.
+#[test]
+fn a_copy_that_fitted_leaves_the_session_able_to_spend_more_than_the_budget() {
+    let mut live = session(&wide_rows(50_000));
+    live.materialise_source("t", GENEROUS_BUT_UNDER_THE_HEAVY_QUERY)
+        .expect("a 50,000-row copy fits a 64 MiB budget");
+
+    let spent = live
+        .in_memory_table_bytes()
+        .expect("DuckDB accounts for the copy it just made");
+    assert!(
+        spent > 0 && spent < GENEROUS_BUT_UNDER_THE_HEAVY_QUERY,
+        "the copy cost {spent} bytes against a budget of \
+         {GENEROUS_BUT_UNDER_THE_HEAVY_QUERY}, so this fixture is not the \
+         comfortably-fitting one this test needs"
+    );
+
+    // The vacuity guard: the copy has to have happened, or this is asserting
+    // about a session that never narrowed anything.
+    assert_eq!(
+        count_of(
+            &mut live,
+            "SELECT count(*) FROM duckdb_tables() WHERE table_name = 't__bf_materialised'"
+        ),
+        1,
+        "no backing table, so the copy did not happen and the restore under \
+         test was never reached"
+    );
+
+    assert!(
+        live.execute_uncached(HEAVY_QUERY).is_ok(),
+        "after a copy that FITTED, the session could not run a query needing \
+         more than the {GENEROUS_BUT_UNDER_THE_HEAVY_QUERY}-byte budget — the \
+         budget is still in force on the success path"
+    );
+
+    let temp_size = live
+        .execute_uncached("SELECT current_setting('max_temp_directory_size')::VARCHAR")
+        .expect("the setting reads");
+    let rendered = format!("{temp_size:?}");
+    assert!(
+        !rendered.contains("0 bytes"),
+        "after a copy that fitted the session still has spilling shut off: \
+         max_temp_directory_size reads {rendered}"
     );
 }

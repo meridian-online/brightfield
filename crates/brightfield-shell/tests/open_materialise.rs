@@ -17,7 +17,9 @@ use std::path::{Path, PathBuf};
 
 use arrow::util::pretty::pretty_format_batches;
 use brightfield_engine::MATERIALISE_BUDGET_FLOOR_BYTES;
-use brightfield_shell::data_file::{self, OpenOptions, MATERIALISE_UNDER_BYTES};
+use brightfield_shell::data_file::{
+    self, OpenOptions, MATERIALISE_BUDGET_BYTES, MATERIALISE_UNDER_BYTES,
+};
 
 /// A fixture with one column of each kind the dashboard draws a tile from: two
 /// measures (one bounded, so both branches of the histogram's own device are
@@ -442,5 +444,187 @@ fn a_materialised_open_reports_the_time_the_copy_took() {
     assert_eq!(
         direct.materialise_bytes, None,
         "an open that made no copy reported what it cost"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The shipped budget, and the boundary the threshold is stated at
+// ---------------------------------------------------------------------------
+
+/// The sum of `total_uncompressed_size` over a Parquet's row groups: the
+/// decompressed size of its *encoded* columns, and the cheapest better
+/// estimate of a copy's cost than the file's size on disk.
+fn parquet_footer_bytes(path: &Path) -> u64 {
+    let conn = duckdb::Connection::open_in_memory().expect("duckdb");
+    conn.query_row(
+        &format!(
+            "SELECT sum(total_uncompressed_size)::BIGINT FROM parquet_metadata('{}')",
+            path.display()
+        ),
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .ok()
+    .and_then(|n| u64::try_from(n).ok())
+    .expect("the fixture's Parquet footer reads")
+}
+
+/// **Neither the file's size on disk nor its Parquet footer says what the copy
+/// will cost, and both understate it by orders of magnitude.**
+///
+/// This is the measurement the two constants are shaped around, and it is a
+/// test rather than a sentence because both round 1 and round 2 carried the
+/// figures in prose, from a fixture that was never committed. The fixture here
+/// is [`widening_parquet`], which the refusal test already opens.
+///
+/// Measured on an Apple M1 Pro against this build's DuckDB v1.5.2: 12,419
+/// bytes on disk, a footer of 1,139,201 bytes, and a 24,649,728-byte table —
+/// 1,985 times the file and 21.6 times the footer. The assertions below are
+/// loose bounds on those ratios rather than the figures themselves, because
+/// the figures are a property of a platform and the ordering is the property
+/// the design rests on.
+#[test]
+fn the_size_on_disk_and_the_footer_both_understate_what_the_copy_costs() {
+    let path = widening_parquet();
+    let on_disk = std::fs::metadata(&path).expect("stat").len();
+    let footer = parquet_footer_bytes(&path);
+    let in_memory = copy_cost(&path);
+
+    assert!(
+        footer > on_disk,
+        "the footer ({footer}) is not larger than the file ({on_disk}), so \
+         this fixture is not compressed and says nothing about either estimate"
+    );
+    assert!(
+        in_memory > on_disk * 500,
+        "the table is {in_memory} bytes against {on_disk} on disk, under 500 \
+         times — the fixture no longer demonstrates that on-disk size cannot \
+         carry a memory bound, and the prose citing it is now wrong"
+    );
+    assert!(
+        in_memory > footer * 10,
+        "the table is {in_memory} bytes against a footer of {footer}, under 10 \
+         times — the Parquet footer would now be a usable estimate, and the \
+         reason for rejecting it no longer holds"
+    );
+}
+
+/// A Parquet whose table is far over [`MATERIALISE_BUDGET_BYTES`] and whose
+/// file is far under [`MATERIALISE_UNDER_BYTES`].
+///
+/// **Both halves matter.** Over the budget is what makes it the refusing case;
+/// under the on-disk threshold is what makes the *budget* the thing that
+/// refused it, rather than the threshold declining to try. 16,000,000 rows of
+/// the same four columns measure 331,306 bytes on disk and about 765 MB as a
+/// table on an Apple M1 Pro.
+fn widening_parquet_over_the_budget() -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("bf-materialise-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    let path = dir.join("over-budget.parquet");
+    if path.exists() {
+        return path;
+    }
+    let conn = duckdb::Connection::open_in_memory().expect("duckdb");
+    conn.execute_batch(&format!(
+        "COPY (SELECT ('cat_' || (i % 8))::VARCHAR AS label, \
+         ('grp_' || (i % 5))::VARCHAR AS kind, (i % 97)::BIGINT AS value, \
+         (i % 13)::BIGINT AS other FROM range(16000000) AS r(i)) \
+         TO '{}' (FORMAT PARQUET, COMPRESSION ZSTD)",
+        path.display()
+    ))
+    .expect("write parquet");
+    path
+}
+
+/// **The budget the build ships is the one an ordinary open applies.**
+///
+/// The twin of `the_shipped_threshold_is_what_decides_an_ordinary_open`, and
+/// it exists for the same reason: every other test of the budget reaches its
+/// branches by passing `materialise_budget_bytes` explicitly, so setting
+/// `MATERIALISE_BUDGET_BYTES` to `u64::MAX` left them green — the constant the
+/// whole round was about was read by nothing. Two Parquets either side of it,
+/// both through [`OpenOptions::default`], put the number itself in the path.
+#[test]
+fn the_shipped_budget_is_what_decides_an_ordinary_open() {
+    // The affordability guard, as on the threshold's twin: the over-budget
+    // fixture below is sized for a budget in this range, and a constant
+    // outside it reddens here rather than by writing a file nobody can hold.
+    assert!(
+        (64 * 1024 * 1024..=512 * 1024 * 1024).contains(&MATERIALISE_BUDGET_BYTES),
+        "the shipped budget is {MATERIALISE_BUDGET_BYTES} bytes; \
+         widening_parquet_over_the_budget is sized to exceed 512 MiB and no \
+         more, so a budget outside that range needs the fixture resized with it"
+    );
+
+    let under = widening_parquet();
+    let (_, was_copied, _) = drawn_rows(&under, &OpenOptions::default());
+    assert!(
+        was_copied,
+        "a fixture whose table is well inside the shipped budget was not \
+         copied by an ordinary open"
+    );
+
+    let over = widening_parquet_over_the_budget();
+    let on_disk = std::fs::metadata(&over).expect("stat").len();
+    assert!(
+        on_disk < MATERIALISE_UNDER_BYTES,
+        "the over-budget fixture is {on_disk} bytes on disk, over the \
+         {MATERIALISE_UNDER_BYTES} threshold — the threshold would decline the \
+         copy and this test would say nothing about the budget"
+    );
+
+    let (drawn, was_copied, tiles) = drawn_rows(&over, &OpenOptions::default());
+    assert!(
+        !was_copied,
+        "a fixture whose table is far over the shipped budget of \
+         {MATERIALISE_BUDGET_BYTES} bytes was copied by an ordinary open"
+    );
+    assert!(
+        tiles > 0 && !drawn.is_empty(),
+        "the refused fixture drew {tiles} tiles and {} marks, so the open did \
+         not survive the refusal",
+        drawn.len()
+    );
+}
+
+/// **A file of exactly the threshold is copied**, which is the `<=` in
+/// [`data_file::open_traced`] and what the option's own documentation claims.
+///
+/// Driven at the size of a small fixture rather than at the shipped 64 MiB,
+/// because what is under test is the comparison and not the constant: the
+/// threshold is passed as the file's own byte count, and then one byte less.
+/// `the_shipped_budget_is_what_decides_an_ordinary_open` and its threshold
+/// twin are where the shipped numbers are read.
+#[test]
+fn a_file_of_exactly_the_threshold_is_copied_and_one_byte_under_it_is_not() {
+    let path = fixture("rows");
+    let bytes = std::fs::metadata(&path).expect("stat").len();
+    assert!(bytes > 1, "the fixture is empty");
+
+    let (_, at_the_boundary, _) = drawn_rows(
+        &path,
+        &OpenOptions {
+            materialise_under_bytes: bytes,
+            ..OpenOptions::default()
+        },
+    );
+    assert!(
+        at_the_boundary,
+        "a {bytes}-byte file was not copied under a threshold of exactly \
+         {bytes} — the comparison is `<` where the documentation says `<=`"
+    );
+
+    let (_, one_byte_short, _) = drawn_rows(
+        &path,
+        &OpenOptions {
+            materialise_under_bytes: bytes - 1,
+            ..OpenOptions::default()
+        },
+    );
+    assert!(
+        !one_byte_short,
+        "a {bytes}-byte file was copied under a threshold of {}, so the \
+         comparison admits a file larger than the threshold",
+        bytes - 1
     );
 }

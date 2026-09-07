@@ -2808,14 +2808,17 @@ impl Session {
     /// # Why the budget is enforced rather than predicted
     ///
     /// The copy costs the table's width in memory, and the source does not say
-    /// what that will be. Measured on this build's DuckDB on an Apple M1 Pro:
-    /// a four-column ZSTD Parquet occupying 123,260 bytes on disk becomes a
-    /// 511,031,296-byte table, and that file's own footer — the sum of
-    /// `total_uncompressed_size` over its row groups, which is the cheapest
-    /// better estimate there is — reports 13,651,713 bytes. On-disk size is
-    /// 4,146 times under the answer and the footer is 37 times under it. A
-    /// guard set against either is a guard in a different unit from the thing
-    /// it guards.
+    /// what that will be. The fixture that shows it is committed —
+    /// `widening_parquet` in
+    /// `crates/brightfield-shell/tests/open_materialise.rs`, four
+    /// low-cardinality columns over 500,000 rows written as ZSTD — and
+    /// `the_size_on_disk_and_the_footer_both_understate_what_the_copy_costs`
+    /// measures all three numbers on this build's DuckDB: 12,419 bytes on
+    /// disk, a Parquet footer summing `total_uncompressed_size` over its row
+    /// groups to 1,139,201 bytes, and a 24,649,728-byte table. On-disk size is
+    /// 1,985 times under the answer and the footer — the cheapest better
+    /// estimate there is — is 21 times under it. A guard set against either is
+    /// a guard in a different unit from the thing it guards.
     ///
     /// So the question is put to the component that can answer it.
     /// `memory_limit` is set to `budget_bytes` for the duration of the copy,
@@ -2898,9 +2901,18 @@ impl Session {
         Ok(())
     }
 
-    /// Put `memory_limit` and `max_temp_directory_size` back to what this
-    /// session was started with, after [`Session::materialise_source`]
-    /// narrowed them for one copy.
+    /// Put `memory_limit` and `max_temp_directory_size` back to the values
+    /// captured at load, after [`Session::materialise_source`] narrowed them
+    /// for one copy.
+    ///
+    /// **Back to the captured rendering, which is one step off the original
+    /// value and stays there.** `current_setting('memory_limit')` renders the
+    /// limit rounded, so setting its own output back lands slightly under:
+    /// measured, a `12.7 GiB` default restores to a limit that renders
+    /// `12.6 GiB`. It happens once, because the captured string is fixed at
+    /// load and every restore sets that same string rather than re-reading —
+    /// re-reading ratcheted 12.7 to 12.6 to 12.5 GiB over three cycles. The
+    /// property here is stability, not exactness.
     ///
     /// **`SET` to the captured values, and deliberately not `RESET`.** On this
     /// build's DuckDB `RESET memory_limit` returns success and leaves
@@ -3269,10 +3281,10 @@ impl Session {
     /// all when nobody is counting.
     ///
     /// **The funnels that hand a statement to the connection call it** — the
-    /// mark execute, the cube serve, the unsampled facts, the two category
-    /// reads, the cube build, `query_arrow_raw`, and the copy
-    /// [`Session::materialise_source`] makes. Each of those seven is driven
-    /// once, and its contribution to the tally asserted, by
+    /// mark execute, the cube serve, the unsampled facts, the colour category
+    /// read, the band order read, the cube build, `query_arrow_raw`, and the
+    /// copy [`Session::materialise_source`] makes. Each of those eight is
+    /// driven once, and its contribution to the tally asserted, by
     /// `crates/brightfield-engine/tests/scan_tally_funnels.rs`. Nobody is
     /// counting unless [`Session::profile_sources_counting_scans`] or
     /// [`Session::begin_scan_tally`] is the enclosing caller; when one of them

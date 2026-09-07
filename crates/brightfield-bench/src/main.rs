@@ -2756,8 +2756,11 @@ mod tests {
     ///
     /// A thirty-second rather than "less than": a copy that only just fitted
     /// would satisfy a bare inequality while making the rustdoc's sentence
-    /// false, and the margin is what the sentence is about. Measured on an
-    /// Apple M1 Pro, the widest shape leaves about eighty-six times the room.
+    /// false, and the margin is what the sentence is about. On the committed
+    /// 2026-09-07 record the widest shape spends 6,864,896 bytes of a
+    /// 536,870,912-byte budget, which is 78 times the room — the assertion
+    /// below is what keeps that figure honest, so it is a bound and not a
+    /// second copy of the number.
     ///
     /// This reddens from either side — a budget cut to a value ordinary opens
     /// crowd, or a shape whose copy grew — which is what a claim about a

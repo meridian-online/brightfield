@@ -8,14 +8,15 @@
 //! would read the file and be recorded as reading it no times — the bound met
 //! by not counting.
 //!
-//! That was measurable before this file existed: `record_scan` removed from
-//! four of the six funnels its own rustdoc enumerates left the whole suite
-//! green, because the fixtures in it reach the mark-execute funnel and
-//! `query_arrow_raw` and no other.
+//! Before this file existed that was not hypothetical. The suite's fixtures
+//! reach the mark execute and `query_arrow_raw`; a review removed `record_scan`
+//! from funnels the fixtures never drove and the whole suite stayed green.
 //!
 //! One test per funnel, each asserting that the statement that funnel issues
 //! is present in the tally, matched on a fragment of its own SQL rather than
 //! on the total. A total moves when any funnel moves and so pins none of them.
+//! Removing `record_scan` from any one of the eight reddens the test that
+//! names it and no other, which is the measurement this file is for.
 //!
 //! # What this does not cover
 //!
