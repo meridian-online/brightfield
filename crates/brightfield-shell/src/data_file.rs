@@ -643,6 +643,23 @@ pub struct OpenOptions {
     /// bringing a native extension up a second time would cost the open twice
     /// for a second answer no caller here reads.
     pub type_source: Option<TypeSourceSpec>,
+    /// Where DuckDB looks for an already-installed extension — its
+    /// `extension_directory`, [`LoadOptions::extension_directory`], handed to
+    /// the same profile load as [`Self::type_source`].
+    ///
+    /// `None` is DuckDB's own default, `~/.duckdb`, which is what the
+    /// application uses and what a developer's machine has years of extensions
+    /// sitting in.
+    ///
+    /// **It is here so a test can be COLD.** That warm per-user directory is
+    /// outside the repository and outside the checkout, so a test that needs
+    /// an extension it does not carry passes on the machine that has one and
+    /// aborts on the machine that does not — which is what
+    /// `the_full_band_names_what_a_varchar_column_means` did between a
+    /// developer's laptop and a CI runner. Pointing this at an empty directory
+    /// per test makes the test carry its own cache, so a warm machine can no
+    /// longer answer a question the code is supposed to.
+    pub extension_directory: Option<PathBuf>,
 }
 
 impl Default for OpenOptions {
@@ -652,6 +669,7 @@ impl Default for OpenOptions {
             materialise_under_bytes: MATERIALISE_UNDER_BYTES,
             materialise_budget_bytes: MATERIALISE_BUDGET_BYTES,
             type_source: LoadOptions::packaged().type_source,
+            extension_directory: None,
         }
     }
 }
@@ -668,7 +686,7 @@ impl Default for OpenOptions {
 /// As [`open`].
 pub fn open_traced(chosen: &str, options: &OpenOptions) -> Result<(OpenedFile, OpenTrace), String> {
     let path = accept(chosen)?;
-    let columns = columns_of(&path, options.type_source.as_ref())?;
+    let columns = columns_of(&path, options)?;
     let dashboard = Dashboard::of(&path, &columns);
     if dashboard.tiles().is_empty() {
         let left: Vec<String> = dashboard
@@ -853,10 +871,7 @@ fn write_spec_file(data: &Path, spec: &str) -> Option<PathBuf> {
 /// The engine's own words, prefixed with the path — this is where a file that
 /// is not really a Parquet, or a CSV whose rows do not line up, is caught, and
 /// DuckDB's message is the whole of what the reader needs.
-fn columns_of(
-    path: &Path,
-    type_source: Option<&TypeSourceSpec>,
-) -> Result<Vec<ColumnProfile>, String> {
+fn columns_of(path: &Path, options: &OpenOptions) -> Result<Vec<ColumnProfile>, String> {
     let spec = source_spec(path);
     let parsed = parse_spec(&spec, Format::Yaml)
         .map_err(|e| format!("{}: parse error: {e}", path.display()))?;
@@ -865,12 +880,13 @@ fn columns_of(
     // The one load in this crate that carries a type source, which is why
     // `OpenOptions::type_source` documents itself as reaching this and not the
     // composition load below.
-    let options = LoadOptions {
-        type_source: type_source.cloned(),
+    let load_options = LoadOptions {
+        type_source: options.type_source.clone(),
+        extension_directory: options.extension_directory.clone(),
         ..LoadOptions::default()
     };
     let load = Engine::new()
-        .load_spec_with(parsed.spec, analysis, None, &options)
+        .load_spec_with(parsed.spec, analysis, None, &load_options)
         .map_err(|e| format!("{}: {e}", path.display()))?;
     let profile = load
         .session

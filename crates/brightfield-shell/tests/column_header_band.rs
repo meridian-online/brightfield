@@ -72,16 +72,31 @@ impl Live {
     }
 
     /// A window over `path`, opened with `type_source` deciding where a
-    /// column's meaning is answered from.
+    /// column's meaning is answered from, **over an extension cache of this
+    /// call's own**.
     ///
-    /// `None` is a build with no FineType bundle, stated rather than inherited:
-    /// `OpenOptions::default` looks for one beside the running executable, and
-    /// what sits beside a test binary is whatever `target/debug/deps` happens
-    /// to hold.
+    /// Two things are stated rather than inherited, and both were inherited
+    /// once.
+    ///
+    /// `None` is a build with no FineType bundle. `OpenOptions::default` looks
+    /// for one beside the running executable, and what sits beside a test
+    /// binary is whatever `target/debug/deps` happens to hold.
+    ///
+    /// The extension directory is [`cold_cache`] rather than DuckDB's default
+    /// `~/.duckdb`, and that is the whole reason this branch reached CI red.
+    /// Bringing a native type source up runs the extension's own registration,
+    /// which mentions `json`; DuckDB answers by autoloading it. A developer's
+    /// `~/.duckdb` has `json` in it from some unrelated afternoon, so the
+    /// autoload succeeded and the tests passed; a fresh runner has nothing, so
+    /// it failed inside a `#[no_mangle]` frame and took the process down with
+    /// `SIGABRT`. Warm machine green, cold machine dead, and the difference
+    /// was a directory outside the repository. Pointing this somewhere empty
+    /// per call makes every machine the cold one.
     fn open_typed(path: &std::path::Path, type_source: Option<TypeSourceSpec>) -> Self {
         let chosen = path.to_str().expect("utf-8 fixture path");
         let options = OpenOptions {
             type_source,
+            extension_directory: Some(cold_cache()),
             ..OpenOptions::default()
         };
         let boot = Boot::data_file_with(chosen, &options)
@@ -742,6 +757,25 @@ fn the_grid_view_says_how_many_of_the_tables_columns_are_across() {
 // postcodes and a column of free text. `identity.person.email` is what the
 // product adds on top of that, and the two are different strings, so a
 // regression to storage types reddens rather than passing on a coincidence.
+
+/// An empty DuckDB extension directory of this call's own.
+///
+/// A fresh one per call rather than one per process: the two-sources test opens
+/// the same file twice, and a second open that found what the first left behind
+/// would be reading a cache again — a smaller version of the machine-shaped
+/// cache this exists to remove.
+fn cold_cache() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NTH: AtomicUsize = AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "bf-cold-extensions-{}-{}",
+        std::process::id(),
+        NTH.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).expect("an empty extension directory");
+    dir
+}
 
 /// The table whose one text column means something.
 fn reply_addresses() -> std::path::PathBuf {
