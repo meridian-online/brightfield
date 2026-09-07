@@ -738,10 +738,10 @@ fn the_grid_view_says_how_many_of_the_tables_columns_are_across() {
 // whole of why it is not the housing sample the rest of this file uses.
 // `reply_addresses_sample.csv` holds email addresses under a column named
 // `reply_to` — a name carrying no clue, so the label follows from the values —
-// and DuckDB reads it as `VARCHAR`, which is what every text column in every
-// file it has ever opened is. `identity.person.email` is what the product adds
-// on top of that, and the two are different strings, so a regression to
-// storage types reddens rather than passing on a coincidence.
+// and DuckDB reads it as `VARCHAR`, the same answer it gives a column of
+// postcodes and a column of free text. `identity.person.email` is what the
+// product adds on top of that, and the two are different strings, so a
+// regression to storage types reddens rather than passing on a coincidence.
 
 /// The table whose one text column means something.
 fn reply_addresses() -> std::path::PathBuf {
@@ -861,9 +861,9 @@ fn the_full_band_names_what_a_varchar_column_means() {
 
 /// **AC3 — with no type source the header still states the storage type.**
 ///
-/// The behaviour a build with no bundle has always had, held as a test rather
-/// than assumed: the row is drawn, both halves say `VARCHAR`, and the window
-/// settles without a panic or a blank.
+/// The behaviour a build with no bundle had before this file named a type
+/// source, held as a test rather than assumed: the row is drawn, both halves
+/// say `VARCHAR`, and the window settles without a panic or a blank.
 ///
 /// `None` is passed rather than left to `OpenOptions::default`, which looks for
 /// a bundle beside the running executable — and what sits beside a test binary
@@ -902,8 +902,8 @@ fn a_varchar_column_with_no_type_source_draws_its_storage_type() {
 /// **AC4 — two type sources, one file, one process.**
 ///
 /// The `OnceLock` inside `LoadOptions::packaged` resolves the bundle location
-/// once per process, so a seam that had merely set it would let the first case
-/// in a suite decide for every case after it — and a suite that can hold one
+/// once per process, so a seam that had merely set it would let one case in a
+/// suite answer for the cases after it — and a suite that can hold a single
 /// type source cannot compare two. This opens the same file twice in one
 /// process and each open answers its own way.
 ///

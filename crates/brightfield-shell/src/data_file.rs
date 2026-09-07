@@ -615,31 +615,33 @@ pub struct OpenOptions {
     pub materialise_budget_bytes: u64,
     /// Where an answer to "what does this column MEAN" comes from, as opposed
     /// to what DuckDB stored it as — [`LoadOptions::type_source`], handed to
-    /// the profile pass in `columns_of` and to nothing else.
+    /// the profile pass in `columns_of`.
     ///
     /// The default is [`LoadOptions::packaged`]'s: the FineType bundle a
     /// packaged build carries beside its own executable, and `None` for a
     /// build without one. So [`open`] does what it did when this was written
     /// inline, and a caller that wants the app's own open still has no field
-    /// to set.
+    /// to set. That the default keeps finding the packaged bundle is asked by
+    /// `--check-type-source` in [`crate`]'s binary, which runs in the one
+    /// process that has a bundle where the application looks for it.
     ///
     /// **A field rather than a call, and the difference is what a test can
     /// reach.** [`LoadOptions::packaged`] resolves the bundle from
     /// `current_exe` behind a process-wide `OnceLock`, so a test binary — with
-    /// no bundle beside it and no way to move its own executable — could not
-    /// drive the labelled branch at all. Setting the once-cell instead would
-    /// let the first case in a suite decide for every case after it. This is
-    /// per call: two opens in one process carry two sources and get two
-    /// answers, which
+    /// no bundle beside it and no way to move its own executable — cannot
+    /// drive the labelled branch through it, and setting the once-cell would
+    /// let one case in a suite answer for the cases after it. This is per
+    /// call, which
     /// `one_process_opens_one_file_with_a_type_source_and_without_one` in
-    /// `crates/brightfield-shell/tests/column_header_band.rs` drives over the
-    /// same file.
+    /// `crates/brightfield-shell/tests/column_header_band.rs` drives: two
+    /// opens of one file in one process, carrying two sources, getting two
+    /// answers.
     ///
-    /// It reaches the profile load and not the composition load beside it.
+    /// It reaches the profile load rather than the composition load beside it.
     /// The labels the rails and the grid's header band draw come off the
     /// profile — see `columns_of` and [`crate::one_step::ColumnFacts`] — so
     /// bringing a native extension up a second time would cost the open twice
-    /// for an answer nothing reads.
+    /// for a second answer no caller here reads.
     pub type_source: Option<TypeSourceSpec>,
 }
 

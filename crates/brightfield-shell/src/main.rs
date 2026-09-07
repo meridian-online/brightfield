@@ -745,14 +745,16 @@ plot:
     //
     // Opening a data file does not build a `LoadOptions`: it takes
     // `data_file::OpenOptions::type_source`, whose default is
-    // `LoadOptions::packaged`'s answer. Nothing else in this repository reads
-    // that default with a bundle in place — the options built below are this
-    // function's own, because it needs the seal, and every test binary runs
-    // with nothing beside it to find. So a default changed to `None` would
-    // leave this check green, leave the artifact read-back that runs it green,
-    // and leave every file opened in the window stating its storage type where
-    // its meaning belongs. This is the one process that can tell the
-    // difference, which is why the question is asked here.
+    // `LoadOptions::packaged`'s answer. That default was read nowhere with a
+    // bundle in place — the options built below are this function's own,
+    // because it needs the seal, and a test binary has `target/debug/deps`
+    // beside it rather than a bundle directory. Measured with the default
+    // changed to `None`: the `column_header_band`, `data_file` and
+    // `one_step_protocol` targets ran 60 tests between them and 60 passed,
+    // and this check passed too, over a build whose window would open a file
+    // and state its storage type where its meaning belongs. This is the one
+    // process that can tell the difference, which is why the question is
+    // asked here.
     match brightfield_shell::data_file::OpenOptions::default().type_source {
         Some(TypeSourceSpec::Bundle(ref dir)) if *dir == bundle => {}
         other => {

@@ -1053,8 +1053,8 @@ impl Boot {
     /// [`OpenOptions::type_source`](crate::data_file::OpenOptions::type_source):
     /// a packaged build finds its FineType bundle beside its own executable,
     /// and a test binary has none there to find — so without a way to name one
-    /// the whole labelled branch of the grid's header band would be reachable
-    /// by a shipped binary and by nothing a suite can drive.
+    /// the labelled branch of the grid's header band is reachable by a shipped
+    /// binary and out of reach of a suite.
     ///
     /// # Errors
     ///
