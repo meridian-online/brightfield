@@ -199,8 +199,8 @@ pub fn build_chart_scene(data: &ChartData<'_>, ink: ChartInk) -> (Scene, ScaleSe
 
     // Let the mark contribute positional scales generic column inference can't
     // supply (regression's x/y extents, 1D-density's perpendicular axis). A mark
-    // the projection leaves undrawable contributes nothing, for the reason
-    // `render_entry` draws nothing for it.
+    // the projection leaves undrawable contributes no domain, for the reason
+    // `render_entry` above declines to draw it.
     if !data.channel_map.mark_projection().is_undrawable() {
         data.renderer.augment_scales(
             &mut scales,

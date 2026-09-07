@@ -474,9 +474,10 @@ pub enum ParseWarning {
     /// and carries an `intervalX` / `intervalY` / `intervalXY` interactor.
     ///
     /// A rectangle swept in pixels has a rectangle of longitudes and latitudes
-    /// behind it only when the planar `u` depends on the longitude alone and the
-    /// planar `v` on the latitude alone — see
-    /// [`crate::layout::ResolvedProjection::axes_invert_separately`]. Under a
+    /// behind it when the planar `u` depends on the longitude alone and the
+    /// planar `v` on the latitude alone, and not otherwise — see
+    /// [`crate::layout::ResolvedProjection::axes_invert_separately`], enumerated
+    /// by `four_of_mosaics_names_invert_per_axis`. Under a
     /// conic or an azimuthal it does not, so the `column BETWEEN lo AND hi`
     /// clause the brush would build names bounds the reader never swept.
     /// **The interactor is not installed**, and this is what says so.
@@ -3215,15 +3216,16 @@ plot:
         }
     }
 
-    /// **`projectionType` on a MARK is a key nothing reads.** Mosaic has no
-    /// mark-level projection: a projection is a plot attribute and it replaces
-    /// the plot's x and y scales, so a mark cannot ask for a different one. This
+    /// **`projectionType` on a MARK is a key no lowerer and no renderer reads.**
+    /// Mosaic has no mark-level projection: a projection is a plot attribute and
+    /// it replaces the plot's x and y scales, so a mark cannot ask for a
+    /// different one. This
     /// build read one for a while, which made the mark option and the plot
     /// attribute two mechanisms with nothing arbitrating between them.
     ///
-    /// It now reports as `UnconsumedMarkOption` like `curve` or any other key
-    /// nothing consumes — including when the value IS one of Mosaic's names,
-    /// which is the case a reader would otherwise expect to work.
+    /// It now reports as `UnconsumedMarkOption` like `curve` does — including
+    /// when the value IS one of Mosaic's names, which is the case a reader would
+    /// otherwise expect to work.
     #[test]
     fn a_mark_level_projection_is_a_key_nothing_reads() {
         let mark = |opts: &str| {
@@ -3291,8 +3293,8 @@ plot:
         }
 
         // An `aspectRatio` on a plot naming a projection this build cannot draw
-        // is not the refusal — the plot names no projection at all, so the mark
-        // keeps its equal-aspect frame and hears about the name instead.
+        // is not the refusal — the plot names no projection, so the mark keeps
+        // its equal-aspect frame and hears about the name instead.
         let out = parse_spec(
             &plot(", aspectRatio: 1", "projectionType: mollweide\n"),
             Format::Yaml,

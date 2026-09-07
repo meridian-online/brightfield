@@ -4094,8 +4094,10 @@ impl Projection {
     /// names `orthographic` was drawing the plate carrée before the catalogue
     /// widened and draws an orthographic now — the vendored
     /// `earthquakes-globe.yaml` is exactly that spec. What is true is narrower:
-    /// no spec whose `projectionType` this build ALREADY recognised changes what
-    /// it draws, because those three names are all total.
+    /// a spec whose `projectionType` this build ALREADY recognised —
+    /// `equirectangular`, `albers`, `albers-usa` — changes nothing it draws,
+    /// because those names are total, which the last block of
+    /// `an_unrepresentable_coordinate_has_no_position` enumerates.
     #[must_use]
     pub fn project(self, lon: f64, lat: f64) -> Option<(f64, f64)> {
         match self {
@@ -4160,9 +4162,10 @@ impl Projection {
 impl Projection {
     /// The longitude an x-axis planar `u` came from, WITHOUT knowing `v`.
     ///
-    /// `None` for a projection whose `u` depends on the latitude as well — every
-    /// conic and every azimuthal, and Equal Earth. See
-    /// [`Self::axes_invert_separately`] for what that costs a brush.
+    /// `None` for a projection whose `u` depends on the latitude as well (the
+    /// conics, the azimuthals, Equal Earth). Which names answer is enumerated by
+    /// `separability_is_the_claim_the_inverses_keep`; see
+    /// [`Self::axes_invert_separately`] for what it costs a brush.
     #[must_use]
     pub fn invert_lon(self, u: f64) -> Option<f64> {
         match self {
@@ -4755,12 +4758,14 @@ const GEO_STROKE_WIDTH: f64 = 0.75;
 /// dimming).
 ///
 /// **The projection is not a field here.** It reaches this renderer the way it
-/// reaches every other projected mark — on the [`ChannelMap`], put there by
+/// reaches a projected `dot` — on the [`ChannelMap`], put there by
 /// `ChannelMap::from_mark_in` from the owning plot's `projectionType`. A geo
 /// mark on a plot naming nothing draws the plate carrée, which
-/// `MarkProjection::of` supplies; there is no second path by which a name could
-/// arrive, and so no way for a geo mark and a dot mark on one plot to draw in
-/// different coordinate systems.
+/// `MarkProjection::of` supplies. That a geo mark and a dot mark on one plot
+/// draw in the same coordinate system is held by
+/// `the_land_is_drawn_where_the_orthographic_puts_it` and
+/// `an_earthquake_lands_where_the_orthographic_puts_it` (brightfield-ui's
+/// `vendored_globe_one_coordinate_system`), over the vendored globe spec.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GeoRenderer {
     /// Sequential scheme for a numeric `fill:` choropleth (default viridis).
@@ -5129,8 +5134,8 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
             Box::new(RegressionRenderer::default()),
         ),
         // Geo — projected GeoJSON basemap / choropleth. Its projection comes off
-        // the mark's `ChannelMap`, so the registry default carries the whole
-        // behaviour and only the colour scheme needs configuring.
+        // the mark's `ChannelMap`, so the registry default carries that
+        // behaviour and the colour scheme is what `configured_renderer` adds.
         (MarkKind::Geo, Box::new(GeoRenderer::default())),
     ]
 }
@@ -5150,9 +5155,11 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
 /// that feeds it.
 ///
 /// **A projection is deliberately not among these.** It rides on the
-/// [`ChannelMap`], which every rebuild path constructs from the mark and its
-/// plot, so it cannot be dropped by a rebuild that forgets to thread it — which
-/// is what a colour cycle over a geo choropleth used to do, reverting an Albers
+/// [`ChannelMap`], which a rebuild path constructs from the mark and its plot —
+/// held for the count-changing rebuild by
+/// `findings124_geo_projection_survives_count_changing_rebuild` — so it cannot
+/// be dropped by a rebuild that forgets to thread it, which is what a colour
+/// cycle over a geo choropleth used to do, reverting an Albers
 /// basemap to the plate carrée until restart.
 pub fn configured_renderer(
     kind: MarkKind,

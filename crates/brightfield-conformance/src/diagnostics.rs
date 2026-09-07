@@ -266,8 +266,10 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         | ParseWarning::LegendBindingNonCrossfilter { .. } => "legend",
         ParseWarning::ParamTypeMismatch { .. } | ParseWarning::DeadParam { .. } => "param",
         ParseWarning::NonNumericInset { .. }
-        // `projectionType` is a plot attribute in Mosaic and this build reads it
-        // nowhere else, so an unrecognised name is always the plot's.
+        // `projectionType` is a plot attribute in Mosaic and this build reads
+        // it nowhere else, so an unrecognised name is the plot's — held by
+        // `a_mark_level_projection_is_a_key_nothing_reads` (brightfield-spec),
+        // which shows a mark-level value is not judged as a projection name.
         | ParseWarning::UnknownProjection { .. }
         | ParseWarning::NonStringLabel { .. } => "plot",
         ParseWarning::UnknownAggregate { .. }

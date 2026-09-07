@@ -242,8 +242,8 @@ impl MarkProjection {
         }
     }
 
-    /// The projection this mark DRAWS through, or `None` when it draws
-    /// cartesian or is not drawn at all.
+    /// The projection this mark DRAWS through. `None` when it draws cartesian,
+    /// and `None` when the plot's projection leaves it undrawable.
     #[must_use]
     pub fn drawn(self) -> Option<crate::mark::Projection> {
         match self {
@@ -543,9 +543,10 @@ impl ChannelMap {
     /// projection applied to it.
     ///
     /// **This is the delivery seam.** `from_mark` alone cannot see the plot, and
-    /// a projection is a plot attribute: the mark's own options never mention
-    /// one, and Mosaic has no key with which they could. Every composition path
-    /// that has a plot node calls this; a caller with no plot (a bare
+    /// a projection is a plot attribute — Mosaic has no mark-level key, which
+    /// `a_mark_level_projection_is_a_key_nothing_reads` (brightfield-spec) holds
+    /// by showing one reports as an unconsumed option. A composition path with a
+    /// plot node calls this; a caller with no plot (a bare
     /// composition-level mark, a unit test with no spec) calls `from_mark` and
     /// gets the cartesian reading, which is what such a mark has.
     #[must_use]

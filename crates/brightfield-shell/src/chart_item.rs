@@ -1544,10 +1544,11 @@ fn interval_predicate(
 /// is `None` for a cartesian plot, where there is no gap.
 ///
 /// It is exact wherever it answers: `build_brushable_bindings` installs no
-/// interval brush on a projection whose axes do not invert separately, so a
-/// conic or an azimuthal should never arrive here. If one does, the inverse
-/// answers `None` and this returns no clause — a brush that filters nothing,
-/// rather than one that filters on numbers nobody swept.
+/// interval brush on a projection whose axes do not invert separately — held by
+/// `an_interval_brush_is_not_installed_over_a_curved_projection` — so a conic or
+/// an azimuthal does not arrive here. If one did, the inverse answers `None` and
+/// this returns no clause, which is a brush that filters nothing rather than one
+/// filtering on numbers nobody swept.
 ///
 /// The inversion runs BEFORE the bounds are ordered, because `reflect-y`'s
 /// inverse decreases: ordering first would name a `lo` above its `hi`.
@@ -1819,9 +1820,10 @@ mod tests {
     /// A brush over a plot whose axes do NOT invert separately builds no clause
     /// at all, rather than one naming planar units as if they were degrees.
     ///
-    /// `build_brushable_bindings` should never install such a brush — this is the
-    /// second guard behind that, and the one that decides what happens if the
-    /// first is ever wrong.
+    /// `build_brushable_bindings` does not install such a brush, which
+    /// `an_interval_brush_is_not_installed_over_a_curved_projection` holds. This
+    /// is the second guard behind that, and the one that decides what happens if
+    /// the first is ever wrong.
     #[test]
     fn a_brush_over_a_curved_projection_builds_no_clause() {
         let mut scales = ScaleSet::new();
