@@ -1007,12 +1007,21 @@ mod tests {
         )
     }
 
-    /// **A row with a label at each end keeps them apart at every width.**
+    /// **A row with a label at each end draws both of them, apart, at every
+    /// width the shell reaches.**
     ///
     /// The whole point of the helper, driven across the widths a column band
     /// and a rail actually reach and then some. The pair is the one that
     /// collided in the shell: a column name and the longest type name DuckDB
     /// hands this rail.
+    ///
+    /// **Both halves, and the second one is why this test is written this
+    /// way.** An earlier version skipped a width where the leading label was
+    /// absent, on the grounds that an absent label cannot collide — which is
+    /// true and useless: deleting the room `row_ends` keeps back for the
+    /// leading end left this test green, because the trailing label then took
+    /// the whole row and the leading one stopped being drawn at all. A row
+    /// that silently drops a value is not a row that passed.
     #[test]
     fn a_two_ended_row_keeps_its_two_ends_apart() {
         let ctx = ctx();
@@ -1028,9 +1037,11 @@ mod tests {
                 "at {width} points the trailing end runs past the row: {:?}",
                 drawn.trailing
             );
-            if drawn.leading.is_negative() {
-                continue;
-            }
+            assert!(
+                !drawn.leading.is_negative(),
+                "at {width} points nothing was drawn at the leading end, so \
+                 the row states one of its two values and drops the other"
+            );
             assert!(
                 drawn.leading.right() <= drawn.trailing.left(),
                 "at {width} points the leading end ends at {} and the trailing \
