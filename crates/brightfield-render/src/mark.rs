@@ -373,12 +373,19 @@ pub trait MarkRenderer {
     }
 
     /// Whether this mark suppresses the plot frame — the grid, axes, and tick
-    /// labels. A geo/map mark projects its own coordinate space and reads as a
-    /// map, not a cartesian plot, so it draws no axes or gridlines. Defaults to
-    /// `false` (mirrors [`Self::zero_baseline_channel`]: zero impact on existing
-    /// renderers). The scene builders skip the frame when any entry returns
-    /// `true` (geo mark).
-    fn suppresses_frame(&self) -> bool {
+    /// labels. A mark drawing through a map projection reads as a map rather
+    /// than as a cartesian plot, and it draws its own scaffolding behind itself
+    /// (a graticule), so a second set of hairlines at a different spacing is two
+    /// grids over one picture. Defaults to `false` (mirrors
+    /// [`Self::zero_baseline_channel`]: zero impact on existing renderers); the
+    /// scene builders skip the frame when any entry returns `true`.
+    ///
+    /// It takes the mark's [`ChannelMap`] because for every kind except `geo`
+    /// the answer is a property of the MARK and not of the renderer: one
+    /// `DotRenderer` draws both a scatter, which needs its axes, and a point
+    /// map, which does not, and the two are distinguished only by the plot
+    /// projection the channel map carries.
+    fn suppresses_frame(&self, _channel_map: &ChannelMap) -> bool {
         false
     }
 }
@@ -897,6 +904,19 @@ impl MarkRenderer for DotRenderer {
             let circle = Circle::new((px, py), DOT_RADIUS);
             scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &circle);
         }
+    }
+
+    /// A PROJECTED dot mark suppresses the cartesian frame, exactly as
+    /// [`GeoRenderer`] does and for the same reason: it is a map, and it draws
+    /// its own scaffolding — the graticule — behind the points. Leaving the
+    /// frame on puts axis ticks at `compute_ticks`'s round numbers over
+    /// meridians and parallels at the graticule ladder's whole degrees, which is
+    /// two grids at two spacings on one picture.
+    ///
+    /// An UNPROJECTED dot mark is a scatter and keeps its axes, which is what
+    /// `a_projected_dot_mark_draws_no_axis_labels` holds the other half of.
+    fn suppresses_frame(&self, channel_map: &ChannelMap) -> bool {
+        channel_map.projection().is_some()
     }
 
     fn render_interpolated(
@@ -4919,8 +4939,10 @@ impl MarkRenderer for GeoRenderer {
     }
 
     /// Geo draws no cartesian frame — it projects its own coordinate space and
-    /// reads as a map. The scene builders skip grid + axes for it.
-    fn suppresses_frame(&self) -> bool {
+    /// reads as a map. Unconditionally, unlike `DotRenderer`'s: a geo mark's
+    /// column is longitude/latitude geometry and has no cartesian reading, so
+    /// there is no unprojected case to keep axes for.
+    fn suppresses_frame(&self, _channel_map: &ChannelMap) -> bool {
         true
     }
 }
@@ -5256,8 +5278,8 @@ impl MarkRenderer for ColourOverrideRenderer {
         apply_colour_override(scales, &self.override_);
     }
 
-    fn suppresses_frame(&self) -> bool {
-        self.inner.suppresses_frame()
+    fn suppresses_frame(&self, channel_map: &ChannelMap) -> bool {
+        self.inner.suppresses_frame(channel_map)
     }
 }
 
@@ -7071,7 +7093,7 @@ mod tests {
         );
 
         // Geo suppresses the cartesian frame.
-        assert!(renderer.suppresses_frame(), "geo drops grid + axes");
+        assert!(renderer.suppresses_frame(&cm), "geo drops grid + axes");
 
         // A basemap (no fill) strokes each feature — non-empty scene.
         let mut scene = Scene::new();

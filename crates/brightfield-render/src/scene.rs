@@ -238,7 +238,7 @@ pub fn build_chart_scene(data: &ChartData<'_>, ink: ChartInk) -> (Scene, ScaleSe
     }
 
     // A frame-suppressing mark (geo) drops the grid + axes (geo).
-    let suppress_frame = data.renderer.suppresses_frame();
+    let suppress_frame = data.renderer.suppresses_frame(data.channel_map);
 
     // Grid lines (behind marks).
     if !suppress_frame {
@@ -921,7 +921,9 @@ fn draw_multi_mark_scene(
 
     // A frame-suppressing mark (geo — it projects its own coordinate space and
     // reads as a map) drops the grid + axes for the whole plot (geo).
-    let suppress_frame = entries.iter().any(|e| e.renderer.suppresses_frame());
+    let suppress_frame = entries
+        .iter()
+        .any(|e| e.renderer.suppresses_frame(e.channel_map));
 
     // Grid lines (behind marks).
     if !suppress_frame {

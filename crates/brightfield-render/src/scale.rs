@@ -1144,10 +1144,13 @@ fn project_positional_domains(
     x_range: (f64, f64),
     y_range: (f64, f64),
 ) {
-    let Some(projection) = entries
-        .iter()
-        .find_map(|(_, cm)| cm.mark_projection().on_the_plot())
-    else {
+    // From a mark that DRAWS through it, not from the plot naming one. The two
+    // differ for a plot whose positional marks are all undrawable: the plot
+    // names a projection, nothing projected anything, so the domains below stay
+    // in the degrees column inference produced — and a scale set describing
+    // those as planar units would have `axis_interval` unproject a value that
+    // was never projected.
+    let Some(projection) = entries.iter().find_map(|(_, cm)| cm.projection()) else {
         return;
     };
     let (mut umin, mut umax) = (f64::INFINITY, f64::NEG_INFINITY);
