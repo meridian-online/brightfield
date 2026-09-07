@@ -1,12 +1,14 @@
-//! **The point map's equal-aspect frame survives a window resize** — one unit
-//! of longitude stays the same length on screen as one unit of latitude after
-//! the window is resized, with no reset in between, whether or not the reader
-//! had already panned or zoomed the map.
+//! **The point map's square frame survives a window resize** — one unit of
+//! longitude stays the same length on screen as one unit of latitude after the
+//! window is resized, with no reset in between, whether or not the reader had
+//! already panned or zoomed the map.
 //!
 //! `DotRenderer::augment_scales` (`crates/brightfield-render/src/mark.rs`)
-//! fits the map's x/y domains to the pane's pixel range so `aspectRatio: 1`
-//! holds. That fit is recomputed from the raw column domain each time the
-//! plot composes. A resize with **no** navigation in force was already
+//! aspect-fits the map's x/y domains to the pane's pixel range. The tile asks
+//! for that fit by carrying a `projectionType`, which is what the renderer
+//! aspect-fits the output of; it used to ask by writing `aspectRatio: 1`, and
+//! the two are refused together because they answer the same question. That fit
+//! is recomputed from the raw column domain each time the plot composes. A resize with **no** navigation in force was already
 //! correct before this card, since no other step touches the domain it
 //! produces.
 //!

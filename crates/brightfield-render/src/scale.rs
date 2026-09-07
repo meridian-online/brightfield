@@ -331,6 +331,8 @@ pub struct ViewExtent {
 pub struct ScaleSet {
     scales: HashMap<Channel, Scale>,
     ink: ChartInk,
+    projection: Option<crate::mark::Projection>,
+    geo_extent: Option<crate::mark::GeoExtent>,
 }
 
 impl ScaleSet {
@@ -345,7 +347,49 @@ impl ScaleSet {
         Self {
             scales: HashMap::new(),
             ink,
+            projection: None,
+            geo_extent: None,
         }
+    }
+
+    /// The map projection the PLOT these scales belong to names, if any.
+    ///
+    /// **The x and y domains are in this projection's planar units**, not in
+    /// degrees — that is what a projection means for a plot in Observable Plot
+    /// and therefore in Mosaic, and it is why this rides on the scale set rather
+    /// than on each mark. Two readers today: `DotRenderer::render` takes the
+    /// graticule's extent from here so a plot's layers draw ONE graticule rather
+    /// than one apiece, and `brightfield-shell`'s `axis_interval` inverts a
+    /// brush pixel back to a longitude or a latitude through it.
+    #[must_use]
+    pub fn projection(&self) -> Option<crate::mark::Projection> {
+        self.projection
+    }
+
+    /// The geographic rectangle every projected mark on the plot covers between
+    /// them, in DEGREES — the graticule's extent.
+    ///
+    /// Accumulated where the projected domains are (`project_positional_domains`,
+    /// private to this module),
+    /// from the same pass over the same coordinates, so a plot's ghost layer and
+    /// its brushed subset get the same answer. Deriving it per mark from that
+    /// mark's own batch is what made a brushed point map draw a second, finer
+    /// graticule over the selection.
+    #[must_use]
+    pub fn geo_extent(&self) -> Option<crate::mark::GeoExtent> {
+        self.geo_extent
+    }
+
+    /// Record the plot's projection and the geographic extent its projected
+    /// marks cover. Called by the private `project_positional_domains`; also by tests
+    /// that assemble a scale set by hand.
+    pub fn set_projection(
+        &mut self,
+        projection: crate::mark::Projection,
+        extent: Option<crate::mark::GeoExtent>,
+    ) {
+        self.projection = Some(projection);
+        self.geo_extent = extent;
     }
 
     /// The canvas palette this set's scales were resolved against.
@@ -392,6 +436,17 @@ pub fn anchor_scales(launch: &ScaleSet, fresh: ScaleSet) -> ScaleSet {
     // The launch set's canvas, not the fresh one's: the anchor exists so the
     // frame of reference holds still, and the mode is part of that frame.
     let mut anchored = ScaleSet::in_ink(launch.ink());
+    // The projection and its extent belong to the launch frame for the same
+    // reason the canvas does: they ARE the frame of reference, and a rebuild
+    // that dropped them would leave a map's axes in planar units with nothing
+    // saying which projection produced them. `fresh` wins only where launch has
+    // nothing, which is the mark-arrived-late case the domains take too.
+    if let Some(projection) = launch.projection().or_else(|| fresh.projection()) {
+        anchored.set_projection(
+            projection,
+            launch.geo_extent().or_else(|| fresh.geo_extent()),
+        );
+    }
     for &ch in Channel::all() {
         let scale = match (launch.get(ch), fresh.get(ch)) {
             (Some(l), Some(f)) => anchor_scale(l, f),
@@ -980,6 +1035,7 @@ pub fn infer_scales_in(
     }
 
     extend_scales_with_literals(&mut set, channel_map.literals_iter(), x_range, y_range);
+    project_positional_domains(&mut set, &[(batch, channel_map)], x_range, y_range);
     set
 }
 
@@ -1053,7 +1109,108 @@ pub fn infer_scales_multi_in(
     for (_, cm) in entries {
         extend_scales_with_literals(&mut set, cm.literals_iter(), x_range, y_range);
     }
+    project_positional_domains(&mut set, entries, x_range, y_range);
     set
+}
+
+/// Replace the X/Y linear domains with the PROJECTED extent of the coordinates,
+/// when the marks carry a map projection.
+///
+/// The column pass above reads `x`/`y` as plain numbers and leaves domains in
+/// degrees of longitude and latitude. A projected mark does not draw at those
+/// numbers — it draws at `Projection::project` of them — so its axes have to be
+/// in the projection's planar units or the points land off the scale entirely.
+/// Under Mercator a latitude of 64° is a `v` of 1.47, and a domain that spans
+/// both is a plot with its marks crowded into one corner.
+///
+/// The domains are **replaced** rather than unioned with the degree-unit ones
+/// for exactly that reason, and the union across `entries` happens here instead:
+/// a point map's ghost and subset layers are two entries, and the extent that
+/// has to reach the axes is the wider of the two, or the ghost is drawn outside
+/// its own frame.
+///
+/// A mark the plot's projection leaves undrawable contributes no coordinates
+/// here and is not drawn either (`crate::scene::render_entry`, held by
+/// `a_mark_that_cannot_project_contributes_no_geometry`), so its degrees do not
+/// widen an axis in planar units.
+///
+/// The plot's projection and the geographic extent of everything projected are
+/// recorded on the set as they are computed — the graticule and the brush both
+/// need them, and re-deriving either from one mark's batch is what made a
+/// brushed point map draw a second graticule over its selection.
+fn project_positional_domains(
+    set: &mut ScaleSet,
+    entries: &[(&RecordBatch, &ChannelMap)],
+    x_range: (f64, f64),
+    y_range: (f64, f64),
+) {
+    // From a mark that DRAWS through it, not from the plot naming one — held by
+    // `the_scales_carry_a_projection_only_when_something_drew_through_it`. The
+    // two differ for a plot whose positional marks cannot project: the plot
+    // names a projection, no mark applied it, so the domains below stay in the
+    // degrees column inference produced, and a scale set describing those as
+    // planar units would have `axis_interval` unproject a raw degree.
+    let Some(projection) = entries.iter().find_map(|(_, cm)| cm.projection()) else {
+        return;
+    };
+    let (mut umin, mut umax) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut vmin, mut vmax) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut lon0, mut lon1) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut lat0, mut lat1) = (f64::INFINITY, f64::NEG_INFINITY);
+    for (batch, cm) in entries {
+        let Some(projection) = cm.projection() else {
+            continue;
+        };
+        let (Some(lon_col), Some(lat_col)) = (cm.get(Channel::X), cm.get(Channel::Y)) else {
+            continue;
+        };
+        let (Some(lons), Some(lats)) = (
+            crate::mark::column_as_f64(batch, lon_col),
+            crate::mark::column_as_f64(batch, lat_col),
+        ) else {
+            continue;
+        };
+        for (lon, lat) in lons.iter().zip(lats.iter()) {
+            let (Some(lon), Some(lat)) = (lon, lat) else {
+                continue;
+            };
+            let Some((u, v)) = projection.project(*lon, *lat) else {
+                continue;
+            };
+            umin = umin.min(u);
+            umax = umax.max(u);
+            vmin = vmin.min(v);
+            vmax = vmax.max(v);
+            lon0 = lon0.min(*lon);
+            lon1 = lon1.max(*lon);
+            lat0 = lat0.min(*lat);
+            lat1 = lat1.max(*lat);
+        }
+    }
+    let extent = (lon0.is_finite() && lat0.is_finite())
+        .then(|| crate::mark::GeoExtent::new(lon0, lon1, lat0, lat1));
+    set.set_projection(projection, extent);
+    if !(umin.is_finite() && umax.is_finite() && vmin.is_finite() && vmax.is_finite()) {
+        return;
+    }
+    set.insert(
+        Channel::X,
+        Scale::Linear {
+            domain_min: umin,
+            domain_max: umax,
+            range_start: x_range.0,
+            range_end: x_range.1,
+        },
+    );
+    set.insert(
+        Channel::Y,
+        Scale::Linear {
+            domain_min: vmin,
+            domain_max: vmax,
+            range_start: y_range.0,
+            range_end: y_range.1,
+        },
+    );
 }
 
 /// Union a list of scales of the same type into a single scale.

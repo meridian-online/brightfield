@@ -15,7 +15,7 @@ pub mod emit;
 pub mod error;
 
 // Re-exports for downstream crates.
-pub use emit::{collect_marks, collect_plot_groups, PlotGroup};
+pub use emit::{collect_marks, collect_plot_groups, plot_of_each_mark, PlotGroup};
 pub mod ir;
 pub mod lower;
 pub mod navigation_filter_pass;

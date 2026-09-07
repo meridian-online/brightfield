@@ -27,11 +27,11 @@ use vello::Scene;
 
 use brightfield_engine::DispatchResult;
 use brightfield_engine::{concat_batches, RecordBatch, Session};
-use brightfield_render::channel::{Channel, ChannelMap};
+use brightfield_render::channel::{Channel, ChannelMap, MarkProjection};
 use brightfield_render::layout::ChartLayout;
 use brightfield_render::mark::{
     build_highlight_state, configured_renderer, default_renderers, find_renderer, HighlightState,
-    HighlightStyle, MarkRenderer, Projection,
+    HighlightStyle, MarkRenderer,
 };
 use brightfield_render::nearest::SelectionValue;
 use brightfield_render::scale::{Scale, ScaleSet, SequentialScheme};
@@ -593,16 +593,15 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
                 continue; // a plot the coordinator does not track
             };
             let scheme = plot_meta[pi].1;
-            let (highlight_style, projection) =
-                plot_render_context(path, plot, &highlight_bindings);
+            let highlight_style = plot_highlight_style(path, &highlight_bindings);
             for c in &plot.items {
                 if let Component::Mark(m) = c {
                     let flat = new_marks.len();
                     new_marks.push(build_fresh_mark_input(
                         m,
+                        plot,
                         scheme,
                         highlight_style.as_ref(),
-                        projection,
                     ));
                     new_indices.entry(path.clone()).or_default().push(flat);
                     mark_to_plot.insert(flat, pi);
@@ -658,14 +657,15 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
 
         // Capture the re-analysis inputs a mark rebuild needs BEFORE `reload_spec`
         // MOVES `analysis` (finding 1/2/4): the highlight bindings + the affected
-        // plot's render context (highlight `otherwise` style + geo projection), so
-        // a rebuilt/retyped mark keeps its dimming + projection
-        // instead of silently reverting to no-highlight / equirectangular.
+        // plot's highlight `otherwise` style and its resolved projection, so a
+        // rebuilt/retyped mark keeps its dimming and its map instead of silently
+        // reverting to no-highlight / unprojected.
         let highlight_bindings = analysis.highlight_bindings.clone();
-        let affected_ctx = collect_plot_nodes(&spec)
+        let affected_hl = plot_highlight_style(&plot_path, &highlight_bindings);
+        let affected_projection = collect_plot_nodes(&spec)
             .into_iter()
             .find(|(p, _)| *p == plot_path)
-            .map(|(_, node)| plot_render_context(&plot_path, node, &highlight_bindings));
+            .and_then(|(_, node)| resolve_projection(node));
 
         // (1) Swap the session's private spec so execute_mark re-emits new SQL.
         self.session.reload_spec(spec.clone(), analysis);
@@ -678,23 +678,28 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
         } else {
             // (3, count-stable) In-place mutate the mark at the edit's ORDINAL
             // (finding 7 — was hardcoded `.first()`) then re-execute.
-            let (plot_hl, plot_proj) = affected_ctx
-                .clone()
-                .unwrap_or((None, Projection::default()));
+            let plot_hl = affected_hl.clone();
             if let Some(&mi) = self.plots[pi].mark_indices.get(edit.mark_ordinal()) {
                 match edit {
                     ChartEdit::ChangeMarkType { new_kind, .. } => {
                         if let Some(m) = self.marks.get_mut(mi) {
                             m.kind = *new_kind;
-                            // Geo carries the plot's projection (finding 1/2/4).
-                            let mark_projection = (*new_kind == MarkKind::Geo).then_some(plot_proj);
+                            // Re-gate the plot's projection to the NEW kind: a
+                            // retype from `dot` to `barY` on a projected plot
+                            // takes the mark out of the map's coordinate system,
+                            // and a retype the other way puts it in. The channel
+                            // map is where a mark carries that, so this is the
+                            // whole of it.
+                            m.channels.set_projection(MarkProjection::of_resolved(
+                                *new_kind,
+                                affected_projection,
+                            ));
                             m.renderer_override = configured_renderer(
                                 *new_kind,
                                 self.plots[pi].scheme,
                                 m.bandwidth,
                                 m.thresholds,
                                 m.bin_width,
-                                mark_projection,
                             );
                             // Re-gate highlight to the NEW kind: a retype to a
                             // non-honouring kind drops the style; to a honouring
@@ -1370,7 +1375,7 @@ fn rebuild_flat_index_space(
             continue; // a plot the coordinator does not track
         };
         let (_, old_flat, scheme) = &plot_meta[pi];
-        let (highlight_style, projection) = plot_render_context(path, plot, highlight_bindings);
+        let highlight_style = plot_highlight_style(path, highlight_bindings);
         let marks_in_plot: Vec<&Mark> = plot
             .items
             .iter()
@@ -1382,7 +1387,7 @@ fn rebuild_flat_index_space(
         for (j, mark) in marks_in_plot.iter().enumerate() {
             let new_flat = new_marks.len();
             let input = if path == affected_path {
-                build_fresh_mark_input(mark, *scheme, highlight_style.as_ref(), projection)
+                build_fresh_mark_input(mark, plot, *scheme, highlight_style.as_ref())
             } else {
                 // Preserve by (plot, position) — unaffected plots keep their
                 // batches/renderers/channels/highlight/projection.
@@ -1390,7 +1395,7 @@ fn rebuild_flat_index_space(
                     .get(j)
                     .and_then(|&oi| old_slots.get_mut(oi).and_then(Option::take))
                     .unwrap_or_else(|| {
-                        build_fresh_mark_input(mark, *scheme, highlight_style.as_ref(), projection)
+                        build_fresh_mark_input(mark, plot, *scheme, highlight_style.as_ref())
                     })
             };
             new_marks.push(input);
@@ -1402,59 +1407,53 @@ fn rebuild_flat_index_space(
 }
 
 /// The per-plot render context a mark rebuild must re-derive from the swapped
-/// spec + analysis (finding 1/2/4): the plot's highlight `otherwise`
-/// style and its map projection (geo). Mirrors app
-/// assembly (main.rs) so a re-queried mark carries the SAME highlight/projection
-/// it launched with — a rebuild that reset these to `None` silently killed
-/// dashboard-wide highlight dimming and reverted a US-Albers basemap to
-/// equirectangular. `build_fresh_mark_input` gates each by mark kind.
-fn plot_render_context(
+/// spec + analysis (finding 1/2/4): the plot's highlight `otherwise` style.
+/// Mirrors app assembly (main.rs) so a re-queried mark carries the SAME
+/// highlight it launched with — a rebuild that reset it to `None` silently
+/// killed dashboard-wide highlight dimming.
+///
+/// **The plot's map projection is no longer one of these.** It rides on the
+/// mark's `ChannelMap`, put there by `ChannelMap::from_mark_in` from the plot
+/// node itself, so a rebuild carries it by construction instead of by a caller
+/// remembering to thread it — which is the regression this function's own
+/// history is a record of.
+fn plot_highlight_style(
     plot_path: &str,
-    plot: &PlotNode,
     highlight_bindings: &[HighlightBinding],
-) -> (Option<HighlightStyle>, Projection) {
-    let highlight_style = highlight_bindings
+) -> Option<HighlightStyle> {
+    highlight_bindings
         .iter()
         .find(|b| b.parent_plot.0 == plot_path)
-        .map(|b| HighlightStyle::from(&b.style));
-    let projection = Projection::from(resolve_projection(plot));
-    (highlight_style, projection)
+        .map(|b| HighlightStyle::from(&b.style))
 }
 
-/// Build a fresh [`MarkInput`] from a spec mark + its plot's render context
-/// (scheme, highlight style, projection). `highlight_style` is applied only to
-/// the honouring families (`mark_honours_highlight`); `projection` only to a
-/// `geo` mark — exactly the two gates app assembly applies (finding
-/// 1/2/4). Used by the count-changing rebuild + the undo full-reload path.
+/// Build a fresh [`MarkInput`] from a spec mark, its owning plot node, and the
+/// plot's scheme + highlight style. `highlight_style` is applied to the
+/// honouring families (`mark_honours_highlight`) and to no others; the plot's
+/// projection is gated by mark kind inside `ChannelMap::from_mark_in`. Both
+/// gates are held by `findings124_build_fresh_mark_input_gates_by_kind`. Used by
+/// the
+/// count-changing rebuild + the undo full-reload path.
 fn build_fresh_mark_input(
     mark: &Mark,
+    plot: &PlotNode,
     scheme: SequentialScheme,
     plot_highlight: Option<&HighlightStyle>,
-    projection: Projection,
 ) -> MarkInput {
     let bandwidth = mark_attr_f64(mark, "bandwidth");
     let thresholds = mark_attr_f64(mark, "thresholds")
         .filter(|t| *t >= 1.0)
         .map(|t| t as usize);
     let bin_width = mark_attr_f64(mark, "binWidth");
-    // Geo carries the plot's projection; every other kind ignores it.
-    let mark_projection = (mark.kind == MarkKind::Geo).then_some(projection);
     // Only the honouring families dim, so a non-honouring mark stays `None`.
     let highlight_style = mark_honours_highlight(mark.kind)
         .then(|| plot_highlight.cloned())
         .flatten();
     MarkInput {
         batch: None,
-        channels: ChannelMap::from_mark(mark),
+        channels: ChannelMap::from_mark_in(mark, Some(plot)),
         kind: mark.kind,
-        renderer_override: configured_renderer(
-            mark.kind,
-            scheme,
-            bandwidth,
-            thresholds,
-            bin_width,
-            mark_projection,
-        ),
+        renderer_override: configured_renderer(mark.kind, scheme, bandwidth, thresholds, bin_width),
         bandwidth,
         thresholds,
         bin_width,
@@ -1489,7 +1488,7 @@ fn recolour_override(
     // Albers example is a stroke-only basemap with no Sequential fill, so it is
     // not colour-cyclable). Passing the resolved projection would need a
     // `projection` field on MarkInput, deferred with geo interaction.
-    configured_renderer(m.kind, scheme, m.bandwidth, m.thresholds, m.bin_width, None)
+    configured_renderer(m.kind, scheme, m.bandwidth, m.thresholds, m.bin_width)
 }
 
 /// Swap a `ScaleSet`'s Fill ramp stops in place, preserving its domain.
@@ -1631,7 +1630,7 @@ mod tests {
     use super::*;
     use crate::brush::commit_brush_release_multi;
     use crate::chart_state::ChartState;
-    use brightfield_render::mark::configured_renderer;
+    use brightfield_render::mark::{configured_renderer, Projection};
     use brightfield_render::scale::{anchor_scales, SequentialScheme};
     use brightfield_render::scene::build_multi_mark_scene;
 
@@ -1765,7 +1764,7 @@ mod tests {
         let layout = ChartLayout::new(400.0, 300.0);
 
         let fingerprint = |kind: MarkKind| -> (Vec<u32>, Vec<u32>) {
-            let ro = configured_renderer(kind, SequentialScheme::default(), None, None, None, None);
+            let ro = configured_renderer(kind, SequentialScheme::default(), None, None, None);
             let renderer: &dyn MarkRenderer = ro
                 .as_deref()
                 .or_else(|| find_renderer(&renderers, kind))
@@ -1967,11 +1966,11 @@ projectionType: albers
         let spec = parse_spec(geo, Format::Yaml).expect("parse").spec;
         let nodes = collect_plot_nodes(&spec);
         let (path, node) = nodes.first().expect("one plot");
-        let (hl, proj) = plot_render_context(path, node, &[]);
+        let hl = plot_highlight_style(path, &[]);
         assert_eq!(
-            proj,
-            Projection::Albers,
-            "projectionType: albers resolves to Albers"
+            MarkProjection::of(MarkKind::Geo, Some(node)).drawn(),
+            Some(Projection::Albers),
+            "projectionType: albers reaches a geo mark on the plot as Albers"
         );
         assert!(hl.is_none(), "no highlight binding on this plot → no style");
 
@@ -2000,15 +1999,15 @@ plot:
                 stroke_opacity: None,
             },
         }];
-        let (hl, proj) = plot_render_context(path, node, &bindings);
+        let hl = plot_highlight_style(path, &bindings);
         assert!(
             hl.is_some(),
             "a highlight binding on this plot yields a render style"
         );
         assert_eq!(
-            proj,
-            Projection::Equirectangular,
-            "no projectionType → the default fit"
+            MarkProjection::of(MarkKind::Dot, Some(node)),
+            MarkProjection::None,
+            "no projectionType → a dot mark draws cartesian, not a defaulted map"
         );
     }
 
@@ -2020,6 +2019,7 @@ plot:
     fn findings124_build_fresh_mark_input_gates_by_kind() {
         use brightfield_spec::ast::Mark;
         use brightfield_spec::vocab::MarkKind as K;
+        use brightfield_spec::{parse_spec, Format};
         let mk = |kind: K| Mark {
             kind,
             status: kind.status(),
@@ -2030,68 +2030,81 @@ plot:
             opacity: Some(0.2),
             ..Default::default()
         };
+        // A plot naming `albers`, and one naming nothing — the two contexts a
+        // rebuilt mark can land in.
+        let albers_spec = parse_spec(
+            "data:\n  t: SELECT 1 AS a\nplot:\n  - mark: geo\n    data: { from: t }\nprojectionType: albers\n",
+            Format::Yaml,
+        )
+        .expect("parse")
+        .spec;
+        let albers_nodes = collect_plot_nodes(&albers_spec);
+        let albers = albers_nodes.first().expect("one plot").1;
+        let bare_spec = parse_spec(
+            "data:\n  t: SELECT 1 AS a\nplot:\n  - mark: geo\n    data: { from: t }\n",
+            Format::Yaml,
+        )
+        .expect("parse")
+        .spec;
+        let bare_nodes = collect_plot_nodes(&bare_spec);
+        let bare = bare_nodes.first().expect("one plot").1;
 
-        // A honouring dot with a plot highlight style → the mark dims.
+        // A honouring dot with a plot highlight style → the mark dims, and it
+        // draws through the plot's projection like every other positional mark.
         let dot = build_fresh_mark_input(
             &mk(K::Dot),
+            albers,
             SequentialScheme::default(),
             Some(&style),
-            Projection::Albers,
         );
         assert!(
             dot.highlight_style.is_some(),
             "a honouring mark carries the plot highlight style"
         );
-        assert!(
-            dot.renderer_override.is_none(),
-            "a non-geo dot ignores the projection (registry renderer)"
+        assert_eq!(
+            dot.channels.projection(),
+            Some(Projection::Albers),
+            "a dot on an albers plot draws through albers"
         );
 
         // A non-honouring line with the SAME plot style → no highlight (the 12
-        // non-honouring families never dim).
+        // non-honouring families never dim), and it cannot draw through the
+        // projection at all.
         let line = build_fresh_mark_input(
             &mk(K::Line),
+            albers,
             SequentialScheme::default(),
             Some(&style),
-            Projection::Albers,
         );
         assert!(
             line.highlight_style.is_none(),
             "a non-honouring mark never carries a highlight style"
         );
-
-        // A geo mark threads the projection into its configured renderer — and
-        // it must be the ALBERS we passed, not the equirectangular default: the
-        // finding-1/2/4 regression was the rebuild dropping the projection, which
-        // `unwrap_or_default()` silently masks as equirectangular. Read it back
-        // through the renderer's `projection()` seam so the guard has teeth.
-        let geo = build_fresh_mark_input(
-            &mk(K::Geo),
-            SequentialScheme::default(),
-            None,
-            Projection::Albers,
-        );
         assert_eq!(
-            geo.renderer_override.as_ref().and_then(|r| r.projection()),
+            line.channels.mark_projection(),
+            MarkProjection::Undrawable(Projection::Albers),
+            "a line mark cannot draw through a projection, so it is not drawn"
+        );
+
+        // A geo mark carries the plot's projection on its channel map — and it
+        // must be the ALBERS the plot named, not the equirectangular default:
+        // the finding-1/2/4 regression was a rebuild dropping the projection,
+        // which `unwrap_or_default()` silently masks as equirectangular.
+        let geo = build_fresh_mark_input(&mk(K::Geo), albers, SequentialScheme::default(), None);
+        assert_eq!(
+            geo.channels.projection(),
             Some(Projection::Albers),
-            "a geo mark carries the ALBERS projection through the rebuilt renderer (distinct from the default)"
+            "a geo mark carries the ALBERS projection through the rebuild (distinct from the default)"
         );
 
-        // And the equirectangular default threads through as itself (a sanity
-        // pin that `projection()` is not hardwired to Albers).
-        let geo_default = build_fresh_mark_input(
-            &mk(K::Geo),
-            SequentialScheme::default(),
-            None,
-            Projection::Equirectangular,
-        );
+        // And a geo mark on a plot naming nothing draws the plate carrée — the
+        // one kind that projects regardless, since its column is geometry.
+        let geo_default =
+            build_fresh_mark_input(&mk(K::Geo), bare, SequentialScheme::default(), None);
         assert_eq!(
-            geo_default
-                .renderer_override
-                .as_ref()
-                .and_then(|r| r.projection()),
+            geo_default.channels.projection(),
             Some(Projection::Equirectangular),
-            "the equirectangular default threads through unchanged"
+            "a geo mark on an unprojected plot still draws the plate carrée"
         );
     }
 
@@ -2218,7 +2231,7 @@ projectionType: albers
             rebuild_flat_index_space(&plot_meta, old_marks, &spec, &[], &path);
         for &mi in &new_indices[&path] {
             assert_eq!(
-                new_marks[mi].renderer_override.as_ref().and_then(|r| r.projection()),
+                new_marks[mi].channels.projection(),
                 Some(Projection::Albers),
                 "the affected geo plot's rebuilt marks keep the ALBERS projection (survives the rebuild, not reverted to equirectangular)"
             );
@@ -2372,14 +2385,7 @@ projectionType: albers
                 batch: Some(batch.clone()),
                 channels: channels.clone(),
                 kind: MarkKind::Raster,
-                renderer_override: configured_renderer(
-                    MarkKind::Raster,
-                    scheme,
-                    None,
-                    None,
-                    None,
-                    None,
-                ),
+                renderer_override: configured_renderer(MarkKind::Raster, scheme, None, None, None),
                 bandwidth: None,
                 thresholds: None,
                 bin_width: None,
@@ -2424,7 +2430,6 @@ projectionType: albers
                 None,
                 None,
                 None,
-                None,
             ),
             bandwidth: None,
             thresholds: None,
@@ -2451,7 +2456,6 @@ projectionType: albers
             renderer_override: configured_renderer(
                 MarkKind::Raster,
                 SequentialScheme::Blues,
-                None,
                 None,
                 None,
                 None,
@@ -2959,7 +2963,6 @@ plot:
                     None,
                     None,
                     None,
-                    None,
                 ),
                 bandwidth: None,
                 thresholds: None,
@@ -3075,7 +3078,6 @@ plot:
                     Some(0.8),
                     None,
                     None,
-                    None,
                 )
             };
             let marks_for = |batch: RecordBatch| {
@@ -3164,7 +3166,6 @@ plot:
                 None,
                 None,
                 None,
-                None,
             ),
             bandwidth: None,
             thresholds: None,
@@ -3200,7 +3201,6 @@ plot:
                     MarkKind::Heatmap,
                     SequentialScheme::default(),
                     bandwidth,
-                    None,
                     None,
                     None,
                 ),
@@ -3252,7 +3252,6 @@ plot:
                     SequentialScheme::default(),
                     None,
                     thresholds,
-                    None,
                     None,
                 ),
                 bandwidth: None,
@@ -3490,7 +3489,6 @@ plot:
                 renderer_override: configured_renderer(
                     MarkKind::Raster,
                     SequentialScheme::Blues,
-                    None,
                     None,
                     None,
                     None,

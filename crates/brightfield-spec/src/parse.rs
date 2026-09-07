@@ -424,14 +424,68 @@ pub enum ParseWarning {
         attribute: String,
     },
 
-    /// A plot-level `projectionType` carried a value that is not a supported
-    /// projection (v1: `equirectangular`, `albers`, `albers-usa`). The plot
-    /// degrades to the default equirectangular fit, and this names the value so
-    /// an author sees the unsupported projection rather than silently getting a
-    /// different map (geo mark).
+    /// A plot's `projectionType` carried a value outside Mosaic's
+    /// `ProjectionName` vocabulary, or a non-string value. The plot then names
+    /// no projection at all — it draws as a cartesian plot — and this names the
+    /// value so an author sees the unsupported projection rather than silently
+    /// getting a different picture.
+    ///
+    /// [`crate::layout::ResolvedProjection::from_wire`] is the sole judge of
+    /// what is recognised, so widening the catalogue narrows this warning and
+    /// widens [`crate::layout::resolve_projection`] in the same edit.
     UnknownProjection {
         /// The unrecognised projection value (or `<non-string>` for a non-string).
         value: String,
+    },
+
+    /// A mark asked for `aspectRatio: 1` on a plot that names a
+    /// `projectionType`. The two
+    /// are alternatives, not layers: equal-aspect widens the narrower positional
+    /// domain until a degree of longitude and a degree of latitude take the same
+    /// number of pixels, which is a cartesian frame's best impersonation of a
+    /// map, and a projection has already answered that question — correctly, and
+    /// differently at each latitude. The projection decides the frame and the
+    /// `aspectRatio` is dropped.
+    ///
+    /// `brightfield_render::channel::ChannelMap::equal_aspect` is what makes the
+    /// refusal true rather than merely announced; this is what tells the author
+    /// it happened.
+    AspectRatioWithProjection {
+        /// The mark that asked for both.
+        mark: String,
+    },
+
+    /// A plot names a `projectionType` and carries a mark whose kind cannot
+    /// draw through it — see
+    /// [`crate::vocab::MarkKind::draws_through_a_projection`].
+    ///
+    /// The plot's axes are in the projection's planar units, so this mark's raw
+    /// column numbers would land somewhere arbitrary on them: a second
+    /// coordinate system drawn over the first, which reads as a picture rather
+    /// than as an error. **The mark is not drawn**, and this is what says so.
+    MarkCannotProject {
+        /// The mark kind's wire name.
+        mark: String,
+        /// The `projectionType` the plot named.
+        projection: String,
+    },
+
+    /// A plot names a `projectionType` whose two axes do not invert separately,
+    /// and carries an `intervalX` / `intervalY` / `intervalXY` interactor.
+    ///
+    /// A rectangle swept in pixels has a rectangle of longitudes and latitudes
+    /// behind it when the planar `u` depends on the longitude alone and the
+    /// planar `v` on the latitude alone, and not otherwise — see
+    /// [`crate::layout::ResolvedProjection::axes_invert_separately`], enumerated
+    /// by `four_of_mosaics_names_invert_per_axis`. Under a
+    /// conic or an azimuthal it does not, so the `column BETWEEN lo AND hi`
+    /// clause the brush would build names bounds the reader never swept.
+    /// **The interactor is not installed**, and this is what says so.
+    IntervalBrushUnderCurvedProjection {
+        /// The interactor kind's wire name.
+        interactor: String,
+        /// The `projectionType` the plot named.
+        projection: String,
     },
 
     /// A mark carried an option key that **no lowerer and no renderer reads**
@@ -628,7 +682,22 @@ impl fmt::Display for ParseWarning {
             ),
             Self::UnknownProjection { value } => write!(
                 f,
-                "projection `{value}` is not supported — the plot falls back to equirectangular"
+                "projection `{value}` is not supported — the plot draws unprojected"
+            ),
+            Self::AspectRatioWithProjection { mark } => write!(
+                f,
+                "mark `{mark}` sets `aspectRatio` on a plot with a `projectionType` — the projection decides the frame and `aspectRatio` is dropped"
+            ),
+            Self::MarkCannotProject { mark, projection } => write!(
+                f,
+                "mark `{mark}` cannot draw through the plot's `{projection}` projection — it is not drawn, because its coordinates are not in the units the plot's axes are in"
+            ),
+            Self::IntervalBrushUnderCurvedProjection {
+                interactor,
+                projection,
+            } => write!(
+                f,
+                "`{interactor}` cannot filter under the plot's `{projection}` projection — the axes do not invert separately, so no interval brush is installed"
             ),
             Self::UnconsumedMarkOption { mark, key } => write!(
                 f,
@@ -1218,28 +1287,89 @@ impl Walker {
             // default equirectangular fit — name it so the author sees the
             // unsupported projection. A lifted `$param` is a recorded deferral.
             if key == "projectionType" {
-                let unsupported = match &value {
-                    SpecValue::String(s) => {
-                        crate::layout::ResolvedProjection::from_wire(s).is_none()
-                    }
-                    SpecValue::Param(_) => false,
-                    _ => true,
-                };
-                if unsupported {
-                    let shown = match &value {
-                        SpecValue::String(s) => s.clone(),
-                        _ => "<non-string>".to_string(),
-                    };
-                    self.warnings
-                        .push(ParseWarning::UnknownProjection { value: shown });
-                }
+                self.warn_unknown_projection(&value);
             }
             attributes.insert(key, value);
         }
-        Ok(PlotNode {
+        let node = PlotNode {
             items: plot_items,
             attributes,
-        })
+        };
+        self.warn_plot_projection(&node);
+        Ok(node)
+    }
+
+    /// Name what a plot's `projectionType` costs the items inside it.
+    ///
+    /// A projection is a PLOT attribute and it replaces the plot's x and y
+    /// scales, so it is not a per-mark decision and the marks cannot each answer
+    /// it differently. Three consequences, and an author is told about each
+    /// rather than shown a picture that quietly means something else:
+    ///
+    /// - a mark whose kind cannot project ([`MarkKind::draws_through_a_projection`])
+    ///   is not drawn, because its degrees would land arbitrarily on axes in the
+    ///   projection's planar units;
+    /// - a mark asking for `aspectRatio: 1` has already had that question
+    ///   answered, better, by the projection;
+    /// - an interval brush over a projection whose axes do not invert
+    ///   separately is not installed, because its `BETWEEN` bounds would be
+    ///   bounds nobody swept.
+    ///
+    /// Runs over the built [`PlotNode`] rather than over the YAML, so it asks
+    /// [`crate::layout::resolve_projection`] — the same function the renderer
+    /// asks — instead of re-reading the attribute here.
+    fn warn_plot_projection(&mut self, node: &PlotNode) {
+        let Some(projection) = crate::layout::resolve_projection(node) else {
+            return;
+        };
+        let name = match node.attributes.get("projectionType") {
+            Some(SpecValue::String(s)) => s.clone(),
+            _ => String::new(),
+        };
+        for item in &node.items {
+            match item {
+                Component::Mark(mark) => {
+                    if mark.status != ImplStatus::Implemented {
+                        continue;
+                    }
+                    if !mark.kind.draws_through_a_projection() {
+                        self.warnings.push(ParseWarning::MarkCannotProject {
+                            mark: mark.kind.wire_name().to_string(),
+                            projection: name.clone(),
+                        });
+                        continue;
+                    }
+                    let asks_aspect = matches!(
+                        mark.options.get("aspectRatio"),
+                        Some(ValueOrParamRef::Value(SpecValue::Integer(1)))
+                    ) || matches!(
+                        mark.options.get("aspectRatio"),
+                        Some(ValueOrParamRef::Value(SpecValue::Float(f))) if (*f - 1.0).abs() < f64::EPSILON
+                    );
+                    if asks_aspect {
+                        self.warnings.push(ParseWarning::AspectRatioWithProjection {
+                            mark: mark.kind.wire_name().to_string(),
+                        });
+                    }
+                }
+                Component::Interactor(interactor) => {
+                    let is_interval = matches!(
+                        interactor.kind,
+                        InteractorKind::IntervalX
+                            | InteractorKind::IntervalY
+                            | InteractorKind::IntervalXY
+                    );
+                    if is_interval && !projection.axes_invert_separately() {
+                        self.warnings
+                            .push(ParseWarning::IntervalBrushUnderCurvedProjection {
+                                interactor: interactor.kind.wire_name().to_string(),
+                                projection: name.clone(),
+                            });
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     fn walk_concat(&mut self, items: &serde_yaml::Value) -> Result<ConcatNode, ParseError> {
@@ -1503,6 +1633,31 @@ impl Walker {
                 channel: field.to_string(),
                 transform: key.to_string(),
             });
+    }
+
+    /// Raise [`ParseWarning::UnknownProjection`] when `value` is a
+    /// `projectionType` this build cannot draw.
+    ///
+    /// ONE function for the plot attribute and the mark option, asking
+    /// [`crate::layout::ResolvedProjection::from_wire`] — the same question the
+    /// renderer's resolution asks. A lifted `$param` is a recorded deferral and
+    /// not a bad name, so it does not warn; a value that is not a string cannot
+    /// name a projection.
+    fn warn_unknown_projection(&mut self, value: &SpecValue) {
+        let unsupported = match value {
+            SpecValue::String(s) => crate::layout::ResolvedProjection::from_wire(s).is_none(),
+            SpecValue::Param(_) => false,
+            _ => true,
+        };
+        if !unsupported {
+            return;
+        }
+        let shown = match value {
+            SpecValue::String(s) => s.clone(),
+            _ => "<non-string>".to_string(),
+        };
+        self.warnings
+            .push(ParseWarning::UnknownProjection { value: shown });
     }
 
     /// Name every option key on `mark_name`'s node that no lowerer and no
@@ -3021,15 +3176,18 @@ plot:
 
     #[test]
     fn unknown_projection_warns_but_supported_defer() {
-        // An unsupported projection degrades to the default equirectangular fit
-        // AND names itself (geo) — mirroring the NonStringLabel check.
-        let bad = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\nprojectionType: mercator\n";
+        // A name outside Mosaic's `ProjectionName` vocabulary degrades to the
+        // default equirectangular fit AND names itself — mirroring the
+        // NonStringLabel check. `mollweide` is a real d3 EXTENSION projection
+        // rather than a typo, which is the case worth naming: it is the shape of
+        // request this warning exists to answer.
+        let bad = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\nprojectionType: mollweide\n";
         let out = parse_spec(bad, Format::Yaml).expect("parses despite unsupported projection");
         assert!(
             out.warnings.iter().any(
-                |w| matches!(w, ParseWarning::UnknownProjection { value } if value == "mercator")
+                |w| matches!(w, ParseWarning::UnknownProjection { value } if value == "mollweide")
             ),
-            "one UnknownProjection naming `mercator`; got {:?}",
+            "one UnknownProjection naming `mollweide`; got {:?}",
             out.warnings
         );
 
@@ -3038,6 +3196,10 @@ plot:
             "projectionType: albers",
             "projectionType: albers-usa",
             "projectionType: equirectangular",
+            "projectionType: mercator",
+            "projectionType: orthographic",
+            "projectionType: equal-earth",
+            "projectionType: transverse-mercator",
             "projectionType: $p",
         ] {
             let src = format!(
@@ -3051,6 +3213,198 @@ plot:
                 "`{ok}` must not warn; got {:?}",
                 o.warnings
             );
+        }
+    }
+
+    /// **`projectionType` on a MARK is a key no lowerer and no renderer reads.**
+    /// Mosaic has no mark-level projection: a projection is a plot attribute and
+    /// it replaces the plot's x and y scales, so a mark cannot ask for a
+    /// different one. This
+    /// build read one for a while, which made the mark option and the plot
+    /// attribute two mechanisms with nothing arbitrating between them.
+    ///
+    /// It now reports as `UnconsumedMarkOption` like `curve` does — including
+    /// when the value IS one of Mosaic's names, which is the case a reader would
+    /// otherwise expect to work.
+    #[test]
+    fn a_mark_level_projection_is_a_key_nothing_reads() {
+        let mark = |opts: &str| {
+            format!("data:\n  t:\n    - {{ x: 1, y: 2 }}\nplot:\n  - {{ mark: dot, data: {{ from: t }}, x: x, y: y, {opts} }}\n")
+        };
+        for value in ["mercator", "equal-earth", "mollweide"] {
+            let out = parse_spec(&mark(&format!("projectionType: {value}")), Format::Yaml)
+                .expect("parses");
+            assert!(
+                out.warnings.iter().any(|w| matches!(
+                    w,
+                    ParseWarning::UnconsumedMarkOption { mark, key }
+                        if mark == "dot" && key == "projectionType"
+                )),
+                "`projectionType: {value}` on a mark must report as unconsumed; got {:?}",
+                out.warnings
+            );
+            // And it is NOT judged as a projection name — the vocabulary check
+            // is the plot attribute's alone, so a mark-level name neither
+            // resolves nor warns about resolving.
+            assert!(
+                !out.warnings
+                    .iter()
+                    .any(|w| matches!(w, ParseWarning::UnknownProjection { .. })),
+                "a mark-level value is not judged as a projection name; got {:?}",
+                out.warnings
+            );
+        }
+    }
+
+    /// A mark that asks for `aspectRatio: 1` on a plot that names a
+    /// `projectionType` is refused the combination. The warning is what tells the
+    /// author; `ChannelMap::equal_aspect` is what makes it true, and
+    /// `crates/brightfield-render/tests/projected_point_map.rs` holds that half.
+    #[test]
+    fn aspect_ratio_alongside_a_projection_warns() {
+        let plot = |mark_opts: &str, attrs: &str| {
+            format!("data:\n  t:\n    - {{ x: 1, y: 2 }}\nplot:\n  - {{ mark: dot, data: {{ from: t }}, x: x, y: y{mark_opts} }}\n{attrs}")
+        };
+        let out = parse_spec(
+            &plot(", aspectRatio: 1", "projectionType: mercator\n"),
+            Format::Yaml,
+        )
+        .expect("parses");
+        assert!(
+            out.warnings.iter().any(
+                |w| matches!(w, ParseWarning::AspectRatioWithProjection { mark } if mark == "dot")
+            ),
+            "asking for both warns naming the mark; got {:?}",
+            out.warnings
+        );
+
+        // Each alone is silent — the warning is about the COMBINATION, and
+        // without these two a warning that fired on `aspectRatio` alone would
+        // pass the assertion above.
+        for (mark_opts, attrs) in [(", aspectRatio: 1", ""), ("", "projectionType: mercator\n")] {
+            let out = parse_spec(&plot(mark_opts, attrs), Format::Yaml).expect("parses");
+            assert!(
+                !out.warnings
+                    .iter()
+                    .any(|w| matches!(w, ParseWarning::AspectRatioWithProjection { .. })),
+                "`{mark_opts}` / `{attrs}` alone must not warn; got {:?}",
+                out.warnings
+            );
+        }
+
+        // An `aspectRatio` on a plot naming a projection this build cannot draw
+        // is not the refusal — the plot names no projection, so the mark keeps
+        // its equal-aspect frame and hears about the name instead.
+        let out = parse_spec(
+            &plot(", aspectRatio: 1", "projectionType: mollweide\n"),
+            Format::Yaml,
+        )
+        .expect("parses");
+        assert!(
+            !out.warnings
+                .iter()
+                .any(|w| matches!(w, ParseWarning::AspectRatioWithProjection { .. })),
+            "an unrecognised projection does not displace `aspectRatio`; got {:?}",
+            out.warnings
+        );
+        assert!(
+            out.warnings.iter().any(
+                |w| matches!(w, ParseWarning::UnknownProjection { value } if value == "mollweide")
+            ),
+            "the unrecognised name is what the author hears about; got {:?}",
+            out.warnings
+        );
+    }
+
+    /// **A mark whose kind cannot project is not drawn, and is named.** A plot
+    /// that carries a projection has axes in the projection's planar units; a
+    /// `barY` or a `line` on it would draw its raw columns against those axes,
+    /// which is a second coordinate system laid over the first.
+    ///
+    /// `crates/brightfield-render`'s `scene::render_entry` is what makes the
+    /// "not drawn" half true; this is the half that tells the author.
+    #[test]
+    fn a_mark_that_cannot_project_is_named_rather_than_drawn() {
+        let plot = |kind: &str, attrs: &str| {
+            format!("data:\n  t:\n    - {{ x: 1, y: 2 }}\nplot:\n  - {{ mark: {kind}, data: {{ from: t }}, x: x, y: y }}\n{attrs}")
+        };
+        // `dot` and `geo` draw through a projection; nothing else does.
+        for kind in ["dot", "geo"] {
+            let out = parse_spec(&plot(kind, "projectionType: orthographic\n"), Format::Yaml)
+                .expect("parses");
+            assert!(
+                !out.warnings
+                    .iter()
+                    .any(|w| matches!(w, ParseWarning::MarkCannotProject { .. })),
+                "`{kind}` draws through a projection; got {:?}",
+                out.warnings
+            );
+        }
+        for kind in ["line", "barY", "rectY", "text"] {
+            let out = parse_spec(&plot(kind, "projectionType: orthographic\n"), Format::Yaml)
+                .expect("parses");
+            assert!(
+                out.warnings.iter().any(|w| matches!(
+                    w,
+                    ParseWarning::MarkCannotProject { mark, projection }
+                        if mark == kind && projection == "orthographic"
+                )),
+                "`{kind}` cannot project and must be named; got {:?}",
+                out.warnings
+            );
+            // The control: the SAME mark on a plot naming no projection is
+            // silent, so the warning is about the projection and not the kind.
+            let bare = parse_spec(&plot(kind, ""), Format::Yaml).expect("parses");
+            assert!(
+                !bare
+                    .warnings
+                    .iter()
+                    .any(|w| matches!(w, ParseWarning::MarkCannotProject { .. })),
+                "`{kind}` on an unprojected plot is fine; got {:?}",
+                bare.warnings
+            );
+        }
+    }
+
+    /// **An interval brush over a curved projection is refused, and named.** The
+    /// warning is here; `analysis::build_brushable_bindings` is what stops the
+    /// interactor being installed, held by
+    /// `an_interval_brush_is_not_installed_over_a_curved_projection`.
+    #[test]
+    fn an_interval_brush_over_a_curved_projection_warns() {
+        let plot = |interactor: &str, projection: &str| {
+            format!(
+                "params:\n  sel: {{ select: crossfilter }}\ndata:\n  t:\n    - {{ x: 1, y: 2 }}\n\
+                 plot:\n  - {{ mark: dot, data: {{ from: t }}, x: x, y: y }}\n  \
+                 - {{ select: {interactor}, as: $sel }}\nprojectionType: {projection}\n"
+            )
+        };
+        for interactor in ["intervalX", "intervalY", "intervalXY"] {
+            // Separable: the per-axis inverse is exact, so the brush stands.
+            for ok in ["equirectangular", "mercator", "identity", "reflect-y"] {
+                let out = parse_spec(&plot(interactor, ok), Format::Yaml).expect("parses");
+                assert!(
+                    !out.warnings.iter().any(|w| matches!(
+                        w,
+                        ParseWarning::IntervalBrushUnderCurvedProjection { .. }
+                    )),
+                    "`{interactor}` under `{ok}` inverts per axis; got {:?}",
+                    out.warnings
+                );
+            }
+            // Curved: no rectangle of degrees stands behind the swept pixels.
+            for curved in ["orthographic", "albers", "equal-earth", "conic-conformal"] {
+                let out = parse_spec(&plot(interactor, curved), Format::Yaml).expect("parses");
+                assert!(
+                    out.warnings.iter().any(|w| matches!(
+                        w,
+                        ParseWarning::IntervalBrushUnderCurvedProjection { interactor: i, projection: p }
+                            if i == interactor && p == curved
+                    )),
+                    "`{interactor}` under `{curved}` must be refused; got {:?}",
+                    out.warnings
+                );
+            }
         }
     }
 

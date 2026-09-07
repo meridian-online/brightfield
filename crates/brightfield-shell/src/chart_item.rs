@@ -54,6 +54,7 @@ use brightfield_engine::SqlPredicate;
 use brightfield_keys::BindingContext;
 use brightfield_render::canvas_host::{Color, OverlayPainter, SurfaceCursor};
 use brightfield_render::channel::Channel;
+use brightfield_render::mark::Projection;
 use brightfield_render::scale::Scale;
 use brightfield_spec::analysis::BrushKind;
 use brightfield_spec::vocab::MarkKind;
@@ -1500,6 +1501,8 @@ fn interval_predicate(
         clauses.push(axis_interval(
             column,
             scale,
+            plot.scales.projection(),
+            Channel::X,
             a.x - plot.rect.x,
             b.x - plot.rect.x,
         )?);
@@ -1510,6 +1513,8 @@ fn interval_predicate(
         clauses.push(axis_interval(
             column,
             scale,
+            plot.scales.projection(),
+            Channel::Y,
             a.y - plot.rect.y,
             b.y - plot.rect.y,
         )?);
@@ -1529,8 +1534,40 @@ fn interval_predicate(
 /// `point_predicate` below for the failure that made it matter. Both clause
 /// producers on this path quote, because a file column named with a space is as
 /// legal in an interval as in a point.
-fn axis_interval(column: &str, scale: &Scale, p0: f64, p1: f64) -> Option<SqlPredicate> {
+///
+/// # The second inversion a projected plot needs
+///
+/// A projected plot's axes are in the projection's planar units, so
+/// `Scale::inverse_f64` hands back a `u` or a `v` — under Mercator a latitude of
+/// 64° is a `v` of 1.47 — while the column this clause names holds degrees.
+/// `projection` closes that gap through the per-axis inverse `axis` selects, and
+/// is `None` for a cartesian plot, where there is no gap.
+///
+/// It is exact wherever it answers: `build_brushable_bindings` installs no
+/// interval brush on a projection whose axes do not invert separately — held by
+/// `an_interval_brush_is_not_installed_over_a_curved_projection` — so a conic or
+/// an azimuthal does not arrive here. If one did, the inverse answers `None` and
+/// this returns no clause, which is a brush that filters no rows rather than one
+/// filtering on numbers nobody swept —
+/// `a_brush_over_a_curved_projection_builds_no_clause` drives that case.
+///
+/// The inversion runs BEFORE the bounds are ordered, because `reflect-y`'s
+/// inverse decreases: ordering first would name a `lo` above its `hi`.
+fn axis_interval(
+    column: &str,
+    scale: &Scale,
+    projection: Option<Projection>,
+    axis: Channel,
+    p0: f64,
+    p1: f64,
+) -> Option<SqlPredicate> {
     let (v0, v1) = (scale.inverse_f64(p0)?, scale.inverse_f64(p1)?);
+    let unproject = |v: f64| match (projection, axis) {
+        (None, _) => Some(v),
+        (Some(p), Channel::Y) => p.invert_lat(v),
+        (Some(p), _) => p.invert_lon(v),
+    };
+    let (v0, v1) = (unproject(v0)?, unproject(v1)?);
     let (lo, hi) = min_max(v0, v1);
     let bound = |v: f64| match scale {
         Scale::Time { .. } => ScalarValue::TimestampMicros(v.round() as i64),
@@ -1727,6 +1764,102 @@ mod tests {
         };
         assert!((lo - 5.0).abs() < 1e-9, "lo inverted to {lo}");
         assert!((hi - 45.0).abs() < 1e-9, "hi inverted to {hi}");
+    }
+
+    /// **A brush over a PROJECTED plot names degrees, not planar units.**
+    ///
+    /// The plot's axes are in the projection's units — under Mercator a latitude
+    /// of 60° is a `v` of about 1.317 — while the column the clause names holds
+    /// degrees. Without the second inversion the filter reads
+    /// `latitude BETWEEN 0.55 AND 1.32`, which selects a band around the equator
+    /// and looks exactly like a brush that worked.
+    ///
+    /// The expected numbers come from the Gudermannian written out here,
+    /// `2·atan(e^v) − π/2`, not from `Projection::invert_lat`.
+    #[test]
+    fn a_brush_over_a_projected_plot_names_degrees_not_planar_units() {
+        let gudermannian =
+            |v: f64| (2.0 * v.exp().atan() - std::f64::consts::FRAC_PI_2).to_degrees();
+        // The y axis spans Mercator's `v` for 0°..70°N over 100 pixels, top-down.
+        let v_top = (std::f64::consts::FRAC_PI_2 / 2.0 + 70.0_f64.to_radians() / 2.0)
+            .tan()
+            .ln();
+        let mut scales = ScaleSet::new();
+        scales.insert(Channel::X, linear((0.0, 100.0), (0.0, 10.0)));
+        scales.insert(Channel::Y, linear((100.0, 0.0), (0.0, v_top)));
+        scales.set_projection(Projection::Mercator, None);
+        let plot = plot(scales, BrushKind::IntervalY);
+        let binding = plot.gesture.clone().expect("bound");
+        let SqlPredicate::Interval { lo, hi, .. } = interval_predicate(
+            &binding,
+            &plot,
+            kurbo::Point::new(0.0, 20.0),
+            kurbo::Point::new(0.0, 80.0),
+        )
+        .expect("a sweep over a separable projection inverts") else {
+            panic!("structured clause");
+        };
+        let (ScalarValue::Float(lo), ScalarValue::Float(hi)) = (lo, hi) else {
+            panic!("linear bounds are floats");
+        };
+        // Pixels 80 and 20 on a flipped 100→0 range are `v = 0.2·v_top` and
+        // `v = 0.8·v_top`; through the Gudermannian those are latitudes.
+        let (want_lo, want_hi) = (gudermannian(0.2 * v_top), gudermannian(0.8 * v_top));
+        assert!(
+            (lo - want_lo).abs() < 1e-9 && (hi - want_hi).abs() < 1e-9,
+            "the clause must name latitudes [{want_lo}, {want_hi}]; got [{lo}, {hi}]"
+        );
+        // And the control that makes this a real inversion rather than a
+        // coincidence: the raw planar bounds are an order of magnitude smaller,
+        // so a clause that skipped the inverse could not pass the assertion above.
+        assert!(
+            hi > 4.0 * (0.8 * v_top),
+            "the planar `v` and the latitude must be far apart at this span"
+        );
+    }
+
+    /// A brush over a plot whose axes do NOT invert separately builds no clause
+    /// at all, rather than one naming planar units as if they were degrees.
+    ///
+    /// `build_brushable_bindings` does not install such a brush, which
+    /// `an_interval_brush_is_not_installed_over_a_curved_projection` holds. This
+    /// is the second guard behind that, and the one that decides what happens if
+    /// the first is ever wrong.
+    #[test]
+    fn a_brush_over_a_curved_projection_builds_no_clause() {
+        let mut scales = ScaleSet::new();
+        scales.insert(Channel::X, linear((0.0, 100.0), (-1.0, 1.0)));
+        scales.insert(Channel::Y, linear((100.0, 0.0), (-1.0, 1.0)));
+        scales.set_projection(Projection::Orthographic, None);
+        let curved = plot(scales, BrushKind::IntervalXY);
+        let binding = curved.gesture.clone().expect("bound");
+        assert!(
+            interval_predicate(
+                &binding,
+                &curved,
+                kurbo::Point::new(10.0, 10.0),
+                kurbo::Point::new(90.0, 90.0),
+            )
+            .is_none(),
+            "an orthographic plot's brush has no per-axis inverse, so it names nothing"
+        );
+        // The control: the SAME sweep on the same scales with no projection does
+        // build a clause, so the refusal is about the projection.
+        let mut cartesian = ScaleSet::new();
+        cartesian.insert(Channel::X, linear((0.0, 100.0), (-1.0, 1.0)));
+        cartesian.insert(Channel::Y, linear((100.0, 0.0), (-1.0, 1.0)));
+        let unprojected = plot(cartesian, BrushKind::IntervalXY);
+        let binding = unprojected.gesture.clone().expect("bound");
+        assert!(
+            interval_predicate(
+                &binding,
+                &unprojected,
+                kurbo::Point::new(10.0, 10.0),
+                kurbo::Point::new(90.0, 90.0),
+            )
+            .is_some(),
+            "control: an unprojected plot's brush still filters"
+        );
     }
 
     /// A click on a band axis resolves the category under the pointer to a

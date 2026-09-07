@@ -257,6 +257,28 @@ impl MarkKind {
             _ => None,
         }
     }
+
+    /// Whether a mark of this kind places its geometry through the plot's map
+    /// projection when the plot names one.
+    ///
+    /// `dot` reads its `x` and `y` as a longitude and a latitude and places each
+    /// point at `Projection::project` of them; `geo` projects every vertex of
+    /// every ring. Those two are the whole list today.
+    ///
+    /// **A kind that is NOT here does not silently draw beside them.** A plot
+    /// that names a projection has axes in the projection's planar units, and a
+    /// mark drawing raw degrees against those axes is a picture in a second
+    /// coordinate system laid over the first. Such a mark is not drawn — held by
+    /// `a_mark_that_cannot_project_contributes_no_geometry` (brightfield-render)
+    /// — and the author is told by
+    /// [`ParseWarning::MarkCannotProject`](crate::parse::ParseWarning::MarkCannotProject),
+    /// which `a_mark_that_cannot_project_is_named_rather_than_drawn` holds. The
+    /// same contract as [`Self::bins_positionally`]: a kind belongs here once a
+    /// renderer projects what it produces, and not before.
+    #[must_use]
+    pub fn draws_through_a_projection(self) -> bool {
+        matches!(self, Self::Dot | Self::Geo)
+    }
 }
 
 vocab_enum! {
@@ -442,12 +464,21 @@ vocab_enum! {
 ///   `brightfield_render::mark::DotRenderer::augment_scales`, which widens the
 ///   narrower of a `dot` mark's two positional domains until both axes share
 ///   one px-per-unit. Real Observable Plot's `aspectRatio` is a plot-level
-///   option; this build reads it per mark instead, because a mark option
-///   reaches `ChannelMap::from_mark` with no further wiring, while a new
-///   plot-level attribute would need threading through each
-///   renderer-construction call site. The value `1` is the one read; any
-///   other value is left unbound, the same silence an unrecognised `label:`
-///   value gets.
+///   option; this build reads it per mark instead, which is a stated deviation
+///   and not a claim about Plot. The value `1` is the one read; any other value
+///   is left unbound, the same silence an unrecognised `label:` value gets. A
+///   mark that asks for it on a plot that names a `projectionType` is refused
+///   rather than composed — see
+///   [`ParseWarning::AspectRatioWithProjection`](crate::parse::ParseWarning::AspectRatioWithProjection).
+///
+/// **`projectionType` is deliberately absent.** Mosaic has no mark-level
+/// projection key: a projection is a plot attribute, and it replaces the plot's
+/// x and y scales. Written on a mark it is therefore a key no lowerer and no
+/// renderer reads, and it reports as
+/// [`ParseWarning::UnconsumedMarkOption`](crate::parse::ParseWarning::UnconsumedMarkOption),
+/// which `a_mark_level_projection_is_a_key_nothing_reads` holds. The plot
+/// attribute is delivered to each mark by
+/// `brightfield_render::channel::ChannelMap::from_mark_in`.
 pub const CONSUMED_MARK_OPTION_KEYS: &[&str] = &[
     "x",
     "y",

@@ -580,51 +580,162 @@ pub fn resolve_fixed_domains(plot: &PlotNode) -> FixedDomains {
     }
 }
 
-/// The map projection a geo plot resolves to (geo mark). Which
-/// projection is a PURE spec decision (this resolver, reading plot-level
-/// `projectionType`); the forward MATH lives render-side in
-/// `brightfield_render::mark::Projection`, converted from this.
+/// The map projection a plot resolves to. Which projection is a PURE spec
+/// decision (this resolver, reading `projectionType`); the forward MATH lives
+/// render-side in `brightfield_render::mark::Projection`, converted from this.
 ///
-/// v1 renders Equirectangular (the default fit) and a US-tuned Albers.
-/// `albers-usa`'s AK/HI composite insets are deferred — it maps to plain
-/// [`ResolvedProjection::Albers`] (contiguous-US correct; AK/HI render in true
-/// geographic position, a stated gap). Every other Mosaic projection name
-/// (mercator, orthographic, …) is unrecognised → default + a
-/// [`crate::parse::ParseWarning::UnknownProjection`].
+/// The catalogue is **Mosaic's `ProjectionName` enum**, which is Observable
+/// Plot's, which is d3-geo's — one list, so a name the spec language can ask
+/// for and a name this build can draw are the same vocabulary. Sixteen names
+/// are recognised, which the test
+/// `every_mosaic_projection_name_resolves_to_its_own_variant` enumerates against
+/// the schema; [`ResolvedProjection::from_wire`] is the single place that maps a
+/// wire string to a variant.
+///
+/// **A projection is a PLOT attribute and nothing else**, which is Observable
+/// Plot's rule and therefore Mosaic's: `projection` replaces the plot's x and y
+/// scales, so every mark on the plot whose position channels are longitude and
+/// latitude draws through it and no mark draws through a different one. The one
+/// delivery is `brightfield_render::channel::ChannelMap::from_mark_in`, which
+/// takes the plot the mark sits in.
+///
+/// Two stated fidelity gaps, both unchanged by the catalogue widening:
+///
+/// - `albers-usa`'s AK/HI composite insets are deferred — it maps to plain
+///   [`ResolvedProjection::Albers`] (contiguous-US correct; AK/HI render in
+///   true geographic position).
+/// - `projectionRotate` / `projectionParallels` are not read, so a projection
+///   here is drawn at d3's default rotation and, for the conics, d3's default
+///   standard parallels. `albers` is the exception, because its rotation is
+///   baked into the transform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ResolvedProjection {
     /// `u = lon`, `v = lat` (north-up supplied by the inverted Y scale). The
     /// default when `projectionType` is absent or unrecognised.
     #[default]
     Equirectangular,
+    /// d3's `geoIdentity` — a planar passthrough. Under the renderer's
+    /// aspect-preserving fit this draws the same picture as
+    /// [`Self::Equirectangular`]; it is a separate variant because it is a
+    /// separate name in the spec language, and because [`Self::ReflectY`] is
+    /// its sibling.
+    Identity,
+    /// [`Self::Identity`] with the latitude axis flipped.
+    ReflectY,
+    /// Spherical Mercator — conformal, so local shape survives at each
+    /// latitude. Undefined at the poles: beyond d3's clip latitude
+    /// (±85.05113°) a coordinate has no position.
+    Mercator,
+    /// Transverse spherical Mercator at d3's default `rotate([0, 0, 90])`.
+    TransverseMercator,
+    /// Orthographic — the globe seen from infinitely far away. The far
+    /// hemisphere has no position.
+    Orthographic,
+    /// Stereographic — conformal azimuthal. The antipode has no position.
+    Stereographic,
+    /// Gnomonic — great circles draw straight. Only the near hemisphere has a
+    /// position, and it diverges towards the rim.
+    Gnomonic,
+    /// Lambert azimuthal equal-area.
+    AzimuthalEqualArea,
+    /// Azimuthal equidistant.
+    AzimuthalEquidistant,
+    /// Equal Earth (Šavrič, Patterson & Jenny, 2018) — an equal-area
+    /// pseudocylindrical whole-world projection, defined at each latitude.
+    EqualEarth,
+    /// Albers conic equal-area at d3's default standard parallels (0°, 60°).
+    ConicEqualArea,
+    /// Lambert conic conformal at d3's default standard parallels (30°, 30°).
+    ConicConformal,
+    /// Conic equidistant at d3's default standard parallels (0°, 60°).
+    ConicEquidistant,
     /// US-tuned Albers equal-area conic (fixed standard parallels 29.5°/45.5°).
     Albers,
 }
 
 impl ResolvedProjection {
-    /// Recognise a `projectionType` wire value. `None` for an unsupported
-    /// projection (the caller defaults + warns). `albers-usa` maps to plain
-    /// `Albers` — the composite is deferred (a stated fidelity gap).
+    /// Recognise a `projectionType` wire value. `None` for a name outside
+    /// Mosaic's vocabulary (the caller defaults + warns). `albers-usa` maps to
+    /// plain `Albers` — the composite is deferred (a stated fidelity gap).
+    ///
+    /// This is the ONE reader of a projection name in the build: the plot
+    /// attribute ([`resolve_projection`]) and the parser's
+    /// [`crate::parse::ParseWarning::UnknownProjection`] check come through
+    /// here, so a name the spec language accepts and a name the renderer draws
+    /// cannot come apart. There is no mark-level projection key — Mosaic has no
+    /// such key, and `projectionType` written on a mark reaches
+    /// [`crate::parse::ParseWarning::UnconsumedMarkOption`], which
+    /// `a_mark_level_projection_is_a_key_nothing_reads` holds.
     #[must_use]
     pub fn from_wire(name: &str) -> Option<Self> {
         match name {
             "equirectangular" => Some(Self::Equirectangular),
+            "identity" => Some(Self::Identity),
+            "reflect-y" => Some(Self::ReflectY),
+            "mercator" => Some(Self::Mercator),
+            "transverse-mercator" => Some(Self::TransverseMercator),
+            "orthographic" => Some(Self::Orthographic),
+            "stereographic" => Some(Self::Stereographic),
+            "gnomonic" => Some(Self::Gnomonic),
+            "azimuthal-equal-area" => Some(Self::AzimuthalEqualArea),
+            "azimuthal-equidistant" => Some(Self::AzimuthalEquidistant),
+            "equal-earth" => Some(Self::EqualEarth),
+            "conic-equal-area" => Some(Self::ConicEqualArea),
+            "conic-conformal" => Some(Self::ConicConformal),
+            "conic-equidistant" => Some(Self::ConicEquidistant),
             "albers" | "albers-usa" => Some(Self::Albers),
             _ => None,
         }
     }
+
+    /// Whether a pixel on the x axis inverts to a longitude without knowing the
+    /// y pixel, and a pixel on the y axis to a latitude without knowing the x
+    /// pixel.
+    ///
+    /// True exactly for the four projections whose planar `u` is a function of
+    /// longitude alone and whose `v` is a function of latitude alone —
+    /// equirectangular, identity, reflect-y and Mercator —
+    /// `four_of_mosaics_names_invert_per_axis` enumerates them against the
+    /// catalogue. Elsewhere the two are entangled (a conic's `u` depends on the
+    /// latitude, an azimuthal's on both), so a rectangle swept in pixels has no
+    /// rectangle of longitudes and latitudes behind it and an `intervalX` /
+    /// `intervalY` / `intervalXY` filter over it would name bounds the reader
+    /// did not sweep.
+    ///
+    /// `brightfield_render::mark::Projection` implements the two inverses this
+    /// predicate is a claim about; the test
+    /// `separability_is_the_claim_the_inverses_keep` drives all sixteen names
+    /// through both and fails if either side moves alone.
+    #[must_use]
+    pub fn axes_invert_separately(self) -> bool {
+        matches!(
+            self,
+            Self::Equirectangular | Self::Identity | Self::ReflectY | Self::Mercator
+        )
+    }
 }
 
-/// Resolve a plot's map projection from its `projectionType` attribute — a PURE
-/// resolver beside [`resolve_plot_insets`] / [`resolve_axis_titles`]. Absent, a
-/// `$param`, or an unrecognised value → the default [`ResolvedProjection`]
-/// (equirectangular fit); the unrecognised-value warning is raised at PARSE time
-/// in `walk_plot` (like `NonNumericInset` / `NonStringLabel`), never here.
+/// The map projection a plot's `projectionType` attribute names, or `None` for a
+/// plot that does not name one — a PURE resolver beside [`resolve_plot_insets`] /
+/// [`resolve_axis_titles`], held by `resolve_projection_reads_projection_type`.
+///
+/// **The absence is meaningful and is why this returns an `Option`.** A plot
+/// that names no projection is a cartesian plot: its `dot` marks draw a scatter
+/// at raw column numbers and no graticule goes behind them. A plot that names
+/// `equirectangular` is a map that happens to use the plate carrée, and it draws
+/// a graticule. Collapsing the two — which is what returning a defaulted
+/// `ResolvedProjection` did — makes a scatter indistinguishable from a world
+/// map, which `an_unprojected_dot_mark_draws_no_graticule` is the contrast for.
+///
+/// A `$param` and an unrecognised name both read as absent — the last two cases
+/// of `resolve_projection_reads_projection_type`. The unrecognised-value warning
+/// is raised at PARSE time in `walk_plot` (like `NonNumericInset` /
+/// `NonStringLabel`) rather than here.
 #[must_use]
-pub fn resolve_projection(plot: &PlotNode) -> ResolvedProjection {
+pub fn resolve_projection(plot: &PlotNode) -> Option<ResolvedProjection> {
     match plot.attributes.get("projectionType") {
-        Some(SpecValue::String(s)) => ResolvedProjection::from_wire(s).unwrap_or_default(),
-        _ => ResolvedProjection::default(),
+        Some(SpecValue::String(s)) => ResolvedProjection::from_wire(s),
+        _ => None,
     }
 }
 
@@ -2053,45 +2164,129 @@ hconcat:
 
     #[test]
     fn resolve_projection_reads_projection_type() {
-        // Absent → default equirectangular.
-        assert_eq!(
-            resolve_projection(&plot_with(&[])),
-            ResolvedProjection::Equirectangular
-        );
+        let named = |name: &str| {
+            resolve_projection(&plot_with(&[(
+                "projectionType",
+                SpecValue::String(name.into()),
+            )]))
+        };
+        // Absent → the plot names NO projection. Not "equirectangular": a plot
+        // that names nothing is a cartesian plot, and its dot marks draw a
+        // scatter with no graticule behind it.
+        assert_eq!(resolve_projection(&plot_with(&[])), None);
         // Recognised names.
         assert_eq!(
-            resolve_projection(&plot_with(&[(
-                "projectionType",
-                SpecValue::String("equirectangular".into())
-            )])),
-            ResolvedProjection::Equirectangular
+            named("equirectangular"),
+            Some(ResolvedProjection::Equirectangular)
         );
-        assert_eq!(
-            resolve_projection(&plot_with(&[(
-                "projectionType",
-                SpecValue::String("albers".into())
-            )])),
-            ResolvedProjection::Albers
-        );
+        assert_eq!(named("albers"), Some(ResolvedProjection::Albers));
         // albers-usa → plain Albers (composite deferred, a stated gap).
+        assert_eq!(named("albers-usa"), Some(ResolvedProjection::Albers));
+        // The rest of Mosaic's names resolve through the same attribute — the
+        // catalogue widened without a second mechanism beside `resolve_projection`.
+        assert_eq!(named("mercator"), Some(ResolvedProjection::Mercator));
         assert_eq!(
-            resolve_projection(&plot_with(&[(
-                "projectionType",
-                SpecValue::String("albers-usa".into())
-            )])),
-            ResolvedProjection::Albers
+            named("orthographic"),
+            Some(ResolvedProjection::Orthographic)
         );
-        // Unrecognised / non-string → default (no panic; the warning is parse-time).
-        assert_eq!(
-            resolve_projection(&plot_with(&[(
-                "projectionType",
-                SpecValue::String("mercator".into())
-            )])),
-            ResolvedProjection::Equirectangular
-        );
+        // A name outside Mosaic's vocabulary, and a non-string → no projection
+        // (no panic; the warning is parse-time).
+        assert_eq!(named("mollweide"), None);
         assert_eq!(
             resolve_projection(&plot_with(&[("projectionType", SpecValue::Integer(3))])),
-            ResolvedProjection::Equirectangular
+            None
+        );
+    }
+
+    /// **The separability claim, over Mosaic's sixteen names.**
+    /// `ResolvedProjection::axes_invert_separately` is a spec-side
+    /// assertion about render-side behaviour: `build_brushable_bindings` reads it
+    /// to decide whether an interval brush is installed, and
+    /// `brightfield-shell`'s `axis_interval` then relies on the inverses
+    /// existing. Two ways for that to be wrong, and this test rules out both — a
+    /// projection declared separable whose inverses are missing is a brush that
+    /// silently stops filtering, and one declared curved whose inverses exist is
+    /// a brush refused for nothing.
+    ///
+    /// The render-side half lives in `brightfield-render`'s
+    /// `separability_is_the_claim_the_inverses_keep`, which drives the same
+    /// sixteen names through `Projection::invert_lon` / `invert_lat`; this half
+    /// pins WHICH names the claim covers, so the list cannot quietly widen.
+    #[test]
+    fn four_of_mosaics_names_invert_per_axis() {
+        let mut separable: Vec<&str> = MOSAIC_PROJECTION_NAMES
+            .iter()
+            .map(|(n, _)| *n)
+            .filter(|n| {
+                ResolvedProjection::from_wire(n)
+                    .expect("a Mosaic name resolves")
+                    .axes_invert_separately()
+            })
+            .collect();
+        separable.sort_unstable();
+        assert_eq!(
+            separable,
+            vec!["equirectangular", "identity", "mercator", "reflect-y"],
+            "the separable set is the four whose u depends on the longitude \
+             alone and whose v depends on the latitude alone"
+        );
+    }
+
+    /// Mosaic's `ProjectionName` enum, verbatim from its published JSON schema
+    /// (`idl.uw.edu/mosaic/schema/latest.json`, `definitions/ProjectionName`).
+    /// Sixteen names; ONE enumeration, so a test about the vocabulary and a test
+    /// about what the vocabulary can do cannot be about different lists.
+    const MOSAIC_PROJECTION_NAMES: [(&str, ResolvedProjection); 16] = [
+        ("albers-usa", ResolvedProjection::Albers),
+        ("albers", ResolvedProjection::Albers),
+        (
+            "azimuthal-equal-area",
+            ResolvedProjection::AzimuthalEqualArea,
+        ),
+        (
+            "azimuthal-equidistant",
+            ResolvedProjection::AzimuthalEquidistant,
+        ),
+        ("conic-conformal", ResolvedProjection::ConicConformal),
+        ("conic-equal-area", ResolvedProjection::ConicEqualArea),
+        ("conic-equidistant", ResolvedProjection::ConicEquidistant),
+        ("equal-earth", ResolvedProjection::EqualEarth),
+        ("equirectangular", ResolvedProjection::Equirectangular),
+        ("gnomonic", ResolvedProjection::Gnomonic),
+        ("identity", ResolvedProjection::Identity),
+        ("reflect-y", ResolvedProjection::ReflectY),
+        ("mercator", ResolvedProjection::Mercator),
+        ("orthographic", ResolvedProjection::Orthographic),
+        ("stereographic", ResolvedProjection::Stereographic),
+        (
+            "transverse-mercator",
+            ResolvedProjection::TransverseMercator,
+        ),
+    ];
+
+    /// Each of Mosaic's sixteen names resolves, and to a DISTINCT variant apart
+    /// from the one pair that is deliberately shared: `albers`/`albers-usa`,
+    /// whose composite insets are deferred.
+    #[test]
+    fn every_mosaic_projection_name_resolves_to_its_own_variant() {
+        let names = MOSAIC_PROJECTION_NAMES;
+        for (wire, expected) in names {
+            assert_eq!(
+                ResolvedProjection::from_wire(wire),
+                Some(expected),
+                "`{wire}` must resolve to {expected:?}"
+            );
+        }
+        // Distinctness, so a widening that mapped several names onto one variant
+        // could not pass the loop above: sixteen names, fifteen variants, and the
+        // one collision is the deferred composite.
+        let mut variants: Vec<ResolvedProjection> = names.iter().map(|(_, v)| *v).collect();
+        variants.sort_by_key(|v| format!("{v:?}"));
+        variants.dedup();
+        assert_eq!(
+            variants.len(),
+            names.len() - 1,
+            "only `albers`/`albers-usa` may share a variant; got {variants:?}"
         );
     }
 

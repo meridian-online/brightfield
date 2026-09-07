@@ -1,10 +1,10 @@
 //! **The point-map kind** — a coordinate pair plotted as points, brushable,
-//! on a frame where one px-per-unit is shared by both axes.
+//! drawn through a named map projection with a graticule behind it.
 //!
 //! `chart_kinds::POINT_MAP` declares two required quantitative slots and
 //! builds a block of two `dot` layers over one table — the same device
 //! `tests/scatter_kind.rs` documents at length for the scatter, with two
-//! differences: both layers write `aspectRatio: 1`, and the columns are a
+//! differences: the plot writes `projectionType`, and the columns are a
 //! longitude and a latitude rather than the table's first two measures.
 //!
 //! # Three tiers, over the same declaration/block/gesture split
@@ -13,14 +13,14 @@
 //! **The declaration** — two required quantitative slots, so `accepts`
 //! answers no to a table with one measure, same as the scatter's.
 //!
-//! **The block** — the two layers, the columns they bind, the `aspectRatio: 1`
-//! each writes, and the selection they share, read off the *parsed* document.
-//! The equal-aspect MATH itself — that `DotRenderer::augment_scales` actually
-//! widens the narrower domain until both axes share one px-per-unit — is
-//! `crates/brightfield-render/src/mark.rs`'s own
-//! `augment_scales_equal_aspect_widens_the_narrower_axis`, the render crate
+//! **The block** — the two layers, the columns they bind, the projection the
+//! PLOT declares, and the selection they share, read off the *parsed* document.
+//! What the projection then does to the drawing — a dot at its projected
+//! position, a graticule from the projection and the visible extent — is
+//! `crates/brightfield-render/tests/projected_point_map.rs`'s, the render crate
 //! being where the scales live; this file holds the spec-level half, that the
-//! kind's builder asks for the fit at all.
+//! kind's builder asks for a projection at all and asks for it where Mosaic
+//! puts it.
 //!
 //! **The gesture** — a real diagonal pointer sweep on a point map composed
 //! beside a histogram tile, driven through `MeridianApp` on the presented
@@ -283,15 +283,29 @@ fn the_point_map_declares_a_ghost_cloud_behind_a_filtered_subset() {
         );
         assert_eq!(bound_column(layer, "x"), LON, "layer {n} on x");
         assert_eq!(bound_column(layer, "y"), LAT, "layer {n} on y");
-        match layer.options.get("aspectRatio") {
-            Some(ValueOrParamRef::Value(SpecValue::Integer(1))) => {}
-            other => panic!(
-                "layer {n} does not ask for an equal-aspect frame: \
-                 aspectRatio = {other:?} — without it the map's two axes fit \
-                 their domains independently, and a degree of longitude and a \
-                 degree of latitude cover different numbers of pixels"
-            ),
-        }
+        // `aspectRatio` is refused beside a projection
+        // (`ParseWarning::AspectRatioWithProjection`), so a layer that still
+        // wrote it would be asking for something the parser drops.
+        assert!(
+            layer.options.get("aspectRatio").is_none(),
+            "layer {n} still asks for an equal-aspect frame, which a projected \
+             plot refuses — the projection has already answered that question"
+        );
+    }
+
+    // The projection, at PLOT level: Mosaic has no mark-level projection key,
+    // and this is what puts both layers in one coordinate system by
+    // construction rather than by two lookups agreeing.
+    match plot.attributes.get("projectionType") {
+        Some(SpecValue::String(name)) => assert_eq!(
+            name,
+            chart_kinds::POINT_MAP_PROJECTION,
+            "the tile's projection moved"
+        ),
+        other => panic!(
+            "the plot declares no `projectionType`, so the tile is a scatter \
+             shaped like a map rather than a map: {other:?}\n{source}"
+        ),
     }
 
     let source_of = |layer: &Mark| match layer.data.as_ref() {

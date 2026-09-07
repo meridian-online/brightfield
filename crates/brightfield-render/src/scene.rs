@@ -85,6 +85,17 @@ pub struct ChartData<'a> {
 /// One function rather than an `if` at each of the two builders, so a third
 /// builder cannot quietly acquire the un-navigated behaviour for both cases.
 fn render_entry(scene: &mut Scene, entry: &ChartData<'_>, scales: &ScaleSet) {
+    // A mark the plot's projection leaves undrawable draws nothing at all. Its
+    // columns are degrees and these axes are in the projection's planar units,
+    // so placing it would lay a second coordinate system over the first — a
+    // wrong picture rather than a missing one, and a reader has no way to tell.
+    // `ParseWarning::MarkCannotProject` is what says so out loud. The guard is
+    // here, in the one function both scene builders draw a layer through, for
+    // the reason the `beyond_frame` branch below is: a third builder cannot
+    // quietly acquire the wrong half.
+    if entry.channel_map.mark_projection().is_undrawable() {
+        return;
+    }
     if entry.beyond_frame {
         entry.renderer.render_beyond_frame(
             scene,
@@ -187,14 +198,18 @@ pub fn build_chart_scene(data: &ChartData<'_>, ink: ChartInk) -> (Scene, ScaleSe
     );
 
     // Let the mark contribute positional scales generic column inference can't
-    // supply (regression's x/y extents, 1D-density's perpendicular axis).
-    data.renderer.augment_scales(
-        &mut scales,
-        data.batch,
-        data.channel_map,
-        data.layout.x_range(),
-        data.layout.y_range(),
-    );
+    // supply (regression's x/y extents, 1D-density's perpendicular axis). A mark
+    // the projection leaves undrawable contributes no domain, for the reason
+    // `render_entry` above declines to draw it.
+    if !data.channel_map.mark_projection().is_undrawable() {
+        data.renderer.augment_scales(
+            &mut scales,
+            data.batch,
+            data.channel_map,
+            data.layout.x_range(),
+            data.layout.y_range(),
+        );
+    }
 
     // Anchor the value axis at zero for marks that need it (e.g. bars), so the
     // baseline lands on the axis rather than extrapolating off the plot. Applied
@@ -223,7 +238,7 @@ pub fn build_chart_scene(data: &ChartData<'_>, ink: ChartInk) -> (Scene, ScaleSe
     }
 
     // A frame-suppressing mark (geo) drops the grid + axes (geo).
-    let suppress_frame = data.renderer.suppresses_frame();
+    let suppress_frame = data.renderer.suppresses_frame(data.channel_map);
 
     // Grid lines (behind marks).
     if !suppress_frame {
@@ -778,6 +793,9 @@ fn infer_multi_mark_scales(entries: &[&ChartData<'_>], ink: ChartInk) -> ScaleSe
     // Let each mark contribute positional scales generic column inference can't
     // supply (regression's x/y extents, 1D-density's perpendicular axis).
     for entry in entries {
+        if entry.channel_map.mark_projection().is_undrawable() {
+            continue;
+        }
         entry.renderer.augment_scales(
             &mut scales,
             entry.batch,
@@ -866,6 +884,9 @@ fn infer_multi_mark_scales(entries: &[&ChartData<'_>], ink: ChartInk) -> ScaleSe
         // extent was set at — comes out unchanged, since the fit of an
         // already-fit domain maps back to itself.
         for entry in entries {
+            if entry.channel_map.mark_projection().is_undrawable() {
+                continue;
+            }
             entry.renderer.augment_scales(
                 &mut scales,
                 entry.batch,
@@ -900,7 +921,9 @@ fn draw_multi_mark_scene(
 
     // A frame-suppressing mark (geo — it projects its own coordinate space and
     // reads as a map) drops the grid + axes for the whole plot (geo).
-    let suppress_frame = entries.iter().any(|e| e.renderer.suppresses_frame());
+    let suppress_frame = entries
+        .iter()
+        .any(|e| e.renderer.suppresses_frame(e.channel_map));
 
     // Grid lines (behind marks).
     if !suppress_frame {
