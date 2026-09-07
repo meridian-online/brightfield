@@ -2198,8 +2198,8 @@ hconcat:
         );
     }
 
-    /// **The separability claim and the inverses that keep it, over the whole
-    /// catalogue.** `ResolvedProjection::axes_invert_separately` is a spec-side
+    /// **The separability claim, over Mosaic's sixteen names.**
+    /// `ResolvedProjection::axes_invert_separately` is a spec-side
     /// assertion about render-side behaviour: `build_brushable_bindings` reads it
     /// to decide whether an interval brush is installed at all, and
     /// `brightfield-shell`'s `axis_interval` then relies on the inverses

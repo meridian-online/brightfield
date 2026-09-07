@@ -4760,7 +4760,7 @@ const GEO_STROKE_WIDTH: f64 = 0.75;
 /// **The projection is not a field here.** It reaches this renderer the way it
 /// reaches a projected `dot` — on the [`ChannelMap`], put there by
 /// `ChannelMap::from_mark_in` from the owning plot's `projectionType`. A geo
-/// mark on a plot naming nothing draws the plate carrée, which
+/// mark on an unprojected plot draws the plate carrée, which
 /// `MarkProjection::of` supplies. That a geo mark and a dot mark on one plot
 /// draw in the same coordinate system is held by
 /// `the_land_is_drawn_where_the_orthographic_puts_it` and

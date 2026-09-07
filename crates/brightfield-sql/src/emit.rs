@@ -438,8 +438,8 @@ fn collect_marks_from_component<'a>(component: &'a Component, marks: &mut Vec<&'
 /// The plot node each mark sits in, indexed like [`collect_marks`].
 ///
 /// **The join a renderer needs and the AST does not carry.** A `Mark` has no
-/// back-pointer to its plot, and a plot-level attribute — `projectionType` above
-/// all — has to reach the mark that draws under it. Built from
+/// back-pointer to its plot, and a plot-level attribute — `projectionType`
+/// especially — has to reach the mark that draws under it. Built from
 /// [`collect_plot_groups`] and `collect_plot_nodes` rather than by a third walk
 /// of the tree, so the mark ordering here is the same ordering the engine
 /// returns results in by construction and not by two traversals agreeing.
