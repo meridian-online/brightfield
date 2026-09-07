@@ -93,14 +93,30 @@ const INSET_X: f32 = spacing::SPACE_4;
 
 /// The row carrying the glyph and the column's name.
 /// The clear space kept between the two ends of a row that carries a label at
-/// each end — the range row and the statistics rows.
+/// each end — the range row, the statistics rows and the leaf-and-storage row.
 ///
-/// One step of the scale, the same gap [`crate::protocol`]'s rail keeps
-/// between a name and the type beside it. It is what the two labels are held
-/// apart BY, so it is also the amount by which the leading one is elided
-/// earlier than it strictly has to be: a row where two clauses touch reads as
-/// one clause, which is the defect one step short of the collision.
-const RANGE_GAP: f32 = spacing::SPACE_3;
+/// **The smallest step of the scale, and deliberately not a comfortable one.**
+/// This gap is what the leading label is elided to make room for, so every
+/// point of it is paid for in characters somebody wanted to read. Measured at
+/// one step wider, [`spacing::SPACE_3`] — which is what the rail keeps between
+/// a name and a type — the housing table's `median 26.00 sd 15.34` became
+/// `median 26… sd 15.34` and the point map's `-122.45` became `-122.…`, in
+/// cells that were tight and not colliding. A range row exists to state two
+/// bounds, and eliding one of them to two characters defeats the row to buy a
+/// preference.
+///
+/// The floor is not taste. It is [`text_ink::MIN_OVERLAP`], asserted below:
+/// under that, two labels this file placed could be reported as a collision by
+/// the check in the module that placed them, because epaint rounds each glyph
+/// quad out to the pixel grid and a mesh box stands wider than the line box
+/// these rects are measured from.
+const RANGE_GAP: f32 = spacing::SPACE_1;
+
+// A gap under `MIN_OVERLAP` would let `row_ends` draw a pair that
+// `text_ink::collisions` reports — the drawing and the check disagreeing about
+// one frame. Asserted here rather than in a test because it is decidable
+// without running anything.
+const _: () = assert!(RANGE_GAP >= text_ink::MIN_OVERLAP);
 
 const NAME_ROW: f32 = 16.0;
 
