@@ -46,8 +46,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use brightfield_protocol::contract::{SkipReason, StepState};
 use brightfield_protocol::contract::Outcome;
+use brightfield_protocol::contract::{SkipReason, StepState};
 use brightfield_protocol::contract_graph::{AssetMeta, RunView, SeamStatus, StepView};
 use brightfield_protocol::graph::{AssetGraph, AssetId, AssetKind, SeamKind, StepId};
 use brightfield_protocol::layout::{Flow, Layout, LayoutConfig, Rect};
@@ -1221,6 +1221,32 @@ impl ProtocolModel {
     #[must_use]
     pub fn is_cte_expanded(&self) -> bool {
         self.cte_expanded
+    }
+
+    /// Each step this Protocol declares, and the run state recorded for it.
+    ///
+    /// Over the **seams of the full graph**, not over the recorded map, and
+    /// defaulting a step with nothing recorded to [`SeamStatus::NotRun`] — the
+    /// same defaulting `brightfield_protocol::panel::outline_rows` applies when
+    /// it tints a row. Reading the map alone would answer *no steps* for a
+    /// declaration, where the truth is *every step, and none of them has run*,
+    /// and a test asking "does any step report never-run" would then pass over
+    /// the very document that made the question worth asking.
+    #[must_use]
+    pub fn step_states(&self) -> BTreeMap<StepId, SeamStatus> {
+        self.graph_full
+            .seams
+            .keys()
+            .map(|step| {
+                (
+                    step.clone(),
+                    self.statuses
+                        .get(step)
+                        .copied()
+                        .unwrap_or(SeamStatus::NotRun),
+                )
+            })
+            .collect()
     }
 
     /// The run behind this Protocol, when a run emitted it.
@@ -3560,7 +3586,10 @@ fn status_gloss(s: SeamStatus) -> &'static str {
         SeamStatus::Running => "Currently running.",
         SeamStatus::Skipped => "Skipped — already up to date, or gated off.",
         SeamStatus::Failed => "Failed on the last run — check the run log.",
-        SeamStatus::NotRun => "Not run in this view (the offline manifest has no run status).",
+        SeamStatus::NotRun => {
+            "No recorded state — an input the run did not produce, or a Protocol with no run \
+             behind it."
+        }
     }
 }
 

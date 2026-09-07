@@ -535,7 +535,10 @@ const CROSSWALK_MANIFEST: &str =
 /// Bytes rather than a string because that is what
 /// [`brightfield_protocol::view_from_contract_bytes`] takes — the contract is
 /// JSON on a wire, not source anybody edits.
-const CROSSWALK_RUN_CONTRACT: &[u8] =
+///
+/// Public so a test can compare these bytes with the file on disk and say
+/// *one artefact* rather than *two that agree today*.
+pub const CROSSWALK_RUN_CONTRACT: &[u8] =
     include_bytes!("../../brightfield-protocol/fixtures/edgar_gleif.contract.json");
 
 /// The crosswalk chart, included from `examples/` rather than copied into
