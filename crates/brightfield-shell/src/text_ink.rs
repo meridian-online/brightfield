@@ -7,9 +7,11 @@
 //! screenshot. Looking does not scale to the panes nobody thought to open, and
 //! it does not cover the pane written next.
 //!
-//! [`frame_text`] reads a pass's own paint lists — every galley, the layer it
+//! [`frame_text`] reads a pass's own paint lists — each galley, the layer it
 //! was painted into, the clip it was painted under — and [`collisions`] asks
-//! whether any two of them share pixels. A test drives the real shell for one
+//! whether any two of them share pixels. That it reaches every galley the pass
+//! painted is what `the_check_reads_every_galley_the_pass_painted` measures,
+//! against egui's own flattening of the same pass. A test drives the real shell for one
 //! pass and asserts the list is empty, so the check runs over whatever that
 //! shell happens to draw rather than over the sites somebody remembered.
 //!
@@ -31,9 +33,9 @@
 //!
 //! Text the egui pass painted. The Vello canvas draws through an
 //! [`epaint::Shape::Callback`], so a mark's own labels are not in these lists
-//! and this module says nothing about them. Everything outside the canvas
-//! rect — the rails, the grid, the header band, the inspector, the sheet, the
-//! top bar — is.
+//! and this module does not see them. What is outside the canvas rect — the
+//! rails, the grid, the header band, the inspector, the sheet, the top bar —
+//! is.
 
 use egui::epaint::{ClippedShape, Shape};
 
@@ -79,7 +81,9 @@ pub struct DrawnText {
     /// The clip it was painted under.
     pub clip: egui::Rect,
     /// The part of [`Self::ink`] that reaches the screen: the ink box under
-    /// the clip. [`egui::Rect::is_negative`] where the clip took all of it.
+    /// the clip. [`egui::Rect::is_negative`] where the clip left none of it,
+    /// which `every_exemption_excuses_a_case_and_no_other` drives as its
+    /// [`Rule::NotVisible`] case.
     pub visible: egui::Rect,
 }
 
@@ -125,9 +129,9 @@ impl std::fmt::Display for TextCollision {
 /// One reason two galleys sharing a box is not a defect.
 ///
 /// A variant is inert until it appears in [`EXEMPTIONS`]: [`is_collision`]
-/// reaches an exemption only by walking that table, so a new reason takes
-/// effect when somebody adds a row to it with a sentence saying why — never by
-/// a condition growing quietly inside a predicate.
+/// walks that table and reaches an exemption no other way, so a new reason
+/// takes effect when somebody adds a row to it with a sentence saying why,
+/// rather than by a condition growing quietly inside a predicate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rule {
     /// The two are in different layers.
@@ -138,7 +142,7 @@ pub enum Rule {
     /// reach it do not: a clip stands between them.
     ClippedApart,
     /// Their ink boxes share no more than [`MIN_OVERLAP`] on an axis, so they
-    /// never overlapped to begin with.
+    /// did not overlap to begin with.
     Adjacent,
     /// The pair is named in [`EXEMPT_PAIRS`].
     NamedPair,
@@ -277,8 +281,10 @@ impl Rule {
 
 /// Whether these two galleys sharing a box is a defect.
 ///
-/// The only route to an exemption is [`EXEMPTIONS`]: a [`Rule`] variant that
-/// nobody has written a row for excuses nothing.
+/// The route to an exemption is [`EXEMPTIONS`] and no other: a [`Rule`]
+/// variant nobody has written a row for excuses no pair, which
+/// `every_exemption_excuses_a_case_and_no_other` holds by driving one case per
+/// row and reading back which rows spoke.
 #[must_use]
 pub fn is_collision(a: &DrawnText, b: &DrawnText) -> bool {
     let shared = Shared::of(a, b);
@@ -415,16 +421,17 @@ pub fn frame_text(ctx: &egui::Context) -> Vec<DrawnText> {
 ///
 /// **Not the check's route in, and a caller reaching for it should read
 /// [`frame_text`] instead.** egui flattens its paint lists when the pass ends
-/// and the layer is not in the flattened list, so everything this returns
-/// claims to be in the background layer whatever it was drawn into — which is
-/// exactly the confusion [`frame_text`] exists to avoid.
+/// and the layer is not in the flattened list, so what this returns claims the
+/// background layer whatever it was drawn into — which is the confusion
+/// [`frame_text`] exists to avoid.
 ///
 /// It is here so that a test can ask the one question [`frame_text`] cannot
-/// answer about itself: whether walking the layers found every galley the pass
-/// painted. `frame_text` enumerates layers through `Memory::layer_ids`, and a
-/// layer missing from that list would be a whole pane this check silently
-/// never looked at. Comparing the two counts is what turns that from a hope
-/// into a measurement — `the_check_reads_every_galley_the_pass_painted`.
+/// answer about itself, and
+/// `the_check_reads_every_galley_the_pass_painted` is that test: whether
+/// walking the layers found every galley the pass painted. `frame_text`
+/// enumerates layers through `Memory::layer_ids`, and a layer missing from
+/// that list would be a pane this check silently did not look at. Comparing
+/// the two counts is what turns that from a hope into a measurement.
 #[must_use]
 pub fn flattened_text(shapes: &[ClippedShape]) -> Vec<DrawnText> {
     let mut out = Vec::new();
@@ -455,7 +462,8 @@ pub fn collisions(texts: &[DrawnText]) -> Vec<TextCollision> {
 
 /// The collisions on the pass now in flight, as a message to fail with.
 ///
-/// `None` when nothing collided.
+/// `None` where no pair collided — which is the state
+/// `no_two_texts_are_drawn_into_one_place` asserts of the whole window.
 #[must_use]
 pub fn collision_report(ctx: &egui::Context, what: &str) -> Option<String> {
     let found = collisions(&frame_text(ctx));
@@ -513,7 +521,7 @@ pub fn fit(
 #[derive(Clone, Copy, Debug)]
 pub struct RowEnds {
     /// The label at the leading edge, or [`egui::Rect::NOTHING`] where the row
-    /// was too narrow to draw one at all.
+    /// was too narrow for one.
     ///
     /// Negative rather than absent so that a caller recording *where the row
     /// drew its two ends* records the same shape either way. A row this narrow
@@ -679,9 +687,10 @@ mod tests {
     /// The table is the whole of the check's judgement, so a row that excuses
     /// nothing another row already excuses is a row that reads as a decision
     /// and is not one. That is not hypothetical: the first draft of this
-    /// module measured every rule against the *clipped* boxes, which made
+    /// module measured its rules against the *clipped* boxes, which made
     /// [`Rule::NotVisible`] unreachable — a galley the clip took shares an
-    /// empty box with everything, so [`Rule::Adjacent`] excused it first and
+    /// empty box with whatever it is compared to, so [`Rule::Adjacent`]
+    /// excused it first and
     /// `NotVisible` never decided a single pair. Each row now names the
     /// visibility it applies at as well as the geometry, and this test holds
     /// them apart: for each case, the rows that excuse it are exactly the one
@@ -1020,8 +1029,8 @@ mod tests {
     /// absent, on the grounds that an absent label cannot collide — which is
     /// true and useless: deleting the room `row_ends` keeps back for the
     /// leading end left this test green, because the trailing label then took
-    /// the whole row and the leading one stopped being drawn at all. A row
-    /// that silently drops a value is not a row that passed.
+    /// the whole row and the leading one stopped being drawn. A row that
+    /// silently drops a value is not a row that passed.
     #[test]
     fn a_two_ended_row_keeps_its_two_ends_apart() {
         let ctx = ctx();
@@ -1143,7 +1152,7 @@ mod tests {
         // Read off the glyphs. `Galley::text()` answers the string that was
         // asked for — this galley still says "TIMESTAMP WITH TIME ZONE"
         // there — so a check written against it would pass over a fitter that
-        // elided nothing at all.
+        // did not elide.
         let drawn = drawn_string(&cut);
         assert!(cut.elided, "the galley did not elide: {drawn:?}");
         assert!(

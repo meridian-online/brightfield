@@ -17,9 +17,10 @@
 //!
 //! # What is exempt
 //!
-//! Not here. Every reason two galleys may share a box is a row of
+//! Not here. A reason two galleys may share a box is a row of
 //! `text_ink::EXEMPTIONS` with a sentence saying why, and adding one is an
-//! edit to that table. These tests pass the whole window in and assert the
+//! edit to that table — `every_exemption_excuses_a_case_and_no_other` is what
+//! keeps a row in it that decides nothing. These tests pass the whole window in and assert the
 //! list comes back empty.
 
 use brightfield_shell::design::Mode;
@@ -51,7 +52,7 @@ struct Live {
 struct Survey {
     /// Every galley, read layer by layer while the pass was open.
     texts: Vec<text_ink::DrawnText>,
-    /// The failure message, or `None` where nothing collided.
+    /// The failure message, or `None` where no pair collided.
     report: Option<String>,
     /// How many galleys the flattened `FullOutput` carried — the same pass,
     /// counted the other way. See `the_check_reads_every_galley_the_pass_painted`.
@@ -174,9 +175,10 @@ fn states() -> Vec<(&'static str, fn() -> Live)> {
 
 /// **No two texts the shell paints land in the same pixels.**
 ///
-/// The card's AC1. Every window state above, every layer, every galley — and
-/// the whole judgement about what is not a defect lives in
-/// `text_ink::EXEMPTIONS`, so this assertion has nothing in it to weaken.
+/// The card's AC1, over each window state above, each layer and each galley.
+/// The judgement about what is not a defect lives in `text_ink::EXEMPTIONS`
+/// and `every_exemption_excuses_a_case_and_no_other` drives it, so there is
+/// no tolerance here to widen and no predicate here to soften.
 #[test]
 fn no_two_texts_are_drawn_into_one_place() {
     let mut failures = Vec::new();
@@ -199,13 +201,12 @@ fn no_two_texts_are_drawn_into_one_place() {
 ///
 /// The self-test the check needs and cannot do for itself. `frame_text` walks
 /// the layers it can name, and it names them through `Memory::layer_ids` —
-/// a layer missing from that list is a whole pane this check would silently
-/// never look at, and silence is exactly what a passing check looks like.
+/// a layer missing from that list is a pane this check would silently pass
+/// over, and silence is what a passing check looks like too.
 ///
 /// So the same pass is counted the other way: `FullOutput::shapes` is egui's
-/// own flattening of every layer, drained by the framework rather than
-/// enumerated by us. The two counts have no common cause beyond the pass
-/// itself.
+/// own flattening, drained by the framework rather than enumerated by us. The
+/// two counts have no common cause beyond the pass itself.
 #[test]
 fn the_check_reads_every_galley_the_pass_painted() {
     for (what, open) in states() {

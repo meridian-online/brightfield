@@ -29,7 +29,9 @@
 //!
 //! [`ColumnHeaderFrame::extent`] adds the rows the density stacks, so a row
 //! that changes height moves the band with it instead of leaving the widget a
-//! height nothing fills. The frames the contract was drawn from carry the two
+//! height its rows do not fill — which
+//! `the_rows_stack_to_the_extent_the_frame_claims` measures off the drawing
+//! rather than off the sum. The frames the contract was drawn from carry the two
 //! totals as constants at 1440 by 900: **57 and 127**. This file reproduces
 //! the full density's by addition and no longer reproduces the compact one —
 //! it stacks to 70, because the compact band gained its own distinct-count row
@@ -650,11 +652,13 @@ pub fn validity_segments(
 /// row, at the full density the leaf and the storage type on another, and at
 /// the compact density the distinct count on its own.
 ///
-/// **Every row that can be wider than the name has to be in this sum**, or the
-/// column is sized for a header it does not have. The distinct row was not:
+/// **A row that can be wider than the name has to be in this sum**, or the
+/// column is sized for a header it does not have —
+/// `the_width_a_column_claims_covers_its_distinct_row` is what holds that for
+/// the row it was missing. The distinct row was not in it:
 /// `1,234,567 distinct` lays out at 97 points against the 80 of content a
 /// column at the compact floor has, so a seven-figure count ran into the
-/// column beside it. It is the one row here with nothing to give way to — the
+/// column beside it. It is the row here with no way to give way — the
 /// two-ended rows elide through [`text_ink::row_ends`] when the column is
 /// narrow, and a lone left-aligned label just keeps going.
 #[must_use]
