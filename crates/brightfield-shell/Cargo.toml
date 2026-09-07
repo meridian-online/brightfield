@@ -102,7 +102,8 @@ rfd = "0.17"
 #
 # Default features are kept, which turns `gzip` on for the whole graph and adds
 # flate2 to ureq's dependency list — flate2 is already a package in Cargo.lock
-# with six other dependents, so nothing new enters the build. The other user of
+# with five other dependents (arc, libduckdb-sys, png, tiff, zip), so nothing
+# new enters the build. The other user of
 # this crate in the graph is arc's `http_fetch` operator, which this binary
 # links and never calls: brightfield runs no step. What the feature buys here is
 # that a source served with `Content-Encoding: gzip` arrives usable rather than

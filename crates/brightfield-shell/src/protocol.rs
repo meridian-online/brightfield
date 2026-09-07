@@ -395,10 +395,9 @@ pub fn load_protocol_str(text: &str, models: &[(&str, &str)]) -> Result<Protocol
 /// # What this is, and what it is not
 ///
 /// It is not an execution engine and it does not make a manifest runnable.
-/// Brightfield runs no step — a search of `crates/` for `Command::new` or
-/// `std::process` turns up temporary-file naming, and no site that invokes an
-/// operator — and running a Protocol belongs to `arc`. What brightfield has
-/// always been able to *read* is the artefact a run emits, and until this
+/// Brightfield invokes no operator, and running a Protocol belongs to `arc`.
+/// What brightfield has always been able to *read* is the artefact a run
+/// emits, and until this
 /// existed nothing in the shell built a document from one: `statuses`,
 /// `assets` and `steps` were empty on every input the binary could open, so
 /// every surface that exists to report a run reported the same nothing.
