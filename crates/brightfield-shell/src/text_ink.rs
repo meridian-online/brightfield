@@ -36,6 +36,14 @@
 //! and this module does not see them. What is outside the canvas rect — the
 //! rails, the grid, the header band, the inspector, the sheet, the top bar —
 //! is.
+//!
+//! Text, and not ink in general. The header band's rug is
+//! `epaint::Shape::Rect`, not a galley, so a label drawn over the rug is not a
+//! pair this module can see — that stacking is held separately, by
+//! `the_compact_bands_distinct_row_draws_below_the_range_and_never_over_the_rug`
+//! reading the two rects. The same goes for the validity band, the separator
+//! rules and the status dots: this check answers *did two strings land in one
+//! place*, which is the question, and not *did a string land on a shape*.
 
 use egui::epaint::{ClippedShape, Shape};
 
