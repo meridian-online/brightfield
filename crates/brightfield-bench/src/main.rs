@@ -2311,6 +2311,7 @@ mod tests {
                 rustc: field("rustc test"),
                 build_profile: field("release"),
                 commit: field("0000000"),
+                load_average: field("0.00"),
                 captured_at: field("2026-07-25T00:00:00+00:00"),
                 duckdb: field("v1.5.2"),
             },
@@ -2765,7 +2766,9 @@ mod tests {
     fn every_recorded_open_spends_far_less_than_the_budget_allows() {
         const MARGIN: u64 = 32;
         let budget = brightfield_shell::data_file::MATERIALISE_BUDGET_BYTES;
-        let dir = repo_root().join("benchmarks/results").join(OPEN_SCAN_SUBDIR);
+        let dir = repo_root()
+            .join("benchmarks/results")
+            .join(OPEN_SCAN_SUBDIR);
         let mut records: Vec<PathBuf> = std::fs::read_dir(&dir)
             .unwrap_or_else(|e| panic!("{} is readable: {e}", dir.display()))
             .filter_map(|e| e.ok().map(|e| e.path()))
@@ -2781,8 +2784,7 @@ mod tests {
         let mut checked = 0usize;
         for record in &records {
             let text = std::fs::read_to_string(record).expect("the record reads");
-            let json: serde_json::Value =
-                serde_json::from_str(&text).expect("the record is JSON");
+            let json: serde_json::Value = serde_json::from_str(&text).expect("the record is JSON");
             let stated = json["materialise_budget_bytes"].as_u64();
             if let Some(stated) = stated {
                 assert_eq!(

@@ -21,9 +21,9 @@
 //!    outlives the source it was computed from.
 
 use brightfield_engine::{Engine, RecordBatch, Session, MATERIALISE_BUDGET_FLOOR_BYTES};
-use duckdb::arrow::array::{Array, Int64Array};
 use brightfield_spec::analysis::analyse_spec;
 use brightfield_spec::{parse_spec, Format};
+use duckdb::arrow::array::{Array, Int64Array};
 
 /// A generous budget: far above anything these fixtures cost, so a refusal
 /// under it would mean the mechanism refuses everything.
@@ -109,8 +109,11 @@ fn a_refused_copy_leaves_the_session_able_to_run_a_query_far_larger_than_the_bud
 
     // The refusal costs nothing: no half-built table, the view still reads.
     assert_eq!(
-        count_of(&mut over, "SELECT count(*) FROM duckdb_tables() \
-                         WHERE table_name = 't__bf_materialised'"),
+        count_of(
+            &mut over,
+            "SELECT count(*) FROM duckdb_tables() \
+                         WHERE table_name = 't__bf_materialised'"
+        ),
         0,
         "the refused copy left its backing table behind"
     );
@@ -139,8 +142,11 @@ fn a_refused_copy_leaves_the_session_able_to_run_a_query_far_larger_than_the_bud
         .materialise_source("t", GENEROUS)
         .expect("the same source under a generous budget is copied");
     assert_eq!(
-        count_of(&mut under, "SELECT count(*) FROM duckdb_tables() \
-                          WHERE table_name = 't__bf_materialised'"),
+        count_of(
+            &mut under,
+            "SELECT count(*) FROM duckdb_tables() \
+                          WHERE table_name = 't__bf_materialised'"
+        ),
         1,
         "a generous budget did not produce a backing table, so the refusal \
          above is not evidence that the budget decided anything"
@@ -201,7 +207,8 @@ fn a_materialised_source_serves_no_answer_computed_before_the_copy() {
 
     live.materialise_source("t", GENEROUS)
         .expect("the copy fits a generous budget");
-    live.execute_mark(0).expect("the mark executes after the copy");
+    live.execute_mark(0)
+        .expect("the mark executes after the copy");
     assert!(
         live.duckdb_execute_count() > before,
         "the mark was served from a cache filled before the copy — its answer \

@@ -115,7 +115,9 @@ fn the_materialise_copy_funnel_counts() {
     live.materialise_source("t", 512 * 1024 * 1024)
         .expect("the copy fits");
     let tally = live.take_scan_tally();
-    counted(&tally, "materialise copy", |sql| sql.contains("__bf_materialised"));
+    counted(&tally, "materialise copy", |sql| {
+        sql.contains("__bf_materialised")
+    });
 }
 
 /// **The profile pass's reads count.** `query_arrow_raw` is the funnel behind
@@ -150,7 +152,9 @@ fn the_unsampled_facts_and_both_category_funnels_count() {
     counted(&tally, "unsampled colour categories", |sql| {
         sql.contains("__bf_cats")
     });
-    counted(&tally, "unsampled band order", |sql| sql.contains("__bf_band"));
+    counted(&tally, "unsampled band order", |sql| {
+        sql.contains("__bf_band")
+    });
 }
 
 /// **The cube build and the cube serve count.**
