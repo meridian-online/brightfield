@@ -514,9 +514,14 @@ fn the_size_on_disk_and_the_footer_both_understate_what_the_copy_costs() {
 ///
 /// **Both halves matter.** Over the budget is what makes it the refusing case;
 /// under the on-disk threshold is what makes the *budget* the thing that
-/// refused it, rather than the threshold declining to try. 16,000,000 rows of
-/// the same four columns measure 331,306 bytes on disk and about 765 MB as a
-/// table on an Apple M1 Pro.
+/// refused it, rather than the threshold declining to try.
+///
+/// The row count is set from a measurement of the same four columns at a size
+/// that still completes: on an Apple M1 Pro, 12,000,000 rows copy to
+/// 574,046,208 bytes, already over the 512-MiB budget. 16,000,000 is used
+/// instead for margin, and measures 331,306 bytes on disk. Its own table is
+/// never measured, because the budget refuses the copy before it finishes —
+/// which is the behaviour under test.
 fn widening_parquet_over_the_budget() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("bf-materialise-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("fixture dir");
