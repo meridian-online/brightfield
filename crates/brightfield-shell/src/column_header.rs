@@ -5,8 +5,9 @@
 //! [`crate::data_grid`]'s and stays. This module is the band that replaces it
 //! where the pane has the column's profile to draw: per column the finetype
 //! glyph and the name over a tint of the storage type, a validity band with
-//! its count, a picture of the distribution, the range, and — at the taller of
-//! the two densities — the finetype leaf, the storage type and the statistics.
+//! its count, a picture of the distribution, the range, and the distinct
+//! count — with the finetype leaf, the storage type and the fuller run of
+//! statistics reserved for the taller of the two densities.
 //!
 //! # Two densities, one style function
 //!
@@ -27,10 +28,12 @@
 //! # The extents are summed, never stated
 //!
 //! [`ColumnHeaderFrame::extent`] adds the rows the density stacks. The frames
-//! the contract was drawn from carry the two totals as constants — 57 and 127
+//! the contract was drawn from carry the two totals as constants — 70 and 127
 //! at 1440 by 900 — and this file reproduces them by addition, so a row that
 //! changes height moves the band with it instead of leaving the widget a
-//! height nothing fills.
+//! height nothing fills. The compact total moved from 57 to 70 when the
+//! compact band gained its own distinct-count row — see
+//! [`GridDensity::Compact`].
 
 use meridian_design::colour::Rgba;
 use meridian_design::{semantic, spacing, typography, viz};
@@ -49,7 +52,11 @@ use crate::one_step::ColumnFacts;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GridDensity {
     /// Beneath the hero, in a pane that is a quarter of the canvas: the glyph
-    /// and the name, the validity band, a rug and the range.
+    /// and the name, the validity band, a rug, the range, and — its own row,
+    /// below the range — the distinct count. Not a bar distribution: the rug
+    /// stays the glance-level hint that a distribution exists, and what this
+    /// density gains beyond it is the summaries a number can carry at this
+    /// width, the distinct count first.
     Compact,
     /// The grid as the canvas's whole view of the node: the above, plus the
     /// finetype leaf and the storage type, a bar distribution in place of the
@@ -102,16 +109,25 @@ const DISTRIBUTION_ROW: f32 = 28.0;
 
 /// The row carrying the minimum and the maximum, at each density.
 ///
-/// The full density's is the frame's own 11. The compact density's is 9, and
-/// the difference is the ratified extent: the frame paints the compact range
-/// with no increment at all, so its increments sum to 48 against a constant of
-/// 57, and the nine points that constant implies are this row. See the pull
-/// request for the fork.
+/// The full density's is the frame's own 11. The compact density's is 9: the
+/// frame paints the compact range with no increment at all, so the rows the
+/// original contract ratified sum to 48 against its constant of 57, and the
+/// nine points that constant implies are this row. See the pull request for
+/// the fork. That 57 was the compact total before this file's distinct row
+/// existed; [`DISTINCT_ROW`] is what moved it to 70.
 const RANGE_ROW_FULL: f32 = 11.0;
 const RANGE_ROW_COMPACT: f32 = 9.0;
 
-/// One caption row — *mean* and *nulls*, *median* and *sd*, *n distinct*.
+/// One caption row — *mean* and *nulls*, *median* and *sd*, *n distinct* — at
+/// the full density.
 const CAPTION_ROW: f32 = 13.0;
+
+/// The row carrying the distinct count, at the compact density's own row
+/// below the range. Sized the same as [`CAPTION_ROW`] because it is the same
+/// face at the same padding, drawn solo rather than paired the way the full
+/// density's rows are — the width a compact column has at its floor is not
+/// wide enough to set two captions side by side without them colliding.
+const DISTINCT_ROW: f32 = 13.0;
 
 /// How many of them the full density stacks.
 const CAPTION_ROWS: usize = 3;
@@ -258,7 +274,7 @@ impl ColumnHeaderFrame {
                 let captions = CAPTION_ROWS as f32 * CAPTION_ROW;
                 TYPES_ROW + captions
             } else {
-                0.0
+                DISTINCT_ROW
             };
         2.0f32.mul_add(INSET_Y, stacked)
     }
@@ -490,6 +506,18 @@ pub struct ColumnBandDrawn {
     pub bars: Vec<egui::Rect>,
     /// The statistics rows, at the full density.
     pub stats: Option<BandStats>,
+    /// The distinct count, at the compact density's own row. `None` for a
+    /// column with no moments, and `None` at the full density too, whose
+    /// [`Self::stats`] carries the same number on its own `distinct` field
+    /// instead.
+    pub distinct: Option<u64>,
+    /// The text [`Self::distinct`] was painted as.
+    pub distinct_text: Option<String>,
+    /// Where [`Self::distinct_text`] was painted — the compact density's own
+    /// row, below the range and never over the rug, which
+    /// `the_compact_bands_distinct_row_draws_below_the_range_and_never_over_the_rug`
+    /// holds. `None` under the same conditions as [`Self::distinct`].
+    pub distinct_rect: Option<egui::Rect>,
 }
 
 // ---------------------------------------------------------------------------
@@ -835,6 +863,28 @@ pub fn draw_column_band(
         None
     };
 
+    // 7. The distinct count — the compact density's own row, below the
+    //    range. The full density does not draw this a second time: its own
+    //    distinct count is already inside `stats`, painted above.
+    let mut distinct = None;
+    let mut distinct_text = None;
+    let mut distinct_rect = None;
+    if !frame.density.is_full() {
+        if let Some(moments) = facts.moments.as_ref() {
+            let text = format!("{} distinct", thousands(moments.distinct));
+            let rect = painter.text(
+                egui::pos2(inner.left(), y + DISTINCT_ROW / 2.0),
+                egui::Align2::LEFT_CENTER,
+                &text,
+                detail_font(),
+                frame.caption,
+            );
+            distinct = Some(moments.distinct);
+            distinct_text = Some(text);
+            distinct_rect = Some(rect);
+        }
+    }
+
     ColumnBandDrawn {
         column,
         name: facts.column.clone(),
@@ -857,6 +907,9 @@ pub fn draw_column_band(
         storage,
         bars,
         stats,
+        distinct,
+        distinct_text,
+        distinct_rect,
     }
 }
 
@@ -951,19 +1004,21 @@ mod tests {
     use super::*;
 
     /// **The two extents are the rows the density stacks** — summed here and
-    /// stated in the ratified frames as 57 and 127.
+    /// stated in the ratified frames as 70 and 127.
     ///
     /// The frames hard-code those two numbers; this file adds its rows up. The
     /// assertion is what keeps the two answers the same one, and it is why a
     /// row changing height is a change this reports rather than one it
-    /// absorbs.
+    /// absorbs. The compact total is 70, not the original contract's 57: this
+    /// card gave the compact density its own distinct-count row, and 57 + 13
+    /// (`DISTINCT_ROW`) is 70.
     #[test]
     fn the_band_extents_are_the_sums_of_the_rows_each_density_stacks() {
         let compact = column_header_frame(GridDensity::Compact, Mode::Light);
         let full = column_header_frame(GridDensity::Full, Mode::Light);
         assert!(
-            (compact.extent() - 57.0).abs() < f32::EPSILON,
-            "the compact band is {} points, and the ratified frame is 57",
+            (compact.extent() - 70.0).abs() < f32::EPSILON,
+            "the compact band is {} points, and the ratified frame is 70",
             compact.extent()
         );
         assert!(
@@ -971,13 +1026,16 @@ mod tests {
             "the full band is {} points, and the ratified frame is 127",
             full.extent()
         );
-        // What the full density adds: the leaf-and-storage row, the bar chart
-        // over the rug, two more points of range row, and three caption rows.
+        // What the full density adds over the compact one: the leaf-and-storage
+        // row, the bar chart over the rug, two more points of range row, and
+        // three caption rows — less the one row the compact density has that
+        // the full density does not, its own solo distinct-count row.
         #[allow(clippy::cast_precision_loss)]
         let added = TYPES_ROW
             + (DISTRIBUTION_ROW - RUG_ROW)
             + (RANGE_ROW_FULL - RANGE_ROW_COMPACT)
-            + CAPTION_ROWS as f32 * CAPTION_ROW;
+            + CAPTION_ROWS as f32 * CAPTION_ROW
+            - DISTINCT_ROW;
         assert!(
             (full.extent() - compact.extent() - added).abs() < f32::EPSILON,
             "full {} less compact {} is not the {added} points the contract adds",
