@@ -23,7 +23,9 @@
 //! keeps a row in it that decides nothing. These tests pass the whole window in and assert the
 //! list comes back empty.
 
+use brightfield_protocol::layout::Flow;
 use brightfield_shell::design::Mode;
+use brightfield_shell::starts;
 use brightfield_shell::text_ink;
 use brightfield_shell::window::{Boot, MeridianApp};
 
@@ -64,6 +66,17 @@ impl Live {
         let chosen = path.to_str().expect("utf-8 fixture path");
         let boot =
             Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+        Self::boot(boot)
+    }
+
+    /// A window over `boot`, settled.
+    ///
+    /// The half [`Self::open`] does not reach: a data file is one of the
+    /// documents this shell holds and not the only one, and the surfaces that
+    /// have no file behind them — the front door, a Protocol read off a
+    /// contract — were outside this check entirely until they were named in
+    /// [`states`].
+    fn boot(boot: Boot) -> Self {
         let mut live = Self {
             app: MeridianApp::headless(boot, Mode::Light),
             ctx: egui::Context::default(),
@@ -144,11 +157,30 @@ type State = (&'static str, fn() -> Live);
 /// Every window state this check is driven over, named for the failure
 /// message.
 ///
-/// Two fixtures and two densities. `site_readings_sample.csv` is the narrow
+/// Three fixtures and two densities. `site_readings_sample.csv` is the narrow
 /// case: a timestamp column, so the rail draws a long type name beside a
 /// column name, and readings whose bounds are wide against a narrow column.
+///
+/// **And two windows with no file behind them**, which is a gap this list had
+/// rather than a decision it made. Every state above is `Boot::data_file`, so
+/// the front door — the first screen anyone sees, and a row of cards each
+/// carrying a label, a summary and a line at its foot — was outside a check
+/// written to cover "the pane written next". So was a Protocol window, whose
+/// ledger strip sets a summary against the trailing end of a row of pane
+/// names. Both are surfaces where two texts have room to meet.
 fn states() -> Vec<State> {
     vec![
+        ("the front door", || Live::boot(Boot::empty())),
+        ("a Protocol that has run", || {
+            Live::boot(
+                Boot::start(starts::CROSSWALK_RUN, Flow::Vertical).expect("the run start loads"),
+            )
+        }),
+        ("a Protocol with no run behind it", || {
+            Live::boot(
+                Boot::start(starts::CROSSWALK, Flow::Vertical).expect("the manifest start loads"),
+            )
+        }),
         ("the housing table, as opened", || {
             Live::open("california_housing_sample.csv")
         }),

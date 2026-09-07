@@ -1246,12 +1246,12 @@ fn a_door_with_recents_lists_every_one_of_them_most_recent_first() {
 ///
 /// It walks the door's own set rather than one hand-picked start, because a
 /// route that diverges for one document kind and not the other is the
-/// divergence a single-case test would survive. **Today that walk is one
-/// start**, the crosswalk manifest: the Datasets section offers two, and the
-/// other reads over the network. So the count is asserted rather than left
-/// implicit — a door that lost its last local card would otherwise pass this
-/// by walking an empty set, which is the failure this file has already had
-/// once in a different loop.
+/// divergence a single-case test would survive. **Today that walk is two
+/// starts**, the crosswalk manifest and a run of it: the Datasets section
+/// offers three, and the third reads over the network. So the count is
+/// asserted rather than left implicit — a door that lost its last local card
+/// would otherwise pass this by walking an empty set, which is the failure
+/// this file has already had once in a different loop.
 ///
 /// The remote start is skipped, for the reason its siblings in this file skip
 /// it: taking its card composes its spec, and that spec reads an `https://`
@@ -1319,16 +1319,16 @@ fn either_route_to_the_same_subject_leaves_the_same_window() {
             start.id
         );
     }
-    // Two starts declare themselves for the door and one of those two reads
-    // over the network, so one is what a hermetic run can compare. Written as
+    // Three starts declare themselves for the door and one of the three reads
+    // over the network, so two are what a hermetic run can compare. Written as
     // the number rather than as the same filter the loop is built from,
     // because a filter compared against itself agrees whatever it yields.
     assert_eq!(
-        walked, 1,
+        walked, 2,
         "{walked} start(s) were compared, where the Datasets section offers \
-         one a hermetic run can take — a walk of nothing here would leave both \
-         routes unasserted and this test green, and a walk of more than one \
-         means the section changed without this number being looked at"
+         two a hermetic run can take — a walk of nothing here would leave both \
+         routes unasserted and this test green, and a walk of a different \
+         number means the section changed without this one being looked at"
     );
 }
 
