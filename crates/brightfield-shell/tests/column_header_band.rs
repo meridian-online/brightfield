@@ -766,7 +766,7 @@ const LEAF: &str = "email";
 /// `the grid names what a column means` in `.github/workflows/test.yml` fetches
 /// one, runs them by name and holds libtest's executed count to a floor, which
 /// is what stops "ignored in CI" being what this section quietly settles for.
-fn bundle() -> TypeSourceSpec {
+fn bundle_from_env() -> TypeSourceSpec {
     let dir = std::path::PathBuf::from(
         std::env::var_os("BRIGHTFIELD_FINETYPE_BUNDLE")
             .expect("BRIGHTFIELD_FINETYPE_BUNDLE is not set"),
@@ -781,7 +781,15 @@ fn bundle() -> TypeSourceSpec {
 }
 
 /// One column's cell of the band the grid drew, by the name the table spells.
-fn cell(
+///
+/// Named at three segments and not as the bare word, because
+/// `the_prose_rules_separate_the_shipped_corpus` in
+/// `crates/brightfield-shell/tests/start_interaction.rs` collects every `fn`
+/// under `tests/` as a test name and holds the ones the shipped start prose
+/// backticks to a four-segment floor. A helper called `cell` collides with a
+/// start whose prose says `cell`, and the gate then reads a one-segment token
+/// as a cited test.
+fn band_cell_named(
     drawn: &brightfield_shell::data_grid::TableDrawn,
     name: &str,
 ) -> brightfield_shell::column_header::ColumnBandDrawn {
@@ -811,7 +819,7 @@ fn cell(
 #[test]
 #[ignore = "needs a FineType bundle: set BRIGHTFIELD_FINETYPE_BUNDLE"]
 fn the_full_band_names_what_a_varchar_column_means() {
-    let mut win = Live::open_typed(&reply_addresses(), Some(bundle()));
+    let mut win = Live::open_typed(&reply_addresses(), Some(bundle_from_env()));
     win.click_row("grid");
     assert_eq!(
         win.app.canvas_holds().view(),
@@ -819,7 +827,7 @@ fn the_full_band_names_what_a_varchar_column_means() {
         "clicking the grid row puts the grid on the canvas"
     );
     let drawn = win.drawn();
-    let cell = cell(&drawn, MEANT);
+    let cell = band_cell_named(&drawn, MEANT);
     assert_eq!(
         cell.density,
         GridDensity::Full,
@@ -873,7 +881,7 @@ fn a_varchar_column_with_no_type_source_draws_its_storage_type() {
     let mut win = Live::open_typed(&reply_addresses(), None);
     win.click_row("grid");
     let drawn = win.drawn();
-    let cell = cell(&drawn, MEANT);
+    let cell = band_cell_named(&drawn, MEANT);
     assert_eq!(cell.density, GridDensity::Full);
     assert_eq!(
         cell.storage.as_deref(),
@@ -914,13 +922,13 @@ fn a_varchar_column_with_no_type_source_draws_its_storage_type() {
 fn one_process_opens_one_file_with_a_type_source_and_without_one() {
     let path = reply_addresses();
 
-    let mut labelled = Live::open_typed(&path, Some(bundle()));
+    let mut labelled = Live::open_typed(&path, Some(bundle_from_env()));
     labelled.click_row("grid");
-    let with = cell(&labelled.drawn(), MEANT);
+    let with = band_cell_named(&labelled.drawn(), MEANT);
 
     let mut plain = Live::open_typed(&path, None);
     plain.click_row("grid");
-    let without = cell(&plain.drawn(), MEANT);
+    let without = band_cell_named(&plain.drawn(), MEANT);
 
     assert_eq!(with.storage, without.storage, "one file, one storage type");
     assert_eq!(
