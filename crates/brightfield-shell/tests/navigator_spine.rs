@@ -117,6 +117,40 @@ impl Live {
         self.run(vec![click_at(at), Vec::new(), Vec::new()]);
     }
 
+    /// Click rail `id`'s collapse control, at the place a pointer would find
+    /// it — the caret that reopens a stub.
+    fn click_rail_caret(&mut self, id: brightfield_workbench::arrangement::RegionId) {
+        let at = self
+            .app
+            .rail_collapse_rect(id)
+            .unwrap_or_else(|| panic!("{id} drew no collapse control"))
+            .center();
+        self.run(vec![click_at(at), Vec::new(), Vec::new()]);
+    }
+
+    /// Press and release on the composed plot at `index` — two frames, not
+    /// one, because a tile's selection is edge-triggered on the pointer
+    /// button state at the end of a frame, so a press and a release inside
+    /// the same frame leave it unchanged. `hover_readout.rs` drives its own
+    /// gesture across separate frames for the same reason, and
+    /// `one_step_protocol.rs`'s own `click_tile` on its `Window` is the
+    /// sibling this one copies.
+    fn click_tile(&mut self, index: usize) {
+        let at = self
+            .app
+            .composed_plot_rects()
+            .get(index)
+            .copied()
+            .unwrap_or_else(|| panic!("the composition drew no plot at {index}"))
+            .center();
+        self.run(vec![vec![
+            egui::Event::PointerMoved(at),
+            button_at(at, true),
+        ]]);
+        self.run(vec![vec![button_at(at, false)]]);
+        self.settle();
+    }
+
     /// The graph chip the head row drew — panics when the head drew no chip,
     /// naming what the first row was instead, so a chip dropped off the head
     /// fails here with a sentence rather than with `unwrap` on a `None`.
@@ -199,6 +233,18 @@ fn click_at(pos: egui::Pos2) -> Vec<egui::Event> {
         });
     }
     events
+}
+
+/// A primary pointer button event at `pos`, `pressed` or released — the half
+/// of [`click_at`] that [`Live::click_tile`] drives as two separate frames
+/// rather than one.
+fn button_at(pos: egui::Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    }
 }
 
 /// The text galleys the frame painted, with the rect each landed in and the
@@ -624,10 +670,15 @@ fn a_fresh_open_holds_the_dashboard_and_marks_the_row_that_says_so() {
 /// keystroke. A round that widened this pane's reach on a fresh open once
 /// left the old "press y to copy it" clause on a window where `y` does
 /// nothing.
+///
+/// A one-step Protocol (which the housing fixture is) opens the inspector
+/// collapsed to its own stub, so this test's first gesture is the caret that
+/// reopens it — the tab search below finds no `Operator` text otherwise.
 #[test]
 fn switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table() {
     let mut win = Live::open(housing_boot());
     win.settle();
+    win.click_rail_caret(brightfield_workbench::arrangement::INSPECTOR_RAIL);
 
     let shapes = win.shapes();
     let operator = texts(&shapes)
@@ -1856,5 +1907,177 @@ fn opening_a_second_file_over_the_graph_comes_back_to_the_new_tables_dashboard()
     assert!(
         win.row("dashboard").on_canvas.is_some(),
         "…and the bar is not on the new table's dashboard row"
+    );
+}
+
+/// **AC1 — the closed inspector stub is the rail's own width, and reads its
+/// own name with no dot.**
+///
+/// A one-step Protocol collapses the inspector by default —
+/// `MeridianApp::apply_rail_defaults`'s own contract — so the fixture opens
+/// straight into the state this checks, with no caret click needed. No tile
+/// has been clicked, so `ChartDoc::selected_column` is `None` and the stub
+/// paints no dot.
+#[test]
+fn the_closed_inspector_stub_reads_its_own_name_and_paints_no_dot() {
+    let mut win = Live::open(housing_boot());
+    win.settle();
+    let shapes = win.shapes();
+
+    let inspector = brightfield_workbench::arrangement::INSPECTOR_RAIL;
+    let width = win
+        .app
+        .region_rect(inspector)
+        .expect("the inspector rail drew")
+        .width();
+    assert!(
+        (width - brightfield_workbench::chrome::rail_selector_height()).abs() < 0.5,
+        "a one-step Protocol's inspector did not collapse to the stub's own \
+         width by default: {width}"
+    );
+
+    assert_eq!(
+        win.app.rail_stub_dot(inspector),
+        None,
+        "nothing is selected yet, so the closed stub must paint no dot"
+    );
+
+    win.app
+        .rail_stub_label_rect(inspector)
+        .expect("the closed stub drew a rotated label");
+    let name = win
+        .app
+        .chart_pane_title(brightfield_workbench::PaneKey::new(
+            brightfield_shell::app::CONTROLS,
+        ))
+        .expect("the inspector slot carries a pane title");
+    let stub = win
+        .app
+        .region_rect(inspector)
+        .expect("the inspector rail drew");
+    let found = texts(&shapes)
+        .into_iter()
+        .any(|(text, rect, _)| text == name && stub.contains(rect.min));
+    assert!(
+        found,
+        "the stub's label does not read {name:?} inside {stub:?}"
+    );
+}
+
+/// **AC2 (recut 2026-09-12) — a tile click selects the column, paints the
+/// stub's dot, and never puts the column's name on the stub.**
+///
+/// `composed_plot_rects()[1]` is `median_income`: `plot_order` leads with the
+/// hero — the point map this fixture picks — then the file's own column
+/// order, whose first column in `california_housing_sample.csv` is
+/// `median_income`. Hugh's ruling struck the *Inspector · <selection>* line
+/// the label used to draw: two other places on this same screen already name
+/// a clicked column, so the stub keeps saying only what it is.
+#[test]
+fn clicking_a_tile_paints_the_stub_dot_and_leaves_its_name_alone() {
+    let mut win = Live::open(housing_boot());
+    win.settle();
+
+    let inspector = brightfield_workbench::arrangement::INSPECTOR_RAIL;
+    let before_width = win
+        .app
+        .region_rect(inspector)
+        .expect("the inspector rail drew")
+        .width();
+
+    win.click_tile(1);
+
+    let selected = win
+        .app
+        .chart_doc()
+        .selected_column()
+        .cloned()
+        .expect("clicking a tile selects the column it draws");
+    assert_eq!(
+        selected.column, "median_income",
+        "the clicked tile's column was not the one this fixture expects"
+    );
+
+    let width = win
+        .app
+        .region_rect(inspector)
+        .expect("the inspector rail drew")
+        .width();
+    assert_eq!(
+        width, before_width,
+        "a tile click selects a column; it must not reopen the rail"
+    );
+
+    win.app
+        .rail_stub_label_rect(inspector)
+        .expect("the closed stub drew a rotated label");
+    let name = win
+        .app
+        .chart_pane_title(brightfield_workbench::PaneKey::new(
+            brightfield_shell::app::CONTROLS,
+        ))
+        .expect("the inspector slot carries a pane title");
+    let stub = win
+        .app
+        .region_rect(inspector)
+        .expect("the inspector rail drew");
+    let shapes = win.shapes();
+    let in_stub: Vec<String> = texts(&shapes)
+        .into_iter()
+        .filter(|(_, rect, _)| stub.contains(rect.min))
+        .map(|(text, _, _)| text)
+        .collect();
+    assert!(
+        in_stub.iter().any(|t| t == &name),
+        "the stub's label is not {name:?} after a tile click: {in_stub:?}"
+    );
+    assert!(
+        !in_stub.iter().any(|t| t == "median_income"),
+        "the stub drew the selected column's name — Hugh's 2026-09-12 ruling \
+         keeps that off the stub, since the outline row and the grid header \
+         already carry it: {in_stub:?}"
+    );
+
+    let dot = win
+        .app
+        .rail_stub_dot(inspector)
+        .expect("a live selection paints the stub's dot");
+    let mark = brightfield_workbench::chrome::mark_colour(Mode::Light);
+    let painted = circles(&shapes)
+        .into_iter()
+        .any(|circle| (circle.center - dot).length() < 0.5 && circle.fill == mark);
+    assert!(
+        painted,
+        "no circle painted at the stub's own dot position {dot:?} in the mark colour"
+    );
+}
+
+/// **AC3 — the caret reopens the rail at its default width, on the Inspector
+/// pane showing the column a prior tile click selected.**
+#[test]
+fn the_caret_reopens_the_inspector_on_the_clicked_column() {
+    let mut win = Live::open(housing_boot());
+    win.settle();
+    win.click_tile(1); // median_income — see the AC2 test above for why.
+
+    let inspector = brightfield_workbench::arrangement::INSPECTOR_RAIL;
+    win.click_rail_caret(inspector);
+
+    let width = win
+        .app
+        .region_rect(inspector)
+        .expect("the inspector rail drew")
+        .width();
+    assert!(
+        (width - brightfield_workbench::arrangement::INSPECTOR_RAIL_WIDTH).abs() < 0.5,
+        "the caret did not reopen the inspector at its declared default \
+         width: {width}"
+    );
+
+    let shapes = win.shapes();
+    let drawn: Vec<String> = texts(&shapes).into_iter().map(|(t, _, _)| t).collect();
+    assert!(
+        drawn.iter().any(|t| t == "median_income"),
+        "the reopened Inspector pane does not show the clicked column: {drawn:?}"
     );
 }
