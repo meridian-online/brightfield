@@ -628,9 +628,10 @@ impl ScaleType {
 
     /// Read a wire name, or `None` for a spelling this build does not know.
     ///
-    /// Matched exactly rather than case-insensitively, for the reason
-    /// [`FIXED`] is: a spec written for Mosaic is the thing being read, and
-    /// Mosaic resolves the name and not a spelling of it.
+    /// Matched exactly rather than case-insensitively, for the reason the
+    /// private `FIXED` literal above is: a spec written for Mosaic is the
+    /// thing being read, and Mosaic resolves the name and not a spelling of
+    /// it.
     #[must_use]
     pub fn from_wire(name: &str) -> Option<Self> {
         match name {
