@@ -396,17 +396,34 @@ fn each_switch_names_its_own_column_in_its_hover_text() {
     );
 }
 
-/// A document the generator never named draws no switch at all — the list the
-/// control is derived from is the tile list, and a shipped start has none.
+/// **An authored spec draws no switch even when it draws a binned histogram.**
+///
+/// The fixture is `examples/rect-bin-count.yaml` — one `rectY` over a binned
+/// column, the same device a generated tile emits — so the assertion is about
+/// where the offer comes from and not about there being nothing to offer it
+/// on. The switch is the generated dashboard's: it exists because a generated
+/// tile has no author standing by to rewrite its spec, and a spec somebody
+/// wrote has one. A build that decided switchability from the marks on the
+/// page rather than from the generator's tile list draws one here and fails.
 #[test]
-fn an_authored_spec_draws_no_scale_switch() {
-    let boot = Boot::start(brightfield_shell::starts::CROSSWALK, Flow::Vertical)
-        .expect("the shipped start opens");
+fn an_authored_binned_histogram_draws_no_scale_switch() {
+    let spec = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/rect-bin-count.yaml");
+    let spec = spec.to_str().expect("utf-8 example path");
+    let boot = Boot::open(spec, Flow::Vertical, None).expect("the example opens");
     let mut live = Live::open(boot);
     live.settle();
     assert!(
         live.doc().tile_columns().is_empty(),
-        "a shipped start names no tiles"
+        "an authored spec names no tiles"
+    );
+    assert!(
+        live.doc()
+            .composed
+            .plots
+            .iter()
+            .any(|p| p.marks.contains(&brightfield_spec::vocab::MarkKind::RectY)),
+        "the fixture draws no binned rect, so it measures nothing"
     );
     assert!(
         live.doc().scale_switches.is_empty(),
@@ -750,23 +767,42 @@ fn the_log_tile_re_bins_and_the_other_six_stand_still() {
     }
 }
 
-/// A press that lands on the control starts no brush and commits no selection
-/// — the gate in `drive_gestures`, without which a click on `log` swept a
-/// zero-width interval on that tile and cross-filtered every other tile with
-/// it.
+/// **A press that lands on the control is not a press on the canvas.**
+///
+/// The canvas selects a tile on its press edge, and it reads the pointer out
+/// of the context rather than through an `egui::Response` — so egui's own
+/// paint-order precedence, which does suppress the widget under a widget,
+/// never reaches it. Without the gate in `drive_gestures` a click on `log`
+/// also moved the window's selected tile to the tile under the control, so
+/// throwing one tile's switch renamed what the inspector was describing.
+///
+/// The selection is set on another tile first, because a gate that were
+/// missing would be invisible against no selection at all — which is the
+/// state the page opens in.
 #[test]
-fn a_click_on_the_switch_starts_no_brush() {
+fn a_press_on_the_switch_is_not_a_press_on_the_canvas() {
     let mut live = Live::open(housing_boot());
     live.settle();
-    assert!(
-        live.doc().selection_sql().is_none(),
-        "nothing is selected before the click"
+
+    let income = live.switch("median_income").plot;
+    let at = live.at(income, 0.5);
+    live.click(at);
+    assert_eq!(
+        live.doc().selected_column().map(|c| c.column.clone()),
+        Some("median_income".to_string()),
+        "the press on the tile body did not select it, so the gate below is          being measured against nothing"
     );
+
     let switch = live.switch("population");
     live.click(switch.states[1].1.center());
+    assert_eq!(
+        live.doc().selected_column().map(|c| c.column.clone()),
+        Some("median_income".to_string()),
+        "the press on population's switch moved the window's selected tile"
+    );
     assert!(
         live.doc().selection_sql().is_none(),
-        "the click committed {:?}",
+        "the press on the switch committed {:?}",
         live.doc().selection_sql()
     );
 }
