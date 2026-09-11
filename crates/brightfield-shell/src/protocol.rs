@@ -46,8 +46,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use brightfield_protocol::contract::Outcome;
 use brightfield_protocol::contract::{SkipReason, StepState};
-use brightfield_protocol::contract_graph::{AssetMeta, SeamStatus, StepView};
+use brightfield_protocol::contract_graph::{AssetMeta, RunView, SeamStatus, StepView};
 use brightfield_protocol::graph::{AssetGraph, AssetId, AssetKind, SeamKind, StepId};
 use brightfield_protocol::layout::{Flow, Layout, LayoutConfig, Rect};
 use brightfield_protocol::panel::{
@@ -112,6 +113,17 @@ pub struct ProtocolInputs {
     pub assets: BTreeMap<AssetId, AssetMeta>,
     /// Per-step detail (empty offline).
     pub steps: BTreeMap<StepId, StepView>,
+    /// The run behind this Protocol, when there is one.
+    ///
+    /// `None` for a **declaration** — a manifest, or the Protocol brightfield
+    /// writes for a data file — which is the kind of input this build had
+    /// before [`load_contract_str`]. That is the state the whole of the ledger,
+    /// the spine's status column and the per-step quality output report *not
+    /// run* for, honestly and with no record behind them to report instead.
+    ///
+    /// `Some` for an emitted Protocol+Run contract, and then it is the run
+    /// header the contract carried: the outcome, the id, and the timestamps.
+    pub run: Option<RunView>,
     /// The S-sheet rows in run order.
     pub sheet_rows: Vec<StepRow>,
     /// The columns of the one table this Protocol produces, in the table's own
@@ -161,6 +173,7 @@ impl ProtocolInputs {
             statuses: BTreeMap::new(),
             assets: BTreeMap::new(),
             steps: BTreeMap::new(),
+            run: None,
             sheet_rows: Vec::new(),
             columns: Vec::new(),
             tiles: Vec::new(),
@@ -376,6 +389,86 @@ pub fn load_protocol_str(text: &str, models: &[(&str, &str)]) -> Result<Protocol
     Ok(inputs_from(&manifest, &sources))
 }
 
+/// Load an emitted **Protocol+Run contract** into [`ProtocolInputs`] — a
+/// Protocol that has run, with each step's real state on it.
+///
+/// # What this is, and what it is not
+///
+/// It is not an execution engine and it does not make a manifest runnable.
+/// Brightfield invokes no operator, and running a Protocol belongs to `arc`.
+/// What brightfield has always been able to *read* is the artefact a run
+/// emits, and until this
+/// existed nothing in the shell built a document from one: `statuses`,
+/// `assets` and `steps` were empty on every input the binary could open, so
+/// every surface that exists to report a run reported the same nothing.
+///
+/// The four derived graphs are built exactly as the private `inputs_from` builds
+/// them from a manifest, in the same order and for the same reasons — the explode
+/// before the collapse, the contraction last — because the fold rules are
+/// about the graph's shape and not about where the graph came from. What
+/// differs is the source of the SQL the CTE explode reads: a manifest has
+/// `models/*.sql` beside it, and a contract carries each `sql` step's text on
+/// the step itself.
+///
+/// # Errors
+///
+/// If `bytes` are not a structurally valid contract, or carry a
+/// `contract_version` outside the family this build reads.
+pub fn load_contract_str(bytes: &[u8]) -> Result<ProtocolInputs, String> {
+    let view = brightfield_protocol::view_from_contract_bytes(bytes)
+        .map_err(|e| format!("contract error: {e}"))?;
+    let graph_full = view.graph.clone();
+    let graph_collapsed = collapse_families(&graph_full);
+    // The SQL each step ran, off the contract's own step records — the input
+    // `manifest_sql` derives from a manifest's model files. A step with no SQL
+    // (an `op`, a `command`) is skipped, which is what the manifest path's
+    // `filter_map` over `step.sql` does too.
+    let sql_by_step: BTreeMap<StepId, String> = view
+        .steps
+        .iter()
+        .filter_map(|(name, step)| step.sql_text.clone().map(|sql| (name.clone(), sql)))
+        .collect();
+    let graph_exploded = collapse_families(&explode_ctes(&graph_full, &sql_by_step));
+    let graph_contracted = brightfield_protocol::contract_chains(&graph_collapsed);
+    Ok(ProtocolInputs {
+        protocol: view.graph.protocol.clone(),
+        graph_collapsed,
+        graph_full,
+        graph_exploded,
+        graph_contracted,
+        statuses: view.seam_statuses(),
+        assets: view.assets.clone(),
+        steps: view.steps.clone(),
+        run: Some(view.run.clone()),
+        // From the view, not synthesised from the seams: `StepsSheet::from_view`
+        // carries the status and live columns a run recorded, where the manifest
+        // path's `synth_sheet_rows` leaves both at their unrun default.
+        // `the_run_start_draws_the_contract_it_ships` compares this column with
+        // the contract's own states.
+        sheet_rows: StepsSheet::from_view(&view).rows().to_vec(),
+        columns: Vec::new(),
+        tiles: Vec::new(),
+        table: None,
+        source: None,
+    })
+}
+
+/// What the ledger's strip says a run came to.
+///
+/// The contract's own vocabulary rather than a second one coined here, and
+/// `Unknown` is drawn as what it is — a contract this reader does not
+/// recognise the outcome of — rather than folded into a failure or into a
+/// success.
+#[must_use]
+pub fn outcome_word(outcome: Outcome) -> &'static str {
+    match outcome {
+        Outcome::Success => "success",
+        Outcome::Error => "failed",
+        Outcome::Partial => "partial",
+        Outcome::Unknown => "unrecognised",
+    }
+}
+
 /// Derive the panel's inputs from a parsed manifest and its models' sources —
 /// the half both loaders share, so a start that ships inside the binary and a
 /// manifest read off disk produce the same graph by construction rather than
@@ -424,6 +517,10 @@ fn inputs_from(
         statuses: BTreeMap::new(),
         assets: BTreeMap::new(),
         steps: BTreeMap::new(),
+        // A manifest is a declaration: there is no run behind it, which is what
+        // the `(no run)` disclosure on the shipped start's own button says out
+        // loud before the click.
+        run: None,
         sheet_rows,
         // A manifest declares relations, not columns: nothing here profiled a
         // table, so the outline lists assets alone. The data-file path fills
@@ -687,6 +784,7 @@ pub struct ProtocolModel {
     statuses: BTreeMap<StepId, SeamStatus>,
     assets: BTreeMap<AssetId, AssetMeta>,
     steps: BTreeMap<StepId, StepView>,
+    run: Option<RunView>,
     /// Nav over the collapsed graph (stable ids across a fold).
     nav: ProtocolNav,
     sheet: StepsSheet,
@@ -807,6 +905,7 @@ impl ProtocolModel {
             statuses: inputs.statuses,
             assets: inputs.assets,
             steps: inputs.steps,
+            run: inputs.run,
             columns: inputs.columns,
             tiles: inputs.tiles,
             table: inputs.table,
@@ -1123,6 +1222,42 @@ impl ProtocolModel {
     #[must_use]
     pub fn is_cte_expanded(&self) -> bool {
         self.cte_expanded
+    }
+
+    /// Each step this Protocol declares, and the run state recorded for it.
+    ///
+    /// Over the **seams of the full graph**, not over the recorded map, and
+    /// defaulting an unrecorded step to [`SeamStatus::NotRun`] — the same
+    /// defaulting `brightfield_protocol::panel::outline_rows` applies when it
+    /// tints a row. Reading the map alone would answer *no steps* for a
+    /// declaration, where the truth is *every step, and none of them has run*,
+    /// and a test asking "does any step report never-run" would then pass over
+    /// the very document that made the question worth asking.
+    #[must_use]
+    pub fn step_states(&self) -> BTreeMap<StepId, SeamStatus> {
+        self.graph_full
+            .seams
+            .keys()
+            .map(|step| {
+                (
+                    step.clone(),
+                    self.statuses
+                        .get(step)
+                        .copied()
+                        .unwrap_or(SeamStatus::NotRun),
+                )
+            })
+            .collect()
+    }
+
+    /// The run behind this Protocol, when a run emitted it.
+    ///
+    /// `None` for a declaration — see [`ProtocolInputs::run`]. Read by the
+    /// window to decide what the ledger's strip says, which is the one place a
+    /// reader is told the whole Protocol's answer rather than one step's.
+    #[must_use]
+    pub fn run(&self) -> Option<&RunView> {
+        self.run.as_ref()
     }
 
     /// Whether the canvas draws each run of single hand-offs as the one asset it
@@ -3452,7 +3587,10 @@ fn status_gloss(s: SeamStatus) -> &'static str {
         SeamStatus::Running => "Currently running.",
         SeamStatus::Skipped => "Skipped — already up to date, or gated off.",
         SeamStatus::Failed => "Failed on the last run — check the run log.",
-        SeamStatus::NotRun => "Not run in this view (the offline manifest has no run status).",
+        SeamStatus::NotRun => {
+            "No recorded state — an input the run did not produce, or a Protocol with no run \
+             behind it."
+        }
     }
 }
 
@@ -3585,7 +3723,12 @@ fn run_state_field(ui: &mut egui::Ui, mode: Mode, state: RunState) {
 }
 
 /// Human-readable byte size (1 KiB steps), for the inspector's measured Size.
-fn human_bytes(b: u64) -> String {
+///
+/// Crate-visible so [`crate::remote`]'s fetch readout counts in the same
+/// units and the same words the inspector's Size does — a card saying
+/// `4.1 MB` and an inspector saying `4.2 MB` about one file is a difference a
+/// reader has to explain to themselves.
+pub(crate) fn human_bytes(b: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     if b < 1024 {
         return format!("{b} B");

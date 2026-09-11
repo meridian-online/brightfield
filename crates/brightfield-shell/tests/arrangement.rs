@@ -44,6 +44,7 @@ fn both() -> Boot {
         spec_path: Some(DASHBOARD.into()),
         authored: None,
         stacked_tiles: None,
+        fetched: None,
         protocol: inputs,
         flow: Flow::Vertical,
         focus: None,

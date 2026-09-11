@@ -1042,6 +1042,22 @@ impl LiveDashboard {
         &self.diagnostics
     }
 
+    /// The spec this dashboard is composing — the parse the engine was built
+    /// from, after any rewriting a caller did before handing it over.
+    ///
+    /// Public for the reason [`crate::app::ChartDoc::live_coordinator`] is:
+    /// *what is this document actually reading* has exactly one honest answer,
+    /// and it is this. A gate that asked the caller instead would be asking the
+    /// code under test to confirm its own intention —
+    /// `crate::remote::repointed` rewrites a fetched source's `file:` to the
+    /// local path it was written to, and
+    /// `crates/brightfield-shell/tests/remote_start.rs` reads that back through
+    /// [`spec_data_files`] to say the engine bound a file and not a URL.
+    #[must_use]
+    pub fn spec(&self) -> &Spec {
+        &self.spec
+    }
+
     /// The box the next composite will be laid out into.
     #[must_use]
     pub fn viewport(&self) -> Rect {

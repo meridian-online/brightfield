@@ -333,11 +333,22 @@ fn canvas_subject(doc: &ProtocolDoc) -> Subject {
 /// start's load gate runs on demand, not on every push.
 #[test]
 fn every_shipped_start_loads_into_a_document_with_something_in_it() {
+    // The recorded size is the **gallery's**, which is what a stranger
+    // chooses from, and the gallery is `Start::on_door`'s answer rather than
+    // the length of the shipped set. The two were one number while every start
+    // was on the door; they stopped being one when the generated charts came
+    // off it, and this assertion went on reading the wrong one until the door
+    // grew a third card and the shipped set a sixth entry.
     assert!(
-        (3..=5).contains(&starts::STARTS.len()),
-        "the curated set is {} starts — few enough to choose from at a \
-         glance, enough to read as a gallery, is the recorded size",
-        starts::STARTS.len()
+        (2..=5).contains(&starts::on_door_count()),
+        "the door offers {} card(s) — few enough to choose from at a glance, \
+         enough to read as a gallery, is the recorded size",
+        starts::on_door_count()
+    );
+    assert!(
+        starts::on_door_count() < starts::STARTS.len(),
+        "every shipped start is on the door, so `on_door` has stopped being a \
+         choice and this assertion has stopped measuring one"
     );
     assert!(
         starts::find(starts::CROSSWALK).is_some(),
@@ -1235,12 +1246,12 @@ fn a_door_with_recents_lists_every_one_of_them_most_recent_first() {
 ///
 /// It walks the door's own set rather than one hand-picked start, because a
 /// route that diverges for one document kind and not the other is the
-/// divergence a single-case test would survive. **Today that walk is one
-/// start**, the crosswalk manifest: the Datasets section offers two, and the
-/// other reads over the network. So the count is asserted rather than left
-/// implicit — a door that lost its last local card would otherwise pass this
-/// by walking an empty set, which is the failure this file has already had
-/// once in a different loop.
+/// divergence a single-case test would survive. **Today that walk is two
+/// starts**, the crosswalk manifest and a run of it: the Datasets section
+/// offers three, and the third reads over the network. So the count is
+/// asserted rather than left implicit — a door that lost its last local card
+/// would otherwise pass this by walking an empty set, which is the failure
+/// this file has already had once in a different loop.
 ///
 /// The remote start is skipped, for the reason its siblings in this file skip
 /// it: taking its card composes its spec, and that spec reads an `https://`
@@ -1308,16 +1319,16 @@ fn either_route_to_the_same_subject_leaves_the_same_window() {
             start.id
         );
     }
-    // Two starts declare themselves for the door and one of those two reads
-    // over the network, so one is what a hermetic run can compare. Written as
+    // Three starts declare themselves for the door and one of the three reads
+    // over the network, so two are what a hermetic run can compare. Written as
     // the number rather than as the same filter the loop is built from,
     // because a filter compared against itself agrees whatever it yields.
     assert_eq!(
-        walked, 1,
+        walked, 2,
         "{walked} start(s) were compared, where the Datasets section offers \
-         one a hermetic run can take — a walk of nothing here would leave both \
-         routes unasserted and this test green, and a walk of more than one \
-         means the section changed without this number being looked at"
+         two a hermetic run can take — a walk of nothing here would leave both \
+         routes unasserted and this test green, and a walk of a different \
+         number means the section changed without this one being looked at"
     );
 }
 
