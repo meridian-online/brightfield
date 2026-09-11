@@ -16,12 +16,11 @@
 #
 # TWO SOURCES, AND THE ASYMMETRY BETWEEN THEM IS THE THING TO UNDERSTAND.
 #
-#   The FineType release, addressed by the pinned tag, is to carry the
-#   extension, the taxonomy catalogue and `finetype-model.json` — IT DOES NOT
-#   YET, and the paragraph below says what that means. Each is to have a
-#   `.sha256` published beside it, and each is refused unless the bytes hash to
-#   it. That is an attestation: the checksum is written by the party that built
-#   the artefact.
+#   The FineType release, addressed by the pinned tag, carries the extension,
+#   the taxonomy catalogue and `finetype-model.json`. Each has a `.sha256`
+#   published beside it, and each is refused here unless the bytes hash to it.
+#   That is an attestation: the checksum is written by the party that built the
+#   artefact.
 #
 #   The model registry, addressed by the pinned revision, holds the weights.
 #   The FineType tag does not attach them and publishes no checksum for them,
@@ -36,17 +35,18 @@
 #   consistent. Do not read a green run here as the model being checksummed
 #   the way the release assets are.
 #
-# WHICH ASSET NAMES ARE ASSUMED AND WHICH ARE MEASURED, stated precisely
-# because the difference is the whole risk here. THE THREE RELEASE ASSETS DO
-# NOT EXIST YET: `gh release view v0.6.58 --json assets` lists five CLI
-# archives and their `.sha256` sidecars and nothing else. The names below are
-# the ones a FineType change is adding, in the form those five already use, and
-# the first release that carries them is where they are confirmed. A wrong name
-# fails as a 404 during a release, loudly, which is the failure direction to
-# want. The registry layout, by contrast, was read off the registry itself at
-# the pinned revision. What no test reaches is the live release and the live
-# registry together; the self-test drives this whole file against a loopback
-# server standing in for both.
+# WHICH ASSET NAMES ARE MEASURED AND WHEN, stated precisely because the
+# difference between a name that was read and a name that was guessed is the
+# whole risk here. The three asset names below were read off the live release
+# at the pinned tag, and so was the registry layout at the pinned revision — a
+# real run of this script assembled a bundle from both on 2026-09-07. That is a
+# reading of ONE tag: a bump to a release naming its assets differently fails
+# as a 404 during the fetch, loudly, which is the failure direction to want.
+# What no self-test reaches is the live release and the live registry together;
+# the self-test drives this whole file against a loopback server standing in
+# for both. The workflow that does reach them is .github/workflows/test.yml,
+# whose `fetch the pinned FineType bundle` step runs this against the real
+# hosts on the pull request that moves the pin.
 #
 # BRIGHTFIELD_FINETYPE_ASSET_BASE replaces the release url and
 # BRIGHTFIELD_FINETYPE_MODEL_ORIGIN the registry's. The self-test sets both; a

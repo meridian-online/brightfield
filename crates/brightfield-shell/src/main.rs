@@ -740,6 +740,34 @@ plot:
         return 2;
     };
 
+    // THE APPLICATION'S OWN DEFAULT, held against the bundle this function has
+    // just located by hand.
+    //
+    // Opening a data file does not build a `LoadOptions`: it takes
+    // `data_file::OpenOptions::type_source`, whose default is
+    // `LoadOptions::packaged`'s answer. That default was read nowhere with a
+    // bundle in place — the options built below are this function's own,
+    // because it needs the seal, and a test binary has `target/debug/deps`
+    // beside it rather than a bundle directory. Measured with the default
+    // changed to `None`: the `column_header_band`, `data_file` and
+    // `one_step_protocol` targets ran 60 tests between them and 60 passed,
+    // and this check passed too, over a build whose window would open a file
+    // and state its storage type where its meaning belongs. This is the one
+    // process that can tell the difference, which is why the question is
+    // asked here.
+    match brightfield_shell::data_file::OpenOptions::default().type_source {
+        Some(TypeSourceSpec::Bundle(ref dir)) if *dir == bundle => {}
+        other => {
+            eprintln!(
+                "check-type-source: a bundle is at {} and \
+                 data_file::OpenOptions::default() resolves {other:?} — opening a file in \
+                 this build would ask nobody what its columns mean",
+                bundle.display()
+            );
+            return 1;
+        }
+    }
+
     let Ok(parsed) = parse_spec(FIXTURE, Format::Yaml) else {
         eprintln!("check-type-source: the built-in fixture does not parse");
         return 1;
@@ -820,13 +848,93 @@ plot:
                     return 1;
                 }
             }
-            0
+            opened_file_names_what_its_column_means()
         }
         other => {
             eprintln!("check-type-source: the bundle put no usable label on the column: {other:?}");
             1
         }
     }
+}
+
+/// The second leg: the application's OWN open, through `data_file::open`.
+///
+/// **The check above proves the bundle can label a column. This proves the
+/// route a person takes does.** They are not the same claim and the gap
+/// between them is where two defects sat at once.
+///
+/// The first is what the options say. The check above builds its own
+/// `LoadOptions` because it needs the seal, and what
+/// `data_file::OpenOptions::default` resolves or what `data_file::open` passes
+/// went unread. Measured with `open` passing `type_source: None`: 839 shell
+/// tests green, both bundle-present band tests green, this binary exit 0 — over
+/// a build in which a file a reader opens draws its storage type where its
+/// meaning belongs.
+///
+/// The second is the cache. The check above runs `NetworkPolicy::Disabled`,
+/// which switches autoloading off; `data_file::open` leaves it on, which is
+/// what a Parquet needs. So this leg is the one that runs the type source up
+/// with autoload live — and it runs it here, under the sealed `HOME` this
+/// process made itself, which is empty. That is the condition a fresh machine
+/// is in and a developer's laptop is not: the same code aborted with `SIGABRT`
+/// on a cold `HOME` and passed on a warm one, and the checks that existed ran
+/// warm.
+///
+/// The fixture is written here rather than shipped, because a packaged
+/// artefact carries no test data and the sealed working directory is this
+/// run's own.
+fn opened_file_names_what_its_column_means() -> i32 {
+    // Two columns, and the second is not decoration: an identifying column gets
+    // no tile, so a table of just that one leaves the dashboard empty and
+    // `data_file::open` refuses it.
+    const CSV: &str = "reply_to,messages\n\
+                       alice.a00@example.com,3\n\
+                       bob.b01@example.org,10\n\
+                       carol.c02@example.net,17\n\
+                       dan.d03@example.edu,24\n";
+    const COLUMN: &str = "reply_to";
+
+    let path = std::env::temp_dir().join("check-type-source-open.csv");
+    if let Err(e) = std::fs::write(&path, CSV) {
+        eprintln!("check-type-source: cannot write the fixture to open: {e}");
+        return 1;
+    }
+
+    let opened = match brightfield_shell::data_file::open(&path.to_string_lossy()) {
+        Ok(opened) => opened,
+        Err(e) => {
+            eprintln!("check-type-source: opening a data file failed: {e}");
+            return 1;
+        }
+    };
+    let Some(facts) = opened.protocol.columns.iter().find(|c| c.column == COLUMN) else {
+        eprintln!("check-type-source: the opened file has no {COLUMN} column");
+        return 1;
+    };
+
+    let Some(label) = facts.label.as_deref() else {
+        eprintln!(
+            "check-type-source: opening a file put no meaning on {COLUMN} — it is stored as \
+             {} and the grid would draw that word twice. The bundle labels this column when \
+             asked directly, so what failed is the route: data_file::open passes no type \
+             source, or OpenOptions::default resolves none.",
+            facts.storage
+        );
+        return 1;
+    };
+    if facts.leaf == facts.storage {
+        eprintln!(
+            "check-type-source: {COLUMN} is labelled {label} and the grid's header would still \
+             draw {} on both halves of its row",
+            facts.storage
+        );
+        return 1;
+    }
+    println!(
+        "check-type-source: opening a file names {COLUMN} as {label} ({}), stored as {}",
+        facts.leaf, facts.storage
+    );
+    0
 }
 
 fn main() -> Result<(), String> {

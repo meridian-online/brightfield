@@ -153,11 +153,20 @@ jobs:
       #         shell red together points at the host or the data; shell red
       #         alone points at the start.
       #
-      # DELIBERATELY NOT COVERED: the one other `#[ignore]`d test in the
-      # workspace, `vello_bump_ceiling.rs`'s counter ladder. Its own module
-      # comment calls it "an instrument, not a gate" — it reads counters
-      # rather than passing or failing, and it is ignored for GPU reasons, not
-      # network ones. Adding it would put a non-gate in a gate.
+      #   crates/brightfield-shell/tests/column_header_band.rs
+      #     the_full_band_names_what_a_varchar_column_means
+      #     one_process_opens_one_file_with_a_type_source_and_without_one
+      #       - the grid's header band stating a column's MEANING rather than
+      #         its storage type, which needs a real FineType bundle. Ignored
+      #         for a bundle reason rather than a published-data one, and here
+      #         because the bundle arrives over the network: see the steps at
+      #         the foot of this job, which fetch it and run these two by name
+      #         under their own floor rather than inside the loop below.
+      #
+      # DELIBERATELY NOT COVERED: `vello_bump_ceiling.rs`'s counter ladder. Its
+      # own module comment calls it "an instrument, not a gate" — it reads
+      # counters rather than passing or failing, and it is ignored for GPU
+      # reasons, not network ones. Adding it would put a non-gate in a gate.
       #
       # THE GUARD, which is the point of the step's shape. `cargo test --
       # --ignored` with a filter that matches NOTHING exits 0 and prints
@@ -235,6 +244,109 @@ jobs:
           fi
 
           echo "${total} network-gated test(s) executed and passed (floor ${expected_total})"
+
+      # ------------------------------------------------------------------
+      # THE BUNDLE-PRESENT CONFIGURATION, which nothing else in CI runs.
+      #
+      # brightfield's differentiating claim is that the grid states what a
+      # column MEANS rather than how DuckDB stored it, and all of it depends on
+      # a FineType bundle being present. `LoadOptions::packaged` looks beside
+      # the running executable; a test binary has nothing there, so the labelled
+      # branch is reachable by a shipped binary and by no test the `test`
+      # workflow executes. The release workflow stages a bundle and reads it
+      # back, but that runs on a tag — after review rather than before it.
+      #
+      # HERE AND NOT IN `test`, and the header of this file is the argument.
+      # It gives three reasons the push suite does not reach the network, and
+      # only one of them is about somebody else's data moving: the other two are
+      # that a red here means something different, and that this must not delay
+      # a run somebody is waiting on. A first-party artefact addressed by a
+      # reviewed pin answers the first reason and not the other two — the fetch
+      # is still two hosts that can be down while the commit is fine, and a step
+      # in `test` sits in front of the gates after it. This was in `test.yml`
+      # for one round and is here for that reason.
+      #
+      # WHAT IS LOST BY THAT, stated rather than left implicit: the label test
+      # does not run per pull request. A change to the header band's leaf row is
+      # reviewed against a suite that cannot see it, and the first execution is
+      # the next 06:37 UTC. Moving it back is one step, and it waits on a ruling
+      # about whether `test` may reach these hosts at all.
+      #
+      # The cache is keyed on the pin file, so the fetch happens once per bump
+      # rather than once per night.
+      # ------------------------------------------------------------------
+      - name: cache the pinned FineType bundle
+        id: finetype-bundle
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/finetype-bundle
+          key: finetype-bundle-aarch64-apple-darwin-${{ hashFiles('packaging/finetype-pin.env') }}
+
+      - name: fetch the pinned FineType bundle
+        if: steps.finetype-bundle.outputs.cache-hit != 'true'
+        run: ./scripts/fetch-finetype-bundle.sh aarch64-apple-darwin "${RUNNER_TEMP}/finetype-bundle"
+
+      # Read the bundle before trusting it, restored or freshly fetched alike.
+      # A cache entry is not an attestation: it is whatever a previous run left
+      # under that key. This is the same pre-flight scripts/package.sh runs over
+      # the bundle it stages, with the pinned tag, so a restored bundle from a
+      # different release is refused by name rather than by a puzzling assertion
+      # in a test.
+      - name: the restored bundle is the pinned one
+        run: |
+          ./scripts/check-bundled-extension.sh \
+            "${RUNNER_TEMP}/finetype-bundle" \
+            "$(./scripts/duckdb-platform.sh aarch64-apple-darwin)" \
+            "$(./scripts/finetype-pin.sh --tag)"
+
+      # The same guard shape as the step above, for the same reason: `cargo test
+      # -- --ignored` with a filter matching nothing exits 0 and prints
+      # "0 passed", so a green step would otherwise prove nothing.
+      #
+      # THE FLOOR IS A LITERAL AND NOTHING PINS IT TO THE SOURCE. It is 2
+      # because `crates/brightfield-shell/tests/column_header_band.rs` carries
+      # two `#[ignore]`d tests today; nothing rereads that file to check, so
+      # deleting one of them and this number together would be green. That is
+      # the same hole the floors above have and it is disclosed rather than
+      # closed here — closing it means deriving the count from the source, which
+      # is a change to how every floor in this file works.
+      - name: the grid names what a column means
+        shell: bash
+        env:
+          BRIGHTFIELD_FINETYPE_BUNDLE: ${{ runner.temp }}/finetype-bundle
+        run: |
+          set -u
+
+          floor=2
+          log="${RUNNER_TEMP}/column-header-band-typed.log"
+
+          # The exit code is captured, never masked: no pipe into head/tail,
+          # output redirected to a file, the code kept in a variable and the
+          # file printed afterwards.
+          code=0
+          cargo test --locked -p brightfield-shell --test column_header_band \
+            -- --ignored --test-threads=1 --nocapture >"$log" 2>&1 || code=$?
+          cat "$log"
+
+          ran=$(awk '/^test result:/ { for (i = 1; i <= NF; i++) if ($i == "passed;") n += $(i - 1) } END { print n + 0 }' "$log")
+          echo "--- column_header_band --ignored: cargo exited ${code}, ${ran} test(s) executed (floor ${floor})"
+
+          failed=0
+          if [ "$code" -ne 0 ]; then
+            echo "::error title=the grid does not name what a column means::cargo test exited ${code} over a real FineType bundle. The failure above names the column and quotes what the band drew; a header reading the storage type in both halves of its leaf-and-storage row is the regression this covers."
+            failed=1
+          fi
+
+          if [ "$ran" -lt "$floor" ]; then
+            echo "::error title=executed too few tests::expected at least ${floor} ignored test(s) to execute in column_header_band, ${ran} executed — the filter matched nothing, or a covered test was renamed, deleted or un-ignored. A green run here would prove nothing."
+            failed=1
+          fi
+
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
+
+          echo "${ran} bundle-present band test(s) executed and passed (floor ${floor})"
 
       # A thumbnail-drift red is undiagnosable from a log alone, so hand back
       # what the remote start actually rendered and its perceptual diff. Same

@@ -496,19 +496,33 @@ impl Engine {
             // locally rather than reach out.
             //
             // `autoload_known_extensions` is deliberately NOT touched, and the
-            // difference matters. Autoload is not a network control: it is how
-            // DuckDB registers an extension it ALREADY has, and the bundled
-            // library carries `parquet` statically. An earlier form of this
-            // restriction switched it off and stopped Parquet files opening at
-            // all. What holds that now is
+            // difference matters: it is how DuckDB resolves `read_parquet`, so
+            // a session with it off cannot open a Parquet file. An earlier form
+            // of this restriction switched it off and did exactly that. What
+            // holds it now is
             // `a_native_type_source_costs_the_session_acquisition_but_not_autoload`,
             // which reads the setting off a live session — NOT the data_file
             // suite, which has no bundle beside its test binary and so never
             // reaches this branch.
             //
-            // Autoload resolves through the same repository as autoinstall, so
-            // with both shut it can only succeed for an extension already
-            // present.
+            // WHAT LEAVING IT ON DOES NOT BUY, corrected here on a
+            // measurement rather than left as it stood. The reason recorded
+            // above this line used to be that `parquet` is linked statically
+            // and autoload merely registers what the process already has. It is
+            // not: on a `HOME` with no `~/.duckdb`, this build downloads
+            // `parquet` on first use. So on a relaxed connection — autoinstall
+            // off, repository unresolvable — autoload can only find a parquet
+            // the machine already cached, and a fresh machine has none.
+            // Measured on an empty `HOME`, through `data_file::open` with a
+            // bundle: a CSV opens and a Parquet fails with `Extension
+            // ".../parquet.duckdb_extension" not found`. The same open with no
+            // bundle succeeds, by downloading it.
+            //
+            // That is a real gap in what a packaged build can open on a fresh
+            // machine and it is not fixed here: closing it means either
+            // staging `parquet` into the bundle or acquiring it before the
+            // relaxation, and both are packaging decisions rather than a
+            // setting.
             conn.execute_batch(
                 "SET autoinstall_known_extensions=false; \
                  SET custom_extension_repository='/dev/null/brightfield-no-network';",
@@ -523,7 +537,54 @@ impl Engine {
         let mut type_source: Option<Box<dyn TypeSource>> = None;
         let mut type_source_error: Option<String> = None;
         if let Some(spec) = &options.type_source {
-            match spec.open(&conn) {
+            // AUTOLOAD IS OFF FOR THE DURATION OF THIS ONE CALL, AND PUT BACK
+            // AFTER IT. The scope is the whole point and it is narrow on
+            // purpose.
+            //
+            // What goes wrong without it: bringing a native type source up
+            // runs the extension's own registration code, and FineType's
+            // registers a macro whose body mentions `json`. DuckDB answers
+            // that by autoloading `json` — through the repository this engine
+            // has just pointed at `/dev/null`, so it can only succeed for an
+            // extension the machine already had. On a machine that has one it
+            // succeeds and nobody notices. On a machine that does not, DuckDB
+            // raises, and it raises inside the extension's `#[no_mangle]`
+            // registration frame, where there is no unwinding to catch:
+            // measured on a cold `HOME`, `SIGABRT` out of
+            // `ExtensionHelper::LoadExternalExtension`, taking the process
+            // with it rather than returning the `Err` this match handles.
+            //
+            // So the failure mode is not "the type source did not come up",
+            // which this function is built to survive — it is the whole
+            // application dying on its first open. Switching autoload off
+            // across the call turns a registration that cannot succeed into
+            // one that does not try.
+            //
+            // NOT for the session, which is the difference from
+            // `NetworkPolicy::Disabled` and from the restriction above.
+            // Autoload is how DuckDB resolves `read_parquet`, so a session with
+            // it off cannot open a Parquet file: measured with this scoped to
+            // the session instead, `Table Function with name "read_parquet" is
+            // not in the catalog, but it exists in the parquet extension`, on a
+            // machine whose cache HAS parquet. That is
+            // what `a_native_type_source_costs_the_session_acquisition_but_not_autoload`
+            // holds by reading the setting back off the finished session, and
+            // what `a_chosen_parquet_opens_on_the_same_path` in
+            // `crates/brightfield-shell/tests/data_file.rs` holds by opening
+            // one.
+            let restore = current_setting(&conn, "autoload_known_extensions");
+            if let Err(e) = conn.execute_batch("SET autoload_known_extensions=false;") {
+                eprintln!("warning: autoload could not be switched off for the type source: {e}");
+            }
+            let opened = spec.open(&conn);
+            if let Some(previous) = restore {
+                if let Err(e) =
+                    conn.execute_batch(&format!("SET autoload_known_extensions={previous};"))
+                {
+                    eprintln!("warning: autoload could not be put back to {previous}: {e}");
+                }
+            }
+            match opened {
                 Ok(source) => type_source = Some(source),
                 Err(e) => {
                     eprintln!("warning: no semantic type source — {e}");
