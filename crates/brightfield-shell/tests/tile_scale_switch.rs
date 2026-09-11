@@ -366,3 +366,359 @@ fn an_authored_spec_draws_no_scale_switch() {
         live.doc().scale_switches
     );
 }
+
+// ---------------------------------------------------------------------------
+// What the tiles actually drew — read off the live session, not off a second
+// derivation of the same arithmetic.
+// ---------------------------------------------------------------------------
+
+/// One mark's bins, as `(bin start, count)` pairs in the order the engine
+/// returned them.
+///
+/// This is what "the picture" means for a binned mark: the rows the session
+/// returns after the composition has run, so a bin count read here is the
+/// number of bars the tile has to draw. Counting anything the composer wrote
+/// down would be asking the code under test to confirm its own intention.
+fn mark_bins(doc: &mut ChartDoc, mark: usize, column: &str) -> Vec<(f64, f64)> {
+    use arrow::array::Float64Array;
+    use arrow::compute::cast;
+    use arrow::datatypes::DataType;
+    let batches = doc
+        .live_coordinator()
+        .expect("a live document")
+        .chart_rows(mark)
+        .expect("the mark queries");
+    let mut out = Vec::new();
+    for batch in &batches {
+        let (Ok(bin), Ok(count)) = (
+            batch.schema().index_of(column),
+            batch.schema().index_of("__bf_count"),
+        ) else {
+            continue;
+        };
+        let bins = cast(batch.column(bin), &DataType::Float64).expect("numeric bins");
+        let counts = cast(batch.column(count), &DataType::Float64).expect("numeric counts");
+        let bins = bins
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .expect("f64 bins");
+        let counts = counts
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .expect("f64 counts");
+        for i in 0..bins.len() {
+            out.push((bins.value(i), counts.value(i)));
+        }
+    }
+    out
+}
+
+/// Which flat mark indices bin `column`, in index order.
+///
+/// A histogram tile emits two marks over one column — the unfiltered ghost and
+/// the layer the selection narrows — so this answers with both, and the pair
+/// is what makes "the filtered layer moved and the ghost did not" a thing a
+/// test can say. Panics naming every mark's schema when none binds the column,
+/// so a renamed bin output fails with a list rather than with an empty vector
+/// that reads like a passing zero.
+fn marks_binning(doc: &mut ChartDoc, column: &str) -> Vec<usize> {
+    let mut found = Vec::new();
+    let mut schemas = Vec::new();
+    for mark in 0..64 {
+        let Some(coordinator) = doc.live_coordinator() else {
+            break;
+        };
+        let Ok(batches) = coordinator.chart_rows(mark) else {
+            break;
+        };
+        let Some(batch) = batches.first() else {
+            continue;
+        };
+        let names: Vec<String> = batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        if names.iter().any(|n| n == column) && names.iter().any(|n| n == "__bf_count") {
+            found.push(mark);
+        }
+        schemas.push(format!("{mark}: {names:?}"));
+    }
+    assert!(
+        !found.is_empty(),
+        "no mark binned {column:?} into counted bins; the marks read {schemas:?}"
+    );
+    found
+}
+
+/// The x-axis tick labels the plot's own scale produces, at the density the
+/// axis renderer asks for.
+fn x_tick_labels(doc: &ChartDoc, plot: usize) -> Vec<String> {
+    let scale = doc.composed.plots[plot]
+        .scales
+        .get(brightfield_render::channel::Channel::X)
+        .expect("the plot has an x scale")
+        .clone();
+    brightfield_render::axis::compute_ticks(&scale, 10)
+        .into_iter()
+        .map(|t| t.label)
+        .collect()
+}
+
+/// What a plot draws against, as one comparable value: the scale on each
+/// positional axis and the box it was placed in.
+fn plot_frame(doc: &ChartDoc, plot: usize) -> String {
+    use brightfield_render::channel::Channel;
+    let handle = &doc.composed.plots[plot];
+    // Rendered rather than compared field by field: `Scale` carries a domain,
+    // a pixel range and — on a band — its categories, and the debug form
+    // holds every one of them, so a domain that widened by a pixel shows up
+    // here. `Scale` derives no `PartialEq` to compare instead.
+    format!(
+        "x={:?} y={:?} at={:?}",
+        handle.scales.get(Channel::X),
+        handle.scales.get(Channel::Y),
+        handle.rect
+    )
+}
+
+// ---------------------------------------------------------------------------
+// AC4 — a click rewrites one key, and the page re-queries around it.
+// ---------------------------------------------------------------------------
+
+/// Clicking `log` on `population` writes `xScale: log` into that plot's node
+/// in the canonical spec and **changes nothing else in it**.
+///
+/// Held by walking every plot node in the spec before and after and comparing
+/// them: the items of all eight, and the attribute maps of the seven the click
+/// did not name. An edit that wrote to the focused plot *and* somewhere else —
+/// or to the wrong plot — fails on a named path rather than on a byte count.
+#[test]
+fn a_click_writes_one_key_into_the_canonical_spec() {
+    use brightfield_spec::layout::collect_plot_nodes;
+
+    let mut live = Live::open(housing_boot());
+    live.settle();
+    let before = live
+        .doc()
+        .live_dashboard()
+        .expect("a live session")
+        .spec()
+        .clone();
+
+    let switch = live.switch("population");
+    let log = switch
+        .states
+        .iter()
+        .find(|(state, _)| *state == ScaleType::Log)
+        .expect("the switch offers log")
+        .1;
+    live.click(log.center());
+
+    let after = live
+        .doc()
+        .live_dashboard()
+        .expect("a live session")
+        .spec()
+        .clone();
+    let was = collect_plot_nodes(&before);
+    let now = collect_plot_nodes(&after);
+    assert_eq!(
+        was.len(),
+        now.len(),
+        "the edit is count-stable: {} plots before, {} after",
+        was.len(),
+        now.len()
+    );
+
+    let target = &live.doc().composed.plots[switch.plot].path;
+    let mut touched = Vec::new();
+    for ((path_a, plot_a), (path_b, plot_b)) in was.iter().zip(now.iter()) {
+        assert_eq!(path_a, path_b, "the plot order moved");
+        assert_eq!(plot_a.items, plot_b.items, "{path_a}'s marks moved");
+        if plot_a.attributes == plot_b.attributes {
+            continue;
+        }
+        touched.push(path_a.clone());
+        assert_eq!(
+            path_a, target,
+            "the edit landed on {path_a} and not on the tile that was clicked"
+        );
+        assert_eq!(
+            plot_b.attributes.len(),
+            plot_a.attributes.len() + 1,
+            "one attribute added and nothing else: {:?} -> {:?}",
+            plot_a.attributes,
+            plot_b.attributes
+        );
+        assert_eq!(
+            plot_b.attributes.get("xScale"),
+            Some(&brightfield_spec::ast::SpecValue::String("log".to_string()))
+        );
+    }
+    assert_eq!(
+        touched,
+        vec![target.clone()],
+        "exactly one plot node changed"
+    );
+}
+
+/// The tile re-queries: its bins are cut in log space, more of them are
+/// occupied than the linear cut left, its x axis is ticked in decades — and
+/// the other six tiles' frames and rows are where they were.
+///
+/// The bin count is read off the **session**, one row per occupied bin, so it
+/// is the number of bars the tile has to draw rather than a number the
+/// composer wrote down. The other six are read as their scales, their placed
+/// boxes and their own rows: an edit that re-cut the whole page would move at
+/// least one of the three.
+#[test]
+fn the_log_tile_re_bins_and_the_other_six_stand_still() {
+    let mut live = Live::open(housing_boot());
+    live.settle();
+
+    let switch = live.switch("population");
+    let others: Vec<usize> = live
+        .doc()
+        .scale_switches
+        .iter()
+        .map(|s| s.plot)
+        .filter(|p| *p != switch.plot)
+        .collect();
+    assert_eq!(others.len(), 6, "six tiles besides population");
+
+    let marks = marks_binning(live.app.chart_doc_mut(), "population");
+    let linear_bins = mark_bins(live.app.chart_doc_mut(), marks[0], "population");
+    let frames_before: Vec<_> = others.iter().map(|p| plot_frame(live.doc(), *p)).collect();
+    let rows_before: Vec<Vec<(f64, f64)>> = live
+        .doc()
+        .scale_switches
+        .iter()
+        .filter(|s| s.plot != switch.plot)
+        .map(|s| (s.plot, s.column.clone()))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|(_, column)| {
+            let mark = marks_binning(live.app.chart_doc_mut(), &column)[0];
+            mark_bins(live.app.chart_doc_mut(), mark, &column)
+        })
+        .collect();
+    let page_before = (live.doc().composed.width, live.doc().composed.height);
+    assert!(
+        matches!(
+            live.doc().composed.plots[switch.plot]
+                .scales
+                .get(brightfield_render::channel::Channel::X),
+            Some(brightfield_render::scale::Scale::Linear { .. })
+        ),
+        "population starts linear"
+    );
+
+    let log = switch
+        .states
+        .iter()
+        .find(|(state, _)| *state == ScaleType::Log)
+        .expect("the switch offers log")
+        .1;
+    live.click(log.center());
+
+    // The picture is now a log picture, and the switch says so.
+    assert!(
+        matches!(
+            live.doc().composed.plots[switch.plot]
+                .scales
+                .get(brightfield_render::channel::Channel::X),
+            Some(brightfield_render::scale::Scale::Log { .. })
+        ),
+        "population's x scale after the click: {:?}",
+        live.doc().composed.plots[switch.plot]
+            .scales
+            .get(brightfield_render::channel::Channel::X)
+    );
+    assert_eq!(live.switch("population").active, ScaleType::Log);
+
+    // Ticked in decades: each label is ten times the last, which `nice_step`'s
+    // 1/2/5 decimal ladder cannot produce.
+    let labels = x_tick_labels(live.doc(), switch.plot);
+    let values: Vec<f64> = labels.iter().filter_map(|l| l.parse::<f64>().ok()).collect();
+    assert!(
+        values.len() >= 3,
+        "a log axis over population is ticked at least three times; it drew {labels:?}"
+    );
+    for pair in values.windows(2) {
+        let ratio = pair[1] / pair[0];
+        assert!(
+            (ratio - 10.0).abs() < 0.01,
+            "the ticks step by {ratio} and not by a decade: {labels:?}"
+        );
+    }
+
+    // More bins carry rows than the linear cut left — the whole point of the
+    // switch on a long-tailed column.
+    let marks = marks_binning(live.app.chart_doc_mut(), "population");
+    let log_bins = mark_bins(live.app.chart_doc_mut(), marks[0], "population");
+    assert!(
+        log_bins.len() > linear_bins.len(),
+        "log occupies {} bins and linear occupied {}",
+        log_bins.len(),
+        linear_bins.len()
+    );
+    let total = |bins: &[(f64, f64)]| bins.iter().map(|(_, c)| *c).sum::<f64>();
+    assert!(
+        (total(&log_bins) - total(&linear_bins)).abs() < f64::EPSILON,
+        "the same rows are drawn either way: {} against {}",
+        total(&log_bins),
+        total(&linear_bins)
+    );
+
+    // And nothing else on the page moved.
+    assert_eq!(
+        (live.doc().composed.width, live.doc().composed.height),
+        page_before,
+        "the page was re-laid out"
+    );
+    for (i, plot) in others.iter().enumerate() {
+        assert_eq!(
+            plot_frame(live.doc(), *plot),
+            frames_before[i],
+            "plot {plot}'s scales or box moved"
+        );
+    }
+    let columns: Vec<String> = live
+        .doc()
+        .scale_switches
+        .iter()
+        .filter(|s| s.plot != switch.plot)
+        .map(|s| s.column.clone())
+        .collect();
+    for (i, column) in columns.iter().enumerate() {
+        let mark = marks_binning(live.app.chart_doc_mut(), column)[0];
+        assert_eq!(
+            mark_bins(live.app.chart_doc_mut(), mark, column),
+            rows_before[i],
+            "{column}'s rows moved"
+        );
+    }
+}
+
+/// A press that lands on the control starts no brush and commits no selection
+/// — the gate in `drive_gestures`, without which a click on `log` swept a
+/// zero-width interval on that tile and cross-filtered every other tile with
+/// it.
+#[test]
+fn a_click_on_the_switch_starts_no_brush() {
+    let mut live = Live::open(housing_boot());
+    live.settle();
+    assert!(
+        live.doc().selection_sql().is_none(),
+        "nothing is selected before the click"
+    );
+    let switch = live.switch("population");
+    live.click(switch.states[1].1.center());
+    assert!(
+        live.doc().selection_sql().is_none(),
+        "the click committed {:?}",
+        live.doc().selection_sql()
+    );
+}
