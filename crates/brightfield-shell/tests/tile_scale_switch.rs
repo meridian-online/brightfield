@@ -153,6 +153,54 @@ impl Live {
     }
 }
 
+impl Live {
+    /// A point `fraction` of the way across plot `plot`'s box, at its middle
+    /// height — clear of the switch at its head, which sits in the top corner.
+    ///
+    /// Read off [`MeridianApp::composed_plot_rects`], which resolves the two
+    /// origins the page is painted at, so a tile in the scrolled column is
+    /// aimed at where it is on screen.
+    fn at(&self, plot: usize, fraction: f32) -> egui::Pos2 {
+        let rect = self.app.composed_plot_rects()[plot];
+        egui::pos2(rect.left() + rect.width() * fraction, rect.center().y)
+    }
+
+    /// Sweep a brush across plot `plot`, from one fraction of its width to
+    /// another, and release — the press, the move and the release are each a
+    /// frame, because the canvas reads its own press edge across frames.
+    fn brush(&mut self, plot: usize, from: f32, to: f32) {
+        let start = self.at(plot, from);
+        let end = self.at(plot, to);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        self.run(vec![
+            vec![egui::Event::PointerMoved(start)],
+            vec![egui::Event::PointerMoved(start), button(start, true)],
+            vec![egui::Event::PointerMoved(end)],
+            vec![egui::Event::PointerMoved(end), button(end, false)],
+            Vec::new(),
+            Vec::new(),
+        ]);
+    }
+
+    /// Throw `column`'s switch to `kind` and let the page settle.
+    fn switch_to(&mut self, column: &str, kind: ScaleType) {
+        let at = self
+            .switch(column)
+            .states
+            .iter()
+            .find(|(state, _)| *state == kind)
+            .unwrap_or_else(|| panic!("{column}'s switch offers no {kind:?}"))
+            .1
+            .center();
+        self.click(at);
+    }
+}
+
 /// Every text the frame painted, with its box and the font its first section
 /// was set in — `tests/navigator_spine.rs`'s reader, so a label drawn in the
 /// wrong face is a fact this file can state.
@@ -720,5 +768,100 @@ fn a_click_on_the_switch_starts_no_brush() {
         live.doc().selection_sql().is_none(),
         "the click committed {:?}",
         live.doc().selection_sql()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// AC5 — a brush elsewhere narrows the log tile without moving its scale.
+// ---------------------------------------------------------------------------
+
+/// With `population` on log, a brush swept on `median_income` narrows
+/// population's **filtered layer on the log bins** and leaves the tile's
+/// scale, its bins and its ticks exactly where they were.
+///
+/// The two layers are the assertion. A histogram tile emits the unfiltered
+/// ghost and the layer the selection narrows over one column; after the sweep
+/// the ghost's rows are byte-equal to what they were and the filtered layer's
+/// total has dropped, with every bin it still holds standing on an edge the
+/// ghost also holds. A build that re-cut the tile on the *filtered* rows would
+/// pass a test that only counted, and fails the edge check here.
+#[test]
+fn a_brush_on_another_tile_narrows_the_log_tile_on_its_own_bins() {
+    let mut live = Live::open(housing_boot());
+    live.settle();
+    live.switch_to("population", ScaleType::Log);
+    assert_eq!(live.switch("population").active, ScaleType::Log);
+
+    let population = live.switch("population").plot;
+    let marks = marks_binning(live.app.chart_doc_mut(), "population");
+    assert_eq!(
+        marks.len(),
+        2,
+        "a histogram tile draws a ghost and a filtered layer; it drew {marks:?}"
+    );
+    let (ghost, filtered) = (marks[0], marks[1]);
+    let ghost_before = mark_bins(live.app.chart_doc_mut(), ghost, "population");
+    let filtered_before = mark_bins(live.app.chart_doc_mut(), filtered, "population");
+    let frame_before = plot_frame(live.doc(), population);
+    let ticks_before = x_tick_labels(live.doc(), population);
+    let total = |bins: &[(f64, f64)]| bins.iter().map(|(_, c)| *c).sum::<f64>();
+    assert!(
+        (total(&ghost_before) - total(&filtered_before)).abs() < f64::EPSILON,
+        "nothing is selected yet, so the two layers hold the same rows"
+    );
+
+    // The sweep lands on the first tile in the column — `median_income`, the
+    // file's own first column — and not on population's own tile.
+    let income = live.switch("median_income").plot;
+    assert_ne!(income, population);
+    live.brush(income, 0.15, 0.45);
+    assert!(
+        live.doc().selection_sql().is_some(),
+        "the sweep committed no selection"
+    );
+
+    let ghost_after = mark_bins(live.app.chart_doc_mut(), ghost, "population");
+    let filtered_after = mark_bins(live.app.chart_doc_mut(), filtered, "population");
+    assert_eq!(
+        ghost_after, ghost_before,
+        "the unfiltered layer is what the tile keeps behind the selection"
+    );
+    assert!(
+        total(&filtered_after) < total(&filtered_before),
+        "the filtered layer holds {} rows and held {}",
+        total(&filtered_after),
+        total(&filtered_before)
+    );
+    assert!(
+        total(&filtered_after) > 0.0,
+        "the sweep left the tile empty, which measures nothing about its bins"
+    );
+
+    // On the SAME bins: every edge the narrowed layer still stands on is an
+    // edge the log cut produced, not a fresh cut over the filtered rows.
+    let edges: Vec<f64> = ghost_before.iter().map(|(bin, _)| *bin).collect();
+    for (bin, _) in &filtered_after {
+        assert!(
+            edges.iter().any(|e| (e - bin).abs() < f64::EPSILON),
+            "the narrowed layer stands on {bin}, which is not one of the log \
+             edges {edges:?}"
+        );
+    }
+
+    // And the tile's own frame is untouched: same scale, same box, same ticks.
+    assert_eq!(
+        plot_frame(live.doc(), population),
+        frame_before,
+        "the brush moved population's scale or its box"
+    );
+    assert_eq!(
+        x_tick_labels(live.doc(), population),
+        ticks_before,
+        "the brush moved population's ticks"
+    );
+    assert_eq!(
+        live.switch("population").active,
+        ScaleType::Log,
+        "the switch stopped saying log"
     );
 }
