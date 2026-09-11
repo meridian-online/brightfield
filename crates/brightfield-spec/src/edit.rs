@@ -1721,7 +1721,10 @@ hconcat:
             },
         );
         assert_eq!(refused, Err(RefuseReason::WouldChangeAxisTitle));
-        assert_eq!(spec, before, "a refused edit leaves the spec byte-identical");
+        assert_eq!(
+            spec, before,
+            "a refused edit leaves the spec byte-identical"
+        );
     }
 
     /// A path that names no plot is refused rather than silently dropped.

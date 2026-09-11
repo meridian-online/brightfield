@@ -324,7 +324,10 @@ pub fn plot_window_rect(
     plot: &crate::pipeline::PlotHandle,
 ) -> egui::Rect {
     let at = egui::Rect::from_min_size(
-        egui::pos2(page.left() + plot.rect.x as f32, page.top() + plot.rect.y as f32),
+        egui::pos2(
+            page.left() + plot.rect.x as f32,
+            page.top() + plot.rect.y as f32,
+        ),
         egui::vec2(plot.rect.width as f32, plot.rect.height as f32),
     );
     match views {
@@ -360,9 +363,11 @@ pub struct HoverReadout {
 /// rects here are the ones the painter and the hit test were handed, in one
 /// expression each, so a readback cannot agree with a paint that has moved.
 ///
-/// Every rect is in **window-space logical points**, which is what makes
+/// The rects are in **window-space logical points**, which is what makes
 /// containment inside a tile — [`crate::window::MeridianApp::composed_plot_rects`]
-/// — an assertion about the frame rather than about arithmetic repeated twice.
+/// — an assertion about the frame rather than about arithmetic repeated twice;
+/// `every_histogram_tile_carries_a_scale_switch_inside_its_own_box` is the
+/// test that makes it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScaleSwitchDrawn {
     /// Which plot on the page this switch acts on — an index into

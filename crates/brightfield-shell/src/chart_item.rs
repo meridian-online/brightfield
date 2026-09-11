@@ -491,10 +491,10 @@ impl ChartItem {
         // this frame's control actually occupies. The gate is needed because
         // the gesture machine reads the pointer out of the context rather than
         // through an `egui::Response`, so egui's own paint-order precedence —
-        // which does suppress the widget *under* a widget — never reaches it.
-        // Without it a click on `log` committed a zero-width interval on that
-        // tile and cross-filtered every other tile on the page with it, which
-        // is `a_click_on_the_switch_starts_no_brush`.
+        // which does suppress the widget *under* a widget — does not reach it.
+        // Without it, throwing one tile's switch also moved the window's
+        // selected tile to that tile and renamed what the inspector was
+        // describing — `a_press_on_the_switch_is_not_a_press_on_the_canvas`.
         let on_chrome = at.is_some_and(|at| doc.scale_switches.iter().any(|s| s.rect.contains(at)));
 
         // The drag state machine: press starts a brush in the plot under
@@ -1437,6 +1437,20 @@ fn scale_switch_hover(column: &str) -> String {
     format!("scale: {column}")
 }
 
+/// **One tile's claim on a switch**: which plot it is, the column it bins,
+/// which positional axis carries those bins, and the transform the picture on
+/// screen is currently drawn against.
+///
+/// The four travel together because they are one tile's answer, resolved once
+/// per tile in [`draw_scale_switches`] and read once in [`draw_scale_switch`];
+/// passed separately they were eight arguments to one function.
+struct SwitchSubject<'a> {
+    plot: usize,
+    column: &'a str,
+    axis: PlotAxis,
+    active: ScaleType,
+}
+
 /// **Draw one histogram tile's scale switch and return what it drew**, plus
 /// the state the pointer picked on this frame.
 ///
@@ -1448,12 +1462,15 @@ fn draw_scale_switch(
     ui: &mut egui::Ui,
     tile: egui::Rect,
     clip: egui::Rect,
-    plot: usize,
-    column: &str,
-    axis: PlotAxis,
-    active: ScaleType,
+    subject: &SwitchSubject<'_>,
     mode: Mode,
 ) -> Option<(ScaleSwitchDrawn, Option<ScaleType>)> {
+    let SwitchSubject {
+        plot,
+        column,
+        axis,
+        active,
+    } = *subject;
     let sem = semantic(mode.is_dark());
     let font = egui::FontId::proportional(typography::CHART_LABEL_SIZE);
     let gap = spacing::SPACE_2;
@@ -1475,9 +1492,9 @@ fn draw_scale_switch(
 
     // The head of the tile's own box, at its trailing end — the corner a
     // long-tailed histogram leaves empty. A tile with no room for the control
-    // draws none rather than drawing one over its neighbour, and the count in
-    // `every_histogram_tile_carries_a_scale_switch` is what reddens if a tile
-    // ever gets that small.
+    // draws no control rather than drawing one over its neighbour, and the
+    // list `every_histogram_tile_carries_a_scale_switch_inside_its_own_box`
+    // compares is what reddens if a tile ever gets that small.
     let inset = spacing::SPACE_2;
     if total + inset * 2.0 > tile.width() || height + inset * 2.0 > tile.height() {
         return None;
@@ -1506,7 +1523,8 @@ fn draw_scale_switch(
             );
             x += gap * 2.0 + separator;
         }
-        let seg = egui::Rect::from_min_size(egui::pos2(x, outer.top()), egui::vec2(widths[i], height));
+        let seg =
+            egui::Rect::from_min_size(egui::pos2(x, outer.top()), egui::vec2(widths[i], height));
         x += widths[i];
         let state = SCALE_STATES[i];
         let hit = seg.intersect(clip);
@@ -1557,9 +1575,10 @@ fn draw_scale_switch(
 /// The tiles are read off [`ChartDoc::tile_columns`] rather than off the
 /// channel expressions: that list is one entry per plot, in the order the
 /// composition places its plots, and it carries the chart kind the generator
-/// chose. A document the generator never named — an authored spec, a capture,
-/// a shipped start — has an empty list and draws no switch, which is
-/// `an_authored_spec_draws_no_scale_switch`.
+/// chose. A document the generator did not name — an authored spec, a
+/// capture, a shipped start — has an empty list and draws no switch, which
+/// `an_authored_binned_histogram_draws_no_scale_switch` holds over a spec
+/// that draws the same binned device a tile does.
 fn draw_scale_switches(
     doc: &ChartDoc,
     ui: &mut egui::Ui,
@@ -1586,16 +1605,13 @@ fn draw_scale_switches(
             Some(view) => view.first,
             None => laid,
         };
-        let Some((record, picked)) = draw_scale_switch(
-            ui,
-            tile,
-            clip,
-            i,
-            &facts.column,
+        let subject = SwitchSubject {
+            plot: i,
+            column: &facts.column,
             axis,
-            composed_scale_type(plot, axis),
-            mode,
-        ) else {
+            active: composed_scale_type(plot, axis),
+        };
+        let Some((record, picked)) = draw_scale_switch(ui, tile, clip, &subject, mode) else {
             continue;
         };
         if let Some(state) = picked {

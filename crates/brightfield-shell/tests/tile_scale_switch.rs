@@ -17,10 +17,10 @@
 //! scale. Not covered here: the pixels. `tests/dashboard_baseline.rs` is that
 //! half — the two re-photographed baselines carry the control at rest.
 
+use brightfield_protocol::layout::Flow;
 use brightfield_shell::app::ChartDoc;
 use brightfield_shell::design::Mode;
 use brightfield_shell::window::{Boot, MeridianApp};
-use brightfield_protocol::layout::Flow;
 use brightfield_spec::layout::ScaleType;
 
 /// The committed table these windows are opened over — the same fixture
@@ -92,15 +92,14 @@ impl Live {
     /// frame's widget rect resolved, and egui's own delay is measured off the
     /// input clock a scripted frame advances by one predicted step at a time —
     /// three frames of rest is where the text first appears, which a probe
-    /// over a bare `on_hover_text` in an empty context reproduces with nothing
-    /// of this window in it. Two frames is not enough and this is the test
-    /// that says so.
+    /// over a bare `on_hover_text` in an empty context reproduces outside this
+    /// window. Two frames is not enough and this is the test that says so.
     fn hover_shapes(&mut self, pos: egui::Pos2) -> Vec<egui::epaint::ClippedShape> {
         // The delay is zeroed HERE and not at construction. The window
         // installs the design system's whole `Style` on its first draw —
         // `meridian_egui`'s `set_style_of` replaces the struct rather than
-        // editing it — so a delay set before that frame is gone by the time a
-        // pointer could rest on anything.
+        // editing it — so a delay set before that frame is already gone when
+        // the first pointer comes to rest.
         for theme in [egui::Theme::Light, egui::Theme::Dark] {
             self.ctx
                 .style_mut_of(theme, |style| style.interaction.tooltip_delay = 0.0);
@@ -355,7 +354,9 @@ fn the_switch_offers_linear_log_and_symlog_in_the_small_face() {
         let found = painted
             .iter()
             .find(|(text, rect, _)| text == word && seg.contains_rect(*rect))
-            .unwrap_or_else(|| panic!("the frame painted no {word:?} inside population's {word} segment"));
+            .unwrap_or_else(|| {
+                panic!("the frame painted no {word:?} inside population's {word} segment")
+            });
         assert!(
             (found.2.size - meridian_design::typography::CHART_LABEL_SIZE).abs() < f32::EPSILON,
             "{word} is set at {} and not the chart-label size",
@@ -386,7 +387,7 @@ fn each_switch_names_its_own_column_in_its_hover_text() {
 
     // And the words the tooltip actually paints when the pointer rests on one
     // — the record and the paint are one `String`, and this is the half that
-    // says the paint happens at all.
+    // says the paint happens.
     let at = live.switch("population").rect.center();
     let shapes = live.hover_shapes(at);
     let painted: Vec<String> = texts(&shapes).into_iter().map(|(t, _, _)| t).collect();
@@ -423,7 +424,7 @@ fn an_authored_binned_histogram_draws_no_scale_switch() {
             .plots
             .iter()
             .any(|p| p.marks.contains(&brightfield_spec::vocab::MarkKind::RectY)),
-        "the fixture draws no binned rect, so it measures nothing"
+        "the fixture draws no binned rect, so there is no offer to withhold"
     );
     assert!(
         live.doc().scale_switches.is_empty(),
@@ -538,7 +539,7 @@ fn plot_frame(doc: &ChartDoc, plot: usize) -> String {
     let handle = &doc.composed.plots[plot];
     // Rendered rather than compared field by field: `Scale` carries a domain,
     // a pixel range and — on a band — its categories, and the debug form
-    // holds every one of them, so a domain that widened by a pixel shows up
+    // holds each of the three, so a domain that widened by a pixel shows up
     // here. `Scale` derives no `PartialEq` to compare instead.
     format!(
         "x={:?} y={:?} at={:?}",
@@ -706,7 +707,10 @@ fn the_log_tile_re_bins_and_the_other_six_stand_still() {
     // Ticked in decades: each label is ten times the last, which `nice_step`'s
     // 1/2/5 decimal ladder cannot produce.
     let labels = x_tick_labels(live.doc(), switch.plot);
-    let values: Vec<f64> = labels.iter().filter_map(|l| l.parse::<f64>().ok()).collect();
+    let values: Vec<f64> = labels
+        .iter()
+        .filter_map(|l| l.parse::<f64>().ok())
+        .collect();
     assert!(
         values.len() >= 3,
         "a log axis over population is ticked at least three times; it drew {labels:?}"
@@ -772,7 +776,7 @@ fn the_log_tile_re_bins_and_the_other_six_stand_still() {
 /// The canvas selects a tile on its press edge, and it reads the pointer out
 /// of the context rather than through an `egui::Response` — so egui's own
 /// paint-order precedence, which does suppress the widget under a widget,
-/// never reaches it. Without the gate in `drive_gestures` a click on `log`
+/// does not reach it. Without the gate in `drive_gestures` a click on `log`
 /// also moved the window's selected tile to the tile under the control, so
 /// throwing one tile's switch renamed what the inspector was describing.
 ///
