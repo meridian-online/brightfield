@@ -622,7 +622,9 @@ fn column_as_string(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<St
 /// Resolve the pixel position for a value given a channel's scale.
 fn resolve_position(scale: &Scale, value_f64: Option<f64>, value_str: Option<&str>) -> Option<f64> {
     match scale {
-        Scale::Linear { .. } | Scale::Time { .. } => value_f64.map(|v| scale.map_f64(v)),
+        Scale::Linear { .. } | Scale::Log { .. } | Scale::Symlog { .. } | Scale::Time { .. } => {
+            value_f64.map(|v| scale.map_f64(v))
+        }
         Scale::Band { .. } => value_str.and_then(|s| scale.map_category(s)),
         // Colour ramps (categorical or sequential) don't position on an axis.
         Scale::Colour { .. } | Scale::Sequential { .. } => None,

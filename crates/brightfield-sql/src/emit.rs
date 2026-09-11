@@ -352,6 +352,56 @@ fn enclosing_plot_area_px(spec: &Spec, mark_index: usize) -> Option<(f64, f64)> 
     Some(((w - PLOT_MARGIN_X).max(1.0), (h - PLOT_MARGIN_Y).max(1.0)))
 }
 
+/// The scale types the mark's enclosing plot declared, or linear on both axes
+/// for a mark with no enclosing plot.
+///
+/// The companion of [`enclosing_plot_area_px`], and walked the same way: a
+/// plot attribute reaches a mark's lowerer only because the emit path knows
+/// which plot the mark sits in, and neither the mark nor its options carry it.
+fn enclosing_plot_scales(spec: &Spec, mark_index: usize) -> brightfield_spec::layout::PlotScales {
+    collect_mark_plot_scales(spec)
+        .get(mark_index)
+        .copied()
+        .unwrap_or_default()
+}
+
+/// [`brightfield_spec::layout::resolve_plot_scales_in`] for each mark, in
+/// depth-first mark order — mirroring [`collect_marks`].
+fn collect_mark_plot_scales(spec: &Spec) -> Vec<brightfield_spec::layout::PlotScales> {
+    fn walk(
+        component: &Component,
+        spec: &Spec,
+        current: brightfield_spec::layout::PlotScales,
+        out: &mut Vec<brightfield_spec::layout::PlotScales>,
+    ) {
+        match component {
+            Component::Plot(plot) => {
+                let here = brightfield_spec::layout::resolve_plot_scales_in(plot, &spec.params);
+                for item in &plot.items {
+                    walk(item, spec, here, out);
+                }
+            }
+            Component::HConcat(concat) | Component::VConcat(concat) => {
+                for item in &concat.items {
+                    walk(item, spec, current, out);
+                }
+            }
+            Component::Mark(_) => out.push(current),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(root) = &spec.root {
+        walk(
+            root,
+            spec,
+            brightfield_spec::layout::PlotScales::default(),
+            &mut out,
+        );
+    }
+    out
+}
+
 /// Declared plot `(width, height)` for each mark, in depth-first mark order —
 /// mirroring [`collect_marks`]. A mark inside a plot inherits that plot's
 /// declared size (or the Mosaic defaults); a mark with no enclosing plot gets
@@ -673,6 +723,7 @@ pub fn lower_mark_plan(spec: &Spec, mark_index: usize) -> Result<(QueryPlan, Str
         data_sources: &spec.data,
         params: &spec.params,
         plot_px: enclosing_plot_area_px(spec, mark_index),
+        scales: enclosing_plot_scales(spec, mark_index),
     };
 
     let lowerer = find_lowerer(mark.kind, &lowerers);

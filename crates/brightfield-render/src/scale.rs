@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use arrow::array::{Array, Float64Array, StringArray, TimestampMicrosecondArray};
 use arrow::datatypes::{DataType, TimeUnit};
 use arrow::record_batch::RecordBatch;
-use brightfield_spec::layout::FixedDomains;
+use brightfield_spec::layout::{FixedDomains, ScaleType};
 
 use crate::channel::{Channel, ChannelMap};
 use crate::ink::ChartInk;
@@ -56,6 +56,32 @@ pub enum Scale {
         range_start: f64,
         range_end: f64,
     },
+    /// Logarithmic scale: maps `[min, max]` onto the pixel range through
+    /// `log`, the way d3's `scaleLog` and therefore Mosaic's `log` do.
+    ///
+    /// The domain is in **data** units, not log units — it is the same pair a
+    /// `Linear` would hold, and the transform is applied per value. A domain
+    /// endpoint at or below zero has no logarithm; the binning layer drops
+    /// those rows before they reach a scale, and [`Scale::map_f64`] clamps
+    /// rather than emitting a NaN pixel if one arrives anyway.
+    Log {
+        domain_min: f64,
+        domain_max: f64,
+        range_start: f64,
+        range_end: f64,
+    },
+    /// Symmetric-log scale: `sign(v) * ln(1 + |v| / C)` with `C` =
+    /// [`SYMLOG_CONSTANT`], which is d3's `scaleSymlog` and Mosaic's `symlog`.
+    ///
+    /// Logarithmic away from the origin and linear through it, so zero and
+    /// negative values keep a position — the difference from [`Scale::Log`],
+    /// and the whole reason a spec is offered both.
+    Symlog {
+        domain_min: f64,
+        domain_max: f64,
+        range_start: f64,
+        range_end: f64,
+    },
     /// Categorical band scale: maps discrete categories to equal-width bands.
     Band {
         categories: Vec<String>,
@@ -86,10 +112,78 @@ pub enum Scale {
     },
 }
 
+/// d3's `scaleSymlog().constant()` default, and the one Mosaic inherits by
+/// never setting it. A spec has no key for it, so it is a constant here rather
+/// than a field on [`Scale::Symlog`] — which is also what lets a symlog scale
+/// share every match arm with a log one.
+pub const SYMLOG_CONSTANT: f64 = 1.0;
+
+/// `ln(value)`, with `floor` standing in for anything at or below zero.
+///
+/// A logarithm is undefined there. The binning layer drops those rows before
+/// a scale ever sees them (Mosaic's own treatment), so this is the answer to
+/// "what if one arrives anyway", and the answer is the domain's low end — a
+/// pixel at the axis's start rather than a NaN that silently removes a bar.
+fn log_of(value: f64, floor: f64) -> f64 {
+    let floor = if floor > 0.0 {
+        floor
+    } else {
+        f64::MIN_POSITIVE
+    };
+    value.max(floor).ln()
+}
+
+/// d3's symlog forward transform: `sign(v) * ln(1 + |v| / C)`.
+fn symlog_of(value: f64) -> f64 {
+    let sign = if value < 0.0 { -1.0 } else { 1.0 };
+    sign * (1.0 + value.abs() / SYMLOG_CONSTANT).ln()
+}
+
+/// d3's symlog inverse: `sign(t) * C * (e^|t| - 1)`.
+fn symlog_inverse(t: f64) -> f64 {
+    let sign = if t < 0.0 { -1.0 } else { 1.0 };
+    sign * SYMLOG_CONSTANT * (t.abs().exp() - 1.0)
+}
+
+/// Place `t` in `[lo, hi]` onto `[range_start, range_end]`, answering the
+/// range's midpoint for a domain with no width — the degenerate branch
+/// [`Scale::map_f64`]'s linear arm already takes, kept identical so a log
+/// scale over a single-valued column does not draw somewhere else.
+fn interpolate(t: f64, lo: f64, hi: f64, range_start: f64, range_end: f64) -> f64 {
+    if (hi - lo).abs() < f64::EPSILON {
+        return (range_start + range_end) / 2.0;
+    }
+    range_start + (t - lo) / (hi - lo) * (range_end - range_start)
+}
+
 impl Scale {
     /// Map a numeric value to a pixel position (linear and time scales).
     pub fn map_f64(&self, value: f64) -> f64 {
         match self {
+            Self::Log {
+                domain_min,
+                domain_max,
+                range_start,
+                range_end,
+            } => interpolate(
+                log_of(value, *domain_min),
+                log_of(*domain_min, *domain_min),
+                log_of(*domain_max, *domain_min),
+                *range_start,
+                *range_end,
+            ),
+            Self::Symlog {
+                domain_min,
+                domain_max,
+                range_start,
+                range_end,
+            } => interpolate(
+                symlog_of(value),
+                symlog_of(*domain_min),
+                symlog_of(*domain_max),
+                *range_start,
+                *range_end,
+            ),
             Self::Linear {
                 domain_min,
                 domain_max,
@@ -195,6 +289,32 @@ impl Scale {
                 let domain_span = (*domain_max_us - *domain_min_us) as f64;
                 Some(*domain_min_us as f64 + t * domain_span)
             }
+            Self::Log {
+                domain_min,
+                domain_max,
+                range_start,
+                range_end,
+            } => {
+                let lo = log_of(*domain_min, *domain_min);
+                let hi = log_of(*domain_max, *domain_min);
+                Some(interpolate(pixel, *range_start, *range_end, lo, hi).exp())
+            }
+            Self::Symlog {
+                domain_min,
+                domain_max,
+                range_start,
+                range_end,
+            } => {
+                let lo = symlog_of(*domain_min);
+                let hi = symlog_of(*domain_max);
+                Some(symlog_inverse(interpolate(
+                    pixel,
+                    *range_start,
+                    *range_end,
+                    lo,
+                    hi,
+                )))
+            }
             Self::Band { .. } | Self::Colour { .. } | Self::Sequential { .. } => None,
         }
     }
@@ -258,7 +378,9 @@ impl Scale {
     /// the gradient-legend min tick label.
     pub fn domain_min(&self) -> Option<f64> {
         match self {
-            Self::Linear { domain_min, .. } => Some(*domain_min),
+            Self::Linear { domain_min, .. }
+            | Self::Log { domain_min, .. }
+            | Self::Symlog { domain_min, .. } => Some(*domain_min),
             Self::Time { domain_min_us, .. } => Some(*domain_min_us as f64),
             Self::Sequential { domain_min, .. } => Some(*domain_min),
             _ => None,
@@ -269,7 +391,9 @@ impl Scale {
     /// the gradient-legend max tick label.
     pub fn domain_max(&self) -> Option<f64> {
         match self {
-            Self::Linear { domain_max, .. } => Some(*domain_max),
+            Self::Linear { domain_max, .. }
+            | Self::Log { domain_max, .. }
+            | Self::Symlog { domain_max, .. } => Some(*domain_max),
             Self::Time { domain_max_us, .. } => Some(*domain_max_us as f64),
             Self::Sequential { domain_max, .. } => Some(*domain_max),
             _ => None,
@@ -280,6 +404,8 @@ impl Scale {
     pub fn range_start(&self) -> f64 {
         match self {
             Self::Linear { range_start, .. }
+            | Self::Log { range_start, .. }
+            | Self::Symlog { range_start, .. }
             | Self::Band { range_start, .. }
             | Self::Time { range_start, .. } => *range_start,
             // Colour ramps carry no positional pixel range.
@@ -291,6 +417,8 @@ impl Scale {
     pub fn range_end(&self) -> f64 {
         match self {
             Self::Linear { range_end, .. }
+            | Self::Log { range_end, .. }
+            | Self::Symlog { range_end, .. }
             | Self::Band { range_end, .. }
             | Self::Time { range_end, .. } => *range_end,
             // Colour ramps carry no positional pixel range.
@@ -482,6 +610,46 @@ fn anchor_scale(launch: &Scale, fresh: &Scale) -> Scale {
             range_start: *range_start,
             range_end: *range_end,
         },
+        // A log or symlog axis widens on the same rule and in the same DATA
+        // units. Without these two arms the pair falls to the kind-mismatch
+        // catch-all, which keeps launch — so a log tile whose rows grew past
+        // its launch extent would clip them instead of widening.
+        (
+            Scale::Log {
+                domain_min: lmin,
+                domain_max: lmax,
+                range_start,
+                range_end,
+            },
+            Scale::Log {
+                domain_min: fmin,
+                domain_max: fmax,
+                ..
+            },
+        ) => Scale::Log {
+            domain_min: lmin.min(*fmin),
+            domain_max: lmax.max(*fmax),
+            range_start: *range_start,
+            range_end: *range_end,
+        },
+        (
+            Scale::Symlog {
+                domain_min: lmin,
+                domain_max: lmax,
+                range_start,
+                range_end,
+            },
+            Scale::Symlog {
+                domain_min: fmin,
+                domain_max: fmax,
+                ..
+            },
+        ) => Scale::Symlog {
+            domain_min: lmin.min(*fmin),
+            domain_max: lmax.max(*fmax),
+            range_start: *range_start,
+            range_end: *range_end,
+        },
         (
             Scale::Time {
                 domain_min_us: lmin,
@@ -557,6 +725,16 @@ impl PinnedDomain {
                 domain_min,
                 domain_max,
                 ..
+            }
+            | Scale::Log {
+                domain_min,
+                domain_max,
+                ..
+            }
+            | Scale::Symlog {
+                domain_min,
+                domain_max,
+                ..
             } => Some(Self::Linear(*domain_min, *domain_max)),
             Scale::Time {
                 domain_min_us,
@@ -586,6 +764,36 @@ impl PinnedDomain {
                     ..
                 },
             ) => Some(Scale::Linear {
+                domain_min: *lo,
+                domain_max: *hi,
+                range_start: *range_start,
+                range_end: *range_end,
+            }),
+            // A log or symlog axis pins the same NUMERIC pair and keeps its
+            // own transform: the pin says what the domain IS, not how it maps
+            // onto pixels, and re-applying it as a linear scale would move
+            // every bar on a pinned log tile.
+            (
+                Self::Linear(lo, hi),
+                Scale::Log {
+                    range_start,
+                    range_end,
+                    ..
+                },
+            ) => Some(Scale::Log {
+                domain_min: *lo,
+                domain_max: *hi,
+                range_start: *range_start,
+                range_end: *range_end,
+            }),
+            (
+                Self::Linear(lo, hi),
+                Scale::Symlog {
+                    range_start,
+                    range_end,
+                    ..
+                },
+            ) => Some(Scale::Symlog {
                 domain_min: *lo,
                 domain_max: *hi,
                 range_start: *range_start,
@@ -995,6 +1203,46 @@ pub fn merge_linear_scale(
     );
 }
 
+/// Re-cast a freshly inferred scale into the transform its plot asked for.
+///
+/// Only a [`Scale::Linear`] converts. A band, time or colour scale is left
+/// exactly as inferred: `xScale: log` on a categorical axis is a name the
+/// reference itself ignores there — Embedding Atlas's picker hides on a band
+/// scale — and a time axis's ticks are calendar ticks, which a decade tick
+/// generator has nothing to say about.
+#[must_use]
+pub fn as_scale_type(scale: Scale, kind: ScaleType) -> Scale {
+    let Scale::Linear {
+        domain_min,
+        domain_max,
+        range_start,
+        range_end,
+    } = scale
+    else {
+        return scale;
+    };
+    match kind {
+        ScaleType::Linear => Scale::Linear {
+            domain_min,
+            domain_max,
+            range_start,
+            range_end,
+        },
+        ScaleType::Log => Scale::Log {
+            domain_min,
+            domain_max,
+            range_start,
+            range_end,
+        },
+        ScaleType::Symlog => Scale::Symlog {
+            domain_min,
+            domain_max,
+            range_start,
+            range_end,
+        },
+    }
+}
+
 /// [`infer_scales_in`] on the light canvas.
 pub fn infer_scales(
     batch: &RecordBatch,
@@ -1030,7 +1278,10 @@ pub fn infer_scales_in(
 
         let scale = infer_column_scale(col.as_ref(), range_start, range_end, *channel, ink);
         if let Some(s) = scale {
-            set.insert(*channel, s);
+            set.insert(
+                *channel,
+                as_scale_type(s, channel_map.scale_type_for(*channel)),
+            );
         }
     }
 
@@ -1102,7 +1353,14 @@ pub fn infer_scales_multi_in(
         }
 
         if let Some(merged) = union_scales(&scales_for_channel, range_start, range_end) {
-            set.insert(*channel, merged);
+            // Every entry is a layer of ONE plot, so they share that plot's
+            // attributes; the first channel map that binds this channel is
+            // asked, which is the same map the domain came from.
+            let kind = entries
+                .iter()
+                .find(|(_, cm)| cm.get(*channel).is_some())
+                .map_or(ScaleType::Linear, |(_, cm)| cm.scale_type_for(*channel));
+            set.insert(*channel, as_scale_type(merged, kind));
         }
     }
 
@@ -1242,6 +1500,53 @@ fn union_scales(scales: &[Scale], range_start: f64, range_end: f64) -> Option<Sc
                 None
             } else {
                 Some(Scale::Linear {
+                    domain_min: min,
+                    domain_max: max,
+                    range_start,
+                    range_end,
+                })
+            }
+        }
+        // A non-linear positional scale unions its DATA domain exactly as a
+        // linear one does — the transform is applied per value at map time,
+        // so the widest pair is still the widest pair — and keeps its own
+        // kind, which a fall-through to the linear arm would lose.
+        first @ (Scale::Log { .. } | Scale::Symlog { .. }) => {
+            let log = matches!(first, Scale::Log { .. });
+            let mut min = f64::INFINITY;
+            let mut max = f64::NEG_INFINITY;
+            for s in scales {
+                let (Scale::Log {
+                    domain_min,
+                    domain_max,
+                    ..
+                }
+                | Scale::Symlog {
+                    domain_min,
+                    domain_max,
+                    ..
+                }) = s
+                else {
+                    continue;
+                };
+                if *domain_min < min {
+                    min = *domain_min;
+                }
+                if *domain_max > max {
+                    max = *domain_max;
+                }
+            }
+            if min.is_infinite() {
+                None
+            } else if log {
+                Some(Scale::Log {
+                    domain_min: min,
+                    domain_max: max,
+                    range_start,
+                    range_end,
+                })
+            } else {
+                Some(Scale::Symlog {
                     domain_min: min,
                     domain_max: max,
                     range_start,

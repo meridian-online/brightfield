@@ -1560,6 +1560,30 @@ pub fn clause_meta_for_scale(scale: &Scale) -> ClauseMeta {
             domain: Some((*domain_min, *domain_max)),
             range: Some((*range_start, *range_end)),
         },
+        // The kind travels with the clause because the query layer reads it:
+        // a brush on a log axis was inverted through a log scale, and a
+        // descriptor that called it linear would describe a gesture nobody
+        // made.
+        Scale::Log {
+            domain_min,
+            domain_max,
+            range_start,
+            range_end,
+        } => ScaleDescriptor {
+            kind: "log".to_string(),
+            domain: Some((*domain_min, *domain_max)),
+            range: Some((*range_start, *range_end)),
+        },
+        Scale::Symlog {
+            domain_min,
+            domain_max,
+            range_start,
+            range_end,
+        } => ScaleDescriptor {
+            kind: "symlog".to_string(),
+            domain: Some((*domain_min, *domain_max)),
+            range: Some((*range_start, *range_end)),
+        },
         Scale::Time {
             domain_min_us,
             domain_max_us,
