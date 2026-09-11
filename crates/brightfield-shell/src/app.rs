@@ -63,6 +63,8 @@ use brightfield_keys::BindingContext;
 use brightfield_render::canvas_host::{ChartSurface, Color, PixelSize};
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_spec::ast::SpecValue;
+use brightfield_spec::edit::{self, ChartEdit};
+use brightfield_spec::layout::{plot_scale_key, PlotAxis, ScaleType};
 use brightfield_spec::vocab::MarkKind;
 use brightfield_workbench::item::ModuleHost;
 use brightfield_workbench::registry::{ChartKindId, ChartKindRegistry, DockSide, Field, Slot};
@@ -301,6 +303,36 @@ pub fn page_offset(
     }
 }
 
+/// **Where a plot on the page lands on the window**, given the box the page's
+/// own origin was painted at and the views it was painted in.
+///
+/// The page is drawn at two origins when the canvas is a pane group, and a
+/// plot belongs to whichever view holds its column — [`PaneViews::second_holds`]
+/// is that rule, and this is [`PaneViews::offset_at`]'s counterpart for a plot
+/// rather than for a pointer.
+///
+/// Written as a function so a surface that draws chrome ON a tile and a test
+/// that reads a tile's box back are asking one question. The other reader is
+/// [`crate::window::MeridianApp::composed_plot_rects`], which is the test hook;
+/// `the_scale_switch_sits_inside_its_own_tile` holds the two together by
+/// asserting containment across them, so the pair drifting apart reddens.
+#[must_use]
+#[allow(clippy::cast_possible_truncation)]
+pub fn plot_window_rect(
+    page: egui::Rect,
+    views: Option<PaneViews>,
+    plot: &crate::pipeline::PlotHandle,
+) -> egui::Rect {
+    let at = egui::Rect::from_min_size(
+        egui::pos2(page.left() + plot.rect.x as f32, page.top() + plot.rect.y as f32),
+        egui::vec2(plot.rect.width as f32, plot.rect.height as f32),
+    );
+    match views {
+        Some(view) if view.second_holds(at.center().x) => at.translate(egui::vec2(0.0, -view.by)),
+        _ => at,
+    }
+}
+
 /// **What one hover read produced**, held for as long as the pointer stays
 /// where it was read.
 ///
@@ -319,6 +351,41 @@ pub struct HoverReadout {
     /// One line per channel the hovered layer binds to a column, in readout
     /// order, already rendered as `column: value`.
     pub lines: Vec<String>,
+}
+
+/// **One histogram tile's scale switch, as the last frame drew it.**
+///
+/// The record a GPU-free test reads a control back from, on the same standing
+/// as [`ChartDoc::gesture_ink`] and [`ChartDoc::interval_slider_rects`]: the
+/// rects here are the ones the painter and the hit test were handed, in one
+/// expression each, so a readback cannot agree with a paint that has moved.
+///
+/// Every rect is in **window-space logical points**, which is what makes
+/// containment inside a tile — [`crate::window::MeridianApp::composed_plot_rects`]
+/// — an assertion about the frame rather than about arithmetic repeated twice.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScaleSwitchDrawn {
+    /// Which plot on the page this switch acts on — an index into
+    /// [`Composed::plots`] and into [`ChartDoc::tile_columns`] alike, which
+    /// are one list twice.
+    pub plot: usize,
+    /// The column that plot bins, as the table spells it.
+    pub column: String,
+    /// Which positional axis carries the bins, and therefore which of
+    /// `xScale` / `yScale` a pick writes.
+    pub axis: PlotAxis,
+    /// The control's outer rect — the box the hover text is offered over.
+    pub rect: egui::Rect,
+    /// One entry per offered state, in the order they were drawn, each with
+    /// the rect a pointer has to be inside to pick it.
+    pub states: Vec<(ScaleType, egui::Rect)>,
+    /// The state the picture on screen was actually composed against, read
+    /// off the plot's own scale rather than off the spec — so a switch
+    /// showing `log` is a switch over a log picture.
+    pub active: ScaleType,
+    /// The words the control offers on hover, verbatim. The same `String` is
+    /// handed to the tooltip, so the two cannot drift.
+    pub hover: String,
 }
 
 /// The chart view's **document**: the composited dashboard, the canvas it
@@ -434,6 +501,16 @@ pub struct ChartDoc {
     /// The rect the legend band occupied last frame — `None` when the
     /// dashboard calls for no legend, which is itself an assertable fact.
     pub legend_rect: Option<egui::Rect>,
+    /// **Each histogram tile's scale switch, as the last frame drew it** — see
+    /// [`ScaleSwitchDrawn`].
+    ///
+    /// Rewritten on every frame the chart pane draws, whether or not there is
+    /// a device behind the document to paint with, and empty for a document
+    /// whose tiles the generator never named (an authored spec, a capture, a
+    /// shipped start). A stale entry would aim a click at a control that is no
+    /// longer there, which is the same failure [`Self::raster_rect`] clears
+    /// itself against each frame.
+    pub scale_switches: Vec<ScaleSwitchDrawn>,
     /// Where each interval slider's track was drawn last frame, as
     /// `(control key, rect)` in window-space logical points — empty until a
     /// frame has laid the rail out, and empty for a spec that declares none.
@@ -590,6 +667,7 @@ impl ChartDoc {
             wheel_taken: false,
             raster_rect: None,
             legend_rect: None,
+            scale_switches: Vec::new(),
             interval_slider_rects: Vec::new(),
             stacked_tiles: None,
             min_page_height: 0.0,
@@ -627,6 +705,7 @@ impl ChartDoc {
             wheel_taken: false,
             raster_rect: None,
             legend_rect: None,
+            scale_switches: Vec::new(),
             interval_slider_rects: Vec::new(),
             stacked_tiles: None,
             min_page_height: 0.0,
@@ -817,6 +896,86 @@ impl ChartDoc {
             }
             Err(e) => {
                 eprintln!("warning: reflow re-composite failed: {e}");
+                self.interaction_fault = Some(ChartFault {
+                    title: ENGINE_REFUSED.to_string(),
+                    detail: e.to_string(),
+                });
+                false
+            }
+        }
+    }
+
+    /// **Put `kind` on the plot's binned axis, and recompose the page from the
+    /// rewritten spec.**
+    ///
+    /// The switch's whole effect, in one call. It is a document EDIT and not
+    /// view state: [`ChartEdit::SetPlotAttribute`] writes `xScale: log` into
+    /// the live AST through [`brightfield_spec::edit::apply`], and the page is
+    /// then rebuilt by [`LiveDashboard::load`] over the rewritten spec — which
+    /// re-analyses, re-lowers and re-queries, so the tile's bins are cut in
+    /// the new space by the engine rather than redrawn from the old ones.
+    ///
+    /// **What survives the rebuild and what does not.** The viewport, the hero
+    /// bound and the ink mode are put back onto the new dashboard before it
+    /// presents, because they are facts about the window this page is drawn in
+    /// and the edit did not change the window. The engine session does not
+    /// survive: a committed selection is dropped, because the reload builds a
+    /// fresh coordinator. That is the seam a later card closes; today the
+    /// switch is thrown before a brush is swept, which is the order
+    /// `a_brush_on_a_log_tile_narrows_it_and_leaves_the_scale` drives.
+    ///
+    /// Returns whether the picture changed. `false` — with the previous page
+    /// standing, the way a refused gesture leaves it — for a document with no
+    /// live session behind it, a plot index off the end, an axis with no
+    /// attribute key, an edit the reload gate refused, and a reload or a
+    /// present the engine refused.
+    pub fn set_plot_scale(&mut self, plot: usize, axis: PlotAxis, kind: ScaleType) -> bool {
+        let Some(handle) = self.composed.plots.get(plot) else {
+            return false;
+        };
+        let path = ComponentPath(handle.path.clone());
+        let Some(key) = plot_scale_key(axis) else {
+            return false;
+        };
+        let Some(live) = self.live.as_ref() else {
+            return false;
+        };
+        let mut spec = live.spec().clone();
+        let edit = ChartEdit::SetPlotAttribute {
+            plot: path,
+            key: key.to_string(),
+            value: SpecValue::String(kind.wire_name().to_string()),
+        };
+        if let Err(reason) = edit::apply(&mut spec, &edit) {
+            self.interaction_fault = Some(ChartFault {
+                title: "the scale switch was refused".to_string(),
+                detail: reason.reason().to_string(),
+            });
+            return false;
+        }
+
+        let viewport = live.viewport();
+        let mode = live.mode();
+        let dir = self
+            .spec_path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(std::path::Path::to_path_buf);
+        self.activity.begin(Activity::EngineQuery);
+        let rebuilt = LiveDashboard::load(spec, dir.as_deref()).and_then(|mut live| {
+            live.set_viewport(viewport);
+            live.set_mode(mode);
+            live.present().map(|composed| (live, composed))
+        });
+        self.activity.end(Activity::EngineQuery);
+        match rebuilt {
+            Ok((live, composed)) => {
+                self.live = Some(live);
+                self.composed = composed;
+                self.canvas.invalidate();
+                true
+            }
+            Err(e) => {
                 self.interaction_fault = Some(ChartFault {
                     title: ENGINE_REFUSED.to_string(),
                     detail: e.to_string(),
