@@ -401,8 +401,9 @@ fn each_switch_names_its_own_column_in_its_hover_text() {
 ///
 /// The fixture is `examples/rect-bin-count.yaml` — one `rectY` over a binned
 /// column, the same device a generated tile emits — so the assertion is about
-/// where the offer comes from and not about there being nothing to offer it
-/// on. The switch is the generated dashboard's: it exists because a generated
+/// where the offer comes from rather than about a page with no binned axis to
+/// offer it on. The switch is the generated dashboard's: it exists because a
+/// generated
 /// tile has no author standing by to rewrite its spec, and a spec somebody
 /// wrote has one. A build that decided switchability from the marks on the
 /// page rather than from the generator's tile list draws one here and fails.
