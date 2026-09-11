@@ -44,7 +44,9 @@
 //! The shell-level `top_bar`, the modal card, and the list/grid row primitives
 //! land with their first callers rather than being written speculatively here.
 
-use meridian_design::{control, focus, radius, semantic, spacing, typography, Elevation, Rgba};
+use meridian_design::{
+    control, focus, radius, semantic, spacing, typography, viz, Elevation, Rgba,
+};
 
 use crate::arrangement::RegionFrame;
 use crate::item::PaneKey;
@@ -135,6 +137,23 @@ fn toggle_ink(enabled: bool, mode: Mode) -> Rgba {
 
 fn ui_font() -> egui::FontId {
     egui::FontId::proportional(typography::UI_SIZE)
+}
+
+/// A small proportional face, for chrome that names something beside the UI
+/// text rather than as part of it — [`rail_stub`]'s own label.
+fn label_font() -> egui::FontId {
+    egui::FontId::proportional(typography::CHART_LABEL_SIZE)
+}
+
+/// The default mark colour for `mode` — the ink [`rail_stub`]'s selection dot
+/// draws in, copying the shape [`tone_colour`] resolves a semantic token by.
+#[must_use]
+pub fn mark_colour(mode: Mode) -> egui::Color32 {
+    if mode.is_dark() {
+        colour(viz::MARK_DEFAULT_DARK)
+    } else {
+        colour(viz::MARK_DEFAULT_LIGHT)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -409,6 +428,16 @@ pub struct StripDrawn {
     pub picked: Option<usize>,
     /// Whether the pointer clicked the collapse control this frame.
     pub toggled: bool,
+    /// Where [`rail_stub`]'s rotated label landed, on a stub drawn with one
+    /// — the label's **visual** bounding rect, after rotation, so a reader of
+    /// this field does not re-derive the rotation to ask where the words
+    /// actually are. `None` on a strip [`rail_selector`] drew, or on a stub
+    /// [`rail_stub`] drew with its `label` argument `None`.
+    pub stub_label: Option<egui::Rect>,
+    /// Where [`rail_stub`]'s selection dot landed, on a stub whose label
+    /// carried a selection. `None` on a strip with no dot drawn, which is the
+    /// answer for a stub with a name and an unselected rail alike.
+    pub stub_dot: Option<egui::Pos2>,
 }
 
 /// A rail's rect, split into the strip at its head and the body under it.
@@ -655,25 +684,58 @@ fn strip(
         summary,
         picked,
         toggled,
+        stub_label: None,
+        stub_dot: None,
     }
 }
 
+/// What a collapsed side rail's stub carries, when it carries one: the words
+/// [`rail_stub`] sets on their side under the collapse control.
+///
+/// `None` is a caller whose stub draws no label — the front door's navigator
+/// passes it and keeps the bare square this crate drew before this change:
+/// the frames that shaped this rail draw it open, so a label there would be a
+/// picture nobody has looked at.
+pub struct StubLabel {
+    /// The rail's own name, drawn under a selection or on its own.
+    pub name: String,
+    /// What is selected in the document this rail answers for, drawn after
+    /// [`Self::name`] with the shell's own separator, and behind the dot.
+    /// `None` draws the name alone and no dot.
+    pub selection: Option<String>,
+}
+
+/// The stub's selection dot's radius, in logical points — the same 2.5 the
+/// Protocol spine's own marker draws at, named here rather than typed again
+/// at this call site.
+const STUB_DOT_RADIUS: f32 = 2.5;
+
 /// What a side rail leaves behind when it is collapsed: the control that
-/// reopens it.
+/// reopens it, and, where `label` says so, a dot for a live selection and the
+/// rail's own name set on its side.
 ///
 /// A side rail collapses along its *width*, so what is left is
-/// [`rail_selector_height`] of width — room for one square control, and too
-/// little for a name. That is the difference between this and [`rail_selector`], and
-/// it is why the arrangement declares what a region collapses to per region
-/// rather than once: the same measure reads as a whole strip on one axis and
-/// as a stub on the other.
-pub fn rail_stub(ui: &mut egui::Ui, rect: egui::Rect, caret: Caret, mode: Mode) -> StripDrawn {
+/// [`rail_selector_height`] of width. That is the difference between this and
+/// [`rail_selector`], and it is why the arrangement declares what a region
+/// collapses to per region rather than once: the same measure reads as a
+/// whole strip on one axis and as a stub on the other.
+pub fn rail_stub(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    caret: Caret,
+    mode: Mode,
+    label: Option<StubLabel>,
+) -> StripDrawn {
     let sem = semantic(mode.is_dark());
     ui.painter()
         .rect_filled(rect, radius::NONE, colour(sem.tabs.bar_background));
 
     let square = control_square(rect);
     let toggled = collapse_control(ui, square, caret, mode);
+    let (stub_label, stub_dot) = match label {
+        Some(label) => stub_label_ui(ui, rect, square, &label, mode),
+        None => (None, None),
+    };
     StripDrawn {
         rect,
         names: Vec::new(),
@@ -681,7 +743,64 @@ pub fn rail_stub(ui: &mut egui::Ui, rect: egui::Rect, caret: Caret, mode: Mode) 
         summary: None,
         picked: None,
         toggled,
+        stub_label,
+        stub_dot,
     }
+}
+
+/// [`rail_stub`]'s dot and rotated label, painted under `square` and reported
+/// back the way [`StripDrawn::stub_label`] and [`StripDrawn::stub_dot`]
+/// promise.
+///
+/// `SPACE_5` under the control for the dot's centre, `SPACE_7` for the
+/// label's top — the contract's own offsets, off [`control_square`]'s drawn
+/// bottom rather than the stub's declared height, so a caret clipped by a
+/// too-short strip still anchors what follows it to where the control
+/// actually ended. The label reads top to bottom: laid out on one line at
+/// [`label_font`], then rotated a quarter turn clockwise about its own
+/// top-left corner, which is what [`egui::epaint::TextShape::with_angle`]
+/// pivots on — so its drawn top-left is the position handed in, and its
+/// drawn top-right, after the turn, is `SPACE_5` short of the dot's own row.
+/// Truncated to the room under that top rather than clipped by the painter,
+/// so the promise is a measurable galley width a test can read back rather
+/// than a clip rect it cannot see.
+fn stub_label_ui(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    square: egui::Rect,
+    label: &StubLabel,
+    mode: Mode,
+) -> (Option<egui::Rect>, Option<egui::Pos2>) {
+    let sem = semantic(mode.is_dark());
+    let top = square.bottom();
+
+    let dot = label.selection.is_some().then(|| {
+        let centre = egui::pos2(rect.center().x, top + spacing::SPACE_5);
+        ui.painter()
+            .circle_filled(centre, STUB_DOT_RADIUS, mark_colour(mode));
+        centre
+    });
+
+    let text = label.selection.as_ref().map_or_else(
+        || label.name.clone(),
+        |selection| format!("{} \u{b7} {selection}", label.name),
+    );
+    let room = (rect.bottom() - (top + spacing::SPACE_7)).max(0.0);
+    let mut job = egui::text::LayoutJob::single_section(
+        text,
+        egui::TextFormat::simple(label_font(), colour(sem.text.muted)),
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+    let galley = ui.painter().layout_job(job);
+    let pos = egui::pos2(
+        rect.center().x + galley.size().y / 2.0,
+        top + spacing::SPACE_7,
+    );
+    let shape = egui::epaint::TextShape::new(pos, galley, colour(sem.text.muted))
+        .with_angle(std::f32::consts::FRAC_PI_2);
+    let label_rect = shape.visual_bounding_rect();
+    ui.painter().add(shape);
+    (Some(label_rect), dot)
 }
 
 /// The square the collapse control takes: [`rail_selector_height`] on a side,

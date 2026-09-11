@@ -125,6 +125,29 @@ fn window() -> MeridianApp {
     MeridianApp::headless(boot, Mode::Light)
 }
 
+/// [`window`], with the inspector rail's caret already clicked once.
+///
+/// The fixture is a one-step Protocol, so the inspector opens collapsed to
+/// its stub — clicked open here, on the app's own state, before it is handed
+/// to a `Harness`: the click is driven through the plain `egui::Context`
+/// helpers this file already has (`frame`, `button`, `settle`), and the app
+/// they mutate is the one the caller's harness then wraps, so the reopened
+/// rail is what its first `run()` draws.
+fn window_with_inspector_open() -> MeridianApp {
+    let mut app = window();
+    let ctx = egui::Context::default();
+    settle(&mut app, &ctx);
+    let at = app
+        .rail_collapse_rect(arrangement::INSPECTOR_RAIL)
+        .expect("the inspector rail drew its collapse control")
+        .center();
+    frame(&mut app, &ctx, vec![egui::Event::PointerMoved(at)]);
+    frame(&mut app, &ctx, vec![button(at, true)]);
+    frame(&mut app, &ctx, vec![button(at, false)]);
+    settle(&mut app, &ctx);
+    app
+}
+
 /// A window over a spec file, with no device behind it.
 fn spec_window(relative: &str) -> MeridianApp {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative);
@@ -857,17 +880,21 @@ fn a_hover_on_a_plot_that_encodes_size_names_the_size_column() {
 /// **The *hover overlay* checkbox is gone from a window holding a chart.**
 ///
 /// Asked of the accessibility tree, which is where a checkbox that is still
-/// drawn would be. The inspector rail is asserted to have drawn first — with
-/// the rail collapsed or the pane never reached, no label in it resolves and
-/// an absence assertion passes over a window that drew no rail at all.
+/// drawn would be. The inspector rail is asserted to have drawn OPEN first —
+/// a width above the collapsed stub's own, not merely a positive one: the
+/// fixture is a one-step Protocol, so the rail opens collapsed by default and
+/// a check against zero alone would pass over the 24-point stub just as
+/// readily as over the pane, over a window that drew no rail body at all.
+/// [`window_with_inspector_open`] clicks the caret first for exactly this
+/// reason.
 #[test]
 fn no_hover_overlay_checkbox_is_drawn_on_a_window_holding_a_chart() {
-    let h = harness(window());
+    let h = harness(window_with_inspector_open());
     assert!(
         h.state()
             .region_rect(arrangement::INSPECTOR_RAIL)
-            .is_some_and(|r| r.width() > 0.0),
-        "the inspector rail did not draw, so an absence in it means nothing"
+            .is_some_and(|r| r.width() > brightfield_workbench::chrome::rail_selector_height()),
+        "the inspector rail did not draw open, so an absence in it means nothing"
     );
     assert!(
         h.state().chart_doc().live_dashboard().is_some(),

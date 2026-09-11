@@ -2162,10 +2162,10 @@ impl MeridianApp {
         // What the canvas holds, before the first frame and from the same two
         // documents the arrangement above was derived from.
         app.reconcile_canvas_holds();
-        // The ledger's state before the first frame, from the document this
-        // window was built over — the same derivation `adopt_boot` runs when a
-        // second document arrives.
-        app.apply_ledger_default();
+        // The two rails' state before the first frame, from the document this
+        // window was built over — the same derivation `documents_changed`
+        // runs on every later document swap.
+        app.apply_rail_defaults();
         // Say what this document's load found, before its first frame. A
         // diagnostic that waits for the user to go looking is a diagnostic
         // that does not exist.
@@ -2463,6 +2463,15 @@ impl MeridianApp {
         // those files for the life of the document that just arrived.
         self.fetching = None;
         self.reconcile_canvas_holds();
+        // The ledger and inspector rails' collapsed default, and which
+        // inspector pane the caret opens on — re-derived here so a document
+        // swap through `land_start`, `adopt_boot` or `open_home` gives the
+        // rails the same read a fresh construction does. Before this call
+        // joined `documents_changed`, `open_home` skipped it: a window that
+        // had opened a many-step Protocol and then went Home kept that
+        // Protocol's open rail standing over an empty document it has no
+        // step to summarise.
+        self.apply_rail_defaults();
     }
 
     /// The pane the window's chrome is reading from, if any.
@@ -2645,14 +2654,29 @@ impl MeridianApp {
         self.protocol.doc.model.sheet().len() == 1
     }
 
-    /// Put the ledger rail at the state [`Self::ledger_opens_collapsed`] gives
-    /// the document this window is now holding.
-    fn apply_ledger_default(&mut self) {
+    /// Put the ledger AND the inspector rail at the state
+    /// [`Self::ledger_opens_collapsed`] gives the document this window is now
+    /// holding, and re-derive [`Self::inspector_panel`] alongside them.
+    ///
+    /// One function for the three because they are one fact about the
+    /// document just adopted, read at one moment: a caller that ran the
+    /// ledger's half alone would leave the inspector rail open on a Protocol
+    /// of one step, and a caller that skipped `inspector_panel` would open
+    /// the caret on the Operator pane over a chart document that has since
+    /// taken the canvas. The inspector rail's own default is the ledger's,
+    /// copied rather than re-derived from a rule of its own.
+    fn apply_rail_defaults(&mut self) {
         if self.ledger_opens_collapsed() {
             self.collapsed.insert(arrangement::LEDGER_RAIL);
+            self.collapsed.insert(arrangement::INSPECTOR_RAIL);
         } else {
             self.collapsed.remove(&arrangement::LEDGER_RAIL);
+            self.collapsed.remove(&arrangement::INSPECTOR_RAIL);
         }
+        self.inspector_panel = usize::from(!graph_takes_the_canvas(
+            self.protocol.doc.model.has_assets(),
+            !self.charts.doc.is_empty(),
+        ));
     }
 
     /// Where the document on the canvas came from, for the locator band's
@@ -2755,6 +2779,31 @@ impl MeridianApp {
             .iter()
             .find(|(r, _)| *r == id)
             .and_then(|(_, strip)| strip.names.get(index).copied())
+    }
+
+    /// Where a collapsed rail `id`'s stub drew its rotated label in the last
+    /// frame, or `None` on a frame that stub drew no label at all.
+    ///
+    /// The **visual** bounding rect, read straight off
+    /// [`chrome::StripDrawn::stub_label`] — see its own doc for why a reader
+    /// of a rotated galley wants this rather than `region_rect` or
+    /// `rail_collapse_rect`.
+    #[must_use]
+    pub fn rail_stub_label_rect(&self, id: RegionId) -> Option<egui::Rect> {
+        self.strips
+            .iter()
+            .find(|(r, _)| *r == id)
+            .and_then(|(_, strip)| strip.stub_label)
+    }
+
+    /// Where a collapsed rail `id`'s stub drew its selection dot in the last
+    /// frame, or `None` on a stub that drew none.
+    #[must_use]
+    pub fn rail_stub_dot(&self, id: RegionId) -> Option<egui::Pos2> {
+        self.strips
+            .iter()
+            .find(|(r, _)| *r == id)
+            .and_then(|(_, strip)| strip.stub_dot)
     }
 
     /// Where each of the composed dashboard's plots landed **on the screen**,
@@ -3323,7 +3372,10 @@ impl MeridianApp {
                 .show(ui, |ui| {
                     let caret = collapse_caret(navigator.edge, navigator_collapsed);
                     if navigator_collapsed {
-                        door_strip = Some(chrome::rail_stub(ui, ui.max_rect(), caret, mode));
+                        // The door draws no document, so its navigator stub
+                        // has no selection to say — the bare square, as
+                        // before.
+                        door_strip = Some(chrome::rail_stub(ui, ui.max_rect(), caret, mode, None));
                         return;
                     }
                     ui.set_min_width(ui.available_width());
@@ -3465,6 +3517,23 @@ impl MeridianApp {
             let ledger_labels = self.pane_titles(ledger_panes);
             let navigator_labels = self.pane_titles(navigator_panes);
             let inspector_labels = self.pane_titles(inspector_panes);
+            // What the inspector's own collapsed stub names itself with, read
+            // here for the reason `grid_title` below is: before the borrows
+            // that follow take the documents apart. The word is
+            // `InspectorPane::describe`'s own, not a literal typed here, and
+            // the selection is the chart document's — the same read
+            // `InspectorPane::ui` takes, through `selected_column`, so the
+            // stub and the open pane cannot disagree about what is selected.
+            let inspector_stub_label = chrome::StubLabel {
+                name: self
+                    .chart_pane_title(PaneKey::new(CONTROLS))
+                    .unwrap_or_else(|| "Inspector".to_string()),
+                selection: self
+                    .charts
+                    .doc
+                    .selected_column()
+                    .map(|column| column.column.clone()),
+            };
             // What the canvas is showing, which is the leaf of the locator
             // rather than the pane's own kind: each pane of the group below
             // already carries its own title in its own header band, so a head
@@ -3641,8 +3710,13 @@ impl MeridianApp {
                     if navigator_collapsed {
                         // A side rail collapses along its width, so what is left
                         // is that measure of *width* — a stub with room for the
-                        // control that reopens it and none for a name.
-                        navigator_strip = Some(chrome::rail_stub(ui, ui.max_rect(), caret, mode));
+                        // control that reopens it and none for a name. That is
+                        // still true here, and only here: the frames that
+                        // shaped this rail draw it open, so this stub passes no
+                        // label and stays bare. The inspector's own stub below
+                        // takes one.
+                        navigator_strip =
+                            Some(chrome::rail_stub(ui, ui.max_rect(), caret, mode, None));
                         return;
                     }
                     ui.set_min_width(ui.available_width());
@@ -3697,7 +3771,13 @@ impl MeridianApp {
                 .show(ui, |ui| {
                     let caret = collapse_caret(inspector.edge, inspector_collapsed);
                     if inspector_collapsed {
-                        inspector_strip = Some(chrome::rail_stub(ui, ui.max_rect(), caret, mode));
+                        inspector_strip = Some(chrome::rail_stub(
+                            ui,
+                            ui.max_rect(),
+                            caret,
+                            mode,
+                            Some(inspector_stub_label),
+                        ));
                         return;
                     }
                     // Measured before this line existed: the rail's reported
@@ -5013,13 +5093,17 @@ impl MeridianApp {
         // …and the files its remote sources were fetched into, for the life of
         // the document that reads them — see [`Boot::fetched`].
         self.remote_files = boot.fetched;
+        // `documents_changed` reads only the Protocol's sheet and the chart
+        // document's composed size for the rails' default — both are set
+        // above — so it runs before `wire_columns` rather than after: a
+        // later default that read a wired column would want the order
+        // reversed, and that is the cost if this placement turns out wrong.
         self.documents_changed();
         wire_columns(
             &mut self.charts.doc,
             &self.protocol.doc.model,
             &self.charts.inspector_table,
         );
-        self.apply_ledger_default();
     }
 
     /// Open the data file at `chosen` into the chart document: the file as a

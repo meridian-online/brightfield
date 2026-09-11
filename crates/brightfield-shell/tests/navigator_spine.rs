@@ -117,6 +117,17 @@ impl Live {
         self.run(vec![click_at(at), Vec::new(), Vec::new()]);
     }
 
+    /// Click rail `id`'s collapse control, at the place a pointer would find
+    /// it — the caret that reopens a stub.
+    fn click_rail_caret(&mut self, id: brightfield_workbench::arrangement::RegionId) {
+        let at = self
+            .app
+            .rail_collapse_rect(id)
+            .unwrap_or_else(|| panic!("{id} drew no collapse control"))
+            .center();
+        self.run(vec![click_at(at), Vec::new(), Vec::new()]);
+    }
+
     /// The graph chip the head row drew — panics when the head drew no chip,
     /// naming what the first row was instead, so a chip dropped off the head
     /// fails here with a sentence rather than with `unwrap` on a `None`.
@@ -624,10 +635,15 @@ fn a_fresh_open_holds_the_dashboard_and_marks_the_row_that_says_so() {
 /// keystroke. A round that widened this pane's reach on a fresh open once
 /// left the old "press y to copy it" clause on a window where `y` does
 /// nothing.
+///
+/// A one-step Protocol (which the housing fixture is) opens the inspector
+/// collapsed to its own stub, so this test's first gesture is the caret that
+/// reopens it — the tab search below finds no `Operator` text otherwise.
 #[test]
 fn switching_to_operator_on_a_fresh_open_describes_the_canvas_held_table() {
     let mut win = Live::open(housing_boot());
     win.settle();
+    win.click_rail_caret(brightfield_workbench::arrangement::INSPECTOR_RAIL);
 
     let shapes = win.shapes();
     let operator = texts(&shapes)

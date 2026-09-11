@@ -216,6 +216,33 @@ impl Window {
         self.settle();
     }
 
+    /// Click rail `id`'s collapse control, at the place a pointer would find
+    /// it — the caret that reopens a stub, or closes an open rail.
+    fn click_rail_caret(&mut self, id: brightfield_workbench::arrangement::RegionId) {
+        let at = self
+            .app
+            .rail_collapse_rect(id)
+            .expect("the rail drew its collapse control")
+            .center();
+        self.run(vec![
+            egui::Event::PointerMoved(at),
+            button_at(at, true),
+            button_at(at, false),
+        ]);
+        self.settle();
+    }
+
+    /// [`Self::click_rail_caret`], only where rail `id` last drew collapsed to
+    /// its stub — read off the drawn width against the stub's own measure, so
+    /// a caller that does not know which default a fixture opened with can
+    /// still ask for the rail open.
+    fn reopen_if_collapsed(&mut self, id: brightfield_workbench::arrangement::RegionId) {
+        let width = self.app.region_rect(id).expect("the rail drew").width();
+        if (width - brightfield_workbench::chrome::rail_selector_height()).abs() < 0.5 {
+            self.click_rail_caret(id);
+        }
+    }
+
     /// Every string this window's next frame hands the painter.
     ///
     /// Read off the frame's own shapes rather than off a document field,
@@ -610,6 +637,9 @@ fn both_halves_of_a_coordinate_pair_are_drawn_and_share_one_plot() {
         "the inspector names `{}` for plot 0, which draws {drawn_by_plot:?}",
         picked.column
     );
+    // The fixture is one step, so the inspector opened collapsed to its stub
+    // — the caret reopens it on the pane the selection above already set.
+    win.reopen_if_collapsed(brightfield_workbench::arrangement::INSPECTOR_RAIL);
     let after = win.drawn_text();
     assert!(
         after.iter().any(|t| t == "drawn with"),
@@ -706,6 +736,10 @@ fn clicking_a_tile_selects_the_column_that_plot_draws_and_the_inspector_shows_it
     let path = dir.write("harbour.csv", DECLINED_FIRST_CSV);
     let mut win =
         Window::over(Boot::data_file(&path.to_string_lossy()).expect("the file opens as a boot"));
+    // The fixture is one step, so the inspector opened collapsed to its stub
+    // — reopened here so its empty state is legible below, the way a reader
+    // who clicked the caret first would see it.
+    win.reopen_if_collapsed(brightfield_workbench::arrangement::INSPECTOR_RAIL);
 
     assert!(
         win.app.chart_doc().selected_column().is_none(),
@@ -885,6 +919,10 @@ fn a_labelled_column_sends_its_leaf_to_the_rail_and_its_whole_label_to_the_inspe
     win.app.chart_doc_mut().set_tile_columns(spec.tiles.clone());
     win.app.chart_doc_mut().select_tile(0);
     win.settle();
+    // The fixture is one step, so the inspector opened collapsed to its stub
+    // — reopened here to read the whole label off the open pane rather than
+    // off the stub, which draws the selection's name and not its label.
+    win.reopen_if_collapsed(brightfield_workbench::arrangement::INSPECTOR_RAIL);
     let drawn = win.drawn_text();
     assert!(
         drawn.iter().any(|t| t == LABEL),
@@ -928,6 +966,11 @@ fn the_inspector_rail_draws_no_save_while_the_palette_offers_one() {
             "the editor pane is not in this window's tree"
         );
         win.settle();
+        // A one-step Protocol (the data-file window below) opens the
+        // inspector collapsed to its stub, which draws no toolbar for the
+        // focused editor to reach — reopened here so both windows this
+        // function reads from are the same shape.
+        win.reopen_if_collapsed(INSPECTOR_RAIL);
         let rect = win
             .app
             .region_rect(INSPECTOR_RAIL)
