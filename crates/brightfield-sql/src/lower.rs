@@ -1040,7 +1040,7 @@ fn bin_edge(col: &str, edge: BinEdge, kind: ScaleType) -> String {
 /// a 1/2/5 × 10^n step, just over `log10(v)` rather than over `v`.
 ///
 /// **`log10` and not `ln`, and this is a deviation of BASE and not of shape**
-/// (`deviations.yaml` DEV-0009). A monotone change of base cannot move a row
+/// (`deviations.yaml` DEV-0006). A monotone change of base cannot move a row
 /// into a different bin relative to its neighbours, and it cannot move a pixel
 /// — `Scale::Log` normalises by the domain's own span, so `ln` and `log10`
 /// place identically. What it does move is where the nice step LANDS: in

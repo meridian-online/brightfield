@@ -1176,6 +1176,14 @@ fn extend_scales_with_literals<I: Iterator<Item = (Channel, f64)>>(
 /// already established a Linear scale on the channel, the domain is unioned so
 /// co-rendered marks share one axis; an existing non-Linear (Band/Time/Colour)
 /// scale is left untouched.
+///
+/// **A log or symlog axis widens like a linear one and keeps its transform.**
+/// Its domain is in the column's own units — the transform is applied per
+/// value at map time — so a data extent means the same thing on it, and the
+/// `Some(_) => return` branch below would otherwise silently drop the widening
+/// on exactly the axes this is most often called for: a binned rect merges its
+/// HIGH bin edges onto the bin channel through here, so a log tile's last bar
+/// would have run past the end of its own axis.
 pub fn merge_linear_scale(
     set: &mut ScaleSet,
     channel: Channel,
@@ -1183,23 +1191,38 @@ pub fn merge_linear_scale(
     max: f64,
     range: (f64, f64),
 ) {
-    let (domain_min, domain_max) = match set.get(channel) {
+    let (kind, domain_min, domain_max) = match set.get(channel) {
         Some(Scale::Linear {
             domain_min,
             domain_max,
             ..
-        }) => (domain_min.min(min), domain_max.max(max)),
-        Some(_) => return, // non-linear axis already established
-        None => (min, max),
+        }) => (ScaleType::Linear, domain_min.min(min), domain_max.max(max)),
+        Some(Scale::Log {
+            domain_min,
+            domain_max,
+            ..
+        }) => (ScaleType::Log, domain_min.min(min), domain_max.max(max)),
+        Some(Scale::Symlog {
+            domain_min,
+            domain_max,
+            ..
+        }) => (ScaleType::Symlog, domain_min.min(min), domain_max.max(max)),
+        // Band / Time / Colour / Sequential: a different KIND of axis, and a
+        // numeric extent is not a widening of one.
+        Some(_) => return,
+        None => (ScaleType::Linear, min, max),
     };
     set.insert(
         channel,
-        Scale::Linear {
-            domain_min,
-            domain_max,
-            range_start: range.0,
-            range_end: range.1,
-        },
+        as_scale_type(
+            Scale::Linear {
+                domain_min,
+                domain_max,
+                range_start: range.0,
+                range_end: range.1,
+            },
+            kind,
+        ),
     );
 }
 
