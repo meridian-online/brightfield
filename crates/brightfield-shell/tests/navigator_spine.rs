@@ -1915,7 +1915,7 @@ fn opening_a_second_file_over_the_graph_comes_back_to_the_new_tables_dashboard()
 ///
 /// A one-step Protocol collapses the inspector by default —
 /// `MeridianApp::apply_rail_defaults`'s own contract — so the fixture opens
-/// straight into the state this checks, with no caret click needed. Nothing
+/// straight into the state this checks, with no caret click needed. No tile
 /// has been clicked, so `ChartDoc::selected_column` is `None` and the stub
 /// paints no dot.
 #[test]
