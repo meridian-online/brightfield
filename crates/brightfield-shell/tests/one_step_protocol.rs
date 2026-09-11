@@ -232,9 +232,9 @@ impl Window {
         self.settle();
     }
 
-    /// [`Self::click_rail_caret`], only where rail `id` last drew collapsed to
-    /// its stub — read off the drawn width against the stub's own measure, so
-    /// a caller that does not know which default a fixture opened with can
+    /// [`Self::click_rail_caret`], called where rail `id` last drew collapsed
+    /// to its stub — read off the drawn width against the stub's own measure,
+    /// so a caller that does not know which default a fixture opened with can
     /// still ask for the rail open.
     fn reopen_if_collapsed(&mut self, id: brightfield_workbench::arrangement::RegionId) {
         let width = self.app.region_rect(id).expect("the rail drew").width();

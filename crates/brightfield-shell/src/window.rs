@@ -2164,7 +2164,7 @@ impl MeridianApp {
         app.reconcile_canvas_holds();
         // The two rails' state before the first frame, from the document this
         // window was built over — the same derivation `documents_changed`
-        // runs on every later document swap.
+        // runs on a later document swap.
         app.apply_rail_defaults();
         // Say what this document's load found, before its first frame. A
         // diagnostic that waits for the user to go looking is a diagnostic
@@ -2782,7 +2782,7 @@ impl MeridianApp {
     }
 
     /// Where a collapsed rail `id`'s stub drew its rotated label in the last
-    /// frame, or `None` on a frame that stub drew no label at all.
+    /// frame, or `None` on a frame that stub drew no label.
     ///
     /// The **visual** bounding rect, read straight off
     /// [`chrome::StripDrawn::stub_label`] — see its own doc for why a reader
@@ -2797,7 +2797,7 @@ impl MeridianApp {
     }
 
     /// Where a collapsed rail `id`'s stub drew its selection dot in the last
-    /// frame, or `None` on a stub that drew none.
+    /// frame, or `None` on a stub whose frame drew no dot.
     #[must_use]
     pub fn rail_stub_dot(&self, id: RegionId) -> Option<egui::Pos2> {
         self.strips
@@ -5093,7 +5093,7 @@ impl MeridianApp {
         // …and the files its remote sources were fetched into, for the life of
         // the document that reads them — see [`Boot::fetched`].
         self.remote_files = boot.fetched;
-        // `documents_changed` reads only the Protocol's sheet and the chart
+        // `documents_changed` reads the Protocol's sheet and the chart
         // document's composed size for the rails' default — both are set
         // above — so it runs before `wire_columns` rather than after: a
         // later default that read a wired column would want the order

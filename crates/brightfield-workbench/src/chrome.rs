@@ -697,11 +697,14 @@ fn strip(
 /// the frames that shaped this rail draw it open, so a label there would be a
 /// picture nobody has looked at.
 pub struct StubLabel {
-    /// The rail's own name, drawn under a selection or on its own.
+    /// The rail's own name, drawn on its own in every state — never
+    /// appended with a selection. Two of the three named places a clicked
+    /// column already reads (the outline row, the grid header) carry it;
+    /// the stub does not need a third. Hugh's ruling, 2026-09-12.
     pub name: String,
-    /// What is selected in the document this rail answers for, drawn after
-    /// [`Self::name`] with the shell's own separator, and behind the dot.
-    /// `None` draws the name alone and no dot.
+    /// What is selected in the document this rail answers for. Drives the
+    /// dot alone: `Some` paints it, `None` does not, and [`Self::name`] is
+    /// what is drawn either way.
     pub selection: Option<String>,
 }
 
@@ -781,10 +784,7 @@ fn stub_label_ui(
         centre
     });
 
-    let text = label.selection.as_ref().map_or_else(
-        || label.name.clone(),
-        |selection| format!("{} \u{b7} {selection}", label.name),
-    );
+    let text = label.name.clone();
     let room = (rect.bottom() - (top + spacing::SPACE_7)).max(0.0);
     let mut job = egui::text::LayoutJob::single_section(
         text,
