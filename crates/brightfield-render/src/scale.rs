@@ -115,7 +115,7 @@ pub enum Scale {
 /// d3's `scaleSymlog().constant()` default, and the one Mosaic inherits by
 /// never setting it. A spec has no key for it, so it is a constant here rather
 /// than a field on [`Scale::Symlog`] — which is also what lets a symlog scale
-/// share every match arm with a log one.
+/// share its match arms with a log one.
 pub const SYMLOG_CONSTANT: f64 = 1.0;
 
 /// `ln(value)`, with `floor` standing in for anything at or below zero.
@@ -1228,11 +1228,11 @@ pub fn merge_linear_scale(
 
 /// Re-cast a freshly inferred scale into the transform its plot asked for.
 ///
-/// Only a [`Scale::Linear`] converts. A band, time or colour scale is left
-/// exactly as inferred: `xScale: log` on a categorical axis is a name the
-/// reference itself ignores there — Embedding Atlas's picker hides on a band
-/// scale — and a time axis's ticks are calendar ticks, which a decade tick
-/// generator has nothing to say about.
+/// A [`Scale::Linear`] converts; a band, time or colour scale is left exactly
+/// as inferred. `xScale: log` on a categorical axis is a name the reference
+/// itself ignores there — Embedding Atlas's picker hides on a band scale — and
+/// a time axis's ticks are calendar ticks, which a decade tick generator has
+/// nothing to say about.
 #[must_use]
 pub fn as_scale_type(scale: Scale, kind: ScaleType) -> Scale {
     let Scale::Linear {

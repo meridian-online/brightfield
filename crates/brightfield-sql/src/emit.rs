@@ -355,9 +355,10 @@ fn enclosing_plot_area_px(spec: &Spec, mark_index: usize) -> Option<(f64, f64)> 
 /// The scale types the mark's enclosing plot declared, or linear on both axes
 /// for a mark with no enclosing plot.
 ///
-/// The companion of [`enclosing_plot_area_px`], and walked the same way: a
-/// plot attribute reaches a mark's lowerer only because the emit path knows
-/// which plot the mark sits in, and neither the mark nor its options carry it.
+/// The companion of [`enclosing_plot_area_px`], and walked the same way. A
+/// plot attribute reaches a mark's lowerer through this walk: the emit path
+/// knows which plot the mark sits in, and the mark's own options do not carry
+/// the attribute.
 fn enclosing_plot_scales(spec: &Spec, mark_index: usize) -> brightfield_spec::layout::PlotScales {
     collect_mark_plot_scales(spec)
         .get(mark_index)

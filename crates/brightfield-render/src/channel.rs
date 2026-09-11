@@ -352,10 +352,10 @@ impl ChannelMap {
     /// The transform each positional axis of this mark's plot asked for.
     ///
     /// A plot attribute delivered per mark, exactly as the projection is and
-    /// for the same reason: `xScale` belongs to the plot, every mark on it
-    /// draws through the same one, and the renderer is handed a channel map
-    /// rather than the plot. `linear` on both axes when the plot named
-    /// nothing, which is every spec written before the key was read.
+    /// for the same reason: `xScale` belongs to the plot, the marks on it draw
+    /// through the same one, and the renderer is handed a channel map rather
+    /// than the plot. `linear` on both axes for a plot that named nothing,
+    /// which is the state the corpus was in before this key was read.
     #[must_use]
     pub fn scale_types(&self) -> PlotScales {
         self.scale_types

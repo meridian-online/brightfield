@@ -594,9 +594,9 @@ pub enum PlotAxis {
 /// pixel, as Mosaic and Observable Plot name it.
 ///
 /// Three of them, which is the set the reference offers on a continuous
-/// positional axis and the set this build reads. A plot that names none takes
-/// [`ScaleType::Linear`], which is what every spec written before this key
-/// existed already meant.
+/// positional axis and the set this build reads. A plot with no such key takes
+/// [`ScaleType::Linear`] — the reading a spec written before this key existed
+/// already had, held by `a_plot_written_x_scale_log_resolves_log`.
 ///
 /// This is a PURE spec reading — the arithmetic lives in
 /// `brightfield_render::scale::Scale`, and the binning that has to happen in
@@ -702,10 +702,10 @@ pub fn plot_scale_key(axis: PlotAxis) -> Option<&'static str> {
 /// opinion about what a renderer or a lowerer then does with it.
 ///
 /// Three values are read — `linear`, `log`, `symlog`, the set
-/// [`ScaleType::from_wire`] holds. **Anything else leaves that axis linear**,
-/// which is the same degradation an unreadable `xDomain` takes: a name this
-/// build cannot draw is not a reason to draw nothing, and `band` on a binned
-/// axis is a name the reference itself would ignore here.
+/// [`ScaleType::from_wire`] holds. A name outside that set leaves the axis
+/// linear, which `an_unknown_scale_name_degrades_to_linear` holds over a list
+/// of near-misses; it is the same degradation an unreadable `xDomain` takes,
+/// since a name this build cannot draw is not a reason to draw nothing.
 ///
 /// A `$param` at the attribute position resolves through `params` — one hop,
 /// not a chain, because a param whose value is another param reference is not
