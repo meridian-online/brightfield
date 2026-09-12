@@ -6580,8 +6580,10 @@ fn map_rows_split_y(body: egui::Rect) -> f32 {
 /// The columns the pane beside them drew are the grid's rows now, so that pane
 /// has nothing to draw and is not drawn — and the two that are left take the
 /// width it leaves. The split between them is [`map_rows_split_y`], the same
-/// edge the three-pane arrangement uses, so throwing the switch moves one
-/// vertical edge and nothing else.
+/// edge the three-pane arrangement uses, so throwing the switch moves the one
+/// vertical edge — which
+/// `the_transposed_canvas_drops_the_columns_pane_and_gives_the_map_its_width`
+/// reads back off both frames.
 #[must_use]
 pub fn transposed_pane_rects(body: egui::Rect) -> (egui::Rect, egui::Rect) {
     let split_y = map_rows_split_y(body);

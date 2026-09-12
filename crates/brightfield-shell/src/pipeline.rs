@@ -1627,8 +1627,8 @@ impl LiveDashboard {
 /// shape is matched here rather than a marker being written into the emitted
 /// source, because a spec is a file a reader edits and a magic comment they
 /// could delete would take the map's axis with it.
-/// Write `points` as a plot's declared width, and say whether that changed
-/// anything — the numeric comparison [`LiveDashboard::set_page_widths`] needs.
+/// Write `points` as a plot's declared width, and say whether the value moved
+/// — the numeric comparison [`LiveDashboard::set_page_widths`] needs.
 ///
 /// The two arms are the layout's own: `brightfield_spec::layout` reads a
 /// declared width as an integer or as a float and defaults where it is
