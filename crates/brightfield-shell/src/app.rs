@@ -314,8 +314,9 @@ pub fn page_offset(
 /// Written as a function so a surface that draws chrome ON a tile and a test
 /// that reads a tile's box back are asking one question. The other reader is
 /// [`crate::window::MeridianApp::composed_plot_rects`], which is the test hook;
-/// `the_scale_switch_sits_inside_its_own_tile` holds the two together by
-/// asserting containment across them, so the pair drifting apart reddens.
+/// `every_histogram_tile_carries_a_scale_switch_inside_its_own_box` holds the
+/// two together by asserting containment across them, so the pair drifting
+/// apart reddens.
 #[must_use]
 #[allow(clippy::cast_possible_truncation)]
 pub fn plot_window_rect(
@@ -815,8 +816,8 @@ impl ChartDoc {
         };
         // The base the load used, for the reason `set_plot_scale` takes it
         // from there too: a data file named by a relative path does not sit
-        // under the generated spec's scratch directory, and a watch list built
-        // on that directory polls a path that was never written.
+        // under the generated spec's scratch directory, so a watch list built
+        // on that directory polls a path no file was written to.
         let data = self
             .live
             .as_ref()
@@ -928,9 +929,9 @@ impl ChartDoc {
     /// presents, because they are facts about the window this page is drawn in
     /// and the edit did not change the window. The engine session does not
     /// survive: a committed selection is dropped, because the reload builds a
-    /// fresh coordinator. That is the seam a later card closes; today the
-    /// switch is thrown before a brush is swept, which is the order
-    /// `a_brush_on_a_log_tile_narrows_it_and_leaves_the_scale` drives.
+    /// fresh coordinator. Today the switch is thrown before a brush is swept,
+    /// which is the order
+    /// `a_brush_on_another_tile_narrows_the_log_tile_on_its_own_bins` drives.
     ///
     /// Returns whether the picture changed. `false` — with the previous page
     /// standing, the way a refused gesture leaves it — for a document with no

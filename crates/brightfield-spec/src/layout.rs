@@ -593,10 +593,9 @@ pub enum PlotAxis {
 /// The transform a positional scale applies between a data value and its
 /// pixel, as Mosaic and Observable Plot name it.
 ///
-/// Three of them, which is the set the reference offers on a continuous
-/// positional axis and the set this build reads. A plot with no such key takes
-/// [`ScaleType::Linear`] — the reading a spec written before this key existed
-/// already had, held by `a_plot_written_x_scale_log_resolves_log`.
+/// A plot with no such key takes [`ScaleType::Linear`] — the reading a spec
+/// written before this key existed already had, held by
+/// `a_plot_written_x_scale_log_resolves_log`.
 ///
 /// This is a PURE spec reading — the arithmetic lives in
 /// `brightfield_render::scale::Scale`, and the binning that has to happen in

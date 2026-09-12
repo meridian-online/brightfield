@@ -35,10 +35,10 @@ fn housing() -> std::path::PathBuf {
 ///
 /// Derived from the cwd rather than written down, and derived without touching
 /// it. `std::env::set_current_dir` is process-wide and cargo runs this binary's
-/// tests on parallel threads, so a test that set the cwd would decide what
-/// every other test in this file opens; `strip_prefix` reads the cwd instead
-/// and fails here, by name, if the fixture is not underneath it — rather than
-/// handing back a spelling that opens nothing later.
+/// tests on parallel threads, so a test that set the cwd would be deciding for
+/// its siblings which file they open; `strip_prefix` reads the cwd instead and
+/// fails here, by name, if the fixture is not underneath it — rather than
+/// handing back a spelling that opens a file that is not there.
 fn housing_relative() -> std::path::PathBuf {
     let cwd = std::env::current_dir().expect("a working directory");
     let path = housing();

@@ -188,14 +188,13 @@ deviations:
       included, because the renderer's symlog arm uses exactly that and the
       two have to agree for a bar to stand on its edge.
     rationale: |
-      A change of logarithm base is monotone and linear in the exponent, so
-      it cannot move a row into a different bin relative to its neighbours
-      and it cannot move a bar by one pixel: the log scale normalises by its
-      own domain span, so `ln` and `log10` place identically.
+      The log scale normalises by its own domain span, so `ln` and `log10`
+      place identically.
 
-      What it moves is where the nice step LANDS. In log10 space a step of 1
-      is exactly one decade, so the bin edges fall on 1, 10 and 100 — the
-      same values the axis labels, because a log axis is ticked in decades.
+      What the base moves is where the nice step LANDS. In log10 space a
+      step of 1 is exactly one decade, so the bin edges fall on 1, 10 and
+      100 — the same values the axis labels, because a log axis is ticked in
+      decades.
       In `ln` space they would fall on e and e squared, and the picture would
       carry two grids that never meet: bars standing on one set of edges and
       labels naming another.
