@@ -1093,3 +1093,81 @@ fn a_switch_thrown_in_the_dark_leaves_the_page_in_the_dark() {
          throws a switch and the chart is repainted in light"
     );
 }
+
+/// A directory of this test's own under the system temp dir, unique per run so
+/// two binaries of one suite cannot collide in it.
+fn scratch_dir(name: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    let dir = std::env::temp_dir().join(format!(
+        "bf-tile-scale-switch-{name}-{}-{nanos}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a temp directory for the fixture");
+    dir
+}
+
+/// **An authored spec's relative source stays relative to the spec** when a
+/// switch is thrown under it.
+///
+/// The other half of the base, and the half the generated dashboard cannot
+/// exercise: a spec named on the command line resolves its `file:` sources
+/// against its own directory, so the rebuild has to resolve them there too. A
+/// build that answered the previous test by resolving every document's sources
+/// against the working directory would pass it and break this one, which is
+/// why both are here.
+///
+/// Thrown through the document because an authored histogram draws no control
+/// — `an_authored_binned_histogram_draws_no_scale_switch` is the test that
+/// says so — and `set_plot_scale` is the same entry point the control calls.
+#[test]
+fn an_authored_spec_keeps_a_source_relative_to_itself_through_a_switch() {
+    let dir = scratch_dir("authored-relative-source");
+    std::fs::write(
+        dir.join("readings.csv"),
+        "v\n1\n2\n5\n9\n20\n40\n90\n200\n400\n900\n",
+    )
+    .expect("the fixture writes");
+    let spec = dir.join("readings.yaml");
+    std::fs::write(
+        &spec,
+        "data:\n  rows:\n    file: readings.csv\nplot:\n  - mark: rectY\n    \
+         data: { from: rows }\n    x: { bin: v }\n    y: { count: }\n    \
+         fill: steelblue\nwidth: 640\nheight: 400\n",
+    )
+    .expect("the spec writes");
+
+    let boot = Boot::open(
+        spec.to_str().expect("utf-8 temp path"),
+        Flow::Vertical,
+        None,
+    )
+    .unwrap_or_else(|e| panic!("open {}: {e}", spec.display()));
+    let mut live = Live::open(boot);
+    live.settle();
+
+    let doc = live.app.chart_doc_mut();
+    let thrown = doc.set_plot_scale(0, PlotAxis::X, ScaleType::Log);
+    // The fault first: a rebuild that could not find the source refuses, and
+    // its words are the ones that say where it looked.
+    assert_eq!(
+        doc.chart_fault(),
+        None,
+        "the rebuild looked for the source somewhere other than beside the spec"
+    );
+    assert!(thrown, "the switch was refused, so nothing was recomposed");
+    assert!(
+        matches!(
+            doc.composed.plots[0]
+                .scales
+                .get(brightfield_render::channel::Channel::X),
+            Some(brightfield_render::scale::Scale::Log { .. })
+        ),
+        "the plot's x scale after the switch: {:?}",
+        doc.composed.plots[0]
+            .scales
+            .get(brightfield_render::channel::Channel::X)
+    );
+}
