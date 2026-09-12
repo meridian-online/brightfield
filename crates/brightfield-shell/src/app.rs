@@ -188,7 +188,7 @@ pub struct Authored {
 /// left them, so at a short window it hangs below both — and the gutter
 /// between the panes is inside its width and inside neither of them. A pointer
 /// there is over a page nobody drew, which is a question about the two boxes
-/// together and cannot be asked of one; [`Self::offset_at`] is the answer and
+/// together and cannot be asked of one; [`Self::moved_at`] is the answer and
 /// `a_press_over_no_pane_of_the_group_is_over_no_page` holds it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PaneViews {
@@ -329,7 +329,7 @@ impl PaneViews {
 /// which is what an offset with no absence in it has to do — puts the pointer
 /// on whichever tile the page happens to have there, so a press on the ledger
 /// rail under the canvas commits a crossfilter and selects a column. See
-/// [`PaneViews::offset_at`].
+/// [`PaneViews::moved_at`].
 ///
 /// **Why a gesture latches and a frame does not.** A press, a hover and a wheel
 /// zoom are facts about one frame, so the origin the pointer is in *now* is the
@@ -1754,7 +1754,7 @@ impl ChartDoc {
 
     /// Lay the page's hero out `hero` points wide and its tiles `tile` points
     /// wide, as declared widths a constrained `hconcat` shares its residual by
-    /// — see [`Self::page_widths`].
+    /// — the pair [`Self::reflow_to`] writes on the live spec.
     ///
     /// Written on the live spec by the next [`Self::reflow_to`], which is
     /// where the offered box that goes with them is set: the two are one

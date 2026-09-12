@@ -6579,7 +6579,8 @@ fn map_rows_split_y(body: egui::Rect) -> f32 {
 ///
 /// The columns the pane beside them drew are the grid's rows now, so that pane
 /// has nothing to draw and is not drawn — and the two that are left take the
-/// width it leaves. The split between them is [`map_rows_split_y`], the same
+/// width it leaves. The split between them is the map pane's own bottom edge,
+/// the same
 /// edge the three-pane arrangement uses, so throwing the switch moves the one
 /// vertical edge — which
 /// `the_transposed_canvas_drops_the_columns_pane_and_gives_the_map_its_width`
@@ -7087,7 +7088,7 @@ fn draw_transposed_pane_group(
 /// column beside the hero.
 ///
 /// Each cell is the band's own painter at
-/// [`GridDensity::Row`](crate::column_header::GridDensity::Row), so the leaf,
+/// [`crate::column_header::GridDensity::Row`], so the leaf,
 /// the storage type, the validity counts, the range and the statistics are the
 /// ones the full band states and no second formatting of them exists. The box
 /// it paints into is derived from the tile's **drawn** rect — the pane's
@@ -7098,7 +7099,7 @@ fn draw_transposed_pane_group(
 /// One cell per tiled column, whether or not the scroll has carried it past
 /// the pane's foot: the painter is clipped to the pane, so a row below the
 /// fold paints outside no frame, and the record reads as *where each column
-/// is* with [`ColumnBandDrawn::clip`](crate::column_header::ColumnBandDrawn)
+/// is* with the clip [`crate::column_header::ColumnBandDrawn`] carries
 /// beside it saying how much of it reaches the reader — the standing the
 /// band's own cells are recorded on.
 fn draw_row_summaries(
@@ -7349,7 +7350,7 @@ fn layout_switch_hover() -> String {
 /// **Draw the grid pane's layout switch on its header band and return what it
 /// drew**, plus the state the pointer picked on this frame.
 ///
-/// [`draw_scale_switch`](crate::chart_item)'s shape at the band: the rects
+/// The tile scale switch's shape at the band: the rects
 /// handed to the painter and to the hit test are the rects recorded, out of
 /// one expression each, so a scripted click aimed at the record lands where a
 /// reader would press. `band` is the pane's own header band —
