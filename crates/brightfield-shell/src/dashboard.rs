@@ -238,6 +238,50 @@ pub fn stack_extent(offered: f32, tiles: usize) -> f32 {
     offered.max(floor)
 }
 
+/// The floor a **transposed row's** drawn height is held at, in logical
+/// points — the rule that makes the grid pane scroll rather than compress.
+///
+/// A row has to clear two things at once, and this is the taller of them. Its
+/// histogram is the column's own tile, so it needs at least what a tile in
+/// the column needs for its bars and its axis labels
+/// ([`MIN_COLUMN_TILE_HEIGHT`], 96 points). Beside it the row states the
+/// numbers the full band states, and those are seven stacked rows of text —
+/// `ColumnHeaderFrame::extent` at
+/// [`GridDensity::Row`](crate::column_header::GridDensity::Row) measures them
+/// at 107 points, the picture row taken out. 128 clears both with the row's
+/// own breathing room, and `a_transposed_row_clears_its_own_floor` holds this
+/// constant to the two measurements rather than to the number written here —
+/// so a face change that grows the summaries reddens a test instead of
+/// quietly overprinting a row.
+pub const MIN_ROW_HEIGHT: f32 = 128.0;
+
+/// The share of a transposed row's width the **numbers** take, the histogram
+/// taking the rest.
+///
+/// The summaries are two-ended rows — `mean 3.87` at the leading edge and
+/// `nulls 0` at the trailing one — and they elide when the box narrows, so
+/// the failure this share prevents is not a collision but an unreadable
+/// pair. At the 1440-point window the grid pane leaves about 1080 points of
+/// content, which puts the numbers at 450 and the picture at 630: enough for
+/// `median 261,100` and `sd 115,396` to stand at opposite ends of one row
+/// without meeting. A share rather than a fixed width, because a fixed width
+/// takes the whole row at a narrow window and leaves the picture nothing.
+pub const ROW_SUMMARY_SHARE: f32 = 0.42;
+
+/// The height the composed page needs for `tiles` drawn as **rows**, given
+/// the `offered` height of the grid pane they stand in.
+///
+/// [`stack_extent`]'s twin at the transposed layout's own floor, and one
+/// function rather than a second reading of the same rule: the rows do not
+/// compress past [`MIN_ROW_HEIGHT`], so a pane too short for them is given a
+/// taller page and scrolled.
+#[must_use]
+pub fn row_stack_extent(offered: f32, tiles: usize) -> f32 {
+    #[allow(clippy::cast_precision_loss)]
+    let floor = MIN_ROW_HEIGHT * tiles as f32;
+    offered.max(floor)
+}
+
 /// The crossfilter param every tile drives and reads.
 ///
 /// One name for the whole dashboard, declared once under `params:`. An

@@ -188,7 +188,7 @@ pub struct Authored {
 /// left them, so at a short window it hangs below both — and the gutter
 /// between the panes is inside its width and inside neither of them. A pointer
 /// there is over a page nobody drew, which is a question about the two boxes
-/// together and cannot be asked of one; [`Self::offset_at`] is the answer and
+/// together and cannot be asked of one; [`Self::moved_at`] is the answer and
 /// `a_press_over_no_pane_of_the_group_is_over_no_page` holds it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PaneViews {
@@ -200,36 +200,93 @@ pub struct PaneViews {
     /// view.
     pub second: egui::Rect,
     /// How far the page is moved **up** inside [`Self::second`], in logical
-    /// points. Zero is the same view as the first one.
+    /// points — the scroll, and zero at rest.
     pub by: f32,
+    /// **Where the second view's part of the page begins**, as a page-local x
+    /// in logical points: the page left of this is the first view's and the
+    /// page from here on is the second's. See [`Self::second_draws`].
+    pub from_x: f32,
+    /// How the second view stands against the first, which decides where it
+    /// draws the page — see [`PaneSplit`].
+    pub split: PaneSplit,
+}
+
+/// **Where the second pane of a group stands against the first**, and with it
+/// how that pane draws the one page the group composes.
+///
+/// The two arrangements the canvas has: the column of tiles beside the map,
+/// and the same tiles laid as rows in the pane beneath it. They are one enum
+/// rather than two booleans because the placement rule and the containment
+/// rule have to agree, and an arrangement is the one thing both read.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PaneSplit {
+    /// **Beside**: the second view is the column to the right of the first,
+    /// drawing the same page at the same origin moved up by the scroll. The
+    /// page's own x carries the split, so nothing moves across.
+    Beside,
+    /// **Below**: the second view is the pane under the first, and the part of
+    /// the page past [`PaneViews::from_x`] is drawn there — moved both across
+    /// and up, so a column standing to the right of the hero on the page lands
+    /// `lead` points into the pane below it.
+    Below {
+        /// How far into the second view that part of the page is drawn, in
+        /// logical points — the width of whatever the pane draws beside it at
+        /// its leading edge, which for the transposed grid is a row's numbers.
+        lead: f32,
+    },
 }
 
 impl PaneViews {
-    /// **Whether the second view holds the page's column at screen `x`** — the
+    /// **Whether the second view draws the page at page-local `x`** — the
     /// containment rule for a *plot* on a page drawn at two origins, read by
-    /// [`crate::window::MeridianApp::composed_plot_rects`].
+    /// [`plot_window_rect`].
     ///
-    /// Membership is **horizontal**, because the pane group is a left-right
-    /// split: the two views take disjoint parts of the page's width and share
-    /// its vertical band. It is not a rect test, and that is the part worth
-    /// stating — this is asked about a page *taller* than the pane it is drawn
-    /// in, so a tile standing below the column's content bottom is still the
-    /// column's tile. A rect test would hand that tile to the first view and
-    /// report it at the unmoved origin, which is the readback
-    /// `a_wheel_over_the_column_moves_the_column_and_leaves_the_map_where_it_was`
+    /// Membership is **horizontal and page-local**, because the page's own
+    /// width is what the two views share out: the hero takes the page's first
+    /// [`Self::from_x`] points across and the tiles take the rest, whichever
+    /// pane each of the two is drawn in. It is not a rect test, and that is
+    /// the part worth stating — this is asked about a page *taller* than the
+    /// pane it is drawn in, so a tile standing below the pane's content bottom
+    /// is still the second view's tile. A rect test would hand that tile to
+    /// the first view and report it at the unmoved origin, which is the
+    /// readback `a_wheel_over_the_column_moves_the_column_and_leaves_the_map_where_it_was`
     /// holds to the offset the frame applied.
     ///
-    /// A **pointer** is the other subject and gets [`Self::offset_at`]
-    /// instead. The difference is not a missing clause on one side: a tile
-    /// below the fold is still drawn, clipped, and the reader can scroll to it,
-    /// whereas a pointer below the fold is on chrome that pane never painted.
+    /// **Page-local rather than window-space**, which the beside arrangement
+    /// alone could have used: under [`PaneSplit::Below`] the two panes stand
+    /// one above the other and span the same window x, so a window-space test
+    /// answers the same for the hero and for every tile and the page is drawn
+    /// twice in one pane.
+    ///
+    /// A **pointer** is the other subject and gets [`Self::moved_at`] instead.
+    /// The difference is not a missing clause on one side: a tile below the
+    /// fold is still drawn, clipped, and the reader can scroll to it, whereas
+    /// a pointer below the fold is on chrome that pane never painted.
     #[must_use]
-    pub fn second_holds(self, x: f32) -> bool {
-        self.second.x_range().contains(x)
+    pub fn second_draws(self, x: f32) -> bool {
+        x >= self.from_x
     }
 
-    /// **Which view drew the page under `at`**, as the offset that view moved
-    /// the page by — `None` where neither of them drew it.
+    /// **The translation the second view draws `page` by**, in logical points.
+    ///
+    /// Beside the first view that is the scroll and nothing else, which is
+    /// what keeps a layout nobody transposed drawing the pixels it drew
+    /// before. Below it, the page's own point `(from_x, by)` is put `lead`
+    /// points into the second view: the tiles stand to the right of the hero
+    /// on the page and a row's numbers into the pane beneath it, and the
+    /// scroll moves them up from there.
+    #[must_use]
+    pub fn moved(self, page: egui::Rect) -> egui::Vec2 {
+        match self.split {
+            PaneSplit::Beside => egui::vec2(0.0, -self.by),
+            PaneSplit::Below { lead } => {
+                self.second.min - page.min - egui::vec2(self.from_x - lead, self.by)
+            }
+        }
+    }
+
+    /// **Which view drew `page` under `at`**, as the translation that view
+    /// moved it by — `None` where neither of them drew it.
     ///
     /// The rect test the pointer needs and the plot does not. Each pane paints
     /// inside its own box, so the page is under the pointer exactly where one
@@ -240,14 +297,15 @@ impl PaneViews {
     /// view's zero — which is why this returns an [`Option`] rather than an
     /// offset a caller has to know to disbelieve.
     ///
-    /// The two boxes are disjoint by construction — the gutter is between them
-    /// — so the order of the tests below is not a tie-break.
+    /// The two boxes are disjoint by construction — a gutter between them
+    /// beside, a pane gap between them below — so the order of the tests here
+    /// is not a tie-break.
     #[must_use]
-    pub fn offset_at(self, at: egui::Pos2) -> Option<f32> {
+    pub fn moved_at(self, page: egui::Rect, at: egui::Pos2) -> Option<egui::Vec2> {
         if self.second.contains(at) {
-            Some(self.by)
+            Some(self.moved(page))
         } else if self.first.contains(at) {
-            Some(0.0)
+            Some(egui::Vec2::ZERO)
         } else {
             None
         }
@@ -271,7 +329,7 @@ impl PaneViews {
 /// which is what an offset with no absence in it has to do — puts the pointer
 /// on whichever tile the page happens to have there, so a press on the ledger
 /// rail under the canvas commits a crossfilter and selects a column. See
-/// [`PaneViews::offset_at`].
+/// [`PaneViews::moved_at`].
 ///
 /// **Why a gesture latches and a frame does not.** A press, a hover and a wheel
 /// zoom are facts about one frame, so the origin the pointer is in *now* is the
@@ -287,19 +345,20 @@ impl PaneViews {
 #[must_use]
 pub fn page_offset(
     views: Option<PaneViews>,
-    latched: Option<f32>,
+    page: egui::Rect,
+    latched: Option<egui::Vec2>,
     at: Option<egui::Pos2>,
-) -> Option<f32> {
+) -> Option<egui::Vec2> {
     if let Some(by) = latched {
         return Some(by);
     }
     let at = at?;
     match views {
-        Some(views) => views.offset_at(at),
+        Some(views) => views.moved_at(page, at),
         // One view, and its box IS the page's: a document drawn in one pane
         // lays the raster out inside that pane, so the containment test that
         // matters is the raster's own and the callers already make it.
-        None => Some(0.0),
+        None => Some(egui::Vec2::ZERO),
     }
 }
 
@@ -307,9 +366,9 @@ pub fn page_offset(
 /// own origin was painted at and the views it was painted in.
 ///
 /// The page is drawn at two origins when the canvas is a pane group, and a
-/// plot belongs to whichever view holds its column — [`PaneViews::second_holds`]
-/// is that rule, and this is [`PaneViews::offset_at`]'s counterpart for a plot
-/// rather than for a pointer.
+/// plot belongs to whichever view draws its part of the page —
+/// [`PaneViews::second_draws`] is that rule, and this is
+/// [`PaneViews::moved_at`]'s counterpart for a plot rather than for a pointer.
 ///
 /// Written as a function so a surface that draws chrome ON a tile and a test
 /// that reads a tile's box back are asking one question. The other reader is
@@ -328,8 +387,11 @@ pub fn plot_window_rect(
         ),
         egui::vec2(plot.rect.width as f32, plot.rect.height as f32),
     );
+    // The centre, page-local: a plot deep inside one view's part of the page
+    // cannot be handed to the other by a boundary that moved half a point.
+    let centre = (plot.rect.x + plot.rect.width / 2.0) as f32;
     match views {
-        Some(view) if view.second_holds(at.center().x) => at.translate(egui::vec2(0.0, -view.by)),
+        Some(view) if view.second_draws(centre) => at.translate(view.moved(page)),
         _ => at,
     }
 }
@@ -352,6 +414,66 @@ pub struct HoverReadout {
     /// One line per channel the hovered layer binds to a column, in readout
     /// order, already rendered as `column: value`.
     pub lines: Vec<String>,
+}
+
+/// **Which way the grid pane draws the file** — its own rows, or the tiled
+/// columns as rows.
+///
+/// A file opens on [`Self::Rows`]: the table is what a reader came to the
+/// grid for, and the histograms are one throw of the switch away. See
+/// [`LayoutSwitchDrawn`] for the control that moves between them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum GridLayout {
+    /// The file's rows, listed in the grid, under the column header band at
+    /// the density the pane's place calls for.
+    #[default]
+    Rows,
+    /// One row per tiled column: the column's own histogram tile, re-laid at
+    /// a row's height, with the numbers the full band states beside it.
+    Columns,
+}
+
+impl GridLayout {
+    /// The word the switch offers this state as, and the word a test reads
+    /// back off the band. One noun, in the reader's own terms: what the pane
+    /// would be a list of.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Rows => "rows",
+            Self::Columns => "columns",
+        }
+    }
+
+    /// The other state — what a click on the control moves to.
+    #[must_use]
+    pub const fn other(self) -> Self {
+        match self {
+            Self::Rows => Self::Columns,
+            Self::Columns => Self::Rows,
+        }
+    }
+}
+
+/// **The grid pane's layout switch, as the last frame drew it.**
+///
+/// The [`ScaleSwitchDrawn`] standing, for the same reason and read the same
+/// way: the rects here are the ones the painter and the hit test were handed,
+/// so a scripted click aimed at this record lands on the control a reader
+/// would press. In **window-space logical points**.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayoutSwitchDrawn {
+    /// The control's outer rect — the box the hover text is offered over.
+    pub rect: egui::Rect,
+    /// One entry per offered state, in the order they were drawn, each with
+    /// the rect a pointer has to be inside to pick it.
+    pub states: Vec<(GridLayout, egui::Rect)>,
+    /// The layout the pane beneath this band actually drew, so a switch
+    /// reading *rows* stands over a list of rows.
+    pub active: GridLayout,
+    /// The words the control offers on hover, verbatim. The same `String` is
+    /// handed to the tooltip, so the two cannot drift.
+    pub hover: String,
 }
 
 /// **One histogram tile's scale switch, as the last frame drew it.**
@@ -443,6 +565,21 @@ pub struct ChartDoc {
     /// records and another reports has to pass through here. `None` on a frame
     /// where the grid drew no table.
     pub grid_drawn: Option<crate::data_grid::TableDrawn>,
+    /// **The grid pane's layout switch, as the last frame drew it** — see
+    /// [`LayoutSwitchDrawn`]. `None` on a frame whose canvas drew no grid
+    /// pane, and rewritten by each frame that does, for the reason
+    /// [`Self::scale_switches`] is: a rect left standing from a previous frame
+    /// aims a click at a control that is no longer there.
+    pub grid_layout_switch: Option<LayoutSwitchDrawn>,
+    /// **What the transposed layout's rows stated**, in tile order, one entry
+    /// per row the last frame drew.
+    ///
+    /// The cells are drawn by the band's own painter at
+    /// [`GridDensity::Row`](crate::column_header::GridDensity::Row), so this
+    /// is the same record the grid's header band leaves and carries the same
+    /// numbers. Empty on a frame that drew the file's rows instead, and
+    /// emptied rather than left standing for the reason above.
+    pub transposed_rows: Vec<crate::column_header::ColumnBandDrawn>,
     /// **Which density the grid pane's column header band draws at**, or
     /// `None` for the plain header this module drew before the band existed.
     ///
@@ -535,6 +672,17 @@ pub struct ChartDoc {
     /// it from the composed plots' rects instead would be reading the answer
     /// off the geometry the answer produced.
     stacked_tiles: Option<usize>,
+    /// **The declared widths the live page's hero and its column of tiles are
+    /// laid out by**, in logical points.
+    ///
+    /// A constrained `hconcat` shares its residual out in proportion to its
+    /// items' declared widths, so this pair is how the shell asks for a
+    /// different split of one page without a second spec: the emitted values
+    /// — [`crate::dashboard::HERO_WIDTH`] and
+    /// [`crate::dashboard::COLUMN_TILE_WIDTH`] — are the default and are
+    /// written back unchanged, so a document nobody transposed is laid out
+    /// exactly as its own source says.
+    page_widths: (f32, f32),
     /// The floor the composed page's height is held at, in logical points.
     ///
     /// Zero for every document but a hero-and-column dashboard, whose stacked
@@ -665,6 +813,8 @@ impl ChartDoc {
             pane_views: None,
             grid_drawn: None,
             grid_density: None,
+            grid_layout_switch: None,
+            transposed_rows: Vec::new(),
             gesture_latched: false,
             gesture_ink: None,
             wheel_taken: false,
@@ -674,6 +824,10 @@ impl ChartDoc {
             interval_slider_rects: Vec::new(),
             stacked_tiles: None,
             min_page_height: 0.0,
+            page_widths: (
+                crate::dashboard::HERO_WIDTH as f32,
+                crate::dashboard::COLUMN_TILE_WIDTH as f32,
+            ),
             authored: None,
             spec_path: None,
             activity: ActivityLog::new(),
@@ -703,6 +857,8 @@ impl ChartDoc {
             pane_views: None,
             grid_drawn: None,
             grid_density: None,
+            grid_layout_switch: None,
+            transposed_rows: Vec::new(),
             gesture_latched: false,
             gesture_ink: None,
             wheel_taken: false,
@@ -712,6 +868,10 @@ impl ChartDoc {
             interval_slider_rects: Vec::new(),
             stacked_tiles: None,
             min_page_height: 0.0,
+            page_widths: (
+                crate::dashboard::HERO_WIDTH as f32,
+                crate::dashboard::COLUMN_TILE_WIDTH as f32,
+            ),
             authored: None,
             spec_path: None,
             activity: ActivityLog::new(),
@@ -783,9 +943,15 @@ impl ChartDoc {
         // outgoing dashboard's two panes.
         self.stacked_tiles = None;
         self.min_page_height = 0.0;
+        self.page_widths = (
+            crate::dashboard::HERO_WIDTH as f32,
+            crate::dashboard::COLUMN_TILE_WIDTH as f32,
+        );
         self.pane_views = None;
         self.grid_drawn = None;
         self.grid_density = None;
+        self.grid_layout_switch = None;
+        self.transposed_rows = Vec::new();
         self.gesture_latched = false;
         self.gesture_ink = None;
         // …and the readout named a row of the replaced document's table. Left
@@ -888,7 +1054,9 @@ impl ChartDoc {
             return false;
         };
         let bound = live.set_hero_bound(f64::from((page - hero_room).max(0.0)));
-        if !live.set_viewport(box_) && !bound {
+        let widths =
+            live.set_page_widths(f64::from(self.page_widths.0), f64::from(self.page_widths.1));
+        if !live.set_viewport(box_) && !bound && !widths {
             return false;
         }
         self.activity.begin(Activity::EngineQuery);
@@ -1582,6 +1750,18 @@ impl ChartDoc {
     /// [`crate::dashboard::stack_extent`].
     pub fn set_min_page_height(&mut self, height: f32) {
         self.min_page_height = height;
+    }
+
+    /// Lay the page's hero out `hero` points wide and its tiles `tile` points
+    /// wide, as declared widths a constrained `hconcat` shares its residual by
+    /// — the pair [`Self::reflow_to`] writes on the live spec.
+    ///
+    /// Written on the live spec by the next [`Self::reflow_to`], which is
+    /// where the offered box that goes with them is set: the two are one
+    /// layout and a frame that wrote the widths without the box would compose
+    /// a hero at the wrong share of the page.
+    pub fn set_page_widths(&mut self, hero: f32, tile: f32) {
+        self.page_widths = (hero, tile);
     }
 
     pub fn set_tile_columns(&mut self, columns: Vec<ColumnFacts>) {
