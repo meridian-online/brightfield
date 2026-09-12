@@ -1085,9 +1085,7 @@ impl LiveDashboard {
     }
 
     /// The directory a relative `file:` source in this dashboard's spec
-    /// resolves against — see [`Self::base_dir`] the field for why a re-load
-    /// must take it from here rather than derive one. `None` is the process's
-    /// working directory.
+    /// resolves against. `None` is the process's working directory.
     #[must_use]
     pub fn base_dir(&self) -> Option<&Path> {
         self.base_dir.as_deref()

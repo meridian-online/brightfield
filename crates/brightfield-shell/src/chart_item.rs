@@ -1369,10 +1369,8 @@ impl Item<ChartDoc> for ChartItem {
 
 /// The states the switch offers, in the order it draws them.
 ///
-/// The same three [`ScaleType`] resolves from `xScale`, which is the set
-/// Mosaic offers on a continuous positional axis. Declared as one array so the
-/// picker, the hit test and the readback cannot disagree about what is on
-/// offer — `the_switch_offers_linear_log_and_symlog` counts it.
+/// Declared as one array so the picker, the hit test and the readback cannot
+/// disagree about what is on offer.
 const SCALE_STATES: [ScaleType; 3] = [ScaleType::Linear, ScaleType::Log, ScaleType::Symlog];
 
 /// What separates one state from the next, in the quietest ink the type ramp
