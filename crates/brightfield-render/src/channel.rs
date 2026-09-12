@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 
 use brightfield_spec::ast::{AggregateFunc, Mark, PlotNode, SpecValue, ValueOrParamRef};
+use brightfield_spec::layout::{resolve_plot_scales, PlotScales, ScaleType};
 use brightfield_spec::vocab::is_colour_literal;
 use brightfield_spec::vocab::MarkKind;
 use peniko::Color;
@@ -174,6 +175,7 @@ pub struct ChannelMap {
     label: Option<LabelForm>,
     equal_aspect: bool,
     projection: MarkProjection,
+    scale_types: PlotScales,
 }
 
 /// What the plot's map projection means for one mark on it.
@@ -338,6 +340,35 @@ impl ChannelMap {
     /// [`ChannelMap::equal_aspect`].
     pub fn set_equal_aspect(&mut self, on: bool) {
         self.equal_aspect = on;
+    }
+
+    /// Set the transform each positional axis of this mark's plot asked for.
+    /// Called by [`ChannelMap::from_mark_in`] and by tests that build a map
+    /// without a spec behind it.
+    pub fn set_scale_types(&mut self, scale_types: PlotScales) {
+        self.scale_types = scale_types;
+    }
+
+    /// The transform each positional axis of this mark's plot asked for.
+    ///
+    /// A plot attribute delivered per mark, exactly as the projection is and
+    /// for the same reason: `xScale` belongs to the plot, the marks on it draw
+    /// through the same one, and the renderer is handed a channel map rather
+    /// than the plot. `linear` on both axes for a plot that named nothing,
+    /// which is the state the corpus was in before this key was read.
+    #[must_use]
+    pub fn scale_types(&self) -> PlotScales {
+        self.scale_types
+    }
+
+    /// The transform the axis carrying `channel` asked for.
+    #[must_use]
+    pub fn scale_type_for(&self, channel: Channel) -> ScaleType {
+        match channel {
+            Channel::X | Channel::X1 | Channel::X2 => self.scale_types.x,
+            Channel::Y | Channel::Y1 | Channel::Y2 => self.scale_types.y,
+            _ => ScaleType::Linear,
+        }
     }
 
     /// Set what the plot's projection means for this mark — see
@@ -553,6 +584,7 @@ impl ChannelMap {
     pub fn from_mark_in(mark: &Mark, plot: Option<&PlotNode>) -> Self {
         let mut cm = Self::from_mark(mark);
         cm.set_projection(MarkProjection::of(mark.kind, plot));
+        cm.set_scale_types(plot.map(resolve_plot_scales).unwrap_or_default());
         cm
     }
 

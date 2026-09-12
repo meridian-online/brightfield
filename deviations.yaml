@@ -168,3 +168,35 @@ deviations:
     affected_specs:
       - facet-interval.yaml
     conformance_layers_suppressed: [3]
+  - id: DEV-0006
+    surface: "scales — log bin space base (`xScale: log` on a binned column)"
+    mosaic_behaviour: |
+      Mosaic's bin transform applies the scale's transform to the column
+      before it picks a bin scheme, so a binned column on a log axis is cut
+      into equal RATIOS rather than equal widths, and the edges are mapped
+      back to the column's own units for the mark to stand on. The transform
+      d3 and therefore Mosaic apply for `scale.type = "log"` is the natural
+      logarithm.
+    brightfield_behaviour: |
+      The shape is copied exactly — the same nice 1/2/5 x 10^n step, the same
+      outward snap of the extent, the same mapping back — but the bin space
+      is `log10(v)` rather than `ln(v)`. Rows at or below zero are dropped,
+      as Mosaic drops them, by a predicate that also guards the bin scheme's
+      own extent query so a dropped row cannot set the low edge either.
+
+      `symlog` is NOT rebased: it takes d3's own transform, natural logarithm
+      included, because the renderer's symlog arm uses exactly that and the
+      two have to agree for a bar to stand on its edge.
+    rationale: |
+      The log scale normalises by its own domain span, so `ln` and `log10`
+      place identically.
+
+      What the base moves is where the nice step LANDS. In log10 space a
+      step of 1 is exactly one decade, so the bin edges fall on 1, 10 and
+      100 — the same values the axis labels, because a log axis is ticked in
+      decades.
+      In `ln` space they would fall on e and e squared, and the picture would
+      carry two grids that never meet: bars standing on one set of edges and
+      labels naming another.
+    affected_specs: []
+    conformance_layers_suppressed: [3]

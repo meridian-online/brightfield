@@ -57,6 +57,7 @@ use brightfield_render::channel::Channel;
 use brightfield_render::mark::Projection;
 use brightfield_render::scale::Scale;
 use brightfield_spec::analysis::BrushKind;
+use brightfield_spec::layout::{PlotAxis, ScaleType};
 use brightfield_spec::vocab::MarkKind;
 use brightfield_sql::ir::ScalarValue;
 use brightfield_workbench::item::{ChartModule, ModuleHost};
@@ -67,9 +68,9 @@ use brightfield_workbench::{
 };
 use meridian_design::chrome::{OverlayTokens, INK_DARK, INK_LIGHT, OVERLAY_DARK, OVERLAY_LIGHT};
 use meridian_design::semantic::{semantic, Role};
-use meridian_design::{radius, spacing, Elevation};
+use meridian_design::{control, radius, spacing, typography, Elevation};
 
-use crate::app::{ChartDoc, HoverReadout, CHART};
+use crate::app::{ChartDoc, HoverReadout, ScaleSwitchDrawn, CHART};
 use crate::canvas::{set_surface_cursor, surface_input, EguiOverlay};
 use crate::design::Mode;
 use crate::legend;
@@ -481,9 +482,24 @@ impl ChartItem {
             brightfield_render::canvas_host::ButtonState::Down
         );
 
+        // **A press on the tile's scale switch is a press on chrome**, and the
+        // canvas under it never hears it: neither the tile selection below nor
+        // the brush the press would otherwise start.
+        //
+        // The switch is drawn by the caller before this runs, into
+        // [`ChartDoc::scale_switches`], so what is tested here are the rects
+        // this frame's control actually occupies. The gate is needed because
+        // the gesture machine reads the pointer out of the context rather than
+        // through an `egui::Response`, so egui's own paint-order precedence —
+        // which does suppress the widget *under* a widget — does not reach it.
+        // Without it, throwing one tile's switch also moved the window's
+        // selected tile to that tile and renamed what the inspector was
+        // describing — `a_press_on_the_switch_is_not_a_press_on_the_canvas`.
+        let on_chrome = at.is_some_and(|at| doc.scale_switches.iter().any(|s| s.rect.contains(at)));
+
         // The drag state machine: press starts a brush in the plot under
         // the pointer, release commits it. Edge-triggered on the button.
-        if down && !self.was_down {
+        if down && !self.was_down && !on_chrome {
             // `frame_by` is `Some` wherever `pointer` is — the pointer is
             // page-local against the box that offset named — and taken
             // together rather than unwrapped so the press cannot latch an
@@ -1232,6 +1248,20 @@ impl Item<ChartDoc> for ChartItem {
                     );
                 }
             }
+            // **Each histogram tile's own scale switch**, drawn over the page
+            // the two paints above just put down and recorded on the document
+            // — [`ChartDoc::scale_switches`].
+            //
+            // Before the gestures, for two reasons in one line. The press edge
+            // in `drive_gestures` reads the record to tell a press on the
+            // control from a press on the canvas, so the record has to be this
+            // frame's. And the control is chrome, like the toolbar and the
+            // readout above: drawn whether or not there is a device behind the
+            // document, because a GPU-free window is exactly where it is read
+            // from.
+            let (switches, picked) = draw_scale_switches(doc, ui, rect, mode);
+            doc.scale_switches = switches;
+
             // Same gestures with a device and without one. The overlay is the
             // only thing a headless document loses: it has nowhere to paint.
             //
@@ -1243,6 +1273,17 @@ impl Item<ChartDoc> for ChartItem {
                 cx.request_repaint();
             }
             let (hovered, pointer, page) = (gesture.hovered, gesture.pointer, gesture.page);
+
+            // The pick, applied after the gestures so one frame carries one
+            // change to the page. It rewrites the plot's `xScale` in the live
+            // AST and rebuilds the composition from it — see
+            // [`ChartDoc::set_plot_scale`] for what survives that and what
+            // does not.
+            if let Some((plot, axis, state)) = picked {
+                if doc.set_plot_scale(plot, axis, state) {
+                    cx.request_repaint();
+                }
+            }
 
             // The one transient-gesture treatment: the overlay token group.
             // `drive_gestures` above has already taken a released drag, so the
@@ -1320,6 +1361,263 @@ impl Item<ChartDoc> for ChartItem {
             hover_readout(ui.ctx(), &readout, mode);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// The per-tile scale switch — chrome over the raster, state in the document.
+// ---------------------------------------------------------------------------
+
+/// The states the switch offers, in the order it draws them.
+///
+/// Declared as one array so the picker, the hit test and the readback cannot
+/// disagree about what is on offer.
+const SCALE_STATES: [ScaleType; 3] = [ScaleType::Linear, ScaleType::Log, ScaleType::Symlog];
+
+/// What separates one state from the next, in the quietest ink the type ramp
+/// has.
+const SCALE_STATE_SEPARATOR: &str = "·";
+
+/// The chart-kind id whose tiles carry a scale switch.
+///
+/// **One kind, on purpose.** The switch acts on a *binned* positional axis:
+/// it re-cuts the bins in the transformed space, which is a thing to offer
+/// where there are bins and nowhere else. The hero point map on the generated
+/// dashboard binds two raw columns and bins neither, so it draws none —
+/// `the_hero_point_map_draws_no_scale_switch`.
+const SWITCHABLE_TILE: brightfield_workbench::registry::ChartKindId =
+    crate::chart_kinds::BINNED_HISTOGRAM;
+
+/// The transform the picture on screen was composed against, on `axis`.
+///
+/// Read off the plot's own [`Scale`] rather than off the spec: the switch
+/// reports the state of the *picture*, so a spec asking for a scale the
+/// composition did not draw shows what was drawn. A band or a time axis has
+/// no place on the switch's ladder and reads linear, which is the state a plot
+/// with no `xScale` key has.
+fn composed_scale_type(plot: &PlotHandle, axis: PlotAxis) -> ScaleType {
+    let channel = match axis {
+        PlotAxis::X => Channel::X,
+        PlotAxis::Y => Channel::Y,
+    };
+    match plot.scales.get(channel) {
+        Some(Scale::Log { .. }) => ScaleType::Log,
+        Some(Scale::Symlog { .. }) => ScaleType::Symlog,
+        _ => ScaleType::Linear,
+    }
+}
+
+/// Which of the plot's positional axes carries `column`'s bins, or `None`
+/// where neither does.
+///
+/// A binned histogram's binned axis is the one bound to the tile's own column;
+/// the other carries the count. Answered from the composed plot's channel
+/// columns rather than from the tile's declared shape, so a generator that
+/// emitted the device transposed puts the switch on the transposed axis
+/// instead of writing `xScale` at a `y` axis's bins.
+fn binned_axis(plot: &PlotHandle, column: &str) -> Option<PlotAxis> {
+    if plot.x_column.as_deref() == Some(column) {
+        Some(PlotAxis::X)
+    } else if plot.y_column.as_deref() == Some(column) {
+        Some(PlotAxis::Y)
+    } else {
+        None
+    }
+}
+
+/// The words the control offers on hover: what it is, and which tile's.
+///
+/// It names the column because seven controls stand on one page and a tooltip
+/// that said only *scale* would read the same over all of them — which is also
+/// a readback that could not tell a control aimed at the wrong plot from one
+/// aimed at the right one. `each_tile_s_switch_names_its_own_column` reads
+/// seven different strings.
+fn scale_switch_hover(column: &str) -> String {
+    format!("scale: {column}")
+}
+
+/// **One tile's claim on a switch**: which plot it is, the column it bins,
+/// which positional axis carries those bins, and the transform the picture on
+/// screen is currently drawn against.
+///
+/// The four travel together because they are one tile's answer, resolved once
+/// per tile in [`draw_scale_switches`] and read once in [`draw_scale_switch`];
+/// passed separately they were eight arguments to one function.
+struct SwitchSubject<'a> {
+    plot: usize,
+    column: &'a str,
+    axis: PlotAxis,
+    active: ScaleType,
+}
+
+/// **Draw one histogram tile's scale switch and return what it drew**, plus
+/// the state the pointer picked on this frame.
+///
+/// The rects handed to the painter and to the hit test are the rects recorded,
+/// out of one expression each — see [`ScaleSwitchDrawn`]. `clip` is the view
+/// the tile's own pane painted in, so a tile scrolled below the fold neither
+/// paints its control over the pane below nor answers a pointer there.
+fn draw_scale_switch(
+    ui: &mut egui::Ui,
+    tile: egui::Rect,
+    clip: egui::Rect,
+    subject: &SwitchSubject<'_>,
+    mode: Mode,
+) -> Option<(ScaleSwitchDrawn, Option<ScaleType>)> {
+    let SwitchSubject {
+        plot,
+        column,
+        axis,
+        active,
+    } = *subject;
+    let sem = semantic(mode.is_dark());
+    let font = egui::FontId::proportional(typography::CHART_LABEL_SIZE);
+    let gap = spacing::SPACE_2;
+    let painter = ui.painter().with_clip_rect(clip);
+
+    let width_of = |text: &str| {
+        painter
+            .layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::PLACEHOLDER)
+            .size()
+            .x
+    };
+    let labels: Vec<&str> = SCALE_STATES.iter().map(|s| s.wire_name()).collect();
+    let separator = width_of(SCALE_STATE_SEPARATOR);
+    let widths: Vec<f32> = labels.iter().map(|l| width_of(l)).collect();
+    let total: f32 = widths.iter().sum::<f32>()
+        + separator * (labels.len() as f32 - 1.0)
+        + gap * (labels.len() as f32 - 1.0) * 2.0;
+    let height = control::HEIGHT_XS;
+
+    // The head of the tile's own box, at its trailing end — the corner a
+    // long-tailed histogram leaves empty. A tile with no room for the control
+    // draws no control rather than drawing one over its neighbour, and the
+    // list `every_histogram_tile_carries_a_scale_switch_inside_its_own_box`
+    // compares is what reddens if a tile ever gets that small.
+    let inset = spacing::SPACE_2;
+    if total + inset * 2.0 > tile.width() || height + inset * 2.0 > tile.height() {
+        return None;
+    }
+    let outer = egui::Rect::from_min_size(
+        egui::pos2(tile.right() - inset - total, tile.top() + inset),
+        egui::vec2(total, height),
+    );
+
+    // The words the control offers on hover, on every one of its states: the
+    // name belongs to the switch rather than to the state under the pointer,
+    // and a reader crossing it wants to know what it is wherever they are.
+    // The same `String` is recorded, so the two cannot drift.
+    let hover = scale_switch_hover(column);
+    let mut states = Vec::with_capacity(labels.len());
+    let mut picked = None;
+    let mut x = outer.left();
+    for (i, label) in labels.iter().enumerate() {
+        if i > 0 {
+            painter.text(
+                egui::pos2(x + gap + separator / 2.0, outer.center().y),
+                egui::Align2::CENTER_CENTER,
+                SCALE_STATE_SEPARATOR,
+                font.clone(),
+                chrome::colour(sem.text.placeholder),
+            );
+            x += gap * 2.0 + separator;
+        }
+        let seg =
+            egui::Rect::from_min_size(egui::pos2(x, outer.top()), egui::vec2(widths[i], height));
+        x += widths[i];
+        let state = SCALE_STATES[i];
+        let hit = seg.intersect(clip);
+        let response = ui
+            .interact(
+                hit,
+                egui::Id::new(("tile-scale-switch", plot, i)),
+                egui::Sense::click(),
+            )
+            .on_hover_text(hover.clone());
+        if response.clicked() {
+            picked = Some(state);
+        }
+        let ink = if state == active {
+            sem.text.primary
+        } else if response.hovered() {
+            sem.text.secondary
+        } else {
+            sem.text.muted
+        };
+        painter.text(
+            seg.center(),
+            egui::Align2::CENTER_CENTER,
+            *label,
+            font.clone(),
+            chrome::colour(ink),
+        );
+        states.push((state, seg));
+    }
+
+    Some((
+        ScaleSwitchDrawn {
+            plot,
+            column: column.to_owned(),
+            axis,
+            rect: outer,
+            states,
+            active,
+            hover,
+        },
+        picked,
+    ))
+}
+
+/// **Every histogram tile's switch on this page**, drawn and recorded, with
+/// the pick the pointer made on this frame.
+///
+/// The tiles are read off [`ChartDoc::tile_columns`] rather than off the
+/// channel expressions: that list is one entry per plot, in the order the
+/// composition places its plots, and it carries the chart kind the generator
+/// chose. A document the generator did not name — an authored spec, a
+/// capture, a shipped start — has an empty list and draws no switch, which
+/// `an_authored_binned_histogram_draws_no_scale_switch` holds over a spec
+/// that draws the same binned device a tile does.
+fn draw_scale_switches(
+    doc: &ChartDoc,
+    ui: &mut egui::Ui,
+    page: egui::Rect,
+    mode: Mode,
+) -> (Vec<ScaleSwitchDrawn>, Option<(usize, PlotAxis, ScaleType)>) {
+    let views = doc.pane_views;
+    let laid = ui.clip_rect();
+    let mut drawn = Vec::new();
+    let mut pick = None;
+    for (i, facts) in doc.tile_columns().iter().enumerate() {
+        if facts.tile.as_deref() != Some(SWITCHABLE_TILE.as_str()) {
+            continue;
+        }
+        let Some(plot) = doc.composed.plots.get(i) else {
+            continue;
+        };
+        let Some(axis) = binned_axis(plot, &facts.column) else {
+            continue;
+        };
+        let tile = crate::app::plot_window_rect(page, views, plot);
+        let clip = match views {
+            Some(view) if view.second_holds(tile.center().x) => view.second,
+            Some(view) => view.first,
+            None => laid,
+        };
+        let subject = SwitchSubject {
+            plot: i,
+            column: &facts.column,
+            axis,
+            active: composed_scale_type(plot, axis),
+        };
+        let Some((record, picked)) = draw_scale_switch(ui, tile, clip, &subject, mode) else {
+            continue;
+        };
+        if let Some(state) = picked {
+            pick = Some((i, axis, state));
+        }
+        drawn.push(record);
+    }
+    (drawn, pick)
 }
 
 // ---------------------------------------------------------------------------

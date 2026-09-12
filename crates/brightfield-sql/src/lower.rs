@@ -10,6 +10,7 @@ use indexmap::IndexMap;
 use brightfield_spec::ast::{
     AggregateFunc, Mark, MarkData, ParamNode, SelectionNode, SpecValue, ValueOrParamRef,
 };
+use brightfield_spec::layout::{PlotAxis, PlotScales, ScaleType};
 use brightfield_spec::vocab::MarkKind;
 
 use crate::error::EmitError;
@@ -33,6 +34,13 @@ pub struct LowerCtx<'a> {
     /// the lowerer then falls back to the default plot area. Other lowerers
     /// ignore it.
     pub plot_px: Option<(f64, f64)>,
+    /// The transform each positional axis of the mark's enclosing plot asked
+    /// for (`xScale` / `yScale`), resolved at emit time. [`RectLowerer`] bins
+    /// in that space: Mosaic's bin transform applies the scale's transform to
+    /// the column before it picks the bin scheme, so a log axis's bins are
+    /// equal RATIOS and not equal widths. Linear on both axes when the plot
+    /// named nothing, which is every spec written before the key was read.
+    pub scales: PlotScales,
 }
 
 /// Trait for per-mark AST → IR lowering.
@@ -893,12 +901,23 @@ impl MarkLower for RectLowerer {
             }
         };
 
+        let kind = ctx.scales.axis(match axis {
+            BinAxis::X => PlotAxis::X,
+            BinAxis::Y => PlotAxis::Y,
+        });
         let row_filter = filter.map(|f| format!(" AND ({f})")).unwrap_or_default();
+        // A log axis has no logarithm at or below zero, and Mosaic drops those
+        // rows rather than placing them somewhere the reader would read as a
+        // value. The same predicate goes on the bin scheme's own extent query
+        // below, so the dropped rows cannot set the low edge either.
+        let domain_filter = nonpositive_filter(&column, kind);
         let filtered = QueryPlan::Filter {
             input: Box::new(QueryPlan::Source {
                 table: source.clone(),
             }),
-            predicate: Predicate::Expr(format!("\"{column}\" IS NOT NULL{row_filter}")),
+            predicate: Predicate::Expr(format!(
+                "\"{column}\" IS NOT NULL{domain_filter}{row_filter}"
+            )),
         };
 
         // The bin scheme is resolved over the WHOLE table and carried alongside
@@ -920,11 +939,11 @@ impl MarkLower for RectLowerer {
                 "*".to_string(),
                 format!(
                     "{} AS {BIN_LO_EXTENT_COL}",
-                    bin_spec_field(&source, &column, steps, BinSpecField::Min)
+                    bin_spec_field(&source, &column, steps, BinSpecField::Min, kind)
                 ),
                 format!(
                     "{} AS {BIN_STEP_COL}",
-                    bin_spec_field(&source, &column, steps, BinSpecField::Alpha)
+                    bin_spec_field(&source, &column, steps, BinSpecField::Alpha, kind)
                 ),
             ],
         };
@@ -937,8 +956,8 @@ impl MarkLower for RectLowerer {
             input: Box::new(QueryPlan::Aggregation {
                 input: Box::new(binned),
                 group_by: vec![
-                    format!("{} AS \"{column}\"", bin_edge(&column, BinEdge::Low)),
-                    format!("{} AS {hi_col}", bin_edge(&column, BinEdge::High)),
+                    format!("{} AS \"{column}\"", bin_edge(&column, BinEdge::Low, kind)),
+                    format!("{} AS {hi_col}", bin_edge(&column, BinEdge::High, kind)),
                 ],
                 aggregates: vec![density_count_expr()],
             }),
@@ -999,14 +1018,68 @@ fn positional_bin(
 /// where the raw maximum does fall exactly on a step boundary, Mosaic puts it
 /// in a bin of its own. Clamping would be a silent divergence from the
 /// reference on a shape the vendored corpus contains.
-fn bin_edge(col: &str, edge: BinEdge) -> String {
-    let index =
-        format!("floor((\"{col}\" - {BIN_LO_EXTENT_COL}) / CAST({BIN_STEP_COL} AS DOUBLE))");
+fn bin_edge(col: &str, edge: BinEdge, kind: ScaleType) -> String {
+    let value = bin_space_expr(col, kind);
+    let index = format!("floor(({value} - {BIN_LO_EXTENT_COL}) / CAST({BIN_STEP_COL} AS DOUBLE))");
     let index = match edge.offset() {
         0 => index,
         n => format!("({n} + {index})"),
     };
-    format!("CAST({BIN_LO_EXTENT_COL} + {BIN_STEP_COL} * {index} AS DOUBLE)")
+    let edge_in_bin_space = format!("{BIN_LO_EXTENT_COL} + {BIN_STEP_COL} * {index}");
+    format!(
+        "CAST({} AS DOUBLE)",
+        from_bin_space_expr(&edge_in_bin_space, kind)
+    )
+}
+
+/// The column as the bin scheme sees it — **the space the bins are cut in**.
+///
+/// Mosaic's bin transform applies the scale's transform to the column before
+/// it picks a bin scheme, so a log axis's bins are equal ratios rather than
+/// equal widths, and the nice-step machinery below is untouched: it still cuts
+/// a 1/2/5 × 10^n step, just over `log10(v)` rather than over `v`.
+///
+/// **`log10` and not `ln`, and this is a deviation of BASE and not of shape**
+/// (`deviations.yaml` DEV-0006). `Scale::Log` normalises by the domain's own
+/// span, so `ln` and `log10` place identically. What the base does move is
+/// where the nice step LANDS: in log10 space a step of 1 is exactly one
+/// decade, so the bin edges fall on 1, 10, 100 — the same values the axis
+/// labels. In `ln` space they would fall on e, e², and the picture would
+/// carry two different grids.
+///
+/// Symlog takes d3's own transform, `sign(v) · ln(1 + |v|/C)` with `C` = 1,
+/// natural log included, because `brightfield_render::scale`'s symlog arm uses
+/// exactly that and the two have to agree for a bar to stand on its edge.
+fn bin_space_expr(col: &str, kind: ScaleType) -> String {
+    match kind {
+        ScaleType::Linear => format!("\"{col}\""),
+        ScaleType::Log => format!("(ln(\"{col}\") / {JS_LN10})"),
+        ScaleType::Symlog => format!("(sign(\"{col}\") * ln(1 + abs(\"{col}\")))"),
+    }
+}
+
+/// The inverse of [`bin_space_expr`]: a bin edge, computed in bin space, back
+/// in the column's own units — which is what the renderer draws and what the
+/// axis labels.
+fn from_bin_space_expr(expr: &str, kind: ScaleType) -> String {
+    match kind {
+        ScaleType::Linear => expr.to_string(),
+        ScaleType::Log => format!("pow(10, {expr})"),
+        ScaleType::Symlog => format!("(sign({expr}) * (exp(abs({expr})) - 1))"),
+    }
+}
+
+/// The extra row predicate a scale's domain forces, or the empty string.
+///
+/// Only `log` forces one: its transform is undefined at and below zero, and
+/// Mosaic drops those rows. Symlog is defined everywhere, which is the reason
+/// a spec is offered both.
+fn nonpositive_filter(col: &str, kind: ScaleType) -> String {
+    if kind.drops_nonpositive() {
+        format!(" AND \"{col}\" > 0")
+    } else {
+        String::new()
+    }
 }
 
 /// The two numbers a bin scheme reduces to: the snapped low extent and the bin
@@ -1023,7 +1096,13 @@ enum BinSpecField {
 /// The degenerate `max == min` column takes Mosaic's degenerate branch —
 /// `binHistogram` returns a bare `floor(field)` when the extent has no width,
 /// which is what `bmin = 0`, `alpha = 1` reproduces exactly.
-fn bin_spec_field(table: &str, col: &str, steps: i64, field: BinSpecField) -> String {
+fn bin_spec_field(
+    table: &str,
+    col: &str,
+    steps: i64,
+    field: BinSpecField,
+    kind: ScaleType,
+) -> String {
     let projection = match field {
         BinSpecField::Min => "CASE WHEN span IS NULL THEN 0 ELSE bmin END",
         BinSpecField::Alpha => {
@@ -1032,7 +1111,7 @@ fn bin_spec_field(table: &str, col: &str, steps: i64, field: BinSpecField) -> St
     };
     format!(
         "(SELECT {projection} FROM ({}) AS _bs)",
-        bin_spec_query(table, col, steps)
+        bin_spec_query(table, col, steps, kind)
     )
 }
 
@@ -1052,7 +1131,7 @@ fn bin_spec_field(table: &str, col: &str, steps: i64, field: BinSpecField) -> St
 ///
 /// `minstep` is 0 throughout (brightfield exposes no such knob), so `binStep`'s
 /// two `v >= minstep` guards are vacuous and are not emitted.
-fn bin_spec_query(table: &str, col: &str, steps: i64) -> String {
+fn bin_spec_query(table: &str, col: &str, steps: i64, kind: ScaleType) -> String {
     // `Math.ceil(Math.log(steps) / Math.LN10)`. `steps` is a spec literal, so
     // this is a plan-time constant rather than more SQL.
     let level = ((steps as f64).ln() / std::f64::consts::LN_10).ceil();
@@ -1072,8 +1151,13 @@ fn bin_spec_query(table: &str, col: &str, steps: i64) -> String {
          WHEN ceil(span / (s0 * 10)) <= {steps} THEN s0 * 10 ELSE s0 * 100 END AS s1 FROM (\
          SELECT lo, hi, span, pow(10, floor(ln(span) / {JS_LN10} + 0.5) - {level}) AS s0 FROM (\
          SELECT lo, hi, nullif(hi - lo, 0) AS span FROM (\
-         SELECT min(\"{col}\") AS lo, max(\"{col}\") AS hi FROM \"{table}\"\
-         ) AS _b0) AS _b1) AS _b2) AS _b3) AS _b4) AS _b5) AS _b6"
+         SELECT min({value}) AS lo, max({value}) AS hi FROM \"{table}\"{domain_filter}\
+         ) AS _b0) AS _b1) AS _b2) AS _b3) AS _b4) AS _b5) AS _b6",
+        value = bin_space_expr(col, kind),
+        domain_filter = match nonpositive_filter(col, kind).strip_prefix(" AND ") {
+            Some(predicate) => format!(" WHERE {predicate}"),
+            None => String::new(),
+        },
     )
 }
 
@@ -1539,6 +1623,7 @@ mod tests {
             data_sources,
             params,
             plot_px: None,
+            scales: PlotScales::default(),
         }
     }
 
@@ -1582,6 +1667,7 @@ mod tests {
             data_sources,
             params,
             plot_px: None,
+            scales: PlotScales::default(),
         }
     }
 

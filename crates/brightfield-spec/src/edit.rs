@@ -37,14 +37,16 @@ const INHERITED_CHANNELS: &[&str] = &["x", "y", "x1", "x2", "y1", "y2"];
 /// A typed structural mutation applied to the working [`Spec`] by [`apply`] —
 /// the framework-free AST-mutation API the keyboard grammar named as missing.
 ///
-/// Four variants (the 5th reserved verb, undo, is an [`UndoStack`] pop, not an
+/// Five variants (the reserved undo verb is an [`UndoStack`] pop, not an
 /// edit). Each edit is TYPED (never an exec-string, per the VisiData warning),
-/// targets the focused plot's primary mark by walking the live AST via a plot
-/// [`ComponentPath`], and is bracketed by a whole-`Spec` clone snapshot so undo
-/// is total and near-free. Two variants are count-STABLE
-/// ([`ChartEdit::ChangeMarkType`], [`ChartEdit::SetChannel`]) and two are
-/// count-CHANGING ([`ChartEdit::AddMark`], [`ChartEdit::RemoveMark`]); the
-/// transient apply treats them differently (the coordinator flat-index rebuild).
+/// walks the live AST via a plot [`ComponentPath`], and is bracketed by a
+/// whole-`Spec` clone snapshot so undo is total and near-free. Four target the
+/// focused plot's primary mark; [`ChartEdit::SetPlotAttribute`] targets the
+/// plot's own attribute map instead. Three variants are count-STABLE
+/// ([`ChartEdit::ChangeMarkType`], [`ChartEdit::SetChannel`],
+/// [`ChartEdit::SetPlotAttribute`]) and two are count-CHANGING
+/// ([`ChartEdit::AddMark`], [`ChartEdit::RemoveMark`]); the transient apply
+/// treats them differently (the coordinator flat-index rebuild).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChartEdit {
     /// Retype the focused plot's primary mark (`dot` -> `bar`). Count-stable.
@@ -87,6 +89,27 @@ pub enum ChartEdit {
         /// Ordinal of the target mark among the plot's marks (v1: always 0).
         mark_ordinal: usize,
     },
+    /// Write `key: value` into the focused plot's own attribute map — the
+    /// siblings of `plot:`, not a mark's channels. Count-stable, and the one
+    /// variant that targets no mark at all.
+    ///
+    /// The plot attribute a surface changes today is the positional scale
+    /// type (`xScale: log`), which re-bins and re-draws every mark on the plot
+    /// through one key. The variant is written in terms of the attribute map
+    /// rather than in terms of scales because that map is what the AST holds,
+    /// and because [`classify_edit`] already refuses the attributes that would
+    /// move launch-fixed chrome: an `xLabel` written here changes the axis
+    /// title and comes back [`RefuseReason::WouldChangeAxisTitle`], with the
+    /// spec untouched. `an_x_label_written_as_a_plot_attribute_is_refused`
+    /// holds that.
+    SetPlotAttribute {
+        /// Plot-node path of the focused plot.
+        plot: ComponentPath,
+        /// The attribute key, as the spec spells it (`xScale`).
+        key: String,
+        /// The value to write.
+        value: SpecValue,
+    },
 }
 
 impl ChartEdit {
@@ -97,7 +120,8 @@ impl ChartEdit {
             ChartEdit::ChangeMarkType { plot, .. }
             | ChartEdit::AddMark { plot, .. }
             | ChartEdit::SetChannel { plot, .. }
-            | ChartEdit::RemoveMark { plot, .. } => plot.0.as_str(),
+            | ChartEdit::RemoveMark { plot, .. }
+            | ChartEdit::SetPlotAttribute { plot, .. } => plot.0.as_str(),
         }
     }
 
@@ -122,7 +146,7 @@ impl ChartEdit {
             ChartEdit::ChangeMarkType { mark_ordinal, .. }
             | ChartEdit::SetChannel { mark_ordinal, .. }
             | ChartEdit::RemoveMark { mark_ordinal, .. } => *mark_ordinal,
-            ChartEdit::AddMark { .. } => 0,
+            ChartEdit::AddMark { .. } | ChartEdit::SetPlotAttribute { .. } => 0,
         }
     }
 
@@ -141,6 +165,10 @@ impl ChartEdit {
                 format!("set-channel: {channel} -> {column}")
             }
             ChartEdit::RemoveMark { .. } => "remove-mark".to_string(),
+            ChartEdit::SetPlotAttribute { key, value, .. } => match value {
+                SpecValue::String(s) => format!("set-plot-attribute: {key} -> {s}"),
+                other => format!("set-plot-attribute: {key} -> {other:?}"),
+            },
         }
     }
 }
@@ -253,6 +281,9 @@ fn apply_unchecked(spec: &mut Spec, edit: &ChartEdit) {
                 data,
                 options,
             }));
+        }
+        ChartEdit::SetPlotAttribute { key, value, .. } => {
+            p.attributes.insert(key.clone(), value.clone());
         }
         ChartEdit::SetChannel {
             mark_ordinal,
@@ -1560,5 +1591,151 @@ vconcat:
             let reparsed = parse(&yaml);
             assert_eq!(spec, reparsed, "round-trip AST mismatch for {edit:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod plot_attribute_tests {
+    use super::*;
+    use crate::parse::{parse_spec, Format};
+
+    fn parse(yaml: &str) -> Spec {
+        parse_spec(yaml, Format::Yaml).expect("parse").spec
+    }
+
+    fn cp(s: &str) -> ComponentPath {
+        ComponentPath(s.to_string())
+    }
+
+    /// Two labelled plots side by side, so an edit aimed at one can be shown
+    /// to have left the other alone.
+    const PAIR: &str = "\
+data:
+  t: SELECT 1 AS a, 2 AS b
+hconcat:
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        y: b
+    xLabel: X axis
+    yLabel: Y axis
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        y: b
+    xLabel: X axis
+    yLabel: Y axis
+";
+
+    fn set_scale(path: &str, value: &str) -> ChartEdit {
+        ChartEdit::SetPlotAttribute {
+            plot: cp(path),
+            key: "xScale".to_string(),
+            value: SpecValue::String(value.to_string()),
+        }
+    }
+
+    /// The key lands on the targeted plot, and **only** on it: the sibling
+    /// plot's attribute map and items are byte-equal before and after, which
+    /// is the half that reddens if the reducer walked to the wrong node or
+    /// wrote to every plot it found.
+    #[test]
+    fn setting_a_plot_attribute_writes_one_key_on_one_plot() {
+        let mut spec = parse(PAIR);
+        let before = spec.clone();
+        apply(&mut spec, &set_scale("root/hconcat[0]", "log")).expect("gate-clean");
+
+        let edited = plot_at_path(&spec, "root/hconcat[0]").expect("plot 0");
+        assert_eq!(
+            edited.attributes.get("xScale"),
+            Some(&SpecValue::String("log".to_string())),
+            "the edit writes xScale on the plot it named"
+        );
+        let was = plot_at_path(&before, "root/hconcat[0]").expect("plot 0 before");
+        assert_eq!(
+            edited.attributes.len(),
+            was.attributes.len() + 1,
+            "one key added and nothing else: {:?} -> {:?}",
+            was.attributes,
+            edited.attributes
+        );
+        assert_eq!(edited.items, was.items, "no mark on the plot moved");
+        assert_eq!(
+            plot_at_path(&spec, "root/hconcat[1]"),
+            plot_at_path(&before, "root/hconcat[1]"),
+            "the sibling plot is untouched"
+        );
+    }
+
+    /// Writing the key a second time REPLACES it rather than appending, so
+    /// switching log -> symlog -> linear leaves one attribute and not three
+    /// readings of the same axis.
+    #[test]
+    fn setting_the_same_attribute_twice_replaces_it() {
+        let mut spec = parse(PAIR);
+        apply(&mut spec, &set_scale("root/hconcat[0]", "log")).expect("gate-clean");
+        let after_one = plot_at_path(&spec, "root/hconcat[0]")
+            .expect("plot")
+            .attributes
+            .len();
+        apply(&mut spec, &set_scale("root/hconcat[0]", "symlog")).expect("gate-clean");
+        let p = plot_at_path(&spec, "root/hconcat[0]").expect("plot");
+        assert_eq!(
+            p.attributes.get("xScale"),
+            Some(&SpecValue::String("symlog".to_string()))
+        );
+        assert_eq!(
+            p.attributes.len(),
+            after_one,
+            "the second write replaced the first: {:?}",
+            p.attributes
+        );
+    }
+
+    /// The variant is count-stable and targets no mark, so it reports mark
+    /// ordinal 0 and never asks the coordinator for a flat-index rebuild.
+    #[test]
+    fn a_plot_attribute_edit_is_count_stable() {
+        let edit = set_scale("root", "log");
+        assert!(!edit.is_count_changing());
+        assert_eq!(edit.mark_ordinal(), 0);
+        assert_eq!(edit.plot_path(), "root");
+        assert_eq!(edit.summary(), "set-plot-attribute: xScale -> log");
+    }
+
+    /// An attribute the reload gate watches is refused with the spec
+    /// untouched — the generic variant does not become a way around
+    /// [`classify_edit`].
+    #[test]
+    fn an_x_label_written_as_a_plot_attribute_is_refused() {
+        let mut spec = parse(PAIR);
+        let before = spec.clone();
+        let refused = apply(
+            &mut spec,
+            &ChartEdit::SetPlotAttribute {
+                plot: cp("root/hconcat[0]"),
+                key: "xLabel".to_string(),
+                value: SpecValue::String("Something else".to_string()),
+            },
+        );
+        assert_eq!(refused, Err(RefuseReason::WouldChangeAxisTitle));
+        assert_eq!(
+            spec, before,
+            "a refused edit leaves the spec byte-identical"
+        );
+    }
+
+    /// A path that names no plot is refused rather than silently dropped.
+    #[test]
+    fn a_plot_attribute_on_a_missing_plot_is_refused() {
+        let mut spec = parse(PAIR);
+        let before = spec.clone();
+        assert_eq!(
+            apply(&mut spec, &set_scale("root/hconcat[9]", "log")),
+            Err(RefuseReason::PlotNotFound)
+        );
+        assert_eq!(spec, before);
     }
 }

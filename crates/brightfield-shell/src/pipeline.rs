@@ -876,6 +876,24 @@ pub struct LiveDashboard {
     coordinator: Coordinator,
     spec: Spec,
     diagnostics: LoadDiagnostics,
+    /// **The directory this dashboard's relative `file:` sources were resolved
+    /// against**: the `spec_dir` its own load was handed, kept so a later load
+    /// off the same document cannot resolve them against a different one.
+    ///
+    /// It lives here for the reason [`Self::mode`] does — a re-load after a
+    /// gesture has to carry it, and a base a gesture path re-derives is a base
+    /// that can differ from the one the picture was built on. It did:
+    /// [`crate::app::ChartDoc::set_plot_scale`] took the parent of the
+    /// document's spec file, which for a dashboard generated from a data file
+    /// is the scratch directory that generated spec was written to and is
+    /// nowhere near the data. A table opened by a relative path drew its
+    /// picture and then lost it on the first switch thrown, because the
+    /// re-load asked DuckDB for the relative path under the scratch directory.
+    ///
+    /// `None` is the process's working directory — what the file readers
+    /// resolve a relative path against when no base is given, which is an
+    /// answer and not a missing one.
+    base_dir: Option<PathBuf>,
     /// What each plot's axes are DRAWN at, keyed by plot node path — the
     /// render-side half of navigation.
     ///
@@ -973,6 +991,7 @@ impl LiveDashboard {
             coordinator,
             spec,
             diagnostics,
+            base_dir: spec_dir.map(Path::to_path_buf),
             view_extents: ViewExtents::new(),
             pins: PlotPins::new(),
             viewport: Rect::zero(),
@@ -1018,6 +1037,7 @@ impl LiveDashboard {
             coordinator,
             spec,
             diagnostics,
+            base_dir: spec_dir.map(Path::to_path_buf),
             view_extents: ViewExtents::new(),
             pins: PlotPins::new(),
             viewport: Rect::zero(),
@@ -1062,6 +1082,13 @@ impl LiveDashboard {
     #[must_use]
     pub fn viewport(&self) -> Rect {
         self.viewport
+    }
+
+    /// The directory a relative `file:` source in this dashboard's spec
+    /// resolves against. `None` is the process's working directory.
+    #[must_use]
+    pub fn base_dir(&self) -> Option<&Path> {
+        self.base_dir.as_deref()
     }
 
     /// The mode the next composite will be inked in.

@@ -1,0 +1,68 @@
+# The same histogram as rect-bin-count.yaml, binned on a LOG axis.
+#
+# Byte-for-byte the same 37 raw observations. The only difference is the plot
+# attribute `xScale: log`, and it changes where the bin edges are: Mosaic's bin
+# transform applies the scale's transform to the column BEFORE it picks a bin
+# scheme, so the nice 1/2/5 x 10^n step is cut over log10(v) rather than over v
+# and the bins are equal RATIOS instead of equal widths.
+#
+# Over these values (1..97) the log-space extent is [0, 1.9868], which resolves
+# to a step of 0.1 and 20 bins across [0, 2] — that is, across [1, 100] once the
+# edges are mapped back to the column's own units. Every decade tick therefore
+# lands on a bin boundary: 1 is the first edge, 10 the eleventh, 100 the last.
+#
+# The linear companion reads those same 37 observations into 20 bins of width 5
+# across [0, 100], of which 15 are occupied. So the two pictures differ in the
+# one place that matters: the linear one starts its axis at 0 and the log one at
+# 1, because zero has no logarithm and is not a place on this axis.
+#
+# Preview headlessly:
+#   cargo run -p brightfield-shell --bin brightfield-shot -- --spec examples/rect-bin-count-log.yaml --out out.png --vello-only
+data:
+  observations:
+    - { v: 1 }
+    - { v: 3 }
+    - { v: 4 }
+    - { v: 6 }
+    - { v: 7 }
+    - { v: 9 }
+    - { v: 11 }
+    - { v: 12 }
+    - { v: 12 }
+    - { v: 13 }
+    - { v: 14 }
+    - { v: 14 }
+    - { v: 15 }
+    - { v: 16 }
+    - { v: 16 }
+    - { v: 17 }
+    - { v: 17 }
+    - { v: 18 }
+    - { v: 19 }
+    - { v: 19 }
+    - { v: 21 }
+    - { v: 22 }
+    - { v: 23 }
+    - { v: 24 }
+    - { v: 26 }
+    - { v: 27 }
+    - { v: 29 }
+    - { v: 31 }
+    - { v: 34 }
+    - { v: 38 }
+    - { v: 42 }
+    - { v: 47 }
+    - { v: 53 }
+    - { v: 61 }
+    - { v: 72 }
+    - { v: 88 }
+    - { v: 97 }
+plot:
+  - mark: rectY
+    data: { from: observations }
+    x: { bin: v }
+    y: { count: }
+    fill: steelblue
+xScale: log
+width: 640
+height: 400

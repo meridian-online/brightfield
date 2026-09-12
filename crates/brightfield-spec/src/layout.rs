@@ -16,6 +16,7 @@ use crate::ast::{
     Component, ConcatNode, Input, Mark, PlotNode, SpaceNode, Spec, SpecValue, ValueOrParamRef,
 };
 use crate::vocab::InputKind;
+use indexmap::IndexMap;
 
 // ---------------------------------------------------------------------------
 // Rect
@@ -578,6 +579,171 @@ pub fn resolve_fixed_domains(plot: &PlotNode) -> FixedDomains {
         x: pinned("xDomain"),
         y: pinned("yDomain"),
     }
+}
+
+/// Which positional axis a plot attribute speaks about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlotAxis {
+    /// The x axis.
+    X,
+    /// The y axis.
+    Y,
+}
+
+/// The transform a positional scale applies between a data value and its
+/// pixel, as Mosaic and Observable Plot name it.
+///
+/// A plot with no such key takes [`ScaleType::Linear`] — the reading a spec
+/// written before this key existed already had, held by
+/// `a_plot_written_x_scale_log_resolves_log`.
+///
+/// This is a PURE spec reading — the arithmetic lives in
+/// `brightfield_render::scale::Scale`, and the binning that has to happen in
+/// the same space lives in `brightfield_sql`'s rect lowerer. Both convert from
+/// this; neither re-parses the attribute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScaleType {
+    /// `value` maps straight onto the pixel range. The default.
+    #[default]
+    Linear,
+    /// `log(value)` maps onto the pixel range. Undefined at and below zero:
+    /// Mosaic drops those rows rather than drawing them somewhere arbitrary.
+    Log,
+    /// `sign(v) * log1p(|v| / C)` — logarithmic away from the origin and
+    /// linear through it, so a column holding a zero keeps that row.
+    Symlog,
+}
+
+impl ScaleType {
+    /// The wire name Mosaic writes, and the one this build reads back.
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Linear => "linear",
+            Self::Log => "log",
+            Self::Symlog => "symlog",
+        }
+    }
+
+    /// Read a wire name, or `None` for a spelling this build does not know.
+    ///
+    /// Matched exactly rather than case-insensitively, for the reason the
+    /// private `FIXED` literal above is: a spec written for Mosaic is the
+    /// thing being read, and Mosaic resolves the name and not a spelling of
+    /// it.
+    #[must_use]
+    pub fn from_wire(name: &str) -> Option<Self> {
+        match name {
+            "linear" => Some(Self::Linear),
+            "log" => Some(Self::Log),
+            "symlog" => Some(Self::Symlog),
+            _ => None,
+        }
+    }
+
+    /// Whether this transform is undefined at or below zero — the question the
+    /// lowerer asks before it decides which rows can be binned at all.
+    #[must_use]
+    pub fn drops_nonpositive(self) -> bool {
+        matches!(self, Self::Log)
+    }
+}
+
+/// The scale type each of a plot's positional axes resolves to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PlotScales {
+    /// The x axis's transform.
+    pub x: ScaleType,
+    /// The y axis's transform.
+    pub y: ScaleType,
+}
+
+impl PlotScales {
+    /// The transform on one axis.
+    #[must_use]
+    pub fn axis(self, axis: PlotAxis) -> ScaleType {
+        match axis {
+            PlotAxis::X => self.x,
+            PlotAxis::Y => self.y,
+        }
+    }
+
+    /// Whether both axes are linear — the shape of every spec written before
+    /// this key was read, and the one a caller may skip work for.
+    #[must_use]
+    pub fn is_linear(self) -> bool {
+        self.x == ScaleType::Linear && self.y == ScaleType::Linear
+    }
+}
+
+/// The plot attribute naming each positional axis's scale type — **the
+/// consumed list**.
+///
+/// [`resolve_plot_scales_in`] reads an axis's key OUT of this table rather
+/// than writing the string at the lookup, so a key removed here is a key
+/// nothing reads, and `a_plot_written_x_scale_log_resolves_log` says so.
+const SCALE_KEYS: [(PlotAxis, &str); 2] = [(PlotAxis::X, "xScale"), (PlotAxis::Y, "yScale")];
+
+/// The attribute key this build reads as `axis`'s scale type, or `None` when
+/// that axis has no key on the consumed list.
+#[must_use]
+pub fn plot_scale_key(axis: PlotAxis) -> Option<&'static str> {
+    SCALE_KEYS
+        .iter()
+        .find(|(a, _)| *a == axis)
+        .map(|(_, key)| *key)
+}
+
+/// Resolve a plot's `xScale` / `yScale` attributes, reading a lifted `$param`
+/// through its declared value.
+///
+/// A pure spec reading, mirroring [`resolve_fixed_domains`] and
+/// [`resolve_plot_insets`]: it says what the author asked for and holds no
+/// opinion about what a renderer or a lowerer then does with it.
+///
+/// Three values are read — `linear`, `log`, `symlog`, the set
+/// [`ScaleType::from_wire`] holds. A name outside that set leaves the axis
+/// linear, which `an_unknown_scale_name_degrades_to_linear` holds over a list
+/// of near-misses; it is the same degradation an unreadable `xDomain` takes,
+/// since a name this build cannot draw is not a reason to draw nothing.
+///
+/// A `$param` at the attribute position resolves through `params` — one hop,
+/// not a chain, because a param whose value is another param reference is not
+/// a form the spec language produces. An unresolvable reference leaves the
+/// axis linear.
+#[must_use]
+pub fn resolve_plot_scales_in(
+    plot: &PlotNode,
+    params: &IndexMap<String, crate::ast::ParamNode>,
+) -> PlotScales {
+    let resolve = |axis: PlotAxis| -> ScaleType {
+        let Some(key) = plot_scale_key(axis) else {
+            return ScaleType::Linear;
+        };
+        let named = match plot.attributes.get(key) {
+            Some(SpecValue::String(s)) => Some(s.as_str()),
+            Some(SpecValue::Param(r)) => match params.get(&r.0) {
+                Some(crate::ast::ParamNode::Value(SpecValue::String(s))) => Some(s.as_str()),
+                _ => None,
+            },
+            _ => None,
+        };
+        named
+            .and_then(ScaleType::from_wire)
+            .unwrap_or(ScaleType::Linear)
+    };
+    PlotScales {
+        x: resolve(PlotAxis::X),
+        y: resolve(PlotAxis::Y),
+    }
+}
+
+/// [`resolve_plot_scales_in`] with no params in scope — the literal-only
+/// reading, which is what a render path that was handed a plot and not a spec
+/// can answer.
+#[must_use]
+pub fn resolve_plot_scales(plot: &PlotNode) -> PlotScales {
+    resolve_plot_scales_in(plot, &IndexMap::new())
 }
 
 /// The map projection a plot resolves to. Which projection is a PURE spec
@@ -1186,7 +1352,6 @@ mod tests {
     use super::*;
     use crate::ast::*;
     use crate::parse::{parse_spec, Format};
-    use indexmap::IndexMap;
 
     /// A viewport that offers nothing on either axis: every assertion made
     /// under it is about the spec's own intrinsic size.
@@ -2447,6 +2612,108 @@ vconcat:
             Rect::new(0.0, 0.0, DEFAULT_INPUT_WIDTH, DEFAULT_INPUT_HEIGHT),
             "non-menu kinds ignore the menu-family style keys"
         );
+    }
+
+    // --- positional scale type (`xScale` / `yScale`) ---
+
+    /// The key is read, per axis, and a plot that never mentions it is linear.
+    ///
+    /// The second half is what makes the first a measurement: every spec in
+    /// the corpus predates this attribute, so a resolver that answered `Log`
+    /// unconditionally would also pass a test that only looked at the `log`
+    /// plot.
+    #[test]
+    fn a_plot_written_x_scale_log_resolves_log() {
+        let log = || SpecValue::String("log".to_string());
+        assert_eq!(
+            resolve_plot_scales(&plot_with(&[("xScale", log())])),
+            PlotScales {
+                x: ScaleType::Log,
+                y: ScaleType::Linear
+            },
+        );
+        assert_eq!(
+            resolve_plot_scales(&plot_with(&[("yScale", log())])),
+            PlotScales {
+                x: ScaleType::Linear,
+                y: ScaleType::Log
+            },
+        );
+        let none = resolve_plot_scales(&plot_with(&[]));
+        assert!(
+            none.is_linear(),
+            "a plot without the key is linear on both axes, got {none:?}"
+        );
+    }
+
+    /// `symlog` is its own resolved kind and not a spelling of `log` — the
+    /// two differ exactly at zero, which is the reason both are offered.
+    #[test]
+    fn symlog_resolves_to_its_own_kind() {
+        let p = plot_with(&[("xScale", SpecValue::String("symlog".to_string()))]);
+        assert_eq!(resolve_plot_scales(&p).x, ScaleType::Symlog);
+        assert!(
+            !ScaleType::Symlog.drops_nonpositive(),
+            "symlog is defined at zero; only log drops those rows"
+        );
+        assert!(ScaleType::Log.drops_nonpositive());
+    }
+
+    /// A name this build cannot draw degrades to linear rather than to
+    /// nothing, and the degradation is per axis.
+    #[test]
+    fn an_unknown_scale_name_degrades_to_linear() {
+        for name in ["band", "sqrt", "LOG", "", "pow"] {
+            let p = plot_with(&[("xScale", SpecValue::String(name.to_string()))]);
+            assert!(
+                resolve_plot_scales(&p).is_linear(),
+                "xScale: {name:?} is not a name this build reads and must not leave linear"
+            );
+        }
+    }
+
+    /// The attribute may be a lifted `$param`, and it resolves through the
+    /// param's declared value.
+    #[test]
+    fn a_lifted_param_scale_resolves_through_its_declaration() {
+        let p = plot_with(&[("xScale", SpecValue::Param(ParamRef::new("s")))]);
+        let mut params = IndexMap::new();
+        params.insert(
+            "s".to_string(),
+            ParamNode::Value(SpecValue::String("log".to_string())),
+        );
+        assert_eq!(resolve_plot_scales_in(&p, &params).x, ScaleType::Log);
+        // Undeclared, and a selection rather than a value, both degrade.
+        assert!(resolve_plot_scales_in(&p, &IndexMap::new()).is_linear());
+    }
+
+    /// The resolver reads the axis's key out of the consumed list, so a key
+    /// dropped from that list is a key nothing reads.
+    #[test]
+    fn each_axis_has_its_key_on_the_consumed_list() {
+        assert_eq!(plot_scale_key(PlotAxis::X), Some("xScale"));
+        assert_eq!(plot_scale_key(PlotAxis::Y), Some("yScale"));
+    }
+
+    /// The attribute survives a real parse: `xScale: log` written in a YAML
+    /// document reaches `PlotNode::attributes` as the string the resolver
+    /// reads, rather than being dropped or lifted into something else.
+    #[test]
+    fn the_scale_attribute_survives_a_parse() {
+        let spec = parse_spec(
+            r#"
+plot:
+  - mark: rectY
+    data: { from: t }
+    x: { bin: v }
+    y: { count: }
+xScale: log
+"#,
+            Format::Yaml,
+        )
+        .expect("parses");
+        let plots = collect_plot_nodes(&spec.spec);
+        assert_eq!(resolve_plot_scales(plots[0].1).x, ScaleType::Log);
     }
 
     // --- positional domain pinning (`Domain: Fixed`) ---

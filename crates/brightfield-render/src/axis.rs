@@ -103,9 +103,93 @@ pub fn compute_ticks(scale: &Scale, target_count: usize) -> Vec<Tick> {
             *range_end,
             target_count,
         ),
+        // A log axis's ticks are the DECADES, not a nice decimal step: the
+        // whole point of the transform is that equal pixel distances are equal
+        // ratios, and a 1/2/5 step read off the data extent labels a line at
+        // the wrong place for that. `nice_step` is deliberately not reachable
+        // from here.
+        Scale::Log {
+            domain_min,
+            domain_max,
+            ..
+        } => positioned(scale, &log_tick_values(*domain_min, *domain_max)),
+        // Symlog's ticks are SIGNED decades with zero among them — the choice
+        // recorded for this build. Zero is the value the transform exists to
+        // keep, so an axis that could not label it would be hiding the reason
+        // it was chosen over log.
+        Scale::Symlog {
+            domain_min,
+            domain_max,
+            ..
+        } => positioned(scale, &symlog_tick_values(*domain_min, *domain_max)),
         // Colour ramps (categorical or sequential) have no positional axis ticks.
         Scale::Colour { .. } | Scale::Sequential { .. } => Vec::new(),
     }
+}
+
+/// Turn tick VALUES into ticks, placing each one through the scale itself so
+/// the label and the bar it stands under cannot be positioned by two different
+/// rules.
+fn positioned(scale: &Scale, values: &[f64]) -> Vec<Tick> {
+    values
+        .iter()
+        .map(|value| Tick {
+            value: *value,
+            label: format_number(*value),
+            position: scale.map_f64(*value),
+        })
+        .collect()
+}
+
+/// The powers of ten inside `[lo, hi]`.
+///
+/// Under two decades that list is one label or none, which is not an axis; the
+/// fallback subdivides each decade at 1, 2 and 5, which is `d3.scaleLog`'s own
+/// treatment of a short domain.
+fn log_tick_values(lo: f64, hi: f64) -> Vec<f64> {
+    let lo = if lo > 0.0 { lo } else { f64::MIN_POSITIVE };
+    if hi <= lo {
+        return Vec::new();
+    }
+    let decades: Vec<f64> = (lo.log10().ceil() as i32..=hi.log10().floor() as i32)
+        .map(|e| 10_f64.powi(e))
+        .collect();
+    if decades.len() >= 2 {
+        return decades;
+    }
+    let mut out = Vec::new();
+    for e in lo.log10().floor() as i32..=hi.log10().ceil() as i32 {
+        for mantissa in [1.0, 2.0, 5.0] {
+            let v = mantissa * 10_f64.powi(e);
+            if v >= lo && v <= hi {
+                out.push(v);
+            }
+        }
+    }
+    out
+}
+
+/// Zero and the signed powers of ten inside `[lo, hi]`, ascending.
+fn symlog_tick_values(lo: f64, hi: f64) -> Vec<f64> {
+    if hi <= lo {
+        return Vec::new();
+    }
+    let reach = lo.abs().max(hi.abs());
+    let top = if reach >= 1.0 {
+        reach.log10().floor() as i32
+    } else {
+        0
+    };
+    let mut out: Vec<f64> = Vec::new();
+    for e in (0..=top).rev() {
+        out.push(-10_f64.powi(e));
+    }
+    out.push(0.0);
+    for e in 0..=top {
+        out.push(10_f64.powi(e));
+    }
+    out.retain(|v| *v >= lo && *v <= hi);
+    out
 }
 
 fn compute_linear_ticks(

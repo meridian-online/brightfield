@@ -105,7 +105,10 @@ pub enum Selected {
 fn spans(scale: &Scale, selected: &Selected) -> Vec<(f64, f64)> {
     match selected {
         Selected::Interval(lo, hi) => match scale {
-            Scale::Linear { .. } | Scale::Time { .. } => {
+            Scale::Linear { .. }
+            | Scale::Log { .. }
+            | Scale::Symlog { .. }
+            | Scale::Time { .. } => {
                 let (a, b) = (scale.map_f64(*lo), scale.map_f64(*hi));
                 vec![(a.min(b), a.max(b))]
             }
