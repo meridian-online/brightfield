@@ -643,3 +643,174 @@ fn a_transposed_row_clears_its_own_floor() {
         pane.height()
     );
 }
+
+// ---------------------------------------------------------------------------
+// AC2 — a brush on a row's histogram is a brush on the tile it is.
+// ---------------------------------------------------------------------------
+
+impl Live {
+    /// A point `fraction` of the way across plot `plot`'s drawn box, at its
+    /// middle height — clear of the scale switch at its head.
+    fn at(&self, plot: usize, fraction: f32) -> egui::Pos2 {
+        let rect = self.app.composed_plot_rects()[plot];
+        egui::pos2(rect.left() + rect.width() * fraction, rect.center().y)
+    }
+
+    /// Sweep a brush across plot `plot`, from one fraction of its width to
+    /// another, and release — the press, the move and the release are each a
+    /// frame, because the canvas reads its own press edge across frames.
+    fn brush(&mut self, plot: usize, from: f32, to: f32) {
+        let start = self.at(plot, from);
+        let end = self.at(plot, to);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        self.run(vec![
+            vec![egui::Event::PointerMoved(start)],
+            vec![egui::Event::PointerMoved(start), button(start, true)],
+            vec![egui::Event::PointerMoved(end)],
+            vec![egui::Event::PointerMoved(end), button(end, false)],
+            Vec::new(),
+            Vec::new(),
+        ]);
+    }
+}
+
+/// The fixture's own values for one column, straight out of the CSV — the
+/// ground truth a narrowing is checked against, so no assertion below compares
+/// the engine with itself.
+fn fixture_column(column: &str) -> Vec<f64> {
+    let text = std::fs::read_to_string(housing()).expect("the fixture reads");
+    let mut lines = text.lines();
+    let header: Vec<&str> = lines.next().expect("a header").split(',').collect();
+    let at = header
+        .iter()
+        .position(|name| *name == column)
+        .unwrap_or_else(|| panic!("the fixture has no {column:?} column: {header:?}"));
+    lines
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let cell = line.split(',').nth(at).expect("a cell");
+            cell.parse::<f64>()
+                .unwrap_or_else(|e| panic!("the fixture's {column} cell {cell:?}: {e}"))
+        })
+        .collect()
+}
+
+/// The two bounds a committed interval names, read out of the clause the
+/// window says out loud — [`ChartDoc::selection_sql`], the same string the
+/// status band paints.
+///
+/// Read rather than typed: the interval is whatever the sweep inverted through
+/// the plot's own scale, so a test that wrote its own bounds would be checking
+/// the rows against a brush nobody drew.
+fn committed_interval(doc: &ChartDoc, column: &str) -> (f64, f64) {
+    let clause = doc
+        .selection_sql()
+        .expect("the sweep committed a selection");
+    assert!(
+        clause.contains(column),
+        "the committed clause {clause:?} does not name {column:?}"
+    );
+    let bounds: Vec<f64> = clause
+        .split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == ',')
+        .filter_map(|token| token.parse::<f64>().ok())
+        .collect();
+    assert_eq!(
+        bounds.len(),
+        2,
+        "the committed clause {clause:?} reads {bounds:?}, which is not an \
+         interval this test can check rows against"
+    );
+    (bounds[0].min(bounds[1]), bounds[0].max(bounds[1]))
+}
+
+/// **A brush dragged across a transposed row's histogram narrows the rest of
+/// the screen**, exactly as the same sweep on the column's tile does.
+///
+/// The gesture is pointer events on the drawn row — no interaction is
+/// registered by hand — and every figure below is read after it: the clause
+/// the window says out loud, the count the status band states, the rows the
+/// grid's own read would list, and the bins the other rows' histograms draw.
+/// The ghost is read too, and it must NOT move: a narrowing that took the
+/// unfiltered layer with it would be a re-query of the file rather than a
+/// crossfilter.
+#[test]
+fn a_brush_on_a_transposed_row_narrows_the_grid_the_count_and_the_other_rows() {
+    let mut live = Live::open();
+    live.throw(GridLayout::Columns);
+
+    let (brushed, _) = live.row("median_income");
+    let (other, _) = live.row("population");
+    let ghost_before = plot_bins(live.app.chart_doc_mut(), other.column, "population");
+    let subset_before: f64 = ghost_before.iter().map(|(_, count)| count).sum::<f64>() / 2.0;
+    assert!(
+        (subset_before - 240.0).abs() < f64::EPSILON,
+        "population's two layers hold {subset_before} rows apiece before any \
+         brush, where the sample is 240"
+    );
+
+    live.brush(brushed.column, 0.30, 0.62);
+
+    // What the sweep committed, said out loud by the window itself.
+    let (lo, hi) = committed_interval(live.doc(), "median_income");
+    let values = fixture_column("median_income");
+    assert_eq!(values.len(), 240, "the committed sample is 240 rows");
+    let inside = values.iter().filter(|v| (lo..=hi).contains(v)).count();
+    assert!(
+        inside > 0 && inside < 240,
+        "the sweep committed [{lo}, {hi}], which holds {inside} of 240 rows — \
+         an interval that kept everything, or nothing, would make every \
+         narrowing below unreadable"
+    );
+
+    // The count the status band states.
+    assert_eq!(
+        live.doc().composed.rows,
+        Some(brightfield_shell::pipeline::RowCount {
+            selected: inside as u64,
+            total: 240
+        }),
+        "the count under the hero disagrees with the CSV's own count of rows \
+         inside the brushed interval"
+    );
+
+    // The rows the grid's own read would list.
+    let doc = live.app.chart_doc_mut();
+    let mark = doc
+        .live_dashboard()
+        .expect("the opened file has a live dashboard")
+        .rows_mark();
+    let session = doc
+        .live_coordinator()
+        .expect("the opened file has a live session")
+        .session();
+    assert_eq!(
+        session
+            .step_rows_count(mark, brightfield_engine::RowsAudience::Reader)
+            .expect("the grid's own read"),
+        inside as u64,
+        "the rows the grid would list do not agree with the CSV's own count \
+         inside the brushed interval"
+    );
+
+    // The other rows' histograms: the subset narrowed and the ghost did not.
+    let after = plot_bins(live.app.chart_doc_mut(), other.column, "population");
+    let total_after: f64 = after.iter().map(|(_, count)| count).sum();
+    #[allow(clippy::cast_precision_loss)]
+    let expected = 240.0 + inside as f64;
+    assert!(
+        (total_after - expected).abs() < f64::EPSILON,
+        "population's two layers hold {total_after} rows between them under \
+         the brush, where the ghost's 240 and the subset's {inside} make \
+         {expected}"
+    );
+    assert_ne!(
+        after, ghost_before,
+        "population's histogram drew the identical bins before and after the \
+         sweep — the brush on the row did not reach the other marks"
+    );
+}
