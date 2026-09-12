@@ -1054,10 +1054,8 @@ impl ChartDoc {
             return false;
         };
         let bound = live.set_hero_bound(f64::from((page - hero_room).max(0.0)));
-        let widths = live.set_page_widths(
-            f64::from(self.page_widths.0),
-            f64::from(self.page_widths.1),
-        );
+        let widths =
+            live.set_page_widths(f64::from(self.page_widths.0), f64::from(self.page_widths.1));
         if !live.set_viewport(box_) && !bound && !widths {
             return false;
         }

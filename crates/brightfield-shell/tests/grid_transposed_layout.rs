@@ -53,7 +53,8 @@ impl Live {
     }
 
     /// [`Live::open`] in a window of a named size — the short window the
-    /// scroll claims are read in, where the rows cannot all stand at once.
+    /// scroll claim is read in, where seven rows at their floor outreach the
+    /// pane.
     fn open_at(screen: Option<egui::Rect>) -> Self {
         let path = housing();
         let chosen = path.to_str().expect("utf-8 fixture path");
@@ -159,10 +160,16 @@ impl Live {
         self.doc().transposed_rows.clone()
     }
 
-    /// The row whose numbers name `column`, with the picture beside it — the
-    /// pairing the whole layout is, read back off the two records that make
-    /// it.
-    fn row(&self, column: &str) -> (ColumnBandDrawn, egui::Rect) {
+    /// The row whose numbers name `column`, and **the picture that stands
+    /// beside those numbers** — found by where it was drawn, not by an index
+    /// the two records happen to share.
+    ///
+    /// That is the whole of the pairing claim. Looking the plot up by the
+    /// cell's own index would ask the layout which plot it meant to draw
+    /// there, which is a question it answers correctly however it paired them;
+    /// the geometry is the only reading that can disagree. A row whose numbers
+    /// have no picture at their trailing edge fails here by name.
+    fn row(&self, column: &str) -> (ColumnBandDrawn, usize, egui::Rect) {
         let rows = self.rows();
         let cell = rows
             .iter()
@@ -172,8 +179,29 @@ impl Live {
                 panic!("no transposed row for {column:?}; the pane drew {names:?}")
             })
             .clone();
-        let plot = self.app.composed_plot_rects()[cell.column];
-        (cell, plot)
+        let (plot, rect) = self.beside(&cell);
+        (cell, plot, rect)
+    }
+
+    /// The plot drawn against `cell`'s trailing edge, as `(index, rect)`.
+    fn beside(&self, cell: &ColumnBandDrawn) -> (usize, egui::Rect) {
+        let rects = self.app.composed_plot_rects();
+        rects
+            .iter()
+            .enumerate()
+            .find(|(_, rect)| {
+                (rect.left() - cell.cell.right()).abs() < 1.0
+                    && (rect.top() - cell.cell.top()).abs() < 1.0
+                    && (rect.bottom() - cell.cell.bottom()).abs() < 1.0
+            })
+            .map(|(i, rect)| (i, *rect))
+            .unwrap_or_else(|| {
+                panic!(
+                    "no picture was drawn against {}'s numbers at {:?}; the \
+                     page placed {rects:?}",
+                    cell.name, cell.cell
+                )
+            })
     }
 }
 
@@ -296,6 +324,28 @@ fn the_transposed_grid_draws_one_row_per_tile_column_in_tile_order() {
 
     live.throw(GridLayout::Columns);
 
+    // The picture beside `population`'s numbers is `population`'s tile, at the
+    // bins the column drew before the throw. First, because it is the claim a
+    // mis-paired row breaks in the fewest steps: a row that took its
+    // neighbour's picture draws another column's bins, and this is the
+    // assertion that says so.
+    let (_, beside, _) = live.row("population");
+    let column = live.doc().composed.plots[beside].x_column.clone();
+    assert_eq!(
+        column.as_deref(),
+        Some("population"),
+        "the picture beside population's numbers bins {column:?}"
+    );
+    let after = plot_bins(live.app.chart_doc_mut(), beside, "population");
+    assert_eq!(
+        after,
+        before,
+        "the row's histogram drew different bins from the tile it was laid out \
+         from: {} bins against {}",
+        after.len(),
+        before.len()
+    );
+
     let rows = live.rows();
     let drawn: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
     assert_eq!(
@@ -309,42 +359,18 @@ fn the_transposed_grid_draws_one_row_per_tile_column_in_tile_order() {
         "the rows were drawn at {tops:?}, which is not top to bottom in tile order"
     );
 
-    // Each row's numbers end where its own picture begins.
+    // Each row's numbers stand beside a picture of their own column — the
+    // plot found at the cell's trailing edge, asked what it bins.
     for row in &rows {
-        let plot = live.app.composed_plot_rects()[row.column];
-        assert!(
-            (row.cell.right() - plot.left()).abs() < 1.0,
-            "{}'s numbers end at {} and its picture begins at {}",
-            row.name,
-            row.cell.right(),
-            plot.left()
-        );
-        assert!(
-            (row.cell.top() - plot.top()).abs() < 1.0
-                && (row.cell.bottom() - plot.bottom()).abs() < 1.0,
-            "{}'s numbers stand at {:?} beside a picture at {:?}",
-            row.name,
-            row.cell.y_range(),
-            plot.y_range()
+        let (plot, rect) = live.beside(row);
+        let binned = live.doc().composed.plots[plot].x_column.clone();
+        assert_eq!(
+            binned.as_deref(),
+            Some(row.name.as_str()),
+            "{}'s numbers stand beside a picture of {binned:?}, drawn at {rect:?}",
+            row.name
         );
     }
-
-    // …and the picture beside `population`'s numbers is `population`'s tile.
-    let (cell, _) = live.row("population");
-    let column = live.doc().composed.plots[cell.column].x_column.clone();
-    assert_eq!(
-        column.as_deref(),
-        Some("population"),
-        "the picture beside population's numbers bins {column:?}"
-    );
-    let after = plot_bins(live.app.chart_doc_mut(), cell.column, "population");
-    assert_eq!(
-        after, before,
-        "the row's histogram drew different bins from the tile it was laid out \
-         from: {} bins against {}",
-        after.len(),
-        before.len()
-    );
 }
 
 /// **Every transposed row states the numbers the full band states.**
@@ -468,7 +494,7 @@ fn the_layout_switch_reads_its_two_states_and_takes_the_pane_both_ways() {
         );
     }
     assert!(
-        texts.iter().any(|t| *t == switch.hover),
+        texts.contains(&switch.hover),
         "resting on the control painted no hover text {:?}; the frame painted \
          {texts:?}",
         switch.hover
@@ -604,11 +630,12 @@ fn a_transposed_row_clears_its_own_floor() {
         "a row's floor is {MIN_ROW_HEIGHT} points and its numbers stack to \
          {numbers}"
     );
-    assert!(
-        MIN_ROW_HEIGHT >= MIN_COLUMN_TILE_HEIGHT,
-        "a row's floor is {MIN_ROW_HEIGHT} points and a tile's is \
-         {MIN_COLUMN_TILE_HEIGHT}"
-    );
+    const {
+        assert!(
+            MIN_ROW_HEIGHT >= MIN_COLUMN_TILE_HEIGHT,
+            "a row's floor must clear the floor a tile in the column keeps"
+        );
+    }
 
     // A window short enough that seven rows at that floor do not fit the pane.
     let mut live = Live::open_at(Some(egui::Rect::from_min_size(
@@ -620,7 +647,7 @@ fn a_transposed_row_clears_its_own_floor() {
     let rows = live.rows();
     assert_eq!(rows.len(), TILE_ORDER.len());
     for row in &rows {
-        let plot = live.app.composed_plot_rects()[row.column];
+        let (_, plot) = live.beside(row);
         assert!(
             plot.height() >= MIN_ROW_HEIGHT - 0.5,
             "{}'s row was drawn {} points tall, under the {MIN_ROW_HEIGHT}-point \
@@ -743,9 +770,9 @@ fn a_brush_on_a_transposed_row_narrows_the_grid_the_count_and_the_other_rows() {
     let mut live = Live::open();
     live.throw(GridLayout::Columns);
 
-    let (brushed, _) = live.row("median_income");
-    let (other, _) = live.row("population");
-    let ghost_before = plot_bins(live.app.chart_doc_mut(), other.column, "population");
+    let (_, brushed, _) = live.row("median_income");
+    let (_, other, _) = live.row("population");
+    let ghost_before = plot_bins(live.app.chart_doc_mut(), other, "population");
     let subset_before: f64 = ghost_before.iter().map(|(_, count)| count).sum::<f64>() / 2.0;
     assert!(
         (subset_before - 240.0).abs() < f64::EPSILON,
@@ -753,7 +780,7 @@ fn a_brush_on_a_transposed_row_narrows_the_grid_the_count_and_the_other_rows() {
          brush, where the sample is 240"
     );
 
-    live.brush(brushed.column, 0.30, 0.62);
+    live.brush(brushed, 0.30, 0.62);
 
     // What the sweep committed, said out loud by the window itself.
     let (lo, hi) = committed_interval(live.doc(), "median_income");
@@ -798,7 +825,7 @@ fn a_brush_on_a_transposed_row_narrows_the_grid_the_count_and_the_other_rows() {
     );
 
     // The other rows' histograms: the subset narrowed and the ghost did not.
-    let after = plot_bins(live.app.chart_doc_mut(), other.column, "population");
+    let after = plot_bins(live.app.chart_doc_mut(), other, "population");
     let total_after: f64 = after.iter().map(|(_, count)| count).sum();
     #[allow(clippy::cast_precision_loss)]
     let expected = 240.0 + inside as f64;

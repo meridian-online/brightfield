@@ -65,9 +65,11 @@ pub enum GridDensity {
     /// finetype leaf and the storage type, a bar distribution in place of the
     /// rug, and the statistics.
     Full,
-    /// **Beside a transposed row's own histogram**: everything [`Self::Full`]
+    /// **Beside a transposed row's own histogram**: the facts [`Self::Full`]
     /// states, in a box as wide as the numbers need and as tall as one row,
-    /// and no picture of its own.
+    /// and no picture of its own —
+    /// `every_transposed_row_states_the_numbers_the_band_states` reads them
+    /// back off a drawn row.
     ///
     /// The picture is the tile the row is laid out around — the composed
     /// page's plot, at the row's height — so a distribution drawn here would

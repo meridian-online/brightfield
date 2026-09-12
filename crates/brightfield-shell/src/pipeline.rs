@@ -1160,7 +1160,9 @@ impl LiveDashboard {
 
     /// Declare the hero `hero` points wide and each stacked tile `tile` points
     /// wide, and say whether that is news — the [`LiveDashboard::set_viewport`]
-    /// shape, for the same reason and on the same frame.
+    /// shape, for the same reason and on the same frame:
+    /// `the_transposed_canvas_drops_the_columns_pane_and_gives_the_map_its_width`
+    /// reads the split back off the panes it produces.
     ///
     /// A constrained `hconcat` shares its residual out in proportion to its
     /// items' declared widths, so these two numbers are the split of the page
@@ -1173,8 +1175,8 @@ impl LiveDashboard {
     /// **Numeric, not structural**: the value already there is read through
     /// the same two arms the layout reads it through, so a spec that declares
     /// `width: 620` as an integer is not rewritten as a float it agrees with,
-    /// and a frame that asks for the width already declared is not news. A
-    /// re-present per frame is what that would cost.
+    /// and a frame that asks for the width already declared reports no news. A
+    /// re-present per frame is what a structural comparison would cost.
     ///
     /// `false`, and no write, for a spec whose root is not the shape
     /// [`crate::dashboard::Dashboard::to_spec`] emits — as

@@ -3930,8 +3930,8 @@ impl MeridianApp {
                         // left standing would have the grid item paint a band
                         // over them on the next frame it is asked for one.
                         let transposed = grid_layout == crate::app::GridLayout::Columns;
-                        charts.doc.grid_density = (stacked.is_some() && !transposed)
-                            .then_some(GridDensity::Compact);
+                        charts.doc.grid_density =
+                            (stacked.is_some() && !transposed).then_some(GridDensity::Compact);
                         if transposed && stacked.is_some() {
                             charts.doc.grid_drawn = None;
                         } else {
@@ -3957,8 +3957,8 @@ impl MeridianApp {
                             // two terms `reflow_to` takes a maximum of — and
                             // the pane that scrolls it is the one beneath the
                             // map.
-                            let inset = chrome::header_band_height()
-                                + 2.0 * chrome::pane_content_inset();
+                            let inset =
+                                chrome::header_band_height() + 2.0 * chrome::pane_content_inset();
                             let toolbar = chart_toolbar_band(&charts.doc.composed);
                             let (floor, content_h, scrolls) = if transposed {
                                 let (map_rect, rows_rect) = transposed_pane_rects(body);
@@ -6561,9 +6561,9 @@ pub fn canvas_pane_rects(body: egui::Rect) -> CanvasPaneRects {
 /// Half a point either way is inside the tolerance the share is asserted at.
 ///
 /// One function because the two arrangements share this edge: the columns
-/// pane standing beside them does not move it, which is what makes
-/// `switching_the_grid_back_restores_every_pane_rect` an assertion about the
-/// map and the grid rather than about arithmetic written twice.
+/// pane standing beside them leaves it where it is, which is what
+/// `the_transposed_canvas_drops_the_columns_pane_and_gives_the_map_its_width`
+/// reads back off the two frames.
 fn map_rows_split_y(body: egui::Rect) -> f32 {
     crate::dashboard::MAP_COLUMN_SHARE
         .mul_add(body.height(), body.top())
@@ -7024,9 +7024,7 @@ fn draw_transposed_pane_group(
         second: rows_body,
         by: scroll,
         from_x,
-        split: crate::app::PaneSplit::Below {
-            lead: summaries,
-        },
+        split: crate::app::PaneSplit::Below { lead: summaries },
     });
     let reserved = crate::legend::band_width(&charts.doc.composed);
     let laid = egui::Rect::from_min_size(
@@ -7095,10 +7093,10 @@ fn draw_transposed_pane_group(
 /// top and bottom — so the numbers move with the picture under a scroll
 /// instead of being laid out twice.
 ///
-/// One cell per tiled column, whether or not the scroll has
-/// carried it past the pane's foot: the painter is clipped to the pane, so a
-/// row below the fold paints nothing, and the record reads as *where each
-/// column is* with [`ColumnBandDrawn::clip`](crate::column_header::ColumnBandDrawn)
+/// One cell per tiled column, whether or not the scroll has carried it past
+/// the pane's foot: the painter is clipped to the pane, so a row below the
+/// fold paints outside no frame, and the record reads as *where each column
+/// is* with [`ColumnBandDrawn::clip`](crate::column_header::ColumnBandDrawn)
 /// beside it saying how much of it reaches the reader — the standing the
 /// band's own cells are recorded on.
 fn draw_row_summaries(
@@ -7111,10 +7109,8 @@ fn draw_row_summaries(
         return Vec::new();
     };
     let views = charts.doc.pane_views;
-    let frame = crate::column_header::column_header_frame(
-        crate::column_header::GridDensity::Row,
-        mode,
-    );
+    let frame =
+        crate::column_header::column_header_frame(crate::column_header::GridDensity::Row, mode);
     let facts = charts.doc.column_facts();
     let painter = ui.painter().with_clip_rect(rows_body);
     let mut drawn = Vec::new();
@@ -7158,9 +7154,11 @@ fn pane_body(ui: &mut egui::Ui, rect: egui::Rect, subject: &Subject, mode: Mode)
 /// hand back the state a click picked this frame.
 ///
 /// Recorded here rather than by the caller so the drawn record and the paint
-/// are one statement — [`crate::app::LayoutSwitchDrawn`] — and written on
-/// every frame the pane group draws, in either arrangement: a rect left
-/// standing from a previous frame aims a click at a control that has moved.
+/// are one statement — [`crate::app::LayoutSwitchDrawn`] — and written by
+/// each of the two arrangements as it draws: a rect left standing from a
+/// previous frame aims a click at a control that has moved.
+/// `the_layout_switch_reads_its_two_states_and_takes_the_pane_both_ways`
+/// clicks the record in both.
 fn record_layout_switch(
     ui: &mut egui::Ui,
     charts: &mut ChartView,
@@ -7327,8 +7325,10 @@ fn band_note(ui: &egui::Ui, band: egui::Rect, text: &str, mode: Mode) -> egui::R
 
 /// The two states the grid pane's layout switch offers, in the order they are
 /// drawn — the one a file opens on first.
-const GRID_LAYOUTS: [crate::app::GridLayout; 2] =
-    [crate::app::GridLayout::Rows, crate::app::GridLayout::Columns];
+const GRID_LAYOUTS: [crate::app::GridLayout; 2] = [
+    crate::app::GridLayout::Rows,
+    crate::app::GridLayout::Columns,
+];
 
 /// What stands between the two words. The scale switch's own separator, so two
 /// controls a reader meets on one screen read as one kind of control.
@@ -7356,13 +7356,16 @@ fn layout_switch_hover() -> String {
 /// leaves.
 ///
 /// `None` where the band is too short to hold the control, which is a band
-/// drawn at no height at all: a pane whose frame drew no header.
+/// drawn at no height: a pane whose frame drew no header.
 fn draw_layout_switch(
     ui: &mut egui::Ui,
     band: egui::Rect,
     active: crate::app::GridLayout,
     mode: Mode,
-) -> Option<(crate::app::LayoutSwitchDrawn, Option<crate::app::GridLayout>)> {
+) -> Option<(
+    crate::app::LayoutSwitchDrawn,
+    Option<crate::app::GridLayout>,
+)> {
     use meridian_design::control;
 
     let sem = semantic(mode.is_dark());

@@ -2217,7 +2217,7 @@ mod tests {
             plot: 0,
             start: kurbo::Point::new(40.0, 40.0),
             current: kurbo::Point::new(41.0, 41.0),
-            by: 0.0,
+            by: egui::Vec2::ZERO,
             move_from: None,
         };
         let binding = interval.gesture.clone().expect("bound");
@@ -2231,7 +2231,7 @@ mod tests {
             plot: 0,
             start: kurbo::Point::new(10.0, 10.0),
             current: kurbo::Point::new(90.0, 90.0),
-            by: 0.0,
+            by: egui::Vec2::ZERO,
             move_from: None,
         };
         let binding = point.gesture.clone().expect("bound");
