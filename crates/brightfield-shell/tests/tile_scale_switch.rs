@@ -21,13 +21,37 @@ use brightfield_protocol::layout::Flow;
 use brightfield_shell::app::ChartDoc;
 use brightfield_shell::design::Mode;
 use brightfield_shell::window::{Boot, MeridianApp};
-use brightfield_spec::layout::ScaleType;
+use brightfield_spec::layout::{PlotAxis, ScaleType};
 
 /// The committed table these windows are opened over — the same fixture
 /// `tests/navigator_spine.rs` and `tests/dashboard_baseline.rs` use.
 fn housing() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/data/california_housing_sample.csv")
+}
+
+/// [`housing`] spelled **relative to the process's working directory** — the
+/// other way a reader names a file, and the one the recompose used to lose.
+///
+/// Derived from the cwd rather than written down, and derived without touching
+/// it. `std::env::set_current_dir` is process-wide and cargo runs this binary's
+/// tests on parallel threads, so a test that set the cwd would decide what
+/// every other test in this file opens; `strip_prefix` reads the cwd instead
+/// and fails here, by name, if the fixture is not underneath it — rather than
+/// handing back a spelling that opens nothing later.
+fn housing_relative() -> std::path::PathBuf {
+    let cwd = std::env::current_dir().expect("a working directory");
+    let path = housing();
+    path.strip_prefix(&cwd)
+        .unwrap_or_else(|_| {
+            panic!(
+                "the fixture {} is not under the working directory {}, so this \
+                 test cannot name it relatively",
+                path.display(),
+                cwd.display()
+            )
+        })
+        .to_path_buf()
 }
 
 /// A boot over [`housing`], as the front door's picker builds it.
@@ -50,10 +74,19 @@ impl Live {
     /// A window over `boot` at the size that boot asks for — the dashboard
     /// baseline's window.
     fn open(boot: Boot) -> Self {
+        Self::open_in(boot, Mode::Light)
+    }
+
+    /// [`Live::open`] in a named mode. A composed scene is a finished list of
+    /// drawing commands with its brushes already resolved, so the mode a page
+    /// is inked in is a property of the composition and not of the paint —
+    /// which is why the mode-restore assertion needs a window that is dark
+    /// from its first frame.
+    fn open_in(boot: Boot, mode: Mode) -> Self {
         let size = boot.window_size();
         let ctx = egui::Context::default();
         Self {
-            app: MeridianApp::headless(boot, Mode::Light),
+            app: MeridianApp::headless(boot, mode),
             ctx,
             screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size.0, size.1)),
         }
@@ -904,5 +937,159 @@ fn a_brush_on_another_tile_narrows_the_log_tile_on_its_own_bins() {
         live.switch("population").active,
         ScaleType::Log,
         "the switch stopped saying log"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// What the recompose carries across the rebuild: the base the sources were
+// resolved against, and the mode the page is inked in.
+// ---------------------------------------------------------------------------
+
+/// **A file opened by a relative path keeps its picture when a switch is
+/// thrown**, because the rebuild resolves its `file:` source against the base
+/// the first load used and not against the generated spec's scratch directory.
+///
+/// The same read as `the_log_tile_re_bins_and_the_other_six_stand_still`, over
+/// a window opened the other way. Absolutely spelled, the two are the same
+/// document; relatively spelled, the rebuild used to ask DuckDB for the
+/// relative path underneath `$TMPDIR/brightfield-generated-<pid>/<hash>/`,
+/// which is not where the file is — so the page that came back was the
+/// engine's refusal to query it, with the chart gone. The fault is asserted
+/// FIRST and by its words, because that is what the reader was left looking
+/// at; the bins and the ticks after it say the picture that replaced it is the
+/// log picture rather than merely not-a-fault.
+#[test]
+fn a_file_opened_by_a_relative_path_keeps_its_picture_through_a_switch() {
+    let relative = housing_relative();
+    assert!(
+        relative.is_relative(),
+        "{} is not a relative spelling, so this test is the absolute one again",
+        relative.display()
+    );
+    let boot = Boot::data_file(relative.to_str().expect("utf-8 fixture path"))
+        .unwrap_or_else(|e| panic!("open {}: {e}", relative.display()));
+    let mut live = Live::open(boot);
+    live.settle();
+
+    let switch = live.switch("population");
+    let others: Vec<usize> = live
+        .doc()
+        .scale_switches
+        .iter()
+        .map(|s| s.plot)
+        .filter(|p| *p != switch.plot)
+        .collect();
+    assert_eq!(others.len(), 6, "six tiles besides population");
+    let frames_before: Vec<_> = others.iter().map(|p| plot_frame(live.doc(), *p)).collect();
+    let marks = marks_binning(live.app.chart_doc_mut(), "population");
+    let linear_bins = mark_bins(live.app.chart_doc_mut(), marks[0], "population");
+
+    live.switch_to("population", ScaleType::Log);
+
+    assert_eq!(
+        live.doc().chart_fault(),
+        None,
+        "the switch left a fault where the chart was"
+    );
+    assert!(
+        matches!(
+            live.doc().composed.plots[switch.plot]
+                .scales
+                .get(brightfield_render::channel::Channel::X),
+            Some(brightfield_render::scale::Scale::Log { .. })
+        ),
+        "population's x scale after the click: {:?}",
+        live.doc().composed.plots[switch.plot]
+            .scales
+            .get(brightfield_render::channel::Channel::X)
+    );
+    assert_eq!(live.switch("population").active, ScaleType::Log);
+
+    // It re-queried, and it re-queried the same file: the rows are cut in log
+    // space and they are all still there.
+    let marks = marks_binning(live.app.chart_doc_mut(), "population");
+    let log_bins = mark_bins(live.app.chart_doc_mut(), marks[0], "population");
+    assert!(
+        log_bins.len() > linear_bins.len(),
+        "log occupies {} bins and linear occupied {}",
+        log_bins.len(),
+        linear_bins.len()
+    );
+    let total = |bins: &[(f64, f64)]| bins.iter().map(|(_, c)| *c).sum::<f64>();
+    assert!(
+        (total(&log_bins) - total(&linear_bins)).abs() < f64::EPSILON,
+        "the same rows are drawn either way: {} against {}",
+        total(&log_bins),
+        total(&linear_bins)
+    );
+
+    // Ticked in decades, as the absolutely-opened window is.
+    let labels = x_tick_labels(live.doc(), switch.plot);
+    let values: Vec<f64> = labels
+        .iter()
+        .filter_map(|l| l.parse::<f64>().ok())
+        .collect();
+    assert!(
+        values.len() >= 3,
+        "a log axis over population is ticked at least three times; it drew {labels:?}"
+    );
+    for pair in values.windows(2) {
+        let ratio = pair[1] / pair[0];
+        assert!(
+            (ratio - 10.0).abs() < 0.01,
+            "the ticks step by {ratio} and not by a decade: {labels:?}"
+        );
+    }
+
+    // And the other six tiles are where they were.
+    for (i, plot) in others.iter().enumerate() {
+        assert_eq!(
+            plot_frame(live.doc(), *plot),
+            frames_before[i],
+            "plot {plot}'s scales or box moved"
+        );
+    }
+}
+
+/// **A switch thrown in a dark window leaves the page in dark ink.**
+///
+/// The rebuild is a fresh [`brightfield_shell::pipeline::LiveDashboard`] and a
+/// fresh dashboard starts at light, so the mode has to be put back onto it
+/// before it presents. Delete that one line and the recompose hands the window
+/// a page inked in light.
+///
+/// **Thrown through the document rather than by clicking the control, and that
+/// is the whole reason this assertion can fail.** Every frame the window draws
+/// calls `ChartDoc::present`, which re-composes any page whose ink disagrees
+/// with the window's mode — so the window repairs the damage on its own next
+/// frame, at the cost of composing and re-querying the whole page a second
+/// time per switch, and a test driven by a click (five frames) reads green
+/// over the defect. Measured: with the restore deleted, a variant of this test
+/// that clicks the control and asserts the same thing passes. The mode a
+/// composition was inked in is `Composed::mode`, and that is the record read
+/// here — at the moment the recompose hands it back, which is the moment the
+/// line under test is supposed to have acted.
+#[test]
+fn a_switch_thrown_in_the_dark_leaves_the_page_in_the_dark() {
+    let mut live = Live::open_in(housing_boot(), Mode::Dark);
+    live.settle();
+    assert_eq!(
+        live.doc().composed.mode,
+        Mode::Dark,
+        "a dark window has to open on a page inked in dark, or this test is \
+         asserting nothing"
+    );
+
+    let switch = live.switch("population");
+    let doc = live.app.chart_doc_mut();
+    assert!(
+        doc.set_plot_scale(switch.plot, PlotAxis::X, ScaleType::Log),
+        "the switch was refused, so nothing was recomposed"
+    );
+    assert_eq!(
+        doc.composed.mode,
+        Mode::Dark,
+        "the page came back inked in the other mode: a reader in the dark \
+         throws a switch and the chart is repainted in light"
     );
 }

@@ -813,11 +813,14 @@ impl ChartDoc {
             self.watch.watch(None, Vec::new());
             return;
         };
-        let dir = spec.parent().map(std::path::Path::to_path_buf);
+        // The base the load used, for the reason `set_plot_scale` takes it
+        // from there too: a data file named by a relative path does not sit
+        // under the generated spec's scratch directory, and a watch list built
+        // on that directory polls a path that was never written.
         let data = self
             .live
             .as_ref()
-            .map(|live| live.data_files(dir.as_deref()))
+            .map(|live| live.data_files(live.base_dir()))
             .unwrap_or_default();
         self.watch.watch(Some(spec), data);
     }
@@ -961,11 +964,14 @@ impl ChartDoc {
 
         let viewport = live.viewport();
         let mode = live.mode();
-        let dir = self
-            .spec_path
-            .as_ref()
-            .and_then(|p| p.parent())
-            .map(std::path::Path::to_path_buf);
+        // The base the FIRST load resolved this spec's relative `file:` sources
+        // against, carried on the dashboard itself — see
+        // [`LiveDashboard::base_dir`]. NOT the parent of `spec_path`, which for
+        // a dashboard generated from a data file is the scratch directory that
+        // generated spec was written to: a file named by a relative path was
+        // then looked for underneath it, and the switch replaced the picture
+        // with the engine's refusal to query a file that is not there.
+        let dir = live.base_dir().map(std::path::Path::to_path_buf);
         self.activity.begin(Activity::EngineQuery);
         let rebuilt = LiveDashboard::load(spec, dir.as_deref()).and_then(|mut live| {
             live.set_viewport(viewport);
