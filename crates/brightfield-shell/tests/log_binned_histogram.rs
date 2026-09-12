@@ -241,6 +241,156 @@ fn a_log_axis_is_ticked_in_decades() {
 }
 
 // ---------------------------------------------------------------------------
+// Symlog: the same 37 observations, ticked and binned
+// ---------------------------------------------------------------------------
+
+/// The 37 raw observations `examples/rect-bin-count.yaml` and
+/// `examples/rect-bin-count-log.yaml` both hold, this time under `xScale:
+/// symlog` — the third scale offered over the same data, so a domain
+/// difference from the log document is the attribute doing something and not
+/// a different fixture. None of the 37 sit at or below zero, so this fixture
+/// is not where the domain's reach to zero is pinned —
+/// `log_drops_the_rows_at_or_below_zero_and_symlog_keeps_them`, above, is that
+/// half.
+const SYMLOG_37: &str = r#"
+data:
+  observations:
+    - { v: 1 }
+    - { v: 3 }
+    - { v: 4 }
+    - { v: 6 }
+    - { v: 7 }
+    - { v: 9 }
+    - { v: 11 }
+    - { v: 12 }
+    - { v: 12 }
+    - { v: 13 }
+    - { v: 14 }
+    - { v: 14 }
+    - { v: 15 }
+    - { v: 16 }
+    - { v: 16 }
+    - { v: 17 }
+    - { v: 17 }
+    - { v: 18 }
+    - { v: 19 }
+    - { v: 19 }
+    - { v: 21 }
+    - { v: 22 }
+    - { v: 23 }
+    - { v: 24 }
+    - { v: 26 }
+    - { v: 27 }
+    - { v: 29 }
+    - { v: 31 }
+    - { v: 34 }
+    - { v: 38 }
+    - { v: 42 }
+    - { v: 47 }
+    - { v: 53 }
+    - { v: 61 }
+    - { v: 72 }
+    - { v: 88 }
+    - { v: 97 }
+plot:
+  - mark: rectY
+    data: { from: observations }
+    x: { bin: v }
+    y: { count: }
+    fill: steelblue
+xScale: symlog
+width: 640
+height: 400
+"#;
+
+fn symlog_37_observations() -> PathBuf {
+    let path = scratch().join("rect-bin-count-symlog.yaml");
+    std::fs::write(&path, SYMLOG_37).expect("write fixture");
+    path
+}
+
+/// The bin space these 37 values snap their extent in is
+/// `sign(v) * ln(1 + |v|)` — natural log, the base `bin_space_expr`'s
+/// `ScaleType::Symlog` arm (`crates/brightfield-sql/src/lower.rs`) takes so it
+/// agrees with `symlog_of` (`crates/brightfield-render/src/scale.rs`). Snapped
+/// to a nice step in that space and mapped back, the low and high edges land
+/// on `e^0.6 - 1` and `e^4.6 - 1` — not round numbers, unlike the log
+/// document's edges, because nothing here asked for one.
+///
+/// Every bar in the picture stands on those two edges: the leftmost ink column
+/// is the scale's own low edge mapped through the scale, and the rightmost is
+/// the high edge, read the way `a_log_axis_bins_the_column_in_log_space` reads
+/// its log counterpart. A bin space rebased to `log10` snaps its nice step
+/// over a differently-scaled span and lands on different edges, which reddens
+/// the domain assertions here before the ink is ever measured.
+#[test]
+fn a_symlog_axis_bins_the_column_in_symlog_space() {
+    let (symlog, png) = compose_and_capture(&symlog_37_observations(), "symlog.png");
+
+    let symlog_x = x_scale(&symlog);
+    assert!(
+        matches!(symlog_x, Scale::Symlog { .. }),
+        "xScale: symlog must reach the drawn scale set, got {symlog_x:?}"
+    );
+    let (lo, hi) = (
+        symlog_x.domain_min().expect("lo"),
+        symlog_x.domain_max().expect("hi"),
+    );
+    assert!(
+        (lo - 0.822_118_800_390_509_1).abs() < 1e-6,
+        "the first bin's low edge is e^0.6 - 1 = 0.8221..., not {lo} — a bin \
+         space rebased to log10 snaps its nice step over a differently-scaled \
+         span and lands here instead"
+    );
+    assert!(
+        (hi - 98.484_315_641_933_86).abs() < 1e-6,
+        "the last bin's high edge is e^4.6 - 1 = 98.4843..., got {hi}"
+    );
+
+    let cols = column_heights(&png, STEELBLUE);
+    let first = cols.iter().position(|&h| h > 0).expect("some ink");
+    let last = cols.iter().rposition(|&h| h > 0).expect("some ink");
+    let (want_first, want_last) = (symlog_x.map_f64(lo), symlog_x.map_f64(hi));
+    assert!(
+        (first as f64 - want_first).abs() <= 2.0,
+        "the leftmost bar stands on the first bin edge: ink starts at column \
+         {first}, the scale puts the low edge at {want_first}"
+    );
+    assert!(
+        (last as f64 - want_last).abs() <= 2.0,
+        "the rightmost bar reaches the last bin edge: ink ends at column \
+         {last}, the scale puts the high edge at {want_last}"
+    );
+}
+
+/// A symlog axis over data whose domain stays clear of zero is ticked at the
+/// powers of ten inside it — the same decade ladder `log_tick_values` walks on
+/// its side of zero, built instead by `symlog_tick_values`
+/// (`crates/brightfield-render/src/axis.rs`), which also carries zero onto the
+/// axis when a domain reaches it. This domain — pinned by
+/// `a_symlog_axis_bins_the_column_in_symlog_space`, above — spans
+/// `[0.8221..., 98.4843...]`, which holds exactly two signed powers of ten and
+/// no zero.
+#[test]
+fn a_symlog_axis_is_ticked_at_the_signed_decades() {
+    let (symlog, _) = compose_and_capture(&symlog_37_observations(), "symlog-ticks.png");
+    let scale = x_scale(&symlog);
+    assert!(
+        matches!(scale, Scale::Symlog { .. }),
+        "xScale: symlog must reach the drawn scale set, got {scale:?}"
+    );
+    let ticks = brightfield_render::axis::compute_ticks(&scale, 10);
+    let labels: Vec<String> = ticks.iter().map(|t| t.label.clone()).collect();
+    assert_eq!(
+        labels,
+        vec!["1".to_string(), "10".to_string()],
+        "the domain holds two powers of ten and no zero; \
+         `symlog_tick_values` returning an empty set reddens here as no \
+         labels rather than this pair"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Rows at or below zero
 // ---------------------------------------------------------------------------
 
