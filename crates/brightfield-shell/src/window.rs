@@ -3934,6 +3934,12 @@ impl MeridianApp {
                             .then_some(GridDensity::Compact);
                         if transposed && stacked.is_some() {
                             charts.doc.grid_drawn = None;
+                        } else {
+                            // …and the rows the transposed layout drew are a
+                            // record of a pane this frame is not drawing. Left
+                            // standing they would report a layout the reader
+                            // has already switched away from.
+                            charts.doc.transposed_rows.clear();
                         }
                         if let Some(tiles) = stacked {
                             // The page's height floor, and the scroll that
@@ -7018,7 +7024,9 @@ fn draw_transposed_pane_group(
         second: rows_body,
         by: scroll,
         from_x,
-        split: crate::app::PaneSplit::Below,
+        split: crate::app::PaneSplit::Below {
+            lead: summaries,
+        },
     });
     let reserved = crate::legend::band_width(&charts.doc.composed);
     let laid = egui::Rect::from_min_size(
@@ -7087,8 +7095,12 @@ fn draw_transposed_pane_group(
 /// top and bottom — so the numbers move with the picture under a scroll
 /// instead of being laid out twice.
 ///
-/// A row scrolled clear of the pane is skipped rather than clipped to nothing,
-/// which is what keeps the record a list of the rows a reader can see.
+/// One cell per tiled column, whether or not the scroll has
+/// carried it past the pane's foot: the painter is clipped to the pane, so a
+/// row below the fold paints nothing, and the record reads as *where each
+/// column is* with [`ColumnBandDrawn::clip`](crate::column_header::ColumnBandDrawn)
+/// beside it saying how much of it reaches the reader — the standing the
+/// band's own cells are recorded on.
 fn draw_row_summaries(
     ui: &egui::Ui,
     charts: &ChartView,
@@ -7115,7 +7127,7 @@ fn draw_row_summaries(
             egui::pos2(rows_body.left(), tile.top()),
             egui::pos2(tile.left(), tile.bottom()),
         );
-        if cell.width() <= 0.0 || !rows_body.intersects(cell) {
+        if cell.width() <= 0.0 {
             continue;
         }
         drawn.push(crate::column_header::draw_column_band(

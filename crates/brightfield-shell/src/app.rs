@@ -218,7 +218,7 @@ pub struct PaneViews {
 /// and the same tiles laid as rows in the pane beneath it. They are one enum
 /// rather than two booleans because the placement rule and the containment
 /// rule have to agree, and an arrangement is the one thing both read.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PaneSplit {
     /// **Beside**: the second view is the column to the right of the first,
     /// drawing the same page at the same origin moved up by the scroll. The
@@ -227,8 +227,13 @@ pub enum PaneSplit {
     /// **Below**: the second view is the pane under the first, and the part of
     /// the page past [`PaneViews::from_x`] is drawn there — moved both across
     /// and up, so a column standing to the right of the hero on the page lands
-    /// at the leading edge of the pane below it.
-    Below,
+    /// `lead` points into the pane below it.
+    Below {
+        /// How far into the second view that part of the page is drawn, in
+        /// logical points — the width of whatever the pane draws beside it at
+        /// its leading edge, which for the transposed grid is a row's numbers.
+        lead: f32,
+    },
 }
 
 impl PaneViews {
@@ -266,15 +271,17 @@ impl PaneViews {
     ///
     /// Beside the first view that is the scroll and nothing else, which is
     /// what keeps a layout nobody transposed drawing the pixels it drew
-    /// before. Below it, the page's own point `(from_x, by)` is put at the
-    /// second view's origin: the tiles stand to the right of the hero on the
-    /// page and at the leading edge of the pane beneath it, and the scroll
-    /// moves them up from there.
+    /// before. Below it, the page's own point `(from_x, by)` is put `lead`
+    /// points into the second view: the tiles stand to the right of the hero
+    /// on the page and a row's numbers into the pane beneath it, and the
+    /// scroll moves them up from there.
     #[must_use]
     pub fn moved(self, page: egui::Rect) -> egui::Vec2 {
         match self.split {
             PaneSplit::Beside => egui::vec2(0.0, -self.by),
-            PaneSplit::Below => self.second.min - page.min - egui::vec2(self.from_x, self.by),
+            PaneSplit::Below { lead } => {
+                self.second.min - page.min - egui::vec2(self.from_x - lead, self.by)
+            }
         }
     }
 
