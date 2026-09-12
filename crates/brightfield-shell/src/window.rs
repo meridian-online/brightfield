@@ -1701,6 +1701,14 @@ pub struct MeridianApp {
     /// Zero until the column's tiles reach their height floor and the page
     /// grows past the pane — see [`crate::dashboard::stack_extent`].
     canvas_scroll: f32,
+    /// **Which way the grid pane draws the file** — its rows, or its columns
+    /// as rows. See [`crate::app::GridLayout`].
+    ///
+    /// Latched here rather than on the document for the reason
+    /// [`Self::canvas_holds`] is: it is a reader's choice, thrown by a control
+    /// on the pane's own header band, and no document records it. A file opens
+    /// on its rows.
+    grid_layout: crate::app::GridLayout,
     /// **What the canvas holds** — the graph, one view of one node, or a chart
     /// that is nobody's view.
     ///
@@ -2120,6 +2128,7 @@ impl MeridianApp {
             inspector_panel,
             canvas_panes: CanvasPanes::default(),
             canvas_scroll: 0.0,
+            grid_layout: crate::app::GridLayout::default(),
             // Reconciled from the documents on the next line, so the latch is
             // right before the first frame — a test that asks what a fresh
             // window holds should not have to draw one first.
@@ -2821,9 +2830,11 @@ impl MeridianApp {
     /// `a_wheel_over_the_column_moves_the_column_and_leaves_the_map_where_it_was`
     /// for what a frame answers. Which view a plot is in is read off the
     /// second view's own containment rule —
-    /// [`crate::app::PaneViews::second_holds`] — rather than off the plot's
-    /// index. A *pointer* is placed by
-    /// [`crate::app::PaneViews::offset_at`] instead, which is a rect test and
+    /// [`crate::app::PaneViews::second_draws`] — rather than off the plot's
+    /// index, and the placement through
+    /// [`crate::app::plot_window_rect`], which is the one expression the
+    /// chrome drawn on a tile is placed by as well. A *pointer* is placed by
+    /// [`crate::app::PaneViews::moved_at`] instead, which is a rect test and
     /// can answer that there is no page there at all; a plot below the fold is
     /// still the column's, and that difference is the reason there are two
     /// rules rather than one.
@@ -2838,22 +2849,7 @@ impl MeridianApp {
             .composed
             .plots
             .iter()
-            .map(|plot| {
-                #[allow(clippy::cast_possible_truncation)]
-                let at = egui::Rect::from_min_size(
-                    egui::pos2(
-                        page.left() + plot.rect.x as f32,
-                        page.top() + plot.rect.y as f32,
-                    ),
-                    egui::vec2(plot.rect.width as f32, plot.rect.height as f32),
-                );
-                match view {
-                    Some(view) if view.second_holds(at.center().x) => {
-                        at.translate(egui::vec2(0.0, -view.by))
-                    }
-                    _ => at,
-                }
-            })
+            .map(|plot| crate::app::plot_window_rect(page, view, plot))
             .collect()
     }
 
@@ -2867,6 +2863,13 @@ impl MeridianApp {
     #[must_use]
     pub const fn canvas_scroll(&self) -> f32 {
         self.canvas_scroll
+    }
+
+    /// **Which way the grid pane drew the file** in the last frame — the state
+    /// the switch on its header band is in.
+    #[must_use]
+    pub const fn grid_layout(&self) -> crate::app::GridLayout {
+        self.grid_layout
     }
 
     /// What the canvas's pane group drew in the last frame — the panes, their
@@ -3557,6 +3560,7 @@ impl MeridianApp {
             let mut strips = std::mem::take(&mut self.strips);
             let mut canvas_panes = CanvasPanes::default();
             let mut canvas_scroll = self.canvas_scroll;
+            let mut grid_layout = self.grid_layout;
             let mut picks = RegionPicks::default();
             let (ws, charts, protocol, affordances) = (
                 self.layout.workspace_mut(),
@@ -3920,7 +3924,17 @@ impl MeridianApp {
                         // all. Both are written every frame rather than once,
                         // so a document that moves from one to the other
                         // cannot draw the band the previous shape wanted.
-                        charts.doc.grid_density = stacked.is_some().then_some(GridDensity::Compact);
+                        //
+                        // Transposed there is no table under the band at all:
+                        // the pane draws the columns as rows, and a density
+                        // left standing would have the grid item paint a band
+                        // over them on the next frame it is asked for one.
+                        let transposed = grid_layout == crate::app::GridLayout::Columns;
+                        charts.doc.grid_density = (stacked.is_some() && !transposed)
+                            .then_some(GridDensity::Compact);
+                        if transposed && stacked.is_some() {
+                            charts.doc.grid_drawn = None;
+                        }
                         if let Some(tiles) = stacked {
                             // The page's height floor, and the scroll that
                             // buys it: the column's tiles do not compress past
@@ -3929,11 +3943,35 @@ impl MeridianApp {
                             // What the page gained is the column's alone — the
                             // hero is held at the room the pane has, through
                             // `ChartDoc::reflow_to`.
-                            let content_h = body.height()
-                                - chrome::header_band_height()
-                                - 2.0 * chrome::pane_content_inset()
-                                - chart_toolbar_band(&charts.doc.composed);
-                            let page_h = crate::dashboard::stack_extent(content_h, tiles);
+                            //
+                            // Transposed, the same rule at the other pane and
+                            // the other floor: the rows do not compress past
+                            // `MIN_ROW_HEIGHT`, the page is the taller of that
+                            // stack and the room the hero is composed in — the
+                            // two terms `reflow_to` takes a maximum of — and
+                            // the pane that scrolls it is the one beneath the
+                            // map.
+                            let inset = chrome::header_band_height()
+                                + 2.0 * chrome::pane_content_inset();
+                            let toolbar = chart_toolbar_band(&charts.doc.composed);
+                            let (floor, content_h, scrolls) = if transposed {
+                                let (map_rect, rows_rect) = transposed_pane_rects(body);
+                                let rows_room = rows_rect.height() - inset;
+                                (
+                                    crate::dashboard::row_stack_extent(rows_room, tiles)
+                                        .max(map_rect.height() - inset - toolbar),
+                                    rows_room,
+                                    rows_rect,
+                                )
+                            } else {
+                                let room = body.height() - inset - toolbar;
+                                (
+                                    crate::dashboard::stack_extent(room, tiles),
+                                    room,
+                                    canvas_pane_rects(body).columns,
+                                )
+                            };
+                            let page_h = floor;
                             charts.doc.set_min_page_height(page_h);
                             let reach = (page_h - content_h).max(0.0);
                             // **The wheel belongs to the pane under the
@@ -3941,8 +3979,7 @@ impl MeridianApp {
                             // scrolls the column, and the chart's own wheel
                             // zoom stands down for the frame; over the map it
                             // is the chart's, and the column does not move.
-                            let over_columns =
-                                ui.rect_contains_pointer(canvas_pane_rects(body).columns);
+                            let over_columns = ui.rect_contains_pointer(scrolls);
                             charts.doc.wheel_taken = over_columns;
                             // **A gesture holding a page origin pins the
                             // column.** A drag reads every frame's pointer
@@ -3964,18 +4001,44 @@ impl MeridianApp {
                             if !latched {
                                 canvas_scroll = (canvas_scroll - wheel).clamp(0.0, reach);
                             }
-                            canvas_panes = draw_canvas_pane_group(
-                                ui,
-                                body,
-                                charts,
-                                ws,
-                                item,
-                                mode,
-                                focused,
-                                canvas_scroll,
-                                &mut requests,
-                                affordances,
-                            );
+                            let (drawn, picked) = if transposed {
+                                draw_transposed_pane_group(
+                                    ui,
+                                    body,
+                                    charts,
+                                    ws,
+                                    item,
+                                    mode,
+                                    focused,
+                                    canvas_scroll,
+                                    &mut requests,
+                                    affordances,
+                                )
+                            } else {
+                                draw_canvas_pane_group(
+                                    ui,
+                                    body,
+                                    charts,
+                                    ws,
+                                    item,
+                                    mode,
+                                    focused,
+                                    canvas_scroll,
+                                    grid_layout,
+                                    &mut requests,
+                                    affordances,
+                                )
+                            };
+                            canvas_panes = drawn;
+                            // The throw takes effect on the next frame, and it
+                            // takes the scroll with it: the two arrangements
+                            // scroll different panes over different pages, so
+                            // a reach carried across would start the new one
+                            // part way down.
+                            if let Some(next) = picked.filter(|next| *next != grid_layout) {
+                                grid_layout = next;
+                                canvas_scroll = 0.0;
+                            }
                         } else {
                             charts.doc.set_min_page_height(0.0);
                             charts.doc.pane_views = None;
@@ -4002,6 +4065,7 @@ impl MeridianApp {
             self.strips = strips;
             self.canvas_panes = canvas_panes;
             self.canvas_scroll = canvas_scroll;
+            self.grid_layout = grid_layout;
             if let Some(next) = picks.projection {
                 self.projection = next;
             }
@@ -6465,13 +6529,7 @@ pub fn canvas_pane_rects(body: egui::Rect) -> CanvasPaneRects {
     // half a pixel into the gap. `the_pane_group_clips_the_page_to_the_panes_it_is_drawn_in`
     // reads that frame back off a capture and counts the rows it runs across.
     // Half a point either way is inside the tolerance the share is asserted at.
-    let split_y = crate::dashboard::MAP_COLUMN_SHARE
-        .mul_add(body.height(), body.top())
-        .round()
-        .clamp(
-            body.top() + 1.0,
-            (body.bottom() - 1.0).max(body.top() + 1.0),
-        );
+    let split_y = map_rows_split_y(body);
     let map = egui::Rect::from_min_max(body.min, egui::pos2(split, split_y));
     let rows = egui::Rect::from_min_max(
         egui::pos2(
@@ -6483,6 +6541,53 @@ pub fn canvas_pane_rects(body: egui::Rect) -> CanvasPaneRects {
     let columns =
         egui::Rect::from_min_max(egui::pos2(split + CANVAS_PANE_GAP, body.top()), body.max);
     CanvasPaneRects { map, rows, columns }
+}
+
+/// **Where the map pane's bottom frame falls** inside `body`, in window-space
+/// logical points — [`crate::dashboard::MAP_COLUMN_SHARE`] of the body's own
+/// height, and the grid pane takes what is under it.
+///
+/// Rounded to a whole logical point, because this edge is a pane's own bottom
+/// frame: a hairline stroked at a fractional y is antialiased across two
+/// device rows at neither's full strength, and the pane below it starts half a
+/// pixel into the gap. `the_pane_group_clips_the_page_to_the_panes_it_is_drawn_in`
+/// reads that frame back off a capture and counts the rows it runs across.
+/// Half a point either way is inside the tolerance the share is asserted at.
+///
+/// One function because the two arrangements share this edge: the columns
+/// pane standing beside them does not move it, which is what makes
+/// `switching_the_grid_back_restores_every_pane_rect` an assertion about the
+/// map and the grid rather than about arithmetic written twice.
+fn map_rows_split_y(body: egui::Rect) -> f32 {
+    crate::dashboard::MAP_COLUMN_SHARE
+        .mul_add(body.height(), body.top())
+        .round()
+        .clamp(
+            body.top() + 1.0,
+            (body.bottom() - 1.0).max(body.top() + 1.0),
+        )
+}
+
+/// The pane group's outer rects inside `body` **while the grid is
+/// transposed**: the map above, the grid beneath it, and no column pane.
+///
+/// The columns the pane beside them drew are the grid's rows now, so that pane
+/// has nothing to draw and is not drawn — and the two that are left take the
+/// width it leaves. The split between them is [`map_rows_split_y`], the same
+/// edge the three-pane arrangement uses, so throwing the switch moves one
+/// vertical edge and nothing else.
+#[must_use]
+pub fn transposed_pane_rects(body: egui::Rect) -> (egui::Rect, egui::Rect) {
+    let split_y = map_rows_split_y(body);
+    let map = egui::Rect::from_min_max(body.min, egui::pos2(body.right(), split_y));
+    let rows = egui::Rect::from_min_max(
+        egui::pos2(
+            body.left(),
+            (map.bottom() + CANVAS_PANE_GAP).min(body.bottom()),
+        ),
+        body.max,
+    );
+    (map, rows)
 }
 
 /// The map pane's title: the hero and the columns it draws.
@@ -6684,9 +6789,10 @@ fn draw_canvas_pane_group(
     mode: Mode,
     focused: Option<PaneKey>,
     scroll: f32,
+    layout: crate::app::GridLayout,
     requests: &mut Vec<Request>,
     affordances: &mut Vec<(PaneKey, egui::Rect)>,
-) -> CanvasPanes {
+) -> (CanvasPanes, Option<crate::app::GridLayout>) {
     let rects = canvas_pane_rects(body);
     let (map_rect, rows_rect, columns_rect) = (rects.map, rects.rows, rects.columns);
     let hero = charts.doc.tile_columns().first().cloned();
@@ -6707,16 +6813,8 @@ fn draw_canvas_pane_group(
         brightfield_keys::BindingContext::Workspace,
     );
 
-    let frame_of = |ui: &mut egui::Ui, rect: egui::Rect, subject: &Subject| {
-        let mut pane = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(rect)
-                .layout(egui::Layout::top_down(egui::Align::Min)),
-        );
-        chrome::pane_frame(&mut pane, subject, true, mode).max_rect()
-    };
-    let map_body = frame_of(ui, map_rect, &map_subject);
-    let columns_body = frame_of(ui, columns_rect, &columns_subject);
+    let map_body = pane_body(ui, map_rect, &map_subject, mode);
+    let columns_body = pane_body(ui, columns_rect, &columns_subject, mode);
     // The rows pane's frame comes after the page below, so its own fill and
     // header band are not painted over by the texture the group composes
     // across the union. What is settled here is that it is drawn: the page's
@@ -6735,6 +6833,11 @@ fn draw_canvas_pane_group(
         first: map_body,
         second: columns_body,
         by: scroll,
+        // The page's first view is as wide as the hero, by the arithmetic
+        // `canvas_pane_rects` and `HERO_GUTTER` make true together: what is
+        // past it across is the column's, wherever the column is drawn.
+        from_x: map_body.width(),
+        split: crate::app::PaneSplit::Beside,
     });
     draw_chart_body(
         ui,
@@ -6752,25 +6855,11 @@ fn draw_canvas_pane_group(
     // The chip goes inside the hero's own frame, which is why this waits for
     // the page to have been drawn: the data area is a fact about the
     // composition's layout and the origin it landed at.
-    let hero_empty = charts
-        .doc
-        .composed
-        .plots
-        .first()
-        .is_some_and(|p| p.navigated_empty);
-    let (count_text, count) = match count_overlay_text(hero.as_ref(), hero_empty)
-        .zip(hero_data_area(&charts.doc, map_body))
-    {
-        Some((text, within)) => (
-            Some(text.clone()),
-            Some(count_overlay(ui, within, &text, mode)),
-        ),
-        None => (None, None),
-    };
+    let (count_text, count) = hero_count_chip(ui, charts, map_body, hero.as_ref(), mode);
 
     // The rows: the same session read as rows rather than as marks, in a pane
     // of its own under the map.
-    let rows_body = frame_of(ui, rows_rect, &rows_subject);
+    let rows_body = pane_body(ui, rows_rect, &rows_subject, mode);
     draw_chart_body(
         ui,
         rows_body,
@@ -6783,21 +6872,24 @@ fn draw_canvas_pane_group(
         requests,
         affordances,
     );
-    // …and what the grid could not fit, said at the trailing end of that
-    // pane's own header band. Read off the cells the table drew — this frame's
-    // — rather than off the widths it was handed.
+    // The layout switch, at the trailing end of that pane's own band…
     let rows_header = pane_header_of(rows_rect, rows_body);
+    let picked = record_layout_switch(ui, charts, rows_header, layout, mode);
+    // …and what the grid could not fit, inside what the control leaves of the
+    // band. Read off the cells the table drew — this frame's — rather than off
+    // the widths it was handed.
     let rows_note = charts
         .doc
         .grid_drawn
         .as_ref()
         .filter(|drawn| drawn.some_column_is_off_screen())
-        .map(|drawn| {
-            let text = format!("{} of {} columns", drawn.on_screen(), drawn.columns);
-            (band_note(ui, rows_header, &text, mode), text)
+        .map(|drawn| format!("{} of {} columns", drawn.on_screen(), drawn.columns))
+        .map(|text| {
+            let band = band_less_switch(rows_header, charts.doc.grid_layout_switch.as_ref());
+            (band_note(ui, band, &text, mode), text)
         });
 
-    CanvasPanes {
+    let panes = CanvasPanes {
         panes: vec![
             CanvasPane {
                 name: "map",
@@ -6822,10 +6914,278 @@ fn draw_canvas_pane_group(
         count_text,
         rows_note,
         page: charts.doc.raster_rect,
+    };
+    (panes, picked)
+}
+
+/// **The count chip inside the hero's own frame**, as the text it says and the
+/// box it took — `(None, None)` for a document with no hero column, and for a
+/// frame whose composition placed no hero to read a data area off.
+///
+/// Drawn after the page, in both arrangements of the pane group, because the
+/// data area is a fact about the composition's layout and the origin it landed
+/// at.
+fn hero_count_chip(
+    ui: &egui::Ui,
+    charts: &ChartView,
+    map_body: egui::Rect,
+    hero: Option<&crate::one_step::ColumnFacts>,
+    mode: Mode,
+) -> (Option<String>, Option<egui::Rect>) {
+    let hero_empty = charts
+        .doc
+        .composed
+        .plots
+        .first()
+        .is_some_and(|p| p.navigated_empty);
+    match count_overlay_text(hero, hero_empty).zip(hero_data_area(&charts.doc, map_body)) {
+        Some((text, within)) => (
+            Some(text.clone()),
+            Some(count_overlay(ui, within, &text, mode)),
+        ),
+        None => (None, None),
     }
 }
 
-/// The header band a pane actually drew, derived from the content rect
+/// **The canvas with the grid transposed**: the hero above, and beneath it one
+/// row per tiled column carrying that column's own histogram and the numbers
+/// the full band states.
+///
+/// # One page, two panes, and no third
+///
+/// The same composition the three-pane arrangement draws — one session, one
+/// selection, one texture — read through a [`crate::app::PaneViews`] whose
+/// second view is the pane **below** rather than the column beside. The tiles
+/// stand to the right of the hero on the page, as they do in the source the
+/// generator emitted, and the second view puts that part of the page at the
+/// grid pane's leading edge. So a row's histogram is the tile: its brush, its
+/// ghost and its scale switch are the ones the column drew, moved, and nothing
+/// about them is re-implemented here.
+///
+/// # What the page is asked for
+///
+/// Two numbers, both written before the body is drawn because
+/// [`crate::app::ChartDoc::reflow_to`] reads them on its way past. The hero is
+/// declared as wide as the map pane, which has the width the column pane left;
+/// each tile is declared as wide as a row's summaries leave it
+/// ([`crate::dashboard::ROW_SUMMARY_SHARE`]). The box offered is the two and
+/// the gutter together, so the constrained `hconcat` shares its residual out
+/// at exactly that split rather than at [`crate::dashboard::HERO_SHARE`].
+///
+/// The box is **wider than the canvas**, and the clip is not: the page reaches
+/// past the map pane's right edge by a row's worth of histogram, which is the
+/// part the pane below draws. `clip` is the two panes' union, so nothing is
+/// painted outside them however wide the box is.
+#[allow(clippy::too_many_arguments)]
+fn draw_transposed_pane_group(
+    ui: &mut egui::Ui,
+    body: egui::Rect,
+    charts: &mut ChartView,
+    ws: &Workspace,
+    item: ItemId,
+    mode: Mode,
+    focused: Option<PaneKey>,
+    scroll: f32,
+    requests: &mut Vec<Request>,
+    affordances: &mut Vec<(PaneKey, egui::Rect)>,
+) -> (CanvasPanes, Option<crate::app::GridLayout>) {
+    let (map_rect, rows_rect) = transposed_pane_rects(body);
+    let hero = charts.doc.tile_columns().first().cloned();
+    let map_subject = Subject::new(
+        map_pane_title(hero.as_ref()),
+        subject_icon(hero.as_ref()),
+        brightfield_keys::BindingContext::Workspace,
+    );
+    let rows_subject = Subject::new(
+        ROWS_PANE_TITLE.to_string(),
+        brightfield_workbench::subject::Icon("table"),
+        brightfield_keys::BindingContext::Workspace,
+    );
+    let map_body = pane_body(ui, map_rect, &map_subject, mode);
+    // Framed before the page rather than after it, which is the opposite of
+    // the three-pane arrangement's order and for the same reason: this pane
+    // draws part of the page, so its fill and its header band have to be down
+    // before the texture lands on them.
+    let rows_body = pane_body(ui, rows_rect, &rows_subject, mode);
+
+    let summaries = (rows_body.width() * crate::dashboard::ROW_SUMMARY_SHARE).floor();
+    let tile_width = (rows_body.width() - summaries).max(1.0);
+    charts.doc.set_page_widths(map_body.width(), tile_width);
+    let gutter = f32::from(u16::try_from(crate::dashboard::HERO_GUTTER).unwrap_or(u16::MAX));
+    let from_x = map_body.width() + gutter;
+    charts.doc.pane_views = Some(crate::app::PaneViews {
+        first: map_body,
+        second: rows_body,
+        by: scroll,
+        from_x,
+        split: crate::app::PaneSplit::Below,
+    });
+    let reserved = crate::legend::band_width(&charts.doc.composed);
+    let laid = egui::Rect::from_min_size(
+        map_body.min,
+        egui::vec2(from_x + tile_width + reserved, map_body.height()),
+    );
+    draw_chart_body(
+        ui,
+        laid,
+        map_body.union(rows_body),
+        charts,
+        ws,
+        item,
+        mode,
+        focused,
+        requests,
+        affordances,
+    );
+    let (count_text, count) = hero_count_chip(ui, charts, map_body, hero.as_ref(), mode);
+    charts.doc.transposed_rows = draw_row_summaries(ui, charts, rows_body, mode);
+
+    let rows_header = pane_header_of(rows_rect, rows_body);
+    let picked = record_layout_switch(
+        ui,
+        charts,
+        rows_header,
+        crate::app::GridLayout::Columns,
+        mode,
+    );
+    let panes = CanvasPanes {
+        panes: vec![
+            CanvasPane {
+                name: "map",
+                rect: map_rect,
+                header: pane_header_of(map_rect, map_body),
+                body: map_body,
+            },
+            CanvasPane {
+                name: "rows",
+                rect: rows_rect,
+                header: rows_header,
+                body: rows_body,
+            },
+        ],
+        count,
+        count_text,
+        // No table is drawn across, so there is no count of the columns that
+        // fit in it to state. The switch stands at that end of the band
+        // instead.
+        rows_note: None,
+        page: charts.doc.raster_rect,
+    };
+    (panes, picked)
+}
+
+/// **The numbers beside each transposed row**, drawn and reported in tile
+/// order — one cell per tile column, the map's pair excluded as it is from the
+/// column beside the hero.
+///
+/// Each cell is the band's own painter at
+/// [`GridDensity::Row`](crate::column_header::GridDensity::Row), so the leaf,
+/// the storage type, the validity counts, the range and the statistics are the
+/// ones the full band states and no second formatting of them exists. The box
+/// it paints into is derived from the tile's **drawn** rect — the pane's
+/// leading edge across to where the histogram starts, at the histogram's own
+/// top and bottom — so the numbers move with the picture under a scroll
+/// instead of being laid out twice.
+///
+/// A row scrolled clear of the pane is skipped rather than clipped to nothing,
+/// which is what keeps the record a list of the rows a reader can see.
+fn draw_row_summaries(
+    ui: &egui::Ui,
+    charts: &ChartView,
+    rows_body: egui::Rect,
+    mode: Mode,
+) -> Vec<crate::column_header::ColumnBandDrawn> {
+    let Some(page) = charts.doc.raster_rect else {
+        return Vec::new();
+    };
+    let views = charts.doc.pane_views;
+    let frame = crate::column_header::column_header_frame(
+        crate::column_header::GridDensity::Row,
+        mode,
+    );
+    let facts = charts.doc.column_facts();
+    let painter = ui.painter().with_clip_rect(rows_body);
+    let mut drawn = Vec::new();
+    for (i, column) in charts.doc.tile_columns().iter().enumerate().skip(1) {
+        let Some(plot) = charts.doc.composed.plots.get(i) else {
+            continue;
+        };
+        let tile = crate::app::plot_window_rect(page, views, plot);
+        let cell = egui::Rect::from_min_max(
+            egui::pos2(rows_body.left(), tile.top()),
+            egui::pos2(tile.left(), tile.bottom()),
+        );
+        if cell.width() <= 0.0 || !rows_body.intersects(cell) {
+            continue;
+        }
+        drawn.push(crate::column_header::draw_column_band(
+            &painter,
+            cell,
+            i,
+            column,
+            facts.tint_index(column),
+            &frame,
+        ));
+    }
+    drawn
+}
+
+/// **One pane's frame, and the content rect it leaves** — the group's three
+/// panes and the two of the transposed arrangement are drawn through this one
+/// call, so a pane cannot acquire a frame the others do not have.
+fn pane_body(ui: &mut egui::Ui, rect: egui::Rect, subject: &Subject, mode: Mode) -> egui::Rect {
+    let mut pane = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    chrome::pane_frame(&mut pane, subject, true, mode).max_rect()
+}
+
+/// Draw the grid pane's layout switch on `band`, record it on the document and
+/// hand back the state a click picked this frame.
+///
+/// Recorded here rather than by the caller so the drawn record and the paint
+/// are one statement — [`crate::app::LayoutSwitchDrawn`] — and written on
+/// every frame the pane group draws, in either arrangement: a rect left
+/// standing from a previous frame aims a click at a control that has moved.
+fn record_layout_switch(
+    ui: &mut egui::Ui,
+    charts: &mut ChartView,
+    band: egui::Rect,
+    layout: crate::app::GridLayout,
+    mode: Mode,
+) -> Option<crate::app::GridLayout> {
+    let drawn = draw_layout_switch(ui, band, layout, mode);
+    let picked = drawn.as_ref().and_then(|(_, picked)| *picked);
+    charts.doc.grid_layout_switch = drawn.map(|(record, _)| record);
+    picked
+}
+
+/// What is left of a header band once the layout switch has taken its trailing
+/// end — the box [`band_note`] paints its readout into.
+///
+/// The note is right-aligned and the control stands where it used to start, so
+/// without this the two are drawn into one place. `no_two_texts_are_drawn_into_one_place`
+/// is the exercise that measures that class; this is the seam that keeps the
+/// band out of it.
+fn band_less_switch(
+    band: egui::Rect,
+    switch: Option<&crate::app::LayoutSwitchDrawn>,
+) -> egui::Rect {
+    match switch {
+        Some(drawn) => egui::Rect::from_min_max(
+            band.min,
+            egui::pos2(
+                (drawn.rect.left() - spacing::SPACE_3).max(band.left()),
+                band.bottom(),
+            ),
+        ),
+        None => band,
+    }
+}
+
+/// The header band a pane actually drew, derived from the content rect/// The header band a pane actually drew, derived from the content rect
 /// [`brightfield_workbench::chrome::pane_frame`] handed back rather than from
 /// the height it would have used.
 ///
@@ -6951,6 +7311,131 @@ fn band_note(ui: &egui::Ui, band: egui::Rect, text: &str, mode: Mode) -> egui::R
     );
     ui.painter().galley(at, galley, ink);
     egui::Rect::from_min_size(at, size)
+}
+
+/// The two states the grid pane's layout switch offers, in the order they are
+/// drawn — the one a file opens on first.
+const GRID_LAYOUTS: [crate::app::GridLayout; 2] =
+    [crate::app::GridLayout::Rows, crate::app::GridLayout::Columns];
+
+/// What stands between the two words. The scale switch's own separator, so two
+/// controls a reader meets on one screen read as one kind of control.
+const LAYOUT_STATE_SEPARATOR: &str = "\u{b7}";
+
+/// The words the switch offers on hover: what the pane draws either way.
+///
+/// It says what the control does rather than what it is, because *rows* and
+/// *columns* are the words on the band and a tooltip repeating them tells a
+/// stranger nothing they can act on. `the_layout_switch_names_itself_on_hover`
+/// reads this string back off the drawn record.
+fn layout_switch_hover() -> String {
+    "grid: the file's rows, or its columns as rows".to_string()
+}
+
+/// **Draw the grid pane's layout switch on its header band and return what it
+/// drew**, plus the state the pointer picked on this frame.
+///
+/// [`draw_scale_switch`](crate::chart_item)'s shape at the band: the rects
+/// handed to the painter and to the hit test are the rects recorded, out of
+/// one expression each, so a scripted click aimed at the record lands where a
+/// reader would press. `band` is the pane's own header band —
+/// [`pane_header_of`] — and the control takes its trailing end, which is where
+/// [`band_note`] would otherwise start; the note is drawn inside what this
+/// leaves.
+///
+/// `None` where the band is too short to hold the control, which is a band
+/// drawn at no height at all: a pane whose frame drew no header.
+fn draw_layout_switch(
+    ui: &mut egui::Ui,
+    band: egui::Rect,
+    active: crate::app::GridLayout,
+    mode: Mode,
+) -> Option<(crate::app::LayoutSwitchDrawn, Option<crate::app::GridLayout>)> {
+    use meridian_design::control;
+
+    let sem = semantic(mode.is_dark());
+    let font = ui_font();
+    let gap = spacing::SPACE_1;
+    let painter = ui.painter().clone();
+    let width_of = |text: &str| {
+        painter
+            .layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::PLACEHOLDER)
+            .size()
+            .x
+    };
+    let labels: Vec<&str> = GRID_LAYOUTS.iter().map(|l| l.word()).collect();
+    let separator = width_of(LAYOUT_STATE_SEPARATOR);
+    let widths: Vec<f32> = labels.iter().map(|l| width_of(l)).collect();
+    #[allow(clippy::cast_precision_loss)]
+    let states_less_one = (labels.len() - 1) as f32;
+    let total = widths.iter().sum::<f32>() + (separator + gap * 2.0) * states_less_one;
+    let height = control::HEIGHT_XS.min(band.height());
+    if total + spacing::SPACE_4 > band.width() || band.height() <= 0.0 {
+        return None;
+    }
+    let outer = egui::Rect::from_min_size(
+        egui::pos2(
+            band.right() - spacing::SPACE_4 - total,
+            band.center().y - height / 2.0,
+        ),
+        egui::vec2(total, height),
+    );
+
+    let hover = layout_switch_hover();
+    let mut states = Vec::with_capacity(labels.len());
+    let mut picked = None;
+    let mut x = outer.left();
+    for (i, label) in labels.iter().enumerate() {
+        if i > 0 {
+            painter.text(
+                egui::pos2(x + gap + separator / 2.0, outer.center().y),
+                egui::Align2::CENTER_CENTER,
+                LAYOUT_STATE_SEPARATOR,
+                font.clone(),
+                chrome::colour(sem.text.placeholder),
+            );
+            x += gap * 2.0 + separator;
+        }
+        let seg =
+            egui::Rect::from_min_size(egui::pos2(x, outer.top()), egui::vec2(widths[i], height));
+        x += widths[i];
+        let state = GRID_LAYOUTS[i];
+        let response = ui
+            .interact(
+                seg,
+                egui::Id::new(("grid-layout-switch", i)),
+                egui::Sense::click(),
+            )
+            .on_hover_text(hover.clone());
+        if response.clicked() {
+            picked = Some(state);
+        }
+        let ink = if state == active {
+            sem.text.primary
+        } else if response.hovered() {
+            sem.text.secondary
+        } else {
+            sem.text.muted
+        };
+        painter.text(
+            seg.center(),
+            egui::Align2::CENTER_CENTER,
+            *label,
+            font.clone(),
+            chrome::colour(ink),
+        );
+        states.push((state, seg));
+    }
+
+    Some((
+        crate::app::LayoutSwitchDrawn {
+            rect: outer,
+            states,
+            active,
+            hover,
+        },
+        picked,
+    ))
 }
 
 /// The icon the map pane's header carries: the point-map kind's own for a

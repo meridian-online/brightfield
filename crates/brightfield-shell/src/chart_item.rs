@@ -281,7 +281,7 @@ struct Drag {
     /// long as the button is down: the sweep is the difference between them,
     /// and a difference across two origins is not a distance. See
     /// `a_brush_across_the_pane_boundary_commits_what_it_swept`.
-    by: f32,
+    by: egui::Vec2,
     /// **This is a move, not a draw** — `Some` with the committed rectangle
     /// as it stood at the press edge, raster-local and in the same origin as
     /// [`Self::start`], when the press landed inside it. `None` starts an
@@ -329,7 +329,7 @@ struct Pan {
     /// Where the pointer was last frame, in the latched origin.
     last: kurbo::Point,
     /// The offset [`crate::app::page_offset`] answered at the press edge.
-    by: f32,
+    by: egui::Vec2,
 }
 
 /// The chart pane. See the module docs for what this one type replaces.
@@ -458,10 +458,10 @@ impl ChartItem {
         // read its docs for why a frame and a gesture answer differently.
         let at = ctx.input(|i| i.pointer.hover_pos());
         let views = doc.pane_views;
-        let page_of = |latched: Option<f32>| {
-            crate::app::page_offset(views, latched, at).map(|by| page_at(raster, by))
+        let page_of = |latched: Option<egui::Vec2>| {
+            crate::app::page_offset(views, raster, latched, at).map(|by| page_at(raster, by))
         };
-        let frame_by = crate::app::page_offset(views, None, at);
+        let frame_by = crate::app::page_offset(views, raster, None, at);
         let frame_page = page_of(None);
         let drag_page = page_of(self.drag.map(|d| d.by));
         let pan_page = page_of(self.pan.map(|p| p.by));
@@ -887,7 +887,7 @@ fn hover_readout(ctx: &egui::Context, readout: &HoverReadout, mode: Mode) {
         });
 }
 
-/// `raster` moved up by `by` — the page as the view with that offset draws it.
+/// `raster` moved by `by` — the page as the view with that translation draws it.
 ///
 /// A page drawn in two views has two origins, and a pointer position is only
 /// meaningful against the one it is read in: against the wrong one, a press on
@@ -895,8 +895,8 @@ fn hover_readout(ctx: &egui::Context, readout: &HoverReadout, mode: Mode) {
 /// brush filtering a column the reader did not touch
 /// (`a_brush_on_a_scrolled_tile_lands_on_the_tile_under_the_pointer`). Which
 /// offset applies is [`crate::app::page_offset`]'s answer.
-fn page_at(raster: egui::Rect, by: f32) -> egui::Rect {
-    raster.translate(egui::vec2(0.0, -by))
+fn page_at(raster: egui::Rect, by: egui::Vec2) -> egui::Rect {
+    raster.translate(by)
 }
 
 /// A window-space point in page-local logical pixels, or `None` when it is off
@@ -1242,7 +1242,7 @@ impl Item<ChartDoc> for ChartItem {
                 if let Some(texture) = doc.canvas_texture() {
                     ui.painter().with_clip_rect(view.second).image(
                         texture,
-                        rect.translate(egui::vec2(0.0, -view.by)),
+                        rect.translate(view.moved(rect)),
                         egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
                         egui::Color32::WHITE,
                     );
@@ -1598,8 +1598,10 @@ fn draw_scale_switches(
             continue;
         };
         let tile = crate::app::plot_window_rect(page, views, plot);
+        #[allow(clippy::cast_possible_truncation)]
+        let centre = (plot.rect.x + plot.rect.width / 2.0) as f32;
         let clip = match views {
-            Some(view) if view.second_holds(tile.center().x) => view.second,
+            Some(view) if view.second_draws(centre) => view.second,
             Some(view) => view.first,
             None => laid,
         };

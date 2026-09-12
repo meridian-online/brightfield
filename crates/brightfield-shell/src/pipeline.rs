@@ -47,7 +47,7 @@ use brightfield_render::{grow_margins, resolve_titles};
 use brightfield_spec::analysis::{
     analyse_spec, build_brushable_bindings, BrushKind, ComponentPath,
 };
-use brightfield_spec::ast::{Component, MarkData, ParamNode, SpaceNode, SpecValue};
+use brightfield_spec::ast::{Component, MarkData, ParamNode, PlotNode, SpaceNode, SpecValue};
 use brightfield_spec::layout::{
     collect_plot_nodes, placed_plots, resolve_fixed_domains, resolve_plot_insets, Rect,
 };
@@ -1158,6 +1158,47 @@ impl LiveDashboard {
         true
     }
 
+    /// Declare the hero `hero` points wide and each stacked tile `tile` points
+    /// wide, and say whether that is news — the [`LiveDashboard::set_viewport`]
+    /// shape, for the same reason and on the same frame.
+    ///
+    /// A constrained `hconcat` shares its residual out in proportion to its
+    /// items' declared widths, so these two numbers are the split of the page
+    /// between the hero and the column beside it. The emitted spec's own pair
+    /// puts the hero at [`crate::dashboard::HERO_SHARE`] of the page; the
+    /// transposed layout writes a different pair, because there the hero fills
+    /// a pane the column has left and the column is as wide as a row's
+    /// summaries leave it.
+    ///
+    /// **Numeric, not structural**: the value already there is read through
+    /// the same two arms the layout reads it through, so a spec that declares
+    /// `width: 620` as an integer is not rewritten as a float it agrees with,
+    /// and a frame that asks for the width already declared is not news. A
+    /// re-present per frame is what that would cost.
+    ///
+    /// `false`, and no write, for a spec whose root is not the shape
+    /// [`crate::dashboard::Dashboard::to_spec`] emits — as
+    /// [`Self::set_hero_bound`].
+    pub fn set_page_widths(&mut self, hero: f64, tile: f64) -> bool {
+        let Some(Component::HConcat(row)) = self.spec.root.as_mut() else {
+            return false;
+        };
+        let mut news = false;
+        if let Some(Component::VConcat(column)) = row.items.first_mut() {
+            if let Some(Component::Plot(plot)) = column.items.first_mut() {
+                news |= set_declared_width(plot, hero);
+            }
+        }
+        if let Some(Component::VConcat(column)) = row.items.last_mut() {
+            for item in &mut column.items {
+                if let Component::Plot(plot) = item {
+                    news |= set_declared_width(plot, tile);
+                }
+            }
+        }
+        news
+    }
+
     /// Composite the CURRENT materialisation into a dashboard scene — the first
     /// paint and every post-interaction re-paint go through here.
     ///
@@ -1584,6 +1625,28 @@ impl LiveDashboard {
 /// shape is matched here rather than a marker being written into the emitted
 /// source, because a spec is a file a reader edits and a magic comment they
 /// could delete would take the map's axis with it.
+/// Write `points` as a plot's declared width, and say whether that changed
+/// anything — the numeric comparison [`LiveDashboard::set_page_widths`] needs.
+///
+/// The two arms are the layout's own: `brightfield_spec::layout` reads a
+/// declared width as an integer or as a float and defaults where it is
+/// neither, so a comparison that tested the `SpecValue` for equality would
+/// call an unchanged 620 news on the frame after the first write.
+fn set_declared_width(plot: &mut PlotNode, points: f64) -> bool {
+    let current = match plot.attributes.get("width") {
+        #[allow(clippy::cast_precision_loss)]
+        Some(SpecValue::Integer(n)) => Some(*n as f64),
+        Some(SpecValue::Float(f)) => Some(*f),
+        _ => None,
+    };
+    if current == Some(points) {
+        return false;
+    }
+    plot.attributes
+        .insert("width".to_string(), SpecValue::Float(points));
+    true
+}
+
 fn hero_bound_spacer(spec: &mut Spec) -> Option<&mut SpaceNode> {
     let Some(Component::HConcat(row)) = spec.root.as_mut() else {
         return None;

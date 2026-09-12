@@ -65,14 +65,31 @@ pub enum GridDensity {
     /// finetype leaf and the storage type, a bar distribution in place of the
     /// rug, and the statistics.
     Full,
+    /// **Beside a transposed row's own histogram**: everything [`Self::Full`]
+    /// states, in a box as wide as the numbers need and as tall as one row,
+    /// and no picture of its own.
+    ///
+    /// The picture is the tile the row is laid out around — the composed
+    /// page's plot, at the row's height — so a distribution drawn here would
+    /// be the same column's shape at a second fidelity, which is the thing
+    /// the transposed layout exists to stop. [`ColumnHeaderFrame::plot_row`]
+    /// is zero for this density and [`draw_column_band`] draws neither bars
+    /// nor rug, which is what makes that true of the paint rather than of the
+    /// prose.
+    Row,
 }
 
 impl GridDensity {
     /// Whether this density states the leaf, the storage type and the
     /// statistics.
+    ///
+    /// True of [`Self::Row`] as well as of [`Self::Full`]: a transposed row
+    /// states the same facts a full band cell does. What separates them is
+    /// the picture, and that is [`ColumnHeaderFrame::plot_row`]'s answer
+    /// rather than this one.
     #[must_use]
     pub const fn is_full(self) -> bool {
-        matches!(self, Self::Full)
+        matches!(self, Self::Full | Self::Row)
     }
 }
 
@@ -314,13 +331,14 @@ impl ColumnHeaderFrame {
     }
 
     /// The row the picture of the distribution is drawn in: the rug's at the
-    /// compact density, the bar chart's at the full one.
+    /// compact density, the bar chart's at the full one, and **none** beside
+    /// a transposed row, whose picture is the tile it is laid out against.
     #[must_use]
     pub const fn plot_row(&self) -> f32 {
-        if self.density.is_full() {
-            DISTRIBUTION_ROW
-        } else {
-            RUG_ROW
+        match self.density {
+            GridDensity::Full => DISTRIBUTION_ROW,
+            GridDensity::Compact => RUG_ROW,
+            GridDensity::Row => 0.0,
         }
     }
 
@@ -845,7 +863,11 @@ pub fn draw_column_band(
     let mut bars = Vec::new();
     let mut rug = None;
     let mut rug_alphas = Vec::new();
-    if frame.density.is_full() {
+    if frame.plot_row() <= 0.0 {
+        // A density that reserves no plot row draws no picture and no rule
+        // under one — [`GridDensity::Row`], whose column is pictured by the
+        // tile beside this cell rather than in it.
+    } else if frame.density.is_full() {
         if let Some(moments) = facts.moments.as_ref() {
             bars = draw_bars(painter, plot, moments, frame);
         }
