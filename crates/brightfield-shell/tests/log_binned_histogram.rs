@@ -363,8 +363,8 @@ fn a_symlog_axis_bins_the_column_in_symlog_space() {
     );
 }
 
-/// A symlog axis over data that never reaches zero is ticked at the powers of
-/// ten inside its domain — the same decade ladder `log_tick_values` walks on
+/// A symlog axis over data whose domain stays clear of zero is ticked at the
+/// powers of ten inside it — the same decade ladder `log_tick_values` walks on
 /// its side of zero, built instead by `symlog_tick_values`
 /// (`crates/brightfield-render/src/axis.rs`), which also carries zero onto the
 /// axis when a domain reaches it. This domain — pinned by
