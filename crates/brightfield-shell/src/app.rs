@@ -313,10 +313,7 @@ pub fn page_offset(
 ///
 /// Written as a function so a surface that draws chrome ON a tile and a test
 /// that reads a tile's box back are asking one question. The other reader is
-/// [`crate::window::MeridianApp::composed_plot_rects`], which is the test hook;
-/// `every_histogram_tile_carries_a_scale_switch_inside_its_own_box` holds the
-/// two together by asserting containment across them, so the pair drifting
-/// apart reddens.
+/// [`crate::window::MeridianApp::composed_plot_rects`], which is the test hook.
 #[must_use]
 #[allow(clippy::cast_possible_truncation)]
 pub fn plot_window_rect(
@@ -929,9 +926,7 @@ impl ChartDoc {
     /// presents, because they are facts about the window this page is drawn in
     /// and the edit did not change the window. The engine session does not
     /// survive: a committed selection is dropped, because the reload builds a
-    /// fresh coordinator. Today the switch is thrown before a brush is swept,
-    /// which is the order
-    /// `a_brush_on_another_tile_narrows_the_log_tile_on_its_own_bins` drives.
+    /// fresh coordinator. Today the switch is thrown before a brush is swept.
     ///
     /// Returns whether the picture changed. `false` — with the previous page
     /// standing, the way a refused gesture leaves it — for a document with no
