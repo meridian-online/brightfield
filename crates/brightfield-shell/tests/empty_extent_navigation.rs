@@ -25,6 +25,7 @@
 //! `a_secondary_button_drag_pans_and_queries_on_release` already drives), and
 //! a real primary-button click for the tile-select assertion.
 
+use brightfield_shell::app::GridLayout;
 use brightfield_shell::design::Mode;
 use brightfield_shell::window::{Boot, MeridianApp};
 
@@ -73,6 +74,51 @@ fn button(pos: egui::Pos2, button: egui::PointerButton, pressed: bool) -> egui::
         pressed,
         modifiers: egui::Modifiers::default(),
     }
+}
+
+/// **Throw the layout switch on the grid pane's header band to its columns
+/// state**, and settle.
+///
+/// A tiled column's own picture is on screen only with the grid transposed:
+/// untransposed the grid pane draws a table and each column's distribution is
+/// a rug in its header band, so a press aimed at a tile has no tile to land
+/// on. `tests/navigator_spine.rs` and `tests/hover_readout.rs` carry the same
+/// helper, each in the shape its own file uses.
+///
+/// Aimed at the rect the frame recorded for the control, and the state is read
+/// back: a miss would leave the press below landing on the table instead.
+fn transpose_the_grid(app: &mut MeridianApp, ctx: &egui::Context) {
+    let at = app
+        .chart_doc()
+        .grid_layout_switch
+        .as_ref()
+        .expect("the grid pane's header band drew a layout switch")
+        .states
+        .iter()
+        .find(|(state, _)| *state == GridLayout::Columns)
+        .expect("the switch offers a columns state")
+        .1
+        .center();
+    frame(app, ctx, vec![egui::Event::PointerMoved(at)]);
+    frame(
+        app,
+        ctx,
+        vec![button(at, egui::PointerButton::Primary, true)],
+    );
+    frame(
+        app,
+        ctx,
+        vec![button(at, egui::PointerButton::Primary, false)],
+    );
+    for _ in 0..3 {
+        frame(app, ctx, Vec::new());
+    }
+    assert_eq!(
+        app.grid_layout(),
+        GridLayout::Columns,
+        "the click at {at:?} did not throw the switch, so the tile the press \
+         below aims at is not on screen"
+    );
 }
 
 /// A point inside plot `index`'s own DATA area, at `fx` and `fy` of its
@@ -199,6 +245,9 @@ fn a_navigated_map_with_no_data_beneath_it_stays_placed() {
          should say zero points, not the file's own static total"
     );
 
+    // Thrown here rather than at the open, so the pans above happen in the
+    // layout the hero is read in and only the press below needs the tile.
+    transpose_the_grid(&mut app, &ctx);
     let top_tile = plot_data_point(&app, 1, 0.5, 0.5);
     frame(
         &mut app,

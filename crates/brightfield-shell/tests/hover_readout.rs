@@ -25,7 +25,7 @@ use std::path::PathBuf;
 
 use brightfield_engine::RowsAudience;
 use brightfield_render::channel::Channel;
-use brightfield_shell::app::HoverReadout;
+use brightfield_shell::app::{GridLayout, HoverReadout};
 use brightfield_shell::data_grid::fetch_page;
 use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::LiveDashboard;
@@ -188,6 +188,42 @@ fn settle(app: &mut MeridianApp, ctx: &egui::Context) {
     for _ in 0..3 {
         frame(app, ctx, Vec::new());
     }
+}
+
+/// **Throw the layout switch on the grid pane's header band to its columns
+/// state**, and settle.
+///
+/// Each tiled column's own picture is on screen only with the grid
+/// transposed: untransposed the grid pane draws a table and each column's
+/// distribution is a rug in its header band, so a gesture aimed at a tile has
+/// no tile to land on until this is thrown. `tests/navigator_spine.rs` carries
+/// the same helper, in the shape that file's own harness uses.
+///
+/// The click is aimed at the rect the frame recorded for the control, and the
+/// state is read back: a miss would leave the caller sweeping a box no tile is
+/// drawn in.
+fn transpose_the_grid(app: &mut MeridianApp, ctx: &egui::Context) {
+    let at = app
+        .chart_doc()
+        .grid_layout_switch
+        .as_ref()
+        .expect("the grid pane's header band drew a layout switch")
+        .states
+        .iter()
+        .find(|(state, _)| *state == GridLayout::Columns)
+        .expect("the switch offers a columns state")
+        .1
+        .center();
+    frame(app, ctx, vec![egui::Event::PointerMoved(at)]);
+    frame(app, ctx, vec![button(at, true)]);
+    frame(app, ctx, vec![button(at, false)]);
+    settle(app, ctx);
+    assert_eq!(
+        app.grid_layout(),
+        GridLayout::Columns,
+        "the click at {at:?} did not throw the switch, so the tile the caller \
+         aims at is not on screen"
+    );
 }
 
 /// **Where a data point lands on screen**, in window-space logical points.
@@ -561,18 +597,20 @@ fn a_brush_on_a_tile_leaves_the_hover_reading_only_what_the_map_still_draws() {
     let mut app = window();
     let ctx = egui::Context::default();
     settle(&mut app, &ctx);
+    transpose_the_grid(&mut app, &ctx);
 
-    // The first stacked tile the column pane drew whole — a histogram over one
-    // of the file's columns, with an `intervalX` brush on it.
-    let columns_body = app
+    // The first tiled column's own picture the grid pane drew whole — a
+    // histogram over one of the file's columns, with an `intervalX` brush on
+    // it.
+    let grid_body = app
         .canvas_panes()
-        .pane("columns")
-        .expect("the column pane drew")
+        .pane("grid")
+        .expect("the grid pane drew")
         .body;
     let rects = app.composed_plot_rects();
     let tile = (1..rects.len())
-        .find(|i| columns_body.contains(rects[*i].min) && columns_body.contains(rects[*i].max))
-        .expect("a stacked tile is drawn whole inside the column pane");
+        .find(|i| grid_body.contains(rects[*i].min) && grid_body.contains(rects[*i].max))
+        .expect("a tiled column is drawn whole inside the grid pane");
     let tile_rect = rects[tile];
     let column = app.chart_doc().composed.plots[tile]
         .x_column
