@@ -475,8 +475,8 @@ fn the_layout_switch_reads_its_two_states_and_takes_the_pane_both_ways() {
     let band = live
         .app
         .canvas_panes()
-        .pane("rows")
-        .expect("the rows pane drew")
+        .pane("grid")
+        .expect("the grid pane drew")
         .header;
     assert!(
         band.contains_rect(switch.rect),
@@ -537,75 +537,83 @@ fn shape_texts(shapes: &[egui::epaint::ClippedShape]) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
-// AC5 — the columns pane goes, the map takes its width, and both come back.
+// Throwing the switch moves no edge.
 // ---------------------------------------------------------------------------
 
-/// **While the grid is transposed the columns pane is not drawn and the map
-/// spans the width it left; switched back, every pane rect is the one it was.**
+/// **The canvas draws the same two panes at the same rects either way round,
+/// and throwing the switch moves no edge.**
+///
+/// The hero pane and the grid pane share the canvas at their full height, and
+/// which of its two layouts the grid is in is what the *grid pane draws*, not
+/// where either pane stands. One `canvas_pane_rects` sizes both layouts for
+/// exactly this reason: a reader who has dragged the boundary keeps it where
+/// they put it across the throw.
+///
+/// The rects are read back through `canvas_panes` on each side of two clicks
+/// on the control the frame drew, and compared whole — name, outer rect and
+/// content rect — rather than by a share or a width, so an edge that moved and
+/// came back by the same amount is still a failure of the first comparison.
+///
+/// The transposed rows are asserted on either side of the throws as well: a
+/// window that drew no rows transposed would compare two identical pane
+/// groups for want of a layout change rather than because throwing the switch
+/// moves nothing.
 #[test]
-fn the_transposed_canvas_drops_the_columns_pane_and_gives_the_map_its_width() {
+fn throwing_the_layout_switch_draws_the_same_two_panes_at_the_same_rects() {
     let mut live = Live::open();
-    let before: Vec<(String, egui::Rect)> = live
-        .app
-        .canvas_panes()
-        .panes
-        .iter()
-        .map(|pane| (pane.name.to_string(), pane.rect))
-        .collect();
-    let names: Vec<&str> = before.iter().map(|(name, _)| name.as_str()).collect();
-    assert_eq!(names, vec!["map", "rows", "columns"]);
-    let narrow_map = before[0].1;
-    let columns = before[2].1;
+    let before = pane_boxes(&live);
+    let names: Vec<&str> = before.iter().map(|(name, ..)| name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["map", "grid"],
+        "the canvas drew {names:?} on its rows"
+    );
+    assert!(
+        live.rows().is_empty(),
+        "a window that opened on its rows drew transposed rows, so the throw \
+         below changes nothing and the comparison is empty"
+    );
 
     live.throw(GridLayout::Columns);
-
-    let panes = live.app.canvas_panes();
-    let drawn: Vec<&str> = panes.panes.iter().map(|pane| pane.name).collect();
+    let transposed = pane_boxes(&live);
     assert_eq!(
-        drawn,
-        vec!["map", "rows"],
-        "the transposed canvas drew {drawn:?}"
+        live.rows().len(),
+        TILE_ORDER.len(),
+        "the transposed canvas drew {} rows, so the pane group below is not \
+         the transposed one",
+        live.rows().len()
     );
-    let wide_map = panes.pane("map").expect("the map pane drew").rect;
-    let wide_rows = panes.pane("rows").expect("the grid pane drew").rect;
-    assert!(
-        (wide_map.right() - columns.right()).abs() < 0.5,
-        "the map ends at {} where the columns pane ended at {}",
-        wide_map.right(),
-        columns.right()
-    );
-    assert!(
-        wide_map.width() > narrow_map.width(),
-        "the map kept its narrow width {} when the pane beside it went",
-        narrow_map.width()
-    );
-    assert!(
-        (wide_rows.right() - wide_map.right()).abs() < 0.5
-            && (wide_rows.left() - wide_map.left()).abs() < 0.5,
-        "the grid pane at {:?} does not stand under the map at {:?}",
-        wide_rows,
-        wide_map
-    );
-    assert!(
-        (wide_map.bottom() - narrow_map.bottom()).abs() < 0.5,
-        "transposing moved the edge between the map and the grid from {} to {}",
-        narrow_map.bottom(),
-        wide_map.bottom()
+    assert_eq!(
+        transposed, before,
+        "throwing the switch drew {transposed:?} where the rows layout drew \
+         {before:?} — the grid's layout is what the grid pane draws, not where \
+         either pane stands"
     );
 
     live.throw(GridLayout::Rows);
-
-    let after: Vec<(String, egui::Rect)> = live
-        .app
-        .canvas_panes()
-        .panes
-        .iter()
-        .map(|pane| (pane.name.to_string(), pane.rect))
-        .collect();
+    let after = pane_boxes(&live);
+    assert!(
+        live.rows().is_empty(),
+        "the pane came back to its rows still drawing transposed rows"
+    );
     assert_eq!(
         after, before,
         "the panes came back at {after:?} from {before:?}"
     );
+}
+
+/// Each pane the canvas drew, as its name, its outer rect and its content
+/// rect.
+///
+/// Compared whole rather than by a share: a pane group that kept its widths
+/// and lost a header band is a pane group that changed.
+fn pane_boxes(live: &Live) -> Vec<(String, egui::Rect, egui::Rect)> {
+    live.app
+        .canvas_panes()
+        .panes
+        .iter()
+        .map(|pane| (pane.name.to_string(), pane.rect, pane.body))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -659,7 +667,7 @@ fn a_transposed_row_clears_its_own_floor() {
     let pane = live
         .app
         .canvas_panes()
-        .pane("rows")
+        .pane("grid")
         .expect("the grid pane drew")
         .body;
     let stack = rows.len() as f32 * MIN_ROW_HEIGHT;
