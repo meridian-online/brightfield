@@ -73,10 +73,10 @@ fn flights_200k_computes_and_no_longer_speaks() {
 /// enum would keep passing against a variant whose `Display` had been gutted.
 ///
 /// Read off `protein-design.yaml`, which is where the histogram idiom still
-/// goes dark: its binned `rectY` binds `fill: version`, a GROUPING colour that
-/// Mosaic stacks. Brightfield does not stack yet, and merging the groups would
-/// draw one bar per bin at the right TOTAL with every version's share
-/// invisible — so the lift is refused and the line stays.
+/// goes dark: its binned `rectY` binds `z: version` beside `fill: version`.
+/// The fill is now carried and stacked like any other grouping colour, but
+/// `z` is Mosaic's explicit grouping channel with no renderer behind it — so
+/// the lift is refused and the line stays.
 #[test]
 fn the_message_names_the_channel_the_transform_and_the_cost() {
     let rendered = lines(include_str!(
@@ -281,9 +281,9 @@ fn only_the_specs_that_bin_or_count_positionally_are_reported() {
 /// column selector (`column`, as `x: { column: $x }` — the dropdown in
 /// `symbols.yaml` chooses a column nothing then resolves), and one entry that
 /// is still the histogram idiom: `protein-design`, whose binned rects carry
-/// `fill: version`. Mosaic STACKS a binned rect with a grouping colour and
-/// brightfield does not yet, so the lift is refused and the diagnostic is the
-/// truth about that chart.
+/// `z: version` beside a `fill: version` brightfield now carries and stacks.
+/// `z` has no renderer behind it, so the lift is refused and the diagnostic
+/// is the truth about that chart.
 ///
 /// This list SHRINKING is the point: each entry that leaves is a capability
 /// that landed. Nothing here is a defect in this check.
@@ -306,7 +306,7 @@ const EXPECTED_SPEAKING: &[&str] = &[
 /// `protein-design.yaml` is the case that forced this and is still the case
 /// that proves it — though for a different reason than when it was written.
 /// Its `x: { bin: plddt_total, steps: 60 }` is now a shape the lowerer honours
-/// modifier and all; what keeps the spec dark is `fill: version` on the same
+/// modifier and all; what keeps the spec dark is `z: version` on the same
 /// mark. Both halves must still be named: an author who fixed only the half
 /// they were told about would be back at a blank frame with nothing left to
 /// account for it, and **a partial diagnostic on a two-part failure is a wrong
