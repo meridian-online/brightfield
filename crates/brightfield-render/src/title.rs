@@ -72,8 +72,8 @@ const STACK_TOP_COLUMNS: [&str; 2] = ["__bf_stack_x2", "__bf_stack_y2"];
 
 /// The axis title a stack column resolves to when the plot divided each
 /// segment by its own group's total. The axis is then a fraction of a bin
-/// rather than a number of rows, and `Count` over bars that all stop at 1 is
-/// the one reading it cannot have.
+/// rather than a number of rows, and the bars stop at 1 — which is the one
+/// height a count axis cannot be reading.
 const SHARE_TITLE: &str = "Share";
 
 /// Resolve one axis's decision against the mark channel maps. A `Derive` axis

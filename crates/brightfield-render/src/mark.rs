@@ -1580,8 +1580,8 @@ impl RectRenderer {
         // binned rect split by a `fill:` column, and a segment there runs from the
         // total beneath it to the total including it — a pair of edges, not a
         // value over a baseline. The binding is recognised by the reserved name
-        // rather than by the channel being bound at all, so a spec that writes its
-        // own `y1`/`y2` on a `rectY` is untouched.
+        // rather than by the channel being bound, so an author's own `y1`/`y2`
+        // on a rectY reads as it did before.
         let stacked = channel_map.get(interval.0).is_some_and(|c| c == stack_lo);
         if ranged || stacked {
             let a = column_as_f64(batch, channel_map.get(interval.0)?)?;

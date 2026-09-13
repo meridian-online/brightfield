@@ -2319,8 +2319,8 @@ fn mark_source_name(parent: &serde_yaml::Mapping) -> Option<&str> {
 ///
 /// `fill: species`, a field name on the one grouping channel with a renderer
 /// behind it, is carried and so is NOT a refusal: the lowerer groups by it and
-/// the rect stacks the segments. Everything else in `GROUPING_CHANNEL_FIELDS`
-/// still refuses, and each for its own reason:
+/// the rect stacks the segments. The other bindings in
+/// `GROUPING_CHANNEL_FIELDS` still refuse, each for its own reason:
 ///
 /// - **`z`**, whatever its value. `brightfield-render`'s `Channel` has no `z`
 ///   variant, so no colour, no stack order and no legend could be recovered

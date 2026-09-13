@@ -42,11 +42,12 @@ pub struct LowerCtx<'a> {
     /// named nothing, which is every spec written before the key was read.
     pub scales: PlotScales,
     /// What the mark's enclosing plot asked its stacks to be measured against
-    /// (`stackOffset`), resolved at emit time. [`RectLowerer`] divides each
-    /// stacked segment by its own bin's total under
-    /// [`StackOffset::Normalize`], so every occupied bin reads as a
-    /// composition. [`StackOffset::None`] when the plot named nothing, which is
-    /// every spec written before the key was read.
+    /// (`stackOffset`), resolved at emit time. Under
+    /// [`StackOffset::Normalize`] the rect lowerer divides each stacked segment
+    /// by its own bin's total, so an occupied bin reads as a composition —
+    /// `an_occupied_bin_reaches_the_full_height_under_normalise` reads the
+    /// tops off the raster. [`StackOffset::None`] for a plot that named no
+    /// offset, which is the reading a spec written before this key had.
     pub stack_offset: StackOffset,
 }
 

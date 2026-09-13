@@ -140,9 +140,9 @@ pub struct PlotHandle {
     ///
     /// Read off the drawn mark's channel map
     /// ([`ChannelMap::stacked_group`](brightfield_render::channel::ChannelMap::stacked_group)),
-    /// so it is the group the picture was actually composed with. `None` for
-    /// every plot whose marks carry no stack, which is every tile the
-    /// generator composes today.
+    /// so it is the group the picture was actually composed with. A plot whose
+    /// marks carry no stack has none, which is the case for a generated tile —
+    /// `the_housing_dashboard_draws_no_normalise_control` reads that page.
     pub group_column: Option<String>,
     /// **What this plot's stacks were measured against** when it was composed
     /// — its resolved `stackOffset`. The state the normalise control shows,

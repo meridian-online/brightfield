@@ -733,9 +733,10 @@ pub const STACK_OFFSET_KEY: &str = "stackOffset";
 ///
 /// A pure spec reading, on the same standing as [`resolve_plot_scales`]: it
 /// says what the author asked for and holds no opinion about what a lowerer
-/// then does with it. A name outside the two [`StackOffset::from_wire`] knows
+/// then does with it. A name outside the two `StackOffset::from_wire` knows
 /// leaves the plot unnormalised, the same degradation an unknown scale name
-/// takes — a word this build cannot draw is not a reason to draw nothing.
+/// takes: a word this build cannot draw is a reason to draw the default, not
+/// a reason to blank the frame.
 #[must_use]
 pub fn resolve_plot_stack_offset(plot: &PlotNode) -> StackOffset {
     match plot.attributes.get(STACK_OFFSET_KEY) {
