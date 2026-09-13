@@ -3965,7 +3965,8 @@ impl MeridianApp {
                             let split = canvas_split;
                             let rects = canvas_pane_rects(body, split);
                             // **The page's height floor, and the scroll that
-                            // buys it — transposed only.** The rows do not
+                            // buys it, which the transposed layout has and
+                            // the other does not.** The rows do not
                             // compress past `MIN_ROW_HEIGHT`, so a grid pane
                             // too short for them composes a taller page and
                             // moves it; the page is the taller of that stack
@@ -6774,7 +6775,8 @@ fn draw_canvas_pane_group(
     // The page: the hero at the pane's own content width, the spec's tile
     // column past the gutter, and the clip at the hero pane so only the first
     // of those reaches the screen.
-    let tile_width = f32::from(u16::try_from(crate::dashboard::COLUMN_TILE_WIDTH).unwrap_or(u16::MAX));
+    let tile_width =
+        f32::from(u16::try_from(crate::dashboard::COLUMN_TILE_WIDTH).unwrap_or(u16::MAX));
     let gutter = f32::from(u16::try_from(crate::dashboard::HERO_GUTTER).unwrap_or(u16::MAX));
     charts.doc.set_page_widths(map_body.width(), tile_width);
     charts.doc.pane_views = Some(crate::app::PaneViews::sole(map_body));

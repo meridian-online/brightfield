@@ -37,9 +37,9 @@
 //! they are claims about a page bigger than its pane and that is where this
 //! fixture makes one.
 
+use brightfield_shell::app::GridLayout;
 use brightfield_shell::dashboard::MIN_ROW_HEIGHT;
 use brightfield_shell::data_file;
-use brightfield_shell::app::GridLayout;
 use brightfield_shell::design::Mode;
 use brightfield_shell::window::{Boot, MeridianApp, CANVAS_PANE_GAP, EVEN_CANVAS_SPLIT};
 use brightfield_workbench::arrangement;
@@ -85,8 +85,8 @@ enum Ledger {
 /// **Which way round the grid pane is drawing** when the frame is read.
 ///
 /// A file opens on [`Grid::Rows`]; [`Grid::Columns`] is the switch on the grid
-/// pane's own header band thrown by a click, which is the only way a reader
-/// reaches it. It matters to every scroll and gesture claim below because it
+/// pane's own header band thrown by a click, which is the gesture a reader
+/// reaches it by. It matters to the scroll and gesture claims below because it
 /// decides which pane, if either, has a page taller than itself: untransposed
 /// the page is the hero and the hero is bounded to the pane it is drawn in, so
 /// nothing scrolls at any window size.
@@ -850,7 +850,13 @@ fn a_wheel_over_the_column_moves_the_column_and_leaves_the_map_where_it_was() {
         .canvas_panes()
         .pane("grid")
         .expect("the grid pane drew");
-    let after = settled_after(SCREEN, Ledger::Reopened, Grid::Columns, Some(columns.body.center()), 4);
+    let after = settled_after(
+        SCREEN,
+        Ledger::Reopened,
+        Grid::Columns,
+        Some(columns.body.center()),
+        4,
+    );
 
     let scrolled = after.canvas_scroll();
     assert!(
@@ -935,7 +941,13 @@ fn a_wheel_over_the_map_does_not_scroll_the_column() {
         .pane("map")
         .expect("the map pane drew");
     let still = before.composed_plot_rects();
-    let after = settled_after(SCREEN, Ledger::Reopened, Grid::Columns, Some(map.body.center()), 4);
+    let after = settled_after(
+        SCREEN,
+        Ledger::Reopened,
+        Grid::Columns,
+        Some(map.body.center()),
+        4,
+    );
 
     assert_eq!(
         after.canvas_scroll(),
@@ -1474,7 +1486,13 @@ fn the_columns_scroll_stops_at_the_end_of_its_page() {
     // short of that is overshot rather than approached.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let notches = (reach / WHEEL_NOTCH).ceil() as usize * 4 + 4;
-    let after = settled_after(SCREEN, Ledger::Reopened, Grid::Columns, Some(columns.center()), notches);
+    let after = settled_after(
+        SCREEN,
+        Ledger::Reopened,
+        Grid::Columns,
+        Some(columns.center()),
+        notches,
+    );
     assert!(
         (after.canvas_scroll() - reach).abs() < 0.5,
         "{notches} notches of wheel scrolled the column {} points where the \

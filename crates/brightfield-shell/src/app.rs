@@ -225,9 +225,9 @@ pub struct PaneViews {
 pub enum PaneSplit {
     /// **At the page's own origin**: the second view draws the page where the
     /// page already is, moved up by the scroll and by nothing else. The page's
-    /// own x carries the split, so nothing moves across — which is also what
-    /// makes [`PaneViews::sole`] a statement rather than a special case, since
-    /// a page drawn in one box is a page nothing moved.
+    /// own x carries the split, so the page does not move across — which is
+    /// also what makes [`PaneViews::sole`] a statement rather than a special
+    /// case, since a page drawn in one box is a page that moved by zero.
     AtOrigin,
     /// **Re-origined**: the part of the page past [`PaneViews::from_x`] is
     /// drawn in the second view's own box — moved both across and up, so a
@@ -302,8 +302,8 @@ impl PaneViews {
 
     /// **The translation the second view draws `page` by**, in logical points.
     ///
-    /// At the page's own origin that is the scroll and nothing else — and for
-    /// [`Self::sole`], where there is no scroll, it is nothing at all.
+    /// At the page's own origin that is the scroll, and for [`Self::sole`],
+    /// where there is no scroll, it is zero.
     /// Re-origined, the page's own point `(from_x, by)` is put `lead` points
     /// into the second view: the tiles stand to the right of the hero on the
     /// page and a row's numbers at the grid pane's leading edge, and the
