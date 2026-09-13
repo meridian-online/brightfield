@@ -18,7 +18,7 @@
 //! half — the two re-photographed baselines carry the control at rest.
 
 use brightfield_protocol::layout::Flow;
-use brightfield_shell::app::ChartDoc;
+use brightfield_shell::app::{ChartDoc, GridLayout};
 use brightfield_shell::design::Mode;
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_spec::layout::{PlotAxis, ScaleType};
@@ -107,6 +107,38 @@ impl Live {
     /// reason `tests/arrangement.rs` runs three.
     fn settle(&mut self) {
         self.run(vec![Vec::new(), Vec::new(), Vec::new()]);
+    }
+
+    /// **Throw the layout switch on the grid pane's header band to its
+    /// columns state**, and settle.
+    ///
+    /// Every claim in this file is about a *tile* — its scale switch, its
+    /// bins, the key a click writes — and a tile is on screen only with the
+    /// grid transposed. Untransposed the grid pane draws the table and each
+    /// column's distribution is a rug in its header band, so the page's tile
+    /// column is composed outside the hero pane's clip and there is nothing
+    /// for a click to land on. Asserted rather than assumed: a miss would
+    /// leave every switch assertion below reading a control nobody drew.
+    fn transpose(&mut self) {
+        let at = self
+            .app
+            .chart_doc()
+            .grid_layout_switch
+            .as_ref()
+            .expect("the grid pane's header band drew a layout switch")
+            .states
+            .iter()
+            .find(|(state, _)| *state == GridLayout::Columns)
+            .expect("the switch offers a columns state")
+            .1
+            .center();
+        self.click(at);
+        self.settle();
+        assert_eq!(
+            self.app.grid_layout(),
+            GridLayout::Columns,
+            "the click at {at:?} did not throw the switch"
+        );
     }
 
     /// One more frame with no events, handing back every shape it painted.
@@ -296,6 +328,7 @@ const HISTOGRAM_COLUMNS: [&str; 7] = [
 fn every_histogram_tile_carries_a_scale_switch_inside_its_own_box() {
     let mut live = Live::open(housing_boot());
     live.settle();
+    live.transpose();
 
     let drawn: Vec<String> = live
         .doc()
@@ -336,6 +369,7 @@ fn every_histogram_tile_carries_a_scale_switch_inside_its_own_box() {
 fn the_hero_point_map_draws_no_scale_switch() {
     let mut live = Live::open(housing_boot());
     live.settle();
+    live.transpose();
 
     let hero = live
         .doc()
@@ -368,6 +402,7 @@ fn the_hero_point_map_draws_no_scale_switch() {
 fn the_switch_offers_linear_log_and_symlog_in_the_small_face() {
     let mut live = Live::open(housing_boot());
     live.settle();
+    live.transpose();
 
     for switch in &live.doc().scale_switches {
         let offered: Vec<ScaleType> = switch.states.iter().map(|(s, _)| *s).collect();
@@ -405,6 +440,7 @@ fn the_switch_offers_linear_log_and_symlog_in_the_small_face() {
 fn each_switch_names_its_own_column_in_its_hover_text() {
     let mut live = Live::open(housing_boot());
     live.settle();
+    live.transpose();
 
     let said: Vec<String> = live
         .doc()
@@ -600,6 +636,7 @@ fn a_click_writes_one_key_into_the_canonical_spec() {
 
     let mut live = Live::open(housing_boot());
     live.settle();
+    live.transpose();
     let before = live
         .doc()
         .live_dashboard()
@@ -677,6 +714,7 @@ fn a_click_writes_one_key_into_the_canonical_spec() {
 fn the_log_tile_re_bins_and_the_other_six_stand_still() {
     let mut live = Live::open(housing_boot());
     live.settle();
+    live.transpose();
 
     let switch = live.switch("population");
     let others: Vec<usize> = live
@@ -821,6 +859,7 @@ fn the_log_tile_re_bins_and_the_other_six_stand_still() {
 fn a_press_on_the_switch_is_not_a_press_on_the_canvas() {
     let mut live = Live::open(housing_boot());
     live.settle();
+    live.transpose();
 
     let income = live.switch("median_income").plot;
     let at = live.at(income, 0.5);
@@ -862,6 +901,7 @@ fn a_press_on_the_switch_is_not_a_press_on_the_canvas() {
 fn a_click_to_symlog_reads_symlog_on_the_switchs_own_record() {
     let mut live = Live::open(housing_boot());
     live.settle();
+    live.transpose();
     assert_eq!(
         live.switch("population").active,
         ScaleType::Linear,
@@ -908,6 +948,7 @@ fn a_click_to_symlog_reads_symlog_on_the_switchs_own_record() {
 fn a_brush_on_another_tile_narrows_the_log_tile_on_its_own_bins() {
     let mut live = Live::open(housing_boot());
     live.settle();
+    live.transpose();
     live.switch_to("population", ScaleType::Log);
     assert_eq!(live.switch("population").active, ScaleType::Log);
 
@@ -1015,6 +1056,7 @@ fn a_file_opened_by_a_relative_path_keeps_its_picture_through_a_switch() {
         .unwrap_or_else(|e| panic!("open {}: {e}", relative.display()));
     let mut live = Live::open(boot);
     live.settle();
+    live.transpose();
 
     let switch = live.switch("population");
     let others: Vec<usize> = live
@@ -1118,6 +1160,7 @@ fn a_file_opened_by_a_relative_path_keeps_its_picture_through_a_switch() {
 fn a_switch_thrown_in_the_dark_leaves_the_page_in_the_dark() {
     let mut live = Live::open_in(housing_boot(), Mode::Dark);
     live.settle();
+    live.transpose();
     assert_eq!(
         live.doc().composed.mode,
         Mode::Dark,

@@ -19,6 +19,7 @@
 //! reads in sentences.
 
 use brightfield_protocol::contract_graph::{AssetMeta, SeamStatus};
+use brightfield_shell::app::GridLayout;
 use brightfield_shell::design::Mode;
 use brightfield_shell::protocol::{
     GraphChipDrawn, NodeView, SpineMarker, SpineRole, SpineRowDrawn,
@@ -109,6 +110,38 @@ impl Live {
                 let drawn: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
                 panic!("the rail drew no row labelled {label:?}; it drew {drawn:?}")
             })
+    }
+
+    /// **Throw the layout switch on the grid pane's header band to its
+    /// columns state**, and settle.
+    ///
+    /// Each tiled column's own picture is on screen only with the grid
+    /// transposed: untransposed the grid pane draws a table and each column's
+    /// distribution is a rug in its header band, so a click aimed at a tile
+    /// has no tile to land on until this is thrown.
+    fn transpose(&mut self) {
+        let at = self
+            .app
+            .chart_doc()
+            .grid_layout_switch
+            .as_ref()
+            .expect("the grid pane's header band drew a layout switch")
+            .states
+            .iter()
+            .find(|(state, _)| *state == GridLayout::Columns)
+            .expect("the switch offers a columns state")
+            .1
+            .center();
+        self.run(vec![
+            vec![egui::Event::PointerMoved(at), button_at(at, true)],
+            vec![button_at(at, false)],
+        ]);
+        self.settle();
+        assert_eq!(
+            self.app.grid_layout(),
+            GridLayout::Columns,
+            "the click at {at:?} did not throw the switch"
+        );
     }
 
     /// Click where the last frame drew the row labelled `label`.
@@ -644,7 +677,7 @@ fn a_fresh_open_holds_the_dashboard_and_marks_the_row_that_says_so() {
         .collect();
     assert_eq!(
         names,
-        vec!["map", "rows", "columns"],
+        vec!["map", "grid"],
         "the dashboard is the canvas's pane group"
     );
 }
@@ -882,8 +915,8 @@ fn clicking_a_view_row_moves_the_canvas_and_the_bar_with_it() {
             .iter()
             .map(|p| p.name)
             .collect::<Vec<_>>(),
-        vec!["map", "rows", "columns"],
-        "…and with it the pane group's three panes"
+        vec!["map", "grid"],
+        "…and with it the pane group's two panes"
     );
     assert!(
         win.row("dashboard").on_canvas.is_some(),
@@ -1576,7 +1609,7 @@ fn clicking_the_graph_chip_puts_the_graph_on_the_canvas_and_a_second_click_bring
             .iter()
             .map(|p| p.name)
             .collect::<Vec<_>>(),
-        vec!["map", "rows", "columns"],
+        vec!["map", "grid"],
         "the fresh open draws the dashboard as the pane group"
     );
     assert!(
@@ -1675,7 +1708,7 @@ fn clicking_the_graph_chip_puts_the_graph_on_the_canvas_and_a_second_click_bring
             .iter()
             .map(|p| p.name)
             .collect::<Vec<_>>(),
-        vec!["map", "rows", "columns"],
+        vec!["map", "grid"],
         "…and the pane group is back"
     );
     assert!(
@@ -1977,6 +2010,7 @@ fn the_closed_inspector_stub_reads_its_own_name_and_paints_no_dot() {
 fn clicking_a_tile_paints_the_stub_dot_and_leaves_its_name_alone() {
     let mut win = Live::open(housing_boot());
     win.settle();
+    win.transpose();
 
     let inspector = brightfield_workbench::arrangement::INSPECTOR_RAIL;
     let before_width = win

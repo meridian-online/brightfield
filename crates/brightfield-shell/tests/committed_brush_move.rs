@@ -23,7 +23,8 @@
 //! the identical shape of concern, and many orders tighter than a pixel.
 
 use brightfield_engine::SqlPredicate;
-use brightfield_shell::dashboard::MIN_COLUMN_TILE_HEIGHT;
+use brightfield_shell::app::GridLayout;
+use brightfield_shell::dashboard::MIN_ROW_HEIGHT;
 use brightfield_shell::design::Mode;
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_sql::ir::ScalarValue;
@@ -387,6 +388,50 @@ fn scroll_the_column(
     }
 }
 
+/// **Throw the layout switch to its columns state** and settle —
+/// `tests/canvas_pane_group.rs`'s `transpose_the_grid` unchanged in shape.
+///
+/// The tiles are only on screen with the grid transposed: untransposed each
+/// column's distribution is the header band's rug and the page's tile column
+/// is composed outside the hero pane's clip. So the gesture this file is about
+/// has no target until the switch is thrown.
+fn transpose_the_grid(app: &mut MeridianApp, ctx: &egui::Context, raw: &egui::RawInput) {
+    let switch = app
+        .chart_doc()
+        .grid_layout_switch
+        .clone()
+        .expect("the grid pane's header band drew a layout switch");
+    let at = switch
+        .states
+        .iter()
+        .find(|(state, _)| *state == GridLayout::Columns)
+        .expect("the switch offers a columns state")
+        .1
+        .center();
+    frame(app, ctx, raw, vec![egui::Event::PointerMoved(at)]);
+    frame(
+        app,
+        ctx,
+        raw,
+        vec![egui::Event::PointerMoved(at), button(at, true)],
+    );
+    frame(
+        app,
+        ctx,
+        raw,
+        vec![egui::Event::PointerMoved(at), button(at, false)],
+    );
+    for _ in 0..3 {
+        frame(app, ctx, raw, Vec::new());
+    }
+    assert_eq!(
+        app.grid_layout(),
+        GridLayout::Columns,
+        "the click at {at:?} did not throw the switch — the tile this gesture \
+         is aimed at is not on screen untransposed"
+    );
+}
+
 /// A point across the middle of a stacked tile's data area, at `fx` of its
 /// width — `tests/canvas_pane_group.rs`'s `tile_data_point`.
 fn tile_point(app: &MeridianApp, tile: usize, fx: f64) -> egui::Pos2 {
@@ -405,17 +450,18 @@ fn tile_point(app: &MeridianApp, tile: usize, fx: f64) -> egui::Pos2 {
 fn tile_move_case(scrolled: bool) {
     let (mut app, ctx, raw) = window(GESTURE_SCREEN);
     reopen_the_ledger(&mut app, &ctx, &raw);
+    transpose_the_grid(&mut app, &ctx, &raw);
     let columns = app
         .canvas_panes()
-        .pane("columns")
-        .expect("the column pane drew")
+        .pane("grid")
+        .expect("the grid pane drew")
         .body;
 
     let tile = if scrolled {
         scroll_the_column(&mut app, &ctx, &raw, columns.center(), 12);
         let scroll = app.canvas_scroll();
         assert!(
-            scroll > MIN_COLUMN_TILE_HEIGHT,
+            scroll > MIN_ROW_HEIGHT,
             "fixture check: the column scrolled {scroll} points, less than one tile — the \
              scrolled and unscrolled runs would land on the same tile either way"
         );
@@ -460,11 +506,12 @@ fn tile_move_case(scrolled: bool) {
 
     let (mut fresh, fctx, fraw) = window(GESTURE_SCREEN);
     reopen_the_ledger(&mut fresh, &fctx, &fraw);
+    transpose_the_grid(&mut fresh, &fctx, &fraw);
     if scrolled {
         let fcolumns = fresh
             .canvas_panes()
-            .pane("columns")
-            .expect("the column pane drew")
+            .pane("grid")
+            .expect("the grid pane drew")
             .body;
         scroll_the_column(&mut fresh, &fctx, &fraw, fcolumns.center(), 12);
     }
