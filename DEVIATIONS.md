@@ -205,3 +205,43 @@ labels naming another.
 
 **Conformance layers suppressed:** 3
 
+## DEV-0007 — stacking — per-stack share on a binned rect (`stackOffset: normalize`)
+
+**Mosaic behaviour.** Mosaic has no per-stack-share option for a binned, stacked rect. Its
+own `normalize` name is a `density`-mark option, dividing a kernel
+density estimate by its own sum or maximum so the curve integrates to
+one — a different feature that happens to share the word. Observable
+Plot, which Mosaic's stack transform is drawn from, offers the nearest
+native form of a per-stack share: `offset: "normalize"` on the stack
+transform itself, sitting beside the mark's channels rather than on
+the plot.
+
+
+**Brightfield behaviour.** brightfield takes Plot's word and Plot's spelling, and moves it: a
+column-valued `fill` on a binned rect is carried (lifted) into the
+GROUP BY over the two bin edges and the category, then stacked by a
+window over the aggregation — `SUM(COUNT(*)) OVER (PARTITION BY <bin
+low edge> ORDER BY <category>)` for a slab's top, the same running
+total minus the row's own count for its bottom. `stackOffset:
+normalize` is a plot-level key, not a mark-level transform argument,
+because the control that throws it is a plot's control — one switch
+per plot, beside the plot's own scale switch, offered wherever a stack
+was drawn and nowhere else. When set, both slab edges divide by a
+second window over the same partition with no `ORDER BY` — the bin's
+own total rather than the running part of it.
+
+
+**Rationale.** The two `normalize`s share a name and nothing else: one rescales a
+curve, the other rescales a stack. A per-stack share is the feature a
+reader reaches for that word to mean, and Plot's own spelling is the
+nearest existing precedent to borrow rather than inventing a third
+word for the same idea.
+
+Where the key lives follows from what throws it. The control is a
+single switch per plot, not a per-mark transform argument, so the AST
+carries it on the plot node it is drawn from rather than nested under
+the mark that happens to be stacked.
+
+
+**Conformance layers suppressed:** 2, 3
+
