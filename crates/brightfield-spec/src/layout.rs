@@ -682,7 +682,7 @@ impl PlotScales {
 /// Plot writes it on the stack transform (`stackY({offset: "normalize"})`);
 /// brightfield writes it on the PLOT, because the control that throws it is a
 /// plot's control and the switch beside it already writes `xScale` there.
-/// The deviation is recorded as DEV-0008 in `deviations.yaml`.
+/// The deviation is recorded as DEV-0007 in `deviations.yaml`.
 ///
 /// **`normalize` here is not Mosaic's density `normalize`.** That key sits on a
 /// `density` mark and divides a kernel estimate by its own sum or maximum so a
@@ -725,8 +725,8 @@ impl StackOffset {
 
 /// The plot attribute [`resolve_plot_stack_offset`] reads — **the consumed
 /// key**, read out of this constant at the one lookup, so a rename here is a
-/// rename everywhere and `a_plot_written_stack_offset_normalize_resolves_it`
-/// says what it reads.
+/// rename everywhere and `a_click_writes_the_stack_offset_into_the_canonical_spec`
+/// reads back its exact wire name.
 pub const STACK_OFFSET_KEY: &str = "stackOffset";
 
 /// Resolve a plot's `stackOffset` attribute.
