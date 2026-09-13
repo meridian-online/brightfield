@@ -140,23 +140,20 @@ pub const TILES_PER_ROW: usize = 3;
 ///
 /// The declared widths below are this ratio written as two weights, because
 /// [`brightfield_spec::layout`] shares a constrained `hconcat`'s residual out
-/// in proportion to its items' intrinsic sizes. Stated as a number as well
-/// because the shell splits the canvas into panes with it, and the two have to
-/// be one declaration: `the_hero_takes_the_larger_share_of_the_page` lays the
-/// emitted spec out and reads the hero's width back as a fraction of what the
-/// gutter leaves, so a weight that stopped agreeing with this number reddens
-/// there.
-pub const HERO_SHARE: f32 = 0.62;
-
-/// The share of its own **column** the map pane takes, as a fraction of the
-/// height — the rows pane beneath it takes what is left.
+/// in proportion to its items' intrinsic sizes. Stated as a number as well so
+/// the ratio has a name: `the_hero_takes_the_larger_share_of_the_page` lays
+/// the emitted spec out and reads the hero's width back as a fraction of what
+/// the gutter leaves, so a weight that stopped agreeing with this number
+/// reddens there.
 ///
-/// [`HERO_SHARE`] again, and the tie is the design rather than a coincidence:
-/// the map is the same fraction of the canvas across and of its column down,
-/// so the two panes beside and below it read as one proportion instead of two.
-/// `the_rows_pane_sits_under_the_map_and_takes_the_rest_of_its_column` reads
-/// the drawn rects back against it.
-pub const MAP_COLUMN_SHARE: f32 = HERO_SHARE;
+/// **It is the emitted source's proportion and no longer the canvas's.** The
+/// shell draws the hero and the grid at
+/// [`crate::window::EVEN_CANVAS_SPLIT`], writing the hero's own pane width
+/// onto the live spec through
+/// [`crate::app::ChartDoc::set_page_widths`] as it lays each frame out, so
+/// what is here is what a reader opening the generated `.bf` sees and what an
+/// unconstrained layout is sized from.
+pub const HERO_SHARE: f32 = 0.62;
 
 /// The hero plot's declared width in logical points — [`HERO_SHARE`] of a
 /// thousand, so the pair of weights below reads as the ratio it is.
@@ -181,36 +178,43 @@ pub const COLUMN_TILE_HEIGHT: u32 = 100;
 
 /// The floor a stacked tile's drawn height is held at, in logical points.
 ///
-/// Below this a histogram is a smear rather than a distribution. The column
-/// scrolls rather than compressing past it — see [`stack_extent`].
+/// Below this a histogram is a smear rather than a distribution. Read now by
+/// [`MIN_ROW_HEIGHT`], which has to clear it: a transposed row's picture *is*
+/// a tile of that column, so the rows' own floor is the taller of this and
+/// what the numbers beside them measure.
 pub const MIN_COLUMN_TILE_HEIGHT: f32 = 96.0;
 
 /// The gutter between the hero and the column, in logical points, written into
 /// the emitted spec as an `hspace`.
 ///
-/// **It is a chrome measurement, and that is deliberate.** The two panes the
-/// shell draws this dashboard in each take
-/// [`brightfield_workbench::chrome::pane_content_inset`] out of their own rect
-/// and stand a pane gap apart, so the page the raster is composed on has to
-/// carry that gutter or the hero's right edge and the column's left edge land
-/// inside the other pane's frame. Its value is what makes the map pane's
-/// drawn rect [`HERO_SHARE`] of the canvas exactly:
+/// **It is a chrome measurement, and that is deliberate.** The emitted source
+/// is a hero beside a column, and a reader who renders that source on its own
+/// gets no panes to separate the two — so the gutter carries what the shell's
+/// own chrome would have put between them: the inset each of two panes takes
+/// out of its rect at both sides, and the pane gap they stand apart, at the
+/// ratio the two weights declare.
 ///
 /// ```text
 /// gutter = (2 · HERO_SHARE · pane_content_inset + pane_gap) / (1 − HERO_SHARE)
 /// ```
 ///
-/// `the_gutter_is_what_puts_the_map_pane_at_its_declared_share` derives it
-/// from the chrome and reddens if either moves.
+/// `the_gutter_carries_what_two_pane_frames_would_have` derives it from the
+/// chrome and reddens if either moves.
+///
+/// The shell subtracts it again on the way in: both of the canvas's layouts
+/// offer the page a box of *hero + gutter + tile* and declare the two widths
+/// they want, so the `hspace` comes off the residual before the split rather
+/// than out of either pane.
 pub const HERO_GUTTER: u32 = 42;
 
 /// The spacer under the hero, as the emitted spec declares it: **zero**.
 ///
-/// The page is as tall as the *column* needs — [`stack_extent`] — and an
+/// The page is as tall as the transposed layout's rows need —
+/// [`row_stack_extent`] — and an
 /// `hconcat` offers each item that flexes its whole height, so a hero standing
-/// directly in the row is composed at the page's height rather than at the map
-/// pane's. That is what put its x-axis below the pane's content rect at 1440 by
-/// 900. It stands under a `vspace` instead, which does not flex: the hero takes
+/// directly in the row is composed at the page's height rather than at the
+/// hero pane's. That is what put its x-axis below the pane's content rect at
+/// 1440 by 900. It stands under a `vspace` instead, which does not flex: the hero takes
 /// the page height less the spacer, so setting the spacer to what the page
 /// overflows the pane by bounds the hero at the pane's own content height.
 ///
@@ -221,22 +225,6 @@ pub const HERO_GUTTER: u32 = 42;
 /// is what receives it. A window with room for the whole column overflows by
 /// nothing and leaves this at the value written here.
 pub const HERO_BOUND: u32 = 0;
-
-/// The height the composed page needs for a column of `tiles` stacked tiles,
-/// given the `offered` height of the pane they stand in.
-///
-/// [`MIN_COLUMN_TILE_HEIGHT`] each, or the offered box shared out evenly when
-/// that is the larger — the "or 96 points whichever is greater, scrolling past
-/// that" rule, as one number the caller can scroll a page of.
-///
-/// What the page grows by is what the hero must *not* grow by: see
-/// [`HERO_BOUND`].
-#[must_use]
-pub fn stack_extent(offered: f32, tiles: usize) -> f32 {
-    #[allow(clippy::cast_precision_loss)]
-    let floor = MIN_COLUMN_TILE_HEIGHT * tiles as f32;
-    offered.max(floor)
-}
 
 /// The floor a **transposed row's** drawn height is held at, in logical
 /// points — the rule that makes the grid pane scroll rather than compress.
@@ -271,10 +259,10 @@ pub const ROW_SUMMARY_SHARE: f32 = 0.42;
 /// The height the composed page needs for `tiles` drawn as **rows**, given
 /// the `offered` height of the grid pane they stand in.
 ///
-/// [`stack_extent`]'s twin at the transposed layout's own floor, and one
-/// function rather than a second reading of the same rule: the rows do not
-/// compress past [`MIN_ROW_HEIGHT`], so a pane too short for them is given a
-/// taller page and scrolled.
+/// The rows do not compress past [`MIN_ROW_HEIGHT`], so a pane too short for
+/// them is given a taller page and scrolled. The untransposed layout has no
+/// twin of this: its page is the hero alone, bounded to the pane it is drawn
+/// in, so there is nothing for a short canvas to grow.
 #[must_use]
 pub fn row_stack_extent(offered: f32, tiles: usize) -> f32 {
     #[allow(clippy::cast_precision_loss)]
@@ -2258,20 +2246,19 @@ mod tests {
         );
     }
 
-    /// **[`HERO_GUTTER`] is what puts the map pane's drawn rect at
-    /// [`HERO_SHARE`] of the canvas**, and it is derived from the chrome
-    /// rather than tuned by eye.
+    /// **[`HERO_GUTTER`] carries what two pane frames would have carried**,
+    /// and it is derived from the chrome rather than tuned by eye.
     ///
-    /// The shell splits the canvas into two panes, each of which takes
-    /// `pane_content_inset` out of its own rect at the top, at the bottom and
-    /// at both sides, with a pane gap between them; the page the raster is composed on spans the two content
-    /// rects and the gutter, and its hero takes `HERO_SHARE` of what the
-    /// gutter leaves. Setting the map pane's outer width equal to
-    /// `HERO_SHARE · canvas` and solving for the gutter gives the line below.
-    /// Move either chrome measurement and this reddens rather than the map
-    /// pane quietly drifting off its share.
+    /// A pane takes `pane_content_inset` out of its own rect at both sides and
+    /// stands a pane gap from the next, so two panes put
+    /// `2 · pane_content_inset + pane_gap` between their content rects. The
+    /// emitted source has no panes: it is one page whose hero takes
+    /// `HERO_SHARE` of what the gutter leaves, so the gutter that reproduces
+    /// that separation at that split is the line below. Move either chrome
+    /// measurement and this reddens rather than the emitted source quietly
+    /// crowding its column against its hero.
     #[test]
-    fn the_gutter_is_what_puts_the_map_pane_at_its_declared_share() {
+    fn the_gutter_carries_what_two_pane_frames_would_have() {
         let inset = brightfield_workbench::chrome::pane_content_inset();
         let gap = brightfield_workbench::behavior::TILE_GAP;
         let derived = (2.0 * HERO_SHARE * inset + gap) / (1.0 - HERO_SHARE);
@@ -2284,17 +2271,17 @@ mod tests {
         );
     }
 
-    /// **The column's tiles hold at their floor and the page grows instead** —
-    /// the "or 96 points whichever is greater, scrolling past that" rule, as
+    /// **The transposed rows hold at their floor and the page grows instead** —
+    /// the "or 128 points whichever is greater, scrolling past that" rule, as
     /// the one number the canvas scrolls a page of.
     #[test]
-    fn the_stacked_tiles_hold_at_their_height_floor() {
-        // Room to spare: the offered box is what the tiles share.
-        assert!((stack_extent(700.0, 7) - 700.0).abs() < f32::EPSILON);
+    fn the_transposed_rows_hold_at_their_height_floor() {
+        // Room to spare: the offered box is what the rows share.
+        assert!((row_stack_extent(1000.0, 7) - 1000.0).abs() < f32::EPSILON);
         // Too short: the page grows to the floor, and the difference is what
         // there is to scroll.
-        assert!((stack_extent(500.0, 7) - 7.0 * MIN_COLUMN_TILE_HEIGHT).abs() < f32::EPSILON);
-        assert!(stack_extent(500.0, 7) > 500.0);
+        assert!((row_stack_extent(500.0, 7) - 7.0 * MIN_ROW_HEIGHT).abs() < f32::EPSILON);
+        assert!(row_stack_extent(500.0, 7) > 500.0);
     }
 
     /// **One selection, declared once, driven and read by every tile.** This is

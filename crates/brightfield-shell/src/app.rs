@@ -213,24 +213,27 @@ pub struct PaneViews {
     pub split: PaneSplit,
 }
 
-/// **Where the second pane of a group stands against the first**, and with it
-/// how that pane draws the one page the group composes.
+/// **Where the second view draws the one page the group composes** — at the
+/// page's own origin, or re-origined into a pane of its own.
 ///
-/// The two arrangements the canvas has: the column of tiles beside the map,
-/// and the same tiles laid as rows in the pane beneath it. They are one enum
-/// rather than two booleans because the placement rule and the containment
-/// rule have to agree, and an arrangement is the one thing both read.
+/// Both panes of the group stand side by side, so this is not about *where the
+/// pane is*: it is about what the page's own x means once it crosses
+/// [`PaneViews::from_x`]. One enum rather than two booleans because the
+/// placement rule and the containment rule have to agree, and an arrangement
+/// is the one thing both read.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PaneSplit {
-    /// **Beside**: the second view is the column to the right of the first,
-    /// drawing the same page at the same origin moved up by the scroll. The
-    /// page's own x carries the split, so nothing moves across.
-    Beside,
-    /// **Below**: the second view is the pane under the first, and the part of
-    /// the page past [`PaneViews::from_x`] is drawn there — moved both across
-    /// and up, so a column standing to the right of the hero on the page lands
-    /// `lead` points into the pane below it.
-    Below {
+    /// **At the page's own origin**: the second view draws the page where the
+    /// page already is, moved up by the scroll and by nothing else. The page's
+    /// own x carries the split, so nothing moves across — which is also what
+    /// makes [`PaneViews::sole`] a statement rather than a special case, since
+    /// a page drawn in one box is a page nothing moved.
+    AtOrigin,
+    /// **Re-origined**: the part of the page past [`PaneViews::from_x`] is
+    /// drawn in the second view's own box — moved both across and up, so a
+    /// column standing to the right of the hero on the page lands `lead`
+    /// points into the second pane's leading edge.
+    Rehomed {
         /// How far into the second view that part of the page is drawn, in
         /// logical points — the width of whatever the pane draws beside it at
         /// its leading edge, which for the transposed grid is a row's numbers.
@@ -239,6 +242,32 @@ pub enum PaneSplit {
 }
 
 impl PaneViews {
+    /// **The page drawn in one pane of the group**, the pane beside it drawing
+    /// something that is not the page at all.
+    ///
+    /// The arrangement whose grid pane draws a *table*: the hero is the whole
+    /// of what the page shows, and the tiles the emitted spec declares beside
+    /// it are composed and clipped away. Both boxes are `first`, which is the
+    /// statement — a plot past [`Self::from_x`] is the second view's and the
+    /// second view is the first, so [`PaneSplit::AtOrigin`] leaves it exactly
+    /// where the page put it, outside `first` and outside the clip.
+    ///
+    /// **`Some(Self::sole(..))` and not `None`**, and the difference is the
+    /// pointer: [`page_offset`] reads `None` as *one view whose box IS the
+    /// page's*, and this page is wider than its box. Through this, a press in
+    /// the pane beside the hero answers `None` — over no page — instead of
+    /// landing on whichever tile the page happens to have clipped away there.
+    #[must_use]
+    pub fn sole(first: egui::Rect) -> Self {
+        Self {
+            first,
+            second: first,
+            by: 0.0,
+            from_x: first.width(),
+            split: PaneSplit::AtOrigin,
+        }
+    }
+
     /// **Whether the second view draws the page at page-local `x`** — the
     /// containment rule for a *plot* on a page drawn at two origins, read by
     /// [`plot_window_rect`].
@@ -254,11 +283,13 @@ impl PaneViews {
     /// readback `a_wheel_over_the_column_moves_the_column_and_leaves_the_map_where_it_was`
     /// holds to the offset the frame applied.
     ///
-    /// **Page-local rather than window-space**, which the beside arrangement
-    /// alone could have used: under [`PaneSplit::Below`] the two panes stand
-    /// one above the other and span the same window x, so a window-space test
-    /// answers the same for the hero and for every tile and the page is drawn
-    /// twice in one pane.
+    /// **Page-local rather than window-space**, which the unmoved arrangement
+    /// alone could have used: under [`PaneSplit::Rehomed`] the second pane
+    /// redraws its part of the page at a window x the page never had — a tile
+    /// standing to the right of the hero lands at the grid pane's own leading
+    /// edge, `from_x - lead` points left of where the page put it — so a
+    /// window-space test hands the tiles back to the first view and the page
+    /// is drawn twice in one pane.
     ///
     /// A **pointer** is the other subject and gets [`Self::moved_at`] instead.
     /// The difference is not a missing clause on one side: a tile below the
@@ -271,17 +302,17 @@ impl PaneViews {
 
     /// **The translation the second view draws `page` by**, in logical points.
     ///
-    /// Beside the first view that is the scroll and nothing else, which is
-    /// what keeps a layout nobody transposed drawing the pixels it drew
-    /// before. Below it, the page's own point `(from_x, by)` is put `lead`
-    /// points into the second view: the tiles stand to the right of the hero
-    /// on the page and a row's numbers into the pane beneath it, and the
+    /// At the page's own origin that is the scroll and nothing else — and for
+    /// [`Self::sole`], where there is no scroll, it is nothing at all.
+    /// Re-origined, the page's own point `(from_x, by)` is put `lead` points
+    /// into the second view: the tiles stand to the right of the hero on the
+    /// page and a row's numbers at the grid pane's leading edge, and the
     /// scroll moves them up from there.
     #[must_use]
     pub fn moved(self, page: egui::Rect) -> egui::Vec2 {
         match self.split {
-            PaneSplit::Beside => egui::vec2(0.0, -self.by),
-            PaneSplit::Below { lead } => {
+            PaneSplit::AtOrigin => egui::vec2(0.0, -self.by),
+            PaneSplit::Rehomed { lead } => {
                 self.second.min - page.min - egui::vec2(self.from_x - lead, self.by)
             }
         }
@@ -299,9 +330,10 @@ impl PaneViews {
     /// view's zero — which is why this returns an [`Option`] rather than an
     /// offset a caller has to know to disbelieve.
     ///
-    /// The two boxes are disjoint by construction — a gutter between them
-    /// beside, a pane gap between them below — so the order of the tests here
-    /// is not a tie-break.
+    /// The two boxes are either disjoint by construction — a pane gap between
+    /// them — or the same box, which is [`Self::sole`]. So the order of the
+    /// tests here is not a tie-break: where they coincide both arms answer
+    /// [`Self::moved`], and `sole`'s move is zero.
     #[must_use]
     pub fn moved_at(self, page: egui::Rect, at: egui::Pos2) -> Option<egui::Vec2> {
         if self.second.contains(at) {
@@ -722,9 +754,9 @@ pub struct ChartDoc {
     page_widths: (f32, f32),
     /// The floor the composed page's height is held at, in logical points.
     ///
-    /// Zero for every document but a hero-and-column dashboard, whose stacked
-    /// tiles have a height floor: the page grows past the pane and the canvas
-    /// scrolls it. See [`crate::dashboard::stack_extent`].
+    /// Zero but for a dashboard drawn with its grid transposed, whose rows
+    /// have a height floor: the page grows past the pane and the canvas
+    /// scrolls it. See [`crate::dashboard::row_stack_extent`].
     min_page_height: f32,
     /// How this document's picture was chosen, when a chart kind chose it —
     /// see [`Authored`]. Written by the open-a-data-file path, cleared by
@@ -1809,9 +1841,9 @@ impl ChartDoc {
 
     /// Hold the composed page at `height` logical points or taller.
     ///
-    /// The column's tiles have a height floor, so a canvas too short to give
-    /// them one composes a page taller than the pane and is scrolled. See
-    /// [`crate::dashboard::stack_extent`].
+    /// The transposed layout's rows have a height floor, so a grid pane too
+    /// short to give them one composes a page taller than the pane and is
+    /// scrolled. See [`crate::dashboard::row_stack_extent`].
     pub fn set_min_page_height(&mut self, height: f32) {
         self.min_page_height = height;
     }
