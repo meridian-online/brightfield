@@ -337,17 +337,20 @@ fn a_transform_with_modifiers_beside_it_is_still_named() {
 }
 
 /// The line the whole `bin`+`count` lift walks: a colour CONSTANT on the fill
-/// is a plain histogram and computes; a COLUMN on the fill is a stack, which
-/// brightfield does not draw, so the pair stays uncomputed and keeps saying so.
+/// is a plain histogram and computes, and a COLUMN on the fill is now carried
+/// the same way — `RectLowerer` groups by it and stacks the segments, so it
+/// computes too. Only `z`, Mosaic's explicit grouping channel with no
+/// renderer behind it, is never carried and keeps refusing.
 ///
-/// Two identical specs but for that one word. If the predicate ever collapses
-/// — every fill treated as a constant, or every fill treated as a column — one
-/// half of this fails, which is the only cheap way to notice. The failure the
-/// COLUMN half prevents is the expensive one: a merged histogram draws bars of
-/// exactly the right total height in a single colour and looks entirely
-/// correct while having discarded the grouping the author asked for.
+/// Two identical specs but for that one word, plus a third with `z` standing
+/// in for it. If the predicate ever collapses back — a column-valued fill
+/// treated like `z` instead of like the colour constant beside it — the
+/// COLUMN half fails, which is the only cheap way to notice. The failure it
+/// prevents is a carried fill wrongly refused as if it were `z`: a spec whose
+/// grouping brightfield DOES draw sits stuck behind an uncomputed-transform
+/// diagnostic it no longer needs.
 #[test]
-fn a_grouping_fill_refuses_the_lift_and_a_colour_constant_takes_it() {
+fn a_carried_fill_and_a_colour_constant_both_take_the_lift_but_z_still_refuses() {
     let histogram = |fill: &str| {
         transforms(&format!(
             "data:\n  flights: {{ file: data/flights.parquet }}\n\
@@ -364,11 +367,11 @@ fn a_grouping_fill_refuses_the_lift_and_a_colour_constant_takes_it() {
         histogram("'#4682b4'").is_empty(),
         "a hex colour is a constant too"
     );
-    let grouped = histogram("version");
     assert!(
-        grouped.contains("x:bin") && grouped.contains("y:count"),
-        "`fill: version` names a column, which Mosaic stacks — the pair must \
-         stay uncomputed and both halves must be named: {grouped:?}"
+        histogram("version").is_empty(),
+        "`fill: version` names a column, which Mosaic stacks — RectLowerer \
+         carries it into the GROUP BY and stacks the segments, so the pair \
+         computes just like the colour constants above"
     );
     // `z` is Mosaic's explicit grouping channel and refuses on its own, so a
     // spec that grouped by `z` while colouring by a constant cannot slip past.
