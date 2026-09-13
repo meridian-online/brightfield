@@ -10,7 +10,7 @@ use indexmap::IndexMap;
 use brightfield_spec::ast::{
     AggregateFunc, Mark, MarkData, ParamNode, SelectionNode, SpecValue, ValueOrParamRef,
 };
-use brightfield_spec::layout::{PlotAxis, PlotScales, ScaleType};
+use brightfield_spec::layout::{PlotAxis, PlotScales, ScaleType, StackOffset};
 use brightfield_spec::vocab::MarkKind;
 
 use crate::error::EmitError;
@@ -41,6 +41,13 @@ pub struct LowerCtx<'a> {
     /// equal RATIOS and not equal widths. Linear on both axes when the plot
     /// named nothing, which is every spec written before the key was read.
     pub scales: PlotScales,
+    /// What the mark's enclosing plot asked its stacks to be measured against
+    /// (`stackOffset`), resolved at emit time. [`RectLowerer`] divides each
+    /// stacked segment by its own bin's total under
+    /// [`StackOffset::Normalize`], so every occupied bin reads as a
+    /// composition. [`StackOffset::None`] when the plot named nothing, which is
+    /// every spec written before the key was read.
+    pub stack_offset: StackOffset,
 }
 
 /// Trait for per-mark AST → IR lowering.
@@ -985,7 +992,7 @@ impl MarkLower for RectLowerer {
         let mut keys = vec![(format!("\"{column}\""), SortDir::Asc)];
         if let Some(fill) = group {
             group_by.push(format!("\"{fill}\""));
-            aggregates.extend(stack_exprs(&column, fill, kind, axis));
+            aggregates.extend(stack_exprs(&column, fill, kind, axis, ctx.stack_offset));
             keys.push((format!("\"{fill}\""), SortDir::Asc));
         }
         Ok(QueryPlan::Order {
@@ -1071,23 +1078,46 @@ fn grouping_fill(options: &IndexMap<String, ValueOrParamRef<SpecValue>>) -> Opti
 /// stack together. Observable Plot reaches the same numbers with its `stackY`
 /// transform in the client; doing it in SQL is what lets a cross-filtered layer
 /// stack over the rows it kept rather than over the rows the page started with.
+///
+/// **Under [`StackOffset::Normalize`] both edges are divided by the same bin's
+/// own total** — a second window over the same partition with no `ORDER BY`,
+/// which is the whole bin rather than the running part of it. That divisor is
+/// the one number this feature turns on: the LAYER's total would make every bin
+/// a share of the page and the tall bins tall again, so
+/// `an_occupied_bin_reaches_the_full_height_under_normalise` reads the stack
+/// tops off the raster rather than the ratio off a helper.
+///
+/// A bin with no rows produces no row here, so the divisor is positive wherever
+/// it is evaluated and there is no zero to guard.
 fn stack_exprs(
     bin_column: &str,
     group: &str,
     kind: ScaleType,
     axis: BinAxis,
+    offset: StackOffset,
 ) -> Vec<AggregateExpr> {
     let partition = bin_edge(bin_column, BinEdge::Low, kind);
     let count = "CAST(COUNT(*) AS DOUBLE)";
     let running = format!("SUM({count}) OVER (PARTITION BY {partition} ORDER BY \"{group}\")");
+    let divisor = match offset {
+        StackOffset::None => None,
+        StackOffset::Normalize => Some(format!("SUM({count}) OVER (PARTITION BY {partition})")),
+    };
+    let measured = |expr: String| match &divisor {
+        Some(total) => format!("(({expr}) / ({total}))"),
+        None => format!("({expr})"),
+    };
     let (lo_col, hi_col) = match axis {
         // The stack grows on the axis OPPOSITE the bins.
         BinAxis::X => (STACK_LO_Y_COL, STACK_HI_Y_COL),
         BinAxis::Y => (STACK_LO_X_COL, STACK_HI_X_COL),
     };
     vec![
-        AggregateExpr::Raw(format!("({running}) - {count} AS {lo_col}")),
-        AggregateExpr::Raw(format!("({running}) AS {hi_col}")),
+        AggregateExpr::Raw(format!(
+            "{} AS {lo_col}",
+            measured(format!("{running} - {count}"))
+        )),
+        AggregateExpr::Raw(format!("{} AS {hi_col}", measured(running.clone()))),
     ]
 }
 
@@ -1709,6 +1739,7 @@ mod tests {
             params,
             plot_px: None,
             scales: PlotScales::default(),
+            stack_offset: StackOffset::default(),
         }
     }
 
@@ -1753,6 +1784,7 @@ mod tests {
             params,
             plot_px: None,
             scales: PlotScales::default(),
+            stack_offset: StackOffset::default(),
         }
     }
 

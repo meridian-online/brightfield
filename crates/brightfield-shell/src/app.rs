@@ -64,7 +64,9 @@ use brightfield_render::canvas_host::{ChartSurface, Color, PixelSize};
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_spec::ast::SpecValue;
 use brightfield_spec::edit::{self, ChartEdit};
-use brightfield_spec::layout::{plot_scale_key, PlotAxis, ScaleType};
+use brightfield_spec::layout::{
+    plot_scale_key, PlotAxis, ScaleType, StackOffset, STACK_OFFSET_KEY,
+};
 use brightfield_spec::vocab::MarkKind;
 use brightfield_workbench::item::ModuleHost;
 use brightfield_workbench::registry::{ChartKindId, ChartKindRegistry, DockSide, Field, Slot};
@@ -513,6 +515,37 @@ pub struct ScaleSwitchDrawn {
     pub hover: String,
 }
 
+/// **One grouped histogram's normalise control, as the last frame drew it.**
+///
+/// The sibling of [`ScaleSwitchDrawn`], recorded the same way and for the same
+/// reason: the rects here are the ones the painter and the hit test were
+/// handed, in one expression each, so a readback cannot agree with a paint that
+/// has moved. In **window-space logical points**.
+///
+/// There is no `column` for the axis, because this control does not act on one:
+/// it re-measures a stack, and the column it names in its hover text is the one
+/// the stack is split BY.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NormaliseSwitchDrawn {
+    /// Which plot on the page this control acts on — an index into
+    /// [`Composed::plots`].
+    pub plot: usize,
+    /// The column that plot's bins are split by, as the table spells it.
+    pub group: String,
+    /// The control's outer rect — the box the hover text is offered over.
+    pub rect: egui::Rect,
+    /// One entry per offered state, in the order they were drawn, each with
+    /// the rect a pointer has to be inside to pick it.
+    pub states: Vec<(StackOffset, egui::Rect)>,
+    /// The offset the picture on screen was actually composed against, read
+    /// off the plot handle rather than off the spec — so a control reading
+    /// *shares* stands over a picture of shares.
+    pub active: StackOffset,
+    /// The words the control offers on hover, verbatim. The same `String` is
+    /// handed to the tooltip, so the two cannot drift.
+    pub hover: String,
+}
+
 /// The chart view's **document**: the composited dashboard, the canvas it
 /// rasters into, and the chart state the panes read.
 ///
@@ -651,6 +684,10 @@ pub struct ChartDoc {
     /// longer there, which is the same failure [`Self::raster_rect`] clears
     /// itself against each frame.
     pub scale_switches: Vec<ScaleSwitchDrawn>,
+    /// **Each grouped histogram's normalise control, as the last frame drew
+    /// it** — the sibling list to [`Self::scale_switches`], written by the
+    /// chart pane as it draws and read by a GPU-free test.
+    pub normalise_switches: Vec<NormaliseSwitchDrawn>,
     /// Where each interval slider's track was drawn last frame, as
     /// `(control key, rect)` in window-space logical points — empty until a
     /// frame has laid the rail out, and empty for a spec that declares none.
@@ -821,6 +858,7 @@ impl ChartDoc {
             raster_rect: None,
             legend_rect: None,
             scale_switches: Vec::new(),
+            normalise_switches: Vec::new(),
             interval_slider_rects: Vec::new(),
             stacked_tiles: None,
             min_page_height: 0.0,
@@ -865,6 +903,7 @@ impl ChartDoc {
             raster_rect: None,
             legend_rect: None,
             scale_switches: Vec::new(),
+            normalise_switches: Vec::new(),
             interval_slider_rects: Vec::new(),
             stacked_tiles: None,
             min_page_height: 0.0,
@@ -1102,13 +1141,38 @@ impl ChartDoc {
     /// attribute key, an edit the reload gate refused, and a reload or a
     /// present the engine refused.
     pub fn set_plot_scale(&mut self, plot: usize, axis: PlotAxis, kind: ScaleType) -> bool {
+        let Some(key) = plot_scale_key(axis) else {
+            return false;
+        };
+        self.set_plot_attribute(plot, key, kind.wire_name(), "the scale switch was refused")
+    }
+
+    /// **Write one plot's `stackOffset` and rebuild the page from it** — the
+    /// normalise control's half of [`Self::set_plot_scale`], through the same
+    /// edit, the same reload gate and the same rebuild.
+    ///
+    /// Returns whether the picture changed, refusing on the same five
+    /// conditions the scale switch does.
+    pub fn set_plot_stack_offset(&mut self, plot: usize, offset: StackOffset) -> bool {
+        self.set_plot_attribute(
+            plot,
+            STACK_OFFSET_KEY,
+            offset.wire_name(),
+            "the normalise control was refused",
+        )
+    }
+
+    /// Write one string attribute onto one plot's node in the LIVE spec and
+    /// rebuild the page from it.
+    ///
+    /// The one write path both tile controls take, so what survives a pick —
+    /// the viewport, the hero bound, the ink mode; not the engine session —
+    /// cannot come to depend on which control was thrown.
+    fn set_plot_attribute(&mut self, plot: usize, key: &str, value: &str, refused: &str) -> bool {
         let Some(handle) = self.composed.plots.get(plot) else {
             return false;
         };
         let path = ComponentPath(handle.path.clone());
-        let Some(key) = plot_scale_key(axis) else {
-            return false;
-        };
         let Some(live) = self.live.as_ref() else {
             return false;
         };
@@ -1116,11 +1180,11 @@ impl ChartDoc {
         let edit = ChartEdit::SetPlotAttribute {
             plot: path,
             key: key.to_string(),
-            value: SpecValue::String(kind.wire_name().to_string()),
+            value: SpecValue::String(value.to_string()),
         };
         if let Err(reason) = edit::apply(&mut spec, &edit) {
             self.interaction_fault = Some(ChartFault {
-                title: "the scale switch was refused".to_string(),
+                title: refused.to_string(),
                 detail: reason.reason().to_string(),
             });
             return false;

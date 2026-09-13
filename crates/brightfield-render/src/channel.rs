@@ -633,6 +633,19 @@ impl ChannelMap {
             if bins && counts {
                 self.insert(lo, lo_col.to_string());
                 self.insert(hi, hi_col.to_string());
+                // The BARE value channel moves to the stack top too, and this
+                // is the line that gets the axis right. `infer_scales` builds
+                // the value scale from it, and a domain built over the raw
+                // per-segment count stops at the tallest SEGMENT — so a stack
+                // of three would run off the top of a plot scaled to one of
+                // them, and under `stackOffset: normalize` an axis of counts
+                // would run to the tallest count over bars that stop at 1.
+                // The stack top is what the picture actually reaches.
+                let value = match lo {
+                    Channel::Y1 => Channel::Y,
+                    _ => Channel::X,
+                };
+                self.insert(value, hi_col.to_string());
                 return;
             }
         }
@@ -654,6 +667,26 @@ impl ChannelMap {
         cm.set_projection(MarkProjection::of(mark.kind, plot));
         cm.set_scale_types(plot.map(resolve_plot_scales).unwrap_or_default());
         cm
+    }
+
+    /// **The column this mark's bins are split by**, when it is a binned rect
+    /// whose `fill:` named one — the question a surface asks to find out
+    /// whether the picture in front of it is a stack.
+    ///
+    /// Answered off the reserved stack columns rather than off the `fill`
+    /// binding alone, because a `fill` column on a mark that does not bin is a
+    /// colour and not a stack. [`Self::bind_stacked_value_axis`] binds those
+    /// two channels exactly when the lowerer emits them, so this is the same
+    /// condition read back rather than a second derivation of it.
+    #[must_use]
+    pub fn stacked_group(&self) -> Option<&str> {
+        let stacked = [
+            (Channel::Y1, STACK_LO_Y_COL),
+            (Channel::X1, STACK_LO_X_COL),
+        ]
+        .iter()
+        .any(|(ch, col)| self.get(*ch) == Some(*col));
+        stacked.then(|| self.get(Channel::Fill)).flatten()
     }
 
     /// Iterator over all mapped channels.

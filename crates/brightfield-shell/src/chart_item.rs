@@ -57,7 +57,7 @@ use brightfield_render::channel::Channel;
 use brightfield_render::mark::Projection;
 use brightfield_render::scale::Scale;
 use brightfield_spec::analysis::BrushKind;
-use brightfield_spec::layout::{PlotAxis, ScaleType};
+use brightfield_spec::layout::{PlotAxis, ScaleType, StackOffset};
 use brightfield_spec::vocab::MarkKind;
 use brightfield_sql::ir::ScalarValue;
 use brightfield_workbench::item::{ChartModule, ModuleHost};
@@ -70,7 +70,7 @@ use meridian_design::chrome::{OverlayTokens, INK_DARK, INK_LIGHT, OVERLAY_DARK, 
 use meridian_design::semantic::{semantic, Role};
 use meridian_design::{control, radius, spacing, typography, Elevation};
 
-use crate::app::{ChartDoc, HoverReadout, ScaleSwitchDrawn, CHART};
+use crate::app::{ChartDoc, HoverReadout, NormaliseSwitchDrawn, ScaleSwitchDrawn, CHART};
 use crate::canvas::{set_surface_cursor, surface_input, EguiOverlay};
 use crate::design::Mode;
 use crate::legend;
@@ -1260,7 +1260,13 @@ impl Item<ChartDoc> for ChartItem {
             // document, because a GPU-free window is exactly where it is read
             // from.
             let (switches, picked) = draw_scale_switches(doc, ui, rect, mode);
+            // The normalise control, beside the switch that has just been
+            // placed — it reads that record for its right edge, so the two
+            // cannot overlap however wide either one's words are.
+            let (normalise, normalise_picked) =
+                draw_normalise_switches(doc, ui, rect, mode, &switches);
             doc.scale_switches = switches;
+            doc.normalise_switches = normalise;
 
             // Same gestures with a device and without one. The overlay is the
             // only thing a headless document loses: it has nowhere to paint.
@@ -1281,6 +1287,13 @@ impl Item<ChartDoc> for ChartItem {
             // does not.
             if let Some((plot, axis, state)) = picked {
                 if doc.set_plot_scale(plot, axis, state) {
+                    cx.request_repaint();
+                }
+            }
+            // The normalise pick, on the same footing and through the same
+            // rebuild — see [`ChartDoc::set_plot_stack_offset`].
+            if let Some((plot, state)) = normalise_picked {
+                if doc.set_plot_stack_offset(plot, state) {
                     cx.request_repaint();
                 }
             }
@@ -1565,6 +1578,204 @@ fn draw_scale_switch(
         },
         picked,
     ))
+}
+
+/// The states the normalise control offers, in the order it draws them.
+///
+/// Declared as one array for the reason [`SCALE_STATES`] is: the picker, the
+/// hit test and the readback read the same list.
+const NORMALISE_STATES: [StackOffset; 2] = [StackOffset::None, StackOffset::Normalize];
+
+/// The word the control puts on a state.
+///
+/// Not [`StackOffset::wire_name`]. That is the spelling the spec carries —
+/// Observable Plot's `normalize`, kept as Plot spells it — and *none* is the
+/// name of an absent offset rather than a reading a bar can have. What the two
+/// states mean on a grouped histogram is that a bar stands for a count or for a
+/// share, so that is what the control says.
+fn normalise_state_label(state: StackOffset) -> &'static str {
+    match state {
+        StackOffset::None => "count",
+        StackOffset::Normalize => "share",
+    }
+}
+
+/// The words the normalise control offers on hover: what it is, and which
+/// tile's.
+///
+/// It names the column the bins are SPLIT by, not the column they are cut on,
+/// because that is the column the control changes the reading of — and because
+/// the scale switch beside it already names the other one, so a page carrying
+/// both offers two different sentences rather than the same one twice.
+fn normalise_hover(group: &str) -> String {
+    format!("normalise: {group}")
+}
+
+/// **Draw one grouped histogram's normalise control and return what it drew**,
+/// plus the state the pointer picked on this frame.
+///
+/// The chrome is the scale switch's — the same font, the same gap, the same
+/// separator, the same small-face height — because there is one kind of tile
+/// control and this is it wearing a different pair of words. `right` is the
+/// edge it ends at: the scale switch's left edge on a tile that carries one,
+/// and the tile's own trailing inset on a tile that does not.
+///
+/// `None` when the tile has no room for it, which is the same refusal
+/// [`draw_scale_switch`] makes and for the same reason: a control drawn over
+/// the neighbouring tile is worse than no control.
+fn draw_normalise_switch(
+    ui: &mut egui::Ui,
+    tile: egui::Rect,
+    clip: egui::Rect,
+    right: f32,
+    subject: (usize, &str, StackOffset),
+    mode: Mode,
+) -> Option<(NormaliseSwitchDrawn, Option<StackOffset>)> {
+    let (plot, group, active) = subject;
+    let sem = semantic(mode.is_dark());
+    let font = egui::FontId::proportional(typography::CHART_LABEL_SIZE);
+    let gap = spacing::SPACE_2;
+    let painter = ui.painter().with_clip_rect(clip);
+
+    let width_of = |text: &str| {
+        painter
+            .layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::PLACEHOLDER)
+            .size()
+            .x
+    };
+    let labels: Vec<&str> = NORMALISE_STATES
+        .iter()
+        .map(|s| normalise_state_label(*s))
+        .collect();
+    let separator = width_of(SCALE_STATE_SEPARATOR);
+    let widths: Vec<f32> = labels.iter().map(|l| width_of(l)).collect();
+    let total: f32 = widths.iter().sum::<f32>()
+        + separator * (labels.len() as f32 - 1.0)
+        + gap * (labels.len() as f32 - 1.0) * 2.0;
+    let height = control::HEIGHT_XS;
+
+    let inset = spacing::SPACE_2;
+    if right - total < tile.left() + inset || height + inset * 2.0 > tile.height() {
+        return None;
+    }
+    let outer = egui::Rect::from_min_size(
+        egui::pos2(right - total, tile.top() + inset),
+        egui::vec2(total, height),
+    );
+
+    let hover = normalise_hover(group);
+    let mut states = Vec::with_capacity(labels.len());
+    let mut picked = None;
+    let mut x = outer.left();
+    for (i, label) in labels.iter().enumerate() {
+        if i > 0 {
+            painter.text(
+                egui::pos2(x + gap + separator / 2.0, outer.center().y),
+                egui::Align2::CENTER_CENTER,
+                SCALE_STATE_SEPARATOR,
+                font.clone(),
+                chrome::colour(sem.text.placeholder),
+            );
+            x += gap * 2.0 + separator;
+        }
+        let seg =
+            egui::Rect::from_min_size(egui::pos2(x, outer.top()), egui::vec2(widths[i], height));
+        x += widths[i];
+        let state = NORMALISE_STATES[i];
+        let hit = seg.intersect(clip);
+        let response = ui
+            .interact(
+                hit,
+                egui::Id::new(("tile-normalise-switch", plot, i)),
+                egui::Sense::click(),
+            )
+            .on_hover_text(hover.clone());
+        if response.clicked() {
+            picked = Some(state);
+        }
+        let ink = if state == active {
+            sem.text.primary
+        } else if response.hovered() {
+            sem.text.secondary
+        } else {
+            sem.text.muted
+        };
+        painter.text(
+            seg.center(),
+            egui::Align2::CENTER_CENTER,
+            *label,
+            font.clone(),
+            chrome::colour(ink),
+        );
+        states.push((state, seg));
+    }
+
+    Some((
+        NormaliseSwitchDrawn {
+            plot,
+            group: group.to_owned(),
+            rect: outer,
+            states,
+            active,
+            hover,
+        },
+        picked,
+    ))
+}
+
+/// **Every grouped histogram's normalise control on this page**, drawn and
+/// recorded, with the pick the pointer made on this frame.
+///
+/// The offer is read off [`PlotHandle::group_column`], which the composition
+/// writes from the mark's own channel map — so the control appears exactly
+/// where a stack was drawn, and nowhere a stack was not. The generator gives
+/// each tile one column, so no tile it composes carries a group and the
+/// housing dashboard draws none of these;
+/// `the_housing_dashboard_draws_no_normalise_control` is that half.
+///
+/// `switches` is the scale-switch record this frame has already written, and
+/// it decides only where this control ENDS: beside the switch on a tile that
+/// carries one, at the tile's own trailing inset on a tile that does not.
+fn draw_normalise_switches(
+    doc: &ChartDoc,
+    ui: &mut egui::Ui,
+    page: egui::Rect,
+    mode: Mode,
+    switches: &[ScaleSwitchDrawn],
+) -> (Vec<NormaliseSwitchDrawn>, Option<(usize, StackOffset)>) {
+    let views = doc.pane_views;
+    let laid = ui.clip_rect();
+    let mut drawn = Vec::new();
+    let mut pick = None;
+    for (i, plot) in doc.composed.plots.iter().enumerate() {
+        let Some(group) = plot.group_column.as_deref() else {
+            continue;
+        };
+        let tile = crate::app::plot_window_rect(page, views, plot);
+        #[allow(clippy::cast_possible_truncation)]
+        let centre = (plot.rect.x + plot.rect.width / 2.0) as f32;
+        let clip = match views {
+            Some(view) if view.second_draws(centre) => view.second,
+            Some(view) => view.first,
+            None => laid,
+        };
+        let right = switches
+            .iter()
+            .find(|s| s.plot == i)
+            .map_or(tile.right() - spacing::SPACE_2, |s| {
+                s.rect.left() - spacing::SPACE_2 * 2.0
+            });
+        let Some((record, picked)) =
+            draw_normalise_switch(ui, tile, clip, right, (i, group, plot.stack_offset), mode)
+        else {
+            continue;
+        };
+        if let Some(state) = picked {
+            pick = Some((i, state));
+        }
+        drawn.push(record);
+    }
+    (drawn, pick)
 }
 
 /// **Every histogram tile's switch on this page**, drawn and recorded, with
@@ -1974,6 +2185,8 @@ mod tests {
             }),
             x_column: Some("x".to_string()),
             y_column: Some("y".to_string()),
+            group_column: None,
+            stack_offset: StackOffset::None,
             sample: None,
             hover: Some(HoverLayer {
                 mark: 0,

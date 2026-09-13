@@ -676,6 +676,74 @@ impl PlotScales {
     }
 }
 
+/// **What a stacked mark's segments are measured against** — Observable Plot's
+/// stack `offset`, as a plot attribute.
+///
+/// Plot writes it on the stack transform (`stackY({offset: "normalize"})`);
+/// brightfield writes it on the PLOT, because the control that throws it is a
+/// plot's control and the switch beside it already writes `xScale` there.
+/// The deviation is recorded as DEV-0008 in `deviations.yaml`.
+///
+/// **`normalize` here is not Mosaic's density `normalize`.** That key sits on a
+/// `density` mark and divides a kernel estimate by its own sum or maximum so a
+/// curve integrates to one. This divides each stacked segment by its own bin's
+/// total so a bar reads as a composition. Two features, one English word, and
+/// the reason this one is spelled as an OFFSET rather than as a bare
+/// `normalize:` attribute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StackOffset {
+    /// Segments carry their own values and the stack reaches the group's total.
+    /// The default, and the reading every spec written before this key had.
+    #[default]
+    None,
+    /// Each segment is divided by its stack's total, so every occupied stack
+    /// reaches the same height and the bar reads as shares.
+    Normalize,
+}
+
+impl StackOffset {
+    /// The wire name this build reads back, matched exactly for the reason
+    /// [`ScaleType::from_wire`] is.
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Normalize => "normalize",
+        }
+    }
+
+    /// Read a wire name, or `None` for a spelling this build does not know.
+    #[must_use]
+    pub fn from_wire(name: &str) -> Option<Self> {
+        match name {
+            "none" => Some(Self::None),
+            "normalize" => Some(Self::Normalize),
+            _ => None,
+        }
+    }
+}
+
+/// The plot attribute [`resolve_plot_stack_offset`] reads — **the consumed
+/// key**, read out of this constant at the one lookup, so a rename here is a
+/// rename everywhere and `a_plot_written_stack_offset_normalize_resolves_it`
+/// says what it reads.
+pub const STACK_OFFSET_KEY: &str = "stackOffset";
+
+/// Resolve a plot's `stackOffset` attribute.
+///
+/// A pure spec reading, on the same standing as [`resolve_plot_scales`]: it
+/// says what the author asked for and holds no opinion about what a lowerer
+/// then does with it. A name outside the two [`StackOffset::from_wire`] knows
+/// leaves the plot unnormalised, the same degradation an unknown scale name
+/// takes — a word this build cannot draw is not a reason to draw nothing.
+#[must_use]
+pub fn resolve_plot_stack_offset(plot: &PlotNode) -> StackOffset {
+    match plot.attributes.get(STACK_OFFSET_KEY) {
+        Some(SpecValue::String(s)) => StackOffset::from_wire(s).unwrap_or_default(),
+        _ => StackOffset::default(),
+    }
+}
+
 /// The plot attribute naming each positional axis's scale type — **the
 /// consumed list**.
 ///
