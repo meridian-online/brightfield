@@ -411,8 +411,8 @@ fn a_symlog_axis_bins_the_column_in_symlog_space() {
 ///
 /// Read off the PAINTED shapes, not `compute_ticks`'s in-memory `Tick.label`
 /// — a build whose tick VALUES are right but whose paint step drops or
-/// mislabels them would still pass a check that reads `t.label` before
-/// anything reaches the scene. `Composed::scene`'s own glyph runs
+/// mislabels them would still pass a check that reads `t.label` before the
+/// scene is painted. `Composed::scene`'s own glyph runs
 /// (`vello_encoding::GlyphRun`, the record `dashboard_baseline.rs`'s
 /// `drawn_x_axis_rects` reads for the same reason) carry a glyph COUNT per
 /// run, not the glyphs' characters — vello does not keep those — so `"1"`
