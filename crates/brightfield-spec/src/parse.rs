@@ -3639,7 +3639,10 @@ plot:
     }
 
     /// Every refusal, in one place. Each leaves the channels as plain objects,
-    /// which is what keeps the uncomputed-transform diagnostic firing.
+    /// which is what keeps the uncomputed-transform diagnostic firing. The
+    /// one grouping channel the lowerer CAN carry — a column-valued `fill` —
+    /// is pinned separately, as a LIFT rather than a refusal, in
+    /// [`a_column_valued_fill_still_lifts_the_bin_as_a_stack`].
     #[test]
     fn the_bin_lift_refuses_everything_it_cannot_compute() {
         let refused = |src: &str, why: &str| {
@@ -3659,15 +3662,22 @@ plot:
             "mark: rectY\nx: { bin: delay }\ny: value\n",
             "a bin with no count opposite it has nothing to group",
         );
-        // A column-valued fill: a grouping, not a plain histogram.
-        refused(
-            "mark: rectY\nx: { bin: delay }\ny: { count: }\nfill: version\n",
-            "a column-valued fill is a stack, not a histogram",
-        );
         // An explicit `z`, whatever the fill.
         refused(
             "mark: rectY\nx: { bin: delay }\ny: { count: }\nz: version\nfill: steelblue\n",
             "`z` is Mosaic's grouping channel",
+        );
+        // A field-valued `stroke`: a rect draws no per-row stroke, so a
+        // split on it would be invisible.
+        refused(
+            "mark: rectY\nx: { bin: delay }\ny: { count: }\nstroke: version\nfill: steelblue\n",
+            "a rect reads no per-row stroke column",
+        );
+        // A non-string binding on a colour channel (here a map): not a
+        // colour constant, and not a column name either.
+        refused(
+            "mark: rectY\nx: { bin: delay }\ny: { count: }\nfill: { sql: 'a + b' }\n",
+            "a non-string binding on a colour channel is neither literal nor column",
         );
         // A modifier the lowerer does not honour. Honouring the `bin` and
         // ignoring the modifier would draw a chart nobody asked for.
@@ -3679,6 +3689,27 @@ plot:
         refused(
             "mark: rectY\nx: { bin: { sql: 'a + b' } }\ny: { count: }\n",
             "the bin must name a column",
+        );
+    }
+
+    /// The one grouping channel the lowerer CAN carry: a `fill:` naming a
+    /// column lifts the bin exactly as a plain histogram does.
+    /// `RectLowerer` carries the column into the GROUP BY and stacks the
+    /// segments it produces, so the refusal pinned in
+    /// [`the_bin_lift_refuses_everything_it_cannot_compute`] does not reach
+    /// this case.
+    #[test]
+    fn a_column_valued_fill_still_lifts_the_bin_as_a_stack() {
+        let entry = mark_channel(
+            "mark: rectY\nx: { bin: delay }\ny: { count: }\nfill: version\n",
+            "x",
+        );
+        assert_eq!(
+            entry,
+            ValueOrParamRef::Value(SpecValue::Bin {
+                column: "delay".to_string(),
+                steps: None,
+            })
         );
     }
 
