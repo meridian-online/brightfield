@@ -241,6 +241,242 @@ fn a_log_axis_is_ticked_in_decades() {
 }
 
 // ---------------------------------------------------------------------------
+// Symlog: the same 37 observations, ticked and binned
+// ---------------------------------------------------------------------------
+
+/// The 37 raw observations `examples/rect-bin-count.yaml` and
+/// `examples/rect-bin-count-log.yaml` both hold, this time under `xScale:
+/// symlog` — the third scale offered over the same data, so a domain
+/// difference from the log document is the attribute doing something and not
+/// a different fixture. None of the 37 sit at or below zero, so this fixture
+/// is not where the domain's reach to zero is pinned —
+/// `log_drops_the_rows_at_or_below_zero_and_symlog_keeps_them`, above, is that
+/// half.
+const SYMLOG_37: &str = r#"
+data:
+  observations:
+    - { v: 1 }
+    - { v: 3 }
+    - { v: 4 }
+    - { v: 6 }
+    - { v: 7 }
+    - { v: 9 }
+    - { v: 11 }
+    - { v: 12 }
+    - { v: 12 }
+    - { v: 13 }
+    - { v: 14 }
+    - { v: 14 }
+    - { v: 15 }
+    - { v: 16 }
+    - { v: 16 }
+    - { v: 17 }
+    - { v: 17 }
+    - { v: 18 }
+    - { v: 19 }
+    - { v: 19 }
+    - { v: 21 }
+    - { v: 22 }
+    - { v: 23 }
+    - { v: 24 }
+    - { v: 26 }
+    - { v: 27 }
+    - { v: 29 }
+    - { v: 31 }
+    - { v: 34 }
+    - { v: 38 }
+    - { v: 42 }
+    - { v: 47 }
+    - { v: 53 }
+    - { v: 61 }
+    - { v: 72 }
+    - { v: 88 }
+    - { v: 97 }
+plot:
+  - mark: rectY
+    data: { from: observations }
+    x: { bin: v }
+    y: { count: }
+    fill: steelblue
+xScale: symlog
+width: 640
+height: 400
+"#;
+
+fn symlog_37_observations() -> PathBuf {
+    let path = scratch().join("rect-bin-count-symlog.yaml");
+    std::fs::write(&path, SYMLOG_37).expect("write fixture");
+    path
+}
+
+/// The bin space these 37 values snap their extent in is
+/// `sign(v) * ln(1 + |v|)` — natural log, the base `bin_space_expr`'s
+/// `ScaleType::Symlog` arm (`crates/brightfield-sql/src/lower.rs`) takes so it
+/// agrees with `symlog_of` (`crates/brightfield-render/src/scale.rs`). Snapped
+/// to a nice step in that space and mapped back, the low and high edges land
+/// on `e^0.6 - 1` and `e^4.6 - 1` — not round numbers, unlike the log
+/// document's edges, because nothing here asked for one.
+///
+/// **`SYMLOG_37_BIN_COUNT` = 20**: `bin_spec_query`
+/// (`crates/brightfield-sql/src/lower.rs`) snaps the bin-space span `[0.6,
+/// 4.6]` pinned above to a step of `0.2` for these 37 observations at the
+/// default 25 target steps — `(4.6 - 0.6) / 0.2 = 20` — so the k-th of the 21
+/// bin edges sits at bin-space value `0.6 + k * 0.2`.
+///
+/// Every bar in the picture — not only the outermost one's two ends — stands
+/// on one of those 21 edges. The outermost two are a weak witness:
+/// `interpolate` (`crates/brightfield-render/src/scale.rs`) forces the
+/// domain's own two ends onto the range's own two ends for ANY monotonic
+/// transform, so a build that placed bars by straight linear interpolation
+/// over the raw column would still pass a check that only reads those two.
+/// The bins are cut at an EQUAL STEP in bin space, though, and equal steps
+/// are equal FRACTIONS of that span regardless of which transform did the
+/// cutting — so the k-th edge belongs at exactly `k / SYMLOG_37_BIN_COUNT` of
+/// the way from `range_start` to `range_end`, a fact about the nice-step
+/// arithmetic above, not the renderer's own [`Scale::map_f64`].
+/// `symlog_37_bin_edge_pixel`
+/// computes exactly that — no call into `map_f64` or `symlog_of` anywhere in
+/// this test — so a `symlog_of` that draws bars by some OTHER transform (the
+/// renderer's and the query's bin space disagreeing on their base) cannot
+/// make this check agree with itself the way it could a check built from
+/// `map_f64` on both sides.
+const SYMLOG_37_BIN_COUNT: usize = 20;
+
+/// The pixel position of the query's k-th bin edge (`k` in
+/// `0..=SYMLOG_37_BIN_COUNT`) for the 37-observation symlog fixture, derived
+/// from the scale's own range alone — see the derivation on
+/// [`a_symlog_axis_bins_the_column_in_symlog_space`] above.
+fn symlog_37_bin_edge_pixel(scale: &Scale, k: usize) -> f64 {
+    let t = k as f64 / SYMLOG_37_BIN_COUNT as f64;
+    scale.range_start() + t * (scale.range_end() - scale.range_start())
+}
+
+#[test]
+fn a_symlog_axis_bins_the_column_in_symlog_space() {
+    let (symlog, png) = compose_and_capture(&symlog_37_observations(), "symlog.png");
+
+    let symlog_x = x_scale(&symlog);
+    assert!(
+        matches!(symlog_x, Scale::Symlog { .. }),
+        "xScale: symlog must reach the drawn scale set, got {symlog_x:?}"
+    );
+    let (lo, hi) = (
+        symlog_x.domain_min().expect("lo"),
+        symlog_x.domain_max().expect("hi"),
+    );
+    assert!(
+        (lo - 0.822_118_800_390_509_1).abs() < 1e-6,
+        "the first bin's low edge is e^0.6 - 1 = 0.8221..., not {lo} — a bin \
+         space rebased to log10 snaps its nice step over a differently-scaled \
+         span and lands here instead"
+    );
+    assert!(
+        (hi - 98.484_315_641_933_86).abs() < 1e-6,
+        "the last bin's high edge is e^4.6 - 1 = 98.4843..., got {hi}"
+    );
+
+    // Every bar's rect stands on an edge the query's bin space cut — both
+    // its left and its right, matched to the NEAREST of the 21 grid points
+    // rather than an assumed bin index, because two adjacent occupied bins
+    // of equal count draw as one wider bar and merge their shared edge away.
+    const BAR_EDGE_TOL: f64 = 2.0;
+    let found = bars(&png, STEELBLUE);
+    assert!(!found.is_empty(), "the symlog picture has no bars to check");
+    for &(left, right, _height) in &found {
+        for (name, x) in [("left", left), ("right", right)] {
+            let x = f64::from(x);
+            let t = (x - symlog_x.range_start()) / (symlog_x.range_end() - symlog_x.range_start());
+            let k = (t * SYMLOG_37_BIN_COUNT as f64)
+                .round()
+                .clamp(0.0, SYMLOG_37_BIN_COUNT as f64) as usize;
+            let expected = symlog_37_bin_edge_pixel(&symlog_x, k);
+            assert!(
+                (x - expected).abs() <= BAR_EDGE_TOL,
+                "a bar's {name} edge stands at column {x}, not within \
+                 {BAR_EDGE_TOL}px of bin edge {k} (expected column {expected}) \
+                 — every bar stands on an edge the query's bin space cut"
+            );
+        }
+    }
+}
+
+/// A symlog axis over data whose domain stays clear of zero is ticked at the
+/// powers of ten inside it — the same decade ladder `log_tick_values` walks on
+/// its side of zero, built instead by `symlog_tick_values`
+/// (`crates/brightfield-render/src/axis.rs`), which also carries zero onto the
+/// axis when a domain reaches it. This domain — pinned by
+/// `a_symlog_axis_bins_the_column_in_symlog_space`, above — spans
+/// `[0.8221..., 98.4843...]`, which holds exactly two signed powers of ten and
+/// no zero.
+///
+/// Read off the PAINTED shapes, not `compute_ticks`'s in-memory `Tick.label`
+/// — a build whose tick VALUES are right but whose paint step drops or
+/// mislabels them would still pass a check that reads `t.label` before the
+/// scene is painted. `Composed::scene`'s own glyph runs
+/// (`vello_encoding::GlyphRun`, the record `dashboard_baseline.rs`'s
+/// `drawn_x_axis_rects` reads for the same reason) carry a glyph COUNT per
+/// run, not the glyphs' characters — vello does not keep those — so `"1"`
+/// (one glyph) and `"10"` (two) are told apart by length, and each run's own
+/// screen position is checked against where the SCALE (not
+/// `symlog_tick_values`) places that value, tying the count back to which
+/// decade it is.
+#[test]
+fn a_symlog_axis_is_ticked_at_the_signed_decades() {
+    let (symlog, _) = compose_and_capture(&symlog_37_observations(), "symlog-ticks.png");
+    let scale = x_scale(&symlog);
+    assert!(
+        matches!(scale, Scale::Symlog { .. }),
+        "xScale: symlog must reach the drawn scale set, got {scale:?}"
+    );
+
+    let plot = symlog.plots.first().expect("one plot");
+    let label_size = brightfield_render::text::LABEL_SIZE;
+
+    // The x-axis tick-label row sits `TICK_LENGTH + LABEL_SIZE` (both
+    // private to `axis.rs`) below the plot's own bottom edge. `+ 10.0` finds
+    // that row without the private constant: a Y-axis tick landing exactly
+    // on the bottom edge draws its OWN label at most `LABEL_SIZE / 3` below
+    // it (measured here at 3.67px), well short of the x-row's 16px.
+    let x_label_row_y = plot.rect.y + plot.layout.plot_y_end() + 10.0;
+
+    let mut runs: Vec<(f64, usize)> = symlog
+        .scene
+        .encoding()
+        .resources
+        .glyph_runs
+        .iter()
+        .filter(|run| {
+            (run.font_size - label_size).abs() < 0.01
+                && run.transform.matrix[0].abs() > 0.5 // horizontal, not the rotated y title
+                && f64::from(run.transform.translation[1]) > x_label_row_y
+        })
+        .map(|run| (f64::from(run.transform.translation[0]), run.glyphs.len()))
+        .collect();
+    runs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+    let counts: Vec<usize> = runs.iter().map(|&(_, count)| count).collect();
+    assert_eq!(
+        counts,
+        vec![1, 2],
+        "the axis band paints exactly two tick labels, \"1\" (one painted \
+         glyph) then \"10\" (two), left to right; an empty \
+         `symlog_tick_values` paints none here rather than this pair"
+    );
+
+    for (&(x0, _), &value) in runs.iter().zip([1.0_f64, 10.0_f64].iter()) {
+        let label = format!("{}", value as i64);
+        let width = brightfield_render::text::measure_width(&label, label_size);
+        let expected_x0 = plot.rect.x + scale.map_f64(value) - width / 2.0;
+        assert!(
+            (x0 - expected_x0).abs() < 1.0,
+            "the painted \"{label}\" run sits at column {x0}, not at column \
+             {expected_x0} — where the scale (not `symlog_tick_values`) \
+             places {value}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Rows at or below zero
 // ---------------------------------------------------------------------------
 

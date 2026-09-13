@@ -846,6 +846,51 @@ fn a_press_on_the_switch_is_not_a_press_on_the_canvas() {
 }
 
 // ---------------------------------------------------------------------------
+// Symlog — the switch's own drawn record after a throw to the third state.
+// ---------------------------------------------------------------------------
+
+/// A click on `population`'s `symlog` segment reads back `Symlog` on the
+/// switch's own drawn record — the state
+/// `a_click_writes_one_key_into_the_canonical_spec`, above, holds for `log`.
+///
+/// `active` is set from `composed_scale_type`
+/// (`crates/brightfield-shell/src/chart_item.rs`), so a build whose symlog arm
+/// read back `ScaleType::Linear` would still draw a symlog picture behind a
+/// switch that disagrees with it — this readback is where that disagreement
+/// shows up rather than in the pixels.
+#[test]
+fn a_click_to_symlog_reads_symlog_on_the_switchs_own_record() {
+    let mut live = Live::open(housing_boot());
+    live.settle();
+    assert_eq!(
+        live.switch("population").active,
+        ScaleType::Linear,
+        "population starts linear"
+    );
+
+    live.switch_to("population", ScaleType::Symlog);
+
+    assert!(
+        matches!(
+            live.doc().composed.plots[live.switch("population").plot]
+                .scales
+                .get(brightfield_render::channel::Channel::X),
+            Some(brightfield_render::scale::Scale::Symlog { .. })
+        ),
+        "population's x scale after the click: {:?}",
+        live.doc().composed.plots[live.switch("population").plot]
+            .scales
+            .get(brightfield_render::channel::Channel::X)
+    );
+    assert_eq!(
+        live.switch("population").active,
+        ScaleType::Symlog,
+        "the switch's drawn record after a throw to symlog: {:?}",
+        live.switch("population")
+    );
+}
+
+// ---------------------------------------------------------------------------
 // AC5 — a brush elsewhere narrows the log tile without moving its scale.
 // ---------------------------------------------------------------------------
 
