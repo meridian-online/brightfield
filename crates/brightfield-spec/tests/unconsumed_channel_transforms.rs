@@ -339,7 +339,7 @@ fn a_transform_with_modifiers_beside_it_is_still_named() {
 /// The line the whole `bin`+`count` lift walks: a colour CONSTANT on the fill
 /// is a plain histogram and computes, and a COLUMN on the fill is now carried
 /// the same way — `RectLowerer` groups by it and stacks the segments, so it
-/// computes too. Only `z`, Mosaic's explicit grouping channel with no
+/// computes too. `z`, Mosaic's explicit grouping channel with no
 /// renderer behind it, is never carried and keeps refusing.
 ///
 /// Two identical specs but for that one word, plus a third with `z` standing
