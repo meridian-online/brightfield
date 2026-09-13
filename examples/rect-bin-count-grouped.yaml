@@ -1,0 +1,86 @@
+# The GROUPED histogram — one bar per bin, split into a segment per category.
+#
+# The companion to rect-bin-count.yaml, which is the same computed histogram
+# with `fill: steelblue`, a colour CONSTANT: one bar per bin, whole-row counts.
+# Here `fill: site` names a COLUMN instead, and that single character of
+# difference is the whole spec change. The lowerer adds the category to the
+# GROUP BY, so a bin is no longer one row but one row per category present in
+# it, and the segments stack: each slab runs from the running total beneath it
+# to the running total including it, so the bar's full height is still the
+# bin's count and the composition inside it is readable.
+#
+# Stack order is the category's own order, ascending — `harbour`, `quarry`,
+# `ridge` — which is also the order the categorical colour scale hands out its
+# swatches in, so the stack reads bottom-to-top the way a legend reads
+# top-to-bottom.
+#
+# The counts are built to be unmistakable rather than pretty. The 29 readings
+# run 2..54, which Mosaic's binning cuts into 11 bins of width 5 across
+# [0, 55]. Occupied, they carry:
+#
+#   bin       harbour  quarry  ridge   total
+#   [ 0,  5)        2       1      0        3
+#   [ 5, 10)        2       1      1        4
+#   [10, 15)        1       2      1        4
+#   [15, 20)        0       3      1        4
+#   [20, 25)        2       0      2        4
+#   [25, 30)        0       1      1        2
+#   [30, 35)        1       1      0        2
+#   [35, 40)        0       0      1        1
+#   [40, 45)        2       0      0        2
+#   [45, 50)        1       0      0        1
+#   [50, 55)        0       0      2        2
+#
+# Three properties a wrong picture would have to reproduce: the eleven
+# compositions are eleven different triples; two bins carry all three
+# categories, five carry two, four carry one; and the totals run
+# 3 4 4 4 4 2 2 1 2 1 2, asymmetric and not monotone.
+#
+# So three wrong pictures are each excluded by a different one of them. A
+# renderer that dropped the group and drew whole-bin bars gets the totals
+# right and the compositions gone. One that drew the segments side by side
+# rather than stacked gets the bar heights wrong. One that lost the stack
+# offsets draws each segment from the baseline, so a bin's ink reaches its
+# tallest segment rather than its total.
+#
+# Preview headlessly:
+#   cargo run -p brightfield-shell --bin brightfield-shot -- --spec examples/rect-bin-count-grouped.yaml --out out.png --vello-only
+data:
+  readings:
+    - { depth: 2,  site: harbour }
+    - { depth: 4,  site: harbour }
+    - { depth: 6,  site: harbour }
+    - { depth: 8,  site: harbour }
+    - { depth: 3,  site: quarry }
+    - { depth: 7,  site: quarry }
+    - { depth: 5,  site: ridge }
+    - { depth: 12, site: harbour }
+    - { depth: 11, site: quarry }
+    - { depth: 13, site: quarry }
+    - { depth: 15, site: quarry }
+    - { depth: 17, site: quarry }
+    - { depth: 19, site: quarry }
+    - { depth: 14, site: ridge }
+    - { depth: 16, site: ridge }
+    - { depth: 22, site: harbour }
+    - { depth: 24, site: harbour }
+    - { depth: 26, site: quarry }
+    - { depth: 21, site: ridge }
+    - { depth: 23, site: ridge }
+    - { depth: 25, site: ridge }
+    - { depth: 32, site: harbour }
+    - { depth: 34, site: quarry }
+    - { depth: 36, site: ridge }
+    - { depth: 42, site: harbour }
+    - { depth: 44, site: harbour }
+    - { depth: 46, site: harbour }
+    - { depth: 52, site: ridge }
+    - { depth: 54, site: ridge }
+plot:
+  - mark: rectY
+    data: { from: readings }
+    x: { bin: depth }
+    y: { count: }
+    fill: site
+width: 640
+height: 400

@@ -29,6 +29,16 @@ const AGGREGATE_COUNT_COL: &str = "__bf_count";
 const BIN_HI_X_COL: &str = "__bf_bin_x2";
 const BIN_HI_Y_COL: &str = "__bf_bin_y2";
 
+/// Reserved stack-offset columns a GROUPED binned rect's lowerer emits, one
+/// PAIR per axis — the bottom and the top of each segment's slab, in the units
+/// the count axis is drawn in. Keyed by the axis the stack GROWS on, which is
+/// the one opposite the bins. Must match `brightfield-sql`'s `STACK_LO_X_COL`
+/// … `STACK_HI_Y_COL`, by the same convention `__bf_bin_x2` already keeps.
+pub(crate) const STACK_LO_X_COL: &str = "__bf_stack_x1";
+pub(crate) const STACK_HI_X_COL: &str = "__bf_stack_x2";
+pub(crate) const STACK_LO_Y_COL: &str = "__bf_stack_y1";
+pub(crate) const STACK_HI_Y_COL: &str = "__bf_stack_y2";
+
 /// Visual encoding channels recognised by the rendering pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Channel {
@@ -567,7 +577,65 @@ impl ChannelMap {
         if asks_equal_aspect {
             cm.set_equal_aspect(true);
         }
+        cm.bind_stacked_value_axis(mark);
         cm
+    }
+
+    /// Bind the value axis's INTERVAL channels to the reserved stack-offset
+    /// columns, for a binned rect whose `fill:` splits each bin into groups.
+    ///
+    /// A plain histogram's bar runs from the zero baseline to its count, so the
+    /// value channel alone says where it is. A stacked one's segment runs from
+    /// the running total beneath it to the running total including it, and
+    /// neither number is the count — so the lowerer emits both and this binds
+    /// them, leaving the bare value channel on the count column so the axis
+    /// still derives its title from the aggregate the author asked for.
+    ///
+    /// Run last, after the channel loop, because the condition is a property of
+    /// the WHOLE mark: a positional bin on one axis, a count on the other, and a
+    /// `fill` the loop resolved to a column rather than to constant ink. A
+    /// `fill: steelblue` binds no column, so `get(Fill)` is `None` and no stack
+    /// is bound — which is the same discriminator the parser and the lowerer
+    /// use, reached from the map the loop just built.
+    fn bind_stacked_value_axis(&mut self, mark: &Mark) {
+        if self.get(Channel::Fill).is_none() {
+            return;
+        }
+        for (bin_key, count_key, lo, hi, lo_col, hi_col) in [
+            (
+                "x",
+                "y",
+                Channel::Y1,
+                Channel::Y2,
+                STACK_LO_Y_COL,
+                STACK_HI_Y_COL,
+            ),
+            (
+                "y",
+                "x",
+                Channel::X1,
+                Channel::X2,
+                STACK_LO_X_COL,
+                STACK_HI_X_COL,
+            ),
+        ] {
+            let bins = matches!(
+                mark.options.get(bin_key),
+                Some(ValueOrParamRef::Value(SpecValue::Bin { .. }))
+            );
+            let counts = matches!(
+                mark.options.get(count_key),
+                Some(ValueOrParamRef::Value(SpecValue::Aggregate {
+                    func: AggregateFunc::Count,
+                    ..
+                }))
+            );
+            if bins && counts {
+                self.insert(lo, lo_col.to_string());
+                self.insert(hi, hi_col.to_string());
+                return;
+            }
+        }
     }
 
     /// [`ChannelMap::from_mark`] for a mark inside a plot — the plot's map
