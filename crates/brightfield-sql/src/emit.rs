@@ -445,7 +445,11 @@ fn collect_mark_stack_offsets(spec: &Spec) -> Vec<brightfield_spec::layout::Stac
     }
     let mut out = Vec::new();
     if let Some(root) = &spec.root {
-        walk(root, brightfield_spec::layout::StackOffset::default(), &mut out);
+        walk(
+            root,
+            brightfield_spec::layout::StackOffset::default(),
+            &mut out,
+        );
     }
     out
 }

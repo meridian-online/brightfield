@@ -2344,7 +2344,6 @@ fn binned_grouping_is_unsupported(parent: &serde_yaml::Mapping) -> bool {
     })
 }
 
-
 /// If `v` is a lift-shaped form, return the lifted ParamRef.
 /// Accepts: bare `"$name"`; `{param: name}`; `{selection: name}`.
 fn maybe_lift(v: &serde_yaml::Value) -> Option<ParamRef> {

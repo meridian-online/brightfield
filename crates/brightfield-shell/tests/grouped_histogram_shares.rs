@@ -112,9 +112,8 @@ fn columns_at_full_strength(img: &RgbaImage, frame: &Frame) -> Vec<u32> {
         .filter(|&x| {
             (frame.y0..frame.y1).any(|y| {
                 let p = img.get_pixel(x, y).0;
-                inks.iter().any(|want| {
-                    (0..3).all(|c| (i32::from(p[c]) - want[c]).abs() <= 20)
-                })
+                inks.iter()
+                    .any(|want| (0..3).all(|c| (i32::from(p[c]) - want[c]).abs() <= 20))
             })
         })
         .collect()

@@ -141,7 +141,11 @@ fn column_slabs(img: &image::RgbaImage, x: u32, inks: &[[i32; 3]; 3]) -> [Option
             }
         }
         if pixels > 0 {
-            out[i] = Some(Slab { pixels, top, bottom });
+            out[i] = Some(Slab {
+                pixels,
+                top,
+                bottom,
+            });
         }
     }
     out

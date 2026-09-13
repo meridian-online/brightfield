@@ -680,12 +680,9 @@ impl ChannelMap {
     /// condition read back rather than a second derivation of it.
     #[must_use]
     pub fn stacked_group(&self) -> Option<&str> {
-        let stacked = [
-            (Channel::Y1, STACK_LO_Y_COL),
-            (Channel::X1, STACK_LO_X_COL),
-        ]
-        .iter()
-        .any(|(ch, col)| self.get(*ch) == Some(*col));
+        let stacked = [(Channel::Y1, STACK_LO_Y_COL), (Channel::X1, STACK_LO_X_COL)]
+            .iter()
+            .any(|(ch, col)| self.get(*ch) == Some(*col));
         stacked.then(|| self.get(Channel::Fill)).flatten()
     }
 

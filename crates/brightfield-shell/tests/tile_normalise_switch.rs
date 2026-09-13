@@ -273,9 +273,7 @@ fn the_normalise_control_sits_at_the_scale_switch_s_own_inset() {
     let switch_box = housing.app.composed_plot_rects()[switch.plot];
 
     assert!(
-        (control.rect.top() - grouped_box.top()
-            - (switch.rect.top() - switch_box.top()))
-        .abs()
+        (control.rect.top() - grouped_box.top() - (switch.rect.top() - switch_box.top())).abs()
             < 0.5,
         "the control's inset from its plot's head is {} and the switch's is {}",
         control.rect.top() - grouped_box.top(),
@@ -288,9 +286,8 @@ fn the_normalise_control_sits_at_the_scale_switch_s_own_inset() {
         switch.rect.height()
     );
     assert!(
-        (grouped_box.right() - control.rect.right()
-            - (switch_box.right() - switch.rect.right()))
-        .abs()
+        (grouped_box.right() - control.rect.right() - (switch_box.right() - switch.rect.right()))
+            .abs()
             < 0.5,
         "with no switch beside it the control takes the switch's own trailing \
          inset: {} against {}",
@@ -476,9 +473,7 @@ fn the_choice_survives_a_brush_on_a_sibling_plot() {
     live.brush(scatter, 0.2, 0.6);
 
     assert!(
-        live.doc().composed.plots[scatter]
-            .committed_rect
-            .is_some(),
+        live.doc().composed.plots[scatter].committed_rect.is_some(),
         "fixture check: the sweep committed a selection on the sibling"
     );
     assert_eq!(
