@@ -10,7 +10,7 @@ use indexmap::IndexMap;
 use brightfield_spec::ast::{
     AggregateFunc, Mark, MarkData, ParamNode, SelectionNode, SpecValue, ValueOrParamRef,
 };
-use brightfield_spec::layout::{PlotAxis, PlotScales, ScaleType};
+use brightfield_spec::layout::{PlotAxis, PlotScales, ScaleType, StackOffset};
 use brightfield_spec::vocab::MarkKind;
 
 use crate::error::EmitError;
@@ -41,6 +41,14 @@ pub struct LowerCtx<'a> {
     /// equal RATIOS and not equal widths. Linear on both axes when the plot
     /// named nothing, which is every spec written before the key was read.
     pub scales: PlotScales,
+    /// What the mark's enclosing plot asked its stacks to be measured against
+    /// (`stackOffset`), resolved at emit time. Under
+    /// [`StackOffset::Normalize`] the rect lowerer divides each stacked segment
+    /// by its own bin's total, so an occupied bin reads as a composition —
+    /// `an_occupied_bin_reaches_the_full_height_under_normalise` reads the
+    /// tops off the raster. [`StackOffset::None`] for a plot that named no
+    /// offset, which is the reading a spec written before this key had.
+    pub stack_offset: StackOffset,
 }
 
 /// Trait for per-mark AST → IR lowering.
@@ -840,6 +848,22 @@ fn build_hexbin_plan(
 const BIN_HI_X_COL: &str = "__bf_bin_x2";
 const BIN_HI_Y_COL: &str = "__bf_bin_y2";
 
+/// Reserved running-total columns a GROUPED binned rect emits, one PAIR per
+/// axis — the bottom and the top of each segment's place in its bin's stack.
+/// Keyed by the axis the stack GROWS on, which is the one opposite the bins, so
+/// a `rectY` binned on x stacks on y.
+///
+/// They exist because the stack is a running total over the bin's own rows, and
+/// a renderer that has one row at a time cannot see the rows beneath it. A
+/// window function over the aggregation does, in one pass, on the same layer's
+/// own filtered rows — so a ghost layer and a filtered layer each stack their
+/// own counts without either learning about the other. Must match
+/// `brightfield-render`'s `STACK_LO_Y_COL` / `STACK_HI_Y_COL` pair.
+const STACK_LO_X_COL: &str = "__bf_stack_x1";
+const STACK_HI_X_COL: &str = "__bf_stack_x2";
+const STACK_LO_Y_COL: &str = "__bf_stack_y1";
+const STACK_HI_Y_COL: &str = "__bf_stack_y2";
+
 /// Reserved columns carrying the resolved bin scheme — the snapped low extent
 /// and the bin width — projected ONCE beneath the aggregation and read by both
 /// edge expressions above it.
@@ -952,19 +976,33 @@ impl MarkLower for RectLowerer {
             BinAxis::X => BIN_HI_X_COL,
             BinAxis::Y => BIN_HI_Y_COL,
         };
+        // A `fill:` naming a column splits each bin into one row per category.
+        // The bin edges alone would collapse those rows back into one bar, so
+        // the category joins them as a group key, and the stack offsets that
+        // place each segment above the ones beneath it are computed here rather
+        // than at draw time — see [`stack_exprs`].
+        let group = grouping_fill(&mark.options);
+        let mut group_by = vec![
+            format!("{} AS \"{column}\"", bin_edge(&column, BinEdge::Low, kind)),
+            format!("{} AS {hi_col}", bin_edge(&column, BinEdge::High, kind)),
+        ];
+        let mut aggregates = vec![density_count_expr()];
+        // Deterministic row order — the same reason the density lowerers order:
+        // GROUP BY output order is unspecified in DuckDB and the renderer draws
+        // in row order.
+        let mut keys = vec![(format!("\"{column}\""), SortDir::Asc)];
+        if let Some(fill) = group {
+            group_by.push(format!("\"{fill}\""));
+            aggregates.extend(stack_exprs(&column, fill, kind, axis, ctx.stack_offset));
+            keys.push((format!("\"{fill}\""), SortDir::Asc));
+        }
         Ok(QueryPlan::Order {
             input: Box::new(QueryPlan::Aggregation {
                 input: Box::new(binned),
-                group_by: vec![
-                    format!("{} AS \"{column}\"", bin_edge(&column, BinEdge::Low, kind)),
-                    format!("{} AS {hi_col}", bin_edge(&column, BinEdge::High, kind)),
-                ],
-                aggregates: vec![density_count_expr()],
+                group_by,
+                aggregates,
             }),
-            // Deterministic row order — the same reason the density lowerers
-            // order: GROUP BY output order is unspecified in DuckDB and the
-            // renderer draws in row order.
-            keys: vec![(format!("\"{column}\""), SortDir::Asc)],
+            keys,
         })
     }
 }
@@ -1004,6 +1042,84 @@ fn positional_bin(
         }
     }
     None
+}
+
+/// The column a binned rect's `fill:` splits each bin by, when it names one.
+///
+/// The string itself is the one discriminator — `fill: species` is a field and
+/// `fill: steelblue` is constant ink — and
+/// [`brightfield_spec::vocab::is_colour_literal`] is the same predicate the
+/// parser asks before it lifts a grouped histogram and
+/// `brightfield_render::ChannelMap::from_mark` asks before it binds the channel
+/// to a column. One predicate on all three sides, so they cannot disagree about
+/// which one a spec wrote.
+fn grouping_fill(options: &IndexMap<String, ValueOrParamRef<SpecValue>>) -> Option<&str> {
+    match options.get("fill") {
+        Some(ValueOrParamRef::Value(SpecValue::String(s)))
+            if !brightfield_spec::vocab::is_colour_literal(s) =>
+        {
+            Some(s)
+        }
+        _ => None,
+    }
+}
+
+/// The two stack-offset expressions a grouped binned rect emits: where this
+/// segment's slab starts on the value axis and where it ends, in count units.
+///
+/// **A running total over the bin, in the bin's own category order.** The
+/// window partitions on the bin's low edge — the same expression the GROUP BY
+/// keys on, repeated rather than referenced so the partition cannot drift from
+/// the grouping — and orders on the category, which is also the second sort key
+/// the plan carries. Each `(bin, category)` pair is one row after the GROUP BY,
+/// so the order has no ties to break and the stack is the same on every run.
+///
+/// `SUM(COUNT(*)) OVER (…)` is a window over an aggregate, evaluated after the
+/// GROUP BY, so one SELECT produces the per-segment count and its place in the
+/// stack together. Observable Plot reaches the same numbers with its `stackY`
+/// transform in the client; doing it in SQL is what lets a cross-filtered layer
+/// stack over the rows it kept rather than over the rows the page started with.
+///
+/// **Under [`StackOffset::Normalize`] both edges are divided by the same bin's
+/// own total** — a second window over the same partition with no `ORDER BY`,
+/// which is the whole bin rather than the running part of it. That divisor is
+/// the one number this feature turns on: the LAYER's total would make every bin
+/// a share of the page and the tall bins tall again, so
+/// `an_occupied_bin_reaches_the_full_height_under_normalise` reads the stack
+/// tops off the raster rather than the ratio off a helper.
+///
+/// A bin with no rows produces no row here, so the divisor is positive wherever
+/// it is evaluated and there is no zero to guard.
+fn stack_exprs(
+    bin_column: &str,
+    group: &str,
+    kind: ScaleType,
+    axis: BinAxis,
+    offset: StackOffset,
+) -> Vec<AggregateExpr> {
+    let partition = bin_edge(bin_column, BinEdge::Low, kind);
+    let count = "CAST(COUNT(*) AS DOUBLE)";
+    let running = format!("SUM({count}) OVER (PARTITION BY {partition} ORDER BY \"{group}\")");
+    let divisor = match offset {
+        StackOffset::None => None,
+        StackOffset::Normalize => Some(format!("SUM({count}) OVER (PARTITION BY {partition})")),
+    };
+    let measured = |expr: String| match &divisor {
+        Some(total) => format!("(({expr}) / ({total}))"),
+        None => format!("({expr})"),
+    };
+    let (lo_col, hi_col) = match axis {
+        // The stack grows on the axis OPPOSITE the bins.
+        BinAxis::X => (STACK_LO_Y_COL, STACK_HI_Y_COL),
+        BinAxis::Y => (STACK_LO_X_COL, STACK_HI_X_COL),
+    };
+    vec![
+        AggregateExpr::Raw(format!(
+            "{} AS {lo_col}",
+            measured(format!("{running} - {count}"))
+        )),
+        AggregateExpr::Raw(format!("{} AS {hi_col}", measured(running.clone()))),
+    ]
 }
 
 /// One edge of the bin containing `col`, in data units, as Mosaic's
@@ -1624,6 +1740,7 @@ mod tests {
             params,
             plot_px: None,
             scales: PlotScales::default(),
+            stack_offset: StackOffset::default(),
         }
     }
 
@@ -1668,6 +1785,7 @@ mod tests {
             params,
             plot_px: None,
             scales: PlotScales::default(),
+            stack_offset: StackOffset::default(),
         }
     }
 

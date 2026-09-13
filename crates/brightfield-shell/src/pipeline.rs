@@ -49,7 +49,8 @@ use brightfield_spec::analysis::{
 };
 use brightfield_spec::ast::{Component, MarkData, ParamNode, PlotNode, SpaceNode, SpecValue};
 use brightfield_spec::layout::{
-    collect_plot_nodes, placed_plots, resolve_fixed_domains, resolve_plot_insets, Rect,
+    collect_plot_nodes, placed_plots, resolve_fixed_domains, resolve_plot_insets,
+    resolve_plot_stack_offset, Rect, StackOffset,
 };
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, Spec};
@@ -132,6 +133,23 @@ pub struct PlotHandle {
     /// The y channel's column on this plot's first mark. See
     /// [`PlotHandle::x_column`].
     pub y_column: Option<String>,
+    /// **The column this plot's bins are split by**, when one of its marks is
+    /// a binned rect whose `fill:` named a column — the fact that decides
+    /// whether a normalise control is offered here at all, and the column that
+    /// control names in its hover text.
+    ///
+    /// Read off the drawn mark's channel map
+    /// ([`ChannelMap::stacked_group`](brightfield_render::channel::ChannelMap::stacked_group)),
+    /// so it is the group the picture was actually composed with. A plot whose
+    /// marks carry no stack has none, which is the case for a generated tile —
+    /// `the_housing_dashboard_draws_no_normalise_control` reads that page.
+    pub group_column: Option<String>,
+    /// **What this plot's stacks were measured against** when it was composed
+    /// — its resolved `stackOffset`. The state the normalise control shows,
+    /// on the same standing as [`PlotHandle::scales`]: read off the
+    /// composition that ran rather than off the spec a later edit may have
+    /// moved.
+    pub stack_offset: StackOffset,
     /// `Some` when this plot drew a pushed-down sample — the mirror of
     /// [`ChartData::sample`](brightfield_render::scene::ChartData::sample), so a
     /// surface reading plot handles (chrome, a future export caption) can tell
@@ -2030,6 +2048,7 @@ fn compose_from_results(
         let mut plot_domains = UnsampledDomains::default();
         let mut plot_x_column: Option<String> = None;
         let mut plot_y_column: Option<String> = None;
+        let mut plot_group_column: Option<String> = None;
         // The marks this plot DREW, in draw order — the candidates a hover can
         // read. A mark the engine refused is not on screen, so a pointer
         // cannot be resting on it, and offering it here would hand a reader a
@@ -2053,6 +2072,9 @@ fn compose_from_results(
             }
             if plot_y_column.is_none() {
                 plot_y_column = channel_maps[mi].get(Channel::Y).map(str::to_string);
+            }
+            if plot_group_column.is_none() {
+                plot_group_column = channel_maps[mi].stacked_group().map(str::to_string);
             }
             // A mark is sampled exactly when the session produced unsampled
             // facts for it; `drawn` is what actually arrived, `of` is what the
@@ -2303,6 +2325,12 @@ fn compose_from_results(
             gesture,
             x_column: plot_x_column,
             y_column: plot_y_column,
+            group_column: plot_group_column,
+            stack_offset: plot_nodes
+                .iter()
+                .find(|(p, _)| *p == plot.path)
+                .map(|(_, node)| resolve_plot_stack_offset(node))
+                .unwrap_or_default(),
             sample: plot_sample,
             hover,
             navigated_empty,

@@ -9,7 +9,9 @@
 //! are captured in the `ChromeSnapshot` gate.
 
 use brightfield_spec::ast::PlotNode;
-use brightfield_spec::layout::{resolve_axis_titles, AxisTitle};
+use brightfield_spec::layout::{
+    resolve_axis_titles, resolve_plot_stack_offset, AxisTitle, StackOffset,
+};
 
 use crate::channel::{Channel, ChannelMap};
 use crate::layout::Margins;
@@ -59,6 +61,21 @@ const COUNT_COLUMN: &str = "__bf_count";
 /// The axis title [`COUNT_COLUMN`] resolves to.
 const COUNT_TITLE: &str = "Count";
 
+/// The reserved stack-top columns a GROUPED binned rect's value axis is bound
+/// to — `brightfield-sql`'s `STACK_HI_X_COL` and `STACK_HI_Y_COL`, matched as
+/// literals for the reason [`COUNT_COLUMN`] is.
+///
+/// They earn a title on the same grounds `__bf_count` does: the axis is
+/// counting rows, and the fact that the number reaching the reader is a
+/// running total rather than a bare count does not change what it counts.
+const STACK_TOP_COLUMNS: [&str; 2] = ["__bf_stack_x2", "__bf_stack_y2"];
+
+/// The axis title a stack column resolves to when the plot divided each
+/// segment by its own group's total. The axis is then a fraction of a bin
+/// rather than a number of rows, and the bars stop at 1 — which is the one
+/// height a count axis cannot be reading.
+const SHARE_TITLE: &str = "Share";
+
 /// Resolve one axis's decision against the mark channel maps. A `Derive` axis
 /// takes the FIRST map (in mark order) that binds the positional channel to a
 /// COLUMN the author could have named — subsuming the `entries[0]` default and
@@ -68,7 +85,12 @@ const COUNT_TITLE: &str = "Count";
 /// reserved lowerer output ([`RESERVED_COLUMN_PREFIX`]) each name no field, so
 /// `Derive` yields `None` — except [`COUNT_COLUMN`], which names a quantity
 /// rather than a field and titles its axis [`COUNT_TITLE`].
-fn resolve_axis(decision: &AxisTitle, channel: Channel, maps: &[&ChannelMap]) -> Option<String> {
+fn resolve_axis(
+    decision: &AxisTitle,
+    channel: Channel,
+    maps: &[&ChannelMap],
+    offset: StackOffset,
+) -> Option<String> {
     match decision {
         AxisTitle::Override(s) => Some(s.clone()),
         AxisTitle::Suppress => None,
@@ -76,6 +98,12 @@ fn resolve_axis(decision: &AxisTitle, channel: Channel, maps: &[&ChannelMap]) ->
             let col = m.get(channel)?;
             if col == COUNT_COLUMN {
                 return Some(COUNT_TITLE.to_string());
+            }
+            if STACK_TOP_COLUMNS.contains(&col) {
+                return Some(match offset {
+                    StackOffset::Normalize => SHARE_TITLE.to_string(),
+                    StackOffset::None => COUNT_TITLE.to_string(),
+                });
             }
             (!col.starts_with(RESERVED_COLUMN_PREFIX)).then(|| col.to_string())
         }),
@@ -89,9 +117,10 @@ fn resolve_axis(decision: &AxisTitle, channel: Channel, maps: &[&ChannelMap]) ->
 #[must_use]
 pub fn resolve_titles(plot: &PlotNode, channel_maps: &[&ChannelMap]) -> ResolvedTitles {
     let decided = resolve_axis_titles(plot);
+    let offset = resolve_plot_stack_offset(plot);
     ResolvedTitles {
-        x: resolve_axis(&decided.x, Channel::X, channel_maps),
-        y: resolve_axis(&decided.y, Channel::Y, channel_maps),
+        x: resolve_axis(&decided.x, Channel::X, channel_maps, offset),
+        y: resolve_axis(&decided.y, Channel::Y, channel_maps, offset),
         plot: decided.plot,
     }
 }

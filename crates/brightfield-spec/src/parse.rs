@@ -1984,12 +1984,15 @@ impl Walker {
 ///   [`BIN_MODIFIER_KEYS`] entry. An unrecognised modifier refuses the lift
 ///   rather than dropping it: honouring the `bin` and ignoring the modifier
 ///   would draw a different chart from the one asked for.
-/// - **No grouping channel** (`GROUPING_CHANNEL_FIELDS`). `RectLowerer`
-///   groups on the bin edges alone, so lifting a grouped mark would collapse
-///   its groups into one bar per bin — the right TOTAL, with the composition
-///   the author asked for silently gone. A different chart, drawn confidently.
+/// - **No grouping channel the lowerer cannot carry**
+///   ([`binned_grouping_is_unsupported`]). A `fill:` naming a column is
+///   carried: `RectLowerer` adds it to the GROUP BY and stacks the segments it
+///   produces. `z` and `stroke` are not, and lifting a mark that binds either
+///   would collapse its groups into one bar per bin — the right TOTAL, with the
+///   composition the author asked for silently gone. A different chart, drawn
+///   confidently.
 fn binned_histogram(kind: MarkKind, parent: &serde_yaml::Mapping) -> Option<BinnedHistogram> {
-    if !kind.bins_positionally() || mark_is_grouped(parent) {
+    if !kind.bins_positionally() || binned_grouping_is_unsupported(parent) {
         return None;
     }
     BIN_COUNT_AXES
@@ -2154,7 +2157,8 @@ fn aggregate_transform(m: &serde_yaml::Mapping) -> Option<(AggregateFunc, Option
 /// The band column itself does not count. `observable-latency.yaml` writes
 /// `fill: route` beside `y: route`: that colours one bar per route, it does
 /// not stack two routes into one. A colour constant does not count either,
-/// for the same reason [`mark_is_grouped`] excludes it. Anything else does.
+/// for the same reason [`binned_grouping_is_unsupported`] excludes it.
+/// Anything else does.
 fn mark_is_grouped_beyond(parent: &serde_yaml::Mapping, band_column: &str) -> bool {
     GROUPING_CHANNEL_FIELDS.iter().any(|field| {
         match parent.get(serde_yaml::Value::String((*field).to_string())) {
@@ -2310,21 +2314,31 @@ fn mark_source_name(parent: &serde_yaml::Mapping) -> Option<&str> {
         .as_str()
 }
 
-/// Whether a mark binds a channel that splits each bin into groups.
-/// Conservative in both directions that matter: an explicit `z` is a grouping
-/// whatever its value, and a `fill`/`stroke` that is not a recognised colour
-/// constant is read as a field name (see [`is_colour_literal`]).
+/// Whether a mark binds a grouping channel the binned-rect lowerer does not
+/// carry — the refusal [`binned_histogram`] turns on.
 ///
-/// A name that is BOTH classifies as a colour constant here, and is reported
-/// one level up by `shadowed_colour` rather than silently taken.
-fn mark_is_grouped(parent: &serde_yaml::Mapping) -> bool {
+/// `fill: species`, a field name on the one grouping channel with a renderer
+/// behind it, is carried and so is NOT a refusal: the lowerer groups by it and
+/// the rect stacks the segments. The other bindings in
+/// `GROUPING_CHANNEL_FIELDS` still refuse, each for its own reason:
+///
+/// - **`z`**, whatever its value. `brightfield-render`'s `Channel` has no `z`
+///   variant, so no colour, no stack order and no legend could be recovered
+///   from it downstream.
+/// - **`stroke`** naming a field. A rect is drawn as a fill and reads no
+///   per-row stroke column, so a split on it would be invisible.
+/// - **A non-string binding on a colour channel** (a map, a `$param`, a
+///   number) — not a colour constant, and not a column name either.
+///
+/// A name that is BOTH a colour keyword and a column classifies as a colour
+/// constant here, and is reported one level up by `shadowed_colour` rather
+/// than silently taken (see [`is_colour_literal`]).
+fn binned_grouping_is_unsupported(parent: &serde_yaml::Mapping) -> bool {
     GROUPING_CHANNEL_FIELDS.iter().any(|field| {
         match parent.get(serde_yaml::Value::String((*field).to_string())) {
             None => false,
             Some(_) if *field == "z" => true,
-            Some(serde_yaml::Value::String(s)) => !is_colour_literal(s),
-            // A non-string binding on a colour channel (a map, a `$param`, a
-            // number) is not a colour constant, so it may carry groups.
+            Some(serde_yaml::Value::String(s)) => *field != "fill" && !is_colour_literal(s),
             Some(_) => true,
         }
     })
@@ -3625,7 +3639,10 @@ plot:
     }
 
     /// Every refusal, in one place. Each leaves the channels as plain objects,
-    /// which is what keeps the uncomputed-transform diagnostic firing.
+    /// which is what keeps the uncomputed-transform diagnostic firing. The
+    /// one grouping channel the lowerer CAN carry — a column-valued `fill` —
+    /// is pinned separately, as a LIFT rather than a refusal, in
+    /// [`a_column_valued_fill_still_lifts_the_bin_as_a_stack`].
     #[test]
     fn the_bin_lift_refuses_everything_it_cannot_compute() {
         let refused = |src: &str, why: &str| {
@@ -3645,15 +3662,22 @@ plot:
             "mark: rectY\nx: { bin: delay }\ny: value\n",
             "a bin with no count opposite it has nothing to group",
         );
-        // A column-valued fill: a grouping, not a plain histogram.
-        refused(
-            "mark: rectY\nx: { bin: delay }\ny: { count: }\nfill: version\n",
-            "a column-valued fill is a stack, not a histogram",
-        );
         // An explicit `z`, whatever the fill.
         refused(
             "mark: rectY\nx: { bin: delay }\ny: { count: }\nz: version\nfill: steelblue\n",
             "`z` is Mosaic's grouping channel",
+        );
+        // A field-valued `stroke`: a rect draws no per-row stroke, so a
+        // split on it would be invisible.
+        refused(
+            "mark: rectY\nx: { bin: delay }\ny: { count: }\nstroke: version\nfill: steelblue\n",
+            "a rect reads no per-row stroke column",
+        );
+        // A non-string binding on a colour channel (here a map): not a
+        // colour constant, and not a column name either.
+        refused(
+            "mark: rectY\nx: { bin: delay }\ny: { count: }\nfill: { sql: 'a + b' }\n",
+            "a non-string binding on a colour channel is neither literal nor column",
         );
         // A modifier the lowerer does not honour. Honouring the `bin` and
         // ignoring the modifier would draw a chart nobody asked for.
@@ -3665,6 +3689,27 @@ plot:
         refused(
             "mark: rectY\nx: { bin: { sql: 'a + b' } }\ny: { count: }\n",
             "the bin must name a column",
+        );
+    }
+
+    /// The one grouping channel the lowerer CAN carry: a `fill:` naming a
+    /// column lifts the bin exactly as a plain histogram does.
+    /// `RectLowerer` carries the column into the GROUP BY and stacks the
+    /// segments it produces, so the refusal pinned in
+    /// [`the_bin_lift_refuses_everything_it_cannot_compute`] does not reach
+    /// this case.
+    #[test]
+    fn a_column_valued_fill_still_lifts_the_bin_as_a_stack() {
+        let entry = mark_channel(
+            "mark: rectY\nx: { bin: delay }\ny: { count: }\nfill: version\n",
+            "x",
+        );
+        assert_eq!(
+            entry,
+            ValueOrParamRef::Value(SpecValue::Bin {
+                column: "delay".to_string(),
+                steps: None,
+            })
         );
     }
 

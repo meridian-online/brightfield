@@ -403,6 +403,58 @@ fn collect_mark_plot_scales(spec: &Spec) -> Vec<brightfield_spec::layout::PlotSc
     out
 }
 
+/// The stack offset the mark's enclosing plot declared, or
+/// [`brightfield_spec::layout::StackOffset::None`] for a mark with no
+/// enclosing plot.
+///
+/// The companion of [`enclosing_plot_scales`], walked the same way and for the
+/// same reason: the attribute sits on the plot and the mark's own options do
+/// not carry it.
+fn enclosing_plot_stack_offset(
+    spec: &Spec,
+    mark_index: usize,
+) -> brightfield_spec::layout::StackOffset {
+    collect_mark_stack_offsets(spec)
+        .get(mark_index)
+        .copied()
+        .unwrap_or_default()
+}
+
+/// [`brightfield_spec::layout::resolve_plot_stack_offset`] for each mark, in
+/// depth-first mark order — mirroring [`collect_mark_plot_scales`].
+fn collect_mark_stack_offsets(spec: &Spec) -> Vec<brightfield_spec::layout::StackOffset> {
+    fn walk(
+        component: &Component,
+        current: brightfield_spec::layout::StackOffset,
+        out: &mut Vec<brightfield_spec::layout::StackOffset>,
+    ) {
+        match component {
+            Component::Plot(plot) => {
+                let here = brightfield_spec::layout::resolve_plot_stack_offset(plot);
+                for item in &plot.items {
+                    walk(item, here, out);
+                }
+            }
+            Component::HConcat(concat) | Component::VConcat(concat) => {
+                for item in &concat.items {
+                    walk(item, current, out);
+                }
+            }
+            Component::Mark(_) => out.push(current),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(root) = &spec.root {
+        walk(
+            root,
+            brightfield_spec::layout::StackOffset::default(),
+            &mut out,
+        );
+    }
+    out
+}
+
 /// Declared plot `(width, height)` for each mark, in depth-first mark order —
 /// mirroring [`collect_marks`]. A mark inside a plot inherits that plot's
 /// declared size (or the Mosaic defaults); a mark with no enclosing plot gets
@@ -725,6 +777,7 @@ pub fn lower_mark_plan(spec: &Spec, mark_index: usize) -> Result<(QueryPlan, Str
         params: &spec.params,
         plot_px: enclosing_plot_area_px(spec, mark_index),
         scales: enclosing_plot_scales(spec, mark_index),
+        stack_offset: enclosing_plot_stack_offset(spec, mark_index),
     };
 
     let lowerer = find_lowerer(mark.kind, &lowerers);

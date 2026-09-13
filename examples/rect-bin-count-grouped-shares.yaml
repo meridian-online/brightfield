@@ -1,0 +1,89 @@
+# The grouped histogram read as SHARES — `stackOffset: normalize`.
+#
+# The companion to rect-bin-count-grouped.yaml, which is the same three sites
+# over the same bins with their raw counts. Here the plot carries
+# `stackOffset: normalize`, so each segment is divided by its own bin's total
+# and every occupied bin's stack reaches 1. A long-tailed column read as counts
+# is the tall bins and nothing else; read as shares it is a composition per
+# bin, which is the question a grouped histogram exists to answer.
+#
+# The divisor is the BIN's total, not the layer's. Those two differ the moment
+# a bin is not the whole table, which is always, and the difference is the
+# whole feature: divided by the layer's total every bin would keep its relative
+# height and the long tail would still be invisible.
+#
+# The device around it is `examples/rect-bin-count-ghost.yaml`'s. Drag an
+# x-range on the LEFT scatter; the RIGHT plot carries two rectY layers over
+# `readings`:
+#
+#   * the first reads the table straight and never narrows — the ghost;
+#   * the second reads it through `filterBy: $brush`.
+#
+# Each layer normalises over the rows IT kept, so both reach 1 in every bin
+# they occupy and the two compositions can be compared directly — which is what
+# the shares reading is for. A brush that drops a site out of a bin changes
+# that bin's mix and not its height.
+#
+# The rows are rect-bin-count-grouped.yaml's, with an `hour` column added for
+# the scatter to be brushed on. It runs 1..29 in the order the rows are
+# written, so an x-range on the scatter picks a contiguous prefix of them and
+# the histogram's bins thin unevenly.
+#
+#   cargo run -p brightfield-shell -- examples/rect-bin-count-grouped-shares.yaml
+params:
+  brush: { select: crossfilter }
+data:
+  readings:
+    - { hour: 1,  depth: 2,  site: harbour }
+    - { hour: 2,  depth: 4,  site: harbour }
+    - { hour: 3,  depth: 6,  site: harbour }
+    - { hour: 4,  depth: 8,  site: harbour }
+    - { hour: 5,  depth: 3,  site: quarry }
+    - { hour: 6,  depth: 7,  site: quarry }
+    - { hour: 7,  depth: 5,  site: ridge }
+    - { hour: 8,  depth: 12, site: harbour }
+    - { hour: 9,  depth: 11, site: quarry }
+    - { hour: 10, depth: 13, site: quarry }
+    - { hour: 11, depth: 15, site: quarry }
+    - { hour: 12, depth: 17, site: quarry }
+    - { hour: 13, depth: 19, site: quarry }
+    - { hour: 14, depth: 14, site: ridge }
+    - { hour: 15, depth: 16, site: ridge }
+    - { hour: 16, depth: 22, site: harbour }
+    - { hour: 17, depth: 24, site: harbour }
+    - { hour: 18, depth: 26, site: quarry }
+    - { hour: 19, depth: 21, site: ridge }
+    - { hour: 20, depth: 23, site: ridge }
+    - { hour: 21, depth: 25, site: ridge }
+    - { hour: 22, depth: 32, site: harbour }
+    - { hour: 23, depth: 34, site: quarry }
+    - { hour: 24, depth: 36, site: ridge }
+    - { hour: 25, depth: 42, site: harbour }
+    - { hour: 26, depth: 44, site: harbour }
+    - { hour: 27, depth: 46, site: harbour }
+    - { hour: 28, depth: 52, site: ridge }
+    - { hour: 29, depth: 54, site: ridge }
+hconcat:
+  - plot:
+      - mark: dot
+        data: { from: readings }
+        x: hour
+        y: depth
+      - select: intervalX
+        as: $brush
+    width: 320
+    height: 320
+  - plot:
+      - mark: rectY
+        data: { from: readings }
+        x: { bin: depth }
+        y: { count: }
+        fill: site
+      - mark: rectY
+        data: { from: readings, filterBy: $brush }
+        x: { bin: depth }
+        y: { count: }
+        fill: site
+    stackOffset: normalize
+    width: 320
+    height: 320

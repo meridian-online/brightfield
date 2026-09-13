@@ -29,6 +29,16 @@ const AGGREGATE_COUNT_COL: &str = "__bf_count";
 const BIN_HI_X_COL: &str = "__bf_bin_x2";
 const BIN_HI_Y_COL: &str = "__bf_bin_y2";
 
+/// Reserved stack-offset columns a GROUPED binned rect's lowerer emits, one
+/// PAIR per axis — the bottom and the top of each segment's slab, in the units
+/// the count axis is drawn in. Keyed by the axis the stack GROWS on, which is
+/// the one opposite the bins. Must match `brightfield-sql`'s `STACK_LO_X_COL`
+/// … `STACK_HI_Y_COL`, by the same convention `__bf_bin_x2` already keeps.
+pub(crate) const STACK_LO_X_COL: &str = "__bf_stack_x1";
+pub(crate) const STACK_HI_X_COL: &str = "__bf_stack_x2";
+pub(crate) const STACK_LO_Y_COL: &str = "__bf_stack_y1";
+pub(crate) const STACK_HI_Y_COL: &str = "__bf_stack_y2";
+
 /// Visual encoding channels recognised by the rendering pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Channel {
@@ -567,7 +577,78 @@ impl ChannelMap {
         if asks_equal_aspect {
             cm.set_equal_aspect(true);
         }
+        cm.bind_stacked_value_axis(mark);
         cm
+    }
+
+    /// Bind the value axis's INTERVAL channels to the reserved stack-offset
+    /// columns, for a binned rect whose `fill:` splits each bin into groups.
+    ///
+    /// A plain histogram's bar runs from the zero baseline to its count, so the
+    /// value channel alone says where it is. A stacked one's segment runs from
+    /// the running total beneath it to the running total including it, and
+    /// neither number is the count — so the lowerer emits both and this binds
+    /// them, leaving the bare value channel on the count column so the axis
+    /// still derives its title from the aggregate the author asked for.
+    ///
+    /// Run last, after the channel loop, because the condition is a property of
+    /// the WHOLE mark: a positional bin on one axis, a count on the other, and a
+    /// `fill` the loop resolved to a column rather than to constant ink. A
+    /// `fill: steelblue` binds no column, so `get(Fill)` is `None` and no stack
+    /// is bound — which is the same discriminator the parser and the lowerer
+    /// use, reached from the map the loop just built.
+    fn bind_stacked_value_axis(&mut self, mark: &Mark) {
+        if self.get(Channel::Fill).is_none() {
+            return;
+        }
+        for (bin_key, count_key, lo, hi, lo_col, hi_col) in [
+            (
+                "x",
+                "y",
+                Channel::Y1,
+                Channel::Y2,
+                STACK_LO_Y_COL,
+                STACK_HI_Y_COL,
+            ),
+            (
+                "y",
+                "x",
+                Channel::X1,
+                Channel::X2,
+                STACK_LO_X_COL,
+                STACK_HI_X_COL,
+            ),
+        ] {
+            let bins = matches!(
+                mark.options.get(bin_key),
+                Some(ValueOrParamRef::Value(SpecValue::Bin { .. }))
+            );
+            let counts = matches!(
+                mark.options.get(count_key),
+                Some(ValueOrParamRef::Value(SpecValue::Aggregate {
+                    func: AggregateFunc::Count,
+                    ..
+                }))
+            );
+            if bins && counts {
+                self.insert(lo, lo_col.to_string());
+                self.insert(hi, hi_col.to_string());
+                // The BARE value channel moves to the stack top too, and this
+                // is the line that gets the axis right. `infer_scales` builds
+                // the value scale from it, and a domain built over the raw
+                // per-segment count stops at the tallest SEGMENT — so a stack
+                // of three would run off the top of a plot scaled to one of
+                // them, and under `stackOffset: normalize` an axis of counts
+                // would run to the tallest count over bars that stop at 1.
+                // The stack top is what the picture actually reaches.
+                let value = match lo {
+                    Channel::Y1 => Channel::Y,
+                    _ => Channel::X,
+                };
+                self.insert(value, hi_col.to_string());
+                return;
+            }
+        }
     }
 
     /// [`ChannelMap::from_mark`] for a mark inside a plot — the plot's map
@@ -586,6 +667,23 @@ impl ChannelMap {
         cm.set_projection(MarkProjection::of(mark.kind, plot));
         cm.set_scale_types(plot.map(resolve_plot_scales).unwrap_or_default());
         cm
+    }
+
+    /// **The column this mark's bins are split by**, when it is a binned rect
+    /// whose `fill:` named one — the question a surface asks to find out
+    /// whether the picture in front of it is a stack.
+    ///
+    /// Answered off the reserved stack columns rather than off the `fill`
+    /// binding alone, because a `fill` column on a mark that does not bin is a
+    /// colour and not a stack. The private `bind_stacked_value_axis` binds
+    /// those two channels exactly when the lowerer emits them, so this is the
+    /// same condition read back rather than a second derivation of it.
+    #[must_use]
+    pub fn stacked_group(&self) -> Option<&str> {
+        let stacked = [(Channel::Y1, STACK_LO_Y_COL), (Channel::X1, STACK_LO_X_COL)]
+            .iter()
+            .any(|(ch, col)| self.get(*ch) == Some(*col));
+        stacked.then(|| self.get(Channel::Fill)).flatten()
     }
 
     /// Iterator over all mapped channels.

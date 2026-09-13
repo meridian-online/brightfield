@@ -1573,8 +1573,17 @@ impl RectRenderer {
         channel_map: &ChannelMap,
         interval: (Channel, Channel),
         value: Channel,
+        stack_lo: &str,
     ) -> Option<(Vec<Option<f64>>, Vec<Option<f64>>)> {
-        if ranged {
+        // A STACKED value axis is read as a ranged one. `bind_stacked_value_axis`
+        // binds the interval channels to the reserved running-total columns for a
+        // binned rect split by a `fill:` column, and a segment there runs from the
+        // total beneath it to the total including it — a pair of edges, not a
+        // value over a baseline. The binding is recognised by the reserved name
+        // rather than by the channel being bound, so an author's own `y1`/`y2`
+        // on a rectY reads as it did before.
+        let stacked = channel_map.get(interval.0).is_some_and(|c| c == stack_lo);
+        if ranged || stacked {
             let a = column_as_f64(batch, channel_map.get(interval.0)?)?;
             let b = column_as_f64(batch, channel_map.get(interval.1)?)?;
             Some((a, b))
@@ -1621,6 +1630,7 @@ impl MarkRenderer for RectRenderer {
             channel_map,
             (Channel::X1, Channel::X2),
             Channel::X,
+            crate::channel::STACK_LO_X_COL,
         ) {
             Some(e) => e,
             None => return,
@@ -1631,6 +1641,7 @@ impl MarkRenderer for RectRenderer {
             channel_map,
             (Channel::Y1, Channel::Y2),
             Channel::Y,
+            crate::channel::STACK_LO_Y_COL,
         ) {
             Some(e) => e,
             None => return,
@@ -1687,13 +1698,18 @@ impl MarkRenderer for RectRenderer {
             //
             // Only a value form has a baseline to grow that part from; the
             // fully-ranged `rect` has none, so it keeps the deemphasised whole.
+            // The fraction is of the SEGMENT's own value, which is the span
+            // between its two edges. On an unstacked value axis the near edge is
+            // the zero baseline, so `ybv - yav` is `ybv` and this is the number
+            // it always was; on a stacked one it is the segment's count rather
+            // than the running total the slab's top carries.
             let part = match self.kind {
-                RectKind::Y => selected_fraction_of(counts.as_ref(), i, ybv).map(|f| {
+                RectKind::Y => selected_fraction_of(counts.as_ref(), i, ybv - yav).map(|f| {
                     let base = y_scale.map_f64(yav);
                     let edge = selected_tip(base, y_scale.map_f64(ybv), f);
                     Rect::new(left, base.min(edge), right, base.max(edge))
                 }),
-                RectKind::X => selected_fraction_of(counts.as_ref(), i, xbv).map(|f| {
+                RectKind::X => selected_fraction_of(counts.as_ref(), i, xbv - xav).map(|f| {
                     let base = x_scale.map_f64(xav);
                     let edge = selected_tip(base, x_scale.map_f64(xbv), f);
                     Rect::new(base.min(edge), top, base.max(edge), bottom)
