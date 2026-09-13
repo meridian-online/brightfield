@@ -7198,7 +7198,7 @@ fn band_less_switch(
     }
 }
 
-/// The header band a pane actually drew, derived from the content rect/// The header band a pane actually drew, derived from the content rect
+/// The header band a pane actually drew, derived from the content rect
 /// [`brightfield_workbench::chrome::pane_frame`] handed back rather than from
 /// the height it would have used.
 ///
@@ -7341,8 +7341,7 @@ const LAYOUT_STATE_SEPARATOR: &str = "\u{b7}";
 ///
 /// It says what the control does rather than what it is, because *rows* and
 /// *columns* are the words on the band and a tooltip repeating them tells a
-/// stranger nothing they can act on. `the_layout_switch_names_itself_on_hover`
-/// reads this string back off the drawn record.
+/// stranger nothing they can act on.
 fn layout_switch_hover() -> String {
     "grid: the file's rows, or its columns as rows".to_string()
 }

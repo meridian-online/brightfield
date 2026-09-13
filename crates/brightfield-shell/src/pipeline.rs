@@ -1617,16 +1617,6 @@ impl LiveDashboard {
     }
 }
 
-/// The spacer that holds the hero short of the page's height, in a spec shaped
-/// as [`crate::dashboard::Dashboard::to_spec`] writes one: the last item of the
-/// `vconcat` that is the first item of the root `hconcat`.
-///
-/// `None` for a spec of another shape, and the match is the whole of that
-/// judgement — an authored `hconcat` whose first item happens to be a `vconcat`
-/// ending in a `vspace` is a spec that asked for exactly this and gets it. The
-/// shape is matched here rather than a marker being written into the emitted
-/// source, because a spec is a file a reader edits and a magic comment they
-/// could delete would take the map's axis with it.
 /// Write `points` as a plot's declared width, and say whether the value moved
 /// — the numeric comparison [`LiveDashboard::set_page_widths`] needs.
 ///
@@ -1649,6 +1639,16 @@ fn set_declared_width(plot: &mut PlotNode, points: f64) -> bool {
     true
 }
 
+/// The spacer that holds the hero short of the page's height, in a spec shaped
+/// as [`crate::dashboard::Dashboard::to_spec`] writes one: the last item of the
+/// `vconcat` that is the first item of the root `hconcat`.
+///
+/// `None` for a spec of another shape, and the match is the whole of that
+/// judgement — an authored `hconcat` whose first item happens to be a `vconcat`
+/// ending in a `vspace` is a spec that asked for exactly this and gets it. The
+/// shape is matched here rather than a marker being written into the emitted
+/// source, because a spec is a file a reader edits and a magic comment they
+/// could delete would take the map's axis with it.
 fn hero_bound_spacer(spec: &mut Spec) -> Option<&mut SpaceNode> {
     let Some(Component::HConcat(row)) = spec.root.as_mut() else {
         return None;

@@ -247,8 +247,8 @@ pub fn stack_extent(offered: f32, tiles: usize) -> f32 {
 /// ([`MIN_COLUMN_TILE_HEIGHT`], 96 points). Beside it the row states the
 /// numbers the full band states, and those are seven stacked rows of text —
 /// `ColumnHeaderFrame::extent` at
-/// [`GridDensity::Row`](crate::column_header::GridDensity::Row) measures them
-/// at 107 points, the picture row taken out. 128 clears both with the row's
+/// [`GridDensity::Row`](crate::column_header::GridDensity::Row) measures
+/// them, the picture row taken out. 128 clears both with the row's
 /// own breathing room, and `a_transposed_row_clears_its_own_floor` holds this
 /// constant to the two measurements rather than to the number written here —
 /// so a face change that grows the summaries reddens a test instead of
