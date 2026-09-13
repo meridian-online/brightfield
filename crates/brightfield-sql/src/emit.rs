@@ -404,7 +404,8 @@ fn collect_mark_plot_scales(spec: &Spec) -> Vec<brightfield_spec::layout::PlotSc
 }
 
 /// The stack offset the mark's enclosing plot declared, or
-/// [`StackOffset::None`] for a mark with no enclosing plot.
+/// [`brightfield_spec::layout::StackOffset::None`] for a mark with no
+/// enclosing plot.
 ///
 /// The companion of [`enclosing_plot_scales`], walked the same way and for the
 /// same reason: the attribute sits on the plot and the mark's own options do

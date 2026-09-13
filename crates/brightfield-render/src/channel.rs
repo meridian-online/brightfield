@@ -675,9 +675,9 @@ impl ChannelMap {
     ///
     /// Answered off the reserved stack columns rather than off the `fill`
     /// binding alone, because a `fill` column on a mark that does not bin is a
-    /// colour and not a stack. [`Self::bind_stacked_value_axis`] binds those
-    /// two channels exactly when the lowerer emits them, so this is the same
-    /// condition read back rather than a second derivation of it.
+    /// colour and not a stack. The private `bind_stacked_value_axis` binds
+    /// those two channels exactly when the lowerer emits them, so this is the
+    /// same condition read back rather than a second derivation of it.
     #[must_use]
     pub fn stacked_group(&self) -> Option<&str> {
         let stacked = [(Channel::Y1, STACK_LO_Y_COL), (Channel::X1, STACK_LO_X_COL)]
