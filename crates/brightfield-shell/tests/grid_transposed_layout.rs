@@ -38,6 +38,11 @@ const TILE_ORDER: [&str; 7] = [
     "median_house_value",
 ];
 
+/// How many frames the pointer is held still before a hover is read back —
+/// `tests/tile_scale_switch.rs::STILL_FRAMES`, which is where the measurement
+/// behind it is written down.
+const STILL_FRAMES: usize = 8;
+
 /// A window that keeps its own `egui::Context` for its whole life, because a
 /// click is resolved against the widget id a *previous* frame registered.
 struct Live {
@@ -108,19 +113,29 @@ impl Live {
     }
 
     /// The frame the pointer has been resting at `pos` for, handing back what
-    /// it painted — four frames, because a tooltip is decided from the hover a
-    /// previous frame's widget rect resolved. `tests/tile_scale_switch.rs`
-    /// measured where the text first appears.
+    /// it painted.
+    ///
+    /// egui refuses a tooltip while it reads the pointer as moving, and what
+    /// it reads is a velocity off a position history `0.1` seconds wide — so
+    /// a pointer put down somewhere new is "moving" for that whole window
+    /// however still it then holds. `tests/tile_scale_switch.rs`'s
+    /// `hover_shapes` carries the same rest and the same assertion, and its
+    /// `STILL_FRAMES` is where the count comes from.
     fn hover_shapes(&mut self, pos: egui::Pos2) -> Vec<egui::epaint::ClippedShape> {
         for theme in [egui::Theme::Light, egui::Theme::Dark] {
             self.ctx
                 .style_mut_of(theme, |style| style.interaction.tooltip_delay = 0.0);
         }
-        let moved = || vec![egui::Event::PointerMoved(pos)];
-        self.run(vec![moved(), moved(), moved()]);
+        self.run(vec![vec![egui::Event::PointerMoved(pos)]]);
+        self.run(vec![Vec::new(); STILL_FRAMES]);
+        assert!(
+            self.ctx.input(|i| i.pointer.is_still()),
+            "the pointer is still moving by egui's own reading after \
+             {STILL_FRAMES} frames at rest on {pos:?}, so a tooltip would be \
+             refused for the pointer rather than for the control"
+        );
         let raw = egui::RawInput {
             screen_rect: Some(self.screen),
-            events: moved(),
             ..Default::default()
         };
         self.ctx.run_ui(raw, |ui| self.app.draw(ui)).shapes

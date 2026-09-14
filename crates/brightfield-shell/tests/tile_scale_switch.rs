@@ -61,6 +61,16 @@ fn housing_boot() -> Boot {
     Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()))
 }
 
+/// How many frames the pointer is held still before a hover is read back.
+///
+/// egui's pointer velocity is read off a position history `0.1` seconds wide,
+/// and a scripted frame advances the input clock by one predicted step —
+/// `1/60` of a second at the default refresh — so six frames is where the
+/// arriving jump falls out of that window. Eight, and the stillness is then
+/// asserted rather than assumed: this number is a floor the harness clears,
+/// not a fact about egui that a comment here would be the only record of.
+const STILL_FRAMES: usize = 8;
+
 /// A window that keeps its own `egui::Context` for its whole life, because a
 /// click is resolved against the widget id a *previous* frame registered —
 /// `tests/navigator_spine.rs`'s harness, over this file's own assertions.
@@ -153,12 +163,20 @@ impl Live {
     /// The frame the pointer has been resting at `pos` for, handing back what
     /// it painted.
     ///
-    /// Four frames, not one. A tooltip is decided from the hover a *previous*
-    /// frame's widget rect resolved, and egui's own delay is measured off the
-    /// input clock a scripted frame advances by one predicted step at a time —
-    /// three frames of rest is where the text first appears, which a probe
-    /// over a bare `on_hover_text` in an empty context reproduces outside this
-    /// window. Two frames is not enough and this is the test that says so.
+    /// **A tooltip is refused while egui thinks the pointer is moving**, and
+    /// what egui calls moving is a velocity read off a position history that
+    /// spans `0.1` seconds. A pointer put down somewhere new leaves the jump
+    /// it arrived by in that history, so it is "moving" for the whole window
+    /// however still it then holds — and a scripted frame advances the input
+    /// clock by one predicted step, so the window is frames rather than
+    /// milliseconds. `style.interaction.show_tooltips_only_when_still` is what
+    /// reads it.
+    ///
+    /// So the pointer is put at `pos` and then held there, with no events, for
+    /// [`STILL_FRAMES`] — and the stillness egui itself would test is asserted
+    /// before the frame below is read, rather than a frame count being trusted
+    /// to be enough. Held too few and the readback says *the control painted
+    /// no hover text*, which is what a control that never drew one says too.
     fn hover_shapes(&mut self, pos: egui::Pos2) -> Vec<egui::epaint::ClippedShape> {
         // The delay is zeroed HERE and not at construction. The window
         // installs the design system's whole `Style` on its first draw —
@@ -169,11 +187,16 @@ impl Live {
             self.ctx
                 .style_mut_of(theme, |style| style.interaction.tooltip_delay = 0.0);
         }
-        let moved = || vec![egui::Event::PointerMoved(pos)];
-        self.run(vec![moved(), moved(), moved()]);
+        self.run(vec![vec![egui::Event::PointerMoved(pos)]]);
+        self.run(vec![Vec::new(); STILL_FRAMES]);
+        assert!(
+            self.ctx.input(|i| i.pointer.is_still()),
+            "the pointer is still moving by egui's own reading after \
+             {STILL_FRAMES} frames at rest on {pos:?}, so a tooltip would be \
+             refused for the pointer rather than for the control"
+        );
         let raw = egui::RawInput {
             screen_rect: Some(self.screen),
-            events: moved(),
             ..Default::default()
         };
         self.ctx.run_ui(raw, |ui| self.app.draw(ui)).shapes
