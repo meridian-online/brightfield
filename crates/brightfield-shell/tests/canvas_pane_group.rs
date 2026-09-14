@@ -3185,3 +3185,248 @@ fn the_band_scrolls_with_its_columns_and_not_with_its_rows() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The edge between the panes, dragged and remembered
+// ---------------------------------------------------------------------------
+
+/// A scratch directory that removes itself, so a failing run cannot poison the
+/// next one with a layout file it left behind.
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!(
+            "brightfield-canvas-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        Self(dir)
+    }
+
+    fn file(&self) -> std::path::PathBuf {
+        self.0.join(brightfield_workbench::persist::LAYOUT_FILE)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A window over [`fixture`], laid out in `screen` and settled, over `layout`.
+///
+/// [`settled`]'s twin for the persistence claims: the same three frames, over
+/// an arrangement the caller supplies rather than the built-in default, which
+/// is what makes "and it came back" askable.
+fn settled_over(
+    screen: egui::Rect,
+    layout: brightfield_workbench::persist::SavedLayout,
+) -> (MeridianApp, egui::Context, egui::RawInput) {
+    let path = fixture();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let mut app = MeridianApp::headless_with_layout(boot, layout, Mode::Light);
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(screen),
+        ..Default::default()
+    };
+    for _ in 0..3 {
+        let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
+    }
+    (app, ctx, raw)
+}
+
+/// Where the frame last drew the edge between the two panes — the middle of
+/// the pane gap, which is where the grab zone is centred.
+///
+/// Read off the drawn rects rather than computed from the split, so a test
+/// aiming at it aims at the pixels a reader would.
+fn drawn_edge(app: &MeridianApp) -> f32 {
+    let group = app.canvas_panes();
+    let hero = group.pane("map").expect("the hero pane drew");
+    let grid = group.pane("grid").expect("the grid pane drew");
+    (hero.rect.right() + grid.rect.left()) / 2.0
+}
+
+/// The width the frame last drew the hero pane at.
+fn hero_width(app: &MeridianApp) -> f32 {
+    app.canvas_panes()
+        .pane("map")
+        .expect("the hero pane drew")
+        .rect
+        .width()
+}
+
+/// How far `the_dragged_pane_edge_comes_back_on_the_next_open` moves the edge,
+/// in logical points — leftwards, so the grid pane gets wider.
+///
+/// Big enough that the hero pane could not have landed here by rounding, and
+/// small enough that it stays well clear of `min_canvas_pane_width`, so what
+/// is asserted is the drag rather than the clamp. The clamp is
+/// `neither_pane_can_be_dragged_shut`'s.
+const DRAG: f32 = 180.0;
+
+/// Press on the edge, drag it to `to`, release, and settle.
+///
+/// Five frames rather than one, and each of them is load-bearing: egui decides
+/// a press has become a *drag* from the distance travelled since the button
+/// went down, so the press and the move cannot share a frame; and the split a
+/// drag writes is read by `canvas_pane_rects` on the frame **after** the one
+/// that wrote it, so the caller needs a frame drawn at the new split before it
+/// reads the panes back.
+fn drag_the_edge(app: &mut MeridianApp, ctx: &egui::Context, raw: &egui::RawInput, to: f32) {
+    let from = drawn_edge(app);
+    let y = app
+        .canvas_panes()
+        .pane("map")
+        .expect("the hero pane drew")
+        .rect
+        .center()
+        .y;
+    let (start, end) = (egui::pos2(from, y), egui::pos2(to, y));
+    let mut frame = |events: Vec<egui::Event>| {
+        let mut input = raw.clone();
+        input.events = events;
+        let _ = ctx.run_ui(input, |ui| app.draw(ui));
+    };
+    frame(vec![egui::Event::PointerMoved(start)]);
+    frame(vec![button(start, egui::PointerButton::Primary, true)]);
+    frame(vec![egui::Event::PointerMoved(end)]);
+    frame(vec![button(end, egui::PointerButton::Primary, false)]);
+    frame(Vec::new());
+}
+
+/// **The edge between the hero pane and the grid pane drags, and where it was
+/// dragged to is where the next open draws it.**
+///
+/// The whole round trip, through the machinery the live host uses and nothing
+/// else: a real frame's pointer press on the edge, the shell's own
+/// `flush_layout`, `persist::load` off the file that landed on disk, and a
+/// second window built on what came back. What is read at each end is
+/// `canvas_panes` — the rect the frame **drew** the hero pane at — rather than
+/// `canvas_split`, so a field that was set and never reached the arithmetic
+/// fails here.
+///
+/// Three claims, three assertions, because a failure should say which:
+///
+/// - the drag moved the edge, and moved it as far as the pointer went (the
+///   hero pane lost exactly [`DRAG`] points, so the edge tracks the cursor
+///   rather than merely responding to it);
+/// - the file that was written is a file that loads — `LoadOutcome::Restored`,
+///   not the `Corrupt` an incompatible shape produces;
+/// - the second window drew the hero at the dragged width, and not at the
+///   even one it would have opened at.
+///
+/// The last comparison is against the width the **first window opened at**,
+/// measured, rather than against a number typed here: comparing a restored
+/// rect to a constant would pass on a build where both were wrong together.
+#[test]
+fn the_dragged_pane_edge_comes_back_on_the_next_open() {
+    let scratch = Scratch::new("split");
+    let path = scratch.file();
+
+    let (mut app, ctx, raw) = settled_over(SCREEN, brightfield_shell::startup::default_layout());
+    let even = hero_width(&app);
+    let edge = drawn_edge(&app);
+    drag_the_edge(&mut app, &ctx, &raw, edge - DRAG);
+    let dragged = hero_width(&app);
+    assert!(
+        (even - dragged - DRAG).abs() <= 1.0,
+        "the hero pane was {even} points wide and is {dragged} after the edge \
+         was dragged {DRAG} points left — the edge did not follow the pointer"
+    );
+
+    let written = app
+        .flush_layout(&path)
+        .expect("the dragged split left the layout dirty, so a flush writes it");
+    assert!(written.is_ok(), "the layout file did not write: {written:?}");
+
+    // `default_layout` rather than a panicking closure: `from_json` builds the
+    // fallback on every load that parses, because it is the yardstick the
+    // completeness check measures the restored tree against. A load that
+    // really did fail falls back to it and is caught by the outcome below and
+    // by the last assertion, which is the one that would see the even split.
+    let (restored, outcome) =
+        brightfield_workbench::persist::load(&path, brightfield_shell::startup::default_layout);
+    assert_eq!(
+        outcome,
+        brightfield_workbench::persist::LoadOutcome::Restored,
+        "the layout file written with a dragged split came back as {outcome:?}"
+    );
+
+    let (reopened, _, _) = settled_over(SCREEN, restored);
+    let after = hero_width(&reopened);
+    assert!(
+        (after - dragged).abs() <= 1.0,
+        "the reopened window drew the hero pane {after} points wide where the \
+         drag left it at {dragged} — the edge did not come back where it was \
+         put"
+    );
+    assert!(
+        (after - even).abs() > 1.0,
+        "the reopened window drew the hero pane {after} points wide, which is \
+         the {even} a fresh open draws — the restored split is the default, so \
+         this test would pass over a layout file that recorded nothing"
+    );
+}
+
+/// **Neither pane can be dragged shut.**
+///
+/// A pane dragged to nothing is a pane a reader cannot see, and therefore a
+/// pane whose edge they cannot find to drag back — the one way this control
+/// can leave the window in a state no gesture recovers from. The floor is read
+/// off the frame rather than against `min_canvas_pane_width`, which is
+/// private: what is asserted is that a drag far past either end of the canvas
+/// leaves **both** panes wide enough to draw a header band in, and that the
+/// two ends do not agree, so a clamp that pinned the split to one number
+/// rather than to a range fails the second half.
+#[test]
+fn neither_pane_can_be_dragged_shut() {
+    let canvas_of = |app: &MeridianApp| {
+        app.region_rect(arrangement::CANVAS)
+            .expect("the canvas drew")
+    };
+    let mut widths = Vec::new();
+    for past in [-2000.0_f32, 2000.0] {
+        let (mut app, ctx, raw) =
+            settled_over(SCREEN, brightfield_shell::startup::default_layout());
+        let edge = drawn_edge(&app);
+        drag_the_edge(&mut app, &ctx, &raw, edge + past);
+        let group = app.canvas_panes();
+        let hero = group.pane("map").expect("the hero pane drew");
+        let grid = group.pane("grid").expect("the grid pane drew");
+        let floor = 2.0 * chrome::pane_content_inset();
+        for (name, pane) in [("hero", hero), ("grid", grid)] {
+            assert!(
+                pane.rect.width() > floor,
+                "dragging the edge {past} points left the {name} pane \
+                 {} points wide, which is inside its own frame's {floor} \
+                 points of inset — the pane has been dragged shut",
+                pane.rect.width()
+            );
+        }
+        assert!(
+            hero.rect.right() < canvas_of(&app).right() && hero.rect.left() >= canvas_of(&app).left(),
+            "dragging the edge {past} points put the hero pane at {:?}, outside \
+             the canvas at {:?}",
+            hero.rect,
+            canvas_of(&app)
+        );
+        widths.push(hero.rect.width());
+    }
+    assert!(
+        widths[1] - widths[0] > 100.0,
+        "dragging the edge hard left left the hero pane {} points wide and \
+         dragging it hard right left it {} — the two ends of the drag land in \
+         the same place, so the clamp is pinning the split rather than \
+         bounding it",
+        widths[0],
+        widths[1]
+    );
+}

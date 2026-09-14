@@ -523,6 +523,63 @@ fn a_layout_from_before_recents_existed_still_loads() {
     assert!(restored.recents.is_empty());
 }
 
+/// A layout file written before the canvas split existed loads, **and opens at
+/// the even split** rather than at zero.
+///
+/// The two siblings above hold the first half for an `Option` and for a `Vec`.
+/// This field is an `f32`, and on an `f32` the attribute alone is not enough:
+/// serde's own default for a number is **zero**, and a zero split is a hero
+/// pane one point wide with the grid pane taking the whole canvas — drawn on
+/// every layout file already on every machine, on the first launch after the
+/// upgrade. So the field's attribute names a function, and this holds the
+/// value the function returns as well as the fact that the file parses.
+///
+/// Read off the loaded envelope rather than through a window, because it is a
+/// claim about the parse; that the split the envelope carries is the split the
+/// canvas draws at is `the_dragged_pane_edge_comes_back_on_the_next_open`'s,
+/// in `canvas_pane_group.rs`.
+///
+/// Watched redden, two mutations, one per half. Removing the attribute from
+/// `SavedLayout::canvas_split` altogether fails at `Corrupt` — a `f32` with no
+/// default is a field serde requires. Weakening it to a bare
+/// `#[serde(default)]` parses and fails at the second assertion with a split
+/// of 0, which is the pane dragged shut by an upgrade nobody asked for.
+#[test]
+fn a_layout_from_before_the_canvas_split_existed_opens_at_the_even_split() {
+    let scratch = Scratch::new("upgrade-split");
+    let path = scratch.file();
+    let _ = brightfield_shell::startup::boot_layout(None);
+
+    let mut json = serde_json::to_value(default_layout()).expect("a layout serialises");
+    let removed = json
+        .as_object_mut()
+        .expect("the envelope is an object")
+        .remove("canvas_split");
+    assert!(
+        removed.is_some(),
+        "there is no `canvas_split` key to remove, so this test proves nothing"
+    );
+    std::fs::write(&path, serde_json::to_string(&json).expect("writes")).expect("writes");
+
+    let (restored, outcome) = persist::load(&path, default_layout);
+    assert_eq!(
+        outcome,
+        LoadOutcome::Restored,
+        "a layout written before the canvas split existed no longer loads \
+         ({}) — every file on every machine is discarded on upgrade",
+        outcome.reason()
+    );
+    assert!(
+        (restored.canvas_split - persist::EVEN_CANVAS_SPLIT).abs() < f32::EPSILON,
+        "a layout written before the canvas split existed restored a split of \
+         {}, where {} is the even one the canvas draws on a fresh open — a \
+         split of zero is a hero pane one point wide on every machine that \
+         upgrades",
+        restored.canvas_split,
+        persist::EVEN_CANVAS_SPLIT
+    );
+}
+
 /// The recents list is capped, most recent first, and reopening something
 /// moves it rather than adding a second row for it.
 ///
