@@ -3430,3 +3430,112 @@ fn neither_pane_can_be_dragged_shut() {
         widths[1]
     );
 }
+
+/// **The window `every_transposed_row_states_its_leaf_and_its_storage_type`
+/// and the transposed baselines are read in** — [`SCREEN`] made taller until
+/// all [`STACKED`] rows clear the fold.
+///
+/// The rows do not compress past `MIN_ROW_HEIGHT`, so at [`SCREEN`] the last
+/// of the fixture's seven stands below the pane's foot and the painter clips
+/// it away — correctly, and it is what the scroll exists for. A test that read
+/// the labels there would be reading six rows and calling it every row, and
+/// the baseline beside it would photograph six. The height is stated here so
+/// both read the same window.
+const TRANSPOSED_SCREEN: egui::Rect = egui::Rect {
+    min: egui::Pos2::ZERO,
+    max: egui::pos2(1440.0, 1088.0),
+};
+
+/// [`settled_window`] at `screen` with the grid transposed, by a click on the
+/// switch the last frame drew.
+fn settled_window_transposed(screen: egui::Rect) -> (MeridianApp, egui::Context, egui::RawInput) {
+    let path = fixture();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let mut app = MeridianApp::headless(boot, Mode::Light);
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(screen),
+        ..Default::default()
+    };
+    for _ in 0..3 {
+        let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
+    }
+    transpose_the_grid(&mut app, &ctx, &raw);
+    (app, ctx, raw)
+}
+
+/// **Every transposed row states its column's finetype leaf and its storage
+/// type, in the ink the reader can see.**
+///
+/// Read as **text off the frame's galleys**, inside each row's own cell, and
+/// each string is checked to be non-empty before it is looked for: the failure
+/// this exists for is the row density quietly dropping down to the compact
+/// branch, which draws no leaf and no storage row at all and leaves
+/// `ColumnBandDrawn` reporting a cell that is there. A presence-only check —
+/// "the band drew seven cells" — is green over that, and was: the first half
+/// of this work shipped one.
+///
+/// The pair is looked for **inside the row's own cell** rather than anywhere
+/// in the pane, so a leaf drawn once for the whole grid, or drawn against the
+/// wrong row, is not read as seven correct ones. `drawn_cells_in` respects
+/// clip rects, so what is counted is what reaches the reader rather than what
+/// the painter was handed.
+///
+/// Watched redden, one mutation: narrowing `GridDensity::is_full` to
+/// `matches!(self, Self::Full)` — which is the branch that decides whether a
+/// transposed row states these two facts at all — fails at the first row with
+/// the leaf missing.
+#[test]
+fn every_transposed_row_states_its_leaf_and_its_storage_type() {
+    let (mut app, ctx, raw) = settled_window_transposed(TRANSPOSED_SCREEN);
+    let rows = app.chart_doc().transposed_rows.clone();
+    let facts: Vec<(String, String)> = app
+        .chart_doc()
+        .tile_columns()
+        .iter()
+        .map(|c| (c.leaf.clone(), c.storage.clone()))
+        .collect();
+    assert_eq!(
+        rows.len(),
+        STACKED,
+        "the transposed grid drew {} rows where the fixture earns {STACKED} \
+         tiles past the hero",
+        rows.len()
+    );
+    for row in &rows {
+        let (leaf, storage) = facts
+            .get(row.column)
+            .unwrap_or_else(|| panic!("row {} names a tile the document has", row.column));
+        assert!(
+            !leaf.is_empty() && !storage.is_empty(),
+            "the fixture's column {} has leaf {leaf:?} and storage {storage:?} \
+             — one of them is empty, so looking for it below would pass over a \
+             row that drew neither",
+            row.name
+        );
+        assert!(
+            row.clip.contains_rect(row.cell),
+            "the row for {} was clipped to {:?} from a cell of {:?} — it is \
+             below the fold at {TRANSPOSED_SCREEN:?}, so this window no longer \
+             shows every row and the loop is reading a subset",
+            row.name,
+            row.clip,
+            row.cell
+        );
+        let drawn: Vec<String> = drawn_cells_in(&mut app, &ctx, &raw, row.cell)
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect();
+        for want in [leaf, storage] {
+            assert!(
+                drawn.iter().any(|t| t.contains(want.as_str())),
+                "the transposed row for {} drew {drawn:?} inside its own cell \
+                 {:?}, and {want:?} is not among them — the row states its \
+                 name and its counts and not what kind of column it is",
+                row.name,
+                row.cell
+            );
+        }
+    }
+}
