@@ -106,7 +106,9 @@ fn housing() -> PathBuf {
 /// The tiles [`housing`] earns, in the order the composition places them: the
 /// pair's joint map first, then every one of the file's nine columns in the
 /// file's own order — the two coordinates among them, each with the histogram
-/// every other column gets.
+/// every other column gets, which
+/// [`the_generated_dashboard_light_baseline`] reads back through
+/// [`assert_housing`] before it photographs anything.
 ///
 /// `longitude` appears twice on purpose. The first is the map, which the
 /// generator names for the pair's longitude column; the second is that
@@ -506,6 +508,57 @@ fn the_generated_dashboard_dark_baseline() {
     );
 
     egui_kittest::image_snapshot(&image, "dashboard_dark");
+}
+
+/// **The window a data file opens at does not grow with the count of tiles
+/// beside the hero.**
+///
+/// Two generated dashboards, one from each fixture this file already opens:
+/// [`housing`] earns a tile for each of its nine columns beside the joint map,
+/// [`site_readings`] four beside its own. The generator's page is as tall as
+/// the taller of the hero and that column, so those two compose pages of
+/// different heights — asserted here, because a pair of fixtures whose pages
+/// happened to agree would let this test pass over the arithmetic it is about.
+/// The window each boot asks for is then read back, and it is one size.
+///
+/// What it pins is the route `Boot::window_size` takes for a generated
+/// dashboard: `rows_layout_window_size`, which caps the page at the hero's own
+/// height. Read straight through `chart_window_size`, as it was until this
+/// test existed, the taller page opens a taller window — a window sized
+/// around a column the rows layout composes out of sight and clips away.
+#[test]
+fn the_window_a_data_file_opens_at_does_not_grow_with_the_tile_count() {
+    let tall_path = housing();
+    let tall = Boot::data_file(tall_path.to_str().expect("utf-8 fixture path"))
+        .unwrap_or_else(|e| panic!("open {}: {e}", tall_path.display()));
+    let short_path = site_readings();
+    let short = Boot::data_file(short_path.to_str().expect("utf-8 fixture path"))
+        .unwrap_or_else(|e| panic!("open {}: {e}", short_path.display()));
+
+    assert_ne!(
+        tall.stacked_tiles, short.stacked_tiles,
+        "both fixtures stand the same number of tiles beside the hero \
+         ({:?}), so this test cannot tell a window derived from the column \
+         from one that is not",
+        tall.stacked_tiles
+    );
+    assert_ne!(
+        tall.composed.height, short.composed.height,
+        "the two fixtures compose pages of the same height ({} points), so the \
+         tile count has nothing left to leak into the window and this test \
+         would stay green with the cap removed",
+        tall.composed.height
+    );
+
+    let (tall_size, short_size) = (tall.window_size(), short.window_size());
+    assert_eq!(
+        tall_size, short_size,
+        "{:?} tiles beside the hero open a window of {tall_size:?} and {:?} \
+         tiles open {short_size:?}, so the size a data file opens at is \
+         following the tile column — which the rows layout it opens on \
+         composes out of sight and clips away",
+        tall.stacked_tiles, short.stacked_tiles
+    );
 }
 
 /// The window the scrolled capture below is taken in — the size the

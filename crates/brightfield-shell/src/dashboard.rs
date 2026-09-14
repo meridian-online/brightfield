@@ -581,7 +581,10 @@ impl Dashboard {
         for (i, column) in columns.iter().enumerate() {
             // The joint tile, ahead of the first coordinate column's own —
             // and the walk falls through, so both coordinates reach
-            // `tile_for` and keep the histogram every other column gets.
+            // `tile_for` and keep the histogram every other column gets,
+            // which
+            // `a_coordinate_pair_keeps_both_columns_own_tiles_beside_the_joint_map`
+            // reads back by column and by kind.
             if let Some((lon_i, lat_i, rule)) = pair {
                 if i == lon_i.min(lat_i) {
                     tiles.push(point_map_tile_for(&columns[lon_i], &columns[lat_i], rule));
@@ -1444,13 +1447,13 @@ mod tests {
     }
 
     /// **The housing scenario in three columns**: `longitude` and `latitude`
-    /// beside an ordinary measure, none of them carrying a semantic label — a
+    /// beside an ordinary measure, with no semantic label on the three — a
     /// `cargo test` binary carries no FineType bundle (see [`role_of`]'s
     /// callers), so the pair is found by column name, the tier the label
     /// defers to.
     ///
     /// The pair earns its joint map **and** each of its two columns keeps the
-    /// histogram every other column gets, so three columns draw four tiles:
+    /// histogram every other column gets. So three columns draw four tiles:
     /// the map at the position of the first coordinate the file names, then
     /// `longitude`, `latitude` and `housing_median_age` in the file's own
     /// order. The list is read back by column and by kind, and each
