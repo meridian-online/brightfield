@@ -428,39 +428,50 @@ fn yaml_quoted(value: &str) -> String {
 /// is the longitude and whose
 /// [`Tile::paired_column`](crate::dashboard::Tile::paired_column) is the
 /// latitude. Both are looked up here, so the latitude row reads as drawn rather
-/// than declined — but each keeps its **own** tile's facts, preferred over the
-/// map's: see [`facts_for`]. That is also why the tile list the chart document
-/// is handed is built separately, by `tiles_in_plot_order`: two column rows can
-/// share one plot.
+/// than declined — and both carry the other half in [`ColumnFacts::paired`],
+/// which is the **column-level** meaning of that field: this column is one
+/// half of a pair, whichever of the pair's tiles this entry's own facts came
+/// from. `both_halves_of_a_coordinate_pair_are_drawn_and_share_one_plot`
+/// holds that meaning for the rail.
+///
+/// That is also why the tile list the chart document is handed is built
+/// separately, by `tiles_in_plot_order`: two column rows can share one plot,
+/// and a **plot-order** entry wants the opposite of what this function
+/// answers — a coordinate column's own histogram entry wants its own reason
+/// and no pairing, not the map's — which is a different question, about the
+/// *tile*, not the *column*, and [`tiles_in_plot_order`] answers it directly
+/// through [`build_facts`] rather than through [`facts_for`].
 fn facts(columns: &[ColumnProfile], dashboard: &Dashboard) -> Vec<ColumnFacts> {
     columns.iter().map(|p| facts_for(p, dashboard)).collect()
 }
 
-/// One column's facts: the facts of **that column's own tile**, preferred
-/// over a joint tile it is the other half of rather than the drawer of.
+/// One column's facts, at the **column** level: the facts of whichever tile
+/// draws this column, mapped or not.
 ///
-/// Two separate searches, run in that order: a tile whose own
-/// [`Tile::column`](crate::dashboard::Tile::column) is this profile's name
-/// and whose kind is not the joint map, and — failing that — then a tile
-/// whose [`Tile::paired_column`](crate::dashboard::Tile::paired_column)
-/// is this profile's name. One combined search used to stand here instead, a
-/// single pass over [`Dashboard::tiles`] taking whichever tile named this
-/// column first: `a_coordinate_columns_own_histogram_reports_its_own_reason_and_no_pair`
-/// is what a coordinate pair's own two tiles broke it on, because the joint
-/// map stands ahead of both coordinates' own tiles there and a single forward
-/// search met it before reaching either histogram. Two searches with a kind
-/// test between them read the same list without that ordering mattering to
-/// either one.
+/// One forward search over [`Dashboard::tiles`]: a tile whose own
+/// [`Tile::column`](crate::dashboard::Tile::column) is this profile's name,
+/// or — failing that — whose [`Tile::paired_column`](crate::dashboard::Tile::paired_column)
+/// is. For an ordinary column those two conditions name at most one tile
+/// between them; for a coordinate pair's two columns, both conditions can
+/// meet the *same* joint map (its own `column()` is one half, its
+/// `paired_column()` the other), and a single forward search answers with
+/// that map for both halves alike — which is the rail's own question, *is
+/// this column drawn, and if it is one half of a pair, who is the other
+/// half*, not *which tile does this row draw*. The second question belongs to
+/// [`tiles_in_plot_order`], which does not call this: it already holds the
+/// exact tile each of its entries is of and hands that straight to
+/// [`build_facts`], so a coordinate column's own histogram entry there reports
+/// that histogram's reason regardless of where the map falls in
+/// [`Dashboard::tiles`]. A version of this function that preferred a column's
+/// own tile over the map read correctly at the *tile* level and wrongly at
+/// the *column* level, narrowing [`ColumnFacts::paired`] to the map's own
+/// entry and leaving [`OneStepProtocol::columns`]'s own readers — the rail —
+/// reading a field that no longer carried the meaning they read it for.
 fn facts_for(profile: &ColumnProfile, dashboard: &Dashboard) -> ColumnFacts {
-    let own = dashboard.tiles().iter().find(|t| {
-        t.column() == profile.name && !matches!(t.chosen_by(), ChosenBy::CoordinatePair { .. })
-    });
-    let tile = own.or_else(|| {
-        dashboard
-            .tiles()
-            .iter()
-            .find(|t| t.paired_column() == Some(profile.name.as_str()))
-    });
+    let tile = dashboard
+        .tiles()
+        .iter()
+        .find(|t| t.column() == profile.name || t.paired_column() == Some(profile.name.as_str()));
     build_facts(profile, tile, dashboard)
 }
 
