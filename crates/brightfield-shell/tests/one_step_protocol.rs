@@ -306,18 +306,57 @@ impl Window {
     }
 
     /// A pointer position in the middle of plot `index`'s data area, in the
-    /// window coordinates the raster was presented at — `tests/data_file.rs`'s
-    /// `at`, at the one fraction this file needs.
+    /// window coordinates the frame drew it at — `tests/data_file.rs`'s `at`,
+    /// at the one fraction this file needs.
+    ///
+    /// Off the plot's **drawn** rect rather than off the page origin plus its
+    /// place on the page: the canvas draws one page through two views, and a
+    /// tile the grid pane re-homes is nowhere near where the page put it.
+    /// `tests/empty_extent_navigation.rs::plot_data_point` reads the same way.
     fn middle_of(&self, index: usize) -> egui::Pos2 {
-        let doc = self.app.chart_doc();
-        let raster = doc
-            .raster_rect
-            .expect("a settled frame presented the raster");
-        let plot = &doc.composed.plots[index];
-        let l = &plot.layout;
-        let x = plot.rect.x + (l.plot_x_start() + l.plot_x_end()) / 2.0;
-        let y = plot.rect.y + (l.plot_y_start() + l.plot_y_end()) / 2.0;
-        egui::pos2(raster.min.x + x as f32, raster.min.y + y as f32)
+        let drawn = self.app.composed_plot_rects()[index];
+        let l = &self.app.chart_doc().composed.plots[index].layout;
+        #[allow(clippy::cast_possible_truncation)]
+        egui::pos2(
+            drawn.left() + ((l.plot_x_start() + l.plot_x_end()) / 2.0) as f32,
+            drawn.top() + ((l.plot_y_start() + l.plot_y_end()) / 2.0) as f32,
+        )
+    }
+
+    /// **Throw the layout switch on the grid pane's header band to its columns
+    /// state**, and settle.
+    ///
+    /// A tiled column's own picture is on screen only with the grid
+    /// transposed: untransposed the grid pane draws a table and each column's
+    /// distribution is a rug in its header band, so a click aimed at a tile
+    /// past the hero lands on the table. `tests/navigator_spine.rs` carries
+    /// the same helper, in the shape its own harness uses.
+    ///
+    /// Aimed at the rect the frame recorded, and the state is read back: a
+    /// miss would leave the click below selecting nothing and this file's
+    /// `assert_ne!` reading two copies of the first selection.
+    fn transpose_the_grid(&mut self) {
+        let at = self
+            .app
+            .chart_doc()
+            .grid_layout_switch
+            .as_ref()
+            .expect("the grid pane's header band drew a layout switch")
+            .states
+            .iter()
+            .find(|(state, _)| *state == brightfield_shell::app::GridLayout::Columns)
+            .expect("the switch offers a columns state")
+            .1
+            .center();
+        self.run(vec![egui::Event::PointerMoved(at), button_at(at, true)]);
+        self.run(vec![button_at(at, false)]);
+        self.settle();
+        assert_eq!(
+            self.app.grid_layout(),
+            brightfield_shell::app::GridLayout::Columns,
+            "the click at {at:?} did not throw the switch, so no tile past the \
+             hero is on screen"
+        );
     }
 
     /// Press and release on plot `index` — two frames, because the chart's
@@ -824,7 +863,10 @@ fn clicking_a_tile_selects_the_column_that_plot_draws_and_the_inspector_shows_it
     );
 
     // A second tile moves the selection rather than adding to it, and lands on
-    // that plot's column too.
+    // that plot's column too. Thrown here rather than at the open, because the
+    // hero above is in the hero pane either way round and only this click
+    // needs a tile.
+    win.transpose_the_grid();
     win.click_tile(1);
     let second = win
         .app

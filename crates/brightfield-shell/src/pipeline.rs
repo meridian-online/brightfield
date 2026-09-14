@@ -1526,7 +1526,7 @@ impl LiveDashboard {
     /// is not a plot — [`presenting_rows_mark`] over the spec this dashboard
     /// was composed from.
     ///
-    /// It lives here because the spec does: the rows pane holds a `ChartDoc`,
+    /// It lives here because the spec does: the grid pane holds a `ChartDoc`,
     /// the `ChartDoc` holds this, and the alternative — the pane reaching for
     /// the spec itself — is how a second copy of the rule gets written. There
     /// is one rule and this is the only way to it from a pane.

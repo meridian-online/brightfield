@@ -1197,12 +1197,12 @@ impl Item<ChartDoc> for ChartItem {
             // **The first view's own clip.** A page drawn in a pane group is
             // drawn in the boxes `PaneViews` names and nowhere else, and the
             // box this paint is laid out in is their union — which, since the
-            // map pane gave the foot of its column to the rows pane, reaches
-            // over the map pane's own bottom frame and over the rows pane
-            // under it. The clip is narrowed to the first view for the paint
-            // and put back afterwards, because `Ui::interact` takes its hit
-            // rect from the clip and the gestures below are aimed at the whole
-            // page across both views.
+            // two panes stand side by side at the same height, reaches past
+            // the map pane's own right edge into the grid pane beside it, not
+            // below either pane's own frame. The clip is narrowed to the first
+            // view for the paint and put back afterwards, because
+            // `Ui::interact` takes its hit rect from the clip and the gestures
+            // below are aimed at the whole page across both views.
             let laid = ui.clip_rect();
             if let Some(views) = doc.pane_views {
                 ui.shrink_clip_rect(views.first);

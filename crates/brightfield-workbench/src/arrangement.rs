@@ -541,7 +541,7 @@ static LEDGER_PANES: &[ItemId] = &[ItemId::new("protocol-steps"), ItemId::new("s
 ///
 /// The tabular reading is not a projection of the canvas: a dashboard's rows
 /// are a pane of the canvas's own group, drawn through [`crate::chrome::pane_frame`]
-/// beneath the map, so the numbers and the picture are on screen at once
+/// beside the map, so the numbers and the picture are on screen at once
 /// rather than one behind the other.
 static PROJECTIONS: &[Projection] = &[Projection {
     item: ItemId::new("chart-canvas"),

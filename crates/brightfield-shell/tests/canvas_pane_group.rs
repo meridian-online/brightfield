@@ -1,5 +1,5 @@
-//! **The canvas as a pane group**: the map pane, the column of tiles beside
-//! it, and the count that reads at the map's lower-right.
+//! **The canvas as a pane group**: the map pane, the grid pane beside it,
+//! and the count that reads at the map's lower-right.
 //!
 //! Every claim here is read off a **laid-out frame**, not off a declaration.
 //! Whether a pane drew a header band, where its content rect fell, where the
@@ -15,12 +15,11 @@
 //! the ones the window runs, and the *layout* half of this card is gated
 //! without a wgpu adapter. The picture is `tests/dashboard_baseline.rs`'s.
 //!
-//! # The three panes
+//! # The two panes
 //!
-//! The map, the rows beneath it, and the column of tiles beside both. The
-//! assertion below states the count as a number rather than as an inequality,
-//! so a fourth pane arriving is a change this reports instead of one it
-//! absorbs.
+//! The map, and the grid pane beside it. The assertion below states the count
+//! as a number rather than as an inequality, so a third pane arriving is a
+//! change this reports instead of one it absorbs.
 //!
 //! # Which of them the ledger rail is open for
 //!
@@ -37,10 +36,11 @@
 //! they are claims about a page bigger than its pane and that is where this
 //! fixture makes one.
 
-use brightfield_shell::dashboard::{HERO_SHARE, MAP_COLUMN_SHARE, MIN_COLUMN_TILE_HEIGHT};
+use brightfield_shell::app::GridLayout;
+use brightfield_shell::dashboard::MIN_ROW_HEIGHT;
 use brightfield_shell::data_file;
 use brightfield_shell::design::Mode;
-use brightfield_shell::window::{Boot, MeridianApp, CANVAS_PANE_GAP};
+use brightfield_shell::window::{Boot, MeridianApp, CANVAS_PANE_GAP, EVEN_CANVAS_SPLIT};
 use brightfield_workbench::arrangement;
 use brightfield_workbench::chrome;
 
@@ -57,7 +57,7 @@ fn fixture() -> std::path::PathBuf {
         .join("tests/data/california_housing_sample.csv")
 }
 
-/// How many tiles stand in the column beside the hero for [`fixture`].
+/// How many tiles the grid pane draws as rows, transposed, for [`fixture`].
 ///
 /// Nine columns, two of which the coordinate pair draws as one tile, so eight
 /// tiles: the map and seven others.
@@ -81,9 +81,32 @@ enum Ledger {
     Reopened,
 }
 
+/// **Which way round the grid pane is drawing** when the frame is read.
+///
+/// A file opens on [`Grid::Rows`]; [`Grid::Columns`] is the switch on the grid
+/// pane's own header band thrown by a click, which is the gesture a reader
+/// reaches it by. It matters to the scroll and gesture claims below because it
+/// decides which pane, if either, has a page taller than itself: untransposed
+/// the page is the hero and the hero is bounded to the pane it is drawn in, so
+/// nothing scrolls at any window size.
+#[derive(Clone, Copy, PartialEq)]
+enum Grid {
+    /// As it opens — the table's rows as rows, the grid pane drawing no part
+    /// of the composed page.
+    Rows,
+    /// Transposed — each tiled column a row of its own, the grid pane drawing
+    /// the part of the page the tiles stand in.
+    Columns,
+}
+
 /// A settled window over the fixture, laid out in `screen`, **as it opens**.
 fn settled(screen: egui::Rect) -> MeridianApp {
-    settled_after(screen, Ledger::Closed, None, 0)
+    settled_after(screen, Ledger::Closed, Grid::Rows, None, 0)
+}
+
+/// [`settled`] with the grid **transposed** before the frame is read.
+fn settled_transposed(screen: egui::Rect) -> MeridianApp {
+    settled_after(screen, Ledger::Closed, Grid::Columns, None, 0)
 }
 
 /// [`settled`] with the ledger rail reopened before the frame is read.
@@ -96,7 +119,7 @@ fn settled(screen: egui::Rect) -> MeridianApp {
 /// strip keeps, and it is what makes the assertions below claims about a
 /// scroll rather than about a window size.
 fn settled_scrollable(screen: egui::Rect) -> MeridianApp {
-    settled_after(screen, Ledger::Reopened, None, 0)
+    settled_after(screen, Ledger::Reopened, Grid::Columns, None, 0)
 }
 
 /// [`settled`] with a **wheel** turned over `at` first: the pointer is put
@@ -112,6 +135,7 @@ fn settled_scrollable(screen: egui::Rect) -> MeridianApp {
 fn settled_after(
     screen: egui::Rect,
     ledger: Ledger,
+    grid: Grid,
     at: Option<egui::Pos2>,
     notches: usize,
 ) -> MeridianApp {
@@ -131,6 +155,9 @@ fn settled_after(
     }
     if ledger == Ledger::Reopened {
         reopen_the_ledger(&mut app, &ctx, &raw);
+    }
+    if grid == Grid::Columns {
+        transpose_the_grid(&mut app, &ctx, &raw);
     }
     let Some(at) = at else {
         return app;
@@ -208,7 +235,7 @@ fn reopen_the_ledger(app: &mut MeridianApp, ctx: &egui::Context, raw: &egui::Raw
 /// so it is a term of the window, and each time this window has lost chrome the
 /// reach has shrunk with it: the ledger closing to its strip took 124 points
 /// back and the canvas head band's removal took 28 more, leaving 88 at
-/// [`SCREEN`] against a 96-point tile floor.
+/// [`SCREEN`] against a transposed row's 128-point floor.
 ///
 /// So the reach is bought in the axis it lives in rather than by scrolling
 /// further, which cannot buy any: 120 points of window height is 120 points of
@@ -259,7 +286,7 @@ fn the_canvas_draws_no_band_of_its_own_above_the_panes() {
             .region_rect(arrangement::CANVAS)
             .expect("the canvas drew");
         let group = app.canvas_panes();
-        assert_eq!(group.panes.len(), 3, "the group drew its three panes");
+        assert_eq!(group.panes.len(), 2, "the group drew its two panes");
         let top = group
             .panes
             .iter()
@@ -308,11 +335,11 @@ fn the_canvas_draws_no_band_of_its_own_above_the_panes() {
     );
 }
 
-/// **AC1 — each pane of the group draws its own header band.**
+/// **Each pane of the group draws its own header band.**
 ///
 /// Counted off the frame: a pane that stopped drawing one, or a pane that
 /// vanished from the group, both come out here as a different count. The
-/// number is stated rather than bounded, so a fourth pane arriving is a
+/// number is stated rather than bounded, so a third pane arriving is a
 /// change this test reports instead of one it absorbs.
 #[test]
 fn every_pane_of_the_canvas_group_draws_its_own_header_band() {
@@ -321,9 +348,9 @@ fn every_pane_of_the_canvas_group_draws_its_own_header_band() {
     let names: Vec<&str> = group.panes.iter().map(|p| p.name).collect();
     assert_eq!(
         names,
-        vec!["map", "rows", "columns"],
-        "the canvas draws the map pane, the rows beneath it and the column of \
-         tiles beside both, in that order"
+        vec!["map", "grid"],
+        "the canvas draws the hero pane and the grid pane beside it, in that \
+         order"
     );
 
     let band = chrome::header_band_height();
@@ -352,150 +379,102 @@ fn every_pane_of_the_canvas_group_draws_its_own_header_band() {
     }
 }
 
-/// **AC2 — the map pane takes the larger share of the canvas.**
+/// **The hero pane and the grid pane stand side by side, each at the canvas's
+/// full height, sharing it evenly on a fresh open.**
 ///
-/// `HERO_SHARE` of the canvas's width, within one pane gap, at both windows
-/// the criterion names. The height clause is
-/// `the_rows_pane_sits_under_the_map_and_takes_the_rest_of_its_column`'s.
+/// Four ways to fail it and each is its own assertion, so a failure says
+/// which: a pane is missing, one of them stops short of the canvas's height,
+/// the grid is not beside the hero, or the fresh-open split is not even.
+///
+/// **The even split is read off the two drawn rects, not against
+/// [`EVEN_CANVAS_SPLIT`].** Comparing a rect the constant decided against the
+/// constant that decided it is the declaration asserting itself — watched
+/// pass at 0.62. What is asserted is that the two panes came out the same
+/// width; the constant is then checked to be the half this window opens at,
+/// which is the one thing about it a measurement cannot say.
+///
+/// At both windows, because a share that came out of a literal rather than
+/// out of the canvas would only show up at the second one.
 #[test]
-fn the_map_pane_takes_the_larger_share_of_the_canvas_width() {
+fn the_hero_and_the_grid_split_the_canvas_evenly_side_by_side() {
     for screen in [baseline_screen(), SCREEN] {
         let app = settled(screen);
         let canvas = app
             .region_rect(arrangement::CANVAS)
             .expect("the canvas drew");
         let group = app.canvas_panes();
-        let map = group.pane("map").expect("the map pane drew");
-        let columns = group.pane("columns").expect("the column pane drew");
+        let hero = group.pane("map").expect("the hero pane drew");
+        let grid = group.pane("grid").expect("the grid pane drew");
 
-        let want = HERO_SHARE * canvas.width();
+        for (name, pane) in [("hero", hero), ("grid", grid)] {
+            assert!(
+                (pane.rect.top() - canvas.top()).abs() < 1.0
+                    && (pane.rect.bottom() - canvas.bottom()).abs() < 1.0,
+                "at {screen:?} the {name} pane drew {:?} where the canvas spans \
+                 {} to {} — both panes take the canvas's full height",
+                pane.rect,
+                canvas.top(),
+                canvas.bottom()
+            );
+        }
         assert!(
-            (map.rect.width() - want).abs() <= CANVAS_PANE_GAP,
-            "at {screen:?} the map pane drew {} points wide where {HERO_SHARE} \
-             of the {} the canvas offers is {want} — more than the {CANVAS_PANE_GAP} \
-             point gap between the panes",
-            map.rect.width(),
+            (grid.rect.left() - hero.rect.right() - CANVAS_PANE_GAP).abs() < 0.5,
+            "at {screen:?} the grid pane starts at {} where the hero ends at {} \
+             — the two stand one pane gap of {CANVAS_PANE_GAP} apart",
+            grid.rect.left(),
+            hero.rect.right()
+        );
+        assert!(
+            (hero.rect.width() - grid.rect.width()).abs() <= 1.0,
+            "at {screen:?} the hero pane drew {} points wide and the grid pane \
+             {} — a fresh open splits the canvas evenly",
+            hero.rect.width(),
+            grid.rect.width()
+        );
+        assert!(
+            (hero.rect.width() + grid.rect.width() + CANVAS_PANE_GAP - canvas.width()).abs() < 1.0,
+            "at {screen:?} the two panes and the gap between them span {} of \
+             the canvas's {} — the group leaves no canvas unclaimed",
+            hero.rect.width() + grid.rect.width() + CANVAS_PANE_GAP,
             canvas.width()
         );
-        assert!(
-            map.rect.width() > columns.rect.width(),
-            "the map lost the larger share: map {:?}, columns {:?}",
-            map.rect,
-            columns.rect
-        );
-        assert!(
-            (columns.rect.bottom() - canvas.bottom()).abs() < 1.0,
-            "the column pane stops at {} where the canvas ends at {} — the \
-             tiles keep the canvas's full height, and it is the map's column \
-             that is split",
-            columns.rect.bottom(),
-            canvas.bottom()
-        );
-        assert!(
-            columns.rect.left() >= map.rect.right(),
-            "the column pane is not beside the map: map {:?}, columns {:?}",
-            map.rect,
-            columns.rect
-        );
     }
+    assert!(
+        (EVEN_CANVAS_SPLIT - 0.5).abs() < f32::EPSILON,
+        "`EVEN_CANVAS_SPLIT` is {EVEN_CANVAS_SPLIT} where a fresh open is \
+         declared to be an even one — the measurements above read whatever it \
+         says, and this is the value they are supposed to be reading"
+    );
 }
 
-/// **AC1 — the rows pane sits under the map and takes the rest of its
-/// column**, at [`MAP_COLUMN_SHARE`] of that column's height, and no wider
-/// than the map.
+/// **No pane of the group is called `rows` or `columns` any more.**
 ///
-/// Read off the drawn rects at both windows. Four ways to fail it, and each
-/// is a separate assertion so a failure says which: the pane is absent, it is
-/// above the map instead of beneath it, it is wider than the map's column, or
-/// the map is no longer its declared share of the column the two of them make
-/// between them.
+/// The group is two panes: the hero, and the one grid pane that draws the file
+/// either way round. A third pane under either of the old names is the column
+/// of tiles or the rows pane coming back, and the geometry test above would
+/// not see it — it reads two panes by name and says nothing about a third.
 ///
-/// The column is measured as the two panes' own span — the map's top to the
-/// rows' bottom — rather than as the canvas's height, because *"its column"*
-/// is what these two panes occupy and reading the canvas instead would fold
-/// the head band's height into the claim.
+/// In both of the grid's layouts, because the two draw paths build their
+/// `CanvasPanes` separately.
 #[test]
-fn the_rows_pane_sits_under_the_map_and_takes_the_rest_of_its_column() {
-    for screen in [baseline_screen(), SCREEN] {
-        let app = settled(screen);
-        let canvas = app
-            .region_rect(arrangement::CANVAS)
-            .expect("the canvas drew");
-        let group = app.canvas_panes();
-        let map = group.pane("map").expect("the map pane drew");
-        let rows = group.pane("rows").expect("the rows pane drew");
-        let columns = group.pane("columns").expect("the column pane drew");
-
-        assert!(
-            rows.rect.top() >= map.rect.bottom(),
-            "at {screen:?} the rows pane at {:?} is not under the map at {:?}",
-            rows.rect,
-            map.rect
-        );
-        assert!(
-            rows.rect.width() <= map.rect.width() + 0.5,
-            "at {screen:?} the rows pane drew {} points wide where the map's \
-             column is {} — it reached past the column into the tiles at {:?}",
-            rows.rect.width(),
-            map.rect.width(),
-            columns.rect
-        );
-        assert!(
-            rows.rect.right() <= columns.rect.left(),
-            "at {screen:?} the rows pane at {:?} overlaps the column pane at \
-             {:?}",
-            rows.rect,
-            columns.rect
-        );
-
-        // **Both halves of the share are read off the frame.** A comparison
-        // against `MAP_COLUMN_SHARE` alone cannot fail: the constant decides
-        // the rect and then the same constant is asked whether the rect is
-        // right, so the two move together and the assertion is the
-        // declaration against itself. Watched pass with the constant at 0.5.
-        //
-        // What is asserted instead is the design the constant is a spelling
-        // of: the map is the same fraction of the canvas ACROSS as it is of
-        // its column DOWN, and that fraction is 0.62. The first line is
-        // immune to either constant moving, because it compares two drawn
-        // rects; the second is the number itself, written out here so that
-        // moving both constants together still reddens.
-        let column = rows.rect.bottom() - map.rect.top();
-        let down = map.rect.height() / column;
-        let across = map.rect.width() / canvas.width();
-        assert!(
-            (down - across).abs() <= CANVAS_PANE_GAP / column,
-            "at {screen:?} the map pane took {down} of its column's {column} \
-             points down and {across} of the canvas's {} across — the two \
-             shares are one design and the panes have stopped drawing it",
-            canvas.width()
-        );
-        const SHARE: f32 = 0.62;
-        assert!(
-            (down - SHARE).abs() <= CANVAS_PANE_GAP / column,
-            "at {screen:?} the map pane drew {} points tall, which is {down} \
-             of the {column} points its column spans where the composition \
-             this is cut from says {SHARE}",
-            map.rect.height()
-        );
-        assert!(
-            (MAP_COLUMN_SHARE - SHARE).abs() < f32::EPSILON,
-            "`MAP_COLUMN_SHARE` is {MAP_COLUMN_SHARE} where the composition \
-             says {SHARE} — the drawn share above is measured, and this is the \
-             declaration it is supposed to be a spelling of"
-        );
-        assert!(
-            (rows.rect.bottom() - columns.rect.bottom()).abs() < 1.0,
-            "at {screen:?} the rows pane stops at {} and the column of tiles \
-             beside it at {} — the two columns of the group do not end level",
-            rows.rect.bottom(),
-            columns.rect.bottom()
+fn the_group_draws_two_panes_and_neither_is_called_rows_or_columns() {
+    for transposed in [false, true] {
+        let app = if transposed {
+            settled_transposed(SCREEN)
+        } else {
+            settled(SCREEN)
+        };
+        let names: Vec<&str> = app.canvas_panes().panes.iter().map(|p| p.name).collect();
+        assert_eq!(
+            names,
+            vec!["map", "grid"],
+            "transposed {transposed}: the canvas drew {names:?}"
         );
     }
 }
 
-/// **AC3 — the column holds one tile per tiled column, in file order, at one
-/// height, inside the pane.**
+/// **The grid holds one row per tiled column, in file order, at one height,
+/// inside the pane.**
 ///
 /// Read off the composition's own placed plots rather than off the tile list:
 /// a tile that is chosen and never placed, or placed outside the pane it
@@ -507,7 +486,7 @@ fn the_rows_pane_sits_under_the_map_and_takes_the_rest_of_its_column() {
 /// criterion is about. A shorter window is the other half of the rule, and is
 /// `the_column_scrolls_when_its_tiles_reach_their_floor`'s.
 #[test]
-fn the_column_holds_one_tile_per_column_at_one_height_inside_the_pane() {
+fn the_grid_holds_one_row_per_column_at_one_height_inside_the_pane() {
     let path = fixture();
     let chosen = path.to_str().expect("utf-8 fixture path");
     let opened = data_file::open(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
@@ -534,9 +513,11 @@ fn the_column_holds_one_tile_per_column_at_one_height_inside_the_pane() {
     assert_eq!(filed.len(), STACKED);
     drop(opened);
 
-    let app = settled(baseline_screen());
+    // Transposed, because that is where the tiles are on screen: untransposed
+    // they are the header band's rugs and the grid pane draws a table.
+    let app = settled_transposed(baseline_screen());
     let group = app.canvas_panes();
-    let columns = group.pane("columns").expect("the column pane drew");
+    let columns = group.pane("grid").expect("the grid pane drew");
     assert!(group.page.is_some(), "the page reached the screen");
 
     // Plot 0 is the hero; the rest are the column, in the order the
@@ -558,16 +539,33 @@ fn the_column_holds_one_tile_per_column_at_one_height_inside_the_pane() {
             tile.height(),
             first.height()
         );
+        // **Across, not down.** The rows hold at their floor and the page
+        // grows past the pane rather than compressing, so at this window the
+        // last of seven is below the fold by design — that is
+        // `the_column_scrolls_when_its_tiles_reach_their_floor`'s claim, and
+        // asserting containment down here would contradict it. What is read
+        // here is that each row's picture is laid inside the pane it is drawn
+        // in, which is the part the re-origining can get wrong.
         assert!(
-            columns.body.contains_rect(tile.shrink(0.5)),
-            "tile {i} at {tile:?} is not inside the column pane's content rect \
-             {:?}",
-            columns.body
+            tile.left() >= columns.body.left() - 0.5 && tile.right() <= columns.body.right() + 0.5,
+            "tile {i} spans {}..{} where the grid pane's content rect is \
+             {}..{}",
+            tile.left(),
+            tile.right(),
+            columns.body.left(),
+            columns.body.right()
         );
     }
     assert!(
-        first.height() >= MIN_COLUMN_TILE_HEIGHT - 0.5,
-        "the column's tiles drew {} points high, under the {MIN_COLUMN_TILE_HEIGHT} \
+        (first.top() - columns.body.top()).abs() < 1.0,
+        "the first row's picture starts at {} where the grid pane's content \
+         rect starts at {} — the stack does not begin at the pane's head",
+        first.top(),
+        columns.body.top()
+    );
+    assert!(
+        first.height() >= MIN_ROW_HEIGHT - 0.5,
+        "the grid's rows drew {} points high, under the {MIN_ROW_HEIGHT} \
          point floor, so the page did not grow to hold them",
         first.height()
     );
@@ -697,15 +695,15 @@ fn the_count_reads_over_the_map_and_leaves_its_axes_whole() {
 fn the_column_scrolls_when_its_tiles_reach_their_floor() {
     let app = settled_scrollable(SCREEN);
     let group = app.canvas_panes();
-    let columns = group.pane("columns").expect("the column pane drew");
+    let columns = group.pane("grid").expect("the grid pane drew");
     let placed = app.composed_plot_rects();
     let stacked = &placed[1..];
     assert_eq!(stacked.len(), STACKED);
     for (i, tile) in stacked.iter().enumerate() {
         assert!(
-            (tile.height() - MIN_COLUMN_TILE_HEIGHT).abs() < 1.0,
+            (tile.height() - MIN_ROW_HEIGHT).abs() < 1.0,
             "tile {i} drew {} points high where the floor is \
-             {MIN_COLUMN_TILE_HEIGHT} — the column compressed instead of the \
+             {MIN_ROW_HEIGHT} — the column compressed instead of the \
              page growing",
             tile.height()
         );
@@ -727,36 +725,38 @@ fn the_column_scrolls_when_its_tiles_reach_their_floor() {
     );
 }
 
-/// **The gutter in the emitted spec is what lands the column's tiles on the
-/// column pane's content rect.**
+/// **The hero lands exactly on the hero pane's content rect, across** — which
+/// is the whole of the arithmetic that keeps the tile column off the screen.
 ///
-/// The arithmetic in `window::canvas_pane_rects` and the `hspace` in
-/// `Dashboard::to_spec` are two halves of one number, and a laid-out frame is
-/// what says whether they agree. A page whose stack landed a few
-/// points off would clip a tile's axis labels and look, in a photograph, like
-/// a font change.
+/// Untransposed, the page is offered a box of *hero + gutter + tile* and told
+/// to put the hero at the pane's own content width; a constrained `hconcat`
+/// then shares the residual at exactly that split. Two halves of one number,
+/// and a laid-out frame is what says whether they agree: get the box wrong by
+/// the gutter and the hero comes out narrow with the head of a histogram
+/// beside it, get it wrong the other way and the hero's own y-axis is clipped
+/// off its pane.
+///
+/// Read at both windows, because a box that came out of a literal rather than
+/// out of the pane would only show up at the second one.
 #[test]
-fn the_stack_lands_exactly_on_the_column_panes_content_rect() {
-    let app = settled(SCREEN);
-    let group = app.canvas_panes();
-    let columns = group.pane("columns").expect("the column pane drew");
-    let placed = app.composed_plot_rects();
-    let stacked = &placed[1..];
-    let left = stacked
-        .iter()
-        .map(|r| r.left())
-        .fold(f32::INFINITY, f32::min);
-    let right = stacked
-        .iter()
-        .map(|r| r.right())
-        .fold(f32::NEG_INFINITY, f32::max);
-    assert!(
-        (left - columns.body.left()).abs() < 1.0 && (right - columns.body.right()).abs() < 1.0,
-        "the column's tiles span {left}..{right} where the pane's content rect \
-         is {}..{} — the spec's gutter and the shell's pane split disagree",
-        columns.body.left(),
-        columns.body.right()
-    );
+fn the_hero_lands_exactly_on_the_hero_panes_content_rect() {
+    for screen in [baseline_screen(), SCREEN] {
+        let app = settled(screen);
+        let group = app.canvas_panes();
+        let hero_pane = group.pane("map").expect("the hero pane drew");
+        let hero = app.composed_plot_rects()[0];
+        assert!(
+            (hero.left() - hero_pane.body.left()).abs() < 1.0
+                && (hero.right() - hero_pane.body.right()).abs() < 1.0,
+            "at {screen:?} the hero spans {}..{} where its pane's content rect \
+             is {}..{} — the box the page was offered and the width it was \
+             told to take disagree",
+            hero.left(),
+            hero.right(),
+            hero_pane.body.left(),
+            hero_pane.body.right()
+        );
+    }
 }
 
 /// **A document that is one picture is drawn as one pane, not a group.**
@@ -847,14 +847,20 @@ fn a_wheel_over_the_column_moves_the_column_and_leaves_the_map_where_it_was() {
     let still = before.composed_plot_rects();
     let columns = before
         .canvas_panes()
-        .pane("columns")
-        .expect("the column pane drew");
-    let after = settled_after(SCREEN, Ledger::Reopened, Some(columns.body.center()), 4);
+        .pane("grid")
+        .expect("the grid pane drew");
+    let after = settled_after(
+        SCREEN,
+        Ledger::Reopened,
+        Grid::Columns,
+        Some(columns.body.center()),
+        4,
+    );
 
     let scrolled = after.canvas_scroll();
     assert!(
         scrolled > 0.0,
-        "the wheel over the column pane moved it {scrolled} points, so nothing \
+        "the wheel over the grid pane moved it {scrolled} points, so nothing \
          below is being asserted about a scrolled window"
     );
     let moved = after.composed_plot_rects();
@@ -898,19 +904,19 @@ fn a_wheel_over_the_column_does_not_zoom_the_tile_under_it() {
     let before = settled_scrollable(SCREEN);
     let columns = before
         .canvas_panes()
-        .pane("columns")
-        .expect("the column pane drew");
+        .pane("grid")
+        .expect("the grid pane drew");
     let placed = before.composed_plot_rects();
     let under = placed[1].center();
     assert!(
         columns.body.contains(under),
         "the point this test turns the wheel over, {under:?}, is not on a tile \
-         of the column pane at {:?}",
+         of the grid pane at {:?}",
         columns.body
     );
     let was = tile_domains(&before);
 
-    let after = settled_after(SCREEN, Ledger::Reopened, Some(under), 4);
+    let after = settled_after(SCREEN, Ledger::Reopened, Grid::Columns, Some(under), 4);
     assert!(
         after.canvas_scroll() > 0.0,
         "the wheel over the column did not scroll it, so a domain that did not \
@@ -919,7 +925,7 @@ fn a_wheel_over_the_column_does_not_zoom_the_tile_under_it() {
     let now = tile_domains(&after);
     assert_eq!(
         was, now,
-        "a wheel over the column pane moved a tile's domain: the column \
+        "a wheel over the grid pane moved a tile's domain: the column \
          scrolled and the plot under the pointer zoomed on the same event"
     );
 }
@@ -934,7 +940,13 @@ fn a_wheel_over_the_map_does_not_scroll_the_column() {
         .pane("map")
         .expect("the map pane drew");
     let still = before.composed_plot_rects();
-    let after = settled_after(SCREEN, Ledger::Reopened, Some(map.body.center()), 4);
+    let after = settled_after(
+        SCREEN,
+        Ledger::Reopened,
+        Grid::Columns,
+        Some(map.body.center()),
+        4,
+    );
 
     assert_eq!(
         after.canvas_scroll(),
@@ -1001,11 +1013,11 @@ fn a_brush_on_a_scrolled_tile_lands_on_the_tile_under_the_pointer() {
         let _ = ctx.run_ui(input, |ui| app.draw(ui));
     };
 
-    // Scroll the column to the end of its reach, over the column pane.
+    // Scroll the column to the end of its reach, over the grid pane.
     let columns = app
         .canvas_panes()
-        .pane("columns")
-        .expect("the column pane drew")
+        .pane("grid")
+        .expect("the grid pane drew")
         .body;
     frame(&mut app, vec![egui::Event::PointerMoved(columns.center())]);
     for _ in 0..6 {
@@ -1024,7 +1036,7 @@ fn a_brush_on_a_scrolled_tile_lands_on_the_tile_under_the_pointer() {
     }
     let scrolled = app.canvas_scroll();
     assert!(
-        scrolled > MIN_COLUMN_TILE_HEIGHT,
+        scrolled > MIN_ROW_HEIGHT,
         "the column scrolled {scrolled} points, which is less than one tile — \
          a sweep read against the unmoved origin would land on the same tile \
          and this test would pass either way"
@@ -1051,7 +1063,7 @@ fn a_brush_on_a_scrolled_tile_lands_on_the_tile_under_the_pointer() {
     };
     assert!(
         columns.contains(at.0) && columns.contains(at.1),
-        "the sweep {at:?} is not inside the column pane's content rect \
+        "the sweep {at:?} is not inside the grid pane's content rect \
          {columns:?}, so it is not a gesture on the tile this test is about"
     );
 
@@ -1079,7 +1091,7 @@ fn a_brush_on_a_scrolled_tile_lands_on_the_tile_under_the_pointer() {
         held.contains(&want),
         "the sweep on the last tile committed {held:?}, which does not name \
          {want} — the press was read against the page's own origin rather than \
-         the origin the column pane draws it at, so it landed on whichever tile \
+         the origin the grid pane draws it at, so it landed on whichever tile \
          is {scrolled} points up the page"
     );
 }
@@ -1108,10 +1120,57 @@ fn window() -> (MeridianApp, egui::Context, egui::RawInput) {
         let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
     }
     reopen_the_ledger(&mut app, &ctx, &raw);
+    transpose_the_grid(&mut app, &ctx, &raw);
     (app, ctx, raw)
 }
 
-/// Turn the wheel over the column pane until the scroll stops moving, then
+/// **Throw the layout switch on the grid pane's header band to its columns
+/// state**, by a click on the rect the last frame recorded for it, and settle.
+///
+/// The gesture a reader has, aimed at a rect the frame reported — as
+/// [`reopen_the_ledger`], and checked the same way: a click at a typed
+/// coordinate that missed would leave the grid untransposed, and every scroll
+/// assertion downstream would pass for want of a page rather than because of
+/// one.
+fn transpose_the_grid(app: &mut MeridianApp, ctx: &egui::Context, raw: &egui::RawInput) {
+    let switch = app
+        .chart_doc()
+        .grid_layout_switch
+        .clone()
+        .expect("the grid pane's header band drew a layout switch");
+    let at = switch
+        .states
+        .iter()
+        .find(|(state, _)| *state == GridLayout::Columns)
+        .expect("the switch offers a columns state")
+        .1
+        .center();
+    let mut frame = |events: Vec<egui::Event>| {
+        let mut input = raw.clone();
+        input.events = events;
+        let _ = ctx.run_ui(input, |ui| app.draw(ui));
+    };
+    frame(vec![egui::Event::PointerMoved(at)]);
+    frame(vec![
+        egui::Event::PointerMoved(at),
+        button(at, egui::PointerButton::Primary, true),
+    ]);
+    frame(vec![
+        egui::Event::PointerMoved(at),
+        button(at, egui::PointerButton::Primary, false),
+    ]);
+    for _ in 0..3 {
+        frame(Vec::new());
+    }
+    assert_eq!(
+        app.grid_layout(),
+        GridLayout::Columns,
+        "the click at {at:?} did not throw the switch — every claim about a \
+         scrolling page below would pass for want of a page"
+    );
+}
+
+/// Turn the wheel over the grid pane until the scroll stops moving, then
 /// settle — the whole reach, without naming a distance.
 ///
 /// `notches` frames of travel, then six carrying no wheel: the six are egui's
@@ -1195,8 +1254,8 @@ fn a_brush_across_the_pane_boundary_commits_what_it_swept() {
     let reference = settled_scrollable(GESTURE_SCREEN);
     let columns = reference
         .canvas_panes()
-        .pane("columns")
-        .expect("the column pane drew")
+        .pane("grid")
+        .expect("the grid pane drew")
         .body;
     let map = reference
         .canvas_panes()
@@ -1212,7 +1271,7 @@ fn a_brush_across_the_pane_boundary_commits_what_it_swept() {
     );
     assert!(
         columns.contains(enter) && columns.contains(release),
-        "the sweep does not end inside the column pane's content rect \
+        "the sweep does not end inside the grid pane's content rect \
          {columns:?}, so it never crosses the boundary this test is about"
     );
 
@@ -1261,7 +1320,7 @@ fn a_brush_across_the_pane_boundary_commits_what_it_swept() {
          the scrolled run is being compared against"
     );
     assert!(
-        moved > MIN_COLUMN_TILE_HEIGHT,
+        moved > MIN_ROW_HEIGHT,
         "the scrolled run moved the column {moved} points, less than one tile \
          — an origin read against the wrong view would land within the same \
          tile and this comparison would hold either way"
@@ -1293,14 +1352,14 @@ fn a_pan_across_the_pane_boundary_moves_by_what_the_hand_moved() {
     let reference = settled_scrollable(GESTURE_SCREEN);
     let columns = reference
         .canvas_panes()
-        .pane("columns")
-        .expect("the column pane drew")
+        .pane("grid")
+        .expect("the grid pane drew")
         .body;
     // Near the hero's trailing edge, so the hand crosses the boundary in a
     // short move. The point map keeps an equal aspect inside a frame the rows
     // pane has shortened, so one point of travel is worth more data than it
     // was: a press three tenths across has seven tenths of the frame to cover
-    // before it reaches the column pane, and that much pan carries the
+    // before it reaches the grid pane, and that much pan carries the
     // longitude domain off the data and drops the hero from the composition.
     // The plot count under the two runs is what says so if it happens again.
     let press = hero_data_point(&reference, 0.90, 0.30);
@@ -1384,42 +1443,55 @@ fn a_pan_across_the_pane_boundary_moves_by_what_the_hand_moved() {
 /// **The column's scroll stops at the end of its page.**
 ///
 /// `canvas_scroll` is clamped to the page's reach — how far the page hangs
-/// below the column pane's content rect — and no test held that ceiling until
+/// below the grid pane's content rect — and no test held that ceiling until
 /// this one: with the clamp loosened, more wheel than the reach needs carries
 /// the last tile off the top of the pane and leaves the pane's foot blank,
 /// while the scroll tests above stay green because each turns the wheel a
 /// distance the loose ceiling still clamps.
 ///
-/// The reach is read off the frame — the page's own bottom against the pane's
-/// content bottom — rather than recomputed from the tile floor and the pane
+/// The reach is read off the frame — the page's own height against the pane's
+/// content height — rather than recomputed from the row floor and the pane
 /// arithmetic, which would be the clamp's own sum written twice.
+///
+/// **Heights and not bottoms**, because the grid pane re-origins its part of
+/// the page: [`brightfield_shell::app::PaneSplit::Rehomed`] draws page-local
+/// `(from_x, by)` at the pane's own content origin, so the window into the
+/// page runs from `by` to `by + content height` whatever the raster's own top
+/// is. Differencing the two bottoms instead reads the chart toolbar's band in
+/// as reach, and the scroll stops a toolbar short of what that sum expects.
 #[test]
 fn the_columns_scroll_stops_at_the_end_of_its_page() {
     let before = settled_scrollable(SCREEN);
     let columns = before
         .canvas_panes()
-        .pane("columns")
-        .expect("the column pane drew")
+        .pane("grid")
+        .expect("the grid pane drew")
         .body;
     let page = before
         .chart_doc()
         .raster_rect
         .expect("the page was laid out");
-    let reach = page.bottom() - columns.bottom();
+    let reach = page.height() - columns.height();
     assert!(
         reach > 0.0,
-        "the page ends at {} and the column pane's content rect at {} — \
+        "the page is {} points tall and the grid pane's content rect {} — \
          nothing hangs below the fold at this window, so there is no ceiling \
          to reach",
-        page.bottom(),
-        columns.bottom()
+        page.height(),
+        columns.height()
     );
 
     // Four times the travel the reach needs, so a ceiling raised by any margin
     // short of that is overshot rather than approached.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let notches = (reach / WHEEL_NOTCH).ceil() as usize * 4 + 4;
-    let after = settled_after(SCREEN, Ledger::Reopened, Some(columns.center()), notches);
+    let after = settled_after(
+        SCREEN,
+        Ledger::Reopened,
+        Grid::Columns,
+        Some(columns.center()),
+        notches,
+    );
     assert!(
         (after.canvas_scroll() - reach).abs() < 0.5,
         "{notches} notches of wheel scrolled the column {} points where the \
@@ -1444,7 +1516,7 @@ fn the_columns_scroll_stops_at_the_end_of_its_page() {
 }
 
 /// **The second view's own box bounds its pointer mapping** — a sweep across
-/// the column pane's header band brushes no tile, with the column scrolled.
+/// the grid pane's header band brushes no tile, with the column scrolled.
 ///
 /// `PaneViews::second_holds` is horizontal, because which view a *plot* is in
 /// is a question about the page's width: a tile scrolled below the pane's
@@ -1465,12 +1537,12 @@ fn a_sweep_on_the_column_panes_header_band_lands_on_no_tile() {
     let reference = settled_scrollable(GESTURE_SCREEN);
     let pane = reference
         .canvas_panes()
-        .pane("columns")
-        .expect("the column pane drew");
+        .pane("grid")
+        .expect("the grid pane drew");
     let (header, body) = (pane.header, pane.body);
     assert!(
         header.bottom() <= body.top(),
-        "the column pane's header band {header:?} reaches into its content \
+        "the grid pane's header band {header:?} reaches into its content \
          rect {body:?}, so a point in the band is not above the second view"
     );
 
@@ -1511,16 +1583,16 @@ fn a_sweep_on_the_column_panes_header_band_lands_on_no_tile() {
     };
 
     let on_the_band = sweep_at(header.center().y);
-    let in_the_pane = sweep_at(body.top() + MIN_COLUMN_TILE_HEIGHT / 2.0);
+    let in_the_pane = sweep_at(body.top() + MIN_ROW_HEIGHT / 2.0);
     assert!(
         in_the_pane.is_some(),
-        "the control sweep inside the column pane's content rect committed \
+        "the control sweep inside the grid pane's content rect committed \
          nothing, so the band committing nothing says only that the gesture \
          machine is dead"
     );
     assert_eq!(
         on_the_band, None,
-        "a sweep across the column pane's header band committed {on_the_band:?} \
+        "a sweep across the grid pane's header band committed {on_the_band:?} \
          — the band was mapped onto the page at the second view's origin, which \
          puts it on the part of the column the scroll carried above the fold"
     );
@@ -1605,7 +1677,7 @@ fn landing_of(
 /// **A pointer is over a page only where a pane drew one.**
 ///
 /// The pane group draws one page in two boxes — the map pane's content rect at
-/// the page's own origin, the column pane's moved up by the scroll — and the
+/// the page's own origin, the grid pane's moved up by the scroll — and the
 /// page is bigger than their union in two directions at once. It is taller
 /// than the panes, because the column's tiles have a height floor and the page
 /// grows to hold them; and the gutter that keeps the two pane frames apart runs
@@ -1645,7 +1717,7 @@ fn a_press_over_no_pane_of_the_group_is_over_no_page() {
     let reference = settled_scrollable(GESTURE_SCREEN);
     let panes = reference.canvas_panes();
     let map = *panes.pane("map").expect("the map pane drew");
-    let columns = *panes.pane("columns").expect("the column pane drew");
+    let columns = *panes.pane("grid").expect("the grid pane drew");
     let page = reference
         .chart_doc()
         .raster_rect
@@ -1654,7 +1726,7 @@ fn a_press_over_no_pane_of_the_group_is_over_no_page() {
     let hero_column = reference.chart_doc().tile_columns()[0].column.clone();
 
     // The leftover, as the sweeps that stay inside it: across the band below
-    // both content rects and across the column pane's own inset strip in it,
+    // both content rects and across the grid pane's own inset strip in it,
     // then down the gap between the two pane frames and down each pane's inset
     // strip beside that gap. The band is deep and full width, so its sweeps run
     // across; the gap is 25 points wide, so its sweeps run down.
@@ -1675,7 +1747,7 @@ fn a_press_over_no_pane_of_the_group_is_over_no_page() {
             true,
         ),
         (
-            "the column pane's inset strip below its content rect",
+            "the grid pane's inset strip below its content rect",
             across(
                 columns.body.center().x,
                 (columns.body.bottom() + columns.rect.bottom()) / 2.0,
@@ -1683,12 +1755,12 @@ fn a_press_over_no_pane_of_the_group_is_over_no_page() {
             true,
         ),
         (
-            "one point below the column pane's content bottom",
+            "one point below the grid pane's content bottom",
             across(columns.body.center().x, columns.body.bottom() + 1.0),
             true,
         ),
         (
-            // The strip the rows pane's own frame is drawn under, between the
+            // The strip the grid pane's own frame is drawn under, between the
             // map pane's content bottom and the bottom of the map pane
             // itself. `PaneViews::first` is the map's CONTENT rect, and this
             // is the band that says so: widen it to the pane rect and the
@@ -1714,7 +1786,7 @@ fn a_press_over_no_pane_of_the_group_is_over_no_page() {
             false,
         ),
         (
-            "the column pane's inset strip beside that gap",
+            "the grid pane's inset strip beside that gap",
             down((columns.rect.left() + columns.body.left()) / 2.0, mid),
             false,
         ),
@@ -1784,6 +1856,7 @@ fn a_press_over_no_pane_of_the_group_is_over_no_page() {
     let scrolled = settled_after(
         GESTURE_SCREEN,
         Ledger::Reopened,
+        Grid::Columns,
         Some(columns.body.center()),
         12,
     );
@@ -1792,7 +1865,7 @@ fn a_press_over_no_pane_of_the_group_is_over_no_page() {
         .composed_plot_rects()
         .iter()
         .position(|rect| rect.contains(at))
-        .expect("a tile is drawn at the foot of the column pane");
+        .expect("a tile is drawn at the foot of the grid pane");
     let want = scrolled.chart_doc().tile_columns()[tile].column.clone();
     let (scroll, (held, selected)) = landing_of(
         12,
@@ -1811,7 +1884,7 @@ fn a_press_over_no_pane_of_the_group_is_over_no_page() {
     let held = held.unwrap_or_default();
     assert!(
         held.contains(&want),
-        "a sweep one point above the column pane's content bottom committed \
+        "a sweep one point above the grid pane's content bottom committed \
          {held:?}, which does not name {want} — the tile drawn there"
     );
     assert_eq!(
@@ -1883,13 +1956,13 @@ fn a_held_click_past_a_scrolled_tiles_selection_clears_it() {
     }
     let columns = app
         .canvas_panes()
-        .pane("columns")
-        .expect("the column pane drew")
+        .pane("grid")
+        .expect("the grid pane drew")
         .body;
     scroll_the_column(&mut app, &ctx, &raw, columns.center(), 12);
     let scrolled = app.canvas_scroll();
     assert!(
-        scrolled > MIN_COLUMN_TILE_HEIGHT,
+        scrolled > MIN_ROW_HEIGHT,
         "the column scrolled {scrolled} points, which is less than one tile — \
          the phantom travel a mislatched click carries is the scroll, and under \
          the slop it is not a sweep at all"
@@ -1903,7 +1976,7 @@ fn a_held_click_past_a_scrolled_tiles_selection_clears_it() {
     let at = tile_data_point(&app, last, 0.90);
     assert!(
         columns.contains(at),
-        "the click at {at:?} is outside the column pane's content rect \
+        "the click at {at:?} is outside the grid pane's content rect \
          {columns:?}, so it is not a click on the tile this test is about"
     );
 
@@ -1983,14 +2056,14 @@ fn the_brush_rectangle_stays_where_the_hand_is() {
     let reference = settled_scrollable(GESTURE_SCREEN);
     let columns = reference
         .canvas_panes()
-        .pane("columns")
-        .expect("the column pane drew")
+        .pane("grid")
+        .expect("the grid pane drew")
         .body;
     let press = hero_data_point(&reference, 0.30, 0.30);
     let enter = egui::pos2(columns.left() + 20.0, press.y + 40.0);
     assert!(
         columns.contains(enter),
-        "the drag ends at {enter:?}, outside the column pane's content rect \
+        "the drag ends at {enter:?}, outside the grid pane's content rect \
          {columns:?} — it never crosses into the other origin"
     );
 
@@ -2029,7 +2102,7 @@ fn the_brush_rectangle_stays_where_the_hand_is() {
          the scrolled run is being compared against"
     );
     assert!(
-        moved > MIN_COLUMN_TILE_HEIGHT,
+        moved > MIN_ROW_HEIGHT,
         "the scrolled run moved the column {moved} points, less than one tile \
          — the two origins are close enough here that ink painted in either \
          would compare equal"
@@ -2058,7 +2131,7 @@ fn the_brush_rectangle_stays_where_the_hand_is() {
 /// The drag reads every frame's pointer against the origin the press latched,
 /// which is what keeps a sweep across the pane boundary the sweep the hand
 /// made. Nothing was stopping the column from scrolling underneath it: the
-/// canvas takes the wheel whenever the pointer is over the column pane and asks
+/// canvas takes the wheel whenever the pointer is over the grid pane and asks
 /// no question about the button. Turn the wheel mid-drag and the page moves
 /// while the numbers do not, so the rectangle sits over tiles the gesture is
 /// not about and the release commits the tile the press landed on. The x-only
@@ -2077,8 +2150,8 @@ fn a_wheel_during_a_drag_does_not_move_the_column() {
     let reference = settled_scrollable(GESTURE_SCREEN);
     let columns = reference
         .canvas_panes()
-        .pane("columns")
-        .expect("the column pane drew")
+        .pane("grid")
+        .expect("the grid pane drew")
         .body;
     let first = tile_data_point(&reference, 1, 0.25);
     let mid = tile_data_point(&reference, 1, 0.50);
@@ -2086,7 +2159,7 @@ fn a_wheel_during_a_drag_does_not_move_the_column() {
     for at in [first, mid, last] {
         assert!(
             columns.contains(at),
-            "the sweep passes through {at:?}, outside the column pane's content \
+            "the sweep passes through {at:?}, outside the grid pane's content \
              rect {columns:?} — the wheel this test turns would not be the \
              column's"
         );
@@ -2140,7 +2213,7 @@ fn a_wheel_during_a_drag_does_not_move_the_column() {
     let (_, loose, _) = drag(true, false);
 
     assert!(
-        loose > MIN_COLUMN_TILE_HEIGHT,
+        loose > MIN_ROW_HEIGHT,
         "the same wheel with no button down scrolled the column {loose} points \
          — under a tile, so a run that refused to scroll during the drag would \
          read the same as one where the wheel reached nothing"
@@ -2168,7 +2241,7 @@ fn a_wheel_during_a_drag_does_not_move_the_column() {
     );
 }
 
-/// **AC2 — the rows pane says how many of the table's columns are on screen.**
+/// **AC2 — the grid pane says how many of the table's columns are on screen.**
 ///
 /// The two figures are asserted against the header cells the table drew and
 /// the clips it drew them under, which is where "on screen" is a fact rather
@@ -2189,12 +2262,12 @@ fn a_wheel_during_a_drag_does_not_move_the_column() {
 fn the_rows_pane_says_how_many_of_the_tables_columns_are_on_screen() {
     let app = settled(baseline_screen());
     let group = app.canvas_panes();
-    let rows = group.pane("rows").expect("the rows pane drew");
+    let rows = group.pane("grid").expect("the grid pane drew");
     let drawn = app
         .chart_doc()
         .grid_drawn
         .clone()
-        .expect("the rows pane's grid laid a table out");
+        .expect("the grid pane's grid laid a table out");
 
     // The frame's own answer, recomputed: a header cell wholly inside the clip
     // it was drawn under is a column the reader can read the head of.
@@ -2211,7 +2284,7 @@ fn the_rows_pane_says_how_many_of_the_tables_columns_are_on_screen() {
     );
     assert!(
         whole < drawn.columns,
-        "every one of the {} columns fits the rows pane at the baseline \
+        "every one of the {} columns fits the grid pane at the baseline \
          window, so there is no readout due and this test would hold with the \
          readout deleted. The pane's content rect is {:?} and the header cells \
          are {:?}",
@@ -2233,7 +2306,7 @@ fn the_rows_pane_says_how_many_of_the_tables_columns_are_on_screen() {
 
     let (rect, note) = group.rows_note.clone().unwrap_or_else(|| {
         panic!(
-            "{whole} of the table's {} columns drew whole and the rows pane \
+            "{whole} of the table's {} columns drew whole and the grid pane \
              said nothing — a reader sees a table cut off at the pane's edge \
              with no sign there is more of it",
             drawn.columns
@@ -2242,13 +2315,13 @@ fn the_rows_pane_says_how_many_of_the_tables_columns_are_on_screen() {
     assert_eq!(
         note,
         format!("{whole} of {} columns", drawn.columns),
-        "the rows pane's readout says {note:?} where the frame drew {whole} of \
+        "the grid pane's readout says {note:?} where the frame drew {whole} of \
          {} columns whole",
         drawn.columns
     );
     assert!(
         rows.header.contains_rect(rect),
-        "the readout drew at {rect:?}, outside the rows pane's header band \
+        "the readout drew at {rect:?}, outside the grid pane's header band \
          {:?}",
         rows.header
     );
@@ -2261,7 +2334,7 @@ fn the_rows_pane_says_how_many_of_the_tables_columns_are_on_screen() {
 }
 
 /// How many columns the California Housing sample declares. Nine, which is the
-/// table's own shape and the reason the rows pane has a readout at all: the
+/// table's own shape and the reason the grid pane has a readout at all: the
 /// pane holds a little over half the canvas's width and the columns at their
 /// natural widths do not all fit in it.
 const HOUSING_COLUMNS: usize = 9;
@@ -2269,7 +2342,7 @@ const HOUSING_COLUMNS: usize = 9;
 /// **The columns the pane cannot fit are reached by scrolling sideways** —
 /// which is what makes the readout a readout rather than an apology.
 ///
-/// A wheel with a horizontal component over the rows pane, then the same
+/// A wheel with a horizontal component over the grid pane, then the same
 /// header cells read again: the last column, which the pane cut off before,
 /// draws whole afterwards. Asserted as a change in *which* columns are whole
 /// rather than as a scroll offset, because the offset is `egui_table`'s and
@@ -2298,7 +2371,7 @@ fn the_rows_grid_scrolls_sideways_to_a_column_the_pane_cannot_fit() {
         app.chart_doc()
             .grid_drawn
             .as_ref()
-            .expect("the rows pane's grid laid a table out")
+            .expect("the grid pane's grid laid a table out")
             .header_cells
             .iter()
             .filter(|(_, rect, clip)| clip.contains_rect(rect.shrink(0.5)))
@@ -2315,8 +2388,8 @@ fn the_rows_grid_scrolls_sideways_to_a_column_the_pane_cannot_fit() {
 
     let over = app
         .canvas_panes()
-        .pane("rows")
-        .expect("the rows pane drew")
+        .pane("grid")
+        .expect("the grid pane drew")
         .body
         .center();
     frame(&mut app, vec![egui::Event::PointerMoved(over)]);
@@ -2337,7 +2410,7 @@ fn the_rows_grid_scrolls_sideways_to_a_column_the_pane_cannot_fit() {
     let after = whole_now(&app);
     assert!(
         after.contains(&last),
-        "after scrolling the rows pane sideways the whole columns are {after:?} \
+        "after scrolling the grid pane sideways the whole columns are {after:?} \
          and the table's last one is not among them — the grid does not scroll \
          across, so the columns the readout counts out are unreachable"
     );
@@ -2348,7 +2421,7 @@ fn the_rows_grid_scrolls_sideways_to_a_column_the_pane_cannot_fit() {
 }
 
 // ---------------------------------------------------------------------------
-// The rows pane under a brush — what the table lists, off the drawn frame.
+// The grid pane under a brush — what the table lists, off the drawn frame.
 // ---------------------------------------------------------------------------
 
 /// [`window`] with the ledger rail left as it opens.
@@ -2401,7 +2474,21 @@ fn drawn_cells_in(
     let out = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
     let mut cells = Vec::new();
     for clipped in &out.shapes {
-        collect_cells_in(&clipped.shape, rect, &mut cells);
+        // **Only what the reader can see.** The untransposed page carries the
+        // tile column the transposed layout draws as rows, laid past the hero
+        // and clipped to the hero pane — so its axis labels and its scale
+        // switches are painted under a clip that shows none of them, at window
+        // positions that fall inside the grid pane beside it. Reading the
+        // shape's own position without its clip takes a histogram's tick
+        // labels for the table's cells: measured here as a row of
+        // `avg_rooms: linear`, which is a chip on a picture nobody can see.
+        let mut found = Vec::new();
+        collect_cells_in(&clipped.shape, rect, &mut found);
+        cells.extend(
+            found
+                .into_iter()
+                .filter(|(pos, _)| clipped.clip_rect.contains(*pos)),
+        );
     }
     cells
 }
@@ -2456,7 +2543,7 @@ fn drawn_rows(
         .chart_doc()
         .grid_drawn
         .clone()
-        .expect("the rows pane's grid laid a table out");
+        .expect("the grid pane's grid laid a table out");
     let columns: Vec<egui::Rect> = drawn.header_cells.iter().map(|(_, r, _)| *r).collect();
     let column_at = |x: f32| -> Option<usize> {
         columns
@@ -2597,14 +2684,14 @@ fn fixture_row_for(
     matches[0].clone()
 }
 
-/// **The rows pane lists the rows the brush selects, and goes back when it is
+/// **The grid pane lists the rows the brush selects, and goes back when it is
 /// cleared.**
 ///
 /// The behaviour the whole card is for, read off the drawn frame at both ends.
 /// It failed before this branch's second round in a way no criterion here
 /// caught: the pane read depth-first mark 0, which on a generated dashboard is
 /// the hero's GHOST layer — `data: { from: opened }`, no `filterBy:` — so the
-/// table under the map listed all 240 rows while the marks outside the brush
+/// table beside the map listed all 240 rows while the marks outside the brush
 /// went grey and the status band said 45 were selected.
 ///
 /// **The contributor is the hero's own plot path**, off the composition, and
@@ -2654,19 +2741,19 @@ fn the_rows_pane_lists_the_rows_the_brush_selects() {
     let (mut app, ctx, raw) = settled_window();
     let pane = app
         .canvas_panes()
-        .pane("rows")
-        .expect("the rows pane drew")
+        .pane("grid")
+        .expect("the grid pane drew")
         .body;
     let before = drawn_rows(&mut app, &ctx, &raw, pane);
     // 9, not 10: the compact column header band gained a 13-point row of its
-    // own (a distinct-count caption below the range), and the rows pane's own
+    // own (a distinct-count caption below the range), and the grid pane's own
     // rect is a fixed share of the canvas's height regardless of the band's
     // extent — so the same window now leaves the body one row of the dense
     // 20-point rung shorter. Still comfortably enough to read a narrowing off,
     // which is what the assertion below exists to guard.
     assert!(
         before.len() >= 9,
-        "the rows pane drew {} rows at {SCREEN:?}, too few to read a change off",
+        "the grid pane drew {} rows at {SCREEN:?}, too few to read a change off",
         before.len()
     );
     assert!(
@@ -2748,8 +2835,8 @@ fn the_rows_pane_lists_the_rows_the_brush_selects() {
     let after = drawn_rows(&mut app, &ctx, &raw, pane);
     assert_ne!(
         before, after,
-        "the rows pane drew the identical cells before and after the brush — \
-         the table under the map does not follow the selection"
+        "the grid pane drew the identical cells before and after the brush — \
+         the table beside the map does not follow the selection"
     );
     assert!(!after.is_empty(), "the pane drew no rows after the brush");
     for drawn in &after {
@@ -2790,7 +2877,7 @@ fn the_rows_pane_lists_the_rows_the_brush_selects() {
 // The column header band, beneath the hero — the compact density.
 // ---------------------------------------------------------------------------
 
-/// **AC1 — the rows pane beneath the hero draws the band at the compact
+/// **AC1 — the grid pane beneath the hero draws the band at the compact
 /// density.**
 ///
 /// Per visible column: the finetype glyph and the name, the validity band with
@@ -2812,11 +2899,11 @@ fn the_grid_beneath_the_hero_draws_the_compact_band() {
         .chart_doc()
         .grid_drawn
         .clone()
-        .expect("the rows pane's grid laid a table out");
+        .expect("the grid pane's grid laid a table out");
 
     assert!(
         !drawn.band.is_empty(),
-        "the rows pane drew no band at all — the plain header is back, or the \
+        "the grid pane drew no band at all — the plain header is back, or the \
          density never reached the item"
     );
     assert_eq!(
@@ -2913,7 +3000,7 @@ fn the_grid_beneath_the_hero_draws_the_compact_band() {
 
 /// **AC4 — the band scrolls with its columns and not with its rows.**
 ///
-/// A horizontal wheel over the rows pane moves the band's cells by exactly
+/// A horizontal wheel over the grid pane moves the band's cells by exactly
 /// what it moves the body's cells by; a vertical wheel over the same pane
 /// moves the body and leaves the band where it is. Both halves read rects off
 /// laid-out frames, and each states its own guard: a horizontal scroll that
@@ -2957,7 +3044,7 @@ fn the_band_scrolls_with_its_columns_and_not_with_its_rows() {
         app.chart_doc()
             .grid_drawn
             .as_ref()
-            .expect("the rows pane's grid laid a table out")
+            .expect("the grid pane's grid laid a table out")
             .band
             .iter()
             .filter(|cell| cell.clip.intersect(cell.cell).width() > 0.5)
@@ -2967,16 +3054,29 @@ fn the_band_scrolls_with_its_columns_and_not_with_its_rows() {
 
     let pane = app
         .canvas_panes()
-        .pane("rows")
-        .expect("the rows pane drew")
+        .pane("grid")
+        .expect("the grid pane drew")
         .body;
     // The body's own cells, by the text they carry — the reference the band's
     // movement is compared against. Read below the band so the band's own
     // galleys are not in it.
     let body_rect = egui::Rect::from_min_max(egui::pos2(pane.left(), pane.top() + 200.0), pane.max);
+    // **Keyed by text, so only a text that appears once is a key.** A value
+    // the table holds twice — `4.04` in two of the grid pane's nine columns —
+    // is one entry in this map before the scroll and a different cell's entry
+    // after it, and the difference between those two positions is not a
+    // distance anything travelled. Measured: it came out at -9.875 points
+    // beside the -334 every other cell moved. Dropping the repeats leaves the
+    // cells whose identity survives a scroll.
     let body_cells = |app: &mut MeridianApp| -> std::collections::BTreeMap<String, egui::Pos2> {
-        drawn_cells_in(app, &ctx, &raw, body_rect)
+        let drawn = drawn_cells_in(app, &ctx, &raw, body_rect);
+        let mut seen: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        for (_, text) in &drawn {
+            *seen.entry(text.clone()).or_default() += 1;
+        }
+        drawn
             .into_iter()
+            .filter(|(_, text)| seen.get(text) == Some(&1))
             .map(|(pos, text)| (text, pos))
             .collect()
     };

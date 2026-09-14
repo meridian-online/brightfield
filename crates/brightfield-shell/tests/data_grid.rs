@@ -380,7 +380,7 @@ fn clearing_the_brush_restores_the_grids_full_range() {
     );
 }
 
-/// **The rows pane's read resolves to the filtered layer, and drops nobody's
+/// **The grid pane's read resolves to the filtered layer, and drops nobody's
 /// clause** — the engine-level half of the defect, over a TWO-layer spec.
 ///
 /// Three readings of one brush, and the pane's answer is the third:

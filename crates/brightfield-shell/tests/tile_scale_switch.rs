@@ -15,10 +15,11 @@
 //! does to the tile's bins and ticks, what it leaves alone on the other tiles,
 //! and that a brush swept afterwards narrows a log tile without moving its
 //! scale. Not covered here: the pixels. `tests/dashboard_baseline.rs` is that
-//! half — the two re-photographed baselines carry the control at rest.
+//! half — `dashboard_dark` and `dashboard_light` open on the untransposed
+//! grid pane, so neither baseline carries a scale switch.
 
 use brightfield_protocol::layout::Flow;
-use brightfield_shell::app::ChartDoc;
+use brightfield_shell::app::{ChartDoc, GridLayout};
 use brightfield_shell::design::Mode;
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_spec::layout::{PlotAxis, ScaleType};
@@ -60,6 +61,16 @@ fn housing_boot() -> Boot {
     let chosen = path.to_str().expect("utf-8 fixture path");
     Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()))
 }
+
+/// How many frames the pointer is held still before a hover is read back.
+///
+/// egui's pointer velocity is read off a position history `0.1` seconds wide,
+/// and a scripted frame advances the input clock by one predicted step —
+/// `1/60` of a second at the default refresh — so six frames is where the
+/// arriving jump falls out of that window. Eight, and the stillness is then
+/// asserted rather than assumed: this number is a floor the harness clears,
+/// not a fact about egui that a comment here would be the only record of.
+const STILL_FRAMES: usize = 8;
 
 /// A window that keeps its own `egui::Context` for its whole life, because a
 /// click is resolved against the widget id a *previous* frame registered —
@@ -109,6 +120,38 @@ impl Live {
         self.run(vec![Vec::new(), Vec::new(), Vec::new()]);
     }
 
+    /// **Throw the layout switch on the grid pane's header band to its
+    /// columns state**, and settle.
+    ///
+    /// Every claim in this file is about a *tile* — its scale switch, its
+    /// bins, the key a click writes — and a tile is on screen only with the
+    /// grid transposed. Untransposed the grid pane draws the table and each
+    /// column's distribution is a rug in its header band, so the page's tile
+    /// column is composed outside the hero pane's clip and there is nothing
+    /// for a click to land on. Asserted rather than assumed: a miss would
+    /// leave every switch assertion below reading a control nobody drew.
+    fn transpose(&mut self) {
+        let at = self
+            .app
+            .chart_doc()
+            .grid_layout_switch
+            .as_ref()
+            .expect("the grid pane's header band drew a layout switch")
+            .states
+            .iter()
+            .find(|(state, _)| *state == GridLayout::Columns)
+            .expect("the switch offers a columns state")
+            .1
+            .center();
+        self.click(at);
+        self.settle();
+        assert_eq!(
+            self.app.grid_layout(),
+            GridLayout::Columns,
+            "the click at {at:?} did not throw the switch"
+        );
+    }
+
     /// One more frame with no events, handing back every shape it painted.
     fn shapes(&mut self) -> Vec<egui::epaint::ClippedShape> {
         let raw = egui::RawInput {
@@ -121,12 +164,20 @@ impl Live {
     /// The frame the pointer has been resting at `pos` for, handing back what
     /// it painted.
     ///
-    /// Four frames, not one. A tooltip is decided from the hover a *previous*
-    /// frame's widget rect resolved, and egui's own delay is measured off the
-    /// input clock a scripted frame advances by one predicted step at a time —
-    /// three frames of rest is where the text first appears, which a probe
-    /// over a bare `on_hover_text` in an empty context reproduces outside this
-    /// window. Two frames is not enough and this is the test that says so.
+    /// **A tooltip is refused while egui thinks the pointer is moving**, and
+    /// what egui calls moving is a velocity read off a position history that
+    /// spans `0.1` seconds. A pointer put down somewhere new leaves the jump
+    /// it arrived by in that history, so it is "moving" for the whole window
+    /// however still it then holds — and a scripted frame advances the input
+    /// clock by one predicted step, so the window is frames rather than
+    /// milliseconds. `style.interaction.show_tooltips_only_when_still` is what
+    /// reads it.
+    ///
+    /// So the pointer is put at `pos` and then held there, with no events, for
+    /// [`STILL_FRAMES`] — and the stillness egui itself would test is asserted
+    /// before the frame below is read, rather than a frame count being trusted
+    /// to be enough. Held too few and the readback says *the control painted
+    /// no hover text*, which is what a control that never drew one says too.
     fn hover_shapes(&mut self, pos: egui::Pos2) -> Vec<egui::epaint::ClippedShape> {
         // The delay is zeroed HERE and not at construction. The window
         // installs the design system's whole `Style` on its first draw —
@@ -137,11 +188,16 @@ impl Live {
             self.ctx
                 .style_mut_of(theme, |style| style.interaction.tooltip_delay = 0.0);
         }
-        let moved = || vec![egui::Event::PointerMoved(pos)];
-        self.run(vec![moved(), moved(), moved()]);
+        self.run(vec![vec![egui::Event::PointerMoved(pos)]]);
+        self.run(vec![Vec::new(); STILL_FRAMES]);
+        assert!(
+            self.ctx.input(|i| i.pointer.is_still()),
+            "the pointer is still moving by egui's own reading after \
+             {STILL_FRAMES} frames at rest on {pos:?}, so a tooltip would be \
+             refused for the pointer rather than for the control"
+        );
         let raw = egui::RawInput {
             screen_rect: Some(self.screen),
-            events: moved(),
             ..Default::default()
         };
         self.ctx.run_ui(raw, |ui| self.app.draw(ui)).shapes
@@ -290,12 +346,13 @@ const HISTOGRAM_COLUMNS: [&str; 7] = [
 /// The containment is the assertion: the control's rect comes off the chart
 /// pane's own record and the tile's off [`MeridianApp::composed_plot_rects`],
 /// which resolves a plot's two possible origins independently. A control
-/// placed from the wrong origin — the map pane's, on a tile the column pane
+/// placed from the wrong origin — the map pane's, on a tile the grid pane
 /// scrolled — lands outside and fails here.
 #[test]
 fn every_histogram_tile_carries_a_scale_switch_inside_its_own_box() {
     let mut live = Live::open(housing_boot());
     live.settle();
+    live.transpose();
 
     let drawn: Vec<String> = live
         .doc()
@@ -336,6 +393,7 @@ fn every_histogram_tile_carries_a_scale_switch_inside_its_own_box() {
 fn the_hero_point_map_draws_no_scale_switch() {
     let mut live = Live::open(housing_boot());
     live.settle();
+    live.transpose();
 
     let hero = live
         .doc()
@@ -368,6 +426,7 @@ fn the_hero_point_map_draws_no_scale_switch() {
 fn the_switch_offers_linear_log_and_symlog_in_the_small_face() {
     let mut live = Live::open(housing_boot());
     live.settle();
+    live.transpose();
 
     for switch in &live.doc().scale_switches {
         let offered: Vec<ScaleType> = switch.states.iter().map(|(s, _)| *s).collect();
@@ -405,6 +464,7 @@ fn the_switch_offers_linear_log_and_symlog_in_the_small_face() {
 fn each_switch_names_its_own_column_in_its_hover_text() {
     let mut live = Live::open(housing_boot());
     live.settle();
+    live.transpose();
 
     let said: Vec<String> = live
         .doc()
@@ -600,6 +660,7 @@ fn a_click_writes_one_key_into_the_canonical_spec() {
 
     let mut live = Live::open(housing_boot());
     live.settle();
+    live.transpose();
     let before = live
         .doc()
         .live_dashboard()
@@ -677,6 +738,7 @@ fn a_click_writes_one_key_into_the_canonical_spec() {
 fn the_log_tile_re_bins_and_the_other_six_stand_still() {
     let mut live = Live::open(housing_boot());
     live.settle();
+    live.transpose();
 
     let switch = live.switch("population");
     let others: Vec<usize> = live
@@ -821,6 +883,7 @@ fn the_log_tile_re_bins_and_the_other_six_stand_still() {
 fn a_press_on_the_switch_is_not_a_press_on_the_canvas() {
     let mut live = Live::open(housing_boot());
     live.settle();
+    live.transpose();
 
     let income = live.switch("median_income").plot;
     let at = live.at(income, 0.5);
@@ -862,6 +925,7 @@ fn a_press_on_the_switch_is_not_a_press_on_the_canvas() {
 fn a_click_to_symlog_reads_symlog_on_the_switchs_own_record() {
     let mut live = Live::open(housing_boot());
     live.settle();
+    live.transpose();
     assert_eq!(
         live.switch("population").active,
         ScaleType::Linear,
@@ -908,6 +972,7 @@ fn a_click_to_symlog_reads_symlog_on_the_switchs_own_record() {
 fn a_brush_on_another_tile_narrows_the_log_tile_on_its_own_bins() {
     let mut live = Live::open(housing_boot());
     live.settle();
+    live.transpose();
     live.switch_to("population", ScaleType::Log);
     assert_eq!(live.switch("population").active, ScaleType::Log);
 
@@ -1015,6 +1080,7 @@ fn a_file_opened_by_a_relative_path_keeps_its_picture_through_a_switch() {
         .unwrap_or_else(|e| panic!("open {}: {e}", relative.display()));
     let mut live = Live::open(boot);
     live.settle();
+    live.transpose();
 
     let switch = live.switch("population");
     let others: Vec<usize> = live
@@ -1118,6 +1184,7 @@ fn a_file_opened_by_a_relative_path_keeps_its_picture_through_a_switch() {
 fn a_switch_thrown_in_the_dark_leaves_the_page_in_the_dark() {
     let mut live = Live::open_in(housing_boot(), Mode::Dark);
     live.settle();
+    live.transpose();
     assert_eq!(
         live.doc().composed.mode,
         Mode::Dark,

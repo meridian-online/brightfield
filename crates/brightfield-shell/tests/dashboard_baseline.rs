@@ -521,7 +521,13 @@ const WHEEL_FRAMES: usize = 8;
 /// the device path in the raster alone — the canvas pane reserves the same box
 /// and paints nothing into it — which is the property `tests/canvas_pane_group.rs`
 /// is built on.
-fn pane_rects(size: (f32, f32)) -> (Vec<brightfield_shell::window::CanvasPane>, egui::Pos2) {
+fn pane_rects(
+    size: (f32, f32),
+) -> (
+    Vec<brightfield_shell::window::CanvasPane>,
+    egui::Pos2,
+    egui::Pos2,
+) {
     let path = housing();
     let chosen = path.to_str().expect("utf-8 fixture path");
     let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
@@ -540,10 +546,10 @@ fn pane_rects(size: (f32, f32)) -> (Vec<brightfield_shell::window::CanvasPane>, 
     // The control that reopens the ledger rail, read before it is clicked and
     // returned for the capture to aim at. A data file opens as a one-step
     // Protocol, so the rail opens closed to its strip and hands the canvas its
-    // other 124 points; at this window that is exactly enough for the column's
-    // seven tiles at their floor, and a page that fits its pane is a page no
-    // clip and no scroll can be asserted about. See `settled_scrollable` in
-    // `tests/canvas_pane_group.rs`, which reopens it for the same reason.
+    // other 124 points, which is room the grid pane's page needs to overrun
+    // before a scroll is a scroll rather than a no-op. See
+    // `settled_scrollable` in `tests/canvas_pane_group.rs`, which reopens it
+    // for the same reason.
     let control = app
         .rail_collapse_rect(brightfield_workbench::arrangement::LEDGER_RAIL)
         .expect("the collapsed ledger drew the control that reopens it")
@@ -553,7 +559,63 @@ fn pane_rects(size: (f32, f32)) -> (Vec<brightfield_shell::window::CanvasPane>, 
         input.events = events;
         let _ = ctx.run_ui(input, |ui| app.draw(ui));
     }
-    (app.canvas_panes().panes.clone(), control)
+
+    // …and the layout switch, thrown to the grid's transposed state, for the
+    // reason `settled_scrollable` throws it: the grid pane's rows are the page
+    // taller than the pane it is drawn in, and a page that fits its pane is a
+    // page no clip and no scroll can be asserted about. The rect is read off
+    // the frame that drew it and returned, so the capture aims at the same
+    // place this window did.
+    let at = transposed_state_rect(&app).center();
+    for events in throw_the_switch(at) {
+        let mut input = raw.clone();
+        input.events = events;
+        let _ = ctx.run_ui(input, |ui| app.draw(ui));
+    }
+    assert_eq!(
+        app.grid_layout(),
+        brightfield_shell::app::GridLayout::Columns,
+        "the click at {at:?} did not throw the layout switch, so the page \
+         below is the one that fits its pane and the scroll claims would pass \
+         for want of a page"
+    );
+    (app.canvas_panes().panes.clone(), control, at)
+}
+
+/// Where the grid pane's header band drew the layout switch's transposed
+/// state, on the frame `app` last ran.
+///
+/// Read off the frame rather than typed: a coordinate that missed would leave
+/// the grid on its rows and every claim below would be about the wrong page.
+fn transposed_state_rect(app: &brightfield_shell::window::MeridianApp) -> egui::Rect {
+    app.chart_doc()
+        .grid_layout_switch
+        .clone()
+        .expect("the grid pane's header band drew a layout switch")
+        .states
+        .iter()
+        .find(|(state, _)| *state == brightfield_shell::app::GridLayout::Columns)
+        .expect("the switch offers a transposed state")
+        .1
+}
+
+/// The frames that throw the layout switch by clicking `at` — the same shape
+/// as [`reopen_the_ledger`], and settled for the same reason.
+fn throw_the_switch(at: egui::Pos2) -> Vec<Vec<egui::Event>> {
+    let button = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    };
+    vec![
+        vec![egui::Event::PointerMoved(at)],
+        vec![egui::Event::PointerMoved(at), button(true)],
+        vec![egui::Event::PointerMoved(at), button(false)],
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    ]
 }
 
 /// The frames that reopen a collapsed ledger rail by clicking `control` — one
@@ -576,43 +638,56 @@ fn reopen_the_ledger(control: egui::Pos2) -> Vec<Vec<egui::Event>> {
 }
 
 /// **The two panes clip their own share of the one page, and a scroll moves
-/// one of them** — held over a pair of captures at 1440 by 900, where seven
-/// tiles at their 96-point floor need a page taller than either pane.
+/// one of them** — held over a pair of captures at 1440 by 900 with the grid
+/// transposed, where the file's nine rows at their tile floor need a page
+/// taller than the pane that draws them.
+///
+/// The canvas draws two panes: the hero, and the grid beside it at the
+/// canvas's full height. Transposed is the layout the scroll claims are read
+/// in, for the reason `settled_scrollable` in `tests/canvas_pane_group.rs`
+/// gives — on its rows the grid's page fits the pane and a page that fits its
+/// pane is one no scroll can be asserted about.
 ///
 /// Three claims, and the pair is what makes the middle one decidable:
 ///
-/// 1. the wheel over the column **moved** it — the column's content rect
+/// 1. the wheel over the grid pane **moved** it — the grid pane's content rect
 ///    differs between the two captures, so nothing below is being asserted
 ///    about a window where the scroll did nothing;
-/// 2. it moved **nothing else** — every pixel outside the column's content
+/// 2. it moved **nothing else** — each pixel outside the grid pane's content
 ///    rect is identical in the two captures, the map's picture and both header
 ///    bands included. This is [`the_generated_dashboard_light_baseline`]'s
-///    claim about a scrolled window, and it is what reddens when the column's
-///    second view stops clipping: an unclipped copy of the scrolled page
-///    paints across the map pane and over both bands;
+///    claim about a scrolled window, and it is what reddens when the grid
+///    pane's view of the page stops clipping: an unclipped copy of the
+///    scrolled page paints across the hero pane and over both bands;
 /// 3. no pixel of the marks' own ink lands outside a pane's content rect in
-///    either capture. This is what reddens when `draw_chart_body` stops
-///    clipping the page it lays out: the page is 84 points taller than the
-///    panes at this window, and what hangs below is the last tile's bars.
+///    either capture — the standing containment check, held over both frames.
 ///
-/// Both clips are one line each — `child.shrink_clip_rect(clip)` and
-/// `Painter::with_clip_rect` — and deleting either left the rest of this
-/// crate's test targets green.
+/// Breaking `by: scroll` to `by: 0.0` in the transposed pane group's
+/// `PaneViews` reddens the first of those.
+///
+/// The **untransposed** layout's containment is not asserted here and is not
+/// assertable by mutation: on its rows the page is composed as the hero, a
+/// gutter and the tile column, and clipped to the hero pane in three places in
+/// series — `child.shrink_clip_rect(clip)` here in `draw_chart_body`, the
+/// `shrink_clip_rect(views.first)` `chart_item` narrows the paint with, and
+/// the module frame's own content clip — each stating the same rect, so
+/// removing any one of them leaves the tile column exactly as invisible as
+/// before.
 #[test]
 fn the_pane_group_clips_the_page_to_the_panes_it_is_drawn_in() {
-    let (panes, ledger_control) = pane_rects(SHORT_WINDOW);
+    let (panes, ledger_control, switch_at) = pane_rects(SHORT_WINDOW);
     assert_eq!(
         panes.len(),
-        3,
+        2,
         "the canvas drew {} panes at {SHORT_WINDOW:?}, so the rects below are \
          not the pane group's",
         panes.len()
     );
     let bodies: Vec<egui::Rect> = panes.iter().map(|p| p.body).collect();
-    let column = panes
+    let grid = panes
         .iter()
-        .find(|p| p.name == "columns")
-        .expect("the column pane drew")
+        .find(|p| p.name == "grid")
+        .expect("the grid pane drew")
         .body;
 
     // The pointer lands in the same place in both captures and the wheel is
@@ -621,10 +696,11 @@ fn the_pane_group_clips_the_page_to_the_panes_it_is_drawn_in() {
     // is read back on the frame after, so the pointer has to land on a settled
     // layout.
     let mut point = reopen_the_ledger(ledger_control);
+    point.extend(throw_the_switch(switch_at));
     point.extend([
         Vec::new(),
         Vec::new(),
-        vec![egui::Event::PointerMoved(column.center())],
+        vec![egui::Event::PointerMoved(grid.center())],
     ]);
     let mut turn = point.clone();
     for _ in 0..WHEEL_FRAMES {
@@ -639,7 +715,7 @@ fn the_pane_group_clips_the_page_to_the_panes_it_is_drawn_in() {
     let moved = capture_short(turn, "dashboard_pane_group_scrolled");
     assert_eq!(still.dimensions(), moved.dimensions());
 
-    let mut in_column = 0usize;
+    let mut in_grid = 0usize;
     let mut elsewhere: Vec<(u32, u32)> = Vec::new();
     for (x, y, p) in still.enumerate_pixels() {
         if p == moved.get_pixel(x, y) {
@@ -647,24 +723,24 @@ fn the_pane_group_clips_the_page_to_the_panes_it_is_drawn_in() {
         }
         #[allow(clippy::cast_precision_loss)]
         let at = egui::pos2(x as f32 / SCALE, y as f32 / SCALE);
-        if column.expand(1.0).contains(at) {
-            in_column += 1;
+        if grid.expand(1.0).contains(at) {
+            in_grid += 1;
         } else {
             elsewhere.push((x, y));
         }
     }
     assert!(
-        in_column > 0,
-        "the two captures are identical inside the column's content rect \
-         {column:?}, so the wheel scrolled nothing and the comparison below \
+        in_grid > 0,
+        "the two captures are identical inside the grid pane's content rect \
+         {grid:?}, so the wheel scrolled nothing and the comparison below \
          holds over a window this test is not about"
     );
     assert!(
         elsewhere.is_empty(),
-        "{} device pixels outside the column's content rect changed when the \
-         column scrolled — the first five at {:?}. Scrolling the column moves \
-         the column; the map's picture, both header bands and every frame \
-         around them are somebody else's.",
+        "{} device pixels outside the grid pane's content rect changed when \
+         the grid pane scrolled — the first five at {:?}. Scrolling the grid \
+         pane moves the grid pane; the map's picture, both header bands and \
+         the frames around them are somebody else's.",
         elsewhere.len(),
         &elsewhere[..elsewhere.len().min(5)]
     );
@@ -674,15 +750,13 @@ fn the_pane_group_clips_the_page_to_the_panes_it_is_drawn_in() {
     // pane's inset is its BACKGROUND, and the chart surface and a pane's fill
     // are the same token, so the visible loss is the hairline the page covers.
     //
-    // Measured at this window, with the clip: the map pane's strip carries the
-    // border colour across its full width on one device row — its own stroke,
-    // with the pane gap under it in the canvas's own fill — and the rows and
-    // column panes on two, their own stroke and the hairline of the rail
-    // below them. Without the clip the map pane shows NONE: the page is laid
-    // out across the union of the map's and the column's content rects, which
-    // since the map gave the foot of its column to the rows pane reaches over
-    // the map's bottom frame. The `rows >= 1` below is that measurement as an
-    // assertion, and the map pane is the one it bites on.
+    // With the clip in place, each pane's strip carries the border colour
+    // across its width on at least one device row below its content rect —
+    // its own stroke. Without the clip the page is laid out across the union
+    // of the two panes' content rects and painted from the hero pane's origin,
+    // so it reaches over the hero pane's bottom frame and the row below the
+    // hero's content rect stops being the stroke. The `rows >= 1` below is
+    // that as an assertion, and the hero pane is the one it bites on.
     let border = meridian_design::semantic(false).borders.subtle;
     for pane in &panes {
         let strip = pane.rect.bottom() - pane.body.bottom();
@@ -1243,7 +1317,7 @@ fn assert_day_axis_at_window_width(window_height: f32, window_width: f32) -> f64
 /// those four landed on. What follows sweeps [`SWEEP_STEP`]-point steps from
 /// [`SWEEP_START_WIDTH`] down to wherever the app's own layout stops moving
 /// `day`'s tile width — `brightfield_shell::window::canvas_pane_rects`'s own
-/// floor on the column pane, detected at runtime (two consecutive
+/// floor on the grid pane, detected at runtime (two consecutive
 /// samples resolving the identical tile width) rather than restated as a
 /// constant, because a restated one would rot the moment that floor moved.
 #[test]
@@ -1270,7 +1344,7 @@ fn the_time_axis_never_overlaps_or_clips_across_real_window_widths() {
         if let Some(prev) = last_tile_width {
             if (tile_width - prev).abs() < 1e-6 {
                 // Two consecutive samples resolved the same tile width: the
-                // app's own layout has hit its floor on the column pane, and
+                // app's own layout has hit its floor on the grid pane, and
                 // `width` was the narrowest sample still on the live side of
                 // it (the FIRST floored sample was tested at the step
                 // above — its own assertions already ran). Descending
@@ -1287,7 +1361,7 @@ fn the_time_axis_never_overlaps_or_clips_across_real_window_widths() {
         collapsed,
         "fixture check: the sweep reached {SWEEP_MIN_WIDTH} points wide \
          without the app's own layout ever resolving the same tile width \
-         twice in a row for day's column tile — either the column pane has \
+         twice in a row for day's column tile — either the grid pane has \
          no floor at this width any more, or SWEEP_MIN_WIDTH needs lowering \
          to reach it"
     );

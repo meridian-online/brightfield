@@ -127,15 +127,50 @@ impl Window {
     /// off the end of the domain — so a sweep measured over the rect would commit
     /// bounds the column never reaches.
     fn at(&self, index: usize, fraction: f64) -> egui::Pos2 {
-        let doc = self.app.chart_doc();
-        let raster = doc
-            .raster_rect
-            .expect("a settled frame presented the raster");
-        let plot = &doc.composed.plots[index];
-        let l = &plot.layout;
-        let x = plot.rect.x + l.plot_x_start() + (l.plot_x_end() - l.plot_x_start()) * fraction;
-        let y = plot.rect.y + (l.plot_y_start() + l.plot_y_end()) / 2.0;
-        egui::pos2(raster.min.x + x as f32, raster.min.y + y as f32)
+        let drawn = self.app.composed_plot_rects()[index];
+        let l = &self.app.chart_doc().composed.plots[index].layout;
+        let x = l.plot_x_start() + (l.plot_x_end() - l.plot_x_start()) * fraction;
+        let y = (l.plot_y_start() + l.plot_y_end()) / 2.0;
+        #[allow(clippy::cast_possible_truncation)]
+        egui::pos2(drawn.left() + x as f32, drawn.top() + y as f32)
+    }
+
+    /// **Throw the layout switch on the grid pane's header band to its columns
+    /// state**, and settle.
+    ///
+    /// A tiled column's own picture is on screen only with the grid
+    /// transposed: untransposed the grid pane draws a table and each column's
+    /// distribution is a rug in its header band, so a press aimed at a tile
+    /// past the hero lands on the table. `tests/navigator_spine.rs` carries
+    /// the same helper, in the shape its own harness uses.
+    ///
+    /// Aimed at the rect the frame recorded, with the state read back: a miss
+    /// would leave the caller pressing where no bar is and reading the absence
+    /// of a clause as the defect it is testing for.
+    fn transpose_the_grid(&mut self) {
+        let at = self
+            .app
+            .chart_doc()
+            .grid_layout_switch
+            .as_ref()
+            .expect("the grid pane's header band drew a layout switch")
+            .states
+            .iter()
+            .find(|(state, _)| *state == brightfield_shell::app::GridLayout::Columns)
+            .expect("the switch offers a columns state")
+            .1
+            .center();
+        self.run(vec![
+            vec![egui::Event::PointerMoved(at), button_at(at, true)],
+            vec![button_at(at, false)],
+        ]);
+        self.settle();
+        assert_eq!(
+            self.app.grid_layout(),
+            brightfield_shell::app::GridLayout::Columns,
+            "the click at {at:?} did not throw the switch, so no tile past the \
+             hero is on screen"
+        );
     }
 
     /// Press at `from`, move to `to`, release — the frames a real sweep across
@@ -742,6 +777,9 @@ fn a_click_on_a_timestamp_tile_leaves_its_sibling_tiles_on_the_page() {
     win.app.open_data_file(&ctx, &path.to_string_lossy());
     win.settle();
 
+    // The control's tile is the second on the page, which is on screen only
+    // with the grid transposed.
+    win.transpose_the_grid();
     win.click(1, 0.5);
 
     let held = win
