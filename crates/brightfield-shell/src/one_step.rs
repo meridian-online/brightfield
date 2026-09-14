@@ -436,22 +436,21 @@ fn facts(columns: &[ColumnProfile], dashboard: &Dashboard) -> Vec<ColumnFacts> {
     columns.iter().map(|p| facts_for(p, dashboard)).collect()
 }
 
-/// One column's facts: the facts of **that column's own tile**, preferred over
-/// a joint tile it is only the other half of.
+/// One column's facts: the facts of **that column's own tile**, preferred
+/// over a joint tile it is the other half of rather than the drawer of.
 ///
-/// The two are searched for in that order — a tile whose own
-/// [`Tile::column`](crate::dashboard::Tile::column) is this profile's name and
-/// whose kind is not the joint map, then (only when the first finds nothing) a
-/// tile whose [`Tile::paired_column`](crate::dashboard::Tile::paired_column) is
-/// — rather than in one pass taking whichever tile names this column first, the
-/// way this used to read. A coordinate pair's own two tiles keep the joint map
-/// ahead of them in [`Dashboard::tiles`], so a single forward search always met
-/// the map before either coordinate's own histogram and answered every row of
-/// the pair with the map's reason: `entries seven and eight` in the printed
-/// housing fixture both carried `a coordinate pair with …, found by its name`,
-/// the map's own sentence, rather than the histogram they were rows of. Two
-/// searches with a kind test between them cannot repeat that, whichever tile
-/// [`Dashboard::of`] happened to place first.
+/// Two separate searches, run in that order: a tile whose own
+/// [`Tile::column`](crate::dashboard::Tile::column) is this profile's name
+/// and whose kind is not the joint map, and — failing that — then a tile
+/// whose [`Tile::paired_column`](crate::dashboard::Tile::paired_column)
+/// is this profile's name. One combined search used to stand here instead, a
+/// single pass over [`Dashboard::tiles`] taking whichever tile named this
+/// column first: `a_coordinate_columns_own_histogram_reports_its_own_reason_and_no_pair`
+/// is what a coordinate pair's own two tiles broke it on, because the joint
+/// map stands ahead of both coordinates' own tiles there and a single forward
+/// search met it before reaching either histogram. Two searches with a kind
+/// test between them read the same list without that ordering mattering to
+/// either one.
 fn facts_for(profile: &ColumnProfile, dashboard: &Dashboard) -> ColumnFacts {
     let own = dashboard.tiles().iter().find(|t| {
         t.column() == profile.name && !matches!(t.chosen_by(), ChosenBy::CoordinatePair { .. })
@@ -470,9 +469,9 @@ fn facts_for(profile: &ColumnProfile, dashboard: &Dashboard) -> ColumnFacts {
 /// entry's [`ColumnFacts::because`].
 ///
 /// A dashboard draws at most one joint tile — [`crate::dashboard::coordinate_pair`]
-/// finds at most one pair — so this is a membership test, not a search: it does
-/// not matter where that tile stands in [`Dashboard::tiles`], only whether one
-/// is there naming `profile` as its own column or as its pair.
+/// finds at most one pair — so this is a membership test, not a search: where
+/// that tile stands in [`Dashboard::tiles`] is not the question, whether one
+/// is there naming `profile` as its own column or as its pair is.
 /// [`ColumnFacts::coordinate`] is this, kept apart from
 /// [`ColumnFacts::paired`] so the degree glyph survives on a coordinate
 /// column's own histogram row even though that row's own tile carries no
@@ -579,22 +578,25 @@ fn build_facts(
 /// Each entry is [`build_facts`] of the tile's own
 /// [`Tile::column`](crate::dashboard::Tile::column) **against that exact
 /// tile** — for a point map the longitude, with the latitude in
-/// [`ColumnFacts::paired`] — never searched for again the way [`facts_for`]
-/// searches: this walk already holds the one tile each entry is of, from
-/// [`Dashboard::plot_order`] itself, so a coordinate column's own histogram
-/// entry reports that histogram's own kind and reason and a joint map's entry
-/// reports the map's, whichever of the two [`Dashboard::tiles`] happens to
-/// list first. That used to matter: **the kind** each entry reports is the
-/// kind of the plot it stands for, which is why this stopped delegating to
-/// `facts_for` for it in the first place — a coordinate column has two tiles,
-/// the pair's joint map and its own histogram, and answering about the
-/// *column* rather than the *tile* meant every entry of the pair reported
-/// whichever tile a search met first. The scale switch is drawn per entry
+/// [`ColumnFacts::paired`]. This walk already holds the one tile each entry
+/// is of, from [`Dashboard::plot_order`] itself, so it hands that tile to
+/// [`build_facts`] directly instead of searching [`Dashboard::tiles`] again
+/// the way [`facts_for`] does: a coordinate column's own histogram entry
+/// reports that histogram's own kind and reason, and the joint map's entry
+/// reports the map's, however [`Dashboard::tiles`] happens to order the two.
+///
+/// **The kind** each entry reports mattered first: a coordinate column has
+/// two tiles, the pair's joint map and its own histogram, and this used to
+/// delegate to `facts_for`, which answers about the *column* rather than the
+/// *tile* — so a search met whichever of the pair's own tiles came first and
+/// both entries reported that one's kind. The scale switch is drawn per entry
 /// whose kind is the binned histogram, so the pair's two rows drew no
-/// linear/log control at all before the kind was fixed here; carrying
-/// `because` and `paired` the same way is what this reading finishes.
+/// linear/log control at all before the kind was read straight off the tile
+/// here; carrying `because` and `paired` the same way is what this finishes.
 /// `tests/tile_scale_switch.rs::every_histogram_tile_carries_a_scale_switch_inside_its_own_box`
-/// reads the kind back; `one_step::tests` below reads `because` and `paired`.
+/// reads the kind back;
+/// `a_coordinate_columns_own_histogram_reports_its_own_reason_and_no_pair`
+/// below reads `because` and `paired`.
 fn tiles_in_plot_order(columns: &[ColumnProfile], dashboard: &Dashboard) -> Vec<ColumnFacts> {
     dashboard
         .plot_order()
@@ -757,10 +759,12 @@ mod tests {
     /// to answering about the *column* rather than the tile a plot-order entry
     /// is actually of: a single forward search over [`Dashboard::tiles`] meets
     /// the joint map before either coordinate's own histogram, because
-    /// [`Dashboard::of`] always places it there, and answers every row of the
-    /// pair with the map's `because` and `paired` instead of the histogram's —
-    /// the defect this module's own history records against the housing
-    /// fixture's `latitude` and `longitude` rows.
+    /// [`Dashboard::of`] places the joint tile at that position — the order
+    /// `a_coordinate_pairs_tile_takes_the_position_of_whichever_column_comes_first`
+    /// pins — and answers the pair's rows with the map's `because` and
+    /// `paired` instead of the histogram's, the defect this module's own
+    /// history records against the housing fixture's `latitude` and
+    /// `longitude` rows.
     #[test]
     fn a_coordinate_columns_own_histogram_reports_its_own_reason_and_no_pair() {
         let path = Path::new("/data/housing.csv");
@@ -798,11 +802,12 @@ mod tests {
     /// title do not depend on where the joint tile falls in the generator's
     /// own list.
     ///
-    /// [`Dashboard::of`] never lists the joint tile after both coordinates'
-    /// own tiles on its own — it always pushes the joint immediately ahead of
-    /// the first — so this drives the one case it cannot produce, through
-    /// [`Dashboard::with_joint_tile_last`], and reads the glyph and the title
-    /// back unchanged against the ordinary order.
+    /// [`Dashboard::of`] itself lists the joint tile immediately ahead of the
+    /// first coordinate column's own tile, the order
+    /// `a_coordinate_pairs_tile_takes_the_position_of_whichever_column_comes_first`
+    /// pins — so this drives the reversed case that construction does not
+    /// produce, through [`Dashboard::with_joint_tile_last`], and reads the
+    /// glyph and the title back unchanged against the ordinary order.
     #[test]
     fn the_glyph_and_the_map_title_do_not_depend_on_tile_order() {
         let path = Path::new("/data/housing.csv");
