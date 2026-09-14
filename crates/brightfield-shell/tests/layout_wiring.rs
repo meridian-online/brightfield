@@ -637,7 +637,13 @@ fn the_recents_list_is_capped_and_most_recent_first() {
          is the only position this assertion can see a missing de-duplication \
          from"
     );
-    layout.remember(&middle, "renamed", RunState::Fresh, GridLayout::Columns, 9_000);
+    layout.remember(
+        &middle,
+        "renamed",
+        RunState::Fresh,
+        GridLayout::Columns,
+        9_000,
+    );
     assert_eq!(
         layout.recents.iter().filter(|r| r.id == middle).count(),
         1,

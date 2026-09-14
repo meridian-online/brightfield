@@ -1648,7 +1648,7 @@ fn capture_grid_view(mode: Mode, at: egui::Pos2, name: &str) -> image::RgbaImage
 // ---------------------------------------------------------------------------
 
 /// **The window the transposed pair is photographed in** — wide as the
-/// untransposed baselines and tall enough for all seven of [`housing`]'s rows.
+/// untransposed baselines and tall enough for the seven rows [`housing`] has.
 ///
 /// A transposed row does not compress past `MIN_ROW_HEIGHT`, so in a shorter
 /// window the last row stands below the pane's foot and the painter clips it
@@ -1679,7 +1679,7 @@ const TRANSPOSED_ROWS: usize = HOUSING_PLOTS.len() - 1;
 /// The guard runs **here**, before the caller reaches `image_snapshot`, for
 /// the reason this file's header gives: under `UPDATE_SNAPSHOTS=1` the
 /// snapshot writes whatever it is handed, so a click that missed would commit
-/// a golden of the untransposed grid under a transposed name and every later
+/// a golden of the untransposed grid under a transposed name and each later
 /// run would agree with it. Three things are checked — the switch is in its
 /// columns state, the pane drew one row per tile past the hero, and every one
 /// of those rows is inside the clip rather than below the fold.

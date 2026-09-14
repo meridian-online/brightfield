@@ -1936,12 +1936,12 @@ fn a_one_step_protocol_opens_with_the_ledger_closed_to_its_strip() {
 
 /// **A document saved with the grid transposed reopens transposed.**
 ///
-/// The gesture a reader has, end to end and through nothing else: the switch
+/// The gesture a reader has, end to end and through no shortcut: the switch
 /// on the grid pane's own header band is thrown by a click at the rect the
 /// frame drew it at, Save is reached through the command palette, the layout
 /// the shell would write on exit is flushed to disk, and a **second window**
-/// — over nothing, built on what `persist::load` read back — is sent to the
-/// manifest that was written. What is read at the end is
+/// — over an empty boot, built on what `persist::load` read back — is sent
+/// to the manifest that was written. What is read at the end is
 /// `MeridianApp::grid_layout`, the state the next frame draws from, not the
 /// field on the record.
 ///
@@ -1955,7 +1955,7 @@ fn a_one_step_protocol_opens_with_the_ledger_closed_to_its_strip() {
 ///
 /// Watched redden, two mutations. Deleting the `grid_layout_of` restore from
 /// `MeridianApp::open_protocol_path` fails at the last assertion with `Rows`
-/// — the record written and never read. Passing `GridLayout::default()`
+/// — the record written and not read. Passing `GridLayout::default()`
 /// instead of `self.grid_layout` to `remember` in `save_protocol` fails the
 /// same way, which is the write half.
 #[test]
@@ -1977,9 +1977,14 @@ fn a_document_saved_transposed_reopens_transposed() {
         .app
         .flush_layout(&layout_path)
         .expect("saving a Protocol remembers it, which leaves the layout dirty");
-    assert!(written.is_ok(), "the layout file did not write: {written:?}");
-    let (restored, outcome) =
-        brightfield_workbench::persist::load(&layout_path, brightfield_shell::startup::default_layout);
+    assert!(
+        written.is_ok(),
+        "the layout file did not write: {written:?}"
+    );
+    let (restored, outcome) = brightfield_workbench::persist::load(
+        &layout_path,
+        brightfield_shell::startup::default_layout,
+    );
     assert_eq!(
         outcome,
         brightfield_workbench::persist::LoadOutcome::Restored,

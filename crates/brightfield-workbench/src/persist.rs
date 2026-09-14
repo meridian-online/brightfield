@@ -254,7 +254,7 @@ pub struct SavedLayout {
     ///
     /// # Why this is not a [`LAYOUT_VERSION`] bump
     ///
-    /// The same reason [`Self::opened`] is not: every file written before this
+    /// The same reason [`Self::opened`] is not: a file written before this
     /// field existed still parses as [`LoadOutcome::Restored`], so no
     /// arrangement is discarded by the upgrade. The version's rule is to bump
     /// when the shape changes *incompatibly*, and an added field with a
@@ -265,7 +265,7 @@ pub struct SavedLayout {
     /// This is an `f32`, and serde's own default for `f32` is **zero** — a
     /// hero pane one point wide and a grid pane taking the whole canvas, on
     /// every layout file written before today. So the attribute names
-    /// [`even_canvas_split`] instead, and what an old file restores to is
+    /// the private `even_canvas_split` instead, and what an old file restores to is
     /// [`EVEN_CANVAS_SPLIT`]: the split the canvas draws on a fresh open,
     /// which is what those files were last looking at.
     /// `a_layout_from_before_the_canvas_split_existed_opens_at_the_even_split`
@@ -412,7 +412,7 @@ impl SavedLayout {
     ///
     /// `grid_layout` is a **parameter** rather than something this reads off
     /// the existing row, and that is deliberate: the row is rebuilt, so a
-    /// caller that did not pass it would silently reset every document to
+    /// caller that did not pass it would silently reset the document to
     /// rows on the next save. The compiler asks for it instead.
     ///
     /// Trimmed to [`RECENTS_KEPT`] from the tail, so the entry dropped is the
@@ -442,11 +442,11 @@ impl SavedLayout {
     }
 
     /// **Which way the grid pane was reading the document `id` names**, or
-    /// `None` for a document this file has never recorded.
+    /// `None` for a document this file has no row for.
     ///
     /// `None` rather than [`GridLayout::Rows`], so a caller can tell "opens on
     /// rows because that is what was saved" from "opens on rows because
-    /// nothing was saved". The two behave the same today and the caller says
+    /// no row was saved". The two behave the same today and the caller says
     /// so at the one place it decides; collapsing them here would be that
     /// decision made in the wrong file.
     #[must_use]

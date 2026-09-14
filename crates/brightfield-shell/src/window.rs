@@ -5339,13 +5339,9 @@ impl MeridianApp {
         // first frame draws it.** Read here rather than in `adopt_boot`
         // because this is the path that knows the document's *id* — the
         // string the row was remembered under — and the record is keyed by
-        // it. A document this file has never seen opens on its rows, which is
+        // it. A document this file has no row for opens on its rows, which is
         // what `GridLayout::default()` is.
-        self.grid_layout = self
-            .layout
-            .live()
-            .grid_layout_of(path)
-            .unwrap_or_default();
+        self.grid_layout = self.layout.live().grid_layout_of(path).unwrap_or_default();
         self.layout
             .live_mut()
             .remember(path, &name, run, self.grid_layout, now_secs());

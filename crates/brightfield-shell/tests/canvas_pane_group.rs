@@ -3305,12 +3305,12 @@ fn drag_the_edge(app: &mut MeridianApp, ctx: &egui::Context, raw: &egui::RawInpu
 /// **The edge between the hero pane and the grid pane drags, and where it was
 /// dragged to is where the next open draws it.**
 ///
-/// The whole round trip, through the machinery the live host uses and nothing
-/// else: a real frame's pointer press on the edge, the shell's own
+/// The whole round trip, through the machinery the live host uses and no
+/// shortcut around it: a real frame's press on the edge, the shell's own
 /// `flush_layout`, `persist::load` off the file that landed on disk, and a
 /// second window built on what came back. What is read at each end is
 /// `canvas_panes` — the rect the frame **drew** the hero pane at — rather than
-/// `canvas_split`, so a field that was set and never reached the arithmetic
+/// `canvas_split`, so a field that was set but did not reach the arithmetic
 /// fails here.
 ///
 /// Three claims, three assertions, because a failure should say which:
@@ -3345,10 +3345,13 @@ fn the_dragged_pane_edge_comes_back_on_the_next_open() {
     let written = app
         .flush_layout(&path)
         .expect("the dragged split left the layout dirty, so a flush writes it");
-    assert!(written.is_ok(), "the layout file did not write: {written:?}");
+    assert!(
+        written.is_ok(),
+        "the layout file did not write: {written:?}"
+    );
 
     // `default_layout` rather than a panicking closure: `from_json` builds the
-    // fallback on every load that parses, because it is the yardstick the
+    // fallback on each load that parses, because it is the yardstick the
     // completeness check measures the restored tree against. A load that
     // really did fail falls back to it and is caught by the outcome below and
     // by the last assertion, which is the one that would see the even split.
@@ -3412,7 +3415,8 @@ fn neither_pane_can_be_dragged_shut() {
             );
         }
         assert!(
-            hero.rect.right() < canvas_of(&app).right() && hero.rect.left() >= canvas_of(&app).left(),
+            hero.rect.right() < canvas_of(&app).right()
+                && hero.rect.left() >= canvas_of(&app).left(),
             "dragging the edge {past} points put the hero pane at {:?}, outside \
              the canvas at {:?}",
             hero.rect,
@@ -3471,7 +3475,7 @@ fn settled_window_transposed(screen: egui::Rect) -> (MeridianApp, egui::Context,
 /// Read as **text off the frame's galleys**, inside each row's own cell, and
 /// each string is checked to be non-empty before it is looked for: the failure
 /// this exists for is the row density quietly dropping down to the compact
-/// branch, which draws no leaf and no storage row at all and leaves
+/// branch, which draws no leaf and no storage row, and leaves
 /// `ColumnBandDrawn` reporting a cell that is there. A presence-only check —
 /// "the band drew seven cells" — is green over that, and was: the first half
 /// of this work shipped one.
@@ -3484,7 +3488,7 @@ fn settled_window_transposed(screen: egui::Rect) -> (MeridianApp, egui::Context,
 ///
 /// Watched redden, one mutation: narrowing `GridDensity::is_full` to
 /// `matches!(self, Self::Full)` — which is the branch that decides whether a
-/// transposed row states these two facts at all — fails at the first row with
+/// transposed row states these two facts — fails at the first row with
 /// the leaf missing.
 #[test]
 fn every_transposed_row_states_its_leaf_and_its_storage_type() {
@@ -3553,7 +3557,7 @@ fn every_transposed_row_states_its_leaf_and_its_storage_type() {
 /// whole visible content was a drag across a table.
 ///
 /// `PaneViews::sole` is that rule — one view, the hero pane's content rect,
-/// and a pointer outside it is over nothing. It was written with the pane
+/// and a pointer outside it is over no page. It was written with the pane
 /// group and had no test: setting the record to `None` left 131 tests across
 /// eight targets green.
 ///
