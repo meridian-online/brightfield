@@ -3939,9 +3939,9 @@ impl MeridianApp {
                         } else {
                             None
                         };
-                        // Beneath the hero the grid is a quarter of the
-                        // canvas, and the single-pane path draws no grid at
-                        // all. Both are written every frame rather than once,
+                        // Beneath the hero the grid is half the canvas, and
+                        // the single-pane path draws no grid at all. Both are
+                        // written every frame rather than once,
                         // so a document that moves from one to the other
                         // cannot draw the band the previous shape wanted.
                         //
