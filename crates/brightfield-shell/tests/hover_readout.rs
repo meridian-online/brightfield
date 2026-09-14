@@ -1092,7 +1092,7 @@ fn surfaces(app: &mut MeridianApp) -> Surfaces {
         "the hero offers no hover layer, so the hovering run below rests on \
          nothing and the comparison is between two identical runs"
     );
-    // The grid is read the way the rows pane reads it — the mark
+    // The grid is read the way the grid pane reads it — the mark
     // `LiveDashboard::rows_mark` resolves, at `RowsAudience::Reader` — so the
     // surface compared here is the shipped surface rather than a neighbouring
     // query. `data_grid::DataGridPane::ui` is the production call.

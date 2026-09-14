@@ -453,8 +453,8 @@ fn every_transposed_row_states_the_numbers_the_band_states() {
 ///
 /// The words are read off the shapes a frame painted, not off the record, so a
 /// control that recorded a state it never drew fails here. The layout is read
-/// back after each click off what the pane drew: the rows record for the
-/// transposed arrangement and the columns pane's own presence for the other.
+/// back after each click off what the pane drew: the transposed rows record
+/// populated for that arrangement and empty for the other.
 #[test]
 fn the_layout_switch_reads_its_two_states_and_takes_the_pane_both_ways() {
     let mut live = Live::open();

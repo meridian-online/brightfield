@@ -1779,7 +1779,7 @@ impl Session {
     /// itself, so brushing a plot and then hovering it leaves the dots outside
     /// the brush on screen; a read asking as `Reader` would apply that clause
     /// and come back empty over a dot the user can see, or name a farther row
-    /// that survived it. The rows pane and the status band ask as
+    /// that survived it. The grid pane and the status band ask as
     /// `Reader` because they draw no mark and publish no clause — see the
     /// enum. Held by
     /// `a_hover_reads_what_its_own_brushed_plot_still_draws`.

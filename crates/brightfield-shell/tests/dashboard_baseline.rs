@@ -1317,7 +1317,7 @@ fn assert_day_axis_at_window_width(window_height: f32, window_width: f32) -> f64
 /// those four landed on. What follows sweeps [`SWEEP_STEP`]-point steps from
 /// [`SWEEP_START_WIDTH`] down to wherever the app's own layout stops moving
 /// `day`'s tile width — `brightfield_shell::window::canvas_pane_rects`'s own
-/// floor on the column pane, detected at runtime (two consecutive
+/// floor on the grid pane, detected at runtime (two consecutive
 /// samples resolving the identical tile width) rather than restated as a
 /// constant, because a restated one would rot the moment that floor moved.
 #[test]
@@ -1344,7 +1344,7 @@ fn the_time_axis_never_overlaps_or_clips_across_real_window_widths() {
         if let Some(prev) = last_tile_width {
             if (tile_width - prev).abs() < 1e-6 {
                 // Two consecutive samples resolved the same tile width: the
-                // app's own layout has hit its floor on the column pane, and
+                // app's own layout has hit its floor on the grid pane, and
                 // `width` was the narrowest sample still on the live side of
                 // it (the FIRST floored sample was tested at the step
                 // above — its own assertions already ran). Descending
@@ -1361,7 +1361,7 @@ fn the_time_axis_never_overlaps_or_clips_across_real_window_widths() {
         collapsed,
         "fixture check: the sweep reached {SWEEP_MIN_WIDTH} points wide \
          without the app's own layout ever resolving the same tile width \
-         twice in a row for day's column tile — either the column pane has \
+         twice in a row for day's column tile — either the grid pane has \
          no floor at this width any more, or SWEEP_MIN_WIDTH needs lowering \
          to reach it"
     );

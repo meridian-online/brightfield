@@ -15,7 +15,8 @@
 //! does to the tile's bins and ticks, what it leaves alone on the other tiles,
 //! and that a brush swept afterwards narrows a log tile without moving its
 //! scale. Not covered here: the pixels. `tests/dashboard_baseline.rs` is that
-//! half — the two re-photographed baselines carry the control at rest.
+//! half — `dashboard_dark` and `dashboard_light` open on the untransposed
+//! grid pane, so neither baseline carries a scale switch at all.
 
 use brightfield_protocol::layout::Flow;
 use brightfield_shell::app::{ChartDoc, GridLayout};
@@ -345,7 +346,7 @@ const HISTOGRAM_COLUMNS: [&str; 7] = [
 /// The containment is the assertion: the control's rect comes off the chart
 /// pane's own record and the tile's off [`MeridianApp::composed_plot_rects`],
 /// which resolves a plot's two possible origins independently. A control
-/// placed from the wrong origin — the map pane's, on a tile the column pane
+/// placed from the wrong origin — the map pane's, on a tile the grid pane
 /// scrolled — lands outside and fails here.
 #[test]
 fn every_histogram_tile_carries_a_scale_switch_inside_its_own_box() {

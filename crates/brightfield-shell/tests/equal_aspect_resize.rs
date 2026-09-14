@@ -48,8 +48,8 @@ fn fixture() -> std::path::PathBuf {
 }
 
 /// A live window over the fixture, opened as a data file — the same route a
-/// reader takes, so the composed dashboard is a hero beside a column of
-/// tiles above a rows pane, exactly as `tests/canvas_pane_group.rs` reads it.
+/// reader takes, so the composed dashboard is a hero beside a grid pane,
+/// exactly as `tests/canvas_pane_group.rs` reads it.
 fn open() -> (MeridianApp, egui::Context) {
     let path = fixture();
     let chosen = path.to_str().expect("utf-8 fixture path");

@@ -9,8 +9,8 @@
 //! `emit_rows_query`, sharing one `compile_selection`), and neither ever
 //! filters a materialised batch client-side — the predicate lives in the SQL
 //! `WHERE`. That is why they are peers: two readings of one step, side by side
-//! on the canvas, the grid being the rows pane of the canvas's own group,
-//! beneath the map.
+//! on the canvas, the grid being the grid pane of the canvas's own group,
+//! beside the map.
 //!
 //! ## Which step, and whose clause it drops
 //!
@@ -262,7 +262,7 @@ pub enum ColumnWidths {
 /// sheet has a fixed vocabulary of columns and no profile behind them, so it
 /// asks for [`HeaderStyle::Plain`] and gets the header this module drew before
 /// the band existed;
-/// the rows pane of a data file has the whole column profile and asks for the
+/// the grid pane of a data file has the whole column profile and asks for the
 /// band.
 #[derive(Clone, Copy, Debug)]
 pub enum HeaderStyle<'a> {
@@ -833,7 +833,7 @@ impl GridCache {
 /// one mark, as a [`RowsAudience::Reader`].
 ///
 /// The audience is fixed here rather than passed in because this source IS the
-/// rows pane's read: the pane draws no mark, so it has no clause of its own to
+/// grid pane's read: the pane draws no mark, so it has no clause of its own to
 /// drop. `mark_index` is the caller's — [`DataGridItem::ui`] resolves it from
 /// the document through
 /// [`LiveDashboard::rows_mark`](crate::pipeline::LiveDashboard::rows_mark) —
@@ -1059,7 +1059,7 @@ const ICON_DATA: Icon = Icon("table");
 
 /// The Data pane's registry entry: a centre tab beside the chart, which is what
 /// gives it a tile in the window's tree. The canvas's pane group draws it in
-/// the rows pane rather than through the dock, the way it draws the chart.
+/// the grid pane rather than through the dock, the way it draws the chart.
 #[must_use]
 pub fn data_grid_spec() -> ItemSpec<ChartDoc> {
     ItemSpec {

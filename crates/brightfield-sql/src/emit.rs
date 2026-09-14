@@ -1222,7 +1222,7 @@ pub enum RowsAudience {
     /// [`emit_query`] compiles for the same mark, and
     /// the chart and a grid asking as `Plot` cannot resolve two WHERE clauses.
     Plot,
-    /// A surface that draws no mark and publishes no clause: the rows pane, a
+    /// A surface that draws no mark and publishes no clause: the grid pane, a
     /// status band's count, an export. [`compile_selection`] is given
     /// [`crate::lower::NO_SELF_EXCLUDE`], which matches no contributor path, so
     /// the query carries the selection's **value**: each contributor's
@@ -1254,7 +1254,7 @@ impl RowsAudience {
 /// the grid query keeps `SELECT *`.
 ///
 /// The audience is the term that used to be implied, and implying it is what
-/// produced a rows pane listing 240 rows under a brush that selected 45. A mark
+/// produced a grid pane listing 240 rows under a brush that selected 45. A mark
 /// asks as [`RowsAudience::Plot`] and a surface that is not a mark asks as
 /// [`RowsAudience::Reader`]; under `select: crossfilter` those are two different
 /// WHERE clauses **on purpose**, and the enum's own doc says why.

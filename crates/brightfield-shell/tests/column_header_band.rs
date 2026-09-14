@@ -278,7 +278,7 @@ fn the_grid_as_the_canvas_view_draws_the_full_band() {
     let compact = win.drawn();
     assert!(
         !compact.band.is_empty(),
-        "the rows pane beneath the hero drew no band at all, so nothing below \
+        "the grid pane beneath the hero drew no band at all, so nothing below \
          is a comparison between two densities"
     );
 
@@ -688,7 +688,7 @@ fn the_compact_bands_distinct_row_draws_below_the_range_and_never_over_the_rug()
 }
 
 // ---------------------------------------------------------------------------
-// The grid view says how much of the table is across, like the rows pane.
+// The grid view says how much of the table is across, like the grid pane beneath the hero.
 // ---------------------------------------------------------------------------
 
 /// **The grid as the canvas's view carries the `N of M columns` readout too.**

@@ -3900,9 +3900,9 @@ impl MeridianApp {
                     } else if canvas_holds.view() == Some(NodeView::Grid) {
                         // **The table's grid, as the canvas.** One pane filling
                         // the canvas body, drawn through the same `pane_frame`
-                        // the group's three panes are drawn through — so this
-                        // is the same object the rows pane is, given the whole
-                        // room instead of a quarter of it.
+                        // the group's two panes are drawn through — so this
+                        // is the same object the grid pane is, given the whole
+                        // room instead of half of it.
                         //
                         // Everything the pane group sets up for a composed page
                         // is unset here, because there is no page: no views to
@@ -6438,7 +6438,7 @@ fn draw_chart_pane(
 }
 
 // ---------------------------------------------------------------------------
-// The canvas's pane group: the map pane, and the column of tiles beside it
+// The canvas's pane group: the map pane, and the grid pane beside it
 // ---------------------------------------------------------------------------
 
 /// The gap between two panes of the canvas's pane group, in logical points.
@@ -6452,9 +6452,9 @@ pub const CANVAS_PANE_GAP: f32 = brightfield_workbench::behavior::TILE_GAP;
 /// One pane of the canvas's pane group, as it was drawn.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CanvasPane {
-    /// What the pane is, for a test and for a failure message: `"map"`,
-    /// `"rows"` and `"columns"` for the three the group lays out, `"grid"` for
-    /// the one pane a canvas holding a node's grid view draws instead.
+    /// What the pane is, for a test and for a failure message: `"map"` and
+    /// `"grid"` for the two the group lays out, `"grid"` again for the one
+    /// pane a canvas holding a node's grid view draws instead.
     pub name: &'static str,
     /// The pane's outer rect, in window-space logical points.
     pub rect: egui::Rect,
@@ -6467,7 +6467,7 @@ pub struct CanvasPane {
 
 /// What the canvas drew in one frame, as panes.
 ///
-/// Three for the pane group a generated dashboard is drawn as, one for a canvas
+/// Two for the pane group a generated dashboard is drawn as, one for a canvas
 /// holding a node's grid view, and empty for a canvas drawing one picture
 /// through the item's own chrome — which is what a document that is one chart
 /// gets. Recorded rather than declared: whether a pane drew a header band is a
@@ -6476,8 +6476,8 @@ pub struct CanvasPane {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CanvasPanes {
     /// The panes, in the order the frame laid them out: for the group, the map
-    /// pane, the rows pane under it, then the column of tiles beside both; for
-    /// a node's grid view, the one pane holding it.
+    /// pane then the grid pane beside it; for a node's grid view, the one pane
+    /// holding it.
     pub panes: Vec<CanvasPane>,
     /// The count overlay's rect inside the map pane, when one was drawn.
     pub count: Option<egui::Rect>,
@@ -6486,12 +6486,12 @@ pub struct CanvasPanes {
     /// says whether the hero read "N points" or "0 points" rather than only
     /// where the chip landed.
     pub count_text: Option<String>,
-    /// The note at the trailing end of the rows pane's header band — what it
+    /// The note at the trailing end of the grid pane's header band — what it
     /// said and where it drew — on a frame where some column of the table was
     /// off screen. `None` on a frame where the grid fitted.
     pub rows_note: Option<(egui::Rect, String)>,
     /// The composed page's rect as it reached the screen, scroll included —
-    /// what the map pane and the column pane clip their share of.
+    /// what the map pane and the grid pane clip their share of.
     pub page: Option<egui::Rect>,
 }
 
@@ -7075,9 +7075,9 @@ fn draw_row_summaries(
     drawn
 }
 
-/// **One pane's frame, and the content rect it leaves** — the group's three
-/// panes and the two of the transposed arrangement are drawn through this one
-/// call, so a pane cannot acquire a frame the others do not have.
+/// **One pane's frame, and the content rect it leaves** — the pane group's two
+/// panes, in either arrangement, are drawn through this one call, so a pane
+/// cannot acquire a frame the others do not have.
 fn pane_body(ui: &mut egui::Ui, rect: egui::Rect, subject: &Subject, mode: Mode) -> egui::Rect {
     let mut pane = ui.new_child(
         egui::UiBuilder::new()
@@ -7148,18 +7148,18 @@ fn pane_header_of(rect: egui::Rect, body: egui::Rect) -> egui::Rect {
 /// Draw the canvas as **one pane holding the table's grid**: the view a reader
 /// reaches by clicking `grid` under a node in the navigator rail.
 ///
-/// The same `pane_frame` the group's three panes are drawn through, and the
-/// same [`DATA`] item the group's rows pane draws — so this is that pane given
-/// the whole canvas instead of a quarter of it, reading the same engine session
+/// The same `pane_frame` the group's two panes are drawn through, and the
+/// same [`DATA`] item the group's grid pane draws — so this is that pane given
+/// the whole canvas instead of half of it, reading the same engine session
 /// at the same layer. It is not a second grid.
 ///
-/// **What it carries that the rows pane does not** is the column header band
+/// **What it carries that the grid pane does not** is the column header band
 /// at its full density: the density follows the pane's place, and this is the
 /// place with room for the finetype leaf, the storage type, a bar distribution
 /// and the statistics. The density is written on the document before this is
 /// called, because the item cannot see where it is drawing.
 ///
-/// **And what it now shares with the rows pane** is the `N of M columns` note
+/// **And what it now shares with the grid pane** is the `N of M columns` note
 /// at the trailing end of its own header band, through the same
 /// [`band_note`]. The premise for leaving it out was that a grid with the
 /// whole canvas usually fits the table; the full density's 128-point floor
@@ -7204,8 +7204,8 @@ fn draw_canvas_grid_pane(
     );
     let header = pane_header_of(rect, body);
     // …and what the grid could not fit, at the trailing end of its own band.
-    // Read off the cells the table drew this frame, exactly as the rows pane
-    // reads it.
+    // Read off the cells the table drew this frame, exactly as the group's
+    // grid pane reads it.
     let rows_note = charts
         .doc
         .grid_drawn

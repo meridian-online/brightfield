@@ -620,7 +620,7 @@ pub struct ChartDoc {
     /// canvas each frame *before* the pane draws, because it is a fact about
     /// the layout the frame chose rather than about the document.
     pub pane_views: Option<PaneViews>,
-    /// **What the rows pane's table laid out**, as of the last frame it drew —
+    /// **What the grid pane's table laid out**, as of the last frame it drew —
     /// see [`crate::data_grid::TableDrawn`].
     ///
     /// Written by the grid pane, read by the canvas group that draws the
@@ -651,7 +651,7 @@ pub struct ChartDoc {
     /// The density follows where the pane is rather than what is in it, and
     /// the pane cannot see where it is: the item is handed the document and
     /// the workbench's per-draw context, and neither says whether this draw is
-    /// the rows pane under the hero or the grid as the canvas's whole view. So
+    /// the grid pane beneath the hero or the grid as the canvas's whole view. So
     /// the canvas writes it here before it draws, the way it writes
     /// [`Self::pane_views`] and [`Self::wheel_taken`], and the item reads it
     /// back.
@@ -1094,14 +1094,16 @@ impl ChartDoc {
     /// column's alone. Both are written before the re-present, and either being
     /// news is what makes one happen.
     ///
-    /// **And the hero's room is the map pane's, not the group's.** The page
-    /// spans a pane group whose panes are no longer the same height: the map
-    /// pane gives the foot of its column to the rows pane, and
-    /// [`PaneViews::first`] is that pane's content rect while
-    /// [`PaneViews::second`] is the full-height column beside it. The offered
-    /// box is the group's, so the difference between the two views is exactly
-    /// what the rows took, and it comes off the hero's room and off nothing
-    /// else — `the_hero_is_composed_whole_inside_the_map_pane`.
+    /// **And the hero's room is [`PaneViews::first`]'s, not `size`'s, when the
+    /// two views differ in height.** The group as it stands draws both panes
+    /// at the canvas's full height — [`crate::window::canvas_pane_rects`]
+    /// puts them side by side, never one under the other — so this
+    /// subtraction is zero today and `hero_room` is `room`. It stays rather
+    /// than being deleted with the arrangement that needed it: a view left
+    /// shorter than its sibling for some other reason should still leave the
+    /// hero its own pane's height rather than the taller one's, and
+    /// `the_hero_is_composed_whole_inside_the_map_pane` is what would catch a
+    /// regression back to one pane borrowing the other's room.
     pub fn reflow_to(&mut self, size: egui::Vec2) -> bool {
         let room = size.y.floor().max(MIN_CHART_EXTENT);
         let hero_room = self

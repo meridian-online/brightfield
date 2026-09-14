@@ -359,7 +359,7 @@ fn reopen_the_ledger(app: &mut MeridianApp, ctx: &egui::Context, raw: &egui::Raw
     }
 }
 
-/// Turn the wheel over the column pane until the scroll stops moving, then
+/// Turn the wheel over the grid pane until the scroll stops moving, then
 /// settle — `tests/canvas_pane_group.rs`'s `scroll_the_column` unchanged in
 /// shape.
 fn scroll_the_column(
@@ -480,7 +480,7 @@ fn tile_move_case(scrolled: bool) {
     let b = tile_point(&app, tile, 0.55);
     assert!(
         columns.contains(a) && columns.contains(b),
-        "fixture check: tile {tile}'s sweep {a:?}..{b:?} is outside the column pane \
+        "fixture check: tile {tile}'s sweep {a:?}..{b:?} is outside the grid pane \
          {columns:?} (scrolled={scrolled})"
     );
     sweep(&mut app, &ctx, &raw, a, b);
@@ -498,7 +498,7 @@ fn tile_move_case(scrolled: bool) {
     let to = press + delta;
     assert!(
         columns.contains(press) && columns.contains(to),
-        "fixture check: the move {press:?} -> {to:?} must stay inside the column pane \
+        "fixture check: the move {press:?} -> {to:?} must stay inside the grid pane \
          {columns:?} (scrolled={scrolled})"
     );
     drag_move(&mut app, &ctx, &raw, rect, delta);
