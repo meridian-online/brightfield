@@ -553,19 +553,25 @@ pub struct Dashboard {
 
 impl Dashboard {
     /// Walk `columns` and choose a tile for each, over the file at `path` —
-    /// except a coordinate pair, which this module's private
-    /// `coordinate_pair` finds and this draws as one joint
-    /// [`chart_kinds::POINT_MAP`] tile instead of two.
+    /// and, where this module's private `coordinate_pair` finds a pair, one
+    /// joint [`chart_kinds::POINT_MAP`] tile **besides** the two its own
+    /// columns earn, not instead of them.
     ///
     /// The walk is in the table's own column order, so the dashboard reads in
-    /// the order the file does — a coordinate pair's joint tile takes the
-    /// position of whichever of the two columns the table declares first.
+    /// the order the file does. The joint tile takes the position of
+    /// whichever of the two coordinate columns the table declares first and
+    /// stands immediately ahead of that column's own tile, so a reader going
+    /// down the list meets the map where the file first mentions a
+    /// coordinate and meets each coordinate's own distribution in file order
+    /// after it.
+    ///
     /// Every column ends in exactly one of the two lists — [`Self::tiles`] or
-    /// [`Self::omitted`] — which is what
-    /// `every_column_is_either_a_tile_or_an_omission` holds for a table with
-    /// no pair; a table with one accounts for both its columns in a single
-    /// entry of [`Self::tiles`] instead, which
-    /// `a_coordinate_pair_draws_one_tile_for_two_columns` holds.
+    /// [`Self::omitted`] — whether or not the table has a pair, which is what
+    /// `every_column_is_either_a_tile_or_an_omission` and
+    /// `a_coordinate_pair_keeps_both_columns_own_tiles_beside_the_joint_map`
+    /// hold; a pair adds its joint tile to [`Self::tiles`] on top of that
+    /// accounting, so a table with one has one more tile than columns that
+    /// earned a picture.
     #[must_use]
     pub fn of(path: &Path, columns: &[ColumnProfile]) -> Self {
         let mut tiles = Vec::new();
@@ -573,15 +579,12 @@ impl Dashboard {
         let taken: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
         let pair = coordinate_pair(columns);
         for (i, column) in columns.iter().enumerate() {
+            // The joint tile, ahead of the first coordinate column's own —
+            // and the walk falls through, so both coordinates reach
+            // `tile_for` and keep the histogram every other column gets.
             if let Some((lon_i, lat_i, rule)) = pair {
-                let anchor = lon_i.min(lat_i);
-                let other = lon_i.max(lat_i);
-                if i == other {
-                    continue;
-                }
-                if i == anchor {
+                if i == lon_i.min(lat_i) {
                     tiles.push(point_map_tile_for(&columns[lon_i], &columns[lat_i], rule));
-                    continue;
                 }
             }
             match tile_for(column, &taken) {
@@ -1425,7 +1428,8 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // AC2 — a coordinate pair draws one point-map tile, not two histograms
+    // A coordinate pair draws one joint point-map tile, and both of its
+    // columns keep the histogram every other column gets
     // -----------------------------------------------------------------
 
     /// A profiled column carrying a measured `min`/`max`, for
@@ -1439,12 +1443,23 @@ mod tests {
         }
     }
 
-    /// **The card's own scenario**: `longitude` and `latitude` beside an
-    /// ordinary measure, none of them carrying a semantic label — a `cargo
-    /// test` binary carries no FineType bundle (see [`role_of`]'s callers),
-    /// so the pair is found by column name, the tier the label defers to.
+    /// **The housing scenario in three columns**: `longitude` and `latitude`
+    /// beside an ordinary measure, none of them carrying a semantic label — a
+    /// `cargo test` binary carries no FineType bundle (see [`role_of`]'s
+    /// callers), so the pair is found by column name, the tier the label
+    /// defers to.
+    ///
+    /// The pair earns its joint map **and** each of its two columns keeps the
+    /// histogram every other column gets, so three columns draw four tiles:
+    /// the map at the position of the first coordinate the file names, then
+    /// `longitude`, `latitude` and `housing_median_age` in the file's own
+    /// order. The list is read back by column and by kind, and each
+    /// coordinate's histogram is then looked for by name as well — the state
+    /// this replaced, where the pair drew the map alone, differs from this one
+    /// by two entries of a list, and a test that only counted tiles or only
+    /// checked the map would pass over it.
     #[test]
-    fn a_coordinate_pair_draws_one_tile_for_two_columns() {
+    fn a_coordinate_pair_keeps_both_columns_own_tiles_beside_the_joint_map() {
         let dash = of(&[
             column("longitude", "DOUBLE", 900),
             column("latitude", "DOUBLE", 900),
@@ -1459,18 +1474,35 @@ mod tests {
             kinds,
             vec![
                 ("longitude", chart_kinds::POINT_MAP),
+                ("longitude", chart_kinds::BINNED_HISTOGRAM),
+                ("latitude", chart_kinds::BINNED_HISTOGRAM),
                 ("housing_median_age", chart_kinds::BINNED_HISTOGRAM),
             ],
             "{kinds:?}"
         );
-        assert_eq!(dash.tiles()[0].paired_column(), Some("latitude"));
-        assert!(
-            !dash
-                .tiles()
+        for coordinate in ["longitude", "latitude"] {
+            assert!(
+                dash.tiles()
+                    .iter()
+                    .any(|t| t.kind() == chart_kinds::BINNED_HISTOGRAM && t.column() == coordinate),
+                "{coordinate} reached no histogram tile of its own, so the \
+                 transposed grid has no row for it: {kinds:?}"
+            );
+        }
+        assert_eq!(
+            dash.tiles()
                 .iter()
-                .any(|t| t.kind() == chart_kinds::BINNED_HISTOGRAM
-                    && (t.column() == "longitude" || t.column() == "latitude")),
-            "a coordinate column reached a histogram tile: {kinds:?}"
+                .filter(|t| t.kind() == chart_kinds::POINT_MAP)
+                .count(),
+            1,
+            "the pair drew more than one map: {kinds:?}"
+        );
+        assert_eq!(dash.tiles()[0].paired_column(), Some("latitude"));
+        let hero = dash.hero_index().expect("four tiles stand a hero");
+        assert_eq!(
+            dash.tiles()[hero].kind(),
+            chart_kinds::POINT_MAP,
+            "the hero is tile {hero}, which is not the map: {kinds:?}"
         );
         assert!(dash.omitted().is_empty(), "{:?}", dash.omitted());
     }
@@ -1486,7 +1518,8 @@ mod tests {
             labelled("lon", "DOUBLE", 900, "geography.coordinate.longitude"),
             labelled("lat", "DOUBLE", 900, "geography.coordinate.latitude"),
         ]);
-        assert_eq!(dash.tiles().len(), 1, "{dash:?}");
+        // The joint map, then the two columns' own histograms.
+        assert_eq!(dash.tiles().len(), 3, "{dash:?}");
         match dash.tiles()[0].chosen_by() {
             ChosenBy::CoordinatePair { latitude, rule } => {
                 assert_eq!(latitude, "lat");
@@ -1500,8 +1533,9 @@ mod tests {
     }
 
     /// **The joint tile takes the position of whichever column the table
-    /// declares first** — here the latitude, so the pair's tile sits second
-    /// and `weight` keeps its own histogram after it rather than before.
+    /// declares first** — here the latitude, so the pair's tile sits second,
+    /// ahead of that column's own histogram, and `weight` keeps its own after
+    /// both coordinates rather than before them.
     #[test]
     fn a_coordinate_pairs_tile_takes_the_position_of_whichever_column_comes_first() {
         let dash = of(&[
@@ -1520,6 +1554,8 @@ mod tests {
             vec![
                 ("region", crate::ranked_bars::KIND_ID),
                 ("longitude", chart_kinds::POINT_MAP),
+                ("latitude", chart_kinds::BINNED_HISTOGRAM),
+                ("longitude", chart_kinds::BINNED_HISTOGRAM),
                 ("weight", chart_kinds::BINNED_HISTOGRAM),
             ],
             "{kinds:?}"
@@ -1547,7 +1583,8 @@ mod tests {
             ranged("y_coord", 900, 32.5, 41.9),
             ranged("x_coord", 900, -124.3, -114.3),
         ]);
-        assert_eq!(dash.tiles().len(), 1, "{dash:?}");
+        // The joint map, then the two columns' own histograms.
+        assert_eq!(dash.tiles().len(), 3, "{dash:?}");
         let tile = &dash.tiles()[0];
         assert_eq!(tile.column(), "x_coord", "x is the longitude candidate");
         assert_eq!(tile.paired_column(), Some("y_coord"));
@@ -2198,19 +2235,19 @@ mod tests {
         let filed: Vec<&str> = dash.tiles().iter().map(Tile::column).collect();
         assert_eq!(
             filed,
-            vec!["amount", "weight", "longitude"],
+            vec!["amount", "weight", "longitude", "latitude", "longitude"],
             "the tile list stays in the file's own order, the pair's joint tile \
-             where its first column sits"
+             where its first column sits and each coordinate's own after it"
         );
         assert_eq!(dash.hero_index(), Some(2));
         let drawn: Vec<&str> = dash.plot_order().iter().map(|t| t.column()).collect();
         assert_eq!(
             drawn,
-            vec!["longitude", "amount", "weight"],
+            vec!["longitude", "amount", "weight", "latitude", "longitude"],
             "the composition places the hero first"
         );
         let stacked: Vec<&str> = dash.column_tiles().iter().map(|t| t.column()).collect();
-        assert_eq!(stacked, vec!["amount", "weight"]);
+        assert_eq!(stacked, vec!["amount", "weight", "latitude", "longitude"]);
     }
 
     /// **A table with no coordinate pair still opens as a hero beside a
