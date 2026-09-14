@@ -2064,6 +2064,10 @@ impl MeridianApp {
         }
 
         let layout = DirtyTracker::new(layout);
+        // Read before the tracker is moved into the window below, and read
+        // rather than defaulted: this is the edge the reader last dragged, and
+        // a launch that opened at the even split would be the drag forgotten.
+        let canvas_split = layout.live().canvas_split;
 
         // The restored tab strip is the authority over the model's default,
         // not the other way round. `ProtocolModel` boots with its sheet shut,
@@ -2138,7 +2142,7 @@ impl MeridianApp {
             inspector_panel,
             canvas_panes: CanvasPanes::default(),
             canvas_scroll: 0.0,
-            canvas_split: EVEN_CANVAS_SPLIT,
+            canvas_split,
             grid_layout: crate::app::GridLayout::default(),
             // Reconciled from the documents on the next line, so the latch is
             // right before the first frame — a test that asks what a fresh
@@ -3580,7 +3584,7 @@ impl MeridianApp {
             let mut canvas_panes = CanvasPanes::default();
             let mut canvas_scroll = self.canvas_scroll;
             let mut grid_layout = self.grid_layout;
-            let canvas_split = self.canvas_split;
+            let mut canvas_split = self.canvas_split;
             let mut picks = RegionPicks::default();
             let (ws, charts, protocol, affordances) = (
                 self.layout.workspace_mut(),
@@ -4050,6 +4054,12 @@ impl MeridianApp {
                                 )
                             };
                             canvas_panes = drawn;
+                            // The edge between the two panes, after both of
+                            // them have drawn — see `drag_canvas_split` for
+                            // why the interaction is registered last, and why
+                            // a frame nobody dragged hands back the number it
+                            // was given.
+                            canvas_split = drag_canvas_split(ui, body, split);
                             // The throw takes effect on the next frame, and it
                             // takes the scroll with it: the two arrangements
                             // scroll different panes over different pages, so
@@ -4086,6 +4096,15 @@ impl MeridianApp {
             self.canvas_panes = canvas_panes;
             self.canvas_scroll = canvas_scroll;
             self.grid_layout = grid_layout;
+            self.canvas_split = canvas_split;
+            // …and into the arrangement the shell saves, in the same
+            // sentence. A drag that moved the edge and stopped there would be
+            // an edge back in the middle on the next launch, which is the
+            // half of "draggable" the card is actually about. Assigning the
+            // unchanged value on a quiet frame leaves the tracker clean —
+            // `DirtyTracker` compares live against saved, not against the
+            // fact of a write.
+            self.layout.live_mut().canvas_split = canvas_split;
             if let Some(next) = picks.projection {
                 self.projection = next;
             }
@@ -6511,7 +6530,92 @@ impl CanvasPanes {
 /// of, and a reader moves between them rather than glancing at one — so the
 /// opening state offers no opinion and the edge between them is draggable
 /// from there.
-pub const EVEN_CANVAS_SPLIT: f32 = 0.5;
+///
+/// The number itself is `brightfield_workbench`'s, the way [`CANVAS_PANE_GAP`]
+/// is: the layout file's `canvas_split` needs it as its serde default and that
+/// crate cannot see this one. One number, named on both sides of the boundary.
+pub const EVEN_CANVAS_SPLIT: f32 = brightfield_workbench::persist::EVEN_CANVAS_SPLIT;
+
+/// **The narrowest either canvas pane is dragged to**, in logical points.
+///
+/// Stated as the pane's own chrome plus a content width rather than as a round
+/// number, so a change to the frame moves the floor with it: a pane's frame
+/// takes [`chrome::pane_content_inset`] off each side, and `SPACE_9` is what
+/// is left between them for the pane to draw in. Below this the grid pane's
+/// header band has no room for its switch and the hero has none for a chart,
+/// so the drag stops here rather than letting either pane be dragged shut —
+/// a pane a reader cannot see is a pane they cannot drag back.
+fn min_canvas_pane_width() -> f32 {
+    2.0f32.mul_add(chrome::pane_content_inset(), spacing::SPACE_9)
+}
+
+/// **The split a drag to `edge_x` writes**, as the hero's share of the room
+/// the pane gap leaves — the inverse of [`canvas_pane_rects`], clamped so
+/// neither pane goes below [`min_canvas_pane_width`].
+///
+/// `edge_x` is the **centre of the gap**, which is where the grab zone is
+/// centred and therefore where the pointer thinks the edge is; the hero's
+/// width is that less half a gap. Taking it as the hero's right edge instead
+/// would move the boundary half a point away from the pointer on the first
+/// frame of every drag.
+///
+/// The floor is itself clamped to half the room, so a canvas narrower than two
+/// floors still yields a split inside `0..1` rather than an inverted range for
+/// `clamp` to panic on.
+fn canvas_split_at(body: egui::Rect, edge_x: f32) -> f32 {
+    let room = (body.width() - CANVAS_PANE_GAP).max(2.0);
+    let floor = min_canvas_pane_width().min(room / 2.0);
+    let hero = (edge_x - CANVAS_PANE_GAP / 2.0 - body.left()).clamp(floor, room - floor);
+    hero / room
+}
+
+/// **The drag on the edge between the two canvas panes**, run after both panes
+/// have drawn — the split to use from the next frame on.
+///
+/// Returns `split` unchanged on a frame nobody is dragging, so the caller
+/// assigns unconditionally and a quiet frame writes back the number it was
+/// given. That matters beyond tidiness: the split is in the layout file, and a
+/// value that differed from itself frame to frame would mark the layout dirty
+/// on every idle frame and rewrite the file for the rest of the session.
+///
+/// # Why the interaction is registered last
+///
+/// egui resolves overlapping interactions in favour of the widget registered
+/// later, and the grab zone is [`egui::style::Interaction::resize_grab_radius_side`]
+/// wide on each side of a one-point gap — wider than the gap, so it laps over
+/// each pane's frame. Registered before the panes it would be the pane
+/// contents that lapped over it. It does not reach either pane's *content*:
+/// the frame takes [`chrome::pane_content_inset`] off each side, which is
+/// wider than the radius, so a press that lands on a chart is a press on the
+/// chart.
+///
+/// The same grab radius `egui_tiles` uses for the splitters in the rest of the
+/// window, read off the style rather than typed, so this edge and the rail
+/// beside it are grabbed from the same distance — which is the whole of what
+/// "configurable like panes in other IDEs" asks for.
+fn drag_canvas_split(ui: &mut egui::Ui, body: egui::Rect, split: f32) -> f32 {
+    let rects = canvas_pane_rects(body, split);
+    let x = egui::lerp(rects.hero.right()..=rects.grid.left(), 0.5);
+    let grab = ui.style().interaction.resize_grab_radius_side;
+    let zone = egui::Rect::from_center_size(
+        egui::pos2(x, body.center().y),
+        egui::vec2(2.0 * grab, body.height()),
+    );
+    let response = ui.interact(zone, ui.id().with("canvas-split"), egui::Sense::drag());
+    if response.hovered() || response.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+    if !response.dragged() {
+        return split;
+    }
+    // The pointer's own position, not the accumulated delta: a delta
+    // integrated frame by frame drifts away from the cursor as soon as the
+    // clamp holds one end, and the edge then lags the pointer by however far
+    // past the floor it was pushed.
+    ui.ctx()
+        .pointer_interact_pos()
+        .map_or(split, |at| canvas_split_at(body, at.x))
+}
 
 /// The two outer rects of the canvas's pane group.
 #[derive(Clone, Copy, Debug, PartialEq)]

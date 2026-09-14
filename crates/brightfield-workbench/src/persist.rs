@@ -85,6 +85,23 @@ pub const LAYOUT_FILE: &str = "workspace-layout.json";
 /// [`PaneKey`]: crate::PaneKey
 pub const LAYOUT_VERSION: u32 = 2;
 
+/// **The hero pane's share of the canvas** in a layout file that never
+/// recorded one, and the share a fresh open draws: half of it.
+///
+/// The number lives here rather than beside the canvas that draws it because
+/// `#[serde(default = "…")]` on [`SavedLayout::canvas_split`] has to name a
+/// function this crate can see, and this crate cannot see the shell.
+/// `brightfield_shell::window::EVEN_CANVAS_SPLIT` is this constant under the
+/// name the canvas reads it by, the way `CANVAS_PANE_GAP` is
+/// [`crate::behavior::TILE_GAP`] — one number, two names, and the reasoning
+/// about why half is written where the canvas draws it.
+pub const EVEN_CANVAS_SPLIT: f32 = 0.5;
+
+/// The serde default for [`SavedLayout::canvas_split`] — see the field.
+fn even_canvas_split() -> f32 {
+    EVEN_CANVAS_SPLIT
+}
+
 /// How long the layout must sit still before it is written, in milliseconds.
 ///
 /// The same 10s window the gpui-era shell used, and the same one
@@ -225,6 +242,37 @@ pub struct SavedLayout {
     /// file.
     #[serde(default)]
     pub recents: Vec<Recent>,
+    /// **Where the reader last left the edge between the canvas's two panes**,
+    /// as the hero pane's share of the room the pane gap leaves.
+    ///
+    /// Part of the arrangement, which is what this envelope is for: the edge
+    /// is a pane boundary a person drags, and a boundary that came back at
+    /// the middle every launch would be a splitter the window forgets. It is
+    /// the window's, not the document's — the same two panes stand in it
+    /// whatever is open, and a reader who has made the grid wide to read
+    /// columns wants it wide for the next file too.
+    ///
+    /// # Why this is not a [`LAYOUT_VERSION`] bump
+    ///
+    /// The same reason [`Self::opened`] is not: every file written before this
+    /// field existed still parses as [`LoadOutcome::Restored`], so no
+    /// arrangement is discarded by the upgrade. The version's rule is to bump
+    /// when the shape changes *incompatibly*, and an added field with a
+    /// default is compatible.
+    ///
+    /// # Why the default is a function and not `#[serde(default)]`
+    ///
+    /// This is an `f32`, and serde's own default for `f32` is **zero** — a
+    /// hero pane one point wide and a grid pane taking the whole canvas, on
+    /// every layout file written before today. So the attribute names
+    /// [`even_canvas_split`] instead, and what an old file restores to is
+    /// [`EVEN_CANVAS_SPLIT`]: the split the canvas draws on a fresh open,
+    /// which is what those files were last looking at.
+    /// `a_layout_from_before_the_canvas_split_existed_opens_at_the_even_split`
+    /// strips the field and holds that; dropping the `= "even_canvas_split"`
+    /// and leaving a bare `#[serde(default)]` is what it watches redden.
+    #[serde(default = "even_canvas_split")]
+    pub canvas_split: f32,
 }
 
 /// One remembered Protocol: what the front door's Protocols section draws a
@@ -284,6 +332,7 @@ impl SavedLayout {
             workspace,
             opened: None,
             recents: Vec::new(),
+            canvas_split: EVEN_CANVAS_SPLIT,
         }
     }
 
