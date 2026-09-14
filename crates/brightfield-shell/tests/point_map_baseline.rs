@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 
 use brightfield_shell::capture::capture_png;
-use brightfield_shell::dashboard::{self, ChosenBy, Dashboard};
+use brightfield_shell::dashboard::{ChosenBy, Dashboard};
 use brightfield_shell::design::Mode;
 use brightfield_shell::window::Boot;
 use brightfield_shell::{chart_kinds, data_file};
