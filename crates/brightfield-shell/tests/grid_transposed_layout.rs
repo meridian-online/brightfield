@@ -67,10 +67,39 @@ struct Live {
     screen: egui::Rect,
 }
 
+/// **The window a transposed claim is read in** — tall enough that the rows
+/// the fixture earns clear the fold, and the window the transposed baselines
+/// are photographed in.
+///
+/// Not the window the boot asks for. That one is derived from the hero the
+/// **rows** layout draws, which is the right answer to the question a data
+/// file opens on and leaves the grid pane less content than this fixture's
+/// nine rows at `MIN_ROW_HEIGHT` stack to. A row past that fold is clipped
+/// away — correctly, and `a_transposed_row_clears_its_own_floor` is the claim
+/// about it — but a test that reads a row's numbers or sweeps a brush across
+/// its histogram down there is aiming at a box nothing drew. `Live::at` says
+/// so out loud rather than leaving it to whatever the gesture lands on.
+///
+/// 1344, matching `crates/brightfield-shell/tests/canvas_pane_group.rs`'s own
+/// `TRANSPOSED_SCREEN` so that the rows one file reads back as text are the
+/// rows the other photographs: the pane's content is the window less 164
+/// points of chrome and the nine rows need 1152.
+const TRANSPOSED_SCREEN: egui::Rect = egui::Rect {
+    min: egui::Pos2::ZERO,
+    max: egui::pos2(1440.0, 1344.0),
+};
+
 impl Live {
-    /// A window over the fixture at the size that boot asks for, settled.
+    /// A window over the fixture at [`TRANSPOSED_SCREEN`], settled.
+    ///
+    /// Every test in this file throws the grid to its columns, so the window
+    /// they are read in is the transposed layout's and not the one the boot
+    /// asks for. It was the boot's until the boot stopped sizing itself around
+    /// the tile column: at that size the fixture's seventh row sat below the
+    /// pane's foot, and the brush tests aimed at a box the painter had clipped
+    /// away.
     fn open() -> Self {
-        Self::open_at(None)
+        Self::open_at(Some(TRANSPOSED_SCREEN))
     }
 
     /// [`Live::open`] in a window of a named size — the short window the
@@ -731,7 +760,25 @@ impl Live {
     /// middle height — clear of the scale switch at its head.
     fn at(&self, plot: usize, fraction: f32) -> egui::Pos2 {
         let rect = self.app.composed_plot_rects()[plot];
-        egui::pos2(rect.left() + rect.width() * fraction, rect.center().y)
+        let point = egui::pos2(rect.left() + rect.width() * fraction, rect.center().y);
+        // A row past the pane's foot is clipped away, and a press aimed there
+        // lands on chrome: the sweep commits nothing and the reading below is
+        // about some other row, or about no row at all. Said here, at the
+        // point the gesture is aimed, because the symptom otherwise surfaces
+        // as an absent selection several assertions later.
+        let pane = self
+            .app
+            .canvas_panes()
+            .pane("grid")
+            .expect("the grid pane drew")
+            .body;
+        assert!(
+            pane.contains(point),
+            "plot {plot} was laid out at {rect:?} and this sweep presses \
+             {point:?}, outside the grid pane {pane:?} — the row is below \
+             the fold at this window and the painter clipped it away"
+        );
+        point
     }
 
     /// Sweep a brush across plot `plot`, from one fraction of its width to
