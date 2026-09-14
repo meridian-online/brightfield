@@ -25,6 +25,9 @@ const SCALE: f32 = 1.0;
 /// `tests/dashboard_baseline.rs` documents for its own fixture), plus one
 /// ordinary measure so the baseline also proves a coordinate pair does not
 /// swallow every numeric column in the file.
+///
+/// Three columns, four tiles: the pair's joint map, and then one histogram per
+/// column — the two coordinates' included.
 fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/point_map_baseline.csv")
 }
@@ -39,17 +42,21 @@ fn scratch(name: &str) -> PathBuf {
 /// over a fixture where the choice is a pair rather than four singles.
 fn assert_choices(dash: &Dashboard) {
     let tiles = dash.tiles();
+    let drawn: Vec<(&str, &str)> = tiles
+        .iter()
+        .map(|t| (t.column(), t.kind().as_str()))
+        .collect();
     assert_eq!(
-        tiles.len(),
-        2,
+        drawn,
+        vec![
+            ("longitude", chart_kinds::POINT_MAP.as_str()),
+            ("longitude", chart_kinds::BINNED_HISTOGRAM.as_str()),
+            ("latitude", chart_kinds::BINNED_HISTOGRAM.as_str()),
+            ("reading", chart_kinds::BINNED_HISTOGRAM.as_str()),
+        ],
         "the fixture has three columns and a coordinate pair among them, so \
-         this dashboard should hold one point-map tile and one histogram — it \
-         holds {}: {:?}",
-        tiles.len(),
-        tiles
-            .iter()
-            .map(dashboard::Tile::column)
-            .collect::<Vec<_>>()
+         this dashboard should hold the pair's joint map and a histogram for \
+         every column — it holds {drawn:?}"
     );
 
     let map = &tiles[0];
@@ -77,7 +84,7 @@ fn assert_choices(dash: &Dashboard) {
         other => panic!("the map tile's chosen_by moved: {other:?}"),
     }
 
-    let reading = &tiles[1];
+    let reading = &tiles[3];
     assert_eq!(reading.column(), "reading");
     assert_eq!(
         reading.kind(),
@@ -95,7 +102,7 @@ fn assert_choices(dash: &Dashboard) {
 /// **The structural claim**, on its own — so a reader of a red pixel test
 /// finds this line first and knows whether the choice or only the ink moved.
 #[test]
-fn the_point_map_and_a_histogram_are_the_two_tiles_this_table_earns() {
+fn the_joint_map_and_a_histogram_per_column_are_the_tiles_this_table_earns() {
     let path = fixture();
     let chosen = path.to_str().expect("utf-8 fixture path");
     let opened = data_file::open(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
@@ -112,9 +119,10 @@ fn the_point_map_dashboard_light_baseline() {
     assert_choices(&opened.dashboard);
     assert_eq!(
         opened.composed.plots.len(),
-        2,
-        "the walk chose 2 tiles and the composition placed {} plots, so the \
+        opened.dashboard.tiles().len(),
+        "the walk chose {} tiles and the composition placed {} plots, so the \
          image below is not a picture of those choices",
+        opened.dashboard.tiles().len(),
         opened.composed.plots.len()
     );
     drop(opened);
