@@ -1005,10 +1005,10 @@ pub struct Boot {
     /// key their row by, and the one [`MeridianApp::open_protocol_path`] reads
     /// from `path` because that is the argument it was called with.
     ///
-    /// `None` for a boot that opens on nothing, or that was built off a
+    /// `None` for a boot that opens on no document, or that was built off a
     /// shipped fixture rather than a named path — [`Boot::charts`] and
-    /// [`Boot::protocol`] set it `None`, and only a constructor that took an
-    /// id or a path fills it in: [`Boot::start`] with the start's own id,
+    /// [`Boot::protocol`] set it `None`, and a constructor that took an id
+    /// or a path fills it in: [`Boot::start`] with the start's own id,
     /// [`Boot::open_sampled`] with the string it was asked to open. **Not**
     /// set by the private constructor the picker route shares with the args
     /// route's own data-file branch — that route ([`MeridianApp::open_data_file`])
@@ -1394,11 +1394,9 @@ impl Boot {
         // place a chart document comes from a *file* rather than an embedded
         // start or a test's in-memory compose.
         boot.spec_path = Some(std::path::PathBuf::from(spec));
-        // A plain chart spec is never a row `SavedLayout::recents` carries —
-        // only a Protocol is — so this id looks up nothing today. Set for the
-        // same reason the other three branches are: the id a document was
-        // opened under is a property of the route, not of which of the four
-        // shapes `spec` turned out to be.
+        // Set for the same reason the other three branches are: the id a
+        // document was opened under is a property of the route, not of
+        // which of the four shapes `spec` turned out to be.
         boot.opened_id = Some(spec.to_string());
         Ok(boot)
     }
@@ -2194,7 +2192,7 @@ impl MeridianApp {
         // Which way the grid pane opens for this document — the same lookup
         // `open_protocol_path` makes after `adopt_boot`, moved here so a
         // launch that boots straight onto a document (the args route, or a
-        // remembered start with no spec named) restores it too, and not only
+        // remembered start with no spec named) restores it too, and not just
         // a click on the front door's own row. A boot with no id here — the
         // front door itself, a shipped fixture, a headless capture — opens on
         // the default; a document this file has no row for does the same,

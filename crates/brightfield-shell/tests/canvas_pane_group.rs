@@ -3549,9 +3549,9 @@ fn the_transposed_grid_draws_a_row_for_every_column_of_the_table() {
 /// **Each end is read inside its own [`ColumnBandDrawn::type_rects`] rect**,
 /// not anywhere in the row's cell. On this build — no FineType bundle, so
 /// `ColumnFacts::leaf` falls back to the storage type — the two strings are
-/// the same word, and a check that asks only "is this string somewhere in the
+/// the same word, and a check that asks "is this string somewhere in the
 /// cell" cannot tell a cell that drew both from one that drew the storage
-/// type at both ends, or once, with nothing at the leaf's own position. The
+/// type at both ends, or once, with no text at the leaf's own position. The
 /// leading rect and the trailing rect are what let the two questions be asked
 /// apart: is the leaf's string among the text painted at the leading edge,
 /// and separately, is the storage type's among what is painted at the
@@ -3561,12 +3561,12 @@ fn the_transposed_grid_draws_a_row_for_every_column_of_the_table() {
 ///
 /// Watched redden, two mutations. Narrowing `GridDensity::is_full` to
 /// `matches!(self, Self::Full)` — the branch that decides whether a
-/// transposed row states these two facts at all — fails at the first row's
+/// transposed row states these two facts — fails at the first row's
 /// leading edge with `type_rects` absent. Changing `draw_column_band`'s
 /// `TwoEndedRow` for this row to `leading: ""` — a row that draws its storage
 /// type and not its leaf, while `ColumnFacts` and `ColumnBandDrawn::leaf`
 /// still carry the real one — fails at the first row's leading edge too, with
-/// nothing painted there to contain it; the prior form of this test, which
+/// no paint there to contain it; the prior form of this test, which
 /// looked for each string anywhere in the whole cell, stayed green over that
 /// change on this fixture because the trailing edge's storage-type text
 /// happens to equal the string the leading check was also looking for.

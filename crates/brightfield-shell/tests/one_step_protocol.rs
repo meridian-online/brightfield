@@ -2024,7 +2024,7 @@ fn a_document_saved_transposed_reopens_transposed() {
 /// row takes — with `MeridianApp::grid_layout` read back after each.
 ///
 /// `A` is opened first so a lookup that quietly answers "whichever row is at
-/// the head of the list" is caught immediately rather than only on the
+/// the head of the list" is caught immediately rather than on the
 /// second call; `B` is opened second so the opposite bug — "whichever row is
 /// at the tail" — is caught too. Between the two, `open_protocol_path`
 /// re-remembers each row it opens, which is the ordinary product behaviour
@@ -2097,7 +2097,7 @@ fn each_remembered_document_restores_its_own_grid_layout() {
 /// `startup::boot_layout` would have read off disk. `MeridianApp::grid_layout`
 /// is read back after the window settles — the state the first frame draws
 /// from, not the field on the record, which is what would still read
-/// `Columns` if the window were never consulting it at all.
+/// `Columns` if the window were not consulting it.
 ///
 /// Watched redden, one mutation: seeding the window's `grid_layout` from
 /// `crate::app::GridLayout::default()` regardless of what the boot names —
