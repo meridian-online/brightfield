@@ -617,6 +617,23 @@ impl Dashboard {
         &self.omitted
     }
 
+    /// Test support: this dashboard, with its joint coordinate-pair tile (if
+    /// it has one) moved to the end of [`Self::tiles`].
+    ///
+    /// [`Self::of`] never produces this order on its own — the joint tile is
+    /// always pushed immediately ahead of the first coordinate column's own
+    /// tile — so a caller downstream of [`Self::tiles`] that is meant not to
+    /// care where the joint tile stands cannot be proven against [`Self::of`]'s
+    /// own output alone. A stable sort on "is the joint tile" keeps every other
+    /// tile's relative order and moves only that one, which is the one
+    /// rearrangement [`Self::of`] structurally cannot hand a caller itself.
+    #[cfg(test)]
+    pub(crate) fn with_joint_tile_last(mut self) -> Self {
+        self.tiles
+            .sort_by_key(|t| matches!(t.chosen_by(), ChosenBy::CoordinatePair { .. }));
+        self
+    }
+
     /// **Which tile takes the map pane** — the hero — as an index into
     /// [`Self::tiles`], or `None` for a dashboard of fewer than two tiles,
     /// which has no column to stand a hero beside.

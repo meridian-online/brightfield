@@ -644,9 +644,17 @@ pub fn format_statistic(v: f64) -> String {
 /// pair, a hash for any other numeric column, and nothing at all for a column
 /// the contract declares no glyph for — a VARCHAR, say, where drawing a hash
 /// would say the column is a number.
+///
+/// Off [`ColumnFacts::coordinate`], not [`ColumnFacts::paired`]: `paired` only
+/// carries a name on the joint map's own entry, so a coordinate column's own
+/// histogram row — which draws its own `because` and no pairing at all — would
+/// draw the plain-number hash if this read that field instead. `coordinate` is
+/// true on both of a pair's rows regardless of which one this entry's own tile
+/// was, which is what keeps the sign on the row however the generator ordered
+/// its tiles.
 #[must_use]
 pub fn glyph_for(facts: &ColumnFacts) -> &'static str {
-    if facts.paired.is_some() {
+    if facts.coordinate {
         GLYPH_COORDINATE
     } else if facts.moments.is_some() {
         GLYPH_NUMBER
@@ -1178,6 +1186,7 @@ mod tests {
             tile: None,
             because: String::new(),
             paired: None,
+            coordinate: false,
             rows: distinct,
             nulls: 0,
             min: Some("0".to_owned()),
@@ -1366,6 +1375,7 @@ mod tests {
             tile: None,
             because: String::new(),
             paired: None,
+            coordinate: false,
             rows: 0,
             nulls: 0,
             min: None,
