@@ -666,9 +666,9 @@ fn reopen_the_ledger(control: egui::Pos2) -> Vec<Vec<egui::Event>> {
 /// `PaneViews` reddens the first of those.
 ///
 /// The **untransposed** layout's containment is not asserted here and is not
-/// assertable by mutation: on its rows the page is composed at *hero + gutter
-/// + tile column* and clipped to the hero pane in three places in series —
-/// `child.shrink_clip_rect(clip)` here in `draw_chart_body`, the
+/// assertable by mutation: on its rows the page is composed as the hero, a
+/// gutter and the tile column, and clipped to the hero pane in three places in
+/// series — `child.shrink_clip_rect(clip)` here in `draw_chart_body`, the
 /// `shrink_clip_rect(views.first)` `chart_item` narrows the paint with, and
 /// the module frame's own content clip — each stating the same rect, so
 /// removing any one of them leaves the tile column exactly as invisible as
