@@ -3185,3 +3185,475 @@ fn the_band_scrolls_with_its_columns_and_not_with_its_rows() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The edge between the panes, dragged and remembered
+// ---------------------------------------------------------------------------
+
+/// A scratch directory that removes itself, so a failing run cannot poison the
+/// next one with a layout file it left behind.
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!(
+            "brightfield-canvas-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        Self(dir)
+    }
+
+    fn file(&self) -> std::path::PathBuf {
+        self.0.join(brightfield_workbench::persist::LAYOUT_FILE)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A window over [`fixture`], laid out in `screen` and settled, over `layout`.
+///
+/// [`settled`]'s twin for the persistence claims: the same three frames, over
+/// an arrangement the caller supplies rather than the built-in default, which
+/// is what makes "and it came back" askable.
+fn settled_over(
+    screen: egui::Rect,
+    layout: brightfield_workbench::persist::SavedLayout,
+) -> (MeridianApp, egui::Context, egui::RawInput) {
+    let path = fixture();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let mut app = MeridianApp::headless_with_layout(boot, layout, Mode::Light);
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(screen),
+        ..Default::default()
+    };
+    for _ in 0..3 {
+        let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
+    }
+    (app, ctx, raw)
+}
+
+/// Where the frame last drew the edge between the two panes — the middle of
+/// the pane gap, which is where the grab zone is centred.
+///
+/// Read off the drawn rects rather than computed from the split, so a test
+/// aiming at it aims at the pixels a reader would.
+fn drawn_edge(app: &MeridianApp) -> f32 {
+    let group = app.canvas_panes();
+    let hero = group.pane("map").expect("the hero pane drew");
+    let grid = group.pane("grid").expect("the grid pane drew");
+    (hero.rect.right() + grid.rect.left()) / 2.0
+}
+
+/// The width the frame last drew the hero pane at.
+fn hero_width(app: &MeridianApp) -> f32 {
+    app.canvas_panes()
+        .pane("map")
+        .expect("the hero pane drew")
+        .rect
+        .width()
+}
+
+/// How far `the_dragged_pane_edge_comes_back_on_the_next_open` moves the edge,
+/// in logical points — leftwards, so the grid pane gets wider.
+///
+/// Big enough that the hero pane could not have landed here by rounding, and
+/// small enough that it stays well clear of `min_canvas_pane_width`, so what
+/// is asserted is the drag rather than the clamp. The clamp is
+/// `neither_pane_can_be_dragged_shut`'s.
+const DRAG: f32 = 180.0;
+
+/// Press on the edge, drag it to `to`, release, and settle.
+///
+/// Five frames rather than one, and each of them is load-bearing: egui decides
+/// a press has become a *drag* from the distance travelled since the button
+/// went down, so the press and the move cannot share a frame; and the split a
+/// drag writes is read by `canvas_pane_rects` on the frame **after** the one
+/// that wrote it, so the caller needs a frame drawn at the new split before it
+/// reads the panes back.
+fn drag_the_edge(app: &mut MeridianApp, ctx: &egui::Context, raw: &egui::RawInput, to: f32) {
+    let from = drawn_edge(app);
+    let y = app
+        .canvas_panes()
+        .pane("map")
+        .expect("the hero pane drew")
+        .rect
+        .center()
+        .y;
+    let (start, end) = (egui::pos2(from, y), egui::pos2(to, y));
+    let mut frame = |events: Vec<egui::Event>| {
+        let mut input = raw.clone();
+        input.events = events;
+        let _ = ctx.run_ui(input, |ui| app.draw(ui));
+    };
+    frame(vec![egui::Event::PointerMoved(start)]);
+    frame(vec![button(start, egui::PointerButton::Primary, true)]);
+    frame(vec![egui::Event::PointerMoved(end)]);
+    frame(vec![button(end, egui::PointerButton::Primary, false)]);
+    frame(Vec::new());
+}
+
+/// **The edge between the hero pane and the grid pane drags, and where it was
+/// dragged to is where the next open draws it.**
+///
+/// The whole round trip, through the machinery the live host uses and no
+/// shortcut around it: a real frame's press on the edge, the shell's own
+/// `flush_layout`, `persist::load` off the file that landed on disk, and a
+/// second window built on what came back. What is read at each end is
+/// `canvas_panes` — the rect the frame **drew** the hero pane at — rather than
+/// `canvas_split`, so a field that was set but did not reach the arithmetic
+/// fails here.
+///
+/// Three claims, three assertions, because a failure should say which:
+///
+/// - the drag moved the edge, and moved it as far as the pointer went (the
+///   hero pane lost exactly [`DRAG`] points, so the edge tracks the cursor
+///   rather than merely responding to it);
+/// - the file that was written is a file that loads — `LoadOutcome::Restored`,
+///   not the `Corrupt` an incompatible shape produces;
+/// - the second window drew the hero at the dragged width, and not at the
+///   even one it would have opened at.
+///
+/// The last comparison is against the width the **first window opened at**,
+/// measured, rather than against a number typed here: comparing a restored
+/// rect to a constant would pass on a build where both were wrong together.
+#[test]
+fn the_dragged_pane_edge_comes_back_on_the_next_open() {
+    let scratch = Scratch::new("split");
+    let path = scratch.file();
+
+    let (mut app, ctx, raw) = settled_over(SCREEN, brightfield_shell::startup::default_layout());
+    let even = hero_width(&app);
+    let edge = drawn_edge(&app);
+    drag_the_edge(&mut app, &ctx, &raw, edge - DRAG);
+    let dragged = hero_width(&app);
+    assert!(
+        (even - dragged - DRAG).abs() <= 1.0,
+        "the hero pane was {even} points wide and is {dragged} after the edge \
+         was dragged {DRAG} points left — the edge did not follow the pointer"
+    );
+
+    let written = app
+        .flush_layout(&path)
+        .expect("the dragged split left the layout dirty, so a flush writes it");
+    assert!(
+        written.is_ok(),
+        "the layout file did not write: {written:?}"
+    );
+
+    // `default_layout` rather than a panicking closure: `from_json` builds the
+    // fallback on each load that parses, because it is the yardstick the
+    // completeness check measures the restored tree against. A load that
+    // really did fail falls back to it and is caught by the outcome below and
+    // by the last assertion, which is the one that would see the even split.
+    let (restored, outcome) =
+        brightfield_workbench::persist::load(&path, brightfield_shell::startup::default_layout);
+    assert_eq!(
+        outcome,
+        brightfield_workbench::persist::LoadOutcome::Restored,
+        "the layout file written with a dragged split came back as {outcome:?}"
+    );
+
+    let (reopened, _, _) = settled_over(SCREEN, restored);
+    let after = hero_width(&reopened);
+    assert!(
+        (after - dragged).abs() <= 1.0,
+        "the reopened window drew the hero pane {after} points wide where the \
+         drag left it at {dragged} — the edge did not come back where it was \
+         put"
+    );
+    assert!(
+        (after - even).abs() > 1.0,
+        "the reopened window drew the hero pane {after} points wide, which is \
+         the {even} a fresh open draws — the restored split is the default, so \
+         this test would pass over a layout file that recorded nothing"
+    );
+}
+
+/// **Neither pane can be dragged shut.**
+///
+/// A pane dragged to nothing is a pane a reader cannot see, and therefore a
+/// pane whose edge they cannot find to drag back — the one way this control
+/// can leave the window in a state no gesture recovers from. The floor is read
+/// off the frame rather than against `min_canvas_pane_width`, which is
+/// private: what is asserted is that a drag far past either end of the canvas
+/// leaves **both** panes wide enough to draw a header band in, and that the
+/// two ends do not agree, so a clamp that pinned the split to one number
+/// rather than to a range fails the second half.
+#[test]
+fn neither_pane_can_be_dragged_shut() {
+    let canvas_of = |app: &MeridianApp| {
+        app.region_rect(arrangement::CANVAS)
+            .expect("the canvas drew")
+    };
+    let mut widths = Vec::new();
+    for past in [-2000.0_f32, 2000.0] {
+        let (mut app, ctx, raw) =
+            settled_over(SCREEN, brightfield_shell::startup::default_layout());
+        let edge = drawn_edge(&app);
+        drag_the_edge(&mut app, &ctx, &raw, edge + past);
+        let group = app.canvas_panes();
+        let hero = group.pane("map").expect("the hero pane drew");
+        let grid = group.pane("grid").expect("the grid pane drew");
+        let floor = 2.0 * chrome::pane_content_inset();
+        for (name, pane) in [("hero", hero), ("grid", grid)] {
+            assert!(
+                pane.rect.width() > floor,
+                "dragging the edge {past} points left the {name} pane \
+                 {} points wide, which is inside its own frame's {floor} \
+                 points of inset — the pane has been dragged shut",
+                pane.rect.width()
+            );
+        }
+        assert!(
+            hero.rect.right() < canvas_of(&app).right()
+                && hero.rect.left() >= canvas_of(&app).left(),
+            "dragging the edge {past} points put the hero pane at {:?}, outside \
+             the canvas at {:?}",
+            hero.rect,
+            canvas_of(&app)
+        );
+        widths.push(hero.rect.width());
+    }
+    assert!(
+        widths[1] - widths[0] > 100.0,
+        "dragging the edge hard left left the hero pane {} points wide and \
+         dragging it hard right left it {} — the two ends of the drag land in \
+         the same place, so the clamp is pinning the split rather than \
+         bounding it",
+        widths[0],
+        widths[1]
+    );
+}
+
+/// **The window `every_transposed_row_states_its_leaf_and_its_storage_type`
+/// and the transposed baselines are read in** — [`SCREEN`] made taller until
+/// all [`STACKED`] rows clear the fold.
+///
+/// The rows do not compress past `MIN_ROW_HEIGHT`, so at [`SCREEN`] the last
+/// of the fixture's seven stands below the pane's foot and the painter clips
+/// it away — correctly, and it is what the scroll exists for. A test that read
+/// the labels there would be reading six rows and calling it every row, and
+/// the baseline beside it would photograph six. The height is stated here so
+/// both read the same window.
+const TRANSPOSED_SCREEN: egui::Rect = egui::Rect {
+    min: egui::Pos2::ZERO,
+    max: egui::pos2(1440.0, 1088.0),
+};
+
+/// [`settled_window`] at `screen` with the grid transposed, by a click on the
+/// switch the last frame drew.
+fn settled_window_transposed(screen: egui::Rect) -> (MeridianApp, egui::Context, egui::RawInput) {
+    let path = fixture();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let mut app = MeridianApp::headless(boot, Mode::Light);
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(screen),
+        ..Default::default()
+    };
+    for _ in 0..3 {
+        let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
+    }
+    transpose_the_grid(&mut app, &ctx, &raw);
+    (app, ctx, raw)
+}
+
+/// **Every transposed row states its column's finetype leaf and its storage
+/// type, in the ink the reader can see.**
+///
+/// Read as **text off the frame's galleys**, inside each row's own cell, and
+/// each string is checked to be non-empty before it is looked for: the failure
+/// this exists for is the row density quietly dropping down to the compact
+/// branch, which draws no leaf and no storage row, and leaves
+/// `ColumnBandDrawn` reporting a cell that is there. A presence-only check —
+/// "the band drew seven cells" — is green over that, and was: the first half
+/// of this work shipped one.
+///
+/// The pair is looked for **inside the row's own cell** rather than anywhere
+/// in the pane, so a leaf drawn once for the whole grid, or drawn against the
+/// wrong row, is not read as seven correct ones. `drawn_cells_in` respects
+/// clip rects, so what is counted is what reaches the reader rather than what
+/// the painter was handed.
+///
+/// Watched redden, one mutation: narrowing `GridDensity::is_full` to
+/// `matches!(self, Self::Full)` — which is the branch that decides whether a
+/// transposed row states these two facts — fails at the first row with
+/// the leaf missing.
+#[test]
+fn every_transposed_row_states_its_leaf_and_its_storage_type() {
+    let (mut app, ctx, raw) = settled_window_transposed(TRANSPOSED_SCREEN);
+    let rows = app.chart_doc().transposed_rows.clone();
+    let facts: Vec<(String, String)> = app
+        .chart_doc()
+        .tile_columns()
+        .iter()
+        .map(|c| (c.leaf.clone(), c.storage.clone()))
+        .collect();
+    assert_eq!(
+        rows.len(),
+        STACKED,
+        "the transposed grid drew {} rows where the fixture earns {STACKED} \
+         tiles past the hero",
+        rows.len()
+    );
+    for row in &rows {
+        let (leaf, storage) = facts
+            .get(row.column)
+            .unwrap_or_else(|| panic!("row {} names a tile the document has", row.column));
+        assert!(
+            !leaf.is_empty() && !storage.is_empty(),
+            "the fixture's column {} has leaf {leaf:?} and storage {storage:?} \
+             — one of them is empty, so looking for it below would pass over a \
+             row that drew neither",
+            row.name
+        );
+        assert!(
+            row.clip.contains_rect(row.cell),
+            "the row for {} was clipped to {:?} from a cell of {:?} — it is \
+             below the fold at {TRANSPOSED_SCREEN:?}, so this window no longer \
+             shows every row and the loop is reading a subset",
+            row.name,
+            row.clip,
+            row.cell
+        );
+        let drawn: Vec<String> = drawn_cells_in(&mut app, &ctx, &raw, row.cell)
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect();
+        for want in [leaf, storage] {
+            assert!(
+                drawn.iter().any(|t| t.contains(want.as_str())),
+                "the transposed row for {} drew {drawn:?} inside its own cell \
+                 {:?}, and {want:?} is not among them — the row states its \
+                 name and its counts and not what kind of column it is",
+                row.name,
+                row.cell
+            );
+        }
+    }
+}
+
+/// **Untransposed, a press and a drag in the grid pane are over no page.**
+///
+/// The untransposed canvas composes a page wider than the hero pane: the
+/// spec's tile column stands past the gutter, and the clip is the hero pane,
+/// so none of it reaches the screen. Those tiles are nevertheless declared at
+/// window positions that fall inside the **grid pane** beside it, where the
+/// reader is looking at a table. Without a rule that can answer *over no
+/// page*, a press there is answered at the page's own origin and lands on
+/// whichever invisible tile the page has at that depth: the inspector changes
+/// what it is showing, and a sweep commits a crossfilter, for a gesture whose
+/// whole visible content was a drag across a table.
+///
+/// `PaneViews::sole` is that rule — one view, the hero pane's content rect,
+/// and a pointer outside it is over no page. It was written with the pane
+/// group and had no test: setting the record to `None` left 131 tests across
+/// eight targets green.
+///
+/// Read back through the **document** — the clause the engine is holding and
+/// the column the inspector is showing — rather than off the gesture, because
+/// those two are the damage. The hero is clicked first so "the selection did
+/// not change" is an assertion rather than a tautology: with nothing selected
+/// to begin with, a probe that selected nothing and a document with nothing to
+/// select read the same.
+///
+/// The probe is checked to be inside the grid pane's content rect **and**
+/// inside the tile the page declares there, before it is used. A layout change
+/// that moves one out from under the other reddens this rather than quietly
+/// making it a press on nothing that could never have been a press on
+/// something.
+///
+/// Watched redden, one mutation: `charts.doc.pane_views =
+/// Some(PaneViews::sole(map_body))` in `draw_canvas_pane_group` replaced by
+/// `None`.
+#[test]
+fn a_press_in_the_grid_pane_lands_on_no_tile_the_hero_pane_is_hiding() {
+    let (mut app, ctx, raw) = settled_window();
+    let frame = |app: &mut MeridianApp, events: Vec<egui::Event>| {
+        let mut input = raw.clone();
+        input.events = events;
+        let _ = ctx.run_ui(input, |ui| app.draw(ui));
+    };
+    let click = |app: &mut MeridianApp, at: egui::Pos2| {
+        frame(
+            app,
+            vec![
+                egui::Event::PointerMoved(at),
+                button(at, egui::PointerButton::Primary, true),
+            ],
+        );
+        frame(app, vec![button(at, egui::PointerButton::Primary, false)]);
+        for _ in 0..2 {
+            frame(app, Vec::new());
+        }
+    };
+
+    let grid = app
+        .canvas_panes()
+        .pane("grid")
+        .expect("the grid pane drew")
+        .body;
+    let hero_tile = app.composed_plot_rects()[0];
+    let hidden = app.composed_plot_rects()[1];
+    assert!(
+        grid.contains_rect(hidden.shrink(1.0)),
+        "the page's second tile is declared at {hidden:?}, which is not inside \
+         the grid pane's content rect {grid:?} — the probe below is not aimed \
+         at the case this test is about"
+    );
+
+    click(&mut app, hero_tile.center());
+    let selected = selected_column(&app);
+    assert!(
+        selected.is_some(),
+        "the click on the hero selected no column, so the assertion below \
+         cannot tell a press that changed nothing from a document with nothing \
+         to change"
+    );
+
+    // A press and a drag wholly inside the hidden tile, which is wholly inside
+    // the grid pane: the sweep a reader makes across a table.
+    let from = egui::pos2(hidden.left() + hidden.width() * 0.3, hidden.center().y);
+    let to = egui::pos2(hidden.left() + hidden.width() * 0.7, hidden.center().y);
+    frame(
+        &mut app,
+        vec![
+            egui::Event::PointerMoved(from),
+            button(from, egui::PointerButton::Primary, true),
+        ],
+    );
+    frame(&mut app, vec![egui::Event::PointerMoved(to)]);
+    frame(
+        &mut app,
+        vec![button(to, egui::PointerButton::Primary, false)],
+    );
+    for _ in 0..2 {
+        frame(&mut app, Vec::new());
+    }
+
+    let clause = app.chart_doc().selection_sql();
+    assert_eq!(
+        clause, None,
+        "a sweep from {from:?} to {to:?} inside the grid pane committed \
+         {clause:?} — the page's tile column is composed under there and the \
+         hero pane's clip is all that hides it, so the reader has filtered the \
+         file by dragging across a table"
+    );
+    assert_eq!(
+        selected_column(&app),
+        selected,
+        "the same sweep changed the column the inspector is showing — it \
+         landed on the tile the clip hides"
+    );
+}

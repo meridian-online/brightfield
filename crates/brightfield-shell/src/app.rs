@@ -451,43 +451,16 @@ pub struct HoverReadout {
 }
 
 /// **Which way the grid pane draws the file** — its own rows, or the tiled
-/// columns as rows.
+/// columns as rows. See [`LayoutSwitchDrawn`] for the control that moves
+/// between them.
 ///
-/// A file opens on [`Self::Rows`]: the table is what a reader came to the
-/// grid for, and the histograms are one throw of the switch away. See
-/// [`LayoutSwitchDrawn`] for the control that moves between them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum GridLayout {
-    /// The file's rows, listed in the grid, under the column header band at
-    /// the density the pane's place calls for.
-    #[default]
-    Rows,
-    /// One row per tiled column: the column's own histogram tile, re-laid at
-    /// a row's height, with the numbers the full band states beside it.
-    Columns,
-}
-
-impl GridLayout {
-    /// The word the switch offers this state as, and the word a test reads
-    /// back off the band. One noun, in the reader's own terms: what the pane
-    /// would be a list of.
-    #[must_use]
-    pub const fn word(self) -> &'static str {
-        match self {
-            Self::Rows => "rows",
-            Self::Columns => "columns",
-        }
-    }
-
-    /// The other state — what a click on the control moves to.
-    #[must_use]
-    pub const fn other(self) -> Self {
-        match self {
-            Self::Rows => Self::Columns,
-            Self::Columns => Self::Rows,
-        }
-    }
-}
+/// Declared in `brightfield_workbench::persist` and named here, the way
+/// [`crate::window::EVEN_CANVAS_SPLIT`] is: the state is recorded per document
+/// in that crate's [`Recent`](brightfield_workbench::Recent), and a record
+/// cannot be typed by a crate that does not exist from where it is written.
+/// One enum, one serialised spelling, and the canvas goes on reading it under
+/// the name it always used.
+pub use brightfield_workbench::persist::GridLayout;
 
 /// **The grid pane's layout switch, as the last frame drew it.**
 ///

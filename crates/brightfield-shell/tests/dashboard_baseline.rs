@@ -65,7 +65,7 @@ use std::path::PathBuf;
 use brightfield_shell::capture::capture_png;
 use brightfield_shell::dashboard::{self, ChosenBy, Dashboard, Omission};
 use brightfield_shell::design::Mode;
-use brightfield_shell::window::Boot;
+use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_shell::{chart_kinds, data_file, ranked_bars};
 use brightfield_workbench::registry::ChartKindId;
 
@@ -1641,4 +1641,197 @@ fn capture_grid_view(mode: Mode, at: egui::Pos2, name: &str) -> image::RgbaImage
     image::open(&out)
         .unwrap_or_else(|e| panic!("read capture {}: {e}", out.display()))
         .to_rgba8()
+}
+
+// ---------------------------------------------------------------------------
+// The grid transposed
+// ---------------------------------------------------------------------------
+
+/// **The window the transposed pair is photographed in** — wide as the
+/// untransposed baselines and tall enough for the seven rows [`housing`] has.
+///
+/// A transposed row does not compress past `MIN_ROW_HEIGHT`, so in a shorter
+/// window the last row stands below the pane's foot and the painter clips it
+/// away. That is correct behaviour and the scroll exists for it, but a
+/// baseline photographed there would be a picture of six rows offered as a
+/// picture of the layout — and the row that goes missing is the one whose
+/// labels a regression would take out first, since it is the one nothing else
+/// is drawn beside. `canvas_pane_group.rs`'s `TRANSPOSED_SCREEN` is the same
+/// window, so the labels the pair photographs are the labels that file reads
+/// back as text.
+const TRANSPOSED_WINDOW: (f32, f32) = (1440.0, 1088.0);
+
+/// How many rows the transposed grid draws for [`housing`]: one per tile past
+/// the hero.
+const TRANSPOSED_ROWS: usize = HOUSING_PLOTS.len() - 1;
+
+/// **The script that throws the grid pane's layout switch**, aimed at the rect
+/// a headless frame of the same window drew the control at — and asserted, in
+/// that headless window, to have landed.
+///
+/// The aim cannot be typed: the switch stands at the trailing end of the grid
+/// pane's header band, which moves with the pane, which moves with the split.
+/// So it is read off a frame. The headless window lays out identically to the
+/// captured one — everything but the raster is a pure function of the loaded
+/// documents, which is the premise `tests/canvas_pane_group.rs` is built on —
+/// so a rect read there is a rect the capture drew the control at.
+///
+/// The guard runs **here**, before the caller reaches `image_snapshot`, for
+/// the reason this file's header gives: under `UPDATE_SNAPSHOTS=1` the
+/// snapshot writes whatever it is handed, so a click that missed would commit
+/// a golden of the untransposed grid under a transposed name and each later
+/// run would agree with it. Three things are checked — the switch is in its
+/// columns state, the pane drew one row per tile past the hero, and every one
+/// of those rows is inside the clip rather than below the fold.
+fn transposed_script(mode: Mode) -> Vec<Vec<egui::Event>> {
+    let path = housing();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let mut app = MeridianApp::headless(boot, mode);
+    let ctx = egui::Context::default();
+    let screen = egui::Rect::from_min_size(
+        egui::Pos2::ZERO,
+        egui::vec2(TRANSPOSED_WINDOW.0, TRANSPOSED_WINDOW.1),
+    );
+    let frame = |app: &mut MeridianApp, events: Vec<egui::Event>| {
+        let raw = egui::RawInput {
+            screen_rect: Some(screen),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(raw, |ui| app.draw(ui));
+    };
+    for _ in 0..3 {
+        frame(&mut app, Vec::new());
+    }
+    let at = app
+        .chart_doc()
+        .grid_layout_switch
+        .as_ref()
+        .expect("the grid pane's header band drew a layout switch")
+        .states
+        .iter()
+        .find(|(state, _)| *state == brightfield_shell::app::GridLayout::Columns)
+        .expect("the switch offers a columns state")
+        .1
+        .center();
+    let press = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    };
+    let script = vec![
+        vec![egui::Event::PointerMoved(at), press(true)],
+        vec![press(false)],
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    ];
+    for events in script.clone() {
+        frame(&mut app, events);
+    }
+
+    assert_eq!(
+        app.grid_layout(),
+        brightfield_shell::app::GridLayout::Columns,
+        "the scripted click at {at:?} did not throw the layout switch, so the \
+         capture below is a photograph of the untransposed grid"
+    );
+    let rows = &app.chart_doc().transposed_rows;
+    assert_eq!(
+        rows.len(),
+        TRANSPOSED_ROWS,
+        "the transposed grid drew {} rows where {} of {}'s tiles stand past the \
+         hero",
+        rows.len(),
+        TRANSPOSED_ROWS,
+        path.display()
+    );
+    for row in rows {
+        assert!(
+            row.clip.contains_rect(row.cell),
+            "the row for {} was clipped to {:?} from a cell of {:?} — it is \
+             below the fold at {TRANSPOSED_WINDOW:?}, so the picture is of \
+             fewer rows than the layout has",
+            row.name,
+            row.clip,
+            row.cell
+        );
+    }
+    script
+}
+
+/// [`housing`] with the grid transposed, captured at [`TRANSPOSED_WINDOW`].
+fn capture_transposed(mode: Mode, name: &str) -> image::RgbaImage {
+    let script = transposed_script(mode);
+    let path = housing();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let out = scratch(name);
+    let (w, h) = brightfield_shell::capture::capture_png_at(
+        boot,
+        mode,
+        SCALE,
+        TRANSPOSED_WINDOW,
+        &out,
+        script,
+    )
+    .unwrap_or_else(|e| panic!("capture {name}: {e}"));
+    assert!(w > 0 && h > 0, "{name}: empty capture");
+    image::open(&out)
+        .unwrap_or_else(|e| panic!("read capture {}: {e}", out.display()))
+        .to_rgba8()
+}
+
+/// **The grid in its transposed layout, as pixels** — the hero pane, and
+/// beside it one row per tiled column carrying that column's histogram, its
+/// finetype leaf and its storage type.
+///
+/// The arrangement had no photograph at all: the committed
+/// `dashboard_{light,dark}` pair pins the grid drawing the table's rows, and
+/// `grid_view_{light,dark}` photograph the grid as the canvas's whole view,
+/// which does not change with the switch. So a row's leaf and its storage
+/// label could both go blank and every image in this repository would still
+/// match. `canvas_pane_group.rs`'s
+/// `every_transposed_row_states_its_leaf_and_its_storage_type` reads those two
+/// strings back as text; this is the picture of them, and of everything beside
+/// them that no assertion names.
+#[test]
+fn the_transposed_dashboard_light_baseline() {
+    let image = capture_transposed(Mode::Light, "dashboard_transposed_light");
+    egui_kittest::image_snapshot(&image, "dashboard_transposed_light");
+}
+
+/// **The same transposed grid in dark**, and the white-slab check its
+/// untransposed twin makes.
+///
+/// The transposed layout draws the page through a second pane view, so it
+/// reaches the dark composition by a path `the_generated_dashboard_dark_baseline`
+/// does not: the tiles are re-homed into the grid pane at a row's height after
+/// the mode is known. A light chart surface arriving through that seam is tens
+/// of thousands of pixels of difference in a perceptual diff and unreadable as
+/// a cause, so it is counted by name ahead of the photograph.
+#[test]
+fn the_transposed_dashboard_dark_baseline() {
+    let image = capture_transposed(Mode::Dark, "dashboard_transposed_dark");
+
+    let light = pixels_of(&image, meridian_design::chrome::INK_LIGHT.surface);
+    assert_eq!(
+        light, 0,
+        "{light} pixels of this dark transposed grid are the LIGHT chart \
+         surface (#fcfcfb). That colour has one source — the plot background — \
+         so this window is drawing a white slab exactly where the analyst is \
+         reading."
+    );
+    let dark = pixels_of(&image, meridian_design::chrome::INK_DARK.surface);
+    assert!(
+        dark > 0,
+        "no pixel of this dark transposed grid is the dark chart surface \
+         (#161413), so the plot background is neither of the two colours it can \
+         be and the assertion above is passing for the wrong reason"
+    );
+
+    egui_kittest::image_snapshot(&image, "dashboard_transposed_dark");
 }
