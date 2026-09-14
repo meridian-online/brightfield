@@ -1875,15 +1875,14 @@ impl ChartDoc {
     /// Select by column name — what an outline row's click resolves to.
     /// A name this document draws no tile for selects nothing.
     ///
-    /// Prefers an entry that is **not** the other half's joint tile: a
-    /// coordinate column names two entries in [`Self::tile_columns`], its own
-    /// histogram and the pair's joint map (both carry this column's name in
-    /// [`ColumnFacts::column`], because the map's own
-    /// [`Tile::column`](crate::dashboard::Tile::column) is one of the pair),
-    /// and [`crate::one_step::OneStepProtocol::tiles`] — what
+    /// Prefers an entry that is **not** the other half's joint tile: of a
+    /// coordinate pair's two columns, only the one sharing its name with the
+    /// joint map's own [`Tile::column`](crate::dashboard::Tile::column) names
+    /// two entries in [`Self::tile_columns`] — the map's and its own
+    /// histogram's — and [`crate::one_step::OneStepProtocol::tiles`] — what
     /// [`Self::tile_columns`] is set from — lists the map ahead of either
     /// coordinate's own histogram, so a plain forward search meets the map
-    /// first for both. The map's own entry is the one with
+    /// first for that column's row. The map's own entry is the one with
     /// [`ColumnFacts::paired`] set — the histogram entry a coordinate column
     /// also has is drawn on its own, so `paired` is `None` on it — so
     /// filtering that out first and falling back to an unfiltered search

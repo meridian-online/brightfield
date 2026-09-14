@@ -427,12 +427,10 @@ fn yaml_quoted(value: &str) -> String {
 /// tile over two columns, whose [`Tile::column`](crate::dashboard::Tile::column)
 /// is the longitude and whose
 /// [`Tile::paired_column`](crate::dashboard::Tile::paired_column) is the
-/// latitude. Both are looked up here, so the latitude row reads as drawn rather
-/// than declined — and both carry the other half in [`ColumnFacts::paired`],
-/// which is the **column-level** meaning of that field: this column is one
-/// half of a pair, whichever of the pair's tiles this entry's own facts came
-/// from. `both_halves_of_a_coordinate_pair_are_drawn_and_share_one_plot`
-/// holds that meaning for the rail.
+/// latitude. Both are looked up here, so the latitude row reads as drawn
+/// rather than declined.
+/// `both_halves_of_a_coordinate_pair_are_drawn_and_share_one_plot` holds that
+/// for the rail.
 ///
 /// That is also why the tile list the chart document is handed is built
 /// separately, by `tiles_in_plot_order`: two column rows can share one plot,
