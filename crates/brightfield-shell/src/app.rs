@@ -1876,7 +1876,7 @@ impl ChartDoc {
     /// A name this document draws no tile for selects nothing.
     ///
     /// Prefers an entry that is **not** the other half's joint tile: of a
-    /// coordinate pair's two columns, only the one sharing its name with the
+    /// coordinate pair's two columns, the one sharing its name with the
     /// joint map's own [`Tile::column`](crate::dashboard::Tile::column) names
     /// two entries in [`Self::tile_columns`] — the map's and its own
     /// histogram's — and [`crate::one_step::OneStepProtocol::tiles`] — what
