@@ -48,6 +48,7 @@ fn both() -> Boot {
         protocol: inputs,
         flow: Flow::Vertical,
         focus: None,
+        opened_id: None,
     }
 }
 

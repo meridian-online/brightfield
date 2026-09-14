@@ -998,6 +998,31 @@ pub struct Boot {
     /// A dotted asset id to select before the first frame, for a scripted
     /// capture that needs a cursor to act on. The graph's, and nothing else's.
     pub focus: Option<String>,
+    /// **The id this document's grid layout is recorded under**, when the
+    /// route that built this boot knows one — the same string
+    /// [`SavedLayout::grid_layout_of`](brightfield_workbench::persist::SavedLayout::grid_layout_of)
+    /// and [`SavedLayout::remember`](brightfield_workbench::persist::SavedLayout::remember)
+    /// key their row by, and the one [`MeridianApp::open_protocol_path`] reads
+    /// from `path` because that is the argument it was called with.
+    ///
+    /// `None` for a boot that opens on nothing, or that was built off a
+    /// shipped fixture rather than a named path — [`Boot::charts`] and
+    /// [`Boot::protocol`] set it `None`, and only a constructor that took an
+    /// id or a path fills it in: [`Boot::start`] with the start's own id,
+    /// [`Boot::open_sampled`] with the string it was asked to open. **Not**
+    /// set by the private constructor the picker route shares with the args
+    /// route's own data-file branch — that route ([`MeridianApp::open_data_file`])
+    /// writes no per-document row; see its own docs. So a document reached
+    /// through the picker carries `None` here even when it opens the same
+    /// kind of file [`Boot::data_file`] does from the args route, where this
+    /// field is set one call up.
+    ///
+    /// Read once, while the window is assembled, to seed
+    /// [`MeridianApp::grid_layout`] from whatever the layout remembers for
+    /// this id before the first frame draws it — the same lookup
+    /// `open_protocol_path` already made for the front door's row, moved
+    /// somewhere both routes reach.
+    pub opened_id: Option<String>,
 }
 
 impl Boot {
@@ -1014,6 +1039,7 @@ impl Boot {
             fetched: None,
             flow: Flow::Vertical,
             focus: None,
+            opened_id: None,
         }
     }
 
@@ -1030,6 +1056,7 @@ impl Boot {
             fetched: None,
             flow,
             focus,
+            opened_id: None,
         }
     }
 
@@ -1059,17 +1086,24 @@ impl Boot {
             fetched: None,
             flow: Flow::Vertical,
             focus: None,
+            opened_id: None,
         }
     }
 
     /// Open on whatever [`crate::starts`] calls `id`.
+    ///
+    /// `opened_id` is `id` itself: this is the same string a landed start is
+    /// remembered under, so a start reopened by
+    /// [`SavedLayout::opened`](brightfield_workbench::persist::SavedLayout::opened)
+    /// — a launch with no spec named — restores the grid layout that id's
+    /// row carries, the same way a launch naming a path does.
     ///
     /// # Errors
     ///
     /// If `id` is not a start this build ships, or the embedded fixture fails
     /// to load.
     pub fn start(id: &str, flow: Flow) -> Result<Self, String> {
-        Ok(match crate::starts::load(id)? {
+        let boot = match crate::starts::load(id)? {
             // The session comes with it, so the pane can re-composite into the
             // box the dock gives it. See [`crate::starts::OpenedChart`].
             crate::starts::Opened::Charts(chart) => Self {
@@ -1078,6 +1112,10 @@ impl Boot {
                 ..Self::charts(chart.composed)
             },
             crate::starts::Opened::Protocol(inputs) => Self::protocol(*inputs, flow, None),
+        };
+        Ok(Self {
+            opened_id: Some(id.to_string()),
+            ..boot
         })
     }
 
@@ -1270,7 +1308,10 @@ impl Boot {
                      without the flag."
                 ));
             }
-            return Self::data_file(spec);
+            return Self::data_file(spec).map(|boot| Self {
+                opened_id: Some(spec.to_string()),
+                ..boot
+            });
         }
         let text = std::fs::read_to_string(spec).map_err(|e| format!("read {spec}: {e}"))?;
         // A Protocol whose single step is a local read of a data file this
@@ -1297,7 +1338,16 @@ impl Boot {
                      without the flag."
                 ));
             }
-            return Self::data_file(&data.to_string_lossy());
+            // The id is `spec` — the manifest's own path — and not `data`,
+            // the file it resolved to: `spec` is what a saved Protocol was
+            // remembered under, and what a front-door row for it would be
+            // reopened with, so the lookup below has to key on the same
+            // string or the two routes would restore two different layouts
+            // for one document.
+            return Self::data_file(&data.to_string_lossy()).map(|boot| Self {
+                opened_id: Some(spec.to_string()),
+                ..boot
+            });
         }
         if brightfield_protocol::is_protocol_manifest(&text) {
             if !crate::protocol::offline_optin() {
@@ -1318,7 +1368,10 @@ impl Boot {
             for line in inputs.degrade_report() {
                 eprintln!("{spec}: {line}");
             }
-            return Ok(Self::protocol(inputs, flow, focus));
+            return Ok(Self {
+                opened_id: Some(spec.to_string()),
+                ..Self::protocol(inputs, flow, focus)
+            });
         }
         // A chart spec named on the command line boots **live**: the session
         // is held behind the document, so a brush, a click or a param slider
@@ -1341,6 +1394,12 @@ impl Boot {
         // place a chart document comes from a *file* rather than an embedded
         // start or a test's in-memory compose.
         boot.spec_path = Some(std::path::PathBuf::from(spec));
+        // A plain chart spec is never a row `SavedLayout::recents` carries —
+        // only a Protocol is — so this id looks up nothing today. Set for the
+        // same reason the other three branches are: the id a document was
+        // opened under is a property of the route, not of which of the four
+        // shapes `spec` turned out to be.
+        boot.opened_id = Some(spec.to_string());
         Ok(boot)
     }
 
@@ -2005,6 +2064,7 @@ impl MeridianApp {
         protocol_host: EguiCanvasHost,
         mode: Mode,
     ) -> Self {
+        let opened_id = boot.opened_id.clone();
         let mut doc = ChartDoc::new(boot.composed, chart_host);
         if let Some(live) = boot.live {
             doc.attach_live(live);
@@ -2018,6 +2078,7 @@ impl MeridianApp {
         let model = ProtocolModel::new(boot.protocol, boot.flow);
         Self::assemble(
             boot.focus,
+            opened_id,
             layout,
             doc,
             ProtocolDoc::new(model, protocol_host),
@@ -2048,6 +2109,7 @@ impl MeridianApp {
     /// directory.
     #[must_use]
     pub fn headless_with_layout(boot: Boot, layout: SavedLayout, mode: Mode) -> Self {
+        let opened_id = boot.opened_id.clone();
         let mut doc = ChartDoc::headless(boot.composed);
         if let Some(live) = boot.live {
             doc.attach_live(live);
@@ -2059,11 +2121,23 @@ impl MeridianApp {
         }
         doc.set_stacked_tiles(boot.stacked_tiles);
         let model = ProtocolModel::new(boot.protocol, boot.flow);
-        Self::assemble(boot.focus, layout, doc, ProtocolDoc::headless(model), mode)
+        Self::assemble(
+            boot.focus,
+            opened_id,
+            layout,
+            doc,
+            ProtocolDoc::headless(model),
+            mode,
+        )
     }
 
+    /// Assemble a window from its parts. `opened_id` is
+    /// [`Boot::opened_id`] — the id, if the route that built the boot knew
+    /// one, `layout` is consulted under to seed the grid pane's opening
+    /// state; see that field's own docs for who sets it and why.
     fn assemble(
         focus: Option<String>,
+        opened_id: Option<String>,
         mut layout: SavedLayout,
         mut chart_doc: ChartDoc,
         mut protocol_doc: ProtocolDoc,
@@ -2117,6 +2191,18 @@ impl MeridianApp {
         // rather than defaulted: this is the edge the reader last dragged, and
         // a launch that opened at the even split would be the drag forgotten.
         let canvas_split = layout.live().canvas_split;
+        // Which way the grid pane opens for this document — the same lookup
+        // `open_protocol_path` makes after `adopt_boot`, moved here so a
+        // launch that boots straight onto a document (the args route, or a
+        // remembered start with no spec named) restores it too, and not only
+        // a click on the front door's own row. A boot with no id here — the
+        // front door itself, a shipped fixture, a headless capture — opens on
+        // the default; a document this file has no row for does the same,
+        // because `grid_layout_of` answers `None` for one.
+        let grid_layout = opened_id
+            .as_deref()
+            .and_then(|id| layout.live().grid_layout_of(id))
+            .unwrap_or_default();
 
         // The restored tab strip is the authority over the model's default,
         // not the other way round. `ProtocolModel` boots with its sheet shut,
@@ -2192,7 +2278,7 @@ impl MeridianApp {
             canvas_panes: CanvasPanes::default(),
             canvas_scroll: 0.0,
             canvas_split,
-            grid_layout: crate::app::GridLayout::default(),
+            grid_layout,
             // Reconciled from the documents on the next line, so the latch is
             // right before the first frame — a test that asks what a fresh
             // window holds should not have to draw one first.

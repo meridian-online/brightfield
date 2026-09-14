@@ -3534,9 +3534,11 @@ fn the_transposed_grid_draws_a_row_for_every_column_of_the_table() {
 }
 
 /// **Every transposed row states its column's finetype leaf and its storage
-/// type, in the ink the reader can see.**
+/// type, in the ink the reader can see — its leaf at its own end of the row
+/// and its storage type at the other, not one covering for the other's
+/// absence.**
 ///
-/// Read as **text off the frame's galleys**, inside each row's own cell, and
+/// Read as **text off the frame's galleys**, inside each end's own rect, and
 /// each string is checked to be non-empty before it is looked for: the failure
 /// this exists for is the row density quietly dropping down to the compact
 /// branch, which draws no leaf and no storage row, and leaves
@@ -3544,16 +3546,30 @@ fn the_transposed_grid_draws_a_row_for_every_column_of_the_table() {
 /// "the band drew its cells" — is green over that, and was: the first half
 /// of this work shipped one.
 ///
-/// The pair is looked for **inside the row's own cell** rather than anywhere
-/// in the pane, so a leaf drawn once for the whole grid, or drawn against the
-/// wrong row, is not read as every row correct. `drawn_cells_in` respects
-/// clip rects, so what is counted is what reaches the reader rather than what
-/// the painter was handed.
+/// **Each end is read inside its own [`ColumnBandDrawn::type_rects`] rect**,
+/// not anywhere in the row's cell. On this build — no FineType bundle, so
+/// `ColumnFacts::leaf` falls back to the storage type — the two strings are
+/// the same word, and a check that asks only "is this string somewhere in the
+/// cell" cannot tell a cell that drew both from one that drew the storage
+/// type at both ends, or once, with nothing at the leaf's own position. The
+/// leading rect and the trailing rect are what let the two questions be asked
+/// apart: is the leaf's string among the text painted at the leading edge,
+/// and separately, is the storage type's among what is painted at the
+/// trailing edge. `drawn_cells_in` respects clip rects on top, so what is
+/// counted is what reaches the reader rather than what the painter was
+/// handed.
 ///
-/// Watched redden, one mutation: narrowing `GridDensity::is_full` to
-/// `matches!(self, Self::Full)` — which is the branch that decides whether a
-/// transposed row states these two facts — fails at the first row with
-/// the leaf missing.
+/// Watched redden, two mutations. Narrowing `GridDensity::is_full` to
+/// `matches!(self, Self::Full)` — the branch that decides whether a
+/// transposed row states these two facts at all — fails at the first row's
+/// leading edge with `type_rects` absent. Changing `draw_column_band`'s
+/// `TwoEndedRow` for this row to `leading: ""` — a row that draws its storage
+/// type and not its leaf, while `ColumnFacts` and `ColumnBandDrawn::leaf`
+/// still carry the real one — fails at the first row's leading edge too, with
+/// nothing painted there to contain it; the prior form of this test, which
+/// looked for each string anywhere in the whole cell, stayed green over that
+/// change on this fixture because the trailing edge's storage-type text
+/// happens to equal the string the leading check was also looking for.
 #[test]
 fn every_transposed_row_states_its_leaf_and_its_storage_type() {
     let (mut app, ctx, raw) = settled_window_transposed(TRANSPOSED_SCREEN);
@@ -3591,20 +3607,29 @@ fn every_transposed_row_states_its_leaf_and_its_storage_type() {
             row.clip,
             row.cell
         );
-        let drawn: Vec<String> = drawn_cells_in(&mut app, &ctx, &raw, row.cell)
-            .into_iter()
-            .map(|(_, text)| text)
-            .collect();
-        for want in [leaf, storage] {
-            assert!(
-                drawn.iter().any(|t| t.contains(want.as_str())),
-                "the transposed row for {} drew {drawn:?} inside its own cell \
-                 {:?}, and {want:?} is not among them — the row states its \
-                 name and its counts and not what kind of column it is",
-                row.name,
-                row.cell
-            );
-        }
+        let (leaf_rect, storage_rect) = row.type_rects.unwrap_or_else(|| {
+            panic!(
+                "the transposed row for {} recorded no leaf/storage row, so it \
+                 drew at a density other than the full one",
+                row.name
+            )
+        });
+        let leading = drawn_cells_in(&mut app, &ctx, &raw, leaf_rect);
+        assert!(
+            leading.iter().any(|(_, t)| t.contains(leaf.as_str())),
+            "the transposed row for {} drew {leading:?} at its leading edge \
+             {leaf_rect:?}, and its finetype leaf {leaf:?} is not among them \
+             — the row states its storage type and not what its column means",
+            row.name
+        );
+        let trailing = drawn_cells_in(&mut app, &ctx, &raw, storage_rect);
+        assert!(
+            trailing.iter().any(|(_, t)| t.contains(storage.as_str())),
+            "the transposed row for {} drew {trailing:?} at its trailing edge \
+             {storage_rect:?}, and its storage type {storage:?} is not among \
+             them",
+            row.name
+        );
     }
 }
 

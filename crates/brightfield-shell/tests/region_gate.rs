@@ -356,6 +356,7 @@ fn a_protocol_and_a_chart() -> Boot {
         protocol: inputs,
         flow: Flow::Vertical,
         focus: None,
+        opened_id: None,
     }
 }
 
