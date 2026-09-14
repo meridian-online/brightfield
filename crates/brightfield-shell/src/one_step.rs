@@ -104,10 +104,23 @@ pub struct ColumnFacts {
     pub tile: Option<String>,
     /// Why that kind, or — for a declined column — why none.
     pub because: String,
-    /// The other half of a coordinate pair, when this column is drawn as one:
-    /// a point map is a single tile over two columns, and each of the two names
-    /// the other here.
+    /// The other half of a coordinate pair, when **this entry's own tile** is
+    /// the joint point map: a point map is a single tile over two columns, and
+    /// each of the two names the other here. `None` for a column drawn on its
+    /// own — including a coordinate column's own histogram entry, whose
+    /// [`Self::because`] is that histogram's reason and not the pair's.
     pub paired: Option<String>,
+    /// Whether this column is one half of a coordinate pair, **whichever tile
+    /// this entry's own facts came from**.
+    ///
+    /// Independent of [`Self::paired`], which narrows to the map's own entry:
+    /// this stays `true` on the pair's own histogram entries too, so
+    /// [`crate::column_header::glyph_for`] can draw the degree glyph on a
+    /// coordinate column's own row without depending on where the joint tile
+    /// falls in [`crate::dashboard::Dashboard::tiles`] — a position this
+    /// module's own per-column lookup used to search by, and searching is what
+    /// let the joint tile answer for a row it does not draw.
+    pub coordinate: bool,
     /// Rows in the table (null and non-null alike), measured by the engine
     /// when the file was profiled.
     pub rows: u64,
@@ -414,27 +427,89 @@ fn yaml_quoted(value: &str) -> String {
 /// tile over two columns, whose [`Tile::column`](crate::dashboard::Tile::column)
 /// is the longitude and whose
 /// [`Tile::paired_column`](crate::dashboard::Tile::paired_column) is the
-/// latitude. Both are looked up here, so the latitude row reads as drawn rather
-/// than declined — and both carry the other half in [`ColumnFacts::paired`].
+/// latitude. Both are looked up here, so the latitude row reads as drawn
+/// rather than declined.
+/// `both_halves_of_a_coordinate_pair_are_drawn_and_share_one_plot` holds that
+/// for the rail.
+///
 /// That is also why the tile list the chart document is handed is built
-/// separately, by `tiles_in_plot_order`: two column rows can share one plot.
+/// separately, by `tiles_in_plot_order`: two column rows can share one plot,
+/// and a **plot-order** entry wants the opposite of what this function
+/// answers — a coordinate column's own histogram entry wants its own reason
+/// and no pairing, not the map's — which is a different question, about the
+/// *tile*, not the *column*, and [`tiles_in_plot_order`] answers it directly
+/// through [`build_facts`] rather than through [`facts_for`].
 fn facts(columns: &[ColumnProfile], dashboard: &Dashboard) -> Vec<ColumnFacts> {
     columns.iter().map(|p| facts_for(p, dashboard)).collect()
 }
 
-/// One column's facts.
+/// One column's facts, at the **column** level: the facts of whichever tile
+/// draws this column, mapped or not.
+///
+/// One forward search over [`Dashboard::tiles`]: a tile whose own
+/// [`Tile::column`](crate::dashboard::Tile::column) is this profile's name,
+/// or — failing that — whose [`Tile::paired_column`](crate::dashboard::Tile::paired_column)
+/// is. For an ordinary column those two conditions name at most one tile
+/// between them; for a coordinate pair's two columns, both conditions can
+/// meet the *same* joint map (its own `column()` is one half, its
+/// `paired_column()` the other), and a single forward search answers with
+/// that map for both halves alike — which is the rail's own question, *is
+/// this column drawn, and if it is one half of a pair, who is the other
+/// half*, not *which tile does this row draw*. The second question belongs to
+/// [`tiles_in_plot_order`], which does not call this: it already holds the
+/// exact tile each of its entries is of and hands that straight to
+/// [`build_facts`], so a coordinate column's own histogram entry there reports
+/// that histogram's reason regardless of where the map falls in
+/// [`Dashboard::tiles`]. A version of this function that preferred a column's
+/// own tile over the map read correctly at the *tile* level and wrongly at
+/// the *column* level, narrowing [`ColumnFacts::paired`] to the map's own
+/// entry and leaving [`OneStepProtocol::columns`]'s own readers — the rail —
+/// reading a field that no longer carried the meaning they read it for.
 fn facts_for(profile: &ColumnProfile, dashboard: &Dashboard) -> ColumnFacts {
     let tile = dashboard
         .tiles()
         .iter()
         .find(|t| t.column() == profile.name || t.paired_column() == Some(profile.name.as_str()));
-    let mut paired = None;
-    let (label, because) = match tile.map(crate::dashboard::Tile::chosen_by) {
+    build_facts(profile, tile, dashboard)
+}
+
+/// Whether `profile` is one half of a coordinate pair, over the **whole**
+/// tile list rather than over whichever tile [`facts_for`] settled on for this
+/// entry's [`ColumnFacts::because`].
+///
+/// A dashboard draws at most one joint tile — [`crate::dashboard::coordinate_pair`]
+/// finds at most one pair — so this is a membership test, not a search: where
+/// that tile stands in [`Dashboard::tiles`] is not the question, whether one
+/// is there naming `profile` as its own column or as its pair is.
+/// [`ColumnFacts::coordinate`] is this, kept apart from
+/// [`ColumnFacts::paired`] so the degree glyph survives on a coordinate
+/// column's own histogram row even though that row's own tile carries no
+/// pairing of its own to report.
+fn is_coordinate(profile: &ColumnProfile, dashboard: &Dashboard) -> bool {
+    dashboard.tiles().iter().any(|t| {
+        matches!(t.chosen_by(), ChosenBy::CoordinatePair { .. })
+            && (t.column() == profile.name || t.paired_column() == Some(profile.name.as_str()))
+    })
+}
+
+/// The label, the reason and the pairing `tile` gives `profile` — the match
+/// [`facts_for`] used to run inline, now shared with `tiles_in_plot_order`,
+/// which already holds the exact tile a plot-order entry is of and has no
+/// searching left to do.
+fn label_because_paired(
+    profile: &ColumnProfile,
+    tile: Option<&crate::dashboard::Tile>,
+    dashboard: &Dashboard,
+) -> (Option<String>, String, Option<String>) {
+    match tile.map(crate::dashboard::Tile::chosen_by) {
         Some(ChosenBy::Meaning { label, role }) => (
             Some(label.clone()),
             format!("the semantic type {label}, read as {role:?}"),
+            None,
         ),
-        Some(ChosenBy::Storage { type_name }) => (None, format!("the storage type {type_name}")),
+        Some(ChosenBy::Storage { type_name }) => {
+            (None, format!("the storage type {type_name}"), None)
+        }
         Some(ChosenBy::CoordinatePair { latitude, rule }) => {
             // The tile is of the longitude and paired with the latitude, so
             // which of the two this row is decides which name it reports as
@@ -446,11 +521,14 @@ fn facts_for(profile: &ColumnProfile, dashboard: &Dashboard) -> ColumnFacts {
                 latitude.clone()
             };
             let because = format!("a coordinate pair with {other}, found by its {rule}");
-            paired = Some(other);
             // The label is this column's own, not the pair's: a pair found by
             // its labels has `geography.coordinate.longitude` on one side and
             // `…latitude` on the other, and the rail draws each row its own.
-            (profile.semantic.label().map(str::to_string), because)
+            (
+                profile.semantic.label().map(str::to_string),
+                because,
+                Some(other),
+            )
         }
         None => (
             profile.semantic.label().map(str::to_string),
@@ -462,8 +540,19 @@ fn facts_for(profile: &ColumnProfile, dashboard: &Dashboard) -> ColumnFacts {
                     || "no tile".to_string(),
                     |o| format!("no tile — {}", o.because),
                 ),
+            None,
         ),
-    };
+    }
+}
+
+/// The [`ColumnFacts`] `tile` gives `profile`, or the declined facts when
+/// `tile` is `None`.
+fn build_facts(
+    profile: &ColumnProfile,
+    tile: Option<&crate::dashboard::Tile>,
+    dashboard: &Dashboard,
+) -> ColumnFacts {
+    let (label, because, paired) = label_because_paired(profile, tile, dashboard);
     let leaf = label.as_deref().map_or_else(
         || profile.type_name.clone(),
         |l| l.rsplit('.').next().unwrap_or(l).to_string(),
@@ -476,6 +565,7 @@ fn facts_for(profile: &ColumnProfile, dashboard: &Dashboard) -> ColumnFacts {
         tile: tile.map(|t| t.kind().as_str().to_string()),
         because,
         paired,
+        coordinate: is_coordinate(profile, dashboard),
         rows: profile.non_null.saturating_add(profile.nulls),
         nulls: profile.nulls,
         min: profile.min.clone(),
@@ -494,29 +584,35 @@ fn facts_for(profile: &ColumnProfile, dashboard: &Dashboard) -> ColumnFacts {
 /// that way, because the tiles are what `Dashboard::to_spec` lays out and
 /// therefore what the composition places.
 ///
-/// Each entry is the facts of the tile's own
-/// [`Tile::column`](crate::dashboard::Tile::column) — for a point map the
-/// longitude, with the latitude in [`ColumnFacts::paired`].
+/// Each entry is [`build_facts`] of the tile's own
+/// [`Tile::column`](crate::dashboard::Tile::column) **against that exact
+/// tile** — for a point map the longitude, with the latitude in
+/// [`ColumnFacts::paired`]. This walk already holds the one tile each entry
+/// is of, from [`Dashboard::plot_order`] itself, so it hands that tile to
+/// [`build_facts`] directly instead of searching [`Dashboard::tiles`] again
+/// the way [`facts_for`] does: a coordinate column's own histogram entry
+/// reports that histogram's own kind and reason, and the joint map's entry
+/// reports the map's, however [`Dashboard::tiles`] happens to order the two.
 ///
-/// **The kind each entry reports is the kind of the plot it stands for**, and
-/// that is written here rather than left to [`facts_for`]: a coordinate column
-/// has two tiles now — the pair's joint map and its own histogram — and
-/// `facts_for` answers about the *column*, so it meets the map first for both
-/// of them. An entry that reported the map over a histogram would offer the
-/// map's affordances on a distribution and withhold the histogram's: the scale
-/// switch is drawn per entry whose kind is the binned histogram, so the pair's
-/// two rows drew no linear/log control at all until this line existed.
+/// **The kind** each entry reports mattered first: a coordinate column has
+/// two tiles, the pair's joint map and its own histogram, and this used to
+/// delegate to `facts_for`, which answers about the *column* rather than the
+/// *tile* — so a search met whichever of the pair's own tiles came first and
+/// both entries reported that one's kind. The scale switch is drawn per entry
+/// whose kind is the binned histogram, so the pair's two rows drew no
+/// linear/log control at all before the kind was read straight off the tile
+/// here; carrying `because` and `paired` the same way is what this finishes.
 /// `tests/tile_scale_switch.rs::every_histogram_tile_carries_a_scale_switch_inside_its_own_box`
-/// is the reading of that.
+/// reads the kind back;
+/// `a_coordinate_columns_own_histogram_reports_its_own_reason_and_no_pair`
+/// below reads `because` and `paired`.
 fn tiles_in_plot_order(columns: &[ColumnProfile], dashboard: &Dashboard) -> Vec<ColumnFacts> {
     dashboard
         .plot_order()
         .into_iter()
         .filter_map(|tile| {
             let profile = columns.iter().find(|p| p.name == tile.column())?;
-            let mut facts = facts_for(profile, dashboard);
-            facts.tile = Some(tile.kind().as_str().to_string());
-            Some(facts)
+            Some(build_facts(profile, Some(tile), dashboard))
         })
         .collect()
 }
@@ -629,5 +725,132 @@ mod tests {
             None
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------
+    // A coordinate column's own histogram row reports the facts of the
+    // tile it draws, not the joint map's — wherever that map falls in the
+    // generator's own list.
+    // -----------------------------------------------------------------
+
+    /// A profiled column with no semantic label — a `cargo test` binary
+    /// carries no FineType bundle, so every profile in this module's other
+    /// tests arrives this way too, and the pair below is found by name, the
+    /// tier an unlabelled build falls to.
+    fn column(name: &str, type_name: &str, distinct: u64) -> ColumnProfile {
+        ColumnProfile {
+            name: name.to_string(),
+            type_name: type_name.to_string(),
+            non_null: 100,
+            nulls: 0,
+            distinct,
+            min: None,
+            max: None,
+            semantic: brightfield_engine::SemanticType::NotAsked,
+            moments: None,
+        }
+    }
+
+    /// A small housing-shaped table: `longitude` and `latitude`, found as a
+    /// pair by name, beside one ordinary measure.
+    fn housing_columns() -> Vec<ColumnProfile> {
+        vec![
+            column("longitude", "DOUBLE", 900),
+            column("latitude", "DOUBLE", 900),
+            column("median_income", "DOUBLE", 400),
+        ]
+    }
+
+    /// **AC1** — a coordinate column's own histogram entry names that
+    /// histogram's own reason, not the pair's, and carries no pairing.
+    ///
+    /// Reddens if `tiles_in_plot_order` (or `facts_for` beneath it) goes back
+    /// to answering about the *column* rather than the tile a plot-order entry
+    /// is actually of: a single forward search over [`Dashboard::tiles`] meets
+    /// the joint map before either coordinate's own histogram, because
+    /// [`Dashboard::of`] places the joint tile at that position — the order
+    /// `a_coordinate_pairs_tile_takes_the_position_of_whichever_column_comes_first`
+    /// pins — and answers the pair's rows with the map's `because` and
+    /// `paired` instead of the histogram's, the defect this module's own
+    /// history records against the housing fixture's `latitude` and
+    /// `longitude` rows.
+    #[test]
+    fn a_coordinate_columns_own_histogram_reports_its_own_reason_and_no_pair() {
+        let path = Path::new("/data/housing.csv");
+        let columns = housing_columns();
+        let dashboard = Dashboard::of(path, &columns);
+        let spec = OneStepProtocol::of(path, &columns, &dashboard);
+
+        for name in ["latitude", "longitude"] {
+            let row = spec
+                .tiles
+                .iter()
+                .find(|f| f.column == name && f.tile.as_deref() == Some("binned-histogram"))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{name} earned no histogram tile of its own: {:?}",
+                        spec.tiles
+                    )
+                });
+            assert_eq!(
+                row.because, "the storage type DOUBLE",
+                "{name}'s own histogram row reports {:?}, which names the pair \
+                 rather than the histogram",
+                row.because
+            );
+            assert_eq!(
+                row.paired, None,
+                "{name}'s own histogram row still carries the pair's other \
+                 half: {:?}",
+                row.paired
+            );
+        }
+    }
+
+    /// **AC2** — the degree glyph on a coordinate row and the map pane's
+    /// title do not depend on where the joint tile falls in the generator's
+    /// own list.
+    ///
+    /// [`Dashboard::of`] itself lists the joint tile immediately ahead of the
+    /// first coordinate column's own tile, the order
+    /// `a_coordinate_pairs_tile_takes_the_position_of_whichever_column_comes_first`
+    /// pins — so this drives the reversed case that construction does not
+    /// produce, through [`Dashboard::with_joint_tile_last`], and reads the
+    /// glyph and the title back unchanged against the ordinary order.
+    #[test]
+    fn the_glyph_and_the_map_title_do_not_depend_on_tile_order() {
+        let path = Path::new("/data/housing.csv");
+        let columns = housing_columns();
+        let ordinary = Dashboard::of(path, &columns);
+        let reordered = ordinary.clone().with_joint_tile_last();
+        assert_ne!(
+            ordinary.tiles().first().map(crate::dashboard::Tile::kind),
+            reordered.tiles().first().map(crate::dashboard::Tile::kind),
+            "the reorder moved nothing, so this drives the same case as the \
+             test above rather than the one it is named for"
+        );
+
+        for dashboard in [&ordinary, &reordered] {
+            let spec = OneStepProtocol::of(path, &columns, dashboard);
+            let hero = spec.tiles.first().expect("a pair stands the map as hero");
+            assert_eq!(hero.tile.as_deref(), Some("point-map"));
+            assert_eq!(
+                crate::window::map_pane_title(Some(hero)),
+                "Map \u{b7} latitude \u{d7} longitude",
+                "the map pane's title moved with the tile order"
+            );
+
+            let latitude_row = spec
+                .tiles
+                .iter()
+                .find(|f| f.column == "latitude" && f.tile.as_deref() == Some("binned-histogram"))
+                .expect("latitude keeps its own histogram beside the map");
+            assert_eq!(
+                crate::column_header::glyph_for(latitude_row),
+                "\u{b0}",
+                "latitude's own row drew glyph {:?} instead of the degree sign",
+                crate::column_header::glyph_for(latitude_row)
+            );
+        }
     }
 }

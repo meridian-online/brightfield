@@ -1874,8 +1874,26 @@ impl ChartDoc {
 
     /// Select by column name — what an outline row's click resolves to.
     /// A name this document draws no tile for selects nothing.
+    ///
+    /// Prefers an entry that is **not** the other half's joint tile: of a
+    /// coordinate pair's two columns, the one sharing its name with the
+    /// joint map's own [`Tile::column`](crate::dashboard::Tile::column) names
+    /// two entries in [`Self::tile_columns`] — the map's and its own
+    /// histogram's — and [`crate::one_step::OneStepProtocol::tiles`] — what
+    /// [`Self::tile_columns`] is set from — lists the map ahead of either
+    /// coordinate's own histogram, so a plain forward search meets the map
+    /// first for that column's row. The map's own entry is the one with
+    /// [`ColumnFacts::paired`] set — the histogram entry a coordinate column
+    /// also has is drawn on its own, so `paired` is `None` on it — so
+    /// filtering that out first and falling back to an unfiltered search
+    /// keeps the outline picking the map when a name has no separate entry of
+    /// its own to fall back to.
     pub fn select_column(&mut self, column: &str) {
-        self.selected_tile = self.tile_columns.iter().position(|c| c.column == column);
+        self.selected_tile = self
+            .tile_columns
+            .iter()
+            .position(|c| c.column == column && c.paired.is_none())
+            .or_else(|| self.tile_columns.iter().position(|c| c.column == column));
     }
 
     /// The column the inspector is showing, if one is selected.

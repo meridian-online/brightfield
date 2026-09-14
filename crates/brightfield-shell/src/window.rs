@@ -6813,7 +6813,7 @@ pub fn canvas_pane_rects(body: egui::Rect, split: f32) -> CanvasPaneRects {
 /// A coordinate pair reads as the map it is; any other hero is named by its
 /// own column, because the pane holds that one column's picture and the column
 /// name is the shortest thing that distinguishes it from the tiles beside it.
-fn map_pane_title(hero: Option<&crate::one_step::ColumnFacts>) -> String {
+pub(crate) fn map_pane_title(hero: Option<&crate::one_step::ColumnFacts>) -> String {
     match hero {
         Some(facts) => match &facts.paired {
             Some(other) => format!("Map \u{b7} {other} \u{d7} {}", facts.column),

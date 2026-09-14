@@ -687,6 +687,67 @@ fn both_halves_of_a_coordinate_pair_are_drawn_and_share_one_plot() {
     );
 }
 
+/// **A click on a coordinate column's own row in the outline selects that
+/// column's own histogram, not the joint map.**
+///
+/// `plot_order` lists the joint map ahead of either coordinate's own
+/// histogram (`a_coordinate_pairs_tile_takes_the_position_of_whichever_column_comes_first`
+/// pins the map at the position of whichever of the pair comes first in the
+/// table), so `tile_columns` carries two entries named `longitude` — the map's
+/// and the histogram's — before it carries one named `latitude`. A forward
+/// search by name alone meets the map first for `longitude`'s row and would
+/// hand the inspector the pair's reason and pairing for a click that landed
+/// on a plain histogram row.
+#[test]
+fn a_click_on_a_coordinate_columns_outline_row_selects_its_own_histogram() {
+    let dir = TempDir::new("coordinates-outline-click");
+    let path = dir.write("points.csv", COORDINATE_CSV);
+    let mut win =
+        Window::over(Boot::data_file(&path.to_string_lossy()).expect("the file opens as a boot"));
+
+    // The map really is ahead of longitude's own histogram in `tile_columns`,
+    // or this test is not driving the case it claims to.
+    let names: Vec<&str> = win
+        .app
+        .chart_doc()
+        .tile_columns()
+        .iter()
+        .map(|c| c.column.as_str())
+        .collect();
+    let map_at = names.iter().position(|c| *c == "longitude").unwrap();
+    let histogram_at = names[map_at + 1..]
+        .iter()
+        .position(|c| *c == "longitude")
+        .map(|i| i + map_at + 1);
+    assert!(
+        histogram_at.is_some(),
+        "fixture check: `tile_columns` names `longitude` once at {map_at} and \
+         nowhere past it, so this fixture does not carry the two entries the \
+         click is meant to tell apart: {names:?}"
+    );
+
+    win.app.chart_doc_mut().select_column("longitude");
+    let picked = win
+        .app
+        .chart_doc()
+        .selected_column()
+        .cloned()
+        .expect("longitude names a tile, so the click selects");
+    assert_eq!(
+        picked.tile.as_deref(),
+        Some(brightfield_shell::chart_kinds::BINNED_HISTOGRAM.as_str()),
+        "a click on longitude's outline row selected {:?}, which is the \
+         joint map's tile rather than longitude's own histogram",
+        picked.tile
+    );
+    assert_eq!(
+        picked.paired, None,
+        "longitude's own histogram row carries no pairing, but the row this \
+         click selected does: {:?}",
+        picked.paired
+    );
+}
+
 // ---------------------------------------------------------------------------
 // AC2 — the Steps pane lists the one step
 // ---------------------------------------------------------------------------
