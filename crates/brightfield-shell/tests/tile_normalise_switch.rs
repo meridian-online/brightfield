@@ -335,18 +335,35 @@ fn the_control_offers_its_two_readings_and_names_its_column() {
     }
 }
 
-/// **The housing dashboard draws none of these.** Its seven tiles each carry
-/// one column and no colour group, so there is no stack to re-measure — and the
-/// seven scale switches beside them are what says the page drew its chrome at
-/// all, rather than this passing over a page that drew nothing.
+/// **The housing dashboard draws none of these.** Its tiles each carry one
+/// column and no colour group, so there is no stack to re-measure — and the
+/// scale switches beside them are what says the page drew its chrome at all,
+/// rather than this passing over a page that drew nothing.
+///
+/// One switch per histogram tile, which on this file is one per column: the
+/// coordinate pair's joint map earns none, and the pair's own two columns
+/// each earn one like every other column.
 #[test]
 fn the_housing_dashboard_draws_no_normalise_control() {
     let mut live = Live::open(housing_boot());
     live.settle();
+    let histograms = live
+        .doc()
+        .tile_columns()
+        .iter()
+        .filter(|c| {
+            c.tile.as_deref() == Some(brightfield_shell::chart_kinds::BINNED_HISTOGRAM.as_str())
+        })
+        .count();
+    assert!(
+        histograms > 1,
+        "fixture check: the page drew {histograms} histogram tiles, so the \
+         switch count below is not a reading of anything"
+    );
     assert_eq!(
         live.doc().scale_switches.len(),
-        7,
-        "fixture check: the seven histogram tiles drew their scale switches"
+        histograms,
+        "fixture check: every histogram tile drew its scale switch"
     );
     assert!(
         live.doc()

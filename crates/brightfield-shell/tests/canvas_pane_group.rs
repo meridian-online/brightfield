@@ -28,13 +28,10 @@
 //! points. That is the window the picture is photographed in, and the window
 //! the claims about the group's own geometry are read in — [`settled`].
 //!
-//! It is also a window in which, at [`SCREEN`], the column has no reach: the
-//! canvas is tall enough for seven tiles at their floor, so the page does not
-//! outgrow the pane and a wheel over it moves the page no distance. The scroll and
-//! page-bound claims are therefore read in the window with the rail reopened
-//! — [`settled_scrollable`], one click on the strip's own control — because
-//! they are claims about a page bigger than its pane and that is where this
-//! fixture makes one.
+//! The scroll and page-bound claims are read in the window with the rail
+//! reopened — [`settled_scrollable`], one click on the strip's own control —
+//! because a reopened rail is the shortest canvas this fixture is read in and
+//! the page outgrows the pane there by the widest margin.
 
 use brightfield_shell::app::GridLayout;
 use brightfield_shell::dashboard::MIN_ROW_HEIGHT;
@@ -50,18 +47,39 @@ use brightfield_workbench::chrome;
 /// A committed **sample**, not the dataset — the real Parquet is 16,640 rows
 /// and belongs in `open-analytics`, not in this repo's test data. What it
 /// shares with the real file is what the layout depends on: the nine column
-/// names, their order, a coordinate pair among them, and seven other columns
-/// that each earn a tile.
+/// names, their order, a coordinate pair among them, and a tile for every one
+/// of the nine — the pair's two included, each beside the joint map.
 fn fixture() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/data/california_housing_sample.csv")
 }
 
-/// How many tiles the grid pane draws as rows, transposed, for [`fixture`].
+/// The [`fixture`]'s own columns, in the file's own order, read off its header
+/// line.
 ///
-/// Nine columns, two of which the coordinate pair draws as one tile, so eight
-/// tiles: the map and seven others.
-const STACKED: usize = 7;
+/// **Read rather than written down.** The generator gives every column of this
+/// file a tile and adds the coordinate pair's joint map on top, and the map is
+/// the hero, so the column beside the hero — and the rows the transposed
+/// layout draws — is one entry per column of the table, in the table's own
+/// order. The number a layout claim asserts is therefore the table's, and a
+/// column added to or taken out of the fixture reddens the layout rather than
+/// a constant standing beside it. The constant this replaced said seven, for
+/// the build where the pair's two columns earned no tile of their own.
+fn fixture_columns() -> Vec<String> {
+    let path = fixture();
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let header = text
+        .lines()
+        .next()
+        .unwrap_or_else(|| panic!("{} has no header line", path.display()));
+    let columns: Vec<String> = header.split(',').map(|c| c.trim().to_string()).collect();
+    assert!(
+        columns.len() > 1 && columns.iter().all(|c| !c.is_empty()),
+        "the fixture's header line reads {columns:?}, which is not a table's"
+    );
+    columns
+}
 
 /// The window a settled frame is laid out in.
 ///
@@ -112,12 +130,9 @@ fn settled_transposed(screen: egui::Rect) -> MeridianApp {
 /// [`settled`] with the ledger rail reopened before the frame is read.
 ///
 /// The column has reach where the composed page outgrows the pane it is drawn
-/// in, and at [`SCREEN`] the rail's own height is what decides whether it
-/// does: closed to its strip the rail hands the canvas 124 points back, the
-/// seven tiles clear their floor inside the pane and the page stops being
-/// taller than the box. Reopening it is one click on the control the collapsed
-/// strip keeps, and it is what makes the assertions below claims about a
-/// scroll rather than about a window size.
+/// in, and reopening the rail is what takes the canvas 124 points back —
+/// one click on the control the collapsed strip keeps, and the shortest
+/// canvas this fixture is read in.
 fn settled_scrollable(screen: egui::Rect) -> MeridianApp {
     settled_after(screen, Ledger::Reopened, Grid::Columns, None, 0)
 }
@@ -490,27 +505,18 @@ fn the_grid_holds_one_row_per_column_at_one_height_inside_the_pane() {
     let path = fixture();
     let chosen = path.to_str().expect("utf-8 fixture path");
     let opened = data_file::open(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
-    let filed: Vec<&str> = opened
+    let filed: Vec<String> = opened
         .dashboard
         .column_tiles()
         .iter()
-        .map(|t| t.column())
+        .map(|t| t.column().to_string())
         .collect();
     assert_eq!(
         filed,
-        vec![
-            "median_income",
-            "house_age",
-            "avg_rooms",
-            "avg_bedrooms",
-            "population",
-            "avg_occupancy",
-            "median_house_value",
-        ],
-        "the column holds one tile per tiled column in the file's own order, \
-         the map's own two excluded"
+        fixture_columns(),
+        "the column holds one tile per column of the file, in the file's own \
+         order — the pair's joint map is the hero and stands outside this list"
     );
-    assert_eq!(filed.len(), STACKED);
     drop(opened);
 
     // Transposed, because that is where the tiles are on screen: untransposed
@@ -525,8 +531,9 @@ fn the_grid_holds_one_row_per_column_at_one_height_inside_the_pane() {
     let placed = app.composed_plot_rects();
     assert_eq!(
         placed.len(),
-        STACKED + 1,
-        "eight tiles were chosen and {} plots were placed",
+        fixture_columns().len() + 1,
+        "a tile per column of the table and the pair's joint map were chosen, \
+         and {} plots were placed",
         placed.len()
     );
     let stacked = &placed[1..];
@@ -541,7 +548,7 @@ fn the_grid_holds_one_row_per_column_at_one_height_inside_the_pane() {
         );
         // **Across, not down.** The rows hold at their floor and the page
         // grows past the pane rather than compressing, so at this window the
-        // last of seven is below the fold by design — that is
+        // last of them is below the fold by design — that is
         // `the_column_scrolls_when_its_tiles_reach_their_floor`'s claim, and
         // asserting containment down here would contradict it. What is read
         // here is that each row's picture is laid inside the pane it is drawn
@@ -680,7 +687,8 @@ fn the_count_reads_over_the_map_and_leaves_its_axes_whole() {
 /// **The other half of AC3's rule: past the floor, the page grows and the
 /// group scrolls.**
 ///
-/// The canvas here has less height than seven tiles at their floor need, so the
+/// The canvas here has less height than the fixture's tiles at their floor
+/// need, so the
 /// column does not compress: the page is composed taller than the pane and what
 /// does not fit is scrolled to. Held here rather than left implicit, because
 /// "the tiles shrank instead" and "the page grew" are the same picture at the
@@ -698,7 +706,7 @@ fn the_column_scrolls_when_its_tiles_reach_their_floor() {
     let columns = group.pane("grid").expect("the grid pane drew");
     let placed = app.composed_plot_rects();
     let stacked = &placed[1..];
-    assert_eq!(stacked.len(), STACKED);
+    assert_eq!(stacked.len(), fixture_columns().len());
     for (i, tile) in stacked.iter().enumerate() {
         assert!(
             (tile.height() - MIN_ROW_HEIGHT).abs() < 1.0,
@@ -789,8 +797,9 @@ fn an_authored_spec_still_draws_one_pane() {
 /// overflows.
 ///
 /// The failure this is here for is not subtle and was invisible to every test
-/// above: at 1440 by 900 the page is composed 672 points tall for the column's
-/// seven tiles at their floor, the map pane's content rect is 588, and a hero
+/// above: at 1440 by 900 the page was composed 672 points tall for the
+/// column's tiles at the floor of the day, the map pane's content rect is 588,
+/// and a hero
 /// that took the page's height put its x-axis — ticks, labels and the
 /// `longitude` title — 112 points below the pane and had them clipped away.
 /// (The page is 84 points taller than the pane's content rect; the raster
@@ -812,8 +821,9 @@ fn the_hero_is_composed_whole_inside_the_map_pane() {
         let placed = app.composed_plot_rects();
         assert_eq!(
             placed.len(),
-            STACKED + 1,
-            "eight tiles were chosen and {} plots were placed",
+            fixture_columns().len() + 1,
+            "a tile per column of the table and the pair's joint map were \
+             chosen, and {} plots were placed",
             placed.len()
         );
         let hero = placed[0];
@@ -1013,14 +1023,20 @@ fn a_brush_on_a_scrolled_tile_lands_on_the_tile_under_the_pointer() {
         let _ = ctx.run_ui(input, |ui| app.draw(ui));
     };
 
-    // Scroll the column to the end of its reach, over the grid pane.
+    // Scroll the column to the end of its reach, over the grid pane —
+    // **until the page stops moving** rather than a fixed number of notches.
+    // The reach is the page's height over the pane's, so it grows with the
+    // column: a count tuned to one file's tiles under-scrolls the moment the
+    // file earns another, and the last tile this test is about would still be
+    // below the fold with every assertion below reading the wrong one.
     let columns = app
         .canvas_panes()
         .pane("grid")
         .expect("the grid pane drew")
         .body;
     frame(&mut app, vec![egui::Event::PointerMoved(columns.center())]);
-    for _ in 0..6 {
+    let mut reached = app.canvas_scroll();
+    for _ in 0..64 {
         frame(
             &mut app,
             vec![egui::Event::MouseWheel {
@@ -1030,6 +1046,11 @@ fn a_brush_on_a_scrolled_tile_lands_on_the_tile_under_the_pointer() {
                 phase: egui::TouchPhase::Move,
             }],
         );
+        let now = app.canvas_scroll();
+        if (now - reached).abs() < 0.5 {
+            break;
+        }
+        reached = now;
     }
     for _ in 0..6 {
         frame(&mut app, Vec::new());
@@ -3061,23 +3082,27 @@ fn the_band_scrolls_with_its_columns_and_not_with_its_rows() {
     // movement is compared against. Read below the band so the band's own
     // galleys are not in it.
     let body_rect = egui::Rect::from_min_max(egui::pos2(pane.left(), pane.top() + 200.0), pane.max);
-    // **Keyed by text, so only a text that appears once is a key.** A value
-    // the table holds twice — `4.04` in two of the grid pane's nine columns —
-    // is one entry in this map before the scroll and a different cell's entry
-    // after it, and the difference between those two positions is not a
-    // distance anything travelled. Measured: it came out at -9.875 points
-    // beside the -334 every other cell moved. Dropping the repeats leaves the
-    // cells whose identity survives a scroll.
+    // **Keyed by the text AND the row it was drawn in.** A value the table
+    // holds twice — `4.04` in two of the grid pane's nine columns — is one
+    // entry in a map keyed by the text alone, and which of the two cells that
+    // entry is can differ before and after the scroll: the difference between
+    // those two positions is not a distance anything travelled. Measured
+    // twice, at -9.875 points and at +327.25, beside the -334 every other cell
+    // moved. A row's own top does not move under a **sideways** scroll, so the
+    // row identifies the cell across the two frames; a key that still repeats
+    // inside one frame — the same value twice in one row — is dropped, because
+    // there is nothing to tell those two apart either.
     let body_cells = |app: &mut MeridianApp| -> std::collections::BTreeMap<String, egui::Pos2> {
         let drawn = drawn_cells_in(app, &ctx, &raw, body_rect);
+        let key = |pos: &egui::Pos2, text: &str| format!("{text} in the row at {:.0}", pos.y);
         let mut seen: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
-        for (_, text) in &drawn {
-            *seen.entry(text.clone()).or_default() += 1;
+        for (pos, text) in &drawn {
+            *seen.entry(key(pos, text)).or_default() += 1;
         }
         drawn
-            .into_iter()
-            .filter(|(_, text)| seen.get(text) == Some(&1))
-            .map(|(pos, text)| (text, pos))
+            .iter()
+            .filter(|(pos, text)| seen.get(&key(pos, text)) == Some(&1))
+            .map(|(pos, text)| (key(pos, text), *pos))
             .collect()
     };
 
@@ -3435,19 +3460,25 @@ fn neither_pane_can_be_dragged_shut() {
     );
 }
 
-/// **The window `every_transposed_row_states_its_leaf_and_its_storage_type`
-/// and the transposed baselines are read in** — [`SCREEN`] made taller until
-/// all [`STACKED`] rows clear the fold.
+/// **The window the two transposed-row tests below and the transposed
+/// baselines are read in** — [`SCREEN`] made taller until every row the
+/// fixture earns clears the fold.
 ///
 /// The rows do not compress past `MIN_ROW_HEIGHT`, so at [`SCREEN`] the last
-/// of the fixture's seven stands below the pane's foot and the painter clips
-/// it away — correctly, and it is what the scroll exists for. A test that read
-/// the labels there would be reading six rows and calling it every row, and
-/// the baseline beside it would photograph six. The height is stated here so
-/// both read the same window.
+/// of them stand below the pane's foot and the painter clips them away —
+/// correctly, and it is what the scroll exists for. A test that read the
+/// labels there would be reading a subset of the rows and calling it every
+/// row, and the baseline beside it would photograph that subset. The height is
+/// stated here so both read the same window.
+///
+/// **1344, up from the 1088 this held** while the coordinate pair's two
+/// columns earned no rows of their own: the pane's content is the window less
+/// 164 points of chrome, the fixture's nine rows at `MIN_ROW_HEIGHT` need
+/// 1152, and 1344 leaves them the same 28 points of slack over the floor that
+/// 1088 left the seven rows drawn before.
 const TRANSPOSED_SCREEN: egui::Rect = egui::Rect {
     min: egui::Pos2::ZERO,
-    max: egui::pos2(1440.0, 1088.0),
+    max: egui::pos2(1440.0, 1344.0),
 };
 
 /// [`settled_window`] at `screen` with the grid transposed, by a click on the
@@ -3469,6 +3500,39 @@ fn settled_window_transposed(screen: egui::Rect) -> (MeridianApp, egui::Context,
     (app, ctx, raw)
 }
 
+/// **The transposed layout draws one row per column of the table, named.**
+///
+/// The rows are read back **by name** off [`ChartDoc::transposed_rows`] — the
+/// record the band's own painter leaves — and compared against the fixture's
+/// own header, in the file's own order. A column of the table with no row of
+/// its own fails here naming itself, which is the failure this exists for: the
+/// generator used to draw the coordinate pair as one joint map and nothing
+/// else, so `latitude` and `longitude` had no row and the layout that says
+/// *the columns* showed two fewer than the outline beside it.
+///
+/// By name rather than by count, because a count is green over a layout that
+/// drew nine rows for the wrong nine columns, and a layout drawn from the tile
+/// list can go wrong in exactly that way — the pair's joint map carries a
+/// coordinate column's name too.
+#[test]
+fn the_transposed_grid_draws_a_row_for_every_column_of_the_table() {
+    let (app, _ctx, _raw) = settled_window_transposed(TRANSPOSED_SCREEN);
+    let drawn: Vec<String> = app
+        .chart_doc()
+        .transposed_rows
+        .iter()
+        .map(|row| row.name.clone())
+        .collect();
+    assert_eq!(
+        drawn,
+        fixture_columns(),
+        "the transposed grid drew rows for {drawn:?} where the table's own \
+         columns are {:?} — a column with no row is one the reader cannot see \
+         a distribution for or brush a span of",
+        fixture_columns()
+    );
+}
+
 /// **Every transposed row states its column's finetype leaf and its storage
 /// type, in the ink the reader can see.**
 ///
@@ -3477,12 +3541,12 @@ fn settled_window_transposed(screen: egui::Rect) -> (MeridianApp, egui::Context,
 /// this exists for is the row density quietly dropping down to the compact
 /// branch, which draws no leaf and no storage row, and leaves
 /// `ColumnBandDrawn` reporting a cell that is there. A presence-only check —
-/// "the band drew seven cells" — is green over that, and was: the first half
+/// "the band drew its cells" — is green over that, and was: the first half
 /// of this work shipped one.
 ///
 /// The pair is looked for **inside the row's own cell** rather than anywhere
 /// in the pane, so a leaf drawn once for the whole grid, or drawn against the
-/// wrong row, is not read as seven correct ones. `drawn_cells_in` respects
+/// wrong row, is not read as every row correct. `drawn_cells_in` respects
 /// clip rects, so what is counted is what reaches the reader rather than what
 /// the painter was handed.
 ///
@@ -3502,10 +3566,10 @@ fn every_transposed_row_states_its_leaf_and_its_storage_type() {
         .collect();
     assert_eq!(
         rows.len(),
-        STACKED,
-        "the transposed grid drew {} rows where the fixture earns {STACKED} \
-         tiles past the hero",
-        rows.len()
+        fixture_columns().len(),
+        "the transposed grid drew {} rows where the fixture has {} columns",
+        rows.len(),
+        fixture_columns().len()
     );
     for row in &rows {
         let (leaf, storage) = facts

@@ -25,18 +25,34 @@ fn housing() -> std::path::PathBuf {
         .join("tests/data/california_housing_sample.csv")
 }
 
-/// The tiles the fixture's nine columns produce, in the order the generator
-/// stacks them — the hero's coordinate pair first, then the seven the column
-/// beside it draws and the transposed layout draws as rows.
-const TILE_ORDER: [&str; 7] = [
-    "median_income",
-    "house_age",
-    "avg_rooms",
-    "avg_bedrooms",
-    "population",
-    "avg_occupancy",
-    "median_house_value",
-];
+/// The rows the transposed layout draws, in order: the fixture's own columns,
+/// read off its header line.
+///
+/// The generator gives every column of this file a tile and adds the
+/// coordinate pair's joint map on top, and the map is the hero — so the column
+/// beside the hero, and the rows the transposed layout draws from it, is one
+/// entry per column of the table in the table's own order, `latitude` and
+/// `longitude` among them.
+///
+/// Read rather than written down, the same read
+/// `tests/canvas_pane_group.rs::fixture_columns` makes: a column added to or
+/// taken out of the fixture then reddens the layout rather than a list
+/// standing beside it.
+fn tile_order() -> Vec<String> {
+    let path = housing();
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let header = text
+        .lines()
+        .next()
+        .unwrap_or_else(|| panic!("{} has no header line", path.display()));
+    let columns: Vec<String> = header.split(',').map(|c| c.trim().to_string()).collect();
+    assert!(
+        columns.len() > 1 && columns.iter().all(|c| !c.is_empty()),
+        "the fixture's header line reads {columns:?}, which is not a table's"
+    );
+    columns
+}
 
 /// How many frames the pointer is held still before a hover is read back —
 /// `tests/tile_scale_switch.rs::STILL_FRAMES`, which is where the measurement
@@ -51,14 +67,43 @@ struct Live {
     screen: egui::Rect,
 }
 
+/// **The window a transposed claim is read in** — tall enough that the rows
+/// the fixture earns clear the fold, and the window the transposed baselines
+/// are photographed in.
+///
+/// Not the window the boot asks for. That one is derived from the hero the
+/// **rows** layout draws, which is the right answer to the question a data
+/// file opens on and leaves the grid pane less content than this fixture's
+/// nine rows at `MIN_ROW_HEIGHT` stack to. A row past that fold is clipped
+/// away — correctly, and `a_transposed_row_clears_its_own_floor` is the claim
+/// about it — but a test that reads a row's numbers or sweeps a brush across
+/// its histogram down there is aiming at a box nothing drew. `Live::at` says
+/// so out loud rather than leaving it to whatever the gesture lands on.
+///
+/// 1344, matching `crates/brightfield-shell/tests/canvas_pane_group.rs`'s own
+/// `TRANSPOSED_SCREEN` so that the rows one file reads back as text are the
+/// rows the other photographs: the pane's content is the window less 164
+/// points of chrome and the nine rows need 1152.
+const TRANSPOSED_SCREEN: egui::Rect = egui::Rect {
+    min: egui::Pos2::ZERO,
+    max: egui::pos2(1440.0, 1344.0),
+};
+
 impl Live {
-    /// A window over the fixture at the size that boot asks for, settled.
+    /// A window over the fixture at [`TRANSPOSED_SCREEN`], settled.
+    ///
+    /// Every test in this file throws the grid to its columns, so the window
+    /// they are read in is the transposed layout's and not the one the boot
+    /// asks for. It was the boot's until the boot stopped sizing itself around
+    /// the tile column: at that size the fixture's seventh row sat below the
+    /// pane's foot, and the brush tests aimed at a box the painter had clipped
+    /// away.
     fn open() -> Self {
-        Self::open_at(None)
+        Self::open_at(Some(TRANSPOSED_SCREEN))
     }
 
     /// [`Live::open`] in a window of a named size — the short window the
-    /// scroll claim is read in, where seven rows at their floor outreach the
+    /// scroll claim is read in, where nine rows at their floor outreach the
     /// pane.
     fn open_at(screen: Option<egui::Rect>) -> Self {
         let path = housing();
@@ -310,7 +355,7 @@ fn plot_bins(doc: &mut ChartDoc, plot: usize, column: &str) -> Vec<(f64, f64)> {
 ///
 /// Three claims, and the third is the one the layout exists for:
 ///
-/// 1. the rows the pane drew are the seven tile columns, in the order the
+/// 1. the rows the pane drew are the nine tile columns, in the order the
 ///    column beside the hero stacks them, top to bottom;
 /// 2. each row's numbers stand beside that row's own picture — the cell ends
 ///    where the plot begins, at the plot's own top and bottom;
@@ -362,11 +407,12 @@ fn the_transposed_grid_draws_one_row_per_tile_column_in_tile_order() {
     );
 
     let rows = live.rows();
-    let drawn: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+    let drawn: Vec<String> = rows.iter().map(|row| row.name.clone()).collect();
     assert_eq!(
         drawn,
-        TILE_ORDER.to_vec(),
-        "the transposed pane drew {drawn:?} where the column stacks {TILE_ORDER:?}"
+        tile_order(),
+        "the transposed pane drew {drawn:?} where the table's columns are {:?}",
+        tile_order()
     );
     let tops: Vec<f32> = rows.iter().map(|row| row.cell.top()).collect();
     assert!(
@@ -404,13 +450,24 @@ fn every_transposed_row_states_the_numbers_the_band_states() {
     let rows = live.rows();
     assert_eq!(
         rows.len(),
-        TILE_ORDER.len(),
+        tile_order().len(),
         "the pane drew {} rows, so the loop below would state nothing",
         rows.len()
     );
     for row in rows {
         let name = row.name.clone();
-        assert_eq!(row.glyph, "#", "{name} drew glyph {:?}", row.glyph);
+        // The glyph is the column's own, off its finetype leaf: a plain
+        // measure draws `#` and a coordinate draws the degree sign. The two
+        // coordinate rows are new here — they exist because the pair's columns
+        // keep their own histograms beside the joint map — and they are named
+        // rather than waved through, so a row that lost its glyph fails and a
+        // row that drew the wrong one fails too.
+        let want = if matches!(name.as_str(), "latitude" | "longitude") {
+            "\u{b0}"
+        } else {
+            "#"
+        };
+        assert_eq!(row.glyph, want, "{name} drew glyph {:?}", row.glyph);
         assert!(row.leaf.is_some(), "{name} stated no finetype leaf");
         assert!(row.storage.is_some(), "{name} stated no storage type");
         assert!(row.range.is_some(), "{name} stated no range");
@@ -519,7 +576,7 @@ fn the_layout_switch_reads_its_two_states_and_takes_the_pane_both_ways() {
     live.throw(GridLayout::Columns);
     assert_eq!(live.app.grid_layout(), GridLayout::Columns);
     assert_eq!(live.switch().active, GridLayout::Columns);
-    assert_eq!(live.rows().len(), TILE_ORDER.len());
+    assert_eq!(live.rows().len(), tile_order().len());
 
     // …and back, by a second click on the rect this frame recorded.
     live.throw(GridLayout::Rows);
@@ -593,7 +650,7 @@ fn throwing_the_layout_switch_draws_the_same_two_panes_at_the_same_rects() {
     let transposed = pane_boxes(&live);
     assert_eq!(
         live.rows().len(),
-        TILE_ORDER.len(),
+        tile_order().len(),
         "the transposed canvas drew {} rows, so the pane group below is not \
          the transposed one",
         live.rows().len()
@@ -660,7 +717,7 @@ fn a_transposed_row_clears_its_own_floor() {
         );
     }
 
-    // A window short enough that seven rows at that floor do not fit the pane.
+    // A window short enough that nine rows at that floor do not fit the pane.
     let mut live = Live::open_at(Some(egui::Rect::from_min_size(
         egui::Pos2::ZERO,
         egui::vec2(1440.0, 900.0),
@@ -668,7 +725,7 @@ fn a_transposed_row_clears_its_own_floor() {
     live.throw(GridLayout::Columns);
 
     let rows = live.rows();
-    assert_eq!(rows.len(), TILE_ORDER.len());
+    assert_eq!(rows.len(), tile_order().len());
     for row in &rows {
         let (_, plot) = live.beside(row);
         assert!(
@@ -703,7 +760,25 @@ impl Live {
     /// middle height — clear of the scale switch at its head.
     fn at(&self, plot: usize, fraction: f32) -> egui::Pos2 {
         let rect = self.app.composed_plot_rects()[plot];
-        egui::pos2(rect.left() + rect.width() * fraction, rect.center().y)
+        let point = egui::pos2(rect.left() + rect.width() * fraction, rect.center().y);
+        // A row past the pane's foot is clipped away, and a press aimed there
+        // lands on chrome: the sweep commits nothing and the reading below is
+        // about some other row, or about no row at all. Said here, at the
+        // point the gesture is aimed, because the symptom otherwise surfaces
+        // as an absent selection several assertions later.
+        let pane = self
+            .app
+            .canvas_panes()
+            .pane("grid")
+            .expect("the grid pane drew")
+            .body;
+        assert!(
+            pane.contains(point),
+            "plot {plot} was laid out at {rect:?} and this sweep presses \
+             {point:?}, outside the grid pane {pane:?} — the row is below \
+             the fold at this window and the painter clipped it away"
+        );
+        point
     }
 
     /// Sweep a brush across plot `plot`, from one fraction of its width to
@@ -776,6 +851,101 @@ fn committed_interval(doc: &ChartDoc, column: &str) -> (f64, f64) {
          interval this test can check rows against"
     );
     (bounds[0].min(bounds[1]), bounds[0].max(bounds[1]))
+}
+
+/// **A brush on the coordinate pair's own row narrows the grid, the count and
+/// the other rows**, exactly as a brush on any other row does.
+///
+/// `latitude` has a row at all only because the pair's two columns keep their
+/// own histograms beside the joint map, and a row a reader cannot brush is
+/// half a row: the analyst who transposes the grid to find where the
+/// coordinates lie wants to hold a span of latitude and watch the rest of the
+/// screen answer. So the gesture is driven on that row — pointer events on the
+/// rect the frame drew, no interaction registered by hand — and every figure
+/// is read back **through the document**: the clause the window says out loud,
+/// the count the status band states, the rows the grid's own read would list,
+/// and the bins another row's histogram draws. None of it asks whether a field
+/// was set.
+///
+/// The ghost is read too and must not move, for
+/// `a_brush_on_a_transposed_row_narrows_the_grid_the_count_and_the_other_rows`'s
+/// reason: a narrowing that took the unfiltered layer with it would be a
+/// re-query of the file rather than a crossfilter.
+#[test]
+fn a_brush_on_the_latitude_row_narrows_the_grid_the_count_and_the_other_rows() {
+    let mut live = Live::open();
+    live.throw(GridLayout::Columns);
+
+    let (_, brushed, _) = live.row("latitude");
+    let (_, other, _) = live.row("population");
+    let ghost_before = plot_bins(live.app.chart_doc_mut(), other, "population");
+    let subset_before: f64 = ghost_before.iter().map(|(_, count)| count).sum::<f64>() / 2.0;
+    assert!(
+        (subset_before - 240.0).abs() < f64::EPSILON,
+        "population's two layers hold {subset_before} rows apiece before any \
+         brush, where the sample is 240"
+    );
+
+    live.brush(brushed, 0.30, 0.62);
+
+    // What the sweep committed, said out loud by the window itself.
+    let (lo, hi) = committed_interval(live.doc(), "latitude");
+    let values = fixture_column("latitude");
+    assert_eq!(values.len(), 240, "the committed sample is 240 rows");
+    let inside = values.iter().filter(|v| (lo..=hi).contains(v)).count();
+    assert!(
+        inside > 0 && inside < 240,
+        "the sweep committed [{lo}, {hi}], which holds {inside} of 240 rows — \
+         an interval that kept everything, or nothing, would make every \
+         narrowing below unreadable"
+    );
+
+    // The count the status band states.
+    assert_eq!(
+        live.doc().composed.rows,
+        Some(brightfield_shell::pipeline::RowCount {
+            selected: inside as u64,
+            total: 240
+        }),
+        "the count under the hero disagrees with the CSV's own count of rows \
+         inside the brushed span of latitude"
+    );
+
+    // The rows the grid's own read would list.
+    let doc = live.app.chart_doc_mut();
+    let mark = doc
+        .live_dashboard()
+        .expect("the opened file has a live dashboard")
+        .rows_mark();
+    let session = doc
+        .live_coordinator()
+        .expect("the opened file has a live session")
+        .session();
+    assert_eq!(
+        session
+            .step_rows_count(mark, brightfield_engine::RowsAudience::Reader)
+            .expect("the grid's own read"),
+        inside as u64,
+        "the rows the grid would list do not agree with the CSV's own count \
+         inside the brushed span of latitude"
+    );
+
+    // The other rows' histograms: the subset narrowed and the ghost did not.
+    let after = plot_bins(live.app.chart_doc_mut(), other, "population");
+    let total_after: f64 = after.iter().map(|(_, count)| count).sum();
+    #[allow(clippy::cast_precision_loss)]
+    let expected = 240.0 + inside as f64;
+    assert!(
+        (total_after - expected).abs() < f64::EPSILON,
+        "population's two layers hold {total_after} rows between them under \
+         the brush, where the ghost's 240 and the subset's {inside} make \
+         {expected}"
+    );
+    assert_ne!(
+        after, ghost_before,
+        "population's histogram drew the identical bins before and after the \
+         sweep — the brush on the latitude row did not reach the other marks"
+    );
 }
 
 /// **A brush dragged across a transposed row's histogram narrows the rest of

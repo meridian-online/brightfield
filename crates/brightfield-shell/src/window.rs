@@ -469,9 +469,11 @@ const CARD_HEIGHT: f32 = 220.0 + spacing::ROW_GRID;
 /// # Who still reads this, now that a saved layout outranks it
 ///
 /// Not a decoy, and worth naming the readers rather than leaving that to be
-/// rediscovered. The live window consults it only on a boot with **no**
-/// restored layout and a document to derive a size from; every other caller
-/// has no saved layout and cannot get one — `capture::capture_png` and the
+/// rediscovered. A boot whose dashboard the generator laid out as a hero
+/// beside a column is sized by [`rows_layout_window_size`] instead, which is
+/// this arithmetic asked about a page height the tile column is out of. What
+/// reaches here is the rest: a live window booting some other document with
+/// no restored layout to outrank it, `capture::capture_png` and the
 /// `brightfield-shot` binary behind it, which need a deterministic
 /// content-derived size for the PNG tier, and the tests that hold this
 /// arithmetic to a real laid-out frame rather than to a second copy of itself.
@@ -479,6 +481,48 @@ const CARD_HEIGHT: f32 = 220.0 + spacing::ROW_GRID;
 /// once caught clipping the bottom seventeen rows of its own chart.
 #[must_use]
 pub fn chart_window_size(composed: &Composed) -> (f32, f32) {
+    window_around(composed, composed.height as f32)
+}
+
+/// The natural window for a dashboard the generator laid out as **a hero
+/// beside a column** — the arithmetic [`chart_window_size`] performs, asked
+/// about the page height the ROWS layout draws rather than about the page's
+/// own.
+///
+/// The rows layout is the hero pane beside the grid; the tile column is
+/// composed out of sight beside the hero and clipped to that pane. The
+/// generator's page, though, is as tall as the taller of the two — the hero
+/// at [`crate::dashboard::HERO_HEIGHT`], the column at one
+/// [`crate::dashboard::COLUMN_TILE_HEIGHT`] per tile — so a table that earns
+/// more tiles composes a taller page, and a window read straight off that page
+/// is sized around a picture the layout it opens on does not draw. A file
+/// whose columns grew by two opened taller by the two tiles they earned, on a
+/// layout showing neither.
+///
+/// So the height is the page's, **capped** at the hero's, and that cap is what
+/// takes the column back out of the answer:
+/// `the_window_a_data_file_opens_at_does_not_grow_with_the_tile_count` builds
+/// a boot over two tables whose tile counts differ, checks that their composed
+/// pages differ in height, and reads one window size back from both.
+///
+/// A cap and not a substitution, because the hero's declared height is the
+/// ceiling here rather than the floor: a page shorter than the hero — which
+/// the generator does not emit today, and which a change to the hero's own
+/// weight could — keeps its own height instead of being stretched to one.
+///
+/// The width is the page's, untouched. The page is as wide as the hero, the
+/// gutter and one tile whatever the column holds, so the across axis did not
+/// carry the tile count in the first place.
+#[must_use]
+pub fn rows_layout_window_size(composed: &Composed) -> (f32, f32) {
+    let hero = f32::from(u16::try_from(crate::dashboard::HERO_HEIGHT).unwrap_or(u16::MAX));
+    window_around(composed, (composed.height as f32).min(hero))
+}
+
+/// [`chart_window_size`]'s arithmetic over an explicit page height, so that it
+/// and [`rows_layout_window_size`] differ in the height they are asked about
+/// and in no other term.
+fn window_around(composed: &Composed, page_h: f32) -> (f32, f32) {
     let inset = chrome::pane_content_inset();
     // Every band and rail the window lays out before the canvas gets what is
     // left, read out of the arrangement rather than restated here.
@@ -491,7 +535,7 @@ pub fn chart_window_size(composed: &Composed) -> (f32, f32) {
     let pane_w = composed.width as f32 + crate::legend::band_width(composed) + 2.0 * inset;
     let w = (pane_w + across).ceil();
 
-    let pane_h = composed.height as f32 + chart_toolbar_band(composed) + 2.0 * inset;
+    let pane_h = page_h + chart_toolbar_band(composed) + 2.0 * inset;
     let h = (pane_h + down).ceil();
 
     (w, h)
@@ -1337,6 +1381,11 @@ impl Boot {
             // the envelope deliberately leaves to scroll.
             let (w, h) = ProtocolModel::boot_extent(&self.protocol, self.flow);
             protocol_window_size_for(w as f32, h as f32)
+        } else if self.stacked_tiles.is_some() {
+            // A generated hero-and-column dashboard, which opens on the rows
+            // layout — so the column beside the hero is out of sight and out
+            // of the size. See `rows_layout_window_size`.
+            rows_layout_window_size(&self.composed)
         } else {
             chart_window_size(&self.composed)
         }

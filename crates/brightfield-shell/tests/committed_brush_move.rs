@@ -39,8 +39,8 @@ use std::path::PathBuf;
 /// California Housing, sampled — the same fixture
 /// `tests/canvas_pane_group.rs` and `tests/equal_aspect_resize.rs` open: nine
 /// numeric columns, a longitude/latitude pair the generator draws as the
-/// point-map hero (`intervalXY`), seven others each earning a column tile
-/// (`intervalX`).
+/// point-map hero (`intervalXY`), and a column tile (`intervalX`) for every
+/// one of the nine, the pair's two included.
 fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/california_housing_sample.csv")
 }

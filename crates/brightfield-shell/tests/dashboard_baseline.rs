@@ -93,7 +93,8 @@ fn fixture() -> PathBuf {
 /// and belongs in `open-analytics` rather than in this repo's test data. What
 /// it shares with the real file is everything the picture depends on: the nine
 /// columns in file order, a coordinate pair among them so the generator draws
-/// a map, and seven other columns that each earn a tile.
+/// a map, and a tile for every one of the nine — the pair's two included, each
+/// beside the joint map.
 ///
 /// The choice table above stays on [`fixture`], whose four columns are four
 /// different shapes and answer a different question — which kind each *type*
@@ -104,7 +105,15 @@ fn housing() -> PathBuf {
 }
 
 /// The tiles [`housing`] earns, in the order the composition places them: the
-/// map first, then its seven columns in the file's own order.
+/// pair's joint map first, then every one of the file's nine columns in the
+/// file's own order — the two coordinates among them, each with the histogram
+/// every other column gets, which
+/// [`the_generated_dashboard_light_baseline`] reads back through
+/// [`assert_housing`] before it photographs anything.
+///
+/// `longitude` appears twice on purpose. The first is the map, which the
+/// generator names for the pair's longitude column; the second is that
+/// column's own histogram, standing where the file declares it.
 const HOUSING_PLOTS: &[&str] = &[
     "longitude",
     "median_income",
@@ -113,12 +122,14 @@ const HOUSING_PLOTS: &[&str] = &[
     "avg_bedrooms",
     "population",
     "avg_occupancy",
+    "latitude",
+    "longitude",
     "median_house_value",
 ];
 
 /// **The structural half of the picture below**: the map is the hero, its pair
-/// is the two coordinate columns, and the seven others stack beside it in file
-/// order.
+/// is the two coordinate columns, and every column of the file — the two
+/// coordinates included — stacks beside it in file order.
 ///
 /// Runs ahead of `image_snapshot` for the reason [`assert_choices`] does, and
 /// it is the assertion that makes a red baseline legible: a photograph of a
@@ -147,8 +158,9 @@ fn assert_housing(dash: &Dashboard) {
     );
     assert_eq!(
         dash.column_tiles().len(),
-        7,
-        "the column holds {} tiles rather than the seven the file earns",
+        HOUSING_PLOTS.len() - 1,
+        "the column holds {} tiles rather than one per column of the file, \
+         the pair's joint map being the hero and standing outside it",
         dash.column_tiles().len()
     );
     assert!(
@@ -179,13 +191,14 @@ fn site_readings() -> PathBuf {
 
 /// The tiles [`site_readings`] earns, in the order the composition places
 /// them: the map first (named for its longitude column, [`assert_housing`]'s
-/// convention), then `day` and `reading` beside it in file order.
-const SITE_READINGS_PLOTS: &[&str] = &["longitude", "day", "reading"];
+/// convention), then every one of the file's four columns beside it in file
+/// order — `day`, the pair's own two, and `reading`.
+const SITE_READINGS_PLOTS: &[&str] = &["longitude", "day", "longitude", "latitude", "reading"];
 
 /// **The structural half of the picture [`the_site_readings_dashboard_light_baseline`]
 /// and its dark twin capture**, [`assert_housing`]'s pattern read against
-/// [`site_readings`] instead: the map is the hero, `day` and `reading` stack
-/// beside it, and nothing was left out.
+/// [`site_readings`] instead: the map is the hero, the file's four columns
+/// stack beside it, and nothing was left out.
 fn assert_site_readings(dash: &Dashboard) {
     let drawn: Vec<&str> = dash.plot_order().iter().map(|t| t.column()).collect();
     assert_eq!(
@@ -209,9 +222,9 @@ fn assert_site_readings(dash: &Dashboard) {
     );
     assert_eq!(
         dash.column_tiles().len(),
-        2,
-        "the column holds {} tiles rather than the two (day, reading) the \
-         file earns",
+        SITE_READINGS_PLOTS.len() - 1,
+        "the column holds {} tiles rather than one per column of the file \
+         (day, longitude, latitude, reading)",
         dash.column_tiles().len()
     );
     assert!(
@@ -498,8 +511,59 @@ fn the_generated_dashboard_dark_baseline() {
     egui_kittest::image_snapshot(&image, "dashboard_dark");
 }
 
+/// **The window a data file opens at does not grow with the count of tiles
+/// beside the hero.**
+///
+/// Two generated dashboards, one from each fixture this file already opens:
+/// [`housing`] earns a tile for each of its nine columns beside the joint map,
+/// [`site_readings`] four beside its own. The generator's page is as tall as
+/// the taller of the hero and that column, so those two compose pages of
+/// different heights — asserted here, because a pair of fixtures whose pages
+/// happened to agree would let this test pass over the arithmetic it is about.
+/// The window each boot asks for is then read back, and it is one size.
+///
+/// What it pins is the route `Boot::window_size` takes for a generated
+/// dashboard: `rows_layout_window_size`, which caps the page at the hero's own
+/// height. Read straight through `chart_window_size`, as it was until this
+/// test existed, the taller page opens a taller window — a window sized
+/// around a column the rows layout composes out of sight and clips away.
+#[test]
+fn the_window_a_data_file_opens_at_does_not_grow_with_the_tile_count() {
+    let tall_path = housing();
+    let tall = Boot::data_file(tall_path.to_str().expect("utf-8 fixture path"))
+        .unwrap_or_else(|e| panic!("open {}: {e}", tall_path.display()));
+    let short_path = site_readings();
+    let short = Boot::data_file(short_path.to_str().expect("utf-8 fixture path"))
+        .unwrap_or_else(|e| panic!("open {}: {e}", short_path.display()));
+
+    assert_ne!(
+        tall.stacked_tiles, short.stacked_tiles,
+        "both fixtures stand the same number of tiles beside the hero \
+         ({:?}), so this test cannot tell a window derived from the column \
+         from one that is not",
+        tall.stacked_tiles
+    );
+    assert_ne!(
+        tall.composed.height, short.composed.height,
+        "the two fixtures compose pages of the same height ({} points), so the \
+         tile count has nothing left to leak into the window and this test \
+         would stay green with the cap removed",
+        tall.composed.height
+    );
+
+    let (tall_size, short_size) = (tall.window_size(), short.window_size());
+    assert_eq!(
+        tall_size, short_size,
+        "{:?} tiles beside the hero open a window of {tall_size:?} and {:?} \
+         tiles open {short_size:?}, so the size a data file opens at is \
+         following the tile column — which the rows layout it opens on \
+         composes out of sight and clips away",
+        tall.stacked_tiles, short.stacked_tiles
+    );
+}
+
 /// The window the scrolled capture below is taken in — the size the
-/// composition this card is cut from was drawn at, and short enough that seven
+/// composition this card is cut from was drawn at, and short enough that nine
 /// tiles at their 96-point floor need a page taller than the pane.
 const SHORT_WINDOW: (f32, f32) = (1440.0, 900.0);
 
@@ -1648,21 +1712,27 @@ fn capture_grid_view(mode: Mode, at: egui::Pos2, name: &str) -> image::RgbaImage
 // ---------------------------------------------------------------------------
 
 /// **The window the transposed pair is photographed in** — wide as the
-/// untransposed baselines and tall enough for the seven rows [`housing`] has.
+/// untransposed baselines and tall enough for the nine rows [`housing`] has,
+/// one per column of the file.
 ///
 /// A transposed row does not compress past `MIN_ROW_HEIGHT`, so in a shorter
-/// window the last row stands below the pane's foot and the painter clips it
+/// window the last rows stand below the pane's foot and the painter clips them
 /// away. That is correct behaviour and the scroll exists for it, but a
-/// baseline photographed there would be a picture of six rows offered as a
-/// picture of the layout — and the row that goes missing is the one whose
-/// labels a regression would take out first, since it is the one nothing else
-/// is drawn beside. `canvas_pane_group.rs`'s `TRANSPOSED_SCREEN` is the same
-/// window, so the labels the pair photographs are the labels that file reads
-/// back as text.
-const TRANSPOSED_WINDOW: (f32, f32) = (1440.0, 1088.0);
+/// baseline photographed there would be a picture of fewer rows offered as a
+/// picture of the layout — and the rows that go missing are the ones whose
+/// labels a regression would take out first, since they are the ones nothing
+/// else is drawn beside. `canvas_pane_group.rs`'s `TRANSPOSED_SCREEN` is the
+/// same window, so the labels the pair photographs are the labels that file
+/// reads back as text.
+///
+/// 1344 and not the 1088 this held while the coordinate pair's two columns
+/// earned no rows of their own: nine rows at `MIN_ROW_HEIGHT` need 1152 points
+/// of pane content and the pane's content is the window less 164 points of
+/// chrome.
+const TRANSPOSED_WINDOW: (f32, f32) = (1440.0, 1344.0);
 
 /// How many rows the transposed grid draws for [`housing`]: one per tile past
-/// the hero.
+/// the hero, which is one per column of the file.
 const TRANSPOSED_ROWS: usize = HOUSING_PLOTS.len() - 1;
 
 /// **The script that throws the grid pane's layout switch**, aimed at the rect

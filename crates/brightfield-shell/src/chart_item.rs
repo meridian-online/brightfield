@@ -1439,11 +1439,11 @@ fn binned_axis(plot: &PlotHandle, column: &str) -> Option<PlotAxis> {
 
 /// The words the control offers on hover: what it is, and which tile's.
 ///
-/// It names the column because seven controls stand on one page and a tooltip
+/// It names the column because nine controls stand on one page and a tooltip
 /// that said only *scale* would read the same over all of them — which is also
 /// a readback that could not tell a control aimed at the wrong plot from one
-/// aimed at the right one. `each_tile_s_switch_names_its_own_column` reads
-/// seven different strings.
+/// aimed at the right one. `each_switch_names_its_own_column_in_its_hover_text`
+/// reads nine different strings.
 fn scale_switch_hover(column: &str) -> String {
     format!("scale: {column}")
 }
