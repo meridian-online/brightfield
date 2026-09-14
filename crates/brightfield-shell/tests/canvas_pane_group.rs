@@ -3539,3 +3539,117 @@ fn every_transposed_row_states_its_leaf_and_its_storage_type() {
         }
     }
 }
+
+/// **Untransposed, a press and a drag in the grid pane are over no page.**
+///
+/// The untransposed canvas composes a page wider than the hero pane: the
+/// spec's tile column stands past the gutter, and the clip is the hero pane,
+/// so none of it reaches the screen. Those tiles are nevertheless declared at
+/// window positions that fall inside the **grid pane** beside it, where the
+/// reader is looking at a table. Without a rule that can answer *over no
+/// page*, a press there is answered at the page's own origin and lands on
+/// whichever invisible tile the page has at that depth: the inspector changes
+/// what it is showing, and a sweep commits a crossfilter, for a gesture whose
+/// whole visible content was a drag across a table.
+///
+/// `PaneViews::sole` is that rule — one view, the hero pane's content rect,
+/// and a pointer outside it is over nothing. It was written with the pane
+/// group and had no test: setting the record to `None` left 131 tests across
+/// eight targets green.
+///
+/// Read back through the **document** — the clause the engine is holding and
+/// the column the inspector is showing — rather than off the gesture, because
+/// those two are the damage. The hero is clicked first so "the selection did
+/// not change" is an assertion rather than a tautology: with nothing selected
+/// to begin with, a probe that selected nothing and a document with nothing to
+/// select read the same.
+///
+/// The probe is checked to be inside the grid pane's content rect **and**
+/// inside the tile the page declares there, before it is used. A layout change
+/// that moves one out from under the other reddens this rather than quietly
+/// making it a press on nothing that could never have been a press on
+/// something.
+///
+/// Watched redden, one mutation: `charts.doc.pane_views =
+/// Some(PaneViews::sole(map_body))` in `draw_canvas_pane_group` replaced by
+/// `None`.
+#[test]
+fn a_press_in_the_grid_pane_lands_on_no_tile_the_hero_pane_is_hiding() {
+    let (mut app, ctx, raw) = settled_window();
+    let frame = |app: &mut MeridianApp, events: Vec<egui::Event>| {
+        let mut input = raw.clone();
+        input.events = events;
+        let _ = ctx.run_ui(input, |ui| app.draw(ui));
+    };
+    let click = |app: &mut MeridianApp, at: egui::Pos2| {
+        frame(
+            app,
+            vec![
+                egui::Event::PointerMoved(at),
+                button(at, egui::PointerButton::Primary, true),
+            ],
+        );
+        frame(app, vec![button(at, egui::PointerButton::Primary, false)]);
+        for _ in 0..2 {
+            frame(app, Vec::new());
+        }
+    };
+
+    let grid = app
+        .canvas_panes()
+        .pane("grid")
+        .expect("the grid pane drew")
+        .body;
+    let hero_tile = app.composed_plot_rects()[0];
+    let hidden = app.composed_plot_rects()[1];
+    assert!(
+        grid.contains_rect(hidden.shrink(1.0)),
+        "the page's second tile is declared at {hidden:?}, which is not inside \
+         the grid pane's content rect {grid:?} — the probe below is not aimed \
+         at the case this test is about"
+    );
+
+    click(&mut app, hero_tile.center());
+    let selected = selected_column(&app);
+    assert!(
+        selected.is_some(),
+        "the click on the hero selected no column, so the assertion below \
+         cannot tell a press that changed nothing from a document with nothing \
+         to change"
+    );
+
+    // A press and a drag wholly inside the hidden tile, which is wholly inside
+    // the grid pane: the sweep a reader makes across a table.
+    let from = egui::pos2(hidden.left() + hidden.width() * 0.3, hidden.center().y);
+    let to = egui::pos2(hidden.left() + hidden.width() * 0.7, hidden.center().y);
+    frame(
+        &mut app,
+        vec![
+            egui::Event::PointerMoved(from),
+            button(from, egui::PointerButton::Primary, true),
+        ],
+    );
+    frame(&mut app, vec![egui::Event::PointerMoved(to)]);
+    frame(
+        &mut app,
+        vec![button(to, egui::PointerButton::Primary, false)],
+    );
+    for _ in 0..2 {
+        frame(&mut app, Vec::new());
+    }
+
+    let clause = app.chart_doc().selection_sql();
+    assert_eq!(
+        clause, None,
+        "a sweep from {from:?} to {to:?} inside the grid pane committed \
+         {clause:?} — the page's tile column is composed under there and the \
+         hero pane's clip is all that hides it, so the reader has filtered the \
+         file by dragging across a table"
+    );
+    assert_eq!(
+        selected_column(&app),
+        selected,
+        "the same sweep changed the column the inspector is showing — it \
+         landed on the tile the clip hides"
+    );
+}
