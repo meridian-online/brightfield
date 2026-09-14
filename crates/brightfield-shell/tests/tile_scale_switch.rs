@@ -461,8 +461,8 @@ fn the_switch_offers_linear_log_and_symlog_in_the_small_face() {
     }
 }
 
-/// The control names the tile it acts on, in its hover text — seven controls,
-/// seven different strings, which is what makes the readback able to tell a
+/// The control names the tile it acts on, in its hover text — nine controls,
+/// nine different strings, which is what makes the readback able to tell a
 /// control aimed at the wrong plot from one aimed at the right one.
 #[test]
 fn each_switch_names_its_own_column_in_its_hover_text() {
@@ -655,7 +655,7 @@ fn plot_frame(doc: &ChartDoc, plot: usize) -> String {
 /// in the canonical spec and **changes nothing else in it**.
 ///
 /// Held by walking every plot node in the spec before and after and comparing
-/// them: the items of all eight, and the attribute maps of the seven the click
+/// them: the items of all ten, and the attribute maps of the nine the click
 /// did not name. An edit that wrote to the focused plot *and* somewhere else —
 /// or to the wrong plot — fails on a named path rather than on a byte count.
 #[test]

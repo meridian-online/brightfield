@@ -3541,12 +3541,12 @@ fn the_transposed_grid_draws_a_row_for_every_column_of_the_table() {
 /// this exists for is the row density quietly dropping down to the compact
 /// branch, which draws no leaf and no storage row, and leaves
 /// `ColumnBandDrawn` reporting a cell that is there. A presence-only check —
-/// "the band drew seven cells" — is green over that, and was: the first half
+/// "the band drew its cells" — is green over that, and was: the first half
 /// of this work shipped one.
 ///
 /// The pair is looked for **inside the row's own cell** rather than anywhere
 /// in the pane, so a leaf drawn once for the whole grid, or drawn against the
-/// wrong row, is not read as seven correct ones. `drawn_cells_in` respects
+/// wrong row, is not read as every row correct. `drawn_cells_in` respects
 /// clip rects, so what is counted is what reaches the reader rather than what
 /// the painter was handed.
 ///

@@ -93,7 +93,8 @@ fn fixture() -> PathBuf {
 /// and belongs in `open-analytics` rather than in this repo's test data. What
 /// it shares with the real file is everything the picture depends on: the nine
 /// columns in file order, a coordinate pair among them so the generator draws
-/// a map, and seven other columns that each earn a tile.
+/// a map, and a tile for every one of the nine — the pair's two included, each
+/// beside the joint map.
 ///
 /// The choice table above stays on [`fixture`], whose four columns are four
 /// different shapes and answer a different question — which kind each *type*
@@ -562,7 +563,7 @@ fn the_window_a_data_file_opens_at_does_not_grow_with_the_tile_count() {
 }
 
 /// The window the scrolled capture below is taken in — the size the
-/// composition this card is cut from was drawn at, and short enough that seven
+/// composition this card is cut from was drawn at, and short enough that nine
 /// tiles at their 96-point floor need a page taller than the pane.
 const SHORT_WINDOW: (f32, f32) = (1440.0, 900.0);
 

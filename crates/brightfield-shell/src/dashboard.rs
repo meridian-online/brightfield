@@ -859,8 +859,9 @@ fn tile_for(column: &ColumnProfile, taken: &[String]) -> Result<Tile, Omission> 
 }
 
 /// The columns [`Dashboard::of`] draws as one [`chart_kinds::POINT_MAP`] tile
-/// instead of two histograms — the longitude's index, the latitude's, and
-/// which test found them — or `None` when no pair is there.
+/// besides their own histograms, not instead of them — the longitude's
+/// index, the latitude's, and which test found them — or `None` when no pair
+/// is there.
 ///
 /// Three tests, in strength order, and the first that answers wins:
 ///

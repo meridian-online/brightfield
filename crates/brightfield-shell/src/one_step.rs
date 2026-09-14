@@ -106,7 +106,7 @@ pub struct ColumnFacts {
     pub because: String,
     /// The other half of a coordinate pair, when this column is drawn as one:
     /// a point map is a single tile over two columns, and each of the two names
-    /// the other here. `None` for a column drawn on its own.
+    /// the other here.
     pub paired: Option<String>,
     /// Rows in the table (null and non-null alike), measured by the engine
     /// when the file was profiled.

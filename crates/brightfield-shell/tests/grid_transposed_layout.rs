@@ -103,7 +103,7 @@ impl Live {
     }
 
     /// [`Live::open`] in a window of a named size — the short window the
-    /// scroll claim is read in, where seven rows at their floor outreach the
+    /// scroll claim is read in, where nine rows at their floor outreach the
     /// pane.
     fn open_at(screen: Option<egui::Rect>) -> Self {
         let path = housing();
@@ -355,7 +355,7 @@ fn plot_bins(doc: &mut ChartDoc, plot: usize, column: &str) -> Vec<(f64, f64)> {
 ///
 /// Three claims, and the third is the one the layout exists for:
 ///
-/// 1. the rows the pane drew are the seven tile columns, in the order the
+/// 1. the rows the pane drew are the nine tile columns, in the order the
 ///    column beside the hero stacks them, top to bottom;
 /// 2. each row's numbers stand beside that row's own picture — the cell ends
 ///    where the plot begins, at the plot's own top and bottom;
@@ -717,7 +717,7 @@ fn a_transposed_row_clears_its_own_floor() {
         );
     }
 
-    // A window short enough that seven rows at that floor do not fit the pane.
+    // A window short enough that nine rows at that floor do not fit the pane.
     let mut live = Live::open_at(Some(egui::Rect::from_min_size(
         egui::Pos2::ZERO,
         egui::vec2(1440.0, 900.0),
