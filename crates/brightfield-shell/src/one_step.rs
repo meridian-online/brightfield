@@ -497,13 +497,26 @@ fn facts_for(profile: &ColumnProfile, dashboard: &Dashboard) -> ColumnFacts {
 /// Each entry is the facts of the tile's own
 /// [`Tile::column`](crate::dashboard::Tile::column) — for a point map the
 /// longitude, with the latitude in [`ColumnFacts::paired`].
+///
+/// **The kind each entry reports is the kind of the plot it stands for**, and
+/// that is written here rather than left to [`facts_for`]: a coordinate column
+/// has two tiles now — the pair's joint map and its own histogram — and
+/// `facts_for` answers about the *column*, so it meets the map first for both
+/// of them. An entry that reported the map over a histogram would offer the
+/// map's affordances on a distribution and withhold the histogram's: the scale
+/// switch is drawn per entry whose kind is the binned histogram, so the pair's
+/// two rows drew no linear/log control at all until this line existed.
+/// `tests/tile_scale_switch.rs::every_histogram_tile_carries_a_scale_switch_inside_its_own_box`
+/// is the reading of that.
 fn tiles_in_plot_order(columns: &[ColumnProfile], dashboard: &Dashboard) -> Vec<ColumnFacts> {
     dashboard
         .plot_order()
         .into_iter()
         .filter_map(|tile| {
             let profile = columns.iter().find(|p| p.name == tile.column())?;
-            Some(facts_for(profile, dashboard))
+            let mut facts = facts_for(profile, dashboard);
+            facts.tile = Some(tile.kind().as_str().to_string());
+            Some(facts)
         })
         .collect()
 }

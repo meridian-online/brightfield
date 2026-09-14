@@ -325,15 +325,18 @@ fn texts(shapes: &[egui::epaint::ClippedShape]) -> Vec<(String, egui::Rect, egui
 }
 
 /// The columns the generator gives a histogram tile on this fixture, in the
-/// order the composition places their plots. The hero point map is not among
-/// them: it is the joint tile over the two coordinate columns.
-const HISTOGRAM_COLUMNS: [&str; 7] = [
+/// order the composition places their plots — every column of the file, the
+/// coordinate pair's own two among them. The hero point map is not among them:
+/// it is the joint tile the pair earns **besides** those two.
+const HISTOGRAM_COLUMNS: [&str; 9] = [
     "median_income",
     "house_age",
     "avg_rooms",
     "avg_bedrooms",
     "population",
     "avg_occupancy",
+    "latitude",
+    "longitude",
     "median_house_value",
 ];
 
@@ -341,7 +344,8 @@ const HISTOGRAM_COLUMNS: [&str; 7] = [
 // AC3 — the control is on every histogram tile, in its own box, and says so.
 // ---------------------------------------------------------------------------
 
-/// Seven tiles, seven switches, each **inside the box its own tile occupies**.
+/// A switch per histogram tile, each **inside the box its own tile
+/// occupies**.
 ///
 /// The containment is the assertion: the control's rect comes off the chart
 /// pane's own record and the tile's off [`MeridianApp::composed_plot_rects`],
@@ -388,7 +392,7 @@ fn every_histogram_tile_carries_a_scale_switch_inside_its_own_box() {
 ///
 /// Held as a rect test rather than as a count so it reddens on a control
 /// drawn over the hero from a *different* code path as loudly as on the
-/// histogram rule growing an eighth entry.
+/// histogram rule growing one more entry.
 #[test]
 fn the_hero_point_map_draws_no_scale_switch() {
     let mut live = Live::open(housing_boot());
