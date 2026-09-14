@@ -731,15 +731,15 @@ fn a_click_writes_one_key_into_the_canonical_spec() {
 
 /// The tile re-queries: its bins are cut in log space, more of them are
 /// occupied than the linear cut left, its x axis is ticked in decades — and
-/// the other six tiles' frames and rows are where they were.
+/// the other tiles' frames and rows are where they were.
 ///
 /// The bin count is read off the **session**, one row per occupied bin, so it
 /// is the number of bars the tile has to draw rather than a number the
-/// composer wrote down. The other six are read as their scales, their placed
+/// composer wrote down. The others are read as their scales, their placed
 /// boxes and their own rows: an edit that re-cut the whole page would move at
 /// least one of the three.
 #[test]
-fn the_log_tile_re_bins_and_the_other_six_stand_still() {
+fn the_log_tile_re_bins_and_the_others_stand_still() {
     let mut live = Live::open(housing_boot());
     live.settle();
     live.transpose();
@@ -752,7 +752,11 @@ fn the_log_tile_re_bins_and_the_other_six_stand_still() {
         .map(|s| s.plot)
         .filter(|p| *p != switch.plot)
         .collect();
-    assert_eq!(others.len(), 6, "six tiles besides population");
+    assert_eq!(
+        others.len(),
+        HISTOGRAM_COLUMNS.len() - 1,
+        "one switchable tile per histogram column besides population"
+    );
 
     let marks = marks_binning(live.app.chart_doc_mut(), "population");
     let linear_bins = mark_bins(live.app.chart_doc_mut(), marks[0], "population");
@@ -1063,7 +1067,7 @@ fn a_brush_on_another_tile_narrows_the_log_tile_on_its_own_bins() {
 /// thrown**, because the rebuild resolves its `file:` source against the base
 /// the first load used and not against the generated spec's scratch directory.
 ///
-/// The same read as `the_log_tile_re_bins_and_the_other_six_stand_still`, over
+/// The same read as `the_log_tile_re_bins_and_the_others_stand_still`, over
 /// a window opened the other way. Absolutely spelled, the two are the same
 /// document; relatively spelled, the rebuild used to ask DuckDB for the
 /// relative path underneath `$TMPDIR/brightfield-generated-<pid>/<hash>/`,
@@ -1094,7 +1098,11 @@ fn a_file_opened_by_a_relative_path_keeps_its_picture_through_a_switch() {
         .map(|s| s.plot)
         .filter(|p| *p != switch.plot)
         .collect();
-    assert_eq!(others.len(), 6, "six tiles besides population");
+    assert_eq!(
+        others.len(),
+        HISTOGRAM_COLUMNS.len() - 1,
+        "one switchable tile per histogram column besides population"
+    );
     let frames_before: Vec<_> = others.iter().map(|p| plot_frame(live.doc(), *p)).collect();
     let marks = marks_binning(live.app.chart_doc_mut(), "population");
     let linear_bins = mark_bins(live.app.chart_doc_mut(), marks[0], "population");
@@ -1156,7 +1164,7 @@ fn a_file_opened_by_a_relative_path_keeps_its_picture_through_a_switch() {
         );
     }
 
-    // And the other six tiles are where they were.
+    // And the other tiles are where they were.
     for (i, plot) in others.iter().enumerate() {
         assert_eq!(
             plot_frame(live.doc(), *plot),

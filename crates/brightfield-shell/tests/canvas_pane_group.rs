@@ -1023,14 +1023,20 @@ fn a_brush_on_a_scrolled_tile_lands_on_the_tile_under_the_pointer() {
         let _ = ctx.run_ui(input, |ui| app.draw(ui));
     };
 
-    // Scroll the column to the end of its reach, over the grid pane.
+    // Scroll the column to the end of its reach, over the grid pane —
+    // **until the page stops moving** rather than a fixed number of notches.
+    // The reach is the page's height over the pane's, so it grows with the
+    // column: a count tuned to one file's tiles under-scrolls the moment the
+    // file earns another, and the last tile this test is about would still be
+    // below the fold with every assertion below reading the wrong one.
     let columns = app
         .canvas_panes()
         .pane("grid")
         .expect("the grid pane drew")
         .body;
     frame(&mut app, vec![egui::Event::PointerMoved(columns.center())]);
-    for _ in 0..6 {
+    let mut reached = app.canvas_scroll();
+    for _ in 0..64 {
         frame(
             &mut app,
             vec![egui::Event::MouseWheel {
@@ -1040,6 +1046,11 @@ fn a_brush_on_a_scrolled_tile_lands_on_the_tile_under_the_pointer() {
                 phase: egui::TouchPhase::Move,
             }],
         );
+        let now = app.canvas_scroll();
+        if (now - reached).abs() < 0.5 {
+            break;
+        }
+        reached = now;
     }
     for _ in 0..6 {
         frame(&mut app, Vec::new());
@@ -3071,23 +3082,27 @@ fn the_band_scrolls_with_its_columns_and_not_with_its_rows() {
     // movement is compared against. Read below the band so the band's own
     // galleys are not in it.
     let body_rect = egui::Rect::from_min_max(egui::pos2(pane.left(), pane.top() + 200.0), pane.max);
-    // **Keyed by text, so only a text that appears once is a key.** A value
-    // the table holds twice — `4.04` in two of the grid pane's nine columns —
-    // is one entry in this map before the scroll and a different cell's entry
-    // after it, and the difference between those two positions is not a
-    // distance anything travelled. Measured: it came out at -9.875 points
-    // beside the -334 every other cell moved. Dropping the repeats leaves the
-    // cells whose identity survives a scroll.
+    // **Keyed by the text AND the row it was drawn in.** A value the table
+    // holds twice — `4.04` in two of the grid pane's nine columns — is one
+    // entry in a map keyed by the text alone, and which of the two cells that
+    // entry is can differ before and after the scroll: the difference between
+    // those two positions is not a distance anything travelled. Measured
+    // twice, at -9.875 points and at +327.25, beside the -334 every other cell
+    // moved. A row's own top does not move under a **sideways** scroll, so the
+    // row identifies the cell across the two frames; a key that still repeats
+    // inside one frame — the same value twice in one row — is dropped, because
+    // there is nothing to tell those two apart either.
     let body_cells = |app: &mut MeridianApp| -> std::collections::BTreeMap<String, egui::Pos2> {
         let drawn = drawn_cells_in(app, &ctx, &raw, body_rect);
+        let key = |pos: &egui::Pos2, text: &str| format!("{text} in the row at {:.0}", pos.y);
         let mut seen: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
-        for (_, text) in &drawn {
-            *seen.entry(text.clone()).or_default() += 1;
+        for (pos, text) in &drawn {
+            *seen.entry(key(pos, text)).or_default() += 1;
         }
         drawn
-            .into_iter()
-            .filter(|(_, text)| seen.get(text) == Some(&1))
-            .map(|(pos, text)| (text, pos))
+            .iter()
+            .filter(|(pos, text)| seen.get(&key(pos, text)) == Some(&1))
+            .map(|(pos, text)| (key(pos, text), *pos))
             .collect()
     };
 
