@@ -677,3 +677,49 @@ fn the_layout_file_survives_a_restart_and_every_way_it_can_be_broken() {
         "an empty override is not an override"
     );
 }
+
+/// **A saved grid layout is spelled the way the switch says it.**
+///
+/// `GridLayout::word` is the noun the control on the pane's header band offers
+/// each state as, and it is also what lands in the layout file. Two spellings
+/// of one state is a file that reads `"Columns"` beside a switch that says
+/// *columns*, and — worse — a rename of the variant that silently stops
+/// matching what is already on disk, which reads as every document reverting
+/// to rows.
+///
+/// Both directions, because serde's `rename_all` decides them separately in
+/// principle: what the enum writes, and what a file already carrying that word
+/// parses back to. The words are also asserted to differ from each other, so a
+/// `word` that returned one constant for both states could not pass by writing
+/// the same string twice.
+///
+/// Watched redden, one mutation: dropping `#[serde(rename_all = "lowercase")]`
+/// from `GridLayout` writes `"Rows"` and fails the first assertion at the
+/// first state.
+#[test]
+fn a_saved_grid_layout_is_spelled_the_way_the_switch_says_it() {
+    use brightfield_workbench::GridLayout;
+    assert_ne!(
+        GridLayout::Rows.word(),
+        GridLayout::Columns.word(),
+        "the two states are offered under one word, so this test cannot tell \
+         them apart on disk either"
+    );
+    for state in [GridLayout::Rows, GridLayout::Columns] {
+        let json = serde_json::to_string(&state).expect("a grid layout serialises");
+        assert_eq!(
+            json,
+            format!("\"{}\"", state.word()),
+            "{state:?} is written to the layout file as {json} where the switch \
+             offers it as {:?}",
+            state.word()
+        );
+        let back: GridLayout = serde_json::from_str(&format!("\"{}\"", state.word()))
+            .expect("the switch's own word parses back");
+        assert_eq!(
+            back, state,
+            "a layout file carrying the switch's word for {state:?} parsed back \
+             as {back:?}"
+        );
+    }
+}
