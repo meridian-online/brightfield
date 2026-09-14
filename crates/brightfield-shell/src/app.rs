@@ -1096,8 +1096,8 @@ impl ChartDoc {
     ///
     /// **And the hero's room is [`PaneViews::first`]'s, not `size`'s, when the
     /// two views differ in height.** The group as it stands draws both panes
-    /// at the canvas's full height — [`crate::window::canvas_pane_rects`]
-    /// puts them side by side, never one under the other — so this
+    /// at the canvas's full height, side by side rather than one under the
+    /// other — [`crate::window::canvas_pane_rects`] — so this
     /// subtraction is zero today and `hero_room` is `room`. It stays rather
     /// than being deleted with the arrangement that needed it: a view left
     /// shorter than its sibling for some other reason should still leave the

@@ -16,7 +16,7 @@
 //! and that a brush swept afterwards narrows a log tile without moving its
 //! scale. Not covered here: the pixels. `tests/dashboard_baseline.rs` is that
 //! half — `dashboard_dark` and `dashboard_light` open on the untransposed
-//! grid pane, so neither baseline carries a scale switch at all.
+//! grid pane, so neither baseline carries a scale switch.
 
 use brightfield_protocol::layout::Flow;
 use brightfield_shell::app::{ChartDoc, GridLayout};
