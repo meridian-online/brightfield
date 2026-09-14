@@ -90,7 +90,9 @@ pub use activity::{Activity, ActivityIndicator, ActivityLog, HONESTY_LINE_MS};
 pub use arrangement::{Arrangement, Edge, Extent, Occupant, Projection, Region, RegionId};
 pub use behavior::PaneChrome;
 pub use item::{Handled, Item, ItemCtx, ItemId, ItemMap, PaneKey, Request};
-pub use persist::{DirtyTracker, LoadOutcome, Recent, SavedLayout, WindowGeometry, RECENTS_KEPT};
+pub use persist::{
+    DirtyTracker, GridLayout, LoadOutcome, Recent, SavedLayout, WindowGeometry, RECENTS_KEPT,
+};
 pub use registry::{audit, window_tree, DockSide, ItemRegistry, ItemSpec, Slot};
 pub use shell::{ModalOutcome, ModalView, StatusItem, ToolbarItem, WorkspaceCtx, WorkspaceView};
 pub use subject::{

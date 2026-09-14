@@ -209,6 +209,10 @@ fn layout_remembering(recents: &[(&str, &str, RunState, u64)]) -> SavedLayout {
             id: (*id).to_string(),
             name: (*name).to_string(),
             run: *run,
+            // The door draws no column for it, so the fixture states the
+            // default rather than varying it — a row's grid layout is what
+            // reopening it restores, not what listing it draws.
+            grid_layout: brightfield_workbench::GridLayout::default(),
             opened_at: now - ago,
         })
         .collect();

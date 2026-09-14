@@ -28,7 +28,7 @@ use brightfield_shell::startup::{default_layout, kept_window_geometry, opening_b
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_workbench::persist::{self, LoadOutcome, LAYOUT_FILE, SAVE_DEBOUNCE_MS};
 use brightfield_workbench::workspace::{tabs_holding, tile_of};
-use brightfield_workbench::{PaneKey, RunState, RECENTS_KEPT};
+use brightfield_workbench::{GridLayout, PaneKey, RunState, RECENTS_KEPT};
 
 /// A scratch directory that removes itself, so a failing run cannot poison the
 /// next one with a file it left behind.
@@ -600,6 +600,7 @@ fn the_recents_list_is_capped_and_most_recent_first() {
             &format!("start-{i}"),
             &format!("protocol {i}"),
             RunState::NeverRun,
+            GridLayout::Rows,
             1_000 + i as u64,
         );
     }
@@ -636,13 +637,19 @@ fn the_recents_list_is_capped_and_most_recent_first() {
          is the only position this assertion can see a missing de-duplication \
          from"
     );
-    layout.remember(&middle, "renamed", RunState::Fresh, 9_000);
+    layout.remember(&middle, "renamed", RunState::Fresh, GridLayout::Columns, 9_000);
     assert_eq!(
         layout.recents.iter().filter(|r| r.id == middle).count(),
         1,
         "reopening one added a second row for it"
     );
     assert_eq!(layout.recents[0].id, middle);
+    assert_eq!(
+        layout.recents[0].grid_layout,
+        GridLayout::Columns,
+        "reopening one kept the grid layout the older row carried, so a \
+         document saved transposed comes back on rows"
+    );
     assert_eq!(layout.recents[0].name, "renamed");
     assert_eq!(layout.recents[0].run, RunState::Fresh);
 }

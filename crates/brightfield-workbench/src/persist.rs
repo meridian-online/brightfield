@@ -275,6 +275,55 @@ pub struct SavedLayout {
     pub canvas_split: f32,
 }
 
+/// **Which way a grid pane draws the file it is over** — the file's own rows,
+/// or its tiled columns as rows.
+///
+/// A file opens on [`Self::Rows`]: the table is what a reader came to the grid
+/// for, and the histograms are one throw of the switch away. `brightfield`'s
+/// shell draws the switch and names this type
+/// `brightfield_shell::app::GridLayout`; it is declared here because
+/// [`Recent`] records it per document, and a persisted record cannot be typed
+/// by a crate above the one that writes it. One enum, so the drawn state and
+/// the saved state cannot drift.
+///
+/// The serialised spelling is [`Self::word`] — the switch's own noun, in the
+/// reader's terms — so a layout file is legible to whoever opens it, and
+/// `a_saved_grid_layout_is_spelled_the_way_the_switch_says_it` pins the two
+/// together.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GridLayout {
+    /// The file's rows, listed in the grid, under the column header band at
+    /// the density the pane's place calls for.
+    #[default]
+    Rows,
+    /// One row per tiled column: the column's own histogram tile, re-laid at
+    /// a row's height, with the numbers the full band states beside it.
+    Columns,
+}
+
+impl GridLayout {
+    /// The word the switch offers this state as, the word a test reads back
+    /// off the band, and the word the layout file spells it with. One noun, in
+    /// the reader's own terms: what the pane would be a list of.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Rows => "rows",
+            Self::Columns => "columns",
+        }
+    }
+
+    /// The other state — what a click on the control moves to.
+    #[must_use]
+    pub const fn other(self) -> Self {
+        match self {
+            Self::Rows => Self::Columns,
+            Self::Columns => Self::Rows,
+        }
+    }
+}
+
 /// One remembered Protocol: what the front door's Protocols section draws a
 /// row from, without reopening anything.
 ///
@@ -303,6 +352,22 @@ pub struct Recent {
     /// default is.
     #[serde(default)]
     pub run: RunState,
+    /// **Which way the grid pane was reading this document** when it was last
+    /// closed — the state of the switch on that pane's own header band.
+    ///
+    /// Per document rather than per window, and that is the whole point of it
+    /// being here rather than beside [`SavedLayout::canvas_split`]: where the
+    /// edge between the panes stands is a property of the window, the same two
+    /// panes whatever is open, but whether the grid is a list of rows or a
+    /// stack of distributions is a property of *what is in it*. An analyst who
+    /// transposed one file to read its distributions did not thereby ask for
+    /// the next one transposed.
+    ///
+    /// Absent from a file written before this field existed, which reads as
+    /// [`GridLayout::Rows`] — a file opens on its rows, which is what those
+    /// files were last looking at.
+    #[serde(default)]
+    pub grid_layout: GridLayout,
     /// When it was last opened, in whole seconds since the Unix epoch — what
     /// the row's relative time is measured from.
     ///
@@ -341,15 +406,27 @@ impl SavedLayout {
     ///
     /// Reopening something already in the list **moves** it rather than
     /// adding a second row: two rows for one Protocol is a list of events,
-    /// and the door offers a list of Protocols. The name and the run state
-    /// are overwritten with what was just seen, because the older pair is by
-    /// construction the more stale of the two.
+    /// and the door offers a list of Protocols. The name, the run state and
+    /// the grid layout are overwritten with what was just seen, because the
+    /// older three are by construction the more stale.
+    ///
+    /// `grid_layout` is a **parameter** rather than something this reads off
+    /// the existing row, and that is deliberate: the row is rebuilt, so a
+    /// caller that did not pass it would silently reset every document to
+    /// rows on the next save. The compiler asks for it instead.
     ///
     /// Trimmed to [`RECENTS_KEPT`] from the tail, so the entry dropped is the
     /// least recently opened one —
     /// `the_recents_list_is_capped_and_most_recent_first` holds the length and
     /// which entry went.
-    pub fn remember(&mut self, id: &str, name: &str, run: RunState, opened_at: u64) {
+    pub fn remember(
+        &mut self,
+        id: &str,
+        name: &str,
+        run: RunState,
+        grid_layout: GridLayout,
+        opened_at: u64,
+    ) {
         self.recents.retain(|r| r.id != id);
         self.recents.insert(
             0,
@@ -357,10 +434,27 @@ impl SavedLayout {
                 id: id.to_string(),
                 name: name.to_string(),
                 run,
+                grid_layout,
                 opened_at,
             },
         );
         self.recents.truncate(RECENTS_KEPT);
+    }
+
+    /// **Which way the grid pane was reading the document `id` names**, or
+    /// `None` for a document this file has never recorded.
+    ///
+    /// `None` rather than [`GridLayout::Rows`], so a caller can tell "opens on
+    /// rows because that is what was saved" from "opens on rows because
+    /// nothing was saved". The two behave the same today and the caller says
+    /// so at the one place it decides; collapsing them here would be that
+    /// decision made in the wrong file.
+    #[must_use]
+    pub fn grid_layout_of(&self, id: &str) -> Option<GridLayout> {
+        self.recents
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| r.grid_layout)
     }
 
     /// Serialise to pretty JSON.

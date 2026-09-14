@@ -5086,7 +5086,9 @@ impl MeridianApp {
         // row for the Protocol the window is.
         let name = self.subject_name();
         let run = self.recorded_run_state();
-        self.layout.live_mut().remember(id, &name, run, now_secs());
+        self.layout
+            .live_mut()
+            .remember(id, &name, run, self.grid_layout, now_secs());
         self.toasts.push(Toast::new(
             Severity::Success,
             format!("Opened {}", self.title()),
@@ -5284,9 +5286,13 @@ impl MeridianApp {
                 self.notifications.dismiss(banner);
                 let name = self.protocol.doc.model.protocol.clone();
                 let run = self.recorded_run_state();
-                self.layout
-                    .live_mut()
-                    .remember(&path.to_string_lossy(), &name, run, now_secs());
+                self.layout.live_mut().remember(
+                    &path.to_string_lossy(),
+                    &name,
+                    run,
+                    self.grid_layout,
+                    now_secs(),
+                );
                 self.toasts
                     .push(Toast::new(Severity::Success, format!("Saved {name}")));
             }
@@ -5329,9 +5335,20 @@ impl MeridianApp {
         // Saved already, by construction: it was opened off its own file.
         let name = self.protocol.doc.model.protocol.clone();
         let run = self.recorded_run_state();
+        // **Which way the grid was reading this document, restored before the
+        // first frame draws it.** Read here rather than in `adopt_boot`
+        // because this is the path that knows the document's *id* — the
+        // string the row was remembered under — and the record is keyed by
+        // it. A document this file has never seen opens on its rows, which is
+        // what `GridLayout::default()` is.
+        self.grid_layout = self
+            .layout
+            .live()
+            .grid_layout_of(path)
+            .unwrap_or_default();
         self.layout
             .live_mut()
-            .remember(path, &name, run, now_secs());
+            .remember(path, &name, run, self.grid_layout, now_secs());
         self.toasts.push(Toast::new(
             Severity::Success,
             format!("Opened {}", self.title()),

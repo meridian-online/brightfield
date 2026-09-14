@@ -1116,6 +1116,7 @@ fn going_home_takes_the_save_offer_with_the_start() {
         brightfield_shell::starts::DASHBOARD,
         "signals-dashboard",
         RunState::NeverRun,
+        brightfield_workbench::GridLayout::Rows,
         1,
     );
     let mut win = Window::with_layout(
