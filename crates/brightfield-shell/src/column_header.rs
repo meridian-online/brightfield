@@ -550,6 +550,19 @@ pub struct ColumnBandDrawn {
     pub leaf: Option<String>,
     /// The storage type beside it.
     pub storage: Option<String>,
+    /// Where [`Self::leaf`] and [`Self::storage`] were painted — the leading
+    /// and trailing rects [`text_ink::row_ends`] handed back for the same
+    /// two-ended row [`Self::range_rects`] is for the range below it.
+    ///
+    /// A caller checking "did this cell draw its leaf" by asking whether
+    /// *any* text inside the cell contains the leaf string cannot tell a
+    /// drawn leaf from a drawn storage type that happens to read the same —
+    /// which is the ordinary case on a build with no FineType bundle, where
+    /// [`crate::one_step::ColumnFacts::leaf`] falls back to the storage type
+    /// itself. These two rects are what let a test ask the position-specific
+    /// question instead: is the leaf's own string among the text painted at
+    /// its own end of the row, independent of what the other end drew.
+    pub type_rects: Option<(egui::Rect, egui::Rect)>,
     /// One rect per bar of the distribution, at the full density: the distinct
     /// count of them where that is at most
     /// [`VALUE_BAR_LIMIT`](brightfield_engine::profile::VALUE_BAR_LIMIT), and
@@ -829,13 +842,13 @@ pub fn draw_column_band(
     y += VALIDITY_ROW;
 
     // 3. The finetype leaf and the storage type — the full density's alone.
-    let (leaf, storage) = if frame.density.is_full() {
+    let (leaf, storage, type_rects) = if frame.density.is_full() {
         // The same two-ended row as the range and the statistics below it. No
         // fixture in this repository makes these two collide — a full-density
         // cell is wide — but the shape is the one that collided at three other
         // sites, and a narrow column with a long storage type is the case
         // nobody has opened yet.
-        text_ink::row_ends(
+        let ends = text_ink::row_ends(
             painter,
             egui::Rect::from_min_max(
                 egui::pos2(inner.left(), y),
@@ -851,9 +864,13 @@ pub fn draw_column_band(
             },
         );
         y += TYPES_ROW;
-        (Some(facts.leaf.clone()), Some(facts.storage.clone()))
+        (
+            Some(facts.leaf.clone()),
+            Some(facts.storage.clone()),
+            Some((ends.leading, ends.trailing)),
+        )
     } else {
-        (None, None)
+        (None, None, None)
     };
 
     // 4. The picture of the distribution: a bar chart at the full density, a
@@ -1038,6 +1055,7 @@ pub fn draw_column_band(
         range_rects,
         leaf,
         storage,
+        type_rects,
         bars,
         stats,
         distinct,

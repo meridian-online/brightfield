@@ -173,6 +173,7 @@ fn both() -> Boot {
         protocol: edgar(),
         flow: Flow::Vertical,
         focus: None,
+        opened_id: None,
     }
 }
 

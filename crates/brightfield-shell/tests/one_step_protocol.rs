@@ -51,7 +51,7 @@ use brightfield_protocol::layout::Flow;
 use brightfield_shell::dashboard::{ChosenBy, Dashboard};
 use brightfield_shell::design::Mode;
 use brightfield_shell::one_step::{self, OneStepProtocol};
-use brightfield_shell::startup::default_layout;
+use brightfield_shell::startup::{default_layout, opening_boot};
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_shell::{data_file, protocol};
 use brightfield_workbench::RunState;
@@ -2007,5 +2007,126 @@ fn a_document_saved_transposed_reopens_transposed() {
         brightfield_workbench::GridLayout::Columns,
         "the document was saved with the grid transposed and reopened on its \
          rows — the layout the reader left it in did not survive the save"
+    );
+}
+
+/// **Two documents remembered in one saved layout each restore their own grid
+/// layout when opened through the front door's row — not whichever row the
+/// lookup happens to answer with.**
+///
+/// One `SavedLayout` carries two rows, `A` transposed and `B` on its rows,
+/// seeded directly with `SavedLayout::remember` rather than through two save
+/// gestures: what is under test is the read `open_protocol_path` makes,
+/// [`brightfield_workbench::persist::SavedLayout::grid_layout_of`], and that
+/// function does not care how its row arrived. Both are real, distinct data
+/// files a `Boot::open` can actually load, opened one after the other through
+/// the same window — the front door's own route, the one a click on either
+/// row takes — with `MeridianApp::grid_layout` read back after each.
+///
+/// `A` is opened first so a lookup that quietly answers "whichever row is at
+/// the head of the list" is caught immediately rather than on the
+/// second call; `B` is opened second so the opposite bug — "whichever row is
+/// at the tail" — is caught too. Between the two, `open_protocol_path`
+/// re-remembers each row it opens, which is the ordinary product behaviour
+/// and not incidental to this test: it is what proves the lookup is keyed on
+/// the id passed at each call rather than on a position that reshuffles under
+/// it.
+///
+/// Watched redden, one mutation: rewriting `grid_layout_of` to ignore `id`
+/// and return `self.recents.first().map(|r| r.grid_layout)` — fails at `A`,
+/// which reads back `B`'s rows layout instead of its own transposed one.
+#[test]
+fn each_remembered_document_restores_its_own_grid_layout() {
+    let dir_a = TempDir::new("two-documents-a");
+    let dir_b = TempDir::new("two-documents-b");
+    let path_a = dir_a.write("harbour.csv", HARBOUR_CSV);
+    let path_b = dir_b.write("harbour.csv", DECLINED_FIRST_CSV);
+    let spelled_a = path_a.to_str().expect("utf-8 fixture path").to_string();
+    let spelled_b = path_b.to_str().expect("utf-8 fixture path").to_string();
+    assert_ne!(
+        spelled_a, spelled_b,
+        "the two fixtures share a path, so the lookup below cannot tell them apart"
+    );
+
+    let mut layout = default_layout();
+    layout.remember(
+        &spelled_a,
+        "A",
+        RunState::NeverRun,
+        brightfield_workbench::GridLayout::Columns,
+        1_000,
+    );
+    layout.remember(
+        &spelled_b,
+        "B",
+        RunState::NeverRun,
+        brightfield_workbench::GridLayout::Rows,
+        2_000,
+    );
+
+    let mut win = Window::with_layout(Boot::empty(), layout);
+
+    win.app.open_protocol_path(&win.ctx, &spelled_a);
+    win.settle();
+    assert_eq!(
+        win.app.grid_layout(),
+        brightfield_workbench::GridLayout::Columns,
+        "A was saved transposed and opened on its rows — the row a click on \
+         A's own front-door entry takes did not restore A's own layout"
+    );
+
+    win.app.open_protocol_path(&win.ctx, &spelled_b);
+    win.settle();
+    assert_eq!(
+        win.app.grid_layout(),
+        brightfield_workbench::GridLayout::Rows,
+        "B was saved on its rows and opened transposed — the row a click on \
+         B's own front-door entry takes restored some other document's \
+         layout instead of B's own"
+    );
+}
+
+/// **A launch that boots straight onto a saved document's own path opens on
+/// the layout saved for it** — the route `main.rs` takes, not only a click on
+/// the front door's row.
+///
+/// The path is saved transposed, then a fresh window is built exactly the way
+/// `main` builds one: `startup::opening_boot` over the path (in place of the
+/// spec `main` would have read off the command line), handed to
+/// `MeridianApp::with_layout`'s device-free twin over the saved layout
+/// `startup::boot_layout` would have read off disk. `MeridianApp::grid_layout`
+/// is read back after the window settles — the state the first frame draws
+/// from, not the field on the record, which is what would still read
+/// `Columns` if the window were not consulting it.
+///
+/// Watched redden, one mutation: seeding the window's `grid_layout` from
+/// `crate::app::GridLayout::default()` regardless of what the boot names —
+/// which is what the args route did before this — fails here at `Rows`,
+/// where the document was saved transposed.
+#[test]
+fn a_launch_over_a_saved_path_opens_on_its_own_grid_layout() {
+    let dir = TempDir::new("args-route-transposed");
+    let path = dir.write("harbour.csv", HARBOUR_CSV);
+    let spelled = path.to_str().expect("utf-8 fixture path").to_string();
+
+    let mut saved = default_layout();
+    saved.remember(
+        &spelled,
+        "Harbour",
+        RunState::NeverRun,
+        brightfield_workbench::GridLayout::Columns,
+        1_000,
+    );
+
+    let boot =
+        opening_boot(Some(&spelled), None, Flow::Vertical, None).expect("the named file opens");
+    let win = Window::with_layout(boot, saved);
+
+    assert_eq!(
+        win.app.grid_layout(),
+        brightfield_workbench::GridLayout::Columns,
+        "a launch straight onto a saved path opened on its rows — the args \
+         route does not consult the layout saved for the document it was \
+         told to open"
     );
 }
