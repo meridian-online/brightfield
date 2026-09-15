@@ -37,6 +37,7 @@ by the provenance test; scores mirror `VerbEntry.scores` (frequency / mnemonic /
 | `open-help` | `?` | 2 / 4 / 5 | `?` = help (near-universal convention) |
 | `clear-selection` | `escape` | 4 / 4 / 5 | esc = cancel/clear (universal); terminal rung of the Esc ladder |
 | `reload-spec` | `cmd-r` | 2 / 4 / 4 | cmd-r = reload (browser); bare `r` NOT bound (dirty-guard) |
+| `reload-data` | `cmd-shift-r` | 1 / 4 / 5 | cmd-shift-r = hard reload (browser convention); distinct chord from cmd-r's spec reload, since this re-reads the DATA file rather than the YAML |
 | `open-home` | `cmd-shift-h` | 3 / 5 / 4 | cmd-shift-h = home; free of the editor chord set; keeps your place under Continue |
 | `toggle-presentation` | `p` | 2 / 3 / 3 | `p` = present (shipped fixed point) |
 | `save-spec` | `cmd-s` | 3 / 5 / 5 | cmd-s = save (universal; shipped, editor-scoped) |
