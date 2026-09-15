@@ -1492,20 +1492,56 @@ impl ProtocolModel {
         rows
     }
 
-    /// The spine's caption: how many **steps** the spine lists.
+    /// How many distinct steps the spine lists — the count
+    /// [`ProtocolModel::spine_caption`] and the locator band's
+    /// [`ProtocolModel::graph_counts`] both draw from, so a step named once in
+    /// two places is counted the same way twice.
     ///
     /// Counted over the spine's own step rows, deduplicated by step name, so
-    /// the caption answers for the list under it rather than for a step map the
+    /// the count answers for the list under it rather than for a step map the
     /// collapsed graph may not draw every member of.
     #[must_use]
-    pub fn spine_caption(&self) -> String {
+    pub fn step_count(&self) -> usize {
         let steps: BTreeSet<String> = self
             .spine()
             .into_iter()
             .filter(|row| row.role == SpineRole::Step)
             .map(|row| row.label)
             .collect();
-        caption(&["SPINE", &counted(steps.len(), "step")])
+        steps.len()
+    }
+
+    /// How many nodes the collapsed graph draws — the locator band's other
+    /// count.
+    ///
+    /// `graph_collapsed`, not [`ProtocolModel::displayed_graph`]:
+    /// [`ProtocolModel::spine`] reads `graph_collapsed` too, so this agrees
+    /// with the `SPINE` caption beneath it on a fresh boot, and only the two
+    /// diverge after a drill or a family unfold this band does not follow.
+    /// Counts the tiles the canvas draws, not the assets the manifest
+    /// declares — a `Family` tile stands for however many instances it
+    /// collapsed and counts once.
+    #[must_use]
+    pub fn node_count(&self) -> usize {
+        self.graph_collapsed.nodes.len()
+    }
+
+    /// The locator band's trailing counts when the graph holds the canvas:
+    /// `<n> nodes \u{b7} <m> step(s)`, singular or plural read off the graph
+    /// rather than typed at the call site.
+    #[must_use]
+    pub fn graph_counts(&self) -> String {
+        format!(
+            "{} \u{b7} {}",
+            counted(self.node_count(), "node"),
+            counted(self.step_count(), "step")
+        )
+    }
+
+    /// The spine's caption: how many **steps** the spine lists.
+    #[must_use]
+    pub fn spine_caption(&self) -> String {
+        caption(&["SPINE", &counted(self.step_count(), "step")])
     }
 
     /// The outline's caption: how many columns stand beneath it.
@@ -1610,6 +1646,35 @@ impl ProtocolModel {
             &self.statuses,
             self.selected.as_ref().or(canvas_node),
         )
+    }
+
+    /// The locator band's four crumbs for a view of `node`: the file `node`'s
+    /// step read, the step's own name, `node`'s name and `view`.
+    ///
+    /// The file is the node at the `from` end of the edge into `node`, spelled
+    /// by its file name rather than its full label — a label built from
+    /// `depends_on` carries a leading `./` a stranger never wrote.
+    ///
+    /// `None` when `node` names nothing in the collapsed graph, when it has no
+    /// producing step, or when no edge feeds it — a caller with the window's
+    /// title to fall back to should use that instead rather than draw a
+    /// partial line.
+    #[must_use]
+    pub fn view_crumbs(&self, node: &AssetId, view: NodeView) -> Option<Vec<String>> {
+        let asset = self.graph_collapsed.nodes.get(node)?;
+        let step = asset.step.clone()?;
+        let file = self
+            .graph_collapsed
+            .edges
+            .iter()
+            .find(|edge| &edge.to == node)
+            .and_then(|edge| self.graph_collapsed.nodes.get(&edge.from))
+            .map(|from| {
+                Path::new(&from.label)
+                    .file_name()
+                    .map_or_else(|| from.label.clone(), |f| f.to_string_lossy().into_owned())
+            })?;
+        Some(vec![file, step, asset.label.clone(), view.label().to_string()])
     }
 
     /// The drill breadcrumb labels, root → deepest.

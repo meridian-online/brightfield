@@ -2858,16 +2858,44 @@ impl MeridianApp {
     /// The breadcrumb the locator band draws: where the subject sits, most
     /// general first.
     ///
-    /// The protocol's own drill trail when the graph holds the canvas, and the
-    /// window's title otherwise — a chart has no drill state, and a locator
-    /// band that went blank on the surface a stranger meets first would be a
-    /// row of empty chrome.
+    /// Three arms, one per [`CanvasHolds`] — a bool cannot tell `View` from
+    /// `Chart`, and the two read differently: a view of a node names the file
+    /// that fed it, the step, the node and the view
+    /// (`ProtocolModel::view_crumbs`); the graph names itself, and the
+    /// locator band's trailing counts (`Self::locator_counts`) say the rest; a
+    /// chart has no drill state, so its crumb line is the window's title,
+    /// which is also the fallback for a view whose node the graph no longer
+    /// knows.
     fn crumb_line(&self) -> Vec<String> {
-        let mut crumbs = vec![self.title()];
-        if self.graph_on_canvas() {
-            crumbs.extend(self.protocol.doc.model.breadcrumb());
+        match self.canvas_holds() {
+            CanvasHolds::Graph => vec!["Protocol".to_string()],
+            CanvasHolds::View { node, view } => self
+                .protocol
+                .doc
+                .model
+                .view_crumbs(node, *view)
+                .unwrap_or_else(|| vec![self.title()]),
+            CanvasHolds::Chart => vec![self.title()],
         }
-        crumbs
+    }
+
+    /// The locator band's crumbs, off the model rather than the frame — a
+    /// test hook, for the reason [`Self::spine_rows`] is: proving what the
+    /// band actually painted needs the galleys `crumb_line` fed to
+    /// `locator_band_ui`, not a second call to `crumb_line` compared with
+    /// itself.
+    #[must_use]
+    pub fn locator_crumbs(&self) -> Vec<String> {
+        self.crumb_line()
+    }
+
+    /// The locator band's trailing counts, when the graph holds the canvas —
+    /// `None` on a view of a node or a chart, which the band says nothing
+    /// extra about.
+    #[must_use]
+    pub fn locator_counts(&self) -> Option<String> {
+        self.graph_on_canvas()
+            .then(|| self.protocol.doc.model.graph_counts())
     }
 
     /// The content box the DAG canvas pane was handed by the last frame this
@@ -3625,13 +3653,14 @@ impl MeridianApp {
             }
             let locator = plan.expect_region(arrangement::LOCATOR_BAND);
             let crumbs = self.crumb_line();
+            let counts = self.locator_counts();
             let source = self.document_source();
             let drawn = Panel::top(panel_id(locator, false))
                 .resizable(false)
                 .exact_size(band_extent(locator))
                 .frame(chrome::region_frame(locator.frame, ui, mode))
                 .show(ui, |ui| {
-                    locator_band_ui(ui, &crumbs, source.as_deref(), mode)
+                    locator_band_ui(ui, &crumbs, counts.as_deref(), source.as_deref(), mode)
                 });
             self.regions.push((locator.id, drawn.response.rect));
 
@@ -7802,7 +7831,18 @@ fn canvas_head(ui: &mut egui::Ui, head: egui::Rect, name: &str, mode: Mode) {
 /// window whose subject has no trail below it: a chart has no drill state, so
 /// its crumb line is one entry, and the file it was composed from is the thing
 /// a locator can say that the title cannot.
-fn locator_band_ui(ui: &egui::Ui, crumbs: &[String], source: Option<&str>, mode: Mode) {
+///
+/// `counts` draws immediately after the last crumb, in the mono caption face
+/// rather than joined by `\u{203a}`: it is not one more step in the trail, it
+/// is what the trail's one entry — `Protocol` — expands to when there is no
+/// deeper crumb to draw.
+fn locator_band_ui(
+    ui: &egui::Ui,
+    crumbs: &[String],
+    counts: Option<&str>,
+    source: Option<&str>,
+    mode: Mode,
+) {
     let sem = semantic(mode.is_dark());
     let rect = ui.max_rect();
     if let Some(source) = source {
@@ -7845,6 +7885,18 @@ fn locator_band_ui(ui: &egui::Ui, crumbs: &[String], source: Option<&str>, mode:
             chrome::colour(ink),
         );
         x += width + spacing::SPACE_3;
+    }
+    if let Some(counts) = counts {
+        let galley = ui.painter().layout_no_wrap(
+            counts.to_owned(),
+            egui::FontId::monospace(meridian_design::typography::UI_SIZE - 1.0),
+            chrome::colour(sem.text.muted),
+        );
+        ui.painter().galley(
+            egui::pos2(x, rect.center().y - galley.size().y / 2.0),
+            galley,
+            chrome::colour(sem.text.muted),
+        );
     }
 }
 
