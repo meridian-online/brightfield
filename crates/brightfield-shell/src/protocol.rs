@@ -1516,8 +1516,8 @@ impl ProtocolModel {
     ///
     /// `graph_collapsed`, not [`ProtocolModel::displayed_graph`]:
     /// [`ProtocolModel::spine`] reads `graph_collapsed` too, so this agrees
-    /// with the `SPINE` caption beneath it on a fresh boot, and only the two
-    /// diverge after a drill or a family unfold this band does not follow.
+    /// with the `SPINE` caption beneath it on a fresh boot, and the two part
+    /// ways after a drill or a family unfold this band does not follow.
     /// Counts the tiles the canvas draws, not the assets the manifest
     /// declares — a `Family` tile stands for however many instances it
     /// collapsed and counts once.
@@ -1653,9 +1653,9 @@ impl ProtocolModel {
     ///
     /// The file is the node at the `from` end of the edge into `node`, spelled
     /// by its file name rather than its full label — a label built from
-    /// `depends_on` carries a leading `./` a stranger never wrote.
+    /// `depends_on` carries a leading `./` that is not what a stranger typed.
     ///
-    /// `None` when `node` names nothing in the collapsed graph, when it has no
+    /// `None` when `node` is absent from the collapsed graph, when it has no
     /// producing step, or when no edge feeds it — a caller with the window's
     /// title to fall back to should use that instead rather than draw a
     /// partial line.

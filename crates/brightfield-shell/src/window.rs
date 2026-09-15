@@ -2890,8 +2890,8 @@ impl MeridianApp {
     }
 
     /// The locator band's trailing counts, when the graph holds the canvas —
-    /// `None` on a view of a node or a chart, which the band says nothing
-    /// extra about.
+    /// `None` on a view of a node or a chart, where the band has no count to
+    /// add.
     #[must_use]
     pub fn locator_counts(&self) -> Option<String> {
         self.graph_on_canvas()
