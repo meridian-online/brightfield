@@ -174,7 +174,7 @@ impl FileWatcher {
     /// run-state.
     ///
     /// The two roles clear differently. The spec notice stands until the rail
-    /// itself is hidden — there is nothing here to *do* about a spec edit
+    /// itself is hidden — there is no action to offer for a spec edit
     /// beyond noticing it, so [`HideAffordance::WithRail`] is the honest
     /// answer. The data notice carries [`HideAffordance::Verb`] instead: a
     /// copied file is a snapshot, so there is a real action a reader can take

@@ -5408,7 +5408,7 @@ impl MeridianApp {
     /// second one that patches the live session in place. A materialised
     /// source cannot be safely re-copied on top of itself — the view it
     /// backs no longer reads the file once it has been copied once — so the
-    /// only way to read a change on disk is a session that starts over
+    /// way to read a change on disk is a session that starts over
     /// against the file, which is exactly what [`crate::data_file::open`]
     /// already does. It also means the budget fallback needs no second
     /// implementation: a file that has grown past the copy threshold, or

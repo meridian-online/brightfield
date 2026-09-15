@@ -282,7 +282,7 @@ fn spec_naming_a_remote_source(url: &str) -> String {
 /// `open_remote_start` latches [`MeridianApp::fetching_start`] in the same
 /// frame, before any worker exists, which is what lets this test drive the
 /// overlap without a network connection: the fetch is outstanding and
-/// nothing has happened yet, exactly the window `reload_data_file`'s guard
+/// still unresolved, exactly the window `reload_data_file`'s guard
 /// exists for. It does not touch the chart document at all, so a real
 /// data-file document is opened first and its marks are read back
 /// unchanged after the refused reload — a window with nothing open would
