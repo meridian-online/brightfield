@@ -4877,6 +4877,16 @@ impl MeridianApp {
                 Request::Verb(verb) if verb.as_str() == NAVIGATOR_TOGGLE => {
                     self.toggle_navigator_focus(ctx);
                 }
+                // reload-data is the window's verb for the same reason
+                // open-home is: the notice that raises it lives on the chart
+                // document, but reloading is a fresh open of a file, not a
+                // dispatch either document's model would recognise. Without
+                // this intercept the graph-on-canvas arm below would forward
+                // it to `model.dispatch`, which silently no-ops an unknown
+                // verb.
+                Request::Verb(verb) if verb.as_str() == "reload-data" => {
+                    self.reload_data_file(ctx);
+                }
                 Request::Verb(verb) if graph_on_canvas => {
                     let canvas_node = self.protocol.doc.canvas_holds.node().cloned();
                     self.protocol
@@ -5389,6 +5399,42 @@ impl MeridianApp {
         ));
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
         ctx.request_repaint();
+    }
+
+    /// Reload the data file behind the open chart document: re-run
+    /// [`Self::open_data_file`] on the same path.
+    ///
+    /// This is deliberately the same route a fresh open takes rather than a
+    /// second one that patches the live session in place. A materialised
+    /// source cannot be safely re-copied on top of itself — the view it
+    /// backs no longer reads the file once it has been copied once — so the
+    /// only way to read a change on disk is a session that starts over
+    /// against the file, which is exactly what [`crate::data_file::open`]
+    /// already does. It also means the budget fallback needs no second
+    /// implementation: a file that has grown past the copy threshold, or
+    /// whose table no longer fits the memory budget, takes the same view
+    /// branch an ordinary open of that file would.
+    ///
+    /// Refuses rather than racing when a remote start is still fetching
+    /// its own sources into this window ([`Self::fetching`]) — that fetch
+    /// ends by adopting its own boot, and running this at the same time
+    /// would leave whichever finished last as the only one that happened.
+    /// It is also a no-op when the canvas holds no data-file document to
+    /// reload: the click that raised this verb named a file the window no
+    /// longer has open, and there is nothing left to race.
+    pub fn reload_data_file(&mut self, ctx: &egui::Context) {
+        if self.fetching.is_some() {
+            return;
+        }
+        let Some(path) = self
+            .charts
+            .doc
+            .live_dashboard()
+            .and_then(|live| live.data_files(live.base_dir()).into_iter().next())
+        else {
+            return;
+        };
+        self.open_data_file(ctx, &path.to_string_lossy());
     }
 
     /// Write this window's Protocol to disk: `arcform.yaml` and its one model,

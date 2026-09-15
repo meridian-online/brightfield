@@ -32,7 +32,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-use brightfield_workbench::{HideAffordance, StatusEntry, StatusSide, Tone};
+use brightfield_workbench::{HideAffordance, StatusEntry, StatusSide, Tone, Verb};
 
 /// How often the watcher stats its files — the editor's own reload cadence,
 /// restated here for the same reason: often enough to feel immediate, rare
@@ -170,8 +170,18 @@ impl FileWatcher {
 
     /// The status entries the recorded changes owe: at most one per role —
     /// three data files changing is one "data changed on disk" line, not
-    /// three — each a standing fact that clears with the rail, worded as a
-    /// file event and toned as a condition, never as a run-state.
+    /// three — worded as a file event and toned as a condition, never as a
+    /// run-state.
+    ///
+    /// The two roles clear differently. The spec notice stands until the rail
+    /// itself is hidden — there is nothing here to *do* about a spec edit
+    /// beyond noticing it, so [`HideAffordance::WithRail`] is the honest
+    /// answer. The data notice carries [`HideAffordance::Verb`] instead: a
+    /// copied file is a snapshot, so there is a real action a reader can take
+    /// — `reload-data`, which copies the file into DuckDB's table again and
+    /// recomposes — and the notice clears itself when that verb's own effect
+    /// re-baselines the watch (see [`FileWatcher::watch`]), not because the
+    /// click removed a line.
     #[must_use]
     pub fn entries(&self) -> Vec<StatusEntry> {
         let mut out = Vec::new();
@@ -190,7 +200,7 @@ impl FileWatcher {
                 side: StatusSide::Trailing,
                 text: "data changed on disk".to_string(),
                 tone: Tone::Warning,
-                hide: HideAffordance::WithRail,
+                hide: HideAffordance::Verb(Verb::new("reload-data")),
             });
         }
         out
@@ -352,6 +362,44 @@ mod tests {
         assert_eq!(entries[0].id, "watch-spec");
         assert_eq!(entries[1].id, "watch-data");
         assert!(entries.iter().all(|e| e.tone == Tone::Warning));
+    }
+
+    /// The data notice carries a reload verb — the spec notice does not,
+    /// because there is nothing to do about a spec edit but notice it, while
+    /// a copied data file has a real action: reload it.
+    #[test]
+    fn only_the_data_notice_carries_a_reload_verb() {
+        let dir = scratch("reload-verb");
+        let spec = dir.join("spec.yaml");
+        let data = dir.join("rows.csv");
+        fs::write(&spec, "a").expect("write spec");
+        fs::write(&data, "b").expect("write data");
+
+        let mut w = FileWatcher::new();
+        w.watch(Some(spec.clone()), vec![data.clone()]);
+        touch_past(&spec, 100);
+        touch_past(&data, 100);
+        w.poll_now();
+
+        let entries = w.entries();
+        let spec_entry = entries
+            .iter()
+            .find(|e| e.id == "watch-spec")
+            .expect("the spec notice is raised");
+        assert_eq!(
+            spec_entry.hide,
+            HideAffordance::WithRail,
+            "a spec edit has nothing to do but notice — it clears with the rail"
+        );
+        let data_entry = entries
+            .iter()
+            .find(|e| e.id == "watch-data")
+            .expect("the data notice is raised");
+        assert_eq!(
+            data_entry.hide,
+            HideAffordance::Verb(Verb::new("reload-data")),
+            "a copied data file has a real action, and the notice offers it"
+        );
     }
 
     /// Re-watching (a new document) drops old notices and re-baselines.
