@@ -5416,8 +5416,8 @@ impl MeridianApp {
     /// branch an ordinary open of that file would.
     ///
     /// Refuses rather than racing when a remote start is still fetching
-    /// its own sources into this window ([`Self::fetching`]) — that fetch
-    /// ends by adopting its own boot, and running this at the same time
+    /// its own sources into this window (the private `fetching` field) —
+    /// that fetch ends by adopting its own boot, and running this at the same time
     /// would leave whichever finished last as the only one that happened.
     /// It is also a no-op when the canvas holds no data-file document to
     /// reload: the click that raised this verb named a file the window no
