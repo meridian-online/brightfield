@@ -2210,7 +2210,10 @@ fn the_locator_band_reads_the_file_the_step_the_node_and_the_view() {
                 panic!(
                     "no galley reading {crumb:?} landed in the locator band {band:?}; it \
                      painted {:?}",
-                    painted.iter().map(|(t, _, _)| t.as_str()).collect::<Vec<_>>()
+                    painted
+                        .iter()
+                        .map(|(t, _, _)| t.as_str())
+                        .collect::<Vec<_>>()
                 )
             });
         assert_eq!(*got, want, "the crumb {crumb:?} painted in the wrong ink");

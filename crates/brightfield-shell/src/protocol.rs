@@ -1674,7 +1674,12 @@ impl ProtocolModel {
                     .file_name()
                     .map_or_else(|| from.label.clone(), |f| f.to_string_lossy().into_owned())
             })?;
-        Some(vec![file, step, asset.label.clone(), view.label().to_string()])
+        Some(vec![
+            file,
+            step,
+            asset.label.clone(),
+            view.label().to_string(),
+        ])
     }
 
     /// The drill breadcrumb labels, root → deepest.
