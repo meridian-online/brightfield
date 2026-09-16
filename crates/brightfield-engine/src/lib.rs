@@ -3118,7 +3118,8 @@ impl Session {
     /// non-finite extreme, a value Rust spells with an exponent, or a pair
     /// wider than DuckDB's 38 digits. Each is quoted — `{:?}` renders a
     /// non-finite `f64` as `inf`, `-inf` or `NaN`, which are bare identifiers
-    /// in SQL, and DuckDB casts all three from a string. On those pairs the
+    /// in SQL, and DuckDB casts `'inf'`, `'-inf'` and `'NaN'` from a string —
+    /// `bucket_extremes_keep_exact_edges_and_fall_back_to_double` asserts the spelling. On those pairs the
     /// bare literals were already DOUBLE arithmetic or already a refusal, so
     /// no edge that was exact before stops being exact.
     ///
@@ -3128,7 +3129,7 @@ impl Session {
     /// pairs take which spelling.
     fn extent_literals(min: f64, max: f64) -> (String, String) {
         // Integer digits (leading zeros are not width) and decimal places of a
-        // plain `{:?}` spelling, or `None` for anything else.
+        // plain `{:?}` spelling, or `None` for an exponent or a non-finite word.
         fn shape(spelled: &str) -> Option<(usize, usize)> {
             let digits = spelled.strip_prefix('-').unwrap_or(spelled);
             let (int, frac) = digits.split_once('.')?;

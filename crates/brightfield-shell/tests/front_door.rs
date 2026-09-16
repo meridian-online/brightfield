@@ -536,8 +536,8 @@ const JAILED_CHILD_VAR: &str = "BRIGHTFIELD_TEST_JAILED_LOOPBACK_PORT";
 /// - first proves the jail denies: a connect to a loopback listener the parent
 ///   is holding open must fail, or the run had a network and proves nothing
 ///   about running without one;
-/// - then loads every start that does not declare `remote` through
-///   `Boot::start`, the boot path's own entry;
+/// - then loads each start in `starts::STARTS` that does not declare
+///   `remote` through `Boot::start`, the boot path's own entry;
 /// - then clicks the California Housing card on a real door and requires the
 ///   window to have left the door.
 ///
@@ -931,7 +931,7 @@ fn a_bundled_data_start_writes_the_committed_bytes_where_a_second_launch_finds_t
 /// start's id written by hand, the door's Protocols tests from a seeded layout —
 /// so none of them read what clicking the card actually wrote. A `return;` after
 /// `adopt_boot` in `land_start`'s data-file arm skips recording the start and
-/// remembering it, and every one of them stayed green over it: a user would
+/// remembering it, and the three stayed green over it: a user would
 /// have opened California Housing, quit, and come back to the door with no row
 /// for it.
 ///
