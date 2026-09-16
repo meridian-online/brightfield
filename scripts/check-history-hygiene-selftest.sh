@@ -80,6 +80,7 @@ ACREF="$(printf '%s#%s' "$_ac" 9)"
 DOCREF="$(printf '%s-%s' "$_doc" 042)"
 SPECACREF="$(printf '%s-%s%s' "$_clg" "$(printf '%s' "$_ac" | tr 'A-Z' 'a-z')" 09)"
 WIKILINK="$(printf '%s%s-%s%s' '[[' region taxonomy ']]')"
+LEDGERPATH="$(printf '%s/%s-%s-%s' decisions gallery datasets committed)"
 
 # A throwaway repo carrying the real gate and the real rules, with one commit
 # whose message is whatever the caller passes.
@@ -157,6 +158,8 @@ check_violation "spec AC id, prefixed" spec-ac-id \
 	"$(printf 'Covered by %s.' "$SPECACREF")"
 check_violation "vault wikilink" vault-wikilink \
 	"$(printf 'Documented at %s.' "$WIKILINK")"
+check_violation "vault ledger path" vault-ledger-path \
+	"$(printf 'Provenance per %s.' "$LEDGERPATH")"
 
 # ---------------------------------------------------------------------------
 # 2. The direction a hygiene gate usually skips.

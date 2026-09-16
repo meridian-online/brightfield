@@ -241,9 +241,9 @@ pub struct BundledData {
     /// they came from, at which upstream revision, under which licence, and
     /// their own size and SHA-256.
     ///
-    /// Shipped beside the bytes because
-    /// `decisions/the-three-gallery-datasets-may-be-committed-to-the-public-repo`
-    /// requires the provenance to travel with them, and read by
+    /// Shipped beside the bytes because a third-party dataset in a public
+    /// repository has to carry its provenance with it rather than leave it
+    /// in the repository that built it, and read by
     /// `the_bundled_dataset_is_the_bytes_its_descriptor_declares` so it is a
     /// gate rather than a note: the descriptor's `bytes` and `hash` are held
     /// against [`Self::bytes`], and its `path` against [`Self::file_name`].
