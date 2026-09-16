@@ -140,9 +140,9 @@ fn the_empty_document_has_nothing_in_it() {
 /// this reads two documents rather than one. The Protocol's own panes — the
 /// outline, the canvas, the steps sheet, the inspector — are filled by the
 /// declaration `loaded` reads, and a declaration is what `edgar_gleif` is. The
-/// ledger rail's Log and Quality are filled by a **run**, and a declaration
-/// carries none, so they apologise over `loaded` correctly and would be
-/// asserted into lying if this held one rule over all six. They are read over
+/// ledger rail's Log and Quality are filled by a **run**, which a declaration
+/// does not carry, so they apologise over `loaded` correctly and would be
+/// asserted into lying if this held one rule over the whole registry. They are read over
 /// [`ran`] instead, where a run record stands behind the same fixture — and
 /// that is the reading that keeps the inverted-predicate catch on them, since
 /// an `empty_state` that answered `Some` unconditionally fails it.
