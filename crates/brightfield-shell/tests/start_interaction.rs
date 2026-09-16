@@ -1266,7 +1266,7 @@ fn the_prose_rules_separate_the_shipped_corpus() {
 fn the_spec_a_start_carries_is_the_spec_its_click_opens() {
     for start in starts::STARTS {
         // **A chart start opens from authored bytes or from data, and the
-        // pair is exhaustive.** This is the same pin it has always been, said
+        // pair is exhaustive.** This is the pin that stood here before, said
         // over three values rather than two, because a third kind of start
         // arrived: `Start::data` opens a chart the generator drew over a file
         // this binary ships, and there is no spec for the enumeration below to
