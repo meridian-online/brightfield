@@ -1153,6 +1153,10 @@ impl Item<ChartDoc> for RowsSpot {
         ROWS
     }
 
+    fn empty_state(&self, _doc: &ChartDoc) -> Option<EmptyState> {
+        None
+    }
+
     fn describe(&self, _doc: &ChartDoc) -> Subject {
         Subject::new("Rows", ICON_DATA, BindingContext::Workspace)
     }
