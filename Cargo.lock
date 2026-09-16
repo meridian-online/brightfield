@@ -686,6 +686,7 @@ dependencies = [
  "pollster",
  "rfd",
  "serde_json",
+ "sha2",
  "ureq",
  "vello",
 ]
