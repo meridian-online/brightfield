@@ -1265,23 +1265,56 @@ fn the_prose_rules_separate_the_shipped_corpus() {
 #[test]
 fn the_spec_a_start_carries_is_the_spec_its_click_opens() {
     for start in starts::STARTS {
-        assert_eq!(
-            start.fills == brightfield_shell::app::CHART,
-            start.spec.is_some(),
-            "{}: it fills the {} pane, and it {}. A chart start \
-             with no `spec:` opens from bytes nothing in this file reads — no \
-             producer of its is enumerated and no claim of its prose is \
-             decided.",
-            start.id,
-            start.fills,
-            if start.spec.is_some() {
-                "carries a chart spec"
-            } else {
-                "carries none"
-            }
-        );
+        // **A chart start opens from authored bytes or from data, and the
+        // pair is exhaustive.** This is the pin that stood here before, said
+        // over three values rather than two, because a third kind of start
+        // arrived: `Start::data` opens a chart the generator drew over a file
+        // this binary ships, and there is no spec for the enumeration below to
+        // read because nobody wrote one. What holds that kind is
+        // `the_door_promises_what_the_generator_draws` in
+        // `tests/scripted_open.rs`, which runs the generator over a real table
+        // and compares the picture to the promise the door makes about it.
+        //
+        // Both directions are still asserted and the hole this guards is still
+        // shut: a chart start declaring neither a spec nor a data file fails at
+        // the first assertion, and a NON-chart start declaring a spec fails at
+        // the second. What is no longer said is that a chart start must carry
+        // a spec — because that is now false, not because it is inconvenient.
+        if start.fills == brightfield_shell::app::CHART {
+            assert!(
+                start.spec.is_some() || start.data.is_some(),
+                "{}: it fills the {} pane and declares neither a chart spec \
+                 nor a data file, so it opens from bytes nothing in this file \
+                 reads — no producer of its is enumerated and no claim of its \
+                 prose is decided.",
+                start.id,
+                start.fills
+            );
+        } else {
+            assert!(
+                start.spec.is_none(),
+                "{}: it carries a chart spec and does not declare the {} pane, \
+                 so the spec this file enumerates is not the one its click \
+                 opens.",
+                start.id,
+                brightfield_shell::app::CHART
+            );
+        }
     }
+    // …and the two kinds are both present, so neither arm above is walking an
+    // empty set while the other carries the whole shipped list.
+    assert!(
+        starts::STARTS.iter().any(|s| s.spec.is_some()),
+        "no shipped start carries a chart spec, so the enumeration below reads \
+         nothing"
+    );
+    assert!(
+        starts::STARTS.iter().any(|s| s.data.is_some()),
+        "no shipped start declares a data file, so the arm admitting one is \
+         dead and this partition has stopped describing the shipped set"
+    );
 
+    datasets_into_scratch();
     for start in starts::STARTS.iter().filter(|s| !s.remote) {
         let opened = starts::load(start.id).unwrap_or_else(|e| panic!("{}: {e}", start.id));
         let starts::Opened::Charts(chart) = opened else {
@@ -1328,4 +1361,19 @@ fn the_spec_a_start_carries_is_the_spec_its_click_opens() {
             start.id
         );
     }
+}
+
+/// Point brightfield's config directory at this target's scratch, so a start
+/// that ships a data file writes that file there and not into the developer's
+/// own `~/Library/Application Support/Brightfield`.
+///
+/// The twin of `datasets_into_scratch` in `tests/front_door.rs`, which carries
+/// the argument for the fixed path; an integration test target cannot import a
+/// sibling's helper, and a shared fixture crate for four lines is more
+/// machinery than the duplication costs.
+fn datasets_into_scratch() {
+    std::env::set_var(
+        brightfield_shell::startup::CONFIG_DIR_VAR,
+        std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("config"),
+    );
 }

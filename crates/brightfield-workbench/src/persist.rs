@@ -626,7 +626,7 @@ pub fn load(path: &Path, default: impl FnOnce() -> SavedLayout) -> (SavedLayout,
     }
 }
 
-/// Where the layout file lives.
+/// The directory this machine keeps brightfield's own files in.
 ///
 /// An explicit override wins, for tests and portable installs; otherwise the
 /// platform config directory — macOS `Application Support`, else
@@ -638,30 +638,40 @@ pub fn load(path: &Path, default: impl FnOnce() -> SavedLayout) -> (SavedLayout,
 /// Pure in its inputs — the environment is passed, never read — so the
 /// selection is testable on every platform's rule at once, and `None` (no
 /// home, no config dir) is a real answer rather than a panic.
+///
+/// **The directory rather than the layout file**, because the layout file is
+/// no longer the only thing the application owns here: a start that ships a
+/// data file writes those bytes under this directory too, and the two have to
+/// land on one policy or a portable install relocates one of them and not the
+/// other. [`layout_path`] is this plus [`LAYOUT_FILE`].
+#[must_use]
+pub fn config_dir(
+    env_override: Option<&str>,
+    xdg_config_home: Option<&str>,
+    home: Option<&str>,
+) -> Option<PathBuf> {
+    if let Some(dir) = env_override.filter(|s| !s.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    if cfg!(target_os = "macos") {
+        home.filter(|s| !s.is_empty())
+            .map(|h| PathBuf::from(h).join("Library/Application Support/Brightfield"))
+    } else if let Some(xdg) = xdg_config_home.filter(|s| !s.is_empty()) {
+        Some(PathBuf::from(xdg).join("brightfield"))
+    } else {
+        home.filter(|s| !s.is_empty())
+            .map(|h| PathBuf::from(h).join(".config/brightfield"))
+    }
+}
+
+/// Where the layout file lives — [`config_dir`] and [`LAYOUT_FILE`].
 #[must_use]
 pub fn layout_path(
     env_override: Option<&str>,
     xdg_config_home: Option<&str>,
     home: Option<&str>,
 ) -> Option<PathBuf> {
-    if let Some(dir) = env_override.filter(|s| !s.is_empty()) {
-        return Some(PathBuf::from(dir).join(LAYOUT_FILE));
-    }
-    if cfg!(target_os = "macos") {
-        home.filter(|s| !s.is_empty()).map(|h| {
-            PathBuf::from(h)
-                .join("Library/Application Support/Brightfield")
-                .join(LAYOUT_FILE)
-        })
-    } else if let Some(xdg) = xdg_config_home.filter(|s| !s.is_empty()) {
-        Some(PathBuf::from(xdg).join("brightfield").join(LAYOUT_FILE))
-    } else {
-        home.filter(|s| !s.is_empty()).map(|h| {
-            PathBuf::from(h)
-                .join(".config/brightfield")
-                .join(LAYOUT_FILE)
-        })
-    }
+    config_dir(env_override, xdg_config_home, home).map(|dir| dir.join(LAYOUT_FILE))
 }
 
 // ---------------------------------------------------------------------------

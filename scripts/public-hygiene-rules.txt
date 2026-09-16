@@ -108,3 +108,13 @@ spec-ac-id|(?i)(?<![A-Za-z0-9])ac[-_][0-9]+[a-z]?(?![0-9])
 # from TOML's own array-of-table headers — single words, no hyphen, and this
 # workspace's own Cargo.toml files carry them for real.
 vault-wikilink|(?i)\[\[[a-z0-9]+(?:-[a-z0-9]+)+\]\]
+
+# A path into the private planning vault's ledger: a directory the vault keeps
+# its records in, then a kebab-case slug of three or more words. The wikilink
+# rule above catches the vault's own link syntax; a path written in backticks
+# in a doc comment is the same pointer spelled as a file, and it reached a
+# public doc comment with the planning-identifiers gate green over it. Three
+# words because a vault slug is a sentence, and a short `notes/foo-bar` is a
+# plausible path in any repository. Measured against this tree before it was
+# committed: the one match was the leak it was written for.
+vault-ledger-path|(?i)(?<![-_A-Za-z0-9/.])(?:decisions|cards|milestones|drafts|notes)/[a-z0-9]+(?:-[a-z0-9]+){2,}

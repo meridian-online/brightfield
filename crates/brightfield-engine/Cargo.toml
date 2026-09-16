@@ -10,7 +10,15 @@ description = "In-process DuckDB execution engine for Mosaic spec pipelines"
 [dependencies]
 brightfield-spec = { path = "../brightfield-spec" }
 brightfield-sql = { path = "../brightfield-sql" }
-duckdb = { version = "1", features = ["bundled"] }
+# `parquet` links DuckDB's Parquet reader into the binary. Without it
+# `read_parquet` is an extension DuckDB autoinstalls on first use — downloaded
+# from extensions.duckdb.org into ~/.duckdb — so a local Parquet opened on a
+# machine with no network and a cold extension cache does not open at all, and
+# on a machine with a network its first open reaches it. The front door ships
+# a bundled Parquet whose whole promise is that it needs neither.
+# `the_local_starts_open_with_the_network_denied_and_a_cold_extension_cache` in
+# the shell's `tests/front_door.rs` reddens when this feature is off.
+duckdb = { version = "1", features = ["bundled", "parquet"] }
 serde_json = "1"
 thiserror = "2"
 

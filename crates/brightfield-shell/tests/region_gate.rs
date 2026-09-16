@@ -386,6 +386,7 @@ fn every_window_this_build_can_open() -> Vec<(String, Boot)> {
             a_protocol_and_a_chart(),
         ),
     ];
+    datasets_into_scratch();
     for start in starts::STARTS {
         let boot = Boot::start(start.id, Flow::Vertical)
             .unwrap_or_else(|e| panic!("the {} start ships with this build: {e}", start.id));
@@ -591,11 +592,21 @@ fn extent_across(edge: Edge, rect: egui::Rect) -> f32 {
 /// Both over the corpus rather than one window, which is what the derived
 /// corpus was built for.
 ///
-/// What this does not cover: a rail the user has collapsed or dragged. Every
-/// window here is freshly booted, so each rail is at its default;
-/// `a_rail_reopens_at_the_extent_it_was_dragged_to` and
-/// `each_rail_collapses_to_the_measure_it_declares` are where the other two
-/// states are held.
+/// What this does not cover: a rail the user has dragged.
+/// `a_rail_reopens_at_the_extent_it_was_dragged_to` is where that state is
+/// held.
+///
+/// It does cover a **collapsed** rail, and it has to: a rail's state used to
+/// be the arrangement's default until a click moved it, so a freshly booted
+/// window was a window with every rail open. `apply_rail_defaults` ended that
+/// — the ledger and inspector rails open closed on a Protocol of one step,
+/// which is what a data file opens as — so which of a rail's two declared
+/// extents applies is now a property of the document. This asks the window
+/// through `MeridianApp::rail_is_collapsed` rather than assuming, and holds a
+/// collapsed rail to `Region::collapsed_extent` exactly as it holds an open
+/// one to its default. Accepting *either* measure would have been the cheap
+/// repair and a worse gate: it would clear a rail that drew its strip on a
+/// window where it should have been open.
 #[test]
 fn every_regions_drawn_extent_is_the_one_it_declares() {
     let plan = arrangement::default_arrangement();
@@ -618,6 +629,15 @@ fn every_regions_drawn_extent_is_the_one_it_declares() {
                 continue; // a region this window does not draw
             };
             let declared = match region.extent {
+                // A collapsed rail is held to the measure it declares for that
+                // state, and an open one to its default — the window is asked
+                // which it is in, and a rail that declares no collapsed extent
+                // while drawing collapsed is a defect `Arrangement`'s own
+                // validation names, so this leaves it to the default and lets
+                // the comparison below report the gap.
+                Extent::Rail { default: size, .. } if app.rail_is_collapsed(region.id) => {
+                    region.collapsed_extent().unwrap_or(size)
+                }
                 Extent::Band(size) | Extent::Rail { default: size, .. } => size,
                 Extent::Overlay(size) => {
                     let drawn = extent_across(region.edge, rect);
@@ -670,5 +690,19 @@ fn every_regions_drawn_extent_is_the_one_it_declares() {
         fixed >= 20 && canvases >= 6 && overlays >= 1,
         "the sweep compared {fixed} fixed extents, {canvases} canvases and \
          {overlays} floating bands; it is not reading the corpus"
+    );
+}
+
+/// Point brightfield's config directory at this target's scratch, so loading a
+/// start that ships a data file writes that file there and not into the
+/// developer's own `~/Library/Application Support/Brightfield`.
+///
+/// The twin of `datasets_into_scratch` in `tests/front_door.rs`, which carries
+/// the argument for the fixed path; an integration test target cannot import a
+/// sibling's helper.
+fn datasets_into_scratch() {
+    std::env::set_var(
+        brightfield_shell::startup::CONFIG_DIR_VAR,
+        std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("config"),
     );
 }

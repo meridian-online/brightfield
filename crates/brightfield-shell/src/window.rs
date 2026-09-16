@@ -1112,6 +1112,11 @@ impl Boot {
                 ..Self::charts(chart.composed)
             },
             crate::starts::Opened::Protocol(inputs) => Self::protocol(*inputs, flow, None),
+            // The start wrote its bundled file and named where it put it, and
+            // this is the same call a launch naming that path on the command
+            // line makes. See [`crate::starts::Opened::File`] for why the
+            // route is shared rather than duplicated.
+            crate::starts::Opened::File(path) => Self::data_file(&path.to_string_lossy())?,
         };
         Ok(Self {
             opened_id: Some(id.to_string()),
@@ -2921,6 +2926,26 @@ impl MeridianApp {
     #[must_use]
     pub fn drawn_regions(&self) -> &[(RegionId, egui::Rect)] {
         &self.regions
+    }
+
+    /// Whether rail `id` is put away right now — drawing its strip rather than
+    /// the room its [`Extent::Rail`] default names.
+    ///
+    /// **Asked rather than assumed**, which is what this exists for. A rail's
+    /// state used to be the arrangement's default until something moved it, so
+    /// a freshly booted window was a window with every rail open and a test
+    /// could compare a drawn extent against the declaration and stop there.
+    /// `apply_rail_defaults` ended that: the ledger and inspector rails open
+    /// closed on a Protocol of one step, which is what a data file opens as,
+    /// so *the default* is now a property of the document. The first window in
+    /// the corpus with one step failed `every_regions_drawn_extent_is_the_one_it_declares`
+    /// at 56pt against 180pt — a correct rail, measured against the wrong one
+    /// of its two declared extents.
+    ///
+    /// [`Extent::Rail`]: brightfield_workbench::arrangement::Extent::Rail
+    #[must_use]
+    pub fn rail_is_collapsed(&self, id: RegionId) -> bool {
+        self.collapsed.contains(&id)
     }
 
     /// Where the collapse control of rail `id` drew in the last frame this
@@ -5278,13 +5303,37 @@ impl MeridianApp {
                 // — and assigning `None` for a local start is the same
                 // sentence, which is why it is one line rather than an arm.
                 self.remote_files = chart.fetched;
+                self.documents_changed();
             }
             crate::starts::Opened::Protocol(inputs) => {
                 self.protocol.doc.open(*inputs);
                 self.remote_files = None;
+                self.documents_changed();
+            }
+            // A data file the start just wrote, opened through the picker's
+            // own route — `Boot::data_file` over `crate::data_file::open`, and
+            // then `adopt_boot`, which is the call `open_data_file` makes.
+            // Both of this window's documents arrive together for a data file,
+            // which is why this arm hands over a whole boot where the two
+            // above replace one document; `adopt_boot` ends in
+            // `documents_changed` itself, and in the `wire_columns` that has
+            // to follow it, so this arm does not repeat the call its siblings
+            // make.
+            //
+            // A refusal here is the same refusal `open_data_file` raises for a
+            // file that will not read, reported as this start's banner: the
+            // window stays up on whatever it was showing.
+            crate::starts::Opened::File(path) => {
+                let boot = match Boot::data_file(&path.to_string_lossy()) {
+                    Ok(boot) => boot,
+                    Err(e) => {
+                        self.refuse_start(ctx, id, &e);
+                        return;
+                    }
+                };
+                self.adopt_boot(boot);
             }
         }
-        self.documents_changed();
         self.notifications.dismiss(banner);
         self.layout.live_mut().opened = Some(id.to_string());
         // …and remembered as a Protocol, which is the other half: `opened` is

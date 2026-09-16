@@ -51,6 +51,41 @@ const CANVAS_PANE: PaneKey = PaneKey::new(CANVAS);
 /// resolves a click against a widget id registered on a previous frame, so two
 /// `run` calls through two contexts swallow every pointer interaction and a
 /// test that clicks a control passes or fails for reasons unrelated to it.
+/// Point brightfield's config directory at this target's scratch, so a start
+/// that ships a data file writes that file there and not into the developer's
+/// own `~/Library/Application Support/Brightfield`.
+///
+/// **A fixed path rather than a per-test one**, so several tests calling this
+/// concurrently write the same string into the same variable and there is no
+/// race to lose — `std::env::set_var` is process-wide and this file's tests do
+/// not all run on one thread unless `--test-threads=1` says so, which is CI's
+/// argument and not the default.
+///
+/// It relocates the layout file too, at no cost here: a saved layout is out of
+/// a constructor's reach (see `crate::startup`'s module docs), so the effect
+/// that lands is the one this is for.
+fn datasets_into_scratch() {
+    std::env::set_var(
+        brightfield_shell::startup::CONFIG_DIR_VAR,
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("config"),
+    );
+}
+
+/// The one shipped start that opens a data file, which several tests below
+/// are about — resolved off the declaration rather than written as an id, so
+/// a second one arriving fails here rather than leaving these tests quietly
+/// asserting about the first.
+fn the_data_file_start() -> &'static starts::Start {
+    let mut found = starts::STARTS.iter().filter(|s| s.data.is_some());
+    let start = found.next().expect("no shipped start opens a data file");
+    assert!(
+        found.next().is_none(),
+        "more than one shipped start opens a data file, so the tests that ask \
+         for `the` one are asserting about whichever comes first"
+    );
+    start
+}
+
 struct Window {
     app: MeridianApp,
     ctx: egui::Context,
@@ -335,6 +370,10 @@ fn canvas_subject(doc: &ProtocolDoc) -> Subject {
 /// `the_crosswalk_chart_start_opens_over_the_network_drawing_every_row` in
 /// `tests/crosswalk_chart.rs`. The trade is stated rather than hidden: that
 /// start's load gate runs on demand, not on every push.
+/// Watched redden, one mutation for the arm a data-file start takes:
+/// `Start::data`'s `bytes:` pointed at `HOUSING_DESCRIPTOR` instead of the
+/// Parquet — bytes that are written but are not a data file — fails at
+/// "california-housing wrote a file that will not open".
 #[test]
 fn every_shipped_start_loads_into_a_document_with_something_in_it() {
     // The recorded size is the **gallery's**, which is what a stranger
@@ -359,6 +398,7 @@ fn every_shipped_start_loads_into_a_document_with_something_in_it() {
         "the crosswalk anchors the set; a gallery without it is a different \
          product decision, not a refactor"
     );
+    datasets_into_scratch();
     let local: Vec<&starts::Start> = starts::STARTS.iter().filter(|s| !s.remote).collect();
     assert!(
         local.len() >= 3,
@@ -366,17 +406,34 @@ fn every_shipped_start_loads_into_a_document_with_something_in_it() {
          been hollowed out by the `remote` exemption rather than narrowed by it",
         local.len()
     );
+    // A data-file start is in this loop and not exempt from it, which is what
+    // AC3 of its card asks: it is not `remote`, so the filter above keeps it,
+    // and the `File` arm below drives the whole open rather than stopping at
+    // the path. An exemption added here would be the hole that AC checks for.
+    assert!(
+        local.iter().any(|s| s.data.is_some()),
+        "no start this gate walks ships a data file, so the `File` arm below \
+         is dead code and the bundled-dataset route is unasserted"
+    );
     for start in local {
         let opened = starts::load(start.id)
             .unwrap_or_else(|e| panic!("the shipped start {} does not load: {e}", start.id));
-        let loads_a_chart = matches!(opened, Opened::Charts(_));
+        // A data-file start opens BOTH documents — a generated dashboard over
+        // the file and the one-step Protocol that describes it — so the
+        // question `fills` answers for it is the same question it answers for
+        // the others: which pane's empty state offers it, which for a picture
+        // over a table is the chart pane.
+        let opens_a_chart = match &opened {
+            Opened::Charts(_) | Opened::File(_) => true,
+            Opened::Protocol(_) => false,
+        };
         assert_eq!(
-            loads_a_chart,
+            opens_a_chart,
             start.fills == CHART,
-            "{} declares it fills the {} pane and loads a {} document",
+            "{} declares it fills the {} pane and opens a {} document",
             start.id,
             start.fills,
-            if loads_a_chart { "chart" } else { "protocol" }
+            if opens_a_chart { "chart" } else { "protocol" }
         );
         match opened {
             Opened::Charts(chart) => assert!(
@@ -385,6 +442,43 @@ fn every_shipped_start_loads_into_a_document_with_something_in_it() {
                  one empty state into another",
                 start.id
             ),
+            // The whole open, not the path: a start that wrote a file nothing
+            // can read would otherwise pass this gate on the strength of
+            // having written something.
+            Opened::File(path) => {
+                let data = start
+                    .data
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("{} opened a file it does not declare", start.id));
+                assert_eq!(
+                    std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())),
+                    data.bytes,
+                    "{} wrote something other than the bytes it carries to {}",
+                    start.id,
+                    path.display()
+                );
+                let boot = Boot::data_file(&path.to_string_lossy()).unwrap_or_else(|e| {
+                    panic!("{} wrote a file that will not open: {e}", start.id)
+                });
+                assert!(
+                    boot.has_chart(),
+                    "{} composed no plots over its own data, so the card that \
+                     opens it resolves one empty state into another",
+                    start.id
+                );
+                assert!(
+                    !boot.protocol.sheet_rows.is_empty(),
+                    "{} built no steps, so the steps sheet opens empty behind \
+                     the click",
+                    start.id
+                );
+                assert!(
+                    !boot.protocol.columns.is_empty(),
+                    "{} listed no columns, so the navigator rail opens empty \
+                     behind the click",
+                    start.id
+                );
+            }
             Opened::Protocol(inputs) => {
                 assert!(
                     !inputs.graph_collapsed.nodes.is_empty(),
@@ -405,6 +499,617 @@ fn every_shipped_start_loads_into_a_document_with_something_in_it() {
                 );
             }
         }
+    }
+}
+
+/// The jail the offline gate below runs its child in, and the one
+/// `scripts/verify-airgapped.sh` runs the packaged binary in: one definition of
+/// "the network is denied" for both proofs.
+#[cfg(target_os = "macos")]
+const NETWORK_DENIED: &str = "(version 1)(allow default)(deny network*)";
+
+/// Set in the jailed child's environment, carrying the port of a loopback
+/// listener the parent holds open — the negative control.
+#[cfg(target_os = "macos")]
+const JAILED_CHILD_VAR: &str = "BRIGHTFIELD_TEST_JAILED_LOOPBACK_PORT";
+
+/// **Every local start opens with the network denied and a cold extension
+/// cache — observed, not declared.**
+///
+/// AC3 of the card that cut the California Housing start says it opens with
+/// the network off. The checks that stood for that read it off the
+/// declaration: `Start::remote` is false, the label carries no `REMOTE_MARK`,
+/// and `every_shipped_start_loads_into_a_document_with_something_in_it` loads
+/// it — with the network on, over whatever `~/.duckdb` this machine has
+/// cached. They were all green over a start that did not open offline: DuckDB
+/// reads Parquet through an extension it autoinstalls on first use, so on a
+/// machine with a cold cache the click downloaded it from
+/// extensions.duckdb.org, and with no network the click raised a banner and
+/// the door stayed up. What makes it true now is the `parquet` feature on the
+/// engine's `duckdb` dependency, which links the reader into the binary.
+///
+/// So this opens the starts rather than reading them. The test re-runs itself
+/// under `sandbox-exec` with the network denied, `HOME` pointed at an empty
+/// directory (DuckDB's extension cache is `$HOME/.duckdb`) and the config
+/// directory at another. Inside, the child:
+///
+/// - first proves the jail denies: a connect to a loopback listener the parent
+///   is holding open must fail, or the run had a network and proves nothing
+///   about running without one;
+/// - then loads each start in `starts::STARTS` that does not declare
+///   `remote` through `Boot::start`, the boot path's own entry;
+/// - then clicks the California Housing card on a real door and requires the
+///   window to have left the door.
+///
+/// The parent then requires the child to have run exactly this test and passed
+/// — a test filter matching nothing exits 0 — and the extension cache to still
+/// be empty, so nothing was installed on the way.
+///
+/// macOS only, because the jail is macOS's; CI's `test` job runs on macOS.
+///
+/// Watched redden, two mutations. The engine's `duckdb` dependency without
+/// the `parquet` feature fails the child at "california-housing no longer
+/// opens with the network denied: … Failed to download extension
+/// \"parquet\" … Could not establish connection". The jail's profile reduced
+/// to `(allow default)` fails the child at "the jail let a loopback connection
+/// through" — so a pass here is a pass with the network denied.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_local_starts_open_with_the_network_denied_and_a_cold_extension_cache() {
+    const NAME: &str = "the_local_starts_open_with_the_network_denied_and_a_cold_extension_cache";
+
+    if let Some(port) = std::env::var_os(JAILED_CHILD_VAR) {
+        // ── the jailed child ────────────────────────────────────────────────
+        let port: u16 = port
+            .to_string_lossy()
+            .parse()
+            .expect("the parent hands the child a port");
+        assert!(
+            std::net::TcpStream::connect(("127.0.0.1", port)).is_err(),
+            "the jail let a loopback connection through, so this run had a \
+             network and proves nothing about running without one"
+        );
+        for start in starts::STARTS.iter().filter(|s| !s.remote) {
+            let boot = Boot::start(start.id, Flow::Vertical).unwrap_or_else(|e| {
+                panic!("{} no longer opens with the network denied: {e}", start.id)
+            });
+            assert!(
+                boot.has_chart() || !boot.protocol.graph_full.nodes.is_empty(),
+                "{} opened onto nothing with the network denied",
+                start.id
+            );
+        }
+        let start = the_data_file_start();
+        let mut win = Window::open(Boot::empty());
+        win.settle();
+        win.take_the_card(start.id);
+        win.settle();
+        assert!(
+            !win.app.front_door_is_live(),
+            "clicking {} with the network denied left the window on the door",
+            start.id
+        );
+        return;
+    }
+
+    // ── the parent ──────────────────────────────────────────────────────────
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("offline-starts");
+    let _ = std::fs::remove_dir_all(&root);
+    let (home, config) = (root.join("home"), root.join("config"));
+    for dir in [&home, &config] {
+        std::fs::create_dir_all(dir).expect("make the jailed child's directories");
+    }
+    let control = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback listener");
+    let port = control.local_addr().expect("its address").port();
+
+    let out = std::process::Command::new("/usr/bin/sandbox-exec")
+        .args(["-p", NETWORK_DENIED])
+        .arg(std::env::current_exe().expect("this test binary"))
+        .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+        .env(JAILED_CHILD_VAR, port.to_string())
+        .env("HOME", &home)
+        .env(brightfield_shell::startup::CONFIG_DIR_VAR, &config)
+        .output()
+        .expect("sandbox-exec runs");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the jailed run failed ({}):\n{stdout}\n{stderr}",
+        out.status
+    );
+    assert!(
+        stdout.contains("test result: ok. 1 passed"),
+        "the jailed run did not run exactly this test, so its exit status says \
+         nothing:\n{stdout}"
+    );
+    drop(control);
+
+    let mut cached = Vec::new();
+    let mut dirs = vec![home.join(".duckdb")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                cached.push(path);
+            }
+        }
+    }
+    assert!(
+        cached.is_empty(),
+        "opening the local starts installed into the cold extension cache: \
+         {cached:?}"
+    );
+}
+
+/// **A start declares a chart spec or a data file, and not both.**
+///
+/// `starts::load` takes the data arm first, so a start carrying both would
+/// materialise its file and leave its spec uncomposed — a silent wrong answer
+/// where a refusal was wanted. The arm order is a decision about which of two
+/// mistakes to make; this is what says the situation does not arise.
+///
+/// Watched redden, one mutation: giving the California Housing entry
+/// `spec: Some(CROSSWALK_CHART_SPEC)` beside its `data:` fails here at
+/// "california-housing declares both a chart spec and a data file".
+#[test]
+fn a_start_declares_a_spec_or_a_data_file_and_never_both() {
+    for start in starts::STARTS {
+        assert!(
+            !(start.spec.is_some() && start.data.is_some()),
+            "{} declares both a chart spec and a data file, and `load` will \
+             open the file and never the spec",
+            start.id
+        );
+        assert!(
+            start.spec.is_some() || start.data.is_some() || start.fills != CHART,
+            "{} fills the chart pane and declares neither a spec nor a data \
+             file, so its click reaches `load`'s refusal",
+            start.id
+        );
+    }
+}
+
+/// **The bundled dataset is the bytes its own descriptor declares.**
+///
+/// The ruling that let a third-party dataset into this repository at all asked
+/// for the provenance to travel with the bytes rather than be left behind in
+/// the repository that built them. A descriptor sitting beside a Parquet is a
+/// note; a descriptor a test reads back against the Parquet is a gate — so a
+/// later rebuild that changes the data and not the descriptor, or copies a
+/// descriptor next to the wrong file, fails here instead of shipping a
+/// licence and a source URL that describe something else.
+///
+/// Three facts, because they fail differently: the declared **size**, the
+/// declared **SHA-256**, and the declared **path**, which is the name the
+/// start writes the file under and therefore the name the locator band says
+/// and the stem the table is called after.
+///
+/// Watched redden, one mutation: `HOUSING_FILE` spelled `housing.parquet`
+/// fails at "california-housing writes its bytes under a name its own
+/// descriptor does not use".
+#[test]
+fn the_bundled_dataset_is_the_bytes_its_descriptor_declares() {
+    let start = the_data_file_start();
+    let data = start.data.as_ref().expect("filtered on `data`");
+    let descriptor: serde_json::Value =
+        serde_json::from_str(data.descriptor).expect("the shipped descriptor is JSON");
+    let resource = descriptor["resources"]
+        .as_array()
+        .and_then(|rs| rs.first())
+        .expect("the descriptor declares a resource");
+
+    assert_eq!(
+        resource["bytes"].as_u64(),
+        Some(data.bytes.len() as u64),
+        "{} carries {} byte(s) and its descriptor declares {}",
+        start.id,
+        data.bytes.len(),
+        resource["bytes"]
+    );
+    let digest = {
+        use sha2::{Digest, Sha256};
+        format!("sha256:{:x}", Sha256::digest(data.bytes))
+    };
+    assert_eq!(
+        resource["hash"].as_str(),
+        Some(digest.as_str()),
+        "{}'s bytes do not hash to what its descriptor declares — the \
+         descriptor describes some other export",
+        start.id
+    );
+    assert_eq!(
+        resource["path"].as_str(),
+        Some(data.file_name),
+        "{} writes its bytes under a name its own descriptor does not use",
+        start.id
+    );
+    // The mitigation the ruling actually asked for: a reader holding these
+    // bytes can say where they came from and under what terms.
+    for named in ["licenses", "sources"] {
+        assert!(
+            descriptor[named]
+                .as_array()
+                .is_some_and(|entries| !entries.is_empty()),
+            "{}'s descriptor declares no {named}, so the bytes are anonymous \
+             in a public repository",
+            start.id
+        );
+    }
+}
+
+/// **The click and the picker land on one window.**
+///
+/// AC2 of the card that cut this start. The two routes are the start's card on
+/// the front door and `MeridianApp::open_data_file`, which is the entry point
+/// the file dialog reaches through — and what is compared is what a reader
+/// looks at: the locator band's line, the columns the rails list, and the
+/// window's own title.
+///
+/// It is worth a test even though the routes share a call, because sharing it
+/// is the thing that could be undone: a later change composing the start's
+/// document in `land_start` rather than handing the path to `Boot::data_file`
+/// is green under the rest of this file — the mutation named below is that
+/// change, and this is the test it reddens.
+///
+/// Watched redden, one mutation: `starts::load`'s data arm returning
+/// `Opened::Protocol(ProtocolInputs::empty())` instead of the path — the shape
+/// of "open the declaration rather than the file" — fails here at "the two
+/// routes drew different locator lines".
+#[test]
+fn the_card_and_the_picker_land_on_one_window() {
+    datasets_into_scratch();
+    let start = the_data_file_start();
+    let data = start.data.as_ref().expect("filtered on `data`");
+
+    let mut clicked = Window::open(Boot::empty());
+    clicked.settle();
+    assert!(
+        clicked.app.front_door_is_live(),
+        "the window this test clicks on is not the door: sections {:?}",
+        clicked.app.front_door_sections()
+    );
+    clicked.take_the_card(start.id);
+    clicked.settle();
+
+    // The path the click put on disk, opened the way the dialog opens one.
+    let path = starts::datasets_dir().join(data.file_name);
+    let mut picked = Window::open(Boot::empty());
+    picked.settle();
+    picked
+        .app
+        .open_data_file(&picked.ctx, &path.to_string_lossy());
+    picked.settle();
+
+    assert_eq!(
+        clicked.app.locator_crumbs(),
+        picked.app.locator_crumbs(),
+        "the two routes drew different locator lines"
+    );
+    assert_eq!(
+        clicked.app.title(),
+        picked.app.title(),
+        "the two routes titled the window differently"
+    );
+    let columns = |win: &Window| -> Vec<String> {
+        win.app
+            .protocol_model()
+            .columns()
+            .iter()
+            .map(|c| c.column.clone())
+            .collect()
+    };
+    assert_eq!(
+        columns(&clicked),
+        columns(&picked),
+        "the two routes listed different columns"
+    );
+    assert!(
+        !columns(&clicked).is_empty(),
+        "both routes listed no columns at all, so the comparison above is two \
+         empty lists agreeing"
+    );
+
+    // …and the band names the file rather than a temporary. `document_source`
+    // draws the generated spec's own name, which `crate::data_file` keys to
+    // the data file's resolved stem — so a start that wrote its bytes into
+    // `std::env::temp_dir()` under a made-up name would say so here.
+    let stem = PathBuf::from(data.file_name)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .expect("the bundled file has a stem");
+    let said = clicked.drawn_text();
+    assert!(
+        said.iter().any(|drawn| drawn.contains(&stem)),
+        "nothing the clicked window drew names {stem:?}: {said:?}"
+    );
+    // The one SQL step, named. A one-step Protocol has exactly one, and the
+    // steps sheet is where a reader meets it.
+    assert_eq!(
+        clicked.app.protocol_model().step_states().len(),
+        1,
+        "the window the click landed on does not draw exactly one step"
+    );
+}
+
+/// **The bytes the click puts on disk are the committed file, at a path a
+/// second launch finds.**
+///
+/// AC4. Three claims, and the third is the one a temporary directory fails:
+/// the file is written under the configured directory rather than under
+/// `std::env::temp_dir()`, its bytes are the bundled bytes, and a second load
+/// lands on the same path rather than on a second copy beside the first.
+///
+/// Watched redden, two mutations: `starts::materialise` writing into
+/// `std::env::temp_dir()` rather than `datasets_dir()` fails at "wrote outside
+/// the configured directory"; writing `&data.bytes[..1000]` fails at "is not
+/// the bytes the binary carries".
+#[test]
+fn a_bundled_data_start_writes_the_committed_bytes_where_a_second_launch_finds_them() {
+    datasets_into_scratch();
+    let start = the_data_file_start();
+    let data = start.data.as_ref().expect("filtered on `data`");
+    let configured = brightfield_shell::startup::datasets_dir()
+        .expect("the override above gives this machine a config directory");
+
+    // **Start cold.** `materialise` leaves a file already holding these bytes
+    // alone, which is the behaviour the second half of this test is about —
+    // and it is also what makes the first half assert nothing when a previous
+    // run left the right file at the path. Measured while writing this: a
+    // mutation truncating the write to its first 1,000 bytes left every
+    // assertion below green, because the write it broke never ran. Removing
+    // the file first is what makes the first load a write.
+    let _ = std::fs::remove_file(configured.join(data.file_name));
+
+    let Opened::File(first) = starts::load(start.id).expect("the start loads") else {
+        panic!("{} did not open a data file", start.id);
+    };
+    assert!(
+        first.starts_with(&configured),
+        "{} wrote outside the configured directory: {} is not under {}",
+        start.id,
+        first.display(),
+        configured.display()
+    );
+    assert_eq!(
+        first.file_name().and_then(|n| n.to_str()),
+        Some(data.file_name),
+        "{} wrote its bytes under a name it does not declare",
+        start.id
+    );
+    assert_eq!(
+        std::fs::read(&first).unwrap_or_else(|e| panic!("{}: {e}", first.display())),
+        data.bytes,
+        "{} is not the bytes the binary carries",
+        first.display()
+    );
+
+    // The second launch. Not a fresh process, but the same question a fresh
+    // process asks: load the start again and see whether it lands back on the
+    // file it wrote, or writes a second one beside it.
+    let Opened::File(second) = starts::load(start.id).expect("the start loads again") else {
+        panic!("{} did not open a data file the second time", start.id);
+    };
+    assert_eq!(
+        first, second,
+        "a second open landed on a different path, so nothing a launch \
+         remembers can reopen the first"
+    );
+    // …and a file that is there but is something ELSE is replaced rather than
+    // adopted, which is what makes the path safe to reuse across builds.
+    std::fs::write(&second, b"not a parquet").expect("overwrite the materialised file");
+    let Opened::File(third) = starts::load(start.id).expect("the start loads a third time") else {
+        panic!("{} did not open a data file the third time", start.id);
+    };
+    assert_eq!(
+        std::fs::read(&third).unwrap_or_else(|e| panic!("{}: {e}", third.display())),
+        data.bytes,
+        "a file at the path that was not these bytes was left in place, so the \
+         start opens whatever happens to be sitting at the name"
+    );
+    // Nothing half-written left behind: the write stages under a `.part` name
+    // in the same directory and renames onto the path.
+    let leftovers: Vec<String> = std::fs::read_dir(&configured)
+        .expect("read the configured directory")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".part"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "staging files were left in {}: {leftovers:?}",
+        configured.display()
+    );
+}
+
+/// **What the click records is what the next launch restores.**
+///
+/// The other AC4 tests each start from something handed to them —
+/// `a_launch_restoring_the_data_file_start_lands_on_its_own_document` from the
+/// start's id written by hand, the door's Protocols tests from a seeded layout —
+/// so none of them read what clicking the card actually wrote. A `return;` after
+/// `adopt_boot` in `land_start`'s data-file arm skips recording the start and
+/// remembering it, and those tests stayed green over it: a user would
+/// have opened California Housing, quit, and come back to the door with no row
+/// for it.
+///
+/// So this chains the three steps off the one window's own record. Click the
+/// card; the layout names the start as opened and heads its recents with it.
+/// Boot a second launch from **that** layout, through `opening_boot` as `main`
+/// does, and it is not the door and draws the same locator line. Open the door
+/// over that layout instead, and its Protocols row for the start reopens the
+/// same window.
+///
+/// Watched redden, one mutation: `return;` after `self.adopt_boot(boot);` in
+/// `land_start` fails here at "clicking california-housing recorded no start
+/// for the next launch to restore".
+#[test]
+fn the_card_records_what_the_next_launch_restores() {
+    datasets_into_scratch();
+    let start = the_data_file_start();
+
+    let mut first = Window::open(Boot::empty());
+    first.settle();
+    first.take_the_card(start.id);
+    first.settle();
+    assert!(
+        !first.app.front_door_is_live(),
+        "clicking {} left the window on the door",
+        start.id
+    );
+    let recorded = first.app.layout().clone();
+    assert_eq!(
+        recorded.opened.as_deref(),
+        Some(start.id),
+        "clicking {} recorded no start for the next launch to restore",
+        start.id
+    );
+    assert_eq!(
+        recorded.recents.first().map(|r| r.id.as_str()),
+        Some(start.id),
+        "clicking {} put no row for it at the head of the door's recents",
+        start.id
+    );
+    let crumbs = first.app.locator_crumbs();
+
+    // The second launch, off the first one's record.
+    let boot = opening_boot(None, recorded.opened.as_deref(), Flow::Vertical, None)
+        .expect("a launch restoring what the click recorded");
+    let mut second = Window {
+        app: MeridianApp::headless_with_layout(boot, recorded.clone(), Mode::Light),
+        ctx: egui::Context::default(),
+        screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
+    };
+    second.settle();
+    assert!(
+        !second.app.front_door_is_live(),
+        "a launch restoring what clicking {} recorded drew the front door",
+        start.id
+    );
+    assert_eq!(
+        second.app.locator_crumbs(),
+        crumbs,
+        "the restored launch drew a different locator line from the click"
+    );
+
+    // The door over the same record, and its Protocols row.
+    let mut door = Window {
+        app: MeridianApp::headless_with_layout(Boot::empty(), recorded, Mode::Light),
+        ctx: egui::Context::default(),
+        screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
+    };
+    door.settle();
+    door.take_the_row(start.id);
+    door.settle();
+    assert_eq!(
+        door.app.locator_crumbs(),
+        crumbs,
+        "the Protocols row for {} reopened a different window from the card",
+        start.id
+    );
+}
+
+/// **A launch that remembers the data-file start reopens it, not the door and
+/// not the crosswalk.**
+///
+/// The other half of AC4, and the half `a_launch_with_something_to_restore_shows_no_front_door`
+/// cannot see: that test restores the crosswalk, whose whole document is in
+/// the binary. This one restores a start whose document is a file on disk, so
+/// it fails if the restore path reaches `starts::load` and then does not know
+/// what to do with a path.
+///
+/// Watched redden, one mutation: `Boot::start`'s `File` arm returning
+/// `Self::empty()` instead of `Self::data_file(...)` — the shape of "a
+/// restored data start has no document to restore" — fails here at "the
+/// restored launch drew the front door".
+#[test]
+fn a_launch_restoring_the_data_file_start_lands_on_its_own_document() {
+    datasets_into_scratch();
+    let start = the_data_file_start();
+    let boot = opening_boot(None, Some(start.id), Flow::Vertical, None)
+        .expect("a launch restoring the data-file start");
+    assert_eq!(
+        boot.opened_id.as_deref(),
+        Some(start.id),
+        "the restored boot is not keyed to the start that was remembered, so \
+         the grid layout that id's row carries is not the one it opens with"
+    );
+    assert!(
+        !boot.is_empty(),
+        "the restored launch loaded no document at all — it will draw the \
+         front door, which is the state the layout said not to show"
+    );
+    assert!(
+        boot.has_chart(),
+        "the restored launch loaded no picture over its own data"
+    );
+    assert!(
+        !boot.protocol.columns.is_empty(),
+        "the restored launch listed no columns, so the rails open empty"
+    );
+
+    let mut win = Window::open(boot);
+    win.settle();
+    assert!(
+        !win.app.front_door_is_live(),
+        "the restored launch drew the front door"
+    );
+}
+
+/// **The Datasets row fits the door's column** — every card the door draws is
+/// inside the window, and they are all on one row.
+///
+/// AC1's geometry half, and it is a different claim from
+/// `a_first_run_populates_datasets_and_states_what_protocols_will_hold`, which
+/// asks whether the Protocols heading below the gallery landed on screen. That
+/// one catches a wrap by its consequence and only while the section below
+/// happens to be pushed off the bottom; this catches the wrap itself. Both
+/// were written because a hard-coded `DOOR_COLUMN_WIDTH` was short by one card
+/// and the gallery quietly went to two rows.
+///
+/// Watched redden, one mutation: `starts::on_door_count`'s walk stopping one
+/// entry short of `STARTS.len()` — a width derived from a count that missed a
+/// card, which is the original defect — fails here at the fourth card sitting
+/// below the first.
+#[test]
+fn the_doors_datasets_row_is_one_row_and_all_of_it_is_on_screen() {
+    let mut win = Window::open(Boot::empty());
+    win.settle();
+
+    let cards: Vec<(&str, egui::Rect)> = starts::on_door()
+        .map(|start| {
+            let rect = win
+                .app
+                .front_door_card_rect(start.id)
+                .unwrap_or_else(|| panic!("the door drew no card for {}", start.id));
+            (start.id, rect)
+        })
+        .collect();
+    assert!(
+        cards.len() >= 2,
+        "the door drew {} card(s), so neither a second row nor a column too \
+         narrow for one is observable here",
+        cards.len()
+    );
+    let (first_id, first) = cards[0];
+    for (id, rect) in &cards[1..] {
+        assert!(
+            (rect.min.y - first.min.y).abs() < 1.0,
+            "the {id} card drew at y {} and the {first_id} card at y {} — the \
+             gallery wrapped to a second row, which is a Datasets set wider \
+             than the column derived for it",
+            rect.min.y,
+            first.min.y
+        );
+    }
+    for (id, rect) in &cards {
+        assert!(
+            win.screen.contains_rect(*rect),
+            "the {id} card drew at {rect:?}, outside a {:?} window",
+            win.screen.size()
+        );
     }
 }
 
@@ -1250,9 +1955,9 @@ fn a_door_with_recents_lists_every_one_of_them_most_recent_first() {
 ///
 /// It walks the door's own set rather than one hand-picked start, because a
 /// route that diverges for one document kind and not the other is the
-/// divergence a single-case test would survive. **Today that walk is two
-/// starts**, the crosswalk manifest and a run of it: the Datasets section
-/// offers three, and the third reads over the network. So the count is
+/// divergence a single-case test would survive. **Today that walk is three
+/// starts** — the crosswalk manifest, a run of it, and California Housing: the
+/// Datasets section offers four, and the fourth reads over the network. So the count is
 /// asserted rather than left implicit — a door that lost its last local card
 /// would otherwise pass this by walking an empty set, which is the failure
 /// this file has already had once in a different loop.
@@ -1272,6 +1977,7 @@ fn a_door_with_recents_lists_every_one_of_them_most_recent_first() {
 /// different surfaces", `Some(protocol-canvas)` against `None`.
 #[test]
 fn either_route_to_the_same_subject_leaves_the_same_window() {
+    datasets_into_scratch();
     let mut walked = 0;
     for start in starts::on_door() {
         if start.remote {
@@ -1322,16 +2028,27 @@ fn either_route_to_the_same_subject_leaves_the_same_window() {
             "{}: the two routes recorded different work to restore",
             start.id
         );
+        // Equal is not recorded: two routes that both forgot to record the
+        // start agree with each other at `None`, and a launch after either
+        // restores the door. Watched redden: `return;` after `adopt_boot` in
+        // `land_start`'s data-file arm fails here.
+        assert_eq!(
+            by_card.app.layout().opened.as_deref(),
+            Some(start.id),
+            "{}: the card recorded no work to restore, so the comparison above \
+             is two absent records agreeing",
+            start.id
+        );
     }
-    // Three starts declare themselves for the door and one of the three reads
-    // over the network, so two are what a hermetic run can compare. Written as
-    // the number rather than as the same filter the loop is built from,
+    // Four starts declare themselves for the door and one of the four reads
+    // over the network, so three are what a hermetic run can compare. Written
+    // as the number rather than as the same filter the loop is built from,
     // because a filter compared against itself agrees whatever it yields.
     assert_eq!(
-        walked, 2,
+        walked, 3,
         "{walked} start(s) were compared, where the Datasets section offers \
-         two a hermetic run can take — a walk of nothing here would leave both \
-         routes unasserted and this test green, and a walk of a different \
+         three a hermetic run can take — a walk of nothing here would leave \
+         both routes unasserted and this test green, and a walk of a different \
          number means the section changed without this one being looked at"
     );
 }
@@ -2101,6 +2818,13 @@ fn render_thumbnails(starts: &[&'static starts::Start], mode: Mode) -> usize {
     // Hermetic capture: keep `BRIGHTFIELD_DEVTOOLS` from baking the top-bar
     // renderer string into a regenerated thumbnail (see `door_surface`).
     std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
+    // …and hermetic on the other axis: a start that ships a data file writes
+    // it before it composes, and a thumbnail of this developer's home
+    // directory is a thumbnail of one machine. `MeridianApp::document_source`
+    // already draws the file's NAME rather than its path, which is what keeps
+    // the picture the same on two machines; this keeps the write out of the
+    // way as well.
+    datasets_into_scratch();
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/starts");
     let options = egui_kittest::SnapshotOptions::default().output_path(&assets);
     let mut failures = Vec::new();

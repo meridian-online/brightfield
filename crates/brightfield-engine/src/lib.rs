@@ -273,9 +273,14 @@ impl std::fmt::Debug for LoadResult {
 ///
 /// The data path itself belongs to DuckDB (`httpfs`), so this is the ONLY
 /// network question the engine ever has: may a missing extension be
-/// downloaded? A spec over local files never triggers an extension
-/// acquisition under either policy — the air-gapped promise does not
-/// depend on choosing [`NetworkPolicy::Disabled`].
+/// downloaded? A spec over local CSV or Parquet files triggers no extension
+/// acquisition under either policy, because both readers are in the binary —
+/// CSV is DuckDB core and Parquet is linked by this crate's `parquet` feature —
+/// so for those the air-gapped promise does not depend on choosing
+/// [`NetworkPolicy::Disabled`]. A local JSON source (`read_json_auto`) or a
+/// spatial one (`ST_Read`) is not in that set: those readers are extensions
+/// this build does not link, and under [`NetworkPolicy::Auto`] DuckDB
+/// autoinstalls them on first use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NetworkPolicy {
     /// Extensions a spec needs may be installed (downloaded) on demand,
@@ -3085,6 +3090,68 @@ impl Session {
         outcome
     }
 
+    /// A column's `min` and `max`, spelled for the bucket expression so the
+    /// statement binds on every pair of extremes a profile can report, and so
+    /// the bucket edges stay **exact** on the pairs it bound on before.
+    ///
+    /// Written out because the obvious spelling fails on real data. A bare
+    /// decimal in DuckDB is a DECIMAL literal whose precision and scale come
+    /// from its own digits, and the binder types `max - min` from the two
+    /// literals' shapes without room for both. California Housing's
+    /// `avg_rooms` is the case: `min` 0.8461538461538461 is DECIMAL(16,16) and
+    /// `max` 141.9090909090909 has three integer digits, so DuckDB refuses the
+    /// whole statement with *Casting value "141.9090909090909" to type
+    /// DECIMAL(18,16) failed: value is out of range*, the profile pass fails,
+    /// and the file does not open.
+    ///
+    /// **One DECIMAL wide enough for both, rather than DOUBLE.** Both extremes
+    /// are cast to `DECIMAL(p, s)` with `s` the larger of the two scales and
+    /// `p` the larger integer width plus `s`, so `max - min` is computed
+    /// exactly — as it was on every pair the bare literals bound on. Casting to
+    /// DOUBLE instead was tried and moved a bar: a value lying exactly on a
+    /// bucket edge, (0.87 − 0.4) / (1.81 − 0.4) × 480 = 160, lands in bucket
+    /// 160 under exact arithmetic and 159 under DOUBLE, and
+    /// `the_grid_view_light_baseline` and its dark twin reddened by sixteen
+    /// pixels over it. The exact answer is the one those baselines hold.
+    ///
+    /// DOUBLE remains the fallback, for the pairs no DECIMAL can carry: a
+    /// non-finite extreme, a value Rust spells with an exponent, or a pair
+    /// wider than DuckDB's 38 digits. Each is quoted — `{:?}` renders a
+    /// non-finite `f64` as `inf`, `-inf` or `NaN`, which are bare identifiers
+    /// in SQL, and DuckDB casts `'inf'`, `'-inf'` and `'NaN'` from a string —
+    /// `bucket_extremes_keep_exact_edges_and_fall_back_to_double` asserts the spelling. On those pairs the
+    /// bare literals were already DOUBLE arithmetic or already a refusal, so
+    /// no edge that was exact before stops being exact.
+    ///
+    /// `a_column_whose_extremes_are_two_decimal_shapes_still_bins` fails when
+    /// the extremes go back to being interpolated bare, and
+    /// `bucket_extremes_keep_exact_edges_and_fall_back_to_double` pins which
+    /// pairs take which spelling.
+    fn extent_literals(min: f64, max: f64) -> (String, String) {
+        // Integer digits (leading zeros are not width) and decimal places of a
+        // plain `{:?}` spelling, or `None` for an exponent or a non-finite word.
+        fn shape(spelled: &str) -> Option<(usize, usize)> {
+            let digits = spelled.strip_prefix('-').unwrap_or(spelled);
+            let (int, frac) = digits.split_once('.')?;
+            let plain = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+            if !plain(int) || !plain(frac) {
+                return None;
+            }
+            Some((int.trim_start_matches('0').len(), frac.len()))
+        }
+        let (lo, hi) = (format!("{min:?}"), format!("{max:?}"));
+        if let (Some((lo_int, lo_frac)), Some((hi_int, hi_frac))) = (shape(&lo), shape(&hi)) {
+            let scale = lo_frac.max(hi_frac);
+            let precision = (lo_int.max(hi_int) + scale).max(1);
+            if precision <= 38 {
+                let cast = |v: &str| format!("CAST('{v}' AS DECIMAL({precision},{scale}))");
+                return (cast(&lo), cast(&hi));
+            }
+        }
+        let cast = |v: &str| format!("CAST('{v}' AS DOUBLE)");
+        (cast(&lo), cast(&hi))
+    }
+
     /// The one `GROUP BY` behind the numeric columns' distributions, however
     /// many of them there are — or `None` where no column asked for one.
     ///
@@ -3104,8 +3171,9 @@ impl Session {
     /// same arithmetic `brightfield-sql`'s `equiwidth_bin_centre` writes for a
     /// histogram tile, because `width_bucket` is not in the bundled libduckdb.
     ///
-    /// The bounds are written into the statement as double literals rather than
-    /// re-derived by a subquery, so the buckets are laid across exactly the
+    /// The bounds are written into the statement as literals — see
+    /// [`Self::extent_literals`] for their spelling — rather than re-derived by
+    /// a subquery, so the buckets are laid across exactly the
     /// range [`ColumnMoments::min`] and `max` report and a reader's bar cannot
     /// sit outside the range printed under it.
     ///
@@ -3132,10 +3200,10 @@ impl Session {
                 let key = if ask.distinct <= profile::VALUE_BAR_LIMIT {
                     format!("CAST(\"{q}\" AS DOUBLE)")
                 } else {
-                    let (lo, hi) = (ask.min, ask.max);
+                    let (lo, hi) = Self::extent_literals(ask.min, ask.max);
                     format!(
-                        "coalesce(least(floor((CAST(\"{q}\" AS DOUBLE) - {lo:?}) \
-                         / nullif({hi:?} - {lo:?}, 0) * {bins}), {last}), 0)"
+                        "coalesce(least(floor((CAST(\"{q}\" AS DOUBLE) - {lo}) \
+                         / nullif({hi} - {lo}, 0) * {bins}), {last}), 0)"
                     )
                 };
                 format!("CASE WHEN \"{q}\" IS NULL THEN NULL ELSE {{'c': {slot}, 'k': {key}}} END")
@@ -4522,6 +4590,132 @@ plot:
         // date is a number in a unit nobody asked about.
         assert_eq!(s.moments, None, "a varchar column carries no moments");
         assert_eq!(d.moments, None, "a temporal column carries no moments");
+    }
+
+    /// **A column whose two extremes are two DECIMAL shapes still bins.**
+    ///
+    /// The profile pass interpolates a wide column's `min` and `max` into the
+    /// bucket expression. Written bare they are DECIMAL literals shaped by their
+    /// own digits, and DuckDB types `max - min` from those two shapes — so a
+    /// `min` with sixteen decimal places and a `max` with three integer digits
+    /// is a statement DuckDB refuses outright. It is not a wrong answer; the
+    /// whole profile pass fails and the file does not open.
+    ///
+    /// The figures here are California Housing's `avg_rooms` to the digit, the
+    /// column that found this: `0.8461538461538461` and `141.9090909090909`.
+    /// The generated rows put those two at the ends of a range wide enough to
+    /// be over `VALUE_BAR_LIMIT`, which is the branch that interpolates them.
+    ///
+    /// Watched redden, one mutation: `extent_literals` returning
+    /// `(format!("{min:?}"), format!("{max:?}"))` — the bare spelling it
+    /// replaced — fails here at "profiling a column with two decimal shapes at
+    /// its ends failed: … Casting value \"141.9090909090909\" to type
+    /// DECIMAL(18,16) failed".
+    #[test]
+    fn a_column_whose_extremes_are_two_decimal_shapes_still_bins() {
+        let yaml = r#"
+data:
+  t: "SELECT CASE i WHEN 0 THEN 0.8461538461538461 WHEN 99 THEN 141.9090909090909 \
+      ELSE 1.0 + i * 1.4 END AS v FROM range(0, 100) AS r(i)"
+plot:
+  - mark: dot
+    data: { from: t }
+    x: v
+    y: v
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let session = Engine::new()
+            .load_spec(spec, analysis, None)
+            .unwrap()
+            .session;
+        let profiles = session.profile_sources();
+        assert!(
+            matches!(&profiles[0].outcome, ProfileOutcome::Profiled { .. }),
+            "profiling a column with two decimal shapes at its ends failed: \
+             {:?}",
+            profiles[0].outcome
+        );
+        let cols = profiled_columns(&profiles[0].outcome);
+        let v = cols
+            .iter()
+            .find(|c| c.name == "v")
+            .expect("the column")
+            .moments
+            .as_ref()
+            .expect("a numeric column carries moments");
+        let crate::profile::Distribution::Bins(bins) = &v.distribution else {
+            panic!(
+                "this column has more distinct values than the per-value \
+                 limit, so it should have taken the binned branch — the one \
+                 that interpolates the extremes: {:?}",
+                v.distribution
+            )
+        };
+        assert_eq!(
+            bins.iter().sum::<u64>(),
+            100,
+            "every row lands in exactly one bucket"
+        );
+    }
+
+    /// **Which pairs of extremes take an exact DECIMAL and which fall back to
+    /// DOUBLE**, stated as the spellings rather than inferred from a picture.
+    ///
+    /// Three claims. A pair of plain decimals shares one DECIMAL wide enough
+    /// for both, which is what keeps a bucket edge exact. A value lying on a
+    /// bucket edge is binned into the bucket exact arithmetic puts it in — the
+    /// row the grid baselines draw, (0.87 − 0.4) / (1.81 − 0.4) × 480 = 160,
+    /// asked of DuckDB directly rather than through a capture. A non-finite
+    /// extreme is quoted, because `inf`, `-inf` and `NaN` are identifiers
+    /// unquoted.
+    ///
+    /// Watched redden, three mutations: `extent_literals` always taking the
+    /// DOUBLE branch fails at "the edge row landed in bucket 159" (and
+    /// `the_grid_view_light_baseline` and its dark twin by sixteen pixels);
+    /// a precision one digit wider than needed fails at the shared-DECIMAL
+    /// spelling; dropping the quotes from the DOUBLE branch fails at "a
+    /// non-finite extreme is not spelled as a quoted DOUBLE".
+    #[test]
+    fn bucket_extremes_keep_exact_edges_and_fall_back_to_double() {
+        // The edge row, asked of DuckDB with the spelling the profile uses.
+        let (lo, hi) = Session::extent_literals(0.4, 1.81);
+        let conn = duckdb::Connection::open_in_memory().expect("an in-memory DuckDB");
+        let bucket: f64 = conn
+            .query_row(
+                &format!(
+                    "SELECT floor((CAST(0.87 AS DOUBLE) - {lo}) / nullif({hi} - {lo}, 0) * 480)"
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .expect("the bucket expression binds");
+        assert!(
+            (bucket - 160.0).abs() < f64::EPSILON,
+            "the edge row landed in bucket {bucket}, where exact arithmetic on \
+             the edge puts it in 160"
+        );
+
+        assert_eq!(
+            Session::extent_literals(0.8461538461538461, 141.9090909090909),
+            (
+                "CAST('0.8461538461538461' AS DECIMAL(19,16))".to_string(),
+                "CAST('141.9090909090909' AS DECIMAL(19,16))".to_string(),
+            ),
+            "two plain decimals do not share one DECIMAL wide enough for both"
+        );
+        for (value, spelled) in [
+            (f64::NAN, "NaN"),
+            (f64::INFINITY, "inf"),
+            (f64::NEG_INFINITY, "-inf"),
+        ] {
+            let (lo, _) = Session::extent_literals(value, 1.0);
+            assert_eq!(
+                lo,
+                format!("CAST('{spelled}' AS DOUBLE)"),
+                "a non-finite extreme is not spelled as a quoted DOUBLE, so \
+                 DuckDB reads it as a column name"
+            );
+        }
     }
 
     /// **The distribution takes the binned branch above the per-value limit,

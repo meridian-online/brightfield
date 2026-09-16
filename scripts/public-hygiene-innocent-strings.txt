@@ -76,3 +76,11 @@ TOML array-of-table headers, not vault wikilinks
     [[test]]
     [[bench]]
     [[example]]
+
+Paths that are not the planning vault's ledger
+-----------------------------------------------
+    docs/notes/release.md
+    notes/two-words
+    examples/cards/front-door.yaml
+    https://example.org/decisions/
+    the gallery cards/rows split

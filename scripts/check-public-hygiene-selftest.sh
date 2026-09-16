@@ -113,6 +113,8 @@ check_violation "spec AC id, prefixed"      spec-ac-id              "$(printf 'c
 check_violation "spec AC id in a fn name"   spec-ac-id              "$(printf 'fn %s_%s%s_logs_the_command() {}' clg ac 09)"
 check_violation "spec AC id in a literal"   spec-ac-id              "$(printf 'let dir = "bf-%s-%s%s-1234";' clg ac 09)"
 check_violation "vault wikilink"            vault-wikilink          "$(printf 'documented at %s%s-%s%s.' '[[' region taxonomy ']]')"
+check_violation "vault ledger path"         vault-ledger-path       "$(printf 'ruled in `%s/%s-%s-%s`.' decisions gallery datasets committed)"
+check_violation "vault ledger path, card"   vault-ledger-path       "$(printf 'see %s/%s-%s-%s-%s.' cards the housing start opens)"
 
 # ---------------------------------------------------------------------------
 # 1b. The vault-wikilink rule discriminates from TOML array-of-table headers —

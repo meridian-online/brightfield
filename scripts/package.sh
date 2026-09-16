@@ -294,6 +294,13 @@ cp LICENSE "$STAGE/LICENSE"
 cp examples/*.yaml "$STAGE/examples/"
 cp -R examples/protocol "$STAGE/examples/protocol"
 cp -R examples/remote "$STAGE/examples/remote"
+# The front door's bundled dataset, as a file too: the binary carries the same
+# bytes, and this copy is what verify-airgapped.sh opens through the file route
+# with the network denied — the proof that the packaged binary reads Parquet
+# with DuckDB's reader linked in rather than downloaded. Its descriptor goes
+# with it: a third-party dataset carries its provenance.
+mkdir -p "$STAGE/examples/data"
+cp crates/brightfield-shell/assets/starts/california_housing.parquet crates/brightfield-shell/assets/starts/california_housing.datapackage.json "$STAGE/examples/data/"
 stage_finetype "$STAGE/finetype"
 cat > "$STAGE/README.txt" <<EOF
 brightfield ${VERSION} (${TARGET})
@@ -321,6 +328,10 @@ Or run it on a bundled example:
 Open a Protocol manifest (rendered from the manifest alone, no run):
 
   BRIGHTFIELD_PROTOCOL_OFFLINE=1 ./brightfield examples/protocol/edgar_gleif/arcform.yaml
+
+Open a data file — a Parquet or a CSV — as a table and a chart for its columns:
+
+  ./brightfield examples/data/california_housing.parquet
 
 Chart the published EDGAR-GLEIF crosswalk (this one needs a connection):
 
@@ -383,6 +394,9 @@ case "$TARGET" in
     cp examples/*.yaml "$APP/Contents/Resources/examples/"
     cp -R examples/protocol "$APP/Contents/Resources/examples/protocol"
     cp -R examples/remote "$APP/Contents/Resources/examples/remote"
+    mkdir -p "$APP/Contents/Resources/examples/data"
+    cp crates/brightfield-shell/assets/starts/california_housing.parquet crates/brightfield-shell/assets/starts/california_housing.datapackage.json \
+      "$APP/Contents/Resources/examples/data/"
     # Resources/, not MacOS/: an app launched from /Applications has no sibling
     # directory, and `semantic::bundle_beside` looks in both places for exactly
     # this reason.

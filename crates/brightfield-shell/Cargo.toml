@@ -118,8 +118,16 @@ egui_kittest = { version = "0.35", features = ["wgpu", "snapshot"] }
 # engine reads it back with, so the gate cannot pass because a second writer's
 # idea of Parquet happens to match. Not a new crate in the graph: it is
 # brightfield-engine's own dependency, on the same version line and the same
-# `bundled` feature (features unify, so this declaration adds no build).
-duckdb = { version = "1", features = ["bundled"] }
+# `bundled` and `parquet` features (features unify, so this declaration adds no
+# build) — `parquet` stated here too so this test-side writer is not relying on
+# the engine's declaration to have its reader.
+duckdb = { version = "1", features = ["bundled", "parquet"] }
+# Reads the bundled gallery dataset back against the SHA-256 its own
+# Frictionless descriptor declares — `the_bundled_dataset_is_the_bytes_its_
+# descriptor_declares` in `tests/front_door.rs`. Not a new crate in the graph:
+# 0.10 is already in Cargo.lock as a transitive dependency, on the same version
+# line, so this declaration adds no build.
+sha2 = "0.10"
 
 [[bin]]
 name = "brightfield-shell"

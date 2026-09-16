@@ -16,7 +16,8 @@
 #   2. The artifact is opened where a stranger would open it — the tarball
 #      unpacked into a fresh temp directory, the image attached read-only — and
 #      the PACKAGED binary, not a repo build, opens, renders and screenshots
-#      (a) a chart spec and (b) a Protocol manifest, entirely inside the jail,
+#      (a) a chart spec, (b) a Protocol manifest and (c) a Parquet data file,
+#      which needs DuckDB's Parquet reader linked in, entirely inside the jail,
 #      with HOME and BRIGHTFIELD_CONFIG_DIR pointed into the temp directory so
 #      nothing leaks in from this machine's config or out of the run.
 #   3. Both screenshots are verified to be real PNGs of non-trivial size —
@@ -312,6 +313,18 @@ is_png "$TMP/chart.png" 20000
 echo "== run 2: Protocol manifest, jailed (a window opens briefly)"
 smoke "$TMP/protocol.png" BRIGHTFIELD_PROTOCOL_OFFLINE=1 -- "$EXAMPLES/protocol/edgar_gleif/arcform.yaml"
 is_png "$TMP/protocol.png" 20000
+
+echo "== run 2b: a Parquet data file, jailed (a window opens briefly)"
+# DuckDB reads Parquet through an extension it autoinstalls on first use unless
+# the reader is linked into the binary. HOME is sealed above, so the extension
+# cache is cold, and the jail denies the network: a build without the reader
+# fails here downloading it, where every chart-spec leg stays green.
+smoke "$TMP/parquet.png" -- "$EXAMPLES/data/california_housing.parquet"
+is_png "$TMP/parquet.png" 20000
+if find "$TMP/home" -name '*.duckdb_extension' 2>/dev/null | grep -q .; then
+  echo "   FAILED: opening a Parquet installed a DuckDB extension into the sealed HOME"
+  exit 1
+fi
 
 echo "== run 3: a spec that needs the network, jailed — it must REFUSE"
 [ -f "$PKG/$REMOTE_SPEC" ] || {
