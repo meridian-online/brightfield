@@ -3744,3 +3744,132 @@ fn a_press_in_the_grid_pane_lands_on_no_tile_the_hero_pane_is_hiding() {
          landed on the tile the clip hides"
     );
 }
+
+/// Click the ledger strip's `index`-th name, where the last frame drew it, and
+/// settle.
+///
+/// [`reopen_the_ledger`]'s sibling, and deliberately not that function: the
+/// collapse control reopens the rail on whichever pane is live, which is Log,
+/// and what is wanted here is a named pane. A click on the name is also the
+/// gesture a reader has while the rail is down — the strip's names are live
+/// collapsed — so nothing is reached here that a pointer could not reach.
+///
+/// The caller is handed the rail's rect afterwards rather than trusting the
+/// click: a click that missed would leave the rail collapsed and every count
+/// below would be a count of one grid read twice.
+fn pick_the_ledger_name(
+    app: &mut MeridianApp,
+    ctx: &egui::Context,
+    raw: &egui::RawInput,
+    index: usize,
+) {
+    let at = app
+        .rail_name_rect(arrangement::LEDGER_RAIL, index)
+        .unwrap_or_else(|| panic!("the ledger strip drew no name at index {index}"))
+        .center();
+    let mut frame = |events: Vec<egui::Event>| {
+        let mut input = raw.clone();
+        input.events = events;
+        let _ = ctx.run_ui(input, |ui| app.draw(ui));
+    };
+    frame(vec![egui::Event::PointerMoved(at)]);
+    frame(vec![
+        button(at, egui::PointerButton::Primary, true),
+        button(at, egui::PointerButton::Primary, false),
+    ]);
+    for _ in 0..3 {
+        frame(Vec::new());
+    }
+}
+
+/// **A brush narrows the ledger's Rows pane and the canvas's rows pane to the
+/// same count.**
+///
+/// AC4. The two grids are separate `DataGridItem`s under separate ids, drawn
+/// in one frame from separate panels — the ledger is a bottom panel, the
+/// canvas's grid is inside the central one — and what makes them one reading
+/// is that both ask the document's own `rows_mark` at `RowsAudience::Reader`.
+///
+/// **Read off each grid's own drawn record**, keyed by the pane's id, which is
+/// the mechanism this criterion is really about: with one slot on the document
+/// the second pane to draw overwrote the first every frame, so the two counts
+/// below would have been one count read twice and would have agreed no matter
+/// what either pane did. The counts are also checked against the CSV's own
+/// count of rows inside the interval — [`fixture_rows`], the file, not a
+/// second query — so a pair that agreed on the wrong number fails.
+///
+/// The before-count matters as much as the after: a Rows pane that drew
+/// nothing, or drew the whole table for ever, would agree with its sibling at
+/// one end and not the other.
+#[test]
+fn a_brush_narrows_the_ledgers_rows_pane_and_the_canvas_grid_to_one_count() {
+    use brightfield_engine::coordinator::Interaction;
+    use brightfield_engine::SqlPredicate;
+    use brightfield_shell::data_grid::{DATA, ROWS};
+    use brightfield_spec::analysis::ComponentPath;
+    use brightfield_sql::ir::ScalarValue;
+
+    // The same west-of-the-valley strip
+    // `the_rows_pane_lists_the_rows_the_brush_selects` brushes, for the same
+    // reason: plenty of rows fall each side of it.
+    const LO: f64 = -122.5;
+    const HI: f64 = -121.5;
+
+    let file = fixture_rows();
+    let inside = file
+        .iter()
+        .filter(|r| (LO..=HI).contains(&r["longitude"]))
+        .count();
+    assert_eq!(
+        (file.len(), inside),
+        (240, 45),
+        "the fixture is 240 rows with 45 inside the brush, or the counts below \
+         are being compared against the wrong file"
+    );
+
+    let (mut app, ctx, raw) = settled_window();
+    // Rows is the ledger's third name: Log, Quality, Rows, Editor.
+    pick_the_ledger_name(&mut app, &ctx, &raw, 2);
+
+    let counts = |app: &MeridianApp| -> (u64, u64) {
+        let doc = app.chart_doc();
+        (
+            doc.grid_drawn(DATA)
+                .expect("the canvas's grid pane laid a table out")
+                .rows,
+            doc.grid_drawn(ROWS)
+                .expect("the ledger's Rows pane laid a table out")
+                .rows,
+        )
+    };
+    assert_eq!(
+        counts(&app),
+        (file.len() as u64, file.len() as u64),
+        "at rest the two grids do not both list the whole file, so a narrowing \
+         below would not be readable"
+    );
+
+    let hero = ComponentPath(app.chart_doc().composed.plots[0].path.clone());
+    assert!(app.chart_doc_mut().apply_interaction(Interaction::Select {
+        name: brightfield_shell::dashboard::SELECTION.to_string(),
+        contributor: hero,
+        predicate: SqlPredicate::Interval {
+            column: "longitude".to_string(),
+            lo: ScalarValue::Float(LO),
+            hi: ScalarValue::Float(HI),
+            meta: None,
+        },
+    }));
+    for _ in 0..3 {
+        let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
+    }
+
+    let (canvas, ledger) = counts(&app);
+    assert_eq!(
+        (canvas, ledger),
+        (inside as u64, inside as u64),
+        "under one brush the canvas's grid lists {canvas} rows and the \
+         ledger's Rows pane {ledger}, where the file holds {inside} inside the \
+         interval"
+    );
+}

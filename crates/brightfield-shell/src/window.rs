@@ -2963,6 +2963,34 @@ impl MeridianApp {
             .and_then(|(_, strip)| strip.names.get(index).copied())
     }
 
+    /// The `Subject` title of the pane rail `id` is **showing** — the item at
+    /// the rail's live index, named by its own document.
+    ///
+    /// The test hook for *which pane did the rail open on*, which the frame's
+    /// galleys cannot answer on their own: a rail draws every one of its
+    /// panes' names in its strip, and the pane's own header band is suppressed
+    /// under that strip, so the words on the screen say which panes the rail
+    /// HAS and not which one is under them. Read through the same
+    /// [`Self::pane_title_of`] the strip reads, so a pane renamed in its
+    /// registry moves this and the strip together.
+    ///
+    /// `None` for a region that is not a rail of panes.
+    #[must_use]
+    pub fn rail_pane_title(&self, id: RegionId) -> Option<String> {
+        let region = arrangement::default_arrangement().region(id)?;
+        let Occupant::Panes(items) = region.occupant else {
+            return None;
+        };
+        let index = match id {
+            arrangement::LEDGER_RAIL => self.ledger_panel,
+            arrangement::INSPECTOR_RAIL => self.inspector_panel,
+            _ => 0,
+        };
+        items
+            .get(index.min(items.len().saturating_sub(1)))
+            .map(|item| self.pane_title_of(*item))
+    }
+
     /// Where a collapsed rail `id`'s stub drew its rotated label in the last
     /// frame, or `None` on a frame that stub drew no label.
     ///
@@ -3848,8 +3876,10 @@ impl MeridianApp {
                     // protocol's, Rows and the Editor the chart's — and a
                     // literal `item == …` here is a second declaration of which
                     // is which, one a fifth pane joins the arrangement without.
-                    // `the_ledger_draws_each_pane_from_the_registry_that_owns_it`
-                    // reddens when a registered pane reaches the wrong arm.
+                    // `clicking_log_on_the_strip_opens_the_rail_on_the_not_run_empty_state`
+                    // reddens when a pane reaches the wrong arm: the item is
+                    // not in that document's map, so nothing draws and the
+                    // empty state it reads is not there.
                     if protocol.items.contains_key(&PaneKey::new(item)) {
                         draw_protocol_pane(
                             ui,

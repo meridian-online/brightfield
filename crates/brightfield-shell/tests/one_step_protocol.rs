@@ -47,6 +47,8 @@ use std::path::{Path, PathBuf};
 
 use brightfield_engine::semantic::ValueCheck;
 use brightfield_engine::{ColumnProfile, SemanticType};
+use brightfield_protocol::contract::Outcome;
+use brightfield_protocol::contract_graph::RunView;
 use brightfield_protocol::layout::Flow;
 use brightfield_shell::dashboard::{ChosenBy, Dashboard};
 use brightfield_shell::design::Mode;
@@ -1059,9 +1061,10 @@ fn the_inspector_rail_draws_no_save_while_the_palette_offers_one() {
 
     /// Focus the editor pane over `win` and read the inspector rail's text.
     fn rail_text(win: &mut Window) -> Vec<String> {
-        // The Editor is the ledger rail's second name; the pane has to DRAW
-        // before it opens a buffer, and it only draws when its tab is picked.
-        win.pick_rail_tab(LEDGER_RAIL, 1);
+        // The Editor is the ledger rail's fourth name, after Log, Quality and
+        // Rows; the pane has to DRAW before it opens a buffer, and it draws
+        // when its tab is picked and not before.
+        win.pick_rail_tab(LEDGER_RAIL, 3);
         assert!(
             win.app.focus_pane(brightfield_workbench::PaneKey::new(
                 brightfield_shell::editor::EDITOR
@@ -1754,52 +1757,306 @@ const FETCH: &str = "    op: http_fetch@1\n    with:\n      url:                
 /// A `parquet_export@1` step body, for the same reason.
 const EXPORT: &str = "    op: parquet_export@1\n    with:\n      input:                       readings\n      dest: build/readings.parquet\n";
 
-/// **The ledger strip reads the step's own name, kind and status — none of the
-/// three is a constant.**
+/// A run record over a hand-written Protocol, with `outcome` as its outcome.
 ///
-/// Three one-step Protocols, differing in all three parts, each opened into a
-/// window and read back off the galleys the painter was handed. A summary that
-/// hard-coded any part reddens on the row that changes it.
+/// The run a contract carries, put there directly: executing the step is
+/// `arc`'s, needs a network and an engine this test binary has neither of, and
+/// what the strip reads is the header a finished run WRITES. The other fields
+/// are what a run that finished would carry, and none of them reaches the
+/// strip — which is itself part of the claim below, since a summary reading
+/// the id or a timestamp would not move when the outcome does.
+fn run_record(outcome: Outcome) -> RunView {
+    RunView {
+        run_id: "2026-09-16T09-00-00Z".to_string(),
+        protocol: "readings".to_string(),
+        outcome,
+        started_at: Some("2026-09-16T09:00:00Z".to_string()),
+        finished_at: Some("2026-09-16T09:04:00Z".to_string()),
+        complete: true,
+    }
+}
+
+/// **The ledger strip's summary reads the RUN's state, and it is derived.**
 ///
-/// The status is set on the sheet row rather than produced by executing the
-/// step: a run is `arc`'s, needs a network and an engine this test binary has
-/// neither of, and what the strip reads is the row a run WRITES. So the third
-/// column here is the run's record, put there directly, and the claim it
-/// carries is the narrow one — that the strip reports the row's status rather
-/// than the words `not run`.
+/// AC2, both halves in one loop. The first row is the run-less Protocol a
+/// hand-written manifest produces — the same state a data file opens in — and
+/// the strip has to say *last run · not run* over it. The rows after it give
+/// the same Protocol a run record whose outcome differs, and the strip has to
+/// say each outcome's own word.
+///
+/// **What makes this a test of derivation rather than of a literal.** Five
+/// documents differing in exactly one field, read back off the galleys the
+/// painter was handed. A summary that hard-coded *not run* fails on row two; a
+/// summary that hard-coded any outcome fails on row one and on three of the
+/// four others; and a summary that read the sheet row's `status` string
+/// instead of the run record fails on every row after the first, because the
+/// hand-written manifest's step stays `not run` in all five.
+///
+/// The step's own status is deliberately NOT varied here. It is the spine's
+/// column, from the per-step map, and
+/// `the_strip_reads_the_run_and_the_spine_reads_the_step` is where the two are
+/// held apart on one screen.
 #[test]
-fn the_ledger_strip_reads_the_steps_own_name_kind_and_status() {
+fn the_ledger_strips_summary_reads_the_runs_state_and_not_a_literal() {
     use brightfield_workbench::arrangement::LEDGER_RAIL;
 
-    for (step, body, kind, status) in [
-        ("ingest_readings", FETCH, "op", "not run"),
-        ("ingest_readings", FETCH, "op", "ok"),
-        ("tide_gauge", EXPORT, "op", "failed"),
+    for (run, want) in [
+        (None, "last run \u{b7} not run"),
+        (Some(Outcome::Success), "last run \u{b7} success"),
+        (Some(Outcome::Error), "last run \u{b7} failed"),
+        (Some(Outcome::Partial), "last run \u{b7} partial"),
+        (Some(Outcome::Unknown), "last run \u{b7} unrecognised"),
     ] {
-        let mut inputs = protocol::load_protocol_str(&one_step_manifest(step, body), &[])
-            .unwrap_or_else(|e| panic!("the hand-written manifest loads: {e}"));
+        let mut inputs =
+            protocol::load_protocol_str(&one_step_manifest("ingest_readings", FETCH), &[])
+                .unwrap_or_else(|e| panic!("the hand-written manifest loads: {e}"));
         assert_eq!(
             inputs.sheet_rows.len(),
             1,
             "the fixture is a Protocol of ONE step, or the rail does not \
              collapse and there is no strip to read"
         );
-        assert_eq!(inputs.sheet_rows[0].label, step);
-        assert_eq!(inputs.sheet_rows[0].kind, kind);
-        inputs.sheet_rows[0].status = status;
+        assert_eq!(
+            inputs.sheet_rows[0].status, "not run",
+            "the manifest loader leaves the step unrun in every row of this \
+             loop, which is what makes the summary's movement the run's"
+        );
+        inputs.run = run.map(run_record);
 
         let mut win = Window::over(Boot::protocol(inputs, Flow::Vertical, None));
         let rect = win
             .app
             .region_rect(LEDGER_RAIL)
             .expect("the ledger rail drew");
-        let want = format!("{step} \u{b7} {kind} \u{b7} {status}");
         let words = win.drawn_text_in(rect);
         assert!(
-            words.contains(&want),
-            "the collapsed ledger's strip drew {words:?}, which does not \
-             contain {want:?} — the summary is not reading this step"
+            words.iter().any(|w| w == want),
+            "the ledger's strip drew {words:?}, which does not contain \
+             {want:?} — the summary is not reading this Protocol's run record"
         );
+    }
+}
+
+/// **The ledger strip's names are Log, Quality, Rows and Editor, in that
+/// order, and Steps is not among them.**
+///
+/// AC1, read off geometry rather than off a bag of strings: each name is
+/// looked up by the rect the strip recorded for it, at its index, so a rail
+/// that drew the right four words in the wrong order fails. The negative is
+/// the whole strip's galleys, so a fifth name saying *Steps* fails it wherever
+/// it drew.
+///
+/// The strip's words are each pane's own `Subject` title, read through
+/// `pane_title_of`, so this is also the assertion that the four ids
+/// `LEDGER_PANES` declares resolve to the four panes intended — an id no
+/// registry has would draw the id itself.
+#[test]
+fn the_ledger_strip_names_the_run_record_and_not_the_steps() {
+    use brightfield_workbench::arrangement::LEDGER_RAIL;
+
+    let dir = TempDir::new("ledger-names");
+    let path = dir.write("harbour.csv", HARBOUR_CSV);
+    let mut win =
+        Window::over(Boot::data_file(&path.to_string_lossy()).expect("the file opens as a boot"));
+
+    for (index, want) in ["Log", "Quality", "Rows", "Editor"].iter().enumerate() {
+        let rect = win
+            .app
+            .rail_name_rect(LEDGER_RAIL, index)
+            .unwrap_or_else(|| panic!("the ledger strip drew no name at index {index}"));
+        let words = win.drawn_text_in(rect);
+        assert!(
+            words.iter().any(|w| w == want),
+            "the ledger strip's name at index {index} drew {words:?}, which \
+             does not read {want:?} — the rail's panes are out of order or \
+             one of them is not the pane the arrangement names"
+        );
+    }
+    assert_eq!(
+        win.app.rail_name_rect(LEDGER_RAIL, 4),
+        None,
+        "the ledger strip drew a fifth name, so its panes are not the four \
+         the run record declares"
+    );
+
+    let rail = win
+        .app
+        .region_rect(LEDGER_RAIL)
+        .expect("the ledger rail drew");
+    let words = win.drawn_text_in(rail);
+    assert!(
+        !words.iter().any(|w| w == "Steps"),
+        "the ledger strip drew {words:?}, which names Steps — the step list \
+         is the navigator spine's, and a rail repeating it puts the one step \
+         on the screen twice"
+    );
+}
+
+/// **Clicking Log opens the rail on the Log pane and its not-run empty state,
+/// and Quality likewise.**
+///
+/// AC3, driven as a reader drives it: the rail is collapsed to its strip on a
+/// data file, and a click on a name at the rect the strip recorded is what
+/// reopens it on that pane. The pane is then identified two ways at once — the
+/// rail reports the `Subject` title of the pane it is showing, and the frame
+/// carries that pane's empty-state headline and body line — so a rail that
+/// opened on the wrong pane fails on the subject, and one that sent the pane
+/// to the wrong document's draw path and drew nothing fails on the empty
+/// state.
+///
+/// The subject cannot be read off the galleys: the strip draws all four names
+/// whichever pane is open, and a pane's own header band is suppressed under
+/// that strip. `MeridianApp::rail_pane_title` is the hook, and the body is the
+/// independent half beside it.
+///
+/// The two panes are read in one test because the claim is about the pair: the
+/// bodies differ in one line, and a test that read only one of them would pass
+/// over a rail that drew the same pane under both names.
+#[test]
+fn clicking_log_on_the_strip_opens_the_rail_on_the_not_run_empty_state() {
+    use brightfield_workbench::arrangement::LEDGER_RAIL;
+
+    let dir = TempDir::new("ledger-log");
+    let path = dir.write("harbour.csv", HARBOUR_CSV);
+    let mut win =
+        Window::over(Boot::data_file(&path.to_string_lossy()).expect("the file opens as a boot"));
+
+    for (index, title, line) in [
+        (0, "Log", "The last run's log appears here once the Protocol runs."),
+        (
+            1,
+            "Quality",
+            "The last run's quality output appears here, per step, once the \
+             Protocol runs.",
+        ),
+    ] {
+        win.pick_rail_tab(LEDGER_RAIL, index);
+        let rect = win
+            .app
+            .region_rect(LEDGER_RAIL)
+            .expect("the ledger rail drew");
+        let words = win.drawn_text_in(rect);
+        assert!(
+            words.iter().any(|w| w == title),
+            "picking the ledger strip's name at index {index} left it drawing \
+             {words:?}, which does not carry {title:?} as the open pane's own \
+             header"
+        );
+        assert!(
+            words.iter().any(|w| w == "Not run"),
+            "the rail opened on {title} over a Protocol with no run behind it \
+             and drew {words:?}, which carries no not-run empty state"
+        );
+        assert!(
+            words.iter().any(|w| w == line),
+            "the {title} pane's body drew {words:?}, which does not say what \
+             would fill it: {line:?}"
+        );
+    }
+}
+
+/// **The strip reads the run and the spine reads the step, on one screen.**
+///
+/// AC5 and the one-place clause. Hugh ruled on 2026-09-11, from the running
+/// app, that both stay: the navigator spine's step row keeps `sql · not run`
+/// as the STEP's status, and the ledger strip reads `last run · not run` as
+/// the RUN's state. So this asserts the two together, and asserts that nothing
+/// else on the first screen draws those words a third time.
+///
+/// **The negative is counted over the whole frame, not searched band by
+/// band.** A band-by-band search passes when it looks in the wrong place, and
+/// a region that draws no rect this frame — the status band is an overlay and
+/// has one only when it has a line to draw — would be skipped silently by one.
+/// Counting every galley the frame paints instead, and then placing each of
+/// them, cannot be vacuous: two galleys carry the words, one is inside the
+/// ledger rail and one inside the navigator rail, so no third place has them.
+/// The named bands are read after that, because the count says how many there
+/// are and these say a particular band is not where one of them went.
+#[test]
+fn the_strip_reads_the_run_and_the_spine_reads_the_step() {
+    use brightfield_workbench::arrangement::{
+        LEDGER_RAIL, LOCATOR_BAND, NAVIGATOR_RAIL, STATUS_BAND, TITLE_BAND,
+    };
+
+    let dir = TempDir::new("one-place");
+    let path = dir.write("harbour.csv", HARBOUR_CSV);
+    let mut win =
+        Window::over(Boot::data_file(&path.to_string_lossy()).expect("the file opens as a boot"));
+
+    let ledger = win
+        .app
+        .region_rect(LEDGER_RAIL)
+        .expect("the ledger rail drew");
+    let strip_words = win.drawn_text_in(ledger);
+    assert!(
+        strip_words.iter().any(|w| w == "last run \u{b7} not run"),
+        "the ledger strip drew {strip_words:?}, which does not read the run's \
+         state"
+    );
+
+    let spine = win
+        .app
+        .region_rect(NAVIGATOR_RAIL)
+        .expect("the navigator rail drew");
+    let spine_words = win.drawn_text_in(spine);
+    assert!(
+        spine_words.iter().any(|w| w == "sql \u{b7} not run"),
+        "the navigator spine drew {spine_words:?}, which does not carry the \
+         step's own status — the sibling card's AC1 pinned it there and this \
+         card leaves it"
+    );
+
+    let whole: Vec<String> = win
+        .drawn_text()
+        .into_iter()
+        .filter(|w| w.contains("not run"))
+        .collect();
+    assert_eq!(
+        whole.len(),
+        2,
+        "the first screen drew {whole:?} — the run's state belongs to the \
+         ledger strip and the step's to the spine's step row, so a third \
+         galley carrying the words is a second place drawing the state"
+    );
+    let in_ledger = strip_words.iter().filter(|w| w.contains("not run")).count();
+    let in_spine = spine_words.iter().filter(|w| w.contains("not run")).count();
+    assert_eq!(
+        (in_ledger, in_spine),
+        (1, 1),
+        "the two galleys reading `not run` are not one in the ledger rail and \
+         one in the navigator rail: {in_ledger} and {in_spine}"
+    );
+
+    // …and the bands the contract names, each read by its own rect. The title
+    // and locator bands draw on every frame of this window, so a missing rect
+    // is a failure rather than a skip. The status band is an
+    // `Extent::Overlay` with a rect only on a frame it has a line for, and
+    // `StatusDrawn::drawn` is what says whether this was one.
+    for band in [TITLE_BAND, LOCATOR_BAND] {
+        let rect = win
+            .app
+            .region_rect(band)
+            .unwrap_or_else(|| panic!("the {band:?} band drew no rect to read"));
+        let words = win.drawn_text_in(rect);
+        assert!(
+            !words.iter().any(|w| w.contains("not run")),
+            "the {band:?} band drew {words:?}, which carries the run's state"
+        );
+    }
+    match win.app.region_rect(STATUS_BAND) {
+        Some(rect) => {
+            let words = win.drawn_text_in(rect);
+            assert!(
+                !words.iter().any(|w| w.contains("not run")),
+                "the status band drew {words:?}, which carries the run's state"
+            );
+        }
+        None => assert!(
+            win.app.rail().drawn.is_empty(),
+            "the status rail reports entries {:?} but pushed no rect, so this \
+             screen's status band went unread",
+            win.app.rail().drawn
+        ),
     }
 }
 
@@ -1935,15 +2192,14 @@ fn a_one_step_protocol_opens_with_the_ledger_closed_to_its_strip() {
         rect.height()
     );
 
-    // The step, as the sheet reports it, said at the strip's trailing end. The
-    // words are the generated Protocol's own: `load` is the step brightfield
-    // writes for a data file, `sql` its kind, and `not run` its status —
-    // brightfield writes the spec and no run record.
+    // The RUN's state, said at the strip's trailing end. `not run` is derived
+    // rather than written: a data file opens as a Protocol no run stands
+    // behind, and the absence of a run record IS that state.
     let words = win.drawn_text_in(rect);
     assert!(
-        words.iter().any(|w| w == "load \u{b7} sql \u{b7} not run"),
+        words.iter().any(|w| w == "last run \u{b7} not run"),
         "the collapsed ledger's strip drew {words:?}, which does not name the \
-         step, its kind and its run status"
+         last run's state"
     );
     let summary = win
         .app
@@ -1963,8 +2219,13 @@ fn a_one_step_protocol_opens_with_the_ledger_closed_to_its_strip() {
         "the summary drew at {summary:?}, outside the rail's own {rect:?}"
     );
 
-    // …and a Protocol of several steps keeps the rail it declares, with no
-    // summary of a step it does not have one of.
+    // …and a Protocol of several steps keeps the rail it declares, AND keeps
+    // the summary — which is the half of this test the recut moves. While the
+    // summary was a summary of one step, a many-step Protocol had none to
+    // give and the assertions here were that it drew nothing. The summary is
+    // now the RUN's state, and a run of six steps has a state exactly as a run
+    // of one does: the contract's *"for a Protocol of one step or many"*
+    // clause. What still distinguishes the two windows is the rail's height.
     let spec = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/protocol/edgar_gleif/arcform.yaml");
     let inputs = protocol::load_protocol_offline(spec.to_str().expect("utf-8 fixture path"))
@@ -1981,14 +2242,18 @@ fn a_one_step_protocol_opens_with_the_ledger_closed_to_its_strip() {
          count and the protocol baselines move with it",
         rect.height()
     );
-    assert_eq!(
-        many.app.rail_summary_rect(LEDGER_RAIL),
-        None,
-        "the ledger's strip drew a summary over a Protocol of several steps, \
-         so its one-step line is on every window and the protocol baselines \
-         carry it"
+    assert!(
+        many.app.rail_summary_rect(LEDGER_RAIL).is_some(),
+        "the ledger's strip drew no summary over a Protocol of several steps, \
+         so the run's state is missing from the window that most has a run to \
+         report"
     );
     let words = many.drawn_text_in(rect);
+    assert!(
+        words.iter().any(|w| w == "last run \u{b7} not run"),
+        "the many-step window's ledger drew {words:?}, which does not read \
+         the run's state — the summary is still conditioned on the step count"
+    );
     assert!(
         !words.iter().any(|w| w.contains(" \u{b7} sql \u{b7} ")),
         "the many-step window's ledger drew a step summary: {words:?}"
