@@ -1153,8 +1153,16 @@ impl Item<ChartDoc> for RowsSpot {
         ROWS
     }
 
-    fn empty_state(&self, _doc: &ChartDoc) -> Option<EmptyState> {
-        None
+    /// Empty when nothing is open, as the grid is: over a live document the
+    /// line this spot draws is content, not absence.
+    fn empty_state(&self, doc: &ChartDoc) -> Option<EmptyState> {
+        doc.is_empty().then(|| {
+            EmptyState::new(
+                ICON_DATA,
+                "No data to tabulate",
+                "The grid shows the rows behind the chart. Open a file to see them here.",
+            )
+        })
     }
 
     fn describe(&self, _doc: &ChartDoc) -> Subject {
