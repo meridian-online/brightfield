@@ -2928,6 +2928,26 @@ impl MeridianApp {
         &self.regions
     }
 
+    /// Whether rail `id` is put away right now — drawing its strip rather than
+    /// the room its [`Extent::Rail`] default names.
+    ///
+    /// **Asked rather than assumed**, which is what this exists for. A rail's
+    /// state used to be the arrangement's default until something moved it, so
+    /// a freshly booted window was a window with every rail open and a test
+    /// could compare a drawn extent against the declaration and stop there.
+    /// `apply_rail_defaults` ended that: the ledger and inspector rails open
+    /// closed on a Protocol of one step, which is what a data file opens as,
+    /// so *the default* is now a property of the document. The first window in
+    /// the corpus with one step failed `every_regions_drawn_extent_is_the_one_it_declares`
+    /// at 56pt against 180pt — a correct rail, measured against the wrong one
+    /// of its two declared extents.
+    ///
+    /// [`Extent::Rail`]: brightfield_workbench::arrangement::Extent::Rail
+    #[must_use]
+    pub fn rail_is_collapsed(&self, id: RegionId) -> bool {
+        self.collapsed.contains(&id)
+    }
+
     /// Where the collapse control of rail `id` drew in the last frame this
     /// window drew, or `None` on a frame that rail did not draw one.
     ///
