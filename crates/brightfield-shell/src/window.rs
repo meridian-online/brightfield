@@ -2767,10 +2767,9 @@ impl MeridianApp {
     /// one screen. The rail is the run record — Log, Quality, Rows — so its
     /// strip reports what a reader would open the rail to read, whatever the
     /// step count; the navigator spine's step row carries the step's own
-    /// status beside it, from the per-step map
-    /// [`crate::protocol::ProtocolModel::seam_statuses`] folds. One typed
-    /// source under each, so a run and its steps cannot contradict each other
-    /// here.
+    /// status beside it, from the per-step status map that model carries. One
+    /// typed source under each, so a run and its steps cannot contradict each
+    /// other here.
     ///
     /// The word comes from [`crate::protocol::ProtocolModel::last_run_word`],
     /// which reads the run record and reports [`crate::protocol::NOT_RUN`] for
@@ -2970,9 +2969,9 @@ impl MeridianApp {
     /// galleys cannot answer on their own: a rail draws every one of its
     /// panes' names in its strip, and the pane's own header band is suppressed
     /// under that strip, so the words on the screen say which panes the rail
-    /// HAS and not which one is under them. Read through the same
-    /// [`Self::pane_title_of`] the strip reads, so a pane renamed in its
-    /// registry moves this and the strip together.
+    /// HAS and not which one is under them. Read through the same private
+    /// `pane_title_of` the strip reads, so a pane renamed in its registry
+    /// moves this and the strip together.
     ///
     /// `None` for a region that is not a rail of panes.
     #[must_use]
