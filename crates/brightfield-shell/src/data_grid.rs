@@ -449,9 +449,8 @@ pub fn show_table_sized(
             .into_iter()
             .zip(source.columns())
             .map(|(natural, column)| {
-                set.get(&column.name).map_or(natural, |w| {
-                    w.clamp(min_column_width(), MAX_COLUMN_WIDTH)
-                })
+                set.get(&column.name)
+                    .map_or(natural, |w| w.clamp(min_column_width(), MAX_COLUMN_WIDTH))
             })
             .map(|w| {
                 // Pinned rather than seeded, and **the column-resize drag is

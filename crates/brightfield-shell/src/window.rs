@@ -5493,9 +5493,14 @@ impl MeridianApp {
         // row for the Protocol the window is.
         let name = self.subject_name();
         let run = self.recorded_run_state();
-        self.layout
-            .live_mut()
-            .remember(id, &name, run, self.grid_layout, self.grid_spot, now_secs());
+        self.layout.live_mut().remember(
+            id,
+            &name,
+            run,
+            self.grid_layout,
+            self.grid_spot,
+            now_secs(),
+        );
         self.toasts.push(Toast::new(
             Severity::Success,
             format!("Opened {}", self.title()),
@@ -7906,8 +7911,15 @@ fn draw_layout_switch(
 )> {
     let hover = layout_switch_hover();
     let states: Vec<_> = GRID_LAYOUTS.iter().map(|l| (*l, l.word())).collect();
-    let (rect, states, picked) =
-        draw_word_switch(ui, band, &states, active, "grid-layout-switch", &hover, mode)?;
+    let (rect, states, picked) = draw_word_switch(
+        ui,
+        band,
+        &states,
+        active,
+        "grid-layout-switch",
+        &hover,
+        mode,
+    )?;
     Some((
         crate::app::LayoutSwitchDrawn {
             rect,
