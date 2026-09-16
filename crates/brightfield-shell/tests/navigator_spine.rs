@@ -386,6 +386,41 @@ fn ink(token: meridian_design::colour::Rgba) -> egui::Color32 {
     brightfield_workbench::chrome::colour(token)
 }
 
+/// [`texts`] with each galley's own colour — the fourth field neither `texts`
+/// nor [`clipped_texts`] returns, for the locator band's ink assertion: a rect
+/// and a font do not show that the last crumb painted in a different colour
+/// from the rest.
+fn inks(shapes: &[egui::epaint::ClippedShape]) -> Vec<(String, egui::Rect, egui::Color32)> {
+    fn walk(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect, egui::Color32)>) {
+        match shape {
+            egui::Shape::Text(text) => {
+                let colour = text
+                    .galley
+                    .job
+                    .sections
+                    .first()
+                    .map_or(egui::Color32::PLACEHOLDER, |section| section.format.color);
+                out.push((
+                    text.galley.text().to_string(),
+                    egui::Rect::from_min_size(text.pos, text.galley.size()),
+                    colour,
+                ));
+            }
+            egui::Shape::Vec(shapes) => {
+                for s in shapes {
+                    walk(s, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for clipped in shapes {
+        walk(&clipped.shape, &mut out);
+    }
+    out
+}
+
 /// The label, kind, depth and marker of one row — what a failure prints.
 fn shape_of(row: &SpineRowDrawn) -> (SpineRole, &str, &str, u8, SpineMarker) {
     (
@@ -2114,4 +2149,161 @@ fn the_caret_reopens_the_inspector_on_the_clicked_column() {
         drawn.iter().any(|t| t == "median_income"),
         "the reopened Inspector pane does not show the clicked column: {drawn:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The locator band: the file, the step, the node and the view — or the
+// graph and its own counts
+// ---------------------------------------------------------------------------
+
+/// **AC1.** On the housing fixture the locator band's crumbs read the file,
+/// the step that read it, the table it made and the view on the canvas, each
+/// in the ink the layout contract gives it — and a click on the spine's
+/// `grid` row moves the last crumb.
+///
+/// The crumbs come off [`MeridianApp::locator_crumbs`], the window's own hook,
+/// and the ink comes off the galleys the frame actually painted — reading the
+/// hook twice would prove the derivation agrees with itself, not that the
+/// band drew it.
+#[test]
+fn the_locator_band_reads_the_file_the_step_the_node_and_the_view() {
+    let mut win = Live::open(housing_boot());
+    win.settle();
+
+    let crumbs = win.app.locator_crumbs();
+    assert_eq!(
+        crumbs,
+        vec![
+            "california_housing_sample.csv".to_string(),
+            "load".to_string(),
+            "california_housing_sample".to_string(),
+            "dashboard".to_string(),
+        ],
+        "the band's crumbs are not the file, the step, the table and the view"
+    );
+
+    // Restricted to the locator band's own rect: the title band above draws
+    // the window's title in its own ink, and for a data-file window that
+    // title is the same file name as the crumb — the very repetition this
+    // card exists to end. A search over the whole frame would find that
+    // occurrence first and pass no matter what ink this band used.
+    let band = win
+        .app
+        .region_rect(brightfield_workbench::arrangement::LOCATOR_BAND)
+        .expect("the locator band drew");
+    let shapes = win.shapes();
+    let painted: Vec<(String, egui::Rect, egui::Color32)> = inks(&shapes)
+        .into_iter()
+        .filter(|(_, rect, _)| band.contains_rect(rect.expand(0.5)))
+        .collect();
+    let sem = semantic(Mode::Light.is_dark());
+    for (i, crumb) in crumbs.iter().enumerate() {
+        let want = if i + 1 == crumbs.len() {
+            ink(sem.text.primary)
+        } else {
+            ink(sem.text.secondary)
+        };
+        let (_, _, got) = painted
+            .iter()
+            .find(|(text, _, _)| text == crumb)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no galley reading {crumb:?} landed in the locator band {band:?}; it \
+                     painted {:?}",
+                    painted
+                        .iter()
+                        .map(|(t, _, _)| t.as_str())
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(*got, want, "the crumb {crumb:?} painted in the wrong ink");
+    }
+    let (_, _, sep_ink) = painted
+        .iter()
+        .find(|(text, _, _)| text == "\u{203a}")
+        .unwrap_or_else(|| panic!("no separator glyph landed in the locator band"));
+    assert_eq!(
+        *sep_ink,
+        ink(sem.text.muted),
+        "the crumb separator is not painted text.muted"
+    );
+
+    win.click_row("grid");
+    assert_eq!(
+        win.app.locator_crumbs().last(),
+        Some(&"grid".to_string()),
+        "a click on the grid row did not move the band's last crumb"
+    );
+}
+
+/// **AC2.** With the graph on the canvas the band reads one crumb, `Protocol`,
+/// and its trailing counts are the graph's own — not a literal, and not the
+/// same two numbers on two different graphs.
+#[test]
+fn the_locator_band_reads_protocol_and_the_graphs_own_counts() {
+    let mut housing = Live::open(housing_boot());
+    housing.settle();
+    housing.click_chip();
+    assert_eq!(
+        housing.app.canvas_holds(),
+        &CanvasHolds::Graph,
+        "the chip did not put the graph on the canvas"
+    );
+    assert_eq!(
+        housing.app.locator_crumbs(),
+        vec!["Protocol".to_string()],
+        "the graph's crumb line is not the one entry Protocol"
+    );
+    let housing_counts = housing
+        .app
+        .locator_counts()
+        .expect("the graph holds the canvas, so the band has counts to say");
+    assert_eq!(
+        housing_counts,
+        counted_pair(
+            housing.app.protocol_model().node_count(),
+            housing.app.protocol_model().step_count(),
+        ),
+        "the housing graph's counts are not the graph's own node and step counts"
+    );
+
+    let mut cross = crosswalk();
+    cross.settle();
+    assert_eq!(
+        cross.app.canvas_holds(),
+        &CanvasHolds::Graph,
+        "a manifest with no chart gives the graph the canvas from the start"
+    );
+    let cross_counts = cross
+        .app
+        .locator_counts()
+        .expect("the graph holds the canvas, so the band has counts to say");
+    assert_eq!(
+        cross_counts,
+        counted_pair(
+            cross.app.protocol_model().node_count(),
+            cross.app.protocol_model().step_count(),
+        ),
+        "the crosswalk graph's counts are not the graph's own node and step counts"
+    );
+
+    assert_ne!(
+        housing_counts, cross_counts,
+        "the housing graph and the crosswalk manifest have different node and \
+         step counts, and the band drew the same text for both"
+    );
+}
+
+/// `graph_counts`' own pluralisation, independently — [`ProtocolModel::graph_counts`]
+/// composes this from a private `counted`, so a test asserting against the
+/// production text has to spell the rule rather than import it.
+fn counted_pair(nodes: usize, steps: usize) -> String {
+    let noun = |n: usize, word: &str| {
+        if n == 1 {
+            format!("{n} {word}")
+        } else {
+            format!("{n} {word}s")
+        }
+    };
+    format!("{} \u{b7} {}", noun(nodes, "node"), noun(steps, "step"))
 }
