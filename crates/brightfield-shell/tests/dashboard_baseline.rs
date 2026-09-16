@@ -407,6 +407,7 @@ fn the_preference_between_applicable_kinds_is_the_registrys_declaration_order() 
 /// can alone is that the ink moves and nothing else does.
 #[test]
 fn the_generated_dashboard_light_baseline() {
+    assert_one_grid_per_frame(&[]);
     let path = housing();
     let chosen = path.to_str().expect("utf-8 fixture path");
 
@@ -479,6 +480,7 @@ fn pixels_of(image: &image::RgbaImage, token: meridian_design::colour::Rgba) -> 
 /// composition inside a dark window.
 #[test]
 fn the_generated_dashboard_dark_baseline() {
+    assert_one_grid_per_frame(&[]);
     let path = housing();
     let chosen = path.to_str().expect("utf-8 fixture path");
 
@@ -1670,6 +1672,7 @@ const HOUSING_COLUMN_COUNT: usize = 9;
 fn the_grid_view_light_baseline() {
     let at = grid_row_centre();
     assert_grid_view_is_what_is_being_photographed(at);
+    assert_one_grid_per_frame(&open_the_grid_view(at));
     let image = capture_grid_view(Mode::Light, at, "grid_view_light");
     egui_kittest::image_snapshot(&image, "grid_view_light");
 }
@@ -1680,6 +1683,7 @@ fn the_grid_view_light_baseline() {
 fn the_grid_view_dark_baseline() {
     let at = grid_row_centre();
     assert_grid_view_is_what_is_being_photographed(at);
+    assert_one_grid_per_frame(&open_the_grid_view(at));
     let image = capture_grid_view(Mode::Dark, at, "grid_view_dark");
     egui_kittest::image_snapshot(&image, "grid_view_dark");
 }
@@ -1904,4 +1908,187 @@ fn the_transposed_dashboard_dark_baseline() {
     );
 
     egui_kittest::image_snapshot(&image, "dashboard_transposed_dark");
+}
+
+// ---------------------------------------------------------------------------
+// One grid, in either of its spots
+// ---------------------------------------------------------------------------
+
+/// **One table filed per frame, across both of the grid's spots** — the guard
+/// the dashboard, grid-view and ledger baselines run ahead of their
+/// photographs.
+///
+/// A photograph cannot see a second grid in a rail it shows collapsed, and the
+/// dashboard and grid-view frames show the ledger collapsed. So the guard
+/// settles [`housing`] under the photograph's own `script`, counts the tables
+/// that frame filed, then moves the grid into the ledger and back — which
+/// leaves the ledger open on its Rows spot beside a canvas drawing the grid —
+/// and replays the script, counting at each stop. A frame that draws the grid
+/// in both spots files two tables and fails here, before any picture is taken.
+///
+/// Watched redden, two mutations: the ledger drawing the grid whatever the
+/// canvas draws, and the canvas drawing it whatever the grid's spot says.
+fn assert_one_grid_per_frame(script: &[Vec<egui::Event>]) {
+    let path = housing();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let mut app = MeridianApp::headless(boot, Mode::Light);
+    let ctx = egui::Context::default();
+    let screen =
+        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SHORT_WINDOW.0, SHORT_WINDOW.1));
+    let run = |app: &mut MeridianApp, events: Vec<egui::Event>| {
+        let raw = egui::RawInput {
+            screen_rect: Some(screen),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(raw, |ui| app.draw(ui));
+    };
+    let settle = |app: &mut MeridianApp, script: &[Vec<egui::Event>]| {
+        for events in script
+            .iter()
+            .cloned()
+            .chain(std::iter::repeat_n(Vec::new(), 3))
+        {
+            run(app, events);
+        }
+    };
+    let filed = |app: &MeridianApp, when: &str| {
+        let n = app.chart_doc().tables_filed();
+        assert_eq!(
+            n, 1,
+            "{when}, the frame filed {n} tables — the grid drew in more than one spot"
+        );
+    };
+    settle(&mut app, script);
+    filed(&app, "at the photographed state");
+    app.move_grid();
+    settle(&mut app, &[]);
+    filed(&app, "with the grid moved into the ledger");
+    app.move_grid();
+    settle(&mut app, script);
+    filed(
+        &app,
+        "with the grid back on the canvas and the ledger open on its Rows spot",
+    );
+}
+
+/// Where the ledger strip draws its Rows name in [`housing`] at
+/// [`SHORT_WINDOW`] — the name a reader clicks to send the grid there.
+fn rows_name_centre() -> egui::Pos2 {
+    let path = housing();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let mut app = MeridianApp::headless(boot, Mode::Light);
+    let ctx = egui::Context::default();
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(SHORT_WINDOW.0, SHORT_WINDOW.1),
+        )),
+        ..Default::default()
+    };
+    for _ in 0..3 {
+        let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
+    }
+    // Log, Quality, Rows, Editor.
+    app.rail_name_rect(brightfield_workbench::arrangement::LEDGER_RAIL, 2)
+        .expect("the ledger strip drew its Rows name")
+        .center()
+}
+
+/// The frames that send the grid to the ledger: a click on the Rows name, then
+/// three to settle — the same click [`open_the_grid_view`] makes, aimed at the
+/// strip.
+fn send_the_grid_to_the_ledger(at: egui::Pos2) -> Vec<Vec<egui::Event>> {
+    open_the_grid_view(at)
+}
+
+/// The structural guard the ledger pair runs first: the frame being
+/// photographed holds the grid in the ledger — its table's header inside the
+/// rail — and the hero alone on the canvas.
+fn assert_grid_in_ledger_is_what_is_being_photographed(at: egui::Pos2) {
+    let path = housing();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let mut app = MeridianApp::headless(boot, Mode::Light);
+    let ctx = egui::Context::default();
+    let screen =
+        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SHORT_WINDOW.0, SHORT_WINDOW.1));
+    for events in std::iter::repeat_n(Vec::new(), 3).chain(send_the_grid_to_the_ledger(at)) {
+        let raw = egui::RawInput {
+            screen_rect: Some(screen),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(raw, |ui| app.draw(ui));
+    }
+    let panes: Vec<&str> = app.canvas_panes().panes.iter().map(|p| p.name).collect();
+    assert_eq!(
+        panes,
+        vec!["map"],
+        "the click at {at:?} did not leave the hero alone on the canvas"
+    );
+    let ledger = app
+        .region_rect(brightfield_workbench::arrangement::LEDGER_RAIL)
+        .expect("the ledger drew");
+    let head = app
+        .chart_doc()
+        .grid_drawn()
+        .and_then(|drawn| drawn.header_cells.first().map(|cell| cell.1))
+        .expect("the grid laid a table out");
+    assert!(
+        ledger.contains_rect(head.shrink(1.0)),
+        "the grid's header drew at {head:?}, outside the ledger {ledger:?}"
+    );
+}
+
+/// [`housing`] at [`SHORT_WINDOW`] with the grid sent to the ledger, read back
+/// as pixels.
+fn capture_grid_in_ledger(mode: Mode, at: egui::Pos2, name: &str) -> image::RgbaImage {
+    let path = housing();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
+    let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let out = scratch(name);
+    let (w, h) = brightfield_shell::capture::capture_png_at(
+        boot,
+        mode,
+        SCALE,
+        SHORT_WINDOW,
+        &out,
+        send_the_grid_to_the_ledger(at),
+    )
+    .unwrap_or_else(|e| panic!("capture {name}: {e}"));
+    assert!(w > 0 && h > 0, "{name}: empty capture");
+    image::open(&out)
+        .unwrap_or_else(|e| panic!("read capture {}: {e}", out.display()))
+        .to_rgba8()
+}
+
+/// **The grid in the ledger, as pixels** — the hero alone on the canvas, and
+/// the table under the ledger strip's Rows name with its own header band and
+/// the spot switch reading *ledger*.
+///
+/// The companion to [`the_generated_dashboard_light_baseline`], which
+/// photographs the same file with the grid beside the hero: between them the
+/// pair pins both of the grid's spots.
+#[test]
+fn the_grid_in_ledger_light_baseline() {
+    let at = rows_name_centre();
+    assert_grid_in_ledger_is_what_is_being_photographed(at);
+    assert_one_grid_per_frame(&send_the_grid_to_the_ledger(at));
+    let image = capture_grid_in_ledger(Mode::Light, at, "grid_in_ledger_light");
+    egui_kittest::image_snapshot(&image, "grid_in_ledger_light");
+}
+
+/// **The dark twin of [`the_grid_in_ledger_light_baseline`]** — the same frame,
+/// the same script, the ink moved.
+#[test]
+fn the_grid_in_ledger_dark_baseline() {
+    let at = rows_name_centre();
+    assert_grid_in_ledger_is_what_is_being_photographed(at);
+    assert_one_grid_per_frame(&send_the_grid_to_the_ledger(at));
+    let image = capture_grid_in_ledger(Mode::Dark, at, "grid_in_ledger_dark");
+    egui_kittest::image_snapshot(&image, "grid_in_ledger_dark");
 }
