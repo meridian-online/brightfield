@@ -1730,6 +1730,7 @@ fn a_door_with_recents_lists_every_one_of_them_most_recent_first() {
 /// different surfaces", `Some(protocol-canvas)` against `None`.
 #[test]
 fn either_route_to_the_same_subject_leaves_the_same_window() {
+    datasets_into_scratch();
     let mut walked = 0;
     for start in starts::on_door() {
         if start.remote {
@@ -1781,15 +1782,15 @@ fn either_route_to_the_same_subject_leaves_the_same_window() {
             start.id
         );
     }
-    // Three starts declare themselves for the door and one of the three reads
-    // over the network, so two are what a hermetic run can compare. Written as
-    // the number rather than as the same filter the loop is built from,
+    // Four starts declare themselves for the door and one of the four reads
+    // over the network, so three are what a hermetic run can compare. Written
+    // as the number rather than as the same filter the loop is built from,
     // because a filter compared against itself agrees whatever it yields.
     assert_eq!(
-        walked, 2,
+        walked, 3,
         "{walked} start(s) were compared, where the Datasets section offers \
-         two a hermetic run can take — a walk of nothing here would leave both \
-         routes unasserted and this test green, and a walk of a different \
+         three a hermetic run can take — a walk of nothing here would leave \
+         both routes unasserted and this test green, and a walk of a different \
          number means the section changed without this one being looked at"
     );
 }
