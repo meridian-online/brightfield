@@ -1955,9 +1955,9 @@ fn a_door_with_recents_lists_every_one_of_them_most_recent_first() {
 ///
 /// It walks the door's own set rather than one hand-picked start, because a
 /// route that diverges for one document kind and not the other is the
-/// divergence a single-case test would survive. **Today that walk is two
-/// starts**, the crosswalk manifest and a run of it: the Datasets section
-/// offers three, and the third reads over the network. So the count is
+/// divergence a single-case test would survive. **Today that walk is three
+/// starts** — the crosswalk manifest, a run of it, and California Housing: the
+/// Datasets section offers four, and the fourth reads over the network. So the count is
 /// asserted rather than left implicit — a door that lost its last local card
 /// would otherwise pass this by walking an empty set, which is the failure
 /// this file has already had once in a different loop.

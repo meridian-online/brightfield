@@ -507,9 +507,12 @@ pub const STARTS: &[Start] = &[
         // manifest, and `crate::protocol::run_less_manifest_refusal` is where
         // the distinction is written out.
         run_less: false,
-        // The bytes are in the binary. The click reaches no network, which is
-        // the whole argument for bundling rather than publishing: the demo
-        // works in a room with no connection.
+        // The bytes are in the binary, and so is the reader DuckDB needs for
+        // them — the engine's `duckdb` dependency declares the `parquet`
+        // feature — so the click reaches no network, which is the whole
+        // argument for bundling rather than publishing.
+        // `the_local_starts_open_with_the_network_denied_and_a_cold_extension_cache`
+        // in `tests/front_door.rs` opens it in a jail that denies one.
         remote: false,
         on_door: true,
         // A data file, not a chart spec and not a manifest — see `load`'s

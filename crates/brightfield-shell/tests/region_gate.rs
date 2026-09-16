@@ -386,6 +386,7 @@ fn every_window_this_build_can_open() -> Vec<(String, Boot)> {
             a_protocol_and_a_chart(),
         ),
     ];
+    datasets_into_scratch();
     for start in starts::STARTS {
         let boot = Boot::start(start.id, Flow::Vertical)
             .unwrap_or_else(|e| panic!("the {} start ships with this build: {e}", start.id));
@@ -689,5 +690,19 @@ fn every_regions_drawn_extent_is_the_one_it_declares() {
         fixed >= 20 && canvases >= 6 && overlays >= 1,
         "the sweep compared {fixed} fixed extents, {canvases} canvases and \
          {overlays} floating bands; it is not reading the corpus"
+    );
+}
+
+/// Point brightfield's config directory at this target's scratch, so loading a
+/// start that ships a data file writes that file there and not into the
+/// developer's own `~/Library/Application Support/Brightfield`.
+///
+/// The twin of `datasets_into_scratch` in `tests/front_door.rs`, which carries
+/// the argument for the fixed path; an integration test target cannot import a
+/// sibling's helper.
+fn datasets_into_scratch() {
+    std::env::set_var(
+        brightfield_shell::startup::CONFIG_DIR_VAR,
+        std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("config"),
     );
 }

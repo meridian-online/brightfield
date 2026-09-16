@@ -41,12 +41,16 @@
 //!
 //! [`datasets_dir`] is the exception and it is deliberately a narrow one: it
 //! names a directory rather than the layout file, and [`crate::starts::load`]
-//! calls it to put a bundled data file where a second launch will find it. A suite
-//! that loads such a start therefore points [`CONFIG_DIR_VAR`] at its own
-//! scratch directory first — `datasets_into_scratch` in
-//! `crates/brightfield-shell/tests/front_door.rs` is that call, and
-//! `a_bundled_data_start_writes_under_the_configured_directory` beside it is
-//! what fails if the resolution stops honouring the override.
+//! calls it to put a bundled data file where a second launch will find it. A
+//! suite that loads such a start therefore points [`CONFIG_DIR_VAR`] at its own
+//! scratch directory first, through a `datasets_into_scratch` of its own —
+//! `front_door.rs`, `region_gate.rs`, `crosswalk_chart.rs`, `remote_start.rs`
+//! and `start_interaction.rs` under `crates/brightfield-shell/tests/` each
+//! carry one — and
+//! `a_bundled_data_start_writes_the_committed_bytes_where_a_second_launch_finds_them`
+//! in `front_door.rs` is what fails if the resolution stops honouring the
+//! override. Nothing fails if a new suite forgets the call: the cost is a
+//! Parquet written under the developer's own config directory.
 
 use std::path::{Path, PathBuf};
 

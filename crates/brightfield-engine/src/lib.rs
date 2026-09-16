@@ -273,9 +273,14 @@ impl std::fmt::Debug for LoadResult {
 ///
 /// The data path itself belongs to DuckDB (`httpfs`), so this is the ONLY
 /// network question the engine ever has: may a missing extension be
-/// downloaded? A spec over local files never triggers an extension
-/// acquisition under either policy — the air-gapped promise does not
-/// depend on choosing [`NetworkPolicy::Disabled`].
+/// downloaded? A spec over local CSV or Parquet files triggers no extension
+/// acquisition under either policy, because both readers are in the binary —
+/// CSV is DuckDB core and Parquet is linked by this crate's `parquet` feature —
+/// so for those the air-gapped promise does not depend on choosing
+/// [`NetworkPolicy::Disabled`]. A local JSON source (`read_json_auto`) or a
+/// spatial one (`ST_Read`) is not in that set: those readers are extensions
+/// this build does not link, and under [`NetworkPolicy::Auto`] DuckDB
+/// autoinstalls them on first use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NetworkPolicy {
     /// Extensions a spec needs may be installed (downloaded) on demand,

@@ -697,6 +697,7 @@ fn no_other_shipped_start_needs_a_connection_to_open() {
          asserts has almost nothing left to hold",
         local.len()
     );
+    datasets_into_scratch();
     for start in local {
         starts::load(start.id).unwrap_or_else(|e| {
             panic!(
@@ -809,4 +810,18 @@ fn the_crosswalk_chart_start_opens_over_the_network_drawing_every_row() {
 )]
 fn ceiling_as_rows() -> f64 {
     MEASURED_INKED_MAX as f64
+}
+
+/// Point brightfield's config directory at this target's scratch, so loading a
+/// start that ships a data file writes that file there and not into the
+/// developer's own `~/Library/Application Support/Brightfield`.
+///
+/// The twin of `datasets_into_scratch` in `tests/front_door.rs`, which carries
+/// the argument for the fixed path; an integration test target cannot import a
+/// sibling's helper.
+fn datasets_into_scratch() {
+    std::env::set_var(
+        brightfield_shell::startup::CONFIG_DIR_VAR,
+        std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("config"),
+    );
 }
