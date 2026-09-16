@@ -502,6 +502,148 @@ fn every_shipped_start_loads_into_a_document_with_something_in_it() {
     }
 }
 
+/// The jail the offline gate below runs its child in, and the one
+/// `scripts/verify-airgapped.sh` runs the packaged binary in: one definition of
+/// "the network is denied" for both proofs.
+#[cfg(target_os = "macos")]
+const NETWORK_DENIED: &str = "(version 1)(allow default)(deny network*)";
+
+/// Set in the jailed child's environment, carrying the port of a loopback
+/// listener the parent holds open — the negative control.
+#[cfg(target_os = "macos")]
+const JAILED_CHILD_VAR: &str = "BRIGHTFIELD_TEST_JAILED_LOOPBACK_PORT";
+
+/// **Every local start opens with the network denied and a cold extension
+/// cache — observed, not declared.**
+///
+/// AC3 of the card that cut the California Housing start says it opens with
+/// the network off. The checks that stood for that read it off the
+/// declaration: `Start::remote` is false, the label carries no `REMOTE_MARK`,
+/// and `every_shipped_start_loads_into_a_document_with_something_in_it` loads
+/// it — with the network on, over whatever `~/.duckdb` this machine has
+/// cached. They were all green over a start that did not open offline: DuckDB
+/// reads Parquet through an extension it autoinstalls on first use, so on a
+/// machine with a cold cache the click downloaded it from
+/// extensions.duckdb.org, and with no network the click raised a banner and
+/// the door stayed up. What makes it true now is the `parquet` feature on the
+/// engine's `duckdb` dependency, which links the reader into the binary.
+///
+/// So this opens the starts rather than reading them. The test re-runs itself
+/// under `sandbox-exec` with the network denied, `HOME` pointed at an empty
+/// directory (DuckDB's extension cache is `$HOME/.duckdb`) and the config
+/// directory at another. Inside, the child:
+///
+/// - first proves the jail denies: a connect to a loopback listener the parent
+///   is holding open must fail, or the run had a network and proves nothing
+///   about running without one;
+/// - then loads every start that does not declare `remote` through
+///   `Boot::start`, the boot path's own entry;
+/// - then clicks the California Housing card on a real door and requires the
+///   window to have left the door.
+///
+/// The parent then requires the child to have run exactly this test and passed
+/// — a test filter matching nothing exits 0 — and the extension cache to still
+/// be empty, so nothing was installed on the way.
+///
+/// macOS only, because the jail is macOS's; CI's `test` job runs on macOS.
+///
+/// Watched redden, two mutations. The engine's `duckdb` dependency without
+/// the `parquet` feature fails the child at "california-housing no longer
+/// opens with the network denied: … Failed to download extension
+/// \"parquet\" … Could not establish connection". The jail's profile reduced
+/// to `(allow default)` fails the child at "the jail let a loopback connection
+/// through" — so a pass here is a pass with the network denied.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_local_starts_open_with_the_network_denied_and_a_cold_extension_cache() {
+    const NAME: &str = "the_local_starts_open_with_the_network_denied_and_a_cold_extension_cache";
+
+    if let Some(port) = std::env::var_os(JAILED_CHILD_VAR) {
+        // ── the jailed child ────────────────────────────────────────────────
+        let port: u16 = port
+            .to_string_lossy()
+            .parse()
+            .expect("the parent hands the child a port");
+        assert!(
+            std::net::TcpStream::connect(("127.0.0.1", port)).is_err(),
+            "the jail let a loopback connection through, so this run had a \
+             network and proves nothing about running without one"
+        );
+        for start in starts::STARTS.iter().filter(|s| !s.remote) {
+            let boot = Boot::start(start.id, Flow::Vertical).unwrap_or_else(|e| {
+                panic!("{} no longer opens with the network denied: {e}", start.id)
+            });
+            assert!(
+                boot.has_chart() || !boot.protocol.graph_full.nodes.is_empty(),
+                "{} opened onto nothing with the network denied",
+                start.id
+            );
+        }
+        let start = the_data_file_start();
+        let mut win = Window::open(Boot::empty());
+        win.settle();
+        win.take_the_card(start.id);
+        win.settle();
+        assert!(
+            !win.app.front_door_is_live(),
+            "clicking {} with the network denied left the window on the door",
+            start.id
+        );
+        return;
+    }
+
+    // ── the parent ──────────────────────────────────────────────────────────
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("offline-starts");
+    let _ = std::fs::remove_dir_all(&root);
+    let (home, config) = (root.join("home"), root.join("config"));
+    for dir in [&home, &config] {
+        std::fs::create_dir_all(dir).expect("make the jailed child's directories");
+    }
+    let control = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback listener");
+    let port = control.local_addr().expect("its address").port();
+
+    let out = std::process::Command::new("/usr/bin/sandbox-exec")
+        .args(["-p", NETWORK_DENIED])
+        .arg(std::env::current_exe().expect("this test binary"))
+        .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+        .env(JAILED_CHILD_VAR, port.to_string())
+        .env("HOME", &home)
+        .env(brightfield_shell::startup::CONFIG_DIR_VAR, &config)
+        .output()
+        .expect("sandbox-exec runs");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the jailed run failed ({}):\n{stdout}\n{stderr}",
+        out.status
+    );
+    assert!(
+        stdout.contains("test result: ok. 1 passed"),
+        "the jailed run did not run exactly this test, so its exit status says \
+         nothing:\n{stdout}"
+    );
+    drop(control);
+
+    let mut cached = Vec::new();
+    let mut dirs = vec![home.join(".duckdb")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                cached.push(path);
+            }
+        }
+    }
+    assert!(
+        cached.is_empty(),
+        "opening the local starts installed into the cold extension cache: \
+         {cached:?}"
+    );
+}
+
 /// **A start declares a chart spec or a data file, and not both.**
 ///
 /// `starts::load` takes the data arm first, so a start carrying both would
