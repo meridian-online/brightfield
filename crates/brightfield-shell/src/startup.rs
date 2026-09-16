@@ -40,8 +40,8 @@
 //! fills in.
 //!
 //! [`datasets_dir`] is the exception and it is deliberately a narrow one: it
-//! names a directory, never the layout file, and [`crate::starts::load`] calls
-//! it to put a bundled data file where a second launch will find it. A suite
+//! names a directory rather than the layout file, and [`crate::starts::load`]
+//! calls it to put a bundled data file where a second launch will find it. A suite
 //! that loads such a start therefore points [`CONFIG_DIR_VAR`] at its own
 //! scratch directory first — `datasets_into_scratch` in
 //! `crates/brightfield-shell/tests/front_door.rs` is that call, and

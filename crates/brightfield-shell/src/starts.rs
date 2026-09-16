@@ -28,8 +28,8 @@
 //!   trivially falsifiable with `cargo tree`.)
 //! - **Choosing one lands on a result.** A front door whose second click opens
 //!   a blank surface has moved the blank canvas rather than removed it, so
-//!   [`load`] returns a *composed* dashboard or a *built* asset graph and
-//!   never an editor buffer. It returns a **path** for exactly one kind of
+//!   [`load`] returns a *composed* dashboard or a *built* asset graph rather
+//!   than an editor buffer. It returns a **path** for exactly one kind of
 //!   start — one that ships a data file ([`Start::data`]) — and that is not
 //!   the exception this bullet is guarding against: the caller's very next
 //!   call opens the path through [`crate::data_file::open`], which is where a
@@ -223,8 +223,9 @@ pub const CALIFORNIA_HOUSING: &str = "california-housing";
 /// writes it under.
 ///
 /// One struct rather than three fields on [`Start`], because they are one
-/// fact: bytes with no name have nowhere to go, a name with no bytes names
-/// nothing, and a descriptor belonging to different bytes is worse than none.
+/// fact: bytes with no name have nowhere to go, a name with no bytes has
+/// nothing to write, and a descriptor belonging to different bytes is worse
+/// than none.
 /// An `Option<BundledData>` therefore has two states and not eight.
 pub struct BundledData {
     /// The name the bytes are written under — and therefore what the locator
@@ -358,7 +359,9 @@ pub struct Start {
     /// `a_start_declares_a_spec_or_a_data_file_and_never_both` is what holds
     /// that rather than [`load`]'s arm order quietly picking a winner.
     ///
-    /// **What it buys is that there is only one route into a data file.**
+    /// **What it buys is one route into a data file rather than two** —
+    /// `the_card_and_the_picker_land_on_one_window` is what reads that back.
+    ///
     /// [`load`] writes these bytes to disk and hands back the path; the caller
     /// then opens that path the way it opens a path the reader picked out of
     /// the dialog — [`crate::window::Boot::data_file`], over
@@ -637,8 +640,8 @@ pub enum Opened {
 /// Underscored rather than hyphenated like the start's id, because this is the
 /// name a **reader** meets — in the locator band, in the one SQL step, and as
 /// the table's own name, which [`crate::one_step`] derives from the stem by
-/// mapping every non-alphanumeric byte to `_`. A hyphen would make the file
-/// and the table read differently for no gain.
+/// mapping a non-alphanumeric byte to `_`. A hyphen would make the file and
+/// the table read differently for no gain.
 pub const HOUSING_FILE: &str = "california_housing.parquet";
 
 /// The bundled California Housing Parquet.
@@ -815,11 +818,13 @@ pub fn compose(spec: &str, fetched: Option<crate::remote::Fetched>) -> Result<Op
 
 /// Where a bundled data file is written on this machine.
 ///
-/// [`crate::startup::datasets_dir`] when this machine has a config directory
-/// at all, and a process-scoped temporary directory when it has none. The
+/// [`crate::startup::datasets_dir`] when this machine resolves a config
+/// directory, and a process-scoped temporary directory when it does not. The
 /// fallback is not a second policy: a machine with no home and no
-/// `XDG_CONFIG_HOME` has nowhere to keep a layout file either, so nothing
-/// survives a launch there and a stable path would be a promise the platform
+/// `XDG_CONFIG_HOME` has nowhere to keep a layout file either, so a launch
+/// there restores nothing to begin with — see
+/// `brightfield_workbench::persist::config_dir`, which answers `None` for
+/// exactly that machine — and a stable path would be a promise the platform
 /// cannot keep. Naming it after the process keeps two brightfields on such a
 /// machine from writing the same path.
 #[must_use]

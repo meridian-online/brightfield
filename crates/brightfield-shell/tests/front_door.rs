@@ -61,10 +61,9 @@ const CANVAS_PANE: PaneKey = PaneKey::new(CANVAS);
 /// not all run on one thread unless `--test-threads=1` says so, which is CI's
 /// argument and not the default.
 ///
-/// It relocates the layout file too, and nothing here reads one: no
-/// constructor in this crate can reach a saved layout (see
-/// `crate::startup`'s module docs), so the only effect is the one this is
-/// for.
+/// It relocates the layout file too, which costs nothing here: a saved layout
+/// is out of a constructor's reach (see `crate::startup`'s module docs), so
+/// the effect that lands is the one this is for.
 fn datasets_into_scratch() {
     std::env::set_var(
         brightfield_shell::startup::CONFIG_DIR_VAR,
@@ -503,10 +502,10 @@ fn every_shipped_start_loads_into_a_document_with_something_in_it() {
     }
 }
 
-/// **A start declares a chart spec or a data file, and never both.**
+/// **A start declares a chart spec or a data file, and not both.**
 ///
 /// `starts::load` takes the data arm first, so a start carrying both would
-/// materialise its file and never compose its spec — a silent wrong answer
+/// materialise its file and leave its spec uncomposed — a silent wrong answer
 /// where a refusal was wanted. The arm order is a decision about which of two
 /// mistakes to make; this is what says the situation does not arise.
 ///
@@ -610,7 +609,8 @@ fn the_bundled_dataset_is_the_bytes_its_descriptor_declares() {
 /// It is worth a test even though the routes share a call, because sharing it
 /// is the thing that could be undone: a later change composing the start's
 /// document in `land_start` rather than handing the path to `Boot::data_file`
-/// would leave every other assertion in this file green.
+/// is green under the rest of this file — the mutation named below is that
+/// change, and this is the test it reddens.
 ///
 /// Watched redden, one mutation: `starts::load`'s data arm returning
 /// `Opened::Protocol(ProtocolInputs::empty())` instead of the path — the shape
@@ -793,8 +793,8 @@ fn a_bundled_data_start_writes_the_committed_bytes_where_a_second_launch_finds_t
 ///
 /// Watched redden, one mutation: `Boot::start`'s `File` arm returning
 /// `Self::empty()` instead of `Self::data_file(...)` — the shape of "a
-/// restored data start has nothing to restore" — fails here at "the restored
-/// launch drew the front door".
+/// restored data start has no document to restore" — fails here at "the
+/// restored launch drew the front door".
 #[test]
 fn a_launch_restoring_the_data_file_start_lands_on_its_own_document() {
     datasets_into_scratch();
