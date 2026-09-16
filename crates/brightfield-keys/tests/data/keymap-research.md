@@ -43,6 +43,7 @@ by the provenance test; scores mirror `VerbEntry.scores` (frequency / mnemonic /
 | `save-spec` | `cmd-s` | 3 / 5 / 5 | cmd-s = save (universal; shipped, editor-scoped) |
 | `cycle-colour-scheme` | `c` | 3 / 5 / 3 | `c` = colour (mnemonic); view-scoped, transient preview |
 | `toggle-outline-rail` | `cmd-b` | 4 / 2 / 5 | cmd-b = the left dock (Zed `workspace::ToggleLeftDock`, VS Code `toggleSidebarVisibility`); round-trip focus, never a numeric |
+| `move-grid` | `cmd-j` | 3 / 2 / 4 | cmd-j = the bottom dock (Zed `workspace::ToggleBottomDock`, VS Code `togglePanel`); moves the table's one grid into the bottom rail and back, one verb for both directions |
 
 ### Navigating the frame — pan, zoom, axis lock, reset
 

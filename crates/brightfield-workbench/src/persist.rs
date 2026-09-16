@@ -324,6 +324,49 @@ impl GridLayout {
     }
 }
 
+/// **Where the table's one grid draws** — beside the hero on the canvas, or in
+/// the ledger rail's Rows spot.
+///
+/// One grid, two spots, never both: the grid is a view of the table node, not
+/// a pane that owns a record, so moving it is a change of this value rather
+/// than a second grid kept in step with the first. A file opens with the grid
+/// on the canvas, where the first screen draws it; the ledger is where a
+/// reader sends it.
+///
+/// Declared here beside [`GridLayout`] for the reason that enum is: [`Recent`]
+/// records it per document, and the shell's switch and the saved record are
+/// one type. The serialised spelling is [`Self::word`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GridSpot {
+    /// Beside the hero, in the canvas's pane group.
+    #[default]
+    Canvas,
+    /// In the ledger rail, under its Rows name.
+    Ledger,
+}
+
+impl GridSpot {
+    /// The word the grid's spot switch offers this state as, and the word the
+    /// layout file spells it with.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Canvas => "canvas",
+            Self::Ledger => "ledger",
+        }
+    }
+
+    /// The other spot — where the move verb sends the grid.
+    #[must_use]
+    pub const fn other(self) -> Self {
+        match self {
+            Self::Canvas => Self::Ledger,
+            Self::Ledger => Self::Canvas,
+        }
+    }
+}
+
 /// One remembered Protocol: what the front door's Protocols section draws a
 /// row from, without reopening anything.
 ///
@@ -368,6 +411,16 @@ pub struct Recent {
     /// files were last looking at.
     #[serde(default)]
     pub grid_layout: GridLayout,
+    /// **Where the grid was drawing** when this document was last closed —
+    /// the canvas or the ledger. Per document for the reason
+    /// [`Self::grid_layout`] is, and the other half of the same record: the
+    /// layout says which way the one grid reads the table, and this says where
+    /// that grid sits.
+    ///
+    /// Absent from a file written before this field existed, which reads as
+    /// [`GridSpot::Canvas`] — where those files last drew it.
+    #[serde(default)]
+    pub grid_spot: GridSpot,
     /// When it was last opened, in whole seconds since the Unix epoch — what
     /// the row's relative time is measured from.
     ///
@@ -410,10 +463,11 @@ impl SavedLayout {
     /// the grid layout are overwritten with what was just seen, because the
     /// older three are by construction the more stale.
     ///
-    /// `grid_layout` is a **parameter** rather than something this reads off
-    /// the existing row, and that is deliberate: the row is rebuilt, so a
-    /// caller that did not pass it would silently reset the document to
-    /// rows on the next save. The compiler asks for it instead.
+    /// `grid_layout` and `grid_spot` are **parameters** rather than something
+    /// this reads off the existing row, and that is deliberate: the row is
+    /// rebuilt, so a caller that did not pass them would silently reset the
+    /// document to rows on the canvas on the next save. The compiler asks for
+    /// them instead.
     ///
     /// Trimmed to [`RECENTS_KEPT`] from the tail, so the entry dropped is the
     /// least recently opened one —
@@ -425,6 +479,7 @@ impl SavedLayout {
         name: &str,
         run: RunState,
         grid_layout: GridLayout,
+        grid_spot: GridSpot,
         opened_at: u64,
     ) {
         self.recents.retain(|r| r.id != id);
@@ -435,6 +490,7 @@ impl SavedLayout {
                 name: name.to_string(),
                 run,
                 grid_layout,
+                grid_spot,
                 opened_at,
             },
         );
@@ -455,6 +511,17 @@ impl SavedLayout {
             .iter()
             .find(|r| r.id == id)
             .map(|r| r.grid_layout)
+    }
+
+    /// **Where the grid was drawing for the document `id` names**, or `None`
+    /// for a document this file has no row for — [`Self::grid_layout_of`]'s
+    /// twin, for the other field of the same record.
+    #[must_use]
+    pub fn grid_spot_of(&self, id: &str) -> Option<GridSpot> {
+        self.recents
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| r.grid_spot)
     }
 
     /// Serialise to pretty JSON.

@@ -77,6 +77,7 @@ use meridian_egui::{PickerDelegate, PickerHint, PickerOutcome, PickerRow};
 pub const CHART_PALETTE_VERBS: &[&str] = &[
     "clear-selection",
     "open-home",
+    crate::data_grid::MOVE_GRID,
     crate::navigation::verb::PAN_LEFT,
     crate::navigation::verb::PAN_RIGHT,
     crate::navigation::verb::PAN_UP,

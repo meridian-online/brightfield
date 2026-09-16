@@ -721,20 +721,12 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Show or hide the chart controls rail",
             scores: None,
         },
-        // The chart view's data-grid tab, on the same terms as the rails
-        // above: the grid is the chart's peer — two queries over one step
-        // materialisation — and the tab strip is the one toggle between the
-        // two projections. Named here because a centre tab must name its
-        // show/hide verb (the item-registry audit enforces it) and the shell
-        // may not invent one; unbound until the workspace shell performs
-        // pane toggles, while the tab itself stays reachable by pointer.
-        // The ledger rail's two run panes and its Rows pane. Each is a centre
-        // tab in its view's item registry, which requires a show/hide verb the
-        // shell may not invent (the item-registry audit enforces it), and each
-        // is unbound until the workspace shell performs pane toggles — the
-        // rail's own strip is how a reader reaches them today. Log and Quality
-        // sit at Protocol because they report a run of the Protocol; Rows sits
-        // at Dashboard and View beside the grid it is a second view of.
+        // The ledger rail's two run panes. Each is a centre tab in its view's
+        // item registry, which requires a show/hide verb the shell may not
+        // invent (the item-registry audit enforces it), and each is unbound
+        // until the workspace shell performs pane toggles — the rail's own
+        // strip is how a reader reaches them today. They sit at Protocol
+        // because they report a run of the Protocol.
         VerbEntry {
             longname: "open-run-log",
             tier: CommandTier::View,
@@ -757,27 +749,22 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Open the run quality output, per step, in the ledger rail",
             scores: None,
         },
+        // The table's one grid, moved between its two spots: beside the hero on
+        // the canvas, and the ledger rail's Rows spot. One verb for both
+        // directions, because it is one grid and one fact about where it is —
+        // not a pane per spot, each with its own show/hide. Global, so it
+        // reaches the grid from whichever spot holds it, and from the rest of
+        // the window, and it is the toggle both spots' item specs name.
         VerbEntry {
-            longname: "open-rows-pane",
+            longname: "move-grid",
             tier: CommandTier::View,
-            binding_specs: Vec::new(),
+            binding_specs: vec![global("cmd-j")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
-            drives: D::Reserved,
-            status: VerbStatus::Reserved,
-            reserved_reason: Some(ReservedReason::NeedsWorkspaceShell),
-            help: "Open the rows behind the mark, in the ledger rail",
-            scores: None,
-        },
-        VerbEntry {
-            longname: "toggle-data-grid",
-            tier: CommandTier::View,
-            binding_specs: Vec::new(),
-            scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
-            drives: D::Reserved,
-            status: VerbStatus::Reserved,
-            reserved_reason: Some(ReservedReason::NeedsWorkspaceShell),
-            help: "Show or hide the data grid — the chart's tabular peer",
-            scores: None,
+            drives: D::RuntimeDispatch,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Move the grid between the canvas and the ledger",
+            scores: Some(Scores { frequency: 3, mnemonic: 2, convention: 4, motor_note: "cmd-j = the bottom dock (Zed workspace::ToggleBottomDock, VS Code togglePanel); here it moves the grid into the bottom rail and back" }),
         },
         // The dev-flagged design gallery tab, on the same terms as the pane
         // toggles above: a centre tab must name its show/hide verb (the
@@ -988,11 +975,9 @@ mod tests {
         assert_eq!(
             needs_shell,
             [
-                "open-rows-pane",
                 "open-run-log",
                 "open-run-quality",
                 "toggle-controls-rail",
-                "toggle-data-grid",
                 "toggle-gallery",
                 "toggle-inspector-rail"
             ]
@@ -1075,8 +1060,7 @@ mod tests {
             "toggle-controls-rail",
             "open-run-log",
             "open-run-quality",
-            "open-rows-pane",
-            "toggle-data-grid",
+            "move-grid",
             "toggle-gallery",
         ];
         assert_eq!(got, expected);

@@ -1621,6 +1621,7 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
             ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::H))
         }
         "cmd-b" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::B)),
+        "cmd-j" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::J)),
         // The navigation family. Bare keys, and mapped here for the same
         // reason the overlay openers are: the shell may not invent a binding,
         // so the token comes off the registry and only its egui spelling lives
@@ -1830,6 +1831,13 @@ pub struct MeridianApp {
     /// on the pane's own header band, and no document records it. A file opens
     /// on its rows.
     grid_layout: crate::app::GridLayout,
+    /// **Where the table's one grid draws** — beside the hero on the canvas,
+    /// or in the ledger rail's Rows spot. See [`crate::app::GridSpot`].
+    ///
+    /// Latched here beside [`Self::grid_layout`], and remembered per document
+    /// beside it: the layout is which way the grid reads the table and this is
+    /// where it sits. A file opens with the grid on the canvas.
+    grid_spot: crate::app::GridSpot,
     /// **What the canvas holds** — the graph, one view of one node, or a chart
     /// that is nobody's view.
     ///
@@ -1983,6 +1991,9 @@ pub struct MeridianApp {
     /// boot — same rule as [`Self::home_binding`]: the shell wires whichever
     /// binding the registry declares, and does not invent one of its own.
     navigator_binding: Option<&'static str>,
+    /// The `move-grid` keystroke token, read off the registry at boot — same
+    /// rule as [`Self::home_binding`].
+    grid_binding: Option<&'static str>,
     /// The navigation family's keystroke tokens paired with their verb
     /// longnames, read off the registry at boot — same rule as
     /// [`Self::home_binding`]: the shell wires the binding the registry
@@ -2206,6 +2217,11 @@ impl MeridianApp {
             .as_deref()
             .and_then(|id| layout.live().grid_layout_of(id))
             .unwrap_or_default();
+        // …and where the grid sits, off the same row for the same reason.
+        let grid_spot = opened_id
+            .as_deref()
+            .and_then(|id| layout.live().grid_spot_of(id))
+            .unwrap_or_default();
 
         // The restored tab strip is the authority over the model's default,
         // not the other way round. `ProtocolModel` boots with its sheet shut,
@@ -2282,6 +2298,7 @@ impl MeridianApp {
             canvas_scroll: 0.0,
             canvas_split,
             grid_layout,
+            grid_spot,
             // Reconciled from the documents on the next line, so the latch is
             // right before the first frame — a test that asks what a fresh
             // window holds should not have to draw one first.
@@ -2312,6 +2329,10 @@ impl MeridianApp {
             navigator_binding: brightfield_keys::registry()
                 .iter()
                 .find(|v| v.longname == NAVIGATOR_TOGGLE)
+                .and_then(brightfield_keys::VerbEntry::primary_key),
+            grid_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == crate::data_grid::MOVE_GRID)
                 .and_then(brightfield_keys::VerbEntry::primary_key),
             nav_bindings: navigation_bindings(),
             recency: RecencyCounter::new(),
@@ -3105,6 +3126,51 @@ impl MeridianApp {
         self.grid_layout
     }
 
+    /// **Where the table's one grid sits** — the canvas or the ledger. The
+    /// state the grid's spot switch is in, and what [`Self::move_grid`] flips.
+    #[must_use]
+    pub const fn grid_spot(&self) -> crate::app::GridSpot {
+        self.grid_spot
+    }
+
+    /// **Move the grid to its other spot** — the `move-grid` verb.
+    ///
+    /// Into the ledger, the rail opens on its Rows name, so the grid lands
+    /// somewhere a reader can see it rather than behind a collapsed strip; and
+    /// a canvas holding the node's grid view goes back to the node's
+    /// dashboard, because a grid in the ledger and a grid as the canvas would
+    /// be the same table drawn twice. Onto the canvas, the ledger is left
+    /// where it is: its Rows spot says where the grid went.
+    pub fn move_grid(&mut self) {
+        self.set_grid_spot(self.grid_spot.other());
+    }
+
+    /// Put the grid in `spot` — see [`Self::move_grid`].
+    fn set_grid_spot(&mut self, spot: crate::app::GridSpot) {
+        self.grid_spot = spot;
+        if spot == crate::app::GridSpot::Ledger {
+            if let Some(rows) = region_panes(
+                arrangement::default_arrangement().expect_region(arrangement::LEDGER_RAIL),
+            )
+            .iter()
+            .position(|item| *item == ROWS)
+            {
+                self.ledger_panel = rows;
+            }
+            self.collapsed.remove(&arrangement::LEDGER_RAIL);
+            if let CanvasHolds::View {
+                node,
+                view: NodeView::Grid,
+            } = &self.canvas_holds
+            {
+                self.canvas_holds = CanvasHolds::View {
+                    node: node.clone(),
+                    view: NodeView::Dashboard,
+                };
+            }
+        }
+    }
+
     /// What the canvas's pane group drew in the last frame — the panes, their
     /// header bands, their content rects and the count overlay.
     ///
@@ -3486,6 +3552,8 @@ impl MeridianApp {
         self.home_key(&ctx);
         // The navigator rail's round-trip focus toggle, on the same gate.
         self.navigator_key(&ctx);
+        // The grid's move, on the same gate: a window verb, wherever focus is.
+        self.grid_key(&ctx);
         // The frame verbs, on the same gate and only where the chart holds the
         // canvas: they are bare keys, so an overlay or a text field must own
         // the keyboard first.
@@ -3797,6 +3865,20 @@ impl MeridianApp {
             let mut grid_layout = self.grid_layout;
             let mut canvas_split = self.canvas_split;
             let mut picks = RegionPicks::default();
+            // **Where the one grid draws this frame**, decided before either of
+            // its spots draws, because the ledger draws before the canvas and
+            // has to know whether the canvas is about to draw the grid. The
+            // canvas draws it as the node's grid view, or beside the hero when
+            // the grid's spot is the canvas and the canvas holds the pane
+            // group; every other frame the ledger's Rows spot is where it
+            // draws. One answer read by both spots is what keeps it to one
+            // grid per frame.
+            let canvas_draws_grid = !graph_on_canvas
+                && (canvas_holds.view() == Some(NodeView::Grid)
+                    || (self.grid_spot == crate::app::GridSpot::Canvas
+                        && projections[projection].item == CHART
+                        && self.charts.doc.stacked_tiles().is_some()));
+            self.charts.doc.begin_grid_frame();
             let (ws, charts, protocol, affordances) = (
                 self.layout.workspace_mut(),
                 &mut self.charts,
@@ -3904,7 +3986,20 @@ impl MeridianApp {
                     // reddens when a pane reaches the wrong arm: the item is
                     // not in that document's map, so nothing draws and the
                     // empty state it reads is not there.
-                    if protocol.items.contains_key(&PaneKey::new(item)) {
+                    if item == ROWS && !canvas_draws_grid {
+                        // **The grid itself, in the Rows spot** — not a second
+                        // grid, but the one the canvas is not drawing.
+                        draw_ledger_grid_pane(
+                            ui,
+                            body,
+                            charts,
+                            ws,
+                            mode,
+                            focused,
+                            &mut requests,
+                            affordances,
+                        );
+                    } else if protocol.items.contains_key(&PaneKey::new(item)) {
                         draw_protocol_pane(
                             ui,
                             body,
@@ -4177,12 +4272,17 @@ impl MeridianApp {
                         // the pane draws the columns as rows, and a density
                         // left standing would have the grid item paint a band
                         // over them on the next frame it is asked for one.
-                        let transposed = grid_layout == crate::app::GridLayout::Columns;
-                        charts.doc.grid_density =
-                            (stacked.is_some() && !transposed).then_some(GridDensity::Compact);
-                        if transposed && stacked.is_some() {
-                            charts.doc.grids_drawn.remove(&DATA);
-                        } else {
+                        //
+                        // And with the grid in the ledger, the hero has the
+                        // canvas to itself, whichever way the grid reads.
+                        let grid_here = canvas_draws_grid;
+                        let transposed =
+                            grid_here && grid_layout == crate::app::GridLayout::Columns;
+                        if grid_here {
+                            charts.doc.grid_density =
+                                (stacked.is_some() && !transposed).then_some(GridDensity::Compact);
+                        }
+                        if !(transposed && stacked.is_some()) {
                             // …and the rows the transposed layout drew are a
                             // record of a pane this frame is not drawing. Left
                             // standing they would report a layout the reader
@@ -4273,6 +4373,7 @@ impl MeridianApp {
                                     focused,
                                     split,
                                     grid_layout,
+                                    grid_here,
                                     &mut requests,
                                     affordances,
                                 )
@@ -4283,7 +4384,13 @@ impl MeridianApp {
                             // why the interaction is registered last, and why
                             // a frame nobody dragged hands back the number it
                             // was given.
-                            canvas_split = drag_canvas_split(ui, body, split);
+                            //
+                            // With the grid in the ledger there is no edge to
+                            // drag, and the split keeps its value for the
+                            // grid's return.
+                            if grid_here {
+                                canvas_split = drag_canvas_split(ui, body, split);
+                            }
                             // The throw takes effect on the next frame, and it
                             // takes the scroll with it: the two arrangements
                             // scroll different panes over different pages, so
@@ -4332,6 +4439,16 @@ impl MeridianApp {
             if let Some(next) = picks.projection {
                 self.projection = next;
             }
+            // The grid's spot switch, in whichever spot drew it.
+            if let Some(spot) = self
+                .charts
+                .doc
+                .grid_spot_switch
+                .as_ref()
+                .and_then(|drawn| drawn.picked)
+            {
+                self.set_grid_spot(spot);
+            }
             // A name picked in a collapsed rail's strip reopens it. Picking a
             // pane you cannot see is a gesture with no result, and the strip
             // stays live while the rail is down precisely so it is a way back
@@ -4339,6 +4456,11 @@ impl MeridianApp {
             if let Some(next) = picks.ledger {
                 self.ledger_panel = next;
                 self.collapsed.remove(&arrangement::LEDGER_RAIL);
+                // The Rows name is the ledger's handle on the grid: picking it
+                // brings the grid here, rather than opening a second one.
+                if ledger_panes.get(next) == Some(&ROWS) {
+                    self.set_grid_spot(crate::app::GridSpot::Ledger);
+                }
             }
             if let Some(next) = picks.inspector {
                 self.inspector_panel = next;
@@ -4472,6 +4594,18 @@ impl MeridianApp {
             .is_some_and(|t| consume_token(ctx, t))
         {
             self.toggle_navigator_focus(ctx);
+        }
+    }
+
+    /// Move the grid to its other spot if the registry's `move-grid` keystroke
+    /// is down this frame. Gated exactly as [`Self::home_key`] is.
+    fn grid_key(&mut self, ctx: &egui::Context) {
+        if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        if self.grid_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.move_grid();
+            ctx.request_repaint();
         }
     }
 
@@ -4978,6 +5112,15 @@ impl MeridianApp {
                 Request::Verb(verb) if verb.as_str() == "reload-data" => {
                     self.reload_data_file(ctx);
                 }
+                // move-grid is the window's too: the grid's two spots are a
+                // chart pane and a rail, and neither document's model owns
+                // where the rail's panes are. Intercepted above the branch so
+                // it moves the grid whether the canvas holds a chart or the
+                // graph.
+                Request::Verb(verb) if verb.as_str() == crate::data_grid::MOVE_GRID => {
+                    self.move_grid();
+                    ctx.request_repaint();
+                }
                 Request::Verb(verb) if graph_on_canvas => {
                     let canvas_node = self.protocol.doc.canvas_holds.node().cloned();
                     self.protocol
@@ -5027,6 +5170,12 @@ impl MeridianApp {
         // `reconcile_canvas_holds` is what refuses a view of a node the
         // documents no longer have — one rule for that, not two.
         if let Some((node, view)) = self.protocol.doc.take_view_pick() {
+            // The spine's `grid` row is a way back for the grid as well as a
+            // view of the node: the grid it puts on the canvas is the one grid,
+            // so it is no longer in the ledger.
+            if view == NodeView::Grid {
+                self.grid_spot = crate::app::GridSpot::Canvas;
+            }
             self.canvas_holds = CanvasHolds::View { node, view };
             ctx.request_repaint();
         }
@@ -5346,7 +5495,7 @@ impl MeridianApp {
         let run = self.recorded_run_state();
         self.layout
             .live_mut()
-            .remember(id, &name, run, self.grid_layout, now_secs());
+            .remember(id, &name, run, self.grid_layout, self.grid_spot, now_secs());
         self.toasts.push(Toast::new(
             Severity::Success,
             format!("Opened {}", self.title()),
@@ -5585,6 +5734,7 @@ impl MeridianApp {
                     &name,
                     run,
                     self.grid_layout,
+                    self.grid_spot,
                     now_secs(),
                 );
                 self.toasts
@@ -5636,9 +5786,15 @@ impl MeridianApp {
         // it. A document this file has no row for opens on its rows, which is
         // what `GridLayout::default()` is.
         self.grid_layout = self.layout.live().grid_layout_of(path).unwrap_or_default();
-        self.layout
-            .live_mut()
-            .remember(path, &name, run, self.grid_layout, now_secs());
+        self.grid_spot = self.layout.live().grid_spot_of(path).unwrap_or_default();
+        self.layout.live_mut().remember(
+            path,
+            &name,
+            run,
+            self.grid_layout,
+            self.grid_spot,
+            now_secs(),
+        );
         self.toasts.push(Toast::new(
             Severity::Success,
             format!("Opened {}", self.title()),
@@ -7161,10 +7317,20 @@ fn draw_canvas_pane_group(
     focused: Option<PaneKey>,
     split: f32,
     layout: crate::app::GridLayout,
+    grid_here: bool,
     requests: &mut Vec<Request>,
     affordances: &mut Vec<(PaneKey, egui::Rect)>,
 ) -> (CanvasPanes, Option<crate::app::GridLayout>) {
-    let rects = canvas_pane_rects(body, split);
+    // With the grid in the ledger the hero pane is the whole canvas — the
+    // grid view's one pane, in reverse.
+    let rects = if grid_here {
+        canvas_pane_rects(body, split)
+    } else {
+        CanvasPaneRects {
+            hero: body,
+            grid: egui::Rect::NOTHING,
+        }
+    };
     let (map_rect, grid_rect) = (rects.hero, rects.grid);
     let hero = charts.doc.tile_columns().first().cloned();
     let map_subject = Subject::new(
@@ -7212,6 +7378,22 @@ fn draw_canvas_pane_group(
     // the page to have been drawn: the data area is a fact about the
     // composition's layout and the origin it landed at.
     let (count_text, count) = hero_count_chip(ui, charts, map_body, hero.as_ref(), mode);
+    let map_pane = CanvasPane {
+        name: "map",
+        rect: map_rect,
+        header: pane_header_of(map_rect, map_body),
+        body: map_body,
+    };
+    if !grid_here {
+        let panes = CanvasPanes {
+            panes: vec![map_pane],
+            count,
+            count_text,
+            rows_note: None,
+            page: charts.doc.raster_rect,
+        };
+        return (panes, None);
+    }
 
     // The grid: the same session read as rows rather than as marks, in the
     // pane beside the hero.
@@ -7231,26 +7413,30 @@ fn draw_canvas_pane_group(
     // The layout switch, at the trailing end of that pane's own band…
     let grid_header = pane_header_of(grid_rect, grid_body);
     let picked = record_layout_switch(ui, charts, grid_header, layout, mode);
-    // …and what the grid could not fit, inside what the control leaves of the
-    // band. Read off the cells the table drew — this frame's — rather than off
-    // the widths it was handed.
+    // …the spot switch beside it, in what that control leaves of the band…
+    let spot_band = band_less_switch(
+        grid_header,
+        charts.doc.grid_layout_switch.as_ref().map(|s| s.rect),
+    );
+    record_spot_switch(ui, charts, spot_band, crate::app::GridSpot::Canvas, mode);
+    // …and what the grid could not fit, inside what the two controls leave of
+    // the band. Read off the cells the table drew — this frame's — rather than
+    // off the widths it was handed.
     let rows_note = charts
         .doc
-        .grid_drawn(DATA)
+        .grid_drawn()
         .filter(|drawn| drawn.some_column_is_off_screen())
         .map(|drawn| format!("{} of {} columns", drawn.on_screen(), drawn.columns))
         .map(|text| {
-            let band = band_less_switch(grid_header, charts.doc.grid_layout_switch.as_ref());
+            let band = band_less_switch(
+                spot_band,
+                charts.doc.grid_spot_switch.as_ref().map(|s| s.rect),
+            );
             (band_note(ui, band, &text, mode), text)
         });
     let panes = CanvasPanes {
         panes: vec![
-            CanvasPane {
-                name: "map",
-                rect: map_rect,
-                header: pane_header_of(map_rect, map_body),
-                body: map_body,
-            },
+            map_pane,
             CanvasPane {
                 name: "grid",
                 rect: grid_rect,
@@ -7401,6 +7587,11 @@ fn draw_transposed_pane_group(
         crate::app::GridLayout::Columns,
         mode,
     );
+    let spot_band = band_less_switch(
+        grid_header,
+        charts.doc.grid_layout_switch.as_ref().map(|s| s.rect),
+    );
+    record_spot_switch(ui, charts, spot_band, crate::app::GridSpot::Canvas, mode);
     let panes = CanvasPanes {
         panes: vec![
             CanvasPane {
@@ -7526,15 +7717,12 @@ fn record_layout_switch(
 /// without this the two are drawn into one place. `no_two_texts_are_drawn_into_one_place`
 /// is the exercise that measures that class; this is the seam that keeps the
 /// band out of it.
-fn band_less_switch(
-    band: egui::Rect,
-    switch: Option<&crate::app::LayoutSwitchDrawn>,
-) -> egui::Rect {
+fn band_less_switch(band: egui::Rect, switch: Option<egui::Rect>) -> egui::Rect {
     match switch {
-        Some(drawn) => egui::Rect::from_min_max(
+        Some(rect) => egui::Rect::from_min_max(
             band.min,
             egui::pos2(
-                (drawn.rect.left() - spacing::SPACE_3).max(band.left()),
+                (rect.left() - spacing::SPACE_3).max(band.left()),
                 band.bottom(),
             ),
         ),
@@ -7618,7 +7806,7 @@ fn draw_canvas_grid_pane(
     // grid pane reads it.
     let rows_note = charts
         .doc
-        .grid_drawn(DATA)
+        .grid_drawn()
         .filter(|drawn| drawn.some_column_is_off_screen())
         .map(|drawn| {
             let text = format!("{} of {} columns", drawn.on_screen(), drawn.columns);
@@ -7716,6 +7904,38 @@ fn draw_layout_switch(
     crate::app::LayoutSwitchDrawn,
     Option<crate::app::GridLayout>,
 )> {
+    let hover = layout_switch_hover();
+    let states: Vec<_> = GRID_LAYOUTS.iter().map(|l| (*l, l.word())).collect();
+    let (rect, states, picked) =
+        draw_word_switch(ui, band, &states, active, "grid-layout-switch", &hover, mode)?;
+    Some((
+        crate::app::LayoutSwitchDrawn {
+            rect,
+            states,
+            active,
+            hover,
+        },
+        picked,
+    ))
+}
+
+/// **A switch of words at the trailing end of `band`** — the states separated
+/// by the scale switch's own dot, the active one in primary ink — returning the
+/// control's rect, each state's rect, and the state a click picked this frame.
+///
+/// The grid's layout switch and its spot switch are both this control, so two
+/// switches a reader meets on one band read as one kind of control. `None`
+/// where the band is too short or too narrow to hold it.
+#[allow(clippy::too_many_arguments)]
+fn draw_word_switch<T: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    band: egui::Rect,
+    offered: &[(T, &'static str)],
+    active: T,
+    salt: &'static str,
+    hover: &str,
+    mode: Mode,
+) -> Option<(egui::Rect, Vec<(T, egui::Rect)>, Option<T>)> {
     use meridian_design::control;
 
     let sem = semantic(mode.is_dark());
@@ -7728,7 +7948,7 @@ fn draw_layout_switch(
             .size()
             .x
     };
-    let labels: Vec<&str> = GRID_LAYOUTS.iter().map(|l| l.word()).collect();
+    let labels: Vec<&str> = offered.iter().map(|(_, word)| *word).collect();
     let separator = width_of(LAYOUT_STATE_SEPARATOR);
     let widths: Vec<f32> = labels.iter().map(|l| width_of(l)).collect();
     #[allow(clippy::cast_precision_loss)]
@@ -7746,7 +7966,6 @@ fn draw_layout_switch(
         egui::vec2(total, height),
     );
 
-    let hover = layout_switch_hover();
     let mut states = Vec::with_capacity(labels.len());
     let mut picked = None;
     let mut x = outer.left();
@@ -7764,14 +7983,10 @@ fn draw_layout_switch(
         let seg =
             egui::Rect::from_min_size(egui::pos2(x, outer.top()), egui::vec2(widths[i], height));
         x += widths[i];
-        let state = GRID_LAYOUTS[i];
+        let state = offered[i].0;
         let response = ui
-            .interact(
-                seg,
-                egui::Id::new(("grid-layout-switch", i)),
-                egui::Sense::click(),
-            )
-            .on_hover_text(hover.clone());
+            .interact(seg, egui::Id::new((salt, i)), egui::Sense::click())
+            .on_hover_text(hover.to_owned());
         if response.clicked() {
             picked = Some(state);
         }
@@ -7791,16 +8006,97 @@ fn draw_layout_switch(
         );
         states.push((state, seg));
     }
+    Some((outer, states, picked))
+}
 
-    Some((
-        crate::app::LayoutSwitchDrawn {
-            rect: outer,
-            states,
-            active,
-            hover,
-        },
-        picked,
-    ))
+/// The two spots the grid's spot switch offers, in the order drawn — the one a
+/// file opens on first.
+const GRID_SPOTS: [crate::app::GridSpot; 2] =
+    [crate::app::GridSpot::Canvas, crate::app::GridSpot::Ledger];
+
+/// The words the spot switch offers on hover: what moving the grid does.
+fn spot_switch_hover() -> String {
+    "grid: beside the chart, or in the ledger".to_string()
+}
+
+/// Draw **the grid's spot switch** on `band`, and record it — with the spot a
+/// click picked — on the document, where the window reads the pick once the
+/// frame has drawn. `active` is the spot the grid beneath the band is in.
+///
+/// On the grid's own header band in both spots, so the move is reachable from
+/// whichever spot holds the grid: from the canvas it sends the grid to the
+/// ledger, and from the ledger it brings it back.
+fn record_spot_switch(
+    ui: &mut egui::Ui,
+    charts: &mut ChartView,
+    band: egui::Rect,
+    active: crate::app::GridSpot,
+    mode: Mode,
+) {
+    let hover = spot_switch_hover();
+    let states: Vec<_> = GRID_SPOTS.iter().map(|s| (*s, s.word())).collect();
+    charts.doc.grid_spot_switch =
+        draw_word_switch(ui, band, &states, active, "grid-spot-switch", &hover, mode).map(
+            |(rect, states, picked)| crate::app::SpotSwitchDrawn {
+                rect,
+                states,
+                active,
+                hover,
+                picked: picked.filter(|spot| *spot != active),
+            },
+        );
+}
+
+/// Draw **the grid in the ledger rail's Rows spot**: the pane the canvas draws
+/// beside the hero, under the same `pane_frame`, the same header band and the
+/// same [`DATA`] item — so it is that pane moved, not a second grid.
+///
+/// Its band carries the spot switch reading *ledger*, which is the way back to
+/// the canvas from here, and the `N of M columns` note in what that leaves.
+/// The column header band draws compact, as it does beneath the hero: the
+/// ledger is a short rail, and the density follows the place.
+#[allow(clippy::too_many_arguments)]
+fn draw_ledger_grid_pane(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    charts: &mut ChartView,
+    ws: &Workspace,
+    mode: Mode,
+    focused: Option<PaneKey>,
+    requests: &mut Vec<Request>,
+    affordances: &mut Vec<(PaneKey, egui::Rect)>,
+) {
+    let subject = Subject::new(
+        GRID_PANE_TITLE.to_string(),
+        brightfield_workbench::subject::Icon("table"),
+        brightfield_keys::BindingContext::Workspace,
+    );
+    let body = pane_body(ui, rect, &subject, mode);
+    charts.doc.set_min_page_height(0.0);
+    charts.doc.grid_density = Some(GridDensity::Compact);
+    draw_chart_body(
+        ui,
+        body,
+        body,
+        charts,
+        ws,
+        DATA,
+        mode,
+        focused,
+        requests,
+        affordances,
+    );
+    let header = pane_header_of(rect, body);
+    record_spot_switch(ui, charts, header, crate::app::GridSpot::Ledger, mode);
+    if let Some(drawn) = charts
+        .doc
+        .grid_drawn()
+        .filter(|drawn| drawn.some_column_is_off_screen())
+    {
+        let text = format!("{} of {} columns", drawn.on_screen(), drawn.columns);
+        let band = band_less_switch(header, charts.doc.grid_spot_switch.as_ref().map(|s| s.rect));
+        band_note(ui, band, &text, mode);
+    }
 }
 
 /// The icon the map pane's header carries: the point-map kind's own for a

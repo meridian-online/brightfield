@@ -104,6 +104,7 @@ use brightfield_engine::{RecordBatch, RowsAudience, Session};
 use brightfield_keys::BindingContext;
 use brightfield_protocol::{sheet, StepRow};
 use brightfield_workbench::registry::Slot;
+use brightfield_workbench::subject::Affordance;
 use brightfield_workbench::{
     chrome, Activity, EmptyState, Icon, Item, ItemCtx, ItemId, ItemSpec, Subject, Verb,
 };
@@ -397,6 +398,25 @@ pub fn show_table(
     widths: ColumnWidths,
     header: HeaderStyle<'_>,
 ) -> TableDrawn {
+    show_table_sized(ui, salt, mode, source, widths, header, &SetWidths::new())
+}
+
+/// The widths a reader has dragged columns to, by column name — what a column
+/// is drawn at in place of its natural width. See [`DataGridItem`].
+pub type SetWidths = std::collections::BTreeMap<String, f32>;
+
+/// [`show_table`], with the widths a reader has set standing in for the natural
+/// width of the columns they name. Only [`ColumnWidths::Natural`] reads `set`;
+/// a declared table is resized by `egui_table`'s own handle.
+pub fn show_table_sized(
+    ui: &mut egui::Ui,
+    salt: &str,
+    mode: Mode,
+    source: &mut dyn RowSource,
+    widths: ColumnWidths,
+    header: HeaderStyle<'_>,
+    set: &SetWidths,
+) -> TableDrawn {
     let binding = control::binding(spacing::ROW_DENSE);
     let frame = header.frame(mode);
     // The one place the widget is told how tall its header is. The dense rung
@@ -427,6 +447,12 @@ pub fn show_table(
             .collect(),
         ColumnWidths::Natural => natural_widths(ui, source, binding, &header, frame.as_ref())
             .into_iter()
+            .zip(source.columns())
+            .map(|(natural, column)| {
+                set.get(&column.name).map_or(natural, |w| {
+                    w.clamp(min_column_width(), MAX_COLUMN_WIDTH)
+                })
+            })
             .map(|w| {
                 // Pinned rather than seeded, and **the column-resize drag is
                 // the price**. `egui_table` stores a resizable column's width
@@ -438,9 +464,10 @@ pub fn show_table(
                 // one value is what makes the drawn width the measured width on
                 // every frame, and `resizable(false)` follows from it: the
                 // widget draws no resize handle and no vertical separator
-                // between columns where one cannot be dragged. Keeping both
-                // needs `egui_table` to distinguish a width a person set from
-                // one a previous frame measured, which it does not expose.
+                // between columns where one cannot be dragged. A width a
+                // person set is therefore kept by the caller rather than by
+                // the widget — `set`, above — and dragged at the header cell's
+                // trailing edge by `drag_column_edges`.
                 egui_table::Column::new(w)
                     .range(egui::Rangef::new(w, w))
                     .resizable(false)
@@ -1063,80 +1090,130 @@ fn truncate(s: &str, max: usize) -> String {
 // The Data pane.
 // ---------------------------------------------------------------------------
 
-/// The data grid — the chart's peer in the centre tab strip.
+/// The table's grid — one view of the table node, drawn in one spot per frame.
 pub const DATA: ItemId = ItemId::new("chart-data-grid");
 
-/// The ledger rail's Rows pane — the second grid over the same session.
+/// The ledger rail's Rows **spot** — where the grid draws when a reader sends it
+/// to the ledger, and a line saying where it went when it is on the canvas.
 pub const ROWS: ItemId = ItemId::new("chart-rows");
+
+/// The verb that moves the grid between its two spots.
+pub const MOVE_GRID: &str = "move-grid";
 
 /// The pane's icon name, from the Meridian icon set.
 const ICON_DATA: Icon = Icon("table");
 
-/// The Data pane's registry entry: a centre tab beside the chart, which is what
-/// gives it a tile in the window's tree. The canvas's pane group draws it in
-/// the grid pane rather than through the dock, the way it draws the chart.
+/// The grid's registry entry: a centre tab beside the chart, which is what
+/// gives it a tile in the window's tree. The window draws it in whichever spot
+/// holds it — beside the hero, or in the ledger rail — rather than through the
+/// dock, the way it draws the chart.
 #[must_use]
 pub fn data_grid_spec() -> ItemSpec<ChartDoc> {
     ItemSpec {
         id: DATA,
         slot: Slot::CentreTab,
-        toggle: Some(Verb::new("toggle-data-grid")),
+        toggle: Some(Verb::new(MOVE_GRID)),
         make: || Box::new(DataGridItem::new()),
     }
 }
 
-/// The Rows pane's registry entry — the ledger rail's third pane, on the same
-/// terms as [`data_grid_spec`].
+/// The Rows spot's registry entry — the ledger rail's third pane.
 ///
-/// A **second item** rather than the Data pane placed twice, and the two
-/// reasons are the same reason: one id draws under one `egui` state and into
-/// one tile. Two panes sharing an id would share the table's column state and
-/// its scroll offset, and `ItemRegistry` would have the ledger's draw and the
-/// canvas's draw both resolve to the tile the dock laid out. What they share
-/// instead is the read path — [`DataGridItem`] and the mark
-/// [`LiveDashboard::rows_mark`] names — which is what makes a brush narrow
-/// both to one count.
+/// **A spot, not a second grid.** The grid is one [`DataGridItem`] under one
+/// id; drawing it in the ledger and on the canvas as two items gave each its
+/// own column widths and scroll offset, and put the same table on the screen
+/// twice. So what the ledger's Rows name holds is either that one grid, drawn
+/// here by the window when the grid is not on the canvas, or this item, which
+/// is never anything but the line saying where the grid is and the way to
+/// bring it here.
 #[must_use]
-pub fn rows_spec() -> ItemSpec<ChartDoc> {
+pub fn rows_spot_spec() -> ItemSpec<ChartDoc> {
     ItemSpec {
         id: ROWS,
         slot: Slot::CentreTab,
-        toggle: Some(Verb::new("open-rows-pane")),
-        make: || Box::new(DataGridItem::rows()),
+        toggle: Some(Verb::new(MOVE_GRID)),
+        make: || Box::new(RowsSpot),
     }
 }
 
-/// The grid pane. Holds only view-local state — the page cache and which of
-/// the two grids it is — per the workbench aliasing rule; the session it reads
-/// belongs to the document and is borrowed for the duration of one draw.
+/// The ledger's Rows spot while the grid is on the canvas: an empty state that
+/// names where the grid is and carries the move.
+///
+/// Drawn by the window only on a frame whose canvas drew the grid, so it is
+/// empty whenever it is drawn — the state IS its content, and its `ui` has
+/// nothing to add.
+pub struct RowsSpot;
+
+/// The Rows spot's headline while the grid is on the canvas.
+pub const GRID_ON_CANVAS: &str = "The grid is on the canvas";
+
+impl Item<ChartDoc> for RowsSpot {
+    fn item_id(&self) -> ItemId {
+        ROWS
+    }
+
+    fn empty_state(&self, _doc: &ChartDoc) -> Option<EmptyState> {
+        Some(
+            EmptyState::new(
+                ICON_DATA,
+                GRID_ON_CANVAS,
+                "It draws beside the chart. Move it here to read the rows in the ledger.",
+            )
+            .with_next(Affordance::new("Move the grid here", Verb::new(MOVE_GRID))),
+        )
+    }
+
+    fn describe(&self, _doc: &ChartDoc) -> Subject {
+        Subject::new("Rows", ICON_DATA, BindingContext::Workspace)
+    }
+
+    fn ui(&mut self, _doc: &mut ChartDoc, _ui: &mut egui::Ui, _cx: &mut ItemCtx<'_>) {}
+}
+
+/// The `egui` id every draw of the grid's table is scoped under, **whichever
+/// spot draws it**.
+///
+/// `egui_table` keys its state — the scroll offset, the stored column widths —
+/// off the id of the `Ui` it is shown in, and that id is otherwise derived from
+/// the parent: a grid drawn under the ledger rail and the same grid drawn under
+/// the canvas would be two states, and a move would reset the scroll. An id
+/// independent of the parent is `egui`'s own mechanism for a widget that moves
+/// in the tree, on the condition that it is drawn in one place per frame —
+/// which is the condition the spot exists to keep.
+#[must_use]
+pub fn grid_state_id() -> egui::Id {
+    egui::Id::new(("brightfield-grid", DATA.as_str()))
+}
+
+/// How far either side of a header cell's trailing edge a press takes that
+/// column's width, in logical points — `egui`'s own resize grab radius.
+const EDGE_GRAB: f32 = 3.0;
+
+/// The grid pane. Holds only view-local state — the page cache and the widths
+/// a reader has dragged columns to — per the workbench aliasing rule; the
+/// session it reads belongs to the document and is borrowed for the duration
+/// of one draw.
+///
+/// **One item, under one id, in either spot.** The widths live here and the
+/// scroll lives under [`grid_state_id`], so both go wherever the grid goes.
 pub struct DataGridItem {
     cache: GridCache,
-    /// Which pane this instance is: [`DATA`] for the canvas's grid, [`ROWS`]
-    /// for the ledger rail's. It is the item id, the `egui` id salt and the
-    /// key this pane files its [`TableDrawn`] under, and it is one field
-    /// because those three must not disagree — two grids sharing a salt share
-    /// a scroll offset, and two sharing a key overwrite each other's record.
-    id: ItemId,
+    /// The widths a reader has dragged columns to, by column name.
+    set_widths: SetWidths,
+    /// The columns `set_widths` was dragged over. A table with other columns
+    /// is another table, and a width set on a column of the last one does not
+    /// carry to a column that happens to share its name.
+    widths_over: Vec<String>,
 }
 
 impl DataGridItem {
-    /// The canvas's grid pane, with nothing fetched.
+    /// The grid, with nothing fetched and no width set.
     #[must_use]
     pub fn new() -> Self {
-        Self::of(DATA)
-    }
-
-    /// The ledger rail's Rows pane, with nothing fetched.
-    #[must_use]
-    pub fn rows() -> Self {
-        Self::of(ROWS)
-    }
-
-    /// A grid pane under `id`.
-    fn of(id: ItemId) -> Self {
         Self {
             cache: GridCache::default(),
-            id,
+            set_widths: SetWidths::new(),
+            widths_over: Vec::new(),
         }
     }
 
@@ -1153,9 +1230,58 @@ impl Default for DataGridItem {
     }
 }
 
+/// Take a drag on any header cell's trailing edge as that column's width.
+///
+/// Registered after the table has drawn, so each edge sits over the cells it
+/// divides, and painted only while the pointer is on it: at rest the grid
+/// draws no rule between its columns, as it did before a width could be set.
+/// The width applies from the next frame, which is when the table is next
+/// handed its widths.
+fn drag_column_edges(
+    ui: &egui::Ui,
+    drawn: &TableDrawn,
+    names: &[String],
+    set: &mut SetWidths,
+    mode: Mode,
+) {
+    let sem = semantic(mode.is_dark());
+    for (col, rect, clip) in &drawn.header_cells {
+        let Some(name) = names.get(*col) else {
+            continue;
+        };
+        if !clip.x_range().contains(rect.right()) {
+            continue;
+        }
+        let edge = egui::Rect::from_x_y_ranges(
+            rect.right() - EDGE_GRAB..=rect.right() + EDGE_GRAB,
+            rect.y_range(),
+        );
+        let response = ui.interact(
+            edge,
+            grid_state_id().with(("column-edge", name.as_str())),
+            egui::Sense::drag(),
+        );
+        if response.dragged() {
+            if let Some(pointer) = ui.ctx().pointer_latest_pos() {
+                let width = (pointer.x - rect.left()).clamp(min_column_width(), MAX_COLUMN_WIDTH);
+                set.insert(name.clone(), width);
+                ui.ctx().request_repaint();
+            }
+        }
+        if response.hovered() || response.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+            ui.painter().vline(
+                rect.right(),
+                rect.y_range(),
+                egui::Stroke::new(1.0, chrome::colour(sem.text.muted)),
+            );
+        }
+    }
+}
+
 impl Item<ChartDoc> for DataGridItem {
     fn item_id(&self) -> ItemId {
-        self.id
+        DATA
     }
 
     fn empty_state(&self, doc: &ChartDoc) -> Option<EmptyState> {
@@ -1187,8 +1313,7 @@ impl Item<ChartDoc> for DataGridItem {
     /// a state the record cannot vouch for stops the rows being fetched.
     /// Dropping the rail entry costs the grid nothing it was telling anyone.
     fn describe(&self, _doc: &ChartDoc) -> Subject {
-        let title = if self.id == ROWS { "Rows" } else { "Data" };
-        Subject::new(title, ICON_DATA, BindingContext::Workspace)
+        Subject::new("Data", ICON_DATA, BindingContext::Workspace)
     }
 
     fn ui(&mut self, doc: &mut ChartDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
@@ -1275,34 +1400,47 @@ impl Item<ChartDoc> for DataGridItem {
         };
         doc.activity.begin(Activity::EngineQuery);
         let mut drawn = None;
+        let mut names = Vec::new();
         if let Some(coordinator) = doc.live_coordinator() {
             let generation = coordinator.generation();
             let session = coordinator.session();
             let mut source = EngineRows::new(session, mark, generation, &mut self.cache);
-            drawn = Some(show_table(
-                ui,
-                self.id.as_str(),
-                mode,
-                &mut source,
-                ColumnWidths::Natural,
-                header,
-            ));
+            // Under the grid's own id rather than the spot's, so the scroll
+            // and the widths are the grid's wherever it is — see
+            // `grid_state_id`.
+            let set = &self.set_widths;
+            drawn = Some(
+                ui.scope_builder(egui::UiBuilder::new().id(grid_state_id()), |ui| {
+                    show_table_sized(
+                        ui,
+                        DATA.as_str(),
+                        mode,
+                        &mut source,
+                        ColumnWidths::Natural,
+                        header,
+                        set,
+                    )
+                })
+                .inner,
+            );
+            names = source.columns().iter().map(|c| c.name.clone()).collect();
         }
         doc.activity.end(Activity::EngineQuery);
-        // What the frame laid out, back on the document under THIS pane's own
-        // id: the pane around this one draws the readout that says how much of
-        // the table is on screen, and it has to read that off the cells rather
-        // than off the widths this pane asked for. Filed per item because the
-        // ledger rail's Rows pane and the canvas's grid pane both run this
-        // line in one frame — see `ChartDoc::grids_drawn`.
-        match drawn {
-            Some(drawn) => {
-                doc.grids_drawn.insert(self.id, drawn);
+        if let Some(drawn) = &drawn {
+            // A frame whose rows have not arrived draws no columns, and that
+            // is not a different table — only a different set of names is.
+            if !names.is_empty() && names != self.widths_over {
+                self.set_widths.clear();
+                self.widths_over.clone_from(&names);
             }
-            None => {
-                doc.grids_drawn.remove(&self.id);
-            }
+            drag_column_edges(ui, drawn, &names, &mut self.set_widths, mode);
         }
+        // What the frame laid out, back on the document: the frame around this
+        // pane draws the readout that says how much of the table is on screen,
+        // and it has to read that off the cells rather than off the widths
+        // this pane asked for. One record, because there is one grid — see
+        // `ChartDoc::table_drawn`.
+        doc.file_table_drawn(drawn);
 
         if self.cache.error.is_none() && self.cache.total == 0 {
             // A real answer, not an empty pane: the query ran and selected
