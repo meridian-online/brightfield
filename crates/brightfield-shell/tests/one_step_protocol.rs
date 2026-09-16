@@ -1901,8 +1901,8 @@ fn the_ledger_strip_names_the_run_record_and_not_the_steps() {
 /// rail reports the `Subject` title of the pane it is showing, and the frame
 /// carries that pane's empty-state headline and body line — so a rail that
 /// opened on the wrong pane fails on the subject, and one that sent the pane
-/// to the wrong document's draw path and drew nothing fails on the empty
-/// state.
+/// to the wrong document's draw path, where no item answers to its key, fails
+/// on the empty state it then does not draw.
 ///
 /// The subject cannot be read off the galleys: the strip draws all four names
 /// whichever pane is open, and a pane's own header band is suppressed under
@@ -1922,7 +1922,11 @@ fn clicking_log_on_the_strip_opens_the_rail_on_the_not_run_empty_state() {
         Window::over(Boot::data_file(&path.to_string_lossy()).expect("the file opens as a boot"));
 
     for (index, title, line) in [
-        (0, "Log", "The last run's log appears here once the Protocol runs."),
+        (
+            0,
+            "Log",
+            "The last run's log appears here once the Protocol runs.",
+        ),
         (
             1,
             "Quality",
@@ -2028,10 +2032,10 @@ fn the_strip_reads_the_run_and_the_spine_reads_the_step() {
     );
 
     // …and the bands the contract names, each read by its own rect. The title
-    // and locator bands draw on every frame of this window, so a missing rect
+    // and locator bands draw on each frame of this window, so a missing rect
     // is a failure rather than a skip. The status band is an
-    // `Extent::Overlay` with a rect only on a frame it has a line for, and
-    // `StatusDrawn::drawn` is what says whether this was one.
+    // `Extent::Overlay` and has a rect on a frame it has a line for,
+    // and `StatusDrawn::drawn` is what says whether this was one.
     for band in [TITLE_BAND, LOCATOR_BAND] {
         let rect = win
             .app

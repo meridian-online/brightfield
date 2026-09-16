@@ -2773,12 +2773,12 @@ impl MeridianApp {
     /// here.
     ///
     /// The word comes from [`crate::protocol::ProtocolModel::last_run_word`],
-    /// which reads the run record and reports [`crate::protocol::NOT_RUN`]
-    /// where there is none — so the line is derived on a fresh file rather
-    /// than written as a literal here.
+    /// which reads the run record and reports [`crate::protocol::NOT_RUN`] for
+    /// a document that has no run — so the line is derived on a fresh file
+    /// rather than written as a literal here.
     ///
     /// `None` for a Protocol with **no steps**, which is what a composed
-    /// dashboard's window holds: a run of nothing has no state worth a line,
+    /// dashboard's window holds: a run of no steps has no state worth a line,
     /// and the strip draws its names alone. It is drawn in both the collapsed
     /// and the open rail, as the two call sites already ask for it: the run's
     /// state is as true with the rail open as with it shut, and a summary that

@@ -3655,7 +3655,7 @@ impl Item<ProtocolDoc> for QualityPane {
 }
 
 /// [`NOT_RUN`] as a headline: sentence case, which the item-registry audit
-/// requires of every empty state's headline and which `NOT_RUN` itself is not,
+/// requires of an empty state's headline and which `NOT_RUN` itself is not,
 /// because the strip says it mid-line.
 fn not_run_headline() -> String {
     let mut chars = NOT_RUN.chars();

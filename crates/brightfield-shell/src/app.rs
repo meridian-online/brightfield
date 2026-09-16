@@ -607,8 +607,8 @@ pub struct ChartDoc {
     /// ledger rail's Rows pane and the canvas's rows pane are both
     /// [`crate::data_grid::DataGridItem`]s over the same session, the ledger
     /// is a bottom panel drawn before the central one, and a single slot had
-    /// the second write overwrite the first every frame — so the readout above
-    /// the canvas's grid reported the rail's table. Read it back through
+    /// the second write overwrite the first on each frame — so the readout
+    /// above the canvas's grid reported the rail's table. Read it back through
     /// [`Self::grid_drawn`].
     pub grids_drawn: std::collections::BTreeMap<ItemId, crate::data_grid::TableDrawn>,
     /// **The grid pane's layout switch, as the last frame drew it** — see
