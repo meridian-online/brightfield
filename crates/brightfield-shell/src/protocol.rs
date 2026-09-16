@@ -453,6 +453,15 @@ pub fn load_contract_str(bytes: &[u8]) -> Result<ProtocolInputs, String> {
     })
 }
 
+/// The word for a Protocol no run stands behind.
+///
+/// One constant read by both carriers of the state: `status_word` gives it for
+/// a step whose [`SeamStatus`] is `NotRun`, and [`ProtocolModel::last_run_word`]
+/// gives it for a document whose [`ProtocolModel::run`] is `None`. The strip
+/// and the spine therefore spell the absence of a run the same way without
+/// either quoting the other's literal.
+pub const NOT_RUN: &str = "not run";
+
 /// What the ledger's strip says a run came to.
 ///
 /// The contract's own vocabulary rather than a second one coined here, and
@@ -1258,6 +1267,28 @@ impl ProtocolModel {
     #[must_use]
     pub fn run(&self) -> Option<&RunView> {
         self.run.as_ref()
+    }
+
+    /// The word the ledger strip's summary reads after *last run*.
+    ///
+    /// The run record is the one typed source for the run's state. Where
+    /// [`ProtocolModel::run`] answers `Some`, that run's own outcome is the
+    /// word, through [`outcome_word`]. Where it answers `None`, the absence of
+    /// a run IS the not-run state: [`Outcome`] carries no variant for a run
+    /// that did not happen, so reading `None` as [`NOT_RUN`] is what saves the
+    /// strip from a second carrier invented to say it.
+    ///
+    /// The per-step `statuses` map is the step-level carrier and words the
+    /// spine's step rows through `status_word`; it does not reach here. A
+    /// document can therefore hold a run whose outcome differs from any one
+    /// step's status without the two contradicting each other on the screen,
+    /// which is what `the_strip_reads_the_run_and_the_spine_reads_the_step`
+    /// asserts.
+    #[must_use]
+    pub fn last_run_word(&self) -> &'static str {
+        self.run
+            .as_ref()
+            .map_or(NOT_RUN, |run| outcome_word(run.outcome))
     }
 
     /// Whether the canvas draws each run of single hand-offs as the one asset it
@@ -2480,6 +2511,10 @@ pub const OUTLINE: ItemId = ItemId::new("protocol-outline");
 pub const INSPECTOR: ItemId = ItemId::new("protocol-inspector");
 /// The flat run-ordered steps sheet, a tab beside the canvas.
 pub const STEPS: ItemId = ItemId::new("protocol-steps");
+/// The last run's log — the first pane of the ledger rail.
+pub const LOG: ItemId = ItemId::new("protocol-log");
+/// The last run's quality output, per step.
+pub const QUALITY: ItemId = ItemId::new("protocol-quality");
 
 /// Add this view's item ids to the process's layout vocabulary.
 ///
@@ -2517,6 +2552,8 @@ const ICON_CANVAS: Icon = Icon("asset-graph");
 const ICON_OUTLINE: Icon = Icon("list-tree");
 const ICON_INSPECTOR: Icon = Icon("info-panel");
 const ICON_STEPS: Icon = Icon("list-ordered");
+const ICON_LOG: Icon = Icon("log");
+const ICON_QUALITY: Icon = Icon("gauge");
 
 /// The protocol document's registry: four panes, where each sits, and the verb
 /// that shows and hides it.
@@ -2550,6 +2587,18 @@ pub fn protocol_registry() -> ItemRegistry<ProtocolDoc> {
             slot: Slot::CentreTab,
             toggle: Some(Verb::new("open-steps-sheet")),
             make: || Box::new(StepsPane),
+        },
+        ItemSpec {
+            id: LOG,
+            slot: Slot::CentreTab,
+            toggle: Some(Verb::new("open-run-log")),
+            make: || Box::new(LogPane),
+        },
+        ItemSpec {
+            id: QUALITY,
+            slot: Slot::CentreTab,
+            toggle: Some(Verb::new("open-run-quality")),
+            make: || Box::new(QualityPane),
         },
         ItemSpec {
             id: INSPECTOR,
@@ -3528,6 +3577,112 @@ impl Item<ProtocolDoc> for StepsPane {
     }
 }
 
+/// The ledger rail's Log pane: the log of the last run.
+///
+/// A unit struct for [`StepsPane`]'s reason — it holds no view-local state.
+///
+/// **What it draws today is its empty state, and that is the whole of it.** No
+/// run writes a log into this build: a run is `arc`'s, and what reaches the
+/// shell is the contract a finished run emitted. Until a log does arrive the
+/// pane says so under the run's own word rather than drawing a body shaped
+/// like one — see [`Self::empty_state`].
+struct LogPane;
+
+impl Item<ProtocolDoc> for LogPane {
+    fn item_id(&self) -> ItemId {
+        LOG
+    }
+
+    /// The not-run empty state, shown while [`ProtocolModel::run`] is `None`.
+    ///
+    /// The headline is [`NOT_RUN`] with its first letter raised, so the word
+    /// the strip reads and the word this pane heads with cannot drift apart
+    /// — `clicking_log_on_the_strip_opens_the_rail_on_the_not_run_empty_state`
+    /// reads both off one frame.
+    fn empty_state(&self, doc: &ProtocolDoc) -> Option<EmptyState> {
+        doc.model.run().is_none().then(|| {
+            EmptyState::new(
+                ICON_LOG,
+                not_run_headline(),
+                "The last run's log appears here once the Protocol runs.",
+            )
+        })
+    }
+
+    fn describe(&self, _doc: &ProtocolDoc) -> Subject {
+        Subject::new("Log", ICON_LOG, BindingContext::Protocol)
+    }
+
+    fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
+        run_header(ui, &doc.model, cx.mode);
+    }
+}
+
+/// The ledger rail's Quality pane: the quality output of the last run, per
+/// step.
+///
+/// [`LogPane`]'s twin, and separate from it for the reason the contract gives
+/// them separate names on the strip: a log is the run's narration and a
+/// quality output is its measurements, and a reader looking for one is not
+/// looking for the other.
+struct QualityPane;
+
+impl Item<ProtocolDoc> for QualityPane {
+    fn item_id(&self) -> ItemId {
+        QUALITY
+    }
+
+    /// [`LogPane::empty_state`]'s twin, over the same predicate: the quality
+    /// output is a product of a run, so no run is no output.
+    fn empty_state(&self, doc: &ProtocolDoc) -> Option<EmptyState> {
+        doc.model.run().is_none().then(|| {
+            EmptyState::new(
+                ICON_QUALITY,
+                not_run_headline(),
+                "The last run's quality output appears here, per step, once the \
+                 Protocol runs.",
+            )
+        })
+    }
+
+    fn describe(&self, _doc: &ProtocolDoc) -> Subject {
+        Subject::new("Quality", ICON_QUALITY, BindingContext::Protocol)
+    }
+
+    fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
+        run_header(ui, &doc.model, cx.mode);
+    }
+}
+
+/// [`NOT_RUN`] as a headline: sentence case, which the item-registry audit
+/// requires of every empty state's headline and which `NOT_RUN` itself is not,
+/// because the strip says it mid-line.
+fn not_run_headline() -> String {
+    let mut chars = NOT_RUN.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().collect::<String>() + chars.as_str()
+    })
+}
+
+/// The line the run panes draw when a run stands behind the document: which
+/// run, and what it came to.
+///
+/// The body the two panes share until each has its own content to draw. It
+/// reads the same [`ProtocolModel::last_run_word`] the ledger strip reads, so
+/// the rail open and the rail closed report one state.
+fn run_header(ui: &mut egui::Ui, model: &ProtocolModel, mode: Mode) {
+    let sem = semantic(mode.is_dark());
+    let line = model.run().map_or_else(
+        || model.last_run_word().to_string(),
+        |run| format!("{} \u{b7} {}", run.run_id, model.last_run_word()),
+    );
+    ui.label(
+        egui::RichText::new(line)
+            .font(ui_font())
+            .color(chrome::colour(sem.text.muted)),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Shared pane helpers.
 // ---------------------------------------------------------------------------
@@ -3580,7 +3735,7 @@ fn status_word(s: SeamStatus) -> &'static str {
         SeamStatus::Running => "running",
         SeamStatus::Skipped => "skipped",
         SeamStatus::Failed => "failed",
-        SeamStatus::NotRun => "not run",
+        SeamStatus::NotRun => NOT_RUN,
     }
 }
 

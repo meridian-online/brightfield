@@ -328,6 +328,12 @@ pub struct TableDrawn {
     pub header_cells: Vec<(usize, egui::Rect, egui::Rect)>,
     /// The table's own column count — how many there are to fit.
     pub columns: usize,
+    /// The table's own row count, as [`RowSource::total_rows`] reported it to
+    /// the widget — the number of rows the query behind this pane selected,
+    /// not the number that fit on screen. Read rather than counted off the
+    /// drawn cells for the reason the count exists at all: the table is
+    /// virtualised, so the cells are the window and this is the answer.
+    pub rows: u64,
     /// The height the table told the widget its header row is, in logical
     /// points — the dense rung for the plain header, and the band's summed
     /// extent for the band. Read rather than restated: this is the number
@@ -403,8 +409,13 @@ pub fn show_table(
     if num_columns == 0 {
         // Nothing fetched yet, or a schema-less result — there is no table to
         // draw. The engine source reports its state through the pane around
-        // this call; an empty reserve here would be a table-shaped lie.
-        return TableDrawn::default();
+        // this call; an empty reserve here would be a table-shaped lie. The
+        // row count still goes back: what the source reported is the source's
+        // answer whether or not a column arrived to draw it under.
+        return TableDrawn {
+            rows: num_rows,
+            ..TableDrawn::default()
+        };
     }
     let columns: Vec<egui_table::Column> = match widths {
         ColumnWidths::Declared => (0..num_columns)
@@ -445,6 +456,7 @@ pub fn show_table(
         drawn: TableDrawn {
             header_cells: Vec::new(),
             columns: num_columns,
+            rows: num_rows,
             header_height,
             band: Vec::new(),
         },
@@ -1054,6 +1066,9 @@ fn truncate(s: &str, max: usize) -> String {
 /// The data grid — the chart's peer in the centre tab strip.
 pub const DATA: ItemId = ItemId::new("chart-data-grid");
 
+/// The ledger rail's Rows pane — the second grid over the same session.
+pub const ROWS: ItemId = ItemId::new("chart-rows");
+
 /// The pane's icon name, from the Meridian icon set.
 const ICON_DATA: Icon = Icon("table");
 
@@ -1070,19 +1085,58 @@ pub fn data_grid_spec() -> ItemSpec<ChartDoc> {
     }
 }
 
-/// The grid pane. Holds only view-local state — the page cache — per the
-/// workbench aliasing rule; the session it reads belongs to the document and
-/// is borrowed for the duration of one draw.
+/// The Rows pane's registry entry — the ledger rail's third pane, on the same
+/// terms as [`data_grid_spec`].
+///
+/// A **second item** rather than the Data pane placed twice, and the two
+/// reasons are the same reason: one id draws under one `egui` state and into
+/// one tile. Two panes sharing an id would share the table's column state and
+/// its scroll offset, and `ItemRegistry` would have the ledger's draw and the
+/// canvas's draw both resolve to the tile the dock laid out. What they share
+/// instead is the read path — [`DataGridItem`] and the mark
+/// [`LiveDashboard::rows_mark`] names — which is what makes a brush narrow
+/// both to one count.
+#[must_use]
+pub fn rows_spec() -> ItemSpec<ChartDoc> {
+    ItemSpec {
+        id: ROWS,
+        slot: Slot::CentreTab,
+        toggle: Some(Verb::new("open-rows-pane")),
+        make: || Box::new(DataGridItem::rows()),
+    }
+}
+
+/// The grid pane. Holds only view-local state — the page cache and which of
+/// the two grids it is — per the workbench aliasing rule; the session it reads
+/// belongs to the document and is borrowed for the duration of one draw.
 pub struct DataGridItem {
     cache: GridCache,
+    /// Which pane this instance is: [`DATA`] for the canvas's grid, [`ROWS`]
+    /// for the ledger rail's. It is the item id, the `egui` id salt and the
+    /// key this pane files its [`TableDrawn`] under, and it is one field
+    /// because those three must not disagree — two grids sharing a salt share
+    /// a scroll offset, and two sharing a key overwrite each other's record.
+    id: ItemId,
 }
 
 impl DataGridItem {
-    /// A grid pane with nothing fetched.
+    /// The canvas's grid pane, with nothing fetched.
     #[must_use]
     pub fn new() -> Self {
+        Self::of(DATA)
+    }
+
+    /// The ledger rail's Rows pane, with nothing fetched.
+    #[must_use]
+    pub fn rows() -> Self {
+        Self::of(ROWS)
+    }
+
+    /// A grid pane under `id`.
+    fn of(id: ItemId) -> Self {
         Self {
             cache: GridCache::default(),
+            id,
         }
     }
 
@@ -1101,7 +1155,7 @@ impl Default for DataGridItem {
 
 impl Item<ChartDoc> for DataGridItem {
     fn item_id(&self) -> ItemId {
-        DATA
+        self.id
     }
 
     fn empty_state(&self, doc: &ChartDoc) -> Option<EmptyState> {
@@ -1133,7 +1187,8 @@ impl Item<ChartDoc> for DataGridItem {
     /// a state the record cannot vouch for stops the rows being fetched.
     /// Dropping the rail entry costs the grid nothing it was telling anyone.
     fn describe(&self, _doc: &ChartDoc) -> Subject {
-        Subject::new("Data", ICON_DATA, BindingContext::Workspace)
+        let title = if self.id == ROWS { "Rows" } else { "Data" };
+        Subject::new(title, ICON_DATA, BindingContext::Workspace)
     }
 
     fn ui(&mut self, doc: &mut ChartDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
@@ -1226,7 +1281,7 @@ impl Item<ChartDoc> for DataGridItem {
             let mut source = EngineRows::new(session, mark, generation, &mut self.cache);
             drawn = Some(show_table(
                 ui,
-                "chart-data-grid",
+                self.id.as_str(),
                 mode,
                 &mut source,
                 ColumnWidths::Natural,
@@ -1234,11 +1289,20 @@ impl Item<ChartDoc> for DataGridItem {
             ));
         }
         doc.activity.end(Activity::EngineQuery);
-        // What the frame laid out, back on the document: the pane around this
-        // one draws the readout that says how much of the table is on screen,
-        // and it has to read that off the cells rather than off the widths
-        // this pane asked for.
-        doc.grid_drawn = drawn;
+        // What the frame laid out, back on the document under THIS pane's own
+        // id: the pane around this one draws the readout that says how much of
+        // the table is on screen, and it has to read that off the cells rather
+        // than off the widths this pane asked for. Filed per item because the
+        // ledger rail's Rows pane and the canvas's grid pane both run this
+        // line in one frame — see `ChartDoc::grids_drawn`.
+        match drawn {
+            Some(drawn) => {
+                doc.grids_drawn.insert(self.id, drawn);
+            }
+            None => {
+                doc.grids_drawn.remove(&self.id);
+            }
+        }
 
         if self.cache.error.is_none() && self.cache.total == 0 {
             // A real answer, not an empty pane: the query ran and selected

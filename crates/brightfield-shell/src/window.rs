@@ -85,7 +85,7 @@ use meridian_design::{radius, semantic, spacing};
 use crate::app::{chart_registry, ChartDoc, ChartFault, CHART, CONTROLS};
 use crate::canvas::EguiCanvasHost;
 use crate::column_header::GridDensity;
-use crate::data_grid::DATA;
+use crate::data_grid::{DATA, ROWS};
 use crate::design::Mode;
 use crate::editor::EDITOR;
 use crate::inspector::{ColumnTable, InspectorPane, Selection, TableHandle};
@@ -94,7 +94,7 @@ use crate::pipeline::Composed;
 use crate::protocol::{
     hint_ui, load_protocol_offline, mono_font, protocol_registry, ui_font, NodeView, ProtocolDoc,
     ProtocolInputs, ProtocolModel, SpineRole, SpineRow, CANVAS as PROTOCOL_CANVAS,
-    INSPECTOR as PROTOCOL_INSPECTOR, OUTLINE, STEPS,
+    INSPECTOR as PROTOCOL_INSPECTOR, LOG, OUTLINE, QUALITY, STEPS,
 };
 
 // ---------------------------------------------------------------------------
@@ -2760,39 +2760,36 @@ impl MeridianApp {
         items.iter().map(|item| self.pane_title_of(*item)).collect()
     }
 
-    /// **What the ledger rail's strip says at its trailing end**: the run this
-    /// Protocol came off, or — where there is no run — the one step.
+    /// **What the ledger rail's strip says at its trailing end**: *last run*,
+    /// and the state of the run this Protocol came off.
     ///
-    /// The two arms answer for two different documents, and the order between
-    /// them is the point.
+    /// **The run's state, not a step's**, and the two are different facts on
+    /// one screen. The rail is the run record — Log, Quality, Rows — so its
+    /// strip reports what a reader would open the rail to read, whatever the
+    /// step count; the navigator spine's step row carries the step's own
+    /// status beside it, from the per-step map
+    /// [`crate::protocol::ProtocolModel::seam_statuses`] folds. One typed
+    /// source under each, so a run and its steps cannot contradict each other
+    /// here.
     ///
-    /// A Protocol with a **run** behind it says what the run came to, whatever
-    /// its step count: the strip is where the reader is told the whole
-    /// Protocol's answer, and the rail below it lists the steps. That arm did
-    /// not exist while a declaration was what this build opened — see
-    /// [`crate::protocol::load_contract_str`] — so the strip said *not run* on
-    /// the screens a stranger could reach, which is the one thing this product
-    /// claims no other tool does.
+    /// The word comes from [`crate::protocol::ProtocolModel::last_run_word`],
+    /// which reads the run record and reports [`crate::protocol::NOT_RUN`]
+    /// where there is none — so the line is derived on a fresh file rather
+    /// than written as a literal here.
     ///
-    /// A Protocol with **no run** and exactly one step is what a data file
-    /// opens as, and the rail's list of it is one row — so the rail opens
-    /// closed ([`Self::ledger_opens_collapsed`]) and this line is the whole of
-    /// what the list would have said. `None` for a run-less Protocol of two
-    /// steps or more, where the rail opens at its declared height and a summary
-    /// of one step would be a summary of the wrong thing.
+    /// `None` for a Protocol with **no steps**, which is what a composed
+    /// dashboard's window holds: a run of nothing has no state worth a line,
+    /// and the strip draws its names alone. It is drawn in both the collapsed
+    /// and the open rail, as the two call sites already ask for it: the run's
+    /// state is as true with the rail open as with it shut, and a summary that
+    /// came and went with the caret would read as a property of the caret.
     fn ledger_summary(&self) -> Option<String> {
-        if let Some(run) = self.protocol.doc.model.run() {
-            return Some(format!(
-                "last run \u{b7} {}",
-                crate::protocol::outcome_word(run.outcome)
-            ));
-        }
-        let [step] = self.protocol.doc.model.sheet().rows() else {
+        if self.protocol.doc.model.sheet().is_empty() {
             return None;
-        };
+        }
         Some(format!(
-            "{} \u{b7} {} \u{b7} {}",
-            step.label, step.kind, step.status
+            "last run \u{b7} {}",
+            self.protocol.doc.model.last_run_word()
         ))
     }
 
@@ -3763,11 +3760,14 @@ impl MeridianApp {
                 OUTLINE,
                 PROTOCOL_INSPECTOR,
                 STEPS,
+                LOG,
+                QUALITY,
                 PROTOCOL_CANVAS,
                 CONTROLS,
                 EDITOR,
                 CHART,
                 DATA,
+                ROWS,
             ] {
                 if let Some(tile) = ws.tile_of(PaneKey::new(item)) {
                     headed.insert(tile);
@@ -3842,7 +3842,15 @@ impl MeridianApp {
                         mode,
                     ));
                     let item = ledger_panes[ledger_panel];
-                    if item == STEPS {
+                    // **Which document owns this pane**, asked of the registries
+                    // rather than of a list of ids written here. The rail draws
+                    // panes of both documents — Log and Quality are the
+                    // protocol's, Rows and the Editor the chart's — and a
+                    // literal `item == …` here is a second declaration of which
+                    // is which, one a fifth pane joins the arrangement without.
+                    // `the_ledger_draws_each_pane_from_the_registry_that_owns_it`
+                    // reddens when a registered pane reaches the wrong arm.
+                    if protocol.items.contains_key(&PaneKey::new(item)) {
                         draw_protocol_pane(
                             ui,
                             body,
@@ -4119,7 +4127,7 @@ impl MeridianApp {
                         charts.doc.grid_density =
                             (stacked.is_some() && !transposed).then_some(GridDensity::Compact);
                         if transposed && stacked.is_some() {
-                            charts.doc.grid_drawn = None;
+                            charts.doc.grids_drawn.remove(&DATA);
                         } else {
                             // …and the rows the transposed layout drew are a
                             // record of a pane this frame is not drawing. Left
@@ -7150,8 +7158,7 @@ fn draw_canvas_pane_group(
     // the widths it was handed.
     let rows_note = charts
         .doc
-        .grid_drawn
-        .as_ref()
+        .grid_drawn(DATA)
         .filter(|drawn| drawn.some_column_is_off_screen())
         .map(|drawn| format!("{} of {} columns", drawn.on_screen(), drawn.columns))
         .map(|text| {
@@ -7533,8 +7540,7 @@ fn draw_canvas_grid_pane(
     // grid pane reads it.
     let rows_note = charts
         .doc
-        .grid_drawn
-        .as_ref()
+        .grid_drawn(DATA)
         .filter(|drawn| drawn.some_column_is_off_screen())
         .map(|drawn| {
             let text = format!("{} of {} columns", drawn.on_screen(), drawn.columns);

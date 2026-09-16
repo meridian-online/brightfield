@@ -532,8 +532,20 @@ static INSPECTOR_PANES: &[ItemId] = &[
     ItemId::new("chart-controls"),
 ];
 
-/// The ledger rail's panes — the step list and the document that declares it.
-static LEDGER_PANES: &[ItemId] = &[ItemId::new("protocol-steps"), ItemId::new("spec-editor")];
+/// The ledger rail's panes — the run record, and the document that declares
+/// the Protocol the run came off.
+///
+/// *Log*, *Quality*, *Rows*, *Editor*, in that order, so the rail opens on
+/// *Log*: the selector's live index starts at zero and the strip's names are
+/// these panes' own `Subject` titles in declaration order. The step list is
+/// deliberately not here — the navigator spine lists the steps, and a rail
+/// repeating that list put the same one step on the screen twice.
+static LEDGER_PANES: &[ItemId] = &[
+    ItemId::new("protocol-log"),
+    ItemId::new("protocol-quality"),
+    ItemId::new("chart-rows"),
+    ItemId::new("spec-editor"),
+];
 
 /// The canvas's projections: the drawn reading of a step's output, one entry,
 /// so no toggle is drawn —

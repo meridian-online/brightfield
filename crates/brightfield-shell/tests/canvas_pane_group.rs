@@ -2286,8 +2286,8 @@ fn the_rows_pane_says_how_many_of_the_tables_columns_are_on_screen() {
     let rows = group.pane("grid").expect("the grid pane drew");
     let drawn = app
         .chart_doc()
-        .grid_drawn
-        .clone()
+        .grid_drawn(brightfield_shell::data_grid::DATA)
+        .cloned()
         .expect("the grid pane's grid laid a table out");
 
     // The frame's own answer, recomputed: a header cell wholly inside the clip
@@ -2390,8 +2390,7 @@ fn the_rows_grid_scrolls_sideways_to_a_column_the_pane_cannot_fit() {
 
     let whole_now = |app: &MeridianApp| -> Vec<usize> {
         app.chart_doc()
-            .grid_drawn
-            .as_ref()
+            .grid_drawn(brightfield_shell::data_grid::DATA)
             .expect("the grid pane's grid laid a table out")
             .header_cells
             .iter()
@@ -2562,8 +2561,8 @@ fn drawn_rows(
     let cells = drawn_cells_in(app, ctx, raw, rect);
     let drawn = app
         .chart_doc()
-        .grid_drawn
-        .clone()
+        .grid_drawn(brightfield_shell::data_grid::DATA)
+        .cloned()
         .expect("the grid pane's grid laid a table out");
     let columns: Vec<egui::Rect> = drawn.header_cells.iter().map(|(_, r, _)| *r).collect();
     let column_at = |x: f32| -> Option<usize> {
@@ -2918,8 +2917,8 @@ fn the_grid_beneath_the_hero_draws_the_compact_band() {
     let (mut app, ctx, raw) = settled_window();
     let drawn = app
         .chart_doc()
-        .grid_drawn
-        .clone()
+        .grid_drawn(brightfield_shell::data_grid::DATA)
+        .cloned()
         .expect("the grid pane's grid laid a table out");
 
     assert!(
@@ -3063,8 +3062,7 @@ fn the_band_scrolls_with_its_columns_and_not_with_its_rows() {
     /// frames' arbitrary tie-breaks rather than a scroll.
     fn band_lefts(app: &MeridianApp) -> std::collections::BTreeMap<String, egui::Rect> {
         app.chart_doc()
-            .grid_drawn
-            .as_ref()
+            .grid_drawn(brightfield_shell::data_grid::DATA)
             .expect("the grid pane's grid laid a table out")
             .band
             .iter()
