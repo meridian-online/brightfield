@@ -601,6 +601,7 @@ fn the_recents_list_is_capped_and_most_recent_first() {
             &format!("protocol {i}"),
             RunState::NeverRun,
             GridLayout::Rows,
+            brightfield_workbench::GridSpot::Canvas,
             1_000 + i as u64,
         );
     }
@@ -642,6 +643,7 @@ fn the_recents_list_is_capped_and_most_recent_first() {
         "renamed",
         RunState::Fresh,
         GridLayout::Columns,
+        brightfield_workbench::GridSpot::Canvas,
         9_000,
     );
     assert_eq!(

@@ -2286,7 +2286,7 @@ fn the_rows_pane_says_how_many_of_the_tables_columns_are_on_screen() {
     let rows = group.pane("grid").expect("the grid pane drew");
     let drawn = app
         .chart_doc()
-        .grid_drawn(brightfield_shell::data_grid::DATA)
+        .grid_drawn()
         .cloned()
         .expect("the grid pane's grid laid a table out");
 
@@ -2390,7 +2390,7 @@ fn the_rows_grid_scrolls_sideways_to_a_column_the_pane_cannot_fit() {
 
     let whole_now = |app: &MeridianApp| -> Vec<usize> {
         app.chart_doc()
-            .grid_drawn(brightfield_shell::data_grid::DATA)
+            .grid_drawn()
             .expect("the grid pane's grid laid a table out")
             .header_cells
             .iter()
@@ -2561,7 +2561,7 @@ fn drawn_rows(
     let cells = drawn_cells_in(app, ctx, raw, rect);
     let drawn = app
         .chart_doc()
-        .grid_drawn(brightfield_shell::data_grid::DATA)
+        .grid_drawn()
         .cloned()
         .expect("the grid pane's grid laid a table out");
     let columns: Vec<egui::Rect> = drawn.header_cells.iter().map(|(_, r, _)| *r).collect();
@@ -2917,7 +2917,7 @@ fn the_grid_beneath_the_hero_draws_the_compact_band() {
     let (mut app, ctx, raw) = settled_window();
     let drawn = app
         .chart_doc()
-        .grid_drawn(brightfield_shell::data_grid::DATA)
+        .grid_drawn()
         .cloned()
         .expect("the grid pane's grid laid a table out");
 
@@ -3062,7 +3062,7 @@ fn the_band_scrolls_with_its_columns_and_not_with_its_rows() {
     /// frames' arbitrary tie-breaks rather than a scroll.
     fn band_lefts(app: &MeridianApp) -> std::collections::BTreeMap<String, egui::Rect> {
         app.chart_doc()
-            .grid_drawn(brightfield_shell::data_grid::DATA)
+            .grid_drawn()
             .expect("the grid pane's grid laid a table out")
             .band
             .iter()
@@ -3882,7 +3882,7 @@ fn a_brush_narrows_the_ledgers_rows_pane_and_the_canvas_grid_to_one_count() {
     let counts = |app: &MeridianApp| -> (u64, u64) {
         let doc = app.chart_doc();
         (
-            doc.grid_drawn(DATA)
+            doc.grid_drawn()
                 .expect("the canvas's grid pane laid a table out")
                 .rows,
             doc.grid_drawn(ROWS)

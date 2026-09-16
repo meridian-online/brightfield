@@ -335,7 +335,7 @@ fn the_bands_two_bounds_stay_apart_at_this_width() {
             let drawn = live
                 .app
                 .chart_doc()
-                .grid_drawn(brightfield_shell::data_grid::DATA)
+                .grid_drawn()
                 .cloned()
                 .expect("the grid pane laid a table out");
             let mut ranges = 0;
@@ -386,7 +386,7 @@ fn the_rows_stack_to_the_extent_the_frame_claims() {
         let drawn = live
             .app
             .chart_doc()
-            .grid_drawn(brightfield_shell::data_grid::DATA)
+            .grid_drawn()
             .cloned()
             .expect("the grid pane laid a table out");
         assert!(!drawn.band.is_empty(), "the pane drew no band");

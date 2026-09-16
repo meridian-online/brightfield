@@ -1637,7 +1637,7 @@ fn assert_grid_view_is_what_is_being_photographed(at: egui::Pos2) {
     );
     let drawn = app
         .chart_doc()
-        .grid_drawn(brightfield_shell::data_grid::DATA)
+        .grid_drawn()
         .cloned()
         .expect("the grid pane laid a table out");
     assert_eq!(
