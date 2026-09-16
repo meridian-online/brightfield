@@ -371,6 +371,10 @@ fn canvas_subject(doc: &ProtocolDoc) -> Subject {
 /// `the_crosswalk_chart_start_opens_over_the_network_drawing_every_row` in
 /// `tests/crosswalk_chart.rs`. The trade is stated rather than hidden: that
 /// start's load gate runs on demand, not on every push.
+/// Watched redden, one mutation for the arm a data-file start takes:
+/// `Start::data`'s `bytes:` pointed at `HOUSING_DESCRIPTOR` instead of the
+/// Parquet — bytes that are written but are not a data file — fails at
+/// "california-housing wrote a file that will not open".
 #[test]
 fn every_shipped_start_loads_into_a_document_with_something_in_it() {
     // The recorded size is the **gallery's**, which is what a stranger
@@ -542,10 +546,9 @@ fn a_start_declares_a_spec_or_a_data_file_and_never_both() {
 /// start writes the file under and therefore the name the locator band says
 /// and the stem the table is called after.
 ///
-/// Watched redden, two mutations: truncating `HOUSING_PARQUET` to its first
-/// 1,000 bytes in the comparison fails at the size; comparing against
-/// `HOUSING_DESCRIPTOR`'s own bytes instead of the Parquet's fails at the
-/// digest.
+/// Watched redden, one mutation: `HOUSING_FILE` spelled `housing.parquet`
+/// fails at "california-housing writes its bytes under a name its own
+/// descriptor does not use".
 #[test]
 fn the_bundled_dataset_is_the_bytes_its_descriptor_declares() {
     let start = the_data_file_start();
@@ -611,8 +614,8 @@ fn the_bundled_dataset_is_the_bytes_its_descriptor_declares() {
 ///
 /// Watched redden, one mutation: `starts::load`'s data arm returning
 /// `Opened::Protocol(ProtocolInputs::empty())` instead of the path — the shape
-/// of "open the declaration rather than the file" — fails here at the columns,
-/// with an empty list against the picker's nine.
+/// of "open the declaration rather than the file" — fails here at "the two
+/// routes drew different locator lines".
 #[test]
 fn the_card_and_the_picker_land_on_one_window() {
     datasets_into_scratch();
@@ -621,6 +624,11 @@ fn the_card_and_the_picker_land_on_one_window() {
 
     let mut clicked = Window::open(Boot::empty());
     clicked.settle();
+    assert!(
+        clicked.app.front_door_is_live(),
+        "the window this test clicks on is not the door: sections {:?}",
+        clicked.app.front_door_sections()
+    );
     clicked.take_the_card(start.id);
     clicked.settle();
 
@@ -692,9 +700,10 @@ fn the_card_and_the_picker_land_on_one_window() {
 /// `std::env::temp_dir()`, its bytes are the bundled bytes, and a second load
 /// lands on the same path rather than on a second copy beside the first.
 ///
-/// Watched redden, one mutation: `starts::materialise` writing into
+/// Watched redden, two mutations: `starts::materialise` writing into
 /// `std::env::temp_dir()` rather than `datasets_dir()` fails at "wrote outside
-/// the configured directory".
+/// the configured directory"; writing `&data.bytes[..1000]` fails at "is not
+/// the bytes the binary carries".
 #[test]
 fn a_bundled_data_start_writes_the_committed_bytes_where_a_second_launch_finds_them() {
     datasets_into_scratch();
@@ -702,6 +711,15 @@ fn a_bundled_data_start_writes_the_committed_bytes_where_a_second_launch_finds_t
     let data = start.data.as_ref().expect("filtered on `data`");
     let configured = brightfield_shell::startup::datasets_dir()
         .expect("the override above gives this machine a config directory");
+
+    // **Start cold.** `materialise` leaves a file already holding these bytes
+    // alone, which is the behaviour the second half of this test is about —
+    // and it is also what makes the first half assert nothing when a previous
+    // run left the right file at the path. Measured while writing this: a
+    // mutation truncating the write to its first 1,000 bytes left every
+    // assertion below green, because the write it broke never ran. Removing
+    // the file first is what makes the first load a write.
+    let _ = std::fs::remove_file(configured.join(data.file_name));
 
     let Opened::File(first) = starts::load(start.id).expect("the start loads") else {
         panic!("{} did not open a data file", start.id);
@@ -823,9 +841,10 @@ fn a_launch_restoring_the_data_file_start_lands_on_its_own_document() {
 /// were written because a hard-coded `DOOR_COLUMN_WIDTH` was short by one card
 /// and the gallery quietly went to two rows.
 ///
-/// Watched redden, one mutation: `starts::on_door_count` returning
-/// `STARTS.len() - 2` — a width derived from the wrong count, which is the
-/// original defect — fails here at the second card sitting below the first.
+/// Watched redden, one mutation: `starts::on_door_count`'s walk stopping one
+/// entry short of `STARTS.len()` — a width derived from a count that missed a
+/// card, which is the original defect — fails here at the fourth card sitting
+/// below the first.
 #[test]
 fn the_doors_datasets_row_is_one_row_and_all_of_it_is_on_screen() {
     let mut win = Window::open(Boot::empty());
