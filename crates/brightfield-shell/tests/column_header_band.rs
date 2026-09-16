@@ -156,8 +156,8 @@ impl Live {
     fn drawn(&self) -> brightfield_shell::data_grid::TableDrawn {
         self.app
             .chart_doc()
-            .grid_drawn
-            .clone()
+            .grid_drawn(brightfield_shell::data_grid::DATA)
+            .cloned()
             .expect("the grid pane laid a table out")
     }
 }

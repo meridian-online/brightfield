@@ -607,8 +607,8 @@ fn a_columns_width_covers_its_widest_value_not_just_its_header() {
     let drawn = harness
         .state()
         .0
-        .grid_drawn
-        .clone()
+        .grid_drawn(brightfield_shell::data_grid::DATA)
+        .cloned()
         .expect("the grid laid a table out");
     assert_eq!(drawn.columns, 2, "the fixture's table has two columns");
 

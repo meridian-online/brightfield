@@ -728,6 +728,46 @@ pub fn registry() -> Vec<VerbEntry> {
         // show/hide verb (the item-registry audit enforces it) and the shell
         // may not invent one; unbound until the workspace shell performs
         // pane toggles, while the tab itself stays reachable by pointer.
+        // The ledger rail's two run panes and its Rows pane. Each is a centre
+        // tab in its view's item registry, which requires a show/hide verb the
+        // shell may not invent (the item-registry audit enforces it), and each
+        // is unbound until the workspace shell performs pane toggles — the
+        // rail's own strip is how a reader reaches them today. Log and Quality
+        // sit at Protocol because they report a run of the Protocol; Rows sits
+        // at Dashboard and View beside the grid it is a second view of.
+        VerbEntry {
+            longname: "open-run-log",
+            tier: CommandTier::View,
+            binding_specs: Vec::new(),
+            scope_applicability: vec![Protocol],
+            drives: D::Reserved,
+            status: VerbStatus::Reserved,
+            reserved_reason: Some(ReservedReason::NeedsWorkspaceShell),
+            help: "Open the run log — the last run's log, in the ledger rail",
+            scores: None,
+        },
+        VerbEntry {
+            longname: "open-run-quality",
+            tier: CommandTier::View,
+            binding_specs: Vec::new(),
+            scope_applicability: vec![Protocol],
+            drives: D::Reserved,
+            status: VerbStatus::Reserved,
+            reserved_reason: Some(ReservedReason::NeedsWorkspaceShell),
+            help: "Open the run quality output, per step, in the ledger rail",
+            scores: None,
+        },
+        VerbEntry {
+            longname: "open-rows-pane",
+            tier: CommandTier::View,
+            binding_specs: Vec::new(),
+            scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
+            drives: D::Reserved,
+            status: VerbStatus::Reserved,
+            reserved_reason: Some(ReservedReason::NeedsWorkspaceShell),
+            help: "Open the rows behind the mark, in the ledger rail",
+            scores: None,
+        },
         VerbEntry {
             longname: "toggle-data-grid",
             tier: CommandTier::View,
@@ -948,6 +988,9 @@ mod tests {
         assert_eq!(
             needs_shell,
             [
+                "open-rows-pane",
+                "open-run-log",
+                "open-run-quality",
                 "toggle-controls-rail",
                 "toggle-data-grid",
                 "toggle-gallery",
@@ -1030,6 +1073,9 @@ mod tests {
             "toggle-outline-rail",
             "toggle-inspector-rail",
             "toggle-controls-rail",
+            "open-run-log",
+            "open-run-quality",
+            "open-rows-pane",
             "toggle-data-grid",
             "toggle-gallery",
         ];

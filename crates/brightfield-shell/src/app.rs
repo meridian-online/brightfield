@@ -593,16 +593,24 @@ pub struct ChartDoc {
     /// canvas each frame *before* the pane draws, because it is a fact about
     /// the layout the frame chose rather than about the document.
     pub pane_views: Option<PaneViews>,
-    /// **What the grid pane's table laid out**, as of the last frame it drew —
-    /// see [`crate::data_grid::TableDrawn`].
+    /// **What each grid pane's table laid out**, as of the last frame it drew,
+    /// keyed by the pane's own [`ItemId`] — see
+    /// [`crate::data_grid::TableDrawn`].
     ///
-    /// Written by the grid pane, read by the canvas group that draws the
+    /// Written by each grid pane, read by the canvas group that draws the
     /// readout above it. It lives on the document rather than on the pane for
     /// the reason [`Self::raster_rect`] does: the shell hands out one
     /// `&mut ChartDoc` for the duration of one pane's draw, so a fact one pane
-    /// records and another reports has to pass through here. `None` on a frame
-    /// where the grid drew no table.
-    pub grid_drawn: Option<crate::data_grid::TableDrawn>,
+    /// records and another reports has to pass through here.
+    ///
+    /// **Keyed rather than single, because two grids draw in one frame.** The
+    /// ledger rail's Rows pane and the canvas's rows pane are both
+    /// [`crate::data_grid::DataGridItem`]s over the same session, the ledger
+    /// is a bottom panel drawn before the central one, and a single slot had
+    /// the second write overwrite the first on each frame — so the readout
+    /// above the canvas's grid reported the rail's table. Read it back through
+    /// [`Self::grid_drawn`].
+    pub grids_drawn: std::collections::BTreeMap<ItemId, crate::data_grid::TableDrawn>,
     /// **The grid pane's layout switch, as the last frame drew it** — see
     /// [`LayoutSwitchDrawn`]. `None` on a frame whose canvas drew no grid
     /// pane, and rewritten by each frame that does, for the reason
@@ -853,7 +861,7 @@ impl ChartDoc {
             hover_readout: None,
             viewport: None,
             pane_views: None,
-            grid_drawn: None,
+            grids_drawn: std::collections::BTreeMap::new(),
             grid_density: None,
             grid_layout_switch: None,
             transposed_rows: Vec::new(),
@@ -898,7 +906,7 @@ impl ChartDoc {
             hover_readout: None,
             viewport: None,
             pane_views: None,
-            grid_drawn: None,
+            grids_drawn: std::collections::BTreeMap::new(),
             grid_density: None,
             grid_layout_switch: None,
             transposed_rows: Vec::new(),
@@ -992,7 +1000,7 @@ impl ChartDoc {
             crate::dashboard::COLUMN_TILE_WIDTH as f32,
         );
         self.pane_views = None;
-        self.grid_drawn = None;
+        self.grids_drawn.clear();
         self.grid_density = None;
         self.grid_layout_switch = None;
         self.transposed_rows = Vec::new();
@@ -1229,6 +1237,17 @@ impl ChartDoc {
                 false
             }
         }
+    }
+
+    /// What the grid pane `item` laid out on the last frame it drew, if it
+    /// drew one — the read half of [`Self::grids_drawn`].
+    ///
+    /// `None` for a pane that drew no table this frame, which is the answer a
+    /// caller wants: a rect left standing from a frame that did draw one would
+    /// aim a readout at a table the reader is no longer looking at.
+    #[must_use]
+    pub fn grid_drawn(&self, item: ItemId) -> Option<&crate::data_grid::TableDrawn> {
+        self.grids_drawn.get(&item)
     }
 
     /// The live coordinator behind this document, when one is attached — the
@@ -2189,6 +2208,7 @@ pub fn chart_registry_with(gallery: bool) -> ItemRegistry<ChartDoc> {
             make: || Box::new(ChartItem::new()),
         },
         crate::data_grid::data_grid_spec(),
+        crate::data_grid::rows_spec(),
         ItemSpec {
             id: CONTROLS,
             slot: Slot::Rail {
