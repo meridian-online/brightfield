@@ -7938,6 +7938,10 @@ fn draw_layout_switch(
 /// The grid's layout switch and its spot switch are both this control, so two
 /// switches a reader meets on one band read as one kind of control. `None`
 /// where the band is too short or too narrow to hold it.
+/// What [`draw_word_switch`] drew: the control's rect, each state's rect, and
+/// the state a click picked this frame.
+type WordSwitch<T> = (egui::Rect, Vec<(T, egui::Rect)>, Option<T>);
+
 #[allow(clippy::too_many_arguments)]
 fn draw_word_switch<T: Copy + PartialEq>(
     ui: &mut egui::Ui,
@@ -7947,7 +7951,7 @@ fn draw_word_switch<T: Copy + PartialEq>(
     salt: &'static str,
     hover: &str,
     mode: Mode,
-) -> Option<(egui::Rect, Vec<(T, egui::Rect)>, Option<T>)> {
+) -> Option<WordSwitch<T>> {
     use meridian_design::control;
 
     let sem = semantic(mode.is_dark());

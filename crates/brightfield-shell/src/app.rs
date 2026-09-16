@@ -633,9 +633,9 @@ pub struct ChartDoc {
     /// through [`Self::grid_drawn`].
     pub table_drawn: Option<crate::data_grid::TableDrawn>,
     /// How many tables the grid filed into [`Self::table_drawn`] this frame —
-    /// one when the grid drew, zero when it drew nowhere, and two only when a
-    /// frame drew the grid in both spots, which is the defect this exists to
-    /// make visible.
+    /// one when the grid drew, zero when it drew nowhere, and two when a frame
+    /// drew the grid in both spots, which is the defect this exists to make
+    /// visible (`one_grid_draws_in_one_spot_and_a_brush_narrows_it_in_either`).
     pub tables_filed: usize,
     /// **The grid pane's layout switch, as the last frame drew it** — see
     /// [`LayoutSwitchDrawn`]. `None` on a frame whose canvas drew no grid

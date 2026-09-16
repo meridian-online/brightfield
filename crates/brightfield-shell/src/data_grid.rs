@@ -406,8 +406,8 @@ pub fn show_table(
 pub type SetWidths = std::collections::BTreeMap<String, f32>;
 
 /// [`show_table`], with the widths a reader has set standing in for the natural
-/// width of the columns they name. Only [`ColumnWidths::Natural`] reads `set`;
-/// a declared table is resized by `egui_table`'s own handle.
+/// width of the columns they name. [`ColumnWidths::Natural`] reads `set`; a
+/// declared table ignores it and is resized by `egui_table`'s own handle.
 pub fn show_table_sized(
     ui: &mut egui::Ui,
     salt: &str,
@@ -1123,8 +1123,7 @@ pub fn data_grid_spec() -> ItemSpec<ChartDoc> {
 /// own column widths and scroll offset, and put the same table on the screen
 /// twice. So what the ledger's Rows name holds is either that one grid, drawn
 /// here by the window when the grid is not on the canvas, or this item, which
-/// is never anything but the line saying where the grid is and the way to
-/// bring it here.
+/// draws the line saying where the grid is and the way to bring it here.
 #[must_use]
 pub fn rows_spot_spec() -> ItemSpec<ChartDoc> {
     ItemSpec {
@@ -1135,12 +1134,15 @@ pub fn rows_spot_spec() -> ItemSpec<ChartDoc> {
     }
 }
 
-/// The ledger's Rows spot while the grid is on the canvas: an empty state that
-/// names where the grid is and carries the move.
+/// The ledger's Rows spot while the grid is on the canvas: a line that names
+/// where the grid is, and the action that brings it here.
 ///
-/// Drawn by the window only on a frame whose canvas drew the grid, so it is
-/// empty whenever it is drawn — the state IS its content, and its `ui` has
-/// nothing to add.
+/// Drawn by the window on a frame whose canvas drew the grid. The line is its
+/// content rather than an empty state: over a live dashboard nothing about this
+/// pane is missing — the grid is on the screen, one rail away —
+/// and `no_pane_is_empty_over_a_real_dashboard` holds every pane to that. It is
+/// drawn through the empty state's own widget so it reads as the same kind of
+/// line the Log and Quality panes draw.
 pub struct RowsSpot;
 
 /// The Rows spot's headline while the grid is on the canvas.
@@ -1151,22 +1153,22 @@ impl Item<ChartDoc> for RowsSpot {
         ROWS
     }
 
-    fn empty_state(&self, _doc: &ChartDoc) -> Option<EmptyState> {
-        Some(
-            EmptyState::new(
-                ICON_DATA,
-                GRID_ON_CANVAS,
-                "It draws beside the chart. Move it here to read the rows in the ledger.",
-            )
-            .with_next(Affordance::new("Move the grid here", Verb::new(MOVE_GRID))),
-        )
-    }
-
     fn describe(&self, _doc: &ChartDoc) -> Subject {
         Subject::new("Rows", ICON_DATA, BindingContext::Workspace)
     }
 
-    fn ui(&mut self, _doc: &mut ChartDoc, _ui: &mut egui::Ui, _cx: &mut ItemCtx<'_>) {}
+    fn ui(&mut self, _doc: &mut ChartDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
+        let line = EmptyState::new(
+            ICON_DATA,
+            GRID_ON_CANVAS,
+            "It draws beside the chart. Move it here to read the rows in the ledger.",
+        )
+        .with_next(Affordance::new("Move the grid here", Verb::new(MOVE_GRID)));
+        let drawn = chrome::empty_state(ui, &line, cx.mode);
+        if let Some(brightfield_workbench::subject::Action::Verb(verb)) = drawn.activated {
+            cx.request(verb);
+        }
+    }
 }
 
 /// The `egui` id every draw of the grid's table is scoped under, **whichever
