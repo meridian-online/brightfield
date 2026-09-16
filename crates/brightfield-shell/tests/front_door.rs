@@ -751,8 +751,7 @@ fn a_bundled_data_start_writes_the_committed_bytes_where_a_second_launch_finds_t
         panic!("{} did not open a data file the second time", start.id);
     };
     assert_eq!(
-        first,
-        second,
+        first, second,
         "a second open landed on a different path, so nothing a launch \
          remembers can reopen the first"
     );
