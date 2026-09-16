@@ -1785,14 +1785,18 @@ fn run_record(outcome: Outcome) -> RunView {
 /// say each outcome's own word.
 ///
 /// **What makes this a test of derivation rather than of a literal.** Five
-/// documents differing in exactly one field, read back off the galleys the
-/// painter was handed. A summary that hard-coded *not run* fails on row two; a
-/// summary that hard-coded any outcome fails on row one and on three of the
-/// four others; and a summary that read the sheet row's `status` string
-/// instead of the run record fails on every row after the first, because the
-/// hand-written manifest's step stays `not run` in all five.
+/// documents read back off the galleys the painter was handed. A summary that
+/// hard-coded *not run* fails on row two; a summary that hard-coded any
+/// outcome fails on row one and on three of the four others; and a summary
+/// that read the sheet row's `status` string instead of the run record fails
+/// on each row after the first, because the hand-written manifest's step is
+/// unrun in all five, which the loop asserts before it reads the strip.
 ///
-/// The step's own status is deliberately NOT varied here. It is the spine's
+/// The step's name and operator alternate down the rows while the outcome
+/// moves independently of them, so a summary that reached for the step —
+/// its label, its kind, its status — could not track the column that changes.
+///
+/// The step's own *status* is deliberately not varied here. It is the spine's
 /// column, from the per-step map, and
 /// `the_strip_reads_the_run_and_the_spine_reads_the_step` is where the two are
 /// held apart on one screen.
@@ -1800,16 +1804,35 @@ fn run_record(outcome: Outcome) -> RunView {
 fn the_ledger_strips_summary_reads_the_runs_state_and_not_a_literal() {
     use brightfield_workbench::arrangement::LEDGER_RAIL;
 
-    for (run, want) in [
-        (None, "last run \u{b7} not run"),
-        (Some(Outcome::Success), "last run \u{b7} success"),
-        (Some(Outcome::Error), "last run \u{b7} failed"),
-        (Some(Outcome::Partial), "last run \u{b7} partial"),
-        (Some(Outcome::Unknown), "last run \u{b7} unrecognised"),
+    for (step, body, run, want) in [
+        ("ingest_readings", FETCH, None, "last run \u{b7} not run"),
+        (
+            "tide_gauge",
+            EXPORT,
+            Some(Outcome::Success),
+            "last run \u{b7} success",
+        ),
+        (
+            "ingest_readings",
+            FETCH,
+            Some(Outcome::Error),
+            "last run \u{b7} failed",
+        ),
+        (
+            "tide_gauge",
+            EXPORT,
+            Some(Outcome::Partial),
+            "last run \u{b7} partial",
+        ),
+        (
+            "ingest_readings",
+            FETCH,
+            Some(Outcome::Unknown),
+            "last run \u{b7} unrecognised",
+        ),
     ] {
-        let mut inputs =
-            protocol::load_protocol_str(&one_step_manifest("ingest_readings", FETCH), &[])
-                .unwrap_or_else(|e| panic!("the hand-written manifest loads: {e}"));
+        let mut inputs = protocol::load_protocol_str(&one_step_manifest(step, body), &[])
+            .unwrap_or_else(|e| panic!("the hand-written manifest loads: {e}"));
         assert_eq!(
             inputs.sheet_rows.len(),
             1,
