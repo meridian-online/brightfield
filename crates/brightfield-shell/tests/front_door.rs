@@ -924,6 +924,93 @@ fn a_bundled_data_start_writes_the_committed_bytes_where_a_second_launch_finds_t
     );
 }
 
+/// **What the click records is what the next launch restores.**
+///
+/// The other AC4 tests each start from something handed to them —
+/// `a_launch_restoring_the_data_file_start_lands_on_its_own_document` from the
+/// start's id written by hand, the door's Protocols tests from a seeded layout —
+/// so none of them read what clicking the card actually wrote. A `return;` after
+/// `adopt_boot` in `land_start`'s data-file arm skips recording the start and
+/// remembering it, and every one of them stayed green over it: a user would
+/// have opened California Housing, quit, and come back to the door with no row
+/// for it.
+///
+/// So this chains the three steps off the one window's own record. Click the
+/// card; the layout names the start as opened and heads its recents with it.
+/// Boot a second launch from **that** layout, through `opening_boot` as `main`
+/// does, and it is not the door and draws the same locator line. Open the door
+/// over that layout instead, and its Protocols row for the start reopens the
+/// same window.
+///
+/// Watched redden, one mutation: `return;` after `self.adopt_boot(boot);` in
+/// `land_start` fails here at "clicking california-housing recorded no start
+/// for the next launch to restore".
+#[test]
+fn the_card_records_what_the_next_launch_restores() {
+    datasets_into_scratch();
+    let start = the_data_file_start();
+
+    let mut first = Window::open(Boot::empty());
+    first.settle();
+    first.take_the_card(start.id);
+    first.settle();
+    assert!(
+        !first.app.front_door_is_live(),
+        "clicking {} left the window on the door",
+        start.id
+    );
+    let recorded = first.app.layout().clone();
+    assert_eq!(
+        recorded.opened.as_deref(),
+        Some(start.id),
+        "clicking {} recorded no start for the next launch to restore",
+        start.id
+    );
+    assert_eq!(
+        recorded.recents.first().map(|r| r.id.as_str()),
+        Some(start.id),
+        "clicking {} put no row for it at the head of the door's recents",
+        start.id
+    );
+    let crumbs = first.app.locator_crumbs();
+
+    // The second launch, off the first one's record.
+    let boot = opening_boot(None, recorded.opened.as_deref(), Flow::Vertical, None)
+        .expect("a launch restoring what the click recorded");
+    let mut second = Window {
+        app: MeridianApp::headless_with_layout(boot, recorded.clone(), Mode::Light),
+        ctx: egui::Context::default(),
+        screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
+    };
+    second.settle();
+    assert!(
+        !second.app.front_door_is_live(),
+        "a launch restoring what clicking {} recorded drew the front door",
+        start.id
+    );
+    assert_eq!(
+        second.app.locator_crumbs(),
+        crumbs,
+        "the restored launch drew a different locator line from the click"
+    );
+
+    // The door over the same record, and its Protocols row.
+    let mut door = Window {
+        app: MeridianApp::headless_with_layout(Boot::empty(), recorded, Mode::Light),
+        ctx: egui::Context::default(),
+        screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
+    };
+    door.settle();
+    door.take_the_row(start.id);
+    door.settle();
+    assert_eq!(
+        door.app.locator_crumbs(),
+        crumbs,
+        "the Protocols row for {} reopened a different window from the card",
+        start.id
+    );
+}
+
 /// **A launch that remembers the data-file start reopens it, not the door and
 /// not the crosswalk.**
 ///
@@ -1939,6 +2026,17 @@ fn either_route_to_the_same_subject_leaves_the_same_window() {
             by_row.app.layout().opened.as_deref(),
             by_card.app.layout().opened.as_deref(),
             "{}: the two routes recorded different work to restore",
+            start.id
+        );
+        // Equal is not recorded: two routes that both forgot to record the
+        // start agree with each other at `None`, and a launch after either
+        // restores the door. Watched redden: `return;` after `adopt_boot` in
+        // `land_start`'s data-file arm fails here.
+        assert_eq!(
+            by_card.app.layout().opened.as_deref(),
+            Some(start.id),
+            "{}: the card recorded no work to restore, so the comparison above \
+             is two absent records agreeing",
             start.id
         );
     }
