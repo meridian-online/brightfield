@@ -3117,6 +3117,35 @@ impl Session {
     /// numeric column carrying a NULL row beside a numeric column that does
     /// not, both counted by the one statement, with each column's exact
     /// distribution asserted.
+    /// One `f64`, spelled so DuckDB reads it as a **DOUBLE**.
+    ///
+    /// Written out because the obvious spelling is wrong and fails on real
+    /// data rather than on a fixture. A bare decimal in DuckDB is a DECIMAL
+    /// literal whose precision and scale come from the digits written, so a
+    /// column's `min` and `max` interpolated bare are two DECIMALs of two
+    /// different shapes, and the arithmetic between them is typed from the
+    /// first. California Housing's `avg_rooms` is the case: `min` is
+    /// 0.8461538461538461 — sixteen decimal places, so DECIMAL(16,16) — and
+    /// `max` is 141.9090909090909, which has three integer digits and does not
+    /// fit the scale that literal forced. DuckDB refuses the whole statement
+    /// with *Casting value "141.9090909090909" to type DECIMAL(18,16) failed:
+    /// value is out of range*, the profile pass fails, and the file does not
+    /// open. A DOUBLE has no such shape, and there is no width to disagree
+    /// about.
+    ///
+    /// **A quoted string cast, not `CAST(141.9 AS DOUBLE)`.** Rust's `{:?}`
+    /// renders a non-finite `f64` as `inf`, `-inf` or `NaN`, which are bare
+    /// identifiers in SQL and not numbers; inside quotes DuckDB casts all
+    /// three to the DOUBLE they name. A Parquet column can hold any of them,
+    /// and a profile pass that refuses such a file is the same defect one
+    /// level along.
+    ///
+    /// `a_column_whose_extremes_are_two_decimal_shapes_still_bins` is what
+    /// fails when this goes back to interpolating the value bare.
+    fn double_literal(v: f64) -> String {
+        format!("CAST('{v:?}' AS DOUBLE)")
+    }
+
     fn distributions_sql(source: &str, asks: &[DistributionAsk]) -> Option<String> {
         if asks.is_empty() {
             return None;
@@ -3132,10 +3161,10 @@ impl Session {
                 let key = if ask.distinct <= profile::VALUE_BAR_LIMIT {
                     format!("CAST(\"{q}\" AS DOUBLE)")
                 } else {
-                    let (lo, hi) = (ask.min, ask.max);
+                    let (lo, hi) = (Self::double_literal(ask.min), Self::double_literal(ask.max));
                     format!(
-                        "coalesce(least(floor((CAST(\"{q}\" AS DOUBLE) - {lo:?}) \
-                         / nullif({hi:?} - {lo:?}, 0) * {bins}), {last}), 0)"
+                        "coalesce(least(floor((CAST(\"{q}\" AS DOUBLE) - {lo}) \
+                         / nullif({hi} - {lo}, 0) * {bins}), {last}), 0)"
                     )
                 };
                 format!("CASE WHEN \"{q}\" IS NULL THEN NULL ELSE {{'c': {slot}, 'k': {key}}} END")
@@ -4527,6 +4556,94 @@ plot:
     /// **The distribution takes the binned branch above the per-value limit,
     /// and the bars fold out of it exactly.**
     ///
+    /// **A column whose two extremes are two DECIMAL shapes still bins.**
+    ///
+    /// The profile pass interpolates a wide column's `min` and `max` into the
+    /// bucket expression. Written bare they are DECIMAL literals shaped by
+    /// their own digits, and DuckDB types the arithmetic from the first one it
+    /// reads — so a `min` with sixteen decimal places and a `max` with three
+    /// integer digits is a statement DuckDB refuses outright. It is not a
+    /// wrong answer; the whole profile pass fails and the file does not open.
+    ///
+    /// The figures here are California Housing's `avg_rooms` to the digit, the
+    /// column that found this: `0.8461538461538461` and `141.9090909090909`.
+    /// The generated rows put those two at the ends of a range wide enough to
+    /// be over `VALUE_BAR_LIMIT`, which is the branch that interpolates them.
+    ///
+    /// Watched redden, one mutation: `double_literal` returning
+    /// `format!("{v:?}")` — the spelling this replaced — fails here at
+    /// "profiling a column with two decimal shapes at its ends failed:
+    /// Conversion Error: Casting value \"141.9090909090909\" to type
+    /// DECIMAL(18,16) failed".
+    ///
+    /// The non-finite half is asserted beside it rather than in a test of its
+    /// own, because it is the same line's other failure mode: `inf` and `NaN`
+    /// are bare identifiers unless they are quoted, so a spelling that fixed
+    /// the DECIMAL shape by casting a bare number would pass the first half of
+    /// this and fail the second.
+    #[test]
+    fn a_column_whose_extremes_are_two_decimal_shapes_still_bins() {
+        let yaml = r#"
+data:
+  t: "SELECT CASE i WHEN 0 THEN 0.8461538461538461 WHEN 99 THEN 141.9090909090909 \
+      ELSE 1.0 + i * 1.4 END AS v FROM range(0, 100) AS r(i)"
+plot:
+  - mark: dot
+    data: { from: t }
+    x: v
+    y: v
+"#;
+        let (spec, analysis) = parse_and_analyse(yaml);
+        let session = Engine::new()
+            .load_spec(spec, analysis, None)
+            .unwrap()
+            .session;
+        let profiles = session.profile_sources();
+        assert!(
+            matches!(&profiles[0].outcome, ProfileOutcome::Profiled { .. }),
+            "profiling a column with two decimal shapes at its ends failed: \
+             {:?}",
+            profiles[0].outcome
+        );
+        let cols = profiled_columns(&profiles[0].outcome);
+        let v = cols
+            .iter()
+            .find(|c| c.name == "v")
+            .expect("the column")
+            .moments
+            .as_ref()
+            .expect("a numeric column carries moments");
+        let crate::profile::Distribution::Bins(bins) = &v.distribution else {
+            panic!(
+                "this column has more distinct values than the per-value \
+                 limit, so it should have taken the binned branch — the one \
+                 that interpolates the extremes: {:?}",
+                v.distribution
+            )
+        };
+        assert_eq!(
+            bins.iter().sum::<u64>(),
+            100,
+            "every row lands in exactly one bucket"
+        );
+
+        // The other failure mode of the same line: `{:?}` renders a non-finite
+        // f64 as a bare word, which is an identifier and not a number.
+        for (value, spelled) in [
+            (f64::NAN, "NaN"),
+            (f64::INFINITY, "inf"),
+            (f64::NEG_INFINITY, "-inf"),
+        ] {
+            let sql = Session::double_literal(value);
+            assert_eq!(
+                sql,
+                format!("CAST('{spelled}' AS DOUBLE)"),
+                "a non-finite extreme is spelled as a bare word, which DuckDB \
+                 reads as a column name"
+            );
+        }
+    }
+
     /// A hundred rows of a hundred distinct values: over
     /// [`profile::VALUE_BAR_LIMIT`], so the pass counts
     /// [`profile::BIN_RESOLUTION`] buckets, and the band's bars are that
