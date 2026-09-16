@@ -91,39 +91,28 @@ jobs:
       # design-system and arcform pins are git dependencies) plus ./target.
       - uses: Swatinem/rust-cache@v2
 
-      # No `cargo fmt --check` / `cargo clippy -D warnings` step here, on
-      # purpose: both now exist, in `lint.yml`. They are a separate workflow so
-      # they report in minutes without queueing behind this suite, and so they
-      # still report when this suite is red or cancelled.
-
-      # --test-threads=1 is the project's standing invocation: it keeps the
-      # GPU-backed suites (the shared wgpu device the shell's snapshot harness
-      # builds) off each other's toes. At this suite
-      # size the serialisation costs little and buys determinism.
-      #
-      # `--locked` because Cargo.lock is tracked: without it CI would happily
-      # re-resolve around the committed lock and go green on a dependency graph
-      # nobody reviewed, and lockfile drift would never be caught. With it, a
-      # stale lock is a hard error here.
-      - name: cargo test --workspace
-        run: cargo test --locked --workspace -- --test-threads=1
-
-      # Frees disk on the macOS runner before the pin-staleness step below,
-      # which is the step most likely to hit the runner's ceiling — see the
-      # comment on that step for why it recompiles `libduckdb-sys` a second
-      # time no matter how its cargo invocation is shaped. On a cold cache the
-      # suite above already leaves the runner within a few gigabytes of its
-      # ceiling, and none of what this step removes is needed to build or
-      # test this workspace: no iOS/watchOS/tvOS or Android target is ever
-      # built here, and the pin-staleness step's own error text names the one
-      # Xcode (`Xcode_16.4.app`) this job actually invokes `ar`/`ranlib` from,
-      # so every other pre-installed Xcode version is dead weight on this
-      # runner. Each `rm -rf` is allowed to fail on its own (`|| true`)
-      # rather than the whole step failing: a path this runner image has
-      # already dropped or renamed should not turn a disk-reclaim step into a
-      # red gate, it should just mean less was freed, which the before/after
-      # `df -h` below still shows.
-      - name: reclaim disk before the sibling-manifest step
+      # Frees disk on the macOS runner before ANY of this job's cargo builds,
+      # not just the pin-staleness step below. It moved here, ahead of the
+      # workspace suite, after a cold run of a lockfile-change PR was proven
+      # green on the sibling-manifest step (see the comment on that step)
+      # only for `cargo test --workspace` itself to go on and fail on a LATER
+      # cold run — `ld: write() failed, errno=28` (ENOSPC) linking a
+      # `brightfield-shell` test binary — because that run's own log showed
+      # only a couple of gigabytes free right after the workspace suite
+      # finished, before the sibling-manifest step's own duplicate compile
+      # ever ran. A step that frees disk for the steps after it has to run
+      # before the FIRST step that can fill the disk, not just before the
+      # one this card was filed over. None of what it removes is needed to
+      # build or test this workspace: no iOS/watchOS/tvOS or Android target
+      # is ever built here, and the pin-staleness step's own error text names
+      # the one Xcode (`Xcode_16.4.app`) this job actually invokes
+      # `ar`/`ranlib` from, so every other pre-installed Xcode version is
+      # dead weight on this runner. Each `rm -rf` is allowed to fail on its
+      # own (`|| true`) rather than the whole step failing: a path this
+      # runner image has already dropped or renamed should not turn a
+      # disk-reclaim step into a red gate, it should just mean less was
+      # freed, which the before/after `df -h` below still shows.
+      - name: reclaim disk before this job's cargo builds
         shell: bash
         run: |
           set -u
@@ -148,6 +137,23 @@ jobs:
 
           echo "--- disk after reclaiming:"
           df -h /
+
+      # No `cargo fmt --check` / `cargo clippy -D warnings` step here, on
+      # purpose: both now exist, in `lint.yml`. They are a separate workflow so
+      # they report in minutes without queueing behind this suite, and so they
+      # still report when this suite is red or cancelled.
+
+      # --test-threads=1 is the project's standing invocation: it keeps the
+      # GPU-backed suites (the shared wgpu device the shell's snapshot harness
+      # builds) off each other's toes. At this suite
+      # size the serialisation costs little and buys determinism.
+      #
+      # `--locked` because Cargo.lock is tracked: without it CI would happily
+      # re-resolve around the committed lock and go green on a dependency graph
+      # nobody reviewed, and lockfile drift would never be caught. With it, a
+      # stale lock is a hard error here.
+      - name: cargo test --workspace
+        run: cargo test --locked --workspace -- --test-threads=1
 
       # THE PIN-STALENESS CHECK. Its own step with its own pass/fail, for the
       # same reason the conformance scoreboard below is one: the number that
@@ -178,9 +184,14 @@ jobs:
       # gigabytes of its ceiling — so this step's rebuild, on its own only a
       # few gigabytes, is what exhausted it with `ranlib: can't write to
       # output file (No space left on device)`. Rather than chase Cargo's
-      # resolver further, the runner's disk is reclaimed in the step above
-      # this one instead, of what neither this build nor this workspace's
-      # tests need.
+      # resolver further, the runner's disk is reclaimed near the top of
+      # this job, before the workspace suite runs — see "reclaim disk before
+      # this job's cargo builds" above — of what neither that build, this
+      # one, nor this workspace's tests need. It reclaims ahead of the
+      # workspace suite rather than only ahead of this step because the
+      # workspace suite itself can fill the disk first on a cold run; a step
+      # that frees disk for later steps has to run before the first step
+      # that can exhaust it.
       #
       # THE GUARD, and it is the point of this step's shape. `cargo test --
       # --ignored` with a filter that matches NOTHING exits 0 and prints
