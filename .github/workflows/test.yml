@@ -130,9 +130,9 @@ jobs:
       # `libduckdb-sys` into the same `target/`. On a warm cache both builds
       # are already on disk and this is invisible; on a cache-key miss (any
       # `Cargo.lock` change) the runner rebuilds both from nothing and the
-      # second one is what exhausted the runner's disk — see
-      # `notes/a-red-brightfield-test-job-whose-workspace-step-passed-can-be-the-runners-disk.md`
-      # in the planning repo. `--workspace --test sibling_manifests` selects
+      # second one is what exhausted the runner's disk with
+      # `ranlib: can't write to output file (No space left on device)`.
+      # `--workspace --test sibling_manifests` selects
       # the same feature set as the step above (so the build is a no-op reuse
       # of what that step already compiled) while still building and running
       # only the one test binary named — Cargo narrows the TARGETS built to
