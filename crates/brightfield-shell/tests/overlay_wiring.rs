@@ -490,6 +490,16 @@ fn every_chart_palette_candidate_actually_dispatches() {
                     "reset-extent did not clear the navigated frame"
                 );
             }
+            "move-grid" => {
+                let mut win = Window::live_chart("scatter.yaml");
+                let before = win.app.grid_spot();
+                confirm_chart_verb(&mut win, longname);
+                assert_eq!(
+                    win.app.grid_spot(),
+                    before.other(),
+                    "move-grid did not move the grid"
+                );
+            }
             "open-home" => {
                 let mut win = Window::live_chart("scatter.yaml");
                 assert!(!win.app.chart_doc().is_empty(), "fixture starts loaded");

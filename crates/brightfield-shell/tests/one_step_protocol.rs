@@ -1181,6 +1181,7 @@ fn going_home_takes_the_save_offer_with_the_start() {
         "signals-dashboard",
         RunState::NeverRun,
         brightfield_workbench::GridLayout::Rows,
+        brightfield_workbench::GridSpot::Canvas,
         1,
     );
     let mut win = Window::with_layout(
@@ -2407,6 +2408,7 @@ fn each_remembered_document_restores_its_own_grid_layout() {
         "A",
         RunState::NeverRun,
         brightfield_workbench::GridLayout::Columns,
+        brightfield_workbench::GridSpot::Canvas,
         1_000,
     );
     layout.remember(
@@ -2414,6 +2416,7 @@ fn each_remembered_document_restores_its_own_grid_layout() {
         "B",
         RunState::NeverRun,
         brightfield_workbench::GridLayout::Rows,
+        brightfield_workbench::GridSpot::Canvas,
         2_000,
     );
 
@@ -2468,6 +2471,7 @@ fn a_launch_over_a_saved_path_opens_on_its_own_grid_layout() {
         "Harbour",
         RunState::NeverRun,
         brightfield_workbench::GridLayout::Columns,
+        brightfield_workbench::GridSpot::Canvas,
         1_000,
     );
 

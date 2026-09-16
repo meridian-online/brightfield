@@ -460,7 +460,7 @@ pub struct HoverReadout {
 /// cannot be typed by a crate that does not exist from where it is written.
 /// One enum, one serialised spelling, and the canvas goes on reading it under
 /// the name it always used.
-pub use brightfield_workbench::persist::GridLayout;
+pub use brightfield_workbench::persist::{GridLayout, GridSpot};
 
 /// **The grid pane's layout switch, as the last frame drew it.**
 ///
@@ -481,6 +481,25 @@ pub struct LayoutSwitchDrawn {
     /// The words the control offers on hover, verbatim. The same `String` is
     /// handed to the tooltip, so the two cannot drift.
     pub hover: String,
+}
+
+/// **The grid's spot switch, as the frame drew it** — *canvas · ledger*, on the
+/// grid's own header band in whichever spot holds it.
+///
+/// The record a test clicks, on the standing of [`LayoutSwitchDrawn`]: the
+/// rects are the ones the painter and the hit test were handed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpotSwitchDrawn {
+    /// The control's outer rect.
+    pub rect: egui::Rect,
+    /// One entry per spot, in the order drawn, with the rect that picks it.
+    pub states: Vec<(GridSpot, egui::Rect)>,
+    /// The spot the grid beneath this band is drawing in.
+    pub active: GridSpot,
+    /// The words offered on hover, verbatim.
+    pub hover: String,
+    /// The spot a click picked this frame, if one did.
+    pub picked: Option<GridSpot>,
 }
 
 /// **One histogram tile's scale switch, as the last frame drew it.**
@@ -593,30 +612,41 @@ pub struct ChartDoc {
     /// canvas each frame *before* the pane draws, because it is a fact about
     /// the layout the frame chose rather than about the document.
     pub pane_views: Option<PaneViews>,
-    /// **What each grid pane's table laid out**, as of the last frame it drew,
-    /// keyed by the pane's own [`ItemId`] — see
+    /// **What the grid's table laid out**, as of the frame it drew in — see
     /// [`crate::data_grid::TableDrawn`].
     ///
-    /// Written by each grid pane, read by the canvas group that draws the
-    /// readout above it. It lives on the document rather than on the pane for
-    /// the reason [`Self::raster_rect`] does: the shell hands out one
-    /// `&mut ChartDoc` for the duration of one pane's draw, so a fact one pane
-    /// records and another reports has to pass through here.
+    /// Written by the grid, read by whichever frame around it draws the
+    /// readout of how much of the table is on screen. It lives on the document
+    /// rather than on the pane for the reason [`Self::raster_rect`] does: the
+    /// shell hands out one `&mut ChartDoc` for the duration of one pane's
+    /// draw, so a fact one pane records and another reports has to pass
+    /// through here.
     ///
-    /// **Keyed rather than single, because two grids draw in one frame.** The
-    /// ledger rail's Rows pane and the canvas's rows pane are both
-    /// [`crate::data_grid::DataGridItem`]s over the same session, the ledger
-    /// is a bottom panel drawn before the central one, and a single slot had
-    /// the second write overwrite the first on each frame — so the readout
-    /// above the canvas's grid reported the rail's table. Read it back through
-    /// [`Self::grid_drawn`].
-    pub grids_drawn: std::collections::BTreeMap<ItemId, crate::data_grid::TableDrawn>,
+    /// **One slot, because there is one grid.** The table is one
+    /// [`crate::data_grid::DataGridItem`] under one id, drawn in one spot per
+    /// frame — beside the hero on the canvas or in the ledger rail — so there
+    /// is one record to keep. [`Self::tables_filed`] counts the filings a
+    /// frame made, which is how a second grid drawn in the same frame is seen
+    /// rather than silently overwriting the first. Cleared at the start of each
+    /// frame by [`Self::begin_grid_frame`], so a grid that drew nowhere this
+    /// frame answers `None` rather than last frame's rect. Read it back
+    /// through [`Self::grid_drawn`].
+    pub table_drawn: Option<crate::data_grid::TableDrawn>,
+    /// How many tables the grid filed into [`Self::table_drawn`] this frame —
+    /// one when the grid drew, zero when it drew nowhere, and two when a frame
+    /// drew the grid in both spots, which is the defect this exists to make
+    /// visible (`one_grid_draws_in_one_spot_and_a_brush_narrows_it_in_either`).
+    pub tables_filed: usize,
     /// **The grid pane's layout switch, as the last frame drew it** — see
     /// [`LayoutSwitchDrawn`]. `None` on a frame whose canvas drew no grid
     /// pane, and rewritten by each frame that does, for the reason
     /// [`Self::scale_switches`] is: a rect left standing from a previous frame
     /// aims a click at a control that is no longer there.
     pub grid_layout_switch: Option<LayoutSwitchDrawn>,
+    /// **The grid's spot switch, as this frame drew it** — see
+    /// [`SpotSwitchDrawn`]. `None` on a frame that drew the grid without a
+    /// header band, or drew no grid; cleared by [`Self::begin_grid_frame`].
+    pub grid_spot_switch: Option<SpotSwitchDrawn>,
     /// **What the transposed layout's rows stated**, in tile order, one entry
     /// per row the last frame drew.
     ///
@@ -861,9 +891,11 @@ impl ChartDoc {
             hover_readout: None,
             viewport: None,
             pane_views: None,
-            grids_drawn: std::collections::BTreeMap::new(),
+            table_drawn: None,
+            tables_filed: 0,
             grid_density: None,
             grid_layout_switch: None,
+            grid_spot_switch: None,
             transposed_rows: Vec::new(),
             gesture_latched: false,
             gesture_ink: None,
@@ -906,9 +938,11 @@ impl ChartDoc {
             hover_readout: None,
             viewport: None,
             pane_views: None,
-            grids_drawn: std::collections::BTreeMap::new(),
+            table_drawn: None,
+            tables_filed: 0,
             grid_density: None,
             grid_layout_switch: None,
+            grid_spot_switch: None,
             transposed_rows: Vec::new(),
             gesture_latched: false,
             gesture_ink: None,
@@ -1000,9 +1034,11 @@ impl ChartDoc {
             crate::dashboard::COLUMN_TILE_WIDTH as f32,
         );
         self.pane_views = None;
-        self.grids_drawn.clear();
+        self.table_drawn = None;
+        self.tables_filed = 0;
         self.grid_density = None;
         self.grid_layout_switch = None;
+        self.grid_spot_switch = None;
         self.transposed_rows = Vec::new();
         self.gesture_latched = false;
         self.gesture_ink = None;
@@ -1239,15 +1275,40 @@ impl ChartDoc {
         }
     }
 
-    /// What the grid pane `item` laid out on the last frame it drew, if it
-    /// drew one — the read half of [`Self::grids_drawn`].
+    /// What the grid laid out on this frame, if it drew — the read half of
+    /// [`Self::table_drawn`].
     ///
-    /// `None` for a pane that drew no table this frame, which is the answer a
-    /// caller wants: a rect left standing from a frame that did draw one would
-    /// aim a readout at a table the reader is no longer looking at.
+    /// `None` for a frame that drew no table, which is the answer a caller
+    /// wants: a rect left standing from a frame that did draw one would aim a
+    /// readout at a table the reader is no longer looking at.
     #[must_use]
-    pub fn grid_drawn(&self, item: ItemId) -> Option<&crate::data_grid::TableDrawn> {
-        self.grids_drawn.get(&item)
+    pub fn grid_drawn(&self) -> Option<&crate::data_grid::TableDrawn> {
+        self.table_drawn.as_ref()
+    }
+
+    /// How many tables the grid filed this frame — see [`Self::tables_filed`].
+    #[must_use]
+    pub const fn tables_filed(&self) -> usize {
+        self.tables_filed
+    }
+
+    /// Forget the last frame's table record before this frame's grid draws.
+    ///
+    /// Called by the window once per frame, ahead of the ledger rail and the
+    /// canvas — the two spots the grid can draw in — so what the record holds
+    /// afterwards is what this frame drew and nothing older.
+    pub fn begin_grid_frame(&mut self) {
+        self.table_drawn = None;
+        self.tables_filed = 0;
+        self.grid_spot_switch = None;
+    }
+
+    /// File what the grid's table laid out this frame, and count the filing.
+    pub fn file_table_drawn(&mut self, drawn: Option<crate::data_grid::TableDrawn>) {
+        if drawn.is_some() {
+            self.tables_filed += 1;
+        }
+        self.table_drawn = drawn;
     }
 
     /// The live coordinator behind this document, when one is attached — the
@@ -2208,7 +2269,7 @@ pub fn chart_registry_with(gallery: bool) -> ItemRegistry<ChartDoc> {
             make: || Box::new(ChartItem::new()),
         },
         crate::data_grid::data_grid_spec(),
-        crate::data_grid::rows_spec(),
+        crate::data_grid::rows_spot_spec(),
         ItemSpec {
             id: CONTROLS,
             slot: Slot::Rail {

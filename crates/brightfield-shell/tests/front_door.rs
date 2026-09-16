@@ -248,6 +248,7 @@ fn layout_remembering(recents: &[(&str, &str, RunState, u64)]) -> SavedLayout {
             // default rather than varying it — a row's grid layout is what
             // reopening it restores, not what listing it draws.
             grid_layout: brightfield_workbench::GridLayout::default(),
+            grid_spot: brightfield_workbench::GridSpot::default(),
             opened_at: now - ago,
         })
         .collect();
