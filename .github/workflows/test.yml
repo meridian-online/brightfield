@@ -108,6 +108,47 @@ jobs:
       - name: cargo test --workspace
         run: cargo test --locked --workspace -- --test-threads=1
 
+      # Frees disk on the macOS runner before the pin-staleness step below,
+      # which is the step most likely to hit the runner's ceiling — see the
+      # comment on that step for why it recompiles `libduckdb-sys` a second
+      # time no matter how its cargo invocation is shaped. On a cold cache the
+      # suite above already leaves the runner within a few gigabytes of its
+      # ceiling, and none of what this step removes is needed to build or
+      # test this workspace: no iOS/watchOS/tvOS or Android target is ever
+      # built here, and the pin-staleness step's own error text names the one
+      # Xcode (`Xcode_16.4.app`) this job actually invokes `ar`/`ranlib` from,
+      # so every other pre-installed Xcode version is dead weight on this
+      # runner. Each `rm -rf` is allowed to fail on its own (`|| true`)
+      # rather than the whole step failing: a path this runner image has
+      # already dropped or renamed should not turn a disk-reclaim step into a
+      # red gate, it should just mean less was freed, which the before/after
+      # `df -h` below still shows.
+      - name: reclaim disk before the sibling-manifest step
+        shell: bash
+        run: |
+          set -u
+          echo "--- disk before reclaiming:"
+          df -h /
+
+          for app in /Applications/Xcode_*.app; do
+            [ -d "$app" ] || continue
+            [ "$app" = "/Applications/Xcode_16.4.app" ] && continue
+            echo "removing $app ($(du -sh "$app" 2>/dev/null | cut -f1))"
+            sudo rm -rf "$app" || true
+          done
+
+          for path in "$HOME/Library/Android" /Library/Developer/CoreSimulator/Profiles/Runtimes; do
+            if [ -e "$path" ]; then
+              echo "removing $path ($(du -sh "$path" 2>/dev/null | cut -f1))"
+              sudo rm -rf "$path" || true
+            else
+              echo "$path not present on this runner image"
+            fi
+          done
+
+          echo "--- disk after reclaiming:"
+          df -h /
+
       # THE PIN-STALENESS CHECK. Its own step with its own pass/fail, for the
       # same reason the conformance scoreboard below is one: the number that
       # matters — how many shipped Protocols the pinned `arc` could load — is
@@ -117,26 +158,29 @@ jobs:
       # `#[ignore]`d because their input is not in this checkout, so the
       # workspace suite above compiled them and ran neither.
       #
-      # `--workspace`, not `-p brightfield-protocol`, and this is deliberate.
-      # `brightfield-protocol` itself only requests `duckdb`'s `bundled`
-      # feature; three other workspace members (`brightfield-engine`,
-      # `brightfield-shell`, `brightfield-bench`) also depend on `duckdb` and
-      # request `bundled` + `parquet`. Cargo's resolver-2 feature unification
-      # is computed over the packages SELECTED on the command line: the
-      # workspace suite above selects all of them, so `duckdb`/`libduckdb-sys`
-      # get built once with the union of features; `-p brightfield-protocol`
-      # alone selected only its own narrower feature request, which is a
-      # DIFFERENT unit graph and forced a second, separate compile of
-      # `libduckdb-sys` into the same `target/`. On a warm cache both builds
-      # are already on disk and this is invisible; on a cache-key miss (any
-      # `Cargo.lock` change) the runner rebuilds both from nothing and the
-      # second one is what exhausted the runner's disk with
-      # `ranlib: can't write to output file (No space left on device)`.
-      # `--workspace --test sibling_manifests` selects
-      # the same feature set as the step above (so the build is a no-op reuse
-      # of what that step already compiled) while still building and running
-      # only the one test binary named — Cargo narrows the TARGETS built to
-      # matches of `--test`, it does not build every member's bins and tests.
+      # THIS STEP COMPILES `libduckdb-sys` A SECOND TIME, into the same
+      # `target/`, no matter how its cargo invocation is shaped. Measured
+      # directly: `-p brightfield-protocol --test sibling_manifests` (the
+      # form below), `--workspace --test sibling_manifests`, and
+      # `-p brightfield-protocol --test sibling_manifests --features
+      # duckdb/parquet` (explicitly matching the feature union the step above
+      # activates: `brightfield-protocol` alone requests `duckdb`'s `bundled`
+      # feature, three other workspace members request `bundled` + `parquet`)
+      # all three recompiled `libduckdb-sys`, `arrow` and `duckdb` rather than
+      # reusing the step above's build. A `--test <NAME>` filter narrows
+      # Cargo to the unit graph that one target actually needs, regardless of
+      # `-p` versus `--workspace` or an explicit `--features`, so this step's
+      # build is a genuinely different, separately-fingerprinted compile from
+      # the workspace suite's, every time. On a warm cache both builds are
+      # already on disk and this is invisible; on a cache-key miss (any
+      # `Cargo.lock` change) the runner rebuilds both from nothing, and the
+      # workspace suite above already leaves the runner within a few
+      # gigabytes of its ceiling — so this step's rebuild, on its own only a
+      # few gigabytes, is what exhausted it with `ranlib: can't write to
+      # output file (No space left on device)`. Rather than chase Cargo's
+      # resolver further, the runner's disk is reclaimed in the step above
+      # this one instead, of what neither this build nor this workspace's
+      # tests need.
       #
       # THE GUARD, and it is the point of this step's shape. `cargo test --
       # --ignored` with a filter that matches NOTHING exits 0 and prints
@@ -177,7 +221,7 @@ jobs:
           # output redirected to a file, the code kept in a variable and the
           # file printed afterwards.
           code=0
-          cargo test --locked --workspace --test sibling_manifests \
+          cargo test --locked -p brightfield-protocol --test sibling_manifests \
             -- --ignored --test-threads=1 --nocapture >"$log" 2>&1 || code=$?
           cat "$log"
 
