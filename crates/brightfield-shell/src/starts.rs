@@ -223,10 +223,9 @@ pub const CALIFORNIA_HOUSING: &str = "california-housing";
 /// writes it under.
 ///
 /// One struct rather than three fields on [`Start`], because they are one
-/// fact: bytes with no name have nowhere to go, a name with no bytes has
-/// nothing to write, and a descriptor belonging to different bytes is worse
-/// than none.
-/// An `Option<BundledData>` therefore has two states and not eight.
+/// fact: bytes with no name have nowhere to go, a name with no bytes has no
+/// bytes to write, and a descriptor belonging to different bytes is worse than
+/// none. An `Option<BundledData>` therefore has two states and not eight.
 pub struct BundledData {
     /// The name the bytes are written under — and therefore what the locator
     /// band says, what the one SQL step reads, and (as its stem) what the
@@ -821,11 +820,10 @@ pub fn compose(spec: &str, fetched: Option<crate::remote::Fetched>) -> Result<Op
 /// [`crate::startup::datasets_dir`] when this machine resolves a config
 /// directory, and a process-scoped temporary directory when it does not. The
 /// fallback is not a second policy: a machine with no home and no
-/// `XDG_CONFIG_HOME` has nowhere to keep a layout file either, so a launch
-/// there restores nothing to begin with — see
+/// `XDG_CONFIG_HOME` has nowhere to keep a layout file either — see
 /// `brightfield_workbench::persist::config_dir`, which answers `None` for
-/// exactly that machine — and a stable path would be a promise the platform
-/// cannot keep. Naming it after the process keeps two brightfields on such a
+/// exactly that machine — so there is no remembered start for a stable path to
+/// reopen, and the path would be a promise the platform cannot keep. Naming it after the process keeps two brightfields on such a
 /// machine from writing the same path.
 #[must_use]
 pub fn datasets_dir() -> std::path::PathBuf {

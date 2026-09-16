@@ -61,9 +61,9 @@ const CANVAS_PANE: PaneKey = PaneKey::new(CANVAS);
 /// not all run on one thread unless `--test-threads=1` says so, which is CI's
 /// argument and not the default.
 ///
-/// It relocates the layout file too, which costs nothing here: a saved layout
-/// is out of a constructor's reach (see `crate::startup`'s module docs), so
-/// the effect that lands is the one this is for.
+/// It relocates the layout file too, at no cost here: a saved layout is out of
+/// a constructor's reach (see `crate::startup`'s module docs), so the effect
+/// that lands is the one this is for.
 fn datasets_into_scratch() {
     std::env::set_var(
         brightfield_shell::startup::CONFIG_DIR_VAR,
