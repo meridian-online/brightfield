@@ -117,6 +117,27 @@ jobs:
       # `#[ignore]`d because their input is not in this checkout, so the
       # workspace suite above compiled them and ran neither.
       #
+      # `--workspace`, not `-p brightfield-protocol`, and this is deliberate.
+      # `brightfield-protocol` itself only requests `duckdb`'s `bundled`
+      # feature; three other workspace members (`brightfield-engine`,
+      # `brightfield-shell`, `brightfield-bench`) also depend on `duckdb` and
+      # request `bundled` + `parquet`. Cargo's resolver-2 feature unification
+      # is computed over the packages SELECTED on the command line: the
+      # workspace suite above selects all of them, so `duckdb`/`libduckdb-sys`
+      # get built once with the union of features; `-p brightfield-protocol`
+      # alone selected only its own narrower feature request, which is a
+      # DIFFERENT unit graph and forced a second, separate compile of
+      # `libduckdb-sys` into the same `target/`. On a warm cache both builds
+      # are already on disk and this is invisible; on a cache-key miss (any
+      # `Cargo.lock` change) the runner rebuilds both from nothing and the
+      # second one is what exhausted the runner's disk — see
+      # `notes/a-red-brightfield-test-job-whose-workspace-step-passed-can-be-the-runners-disk.md`
+      # in the planning repo. `--workspace --test sibling_manifests` selects
+      # the same feature set as the step above (so the build is a no-op reuse
+      # of what that step already compiled) while still building and running
+      # only the one test binary named — Cargo narrows the TARGETS built to
+      # matches of `--test`, it does not build every member's bins and tests.
+      #
       # THE GUARD, and it is the point of this step's shape. `cargo test --
       # --ignored` with a filter that matches NOTHING exits 0 and prints
       # "0 passed", so a green step here would otherwise prove nothing at all.
@@ -146,13 +167,22 @@ jobs:
           floor=2
           log="${RUNNER_TEMP}/sibling-manifests.log"
 
+          # The disk figure this step exists to watch, printed before and
+          # after so a reader sees whether this step is the one that filled
+          # it — no guessing from a "No space left on device" message alone.
+          echo "--- disk before the sibling-manifest step:"
+          df -h /
+
           # The exit code is captured, never masked: no pipe into head/tail,
           # output redirected to a file, the code kept in a variable and the
           # file printed afterwards.
           code=0
-          cargo test --locked -p brightfield-protocol --test sibling_manifests \
+          cargo test --locked --workspace --test sibling_manifests \
             -- --ignored --test-threads=1 --nocapture >"$log" 2>&1 || code=$?
           cat "$log"
+
+          echo "--- disk after the sibling-manifest step:"
+          df -h /
 
           # libtest's summary line:
           #   test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.10s
