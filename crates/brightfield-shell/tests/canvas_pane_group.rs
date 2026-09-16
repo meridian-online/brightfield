@@ -3831,6 +3831,54 @@ fn a_brush_narrows_the_ledgers_rows_pane_and_the_canvas_grid_to_one_count() {
     // Rows is the ledger's third name: Log, Quality, Rows, Editor.
     pick_the_ledger_name(&mut app, &ctx, &raw, 2);
 
+    // **The two records are records of two draws, checked before either count
+    // is believed.** This is the assertion the criterion actually turns on: a
+    // document holding ONE drawn-table slot returns the same record under both
+    // keys, and two counts read out of one record agree whatever either pane
+    // did — measured, by writing one record under both keys and watching the
+    // count comparison below stay green. Each record's first header cell has
+    // to land inside its own pane's rect, and the two rects do not overlap, so
+    // one record answering for both fails here.
+    let placed = |app: &MeridianApp| {
+        let ledger_rect = app
+            .region_rect(arrangement::LEDGER_RAIL)
+            .expect("the ledger rail drew");
+        let canvas_rect = app
+            .canvas_panes()
+            .pane("grid")
+            .expect("the canvas's grid pane drew")
+            .body;
+        assert!(
+            !ledger_rect.intersects(canvas_rect),
+            "the ledger rail {ledger_rect:?} and the canvas's grid pane \
+             {canvas_rect:?} overlap, so where a table drew says nothing about \
+             which pane drew it"
+        );
+        let doc = app.chart_doc();
+        let head = |item, whose: &str| -> egui::Rect {
+            let drawn = doc
+                .grid_drawn(item)
+                .unwrap_or_else(|| panic!("{whose} laid a table out"));
+            drawn
+                .header_cells
+                .first()
+                .unwrap_or_else(|| panic!("{whose} drew no header cell"))
+                .1
+        };
+        let in_canvas = head(DATA, "the canvas's grid pane");
+        let in_ledger = head(ROWS, "the ledger's Rows pane");
+        assert!(
+            canvas_rect.contains_rect(in_canvas.shrink(1.0)),
+            "the record filed under the canvas's grid drew its header at \
+             {in_canvas:?}, outside that pane's {canvas_rect:?}"
+        );
+        assert!(
+            ledger_rect.contains_rect(in_ledger.shrink(1.0)),
+            "the record filed under the ledger's Rows pane drew its header at \
+             {in_ledger:?}, outside that rail's {ledger_rect:?}"
+        );
+    };
+
     let counts = |app: &MeridianApp| -> (u64, u64) {
         let doc = app.chart_doc();
         (
@@ -3842,6 +3890,7 @@ fn a_brush_narrows_the_ledgers_rows_pane_and_the_canvas_grid_to_one_count() {
                 .rows,
         )
     };
+    placed(&app);
     assert_eq!(
         counts(&app),
         (file.len() as u64, file.len() as u64),
@@ -3864,6 +3913,7 @@ fn a_brush_narrows_the_ledgers_rows_pane_and_the_canvas_grid_to_one_count() {
         let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
     }
 
+    placed(&app);
     let (canvas, ledger) = counts(&app);
     assert_eq!(
         (canvas, ledger),
