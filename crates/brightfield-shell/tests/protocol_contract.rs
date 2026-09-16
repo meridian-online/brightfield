@@ -1,7 +1,7 @@
 //! The protocol view against the shell contract, without a GPU.
 //!
 //! Everything asserted here is a property of the view's *declaration* — its
-//! registry, its four subjects, its default arrangement — and none of it needs
+//! registry, its subjects, its default arrangement — and none of it needs
 //! a device. That is the payoff of a [`Subject`](brightfield_workbench::Subject)
 //! being plain data: the pane headers, the empty states and the key context of
 //! a whole surface can be pinned in a unit test that runs in milliseconds,
@@ -15,10 +15,12 @@
 
 use std::collections::BTreeMap;
 
+use brightfield_protocol::contract::Outcome;
+use brightfield_protocol::contract_graph::RunView;
 use brightfield_protocol::layout::Flow;
 use brightfield_shell::protocol::{
     load_protocol_offline, protocol_registry, ProtocolDoc, ProtocolInputs, ProtocolModel, CANVAS,
-    INSPECTOR, OUTLINE, STEPS,
+    INSPECTOR, LOG, OUTLINE, QUALITY, STEPS,
 };
 use brightfield_workbench::registry::Slot;
 use brightfield_workbench::{audit, ItemId, PaneKey, Subject};
@@ -26,10 +28,45 @@ use brightfield_workbench::{audit, ItemId, PaneKey, Subject};
 const EDGAR: &str = "../../examples/protocol/edgar_gleif/arcform.yaml";
 
 /// The real fixture, as a document with no device behind it.
+///
+/// A **declaration**: a manifest, which `load_protocol_offline` reads without
+/// a run behind it. [`ran`] is the same fixture with one.
 fn loaded() -> ProtocolDoc {
-    let inputs = load_protocol_offline(EDGAR).expect("load edgar_gleif");
+    ProtocolDoc::headless(ProtocolModel::new(loaded_inputs(), Flow::Vertical))
+}
+
+/// [`loaded`]'s inputs, before a document is built over them.
+fn loaded_inputs() -> ProtocolInputs {
+    load_protocol_offline(EDGAR).expect("load edgar_gleif")
+}
+
+/// The real fixture with a run record behind it.
+///
+/// The run is put on directly rather than executed: a run is `arc`'s, needs a
+/// network and an engine this test binary has neither of, and what the panes
+/// read is the header a finished run WRITES. The other fields are what a run
+/// that finished would carry.
+fn ran() -> ProtocolDoc {
+    let mut inputs = loaded_inputs();
+    inputs.run = Some(RunView {
+        run_id: "2026-09-16T09-00-00Z".to_string(),
+        protocol: "edgar_gleif".to_string(),
+        outcome: Outcome::Success,
+        started_at: Some("2026-09-16T09:00:00Z".to_string()),
+        finished_at: Some("2026-09-16T09:04:00Z".to_string()),
+        complete: true,
+    });
     ProtocolDoc::headless(ProtocolModel::new(inputs, Flow::Vertical))
 }
+
+/// The panes whose content a **run** supplies rather than the Protocol: the
+/// ledger rail's Log and Quality.
+///
+/// They apologise over a declaration and have content over a run, which is the
+/// opposite way round from every other pane in this registry and is why
+/// `no_pane_is_empty_over_a_real_protocol` splits on this list rather than
+/// asserting one rule over all of them.
+const RUN_PANES: [ItemId; 2] = [LOG, QUALITY];
 
 /// Every pane's subject over one document, keyed by item id.
 fn subjects(doc: &ProtocolDoc) -> BTreeMap<ItemId, Subject> {
@@ -47,10 +84,10 @@ fn subjects(doc: &ProtocolDoc) -> BTreeMap<ItemId, Subject> {
 /// The workbench audit, over the protocol view.
 ///
 /// This is the one assertion that replaces "somebody remembered to write an
-/// empty state". It constructs all four panes, asks each for its subject over
-/// an empty document, and rejects a missing empty state, prose that breaks the
-/// house style, a verb the keyboard registry does not have, and a rail or tab
-/// that names no verb to show and hide it.
+/// empty state". It constructs each registered pane, asks it for its subject
+/// over an empty document, and rejects a missing empty state, prose that
+/// breaks the house style, a verb the keyboard registry does not have, and a
+/// rail or tab that names no verb to show and hide it.
 ///
 /// Watched redden, one mutation each: making the outline pane's
 /// `empty_state` answer `None` gives *"protocol-outline: shows no empty
@@ -91,19 +128,48 @@ fn the_empty_document_has_nothing_in_it() {
 }
 
 /// The mirror of the audit, and the half that actually catches an inverted
-/// predicate: over the **real** fixture, no pane is empty.
+/// predicate: over a document that fills it, no pane is empty.
 ///
 /// An `empty_state` that is always `Some` passes the audit perfectly and blanks
 /// the whole panel — the shell draws the empty state *instead of* the pane's
 /// own body, so `!doc.model.has_assets()` written without the `!` would ship a
-/// four-pane window with four apologies in it. Watched redden: dropping that
-/// `!` fails here on `protocol-outline`.
+/// window of apologies. Watched redden: dropping that `!` fails here on
+/// `protocol-outline`.
+///
+/// **What fills a pane is not the same question for every pane**, which is why
+/// this reads two documents rather than one. The Protocol's own panes — the
+/// outline, the canvas, the steps sheet, the inspector — are filled by the
+/// declaration `loaded` reads, and a declaration is what `edgar_gleif` is. The
+/// ledger rail's Log and Quality are filled by a **run**, and a declaration
+/// carries none, so they apologise over `loaded` correctly and would be
+/// asserted into lying if this held one rule over all six. They are read over
+/// [`ran`] instead, where a run record stands behind the same fixture — and
+/// that is the reading that keeps the inverted-predicate catch on them, since
+/// an `empty_state` that answered `Some` unconditionally fails it.
 #[test]
 fn no_pane_is_empty_over_a_real_protocol() {
     for (id, subject) in subjects(&loaded()) {
+        if RUN_PANES.contains(&id) {
+            assert!(
+                subject.empty_state.is_some(),
+                "{id} shows content over a Protocol with no run behind it, so \
+                 it is drawing a run record that is not there"
+            );
+            continue;
+        }
         assert!(
             subject.empty_state.is_none(),
             "{id} claims to be empty over edgar_gleif: {:?}",
+            subject.empty_state
+        );
+    }
+    let ran = subjects(&ran());
+    for id in RUN_PANES {
+        let subject = ran.get(&id).unwrap_or_else(|| panic!("{id} is registered"));
+        assert!(
+            subject.empty_state.is_none(),
+            "{id} claims to be empty over edgar_gleif WITH a run behind it: \
+             {:?}",
             subject.empty_state
         );
     }

@@ -2555,8 +2555,8 @@ const ICON_STEPS: Icon = Icon("list-ordered");
 const ICON_LOG: Icon = Icon("log");
 const ICON_QUALITY: Icon = Icon("gauge");
 
-/// The protocol document's registry: four panes, where each sits, and the verb
-/// that shows and hides it.
+/// The protocol document's registry: this view's panes, where each sits, and
+/// the verb that shows and hides it.
 ///
 /// This is the **only** declaration of this document's panes. The window's
 /// default arrangement ([`window_tree`](brightfield_workbench::window_tree)),
@@ -2613,7 +2613,7 @@ pub fn protocol_registry() -> ItemRegistry<ProtocolDoc> {
 }
 
 // ---------------------------------------------------------------------------
-// The four panes.
+// The panes.
 // ---------------------------------------------------------------------------
 
 /// The topological outline rail: one row per asset, in run order.
