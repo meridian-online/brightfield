@@ -1112,6 +1112,11 @@ impl Boot {
                 ..Self::charts(chart.composed)
             },
             crate::starts::Opened::Protocol(inputs) => Self::protocol(*inputs, flow, None),
+            // The start wrote its bundled file and named where it put it, and
+            // this is the same call a launch naming that path on the command
+            // line makes. See [`crate::starts::Opened::File`] for why the
+            // route is shared rather than duplicated.
+            crate::starts::Opened::File(path) => Self::data_file(&path.to_string_lossy())?,
         };
         Ok(Self {
             opened_id: Some(id.to_string()),
@@ -5278,13 +5283,37 @@ impl MeridianApp {
                 // — and assigning `None` for a local start is the same
                 // sentence, which is why it is one line rather than an arm.
                 self.remote_files = chart.fetched;
+                self.documents_changed();
             }
             crate::starts::Opened::Protocol(inputs) => {
                 self.protocol.doc.open(*inputs);
                 self.remote_files = None;
+                self.documents_changed();
+            }
+            // A data file the start just wrote, opened through the picker's
+            // own route — `Boot::data_file` over `crate::data_file::open`, and
+            // then `adopt_boot`, which is the call `open_data_file` makes.
+            // Both of this window's documents arrive together for a data file,
+            // which is why this arm hands over a whole boot where the two
+            // above replace one document; `adopt_boot` ends in
+            // `documents_changed` itself, and in the `wire_columns` that has
+            // to follow it, so this arm does not repeat the call its siblings
+            // make.
+            //
+            // A refusal here is the same refusal `open_data_file` raises for a
+            // file that will not read, reported as this start's banner: the
+            // window stays up on whatever it was showing.
+            crate::starts::Opened::File(path) => {
+                let boot = match Boot::data_file(&path.to_string_lossy()) {
+                    Ok(boot) => boot,
+                    Err(e) => {
+                        self.refuse_start(ctx, id, &e);
+                        return;
+                    }
+                };
+                self.adopt_boot(boot);
             }
         }
-        self.documents_changed();
         self.notifications.dismiss(banner);
         self.layout.live_mut().opened = Some(id.to_string());
         // …and remembered as a Protocol, which is the other half: `opened` is

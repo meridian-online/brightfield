@@ -760,6 +760,9 @@ fn the_crosswalk_chart_start_opens_over_the_network_drawing_every_row() {
             "the start composed no plots"
         ),
         starts::Opened::Protocol(_) => panic!("the crosswalk CHART composed a protocol document"),
+        starts::Opened::File(path) => {
+            panic!("the crosswalk CHART opened a data file: {}", path.display())
+        }
     }
 
     let (spec, analysis) = shipped();

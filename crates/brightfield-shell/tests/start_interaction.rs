@@ -1282,6 +1282,7 @@ fn the_spec_a_start_carries_is_the_spec_its_click_opens() {
         );
     }
 
+    datasets_into_scratch();
     for start in starts::STARTS.iter().filter(|s| !s.remote) {
         let opened = starts::load(start.id).unwrap_or_else(|e| panic!("{}: {e}", start.id));
         let starts::Opened::Charts(chart) = opened else {
@@ -1328,4 +1329,19 @@ fn the_spec_a_start_carries_is_the_spec_its_click_opens() {
             start.id
         );
     }
+}
+
+/// Point brightfield's config directory at this target's scratch, so a start
+/// that ships a data file writes that file there and not into the developer's
+/// own `~/Library/Application Support/Brightfield`.
+///
+/// The twin of `datasets_into_scratch` in `tests/front_door.rs`, which carries
+/// the argument for the fixed path; an integration test target cannot import a
+/// sibling's helper, and a shared fixture crate for four lines is more
+/// machinery than the duplication costs.
+fn datasets_into_scratch() {
+    std::env::set_var(
+        brightfield_shell::startup::CONFIG_DIR_VAR,
+        std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("config"),
+    );
 }

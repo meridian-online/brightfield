@@ -120,6 +120,12 @@ egui_kittest = { version = "0.35", features = ["wgpu", "snapshot"] }
 # brightfield-engine's own dependency, on the same version line and the same
 # `bundled` feature (features unify, so this declaration adds no build).
 duckdb = { version = "1", features = ["bundled"] }
+# Reads the bundled gallery dataset back against the SHA-256 its own
+# Frictionless descriptor declares — `the_bundled_dataset_is_the_bytes_its_
+# descriptor_declares` in `tests/front_door.rs`. Not a new crate in the graph:
+# 0.10 is already in Cargo.lock as a transitive dependency, on the same version
+# line, so this declaration adds no build.
+sha2 = "0.10"
 
 [[bin]]
 name = "brightfield-shell"

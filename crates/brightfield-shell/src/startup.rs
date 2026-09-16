@@ -27,7 +27,7 @@
 //! # What this deliberately does not do
 //!
 //! It does not build a [`MeridianApp`](crate::window::MeridianApp), and the
-//! two functions here that can reach the disk — [`layout_path`] and
+//! two functions here that reach a **layout** file — [`layout_path`] and
 //! [`boot_layout`] — have no caller in `window.rs`. It does call
 //! [`default_layout`], which builds the window's declared tree and reads
 //! nothing.
@@ -38,6 +38,15 @@
 //! constructor can reach a saved layout, because the only way one gets in is
 //! as an argument, and the save path is an `Option<PathBuf>` only `main`
 //! fills in.
+//!
+//! [`datasets_dir`] is the exception and it is deliberately a narrow one: it
+//! names a directory, never the layout file, and [`crate::starts::load`] calls
+//! it to put a bundled data file where a second launch will find it. A suite
+//! that loads such a start therefore points [`CONFIG_DIR_VAR`] at its own
+//! scratch directory first — `datasets_into_scratch` in
+//! `crates/brightfield-shell/tests/front_door.rs` is that call, and
+//! `a_bundled_data_start_writes_under_the_configured_directory` beside it is
+//! what fails if the resolution stops honouring the override.
 
 use std::path::{Path, PathBuf};
 
@@ -83,6 +92,39 @@ pub fn layout_path() -> Option<PathBuf> {
         std::env::var("XDG_CONFIG_HOME").ok().as_deref(),
         std::env::var("HOME").ok().as_deref(),
     )
+}
+
+/// The directory under [`layout_path`]'s own directory where a start that
+/// ships a data file puts those bytes.
+///
+/// A subdirectory rather than the config directory itself so a reader opening
+/// it finds one folder of data beside one layout file, rather than a Parquet
+/// filed next to a JSON that has nothing to do with it.
+pub const DATASETS_DIR: &str = "datasets";
+
+/// Where this machine keeps the data files bundled starts write, or `None` if
+/// it has nowhere to put them.
+///
+/// The same policy [`layout_path`] takes and the same override —
+/// [`CONFIG_DIR_VAR`] relocates both together, which is the whole reason
+/// `persist::config_dir` is the directory rather than the layout file. A
+/// portable install that moved one and not the other would put a start's data
+/// somewhere the next launch does not look.
+///
+/// **This is the one function here a constructor does reach**, through
+/// [`crate::starts::load`], and the paragraph above about `cargo test` is
+/// narrower because of it: a suite that loads a start shipping a data file
+/// writes that file, so those suites set [`CONFIG_DIR_VAR`] to their own
+/// scratch directory. The layout file is still out of reach — nothing here
+/// reads or writes one.
+#[must_use]
+pub fn datasets_dir() -> Option<PathBuf> {
+    persist::config_dir(
+        std::env::var(CONFIG_DIR_VAR).ok().as_deref(),
+        std::env::var("XDG_CONFIG_HOME").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    )
+    .map(|dir| dir.join(DATASETS_DIR))
 }
 
 /// Publish both registries' item vocabularies, then read the layout at

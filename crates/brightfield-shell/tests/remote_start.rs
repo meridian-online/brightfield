@@ -743,6 +743,7 @@ fn a_start_that_declares_no_network_never_enters_the_fetch_path() {
     // …and the rest of the local set through `starts::load`, which is the
     // loader `open_start`'s local arm calls: a start that grew a fetched source
     // and forgot to declare it reaches for a socket here.
+    datasets_into_scratch();
     for start in starts::STARTS.iter().filter(|s| !s.remote) {
         let boot = Boot::start(start.id, Flow::Vertical)
             .unwrap_or_else(|e| panic!("{} no longer opens: {e}", start.id));
@@ -981,5 +982,20 @@ fn the_fetched_file_outlives_the_open_and_a_re_query_still_answers() {
     assert!(
         !win.app.chart_doc().is_empty(),
         "the re-composite emptied the document"
+    );
+}
+
+/// Point brightfield's config directory at this target's scratch, so a start
+/// that ships a data file writes that file there and not into the developer's
+/// own `~/Library/Application Support/Brightfield`.
+///
+/// The twin of `datasets_into_scratch` in `tests/front_door.rs`, which carries
+/// the argument for the fixed path; an integration test target cannot import a
+/// sibling's helper, and a shared fixture crate for four lines is more
+/// machinery than the duplication costs.
+fn datasets_into_scratch() {
+    std::env::set_var(
+        brightfield_shell::startup::CONFIG_DIR_VAR,
+        std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("config"),
     );
 }

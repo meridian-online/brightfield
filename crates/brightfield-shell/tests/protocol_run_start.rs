@@ -48,6 +48,7 @@ fn run_model() -> ProtocolModel {
     match starts::load(starts::CROSSWALK_RUN).expect("the run start loads") {
         Opened::Protocol(inputs) => ProtocolModel::new(*inputs, Flow::Vertical),
         Opened::Charts(_) => panic!("the run start opened a chart, not a Protocol"),
+        Opened::File(path) => panic!("the run start opened a data file: {}", path.display()),
     }
 }
 
@@ -184,6 +185,7 @@ fn the_run_less_start_still_reports_every_step_as_never_run() {
     let model = match starts::load(starts::CROSSWALK).expect("the manifest start loads") {
         Opened::Protocol(inputs) => ProtocolModel::new(*inputs, Flow::Vertical),
         Opened::Charts(_) => panic!("the manifest start opened a chart"),
+        Opened::File(path) => panic!("the manifest start opened a data file: {}", path.display()),
     };
     let states = model.step_states();
     assert!(

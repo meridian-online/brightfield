@@ -1,0 +1,130 @@
+{
+  "$schema": "https://datapackage.org/profiles/2.0/datapackage.json",
+  "created": "2026-09-02T04:43:37Z",
+  "description": "16,640 California census-block-group districts with median income, housing age, room and occupancy averages, population, position and median house value. This is the source's train split; the full dataset has 20,640 districts. Demo data: referenced by pinned URL and revision and built locally. Meridian does not host or publish this dataset.",
+  "licenses": [
+    {
+      "name": "MIT",
+      "path": "https://huggingface.co/datasets/gvlassis/california_housing",
+      "title": "MIT License"
+    }
+  ],
+  "name": "california-housing",
+  "resources": [
+    {
+      "bytes": 481832,
+      "format": "parquet",
+      "hash": "sha256:43b5fbc7a7df863ad8e79e5be23963ece9109f178fa46616b68fccd3625807c8",
+      "mediatype": "application/vnd.apache.parquet",
+      "name": "california_housing",
+      "path": "california_housing.parquet",
+      "schema": {
+        "fields": [
+          {
+            "description": "Median household income for the district, in tens of thousands of 1990 US dollars.",
+            "name": "median_income",
+            "type": "number",
+            "x-finetype-confidence": 0.6,
+            "x-finetype-label": "representation.numeric.decimal_number",
+            "x-finetype-unsupported-constraints": {
+              "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"
+            }
+          },
+          {
+            "description": "Median age of the district's houses, in years.",
+            "name": "house_age",
+            "type": "number",
+            "x-finetype-confidence": 1.0,
+            "x-finetype-label": "representation.numeric.decimal_number",
+            "x-finetype-unsupported-constraints": {
+              "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"
+            }
+          },
+          {
+            "description": "Mean rooms per household. A district average, so values above ten are small households in large houses rather than errors.",
+            "name": "avg_rooms",
+            "type": "number",
+            "x-finetype-confidence": 0.6,
+            "x-finetype-label": "representation.numeric.decimal_number",
+            "x-finetype-unsupported-constraints": {
+              "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"
+            }
+          },
+          {
+            "description": "Mean bedrooms per household, on the same district-average basis.",
+            "name": "avg_bedrooms",
+            "type": "number",
+            "x-finetype-confidence": 0.5418,
+            "x-finetype-label": "representation.numeric.decimal_number",
+            "x-finetype-unsupported-constraints": {
+              "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"
+            }
+          },
+          {
+            "description": "Number of people resident in the district.",
+            "name": "population",
+            "type": "number",
+            "x-finetype-confidence": 1.0,
+            "x-finetype-label": "representation.numeric.decimal_number",
+            "x-finetype-unsupported-constraints": {
+              "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"
+            }
+          },
+          {
+            "description": "Mean household members per household.",
+            "name": "avg_occupancy",
+            "type": "number",
+            "x-finetype-confidence": 0.6,
+            "x-finetype-label": "representation.numeric.decimal_number",
+            "x-finetype-unsupported-constraints": {
+              "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"
+            }
+          },
+          {
+            "constraints": {
+              "maximum": 90.0,
+              "minimum": -90.0
+            },
+            "description": "District centroid latitude. With longitude, this is a map that needs no embedding behind it.",
+            "name": "latitude",
+            "type": "number",
+            "x-finetype-confidence": 0.9994,
+            "x-finetype-label": "geography.coordinate.latitude",
+            "x-finetype-unsupported-constraints": {
+              "pattern": "^-?([0-8]?\\d(\\.\\d+)?|90(\\.0+)?)$"
+            }
+          },
+          {
+            "constraints": {
+              "maximum": 180.0,
+              "minimum": -180.0
+            },
+            "description": "District centroid longitude.",
+            "name": "longitude",
+            "type": "number",
+            "x-finetype-confidence": 1.0,
+            "x-finetype-label": "geography.coordinate.longitude"
+          },
+          {
+            "description": "Median house value for the district, in hundreds of thousands of 1990 US dollars. Capped at 5.00001 in the source, which is a ceiling rather than a measurement.",
+            "name": "median_house_value",
+            "type": "number",
+            "x-finetype-confidence": 0.6,
+            "x-finetype-label": "representation.numeric.decimal_number",
+            "x-finetype-unsupported-constraints": {
+              "pattern": "^-?[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "sources": [
+    {
+      "path": "https://huggingface.co/datasets/gvlassis/california_housing",
+      "title": "gvlassis/california_housing on Hugging Face, revision 17110e60"
+    }
+  ],
+  "title": "California Housing — district-level census aggregates",
+  "x-finetype-version": "0.6.58"
+}

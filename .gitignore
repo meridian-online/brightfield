@@ -25,6 +25,13 @@
 
 # User-supplied geo data for examples/live/ (download per each spec's header;
 # never committed — see examples/live/us-states.yaml).
+#
+# That rule is about DOWNLOADED example data and it still stands. It is not a
+# rule about third-party bytes in general: the front door's gallery datasets
+# under crates/brightfield-shell/assets/starts/ ARE committed, deliberately, so
+# a start opens with no network — each beside the Frictionless descriptor
+# recording its upstream source, revision and licence, which is what makes the
+# bytes traceable rather than anonymous. Nothing here downloads them.
 /examples/live/*.json
 
 # The benchmark harness generated datasets and substituted scenario specs —
