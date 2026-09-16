@@ -224,8 +224,9 @@ pub const CALIFORNIA_HOUSING: &str = "california-housing";
 ///
 /// One struct rather than three fields on [`Start`], because they are one
 /// fact: bytes with no name have nowhere to go, a name with no bytes has no
-/// bytes to write, and a descriptor belonging to different bytes is worse than
-/// none. An `Option<BundledData>` therefore has two states and not eight.
+/// bytes to write, and a descriptor belonging to different bytes misdescribes
+/// the ones it sits beside. An `Option<BundledData>` therefore has two states
+/// and not eight.
 pub struct BundledData {
     /// The name the bytes are written under — and therefore what the locator
     /// band says, what the one SQL step reads, and (as its stem) what the
