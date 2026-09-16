@@ -931,7 +931,7 @@ fn a_bundled_data_start_writes_the_committed_bytes_where_a_second_launch_finds_t
 /// start's id written by hand, the door's Protocols tests from a seeded layout —
 /// so none of them read what clicking the card actually wrote. A `return;` after
 /// `adopt_boot` in `land_start`'s data-file arm skips recording the start and
-/// remembering it, and the three stayed green over it: a user would
+/// remembering it, and those tests stayed green over it: a user would
 /// have opened California Housing, quit, and come back to the door with no row
 /// for it.
 ///
