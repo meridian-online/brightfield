@@ -2873,7 +2873,7 @@ impl MeridianApp {
     /// What hovering the ledger strip's Run control says: the verb's own help
     /// line off the registry, with its keystroke appended the way
     /// `chrome::toolbar_button` appends one — so a rebinding cannot leave the
-    /// control naming a key that no longer runs anything.
+    /// control naming a key that no longer runs the verb.
     fn run_tooltip(&self) -> Option<String> {
         let verb = brightfield_keys::registry()
             .into_iter()
@@ -3065,7 +3065,7 @@ impl MeridianApp {
     }
 
     /// Where the trailing action of rail `id`'s strip drew in the last frame
-    /// this window drew, or `None` on a frame that strip was given none — the
+    /// this window drew, or `None` on a frame that strip was given no action — the
     /// ledger's Run control, over a Protocol with a spec to run.
     ///
     /// Recorded and read back for the reason [`Self::rail_summary_rect`] is.

@@ -8,8 +8,7 @@
 //! started from a terminal.
 //!
 //! **The runner is a child process of this same binary**, and the reason is
-//! what `arc` publishes. Its library target exports `arc::spec` and nothing
-//! else; the engine — runner, DuckDB bridge, run contract — is private. The one
+//! what `arc` publishes. Its library target exports `arc::spec` alone; the engine — runner, DuckDB bridge, run contract — is private. The one
 //! other item at its root, `arc::cli_main`, is its binary's entry point, and
 //! each of the three things it does rules out calling it on a worker thread of
 //! a window: it parses the **process's** argv, `arc run` reads the
@@ -311,7 +310,7 @@ fn run_to_completion(program: &Path, dir: &Path) -> Finished {
 /// `text` with its ANSI escape sequences removed.
 ///
 /// `arc` bolds a step's name and colours its tick through a crate that does
-/// not read `NO_COLOR` for every write, so the codes arrive in piped output
+/// not read `NO_COLOR` for the bold or the tick, so the codes arrive in piped output
 /// anyway; a pane that drew them would print `[1m` beside the step. An escape
 /// is `ESC [`, any parameter bytes, and one final byte in `@`..=`~`.
 #[must_use]
@@ -337,6 +336,8 @@ pub fn without_colour_codes(text: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Watched redden, one mutation: the `chars.next()` that consumes the
+    /// `[` removed, so `[` is taken as the final byte and `1m` survives.
     #[test]
     fn colour_codes_come_out_and_the_words_stay() {
         assert_eq!(

@@ -21,9 +21,9 @@
 //!
 //! A run is `arc`'s, started by [`crate::run`] over the spec [`OneStepProtocol::save_to`]
 //! wrote, and it leaves its record under this Protocol's directory where
-//! `arc run` always leaves one. [`OneStepProtocol::inputs_with_last_run`] is
-//! what reads that record back onto the declaration — on every open of the
-//! file, and again when a run taken in the window finishes.
+//! `arc run` leaves one. [`OneStepProtocol::inputs_with_last_run`] is what
+//! reads that record back onto the declaration — when the file opens, and
+//! again when a run taken in the window finishes.
 //!
 //! # Where the Protocol's directory is, and why
 //!
@@ -240,10 +240,10 @@ impl OneStepProtocol {
     /// Run and the strip the next launch draws are one function's answer over
     /// one directory, not two readings kept in step.
     ///
-    /// A record is taken on only where
+    /// A record is taken on where
     /// [`ProtocolInputs::adopt_run`] accepts it — the same Protocol's name
-    /// and the same steps — and the newest such record wins; a directory with
-    /// none leaves the declaration as [`Self::inputs`] built it.
+    /// and the same steps — and the newest such record wins; a directory without
+    /// one leaves the declaration as [`Self::inputs`] built it.
     ///
     /// # Errors
     ///

@@ -100,8 +100,8 @@ pub const CHART_PALETTE_VERBS: &[&str] = &[
 /// [`chart_offers`].
 ///
 /// `run-protocol` is here for the same reason: what it runs is the spec Save
-/// writes (`MeridianApp::run_protocol`), so a window with nothing to save has
-/// nothing to run.
+/// writes (`MeridianApp::run_protocol`), so a window with no spec to save has
+/// no spec to run.
 const SAVEABLE_CHART_VERBS: &[&str] = &["save-spec", crate::window::RUN_PROTOCOL];
 
 /// **Whether a chart window in this state offers `verb`** — what the chart

@@ -295,10 +295,10 @@ fn records(dir: &Path) -> Vec<PathBuf> {
 /// driven — the keystroke the registry declares starts a run — because a bound
 /// verb the window does not consume is a binding only on paper.
 ///
-/// Watched redden, two mutations. The ledger's `ledger_trailing` built with
-/// `action: None`: the expect on `rail_action_rect` fails. The `run-protocol`
-/// entry set to `VerbStatus::Reserved` with no binding: the registry
-/// assertions fail on `is_reserved` and the keystroke starts nothing.
+/// Watched redden, one mutation: the ledger's `ledger_trailing` built with
+/// `action: None` fails the expect on `rail_action_rect` — and the same
+/// mutation reddens `the_generated_dashboard_light_baseline`, which is AC6's
+/// claim that the photographs carry the control.
 #[test]
 fn the_housing_file_offers_a_run_control_on_the_ledger_strip() {
     let verb = brightfield_keys::registry()
@@ -366,8 +366,8 @@ fn the_housing_file_offers_a_run_control_on_the_ledger_strip() {
 /// confirms and does nothing. The strip still draws its summary there, so the
 /// absence is of the control and not of the strip.
 ///
-/// Watched redden, one mutation: `run_action` built unconditionally rather than
-/// behind `source().is_some()`: the `assert_eq!` reads a rect.
+/// Watched redden, one mutation: `run_action` built whatever
+/// `source().is_some()` says: the `assert_eq!` reads a rect.
 #[test]
 fn a_protocol_with_no_spec_behind_it_draws_no_run_control() {
     let boot = Boot::start(starts::CROSSWALK_RUN, Flow::Vertical).expect("the run start loads");
@@ -397,12 +397,9 @@ fn a_protocol_with_no_spec_behind_it_draws_no_run_control() {
 /// row reads `ok`, and both run panes head with the record's own run id rather
 /// than the not-run empty state.
 ///
-/// Watched redden, three mutations. `crate::run::runs_dir` joined `runs` onto
-/// `build` alone: the run writes where `arc` writes and the shell looks
-/// elsewhere, so the strip still reads *not run*. `poll_run`'s reload opened
-/// `source.inputs()` instead of `inputs_with_last_run()`: the strip reads *not
-/// run* after the run. `ProtocolInputs::adopt_run` leaving `statuses` alone:
-/// the strip reads success and the step row still reads *not run*.
+/// Watched redden, one mutation: `poll_run`'s reload opening `source.inputs()`
+/// instead of `inputs_with_last_run()` leaves the strip reading
+/// `["last run · not run"]` after the run.
 #[test]
 fn taking_run_writes_the_record_where_arc_writes_it() {
     let dir = TempDir::new("writes");
@@ -486,11 +483,8 @@ fn taking_run_writes_the_record_where_arc_writes_it() {
 /// read off those frames. And the longest frame is held under the run's own
 /// wall time, which is the frame a synchronous run would have had to draw.
 ///
-/// Watched redden, two mutations. `run_protocol` waiting on the worker —
-/// `Run::begin` followed by a loop on `take` before returning: the click frame
-/// lands the run, zero frames are counted and `run_in_progress` is false
-/// straight after the click. The strip's `label` bound to `RUN_LABEL` whatever
-/// `running` says: the frames carry *Run* and never *Running…*.
+/// Watched redden, one mutation: the strip's `label` bound to `RUN_LABEL`
+/// whatever `running` says — the frames drawn during the run read *Run*.
 #[test]
 fn the_window_keeps_drawing_while_the_run_executes() {
     let dir = TempDir::new("draws");
@@ -540,10 +534,8 @@ fn the_window_keeps_drawing_while_the_run_executes() {
 /// window has opened it, with bytes that are not a Parquet, so DuckDB refuses
 /// `read_parquet` inside the step and `arc` records the outcome `error`.
 ///
-/// Watched redden, two mutations. `outcome_word`'s `Outcome::Error` arm
-/// returning `"success"`: the strip reads success over a failed run.
-/// `LogPane::ui` without the log body: the Log pane draws the header and no
-/// error text.
+/// Watched redden, one mutation: `LogPane::ui` reading no log — the Log pane
+/// draws `last run · failed` and no error text.
 #[test]
 fn a_step_whose_sql_fails_reads_failed_and_the_log_says_why() {
     let dir = TempDir::new("fails");
@@ -586,13 +578,13 @@ fn a_step_whose_sql_fails_reads_failed_and_the_log_says_why() {
 /// **A second window on the same file reads the last run without running.**
 ///
 /// The second window is built the way a relaunch builds one — a fresh
-/// `Boot::data_file` over the path — and is given **no runner**, so nothing it
-/// shows can have come from a run of its own. Its strip reads *last run ·
+/// `Boot::data_file` over the path — and is given **no runner**, so a run it
+/// shows cannot have come from a run of its own. Its strip reads *last run ·
 /// success* and its step row `ok`, and no second record appears.
 ///
 /// Watched redden, one mutation: `Boot::of_opened_file` building its inputs
-/// with `protocol.inputs()` instead of `inputs_with_last_run()`: the second
-/// window reads *not run*.
+/// with `protocol.inputs()` instead of `inputs_with_last_run()` — the second
+/// window reads `["last run · not run"]`.
 #[test]
 fn a_second_launch_reads_the_record_the_first_run_wrote() {
     let dir = TempDir::new("relaunch");

@@ -451,7 +451,7 @@ pub struct StripDrawn {
 /// Two things, both optional and both the caller's answer rather than this
 /// file's: a line of the rail's own content, and a verb that changes what that
 /// line says. `Trailing::default()` is a strip with neither, which is what
-/// every rail but the ledger draws.
+/// the navigator and inspector rails draw.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Trailing<'a> {
     /// A line of the rail's own content, drawn in muted ink against the
@@ -478,7 +478,7 @@ pub struct StripAction<'a> {
     /// gone.
     pub enabled: bool,
     /// What hovering the control says — the caller appends the keystroke, as
-    /// [`toolbar_button`] does, because only the caller knows the verb.
+    /// [`toolbar_button`] does, because the caller knows the verb and the strip does not.
     pub tooltip: Option<&'a str>,
 }
 
@@ -748,8 +748,8 @@ fn strip(
 ///
 /// The control is [`toolbar_button`]'s: the same `egui::Button` at the same
 /// control binding, corner radius and focus ring, so the one verb a strip
-/// carries looks like every other verb the window offers rather than like a
-/// name of the strip. What differs is only that a strip lays itself out by
+/// carries looks like the toolbar's verbs rather than like a name of the
+/// strip. What differs is that a strip lays itself out by
 /// rect, not by `Ui` flow, so the button is put where the trailing end says.
 fn strip_action(
     ui: &mut egui::Ui,
