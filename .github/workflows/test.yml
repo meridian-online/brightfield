@@ -91,6 +91,53 @@ jobs:
       # design-system and arcform pins are git dependencies) plus ./target.
       - uses: Swatinem/rust-cache@v2
 
+      # Frees disk on the macOS runner before ANY of this job's cargo builds,
+      # not just the pin-staleness step below. It moved here, ahead of the
+      # workspace suite, after a cold run of a lockfile-change PR was proven
+      # green on the sibling-manifest step (see the comment on that step)
+      # only for `cargo test --workspace` itself to go on and fail on a LATER
+      # cold run — `ld: write() failed, errno=28` (ENOSPC) linking a
+      # `brightfield-shell` test binary — because that run's own log showed
+      # only a couple of gigabytes free right after the workspace suite
+      # finished, before the sibling-manifest step's own duplicate compile
+      # ever ran. A step that frees disk for the steps after it has to run
+      # before the FIRST step that can fill the disk, not just before the
+      # one this card was filed over. None of what it removes is needed to
+      # build or test this workspace: no iOS/watchOS/tvOS or Android target
+      # is ever built here, and the pin-staleness step's own error text names
+      # the one Xcode (`Xcode_16.4.app`) this job actually invokes
+      # `ar`/`ranlib` from, so every other pre-installed Xcode version is
+      # dead weight on this runner. Each `rm -rf` is allowed to fail on its
+      # own (`|| true`) rather than the whole step failing: a path this
+      # runner image has already dropped or renamed should not turn a
+      # disk-reclaim step into a red gate, it should just mean less was
+      # freed, which the before/after `df -h` below still shows.
+      - name: reclaim disk before this job's cargo builds
+        shell: bash
+        run: |
+          set -u
+          echo "--- disk before reclaiming:"
+          df -h /
+
+          for app in /Applications/Xcode_*.app; do
+            [ -d "$app" ] || continue
+            [ "$app" = "/Applications/Xcode_16.4.app" ] && continue
+            echo "removing $app ($(du -sh "$app" 2>/dev/null | cut -f1))"
+            sudo rm -rf "$app" || true
+          done
+
+          for path in "$HOME/Library/Android" /Library/Developer/CoreSimulator/Profiles/Runtimes; do
+            if [ -e "$path" ]; then
+              echo "removing $path ($(du -sh "$path" 2>/dev/null | cut -f1))"
+              sudo rm -rf "$path" || true
+            else
+              echo "$path not present on this runner image"
+            fi
+          done
+
+          echo "--- disk after reclaiming:"
+          df -h /
+
       # No `cargo fmt --check` / `cargo clippy -D warnings` step here, on
       # purpose: both now exist, in `lint.yml`. They are a separate workflow so
       # they report in minutes without queueing behind this suite, and so they
@@ -116,6 +163,35 @@ jobs:
       # `-- --ignored` is required: the two tests in that target are
       # `#[ignore]`d because their input is not in this checkout, so the
       # workspace suite above compiled them and ran neither.
+      #
+      # THIS STEP COMPILES `libduckdb-sys` A SECOND TIME, into the same
+      # `target/`, no matter how its cargo invocation is shaped. Measured
+      # directly: `-p brightfield-protocol --test sibling_manifests` (the
+      # form below), `--workspace --test sibling_manifests`, and
+      # `-p brightfield-protocol --test sibling_manifests --features
+      # duckdb/parquet` (explicitly matching the feature union the step above
+      # activates: `brightfield-protocol` alone requests `duckdb`'s `bundled`
+      # feature, three other workspace members request `bundled` + `parquet`)
+      # all three recompiled `libduckdb-sys`, `arrow` and `duckdb` rather than
+      # reusing the step above's build. A `--test <NAME>` filter narrows
+      # Cargo to the unit graph that one target actually needs, regardless of
+      # `-p` versus `--workspace` or an explicit `--features`, so this step's
+      # build is a genuinely different, separately-fingerprinted compile from
+      # the workspace suite's, every time. On a warm cache both builds are
+      # already on disk and this is invisible; on a cache-key miss (any
+      # `Cargo.lock` change) the runner rebuilds both from nothing, and the
+      # workspace suite above already leaves the runner within a few
+      # gigabytes of its ceiling — so this step's rebuild, on its own only a
+      # few gigabytes, is what exhausted it with `ranlib: can't write to
+      # output file (No space left on device)`. Rather than chase Cargo's
+      # resolver further, the runner's disk is reclaimed near the top of
+      # this job, before the workspace suite runs — see "reclaim disk before
+      # this job's cargo builds" above — of what neither that build, this
+      # one, nor this workspace's tests need. It reclaims ahead of the
+      # workspace suite rather than only ahead of this step because the
+      # workspace suite itself can fill the disk first on a cold run; a step
+      # that frees disk for later steps has to run before the first step
+      # that can exhaust it.
       #
       # THE GUARD, and it is the point of this step's shape. `cargo test --
       # --ignored` with a filter that matches NOTHING exits 0 and prints
@@ -146,6 +222,12 @@ jobs:
           floor=2
           log="${RUNNER_TEMP}/sibling-manifests.log"
 
+          # The disk figure this step exists to watch, printed before and
+          # after so a reader sees whether this step is the one that filled
+          # it — no guessing from a "No space left on device" message alone.
+          echo "--- disk before the sibling-manifest step:"
+          df -h /
+
           # The exit code is captured, never masked: no pipe into head/tail,
           # output redirected to a file, the code kept in a variable and the
           # file printed afterwards.
@@ -153,6 +235,9 @@ jobs:
           cargo test --locked -p brightfield-protocol --test sibling_manifests \
             -- --ignored --test-threads=1 --nocapture >"$log" 2>&1 || code=$?
           cat "$log"
+
+          echo "--- disk after the sibling-manifest step:"
+          df -h /
 
           # libtest's summary line:
           #   test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.10s
