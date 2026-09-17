@@ -63,6 +63,18 @@ serde_json = "1"
 # is built on is a trap laid for the increment after this one.
 egui_tiles = { version = "0.16", features = ["serde"] }
 brightfield-protocol = { version = "0.1.0", path = "../brightfield-protocol" }
+# The runner behind the ledger strip's Run control — `crate::run`. The SAME
+# package and rev `brightfield-protocol` links for its spec loader (the two
+# entries unify to one build), with `cli` on for the one item it adds:
+# `arc::cli_main`, arc's own binary entry point. That item parses the calling
+# process's argv, reads its working directory and ends the process on an error,
+# so nothing in this crate calls it on a thread of the window: `main` hands a
+# child process of this same binary to it, started with
+# `run::RUNNER_ENV` set, and the window waits on that child from a worker.
+# What `cli` adds to the build is clap; `http-fetch`, the other half of it, was
+# already on. BUMPING moves this rev with `brightfield-protocol`'s, in lockstep —
+# README §"The arcform dependency".
+arc = { git = "https://github.com/meridian-online/arcform", rev = "9c7e7a8fcb24bcb95752e758bdd15600c30c0d1a", default-features = false, features = ["cli", "http-fetch"] }
 brightfield-keys = { version = "0.1.0", path = "../brightfield-keys" }
 # The framework-free argument collector the argument-prompt overlay drives —
 # consumed read-only, like the keys registry above.

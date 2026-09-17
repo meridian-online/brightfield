@@ -55,8 +55,8 @@ use brightfield_protocol::panel::{
     inspector_for, kind_label, outline_rows, InspectorFacts, OutlineRow,
 };
 use brightfield_protocol::{
-    collapse_families, explode_ctes, manifest_sql, Dir, FoldOutcome, ProtocolNav, StepRow,
-    StepsSheet,
+    collapse_families, explode_ctes, manifest_sql, ContractView, Dir, FoldOutcome, ProtocolNav,
+    StepRow, StepsSheet,
 };
 
 use brightfield_render::canvas_host::{Color, PixelSize};
@@ -222,6 +222,39 @@ impl ProtocolInputs {
                 None => format!("degraded node {}: {}", d.node, d.detail),
             })
             .collect()
+    }
+
+    /// Take on the run `view` records, when it is a run of **this** Protocol's
+    /// steps, and say whether it was.
+    ///
+    /// What a declaration lacks and a record carries is exactly the four
+    /// run-shaped fields — the per-step statuses, the per-asset measurements,
+    /// the per-step detail and the run header — plus the steps sheet, whose
+    /// status column [`StepsSheet::from_view`] fills from the record where a
+    /// declaration's sheet leaves it at its unrun default. Those are replaced.
+    /// **The graphs are not**: for a data file they are what the rails draw the
+    /// file as, derived from the spec's own text, and a record's graph of the
+    /// same Protocol is the same lineage read back from a different source.
+    /// The ids the record's measurements are keyed on are the ones the
+    /// declaration's graph uses — both spell a table `asset.<protocol>.<name>`.
+    ///
+    /// **A record of different steps is refused**, and the document is left as
+    /// it was. A record under a Protocol's directory can predate an edit to the
+    /// spec — a step renamed, or a hand-written manifest of more steps that has
+    /// since been replaced by the file's own — and drawing its states against
+    /// steps it did not run would put a run's outcome on the wrong rows.
+    pub fn adopt_run(&mut self, view: &ContractView) -> bool {
+        let declared: BTreeSet<&StepId> = self.graph_full.seams.keys().collect();
+        let recorded: BTreeSet<&StepId> = view.steps.keys().collect();
+        if view.run.protocol != self.protocol || declared != recorded {
+            return false;
+        }
+        self.statuses = view.seam_statuses();
+        self.assets.clone_from(&view.assets);
+        self.steps.clone_from(&view.steps);
+        self.run = Some(view.run.clone());
+        self.sheet_rows = StepsSheet::from_view(view).rows().to_vec();
+        true
     }
 }
 
@@ -794,6 +827,9 @@ pub struct ProtocolModel {
     assets: BTreeMap<AssetId, AssetMeta>,
     steps: BTreeMap<StepId, StepView>,
     run: Option<RunView>,
+    /// What the last run started from this window printed — see
+    /// [`ProtocolModel::run_log`].
+    run_log: Option<String>,
     /// Nav over the collapsed graph (stable ids across a fold).
     nav: ProtocolNav,
     sheet: StepsSheet,
@@ -915,6 +951,7 @@ impl ProtocolModel {
             assets: inputs.assets,
             steps: inputs.steps,
             run: inputs.run,
+            run_log: None,
             columns: inputs.columns,
             tiles: inputs.tiles,
             table: inputs.table,
@@ -1267,6 +1304,25 @@ impl ProtocolModel {
     #[must_use]
     pub fn run(&self) -> Option<&RunView> {
         self.run.as_ref()
+    }
+
+    /// What the last run started from this window printed, when this window
+    /// started one.
+    ///
+    /// **Session-scoped**, and deliberately not a field of
+    /// [`ProtocolInputs`]: the inputs are what is on disk, and `arc` writes a
+    /// contract and a status stream and no log. So a document opened from a
+    /// record has a run and no log, and the Log pane draws the run's header
+    /// alone; a document whose run was taken in this window draws the header
+    /// and what the run printed, which is where a failed step's error text is.
+    #[must_use]
+    pub fn run_log(&self) -> Option<&str> {
+        self.run_log.as_deref()
+    }
+
+    /// Keep `log` as what the last run printed — see [`Self::run_log`].
+    pub fn set_run_log(&mut self, log: String) {
+        self.run_log = Some(log);
     }
 
     /// The word the ledger strip's summary reads after *last run*.
@@ -3581,11 +3637,14 @@ impl Item<ProtocolDoc> for StepsPane {
 ///
 /// A unit struct for [`StepsPane`]'s reason — it holds no view-local state.
 ///
-/// **What it draws today is its empty state, and that is the whole of it.** No
-/// run writes a log into this build: a run is `arc`'s, and what reaches the
-/// shell is the contract a finished run emitted. Until a log does arrive the
-/// pane says so under the run's own word rather than drawing a body shaped
-/// like one — see [`Self::empty_state`].
+/// **Three states, from two sources.** With no run and no log it draws its
+/// empty state — see [`Self::empty_state`]. With a run it heads with that
+/// run's id and outcome, the line [`QualityPane`] heads with too. And under
+/// the header it draws what the run printed, when the run was taken in this
+/// window: `arc` writes no log file, so [`ProtocolModel::run_log`] is carried
+/// back from the child the ledger strip's Run control started (see
+/// [`crate::run`]), and a document opened from a record draws the header
+/// alone. A failed step's error text reaches the reader here.
 struct LogPane;
 
 impl Item<ProtocolDoc> for LogPane {
@@ -3593,14 +3652,20 @@ impl Item<ProtocolDoc> for LogPane {
         LOG
     }
 
-    /// The not-run empty state, shown while [`ProtocolModel::run`] is `None`.
+    /// The not-run empty state, shown while [`ProtocolModel::run`] is `None`
+    /// and no run taken in this window left a log.
+    ///
+    /// The second half is for a run that ended before `arc` wrote a record —
+    /// a manifest it refused, a runner that would not start. There is still no
+    /// run to head the pane with, but there is text saying why, and an empty
+    /// state over it would hide the one answer the reader has.
     ///
     /// The headline is [`NOT_RUN`] with its first letter raised, so the word
     /// the strip reads and the word this pane heads with cannot drift apart
     /// — `clicking_log_on_the_strip_opens_the_rail_on_the_not_run_empty_state`
     /// reads both off one frame.
     fn empty_state(&self, doc: &ProtocolDoc) -> Option<EmptyState> {
-        doc.model.run().is_none().then(|| {
+        (doc.model.run().is_none() && doc.model.run_log().is_none()).then(|| {
             EmptyState::new(
                 ICON_LOG,
                 not_run_headline(),
@@ -3615,6 +3680,19 @@ impl Item<ProtocolDoc> for LogPane {
 
     fn ui(&mut self, doc: &mut ProtocolDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
         run_header(ui, &doc.model, cx.mode);
+        if let Some(log) = doc.model.run_log() {
+            let sem = semantic(cx.mode.is_dark());
+            egui::ScrollArea::vertical()
+                .id_salt("run-log")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(log.trim_end())
+                            .font(mono_font())
+                            .color(chrome::colour(sem.text.secondary)),
+                    );
+                });
+        }
     }
 }
 

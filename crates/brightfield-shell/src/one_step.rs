@@ -11,13 +11,19 @@
 //!
 //! # What is written and what is not
 //!
-//! Brightfield writes the spec and no run record. The step is *not run* and
-//! says so; the table the charts read is materialised by the chart document's
-//! own engine exactly as it was before this module existed. This module writes
-//! text: it opens no database, executes no SQL and asks `arc` to run nothing.
-//! The model file is a declaration, and what reads it back is
-//! [`crate::protocol::load_protocol_str`], which derives the lineage graph from
-//! its text.
+//! Brightfield writes the spec and no run record. Until the reader takes the
+//! ledger strip's Run control the step is *not run* and says so; the table the
+//! charts read is materialised by the chart document's own engine exactly as
+//! it was before this module existed. This module writes text: it opens no
+//! database and executes no SQL. The model file is a declaration, and what
+//! reads it back is [`crate::protocol::load_protocol_str`], which derives the
+//! lineage graph from its text.
+//!
+//! A run is `arc`'s, started by [`crate::run`] over the spec [`OneStepProtocol::save_to`]
+//! wrote, and it leaves its record under this Protocol's directory where
+//! `arc run` leaves one. [`OneStepProtocol::inputs_with_last_run`] is what
+//! reads that record back onto the declaration — when the file opens, and
+//! again when a run taken in the window finishes.
 //!
 //! # Where the Protocol's directory is, and why
 //!
@@ -222,6 +228,34 @@ impl OneStepProtocol {
         inputs.columns.clone_from(&self.columns);
         inputs.tiles.clone_from(&self.tiles);
         inputs.source = Some(self.clone());
+        Ok(inputs)
+    }
+
+    /// [`Self::inputs`], with the newest run of this Protocol recorded under
+    /// its directory taken on — the document a data file opens as.
+    ///
+    /// **Both routes to a run's outcome go through this**: opening the file,
+    /// which is what a relaunch does, and the window reloading the document
+    /// when a run it started finishes. So the strip a reader sees after taking
+    /// Run and the strip the next launch draws are one function's answer over
+    /// one directory, not two readings kept in step.
+    ///
+    /// A record is taken on where
+    /// [`ProtocolInputs::adopt_run`] accepts it — the same Protocol's name
+    /// and the same steps — and the newest such record wins; a directory without
+    /// one leaves the declaration as [`Self::inputs`] built it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::inputs`]. A record that will not read is not an error: it is
+    /// reported and passed over.
+    pub fn inputs_with_last_run(&self) -> Result<ProtocolInputs, String> {
+        let mut inputs = self.inputs()?;
+        for view in crate::run::records_newest_first(&self.dir, &self.name) {
+            if inputs.adopt_run(&view) {
+                break;
+            }
+        }
         Ok(inputs)
     }
 

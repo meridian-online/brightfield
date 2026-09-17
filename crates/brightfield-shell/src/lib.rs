@@ -55,6 +55,9 @@
 //! - [`one_step`] — the Protocol a data file opens as: one SQL step reading
 //!   the file, the table it produces, and the columns the rails list under it.
 //!   The spec brightfield writes, and never a run record.
+//! - [`run`] — the ledger strip's Run control underneath: `arc` running that
+//!   Protocol in a child process of this binary, on a worker, and the run
+//!   records it leaves beside the spec, read back newest first.
 //! - [`overlays`] — the picker delegates: the domain halves of the command
 //!   palette, help sheet, jump lists and argument prompt, over the
 //!   framework-free corpora in `brightfield-keys` / `brightfield-model`.
@@ -94,6 +97,7 @@ pub mod protocol;
 pub mod ranked_bars;
 pub mod remote;
 pub mod resample;
+pub mod run;
 mod sql_ident;
 pub mod starts;
 pub mod startup;

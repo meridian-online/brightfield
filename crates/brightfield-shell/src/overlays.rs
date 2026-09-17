@@ -98,7 +98,11 @@ pub const CHART_PALETTE_VERBS: &[&str] = &[
 /// which is precisely the row this module's list exists to keep out of the
 /// palette. So it is not on the unconditional list; it is here, behind
 /// [`chart_offers`].
-const SAVEABLE_CHART_VERBS: &[&str] = &["save-spec"];
+///
+/// `run-protocol` is here for the same reason: what it runs is the spec Save
+/// writes (`MeridianApp::run_protocol`), so a window with no spec to save has
+/// no spec to run.
+const SAVEABLE_CHART_VERBS: &[&str] = &["save-spec", crate::window::RUN_PROTOCOL];
 
 /// **Whether a chart window in this state offers `verb`** — what the chart
 /// palette is built from.
@@ -812,25 +816,34 @@ mod tests {
     fn the_chart_palette_offers_save_only_where_there_is_something_to_save() {
         let without = chart_palette_candidates(false);
         let with = chart_palette_candidates(true);
-        assert!(
-            !without.contains(&"save-spec"),
-            "a window with no Protocol behind it is offered a Save that \
-             confirms and does nothing: {without:?}"
-        );
-        assert!(
-            with.contains(&"save-spec"),
-            "a window with a Protocol behind it is offered no Save: {with:?}"
-        );
-        assert!(!chart_offers("save-spec", false));
-        assert!(chart_offers("save-spec", true));
+        // Save, and the Run that runs what Save writes: the two rows a window
+        // with no Protocol behind it would confirm to no effect.
+        let saveable = ["save-spec", crate::window::RUN_PROTOCOL];
+        for verb in saveable {
+            assert!(
+                !without.contains(&verb),
+                "a window with no Protocol behind it is offered {verb}, which \
+                 confirms and does nothing: {without:?}"
+            );
+            assert!(
+                with.contains(&verb),
+                "a window with a Protocol behind it is offered no {verb}: {with:?}"
+            );
+            assert!(!chart_offers(verb, false));
+            assert!(chart_offers(verb, true));
+        }
         // Nothing else moves with the state.
-        let mut rest: Vec<&str> = with.iter().copied().filter(|v| *v != "save-spec").collect();
+        let mut rest: Vec<&str> = with
+            .iter()
+            .copied()
+            .filter(|v| !saveable.contains(v))
+            .collect();
         rest.sort_unstable();
         let mut base = without.clone();
         base.sort_unstable();
         assert_eq!(
             rest, base,
-            "the saveable state changed more than the Save row"
+            "the saveable state changed more than the Save and Run rows"
         );
         for verb in CHART_PALETTE_VERBS {
             assert!(

@@ -41,6 +41,7 @@ by the provenance test; scores mirror `VerbEntry.scores` (frequency / mnemonic /
 | `open-home` | `cmd-shift-h` | 3 / 5 / 4 | cmd-shift-h = home; free of the editor chord set; keeps your place under Continue |
 | `toggle-presentation` | `p` | 2 / 3 / 3 | `p` = present (shipped fixed point) |
 | `save-spec` | `cmd-s` | 3 / 5 / 5 | cmd-s = save (universal; shipped, editor-scoped) |
+| `run-protocol` | `cmd-enter` | 3 / 3 / 5 | cmd-enter = run (notebook cells, SQL consoles); `cmd-r` is `reload-spec`'s, so the run takes the other run convention; global, so it reaches from the canvas as well as the ledger strip's Run control |
 | `cycle-colour-scheme` | `c` | 3 / 5 / 3 | `c` = colour (mnemonic); view-scoped, transient preview |
 | `toggle-outline-rail` | `cmd-b` | 4 / 2 / 5 | cmd-b = the left dock (Zed `workspace::ToggleLeftDock`, VS Code `toggleSidebarVisibility`); round-trip focus, never a numeric |
 | `move-grid` | `cmd-j` | 3 / 2 / 4 | cmd-j = the bottom dock (Zed `workspace::ToggleBottomDock`, VS Code `togglePanel`); moves the table's one grid into the bottom rail and back, one verb for both directions |
