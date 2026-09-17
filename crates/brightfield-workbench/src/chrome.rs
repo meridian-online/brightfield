@@ -758,6 +758,10 @@ fn strip_action(
     action: StripAction<'_>,
     mode: Mode,
 ) -> (egui::Rect, bool) {
+    // The strip's own row binding: a control of `b.control` inside a row of
+    // `rail_selector_height`, `b.pad_x` either side of its label. The button's
+    // padding is set to that rather than left at egui's, because egui's grows
+    // the button past the width measured here, which truncated the label.
     let b = control::binding(rail_selector_height());
     let label = ui.painter().layout_no_wrap(
         action.label.to_owned(),
@@ -765,7 +769,7 @@ fn strip_action(
         colour(semantic(mode.is_dark()).text.primary),
     );
     let size = egui::vec2(
-        label.size().x + 2.0 * spacing::SPACE_3,
+        label.size().x + 2.0 * b.pad_x,
         b.control.min(strip.height()),
     );
     let at = egui::Rect::from_min_size(
@@ -773,10 +777,18 @@ fn strip_action(
         size,
     );
     let button = egui::Button::new(egui::RichText::new(action.label).font(ui_font()))
+        .wrap_mode(egui::TextWrapMode::Extend)
         .corner_radius(radius::CONTROL)
         .min_size(size);
     let response = ui
-        .add_enabled_ui(action.enabled, |ui| ui.put(at, button))
+        .add_enabled_ui(action.enabled, |ui| {
+            ui.spacing_mut().button_padding = egui::vec2(b.pad_x, 0.0);
+            // egui raises a button to `interact_size.y` whatever its
+            // `min_size` says, which put this one's foot under the strip's
+            // bottom edge.
+            ui.spacing_mut().interact_size.y = size.y;
+            ui.put(at, button)
+        })
         .inner;
     meridian_egui::widgets::focus_ring_for(ui, &response);
     let clicked = response.clicked();
