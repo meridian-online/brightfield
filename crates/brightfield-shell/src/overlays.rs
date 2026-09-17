@@ -98,7 +98,11 @@ pub const CHART_PALETTE_VERBS: &[&str] = &[
 /// which is precisely the row this module's list exists to keep out of the
 /// palette. So it is not on the unconditional list; it is here, behind
 /// [`chart_offers`].
-const SAVEABLE_CHART_VERBS: &[&str] = &["save-spec"];
+///
+/// `run-protocol` is here for the same reason: what it runs is the spec Save
+/// writes (`MeridianApp::run_protocol`), so a window with nothing to save has
+/// nothing to run.
+const SAVEABLE_CHART_VERBS: &[&str] = &["save-spec", crate::window::RUN_PROTOCOL];
 
 /// **Whether a chart window in this state offers `verb`** — what the chart
 /// palette is built from.

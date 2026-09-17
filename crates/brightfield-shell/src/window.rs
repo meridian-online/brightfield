@@ -421,6 +421,36 @@ pub struct PendingStart {
     fetch: Option<crate::remote::Fetch>,
 }
 
+/// A run of the open Protocol, started from this window and not yet finished.
+///
+/// **Which Protocol it is for is part of the latch**, and it is read every time
+/// the latch is: the ledger strip's control reads *running* only over the
+/// document the run is of, and a run that finishes after the window has moved
+/// to another document lands on nothing. That is identity rather than a list
+/// of call sites that clear the latch, for the reason `documents_changed`
+/// gives about the fetch latch — and unlike a fetch, a run that is not landed
+/// is not lost: `arc` wrote its record beside the spec, and the next open of
+/// that file reads it.
+struct PendingRun {
+    /// The worker waiting on the runner.
+    run: crate::run::Run,
+    /// The name of the Protocol being run. With [`crate::run::Run::dir`], the
+    /// identity a document is compared against.
+    protocol: String,
+}
+
+/// The words on the ledger strip's Run control while it can be taken.
+pub const RUN_LABEL: &str = "Run";
+
+/// The words on the ledger strip's Run control while a run of the open
+/// Protocol is under way — the control drawn disabled, so it reads as busy
+/// rather than as gone.
+pub const RUNNING_LABEL: &str = "Running\u{2026}";
+
+/// The `run-protocol` verb's longname — the registry's, spelled once here for
+/// the window's dispatch, its key and the palette.
+pub const RUN_PROTOCOL: &str = "run-protocol";
+
 /// One gallery card's outer width.
 const CARD_WIDTH: f32 = 216.0;
 
@@ -1227,7 +1257,10 @@ impl Boot {
         // is a build-time defect, not a user's circumstance, so it is said out
         // loud and the file still opens — with the rails reporting that nothing
         // exists, which is loud enough for a reader to notice.
-        let inputs = protocol.inputs().unwrap_or_else(|e| {
+        // Through the last run recorded beside the spec, so a file that has been
+        // run opens reading that run — the same call a run taken in the window
+        // lands through (`MeridianApp::run_protocol`).
+        let inputs = protocol.inputs_with_last_run().unwrap_or_else(|e| {
             eprintln!("the Protocol for this file could not be built: {e}");
             ProtocolInputs::empty()
         });
@@ -1543,6 +1576,8 @@ struct RegionPicks {
     projection: Option<usize>,
     /// The pane the ledger rail's strip was clicked to.
     ledger: Option<usize>,
+    /// Whether the ledger strip's Run control was taken.
+    run: bool,
     /// The pane the inspector rail's strip was clicked to.
     inspector: Option<usize>,
     /// The rails whose collapse control was clicked this frame.
@@ -1622,6 +1657,7 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         }
         "cmd-b" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::B)),
         "cmd-j" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::J)),
+        "cmd-enter" => ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)),
         // The navigation family. Bare keys, and mapped here for the same
         // reason the overlay openers are: the shell may not invent a binding,
         // so the token comes off the registry and only its egui spelling lives
@@ -1938,6 +1974,13 @@ pub struct MeridianApp {
     /// once a frame — see [`MeridianApp::open_start`] for why the fetch is not
     /// simply done inside the click.
     fetching: Option<PendingStart>,
+    /// The run of the open Protocol this window started and has not landed —
+    /// see [`PendingRun`] and [`MeridianApp::run_protocol`].
+    running: Option<PendingRun>,
+    /// The program a run is handed to. `None` until [`MeridianApp::running_with`]
+    /// gives one — see [`crate::run::Runner`] for why a window does not assume
+    /// the process it is in.
+    runner: Option<crate::run::Runner>,
     /// The files the **open document's** remote sources were fetched into.
     ///
     /// Held for the life of the document rather than the life of the open: the
@@ -1994,6 +2037,9 @@ pub struct MeridianApp {
     /// The `move-grid` keystroke token, read off the registry at boot — same
     /// rule as [`Self::home_binding`].
     grid_binding: Option<&'static str>,
+    /// The `run-protocol` keystroke token, read off the registry at boot — same
+    /// rule as [`Self::home_binding`].
+    run_binding: Option<&'static str>,
     /// The navigation family's keystroke tokens paired with their verb
     /// longnames, read off the registry at boot — same rule as
     /// [`Self::home_binding`]: the shell wires the binding the registry
@@ -2315,6 +2361,8 @@ impl MeridianApp {
             door_rows: Vec::new(),
             door_help: None,
             fetching: None,
+            running: None,
+            runner: None,
             remote_files: None,
             door_open_file: None,
             pick_requested: false,
@@ -2333,6 +2381,10 @@ impl MeridianApp {
             grid_binding: brightfield_keys::registry()
                 .iter()
                 .find(|v| v.longname == crate::data_grid::MOVE_GRID)
+                .and_then(brightfield_keys::VerbEntry::primary_key),
+            run_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == RUN_PROTOCOL)
                 .and_then(brightfield_keys::VerbEntry::primary_key),
             nav_bindings: navigation_bindings(),
             recency: RecencyCounter::new(),
@@ -2818,6 +2870,20 @@ impl MeridianApp {
         ))
     }
 
+    /// What hovering the ledger strip's Run control says: the verb's own help
+    /// line off the registry, with its keystroke appended the way
+    /// `chrome::toolbar_button` appends one — so a rebinding cannot leave the
+    /// control naming a key that no longer runs anything.
+    fn run_tooltip(&self) -> Option<String> {
+        let verb = brightfield_keys::registry()
+            .into_iter()
+            .find(|v| v.longname == RUN_PROTOCOL)?;
+        Some(match self.run_binding {
+            Some(keys) => format!("{}  ({keys})", verb.help),
+            None => verb.help.to_string(),
+        })
+    }
+
     /// Whether this window's ledger rail **opens closed to its strip**.
     ///
     /// A Protocol of one step, which is what a data file opens as: the rail's
@@ -2996,6 +3062,19 @@ impl MeridianApp {
             .iter()
             .find(|(r, _)| *r == id)
             .and_then(|(_, strip)| strip.summary)
+    }
+
+    /// Where the trailing action of rail `id`'s strip drew in the last frame
+    /// this window drew, or `None` on a frame that strip was given none — the
+    /// ledger's Run control, over a Protocol with a spec to run.
+    ///
+    /// Recorded and read back for the reason [`Self::rail_summary_rect`] is.
+    #[must_use]
+    pub fn rail_action_rect(&self, id: RegionId) -> Option<egui::Rect> {
+        self.strips
+            .iter()
+            .find(|(r, _)| *r == id)
+            .and_then(|(_, strip)| strip.action)
     }
 
     /// Where the `index`-th name in rail `id`'s strip drew in the last frame,
@@ -3354,6 +3433,18 @@ impl MeridianApp {
         self
     }
 
+    /// Give this window the program its Run control hands a run to.
+    ///
+    /// `main` passes [`crate::run::Runner::this_binary`]; a suite passes the
+    /// `brightfield-shell` binary cargo built for it. A window given `None`
+    /// still draws the control, and taking it raises a banner saying the
+    /// window has no runner — see [`Self::run_protocol`].
+    #[must_use]
+    pub fn running_with(mut self, runner: Option<crate::run::Runner>) -> Self {
+        self.runner = runner;
+        self
+    }
+
     /// The protocol view's interaction model, read-only.
     ///
     /// The window is the only thing that feeds it keys, and it feeds it keys
@@ -3464,6 +3555,10 @@ impl MeridianApp {
         // and adopted the document after would draw one frame of a door for a
         // window that is no longer on it.
         self.poll_fetch(&ctx);
+        // A run that finished since the last frame, for the same reason: it
+        // reloads the Protocol document, and a frame should draw the state the
+        // run left rather than one frame of the state before it.
+        self.poll_run(&ctx);
         // The mark, once per window: both the controls that draw it are below
         // this line and either can be the first to run, so neither owns the
         // load.
@@ -3554,6 +3649,8 @@ impl MeridianApp {
         self.navigator_key(&ctx);
         // The grid's move, on the same gate: a window verb, wherever focus is.
         self.grid_key(&ctx);
+        // The run, on the same gate and for the same reason.
+        self.run_key(&ctx);
         // The frame verbs, on the same gate and only where the chart holds the
         // canvas: they are bare keys, so an overlay or a text field must own
         // the keyboard first.
@@ -3690,7 +3787,7 @@ impl MeridianApp {
                         &[NAVIGATOR_DOOR_NAME],
                         0,
                         Some(caret),
-                        None,
+                        chrome::Trailing::default(),
                         mode,
                     ));
                     door_empty_navigator(ui, body, semantic(mode.is_dark()));
@@ -3819,6 +3916,23 @@ impl MeridianApp {
             // Each strip's words are the panes' own `Subject` titles, read
             // before the closures below take their borrows of the documents.
             let ledger_summary = self.ledger_summary();
+            // The Run control beside that summary, on a Protocol with a spec to
+            // run and nowhere else: a shipped start's Protocol and a chart
+            // spec's have no spec brightfield wrote, so a control over them
+            // would be a verb with nothing to act on.
+            let run_tooltip = self.run_tooltip();
+            let run_action = self.protocol.doc.model.source().is_some().then(|| {
+                let running = self.run_in_progress();
+                chrome::StripAction {
+                    label: if running { RUNNING_LABEL } else { RUN_LABEL },
+                    enabled: !running,
+                    tooltip: run_tooltip.as_deref(),
+                }
+            });
+            let ledger_trailing = chrome::Trailing {
+                summary: ledger_summary.as_deref(),
+                action: run_action,
+            };
             let ledger_labels = self.pane_titles(ledger_panes);
             let navigator_labels = self.pane_titles(navigator_panes);
             let inspector_labels = self.pane_titles(inspector_panes);
@@ -3953,7 +4067,7 @@ impl MeridianApp {
                             &pane_labels(&ledger_labels),
                             ledger_panel,
                             caret,
-                            ledger_summary.as_deref(),
+                            ledger_trailing,
                             mode,
                         ));
                         return;
@@ -3972,7 +4086,7 @@ impl MeridianApp {
                         &pane_labels(&ledger_labels),
                         ledger_panel,
                         Some(caret),
-                        ledger_summary.as_deref(),
+                        ledger_trailing,
                         mode,
                     ));
                     let item = ledger_panes[ledger_panel];
@@ -4029,6 +4143,7 @@ impl MeridianApp {
                 });
             if let Some(strip) = ledger_strip {
                 picks.ledger = strip.picked;
+                picks.run = strip.acted;
                 if strip.toggled {
                     picks.collapse.push(ledger.id);
                 }
@@ -4074,7 +4189,7 @@ impl MeridianApp {
                         &pane_labels(&navigator_labels),
                         0,
                         Some(caret),
-                        None,
+                        chrome::Trailing::default(),
                         mode,
                     ));
                     draw_protocol_pane(
@@ -4142,7 +4257,7 @@ impl MeridianApp {
                         &pane_labels(&inspector_labels),
                         inspector_panel,
                         Some(caret),
-                        None,
+                        chrome::Trailing::default(),
                         mode,
                     ));
                     let item = inspector_panes[inspector_panel];
@@ -4466,6 +4581,9 @@ impl MeridianApp {
                 self.inspector_panel = next;
                 self.collapsed.remove(&arrangement::INSPECTOR_RAIL);
             }
+            if picks.run {
+                self.run_protocol(&ctx);
+            }
             for id in picks.collapse {
                 if !self.collapsed.remove(&id) {
                     self.collapsed.insert(id);
@@ -4594,6 +4712,17 @@ impl MeridianApp {
             .is_some_and(|t| consume_token(ctx, t))
         {
             self.toggle_navigator_focus(ctx);
+        }
+    }
+
+    /// Run the open Protocol if the registry's `run-protocol` keystroke is down
+    /// this frame. Gated exactly as [`Self::home_key`] is.
+    fn run_key(&mut self, ctx: &egui::Context) {
+        if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        if self.run_binding.is_some_and(|t| consume_token(ctx, t)) {
+            self.run_protocol(ctx);
         }
     }
 
@@ -5120,6 +5249,12 @@ impl MeridianApp {
                 Request::Verb(verb) if verb.as_str() == crate::data_grid::MOVE_GRID => {
                     self.move_grid();
                     ctx.request_repaint();
+                }
+                // run-protocol is the window's: it writes the spec, starts a
+                // worker and later replaces the Protocol document, none of
+                // which either document's model can do to itself.
+                Request::Verb(verb) if verb.as_str() == RUN_PROTOCOL => {
+                    self.run_protocol(ctx);
                 }
                 Request::Verb(verb) if graph_on_canvas => {
                     let canvas_node = self.protocol.doc.canvas_holds.node().cloned();
@@ -5755,6 +5890,153 @@ impl MeridianApp {
         }
         ctx.request_repaint();
         Some(written)
+    }
+
+    /// **Run the Protocol this window holds** — the `run-protocol` verb, and
+    /// what the ledger strip's Run control takes.
+    ///
+    /// The entry point a test drives and the one the control, the key and the
+    /// palette reach through, the arrangement [`Self::save_protocol`] has.
+    ///
+    /// What it does before it returns is cheap and its failures are the
+    /// reader's to see at once: the spec is written where Save writes it,
+    /// because `arc run` reads `arcform.yaml` off disk, and a run is started on
+    /// a worker ([`crate::run::Run::begin`]). What it does not do is wait. The
+    /// private `poll_run`, at the head of [`Self::draw`], lands the run on the
+    /// frame after it finishes, by reloading the document through
+    /// [`OneStepProtocol::inputs_with_last_run`](crate::one_step::OneStepProtocol::inputs_with_last_run)
+    /// — the function a relaunch opens the file through.
+    ///
+    /// Answers whether a run of this document is under way when it returns:
+    /// `false` for a window with no Protocol source to run (a chart spec, a
+    /// shipped start, the front door), for a spec that would not write, and for
+    /// a window given no runner, the last two with a banner; `true` when it
+    /// started one, and when one was already running for this document — a
+    /// second press while it runs is the same press.
+    pub fn run_protocol(&mut self, ctx: &egui::Context) -> bool {
+        let Some(source) = self.protocol.doc.model.source().cloned() else {
+            return false;
+        };
+        if self.run_in_progress() {
+            return true;
+        }
+        let banner = NotificationId::new("run-protocol");
+        let refused = |this: &mut Self, body: String| {
+            eprintln!("could not run the Protocol: {body}");
+            this.notifications.raise(
+                Notification::new(banner, Severity::Error, "Could not run this Protocol")
+                    .body(body),
+            );
+            ctx.request_repaint();
+            false
+        };
+        if let Err(e) = source.save_to(&source.dir) {
+            return refused(self, e);
+        }
+        let Some(runner) = self.runner.as_ref() else {
+            return refused(
+                self,
+                "this window was started without a runner to hand the run to".to_string(),
+            );
+        };
+        self.notifications.dismiss(banner);
+        let wake = ctx.clone();
+        self.running = Some(PendingRun {
+            run: crate::run::Run::begin(runner, &source.dir, move || wake.request_repaint()),
+            protocol: source.name,
+        });
+        ctx.request_repaint();
+        true
+    }
+
+    /// Whether a run this window started is under way **for the document it
+    /// holds now** — what the ledger strip's control reads.
+    ///
+    /// `false` while a run of some other Protocol is outstanding: that run is
+    /// not this document's, and the control over this document can be taken.
+    #[must_use]
+    pub fn run_in_progress(&self) -> bool {
+        self.running
+            .as_ref()
+            .is_some_and(|pending| self.holds_protocol(pending.run.dir(), &pending.protocol))
+    }
+
+    /// Whether the document open now is the Protocol named `protocol` whose
+    /// spec lives in `dir`.
+    fn holds_protocol(&self, dir: &std::path::Path, protocol: &str) -> bool {
+        self.protocol
+            .doc
+            .model
+            .source()
+            .is_some_and(|source| source.dir == dir && source.name == protocol)
+    }
+
+    /// Land a run that has finished, if one has.
+    ///
+    /// Called at the head of [`Self::draw`], once a frame — the shape
+    /// `poll_fetch` has. A run of a Protocol the window no longer holds lands
+    /// on nothing: its record is on disk, and opening that file reads it.
+    ///
+    /// **The document is reloaded, not patched.** The reload goes through
+    /// [`OneStepProtocol::inputs_with_last_run`](crate::one_step::OneStepProtocol::inputs_with_last_run),
+    /// so the strip, the spine's step row and the Log and Quality panes read
+    /// the record exactly as they will on the next launch. Only the protocol
+    /// document is replaced — the chart half, the rails' collapsed state and
+    /// the grid's spot are the reader's and stay where they were — and the
+    /// run's log is kept on the new model for the session.
+    fn poll_run(&mut self, ctx: &egui::Context) {
+        let Some(pending) = self.running.as_mut() else {
+            return;
+        };
+        let Some(finished) = pending.run.take() else {
+            return;
+        };
+        let dir = pending.run.dir().to_path_buf();
+        let protocol = std::mem::take(&mut pending.protocol);
+        self.running = None;
+        if !self.holds_protocol(&dir, &protocol) {
+            return;
+        }
+        let Some(source) = self.protocol.doc.model.source().cloned() else {
+            return;
+        };
+        match source.inputs_with_last_run() {
+            Ok(inputs) => {
+                self.protocol.doc.open(inputs);
+                wire_columns(
+                    &mut self.charts.doc,
+                    &self.protocol.doc.model,
+                    &self.charts.inspector_table,
+                );
+            }
+            Err(e) => eprintln!("the Protocol could not be rebuilt after its run: {e}"),
+        }
+        let banner = NotificationId::new("run-protocol");
+        if finished.record.is_none() {
+            // No record: the run ended before `arc` reached its steps, so the
+            // strip has no new outcome to read and the log is the whole of
+            // the answer. The banner carries it as well as the Log pane, since
+            // the ledger is closed to its strip on a file of one step.
+            eprintln!("the run of {protocol} wrote no record:\n{}", finished.log);
+            self.notifications.raise(
+                Notification::new(banner, Severity::Error, "The run did not start")
+                    .body(finished.log.trim().to_string()),
+            );
+        } else {
+            self.notifications.dismiss(banner);
+            let word = self.protocol.doc.model.last_run_word();
+            let severity = if finished.succeeded {
+                Severity::Success
+            } else {
+                Severity::Error
+            };
+            self.toasts.push(Toast::new(
+                severity,
+                format!("Ran {protocol} \u{b7} {word}"),
+            ));
+        }
+        self.protocol.doc.model.set_run_log(finished.log);
+        ctx.request_repaint();
     }
 
     /// Open the Protocol saved at `path` — the route a front door row for a
