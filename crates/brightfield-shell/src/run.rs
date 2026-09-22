@@ -19,11 +19,24 @@
 //! [`Run::begin`] starts that child with `run` as its argument and the
 //! Protocol's directory as its working directory.
 //!
-//! What that buys over spawning an `arc` found on the `PATH`: a stranger needs
-//! no second install, and the runner that writes the record is built from the
-//! same pinned rev as the loader that reads it, so the two cannot disagree
-//! about the contract's shape. What it costs: one more process per run, and a
-//! window that is also, under one environment variable, a command-line tool.
+//! What that buys over spawning an `arc` found on the `PATH`: the runner that
+//! writes the record is built from the same pinned rev as the loader that
+//! reads it, so the two cannot disagree about the contract's shape. What it
+//! costs: one more process per run, and a window that is also, under one
+//! environment variable, a command-line tool.
+//!
+//! # Which DuckDB runs the steps
+//!
+//! `arc run` does not embed DuckDB: it executes each SQL step by spawning a
+//! DuckDB executable, the one [`ENGINE_ENV`] names or else `duckdb` on the
+//! search path. A packaged build carries the official CLI beside its own
+//! executable (`scripts/package.sh` stages it), and [`staged_engine_beside`]
+//! finds it from the runner program — in the live app that is
+//! [`std::env::current_exe`], by way of [`Runner::this_binary`]. When it is
+//! there the child is told it in [`ENGINE_ENV`], so a stranger's run needs no
+//! second install. When it is not — a `cargo run`, a test harness — the
+//! variable is left as the parent had it, so an inherited [`ENGINE_ENV`] or the
+//! search path answers.
 //!
 //! # Where the record is
 //!
@@ -56,6 +69,29 @@ use brightfield_protocol::ContractView;
 /// person who finds it in a process listing should be able to tell what that
 /// process is.
 pub const RUNNER_ENV: &str = "BRIGHTFIELD_RUN_AS_ARC";
+
+/// The environment variable `arc run` reads for the DuckDB executable it runs
+/// SQL steps with: `DUCKDB_BIN_ENV` in arc's engine module, which is private,
+/// so the name is spelled here. Set, it is final — arc refuses a value that is
+/// not an executable file rather than falling back to the search path.
+pub const ENGINE_ENV: &str = "ARC_DUCKDB_BIN";
+
+/// The DuckDB CLI a packaged build staged beside `program`, when there is one.
+///
+/// Two layouts, the two `scripts/package.sh` produces: the tarball puts
+/// `engine/duckdb` beside the `brightfield` executable, and the app puts it at
+/// `Contents/Helpers/duckdb` while the executable sits in `Contents/MacOS/`.
+/// `None` when neither is a file, which is every unpackaged build.
+#[must_use]
+pub fn staged_engine_beside(program: &Path) -> Option<PathBuf> {
+    let dir = program.parent()?;
+    [
+        dir.join("engine").join("duckdb"),
+        dir.join("../Helpers/duckdb"),
+    ]
+    .into_iter()
+    .find(|candidate| candidate.is_file())
+}
 
 /// Hand this process to `arc` if it was started as the runner, and return only
 /// if it was not.
@@ -272,13 +308,17 @@ impl Run {
 /// outcome as this one's.
 fn run_to_completion(program: &Path, dir: &Path) -> Finished {
     let before: BTreeSet<PathBuf> = record_paths_newest_first(dir).into_iter().collect();
-    let output = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .arg("run")
         .current_dir(dir)
         .env(RUNNER_ENV, "1")
         .env("NO_COLOR", "1")
-        .stdin(Stdio::null())
-        .output();
+        .stdin(Stdio::null());
+    if let Some(engine) = staged_engine_beside(program) {
+        command.env(ENGINE_ENV, engine);
+    }
+    let output = command.output();
     let output = match output {
         Ok(output) => output,
         Err(e) => {
@@ -335,6 +375,34 @@ pub fn without_colour_codes(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Watched redden, three mutations, each alone: the tarball candidate
+    /// renamed to `engine/duckdb-cli`, the app candidate to
+    /// `../Resources/duckdb`, and the `is_file` filter replaced by
+    /// `parent().is_some()`.
+    #[test]
+    fn the_staged_engine_is_found_in_either_packaged_layout_and_nowhere_else() {
+        let tmp = std::env::temp_dir().join(format!("bf-engine-{}", std::process::id()));
+        let tar = tmp.join("tarball");
+        let app = tmp.join("Brightfield.app/Contents");
+        std::fs::create_dir_all(tar.join("engine")).unwrap();
+        std::fs::create_dir_all(app.join("MacOS")).unwrap();
+        std::fs::create_dir_all(app.join("Helpers")).unwrap();
+        std::fs::write(tar.join("engine/duckdb"), b"x").unwrap();
+        std::fs::write(app.join("Helpers/duckdb"), b"x").unwrap();
+        std::fs::create_dir_all(tmp.join("bare")).unwrap();
+
+        assert_eq!(
+            staged_engine_beside(&tar.join("brightfield")),
+            Some(tar.join("engine/duckdb"))
+        );
+        assert_eq!(
+            staged_engine_beside(&app.join("MacOS/brightfield")),
+            Some(app.join("MacOS/../Helpers/duckdb"))
+        );
+        assert_eq!(staged_engine_beside(&tmp.join("bare/brightfield")), None);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 
     /// Watched redden, one mutation: the `chars.next()` that consumes the
     /// `[` removed, so `[` is taken as the final byte and `1m` survives.

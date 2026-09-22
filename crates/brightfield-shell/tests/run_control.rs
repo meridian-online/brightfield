@@ -615,3 +615,192 @@ fn a_second_launch_reads_the_record_the_first_run_wrote() {
         "the second launch ran the Protocol again"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The engine the child is handed, and the two refusals a landing run passes
+// ---------------------------------------------------------------------------
+
+/// **A runner laid out the way the tarball ships hands its child the DuckDB
+/// staged beside it.**
+///
+/// The layout is built from parts: `pkg/brightfield` is a link to the binary
+/// cargo built for this suite, and `pkg/engine/duckdb` — the path
+/// `scripts/package.sh` stages the CLI at — is a two-line script that marks a
+/// file and then runs the real CLI (the one an inherited
+/// [`run::ENGINE_ENV`] names, else `duckdb` on the search path). The run must
+/// land as a success AND the mark must be there: an inherited engine completes
+/// the run just as well, so the success alone says nothing about which engine
+/// the child was told.
+///
+/// Watched redden, one mutation: the `command.env(ENGINE_ENV, engine)` in
+/// `run_to_completion` removed — the run still succeeds on the inherited
+/// engine and the mark is absent.
+#[cfg(unix)]
+#[test]
+fn a_packaged_runner_hands_its_child_the_engine_staged_beside_it() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new("staged-engine");
+    let path = dir.housing();
+    let pkg = dir.path().join("pkg");
+    std::fs::create_dir_all(pkg.join("engine")).expect("the package layout");
+    std::os::unix::fs::symlink(
+        env!("CARGO_BIN_EXE_brightfield-shell"),
+        pkg.join("brightfield"),
+    )
+    .expect("the runner links into the layout");
+    let mark = dir.path().join("staged-engine-ran");
+    let real = std::env::var_os(run::ENGINE_ENV).map_or_else(
+        || "duckdb".to_string(),
+        |p| p.to_string_lossy().into_owned(),
+    );
+    let engine = pkg.join("engine").join("duckdb");
+    std::fs::write(
+        &engine,
+        format!(
+            "#!/bin/sh\n: > '{}'\nexec '{}' \"$@\"\n",
+            mark.display(),
+            real
+        ),
+    )
+    .expect("the staged engine writes");
+    std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o755))
+        .expect("the staged engine is executable");
+
+    let mut win = Window::over_file(&path, Some(Runner::at(pkg.join("brightfield"))));
+    win.take_run_control();
+    win.drive_until_landed();
+
+    let summary = win.strip_summary();
+    assert!(
+        summary
+            .iter()
+            .any(|t| t.contains("last run") && t.contains("success")),
+        "the run through the packaged layout reads {summary:?}"
+    );
+    assert!(
+        mark.is_file(),
+        "the run succeeded without the engine staged at {} — the child was not told it",
+        engine.display()
+    );
+}
+
+/// **A record that names this Protocol but not its steps is not this
+/// Protocol's run.**
+///
+/// The crosswalk's contract fixture is a real `arc` record of four steps. Its
+/// protocol name is rewritten to the housing file's, and it is written where a
+/// run of the housing file would be. The name matches, so the name filter in
+/// [`run::records_newest_first`] passes it; the step set does not — the housing
+/// Protocol is one step — so the window must read no run at all.
+///
+/// Watched redden, one mutation: `|| declared != recorded` dropped from
+/// `ProtocolInputs::adopt_run` — the strip reads the fixture's *success*.
+#[test]
+fn a_record_whose_steps_are_not_this_protocols_is_not_read_as_its_run() {
+    let dir = TempDir::new("foreign-steps");
+    let path = dir.housing();
+    let name = Path::new(starts::HOUSING_FILE)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .expect("the housing file has a stem");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../brightfield-protocol/fixtures/edgar_gleif.contract.json");
+    let mut contract: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&fixture).expect("the crosswalk contract fixture reads"),
+    )
+    .expect("the fixture is JSON");
+    contract["run"]["protocol"]["name"] = serde_json::Value::from(name);
+    assert_eq!(
+        contract["run"]["outcome"], "success",
+        "the fixture no longer records a success, so the strip could not tell adopted from refused"
+    );
+    let runs = run::runs_dir(dir.path());
+    std::fs::create_dir_all(&runs).expect("the runs directory");
+    std::fs::write(
+        runs.join("foreign-steps.json"),
+        serde_json::to_string_pretty(&contract).expect("the contract serialises"),
+    )
+    .expect("the record writes");
+    assert_eq!(
+        run::records_newest_first(dir.path(), name).count(),
+        1,
+        "the rewritten record does not carry the housing Protocol's name, so the step-set \
+         refusal is never reached"
+    );
+
+    let mut win = Window::over_file(&path, None);
+    let summary = win.strip_summary();
+    assert!(
+        summary.iter().any(|t| t.contains("not run"))
+            && !summary.iter().any(|t| t.contains("success")),
+        "a record of other steps was read as this Protocol's run: the strip reads {summary:?}"
+    );
+    assert!(
+        win.step_row_kind().contains("not run"),
+        "a record of other steps set the step row"
+    );
+}
+
+/// **A run that finishes after the reader opened another file lands on
+/// nothing.**
+///
+/// The housing file's run is taken in one directory, and before it lands a CSV
+/// in a second directory is opened into the same window. Frames are drawn until
+/// the run has provably been taken ([`MeridianApp::run_outstanding`] clears)
+/// and its record is on disk. The CSV's window must then read as it opened:
+/// the strip *not run*, the Log pane its not-run empty state, and no record in
+/// its directory.
+///
+/// Watched redden, one mutation: `poll_run`'s `if !self.holds_protocol(…)`
+/// replaced with `if false` — the housing run's log lands on the CSV's Log
+/// pane.
+#[test]
+fn a_run_that_lands_after_another_file_opened_lands_on_nothing() {
+    let first = TempDir::new("lands-first");
+    let housing = first.housing();
+    let second = TempDir::new("lands-second");
+    let csv = second.path().join("tiny.csv");
+    std::fs::write(&csv, "a,b\n1,2\n3,4\n").expect("the CSV writes");
+
+    let mut win = Window::over_file(&housing, Some(runner()));
+    win.take_run_control();
+    assert!(win.app.run_outstanding(), "taking Run started no run");
+    win.app.open_data_file(&win.ctx, &csv.to_string_lossy());
+    win.settle();
+    assert!(
+        !win.app.run_in_progress(),
+        "the CSV's window reads the housing run as its own"
+    );
+
+    let deadline = Instant::now() + PATIENCE;
+    while win.app.run_outstanding() {
+        assert!(
+            Instant::now() < deadline,
+            "the run did not land inside {PATIENCE:?} — this test is hung, not slow"
+        );
+        win.frame(Vec::new());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    win.settle();
+    assert_eq!(
+        records(first.path()).len(),
+        1,
+        "the housing run left no record, so nothing landed for the guard to refuse"
+    );
+
+    let summary = win.strip_summary();
+    assert!(
+        summary.iter().any(|t| t.contains("not run")),
+        "the CSV's strip reads {summary:?} after another file's run landed"
+    );
+    let log = win.open_ledger_pane(0);
+    assert!(
+        log.iter().any(|t| t == "Not run"),
+        "the CSV's Log pane drew {log:?}, not its not-run empty state"
+    );
+    assert!(
+        records(second.path()).is_empty(),
+        "a record appeared beside the CSV"
+    );
+}

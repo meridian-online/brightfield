@@ -5961,6 +5961,15 @@ impl MeridianApp {
             .is_some_and(|pending| self.holds_protocol(pending.run.dir(), &pending.protocol))
     }
 
+    /// Whether a run this window started has yet to land, whichever document
+    /// it was started over. [`Self::run_in_progress`] answers for the document
+    /// open now; this one stays `true` after the reader opens something else,
+    /// until the private `poll_run` takes the finished run.
+    #[must_use]
+    pub fn run_outstanding(&self) -> bool {
+        self.running.is_some()
+    }
+
     /// Whether the document open now is the Protocol named `protocol` whose
     /// spec lives in `dir`.
     fn holds_protocol(&self, dir: &std::path::Path, protocol: &str) -> bool {
