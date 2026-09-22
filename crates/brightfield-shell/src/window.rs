@@ -2401,6 +2401,11 @@ impl MeridianApp {
         // window was built over — the same derivation `documents_changed`
         // runs on a later document swap.
         app.apply_rail_defaults();
+        // The restored spot is put through the move rather than left as the
+        // field the struct literal wrote: the rail defaults above close the
+        // ledger for a one-step Protocol, and a grid whose spot is the ledger
+        // behind a closed ledger is drawn nowhere.
+        app.set_grid_spot(app.grid_spot);
         // Say what this document's load found, before its first frame. A
         // diagnostic that waits for the user to go looking is a diagnostic
         // that does not exist.
@@ -4046,6 +4051,7 @@ impl MeridianApp {
                     .resizable(true)
             };
             let mut ledger_strip = None;
+            let mut ledger_grid_body: Option<egui::Rect> = None;
             let drawn = ledger_panel_widget
                 .frame(chrome::region_frame(ledger.frame, ui, mode))
                 .show(ui, |ui| {
@@ -4103,7 +4109,7 @@ impl MeridianApp {
                     if item == ROWS && !canvas_draws_grid {
                         // **The grid itself, in the Rows spot** — not a second
                         // grid, but the one the canvas is not drawing.
-                        draw_ledger_grid_pane(
+                        ledger_grid_body = Some(draw_ledger_grid_pane(
                             ui,
                             body,
                             charts,
@@ -4112,7 +4118,8 @@ impl MeridianApp {
                             focused,
                             &mut requests,
                             affordances,
-                        );
+                            grid_layout,
+                        ));
                     } else if protocol.items.contains_key(&PaneKey::new(item)) {
                         draw_protocol_pane(
                             ui,
@@ -4393,11 +4400,19 @@ impl MeridianApp {
                         let grid_here = canvas_draws_grid;
                         let transposed =
                             grid_here && grid_layout == crate::app::GridLayout::Columns;
+                        // With the grid in the ledger and its saved layout
+                        // columns, `draw_ledger_grid_pane` has already drawn
+                        // the transposed rows into `ledger_grid_body`, and the
+                        // page below is composed with that rect as its second
+                        // view.
+                        let ledger_transposed = !grid_here
+                            && grid_layout == crate::app::GridLayout::Columns
+                            && ledger_grid_body.is_some();
                         if grid_here {
                             charts.doc.grid_density =
                                 (stacked.is_some() && !transposed).then_some(GridDensity::Compact);
                         }
-                        if !(transposed && stacked.is_some()) {
+                        if !((transposed || ledger_transposed) && stacked.is_some()) {
                             // …and the rows the transposed layout drew are a
                             // record of a pane this frame is not drawing. Left
                             // standing they would report a layout the reader
@@ -4489,6 +4504,7 @@ impl MeridianApp {
                                     split,
                                     grid_layout,
                                     grid_here,
+                                    ledger_grid_body,
                                     &mut requests,
                                     affordances,
                                 )
@@ -6082,7 +6098,9 @@ impl MeridianApp {
         // it. A document this file has no row for opens on its rows, which is
         // what `GridLayout::default()` is.
         self.grid_layout = self.layout.live().grid_layout_of(path).unwrap_or_default();
-        self.grid_spot = self.layout.live().grid_spot_of(path).unwrap_or_default();
+        // Through the move, for the reason the constructor gives: `adopt_boot`
+        // has just re-applied the rail defaults, which close the ledger.
+        self.set_grid_spot(self.layout.live().grid_spot_of(path).unwrap_or_default());
         self.layout.live_mut().remember(
             path,
             &name,
@@ -7614,6 +7632,7 @@ fn draw_canvas_pane_group(
     split: f32,
     layout: crate::app::GridLayout,
     grid_here: bool,
+    ledger_rect: Option<egui::Rect>,
     requests: &mut Vec<Request>,
     affordances: &mut Vec<(PaneKey, egui::Rect)>,
 ) -> (CanvasPanes, Option<crate::app::GridLayout>) {
@@ -7644,6 +7663,63 @@ fn draw_canvas_pane_group(
     // The grid pane's frame comes after the page below, so its own fill and
     // header band are not painted over by anything the composition overruns
     // its clip with.
+
+    // **With the grid in the ledger and its saved layout columns**, the page
+    // is composed as `draw_transposed_pane_group` composes it, with the
+    // ledger's grid body as the second view: the tiles are laid out at a
+    // row's width and their rects rehomed into `ledger_rect`. The clip stays
+    // the hero's, so nothing of the page is painted outside the canvas from
+    // here. `draw_ledger_grid_pane` paints the rehomed picture and the numbers
+    // beside it, from the views this call writes.
+    let ledger_transposed = (!grid_here)
+        .then_some(())
+        .and(ledger_rect)
+        .filter(|_| layout == crate::app::GridLayout::Columns);
+    if let Some(second) = ledger_transposed {
+        let summaries = (second.width() * crate::dashboard::ROW_SUMMARY_SHARE).floor();
+        let tile_width = (second.width() - summaries).max(1.0);
+        charts.doc.set_page_widths(map_body.width(), tile_width);
+        let gutter = f32::from(u16::try_from(crate::dashboard::HERO_GUTTER).unwrap_or(u16::MAX));
+        let from_x = map_body.width() + gutter;
+        charts.doc.pane_views = Some(crate::app::PaneViews {
+            first: map_body,
+            second,
+            by: 0.0,
+            from_x,
+            split: crate::app::PaneSplit::Rehomed { lead: summaries },
+        });
+        let reserved = crate::legend::band_width(&charts.doc.composed);
+        let laid = egui::Rect::from_min_size(
+            map_body.min,
+            egui::vec2(from_x + tile_width + reserved, map_body.height()),
+        );
+        draw_chart_body(
+            ui,
+            laid,
+            map_body,
+            charts,
+            ws,
+            item,
+            mode,
+            focused,
+            requests,
+            affordances,
+        );
+        let (count_text, count) = hero_count_chip(ui, charts, map_body, hero.as_ref(), mode);
+        let panes = CanvasPanes {
+            panes: vec![CanvasPane {
+                name: "map",
+                rect: map_rect,
+                header: pane_header_of(map_rect, map_body),
+                body: map_body,
+            }],
+            count,
+            count_text,
+            rows_note: None,
+            page: charts.doc.raster_rect,
+        };
+        return (panes, None);
+    }
 
     // The page: the hero at the pane's own content width, the spec's tile
     // column past the gutter, and the clip at the hero pane so only the first
@@ -8362,6 +8438,24 @@ fn record_spot_switch(
 /// the canvas from here, and the `N of M columns` note in what that leaves.
 /// The column header band draws compact, as it does beneath the hero: the
 /// ledger is a short rail, and the density follows the place.
+///
+/// **Transposed, this draws no table**: one row per tiled column, its
+/// histogram and its numbers, as [`draw_transposed_pane_group`] draws them on
+/// the canvas. This function returns its own body rect, and
+/// `draw_canvas_pane_group` composes the page with that rect as the second of
+/// its [`crate::app::PaneViews`], so the tiles' rects are rehomed here.
+///
+/// **The picture is painted here, not by the chart item.** `chart_item`'s
+/// second paint of the page is clipped by the canvas `Ui`, and egui
+/// intersects a painter's clip with its `Ui`'s, so a second view standing
+/// outside the canvas gets an empty clip. This rail's `Ui` does own the rect,
+/// so it paints the same texture through the same translation.
+///
+/// It reads the views and the raster rect the canvas wrote in the frame
+/// before, because this rail draws before the canvas (see
+/// `canvas_draws_grid`'s note). The texture's contents are this frame's, since
+/// it is sampled when the frame renders. Until the canvas has composed into
+/// this body, `views.second` is some other box and nothing is painted.
 #[allow(clippy::too_many_arguments)]
 fn draw_ledger_grid_pane(
     ui: &mut egui::Ui,
@@ -8372,13 +8466,33 @@ fn draw_ledger_grid_pane(
     focused: Option<PaneKey>,
     requests: &mut Vec<Request>,
     affordances: &mut Vec<(PaneKey, egui::Rect)>,
-) {
+    grid_layout: crate::app::GridLayout,
+) -> egui::Rect {
     let subject = Subject::new(
         GRID_PANE_TITLE.to_string(),
         brightfield_workbench::subject::Icon("table"),
         brightfield_keys::BindingContext::Workspace,
     );
     let body = pane_body(ui, rect, &subject, mode);
+    let header = pane_header_of(rect, body);
+    record_spot_switch(ui, charts, header, crate::app::GridSpot::Ledger, mode);
+    if grid_layout == crate::app::GridLayout::Columns {
+        // The pictures first and the numbers over them, the canvas's order.
+        let rehomed = charts.doc.pane_views.filter(|views| views.second == body);
+        if let (Some(views), Some(page), Some(texture)) =
+            (rehomed, charts.doc.raster_rect, charts.doc.canvas_texture())
+        {
+            ui.painter().with_clip_rect(body).image(
+                texture,
+                page.translate(views.moved(page)),
+                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
+        charts.doc.transposed_rows = draw_row_summaries(ui, charts, body, mode);
+        return body;
+    }
+    charts.doc.transposed_rows.clear();
     charts.doc.set_min_page_height(0.0);
     charts.doc.grid_density = Some(GridDensity::Compact);
     draw_chart_body(
@@ -8393,8 +8507,6 @@ fn draw_ledger_grid_pane(
         requests,
         affordances,
     );
-    let header = pane_header_of(rect, body);
-    record_spot_switch(ui, charts, header, crate::app::GridSpot::Ledger, mode);
     if let Some(drawn) = charts
         .doc
         .grid_drawn()
@@ -8404,6 +8516,7 @@ fn draw_ledger_grid_pane(
         let band = band_less_switch(header, charts.doc.grid_spot_switch.as_ref().map(|s| s.rect));
         band_note(ui, band, &text, mode);
     }
+    body
 }
 
 /// The icon the map pane's header carries: the point-map kind's own for a
