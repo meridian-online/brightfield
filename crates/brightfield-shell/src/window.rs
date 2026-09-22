@@ -2401,6 +2401,11 @@ impl MeridianApp {
         // window was built over — the same derivation `documents_changed`
         // runs on a later document swap.
         app.apply_rail_defaults();
+        // The restored spot is put through the move rather than left as the
+        // field the struct literal wrote: the rail defaults above close the
+        // ledger for a one-step Protocol, and a grid whose spot is the ledger
+        // behind a closed ledger is drawn nowhere.
+        app.set_grid_spot(app.grid_spot);
         // Say what this document's load found, before its first frame. A
         // diagnostic that waits for the user to go looking is a diagnostic
         // that does not exist.
@@ -6094,7 +6099,9 @@ impl MeridianApp {
         // it. A document this file has no row for opens on its rows, which is
         // what `GridLayout::default()` is.
         self.grid_layout = self.layout.live().grid_layout_of(path).unwrap_or_default();
-        self.grid_spot = self.layout.live().grid_spot_of(path).unwrap_or_default();
+        // Through the move, for the reason the constructor gives: `adopt_boot`
+        // has just re-applied the rail defaults, which close the ledger.
+        self.set_grid_spot(self.layout.live().grid_spot_of(path).unwrap_or_default());
         self.layout.live_mut().remember(
             path,
             &name,

@@ -11,11 +11,14 @@
 
 use brightfield_engine::coordinator::Interaction;
 use brightfield_engine::SqlPredicate;
-use brightfield_shell::app::GridSpot;
+use brightfield_protocol::layout::Flow;
+use brightfield_shell::app::{GridLayout, GridSpot};
 use brightfield_shell::data_grid::{GRID_ON_CANVAS, MOVE_GRID};
 use brightfield_shell::design::Mode;
-use brightfield_shell::startup::default_layout;
+use brightfield_shell::protocol::NodeView;
+use brightfield_shell::startup::{default_layout, opening_boot};
 use brightfield_shell::window::{Boot, MeridianApp};
+use brightfield_workbench::RunState;
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_sql::ir::ScalarValue;
 use brightfield_workbench::arrangement::{CANVAS, LEDGER_RAIL};
@@ -79,6 +82,28 @@ impl Window {
         self.run(vec![egui::Event::PointerMoved(at)]);
         self.run(vec![button(at, true), button(at, false)]);
         self.settle();
+    }
+
+    /// Click the navigator spine's row labelled `label`, where the last frame
+    /// drew it.
+    fn pick_spine_row(&mut self, label: &str) {
+        let at = self
+            .app
+            .spine_rows()
+            .iter()
+            .find(|row| row.label == label)
+            .unwrap_or_else(|| {
+                let drawn: Vec<&str> = self
+                    .app
+                    .spine_rows()
+                    .iter()
+                    .map(|r| r.label.as_str())
+                    .collect();
+                panic!("the spine drew no `{label}` row; it drew {drawn:?}")
+            })
+            .rect
+            .center();
+        self.click(at);
     }
 
     fn pick_rows(&mut self) {
@@ -427,8 +452,11 @@ fn a_dragged_width_and_the_scroll_move_with_the_grid() {
 /// second window is asserted to hold the grid on the canvas first, so the last
 /// assertion cannot pass on a latch.
 ///
-/// Watched redden, two mutations: dropping the `grid_spot_of` restore from
-/// `open_protocol_path`, and passing `GridSpot::default()` in `save_protocol`.
+/// Watched redden, three mutations: dropping the `grid_spot_of` restore from
+/// `open_protocol_path`, passing `GridSpot::default()` in `save_protocol`, and
+/// writing the restored spot as a bare field rather than through
+/// `set_grid_spot` — the rail defaults close the ledger, and the table is
+/// drawn nowhere.
 #[test]
 fn the_grid_left_in_the_ledger_reopens_in_the_ledger() {
     let dir = std::env::temp_dir().join(format!("bf-grid-spot-{}", std::process::id()));
@@ -466,6 +494,12 @@ fn the_grid_left_in_the_ledger_reopens_in_the_ledger() {
         "the Protocol was saved with the grid in the ledger and reopened with it on the canvas"
     );
     assert_eq!(reopened.pane_names(), vec!["map"]);
+    let ledger = reopened.rect(LEDGER_RAIL);
+    assert!(
+        ledger.contains_rect(reopened.table_head().shrink(1.0)),
+        "the table's header drew at {:?}, outside the ledger {ledger:?}",
+        reopened.table_head()
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -519,4 +553,167 @@ fn the_move_is_a_bound_verb_and_both_spots_take_it() {
     assert!(win
         .rect(LEDGER_RAIL)
         .contains_rect(win.table_head().shrink(1.0)));
+}
+
+/// **Moving the grid out of the node's grid view leaves the canvas on the
+/// dashboard view.**
+///
+/// The spine's `grid` row puts the grid on the canvas as the node's whole
+/// view. `move-grid` from there sends it to the ledger, and a canvas still
+/// holding the grid view would be the same table drawn a second time — so the
+/// canvas falls back to the dashboard: the hero alone, the table's header in
+/// the ledger.
+///
+/// Watched redden, one mutation: deleting the `CanvasHolds::View { view:
+/// NodeView::Grid }` to `NodeView::Dashboard` reset inside `set_grid_spot`.
+/// The canvas stays on the grid view, which draws the table, and the ledger
+/// draws none.
+#[test]
+fn moving_the_grid_out_of_its_view_leaves_the_canvas_on_the_dashboard() {
+    let mut win = Window::housing();
+    win.pick_spine_row("grid");
+    assert_eq!(
+        win.app.canvas_holds().view(),
+        Some(NodeView::Grid),
+        "the spine's grid row did not put the node's grid view on the canvas"
+    );
+    assert_eq!(win.pane_names(), vec!["grid"]);
+
+    win.cmd_j();
+    win.run(Vec::new());
+    assert_eq!(win.app.grid_spot(), GridSpot::Ledger);
+    assert_eq!(
+        win.app.canvas_holds().view(),
+        Some(NodeView::Dashboard),
+        "the grid moved to the ledger and the canvas is still on the grid view"
+    );
+    assert_eq!(
+        win.pane_names(),
+        vec!["map"],
+        "the canvas did not come back to the hero alone"
+    );
+    let ledger = win.rect(LEDGER_RAIL);
+    assert!(
+        ledger.contains_rect(win.table_head().shrink(1.0)),
+        "the table's header drew at {:?}, outside the ledger {ledger:?}",
+        win.table_head()
+    );
+}
+
+/// **A launch by the args route onto a document saved with the grid in the
+/// ledger opens with it there.**
+///
+/// The route `main.rs` takes for a path on the command line —
+/// `startup::opening_boot` over the path, into a window built over the saved
+/// layout — rather than the front door's row, which
+/// [`the_grid_left_in_the_ledger_reopens_in_the_ledger`] walks through
+/// `open_protocol_path`. The two restores are different lines, and a mutation
+/// of either leaves the other's test green.
+///
+/// Watched redden, one mutation: replacing the boot-route lookup in
+/// `MeridianApp`'s constructor (`grid_spot_of(id)` off `opened_id`) with
+/// `GridSpot::default()` — the window opens with the grid beside the hero.
+#[test]
+fn a_launch_over_a_saved_path_opens_with_the_grid_in_its_saved_spot() {
+    let path = housing();
+    let spelled = path.to_str().expect("utf-8 fixture path").to_string();
+    let mut saved = default_layout();
+    saved.remember(
+        &spelled,
+        "Housing",
+        RunState::NeverRun,
+        GridLayout::Rows,
+        GridSpot::Ledger,
+        1_000,
+    );
+
+    let boot =
+        opening_boot(Some(&spelled), None, Flow::Vertical, None).expect("the named file opens");
+    let mut win = Window::over(boot, saved);
+    win.run(Vec::new());
+
+    assert_eq!(
+        win.app.grid_spot(),
+        GridSpot::Ledger,
+        "a launch straight onto a path saved with the grid in the ledger \
+         opened with it on the canvas — the args route does not consult the \
+         spot saved for the document it was told to open"
+    );
+    assert_eq!(win.pane_names(), vec!["map"]);
+    let ledger = win.rect(LEDGER_RAIL);
+    assert!(
+        ledger.contains_rect(win.table_head().shrink(1.0)),
+        "the table's header drew at {:?}, outside the ledger {ledger:?}",
+        win.table_head()
+    );
+}
+
+/// **The spine's `grid` row brings the grid back from the ledger, and the
+/// document is saved with it on the canvas.**
+///
+/// With the grid in the ledger, the spine's `grid` row is a way back as well
+/// as a view of the node. The `dashboard` row picked after it changes the
+/// view and not the spot, so the canvas draws the pair again — the grid
+/// beside the hero — and a save writes the canvas as the grid's spot.
+///
+/// Watched redden, one mutation: deleting the `self.grid_spot =
+/// GridSpot::Canvas` the spine's view pick makes for the grid row. The spot
+/// stays the ledger, so the dashboard view draws the hero alone and the save
+/// writes the ledger.
+#[test]
+fn the_spines_grid_row_brings_the_grid_back_to_the_canvas() {
+    let dir = std::env::temp_dir().join(format!("bf-grid-spot-spine-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("the scratch dir");
+    let csv = dir.join("housing.csv");
+    std::fs::copy(housing(), &csv).expect("the sample copies");
+
+    let mut win = Window::over(
+        Boot::data_file(csv.to_str().expect("utf-8")).expect("the copy opens"),
+        default_layout(),
+    );
+    win.pick_rows();
+    assert_eq!(win.app.grid_spot(), GridSpot::Ledger);
+    assert_eq!(win.pane_names(), vec!["map"]);
+
+    win.pick_spine_row("grid");
+    win.pick_spine_row("dashboard");
+    win.run(Vec::new());
+    assert_eq!(
+        win.app.canvas_holds().view(),
+        Some(NodeView::Dashboard),
+        "the spine's dashboard row did not put the dashboard back on the canvas"
+    );
+    assert_eq!(
+        win.pane_names(),
+        vec!["map", "grid"],
+        "after the spine's grid row and then its dashboard row, the canvas \
+         does not draw the grid beside the hero"
+    );
+    let grid_pane = win
+        .app
+        .canvas_panes()
+        .pane("grid")
+        .expect("the grid pane drew")
+        .body;
+    assert!(grid_pane.contains_rect(win.table_head().shrink(1.0)));
+
+    let manifest = win
+        .app
+        .save_protocol(&win.ctx)
+        .expect("a data file has a Protocol")
+        .expect("the Protocol saved");
+    let layout_path = dir.join(brightfield_workbench::persist::LAYOUT_FILE);
+    win.app
+        .flush_layout(&layout_path)
+        .expect("the save left the layout dirty")
+        .expect("the layout wrote");
+    let (restored, _) = brightfield_workbench::persist::load(&layout_path, default_layout);
+    assert_eq!(
+        restored.grid_spot_of(manifest.to_str().expect("utf-8")),
+        Some(GridSpot::Canvas),
+        "the grid was brought back by the spine's grid row and the save wrote \
+         some other spot for it"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
