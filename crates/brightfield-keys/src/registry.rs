@@ -485,6 +485,22 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Save the Protocol this data file opened as",
             scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 5, motor_note: "cmd-s = save (universal; shipped, editor-scoped)" }),
         },
+        // The run: the verb behind the ledger strip's Run control. It writes
+        // the spec as save-spec does and asks `arc` to run it, and what it
+        // leaves is `arc`'s run record rather than a change to the document —
+        // so View, beside save-spec, not Data. Global, so it reaches from the
+        // canvas as well as from the strip.
+        VerbEntry {
+            longname: "run-protocol",
+            tier: CommandTier::View,
+            binding_specs: vec![global("cmd-enter")],
+            scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
+            drives: D::RuntimeDispatch,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Run the Protocol this data file opened as",
+            scores: Some(Scores { frequency: 3, mnemonic: 3, convention: 5, motor_note: "cmd-enter = run (notebook cells, SQL consoles); cmd-r is taken by reload-spec" }),
+        },
         // ---- colour preview: transient, view-scoped ----
         VerbEntry {
             longname: "cycle-colour-scheme",
@@ -1036,6 +1052,7 @@ mod tests {
             "open-home",
             "toggle-presentation",
             "save-spec",
+            "run-protocol",
             "cycle-colour-scheme",
             "filter-view",
             "cross-filter-all",

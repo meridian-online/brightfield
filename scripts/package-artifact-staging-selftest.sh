@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Prove a REAL scripts/package.sh run puts the type source inside every artifact
-# it produces, at the path that artifact's own reader opens.
+# it produces, at the path that artifact's own reader opens — and the DuckDB CLI
+# the Run control drives, at the path the shell's runner looks for it.
 #
 # WHAT WAS UNPINNED UNTIL THIS FILE. `stage_finetype` is called twice — once
 # into the tarball's staging tree and once into `Contents/Resources` of the app
@@ -104,6 +105,20 @@ printf '[]' >"$BUNDLE/taxonomy-schemas.json"
 # (otool -L), the bundle's version floor (otool -l LC_BUILD_VERSION) and
 # codesign. And it answers --check-type-source, so the read-back's run leg
 # executes a binary out of the packaged artifact instead of being skipped.
+# THE ENGINE: the real pinned DuckDB CLI, not a stand-in, because package.sh
+# refuses any executable whose sha256 is not the pin. Fetched once per run
+# (16.3 MB for arm64), or taken from BRIGHTFIELD_DUCKDB_CLI when the caller
+# already has a directory scripts/fetch-duckdb-cli.sh wrote.
+ENGINE="${BRIGHTFIELD_DUCKDB_CLI:-}"
+if [ -z "$ENGINE" ]; then
+	ENGINE="$TMP/engine"
+	"$HERE/fetch-duckdb-cli.sh" "$TARGET" "$ENGINE" >/dev/null || {
+		echo "package-artifact-staging-selftest: could not fetch the pinned DuckDB CLI" >&2
+		exit 1
+	}
+fi
+ENGINE_ARG="$ENGINE"
+
 STUB="$TMP/stub"
 mkdir -p "$STUB"
 cat >"$TMP/stub-main.c" <<'C'
@@ -142,6 +157,7 @@ run_packaging() { # run_packaging -> exit status, log in $out
 	(
 		cd "$COPY" || exit 1
 		PATH="$STUB:$PATH" BRIGHTFIELD_FINETYPE_BUNDLE="$BUNDLE" \
+			BRIGHTFIELD_DUCKDB_CLI="$ENGINE_ARG" \
 			./scripts/package.sh "v${CRATE_VERSION}" "$TARGET"
 	) >"$out" 2>&1
 }
@@ -152,6 +168,76 @@ read_back() { # read_back ARTIFACT -> exit status, log appended to $out
 }
 
 # mutate OLD NEW — one occurrence, in the copy's scripts/package.sh.
+# attach_image DMG MOUNTPOINT — hdiutil attach, retried. Measured on a
+# developer Mac: an attach of a freshly written image failed with "Resource
+# temporarily unavailable" in two of two runs of this file, at a different
+# attach each time, and left the image attached with no mount point. So a
+# failed attempt detaches whatever device the image left behind before the
+# next one, and four failures in a row are a failure.
+attach_image() {
+	local n=0 dev img
+	img="$(cd "$(dirname "$1")" && pwd -P)/$(basename "$1")"
+	until hdiutil attach -nobrowse -noverify -readonly -mountpoint "$2" "$1" >/dev/null; do
+		for dev in $(hdiutil info | awk -v p="$img" '
+			$1 == "image-path" { hit = (index($0, p) > 0); next }
+			hit && $1 ~ /^\/dev\/disk[0-9]+$/ { print $1; hit = 0 }'); do
+			hdiutil detach "$dev" -force -quiet >/dev/null 2>&1 || true
+		done
+		n=$((n + 1))
+		[ "$n" -lt 4 ] || return 1
+		sleep 2
+	done
+}
+
+# engine_in KIND -> 0 when the artifact holds the pinned CLI at the path
+# `staged_engine_beside` in crates/brightfield-shell/src/run.rs reads for that
+# layout, and it runs as v1.5.2; the reason it does not is appended to $out.
+LOOK="$TMP/look"
+engine_in() {
+	local kind="$1" root rel status=0 version
+	rm -rf "$LOOK"
+	mkdir -p "$LOOK"
+	case "$kind" in
+	tar.gz)
+		tar -xzf "$COPY/dist/${NAME}.tar.gz" -C "$LOOK" || return 1
+		root="$LOOK/${NAME}"
+		rel="engine/duckdb"
+		;;
+	dmg)
+		attach_image "$COPY/dist/${NAME}.dmg" "$LOOK" || return 1
+		root="$LOOK/Brightfield.app"
+		rel="Contents/Helpers/duckdb"
+		;;
+	esac
+	if [ ! -f "$root/$rel" ]; then
+		echo "the ${kind} carries no engine at ${rel}" >>"$out"
+		status=1
+	elif ! "$HERE/fetch-duckdb-cli.sh" --check "$TARGET" "$(dirname "$root/$rel")" >>"$out" 2>&1; then
+		status=1
+	else
+		version="$("$root/$rel" --version 2>&1)"
+		case "$version" in
+		"v1.5.2 "*) ;;
+		*)
+			echo "the ${kind}'s engine answered --version with: ${version}" >>"$out"
+			status=1
+			;;
+		esac
+	fi
+	if [ "$kind" = dmg ]; then
+		local n=0
+		until hdiutil detach "$LOOK" -quiet >/dev/null 2>&1; do
+			n=$((n + 1))
+			[ "$n" -lt 5 ] || {
+				hdiutil detach "$LOOK" -force -quiet >/dev/null 2>&1 || true
+				break
+			}
+			sleep 1
+		done
+	fi
+	return "$status"
+}
+
 mutate() {
 	local file="$COPY/scripts/package.sh" count
 	count=$(grep -cF -- "$1" "$file")
@@ -190,6 +276,16 @@ done
 # that decided not to run the binary — and then the two cases above would be
 # reading a file tree, which is the reading that already existed. The marker is
 # printed by the stub binary and by nothing else.
+for kind in tar.gz dmg; do
+	if engine_in "$kind"; then
+		echo "  ok   the ${kind} carries the pinned DuckDB CLI where the runner looks, and it runs"
+	else
+		echo "  FAIL the ${kind} does not carry the pinned DuckDB CLI where the runner looks:"
+		sed 's/^/       /' "$out"
+		failures=$((failures + 1))
+	fi
+done
+
 if grep -q 'STUB-RAN-THE-PACKAGED-BINARY' "$out"; then
 	echo "  ok   the packaged binary was executed out of the artifact"
 else
@@ -252,9 +348,73 @@ broken_case "the tarball's staging call is deleted" \
 	':' \
 	tar.gz "carries no type source at finetype" dmg
 
+# broken_engine_case NAME OLD MISSING_KIND NEEDLE PRESENT_KIND — one staging
+# call deleted; the artifact it fed must be refused naming the path, and the
+# other must still pass, so the case says which call each artifact reads.
+broken_engine_case() {
+	local name="$1" old="$2" bad="$3" needle="$4" good="$5"
+	copy_checkout
+	mutate "$old" ':' || return
+	if ! run_packaging; then
+		echo "  FAIL ${name}: packaging itself broke, so the artifacts were never read:"
+		sed 's/^/       /' "$out"
+		failures=$((failures + 1))
+		return
+	fi
+	if engine_in "$bad"; then
+		echo "  FAIL ${name}: the ${bad} still passed"
+		failures=$((failures + 1))
+		return
+	fi
+	if ! grep -qF -- "$needle" "$out"; then
+		echo "  FAIL ${name}: refused without naming ${needle}"
+		sed 's/^/       /' "$out"
+		failures=$((failures + 1))
+		return
+	fi
+	if ! engine_in "$good"; then
+		echo "  FAIL ${name}: the ${good} broke too, so this says nothing about which call is read"
+		sed 's/^/       /' "$out"
+		failures=$((failures + 1))
+		return
+	fi
+	echo "  ok   ${name}"
+}
+
+echo "== packaging with the engine dropped from one artifact"
+
+broken_engine_case "the app bundle's engine staging call is deleted" \
+	'    stage_engine "$APP/Contents/Helpers/duckdb"' \
+	dmg "carries no engine at Contents/Helpers/duckdb" tar.gz
+
+broken_engine_case "the tarball's engine staging call is deleted" \
+	'stage_engine "$STAGE/engine/duckdb"' \
+	tar.gz "carries no engine at engine/duckdb" dmg
+
+echo "== packaging handed a duckdb that is not the pin"
+copy_checkout
+mkdir -p "$TMP/impostor"
+printf '#!/bin/sh\necho "v1.5.2 (impostor)"\n' >"$TMP/impostor/duckdb"
+chmod +x "$TMP/impostor/duckdb"
+ENGINE_ARG="$TMP/impostor"
+if run_packaging; then
+	echo "  FAIL packaging staged an engine whose sha256 is not the pin"
+	failures=$((failures + 1))
+elif ! grep -qF "is not the pinned DuckDB v1.5.2 CLI for ${TARGET}" "$out"; then
+	echo "  FAIL packaging refused, but not for the engine:"
+	sed 's/^/       /' "$out"
+	failures=$((failures + 1))
+elif [ -e "$COPY/target/release/brightfield-shell" ]; then
+	echo "  FAIL the engine was refused only after the build ran"
+	failures=$((failures + 1))
+else
+	echo "  ok   an engine that is not the pinned CLI is refused before the build"
+fi
+ENGINE_ARG="$ENGINE"
+
 echo
 if [ "$failures" -ne 0 ]; then
 	echo "package-artifact-staging-selftest: ${failures} case(s) did not behave as required." >&2
 	exit 1
 fi
-echo "package-artifact-staging-selftest: a real packaging run stages the type source into both artifacts, and dropping either call is refused."
+echo "package-artifact-staging-selftest: a real packaging run stages the type source and the engine into both artifacts; dropping any staging call, or handing it a duckdb that is not the pin, is refused."

@@ -105,7 +105,12 @@ The system comprises four layers:
 
 One native binary, no runtime dependencies beyond the OS graphics stack — no
 server, no webview, no language runtime, and no network required to start,
-render, or open a local protocol.
+render, or open a local protocol. A release artifact carries one more
+executable: the official DuckDB v1.5.2 command-line shell (`engine/duckdb` in
+the tarball, `Contents/Helpers/duckdb` in the app), which the Run control hands
+a Protocol's SQL steps to so a run needs nothing installed.
+`scripts/fetch-duckdb-cli.sh` pins it by sha256; `scripts/package.sh` stages it
+when `BRIGHTFIELD_DUCKDB_CLI` names the directory that script wrote.
 
 ```bash
 # Package: release build → linked-library audit (OS allowlist) →
@@ -248,11 +253,13 @@ resolves it. A path-form patch into a sibling checkout works locally and breaks 
 patch's package version is 0.55.0, so it applies only to arc's requirement; the workspace's
 own newer `sqlparser` keeps coming from crates.io.
 
-**To bump the pin**, move three things in lockstep, in one commit:
+**To bump the pin**, move four things in lockstep, in one commit:
 
 1. the `rev` on `arc` in `crates/brightfield-protocol/Cargo.toml`;
-2. the `rev` on `sqlparser` in the root `[patch.crates-io]` (same sha);
-3. `Cargo.lock` — run a build, and if the resolver pulls a transitive dep above the CI
+2. the `rev` on `arc` in `crates/brightfield-shell/Cargo.toml` (same sha — the shell links
+   arc's `cli` feature to run a Protocol as a child process);
+3. the `rev` on `sqlparser` in the root `[patch.crates-io]` (same sha);
+4. `Cargo.lock` — run a build, and if the resolver pulls a transitive dep above the CI
    toolchain pin (`tree-sitter-iter` has done this: arc pins `yamlpath = "=1.27.0"`, but a
    fresh resolve can still float its deps), pin it back with
    `cargo update <crate>@<ver> --precise <ok-ver>`.

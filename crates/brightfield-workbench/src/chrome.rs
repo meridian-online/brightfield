@@ -424,6 +424,12 @@ pub struct StripDrawn {
     /// so a name that would reach under it is dropped by the rule the control
     /// already imposes.
     pub summary: Option<egui::Rect>,
+    /// Where the trailing action drew, on a strip that was given one — see
+    /// [`StripAction`].
+    pub action: Option<egui::Rect>,
+    /// Whether the pointer took the trailing action this frame. Never `true`
+    /// for an action drawn disabled.
+    pub acted: bool,
     /// The name the pointer picked this frame.
     pub picked: Option<usize>,
     /// Whether the pointer clicked the collapse control this frame.
@@ -438,6 +444,42 @@ pub struct StripDrawn {
     /// carried a selection. `None` on a strip with no dot drawn, which is the
     /// answer for a stub with a name and an unselected rail alike.
     pub stub_dot: Option<egui::Pos2>,
+}
+
+/// What a strip carries at its trailing end, left of its collapse control.
+///
+/// Two things, both optional and both the caller's answer rather than this
+/// file's: a line of the rail's own content, and a verb that changes what that
+/// line says. `Trailing::default()` is a strip with neither, which is what
+/// the navigator and inspector rails draw.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Trailing<'a> {
+    /// A line of the rail's own content, drawn in muted ink against the
+    /// trailing end.
+    pub summary: Option<&'a str>,
+    /// A verb drawn as a control immediately before [`Self::summary`].
+    pub action: Option<StripAction<'a>>,
+}
+
+/// A verb a strip offers beside its summary: the control that produces the
+/// state the summary reads.
+///
+/// **Beside the summary, not among the names**, and the placement is the
+/// point. The names pick which pane the rail shows; this acts on the document
+/// the rail reports on, so drawn among them it would read as a fourth pane.
+/// Drawn before the summary it reads as what makes the summary change — the
+/// ledger's Run control beside *last run · not run*.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StripAction<'a> {
+    /// The words on the control.
+    pub label: &'a str,
+    /// Whether the control can be taken now. A disabled action is still drawn,
+    /// with its label, so a control that is busy reads as busy rather than as
+    /// gone.
+    pub enabled: bool,
+    /// What hovering the control says — the caller appends the keystroke, as
+    /// [`toolbar_button`] does, because the caller knows the verb and the strip does not.
+    pub tooltip: Option<&'a str>,
 }
 
 /// A rail's rect, split into the strip at its head and the body under it.
@@ -467,11 +509,10 @@ pub fn rail_split(rect: egui::Rect) -> (egui::Rect, egui::Rect) {
 /// does not collapse, which is the arrangement's answer rather than this
 /// function's.
 ///
-/// `summary` is a line of the rail's own content at that trailing end, drawn
-/// left of the control and taking its room out of the same end — so the
-/// dropping rule above covers it without a second rule. `None` where the
-/// caller has no summary to give, which is its answer rather than this
-/// function's.
+/// `trailing` is what the strip carries at that trailing end — a line of the
+/// rail's own content, and a verb beside it — each drawn left of the control
+/// and taking its room out of the same end, so the dropping rule above covers
+/// both without a second rule. See [`Trailing`].
 ///
 /// The same strip is drawn whether the rail is open or collapsed: a bottom
 /// rail collapsed to this height is exactly this strip, so its names stay
@@ -486,7 +527,7 @@ pub fn rail_selector(
     names: &[&str],
     active: usize,
     collapse: Option<Caret>,
-    summary: Option<&str>,
+    trailing: Trailing<'_>,
     mode: Mode,
 ) -> StripDrawn {
     strip(
@@ -495,7 +536,7 @@ pub fn rail_selector(
         names,
         active,
         collapse,
-        summary,
+        trailing,
         Below::Body,
         mode,
     )
@@ -536,7 +577,7 @@ pub fn collapsed_rail(
     names: &[&str],
     active: usize,
     caret: Caret,
-    summary: Option<&str>,
+    trailing: Trailing<'_>,
     mode: Mode,
 ) -> StripDrawn {
     let sem = semantic(mode.is_dark());
@@ -549,7 +590,7 @@ pub fn collapsed_rail(
         names,
         active,
         Some(caret),
-        summary,
+        trailing,
         Below::Clearance,
         mode,
     )
@@ -579,7 +620,7 @@ fn strip(
     names: &[&str],
     active: usize,
     collapse: Option<Caret>,
-    summary: Option<&str>,
+    trailing: Trailing<'_>,
     below: Below,
     mode: Mode,
 ) -> StripDrawn {
@@ -607,7 +648,7 @@ fn strip(
     // ink and the same face as the names: it is what the rail is about rather
     // than one of the things it offers, so it must not read as a fourth name
     // the pointer can pick.
-    let summary = summary.map(|text| {
+    let summary = trailing.summary.map(|text| {
         let galley =
             ui.painter()
                 .layout_no_wrap(text.to_owned(), ui_font(), colour(sem.text.muted));
@@ -618,6 +659,17 @@ fn strip(
         );
         ui.painter().galley(at, galley, colour(sem.text.muted));
         let drawn = egui::Rect::from_min_size(at, size);
+        room.max.x = drawn.left() - spacing::SPACE_4;
+        drawn
+    });
+
+    // The action, against what the summary left: the same trailing-end rule,
+    // one step further in, so a name that would reach under it is dropped the
+    // way a name reaching under the summary is.
+    let mut acted = false;
+    let action = trailing.action.map(|action| {
+        let (drawn, clicked) = strip_action(ui, rect, room, action, mode);
+        acted = clicked;
         room.max.x = drawn.left() - spacing::SPACE_4;
         drawn
     });
@@ -682,11 +734,68 @@ fn strip(
         names: drawn,
         control,
         summary,
+        action,
+        acted,
         picked,
         toggled,
         stub_label: None,
         stub_dot: None,
     }
+}
+
+/// A [`StripAction`], drawn against the trailing end of `room` and centred on
+/// `strip`'s height, and whether it was taken.
+///
+/// The control is [`toolbar_button`]'s: the same `egui::Button` at the same
+/// control binding, corner radius and focus ring, so the one verb a strip
+/// carries looks like the toolbar's verbs rather than like a name of the
+/// strip. What differs is that a strip lays itself out by
+/// rect, not by `Ui` flow, so the button is put where the trailing end says.
+fn strip_action(
+    ui: &mut egui::Ui,
+    strip: egui::Rect,
+    room: egui::Rect,
+    action: StripAction<'_>,
+    mode: Mode,
+) -> (egui::Rect, bool) {
+    // The strip's own row binding: a control of `b.control` inside a row of
+    // `rail_selector_height`, `b.pad_x` either side of its label. The button's
+    // padding is set to that rather than left at egui's, because egui's grows
+    // the button past the width measured here, which truncated the label.
+    let b = control::binding(rail_selector_height());
+    let label = ui.painter().layout_no_wrap(
+        action.label.to_owned(),
+        ui_font(),
+        colour(semantic(mode.is_dark()).text.primary),
+    );
+    let size = egui::vec2(
+        label.size().x + 2.0 * b.pad_x,
+        b.control.min(strip.height()),
+    );
+    let at = egui::Rect::from_min_size(
+        egui::pos2(room.right() - size.x, strip.center().y - size.y / 2.0),
+        size,
+    );
+    let button = egui::Button::new(egui::RichText::new(action.label).font(ui_font()))
+        .wrap_mode(egui::TextWrapMode::Extend)
+        .corner_radius(radius::CONTROL)
+        .min_size(size);
+    let response = ui
+        .add_enabled_ui(action.enabled, |ui| {
+            ui.spacing_mut().button_padding = egui::vec2(b.pad_x, 0.0);
+            // egui raises a button to `interact_size.y` whatever its
+            // `min_size` says, which put this one's foot under the strip's
+            // bottom edge.
+            ui.spacing_mut().interact_size.y = size.y;
+            ui.put(at, button)
+        })
+        .inner;
+    meridian_egui::widgets::focus_ring_for(ui, &response);
+    let clicked = response.clicked();
+    if let Some(tip) = action.tooltip {
+        response.on_hover_text(tip);
+    }
+    (at, clicked && action.enabled)
 }
 
 /// What a collapsed side rail's stub carries, when it carries one: the words
@@ -744,6 +853,8 @@ pub fn rail_stub(
         names: Vec::new(),
         control: Some(square),
         summary: None,
+        action: None,
+        acted: false,
         picked: None,
         toggled,
         stub_label,

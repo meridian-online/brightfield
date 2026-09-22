@@ -538,6 +538,44 @@ fn every_chart_palette_candidate_actually_dispatches() {
                 );
                 let _ = std::fs::remove_dir_all(&dir);
             }
+            "run-protocol" => {
+                // The window's Run, over a data file in a directory this test
+                // owns, with the runner cargo built beside this suite. What is
+                // read back is the RECORD `arc` wrote — a verb that reached no
+                // handler starts no run and writes none.
+                let dir = save_fixture_dir();
+                let csv = dir.join("harbour.csv");
+                std::fs::write(
+                    &csv,
+                    "station,reading\nnorth,12\nsouth,31\neast,7\nwest,52\n",
+                )
+                .expect("the fixture writes");
+                let boot = Boot::data_file(csv.to_str().expect("utf-8")).expect("the file opens");
+                let mut win = Window {
+                    app: MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light)
+                        .running_with(Some(brightfield_shell::run::Runner::at(env!(
+                            "CARGO_BIN_EXE_brightfield-shell"
+                        )))),
+                    ..Window::open(Boot::empty())
+                };
+                win.settle();
+                confirm_chart_verb(&mut win, longname);
+                assert!(
+                    win.app.run_in_progress(),
+                    "run-protocol started no run — the verb reached no handler"
+                );
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+                while win.app.run_in_progress() {
+                    assert!(std::time::Instant::now() < deadline, "the run hung");
+                    win.settle();
+                }
+                assert_eq!(
+                    brightfield_shell::run::record_paths_newest_first(&dir).len(),
+                    1,
+                    "run-protocol wrote no run record"
+                );
+                let _ = std::fs::remove_dir_all(&dir);
+            }
             other => panic!(
                 "{other} is listed on the chart palette with no dispatch proof in \
                  this sweep — add a case above before adding it to CHART_PALETTE_VERBS"

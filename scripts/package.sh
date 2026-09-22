@@ -186,6 +186,36 @@ else
     || { echo "package.sh: refusing to stage a bundle that would not load." >&2; exit 1; }
 fi
 
+# ---------------------------------------------------------------------------
+# THE ENGINE `arc run` DRIVES — the official DuckDB command-line shell, staged
+# so the Run control works on a machine with no duckdb installed.
+#
+# `arc run` executes each SQL step by spawning a DuckDB executable. It takes
+# the one ARC_DUCKDB_BIN names and otherwise looks on the search path, and an
+# app started from Finder is handed a search path with no package manager's
+# directory on it. The shell's runner (crates/brightfield-shell/src/run.rs,
+# `staged_engine_beside`) looks for the copy staged here, beside its own
+# executable, and names it to the child in ARC_DUCKDB_BIN; the two paths it
+# looks in are the two `stage_engine` calls below.
+#
+# BRIGHTFIELD_DUCKDB_CLI names a directory scripts/fetch-duckdb-cli.sh wrote.
+# The same script's `--check` refuses it here, before the build, unless it
+# holds the pinned CLI for THIS target — so a Homebrew duckdb or the other
+# architecture's cannot be staged. Unset, the artifact ships without an
+# engine and Run falls back to whatever duckdb the user's search path has:
+# a supported local build, as the type source's absence is. release.yml
+# fetches it and sets the variable.
+# ---------------------------------------------------------------------------
+DUCKDB_CLI="${BRIGHTFIELD_DUCKDB_CLI:-}"
+if [ -z "$DUCKDB_CLI" ]; then
+  echo "== engine: none (BRIGHTFIELD_DUCKDB_CLI unset)"
+  echo "   the artifact ships without one; Run uses a duckdb on the search path"
+else
+  echo "== engine: ${DUCKDB_CLI}"
+  scripts/fetch-duckdb-cli.sh --check "$TARGET" "$DUCKDB_CLI" \
+    || { echo "package.sh: refusing to stage an engine that is not the pinned DuckDB CLI." >&2; exit 1; }
+fi
+
 echo "== build (release, locked): ${TARGET}"
 BUILD=(cargo build --release --locked -p brightfield-shell --bin brightfield-shell)
 BIN="target/release/brightfield-shell"
@@ -285,6 +315,20 @@ stage_finetype() {
   echo "   staged ${dest#dist/}: ${n} files, hashes recorded"
 }
 
+# stage_engine DEST — copy the pinned DuckDB CLI to DEST, bytes unchanged.
+#
+# Not re-signed: the executable carries the DuckDB Foundation's Developer ID
+# signature with the hardened runtime, which is what codesign reads when it
+# seals the app bundle around it and what notarization asks of nested code.
+stage_engine() {
+  local dest="$1"
+  [ -n "$DUCKDB_CLI" ] || return 0
+  mkdir -p "$(dirname "$dest")"
+  cp "$DUCKDB_CLI/duckdb" "$dest"
+  chmod 755 "$dest"
+  echo "   staged ${dest#dist/}: $(du -h "$dest" | cut -f1 | tr -d ' ')"
+}
+
 echo "== stage: ${STAGE}"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/examples"
@@ -302,10 +346,11 @@ cp -R examples/remote "$STAGE/examples/remote"
 mkdir -p "$STAGE/examples/data"
 cp crates/brightfield-shell/assets/starts/california_housing.parquet crates/brightfield-shell/assets/starts/california_housing.datapackage.json "$STAGE/examples/data/"
 stage_finetype "$STAGE/finetype"
+stage_engine "$STAGE/engine/duckdb"
 cat > "$STAGE/README.txt" <<EOF
 brightfield ${VERSION} (${TARGET})
 
-One native binary. No server, no webview, no language runtime, and no network
+One native application. No server, no webview, no language runtime, and no network
 needed to run — the only thing it asks of the machine is a working graphics
 driver. Nothing here reports anywhere; it reaches out only when a spec names a
 remote source, a DuckLake catalog or a spatial source.
@@ -361,6 +406,16 @@ costs you the labels.
 EOF
 fi
 
+if [ -n "$DUCKDB_CLI" ]; then
+  cat >> "$STAGE/README.txt" <<'EOF'
+
+engine/duckdb is the DuckDB command-line shell, v1.5.2, the official build as
+the DuckDB Foundation signed it. Brightfield hands it a Protocol's SQL steps
+when you press Run on a data file, so a run needs nothing installed. It is the
+second executable in this package, and Brightfield starts it only for a run.
+EOF
+fi
+
 # The tarball's Mach-O is signed only when a real identity is given. With none,
 # it keeps the ad-hoc signature the linker gave it — which is what ships today,
 # and re-signing it ad-hoc would change the code-signing identifier for no gain.
@@ -401,6 +456,10 @@ case "$TARGET" in
     # directory, and `semantic::bundle_beside` looks in both places for exactly
     # this reason.
     stage_finetype "$APP/Contents/Resources/finetype"
+    # Contents/Helpers/, the bundle's place for a helper tool: codesign seals
+    # nested code there as code, where a Mach-O under Resources/ is sealed as
+    # a data file.
+    stage_engine "$APP/Contents/Helpers/duckdb"
 
     # The system floor is read out of the executable rather than declared, so a
     # toolchain that moves its deployment target moves this with it. An empty

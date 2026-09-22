@@ -938,6 +938,11 @@ fn opened_file_names_what_its_column_means() -> i32 {
 }
 
 fn main() -> Result<(), String> {
+    // Before anything reads the arguments: a child started by the ledger
+    // strip's Run control is `arc`, not a window, and `run` is its argument
+    // rather than a file to open. `brightfield_shell::run` says why the runner
+    // is this binary.
+    brightfield_shell::run::serve_as_runner_if_asked();
     // Answered before any window work: print to stdout, exit 0, open nothing.
     // Nothing below this match — the layout read, the spec boot, the viewport,
     // `run_native` — is reached for a `--version` or `--help` invocation.
@@ -1068,7 +1073,8 @@ fn main() -> Result<(), String> {
                 // person in front of it, so it is the one that may raise a file
                 // dialog. The capture tiers build the same app without it.
                 app: MeridianApp::with_layout(boot, layout, chart_host, protocol_host, mode)
-                    .allowing_dialogs(),
+                    .allowing_dialogs()
+                    .running_with(brightfield_shell::run::Runner::this_binary()),
                 shot: ShotLatch::new(shot_out, shot_after, saved),
                 layout_path: path,
                 fit,
