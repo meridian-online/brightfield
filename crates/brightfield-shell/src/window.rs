@@ -7694,7 +7694,16 @@ fn draw_canvas_pane_group(
             egui::vec2(from_x + tile_width + reserved, map_body.height()),
         );
         draw_chart_body(
-            ui, laid, map_body, charts, ws, item, mode, focused, requests, affordances,
+            ui,
+            laid,
+            map_body,
+            charts,
+            ws,
+            item,
+            mode,
+            focused,
+            requests,
+            affordances,
         );
         let (count_text, count) = hero_count_chip(ui, charts, map_body, hero.as_ref(), mode);
         let panes = CanvasPanes {
@@ -8430,7 +8439,7 @@ fn record_spot_switch(
 /// The column header band draws compact, as it does beneath the hero: the
 /// ledger is a short rail, and the density follows the place.
 ///
-/// **Transposed, this draws no table at all**: one row per tiled column, its
+/// **Transposed, this draws no table**: one row per tiled column, its
 /// histogram and its numbers, as [`draw_transposed_pane_group`] draws them on
 /// the canvas. This function returns its own body rect, and
 /// `draw_canvas_pane_group` composes the page with that rect as the second of

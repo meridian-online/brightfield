@@ -18,10 +18,10 @@ use brightfield_shell::design::Mode;
 use brightfield_shell::protocol::NodeView;
 use brightfield_shell::startup::{default_layout, opening_boot};
 use brightfield_shell::window::{Boot, MeridianApp};
-use brightfield_workbench::RunState;
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_sql::ir::ScalarValue;
 use brightfield_workbench::arrangement::{CANVAS, LEDGER_RAIL};
+use brightfield_workbench::RunState;
 
 /// The housing sample every criterion opens.
 fn housing() -> std::path::PathBuf {
