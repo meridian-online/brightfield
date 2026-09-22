@@ -81,7 +81,9 @@ pub const ENGINE_ENV: &str = "ARC_DUCKDB_BIN";
 /// Two layouts, the two `scripts/package.sh` produces: the tarball puts
 /// `engine/duckdb` beside the `brightfield` executable, and the app puts it at
 /// `Contents/Helpers/duckdb` while the executable sits in `Contents/MacOS/`.
-/// `None` when neither is a file, which is every unpackaged build.
+/// `None` when neither is a file — a `cargo run` or a test harness, whose
+/// binary sits in `target/` with nothing staged beside it
+/// (`the_staged_engine_is_found_in_either_packaged_layout_and_nowhere_else`).
 #[must_use]
 pub fn staged_engine_beside(program: &Path) -> Option<PathBuf> {
     let dir = program.parent()?;
