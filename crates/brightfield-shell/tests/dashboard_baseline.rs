@@ -62,12 +62,14 @@
 
 use std::path::PathBuf;
 
+use brightfield_protocol::layout::Flow;
 use brightfield_shell::capture::capture_png;
 use brightfield_shell::dashboard::{self, ChosenBy, Dashboard, Omission};
 use brightfield_shell::design::Mode;
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_shell::{chart_kinds, data_file, ranked_bars};
 use brightfield_workbench::registry::ChartKindId;
+use brightfield_workbench::{GridLayout, GridSpot, RunState};
 
 /// Device pixels per logical point for this baseline.
 ///
@@ -1921,10 +1923,11 @@ fn the_transposed_dashboard_dark_baseline() {
 /// A photograph cannot see a second grid in a rail it shows collapsed, and the
 /// dashboard and grid-view frames show the ledger collapsed. So the guard
 /// settles [`housing`] under the photograph's own `script`, counts the tables
-/// that frame filed, then moves the grid into the ledger and back — which
-/// leaves the ledger open on its Rows spot beside a canvas drawing the grid —
-/// and replays the script, counting at each stop. A frame that draws the grid
-/// in both spots files two tables and fails here, before any picture is taken.
+/// that frame filed, then moves the grid between the canvas and the ledger and
+/// back — from whichever spot the script left it in, so the ledger pair's
+/// first move takes the grid out rather than in — and replays the script,
+/// counting at each stop. A frame that draws the grid in both spots files two
+/// tables and fails here, before any picture is taken.
 ///
 /// Watched redden, two mutations: the ledger drawing the grid whatever the
 /// canvas draws, and the canvas drawing it whatever the grid's spot says.
@@ -1964,12 +1967,16 @@ fn assert_one_grid_per_frame(script: &[Vec<egui::Event>]) {
     filed(&app, "at the photographed state");
     app.move_grid();
     settle(&mut app, &[]);
-    filed(&app, "with the grid moved into the ledger");
+    filed(
+        &app,
+        "with the grid moved between the canvas and the ledger, from whichever \
+         spot the script left it in",
+    );
     app.move_grid();
     settle(&mut app, script);
     filed(
         &app,
-        "with the grid back on the canvas and the ledger open on its Rows spot",
+        "with the grid moved back to the spot the script left it in",
     );
 }
 
@@ -2091,4 +2098,131 @@ fn the_grid_in_ledger_dark_baseline() {
     assert_one_grid_per_frame(&send_the_grid_to_the_ledger(at));
     let image = capture_grid_in_ledger(Mode::Dark, at, "grid_in_ledger_dark");
     egui_kittest::image_snapshot(&image, "grid_in_ledger_dark");
+}
+
+// ---------------------------------------------------------------------------
+// The grid in the ledger, transposed
+// ---------------------------------------------------------------------------
+
+/// [`housing`] opened by the args route with `grid_layout` and `grid_spot`
+/// already saved for it, the way a relaunch over a document last left in the
+/// ledger transposed opens — no click script needed, unlike
+/// [`send_the_grid_to_the_ledger`], because the boot itself carries the state.
+fn boot_over_saved_layout(
+    grid_layout: GridLayout,
+    grid_spot: GridSpot,
+) -> (Boot, brightfield_workbench::SavedLayout) {
+    let path = housing();
+    let chosen = path.to_str().expect("utf-8 fixture path").to_string();
+    let mut layout = brightfield_shell::startup::default_layout();
+    layout.remember(
+        &chosen,
+        "Housing",
+        RunState::NeverRun,
+        grid_layout,
+        grid_spot,
+        1_000,
+    );
+    let boot = Boot::open_sampled(&chosen, Flow::Vertical, None, None)
+        .unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    (boot, layout)
+}
+
+/// The structural guard the columns-in-ledger pair runs first: the frame
+/// being photographed holds the hero alone on the canvas and, in the ledger,
+/// one row per tiled column rather than the table [`assert_grid_in_ledger_is_what_is_being_photographed`]
+/// pins for a document saved on its rows.
+fn assert_grid_in_ledger_columns_is_what_is_being_photographed() {
+    let (boot, layout) = boot_over_saved_layout(GridLayout::Columns, GridSpot::Ledger);
+    let mut app = MeridianApp::headless_with_layout(boot, layout, Mode::Light);
+    let ctx = egui::Context::default();
+    let screen =
+        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(SHORT_WINDOW.0, SHORT_WINDOW.1));
+    // More than the three frames a click settles over: the ledger draws
+    // before the canvas each frame and reads the canvas's own `pane_views`
+    // from the frame before, so the first frame this boot's saved state is
+    // live the numbers still lag the picture by one settle.
+    for _ in 0..6 {
+        let raw = egui::RawInput {
+            screen_rect: Some(screen),
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(raw, |ui| app.draw(ui));
+    }
+    let panes: Vec<&str> = app.canvas_panes().panes.iter().map(|p| p.name).collect();
+    assert_eq!(
+        panes,
+        vec!["map"],
+        "a document saved with the grid in the ledger did not leave the hero \
+         alone on the canvas"
+    );
+    let rows = &app.chart_doc().transposed_rows;
+    assert_eq!(
+        rows.len(),
+        TRANSPOSED_ROWS,
+        "the ledger's grid pane drew {} rows where {TRANSPOSED_ROWS} of \
+         housing's tiles stand past the hero — a document saved with its \
+         layout columns left the untransposed table drawn in the ledger \
+         instead, or drew nothing",
+        rows.len()
+    );
+    let ledger = app
+        .region_rect(brightfield_workbench::arrangement::LEDGER_RAIL)
+        .expect("the ledger drew");
+    for row in rows {
+        assert!(
+            ledger.intersects(row.cell),
+            "the row for {} drew at {:?}, nowhere near the ledger {ledger:?}",
+            row.name,
+            row.cell
+        );
+    }
+}
+
+/// [`housing`] with the grid in the ledger and its saved layout columns, read
+/// back as pixels.
+fn capture_grid_in_ledger_columns(mode: Mode, name: &str) -> image::RgbaImage {
+    let (boot, layout) = boot_over_saved_layout(GridLayout::Columns, GridSpot::Ledger);
+    std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
+    let out = scratch(name);
+    let (w, h) = brightfield_shell::capture::capture_png_at_with_layout(
+        boot,
+        layout,
+        mode,
+        SCALE,
+        SHORT_WINDOW,
+        &out,
+        Vec::new(),
+    )
+    .unwrap_or_else(|e| panic!("capture {name}: {e}"));
+    assert!(w > 0 && h > 0, "{name}: empty capture");
+    image::open(&out)
+        .unwrap_or_else(|e| panic!("read capture {}: {e}", out.display()))
+        .to_rgba8()
+}
+
+/// **The grid in the ledger, transposed, as pixels** — the hero alone on the
+/// canvas, and beside it in the ledger one row per tiled column carrying its
+/// histogram and its summaries: [`the_grid_in_ledger_light_baseline`]'s
+/// columns twin.
+///
+/// The companion to [`the_transposed_dashboard_light_baseline`], which
+/// photographs the same saved layout on the canvas: between them the pair
+/// pins the columns layout in both of the grid's spots, the way
+/// [`the_grid_in_ledger_light_baseline`] and
+/// [`the_generated_dashboard_light_baseline`] pin the rows layout in both.
+#[test]
+fn the_grid_in_ledger_columns_light_baseline() {
+    assert_grid_in_ledger_columns_is_what_is_being_photographed();
+    let image = capture_grid_in_ledger_columns(Mode::Light, "grid_in_ledger_columns_light");
+    egui_kittest::image_snapshot(&image, "grid_in_ledger_columns_light");
+}
+
+/// **The dark twin of [`the_grid_in_ledger_columns_light_baseline`]** — the
+/// same frame, the same saved layout, the ink moved.
+#[test]
+fn the_grid_in_ledger_columns_dark_baseline() {
+    assert_grid_in_ledger_columns_is_what_is_being_photographed();
+    let image = capture_grid_in_ledger_columns(Mode::Dark, "grid_in_ledger_columns_dark");
+    egui_kittest::image_snapshot(&image, "grid_in_ledger_columns_dark");
 }

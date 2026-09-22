@@ -1036,7 +1036,7 @@ impl Item<ChartDoc> for ChartItem {
             //
             // It is this one because the chart is `Slot::Centre` with no
             // toggle verb, while the grid is a `Slot::CentreTab` the
-            // `toggle-data-grid` verb closes. `ItemRegistry::new` rejects a
+            // `move-grid` verb moves. `ItemRegistry::new` rejects a
             // view that does not have exactly one `Slot::Centre`, so the
             // centre pane is in the tree whatever else is; `ItemSpec::toggle`
             // records why that is the slot allowed to carry no verb. The test

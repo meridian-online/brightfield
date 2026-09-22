@@ -4046,6 +4046,7 @@ impl MeridianApp {
                     .resizable(true)
             };
             let mut ledger_strip = None;
+            let mut ledger_grid_body: Option<egui::Rect> = None;
             let drawn = ledger_panel_widget
                 .frame(chrome::region_frame(ledger.frame, ui, mode))
                 .show(ui, |ui| {
@@ -4103,7 +4104,7 @@ impl MeridianApp {
                     if item == ROWS && !canvas_draws_grid {
                         // **The grid itself, in the Rows spot** — not a second
                         // grid, but the one the canvas is not drawing.
-                        draw_ledger_grid_pane(
+                        ledger_grid_body = Some(draw_ledger_grid_pane(
                             ui,
                             body,
                             charts,
@@ -4112,7 +4113,8 @@ impl MeridianApp {
                             focused,
                             &mut requests,
                             affordances,
-                        );
+                            grid_layout,
+                        ));
                     } else if protocol.items.contains_key(&PaneKey::new(item)) {
                         draw_protocol_pane(
                             ui,
@@ -4393,11 +4395,20 @@ impl MeridianApp {
                         let grid_here = canvas_draws_grid;
                         let transposed =
                             grid_here && grid_layout == crate::app::GridLayout::Columns;
+                        // With the grid in the ledger and its saved layout
+                        // columns, `draw_ledger_grid_pane` already drew this
+                        // frame's row summaries into `ledger_grid_body` — the
+                        // pictures beside them are rehomed there below, the
+                        // same way `draw_transposed_pane_group` rehomes them
+                        // into a second pane of the canvas.
+                        let ledger_transposed = !grid_here
+                            && grid_layout == crate::app::GridLayout::Columns
+                            && ledger_grid_body.is_some();
                         if grid_here {
                             charts.doc.grid_density =
                                 (stacked.is_some() && !transposed).then_some(GridDensity::Compact);
                         }
-                        if !(transposed && stacked.is_some()) {
+                        if !((transposed || ledger_transposed) && stacked.is_some()) {
                             // …and the rows the transposed layout drew are a
                             // record of a pane this frame is not drawing. Left
                             // standing they would report a layout the reader
@@ -4489,6 +4500,7 @@ impl MeridianApp {
                                     split,
                                     grid_layout,
                                     grid_here,
+                                    ledger_grid_body,
                                     &mut requests,
                                     affordances,
                                 )
@@ -7614,6 +7626,7 @@ fn draw_canvas_pane_group(
     split: f32,
     layout: crate::app::GridLayout,
     grid_here: bool,
+    ledger_rect: Option<egui::Rect>,
     requests: &mut Vec<Request>,
     affordances: &mut Vec<(PaneKey, egui::Rect)>,
 ) -> (CanvasPanes, Option<crate::app::GridLayout>) {
@@ -7644,6 +7657,56 @@ fn draw_canvas_pane_group(
     // The grid pane's frame comes after the page below, so its own fill and
     // header band are not painted over by anything the composition overruns
     // its clip with.
+
+    // **With the grid in the ledger and its saved layout columns**, the spec's
+    // tile column is not clipped away as it is below: it is rehomed into
+    // `ledger_rect`, the way `draw_transposed_pane_group` rehomes it into a
+    // second pane of the canvas. `PaneSplit::Rehomed` asks nothing of the two
+    // views but that each paints its own part of the one page, so the second
+    // one standing in the ledger rather than beside the hero is not a special
+    // case here — `draw_ledger_grid_pane` already drew this frame's row
+    // summaries into `ledger_rect`, and what lands here beside them is the
+    // composition's own tiles, moved.
+    let ledger_transposed = (!grid_here)
+        .then_some(())
+        .and(ledger_rect)
+        .filter(|_| layout == crate::app::GridLayout::Columns);
+    if let Some(second) = ledger_transposed {
+        let summaries = (second.width() * crate::dashboard::ROW_SUMMARY_SHARE).floor();
+        let tile_width = (second.width() - summaries).max(1.0);
+        charts.doc.set_page_widths(map_body.width(), tile_width);
+        let gutter = f32::from(u16::try_from(crate::dashboard::HERO_GUTTER).unwrap_or(u16::MAX));
+        let from_x = map_body.width() + gutter;
+        charts.doc.pane_views = Some(crate::app::PaneViews {
+            first: map_body,
+            second,
+            by: 0.0,
+            from_x,
+            split: crate::app::PaneSplit::Rehomed { lead: summaries },
+        });
+        let reserved = crate::legend::band_width(&charts.doc.composed);
+        let laid = egui::Rect::from_min_size(
+            map_body.min,
+            egui::vec2(from_x + tile_width + reserved, map_body.height()),
+        );
+        draw_chart_body(
+            ui, laid, map_body, charts, ws, item, mode, focused, requests, affordances,
+        );
+        let (count_text, count) = hero_count_chip(ui, charts, map_body, hero.as_ref(), mode);
+        let panes = CanvasPanes {
+            panes: vec![CanvasPane {
+                name: "map",
+                rect: map_rect,
+                header: pane_header_of(map_rect, map_body),
+                body: map_body,
+            }],
+            count,
+            count_text,
+            rows_note: None,
+            page: charts.doc.raster_rect,
+        };
+        return (panes, None);
+    }
 
     // The page: the hero at the pane's own content width, the spec's tile
     // column past the gutter, and the clip at the hero pane so only the first
@@ -8362,6 +8425,18 @@ fn record_spot_switch(
 /// the canvas from here, and the `N of M columns` note in what that leaves.
 /// The column header band draws compact, as it does beneath the hero: the
 /// ledger is a short rail, and the density follows the place.
+///
+/// **Transposed, this draws no table at all.** `grid_layout` is the document's
+/// saved layout, the same field `draw_canvas_pane_group` reads to choose
+/// [`draw_row_summaries`]' page over [`DATA`]'s. Only the numbers land here —
+/// [`draw_row_summaries`] reads `charts.doc.pane_views`, and this pane draws
+/// before the canvas does (see `canvas_draws_grid`'s own note), so on the
+/// frame the layout first turns transposed the numbers lag the canvas by one
+/// frame, the way every latch in this window settles rather than reads itself
+/// mid-write. The pictures beside them are the canvas's: this function returns
+/// its own body rect so `draw_canvas_pane_group` can rehome the composed
+/// page's tile column into it, the way [`draw_transposed_pane_group`] rehomes
+/// it into a second pane of the canvas.
 #[allow(clippy::too_many_arguments)]
 fn draw_ledger_grid_pane(
     ui: &mut egui::Ui,
@@ -8372,13 +8447,21 @@ fn draw_ledger_grid_pane(
     focused: Option<PaneKey>,
     requests: &mut Vec<Request>,
     affordances: &mut Vec<(PaneKey, egui::Rect)>,
-) {
+    grid_layout: crate::app::GridLayout,
+) -> egui::Rect {
     let subject = Subject::new(
         GRID_PANE_TITLE.to_string(),
         brightfield_workbench::subject::Icon("table"),
         brightfield_keys::BindingContext::Workspace,
     );
     let body = pane_body(ui, rect, &subject, mode);
+    let header = pane_header_of(rect, body);
+    record_spot_switch(ui, charts, header, crate::app::GridSpot::Ledger, mode);
+    if grid_layout == crate::app::GridLayout::Columns {
+        charts.doc.transposed_rows = draw_row_summaries(ui, charts, body, mode);
+        return body;
+    }
+    charts.doc.transposed_rows.clear();
     charts.doc.set_min_page_height(0.0);
     charts.doc.grid_density = Some(GridDensity::Compact);
     draw_chart_body(
@@ -8393,8 +8476,6 @@ fn draw_ledger_grid_pane(
         requests,
         affordances,
     );
-    let header = pane_header_of(rect, body);
-    record_spot_switch(ui, charts, header, crate::app::GridSpot::Ledger, mode);
     if let Some(drawn) = charts
         .doc
         .grid_drawn()
@@ -8404,6 +8485,7 @@ fn draw_ledger_grid_pane(
         let band = band_less_switch(header, charts.doc.grid_spot_switch.as_ref().map(|s| s.rect));
         band_note(ui, band, &text, mode);
     }
+    body
 }
 
 /// The icon the map pane's header carries: the point-map kind's own for a
