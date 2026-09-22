@@ -186,6 +186,28 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# attach_image DMG MOUNTPOINT — hdiutil attach, retried. Measured on a
+# developer Mac: an attach of a freshly written image failed with "Resource
+# temporarily unavailable" in two of two runs of
+# scripts/package-artifact-staging-selftest.sh, at a different attach each
+# time, and left the image attached with no mount point. So a failed attempt
+# detaches whatever device the image left behind before the next one, and
+# four failures in a row are a failure.
+attach_image() {
+  local n=0 dev img
+  img="$(cd "$(dirname "$1")" && pwd -P)/$(basename "$1")"
+  until hdiutil attach -nobrowse -noverify -readonly -mountpoint "$2" "$1" >/dev/null; do
+    for dev in $(hdiutil info | awk -v p="$img" '
+      $1 == "image-path" { hit = (index($0, p) > 0); next }
+      hit && $1 ~ /^\/dev\/disk[0-9]+$/ { print $1; hit = 0 }'); do
+      hdiutil detach "$dev" -force -quiet >/dev/null 2>&1 || true
+    done
+    n=$((n + 1))
+    [ "$n" -lt 4 ] || return 1
+    sleep 2
+  done
+}
+
 case "$ARTIFACT" in
   *.tar.gz)
     echo "== unpack: ${ARTIFACT}"
@@ -199,7 +221,7 @@ case "$ARTIFACT" in
     [ "$(uname -s)" = "Darwin" ] || fail "a .dmg can only be attached on macOS"
     mkdir -p "$TMP/volume"
     echo "== attach: ${ARTIFACT}"
-    hdiutil attach -nobrowse -noverify -readonly -mountpoint "$TMP/volume" "$ARTIFACT"
+    attach_image "$ARTIFACT" "$TMP/volume" || fail "could not attach ${ARTIFACT}"
     MOUNT="$TMP/volume"
     PKG="$MOUNT"
     BUNDLE_REL="Brightfield.app/Contents/Resources/finetype"

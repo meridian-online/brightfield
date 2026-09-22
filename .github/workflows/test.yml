@@ -349,12 +349,18 @@ jobs:
   # linkage audit, the version floor and codesign, and which answers
   # `--check-type-source` so the read-back's run leg is actually reached.
   #
+  # The same run stages the DuckDB CLI the Run control drives —
+  # `engine/duckdb` in the tarball, `Contents/Helpers/duckdb` in the app — and
+  # the file reads each back at the path the shell's runner looks, runs it, and
+  # drives the deletion of each staging call and an impostor executable. It
+  # fetches the real pinned CLI, because package.sh refuses anything else.
+  #
   # The toolchain step is explicit for the same reason it is explicit in the job
   # above: `rustc -vV` is read by scripts/package.sh and by the check, and a
   # rustc that is merely preinstalled on the runner image is a dependency
   # nothing in this repository declares.
   packaged-artifact-staging:
-    name: Packaging stages the type source into both artifacts
+    name: Packaging stages the type source and the DuckDB CLI into both artifacts
     runs-on: macos-15
     timeout-minutes: 20
     steps:

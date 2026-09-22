@@ -105,7 +105,12 @@ The system comprises four layers:
 
 One native binary, no runtime dependencies beyond the OS graphics stack — no
 server, no webview, no language runtime, and no network required to start,
-render, or open a local protocol.
+render, or open a local protocol. A release artifact carries one more
+executable: the official DuckDB v1.5.2 command-line shell (`engine/duckdb` in
+the tarball, `Contents/Helpers/duckdb` in the app), which the Run control hands
+a Protocol's SQL steps to so a run needs nothing installed.
+`scripts/fetch-duckdb-cli.sh` pins it by sha256; `scripts/package.sh` stages it
+when `BRIGHTFIELD_DUCKDB_CLI` names the directory that script wrote.
 
 ```bash
 # Package: release build → linked-library audit (OS allowlist) →
