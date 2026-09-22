@@ -143,6 +143,23 @@ jobs:
       # they report in minutes without queueing behind this suite, and so they
       # still report when this suite is red or cancelled.
 
+      # THE ENGINE THE RUN TESTS DRIVE. `arc run` executes a Protocol's SQL
+      # steps by spawning a DuckDB executable, and this runner has no duckdb on
+      # its search path — the condition an app started from Finder is in, and
+      # the one tests/run_control.rs failed under before this step existed
+      # ("engine 'duckdb' not found on PATH or not executable"). The pinned CLI
+      # a release stages is installed under RUNNER_TEMP by the script that pins
+      # it (the zip's sha256 checked before unpacking, the executable's after)
+      # and named to the job in ARC_DUCKDB_BIN. NOT on PATH: the runs reach it
+      # through the variable arc reads, as a packaged app's runs reach the copy
+      # staged beside it, so nothing here can pass on a search-path lookup.
+      - name: install the pinned DuckDB CLI the run tests hand to arc
+        run: |
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          engine=$(scripts/fetch-duckdb-cli.sh "$host" "${RUNNER_TEMP}/duckdb-cli")
+          "$engine" --version
+          echo "ARC_DUCKDB_BIN=${engine}" >> "$GITHUB_ENV"
+
       # --test-threads=1 is the project's standing invocation: it keeps the
       # GPU-backed suites (the shared wgpu device the shell's snapshot harness
       # builds) off each other's toes. At this suite

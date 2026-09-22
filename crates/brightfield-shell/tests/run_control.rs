@@ -18,6 +18,13 @@
 //! test owns: the start's click lands on the same `Boot::data_file` route with
 //! the same bytes, and a directory of the test's own keeps a developer's real
 //! datasets directory out of it.
+//!
+//! **The engine is inherited.** The runner binary cargo builds has no DuckDB
+//! CLI staged beside it, so the child runs whichever one the test process's
+//! `ARC_DUCKDB_BIN` names, else `duckdb` on the search path. `test.yml`
+//! installs the pinned v1.5.2 CLI and names it in that variable, with none on
+//! the runner's search path; with neither, every test here that takes Run
+//! fails with arc's own "not found" message.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
