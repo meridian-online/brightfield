@@ -2166,17 +2166,36 @@ fn assert_grid_in_ledger_columns_is_what_is_being_photographed() {
          instead, or drew nothing",
         rows.len()
     );
+    assert_eq!(
+        app.chart_doc().tables_filed(),
+        0,
+        "the frame filed a table — the ledger drew the rows of a document saved \
+         with its layout columns"
+    );
     let ledger = app
         .region_rect(brightfield_workbench::arrangement::LEDGER_RAIL)
         .expect("the ledger drew");
+    // Every row is painted under the ledger's own clip, and the first stands
+    // inside it. The rest are not asserted to fit: the page is composed at
+    // the hero's height, so the tiles share that height rather than standing
+    // at the canvas layout's `MIN_ROW_HEIGHT` floor, the ledger opens at its
+    // default height, and no scroll reaches the rows below its foot. The
+    // picture below is of the rows that height holds.
     for row in rows {
         assert!(
-            ledger.intersects(row.cell),
-            "the row for {} drew at {:?}, nowhere near the ledger {ledger:?}",
+            ledger.contains_rect(row.clip),
+            "the row for {} drew under a clip of {:?}, outside the ledger {ledger:?}",
             row.name,
-            row.cell
+            row.clip
         );
     }
+    let first = rows.first().expect("a row");
+    assert!(
+        ledger.contains_rect(first.cell),
+        "the first row, for {}, drew at {:?}, outside the ledger {ledger:?}",
+        first.name,
+        first.cell
+    );
 }
 
 /// [`housing`] with the grid in the ledger and its saved layout columns, read

@@ -4401,11 +4401,10 @@ impl MeridianApp {
                         let transposed =
                             grid_here && grid_layout == crate::app::GridLayout::Columns;
                         // With the grid in the ledger and its saved layout
-                        // columns, `draw_ledger_grid_pane` already drew this
-                        // frame's row summaries into `ledger_grid_body` — the
-                        // pictures beside them are rehomed there below, the
-                        // same way `draw_transposed_pane_group` rehomes them
-                        // into a second pane of the canvas.
+                        // columns, `draw_ledger_grid_pane` has already drawn
+                        // the transposed rows into `ledger_grid_body`, and the
+                        // page below is composed with that rect as its second
+                        // view.
                         let ledger_transposed = !grid_here
                             && grid_layout == crate::app::GridLayout::Columns
                             && ledger_grid_body.is_some();
@@ -7665,15 +7664,13 @@ fn draw_canvas_pane_group(
     // header band are not painted over by anything the composition overruns
     // its clip with.
 
-    // **With the grid in the ledger and its saved layout columns**, the spec's
-    // tile column is not clipped away as it is below: it is rehomed into
-    // `ledger_rect`, the way `draw_transposed_pane_group` rehomes it into a
-    // second pane of the canvas. `PaneSplit::Rehomed` asks nothing of the two
-    // views but that each paints its own part of the one page, so the second
-    // one standing in the ledger rather than beside the hero is not a special
-    // case here — `draw_ledger_grid_pane` already drew this frame's row
-    // summaries into `ledger_rect`, and what lands here beside them is the
-    // composition's own tiles, moved.
+    // **With the grid in the ledger and its saved layout columns**, the page
+    // is composed as `draw_transposed_pane_group` composes it, with the
+    // ledger's grid body as the second view: the tiles are laid out at a
+    // row's width and their rects rehomed into `ledger_rect`. The clip stays
+    // the hero's, so nothing of the page is painted outside the canvas from
+    // here. `draw_ledger_grid_pane` paints the rehomed picture and the numbers
+    // beside it, from the views this call writes.
     let ledger_transposed = (!grid_here)
         .then_some(())
         .and(ledger_rect)
@@ -8433,17 +8430,23 @@ fn record_spot_switch(
 /// The column header band draws compact, as it does beneath the hero: the
 /// ledger is a short rail, and the density follows the place.
 ///
-/// **Transposed, this draws no table at all.** `grid_layout` is the document's
-/// saved layout, the same field `draw_canvas_pane_group` reads to choose
-/// [`draw_row_summaries`]' page over [`DATA`]'s. Only the numbers land here —
-/// [`draw_row_summaries`] reads `charts.doc.pane_views`, and this pane draws
-/// before the canvas does (see `canvas_draws_grid`'s own note), so on the
-/// frame the layout first turns transposed the numbers lag the canvas by one
-/// frame, the way every latch in this window settles rather than reads itself
-/// mid-write. The pictures beside them are the canvas's: this function returns
-/// its own body rect so `draw_canvas_pane_group` can rehome the composed
-/// page's tile column into it, the way [`draw_transposed_pane_group`] rehomes
-/// it into a second pane of the canvas.
+/// **Transposed, this draws no table at all**: one row per tiled column, its
+/// histogram and its numbers, as [`draw_transposed_pane_group`] draws them on
+/// the canvas. This function returns its own body rect, and
+/// `draw_canvas_pane_group` composes the page with that rect as the second of
+/// its [`crate::app::PaneViews`], so the tiles' rects are rehomed here.
+///
+/// **The picture is painted here, not by the chart item.** `chart_item`'s
+/// second paint of the page is clipped by the canvas `Ui`, and egui
+/// intersects a painter's clip with its `Ui`'s, so a second view standing
+/// outside the canvas gets an empty clip. This rail's `Ui` does own the rect,
+/// so it paints the same texture through the same translation.
+///
+/// It reads the views and the raster rect the canvas wrote in the frame
+/// before, because this rail draws before the canvas (see
+/// `canvas_draws_grid`'s note). The texture's contents are this frame's, since
+/// it is sampled when the frame renders. Until the canvas has composed into
+/// this body, `views.second` is some other box and nothing is painted.
 #[allow(clippy::too_many_arguments)]
 fn draw_ledger_grid_pane(
     ui: &mut egui::Ui,
@@ -8465,6 +8468,18 @@ fn draw_ledger_grid_pane(
     let header = pane_header_of(rect, body);
     record_spot_switch(ui, charts, header, crate::app::GridSpot::Ledger, mode);
     if grid_layout == crate::app::GridLayout::Columns {
+        // The pictures first and the numbers over them, the canvas's order.
+        let rehomed = charts.doc.pane_views.filter(|views| views.second == body);
+        if let (Some(views), Some(page), Some(texture)) =
+            (rehomed, charts.doc.raster_rect, charts.doc.canvas_texture())
+        {
+            ui.painter().with_clip_rect(body).image(
+                texture,
+                page.translate(views.moved(page)),
+                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
         charts.doc.transposed_rows = draw_row_summaries(ui, charts, body, mode);
         return body;
     }
