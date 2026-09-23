@@ -126,6 +126,43 @@ pub struct MarkInput {
     pub highlight_style: Option<HighlightStyle>,
 }
 
+impl MarkInput {
+    /// Retype this mark to `new_kind` in place: the mark-level half of a
+    /// count-stable `ChartEdit::ChangeMarkType`, which the coordinator applies
+    /// to the mark at the edit's ordinal before it re-executes. `projection` is
+    /// the owning plot's resolved projection, `scheme` its colour scheme and
+    /// `plot_hl` its highlight `otherwise` style.
+    fn retype(
+        &mut self,
+        new_kind: MarkKind,
+        projection: Option<brightfield_spec::layout::ResolvedProjection>,
+        scheme: SequentialScheme,
+        plot_hl: Option<HighlightStyle>,
+    ) {
+        self.kind = new_kind;
+        // Re-gate the plot's projection to the NEW kind: a retype from `dot` to
+        // `barY` on a projected plot takes the mark out of the map's coordinate
+        // system, and a retype the other way puts it in. The channel map is
+        // where a mark carries that, so this is the whole of it — held by
+        // `a_retype_re_gates_the_mark_to_the_plots_projection`.
+        self.channels
+            .set_projection(MarkProjection::of_resolved(new_kind, projection));
+        self.renderer_override = configured_renderer(
+            new_kind,
+            scheme,
+            self.bandwidth,
+            self.thresholds,
+            self.bin_width,
+        );
+        // Re-gate highlight to the NEW kind: a retype to a non-honouring kind
+        // drops the style; to a honouring kind keeps the plot's `otherwise`
+        // style so a brush-to-dim survives the retype (finding 1/2/4).
+        self.highlight_style = mark_honours_highlight(new_kind)
+            .then_some(plot_hl)
+            .flatten();
+    }
+}
+
 /// One plot in the live dashboard: its identity, the marks it owns, its layout,
 /// the brushes it contributes, its data scales (for inversion), and its state.
 /// `H` is the host's [`ReactiveHandle`] to the plot's [`ChartState`](crate::chart_state::ChartState) cell.
@@ -683,31 +720,12 @@ impl<H: ReactiveHandle> CrossfilterCoordinator<H> {
                 match edit {
                     ChartEdit::ChangeMarkType { new_kind, .. } => {
                         if let Some(m) = self.marks.get_mut(mi) {
-                            m.kind = *new_kind;
-                            // Re-gate the plot's projection to the NEW kind: a
-                            // retype from `dot` to `barY` on a projected plot
-                            // takes the mark out of the map's coordinate system,
-                            // and a retype the other way puts it in. The channel
-                            // map is where a mark carries that, so this is the
-                            // whole of it.
-                            m.channels.set_projection(MarkProjection::of_resolved(
+                            m.retype(
                                 *new_kind,
                                 affected_projection,
-                            ));
-                            m.renderer_override = configured_renderer(
-                                *new_kind,
                                 self.plots[pi].scheme,
-                                m.bandwidth,
-                                m.thresholds,
-                                m.bin_width,
+                                plot_hl.clone(),
                             );
-                            // Re-gate highlight to the NEW kind: a retype to a
-                            // non-honouring kind drops the style; to a honouring
-                            // kind keeps the plot's `otherwise` style so a
-                            // brush-to-dim survives the retype (finding 1/2/4).
-                            m.highlight_style = mark_honours_highlight(*new_kind)
-                                .then(|| plot_hl.clone())
-                                .flatten();
                         }
                     }
                     ChartEdit::SetChannel {
@@ -1817,6 +1835,60 @@ mod tests {
         assert_eq!(
             dot, dot_again,
             "retype back to dot reverts the scene fingerprint"
+        );
+    }
+
+    /// **A retype re-gates the mark to its plot's projection.** A `dot` on a
+    /// projected plot draws through the projection; retyped to `barY` it cannot,
+    /// and must say so (undrawable), or its raw degrees are drawn against axes in
+    /// planar units; retyped back to `dot` it draws through it again. Driven
+    /// through `MarkInput::retype`, the call the count-stable `ChangeMarkType`
+    /// branch of the coordinator's spec edit makes.
+    #[test]
+    fn a_retype_re_gates_the_mark_to_the_plots_projection() {
+        use brightfield_render::channel::MarkProjection;
+        use brightfield_spec::layout::ResolvedProjection;
+
+        let projection = Some(ResolvedProjection::Equirectangular);
+        let mut channels = ChannelMap::new();
+        channels.insert(Channel::X, "lon".to_string());
+        channels.insert(Channel::Y, "lat".to_string());
+        channels.set_projection(MarkProjection::of_resolved(MarkKind::Dot, projection));
+        let mut mark = MarkInput {
+            batch: None,
+            channels,
+            kind: MarkKind::Dot,
+            renderer_override: None,
+            bandwidth: None,
+            thresholds: None,
+            bin_width: None,
+            highlight_style: None,
+        };
+        assert_eq!(
+            mark.channels.projection(),
+            Some(Projection::Equirectangular),
+            "the fixture: a dot on a projected plot draws through its projection"
+        );
+
+        mark.retype(
+            MarkKind::BarY,
+            projection,
+            SequentialScheme::default(),
+            None,
+        );
+        assert_eq!(mark.kind, MarkKind::BarY);
+        assert!(
+            mark.channels.mark_projection().is_undrawable(),
+            "a barY on a projected plot cannot draw through the projection, and a \
+             retype to it must mark it undrawable; got {:?}",
+            mark.channels.mark_projection()
+        );
+
+        mark.retype(MarkKind::Dot, projection, SequentialScheme::default(), None);
+        assert_eq!(
+            mark.channels.projection(),
+            Some(Projection::Equirectangular),
+            "a retype back to dot puts the mark back through the plot's projection"
         );
     }
 

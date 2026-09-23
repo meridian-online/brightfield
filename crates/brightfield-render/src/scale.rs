@@ -485,9 +485,9 @@ impl ScaleSet {
     /// **The x and y domains are in this projection's planar units**, not in
     /// degrees — that is what a projection means for a plot in Observable Plot
     /// and therefore in Mosaic, and it is why this rides on the scale set rather
-    /// than on each mark. Two readers today: `DotRenderer::render` takes the
-    /// graticule's extent from here so a plot's layers draw ONE graticule rather
-    /// than one apiece, and `brightfield-shell`'s `axis_interval` inverts a
+    /// than on each mark. Two readers today: [`crate::mark::PlotGraticule::of`]
+    /// inverts the fitted domains through it to lay the plot's one graticule
+    /// across the plot area, and `brightfield-shell`'s `axis_interval` inverts a
     /// brush pixel back to a longitude or a latitude through it.
     #[must_use]
     pub fn projection(&self) -> Option<crate::mark::Projection> {
@@ -495,7 +495,7 @@ impl ScaleSet {
     }
 
     /// The geographic rectangle every projected mark on the plot covers between
-    /// them, in DEGREES — the graticule's extent.
+    /// them, in DEGREES — what the graticule's step is picked from.
     ///
     /// Accumulated where the projected domains are (`project_positional_domains`,
     /// private to this module),

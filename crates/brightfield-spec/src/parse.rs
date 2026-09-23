@@ -1282,9 +1282,10 @@ impl Walker {
                     attribute: key.clone(),
                 });
             }
-            // A plot-level `projectionType` (geo) that names a
-            // projection v1 can't render (or a non-string value) degrades to the
-            // default equirectangular fit — name it so the author sees the
+            // A plot-level `projectionType` that names a projection v1 can't
+            // render (or a non-string value) is not drawn through: a `geo` mark
+            // falls back to the default equirectangular fit and a `dot` mark to
+            // an unprojected scatter — name it so the author sees the
             // unsupported projection. A lifted `$param` is a recorded deferral.
             if key == "projectionType" {
                 self.warn_unknown_projection(&value);
@@ -3190,9 +3191,9 @@ plot:
 
     #[test]
     fn unknown_projection_warns_but_supported_defer() {
-        // A name outside Mosaic's `ProjectionName` vocabulary degrades to the
-        // default equirectangular fit AND names itself — mirroring the
-        // NonStringLabel check. `mollweide` is a real d3 EXTENSION projection
+        // A name outside Mosaic's `ProjectionName` vocabulary resolves to no
+        // projection, so the `dot` below draws as an unprojected scatter, AND
+        // names itself — mirroring the NonStringLabel check. `mollweide` is a real d3 EXTENSION projection
         // rather than a typo, which is the case worth naming: it is the shape of
         // request this warning exists to answer.
         let bad = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\nprojectionType: mollweide\n";

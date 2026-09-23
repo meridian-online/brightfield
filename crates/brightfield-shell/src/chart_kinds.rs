@@ -64,9 +64,9 @@ pub const COUNTS_OVER_TIME: ChartKindId = ChartKindId::new("counts-over-time");
 pub const COUNT_GRID: ChartKindId = ChartKindId::new("count-grid");
 /// Two measures related: `dot` over a pair of quantitative axes.
 pub const SCATTER: ChartKindId = ChartKindId::new("scatter");
-/// A coordinate pair plotted as points on an equal-aspect frame: `dot` over
-/// longitude and latitude, with `aspectRatio: 1` asking one px-per-unit of
-/// both axes rather than each fitting its own domain to the tile independently.
+/// A coordinate pair plotted as points on a projected map: `dot` over longitude
+/// and latitude drawn through `projectionType`, with a labelled graticule in
+/// place of the cartesian axes.
 pub const POINT_MAP: ChartKindId = ChartKindId::new("point-map");
 
 /// The widest **category** axis this registry will cross: a `distinct ×
@@ -424,18 +424,19 @@ pub fn scatter_tile(x: &str, y: &str, indent: usize) -> String {
 /// # Why equirectangular, and why no `aspectRatio`
 ///
 /// The plate carrée is the projection that says the least: `u = lon`,
-/// `v = lat`, so the picture is the one the tile already drew and the numbers on
-/// the axes are still degrees. What it adds is a graticule — meridians and
-/// parallels at whole degrees, drawn from the projection and the visible extent
-/// — and the frame that says the thing being looked at is a map.
+/// `v = lat`, so the points land where an unprojected scatter of the same two
+/// columns would put them. What it adds is a graticule — meridians and
+/// parallels at a round step across the plot area, labelled in degrees along
+/// its bottom and left edges — in place of the cartesian axes, which a
+/// projected plot does not draw.
 ///
 /// `aspectRatio: 1` is gone because a projection refuses it
 /// (`ChannelMap::equal_aspect`, `ParseWarning::AspectRatioWithProjection`): a
 /// projection has already answered which way the frame should stretch. Under
 /// this projection the two answers coincide — the renderer aspect-fits the
 /// projected bbox, and a degree of longitude and a degree of latitude are the
-/// same planar unit — so the change to the drawing is the graticule and nothing
-/// else.
+/// same planar unit — so the points do not move; the frame is what changes,
+/// from axes to a labelled graticule.
 ///
 /// A projection with a curved inverse is not a drop-in replacement here: the
 /// `intervalXY` below inverts each axis's pixel independently to build its
@@ -451,8 +452,8 @@ pub fn scatter_tile(x: &str, y: &str, indent: usize) -> String {
 /// and a rectangle swept over the cloud narrows whatever else subscribes to
 /// [`SELECTION`]. `tests/point_map_kind.rs`'s gesture tier drives a real sweep
 /// through `MeridianApp` the way `tests/scatter_kind.rs`'s does. The two layers
-/// draw ONE graticule between them, because its extent comes off the shared
-/// scale set rather than off each layer's own batch.
+/// sit on ONE graticule, because the plot draws it from the scale set they
+/// share rather than each layer drawing its own.
 fn point_map() -> ChartKind<String> {
     ChartKind {
         id: POINT_MAP,
@@ -494,9 +495,9 @@ pub fn point_map_tile(lon: &str, lat: &str, indent: usize) -> String {
 /// The projection the generated point-map tile draws through, as it is written
 /// into the spec and as the count overlay names it.
 ///
-/// The plate carrée: `u = lon`, `v = lat`, so the axes still read degrees, the
-/// `intervalXY` brush's per-axis inverse is exact, and the graticule's whole
-/// degrees land on round numbers. Any other name here is a product decision
+/// The plate carrée: `u = lon`, `v = lat`, so the `intervalXY` brush's per-axis
+/// inverse is exact and the graticule's lines, and the labels naming them,
+/// land on round numbers of degrees. Any other name here is a product decision
 /// about what an analyst opening a file with coordinates in it should be shown,
 /// not a threading job — the delivery takes all sixteen.
 pub const POINT_MAP_PROJECTION: &str = "equirectangular";
@@ -538,9 +539,10 @@ pub fn point_map_tile_sized(
     let _ = writeln!(out, "{pad}    as: ${SELECTION}");
     // Plot attributes are siblings of `plot:`, so they sit at its indent — one
     // level deeper and they read as more options on the last interactor, which
-    // is a spec that parses and does something else.
-    let _ = writeln!(out, "{pad}  xLabel: {xq}");
-    let _ = writeln!(out, "{pad}  yLabel: {yq}");
+    // is a spec that parses and does something else. No `xLabel` or `yLabel`:
+    // a projected plot draws no axes to title, and its graticule's labels say
+    // what the coordinates are.
+    //
     // The projection, at PLOT level — Mosaic's own vocabulary and the only
     // level it exists at. Every mark on the plot draws through it, so the ghost
     // and the subset cannot come to be in different coordinate systems.
