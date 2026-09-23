@@ -171,9 +171,10 @@ pub const LEDGER_RAIL_MIN_HEIGHT: f32 = 120.0;
 /// is not a run of them. A count of rows rather than a number of points,
 /// because a row's height is the grid's measure and not this module's: the
 /// shell turns the count into points from the measures its own drawing uses,
-/// so the count holds when one of those measures moves. Never below
-/// [`LEDGER_RAIL_HEIGHT`], so the grid's spot opens no shorter than the record
-/// panes do.
+/// so the count holds when one of those measures moves. The shell holds the
+/// grid's height at or above [`LEDGER_RAIL_HEIGHT`], so the grid's spot opens
+/// no shorter than the record panes do; the shell's
+/// `no_ledger_pane_opens_shorter_than_it_did` reads all four panes' heights.
 pub const LEDGER_GRID_ROWS: u16 = 5;
 
 // ---------------------------------------------------------------------------

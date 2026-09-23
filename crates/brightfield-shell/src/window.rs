@@ -7074,8 +7074,9 @@ enum LedgerHolds {
 /// band lies over the inset, so summing them leaves a slice of a sixth row
 /// showing above the band. Each term is the function that draws it, so a
 /// change to any of them moves the height with it and the count of rows
-/// holds. Never below the rail's declared default, so the grid's spot opens no
-/// shorter than the record panes.
+/// holds. Held at or above the rail's declared default, so the grid's spot
+/// opens no shorter than the record panes —
+/// `no_ledger_pane_opens_shorter_than_it_did`.
 ///
 /// # Panics
 ///
