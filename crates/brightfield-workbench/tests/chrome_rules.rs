@@ -443,17 +443,25 @@ fn an_overlay_is_not_painted_in_the_panel_fill() {
 }
 
 /// **The status rail's band is not a control, and its dismissable line still
-/// is.**
+/// is** — named by its hover text, and taken by a click.
 ///
 /// An anchored `egui::Area` registers a move widget over its whole rect, and
 /// one that cannot move senses a click there to raise its layer — so without
 /// a sense of its own the band read as one unnamed control the width of the
 /// window. The first half holds that no widget on this frame senses a click
-/// without also sensing a drag. The second holds the reason the fix is a
-/// sense and not `interactable(false)`: a layer taken out of egui's hit test
-/// takes the line's own click with it, and a click on the line has to land.
+/// without also sensing a drag.
+///
+/// The second half holds that silencing the band left the line a control:
+/// resting on it paints its hover text, which is its name, and a click on it
+/// dismisses it. A fix that silenced the line with the band — a sense taken
+/// off the label, or the rail drawn outside the hit test — reddens here.
+///
+/// It does not tell a hover sense on the Area from `interactable(false)`, and
+/// that is measured rather than assumed: on egui 0.35 both hover and click go
+/// through the widget hit test, which does not read the layer's flag, so the
+/// line kept its tooltip and its click under either.
 #[test]
-fn the_status_rails_band_senses_no_click_and_its_entry_still_dismisses() {
+fn the_status_rails_band_is_not_a_control_and_its_line_still_is() {
     let verb = Verb::new("clear-selection");
     let entries = vec![StatusEntry {
         id: "selection",
@@ -463,6 +471,7 @@ fn the_status_rails_band_senses_no_click_and_its_entry_still_dismisses() {
         hide: HideAffordance::Verb(verb),
     }];
     let ctx = egui::Context::default();
+    ctx.all_styles_mut(|style| style.interaction.tooltip_delay = 0.0);
     let draw = |events: Vec<egui::Event>| {
         let mut out = chrome::StatusDrawn::default();
         let input = egui::RawInput {
@@ -470,7 +479,7 @@ fn the_status_rails_band_senses_no_click_and_its_entry_still_dismisses() {
             events,
             ..Default::default()
         };
-        let _ = ctx.run_ui(input, |ui| {
+        let full = ctx.run_ui(input, |ui| {
             out = chrome::status_rail_overlay(
                 ui.ctx(),
                 &entries,
@@ -478,14 +487,14 @@ fn the_status_rails_band_senses_no_click_and_its_entry_still_dismisses() {
                 Mode::Light,
             );
         });
-        out
+        (out, full.shapes)
     };
 
     // Three frames, because an anchored Area is placed by the size it had the
     // frame before, and on its first frame it has none.
     draw(Vec::new());
     draw(Vec::new());
-    let drawn = draw(Vec::new());
+    let (drawn, _) = draw(Vec::new());
     let band = drawn.rect.expect("a rail with a line draws its band");
     let click_only: Vec<(egui::Id, egui::Rect)> = ctx.viewport(|vp| {
         vp.prev_pass
@@ -515,6 +524,27 @@ fn the_status_rails_band_senses_no_click_and_its_entry_still_dismisses() {
     assert_eq!(line.by, chrome::NamedBy::Hover);
     assert!(line.name.starts_with("dismiss"), "{:?}", line.name);
     let at = line.rect.center();
+
+    // Rest the pointer on the line until egui reads it as still, then read
+    // the frame's galleys for the line's name.
+    draw(vec![egui::Event::PointerMoved(at)]);
+    let mut shapes = Vec::new();
+    for _ in 0..8 {
+        shapes = draw(Vec::new()).1;
+    }
+    let painted: Vec<String> = shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) => Some(text.galley.text().to_string()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        painted.iter().any(|t| *t == line.name),
+        "resting on the line at {at:?} painted no {:?}; it painted {painted:?}",
+        line.name
+    );
+
     let button = |pressed| egui::Event::PointerButton {
         pos: at,
         button: egui::PointerButton::Primary,
@@ -523,8 +553,8 @@ fn the_status_rails_band_senses_no_click_and_its_entry_still_dismisses() {
     };
     // Press and release on separate frames: the line senses a drag as well,
     // and egui decides click-or-drag on the release.
-    draw(vec![egui::Event::PointerMoved(at), button(true)]);
-    let clicked = draw(vec![button(false)]);
+    draw(vec![button(true)]);
+    let (clicked, _) = draw(vec![button(false)]);
     assert_eq!(
         clicked.dismissed,
         vec![verb],
