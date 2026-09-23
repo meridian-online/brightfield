@@ -470,8 +470,9 @@ const HOUSING_COLUMNS: &[(&str, &str)] = &[
 // ---------------------------------------------------------------------------
 
 /// **AC1.** Opening the fixture draws the spine: the file, the step that reads
-/// it with its kind and run state, the table, that table's two views as child
-/// rows, then the outline's caption and the column rows.
+/// it with its kind and run state, the table, that table's grid as a child
+/// row, the dashboard that reads the table as an asset of its own, then the
+/// outline's caption and the column rows.
 ///
 /// The whole list is asserted, in order, rather than a row at a time: a missing
 /// row, a row in the wrong place and a step row carrying a run state the model
@@ -518,8 +519,20 @@ fn the_spine_lists_the_file_the_step_that_read_it_and_the_table_it_made() {
             0,
             SpineMarker::Hollow,
         ),
-        (SpineRole::View, "dashboard", "view", 1, SpineMarker::None),
+        // The table's one view: a grid is a way of looking at any tabular
+        // node, and this is the tabular node here.
         (SpineRole::View, "grid", "view", 1, SpineMarker::None),
+        // The dashboard is a node, not a view: it carries a mosaic spec of its
+        // own, so it is listed at the asset depth after the table it reads,
+        // with its own kind. Brightfield composed it when the file opened and
+        // no step of the Protocol makes it, so it is there and says so.
+        (
+            SpineRole::Asset,
+            "dashboard",
+            "dashboard",
+            0,
+            SpineMarker::Filled,
+        ),
         // No table clause: at 240 points the caption that named it clipped
         // mid-word and took the count off the edge with it, and the table's own
         // name is three rows above in full.
@@ -2224,6 +2237,78 @@ fn the_locator_band_reads_the_file_the_step_the_node_and_the_view() {
         Some(&"grid".to_string()),
         "a click on the grid row did not move the band's last crumb"
     );
+
+    // …and the dashboard's own row brings the page back, named as the node.
+    win.click_row("dashboard");
+    assert_eq!(
+        win.app.canvas_holds(),
+        &the_dashboard(&win.app),
+        "a click on the dashboard row did not put the dashboard node on the canvas"
+    );
+    assert_eq!(
+        win.app.locator_crumbs(),
+        crumbs,
+        "the band reads the dashboard differently once the grid has been visited"
+    );
+}
+
+/// **The band names the dashboard as the node, not as a view of the table.**
+///
+/// On the housing file the dashboard node is labelled `dashboard`, which is
+/// also the word the view it replaced drew, so a band still reading the
+/// canvas as *the table's dashboard view* would print the same four crumbs.
+/// This relabels the node before the window opens: the band has to read the
+/// node's own label where the view's word used to stand, and the spine's
+/// row under that label carries the bar.
+///
+/// Watched redden, one mutation: routing `CanvasHolds::Dashboard` through
+/// `view_crumbs` with the word `dashboard` in `crumb_line` — the band's last
+/// crumb reads `dashboard` over a node called `overview`.
+#[test]
+fn the_locator_band_names_the_dashboard_as_the_node_it_is() {
+    let mut boot = housing_boot();
+    let table = boot
+        .protocol
+        .table
+        .clone()
+        .expect("the housing file holds a table");
+    let id = brightfield_protocol::graph::generated_dashboard_id(&table);
+    for graph in [
+        &mut boot.protocol.graph_collapsed,
+        &mut boot.protocol.graph_full,
+        &mut boot.protocol.graph_exploded,
+        &mut boot.protocol.graph_contracted,
+    ] {
+        graph
+            .nodes
+            .get_mut(&id)
+            .expect("the held table's dashboard is a node of each graph")
+            .label = "overview".to_string();
+    }
+    let mut win = Live::open(boot);
+    win.settle();
+
+    assert_eq!(win.app.canvas_holds(), &the_dashboard(&win.app));
+    assert_eq!(
+        win.app.locator_crumbs(),
+        vec![
+            "california_housing_sample.csv".to_string(),
+            "load".to_string(),
+            "california_housing_sample".to_string(),
+            "overview".to_string(),
+        ],
+        "the band's last crumb is not the dashboard node's own label"
+    );
+    let row = win.row("overview");
+    assert_eq!(
+        (row.role, row.kind.as_str()),
+        (SpineRole::Asset, "dashboard"),
+        "the relabelled dashboard is not an asset row of kind dashboard"
+    );
+    assert!(
+        row.on_canvas.is_some(),
+        "the dashboard's own row does not carry the on-canvas bar"
+    );
 }
 
 /// **AC2.** With the graph on the canvas the band reads one crumb, `Protocol`,
@@ -2296,4 +2381,251 @@ fn counted_pair(nodes: usize, steps: usize) -> String {
         }
     };
     format!("{} \u{b7} {}", noun(nodes, "node"), noun(steps, "step"))
+}
+
+// ---------------------------------------------------------------------------
+// A dashboard a run contract names, and a Protocol of more than one table
+// ---------------------------------------------------------------------------
+
+/// A contract whose run published a dashboard from the table it tallied.
+fn dashboard_contract() -> Live {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../brightfield-protocol/fixtures/dashboard_run.contract.json");
+    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let inputs = brightfield_shell::protocol::load_contract_str(&bytes)
+        .unwrap_or_else(|e| panic!("load {}: {e}", path.display()));
+    Live::open(Boot::protocol(
+        inputs,
+        brightfield_protocol::layout::Flow::Vertical,
+        None,
+    ))
+}
+
+/// **AC3.** A run contract whose assets include a dashboard reaches the spine
+/// as a dashboard row and the graph as a dashboard node, not as a file.
+///
+/// The row is read off the drawn frame and the node off the graph the canvas
+/// draws, which is the one the graph chip puts there: a contract dashboard
+/// folded into a produced file reads `file` on both.
+///
+/// Watched redden, one mutation: mapping `ContractAssetKind::Dashboard` back
+/// to `AssetKind::File` in `build_contract_view` — the row reads `file`.
+#[test]
+fn a_contract_dashboard_is_a_dashboard_row_and_a_dashboard_node() {
+    let mut win = dashboard_contract();
+    win.settle();
+
+    let row = win.row("widgets_overview");
+    assert_eq!(
+        (row.role, row.kind.as_str(), row.depth),
+        (SpineRole::Asset, "dashboard", 0),
+        "the contract's dashboard is not an asset row of kind dashboard"
+    );
+    assert_eq!(
+        row.marker,
+        SpineMarker::Filled,
+        "the run published the dashboard, so its row says it is there"
+    );
+    let labels: Vec<String> = win.rows().iter().map(|r| r.label.clone()).collect();
+    let at = |want: &str| labels.iter().position(|l| l == want);
+    assert!(
+        at("publish") < at("widgets_overview") && at("widget_tally") < at("publish"),
+        "the dashboard does not follow the step that published it from the \
+         table: {labels:?}"
+    );
+
+    assert!(
+        win.app.graph_on_canvas(),
+        "a contract with no chart open holds the graph"
+    );
+    let graph = win.app.protocol_model().displayed_graph();
+    let node = graph
+        .nodes
+        .get("asset.widgets_demo.widgets_overview")
+        .expect("the graph the canvas draws has the dashboard");
+    assert_eq!(
+        node.kind,
+        brightfield_protocol::graph::AssetKind::Dashboard,
+        "the graph the canvas draws holds the contract's dashboard as {:?}",
+        node.kind
+    );
+}
+
+/// A boot over [`housing`] whose Protocol has a second table: the one-step
+/// Protocol's `load`, and a `by_age` step that summarises the table it made.
+///
+/// The engine holds the table the file opened as and nothing else, which is
+/// the pair AC4 is about — one tabular node the session can list and one it
+/// cannot.
+fn housing_with_a_second_table() -> Boot {
+    let mut boot = housing_boot();
+    let manifest = "name: california_housing_sample\n\
+                    engine: duckdb\n\
+                    steps:\n  \
+                    - name: load\n    \
+                    sql: models/load.sql\n    \
+                    depends_on:\n      \
+                    - './california_housing_sample.csv'\n    \
+                    produces:\n      \
+                    - california_housing_sample\n  \
+                    - name: by_age\n    \
+                    sql: models/by_age.sql\n    \
+                    produces:\n      \
+                    - rooms_by_age\n";
+    let models = [
+        (
+            "models/load.sql",
+            "CREATE OR REPLACE TABLE california_housing_sample AS \
+             SELECT * FROM read_csv('./california_housing_sample.csv');\n",
+        ),
+        (
+            "models/by_age.sql",
+            "CREATE OR REPLACE TABLE rooms_by_age AS SELECT house_age, \
+             avg(avg_rooms) AS rooms FROM california_housing_sample GROUP BY house_age;\n",
+        ),
+    ];
+    let mut inputs = brightfield_shell::protocol::load_protocol_str(manifest, &models)
+        .unwrap_or_else(|e| panic!("the two-table manifest loads: {e}"));
+    let table = boot
+        .protocol
+        .table
+        .clone()
+        .expect("the housing file holds a table");
+    inputs.hold_table(table);
+    inputs.columns = std::mem::take(&mut boot.protocol.columns);
+    inputs.tiles = std::mem::take(&mut boot.protocol.tiles);
+    inputs.source = boot.protocol.source.take();
+    boot.protocol = inputs;
+    boot
+}
+
+impl Live {
+    /// Click the `grid` row listed under the asset row labelled `node`.
+    fn click_grid_under(&mut self, node: &str) {
+        let rows = self.rows();
+        let at = rows
+            .iter()
+            .position(|row| row.role == SpineRole::Asset && row.label == node)
+            .unwrap_or_else(|| panic!("the rail drew no asset row labelled {node:?}"));
+        let grid = rows
+            .get(at + 1)
+            .filter(|row| row.role == SpineRole::View && row.label == "grid")
+            .unwrap_or_else(|| panic!("no grid row stands under {node:?}"));
+        let centre = grid.rect.center();
+        self.run(vec![click_at(centre), Vec::new(), Vec::new()]);
+    }
+}
+
+/// **AC4.** On a Protocol with more than one table node each table row
+/// carries a `grid` row, and a click on one lands on that node's grid: the
+/// rows, for the table the engine holds; an empty state naming the node, for
+/// the one it does not.
+///
+/// `3244` is the population in the housing file's first row, the cell
+/// `clicking_a_view_row_moves_the_canvas_and_the_bar_with_it` reads for the
+/// same reason: a grid drawing the session's rows draws it, and a grid of a
+/// node the session does not hold must not.
+///
+/// Watched redden, two mutations: listing views only under the held table in
+/// `ProtocolModel::spine` (`has_views` back to `table == row.id`) — no grid
+/// row stands under `rooms_by_age`; and dropping the `grid_unheld` branch in
+/// the canvas draw — the second table's grid draws the first table's rows.
+#[test]
+fn each_table_carries_a_grid_row_and_its_click_lands_on_that_nodes_grid() {
+    let mut win = Live::open(housing_with_a_second_table());
+    win.settle();
+
+    let shape: Vec<(SpineRole, String, String, u8)> = win
+        .rows()
+        .iter()
+        .filter(|row| row.role != SpineRole::Column && row.role != SpineRole::Caption)
+        .map(|row| (row.role, row.label.clone(), row.kind.clone(), row.depth))
+        .collect();
+    let row =
+        |role, label: &str, kind: &str, depth| (role, label.to_string(), kind.to_string(), depth);
+    assert_eq!(
+        shape,
+        vec![
+            row(
+                SpineRole::Asset,
+                "./california_housing_sample.csv",
+                "file",
+                0
+            ),
+            row(SpineRole::Step, "load", "sql \u{b7} not run", 0),
+            row(SpineRole::Asset, "california_housing_sample", "table", 0),
+            row(SpineRole::View, "grid", "view", 1),
+            row(SpineRole::Step, "by_age", "sql \u{b7} not run", 0),
+            row(SpineRole::Asset, "rooms_by_age", "table", 0),
+            row(SpineRole::View, "grid", "view", 1),
+            // After the table it reads, in the outline's topological order —
+            // the one the rail, the canvas and the render proof share — which
+            // puts the table's two consumers in the order that sorts them.
+            row(SpineRole::Asset, "dashboard", "dashboard", 0),
+        ],
+        "each table of the Protocol does not carry its own grid row"
+    );
+
+    let second = "asset.california_housing_sample.rooms_by_age".to_string();
+    assert!(
+        win.app
+            .protocol_model()
+            .layout()
+            .view_chips
+            .contains_key(&second),
+        "the graph gives the second table no grid chip, though the spine gives \
+         it a grid row"
+    );
+
+    win.click_grid_under("rooms_by_age");
+    assert_eq!(
+        win.app.canvas_holds(),
+        &CanvasHolds::View {
+            node: second,
+            view: NodeView::Grid,
+        },
+        "the second table's grid row did not put that node's grid on the canvas"
+    );
+    let drawn: Vec<String> = texts(&win.shapes())
+        .into_iter()
+        .map(|(t, _, _)| t)
+        .collect();
+    assert!(
+        drawn.contains(&brightfield_shell::window::unheld_grid_headline(
+            "rooms_by_age"
+        )),
+        "the grid of a node the engine does not hold drew no empty state naming \
+         it: {drawn:?}"
+    );
+    assert!(
+        !drawn.iter().any(|t| t == "3244"),
+        "the grid of the second table drew the first table's rows"
+    );
+    assert_eq!(
+        win.app.locator_crumbs(),
+        vec![
+            "california_housing_sample".to_string(),
+            "by_age".to_string(),
+            "rooms_by_age".to_string(),
+            "grid".to_string(),
+        ],
+        "the band does not name the second table's grid"
+    );
+
+    win.click_grid_under("california_housing_sample");
+    let drawn: Vec<String> = texts(&win.shapes())
+        .into_iter()
+        .map(|(t, _, _)| t)
+        .collect();
+    assert!(
+        drawn.iter().any(|t| t == "3244"),
+        "the held table's grid drew none of its rows after the second table's \
+         empty one"
+    );
+    assert!(
+        !drawn.contains(&brightfield_shell::window::unheld_grid_headline(
+            "california_housing_sample"
+        )),
+        "the held table's grid drew the empty state of a node the engine lacks"
+    );
 }

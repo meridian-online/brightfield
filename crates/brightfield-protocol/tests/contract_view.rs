@@ -256,3 +256,99 @@ fn unsupported_contract_version_is_rejected() {
         "got {err:?}"
     );
 }
+
+/// **A run contract's dashboard reaches the graph as a dashboard node**, fed by
+/// the table the step that published it read — not as the produced file every
+/// out-of-domain viz artefact is folded into.
+///
+/// And the table keeps it: a dashboard a contract named is the one
+/// `add_generated_dashboard` returns for that table, with nothing added beside
+/// it, so a Protocol whose run authored a dashboard does not grow a second,
+/// generated one.
+#[test]
+fn a_contract_dashboard_reaches_the_graph_as_a_dashboard_node() {
+    let bytes = std::fs::read(fixture("dashboard_run.contract.json")).expect("read fixture");
+    let contract = parse_contract(&bytes).expect("parse contract");
+    let view = build_contract_view(&contract);
+
+    let id = "asset.widgets_demo.widgets_overview";
+    let node = view.graph.nodes.get(id).unwrap_or_else(|| {
+        panic!(
+            "the contract's dashboard is not a node of the graph: {:?}",
+            view.graph.nodes.keys().collect::<Vec<_>>()
+        )
+    });
+    assert_eq!(
+        node.kind,
+        AssetKind::Dashboard,
+        "the contract's dashboard reached the graph as {:?}",
+        node.kind
+    );
+    assert_eq!(node.label, "widgets_overview");
+    assert_eq!(node.step.as_deref(), Some("publish"));
+    let tally = "asset.widgets_demo.widget_tally";
+    assert!(
+        view.graph
+            .edges
+            .iter()
+            .any(|e| e.from == tally && e.to == id && e.via.as_deref() == Some("publish")),
+        "no edge from the table the publish step read into the dashboard: {:?}",
+        view.graph.edges
+    );
+
+    let mut graph = view.graph.clone();
+    let kept = brightfield_protocol::graph::add_generated_dashboard(&mut graph, &tally.to_string());
+    assert_eq!(
+        kept.as_deref(),
+        Some(id),
+        "the table's authored dashboard was not the one kept"
+    );
+    assert_eq!(
+        graph.nodes.len(),
+        view.graph.nodes.len(),
+        "a generated dashboard was added beside the authored one"
+    );
+}
+
+/// **A table with no authored dashboard is given the generated one's node**:
+/// labelled `dashboard`, made by no step, and fed by one edge from the table
+/// through no seam — so the outline sorts it after the table it reads.
+///
+/// A table the graph does not have is left alone, which is what a fold that
+/// absorbed the table hands over.
+#[test]
+fn a_table_with_no_dashboard_is_given_the_generated_ones_node() {
+    let bytes = std::fs::read(fixture(CONTRACT)).expect("read fixture");
+    let view = build_contract_view(&parse_contract(&bytes).expect("parse contract"));
+    let table = "asset.widgets_demo.widgets".to_string();
+
+    let mut graph = view.graph.clone();
+    let id = brightfield_protocol::graph::add_generated_dashboard(&mut graph, &table)
+        .expect("a table of the graph is given a dashboard");
+    assert_eq!(id, "dashboard.widgets_demo.widgets");
+    let node = &graph.nodes[&id];
+    assert_eq!(node.kind, AssetKind::Dashboard);
+    assert_eq!(node.label, "dashboard");
+    assert_eq!(node.step, None, "no step of the Protocol makes the page");
+    let into: Vec<_> = graph.edges.iter().filter(|e| e.to == id).collect();
+    assert_eq!(into.len(), 1, "one edge feeds the dashboard: {into:?}");
+    assert_eq!(into[0].from, table);
+    assert_eq!(into[0].via, None);
+
+    let order = brightfield_protocol::panel::outline_rows(&graph, &Default::default(), None);
+    let at = |want: &str| order.iter().position(|row| row.id == want);
+    assert!(
+        at(&table) < at(&id),
+        "the dashboard does not sort after the table it reads"
+    );
+
+    let mut untouched = view.graph.clone();
+    assert_eq!(
+        brightfield_protocol::graph::add_generated_dashboard(
+            &mut untouched,
+            &"asset.widgets_demo.absent".to_string()
+        ),
+        None
+    );
+    assert_eq!(untouched.nodes.len(), view.graph.nodes.len());
+}
