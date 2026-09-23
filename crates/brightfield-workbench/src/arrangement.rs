@@ -156,10 +156,26 @@ pub const INSPECTOR_RAIL_WIDTH: f32 = 280.0;
 /// The inspector rail's floor, outer, in logical points.
 pub const INSPECTOR_RAIL_MIN_WIDTH: f32 = 200.0;
 
-/// The ledger rail's default height, outer, in logical points.
+/// The ledger rail's default height, outer, in logical points: what it opens
+/// at over the run record — *Log*, *Quality* and the *Editor* — and what the
+/// window's own size budgets for it.
 pub const LEDGER_RAIL_HEIGHT: f32 = 180.0;
 /// The ledger rail's floor, outer, in logical points.
 pub const LEDGER_RAIL_MIN_HEIGHT: f32 = 120.0;
+/// How many of the grid's data rows the ledger rail opens showing while the
+/// grid is what its *Rows* spot holds.
+///
+/// **The rail opens at the height of what it holds**, not at one height for
+/// its four panes. At [`LEDGER_RAIL_HEIGHT`] the grid's tab strip, pane
+/// header and compact column band leave room for one data row, and one record
+/// is not a run of them. A count of rows rather than a number of points,
+/// because a row's height is the grid's measure and not this module's: the
+/// shell turns the count into points from the measures its own drawing uses,
+/// so the count holds when one of those measures moves. The shell holds the
+/// grid's height at or above [`LEDGER_RAIL_HEIGHT`], so the grid's spot opens
+/// no shorter than the record panes do; the shell's
+/// `no_ledger_pane_opens_shorter_than_it_did` reads all four panes' heights.
+pub const LEDGER_GRID_ROWS: u16 = 5;
 
 // ---------------------------------------------------------------------------
 // The vocabulary

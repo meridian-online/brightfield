@@ -870,7 +870,7 @@ mod tests {
             assert_eq!(hero.tile.as_deref(), Some("point-map"));
             assert_eq!(
                 crate::window::map_pane_title(Some(hero)),
-                "Map \u{b7} latitude \u{d7} longitude",
+                "Map \u{b7} latitude \u{d7} longitude \u{b7} equirectangular",
                 "the map pane's title moved with the tile order"
             );
 

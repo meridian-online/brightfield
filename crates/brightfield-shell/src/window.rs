@@ -3256,7 +3256,7 @@ impl MeridianApp {
     }
 
     /// What the canvas's pane group drew in the last frame — the panes, their
-    /// header bands, their content rects and the count overlay.
+    /// header bands and their content rects.
     ///
     /// Empty on a frame the canvas drew one pane, which is every frame whose
     /// document is one picture rather than a generated dashboard.
@@ -4040,13 +4040,25 @@ impl MeridianApp {
             // `a_rail_reopens_at_the_extent_it_was_dragged_to` measures.
             // egui's own `Panel::show_switched` carries the same rule as a
             // `debug_assert`.
+            //
+            // Open, it is one of two ids again, for the same reason: **the rail
+            // opens at the height of what it holds.** Holding the grid, it
+            // opens tall enough for `LEDGER_GRID_ROWS` of its rows; holding
+            // the run record, at the declared default. Each id keeps its own
+            // dragged height, so a rail dragged over the grid does not carry
+            // that height to the Log, nor the Log's back to the grid.
+            let ledger_holds = if ledger_panes[ledger_panel] == ROWS && !canvas_draws_grid {
+                LedgerHolds::Grid
+            } else {
+                LedgerHolds::Record
+            };
             let ledger_panel_widget = if ledger_collapsed {
                 Panel::bottom(panel_id(ledger, true))
                     .resizable(false)
                     .exact_size(rail_collapsed(ledger))
             } else {
-                Panel::bottom(panel_id(ledger, false))
-                    .default_size(rail_default(ledger))
+                Panel::bottom(panel_id(ledger, false).with(ledger_holds))
+                    .default_size(ledger_open_extent(ledger, ledger_holds, mode))
                     .min_size(rail_min(ledger))
                     .resizable(true)
             };
@@ -4106,7 +4118,7 @@ impl MeridianApp {
                     // reddens when a pane reaches the wrong arm: the item is
                     // not in that document's map, so nothing draws and the
                     // empty state it reads is not there.
-                    if item == ROWS && !canvas_draws_grid {
+                    if ledger_holds == LedgerHolds::Grid {
                         // **The grid itself, in the Rows spot** — not a second
                         // grid, but the one the canvas is not drawing.
                         ledger_grid_body = Some(draw_ledger_grid_pane(
@@ -7039,6 +7051,52 @@ fn rail_default(region: &Region) -> f32 {
     }
 }
 
+/// What the open ledger rail holds, as far as its height is concerned: the
+/// grid in its *Rows* spot, or one of the run-record panes. The key its open
+/// panel's id is derived with, so each keeps the height it was dragged to.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum LedgerHolds {
+    /// *Log*, *Quality*, the *Editor*, or the *Rows* spot saying where the grid
+    /// went — the panes that open at the rail's declared default.
+    Record,
+    /// The grid, drawn in the *Rows* spot.
+    Grid,
+}
+
+/// What the open ledger rail opens at, holding `holds`.
+///
+/// Holding the grid: the chrome above the grid's first data row — the rail's
+/// tab strip, the pane's header band and inset, and the compact column band
+/// the grid draws in this spot — then
+/// [`arrangement::LEDGER_GRID_ROWS`] rows at [`crate::data_grid::row_height`],
+/// then the rail's foot. The foot is the band the status rail floats in or the
+/// pane's own inset, whichever is taller, and not the two summed: the floating
+/// band lies over the inset, so summing them leaves a slice of a sixth row
+/// showing above the band. Each term is the function that draws it, so a
+/// change to any of them moves the height with it and the count of rows
+/// holds. Held at or above the rail's declared default, so the grid's spot
+/// opens no shorter than the record panes —
+/// `no_ledger_pane_opens_shorter_than_it_did`.
+///
+/// # Panics
+///
+/// If the region is not a rail — as [`band_extent`].
+fn ledger_open_extent(ledger: &Region, holds: LedgerHolds, mode: Mode) -> f32 {
+    let declared = rail_default(ledger);
+    if holds == LedgerHolds::Record {
+        return declared;
+    }
+    let above = chrome::rail_selector_height()
+        + chrome::header_band_height()
+        + chrome::pane_content_inset()
+        + crate::column_header::column_header_frame(GridDensity::Compact, mode).extent();
+    let rows = f32::from(arrangement::LEDGER_GRID_ROWS) * crate::data_grid::row_height();
+    let status =
+        overlay_extent(arrangement::default_arrangement().expect_region(arrangement::STATUS_BAND));
+    let foot = chrome::pane_content_inset().max(status);
+    (above + rows + foot).ceil().max(declared)
+}
+
 /// What a rail refuses to narrow past.
 ///
 /// # Panics
@@ -7275,13 +7333,6 @@ pub struct CanvasPanes {
     /// pane then the grid pane beside it; for a node's grid view, the one pane
     /// holding it.
     pub panes: Vec<CanvasPane>,
-    /// The count overlay's rect inside the map pane, when one was drawn.
-    pub count: Option<egui::Rect>,
-    /// The count overlay's own text, when one was drawn — `Some` and `None`
-    /// together with [`Self::count`], since both come off the one paint. What
-    /// says whether the hero read "N points" or "0 points" rather than only
-    /// where the chip landed.
-    pub count_text: Option<String>,
     /// The note at the trailing end of the grid pane's header band — what it
     /// said and where it drew — on a frame where some column of the table was
     /// off screen. `None` on a frame where the grid fitted.
@@ -7439,139 +7490,32 @@ pub fn canvas_pane_rects(body: egui::Rect, split: f32) -> CanvasPaneRects {
     CanvasPaneRects { hero, grid }
 }
 
-/// The map pane's title: the hero and the columns it draws.
+/// The map pane's title: the hero, the columns it draws, and for a map the
+/// projection it draws them through.
 ///
 /// A coordinate pair reads as the map it is; any other hero is named by its
 /// own column, because the pane holds that one column's picture and the column
 /// name is the shortest thing that distinguishes it from the tiles beside it.
+///
+/// **The projection is named here, in the pane's header, and nowhere over the
+/// picture.** A plot's data area takes no chrome ink: the map's caption used to
+/// be a chip painted inside it, and wherever a chip sits inside the data area
+/// some file's points sit under it. The name joins the axes the header already
+/// names, and the row count the chip also said is the status band's.
+/// `no_chrome_ink_is_drawn_inside_the_heros_data_area` reads the drawn frame
+/// for it.
 pub(crate) fn map_pane_title(hero: Option<&crate::one_step::ColumnFacts>) -> String {
     match hero {
         Some(facts) => match &facts.paired {
-            Some(other) => format!("Map \u{b7} {other} \u{d7} {}", facts.column),
+            Some(other) => format!(
+                "Map \u{b7} {other} \u{d7} {} \u{b7} {}",
+                facts.column,
+                crate::chart_kinds::POINT_MAP_PROJECTION
+            ),
             None => facts.column.clone(),
         },
         None => "Map".to_string(),
     }
-}
-
-/// `n` with a thousands separator — `16640` reads `16,640`.
-///
-/// Local because it exists for one line of chrome. The status band's own count
-/// is somebody else's, and a shared helper between the two would be a shared
-/// decision about wording neither of them has made.
-fn grouped(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
-}
-
-/// What the count overlay says: how many rows the hero draws, and over which
-/// columns.
-///
-/// `facts.rows` is the column's own profile, taken once at file open — right
-/// for the ordinary picture, since no gesture has narrowed it yet, but wrong
-/// the moment the hero itself has: `hero_empty` is `true` exactly when
-/// [`crate::pipeline::PlotHandle::navigated_empty`] is, and says the picture
-/// beside the chip has zero points on it rather than the file's own total,
-/// which the axes would otherwise contradict.
-fn count_overlay_text(
-    hero: Option<&crate::one_step::ColumnFacts>,
-    hero_empty: bool,
-) -> Option<String> {
-    let facts = hero?;
-    let rows = grouped(if hero_empty { 0 } else { facts.rows });
-    Some(match &facts.paired {
-        // The projection by name, because that is what the tile now draws
-        // through and what the graticule behind it is a graticule of — the
-        // frame's own description, not a claim about the fit.
-        Some(other) => format!(
-            "{rows} points \u{b7} {other} \u{d7} {} \u{b7} {}",
-            facts.column,
-            crate::chart_kinds::POINT_MAP_PROJECTION
-        ),
-        None => format!("{rows} rows \u{b7} {}", facts.column),
-    })
-}
-
-/// **The hero's data area**, in window-space logical points: the frame its own
-/// axes bound, moved by the origin the page was drawn at.
-///
-/// Read off the composition rather than re-derived, because the margins that
-/// put the axis band where it is are the renderer's — a second copy of them
-/// here would be a chip that drifts onto the axis the first time a tick label
-/// gets longer. `None` for a document with no plots, and for a frame that
-/// presented no raster: in both, there is no picture to read a count over.
-///
-/// `pane` bounds the answer, so an overlay cannot be placed outside the pane
-/// it belongs to even if the page reaches past it.
-fn hero_data_area(doc: &ChartDoc, pane: egui::Rect) -> Option<egui::Rect> {
-    let page = doc.raster_rect?;
-    let plot = doc.composed.plots.first()?;
-    #[allow(clippy::cast_possible_truncation)]
-    let area = egui::Rect::from_min_max(
-        egui::pos2(
-            page.left() + (plot.rect.x + plot.layout.plot_x_start()) as f32,
-            page.top() + (plot.rect.y + plot.layout.plot_y_start()) as f32,
-        ),
-        egui::pos2(
-            page.left() + (plot.rect.x + plot.layout.plot_x_end()) as f32,
-            page.top() + (plot.rect.y + plot.layout.plot_y_end()) as f32,
-        ),
-    );
-    let held = area.intersect(pane);
-    (held.width() > 0.0 && held.height() > 0.0).then_some(held)
-}
-
-/// **The count, at the lower-right of the hero's data area** — a canvas
-/// overlay in the taxonomy's sense: painted over the picture, inset from its
-/// edge, and taking no layout space at all.
-///
-/// Painted rather than laid out, which is the whole of "takes no layout
-/// space": the signature takes `&egui::Ui`, and allocating needs `&mut` — so
-/// the pane's content rect is the same rect whether this draws or not, by
-/// construction rather than by care.
-///
-/// `within` is the plot's **data area**, not the pane: inside the frame the
-/// axes bound, so the chip cannot land on the x-axis title or a tick label.
-/// It used to be the pane's content rect, and at that inset it covered the
-/// map's `longitude` title outright in both themes.
-/// `the_count_reads_over_the_map_and_leaves_its_axes_whole` is what holds it
-/// there.
-///
-/// Returns the rect it painted into, for a test to read.
-fn count_overlay(ui: &egui::Ui, within: egui::Rect, text: &str, mode: Mode) -> egui::Rect {
-    let sem = semantic(mode.is_dark());
-    let font = egui::FontId::monospace(meridian_design::typography::UI_SIZE - 1.0);
-    let galley = ui
-        .painter()
-        .layout_no_wrap(text.to_owned(), font, chrome::colour(sem.text.muted));
-    // The chip `overlay_frame` gives a floating region — the status band's own
-    // fill rather than the panel's, which is what says this is a layer over the
-    // picture rather than a stray line of the chart's own ink. It is also what
-    // keeps the count legible over the marks it now sits on.
-    let pad = egui::vec2(spacing::SPACE_3, spacing::SPACE_2);
-    let size = galley.size() + 2.0 * pad;
-    let rect = egui::Rect::from_min_size(
-        egui::pos2(
-            within.right() - spacing::SPACE_3 - size.x,
-            within.bottom() - spacing::SPACE_3 - size.y,
-        ),
-        size,
-    );
-    ui.painter().rect_filled(
-        rect,
-        radius::CONTROL,
-        chrome::colour(sem.containers.status_bar_background),
-    );
-    ui.painter()
-        .galley(rect.min + pad, galley, chrome::colour(sem.text.muted));
-    rect
 }
 
 /// Draw the canvas as a **pane group**: the hero pane, and the grid pane
@@ -7705,7 +7649,6 @@ fn draw_canvas_pane_group(
             requests,
             affordances,
         );
-        let (count_text, count) = hero_count_chip(ui, charts, map_body, hero.as_ref(), mode);
         let panes = CanvasPanes {
             panes: vec![CanvasPane {
                 name: "map",
@@ -7713,8 +7656,6 @@ fn draw_canvas_pane_group(
                 header: pane_header_of(map_rect, map_body),
                 body: map_body,
             }],
-            count,
-            count_text,
             rows_note: None,
             page: charts.doc.raster_rect,
         };
@@ -7746,10 +7687,6 @@ fn draw_canvas_pane_group(
         affordances,
     );
 
-    // The chip goes inside the hero's own frame, which is why this waits for
-    // the page to have been drawn: the data area is a fact about the
-    // composition's layout and the origin it landed at.
-    let (count_text, count) = hero_count_chip(ui, charts, map_body, hero.as_ref(), mode);
     let map_pane = CanvasPane {
         name: "map",
         rect: map_rect,
@@ -7759,8 +7696,6 @@ fn draw_canvas_pane_group(
     if !grid_here {
         let panes = CanvasPanes {
             panes: vec![map_pane],
-            count,
-            count_text,
             rows_note: None,
             page: charts.doc.raster_rect,
         };
@@ -7816,41 +7751,10 @@ fn draw_canvas_pane_group(
                 body: grid_body,
             },
         ],
-        count,
-        count_text,
         rows_note,
         page: charts.doc.raster_rect,
     };
     (panes, picked)
-}
-
-/// **The count chip inside the hero's own frame**, as the text it says and the
-/// box it took — `(None, None)` for a document with no hero column, and for a
-/// frame whose composition placed no hero to read a data area off.
-///
-/// Drawn after the page, in both arrangements of the pane group, because the
-/// data area is a fact about the composition's layout and the origin it landed
-/// at.
-fn hero_count_chip(
-    ui: &egui::Ui,
-    charts: &ChartView,
-    map_body: egui::Rect,
-    hero: Option<&crate::one_step::ColumnFacts>,
-    mode: Mode,
-) -> (Option<String>, Option<egui::Rect>) {
-    let hero_empty = charts
-        .doc
-        .composed
-        .plots
-        .first()
-        .is_some_and(|p| p.navigated_empty);
-    match count_overlay_text(hero, hero_empty).zip(hero_data_area(&charts.doc, map_body)) {
-        Some((text, within)) => (
-            Some(text.clone()),
-            Some(count_overlay(ui, within, &text, mode)),
-        ),
-        None => (None, None),
-    }
 }
 
 /// **The canvas with the grid transposed**: the hero pane, and beside it one
@@ -7948,7 +7852,6 @@ fn draw_transposed_pane_group(
         requests,
         affordances,
     );
-    let (count_text, count) = hero_count_chip(ui, charts, map_body, hero.as_ref(), mode);
     charts.doc.transposed_rows = draw_row_summaries(ui, charts, grid_body, mode);
 
     let grid_header = pane_header_of(grid_rect, grid_body);
@@ -7979,8 +7882,6 @@ fn draw_transposed_pane_group(
                 body: grid_body,
             },
         ],
-        count,
-        count_text,
         // No table is drawn across, so there is no count of the columns that
         // fit in it to state. The switch stands at that end of the band
         // instead.
@@ -8204,9 +8105,9 @@ fn draw_canvas_grid_pane(
 /// Which way round it is drawing is the switch's own business, at the
 /// trailing end of the same band.
 ///
-/// A plain noun, where the pane beside it carries a count: what the hero is of
-/// changes with the file, while this pane is the file's grid whatever the file
-/// is. The number that does move here — how much of the table is across — is
+/// A plain noun, where the pane beside it names its columns: what the hero is
+/// of changes with the file, while this pane is the file's grid whatever the
+/// file is. The number that does move here — how much of the table is across — is
 /// [`band_note`]'s, at the other end of the same band.
 const GRID_PANE_TITLE: &str = "Grid";
 
@@ -8217,8 +8118,8 @@ const GRID_PANE_TITLE: &str = "Grid";
 /// pane's `Subject` before the pane's body exists, so a readout that depends
 /// on what the body drew cannot be part of the title without being a frame
 /// stale. Painting it here instead keeps the claim and the frame the same one.
-/// Takes `&egui::Ui` for the reason [`count_overlay`] does: allocating needs
-/// `&mut`, so this cannot move the pane's content rect.
+/// Takes `&egui::Ui` rather than `&mut`: allocating needs `&mut`, so this
+/// cannot move the pane's content rect.
 ///
 /// Returns the rect it painted into, for a test to read.
 fn band_note(ui: &egui::Ui, band: egui::Rect, text: &str, mode: Mode) -> egui::Rect {

@@ -2781,9 +2781,7 @@ impl Item<ProtocolDoc> for OutlinePane {
 ///
 /// Mono because a caption is read as fields — a word, a name, a count — and the
 /// mono face is what keeps the separators lining up between the two captions
-/// this pane draws. The size is [`crate::window`]'s count overlay's, which is
-/// the other place in this shell a line of muted chrome sits over content
-/// rather than labelling it.
+/// this pane draws. The size is one step under the UI size, [`caption_font`].
 ///
 /// It allocates a row and senses nothing: a caption is not a control, and a
 /// caption that swallowed a click would be a dead zone between two lists that
@@ -3181,8 +3179,7 @@ const SPINE_MARKER_RADIUS: f32 = 2.5;
 /// size.
 ///
 /// One step down because a caption names the band under it rather than
-/// competing with it, and the same step the canvas count overlay takes for the
-/// same reason. Mono because a caption's clauses line up between the two
+/// competing with it. Mono because a caption's clauses line up between the two
 /// captions this pane draws, and a proportional face lines nothing up.
 fn caption_font() -> egui::FontId {
     egui::FontId::monospace(meridian_design::typography::UI_SIZE - 1.0)

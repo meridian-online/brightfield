@@ -20,7 +20,7 @@ use brightfield_shell::startup::{default_layout, opening_boot};
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_sql::ir::ScalarValue;
-use brightfield_workbench::arrangement::{CANVAS, LEDGER_RAIL};
+use brightfield_workbench::arrangement::{CANVAS, LEDGER_RAIL, STATUS_BAND};
 use brightfield_workbench::RunState;
 
 /// The housing sample every criterion opens.
@@ -31,6 +31,19 @@ fn housing() -> std::path::PathBuf {
 
 /// The ledger strip's Rows name: Log, Quality, Rows, Editor.
 const ROWS_NAME: usize = 2;
+
+/// The ledger strip's names in the order it draws them, and so the index each
+/// is clicked at.
+const LEDGER_NAMES: [&str; 4] = ["Log", "Quality", "Rows", "Editor"];
+
+/// The height the ledger rail opened at over every pane before the Rows spot
+/// asked for its rows. A number and not the constant it came from: what is
+/// held is that no pane opens shorter than it did, and a floor read off the
+/// declaration would move with the declaration.
+const LEDGER_OPENED_AT: f32 = 180.0;
+
+/// How many data rows the Rows spot has to show at its opening height.
+const READABLE_RUN: usize = 5;
 
 struct Window {
     app: MeridianApp,
@@ -107,12 +120,74 @@ impl Window {
     }
 
     fn pick_rows(&mut self) {
+        self.pick_ledger_name(ROWS_NAME);
+    }
+
+    /// Click the ledger strip's name at `index`, where the last frame drew it.
+    fn pick_ledger_name(&mut self, index: usize) {
         let at = self
             .app
-            .rail_name_rect(LEDGER_RAIL, ROWS_NAME)
-            .expect("the ledger strip drew its Rows name")
+            .rail_name_rect(LEDGER_RAIL, index)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the ledger strip drew no {} name",
+                    LEDGER_NAMES.get(index).unwrap_or(&"such")
+                )
+            })
             .center();
         self.click(at);
+    }
+
+    /// One frame, and every shape it handed the painter with the clip each was
+    /// drawn under.
+    fn shapes(&mut self) -> Vec<egui::epaint::ClippedShape> {
+        let raw = egui::RawInput {
+            screen_rect: Some(self.screen),
+            ..Default::default()
+        };
+        self.ctx.run_ui(raw, |ui| self.app.draw(ui)).shapes
+    }
+
+    /// **The hero's data area**, in window space: the frame its own axes bound,
+    /// read off the composition's layout at the rect the hero was drawn at.
+    fn hero_data_area(&self) -> egui::Rect {
+        let hero = self.app.composed_plot_rects()[0];
+        let layout = &self.app.chart_doc().composed.plots[0].layout;
+        #[allow(clippy::cast_possible_truncation)]
+        egui::Rect::from_min_max(
+            egui::pos2(
+                hero.left() + layout.plot_x_start() as f32,
+                hero.top() + layout.plot_y_start() as f32,
+            ),
+            egui::pos2(
+                hero.left() + layout.plot_x_end() as f32,
+                hero.top() + layout.plot_y_end() as f32,
+            ),
+        )
+    }
+
+    /// The text the last frame drew inside `rect`, in reading order.
+    fn words_in(&mut self, rect: egui::Rect) -> String {
+        let mut text = self.run(Vec::new());
+        text.retain(|(at, _)| rect.contains(*at));
+        text.sort_by(|a, b| a.0.y.total_cmp(&b.0.y).then(a.0.x.total_cmp(&b.0.x)));
+        text.into_iter()
+            .map(|(_, t)| t)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// The part of the ledger rail a reader sees: the rail's rect, less the
+    /// status band where that band floats over the rail's foot.
+    fn ledger_seen(&self) -> egui::Rect {
+        let ledger = self.rect(LEDGER_RAIL);
+        match self.app.region_rect(STATUS_BAND) {
+            Some(status) if status.intersects(ledger) => egui::Rect::from_min_max(
+                ledger.min,
+                egui::pos2(ledger.right(), status.top().min(ledger.bottom())),
+            ),
+            _ => ledger,
+        }
     }
 
     /// Click `spot` on the grid's own spot switch, wherever the grid drew it.
@@ -231,6 +306,67 @@ fn collect_text(shape: &egui::epaint::Shape, into: &mut Vec<(egui::Pos2, String)
         }
         _ => {}
     }
+}
+
+/// Every piece of chrome ink a frame drew inside `area`: each galley whose
+/// visible part reaches into it, and each filled rect whose visible part
+/// reaches into it without covering all of it. A fill that covers the whole
+/// area is a pane's background under the picture, not a chip over it. The
+/// picture itself is a textured mesh and is not read.
+fn chrome_ink_inside(shapes: &[egui::epaint::ClippedShape], area: egui::Rect) -> Vec<String> {
+    fn walk(
+        shape: &egui::epaint::Shape,
+        clip: egui::Rect,
+        area: egui::Rect,
+        into: &mut Vec<String>,
+    ) {
+        match shape {
+            egui::epaint::Shape::Vec(shapes) => {
+                for s in shapes {
+                    walk(s, clip, area, into);
+                }
+            }
+            egui::epaint::Shape::Text(t) => {
+                let seen = t.visual_bounding_rect().intersect(clip);
+                if seen.is_positive() && seen.intersects(area.shrink(1.0)) {
+                    into.push(format!("the galley {:?} at {seen:?}", t.galley.text()));
+                }
+            }
+            egui::epaint::Shape::Rect(r) if r.fill.a() > 0 => {
+                let seen = r.rect.intersect(clip);
+                if seen.is_positive()
+                    && seen.intersects(area.shrink(1.0))
+                    && !r.rect.contains_rect(area)
+                {
+                    into.push(format!("a filled rect {:?} at {seen:?}", r.fill));
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut ink = Vec::new();
+    for clipped in shapes {
+        walk(&clipped.shape, clipped.clip_rect, area, &mut ink);
+    }
+    ink
+}
+
+/// A second file for the hero, whose points fill its whole extent — the
+/// north-east corner the housing sample leaves empty included, so no corner of
+/// this map is clear of marks. `latitude` and `longitude` on a half-degree
+/// lattice over California's box, and one value column beside them.
+fn corner_filling_fixture(dir: &std::path::Path) -> std::path::PathBuf {
+    let mut csv = String::from("latitude,longitude,value\n");
+    for i in 0..=20 {
+        for j in 0..=20 {
+            let lat = 32.0 + 0.5 * f64::from(i);
+            let lon = -124.0 + 0.5 * f64::from(j);
+            csv.push_str(&format!("{lat},{lon},{}\n", i * 21 + j));
+        }
+    }
+    let path = dir.join("corners.csv");
+    std::fs::write(&path, csv).expect("the fixture writes");
+    path
 }
 
 fn text_in(text: &[(egui::Pos2, String)], rect: egui::Rect) -> Vec<String> {
@@ -715,5 +851,163 @@ fn the_spines_grid_row_brings_the_grid_back_to_the_canvas() {
         "the grid was brought back by the spine's grid row and the save wrote \
          some other spot for it"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **AC1: the Rows spot opens on a readable run of rows.** The housing sample
+/// at 1440 by 900, the grid sent to the ledger by the Rows name and the rail
+/// left at the height it opens at: the table draws at least
+/// [`READABLE_RUN`] data rows whole, under its compact band and inside the part
+/// of the ledger a reader sees — the rail, less the status band floated over
+/// its foot.
+///
+/// Counted off the rects the table drew its rows at, each held entirely inside
+/// its own clip and the seen rail, so a row cut by the pane's foot or hidden
+/// under the status band is not counted. No drag runs: a count reached by
+/// dragging the rail taller is the defect this holds against.
+#[test]
+fn the_rows_spot_opens_on_a_readable_run_of_rows() {
+    let mut win = Window::housing();
+    win.pick_rows();
+    assert_eq!(
+        win.app.grid_spot(),
+        GridSpot::Ledger,
+        "the Rows name did not send the grid to the ledger"
+    );
+    let seen = win.ledger_seen();
+    let head = win.table_head();
+    assert!(
+        seen.contains_rect(head.shrink(1.0)),
+        "the table's header drew at {head:?}, outside the ledger {seen:?}"
+    );
+    let drawn = win
+        .app
+        .chart_doc()
+        .grid_drawn()
+        .expect("a table was drawn this frame")
+        .clone();
+    let under_band = egui::Rect::from_min_max(egui::pos2(seen.left(), head.bottom()), seen.max);
+    let whole = drawn.rows_whole_within(under_band);
+    assert!(
+        whole >= READABLE_RUN,
+        "the Rows spot opened at {:.0}pt and showed {whole} whole data rows \
+         under its band, short of {READABLE_RUN} — the rows it laid out: {:?}",
+        win.rect(LEDGER_RAIL).height(),
+        drawn
+            .row_cells
+            .iter()
+            .map(|(row, rect, _)| (*row, rect.top(), rect.bottom()))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// **AC2: no ledger pane opens shorter than it did.** On the housing sample,
+/// each of the strip's names opens the rail from its collapsed strip at least
+/// [`LEDGER_OPENED_AT`] tall. Then each is clicked on a rail the grid is
+/// already holding, so a record pane reached from the grid's taller rail is
+/// read too: the two keep separate heights, and a record pane that inherited
+/// the grid's would pass the floor while opening at the wrong one — which is
+/// why the second walk also holds the record panes to the height the first
+/// walk read.
+#[test]
+fn no_ledger_pane_opens_shorter_than_it_did() {
+    let mut record = None;
+    for (index, name) in LEDGER_NAMES.iter().enumerate() {
+        for after_grid in [false, true] {
+            let mut win = Window::housing();
+            if after_grid {
+                win.pick_rows();
+            }
+            win.pick_ledger_name(index);
+            let height = win.rect(LEDGER_RAIL).height();
+            let how = if after_grid {
+                "on a rail the grid was holding"
+            } else {
+                "from the collapsed strip"
+            };
+            assert!(
+                height >= LEDGER_OPENED_AT - 1e-3,
+                "{name}, clicked {how}, drew the ledger rail {height:.1}pt tall, \
+                 shorter than the {LEDGER_OPENED_AT}pt it opened at before"
+            );
+            if index == ROWS_NAME {
+                continue;
+            }
+            let first = *record.get_or_insert(height);
+            assert!(
+                (height - first).abs() < 1e-3,
+                "{name}, clicked {how}, drew the ledger rail {height:.1}pt tall \
+                 where the record panes open at {first:.1}pt"
+            );
+        }
+    }
+}
+
+/// **AC3: no chrome ink is drawn inside the hero's data area, in either grid
+/// spot, on this file or on one whose points fill every corner.**
+///
+/// The frame is read for any galley or filled chip inside the frame the hero's
+/// axes bound, with the grid beside the hero and with the grid sent to the
+/// ledger, on the housing sample and on [`corner_filling_fixture`]. What the
+/// caption used to say is read where it went: the map pane's header names the
+/// axes and the projection, and the status band carries the row count.
+#[test]
+fn no_chrome_ink_is_drawn_inside_the_heros_data_area() {
+    let dir = std::env::temp_dir().join(format!("bf-hero-ink-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("the scratch dir");
+    let corners = corner_filling_fixture(&dir);
+
+    for (file, path, rows) in [
+        ("the housing sample", housing(), 240_u64),
+        ("the corner-filling file", corners, 441),
+    ] {
+        let mut win = Window::over(
+            Boot::data_file(path.to_str().expect("utf-8")).expect("the file opens"),
+            default_layout(),
+        );
+        for spot in [GridSpot::Canvas, GridSpot::Ledger] {
+            if spot == GridSpot::Ledger {
+                win.pick_rows();
+            }
+            assert_eq!(
+                win.app.grid_spot(),
+                spot,
+                "{file}: the grid is not where it was sent"
+            );
+            let area = win.hero_data_area();
+            let shapes = win.shapes();
+            let ink = chrome_ink_inside(&shapes, area);
+            assert!(
+                ink.is_empty(),
+                "{file}, grid in the {spot:?} spot: chrome ink inside the hero's \
+                 data area {area:?}: {ink:#?}"
+            );
+
+            let header = win
+                .app
+                .canvas_panes()
+                .pane("map")
+                .expect("the map pane drew")
+                .header;
+            let title = win.words_in(header);
+            for wanted in ["latitude \u{d7} longitude", "equirectangular"] {
+                assert!(
+                    title.contains(wanted),
+                    "{file}, grid in the {spot:?} spot: the map pane's header reads \
+                     {title:?}, without {wanted:?}"
+                );
+            }
+            let status = win.rect(STATUS_BAND);
+            let said = win.words_in(status);
+            let count = format!("{rows} of {rows} rows");
+            assert!(
+                said.contains(&count),
+                "{file}, grid in the {spot:?} spot: the status band reads {said:?}, \
+                 without {count:?}"
+            );
+        }
+    }
+
     let _ = std::fs::remove_dir_all(&dir);
 }
