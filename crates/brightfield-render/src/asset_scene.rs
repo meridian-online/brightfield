@@ -574,6 +574,39 @@ fn draw_node(
             );
             label_colour = palette.muted_label;
         }
+        AssetKind::Dashboard => {
+            // A page silhouette: a card with a header rule across its top, the
+            // band a composed page's panes hang under. The table's card is the
+            // same size and a heavier ink; this one is drawn in the file's
+            // weight, because it is a thing made from the table, not a
+            // relation other steps read.
+            let card = RoundedRect::new(x, y, x + w, y + h, 4.0);
+            scene.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                palette.node_fill,
+                None,
+                &card,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                Affine::IDENTITY,
+                palette.node_border,
+                None,
+                &card,
+            );
+            let head = 7.0;
+            let mut rule = BezPath::new();
+            rule.move_to((x, y + head));
+            rule.line_to((x + w, y + head));
+            scene.stroke(
+                &Stroke::new(1.0),
+                Affine::IDENTITY,
+                palette.node_border,
+                None,
+                &rule,
+            );
+        }
     }
     let label = fit_label(&node.label, w);
     draw_text(

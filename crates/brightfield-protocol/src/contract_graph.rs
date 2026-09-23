@@ -370,10 +370,14 @@ pub fn build_contract_view(contract: &Contract) -> ContractView {
             ContractAssetKind::Source => AssetKind::Source,
             ContractAssetKind::File => AssetKind::File,
             ContractAssetKind::Table | ContractAssetKind::Model => AssetKind::Table,
-            // Out-of-domain viz artifacts — surface them as produced files.
+            // A dashboard carries a spec of its own and is drawn as the node it
+            // is — not folded into a produced file, which is what reached the
+            // spine as `file` before the graph had a kind for it.
+            ContractAssetKind::Dashboard => AssetKind::Dashboard,
+            // The other out-of-domain viz artifacts — surface them as produced
+            // files.
             ContractAssetKind::ChartSpec
             | ContractAssetKind::Metrics
-            | ContractAssetKind::Dashboard
             | ContractAssetKind::Unknown => AssetKind::File,
         };
         if is_internal(asset, &step_by_name) {

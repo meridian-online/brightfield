@@ -17,7 +17,7 @@ use brightfield_shell::data_grid::{GRID_ON_CANVAS, MOVE_GRID};
 use brightfield_shell::design::Mode;
 use brightfield_shell::protocol::NodeView;
 use brightfield_shell::startup::{default_layout, opening_boot};
-use brightfield_shell::window::{Boot, MeridianApp};
+use brightfield_shell::window::{Boot, CanvasHolds, MeridianApp};
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_sql::ir::ScalarValue;
 use brightfield_workbench::arrangement::{CANVAS, LEDGER_RAIL, STATUS_BAND};
@@ -700,8 +700,8 @@ fn the_move_is_a_bound_verb_and_both_spots_take_it() {
 /// canvas falls back to the dashboard: the hero alone, the table's header in
 /// the ledger.
 ///
-/// Watched redden, one mutation: deleting the `CanvasHolds::View { view:
-/// NodeView::Grid }` to `NodeView::Dashboard` reset inside `set_grid_spot`.
+/// Watched redden, one mutation: deleting the `CanvasHolds::View` to
+/// `CanvasHolds::Dashboard` reset inside `set_grid_spot`.
 /// The canvas stays on the grid view, which draws the table, and the ledger
 /// draws none.
 #[test]
@@ -718,10 +718,10 @@ fn moving_the_grid_out_of_its_view_leaves_the_canvas_on_the_dashboard() {
     win.cmd_j();
     win.run(Vec::new());
     assert_eq!(win.app.grid_spot(), GridSpot::Ledger);
-    assert_eq!(
-        win.app.canvas_holds().view(),
-        Some(NodeView::Dashboard),
-        "the grid moved to the ledger and the canvas is still on the grid view"
+    assert!(
+        matches!(win.app.canvas_holds(), CanvasHolds::Dashboard { .. }),
+        "the grid moved to the ledger and the canvas is not on the dashboard: {:?}",
+        win.app.canvas_holds()
     );
     assert_eq!(
         win.pane_names(),
@@ -815,10 +815,10 @@ fn the_spines_grid_row_brings_the_grid_back_to_the_canvas() {
     win.pick_spine_row("grid");
     win.pick_spine_row("dashboard");
     win.run(Vec::new());
-    assert_eq!(
-        win.app.canvas_holds().view(),
-        Some(NodeView::Dashboard),
-        "the spine's dashboard row did not put the dashboard back on the canvas"
+    assert!(
+        matches!(win.app.canvas_holds(), CanvasHolds::Dashboard { .. }),
+        "the spine's dashboard row did not put the dashboard back on the canvas: {:?}",
+        win.app.canvas_holds()
     );
     assert_eq!(
         win.pane_names(),

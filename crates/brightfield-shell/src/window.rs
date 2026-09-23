@@ -867,6 +867,25 @@ pub const fn graph_takes_the_canvas(has_graph: bool, has_chart: bool) -> bool {
     has_graph && !has_chart
 }
 
+/// What the canvas opens on over a Protocol that holds `table`: the table's
+/// dashboard, when the graph has one, else the table's grid.
+///
+/// The dashboard is the page a data file opens as, so it is the canvas's first
+/// occupant and the one it falls back to. The grid is the fallback for a
+/// document whose graph lost the dashboard — [`ProtocolInputs::hold_table`]
+/// adds it, so that is a document built some other way — because the held
+/// table is viewable and a latch naming a dashboard the graph lacks would name
+/// a node that is not there.
+fn opening_canvas(dashboard: Option<AssetId>, table: AssetId) -> CanvasHolds {
+    match dashboard {
+        Some(node) => CanvasHolds::Dashboard { node, table },
+        None => CanvasHolds::View {
+            node: table,
+            view: NodeView::Grid,
+        },
+    }
+}
+
 /// **What the canvas holds** — latched by the window, and the one answer the
 /// navigator rail marks a row against.
 ///
@@ -888,6 +907,23 @@ pub enum CanvasHolds {
     /// The asset graph — a Protocol read from a manifest, with no chart to give
     /// the canvas away to.
     Graph,
+    /// A dashboard node, drawn as the page it is: the dashboard's own dotted
+    /// asset id, and the table it reads.
+    ///
+    /// **A variant of its own rather than a view**, because a dashboard is a
+    /// node of the Protocol graph with a mosaic spec of its own, not a way of
+    /// looking at the table. What the canvas draws for it is the pane group a
+    /// generated dashboard composes to; the spine marks the dashboard's asset
+    /// row for it, and the locator band names it as the node.
+    ///
+    /// The table is carried because the canvas draws that table's rows and the
+    /// inspector and the `y` fallback describe it — see [`CanvasHolds::node`].
+    Dashboard {
+        /// The dashboard's own node.
+        node: AssetId,
+        /// The table it reads.
+        table: AssetId,
+    },
     /// One view of one node: the node's dotted asset id and which view.
     View {
         /// The node the view belongs to.
@@ -918,8 +954,9 @@ impl CanvasHolds {
     /// Whether `row` is the row whose content the canvas holds — the one row of
     /// the **list** that draws the on-canvas bar.
     ///
-    /// A view row, and no other kind: the graph and a bare chart are not listed
-    /// in the spine, so neither can be a row this answers `true` for. The graph
+    /// A view row for a view, the dashboard's asset row for the dashboard, and
+    /// no other: the graph and a bare chart are not listed in the spine, so
+    /// neither can be a row this answers `true` for. The graph
     /// is still marked, one row up — the spine's head row draws the bar while
     /// the canvas holds the graph, because the head names the whole Protocol
     /// and the graph is the whole Protocol. That decision is
@@ -934,6 +971,9 @@ impl CanvasHolds {
                     && row.view == Some(*view)
                     && row.id.as_ref() == Some(node)
             }
+            Self::Dashboard { node, .. } => {
+                row.role == SpineRole::Asset && row.id.as_ref() == Some(node)
+            }
             Self::Graph | Self::Chart => false,
         }
     }
@@ -943,11 +983,12 @@ impl CanvasHolds {
     pub const fn view(&self) -> Option<NodeView> {
         match self {
             Self::View { view, .. } => Some(*view),
-            Self::Graph | Self::Chart => None,
+            Self::Dashboard { .. } | Self::Graph | Self::Chart => None,
         }
     }
 
-    /// The node whose view the canvas holds, when one is on it.
+    /// The tabular node whose rows the canvas draws, when one is on it: the
+    /// node a view is of, or the table a dashboard reads.
     ///
     /// The fallback subject for a verb that needs one and finds no explicit
     /// selection — `y` is the first: a fresh data-file open selects no asset
@@ -960,9 +1001,13 @@ impl CanvasHolds {
     /// graph names no one node, and a bare chart has no Protocol asset
     /// behind it to name.
     #[must_use]
+    ///
+    /// **The table, on a dashboard, and not the dashboard's own id**: the
+    /// dashboard is drawn from that table's rows, and its address is the one a
+    /// reader has a use for — the dashboard's is an id nothing can query.
     pub const fn node(&self) -> Option<&AssetId> {
         match self {
-            Self::View { node, .. } => Some(node),
+            Self::View { node, .. } | Self::Dashboard { table: node, .. } => Some(node),
             Self::Graph | Self::Chart => None,
         }
     }
@@ -1897,7 +1942,7 @@ pub struct MeridianApp {
     /// it does not go on naming a table the documents have stopped holding;
     /// `opening_a_second_file_over_the_graph_comes_back_to_the_new_tables_dashboard`
     /// is what holds the clearing.
-    graph_reached_from: Option<(AssetId, NodeView)>,
+    graph_reached_from: Option<CanvasHolds>,
     /// Where focus was before the navigator rail's toggle took it, so pressing
     /// that toggle again puts it back. `None` when the rail does not hold
     /// focus — see [`MeridianApp::toggle_navigator_focus`].
@@ -2641,20 +2686,19 @@ impl MeridianApp {
             self.canvas_holds = CanvasHolds::Chart;
             return;
         };
+        let model = &self.protocol.doc.model;
+        let still_there = |holds: &CanvasHolds| match holds {
+            CanvasHolds::View { node, .. } => model.is_viewable(node),
+            CanvasHolds::Dashboard { node, .. } => model.dashboard() == Some(node),
+            CanvasHolds::Graph | CanvasHolds::Chart => false,
+        };
         let held = match &self.canvas_holds {
-            CanvasHolds::View { node, .. } => *node == table,
-            CanvasHolds::Graph => self
-                .graph_reached_from
-                .as_ref()
-                .is_some_and(|(node, _)| *node == table),
-            CanvasHolds::Chart => false,
+            CanvasHolds::Graph => self.graph_reached_from.as_ref().is_some_and(still_there),
+            holds => still_there(holds),
         };
         if !held {
             self.graph_reached_from = None;
-            self.canvas_holds = CanvasHolds::View {
-                node: table,
-                view: NodeView::Dashboard,
-            };
+            self.canvas_holds = opening_canvas(model.dashboard().cloned(), table);
         }
     }
 
@@ -2951,10 +2995,11 @@ impl MeridianApp {
     /// The breadcrumb the locator band draws: where the subject sits, most
     /// general first.
     ///
-    /// Three arms, one per [`CanvasHolds`] — a bool cannot tell `View` from
-    /// `Chart`, and the two read differently: a view of a node names the file
-    /// that fed it, the step, the node and the view
-    /// (`ProtocolModel::view_crumbs`); the graph names itself, and the
+    /// One arm per [`CanvasHolds`] — a bool cannot tell `View` from `Chart`,
+    /// and the two read differently: a view of a node names the file that fed
+    /// it, the step, the node and the view (`ProtocolModel::view_crumbs`); a
+    /// dashboard names the table's file, step and name, then itself as the
+    /// node (`ProtocolModel::dashboard_crumbs`); the graph names itself, and the
     /// locator band's trailing counts (`Self::locator_counts`) say the rest; a
     /// chart has no drill state, so its crumb line is the window's title,
     /// which is also the fallback for a view whose node the graph no longer
@@ -2967,6 +3012,12 @@ impl MeridianApp {
                 .doc
                 .model
                 .view_crumbs(node, *view)
+                .unwrap_or_else(|| vec![self.title()]),
+            CanvasHolds::Dashboard { node, .. } => self
+                .protocol
+                .doc
+                .model
+                .dashboard_crumbs(node)
                 .unwrap_or_else(|| vec![self.title()]),
             CanvasHolds::Chart => vec![self.title()],
         }
@@ -3242,15 +3293,11 @@ impl MeridianApp {
                 self.ledger_panel = rows;
             }
             self.collapsed.remove(&arrangement::LEDGER_RAIL);
-            if let CanvasHolds::View {
-                node,
-                view: NodeView::Grid,
-            } = &self.canvas_holds
+            if let (CanvasHolds::View { .. }, Some(table)) =
+                (&self.canvas_holds, self.protocol.doc.model.table().cloned())
             {
-                self.canvas_holds = CanvasHolds::View {
-                    node: node.clone(),
-                    view: NodeView::Dashboard,
-                };
+                self.canvas_holds =
+                    opening_canvas(self.protocol.doc.model.dashboard().cloned(), table);
             }
         }
     }
@@ -3976,6 +4023,25 @@ impl MeridianApp {
                 || "Grid".to_string(),
                 |table| format!("Grid \u{b7} {table}"),
             );
+            // **A grid of a node the engine does not hold**: the label of the
+            // node whose grid the canvas holds, when that node is not the table
+            // the session read. The one grid lists the session's rows, so drawn
+            // here it would put the table's rows under another node's name;
+            // what the canvas draws instead is an empty state naming the node.
+            let grid_unheld: Option<String> = match self.canvas_holds() {
+                CanvasHolds::View {
+                    node,
+                    view: NodeView::Grid,
+                } if self.protocol.doc.model.table() != Some(node) => Some(
+                    self.protocol
+                        .doc
+                        .model
+                        .label_of(node)
+                        .unwrap_or(node)
+                        .to_string(),
+                ),
+                _ => None,
+            };
 
             let mut regions = std::mem::take(&mut self.regions);
             let mut strips = std::mem::take(&mut self.strips);
@@ -3993,7 +4059,7 @@ impl MeridianApp {
             // draws. One answer read by both spots is what keeps it to one
             // grid per frame.
             let canvas_draws_grid = !graph_on_canvas
-                && (canvas_holds.view() == Some(NodeView::Grid)
+                && ((canvas_holds.view() == Some(NodeView::Grid) && grid_unheld.is_none())
                     || (self.grid_spot == crate::app::GridSpot::Canvas
                         && projections[projection].item == CHART
                         && self.charts.doc.stacked_tiles().is_some()));
@@ -4354,6 +4420,10 @@ impl MeridianApp {
                             &mut requests,
                             affordances,
                         );
+                    } else if let Some(label) = &grid_unheld {
+                        charts.doc.grid_density = None;
+                        canvas_scroll = 0.0;
+                        canvas_panes = draw_unheld_grid_pane(ui, ui.max_rect(), label, mode);
                     } else if canvas_holds.view() == Some(NodeView::Grid) {
                         // **The table's grid, as the canvas.** One pane filling
                         // the canvas body, drawn through the same `pane_frame`
@@ -5332,14 +5402,21 @@ impl MeridianApp {
         // rather than while a chart is on the canvas, because the next frame's
         // `reconcile_canvas_holds` is what refuses a view of a node the
         // documents no longer have — one rule for that, not two.
-        if let Some((node, view)) = self.protocol.doc.take_view_pick() {
-            // The spine's `grid` row is a way back for the grid as well as a
+        if let Some(pick) = self.protocol.doc.take_canvas_pick() {
+            // The table's `grid` row is a way back for the grid as well as a
             // view of the node: the grid it puts on the canvas is the one grid,
-            // so it is no longer in the ledger.
-            if view == NodeView::Grid {
-                self.grid_spot = crate::app::GridSpot::Canvas;
+            // so it is no longer in the ledger. Another node's grid is not that
+            // grid — the engine holds one table — and leaves it where it is.
+            if let CanvasHolds::View {
+                node,
+                view: NodeView::Grid,
+            } = &pick
+            {
+                if self.protocol.doc.model.table() == Some(node) {
+                    self.grid_spot = crate::app::GridSpot::Canvas;
+                }
             }
-            self.canvas_holds = CanvasHolds::View { node, view };
+            self.canvas_holds = pick;
             ctx.request_repaint();
         }
         // …and the graph chip, which is the same shape again: the rail reports
@@ -5356,13 +5433,13 @@ impl MeridianApp {
         // swept into a catch-all.
         if self.protocol.doc.take_graph_pick() {
             match &self.canvas_holds {
-                CanvasHolds::View { node, view } => {
-                    self.graph_reached_from = Some((node.clone(), *view));
+                CanvasHolds::View { .. } | CanvasHolds::Dashboard { .. } => {
+                    self.graph_reached_from = Some(self.canvas_holds.clone());
                     self.canvas_holds = CanvasHolds::Graph;
                 }
                 CanvasHolds::Graph => {
-                    if let Some((node, view)) = self.graph_reached_from.take() {
-                        self.canvas_holds = CanvasHolds::View { node, view };
+                    if let Some(left) = self.graph_reached_from.take() {
+                        self.canvas_holds = left;
                     }
                 }
                 CanvasHolds::Chart => {}
@@ -8095,6 +8172,65 @@ fn draw_canvas_grid_pane(
         rows_note,
         ..CanvasPanes::default()
     }
+}
+
+/// **The grid of a node the engine does not hold**, as the canvas: the grid
+/// pane's frame, titled for that node, around an empty state that names it.
+///
+/// Drawn through the same `pane_frame` the one grid is, so what a reader lands
+/// on from the node's `grid` row is the grid pane — the node's — with no rows
+/// to list yet, rather than the session table's rows under another name. The
+/// session reads the one table the file opened as; materialising any other
+/// node is a run's, and this says so rather than doing it.
+fn draw_unheld_grid_pane(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    label: &str,
+    mode: Mode,
+) -> CanvasPanes {
+    let subject = Subject::new(
+        format!("Grid \u{b7} {label}"),
+        brightfield_workbench::subject::Icon("table"),
+        brightfield_keys::BindingContext::Workspace,
+    );
+    let mut pane = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    let body = chrome::pane_frame(&mut pane, &subject, true, mode).max_rect();
+    let mut inside = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(body)
+            .layout(egui::Layout::top_down(egui::Align::Center)),
+    );
+    chrome::empty_state(
+        &mut inside,
+        &brightfield_workbench::subject::EmptyState::new(
+            brightfield_workbench::subject::Icon("table"),
+            unheld_grid_headline(label),
+            "The grid lists the rows the engine holds, and it holds the table \
+             this file opened as. Nothing has materialised this node yet.",
+        ),
+        mode,
+    );
+    CanvasPanes {
+        panes: vec![CanvasPane {
+            name: "grid",
+            rect,
+            header: pane_header_of(rect, body),
+            body,
+        }],
+        ..CanvasPanes::default()
+    }
+}
+
+/// The headline `draw_unheld_grid_pane` draws for `label`'s grid — named
+/// once, so a test reading the frame for it and the pane that draws it cannot
+/// spell it two ways.
+#[must_use]
+pub fn unheld_grid_headline(label: &str) -> String {
+    format!("No rows for {label}")
 }
 
 /// The grid pane's header title.

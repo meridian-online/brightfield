@@ -143,6 +143,7 @@ pub fn kind_label(kind: AssetKind) -> &'static str {
         AssetKind::Dataset => "dataset",
         AssetKind::Family => "family",
         AssetKind::Opaque => "opaque",
+        AssetKind::Dashboard => "dashboard",
     }
 }
 
