@@ -4714,8 +4714,9 @@ const GRATICULE_EDGE_TOLERANCE: f64 = 0.5;
 /// are the data's projected bbox widened to the pane's aspect
 /// (`aspect_fit_domains`, then any pan or zoom), so inverting them through the
 /// projection gives the geographic rectangle the plot area shows, and the
-/// lines reach its edges on all four sides — Hugh's ruling of 2026-09-23,
-/// frame B. A projection whose axes do not invert separately has no per-axis
+/// lines reach its edges on all four sides, while the plot margins round the
+/// plot area stay blank but for the labels. A projection whose axes do not
+/// invert separately has no per-axis
 /// inverse to take the rectangle back through, so its graticule stays on the
 /// data's extent and the plot clip trims what overhangs.
 ///

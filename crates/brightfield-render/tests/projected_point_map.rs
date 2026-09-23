@@ -19,10 +19,14 @@ use arrow::record_batch::RecordBatch;
 use vello::Scene;
 
 use brightfield_render::channel::{Channel, ChannelMap, MarkProjection};
+use brightfield_render::layout::ChartLayout;
 use brightfield_render::mark::{
-    graticule, graticule_step, DotRenderer, GeoExtent, GraticuleKind, MarkRenderer, Projection,
+    graticule, graticule_step, DotRenderer, GeoExtent, GraticuleKind, MarkRenderer, PlotGraticule,
+    Projection,
 };
 use brightfield_render::scale::{infer_scales, Scale, ScaleSet};
+use brightfield_render::scene::{build_multi_mark_scene, ChartData};
+use brightfield_render::ResolvedTitles;
 
 /// The plot-area pixel box the fixture's scales map onto. `y_range` is
 /// `(bottom, top)` — inverted — which is what supplies the screen flip, so a
@@ -101,6 +105,101 @@ fn render(batch: &RecordBatch, cm: &ChannelMap, set: &ScaleSet) -> Scene {
     let mut scene = Scene::new();
     DotRenderer.render(&mut scene, batch, cm, set, None);
     scene
+}
+
+/// A whole PLOT of `layers` dot layers over one channel map, through the scene
+/// builder the dashboard uses — where the graticule is drawn, once per plot —
+/// returning the scene and the scales it drew against.
+fn plot(
+    layers: &[&RecordBatch],
+    cm: &ChannelMap,
+    renderer: &dyn MarkRenderer,
+    layout: ChartLayout,
+) -> (Scene, ScaleSet) {
+    let entries: Vec<ChartData<'_>> = layers
+        .iter()
+        .map(|batch| ChartData {
+            batch,
+            channel_map: cm,
+            renderer,
+            layout,
+            view_extent: None,
+            highlight: None,
+            sample: None,
+            beyond_frame: false,
+        })
+        .collect();
+    let refs: Vec<&ChartData<'_>> = entries.iter().collect();
+    build_multi_mark_scene(&refs, false, &ResolvedTitles::default())
+}
+
+/// Every text the scene drew, read back off its glyph runs: the string, and the
+/// run's origin in pixels — its start x (a run is placed at its left edge
+/// whatever its anchor) and its baseline y.
+///
+/// The glyph ids are mapped back to characters through the same font's
+/// character map, over the characters a plot's labels use; an id outside that
+/// set reads as `?`, which no expected label contains.
+fn drawn_texts(scene: &Scene) -> Vec<(String, (f64, f64))> {
+    use skrifa::MetadataProvider;
+    let font = skrifa::FontRef::new(meridian_design::fonts::INTER_REGULAR).expect("the UI font");
+    let charmap = font.charmap();
+    let by_id: std::collections::HashMap<u32, char> =
+        "0123456789-.°abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ _"
+            .chars()
+            .filter_map(|c| charmap.map(c).map(|g| (g.to_u32(), c)))
+            .collect();
+    let resources = &scene.encoding().resources;
+    resources
+        .glyph_runs
+        .iter()
+        .map(|run| {
+            let text = resources.glyphs[run.glyphs.clone()]
+                .iter()
+                .map(|g| by_id.get(&g.id).copied().unwrap_or('?'))
+                .collect();
+            let [x, y] = run.transform.translation;
+            (text, (f64::from(x), f64::from(y)))
+        })
+        .collect()
+}
+
+/// How many times `vertex` appears in the drawn record. A stroked polyline
+/// encodes each of its vertices once, so a line drawn twice shows its vertices
+/// twice.
+fn times_drawn(points: &[(f64, f64)], vertex: (f64, f64)) -> usize {
+    points.iter().filter(|p| near(**p, vertex, 1e-3)).count()
+}
+
+/// The pixel rect the plot's two scales map onto, `(x0, y0, x1, y1)`.
+fn plot_rect(set: &ScaleSet) -> (f64, f64, f64, f64) {
+    let (
+        Some(Scale::Linear {
+            range_start: xs,
+            range_end: xe,
+            ..
+        }),
+        Some(Scale::Linear {
+            range_start: ys,
+            range_end: ye,
+            ..
+        }),
+    ) = (set.get(Channel::X), set.get(Channel::Y))
+    else {
+        panic!("a projected plot has two linear positional scales");
+    };
+    (xs.min(*xe), ys.min(*ye), xs.max(*xe), ys.max(*ye))
+}
+
+/// A line's vertices in pixels, through the plot's scales.
+fn pixels(line: &brightfield_render::mark::GraticuleLine, set: &ScaleSet) -> Vec<(f64, f64)> {
+    let (Some(x), Some(y)) = (set.get(Channel::X), set.get(Channel::Y)) else {
+        panic!("positional scales");
+    };
+    line.points
+        .iter()
+        .map(|(u, v)| (x.map_f64(*u), y.map_f64(*v)))
+        .collect()
 }
 
 fn near(a: (f64, f64), b: (f64, f64), tol: f64) -> bool {
@@ -252,14 +351,15 @@ fn narrowing_the_extent_changes_the_graticule_rather_than_redrawing_it() {
 fn the_drawn_scene_carries_a_meridian_at_each_projected_longitude() {
     let batch = batch(FIXTURE);
     let cm = channels(Some(Projection::Mercator));
-    let set = scales(&batch, &cm);
+    let (scene, set) = plot(&[&batch], &cm, &DotRenderer, ChartLayout::new(640.0, 480.0));
     let (Some(x_scale), Some(y_scale)) = (set.get(Channel::X), set.get(Channel::Y)) else {
         panic!("a projected dot mark must have both positional scales");
     };
-    let points = drawn_points(&render(&batch, &cm, &set));
+    let points = drawn_points(&scene);
 
-    let extent = GeoExtent::new(-21.94, 151.21, -33.87, 64.15);
-    let expected = graticule(Projection::Mercator, extent);
+    let expected = PlotGraticule::of(&set)
+        .expect("a projected plot has a graticule")
+        .lines;
     assert!(
         expected.iter().any(|l| l.kind == GraticuleKind::Meridian),
         "the fixture extent must contain meridians for this test to hold anything"
@@ -284,31 +384,61 @@ fn the_drawn_scene_carries_a_meridian_at_each_projected_longitude() {
 }
 
 /// An unprojected dot mark draws no graticule at all — the picture a plain
-/// scatter gets is unchanged by any of this.
+/// scatter gets is unchanged by any of this. The graticule is the PLOT's, so
+/// the question is asked of a plot: its scales carry no projection, so there is
+/// no [`PlotGraticule`] to draw and none of a projected plot's lines is in its
+/// scene; and no mark draws one itself, so a bare mark render is only dots.
 #[test]
 fn an_unprojected_dot_mark_draws_no_graticule() {
     let batch = batch(FIXTURE);
+    let layout = ChartLayout::new(640.0, 480.0);
     let plain = channels(None);
-    let plain_set = scales(&batch, &plain);
-    let plain_points = drawn_points(&render(&batch, &plain, &plain_set));
+    let (plain_scene, plain_set) = plot(&[&batch], &plain, &DotRenderer, layout);
+    assert!(
+        PlotGraticule::of(&plain_set).is_none(),
+        "an unprojected plot has no graticule"
+    );
 
     let projected = channels(Some(Projection::Mercator));
-    let projected_set = scales(&batch, &projected);
-    let projected_points = drawn_points(&render(&batch, &projected, &projected_set));
-
-    // Three dots and nothing else: a circle is one path, and no graticule means
-    // the encoded geometry is exactly three circles' worth.
+    let (projected_scene, projected_set) = plot(&[&batch], &projected, &DotRenderer, layout);
+    let lines = PlotGraticule::of(&projected_set)
+        .expect("control: a projected plot has one")
+        .lines;
+    let rect = plot_rect(&projected_set);
+    let inside = |p: &(f64, f64)| {
+        p.0 > rect.0 + 1.0 && p.0 < rect.2 - 1.0 && p.1 > rect.1 + 1.0 && p.1 < rect.3 - 1.0
+    };
+    let vertices: Vec<(f64, f64)> = lines
+        .iter()
+        .flat_map(|l| pixels(l, &projected_set))
+        .filter(inside)
+        .collect();
+    let projected_points = drawn_points(&projected_scene);
     assert!(
-        projected_points.len() > plain_points.len(),
-        "a projected mark must draw MORE than an unprojected one (the graticule): \
-         {} vs {}",
-        projected_points.len(),
-        plain_points.len()
+        vertices
+            .iter()
+            .all(|v| times_drawn(&projected_points, *v) >= 1),
+        "control: the projected plot's scene carries its graticule's vertices"
     );
+    let plain_points = drawn_points(&plain_scene);
+    assert!(
+        vertices.iter().all(|v| times_drawn(&plain_points, *v) == 0),
+        "the unprojected plot drew a projected plot's graticule vertex"
+    );
+
+    // The mark on its own draws its dots and nothing else: a circle is one
+    // path, so three circles' worth of geometry and no remainder.
+    let mark_points = drawn_points(&render(&batch, &projected, &scales(&batch, &projected)));
+    let one_dot = drawn_points(&render(
+        &batch.slice(0, 1),
+        &projected,
+        &scales(&batch, &projected),
+    ))
+    .len();
     assert_eq!(
-        plain_points.len() % FIXTURE.len(),
-        0,
-        "an unprojected mark draws only its dots"
+        mark_points.len(),
+        one_dot * FIXTURE.len(),
+        "a projected dot mark draws only its dots; the graticule is the plot's"
     );
 }
 
@@ -885,43 +1015,39 @@ fn a_mark_that_cannot_project_contributes_no_geometry() {
 /// round numbers. Both at once is two grids at two spacings over one picture,
 /// which is what the tile drew before this.
 ///
-/// Read as GLYPHS rather than as paths. The frame's tick labels are the only
-/// text a bare dot plot draws, so a glyph count separates the frame from the
-/// graticule cleanly; counting paths could not, because suppressing the frame
-/// removes gridline paths while the graticule adds them.
+/// Read as TEXT rather than as paths. The only text a bare dot plot draws is
+/// its frame's tick labels or, projected, its graticule's labels, and the two
+/// are told apart by what they say: a graticule label is a degree value ending
+/// in `°` and a tick label never is. Counting paths could not separate them,
+/// because suppressing the frame removes gridline paths while the graticule
+/// adds them.
 #[test]
 fn a_projected_dot_mark_draws_no_axis_labels() {
-    use brightfield_render::layout::ChartLayout;
-    use brightfield_render::mark::count_scene_glyphs;
-    use brightfield_render::scene::{build_multi_mark_scene, ChartData};
-    use brightfield_render::ResolvedTitles;
-
     let batch = batch(FIXTURE);
     let layout = ChartLayout::new(640.0, 480.0);
-    let glyphs = |cm: &ChannelMap| {
-        let entry = ChartData {
-            batch: &batch,
-            channel_map: cm,
-            renderer: &DotRenderer,
-            layout,
-            view_extent: None,
-            highlight: None,
-            sample: None,
-            beyond_frame: false,
-        };
-        let (scene, _) = build_multi_mark_scene(&[&entry], false, &ResolvedTitles::default());
-        count_scene_glyphs(&scene)
+    let texts = |cm: &ChannelMap| {
+        let (scene, _) = plot(&[&batch], cm, &DotRenderer, layout);
+        drawn_texts(&scene)
+            .into_iter()
+            .map(|(text, _)| text)
+            .collect::<Vec<_>>()
     };
 
-    let plain = glyphs(&channels(None));
+    let plain = texts(&channels(None));
     assert!(
-        plain > 0,
-        "control: an unprojected scatter draws its tick labels; got {plain} glyphs"
+        !plain.is_empty() && plain.iter().all(|t| !t.ends_with('°')),
+        "control: an unprojected scatter draws its tick labels, none of them in \
+         degrees; got {plain:?}"
     );
-    let projected = glyphs(&channels(Some(Projection::Mercator)));
-    assert_eq!(
-        projected, 0,
-        "a projected dot mark must draw no tick labels; got {projected} glyphs"
+    let projected = texts(&channels(Some(Projection::Mercator)));
+    assert!(
+        !projected.is_empty(),
+        "control: a projected plot labels its graticule"
+    );
+    let ticks: Vec<&String> = projected.iter().filter(|t| !t.ends_with('°')).collect();
+    assert!(
+        ticks.is_empty(),
+        "a projected dot mark must draw no tick labels; drew {ticks:?} among {projected:?}"
     );
 
     // The renderer's own answer, at the seam the scene builders read, so the
@@ -999,5 +1125,559 @@ fn the_scales_carry_a_projection_only_when_something_drew_through_it() {
         both.projection(),
         Some(Projection::Mercator),
         "a mark drawing through the projection puts it on the scale set"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The plot's graticule: labelled, over the plot area, stroked once
+// ---------------------------------------------------------------------------
+
+/// The California housing sample's coordinates, `(lon, lat)` per row — the
+/// fixture the hero map is judged on.
+fn california() -> Vec<(f64, f64)> {
+    let csv = include_str!("../../brightfield-shell/tests/data/california_housing_sample.csv");
+    let mut rows = csv.lines();
+    let header: Vec<&str> = rows.next().expect("a header row").split(',').collect();
+    let col = |name: &str| {
+        header
+            .iter()
+            .position(|h| *h == name)
+            .unwrap_or_else(|| panic!("no {name} column"))
+    };
+    let (lon, lat) = (col("longitude"), col("latitude"));
+    rows.filter(|r| !r.is_empty())
+        .map(|r| {
+            let cells: Vec<&str> = r.split(',').collect();
+            (
+                cells[lon].parse().expect("a longitude"),
+                cells[lat].parse().expect("a latitude"),
+            )
+        })
+        .collect()
+}
+
+/// The whole multiples of `step` inside `[lo, hi]`, as the labels a graticule
+/// over that range would carry. Written out here rather than asked of the
+/// renderer, so the expectation is not the code under test restated.
+fn whole_steps(lo: f64, hi: f64, step: f64) -> Vec<String> {
+    let first = (lo / step).ceil() as i64;
+    let last = (hi / step).floor() as i64;
+    (first..=last)
+        .map(|i| format!("{}°", i as f64 * step))
+        .collect()
+}
+
+/// **The graticule is labelled at the plot area's edges, where the axes'
+/// labels sat, in their ink.** Meridians are named below the plot on the x
+/// tick labels' baseline, centred on the line; parallels in the left margin,
+/// right-aligned where the y tick labels end and on the line's height.
+///
+/// Read off the drawn glyph runs, and placed against what an UNPROJECTED
+/// scatter of the same layout draws for its axes, so "the same place" is a
+/// measurement rather than a restated constant. The label count follows the
+/// step: a second extent four times as wide picks a 5° step, and its labels are
+/// exactly the multiples of five the plot area holds.
+#[test]
+fn the_graticule_is_labelled_at_the_plot_areas_edges_in_the_axes_ink() {
+    use brightfield_render::ink::ChartInk;
+    use brightfield_render::mark::graticule_label;
+    use brightfield_render::text::{measure_width, LABEL_SIZE};
+
+    let layout = ChartLayout::new(640.0, 480.0);
+    let size = f64::from(LABEL_SIZE);
+
+    // Where the axes put their labels: every x tick label on one baseline, every
+    // y tick label ending at one x.
+    let (plain_scene, _) = plot(
+        &[&batch(&[(0.0, 0.0), (10.0, 5.0)])],
+        &channels(None),
+        &DotRenderer,
+        layout,
+    );
+    let plain = drawn_texts(&plain_scene);
+    let x_axis_baseline = plain
+        .iter()
+        .map(|(_, (_, y))| *y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let y_axis_end = plain
+        .iter()
+        .filter(|(_, (_, y))| (*y - x_axis_baseline).abs() > 0.5)
+        .map(|(t, (x, _))| x + measure_width(t, LABEL_SIZE))
+        .fold(f64::NEG_INFINITY, f64::max);
+
+    for (points, step) in [
+        (vec![(0.0, 0.0), (10.0, 5.0)], 1.0),
+        (vec![(0.0, 0.0), (40.0, 20.0)], 5.0),
+    ] {
+        let cm = channels(Some(Projection::Equirectangular));
+        let (scene, set) = plot(&[&batch(&points)], &cm, &DotRenderer, layout);
+        let graticule = PlotGraticule::of(&set).expect("a projected plot has a graticule");
+        assert_eq!(graticule.step, step, "the data's step for {points:?}");
+        let (
+            Some(Scale::Linear {
+                domain_min: u0,
+                domain_max: u1,
+                ..
+            }),
+            Some(Scale::Linear {
+                domain_min: v0,
+                domain_max: v1,
+                ..
+            }),
+        ) = (set.get(Channel::X), set.get(Channel::Y))
+        else {
+            panic!("linear positional scales");
+        };
+        let (x, y) = (set.get(Channel::X).unwrap(), set.get(Channel::Y).unwrap());
+
+        let texts = drawn_texts(&scene);
+        let mut meridians: Vec<(String, f64)> = texts
+            .iter()
+            .filter(|(_, (_, by))| (*by - x_axis_baseline).abs() < 0.5)
+            .map(|(t, (sx, _))| (t.clone(), sx + measure_width(t, LABEL_SIZE) / 2.0))
+            .collect();
+        meridians.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let mut parallels: Vec<(String, f64)> = texts
+            .iter()
+            .filter(|(t, (sx, _))| (sx + measure_width(t, LABEL_SIZE) - y_axis_end).abs() < 0.5)
+            .map(|(t, (_, by))| (t.clone(), *by))
+            .collect();
+        parallels.sort_by(|a, b| b.1.total_cmp(&a.1));
+        assert_eq!(
+            meridians.len() + parallels.len(),
+            texts.len(),
+            "every text the projected plot draws sits where an axis label sat; drew {texts:?}"
+        );
+
+        // The texts, and so the count, are the multiples of the step the plot
+        // area spans.
+        let names =
+            |labels: &[(String, f64)]| labels.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            names(&meridians),
+            whole_steps(*u0, *u1, step),
+            "meridian labels at {step}°"
+        );
+        assert_eq!(
+            names(&parallels),
+            whole_steps(*v0, *v1, step),
+            "parallel labels at {step}°"
+        );
+
+        // Each label is on its own line: a meridian's centred on its x, a
+        // parallel's baseline a third of the label size below its y, as the
+        // y axis places a tick label.
+        for (text, centre) in &meridians {
+            let degrees: f64 = text.trim_end_matches('°').parse().unwrap();
+            assert!(
+                (centre - x.map_f64(degrees)).abs() < 0.5,
+                "{text} is centred at {centre}, its meridian at {}",
+                x.map_f64(degrees)
+            );
+        }
+        for (text, baseline) in &parallels {
+            let degrees: f64 = text.trim_end_matches('°').parse().unwrap();
+            let want = y.map_f64(degrees) + size / 3.0;
+            assert!(
+                (baseline - want).abs() < 0.5,
+                "{text} sits at {baseline}, its parallel wants {want}"
+            );
+        }
+
+        // The axes' label ink, and not the graticule's own.
+        let ink = ChartInk::LIGHT;
+        assert_ne!(ink.label, ink.grid, "the fixture needs the two inks apart");
+        let packed = |c: peniko::Color| c.premultiply().to_rgba8().to_u32();
+        let paints: Vec<u32> = scene.encoding().draw_data.to_vec();
+        assert!(
+            paints.contains(&packed(ink.label)),
+            "the graticule's labels must be drawn in the axes' label ink"
+        );
+    }
+
+    // The text a label carries.
+    assert_eq!(graticule_label(-124.0, 1.0), "-124°");
+    assert_eq!(graticule_label(-0.0, 1.0), "0°");
+    assert_eq!(graticule_label(37.5, 0.5), "37.5°");
+    assert_eq!(graticule_label(-122.25, 0.05), "-122.25°");
+}
+
+/// **The graticule spans the plot area's fitted extent, not the data's**, on
+/// the California fixture, at the data's own step on both axes.
+///
+/// Every meridian is drawn from the plot area's bottom edge to its top edge and
+/// every parallel from its left edge to its right, both ends in the drawn
+/// record; the outermost line on each side is within one step of that side's
+/// edge; and no data point lies outside the lines' reach. Two panes, one wider
+/// than the data and one taller, are the change of aspect fit: the wide one
+/// widens longitude and draws more meridians, the tall one widens latitude and
+/// draws more parallels. On the data's extent — the graticule before this — the
+/// wide pane's parallels end at the data's longitudes, short of both side edges.
+#[test]
+fn the_graticule_reaches_the_plot_areas_fitted_extent_over_the_california_fixture() {
+    let data = california();
+    assert!(data.len() > 100, "the fixture's rows: {}", data.len());
+    let batch = batch(&data);
+    let cm = channels(Some(Projection::Equirectangular));
+    let count = |g: &PlotGraticule, kind| g.lines.iter().filter(|l| l.kind == kind).count();
+
+    let mut drawn = Vec::new();
+    for layout in [
+        ChartLayout::new(1000.0, 400.0),
+        ChartLayout::new(400.0, 700.0),
+    ] {
+        let (scene, set) = plot(&[&batch], &cm, &DotRenderer, layout);
+        let graticule = PlotGraticule::of(&set).expect("a projected plot has a graticule");
+        assert_eq!(
+            graticule.step, 1.0,
+            "the data spans about 6° each way, so 1° on both axes"
+        );
+        let rect = plot_rect(&set);
+        let points = drawn_points(&scene);
+        let (x, y) = (set.get(Channel::X).unwrap(), set.get(Channel::Y).unwrap());
+        let edge = |a: f64, b: f64| (a - b).abs() < 1e-3;
+
+        for line in &graticule.lines {
+            let px = pixels(line, &set);
+            let (start, end) = (px[0], px[px.len() - 1]);
+            match line.kind {
+                GraticuleKind::Meridian => assert!(
+                    edge(start.1, rect.3) && edge(end.1, rect.1),
+                    "the {}° meridian runs y {} to {}, not the plot area's {} to {}",
+                    line.degrees,
+                    start.1,
+                    end.1,
+                    rect.3,
+                    rect.1
+                ),
+                GraticuleKind::Parallel => assert!(
+                    edge(start.0, rect.0) && edge(end.0, rect.2),
+                    "the {}° parallel runs x {} to {}, not the plot area's {} to {}",
+                    line.degrees,
+                    start.0,
+                    end.0,
+                    rect.0,
+                    rect.2
+                ),
+            }
+            assert!(
+                times_drawn(&points, start) >= 1 && times_drawn(&points, end) >= 1,
+                "the {:?} at {}° is not drawn to the plot area's edges",
+                line.kind,
+                line.degrees
+            );
+        }
+
+        // The outermost lines are within one step of the edges.
+        let step_px = |scale: &Scale| (scale.map_f64(1.0) - scale.map_f64(0.0)).abs();
+        let at = |kind| {
+            graticule
+                .lines
+                .iter()
+                .filter(|l| l.kind == kind)
+                .map(|l| pixels(l, &set)[0])
+                .collect::<Vec<_>>()
+        };
+        let xs: Vec<f64> = at(GraticuleKind::Meridian).iter().map(|p| p.0).collect();
+        let ys: Vec<f64> = at(GraticuleKind::Parallel).iter().map(|p| p.1).collect();
+        let (west, east) = (
+            xs.iter().copied().fold(f64::INFINITY, f64::min),
+            xs.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        );
+        let (north, south) = (
+            ys.iter().copied().fold(f64::INFINITY, f64::min),
+            ys.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        );
+        assert!(
+            west - rect.0 < step_px(x) && rect.2 - east < step_px(x),
+            "meridians {west}..{east} in a plot area {}..{}",
+            rect.0,
+            rect.2
+        );
+        assert!(
+            north - rect.1 < step_px(y) && rect.3 - south < step_px(y),
+            "parallels {north}..{south} in a plot area {}..{}",
+            rect.1,
+            rect.3
+        );
+
+        // No data point lies outside the lines' reach.
+        for (lon, lat) in &data {
+            let (px, py) = (x.map_f64(*lon), y.map_f64(*lat));
+            assert!(
+                px >= rect.0 - 1e-6
+                    && px <= rect.2 + 1e-6
+                    && py >= rect.1 - 1e-6
+                    && py <= rect.3 + 1e-6,
+                "({lon}, {lat}) is drawn at ({px}, {py}), outside the graticule's reach"
+            );
+        }
+        drawn.push((
+            count(&graticule, GraticuleKind::Meridian),
+            count(&graticule, GraticuleKind::Parallel),
+        ));
+    }
+
+    let ((wide_m, wide_p), (tall_m, tall_p)) = (drawn[0], drawn[1]);
+    assert!(
+        wide_m > tall_m && tall_p > wide_p,
+        "changing the aspect fit must move the lines: {wide_m} meridians and {wide_p} parallels \
+         on the wide pane, {tall_m} and {tall_p} on the tall one"
+    );
+}
+
+/// **A plot strokes its graticule once, whatever its layer count.** With one,
+/// two and three projected layers over one scale set, every vertex of every
+/// graticule line inside the plot area is in the drawn record exactly once — a
+/// point map's ghost and its subset share one set of hairlines. Drawn per layer
+/// it was twice, and two coincident 0.5 px strokes read darker than one.
+#[test]
+fn a_plot_strokes_its_graticule_once_whatever_its_layer_count() {
+    let ghost = batch(FIXTURE);
+    let subset = batch(&FIXTURE[1..2]);
+    let cm = channels(Some(Projection::Mercator));
+    let layout = ChartLayout::new(640.0, 480.0);
+    for layers in [
+        vec![&ghost],
+        vec![&ghost, &subset],
+        vec![&ghost, &subset, &subset],
+    ] {
+        let (scene, set) = plot(&layers, &cm, &DotRenderer, layout);
+        let graticule = PlotGraticule::of(&set).expect("a projected plot has a graticule");
+        let rect = plot_rect(&set);
+        let points = drawn_points(&scene);
+        let mut checked = 0;
+        for line in &graticule.lines {
+            for v in pixels(line, &set) {
+                if v.0 > rect.0 + 1.0
+                    && v.0 < rect.2 - 1.0
+                    && v.1 > rect.1 + 1.0
+                    && v.1 < rect.3 - 1.0
+                {
+                    assert_eq!(
+                        times_drawn(&points, v),
+                        1,
+                        "the {:?} at {}° was stroked {} times with {} layers",
+                        line.kind,
+                        line.degrees,
+                        times_drawn(&points, v),
+                        layers.len()
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(
+            checked > 20,
+            "too few interior vertices to count: {checked}"
+        );
+    }
+}
+
+/// **The graticule survives a brush.** A gesture rebuilds the plot through
+/// `build_multi_mark_scene_anchored`, folding a fresh inference over the
+/// narrowed subset into the launch scales; the fold keeps the launch set's
+/// projection and geographic extent, so the rebuilt plot draws the graticule it
+/// opened with. Dropped, the rebuilt scales name no projection and the
+/// graticule vanishes on the first brush.
+#[test]
+fn the_graticule_survives_a_brush() {
+    use brightfield_render::scene::build_multi_mark_scene_anchored;
+
+    let ghost = batch(FIXTURE);
+    let subset = batch(&FIXTURE[1..2]);
+    let cm = channels(Some(Projection::Mercator));
+    let layout = ChartLayout::new(640.0, 480.0);
+    let (_, launch) = plot(&[&ghost, &ghost], &cm, &DotRenderer, layout);
+    let before = PlotGraticule::of(&launch).expect("the plot opens with a graticule");
+
+    let entry = |b| ChartData {
+        batch: b,
+        channel_map: &cm,
+        renderer: &DotRenderer,
+        layout,
+        view_extent: None,
+        highlight: None,
+        sample: None,
+        beyond_frame: false,
+    };
+    let (ghost_e, subset_e) = (entry(&ghost), entry(&subset));
+    let (scene, anchored) = build_multi_mark_scene_anchored(
+        &[&ghost_e, &subset_e],
+        false,
+        &ResolvedTitles::default(),
+        &launch,
+    );
+    let after = PlotGraticule::of(&anchored).expect("the brushed plot keeps its graticule");
+    assert_eq!(after.step, before.step);
+    assert_eq!(after.lines, before.lines);
+    let rect = plot_rect(&anchored);
+    let points = drawn_points(&scene);
+    let interior: Vec<(f64, f64)> = after
+        .lines
+        .iter()
+        .flat_map(|l| pixels(l, &anchored))
+        .filter(|v| {
+            v.0 > rect.0 + 1.0 && v.0 < rect.2 - 1.0 && v.1 > rect.1 + 1.0 && v.1 < rect.3 - 1.0
+        })
+        .collect();
+    assert!(!interior.is_empty());
+    assert!(
+        interior.iter().all(|v| times_drawn(&points, *v) == 1),
+        "the brushed plot's scene must carry the graticule once"
+    );
+}
+
+/// **A transition projects.** A dot animated to its new position lands at the
+/// PROJECTED position, not the linear `(lon, lat)` one — `render_interpolated`
+/// places its target through the plot's projection exactly as `render` does.
+#[test]
+fn a_transition_lands_its_dots_at_their_projected_positions() {
+    let batch = batch(FIXTURE);
+    let cm = channels(Some(Projection::Mercator));
+    let set = scales(&batch, &cm);
+    let (x, y) = (set.get(Channel::X).unwrap(), set.get(Channel::Y).unwrap());
+    let prev = vec![(0.0, 0.0); FIXTURE.len()];
+    let mut scene = Scene::new();
+    DotRenderer.render_interpolated(&mut scene, &batch, &cm, &set, &prev, 1.0, None);
+    let points = drawn_points(&scene);
+
+    let projected = (
+        x.map_f64(REYKJAVIK_MERCATOR.0),
+        y.map_f64(REYKJAVIK_MERCATOR.1),
+    );
+    assert!(
+        circle_drawn_at(&points, projected),
+        "the transition's end must put Reykjavík at its Mercator position {projected:?}"
+    );
+    let linear = (x.map_f64(-21.94), y.map_f64(64.15));
+    assert!(
+        !circle_drawn_at(&points, linear),
+        "the transition drew Reykjavík at the linear position {linear:?}"
+    );
+}
+
+/// **A colour override keeps a projected plot's frame suppressed.** A plot with
+/// an explicit colour domain or range wraps its marks in
+/// `ColourOverrideRenderer`, and the wrapper answers `suppresses_frame` by
+/// asking the mark it wraps; answering for itself, it would give the default
+/// `false`, and a projected plot with a colour override would draw cartesian
+/// axes over its graticule.
+#[test]
+fn a_colour_override_keeps_a_projected_plots_frame_suppressed() {
+    use brightfield_render::mark::ColourOverrideRenderer;
+    use brightfield_render::scale::ColourOverride;
+
+    let wrapped = ColourOverrideRenderer {
+        inner: Box::new(DotRenderer),
+        override_: ColourOverride::default(),
+    };
+    let projected = channels(Some(Projection::Mercator));
+    assert!(wrapped.suppresses_frame(&projected));
+    assert!(
+        !wrapped.suppresses_frame(&channels(None)),
+        "control: a plain scatter keeps it"
+    );
+
+    let batch = batch(FIXTURE);
+    let (scene, _) = plot(
+        &[&batch],
+        &projected,
+        &wrapped,
+        ChartLayout::new(640.0, 480.0),
+    );
+    let texts: Vec<String> = drawn_texts(&scene).into_iter().map(|(t, _)| t).collect();
+    assert!(!texts.is_empty(), "control: the graticule is labelled");
+    assert!(
+        texts.iter().all(|t| t.ends_with('°')),
+        "a colour-overridden projected plot drew tick labels: {texts:?}"
+    );
+}
+
+/// **The graticule is clipped to the plot area, and the clip shows.** Under a
+/// conic the lines are laid over the data's geographic rectangle, whose corners
+/// project outside the fitted domain, so some of their vertices fall outside
+/// the plot area; stroked, none of what is drawn does.
+#[test]
+fn the_graticule_is_clipped_to_the_plot_area() {
+    use brightfield_render::ink::ChartInk;
+
+    let batch = batch(&[(-120.0, 30.0), (-75.0, 45.0), (-100.0, 48.0), (-80.0, 26.0)]);
+    let cm = channels(Some(Projection::Albers));
+    let (_, set) = plot(&[&batch], &cm, &DotRenderer, ChartLayout::new(640.0, 480.0));
+    let graticule = PlotGraticule::of(&set).expect("a projected plot has a graticule");
+    let rect = plot_rect(&set);
+    let outside = |p: &(f64, f64)| {
+        p.0 < rect.0 - 1e-3 || p.0 > rect.2 + 1e-3 || p.1 < rect.1 - 1e-3 || p.1 > rect.3 + 1e-3
+    };
+    let overhang = graticule
+        .lines
+        .iter()
+        .flat_map(|l| pixels(l, &set))
+        .filter(|p| outside(p))
+        .count();
+    assert!(
+        overhang > 0,
+        "control: the conic's lines must overhang the plot area"
+    );
+
+    let mut scene = Scene::new();
+    graticule.stroke(&mut scene, ChartInk::LIGHT.grid);
+    let stray: Vec<(f64, f64)> = drawn_points(&scene)
+        .into_iter()
+        .filter(|p| outside(p))
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "{} drawn graticule vertices lie outside the plot area: {:?}",
+        stray.len(),
+        &stray[..stray.len().min(4)]
+    );
+}
+
+/// **Zooming out coarsens the step rather than hatching the plot.** The step is
+/// the data's while the plot area holds at most 36 intervals of it; a view
+/// zoomed out tenfold would hold over a hundred, so the step climbs the ladder
+/// until it fits.
+#[test]
+fn zooming_out_coarsens_the_graticule_step_rather_than_hatching_the_plot() {
+    use brightfield_render::scale::ViewExtent;
+
+    let batch = batch(&[(0.0, 0.0), (10.0, 5.0)]);
+    let cm = channels(Some(Projection::Equirectangular));
+    let layout = ChartLayout::new(640.0, 480.0);
+    let (_, set) = plot(&[&batch], &cm, &DotRenderer, layout);
+    assert_eq!(
+        PlotGraticule::of(&set).unwrap().step,
+        1.0,
+        "the data's step, unzoomed"
+    );
+
+    let zoomed = ViewExtent {
+        x: Some((-50.0, 60.0)),
+        y: Some((-40.0, 45.0)),
+    };
+    let entry = ChartData {
+        batch: &batch,
+        channel_map: &cm,
+        renderer: &DotRenderer,
+        layout,
+        view_extent: Some(&zoomed),
+        highlight: None,
+        sample: None,
+        beyond_frame: false,
+    };
+    let (_, zoomed_set) = build_multi_mark_scene(&[&entry], false, &ResolvedTitles::default());
+    let graticule = PlotGraticule::of(&zoomed_set).unwrap();
+    let widest = graticule.extent.lon_span().max(graticule.extent.lat_span());
+    assert!(
+        widest > 100.0,
+        "the fixture must zoom out past 100°: {widest}"
+    );
+    assert!(
+        graticule.step > 1.0 && widest / graticule.step <= 36.0,
+        "zoomed out to {widest}°, the step {} leaves {} intervals",
+        graticule.step,
+        widest / graticule.step
     );
 }

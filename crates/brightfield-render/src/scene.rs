@@ -278,13 +278,7 @@ pub fn build_chart_scene(data: &ChartData<'_>, ink: ChartInk) -> (Scene, ScaleSe
     }
     if let Some(graticule) = &graticule {
         let (meridians, parallels) = graticule.edge_ticks();
-        crate::axis::render_graticule_labels(
-            &mut scene,
-            &data.layout,
-            &meridians,
-            &parallels,
-            ink,
-        );
+        crate::axis::render_graticule_labels(&mut scene, &data.layout, &meridians, &parallels, ink);
     }
 
     // Colour legend.
