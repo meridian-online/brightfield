@@ -7,7 +7,7 @@
 //! diff reddens on a font bump exactly as loudly as on a dropped chip, and a
 //! reviewer holding one red baseline cannot tell which of those happened. The
 //! guard here reads the model the frame drew from — `canvas_holds`, the step's
-//! own run status, the locator band's crumbs and counts — never a galley.
+//! own run status, the locator band's crumbs and counts — not a galley.
 //!
 //! # How the click reaches the capture
 //!
@@ -105,8 +105,8 @@ fn probe() -> (MeridianApp, egui::Context) {
 }
 
 /// Where the last frame `app` ran drew the spine's graph chip — panicking by
-/// name when the head drew none, so a chip dropped off the head fails here
-/// with a sentence rather than with `unwrap` on a `None`.
+/// name when the head carries no chip, so a chip dropped off the head fails
+/// here with a sentence rather than with `unwrap` on a `None`.
 fn chip_pos(app: &MeridianApp) -> egui::Pos2 {
     let rows = app.spine_rows();
     let head = rows.first().unwrap_or_else(|| {
@@ -371,7 +371,7 @@ fn the_workflow_graph_light_baseline() {
 
 /// **AC1's dark twin.** The model facts the light test above checks are
 /// mode-independent — read off `canvas_holds`, the step map and the locator
-/// band, none of which change with ink — so they are not restated here;
+/// band, and ink moves neither — so they are not restated here;
 /// `tests/dashboard_baseline.rs`'s header gives the same reason for its own
 /// pair.
 #[test]
