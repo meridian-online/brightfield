@@ -869,7 +869,8 @@ impl MarkRenderer for DotRenderer {
         };
 
         // No graticule here: it belongs to the PLOT, not to a layer, and the
-        // scene builders draw it once behind every layer ([`PlotGraticule`]).
+        // scene builders draw it once behind the layers ([`PlotGraticule`],
+        // `a_plot_strokes_its_graticule_once_whatever_its_layer_count`).
         // Drawn from here, a point map's ghost and its brushed subset each laid
         // the same hairlines down, and two coincident 0.5 px strokes read
         // darker than one.
@@ -4714,8 +4715,9 @@ const GRATICULE_EDGE_TOLERANCE: f64 = 0.5;
 /// are the data's projected bbox widened to the pane's aspect
 /// (`aspect_fit_domains`, then any pan or zoom), so inverting them through the
 /// projection gives the geographic rectangle the plot area shows, and the
-/// lines reach its edges on all four sides, while the plot margins round the
-/// plot area stay blank but for the labels. A projection whose axes do not
+/// lines reach its edges on four sides
+/// (`the_graticule_reaches_the_plot_areas_fitted_extent_over_the_california_fixture`),
+/// while the plot margins round the plot area stay blank but for the labels. A projection whose axes do not
 /// invert separately has no per-axis
 /// inverse to take the rectangle back through, so its graticule stays on the
 /// data's extent and the plot clip trims what overhangs.
@@ -4724,7 +4726,9 @@ const GRATICULE_EDGE_TOLERANCE: f64 = 0.5;
 /// extent picks ([`graticule_step`]), used for meridians and parallels alike,
 /// so an equal-aspect map draws square cells and widening the extent to the
 /// plot area changes how far the lines reach and not how far apart they are.
-/// It coarsens only past [`GRATICULE_MAX_INTERVALS`].
+/// It coarsens when the plot area would hold more than 36 intervals of it
+/// (`GRATICULE_MAX_INTERVALS`,
+/// `zooming_out_coarsens_the_graticule_step_rather_than_hatching_the_plot`).
 #[derive(Debug, Clone)]
 pub struct PlotGraticule {
     /// The geographic rectangle the lines are laid across, in degrees.
@@ -4738,8 +4742,8 @@ pub struct PlotGraticule {
 }
 
 impl PlotGraticule {
-    /// The graticule of the plot `scales` belong to, or `None` for a plot
-    /// nothing projected onto: no projection, no geographic extent (a `geo`
+    /// The graticule of the plot `scales` belong to, or `None` for a plot no
+    /// mark projected onto: no projection, no geographic extent (a `geo`
     /// mark's plot records the projection with no extent), or a positional
     /// axis that is not linear.
     #[must_use]
@@ -4841,7 +4845,7 @@ impl PlotGraticule {
 }
 
 /// The one step a plot's graticule takes for both axes: the coarser of the two
-/// the data's extent picks, coarsened further along [`GRATICULE_STEPS`] only
+/// the data's extent picks, coarsened further along [`GRATICULE_STEPS`]
 /// while the widest axis of `viewport` would hold more than
 /// [`GRATICULE_MAX_INTERVALS`] of it.
 fn plot_graticule_step(data: GeoExtent, viewport: GeoExtent) -> f64 {

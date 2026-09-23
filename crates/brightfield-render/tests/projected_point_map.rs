@@ -386,8 +386,8 @@ fn the_drawn_scene_carries_a_meridian_at_each_projected_longitude() {
 /// An unprojected dot mark draws no graticule at all — the picture a plain
 /// scatter gets is unchanged by any of this. The graticule is the PLOT's, so
 /// the question is asked of a plot: its scales carry no projection, so there is
-/// no [`PlotGraticule`] to draw and none of a projected plot's lines is in its
-/// scene; and no mark draws one itself, so a bare mark render is only dots.
+/// no [`PlotGraticule`] to draw and no vertex of a projected plot's lines is
+/// in its scene; and no mark draws one itself, so a bare mark render is only dots.
 #[test]
 fn an_unprojected_dot_mark_draws_no_graticule() {
     let batch = batch(FIXTURE);
@@ -1286,8 +1286,9 @@ fn the_graticule_is_labelled_at_the_plot_areas_edges_in_the_axes_ink() {
 
         // The axes' label ink, and not the graticule's own: one label-ink
         // paint per label drawn. A solid brush is one word of `draw_data` per
-        // draw, and nothing else on a projected plot paints in the label ink,
-        // so the count is per label rather than "somewhere in the scene".
+        // draw, and on this fixture's plot the label ink is the labels' alone
+        // (the surface, the grid ink and the mark ink are the other paints), so
+        // the count is per label rather than "somewhere in the scene".
         let ink = ChartInk::LIGHT;
         assert_ne!(ink.label, ink.grid, "the fixture needs the two inks apart");
         let packed = |c: peniko::Color| c.premultiply().to_rgba8().to_u32();

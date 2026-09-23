@@ -561,7 +561,7 @@ fn a_rectangle_swept_over_the_point_map_narrows_the_tile_beside_it() {
          both of the columns its plot binds"
     );
     // `longitude` spans 230 units over the plot's ~288 pixels and `latitude`
-    // spans only 48 over its ~434 — the narrower fit — so the projected plot's
+    // spans 48 over its ~434 — the narrower fit — so the projected plot's
     // aspect fit (`DotRenderer::augment_scales`, in `brightfield-render`)
     // widens LATITUDE's interactive domain past its own column range to match
     // longitude's px-per-unit, as it widens the drawn extent. Under the plate
