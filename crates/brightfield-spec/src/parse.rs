@@ -3191,9 +3191,9 @@ plot:
 
     #[test]
     fn unknown_projection_warns_but_supported_defer() {
-        // A name outside Mosaic's `ProjectionName` vocabulary degrades to the
-        // default equirectangular fit AND names itself — mirroring the
-        // NonStringLabel check. `mollweide` is a real d3 EXTENSION projection
+        // A name outside Mosaic's `ProjectionName` vocabulary resolves to no
+        // projection, so the `dot` below draws as an unprojected scatter, AND
+        // names itself — mirroring the NonStringLabel check. `mollweide` is a real d3 EXTENSION projection
         // rather than a typo, which is the case worth naming: it is the shape of
         // request this warning exists to answer.
         let bad = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\nprojectionType: mollweide\n";

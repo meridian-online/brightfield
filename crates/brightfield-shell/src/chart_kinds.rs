@@ -426,7 +426,7 @@ pub fn scatter_tile(x: &str, y: &str, indent: usize) -> String {
 /// The plate carrée is the projection that says the least: `u = lon`,
 /// `v = lat`, so the points land where an unprojected scatter of the same two
 /// columns would put them. What it adds is a graticule — meridians and
-/// parallels at whole degrees across the plot area, labelled in degrees along
+/// parallels at a round step across the plot area, labelled in degrees along
 /// its bottom and left edges — in place of the cartesian axes, which a
 /// projected plot does not draw.
 ///
@@ -496,8 +496,8 @@ pub fn point_map_tile(lon: &str, lat: &str, indent: usize) -> String {
 /// into the spec and as the count overlay names it.
 ///
 /// The plate carrée: `u = lon`, `v = lat`, so the `intervalXY` brush's per-axis
-/// inverse is exact and the graticule's whole degrees, and the labels naming
-/// them, land on round numbers. Any other name here is a product decision
+/// inverse is exact and the graticule's lines, and the labels naming them,
+/// land on round numbers of degrees. Any other name here is a product decision
 /// about what an analyst opening a file with coordinates in it should be shown,
 /// not a threading job — the delivery takes all sixteen.
 pub const POINT_MAP_PROJECTION: &str = "equirectangular";

@@ -374,9 +374,9 @@ pub trait MarkRenderer {
 
     /// Whether this mark suppresses the plot frame — the grid, axes, and tick
     /// labels. A mark drawing through a map projection reads as a map rather
-    /// than as a cartesian plot, and it draws its own scaffolding behind itself
-    /// (a graticule), so a second set of hairlines at a different spacing is two
-    /// grids over one picture. Defaults to `false` (mirrors
+    /// than as a cartesian plot, and its plot draws a graticule behind it
+    /// ([`PlotGraticule`]), so a second set of hairlines at a different spacing
+    /// is two grids over one picture. Defaults to `false` (mirrors
     /// [`Self::zero_baseline_channel`]: zero impact on existing renderers); the
     /// scene builders skip the frame when any entry returns `true`.
     ///
@@ -904,8 +904,8 @@ impl MarkRenderer for DotRenderer {
     /// draws a graticule behind the points instead ([`PlotGraticule`]), labelled
     /// at the plot area's edges where the tick labels sat. Leaving the frame on
     /// puts axis ticks at `compute_ticks`'s round numbers over meridians and
-    /// parallels at the graticule ladder's whole degrees, which is two grids at
-    /// two spacings on one picture.
+    /// parallels at multiples of the graticule's step, which is two grids at two
+    /// spacings on one picture.
     ///
     /// An UNPROJECTED dot mark is a scatter and keeps its axes, which is what
     /// `a_projected_dot_mark_draws_no_axis_labels` holds the other half of.
@@ -4375,7 +4375,7 @@ fn albers_forward(lon: f64, lat: f64) -> (f64, f64) {
 }
 
 // ---------------------------------------------------------------------------
-// Graticule — the meridians and parallels a projected mark draws behind itself
+// Graticule — the meridians and parallels a projected plot draws behind its marks
 // ---------------------------------------------------------------------------
 
 /// The geographic rectangle a projected mark is showing, in DEGREES.
@@ -4510,7 +4510,7 @@ pub fn graticule_step(span: f64) -> f64 {
 /// step its own span picks.
 ///
 /// Both halves of the answer come from the two arguments: the EXTENT decides
-/// which whole-degree lines exist and how far apart they are
+/// which lines exist and how far apart they are
 /// ([`graticule_step`]), and the PROJECTION decides where each sampled point
 /// lands. There is no data dependency and no network — this is the reason a
 /// graticule is what a projected plot draws behind its marks rather than a
@@ -4563,8 +4563,9 @@ pub fn graticule_at(
     out
 }
 
-/// The multiples of `step` inside `[lo, hi]`, ascending. Snapped to the step so
-/// the lines a reader sees are whole numbers of degrees.
+/// The multiples of `step` inside `[lo, hi]`, ascending. Snapped to the step, so
+/// each line stands at a round value of it: a whole number of degrees at a
+/// whole-degree step, a hundredth of a degree at 0.01°.
 fn ticks(lo: f64, hi: f64, step: f64) -> Vec<f64> {
     let first = (lo / step).ceil();
     let last = (hi / step).floor();

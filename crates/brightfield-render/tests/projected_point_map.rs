@@ -1010,8 +1010,8 @@ fn a_mark_that_cannot_project_contributes_no_geometry() {
 /// **A projected dot mark draws no cartesian frame** — no axis line, no ticks,
 /// no tick labels — and an unprojected one still draws all three.
 ///
-/// A map draws its own scaffolding behind itself, and the graticule is at whole
-/// degrees off the step ladder while `compute_ticks` puts axis ticks at its own
+/// A projected plot draws a graticule behind its marks, at multiples of a step
+/// off the graticule ladder, while `compute_ticks` puts axis ticks at its own
 /// round numbers. Both at once is two grids at two spacings over one picture,
 /// which is what the tile drew before this.
 ///
