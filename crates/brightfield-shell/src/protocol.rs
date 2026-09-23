@@ -224,6 +224,28 @@ impl ProtocolInputs {
             .collect()
     }
 
+    /// Name `table` as the relation an engine session holds, and give it the
+    /// node of the dashboard Brightfield generates for it.
+    ///
+    /// **The one way a document comes to hold a table**, so a document that
+    /// holds one has that table's dashboard in every graph it draws: the spine
+    /// lists the dashboard as the node it is because the graph has it, not
+    /// because a row was synthesised beside the table. Added to each of the
+    /// four graphs rather than to one and re-derived, because the folds that
+    /// built the other three have already run; where a fold absorbed the table
+    /// the dashboard goes with it.
+    pub fn hold_table(&mut self, table: AssetId) {
+        for graph in [
+            &mut self.graph_collapsed,
+            &mut self.graph_full,
+            &mut self.graph_exploded,
+            &mut self.graph_contracted,
+        ] {
+            brightfield_protocol::graph::add_generated_dashboard(graph, &table);
+        }
+        self.table = Some(table);
+    }
+
     /// Take on the run `view` records, when it is a run of **this** Protocol's
     /// steps, and say whether it was.
     ///
@@ -588,29 +610,27 @@ pub fn column_row_id(table: &AssetId, column: &str) -> AssetId {
 // The spine: the Protocol as an ordered list of what it reads, does and makes
 // ---------------------------------------------------------------------------
 
-/// One way of looking at the table a node names.
+/// One way of looking at a tabular node.
 ///
-/// Two today, in the order the spine lists them under a node. They are views of
-/// **one** table read through **one** engine session, not two documents: the
-/// dashboard is the composed page the canvas draws as a pane group, and the
-/// grid is that same session listed as rows.
+/// **One today: the grid**, the node listed as rows, which any tabular node
+/// has. The dashboard is not one: it carries a mosaic spec of its own, so it is
+/// a node of the graph — [`AssetKind::Dashboard`] — listed in the spine as an
+/// asset and put on the canvas as [`crate::window::CanvasHolds::Dashboard`].
+/// A view is a way of looking at a node; a dashboard is a thing read from one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeView {
-    /// The generated dashboard — the hero, the rows beneath it, the tiles beside.
-    Dashboard,
-    /// The table listed as rows.
+    /// The node listed as rows.
     Grid,
 }
 
 impl NodeView {
     /// Every view a node has, in the order the spine lists them.
-    pub const ALL: [Self; 2] = [Self::Dashboard, Self::Grid];
+    pub const ALL: [Self; 1] = [Self::Grid];
 
     /// The word the spine draws for this view.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Dashboard => "dashboard",
             Self::Grid => "grid",
         }
     }
@@ -653,7 +673,8 @@ impl NodeView {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpineMarker {
     /// The thing exists: an asset the Protocol reads off disk, an asset a run
-    /// materialised, or a step that ran to success.
+    /// materialised, a dashboard Brightfield composed, or a step that ran to
+    /// success.
     Filled,
     /// The thing does not exist yet: a step that has not run to success, or an
     /// asset nothing has materialised.
@@ -686,8 +707,8 @@ pub enum SpineRole {
 pub struct SpineRow {
     /// What the row is called — an asset's label, a step's name, a view's word.
     pub label: String,
-    /// The text at the row's trailing end: `file`, `table`, `sql · not run`,
-    /// `view`.
+    /// The text at the row's trailing end: `file`, `table`, `dashboard`,
+    /// `sql · not run`, `view`.
     pub kind: String,
     /// How far the row is indented: `0` for an asset or a step, `1` for a view
     /// of the asset above it.
@@ -699,8 +720,9 @@ pub struct SpineRow {
     /// Whether this row is the current selection — the wash, and never the
     /// on-canvas bar.
     pub selected: bool,
-    /// The asset a click addresses: the asset itself on an asset row, the node
-    /// a view belongs to on a view row, `None` on a step row.
+    /// The asset a click addresses: the asset itself on an asset row — a
+    /// dashboard's own node on a dashboard's row — the node a view belongs to
+    /// on a view row, `None` on a step row.
     pub id: Option<AssetId>,
     /// The view a click puts on the canvas, on a view row.
     pub view: Option<NodeView>,
@@ -712,6 +734,19 @@ pub struct SpineRow {
 /// as a set of fields rather than as a phrase — the space is what makes the
 /// band's name and its count read as two things rather than as one run-on line.
 const CAPTION_SEPARATOR: &str = "   \u{b7}   ";
+
+/// The nodes of `graph` a grid can list — each tabular node, in id order.
+///
+/// Where the spine's view rows and the graph's view chips are both declared
+/// from, so a node that has a `grid` row has a `grid` chip and the other way
+/// round.
+fn viewable_nodes(graph: &AssetGraph) -> impl Iterator<Item = &AssetId> {
+    graph
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.kind.is_tabular())
+        .map(|(id, _)| id)
+}
 
 /// A caption row's text: its clauses, separated.
 fn caption(clauses: &[&str]) -> String {
@@ -997,14 +1032,23 @@ impl ProtocolModel {
     /// the pair a reader meets first — the boot's and the drawn one — by
     /// comparing the two whole `Layout` values rather than a measure off each.
     ///
+    /// Every tabular node of the collapsed graph carries the chips, because
+    /// every one of them has a grid — [`ProtocolModel::spine`] lists the same
+    /// nodes' view rows off the same test. Read off the **collapsed** graph
+    /// whichever graph is being laid out, so a fold that draws a statement's
+    /// CTEs as nodes does not grow a chip row on each of them.
+    ///
     /// A Protocol with no table names no chips, so its `view_chips` is empty
     /// and `layout` returns exactly what it returned before chips existed —
     /// which is what leaves a manifest Protocol's cards where they were.
-    fn layout_config(table: Option<&AssetId>, flow: Flow) -> LayoutConfig {
-        let mut view_chips = BTreeMap::new();
-        if let Some(table) = table {
-            view_chips.insert(table.clone(), NodeView::chip_labels());
-        }
+    fn layout_config(collapsed: &AssetGraph, table: Option<&AssetId>, flow: Flow) -> LayoutConfig {
+        let view_chips = if table.is_some() {
+            viewable_nodes(collapsed)
+                .map(|id| (id.clone(), NodeView::chip_labels()))
+                .collect()
+        } else {
+            BTreeMap::new()
+        };
         LayoutConfig {
             flow,
             view_chips,
@@ -1022,7 +1066,7 @@ impl ProtocolModel {
     /// 260px wide in one place and 24% of the window in another.
     #[must_use]
     pub fn boot_layout(inputs: &ProtocolInputs, flow: Flow) -> Layout {
-        let cfg = Self::layout_config(inputs.table.as_ref(), flow);
+        let cfg = Self::layout_config(&inputs.graph_collapsed, inputs.table.as_ref(), flow);
         brightfield_protocol::layout(&inputs.graph_collapsed, &cfg)
     }
 
@@ -1080,7 +1124,7 @@ impl ProtocolModel {
     /// caps what is asked for against the monitor the window opens on.
     #[must_use]
     pub fn boot_extent(inputs: &ProtocolInputs, flow: Flow) -> (f64, f64) {
-        let cfg = Self::layout_config(inputs.table.as_ref(), flow);
+        let cfg = Self::layout_config(&inputs.graph_collapsed, inputs.table.as_ref(), flow);
         [
             &inputs.graph_collapsed,
             &inputs.graph_exploded,
@@ -1099,7 +1143,7 @@ impl ProtocolModel {
     /// always walks the collapsed graph, so this is its geometry regardless of a
     /// fold or drill scope; only a flow change alters it.
     fn sync_nav_geometry(&mut self) {
-        let cfg = Self::layout_config(self.table.as_ref(), self.flow);
+        let cfg = Self::layout_config(&self.graph_collapsed, self.table.as_ref(), self.flow);
         let geom = brightfield_protocol::layout(&self.graph_collapsed, &cfg);
         self.nav.set_geometry(self.flow, &geom);
     }
@@ -1484,10 +1528,23 @@ impl ProtocolModel {
     /// does to it, and what that makes.
     ///
     /// The assets in [`outline_rows`]' order, each preceded by the step that
-    /// produces it, and — under the table a data file opened as — that node's
-    /// views. A step with two produced assets is drawn once before each of
-    /// them: the row says *this asset came through this step*, which is a fact
-    /// about the pair rather than about the step alone.
+    /// produces it, and — under each tabular node of a Protocol that holds a
+    /// table — that node's views. A step with two produced assets is drawn once
+    /// before each of them: the row says *this asset came through this step*,
+    /// which is a fact about the pair rather than about the step alone.
+    ///
+    /// **A dashboard is an asset row, not a view row**: it is a node of the
+    /// graph, so it comes out of [`outline_rows`] like the file and the table,
+    /// after the table it reads, at the asset depth, with the kind and the
+    /// marker any asset carries. A generated dashboard has no producing step,
+    /// so no step row stands above it and it reads as existing — Brightfield
+    /// composed it when the file opened.
+    ///
+    /// **Views are listed only where the Protocol holds a table**, because a
+    /// view is something the canvas can hold and a Protocol read from a
+    /// manifest has nothing for the canvas to hold but its graph —
+    /// `graph_takes_the_canvas` gives the graph the canvas whenever no chart is
+    /// open. A `grid` row there would be a row whose click does nothing.
     ///
     /// The order is the outline's and is not re-derived here, for the reason
     /// [`ProtocolModel::column_rows`] is a filter: the rail, the canvas and the
@@ -1548,7 +1605,7 @@ impl ProtocolModel {
                             .is_some_and(|meta| meta.materialized)
                 }
             };
-            let is_table = self.table.as_ref() == Some(&row.id);
+            let has_views = self.table.is_some() && row.kind.is_tabular();
             rows.push(SpineRow {
                 label: row.label,
                 kind: kind_label(row.kind).to_string(),
@@ -1563,7 +1620,7 @@ impl ProtocolModel {
                 id: Some(row.id.clone()),
                 view: None,
             });
-            if is_table {
+            if has_views {
                 rows.extend(NodeView::ALL.map(|view| SpineRow {
                     label: view.label().to_string(),
                     kind: "view".to_string(),
@@ -1670,6 +1727,43 @@ impl ProtocolModel {
         self.table.as_ref()
     }
 
+    /// The dashboard node that reads [`Self::table`] — the page the canvas
+    /// opens on — or `None` on a Protocol that holds no table.
+    ///
+    /// Found in the graph by the edge out of the table, not rebuilt from the
+    /// table's id: [`ProtocolInputs::hold_table`] is what put it there, and an
+    /// authored dashboard a run contract named is the one it kept instead of
+    /// adding its own.
+    #[must_use]
+    pub fn dashboard(&self) -> Option<&AssetId> {
+        let table = self.table.as_ref()?;
+        self.graph_collapsed.edges.iter().find_map(|edge| {
+            (edge.from == *table
+                && self
+                    .graph_collapsed
+                    .nodes
+                    .get(&edge.to)
+                    .is_some_and(|n| n.kind == AssetKind::Dashboard))
+            .then_some(&edge.to)
+        })
+    }
+
+    /// Whether `node` is a node of the collapsed graph a grid can list — the
+    /// nodes the spine gives a `grid` row.
+    #[must_use]
+    pub fn is_viewable(&self, node: &AssetId) -> bool {
+        self.table.is_some() && viewable_nodes(&self.graph_collapsed).any(|id| id == node)
+    }
+
+    /// The label the collapsed graph gives `node`, when it has one.
+    #[must_use]
+    pub fn label_of(&self, node: &AssetId) -> Option<&str> {
+        self.graph_collapsed
+            .nodes
+            .get(node)
+            .map(|n| n.label.as_str())
+    }
+
     /// The columns of the table this Protocol produces, in the table's own
     /// order — empty for a Protocol with no profiled table behind it.
     #[must_use]
@@ -1738,16 +1832,49 @@ impl ProtocolModel {
     /// The locator band's four crumbs for a view of `node`: the file `node`'s
     /// step read, the step's own name, `node`'s name and `view`.
     ///
+    /// `None` where [`Self::lineage_crumbs`] is — a caller with the window's
+    /// title to fall back to should use that instead rather than draw a
+    /// partial line.
+    #[must_use]
+    pub fn view_crumbs(&self, node: &AssetId, view: NodeView) -> Option<Vec<String>> {
+        let mut crumbs = self.lineage_crumbs(node)?;
+        crumbs.push(view.label().to_string());
+        Some(crumbs)
+    }
+
+    /// The locator band's crumbs for a dashboard node on the canvas: the
+    /// lineage of the table it reads, then **the dashboard's own label as the
+    /// node** — where a view of the table would have put a view's word.
+    ///
+    /// Read off the graph's edge into the dashboard, not off the table this
+    /// document holds, so an authored dashboard named `overview` reads
+    /// `overview` here and a view's word could not stand in for it.
+    ///
+    /// `None` when `dashboard` is absent from the collapsed graph, when no edge
+    /// feeds it, or where [`Self::lineage_crumbs`] is for the node that does.
+    #[must_use]
+    pub fn dashboard_crumbs(&self, dashboard: &AssetId) -> Option<Vec<String>> {
+        let node = self.graph_collapsed.nodes.get(dashboard)?;
+        let reads = self
+            .graph_collapsed
+            .edges
+            .iter()
+            .find(|edge| &edge.to == dashboard)?;
+        let mut crumbs = self.lineage_crumbs(&reads.from)?;
+        crumbs.push(node.label.clone());
+        Some(crumbs)
+    }
+
+    /// Where `node` sits, most general first: the file `node`'s step read, the
+    /// step's own name and `node`'s name.
+    ///
     /// The file is the node at the `from` end of the edge into `node`, spelled
     /// by its file name rather than its full label — a label built from
     /// `depends_on` carries a leading `./` that is not what a stranger typed.
     ///
     /// `None` when `node` is absent from the collapsed graph, when it has no
-    /// producing step, or when no edge feeds it — a caller with the window's
-    /// title to fall back to should use that instead rather than draw a
-    /// partial line.
-    #[must_use]
-    pub fn view_crumbs(&self, node: &AssetId, view: NodeView) -> Option<Vec<String>> {
+    /// producing step, or when no edge feeds it.
+    fn lineage_crumbs(&self, node: &AssetId) -> Option<Vec<String>> {
         let asset = self.graph_collapsed.nodes.get(node)?;
         let step = asset.step.clone()?;
         let file = self
@@ -1761,12 +1888,7 @@ impl ProtocolModel {
                     .file_name()
                     .map_or_else(|| from.label.clone(), |f| f.to_string_lossy().into_owned())
             })?;
-        Some(vec![
-            file,
-            step,
-            asset.label.clone(),
-            view.label().to_string(),
-        ])
+        Some(vec![file, step, asset.label.clone()])
     }
 
     /// The drill breadcrumb labels, root → deepest.
@@ -2194,7 +2316,7 @@ impl ProtocolModel {
     /// set is exactly the kind of edit that reads as "the graph changed, so the
     /// canvas changed". It does not. Re-lay-out, or nothing moves.
     fn recompute_layout(&mut self) {
-        let cfg = Self::layout_config(self.table.as_ref(), self.flow);
+        let cfg = Self::layout_config(&self.graph_collapsed, self.table.as_ref(), self.flow);
         let laid = {
             let graph = self.displayed_graph();
             brightfield_protocol::layout(graph, &cfg)
@@ -2275,21 +2397,23 @@ pub struct ProtocolDoc {
     /// caption row's `SPACE_1` of clearance is measured from. `None` until a
     /// frame has laid the pane out.
     pub spine_body: Option<egui::Rect>,
-    /// The view a reader clicked in the rail this frame, if one was clicked.
+    /// What a reader asked the canvas to hold this frame — a view row, the
+    /// dashboard's row or a view chip on the graph — if one was clicked.
     /// Taken by the window, which owns what the canvas holds.
-    view_pick: Option<(AssetId, NodeView)>,
+    canvas_pick: Option<crate::window::CanvasHolds>,
     /// Whether a reader clicked the graph chip in the spine's head this frame.
-    /// Taken by the window for the same reason [`ProtocolDoc::view_pick`] is.
+    /// Taken by the window for the same reason [`ProtocolDoc::canvas_pick`] is.
     graph_pick: bool,
-    /// **Which view of which node the canvas returns to** when the graph gives
-    /// it back — the chip that draws filled in the node's foot on the graph.
+    /// **What the canvas returns to** when the graph gives it back — a view of
+    /// a node, whose chip draws filled in the node's foot on the graph, or the
+    /// dashboard, which has no chip to fill.
     ///
     /// Mirrored onto the document beside [`ProtocolDoc::canvas_holds`] and by
     /// the same statement, because the raster needs it and the raster is built
     /// from this document. `None` on a Protocol that has left no view behind —
     /// one read from a manifest, whose canvas has held the graph since it
     /// opened — where the chips in a node's foot draw as hairlines.
-    pub returns_to: Option<(AssetId, NodeView)>,
+    pub returns_to: Option<crate::window::CanvasHolds>,
     /// **Where the DAG canvas drew each node's view chips in the last frame**,
     /// in screen coordinates.
     ///
@@ -2387,10 +2511,17 @@ pub struct CanvasKey {
     dark: bool,
     /// Which view chip draws filled — a raster input like the others, because
     /// leaving the graph for a view and coming back to it changes the fill and
-    /// moves no card. The **node** it belongs to is not carried: a document
-    /// swap goes through [`ProtocolDoc::open`], which invalidates the slot
-    /// outright, so no key survives a change that could move it.
-    showing: Option<NodeView>,
+    /// moves no card.
+    ///
+    /// **The node is carried as its position in the collapsed graph's id
+    /// order**, a `Copy` stand-in for the id that differs wherever the id does
+    /// within one document. It has to be carried now that every tabular node
+    /// has a grid: coming back from the graph to a second table's grid, after a
+    /// trip from the first's, fills a different chip on the same view. A
+    /// document swap still goes through [`ProtocolDoc::open`], which
+    /// invalidates the slot outright, so no position outlives the graph it
+    /// indexes.
+    showing: Option<(usize, NodeView)>,
 }
 
 impl CanvasKey {
@@ -2417,7 +2548,7 @@ impl ProtocolDoc {
             canvas_holds: crate::window::CanvasHolds::Graph,
             spine_drawn: Vec::new(),
             spine_body: None,
-            view_pick: None,
+            canvas_pick: None,
             graph_pick: false,
             returns_to: None,
             canvas_chips: Vec::new(),
@@ -2434,7 +2565,7 @@ impl ProtocolDoc {
             canvas_holds: crate::window::CanvasHolds::Graph,
             spine_drawn: Vec::new(),
             spine_body: None,
-            view_pick: None,
+            canvas_pick: None,
             graph_pick: false,
             returns_to: None,
             canvas_chips: Vec::new(),
@@ -2456,17 +2587,17 @@ impl ProtocolDoc {
     /// gesture and the window decides what the canvas holds, so what is on the
     /// canvas has one writer. Mirrors [`ProtocolModel::take_column_pick`],
     /// which is the same shape for the inspector's column.
-    pub fn take_view_pick(&mut self) -> Option<(AssetId, NodeView)> {
-        self.view_pick.take()
+    pub fn take_canvas_pick(&mut self) -> Option<crate::window::CanvasHolds> {
+        self.canvas_pick.take()
     }
 
     /// Take the graph chip's click, if the spine's head was clicked this frame.
     ///
-    /// [`ProtocolDoc::take_view_pick`]'s twin, and separate from it because the
-    /// two gestures say different things: a view row names a view to go to,
+    /// [`ProtocolDoc::take_canvas_pick`]'s twin, and separate from it because
+    /// the two gestures say different things: a row names a thing to go to,
     /// and the chip toggles the canvas between the graph and whatever it left.
-    /// Folding them into one would mean spelling "the graph" as a `NodeView`
-    /// that no node has.
+    /// Folding them into one would make the chip a pick of the graph, and the
+    /// way back from the graph is not a pick of anything.
     pub fn take_graph_pick(&mut self) -> bool {
         std::mem::take(&mut self.graph_pick)
     }
@@ -2499,7 +2630,16 @@ impl ProtocolDoc {
                 dev_width: dev.width,
                 dev_height: dev.height,
                 dark: mode.is_dark(),
-                showing: self.returns_to.as_ref().map(|(_, view)| *view),
+                showing: match &self.returns_to {
+                    Some(crate::window::CanvasHolds::View { node, view }) => self
+                        .model
+                        .graph_collapsed
+                        .nodes
+                        .keys()
+                        .position(|id| id == node)
+                        .map(|at| (at, *view)),
+                    _ => None,
+                },
             },
             dev,
         )
@@ -2534,10 +2674,10 @@ impl ProtocolDoc {
         // Build the scene under an immutable borrow, then present (mutable host).
         let scene = {
             let mut s = vello::Scene::new();
-            let showing = self
-                .returns_to
-                .as_ref()
-                .map(|(node, view)| (node, view.label()));
+            let showing = match &self.returns_to {
+                Some(crate::window::CanvasHolds::View { node, view }) => Some((node, view.label())),
+                _ => None,
+            };
             brightfield_render::asset_scene::render_asset_graph_with_status(
                 &mut s,
                 self.model.layout(),
@@ -2708,7 +2848,14 @@ impl Item<ProtocolDoc> for OutlinePane {
         let mut drawn: Vec<SpineRowDrawn> = Vec::with_capacity(spine.len() + columns.len() + 2);
         let mut clicked: Option<AssetId> = None;
         let mut column: Option<String> = None;
-        let mut view: Option<(AssetId, NodeView)> = None;
+        let mut pick: Option<crate::window::CanvasHolds> = None;
+        // The dashboard the canvas opens on, and the table it reads — what a
+        // click on the dashboard's own row puts on the canvas.
+        let dashboard = doc
+            .model
+            .dashboard()
+            .cloned()
+            .zip(doc.model.table().cloned());
         let mut graph_picked = false;
         // Whether the chip is a control here. A Protocol with no node that has
         // views — every Protocol read from a manifest — has nothing for the
@@ -2737,7 +2884,21 @@ impl Item<ProtocolDoc> for OutlinePane {
                             // it names one way of looking at the node above it,
                             // and what it moves is the canvas.
                             (SpineRole::View, Some(id), Some(v)) => {
-                                view = Some((id.clone(), v));
+                                pick = Some(crate::window::CanvasHolds::View {
+                                    node: id.clone(),
+                                    view: v,
+                                });
+                            }
+                            // The dashboard's row is an asset row, and what it
+                            // moves is the canvas, as the view row it replaced
+                            // did: the page is what a reader clicks it to see.
+                            (SpineRole::Asset, Some(id), _)
+                                if dashboard.as_ref().is_some_and(|(d, _)| d == id) =>
+                            {
+                                if let Some((node, table)) = dashboard.clone() {
+                                    pick =
+                                        Some(crate::window::CanvasHolds::Dashboard { node, table });
+                                }
                             }
                             (SpineRole::Asset, Some(id), _) => clicked = Some(id.clone()),
                             _ => {}
@@ -2765,8 +2926,8 @@ impl Item<ProtocolDoc> for OutlinePane {
             doc.model.pick_column(&column);
             cx.request_repaint();
         }
-        if let Some(pick) = view {
-            doc.view_pick = Some(pick);
+        if let Some(pick) = pick {
+            doc.canvas_pick = Some(pick);
             cx.request_repaint();
         }
         if graph_picked {
@@ -3313,7 +3474,7 @@ impl Item<ProtocolDoc> for CanvasPane {
             // window has one writer of what the canvas holds however the
             // gesture arrived.
             Some(CanvasHit::Chip(node, view)) => {
-                doc.view_pick = Some((node, view));
+                doc.canvas_pick = Some(crate::window::CanvasHolds::View { node, view });
                 cx.request_repaint();
             }
             None => {}
@@ -3877,6 +4038,7 @@ fn kind_gloss(kind: AssetKind) -> &'static str {
         AssetKind::Dataset => "dataset · the published output artefact (the sink)",
         AssetKind::Family => "family · a collapsed group of parameterised steps",
         AssetKind::Opaque => "opaque · a degraded or unreadable step",
+        AssetKind::Dashboard => "dashboard · a composed page with a mosaic spec of its own",
     }
 }
 
@@ -4173,26 +4335,48 @@ mod tests {
     ///
     /// The same two-sided shape as
     /// `a_theme_switch_changes_the_canvas_key_and_nothing_else`, aimed at
-    /// `showing` instead of the mode: a `canvas_key` blind to `returns_to`
-    /// would answer the same key for the dashboard chip and the grid chip,
-    /// and the cache would go on presenting the raster it built with the
-    /// dashboard chip filled after a reader had come back on the grid one.
+    /// `showing` instead of the mode, and over three returns rather than two:
+    /// the dashboard, which fills no chip, and the grids of two different
+    /// nodes, which fill the same view's chip on two different cards. A key
+    /// that carried the view and not the node would answer the same for the
+    /// last two, and the cache would go on presenting the first node's chip
+    /// filled after a reader had come back on the second's.
     #[test]
     fn returning_to_the_graph_on_a_different_view_changes_the_canvas_key() {
         let mut doc = ProtocolDoc::headless(model());
-        let node: AssetId = "whatever-node".to_string();
+        let mut ids = doc.model.graph_collapsed.nodes.keys().cloned();
+        let first = ids.next().expect("the crosswalk has nodes");
+        let second = ids.next().expect("the crosswalk has two nodes");
 
-        doc.returns_to = Some((node.clone(), NodeView::Dashboard));
+        doc.returns_to = Some(crate::window::CanvasHolds::Dashboard {
+            node: first.clone(),
+            table: first.clone(),
+        });
         let (dashboard_showing, _) = doc.canvas_key(2.0, Mode::Light);
 
-        doc.returns_to = Some((node, NodeView::Grid));
-        let (grid_showing, _) = doc.canvas_key(2.0, Mode::Light);
+        doc.returns_to = Some(crate::window::CanvasHolds::View {
+            node: first,
+            view: NodeView::Grid,
+        });
+        let (first_grid, _) = doc.canvas_key(2.0, Mode::Light);
+
+        doc.returns_to = Some(crate::window::CanvasHolds::View {
+            node: second,
+            view: NodeView::Grid,
+        });
+        let (second_grid, _) = doc.canvas_key(2.0, Mode::Light);
 
         assert_ne!(
-            dashboard_showing, grid_showing,
-            "the raster key does not change when the chip that should draw \
-             filled changes from dashboard to grid, so the cache would go on \
-             serving the raster built for the dashboard chip"
+            dashboard_showing, first_grid,
+            "the raster key does not change when the canvas comes back on a \
+             grid rather than on the dashboard, so the cache would go on \
+             serving the raster built with no chip filled"
+        );
+        assert_ne!(
+            first_grid, second_grid,
+            "the raster key does not change when the grid the canvas comes \
+             back on is another node's, so the cache would go on serving the \
+             raster built with the first node's chip filled"
         );
     }
 

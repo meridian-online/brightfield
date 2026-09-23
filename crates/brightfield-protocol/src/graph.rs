@@ -34,7 +34,9 @@
 //! `source.<protocol>.<url>` / `stmt.<protocol>.<step>#<n>` (INTERNAL
 //! statement intermediates and opaque chips) / `stmt.<protocol>.<step>#<n>!partial`
 //! (the chip drawn BESIDE a statement recovered from its `WITH`-stripped form,
-//! whose lineage is real but incomplete). Everything is
+//! whose lineage is real but incomplete) / `dashboard.<protocol>.<relation>`
+//! (the dashboard Brightfield generates for a relation, added by
+//! [`add_generated_dashboard`] rather than by the manifest). Everything is
 //! `BTreeMap`/`BTreeSet`/`Vec` — deterministic end-to-end.
 //!
 //! **A degraded graph says so, and says which kind.** A step-level degrade's
@@ -69,6 +71,23 @@ pub enum AssetKind {
     Family,
     /// A degraded statement (or unreadable model) — an issue-badged chip.
     Opaque,
+    /// A composed page drawn from a relation, carrying a mosaic spec of its
+    /// own — a node, not a way of looking at the relation it reads, because
+    /// the spec is a thing the Protocol has in its own right.
+    Dashboard,
+}
+
+impl AssetKind {
+    /// Whether this node's content is rows — the nodes a grid can list.
+    ///
+    /// A durable relation, a statement intermediate and the exported sink are
+    /// each a table by another name. A file is not, whatever it holds: a step
+    /// that writes one names a path, not a relation, and nothing in the graph
+    /// says the bytes at that path are rows.
+    #[must_use]
+    pub const fn is_tabular(self) -> bool {
+        matches!(self, Self::Table | Self::Internal | Self::Dataset)
+    }
 }
 
 /// Why a node carries a degrade — either standing in for something the
@@ -678,6 +697,65 @@ impl Builder {
             .or_default()
             .insert(step.clone());
     }
+}
+
+/// The id [`add_generated_dashboard`] gives the dashboard it adds for
+/// `table`: the relation's own id under the `dashboard.` namespace, so the pair
+/// reads as one relation and its page, and neither can collide with the other.
+#[must_use]
+pub fn generated_dashboard_id(table: &AssetId) -> AssetId {
+    let tail = table.strip_prefix("asset.").unwrap_or(table);
+    format!("dashboard.{tail}")
+}
+
+/// Give `table` the node of the dashboard Brightfield generates for it, and say
+/// which node that is.
+///
+/// **The generated dashboard is a node of the graph because it carries a spec
+/// of its own**: a data file opens as a one-step Protocol whose table is drawn
+/// as a composed page, and that page is not a view of the table but a thing
+/// read from it. The node is labelled `dashboard`, has no producing step —
+/// Brightfield composes it, no step of the Protocol does — and hangs off the
+/// table by an edge through no seam, so it sorts after the table it draws.
+///
+/// An authored dashboard wins: when a [`AssetKind::Dashboard`] node already
+/// reads `table` — one a run contract named — that node is returned and
+/// nothing is added. `None` when `table` is not a node of `graph`, which is
+/// what a fold that absorbed the table leaves; the graph is untouched then.
+pub fn add_generated_dashboard(graph: &mut AssetGraph, table: &AssetId) -> Option<AssetId> {
+    if !graph.nodes.contains_key(table) {
+        return None;
+    }
+    let authored = graph.edges.iter().find_map(|edge| {
+        (edge.from == *table
+            && graph
+                .nodes
+                .get(&edge.to)
+                .is_some_and(|n| n.kind == AssetKind::Dashboard))
+        .then(|| edge.to.clone())
+    });
+    if authored.is_some() {
+        return authored;
+    }
+    let id = generated_dashboard_id(table);
+    graph.nodes.insert(
+        id.clone(),
+        AssetNode {
+            id: id.clone(),
+            kind: AssetKind::Dashboard,
+            label: "dashboard".to_string(),
+            step: None,
+            family_count: None,
+            issue: None,
+        },
+    );
+    graph.edges.push(Edge {
+        from: table.clone(),
+        to: id.clone(),
+        via: None,
+        shield: false,
+    });
+    Some(id)
 }
 
 /// Build the typed asset graph from a parsed manifest plus its model sources

@@ -216,7 +216,7 @@ fn node_height(kind: AssetKind, chips: bool) -> f64 {
     let base = match kind {
         AssetKind::Source => 30.0,
         AssetKind::File => 34.0,
-        AssetKind::Table => 36.0,
+        AssetKind::Table | AssetKind::Dashboard => 36.0,
         AssetKind::Internal | AssetKind::Opaque => 26.0,
         AssetKind::Dataset => 42.0,
         AssetKind::Family => 46.0,

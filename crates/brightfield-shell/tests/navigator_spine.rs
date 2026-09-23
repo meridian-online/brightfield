@@ -42,6 +42,25 @@ fn housing_boot() -> Boot {
     Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()))
 }
 
+/// What a window over a one-step Protocol opens on: its table's dashboard
+/// node, drawn as the page it is.
+///
+/// Read off the model's own graph, not spelled here, so a latch that named the
+/// table's grid or a node the graph does not have reads as the difference it is.
+fn the_dashboard(app: &MeridianApp) -> CanvasHolds {
+    let model = app.protocol_model();
+    CanvasHolds::Dashboard {
+        node: model
+            .dashboard()
+            .cloned()
+            .expect("a one-step Protocol has its table's dashboard as a node"),
+        table: model
+            .table()
+            .cloned()
+            .expect("the fixture opened as a one-step Protocol with a table"),
+    }
+}
+
 /// A window that keeps its own `egui::Context` for its whole life, because a
 /// click is resolved against the widget id a *previous* frame registered — the
 /// same harness `tests/arrangement.rs` uses and for the same reason.
@@ -667,18 +686,9 @@ fn a_fresh_open_holds_the_dashboard_and_marks_the_row_that_says_so() {
     let mut win = Live::open(housing_boot());
     win.settle();
 
-    let table = win
-        .app
-        .protocol_model()
-        .table()
-        .cloned()
-        .expect("the fixture opened as a one-step Protocol with a table");
     assert_eq!(
         win.app.canvas_holds(),
-        &CanvasHolds::View {
-            node: table,
-            view: NodeView::Dashboard,
-        },
+        &the_dashboard(&win.app),
         "a data file opens holding its table's dashboard"
     );
 
@@ -939,8 +949,8 @@ fn clicking_a_view_row_moves_the_canvas_and_the_bar_with_it() {
 
     win.click_row("dashboard");
     assert_eq!(
-        win.app.canvas_holds().view(),
-        Some(NodeView::Dashboard),
+        win.app.canvas_holds(),
+        &the_dashboard(&win.app),
         "clicking the dashboard row brings the dashboard back"
     );
     assert_eq!(
@@ -990,18 +1000,9 @@ fn opening_a_second_file_over_a_grid_resets_the_latch_to_the_new_tables_dashboar
         .open_data_file(&ctx, path.to_str().expect("utf-8 fixture path"));
     win.settle();
 
-    let table = win
-        .app
-        .protocol_model()
-        .table()
-        .cloned()
-        .expect("the second file opened as a one-step Protocol with a table");
     assert_eq!(
         win.app.canvas_holds(),
-        &CanvasHolds::View {
-            node: table,
-            view: NodeView::Dashboard,
-        },
+        &the_dashboard(&win.app),
         "the latch still names the first table's grid after a second, \
          unrelated file opened"
     );
@@ -1060,8 +1061,8 @@ fn selecting_a_column_washes_that_row_and_leaves_the_bar_where_the_canvas_is() {
          wear the picked row's mark"
     );
     assert_eq!(
-        win.app.canvas_holds().view(),
-        Some(NodeView::Dashboard),
+        win.app.canvas_holds(),
+        &the_dashboard(&win.app),
         "a column pick is not a canvas move"
     );
 }
@@ -1730,8 +1731,8 @@ fn clicking_the_graph_chip_puts_the_graph_on_the_canvas_and_a_second_click_bring
     win.click_chip();
 
     assert_eq!(
-        win.app.canvas_holds().view(),
-        Some(NodeView::Dashboard),
+        win.app.canvas_holds(),
+        &the_dashboard(&win.app),
         "the second click gives the canvas back to the view the chip took it \
          from"
     );
@@ -1813,11 +1814,9 @@ fn clicking_a_view_chip_on_the_graph_puts_that_view_on_the_canvas() {
             .iter()
             .map(|chip| (chip.node.clone(), chip.view))
             .collect::<Vec<_>>(),
-        vec![
-            (table.clone(), NodeView::Dashboard),
-            (table.clone(), NodeView::Grid),
-        ],
-        "the canvas drew a different set of chips than the table's two views"
+        vec![(table.clone(), NodeView::Grid)],
+        "the canvas drew a different set of chips than the table's one view: \
+         a dashboard is a node of the graph, not a chip in the table's foot"
     );
 
     win.click_canvas_chip(NodeView::Grid);
@@ -1942,18 +1941,9 @@ fn opening_a_second_file_over_the_graph_comes_back_to_the_new_tables_dashboard()
         .open_data_file(&ctx, path.to_str().expect("utf-8 fixture path"));
     win.settle();
 
-    let table = win
-        .app
-        .protocol_model()
-        .table()
-        .cloned()
-        .expect("the second file opened as a one-step Protocol with a table");
     assert_eq!(
         win.app.canvas_holds(),
-        &CanvasHolds::View {
-            node: table,
-            view: NodeView::Dashboard,
-        },
+        &the_dashboard(&win.app),
         "the latch still holds the graph after a second, unrelated file opened"
     );
     assert!(
@@ -1967,8 +1957,8 @@ fn opening_a_second_file_over_the_graph_comes_back_to_the_new_tables_dashboard()
     win.click_chip();
     win.click_chip();
     assert_eq!(
-        win.app.canvas_holds().view(),
-        Some(NodeView::Dashboard),
+        win.app.canvas_holds(),
+        &the_dashboard(&win.app),
         "the chip's round trip landed somewhere other than the new table's \
          dashboard"
     );

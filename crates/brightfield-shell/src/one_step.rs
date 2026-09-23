@@ -224,7 +224,7 @@ impl OneStepProtocol {
     /// surfaces it rather than swallowing it.
     pub fn inputs(&self) -> Result<ProtocolInputs, String> {
         let mut inputs = load_protocol_str(&self.manifest, &[(MODEL_PATH, &self.model)])?;
-        inputs.table = Some(self.table_id());
+        inputs.hold_table(self.table_id());
         inputs.columns.clone_from(&self.columns);
         inputs.tiles.clone_from(&self.tiles);
         inputs.source = Some(self.clone());

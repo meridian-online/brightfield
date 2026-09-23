@@ -161,7 +161,8 @@ pub enum ContractAssetKind {
     ChartSpec,
     /// A metrics artifact.
     Metrics,
-    /// A dashboard artifact.
+    /// A dashboard artifact — a composed page with a spec of its own, drawn
+    /// as the graph's [`graph::AssetKind::Dashboard`](crate::graph::AssetKind::Dashboard).
     Dashboard,
     /// A variant not known to this reader.
     #[serde(other)]
