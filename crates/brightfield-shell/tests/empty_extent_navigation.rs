@@ -10,13 +10,9 @@
 //! COUNT that drops by one while `Dashboard::tile_columns()` (set once, at
 //! file open, and left at that size from then on) keeps its own count, so
 //! each plot after the dropped one reads one index low against the tile it
-//! is supposed to be. The map pane's count overlay reads
-//! `composed.plots.first()` for its own position
-//! (`crate::window::hero_data_area`) and finds the wrong plot there
-//! entirely, so it draws in no pane whatsoever — measured as
-//! `canvas_panes().count` going `None`. And a press on the column's own top
-//! tile resolves through `composed.plots`' shifted index into the WRONG
-//! entry of `ChartDoc::tile_columns()`.
+//! is supposed to be: a press on the column's own top tile resolves through
+//! `composed.plots`' shifted index into the WRONG entry of
+//! `ChartDoc::tile_columns()`.
 //!
 //! Driven through the real shell, as `tests/canvas_pane_group.rs` and
 //! `tests/equal_aspect_resize.rs` are: [`MeridianApp::headless`] over
@@ -168,7 +164,7 @@ fn pan_the_map(app: &mut MeridianApp, ctx: &egui::Context) {
 }
 
 /// **AC1, AC2, AC3** — two pans past the data keep the hero placed with its
-/// axes drawn and its count at zero, the column's top tile still selects its
+/// axes drawn and read as empty, the column's top tile still selects its
 /// own column, and a pan back over the data restores the points with no
 /// reset.
 #[test]
@@ -225,26 +221,8 @@ fn a_navigated_map_with_no_data_beneath_it_stays_placed() {
          X nor a continuous Y to draw ticks from"
     );
 
-    // AC2 — the count chip reads zero rather than disappearing, and the
-    // column's top tile still selects its own column.
-    let count = panes
-        .count
-        .expect("the count overlay did not draw over an empty-but-placed hero");
-    assert!(
-        map.body.contains_rect(count),
-        "the count at {count:?} is not inside the map pane {:?}",
-        map.body
-    );
-    let count_text = panes
-        .count_text
-        .clone()
-        .expect("the count overlay drew a rect but no text — the two come off one paint");
-    assert!(
-        count_text.starts_with("0 points"),
-        "the count chip read {count_text:?} — an empty-under-navigation hero \
-         should say zero points, not the file's own static total"
-    );
-
+    // AC2 — the column's top tile still selects its own column.
+    //
     // Thrown here rather than at the open, so the pans above happen in the
     // layout the hero is read in and only the press below needs the tile.
     transpose_the_grid(&mut app, &ctx);
@@ -307,20 +285,5 @@ fn a_navigated_map_with_no_data_beneath_it_stays_placed() {
         "panning back over the data left the hero reading empty — no reset \
          was pressed, so this has to be the pan-back putting rows under it \
          again"
-    );
-    let restored_panes = app.canvas_panes();
-    assert!(
-        restored_panes.count.is_some(),
-        "the count overlay stayed absent after the pan back put the map \
-         over real data again"
-    );
-    let restored_text = restored_panes
-        .count_text
-        .clone()
-        .expect("the restored count overlay drew a rect but no text");
-    assert!(
-        !restored_text.starts_with("0 points"),
-        "the count chip still read {restored_text:?} after the pan back put \
-         real rows under the hero again"
     );
 }

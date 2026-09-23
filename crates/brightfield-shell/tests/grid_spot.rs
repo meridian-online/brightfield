@@ -138,6 +138,45 @@ impl Window {
         self.click(at);
     }
 
+    /// One frame, and every shape it handed the painter with the clip each was
+    /// drawn under.
+    fn shapes(&mut self) -> Vec<egui::epaint::ClippedShape> {
+        let raw = egui::RawInput {
+            screen_rect: Some(self.screen),
+            ..Default::default()
+        };
+        self.ctx.run_ui(raw, |ui| self.app.draw(ui)).shapes
+    }
+
+    /// **The hero's data area**, in window space: the frame its own axes bound,
+    /// read off the composition's layout at the rect the hero was drawn at.
+    fn hero_data_area(&self) -> egui::Rect {
+        let hero = self.app.composed_plot_rects()[0];
+        let layout = &self.app.chart_doc().composed.plots[0].layout;
+        #[allow(clippy::cast_possible_truncation)]
+        egui::Rect::from_min_max(
+            egui::pos2(
+                hero.left() + layout.plot_x_start() as f32,
+                hero.top() + layout.plot_y_start() as f32,
+            ),
+            egui::pos2(
+                hero.left() + layout.plot_x_end() as f32,
+                hero.top() + layout.plot_y_end() as f32,
+            ),
+        )
+    }
+
+    /// The text the last frame drew inside `rect`, in reading order.
+    fn words_in(&mut self, rect: egui::Rect) -> String {
+        let mut text = self.run(Vec::new());
+        text.retain(|(at, _)| rect.contains(*at));
+        text.sort_by(|a, b| a.0.y.total_cmp(&b.0.y).then(a.0.x.total_cmp(&b.0.x)));
+        text.into_iter()
+            .map(|(_, t)| t)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     /// The part of the ledger rail a reader sees: the rail's rect, less the
     /// status band where that band floats over the rail's foot.
     fn ledger_seen(&self) -> egui::Rect {
@@ -267,6 +306,67 @@ fn collect_text(shape: &egui::epaint::Shape, into: &mut Vec<(egui::Pos2, String)
         }
         _ => {}
     }
+}
+
+/// Every piece of chrome ink a frame drew inside `area`: each galley whose
+/// visible part reaches into it, and each filled rect whose visible part
+/// reaches into it without covering all of it. A fill that covers the whole
+/// area is a pane's background under the picture, not a chip over it. The
+/// picture itself is a textured mesh and is not read.
+fn chrome_ink_inside(shapes: &[egui::epaint::ClippedShape], area: egui::Rect) -> Vec<String> {
+    fn walk(
+        shape: &egui::epaint::Shape,
+        clip: egui::Rect,
+        area: egui::Rect,
+        into: &mut Vec<String>,
+    ) {
+        match shape {
+            egui::epaint::Shape::Vec(shapes) => {
+                for s in shapes {
+                    walk(s, clip, area, into);
+                }
+            }
+            egui::epaint::Shape::Text(t) => {
+                let seen = t.visual_bounding_rect().intersect(clip);
+                if seen.is_positive() && seen.intersects(area.shrink(1.0)) {
+                    into.push(format!("the galley {:?} at {seen:?}", t.galley.text()));
+                }
+            }
+            egui::epaint::Shape::Rect(r) if r.fill.a() > 0 => {
+                let seen = r.rect.intersect(clip);
+                if seen.is_positive()
+                    && seen.intersects(area.shrink(1.0))
+                    && !r.rect.contains_rect(area)
+                {
+                    into.push(format!("a filled rect {:?} at {seen:?}", r.fill));
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut ink = Vec::new();
+    for clipped in shapes {
+        walk(&clipped.shape, clipped.clip_rect, area, &mut ink);
+    }
+    ink
+}
+
+/// A second file for the hero, whose points fill its whole extent — the
+/// north-east corner the housing sample leaves empty included, so no corner of
+/// this map is clear of marks. `latitude` and `longitude` on a half-degree
+/// lattice over California's box, and one value column beside them.
+fn corner_filling_fixture(dir: &std::path::Path) -> std::path::PathBuf {
+    let mut csv = String::from("latitude,longitude,value\n");
+    for i in 0..=20 {
+        for j in 0..=20 {
+            let lat = 32.0 + 0.5 * f64::from(i);
+            let lon = -124.0 + 0.5 * f64::from(j);
+            csv.push_str(&format!("{lat},{lon},{}\n", i * 21 + j));
+        }
+    }
+    let path = dir.join("corners.csv");
+    std::fs::write(&path, csv).expect("the fixture writes");
+    path
 }
 
 fn text_in(text: &[(egui::Pos2, String)], rect: egui::Rect) -> Vec<String> {
@@ -841,4 +941,73 @@ fn no_ledger_pane_opens_shorter_than_it_did() {
             );
         }
     }
+}
+
+/// **AC3: no chrome ink is drawn inside the hero's data area, in either grid
+/// spot, on this file or on one whose points fill every corner.**
+///
+/// The frame is read for any galley or filled chip inside the frame the hero's
+/// axes bound, with the grid beside the hero and with the grid sent to the
+/// ledger, on the housing sample and on [`corner_filling_fixture`]. What the
+/// caption used to say is read where it went: the map pane's header names the
+/// axes and the projection, and the status band carries the row count.
+#[test]
+fn no_chrome_ink_is_drawn_inside_the_heros_data_area() {
+    let dir = std::env::temp_dir().join(format!("bf-hero-ink-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("the scratch dir");
+    let corners = corner_filling_fixture(&dir);
+
+    for (file, path, rows) in [
+        ("the housing sample", housing(), 240_u64),
+        ("the corner-filling file", corners, 441),
+    ] {
+        let mut win = Window::over(
+            Boot::data_file(path.to_str().expect("utf-8")).expect("the file opens"),
+            default_layout(),
+        );
+        for spot in [GridSpot::Canvas, GridSpot::Ledger] {
+            if spot == GridSpot::Ledger {
+                win.pick_rows();
+            }
+            assert_eq!(
+                win.app.grid_spot(),
+                spot,
+                "{file}: the grid is not where it was sent"
+            );
+            let area = win.hero_data_area();
+            let shapes = win.shapes();
+            let ink = chrome_ink_inside(&shapes, area);
+            assert!(
+                ink.is_empty(),
+                "{file}, grid in the {spot:?} spot: chrome ink inside the hero's \
+                 data area {area:?}: {ink:#?}"
+            );
+
+            let header = win
+                .app
+                .canvas_panes()
+                .pane("map")
+                .expect("the map pane drew")
+                .header;
+            let title = win.words_in(header);
+            for wanted in ["latitude \u{d7} longitude", "equirectangular"] {
+                assert!(
+                    title.contains(wanted),
+                    "{file}, grid in the {spot:?} spot: the map pane's header reads \
+                     {title:?}, without {wanted:?}"
+                );
+            }
+            let status = win.rect(STATUS_BAND);
+            let said = win.words_in(status);
+            let count = format!("{rows} of {rows} rows");
+            assert!(
+                said.contains(&count),
+                "{file}, grid in the {spot:?} spot: the status band reads {said:?}, \
+                 without {count:?}"
+            );
+        }
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

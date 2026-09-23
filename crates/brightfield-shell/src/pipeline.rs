@@ -168,11 +168,9 @@ pub struct PlotHandle {
     /// rather than being dropped. `false` for the overwhelming common case:
     /// a plot with real marks drawn, whether navigated or not.
     ///
-    /// The one reader is the map pane's count overlay
-    /// (`crate::window::count_overlay_text`): it says how many points the
-    /// hero draws, and a static per-file total would say something the
-    /// picture beside it does not — this is what tells it to say zero
-    /// instead.
+    /// A fact about the composition rather than an instruction to any
+    /// reader: the plot's axes still say where the navigated extent is, and
+    /// this says that nothing is there.
     pub navigated_empty: bool,
 }
 

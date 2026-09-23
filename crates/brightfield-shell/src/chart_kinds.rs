@@ -493,7 +493,7 @@ pub fn point_map_tile(lon: &str, lat: &str, indent: usize) -> String {
 }
 
 /// The projection the generated point-map tile draws through, as it is written
-/// into the spec and as the count overlay names it.
+/// into the spec and as the map pane's header names it.
 ///
 /// The plate carrée: `u = lon`, `v = lat`, so the `intervalXY` brush's per-axis
 /// inverse is exact and the graticule's lines, and the labels naming them,
