@@ -238,11 +238,11 @@ fn a_table_with_one_measure_admits_no_point_map() {
 }
 
 // ---------------------------------------------------------------------------
-// AC3 — the block: two equal-aspect layers, ghosted, brushable
+// AC3 — the block: two projected layers, ghosted, brushable
 // ---------------------------------------------------------------------------
 
-/// **The kind emits two `dot` layers over the bound columns, both asking for
-/// an equal-aspect frame, and only the second is narrowed.**
+/// **The kind emits two `dot` layers over the bound columns, on one projected
+/// plot, and only the second is narrowed.**
 #[test]
 fn the_point_map_declares_a_ghost_cloud_behind_a_filtered_subset() {
     let source = document(LON, LAT);
@@ -561,11 +561,12 @@ fn a_rectangle_swept_over_the_point_map_narrows_the_tile_beside_it() {
          both of the columns its plot binds"
     );
     // `longitude` spans 230 units over the plot's ~288 pixels and `latitude`
-    // spans only 48 over its ~434 — the narrower fit — so the equal-aspect
-    // frame widens LATITUDE's interactive domain past its own column range to
-    // match longitude's px-per-unit, exactly as it widens the rendered axis
-    // (`augment_scales_equal_aspect_widens_the_narrower_axis`, in
-    // `brightfield-render`). So longitude is checked against its own values
+    // spans only 48 over its ~434 — the narrower fit — so the projected plot's
+    // aspect fit (`DotRenderer::augment_scales`, in `brightfield-render`)
+    // widens LATITUDE's interactive domain past its own column range to match
+    // longitude's px-per-unit, as it widens the drawn extent. Under the plate
+    // carrée a planar unit is a degree, so the brush's per-axis inverse hands
+    // back degrees on both. So longitude is checked against its own values
     // and latitude only against being a genuine, ordered interval — a
     // narrower check would fail on the very widening this kind exists for.
     let (_, lon_lo, lon_hi) = clauses
