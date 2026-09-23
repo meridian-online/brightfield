@@ -34,10 +34,12 @@
 //! `source.<protocol>.<url>` / `stmt.<protocol>.<step>#<n>` (INTERNAL
 //! statement intermediates and opaque chips) / `stmt.<protocol>.<step>#<n>!partial`
 //! (the chip drawn BESIDE a statement recovered from its `WITH`-stripped form,
-//! whose lineage is real but incomplete) / `dashboard.<protocol>.<relation>`
-//! (the dashboard Brightfield generates for a relation, added by
-//! [`add_generated_dashboard`] rather than by the manifest). Everything is
+//! whose lineage is real but incomplete). Everything is
 //! `BTreeMap`/`BTreeSet`/`Vec` — deterministic end-to-end.
+//!
+//! The dashboard Brightfield generates for a relation is
+//! `dashboard.<protocol>.<relation>`, added by [`add_generated_dashboard`]
+//! rather than by the manifest.
 //!
 //! **A degraded graph says so, and says which kind.** A step-level degrade's
 //! chip is labelled `<class>: <model>` — the class first, because the renderer
@@ -719,9 +721,10 @@ pub fn generated_dashboard_id(table: &AssetId) -> AssetId {
 /// table by an edge through no seam, so it sorts after the table it draws.
 ///
 /// An authored dashboard wins: when a [`AssetKind::Dashboard`] node already
-/// reads `table` — one a run contract named — that node is returned and
-/// nothing is added. `None` when `table` is not a node of `graph`, which is
-/// what a fold that absorbed the table leaves; the graph is untouched then.
+/// reads `table` — one a run contract named — that node is returned and the
+/// graph is left as it was. `None` when `table` is not a node of `graph`,
+/// which is what a fold that absorbed the table leaves; the graph is left as
+/// it was then too.
 pub fn add_generated_dashboard(graph: &mut AssetGraph, table: &AssetId) -> Option<AssetId> {
     if !graph.nodes.contains_key(table) {
         return None;

@@ -873,9 +873,9 @@ pub const fn graph_takes_the_canvas(has_graph: bool, has_chart: bool) -> bool {
 /// The dashboard is the page a data file opens as, so it is the canvas's first
 /// occupant and the one it falls back to. The grid is the fallback for a
 /// document whose graph lost the dashboard — [`ProtocolInputs::hold_table`]
-/// adds it, so that is a document built some other way — because a table is
-/// always viewable and a latch naming a dashboard the graph lacks would be a
-/// view of nothing.
+/// adds it, so that is a document built some other way — because the held
+/// table is viewable and a latch naming a dashboard the graph lacks would name
+/// a node that is not there.
 fn opening_canvas(dashboard: Option<AssetId>, table: AssetId) -> CanvasHolds {
     match dashboard {
         Some(node) => CanvasHolds::Dashboard { node, table },
@@ -8178,7 +8178,7 @@ fn draw_canvas_grid_pane(
 /// pane's frame, titled for that node, around an empty state that names it.
 ///
 /// Drawn through the same `pane_frame` the one grid is, so what a reader lands
-/// on from the node's `grid` row is the grid pane — the node's — with nothing
+/// on from the node's `grid` row is the grid pane — the node's — with no rows
 /// to list yet, rather than the session table's rows under another name. The
 /// session reads the one table the file opened as; materialising any other
 /// node is a run's, and this says so rather than doing it.
@@ -8225,7 +8225,7 @@ fn draw_unheld_grid_pane(
     }
 }
 
-/// The headline [`draw_unheld_grid_pane`] draws for `label`'s grid — named
+/// The headline `draw_unheld_grid_pane` draws for `label`'s grid — named
 /// once, so a test reading the frame for it and the pane that draws it cannot
 /// spell it two ways.
 #[must_use]

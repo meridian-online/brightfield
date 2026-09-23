@@ -262,8 +262,8 @@ fn unsupported_contract_version_is_rejected() {
 /// out-of-domain viz artefact is folded into.
 ///
 /// And the table keeps it: a dashboard a contract named is the one
-/// `add_generated_dashboard` returns for that table, with nothing added beside
-/// it, so a Protocol whose run authored a dashboard does not grow a second,
+/// `add_generated_dashboard` returns for that table, and the node count stays
+/// where it was, so a Protocol whose run authored a dashboard does not grow a second,
 /// generated one.
 #[test]
 fn a_contract_dashboard_reaches_the_graph_as_a_dashboard_node() {

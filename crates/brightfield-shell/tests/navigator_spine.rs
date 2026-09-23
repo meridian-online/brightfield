@@ -1831,7 +1831,7 @@ fn clicking_a_view_chip_on_the_graph_puts_that_view_on_the_canvas() {
         "the canvas drew a different set of chips than the table's one view: \
          a dashboard is a node of the graph, not a chip in the table's foot"
     );
-    // The words the layout laid out, not only the chips a click resolves: a
+    // The words the layout laid out, as well as the chips a click resolves: a
     // `dashboard` word in the table's foot would be drawn by the raster and
     // dropped by `NodeView::from_label` before it reached the list above.
     let laid: Vec<(String, Vec<String>)> = win
@@ -2561,7 +2561,7 @@ impl Live {
 /// same reason: a grid drawing the session's rows draws it, and a grid of a
 /// node the session does not hold must not.
 ///
-/// Watched redden, two mutations: listing views only under the held table in
+/// Watched redden, two mutations: listing views under the held table alone in
 /// `ProtocolModel::spine` (`has_views` back to `table == row.id`) — no grid
 /// row stands under `rooms_by_age`; and dropping the `grid_unheld` branch in
 /// the canvas draw — the second table's grid draws the first table's rows.

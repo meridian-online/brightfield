@@ -1540,11 +1540,11 @@ impl ProtocolModel {
     /// so no step row stands above it and it reads as existing — Brightfield
     /// composed it when the file opened.
     ///
-    /// **Views are listed only where the Protocol holds a table**, because a
-    /// view is something the canvas can hold and a Protocol read from a
-    /// manifest has nothing for the canvas to hold but its graph —
-    /// `graph_takes_the_canvas` gives the graph the canvas whenever no chart is
-    /// open. A `grid` row there would be a row whose click does nothing.
+    /// **Views are listed where the Protocol holds a table**, because a
+    /// view is something the canvas can hold, and a Protocol read from a
+    /// manifest gives its canvas to its graph: `graph_takes_the_canvas` answers
+    /// the graph while no chart is open. A `grid` row there would be a row
+    /// whose click the next frame's reconciliation takes back.
     ///
     /// The order is the outline's and is not re-derived here, for the reason
     /// [`ProtocolModel::column_rows`] is a filter: the rail, the canvas and the
@@ -1832,7 +1832,7 @@ impl ProtocolModel {
     /// The locator band's four crumbs for a view of `node`: the file `node`'s
     /// step read, the step's own name, `node`'s name and `view`.
     ///
-    /// `None` where [`Self::lineage_crumbs`] is — a caller with the window's
+    /// `None` where `lineage_crumbs` is — a caller with the window's
     /// title to fall back to should use that instead rather than draw a
     /// partial line.
     #[must_use]
@@ -1851,7 +1851,7 @@ impl ProtocolModel {
     /// `overview` here and a view's word could not stand in for it.
     ///
     /// `None` when `dashboard` is absent from the collapsed graph, when no edge
-    /// feeds it, or where [`Self::lineage_crumbs`] is for the node that does.
+    /// feeds it, or where `lineage_crumbs` is for the node that does.
     #[must_use]
     pub fn dashboard_crumbs(&self, dashboard: &AssetId) -> Option<Vec<String>> {
         let node = self.graph_collapsed.nodes.get(dashboard)?;
