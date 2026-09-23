@@ -307,6 +307,17 @@ pub fn min_column_width() -> f32 {
     2.0f32.mul_add(b.pad_x, b.icon)
 }
 
+/// The height the table gives one data row, in logical points: the dense
+/// rung's binding, which is what [`show_table`] hands `egui_table` per row.
+///
+/// Public for the reason [`chrome::header_band_height`] is: a rail that opens
+/// tall enough for a number of rows has to know what a row costs, and a copy of
+/// the rung at that call site is how the two answers drift apart.
+#[must_use]
+pub fn row_height() -> f32 {
+    control::binding(spacing::ROW_DENSE).row
+}
+
 /// A column's ceiling in logical points. A free-text column has no natural
 /// width worth honouring; past this it is one column wide enough to push the
 /// others off screen.
@@ -345,6 +356,13 @@ pub struct TableDrawn {
     /// `widest_band_per_column` in this module, for the reason
     /// `widest_per_column` reduces the header cells.
     pub band: Vec<ColumnBandDrawn>,
+    /// One entry per data row the table laid out this frame, in row order: the
+    /// row's index, its rect and the clip it was drawn under. The table is
+    /// virtualised, so these are the rows in and around the viewport, not the
+    /// result set — [`Self::rows`] is that. Reduced per row by
+    /// `most_visible_per_row` in this module, because a row is offered once per
+    /// scrolling region as a header cell is.
+    pub row_cells: Vec<(u64, egui::Rect, egui::Rect)>,
 }
 
 impl TableDrawn {
@@ -355,6 +373,23 @@ impl TableDrawn {
         self.header_cells
             .iter()
             .filter(|(_, rect, clip)| clip.contains_rect(rect.shrink(CLIP_SLACK)))
+            .count()
+    }
+
+    /// How many data rows drew **whole** inside `within`: the row's rect
+    /// entirely inside both the clip the table drew it under and `within`.
+    ///
+    /// `within` is the caller's, because what counts as seen is a fact about
+    /// the window around the table — a layer floated over the table's foot
+    /// hides rows the table's own clip still admits.
+    #[must_use]
+    pub fn rows_whole_within(&self, within: egui::Rect) -> usize {
+        self.row_cells
+            .iter()
+            .filter(|(_, rect, clip)| {
+                let seen = rect.shrink(CLIP_SLACK);
+                clip.contains_rect(seen) && within.contains_rect(seen)
+            })
             .count()
     }
 
@@ -485,6 +520,7 @@ pub fn show_table_sized(
             rows: num_rows,
             header_height,
             band: Vec::new(),
+            row_cells: Vec::new(),
         },
     };
     let _ = egui_table::Table::new()
@@ -495,7 +531,34 @@ pub fn show_table_sized(
         .show(ui, &mut delegate);
     delegate.drawn.header_cells = widest_per_column(&delegate.drawn.header_cells);
     delegate.drawn.band = widest_band_per_column(&delegate.drawn.band);
+    delegate.drawn.row_cells = most_visible_per_row(&delegate.drawn.row_cells);
     delegate.drawn
+}
+
+/// One entry per row out of the several a row is offered under, keeping the
+/// one whose clip shows most of it — `widest_per_column`'s rule, turned to the
+/// rows: `egui_table` hands `row_ui` a row once per scrolling region it spans
+/// and once more on its invisible sizing pass.
+fn most_visible_per_row(
+    cells: &[(u64, egui::Rect, egui::Rect)],
+) -> Vec<(u64, egui::Rect, egui::Rect)> {
+    let seen = |rect: &egui::Rect, clip: &egui::Rect| {
+        let shown = clip.intersect(*rect);
+        shown.width().max(0.0) * shown.height().max(0.0)
+    };
+    let mut best: std::collections::BTreeMap<u64, (egui::Rect, egui::Rect)> =
+        std::collections::BTreeMap::new();
+    for (row, rect, clip) in cells {
+        match best.get(row) {
+            Some((held, held_clip)) if seen(held, held_clip) >= seen(rect, clip) => {}
+            _ => {
+                best.insert(*row, (*rect, *clip));
+            }
+        }
+    }
+    best.into_iter()
+        .map(|(row, (rect, clip))| (row, rect, clip))
+        .collect()
 }
 
 /// One entry per column out of the several the band is painted under, keeping
@@ -641,7 +704,7 @@ impl egui_table::TableDelegate for MeridianTableDelegate<'_> {
     }
 
     fn default_row_height(&self) -> f32 {
-        self.binding.row
+        row_height()
     }
 
     fn header_cell_ui(&mut self, ui: &mut egui::Ui, cell: &egui_table::HeaderCellInfo) {
@@ -692,6 +755,7 @@ impl egui_table::TableDelegate for MeridianTableDelegate<'_> {
         // layout because a grid row's width is unknown until its widest cell
         // is measured; here the row rect is handed in whole.
         let rect = ui.max_rect();
+        self.drawn.row_cells.push((row_nr, rect, ui.clip_rect()));
         if self.source.selected_row() == Some(row_nr) {
             chrome::selection_wash(ui, rect, self.mode);
         } else if row_nr % 2 == 1 {

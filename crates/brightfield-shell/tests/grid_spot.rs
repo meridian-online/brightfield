@@ -20,7 +20,7 @@ use brightfield_shell::startup::{default_layout, opening_boot};
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_sql::ir::ScalarValue;
-use brightfield_workbench::arrangement::{CANVAS, LEDGER_RAIL};
+use brightfield_workbench::arrangement::{CANVAS, LEDGER_RAIL, STATUS_BAND};
 use brightfield_workbench::RunState;
 
 /// The housing sample every criterion opens.
@@ -31,6 +31,19 @@ fn housing() -> std::path::PathBuf {
 
 /// The ledger strip's Rows name: Log, Quality, Rows, Editor.
 const ROWS_NAME: usize = 2;
+
+/// The ledger strip's names in the order it draws them, and so the index each
+/// is clicked at.
+const LEDGER_NAMES: [&str; 4] = ["Log", "Quality", "Rows", "Editor"];
+
+/// The height the ledger rail opened at over every pane before the Rows spot
+/// asked for its rows. A number and not the constant it came from: what is
+/// held is that no pane opens shorter than it did, and a floor read off the
+/// declaration would move with the declaration.
+const LEDGER_OPENED_AT: f32 = 180.0;
+
+/// How many data rows the Rows spot has to show at its opening height.
+const READABLE_RUN: usize = 5;
 
 struct Window {
     app: MeridianApp,
@@ -107,12 +120,35 @@ impl Window {
     }
 
     fn pick_rows(&mut self) {
+        self.pick_ledger_name(ROWS_NAME);
+    }
+
+    /// Click the ledger strip's name at `index`, where the last frame drew it.
+    fn pick_ledger_name(&mut self, index: usize) {
         let at = self
             .app
-            .rail_name_rect(LEDGER_RAIL, ROWS_NAME)
-            .expect("the ledger strip drew its Rows name")
+            .rail_name_rect(LEDGER_RAIL, index)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the ledger strip drew no {} name",
+                    LEDGER_NAMES.get(index).unwrap_or(&"such")
+                )
+            })
             .center();
         self.click(at);
+    }
+
+    /// The part of the ledger rail a reader sees: the rail's rect, less the
+    /// status band where that band floats over the rail's foot.
+    fn ledger_seen(&self) -> egui::Rect {
+        let ledger = self.rect(LEDGER_RAIL);
+        match self.app.region_rect(STATUS_BAND) {
+            Some(status) if status.intersects(ledger) => egui::Rect::from_min_max(
+                ledger.min,
+                egui::pos2(ledger.right(), status.top().min(ledger.bottom())),
+            ),
+            _ => ledger,
+        }
     }
 
     /// Click `spot` on the grid's own spot switch, wherever the grid drew it.
@@ -716,4 +752,93 @@ fn the_spines_grid_row_brings_the_grid_back_to_the_canvas() {
          some other spot for it"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **AC1: the Rows spot opens on a readable run of rows.** The housing sample
+/// at 1440 by 900, the grid sent to the ledger by the Rows name and the rail
+/// left at the height it opens at: the table draws at least
+/// [`READABLE_RUN`] data rows whole, under its compact band and inside the part
+/// of the ledger a reader sees — the rail, less the status band floated over
+/// its foot.
+///
+/// Counted off the rects the table drew its rows at, each held entirely inside
+/// its own clip and the seen rail, so a row cut by the pane's foot or hidden
+/// under the status band is not counted. No drag runs: a count reached by
+/// dragging the rail taller is the defect this holds against.
+#[test]
+fn the_rows_spot_opens_on_a_readable_run_of_rows() {
+    let mut win = Window::housing();
+    win.pick_rows();
+    assert_eq!(
+        win.app.grid_spot(),
+        GridSpot::Ledger,
+        "the Rows name did not send the grid to the ledger"
+    );
+    let seen = win.ledger_seen();
+    let head = win.table_head();
+    assert!(
+        seen.contains_rect(head.shrink(1.0)),
+        "the table's header drew at {head:?}, outside the ledger {seen:?}"
+    );
+    let drawn = win
+        .app
+        .chart_doc()
+        .grid_drawn()
+        .expect("a table was drawn this frame")
+        .clone();
+    let under_band = egui::Rect::from_min_max(egui::pos2(seen.left(), head.bottom()), seen.max);
+    let whole = drawn.rows_whole_within(under_band);
+    assert!(
+        whole >= READABLE_RUN,
+        "the Rows spot opened at {:.0}pt and showed {whole} whole data rows \
+         under its band, short of {READABLE_RUN} — the rows it laid out: {:?}",
+        win.rect(LEDGER_RAIL).height(),
+        drawn
+            .row_cells
+            .iter()
+            .map(|(row, rect, _)| (*row, rect.top(), rect.bottom()))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// **AC2: no ledger pane opens shorter than it did.** On the housing sample,
+/// each of the strip's names opens the rail from its collapsed strip at least
+/// [`LEDGER_OPENED_AT`] tall. Then each is clicked on a rail the grid is
+/// already holding, so a record pane reached from the grid's taller rail is
+/// read too: the two keep separate heights, and a record pane that inherited
+/// the grid's would pass the floor while opening at the wrong one — which is
+/// why the second walk also holds the record panes to the height the first
+/// walk read.
+#[test]
+fn no_ledger_pane_opens_shorter_than_it_did() {
+    let mut record = None;
+    for (index, name) in LEDGER_NAMES.iter().enumerate() {
+        for after_grid in [false, true] {
+            let mut win = Window::housing();
+            if after_grid {
+                win.pick_rows();
+            }
+            win.pick_ledger_name(index);
+            let height = win.rect(LEDGER_RAIL).height();
+            let how = if after_grid {
+                "on a rail the grid was holding"
+            } else {
+                "from the collapsed strip"
+            };
+            assert!(
+                height >= LEDGER_OPENED_AT - 1e-3,
+                "{name}, clicked {how}, drew the ledger rail {height:.1}pt tall, \
+                 shorter than the {LEDGER_OPENED_AT}pt it opened at before"
+            );
+            if index == ROWS_NAME {
+                continue;
+            }
+            let first = *record.get_or_insert(height);
+            assert!(
+                (height - first).abs() < 1e-3,
+                "{name}, clicked {how}, drew the ledger rail {height:.1}pt tall \
+                 where the record panes open at {first:.1}pt"
+            );
+        }
+    }
 }

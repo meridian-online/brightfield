@@ -4040,13 +4040,25 @@ impl MeridianApp {
             // `a_rail_reopens_at_the_extent_it_was_dragged_to` measures.
             // egui's own `Panel::show_switched` carries the same rule as a
             // `debug_assert`.
+            //
+            // Open, it is one of two ids again, for the same reason: **the rail
+            // opens at the height of what it holds.** Holding the grid, it
+            // opens tall enough for `LEDGER_GRID_ROWS` of its rows; holding
+            // the run record, at the declared default. Each id keeps its own
+            // dragged height, so a rail dragged over the grid does not carry
+            // that height to the Log, nor the Log's back to the grid.
+            let ledger_holds = if ledger_panes[ledger_panel] == ROWS && !canvas_draws_grid {
+                LedgerHolds::Grid
+            } else {
+                LedgerHolds::Record
+            };
             let ledger_panel_widget = if ledger_collapsed {
                 Panel::bottom(panel_id(ledger, true))
                     .resizable(false)
                     .exact_size(rail_collapsed(ledger))
             } else {
-                Panel::bottom(panel_id(ledger, false))
-                    .default_size(rail_default(ledger))
+                Panel::bottom(panel_id(ledger, false).with(ledger_holds))
+                    .default_size(ledger_open_extent(ledger, ledger_holds, mode))
                     .min_size(rail_min(ledger))
                     .resizable(true)
             };
@@ -4106,7 +4118,7 @@ impl MeridianApp {
                     // reddens when a pane reaches the wrong arm: the item is
                     // not in that document's map, so nothing draws and the
                     // empty state it reads is not there.
-                    if item == ROWS && !canvas_draws_grid {
+                    if ledger_holds == LedgerHolds::Grid {
                         // **The grid itself, in the Rows spot** — not a second
                         // grid, but the one the canvas is not drawing.
                         ledger_grid_body = Some(draw_ledger_grid_pane(
@@ -7037,6 +7049,50 @@ fn rail_default(region: &Region) -> f32 {
         arrangement::Extent::Rail { default, .. } => default,
         other => panic!("{} is drawn as a rail but declared {other:?}", region.id),
     }
+}
+
+/// What the open ledger rail holds, as far as its height is concerned: the
+/// grid in its *Rows* spot, or one of the run-record panes. The key its open
+/// panel's id is derived with, so each keeps the height it was dragged to.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum LedgerHolds {
+    /// *Log*, *Quality*, the *Editor*, or the *Rows* spot saying where the grid
+    /// went — the panes that open at the rail's declared default.
+    Record,
+    /// The grid, drawn in the *Rows* spot.
+    Grid,
+}
+
+/// What the open ledger rail opens at, holding `holds`.
+///
+/// Holding the grid: the chrome above the grid's first data row — the rail's
+/// tab strip, the pane's header band and inset, and the compact column band
+/// the grid draws in this spot — then
+/// [`arrangement::LEDGER_GRID_ROWS`] rows at [`crate::data_grid::row_height`],
+/// then the pane's inset and the band the status rail floats in over the
+/// rail's foot. Each term is the function that draws it, so a change to any of
+/// them moves the height with it and the count of rows holds. Never below the
+/// rail's declared default, so the grid's spot opens no shorter than the
+/// record panes.
+///
+/// # Panics
+///
+/// If the region is not a rail — as [`band_extent`].
+fn ledger_open_extent(ledger: &Region, holds: LedgerHolds, mode: Mode) -> f32 {
+    let declared = rail_default(ledger);
+    if holds == LedgerHolds::Record {
+        return declared;
+    }
+    let above = chrome::rail_selector_height()
+        + chrome::header_band_height()
+        + chrome::pane_content_inset()
+        + crate::column_header::column_header_frame(GridDensity::Compact, mode).extent();
+    let rows = f32::from(arrangement::LEDGER_GRID_ROWS) * crate::data_grid::row_height();
+    let below = chrome::pane_content_inset()
+        + overlay_extent(
+            arrangement::default_arrangement().expect_region(arrangement::STATUS_BAND),
+        );
+    (above + rows + below).ceil().max(declared)
 }
 
 /// What a rail refuses to narrow past.
