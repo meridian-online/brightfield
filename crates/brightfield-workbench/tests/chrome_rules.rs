@@ -442,6 +442,96 @@ fn an_overlay_is_not_painted_in_the_panel_fill() {
     );
 }
 
+/// **The status rail's band is not a control, and its dismissable line still
+/// is.**
+///
+/// An anchored `egui::Area` registers a move widget over its whole rect, and
+/// one that cannot move senses a click there to raise its layer — so without
+/// a sense of its own the band read as one unnamed control the width of the
+/// window. The first half holds that no widget on this frame senses a click
+/// without also sensing a drag. The second holds the reason the fix is a
+/// sense and not `interactable(false)`: a layer taken out of egui's hit test
+/// takes the line's own click with it, and a click on the line has to land.
+#[test]
+fn the_status_rails_band_senses_no_click_and_its_entry_still_dismisses() {
+    let verb = Verb::new("clear-selection");
+    let entries = vec![StatusEntry {
+        id: "selection",
+        side: StatusSide::Leading,
+        text: "price > 200000".into(),
+        tone: Tone::Neutral,
+        hide: HideAffordance::Verb(verb),
+    }];
+    let ctx = egui::Context::default();
+    let draw = |events: Vec<egui::Event>| {
+        let mut out = chrome::StatusDrawn::default();
+        let input = egui::RawInput {
+            screen_rect: Some(PANE),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(input, |ui| {
+            out = chrome::status_rail_overlay(
+                ui.ctx(),
+                &entries,
+                chrome::status_rail_height(),
+                Mode::Light,
+            );
+        });
+        out
+    };
+
+    // Three frames, because an anchored Area is placed by the size it had the
+    // frame before, and on its first frame it has none.
+    draw(Vec::new());
+    draw(Vec::new());
+    let drawn = draw(Vec::new());
+    let band = drawn.rect.expect("a rail with a line draws its band");
+    let click_only: Vec<(egui::Id, egui::Rect)> = ctx.viewport(|vp| {
+        vp.prev_pass
+            .widgets
+            .layers()
+            .flat_map(|(_, rects)| rects.iter())
+            .filter(|w| {
+                w.enabled
+                    && w.sense.senses_click()
+                    && !w.sense.senses_drag()
+                    && w.interact_rect.is_positive()
+            })
+            .map(|w| (w.id, w.interact_rect))
+            .collect()
+    });
+    assert!(
+        click_only.is_empty(),
+        "the band at {band:?} registered click-only widgets {click_only:?}, which \
+         read as controls with no name"
+    );
+
+    let line = drawn
+        .controls
+        .first()
+        .expect("the dismissable line is recorded as a control")
+        .clone();
+    assert_eq!(line.by, chrome::NamedBy::Hover);
+    assert!(line.name.starts_with("dismiss"), "{:?}", line.name);
+    let at = line.rect.center();
+    let button = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    };
+    // Press and release on separate frames: the line senses a drag as well,
+    // and egui decides click-or-drag on the release.
+    draw(vec![egui::Event::PointerMoved(at), button(true)]);
+    let clicked = draw(vec![button(false)]);
+    assert_eq!(
+        clicked.dismissed,
+        vec![verb],
+        "a click on the line at {at:?} did not dismiss it"
+    );
+}
+
 /// The status band paints the frame its region declares, on a real
 /// tessellated frame rather than by agreeing with itself.
 ///

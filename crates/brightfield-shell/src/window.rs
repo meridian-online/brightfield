@@ -1955,8 +1955,8 @@ pub struct MeridianApp {
     /// [`Self::regions`] is, and read back through [`MeridianApp::home_rect`].
     /// `None` on a frame the bar drew no Home button (the front door).
     home_button: Option<egui::Rect>,
-    /// **Every control the last frame drew, with the name a stranger reads
-    /// for it** — read back through [`MeridianApp::named_controls`].
+    /// **The controls the last frame drew, with the name a stranger reads
+    /// for each** — read back through [`MeridianApp::named_controls`].
     controls: Vec<chrome::NamedControl>,
     /// Where each empty pane drew the button that resolves it, in window-space
     /// logical points — recorded for exactly the reason [`Self::regions`] is,
@@ -3343,9 +3343,9 @@ impl MeridianApp {
     /// the chart pane's toolbar and tile switches, and the status rail's
     /// dismissable lines — rather than kept in a registry any drawing code
     /// could push into, so each entry's name is the value its control was
-    /// drawn with. `named_controls.rs` holds the list against the widgets
-    /// egui itself registered as sensing a click, which is how a control
-    /// drawn without an entry is caught.
+    /// drawn with. `every_control_on_the_housing_baseline_carries_a_name`
+    /// holds the list against the widgets egui itself registered as sensing a
+    /// click, which is how a control drawn without an entry is caught.
     #[must_use]
     pub fn named_controls(&self) -> &[chrome::NamedControl] {
         &self.controls
