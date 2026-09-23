@@ -381,7 +381,10 @@ fn a_collapsed_bottom_rail_paints_the_whole_of_its_rect_in_the_strips_own_fill()
             rect,
             &["Steps", "Controls"],
             0,
-            chrome::Caret::Up,
+            chrome::Collapse {
+                caret: chrome::Caret::Up,
+                hint: "Show the ledger",
+            },
             chrome::Trailing::default(),
             Mode::Light,
         )

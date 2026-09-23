@@ -404,6 +404,69 @@ pub enum Caret {
     Right,
 }
 
+/// How a control's name reaches a reader.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NamedBy {
+    /// The words drawn on the control are its name.
+    Label,
+    /// The control draws no words that name it — a caret, a mark, a chip
+    /// whose one word is ambiguous — so its name is the hover text over it.
+    Hover,
+}
+
+/// One control a frame drew: where a pointer takes it, and the name a
+/// stranger reads for it.
+///
+/// Recorded by the drawing that interacts the control, from the same value it
+/// paints, so the name a test reads and the name on the screen are one
+/// string rather than two spellings free to drift.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NamedControl {
+    /// The rect a pointer has to be inside to take the control.
+    pub rect: egui::Rect,
+    /// The control's name: its label, or its hover text, as [`Self::by`]
+    /// says.
+    pub name: String,
+    /// Whether [`Self::name`] is drawn on the control or offered on hover.
+    pub by: NamedBy,
+}
+
+impl NamedControl {
+    /// A control whose drawn words are its name.
+    #[must_use]
+    pub fn labelled(rect: egui::Rect, name: impl Into<String>) -> Self {
+        Self {
+            rect,
+            name: name.into(),
+            by: NamedBy::Label,
+        }
+    }
+
+    /// A control named by the hover text over it.
+    #[must_use]
+    pub fn hovered(rect: egui::Rect, name: impl Into<String>) -> Self {
+        Self {
+            rect,
+            name: name.into(),
+            by: NamedBy::Hover,
+        }
+    }
+}
+
+/// A rail's collapse control, as the caller declares it: which way its caret
+/// points, and the words hovering it offers.
+///
+/// The words are the caller's because the rail's name is: this file draws the
+/// caret for any rail and knows none of them by name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Collapse<'a> {
+    /// Which way the caret points.
+    pub caret: Caret,
+    /// What hovering the control says. A caret draws no words, so this is
+    /// the whole of the control's name.
+    pub hint: &'a str,
+}
+
 /// What one frame of a rail's strip drew, and what the pointer did to it.
 ///
 /// Returned rather than kept, for the reason [`ToggleDrawn`] is: a test aims a
@@ -444,6 +507,11 @@ pub struct StripDrawn {
     /// carried a selection. `None` on a strip with no dot drawn, which is the
     /// answer for a stub with a name and an unselected rail alike.
     pub stub_dot: Option<egui::Pos2>,
+    /// The strip's controls with their names, in the order drawn: the
+    /// collapse control by its [`Collapse::hint`], the trailing action by its
+    /// label, then each name drawn by its own words — the same rects as
+    /// [`Self::control`], [`Self::action`] and [`Self::names`].
+    pub controls: Vec<NamedControl>,
 }
 
 /// What a strip carries at its trailing end, left of its collapse control.
@@ -526,7 +594,7 @@ pub fn rail_selector(
     rect: egui::Rect,
     names: &[&str],
     active: usize,
-    collapse: Option<Caret>,
+    collapse: Option<Collapse<'_>>,
     trailing: Trailing<'_>,
     mode: Mode,
 ) -> StripDrawn {
@@ -576,7 +644,7 @@ pub fn collapsed_rail(
     rect: egui::Rect,
     names: &[&str],
     active: usize,
-    caret: Caret,
+    collapse: Collapse<'_>,
     trailing: Trailing<'_>,
     mode: Mode,
 ) -> StripDrawn {
@@ -589,7 +657,7 @@ pub fn collapsed_rail(
         head,
         names,
         active,
-        Some(caret),
+        Some(collapse),
         trailing,
         Below::Clearance,
         mode,
@@ -619,7 +687,7 @@ fn strip(
     rect: egui::Rect,
     names: &[&str],
     active: usize,
-    collapse: Option<Caret>,
+    collapse: Option<Collapse<'_>>,
     trailing: Trailing<'_>,
     below: Below,
     mode: Mode,
@@ -636,11 +704,13 @@ fn strip(
 
     let mut control = None;
     let mut toggled = false;
+    let mut controls = Vec::with_capacity(names.len() + 2);
     let mut room = rect;
-    if let Some(caret) = collapse {
+    if let Some(collapse) = collapse {
         let square = control_square(rect);
-        toggled = collapse_control(ui, square, caret, mode);
+        toggled = collapse_control(ui, square, collapse, mode);
         control = Some(square);
+        controls.push(NamedControl::hovered(square, collapse.hint));
         room.max.x = square.left();
     }
 
@@ -670,6 +740,7 @@ fn strip(
     let action = trailing.action.map(|action| {
         let (drawn, clicked) = strip_action(ui, rect, room, action, mode);
         acted = clicked;
+        controls.push(NamedControl::labelled(drawn, action.label));
         room.max.x = drawn.left() - spacing::SPACE_4;
         drawn
     });
@@ -697,6 +768,7 @@ fn strip(
             break;
         }
         drawn.push(hit);
+        controls.push(NamedControl::labelled(hit, *name));
         let response = ui.interact(
             hit,
             ui.id().with(("rail-selector", rect.left_top().x as i32, i)),
@@ -740,6 +812,7 @@ fn strip(
         toggled,
         stub_label: None,
         stub_dot: None,
+        controls,
     }
 }
 
@@ -834,7 +907,7 @@ const STUB_DOT_RADIUS: f32 = 2.5;
 pub fn rail_stub(
     ui: &mut egui::Ui,
     rect: egui::Rect,
-    caret: Caret,
+    collapse: Collapse<'_>,
     mode: Mode,
     label: Option<StubLabel>,
 ) -> StripDrawn {
@@ -843,7 +916,7 @@ pub fn rail_stub(
         .rect_filled(rect, radius::NONE, colour(sem.tabs.bar_background));
 
     let square = control_square(rect);
-    let toggled = collapse_control(ui, square, caret, mode);
+    let toggled = collapse_control(ui, square, collapse, mode);
     let (stub_label, stub_dot) = match label {
         Some(label) => stub_label_ui(ui, rect, square, &label, mode),
         None => (None, None),
@@ -859,6 +932,7 @@ pub fn rail_stub(
         toggled,
         stub_label,
         stub_dot,
+        controls: vec![NamedControl::hovered(square, collapse.hint)],
     }
 }
 
@@ -931,10 +1005,18 @@ fn control_square(rect: egui::Rect) -> egui::Rect {
 
 /// The caret that collapses a rail and reopens it, and whether it was clicked.
 ///
+/// The caret draws no words, so [`Collapse::hint`] is offered on hover and is
+/// the whole of the control's name; the caller records the same value.
+///
 /// A chevron rather than a glyph because the Meridian icon set has not landed
 /// here — see the module docs — and a chevron is two strokes off the row's own
 /// binding rather than a shape invented at a call site.
-fn collapse_control(ui: &mut egui::Ui, square: egui::Rect, caret: Caret, mode: Mode) -> bool {
+fn collapse_control(
+    ui: &mut egui::Ui,
+    square: egui::Rect,
+    collapse: Collapse<'_>,
+    mode: Mode,
+) -> bool {
     let sem = semantic(mode.is_dark());
     let b = control::binding(rail_selector_height());
     let response = ui.interact(
@@ -951,10 +1033,11 @@ fn collapse_control(ui: &mut egui::Ui, square: egui::Rect, caret: Caret, mode: M
     } else {
         sem.tabs.foreground
     };
+    let response = response.on_hover_text(collapse.hint);
 
     let centre = square.center();
     let arm = b.icon / 3.0;
-    let points = match caret {
+    let points = match collapse.caret {
         Caret::Up => vec![
             egui::pos2(centre.x - arm, centre.y + arm / 2.0),
             egui::pos2(centre.x, centre.y - arm / 2.0),
@@ -1401,7 +1484,7 @@ pub fn breadcrumb(ui: &mut egui::Ui, crumbs: &[Crumb], mode: Mode) {
 }
 
 /// What a toolbar row did this frame.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ToolbarDrawn {
     /// The ids actually drawn, in draw order. The test hook behind the
     /// assertion that a [`ToolbarLocation::Hidden`] entry is declared but
@@ -1409,6 +1492,10 @@ pub struct ToolbarDrawn {
     pub drawn: Vec<&'static str>,
     /// The verbs the user activated.
     pub activated: Vec<Verb>,
+    /// Each drawn button by its label and where it landed, index-aligned with
+    /// [`Self::drawn`]. A disabled button is here too: greyed, its label
+    /// still reads.
+    pub controls: Vec<NamedControl>,
 }
 
 /// A pane's toolbar, with the collapse rule attached: a row in which **every**
@@ -1486,10 +1573,11 @@ pub fn toolbar_row(ui: &mut egui::Ui, entries: &[ToolbarEntry], mode: Mode) -> T
             .iter()
             .filter(|e| e.location == ToolbarLocation::Leading)
         {
-            if let Some(verb) = toolbar_button(ui, entry, mode) {
-                out.activated.push(verb);
-            }
+            let (rect, verb) = toolbar_button_at(ui, entry, mode);
+            out.activated.extend(verb);
             out.drawn.push(entry.id);
+            out.controls
+                .push(NamedControl::labelled(rect, entry.label.clone()));
         }
         let trailing: Vec<&ToolbarEntry> = entries
             .iter()
@@ -1498,10 +1586,11 @@ pub fn toolbar_row(ui: &mut egui::Ui, entries: &[ToolbarEntry], mode: Mode) -> T
         if !trailing.is_empty() {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 for entry in trailing.iter().rev() {
-                    if let Some(verb) = toolbar_button(ui, entry, mode) {
-                        out.activated.push(verb);
-                    }
+                    let (rect, verb) = toolbar_button_at(ui, entry, mode);
+                    out.activated.extend(verb);
                     out.drawn.push(entry.id);
+                    out.controls
+                        .push(NamedControl::labelled(rect, entry.label.clone()));
                 }
             });
         }
@@ -1521,6 +1610,17 @@ pub fn toolbar_row(ui: &mut egui::Ui, entries: &[ToolbarEntry], mode: Mode) -> T
 ///
 /// [`focus_ring_for`]: meridian_egui::widgets::focus_ring_for
 pub fn toolbar_button(ui: &mut egui::Ui, entry: &ToolbarEntry, mode: Mode) -> Option<Verb> {
+    toolbar_button_at(ui, entry, mode).1
+}
+
+/// [`toolbar_button`], and the rect the button landed in — what
+/// [`toolbar_row`] records against the entry's label in
+/// [`ToolbarDrawn::controls`].
+fn toolbar_button_at(
+    ui: &mut egui::Ui,
+    entry: &ToolbarEntry,
+    mode: Mode,
+) -> (egui::Rect, Option<Verb>) {
     let b = control::binding(HEADER_ROW);
     let sem = semantic(mode.is_dark());
 
@@ -1573,7 +1673,7 @@ pub fn toolbar_button(ui: &mut egui::Ui, entry: &ToolbarEntry, mode: Mode) -> Op
         None => response,
     };
 
-    response.clicked().then_some(entry.verb)
+    (response.rect, response.clicked().then_some(entry.verb))
 }
 
 /// What a status rail did this frame.
@@ -1597,6 +1697,10 @@ pub struct StatusDrawn {
     /// `every_regions_drawn_extent_is_the_one_it_declares` compares it with
     /// the `Extent::Overlay` the arrangement declares.
     pub rect: Option<egui::Rect>,
+    /// Each entry a click dismisses, by the hover text that says so and the
+    /// rect its line landed in. An entry with no dismissal is a readout and is
+    /// not here.
+    pub controls: Vec<NamedControl>,
 }
 
 /// The height [`status_rail_overlay`] gives the rail's band, in logical
@@ -1630,6 +1734,14 @@ pub const fn status_rail_height() -> f32 {
 /// points on the same 120 ms curve. Disabling the fade removes the curve
 /// rather than out-waiting it.
 ///
+/// `.sense(Sense::hover())`: an anchored `egui::Area` still registers a move
+/// widget over its whole rect, and one that is not movable senses a *click*
+/// there, to raise the layer — so the band read as one unnamed control the
+/// width of the window. Hover rather than `.interactable(false)`, which would
+/// take the layer out of egui's hit test and with it the click on a
+/// dismissable entry's line; `the_status_rails_band_senses_no_click_and_its_entry_still_dismisses`
+/// pins both halves.
+///
 /// Drawn *here* rather than by the shell because this file is where every
 /// pixel of workbench chrome is painted — a shell hand-placing an
 /// `egui::Area` around the rail would be the first line of a second drawing
@@ -1657,6 +1769,7 @@ pub fn status_rail_overlay(
         .anchor(egui::Align2::LEFT_BOTTOM, egui::Vec2::ZERO)
         .order(egui::Order::Foreground)
         .fade_in(false)
+        .sense(egui::Sense::hover())
         .show(ctx, |ui| {
             let (rect, _) =
                 ui.allocate_exact_size(egui::vec2(screen.width(), extent), egui::Sense::hover());
@@ -1717,6 +1830,8 @@ fn draw_status_entry(ui: &mut egui::Ui, entry: &StatusEntry, mode: Mode, out: &m
         let hint = verb
             .keys()
             .map_or_else(|| "dismiss".to_string(), |k| format!("dismiss  ({k})"));
+        out.controls
+            .push(NamedControl::hovered(label.rect, hint.clone()));
         if label
             .interact(egui::Sense::click())
             .on_hover_text(hint)

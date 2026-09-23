@@ -1142,6 +1142,7 @@ impl Item<ChartDoc> for ChartItem {
         for verb in drawn.activated {
             cx.request(verb);
         }
+        doc.controls.extend(drawn.controls);
 
         // The run-state banner, only when this preview shows materialised run
         // output at all: icon + label + tone, never colour alone. A live or
@@ -1265,6 +1266,17 @@ impl Item<ChartDoc> for ChartItem {
             // cannot overlap however wide either one's words are.
             let (normalise, normalise_picked) =
                 draw_normalise_switches(doc, ui, rect, mode, &switches);
+            doc.controls.extend(switches.iter().flat_map(|switch| {
+                switch
+                    .states
+                    .iter()
+                    .map(|(state, rect)| chrome::NamedControl::labelled(*rect, state.wire_name()))
+            }));
+            doc.controls.extend(normalise.iter().flat_map(|switch| {
+                switch.states.iter().map(|(state, rect)| {
+                    chrome::NamedControl::labelled(*rect, normalise_state_label(*state))
+                })
+            }));
             doc.scale_switches = switches;
             doc.normalise_switches = normalise;
 

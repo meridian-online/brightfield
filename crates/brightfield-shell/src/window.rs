@@ -1611,6 +1611,9 @@ struct TopBar {
     /// [`MeridianApp::home_rect`]. `None` on the front door, which draws no
     /// Home button because it is already home.
     home_rect: Option<egui::Rect>,
+    /// The band's controls with their names, as drawn: Home by its hover
+    /// text, and the flow toggle by its label on a frame that drew it.
+    controls: Vec<chrome::NamedControl>,
 }
 
 /// What one frame's region controls were asked for: the canvas toggle and the
@@ -1952,6 +1955,9 @@ pub struct MeridianApp {
     /// [`Self::regions`] is, and read back through [`MeridianApp::home_rect`].
     /// `None` on a frame the bar drew no Home button (the front door).
     home_button: Option<egui::Rect>,
+    /// **Every control the last frame drew, with the name a stranger reads
+    /// for it** — read back through [`MeridianApp::named_controls`].
+    controls: Vec<chrome::NamedControl>,
     /// Where each empty pane drew the button that resolves it, in window-space
     /// logical points — recorded for exactly the reason [`Self::regions`] is,
     /// and read back through [`MeridianApp::affordance_rect`].
@@ -2397,6 +2403,7 @@ impl MeridianApp {
             graph_reached_from: None,
             focus_return: None,
             home_button: None,
+            controls: Vec::new(),
             affordances: Vec::new(),
             door_thumbs: Vec::new(),
             mark: None,
@@ -3326,6 +3333,24 @@ impl MeridianApp {
         &self.protocol.doc.spine_drawn
     }
 
+    /// **The controls the last frame drew, each with the name a stranger
+    /// reads for it** — in its label, or in its hover text, as
+    /// [`chrome::NamedControl::by`] says.
+    ///
+    /// Assembled at the end of the frame out of the records the drawing
+    /// already returns — the top bar's, each rail strip's, the spine's rows
+    /// and its graph chip, the graph's view chips, the grid pane's switches,
+    /// the chart pane's toolbar and tile switches, and the status rail's
+    /// dismissable lines — rather than kept in a registry any drawing code
+    /// could push into, so each entry's name is the value its control was
+    /// drawn with. `named_controls.rs` holds the list against the widgets
+    /// egui itself registered as sensing a click, which is how a control
+    /// drawn without an entry is caught.
+    #[must_use]
+    pub fn named_controls(&self) -> &[chrome::NamedControl] {
+        &self.controls
+    }
+
     /// The content box the Protocol pane was handed by the last frame this
     /// window drew, or `None` if it has not drawn one — what the first caption
     /// row's clearance is measured from.
@@ -3689,6 +3714,9 @@ impl MeridianApp {
         self.protocol.doc.spine_body = None;
         // …and the canvas's record of the chips it drew, for the same reason.
         self.protocol.doc.canvas_chips.clear();
+        // …and the chart pane's record of its controls, which a frame with the
+        // graph on the canvas does not draw.
+        self.charts.doc.controls.clear();
 
         // The overlay-opening keys, before the grammar feed so the frame that
         // opens an overlay is already under it.
@@ -3823,12 +3851,13 @@ impl MeridianApp {
             let drawn = navigator_widget
                 .frame(chrome::region_frame(navigator.frame, ui, mode))
                 .show(ui, |ui| {
-                    let caret = collapse_caret(navigator.edge, navigator_collapsed);
+                    let collapse = rail_collapse(navigator, navigator_collapsed);
                     if navigator_collapsed {
                         // The door draws no document, so its navigator stub
                         // has no selection to say — the bare square, as
                         // before.
-                        door_strip = Some(chrome::rail_stub(ui, ui.max_rect(), caret, mode, None));
+                        door_strip =
+                            Some(chrome::rail_stub(ui, ui.max_rect(), collapse, mode, None));
                         return;
                     }
                     ui.set_min_width(ui.available_width());
@@ -3838,7 +3867,7 @@ impl MeridianApp {
                         strip,
                         &[NAVIGATOR_DOOR_NAME],
                         0,
-                        Some(caret),
+                        Some(collapse),
                         chrome::Trailing::default(),
                         mode,
                     ));
@@ -4133,7 +4162,7 @@ impl MeridianApp {
             let drawn = ledger_panel_widget
                 .frame(chrome::region_frame(ledger.frame, ui, mode))
                 .show(ui, |ui| {
-                    let caret = collapse_caret(ledger.edge, ledger_collapsed);
+                    let collapse = rail_collapse(ledger, ledger_collapsed);
                     if ledger_collapsed {
                         // Collapsed, this rail is its own strip — names live,
                         // and no body under it to put a pane in. Handed the
@@ -4150,7 +4179,7 @@ impl MeridianApp {
                             ui.max_rect(),
                             &pane_labels(&ledger_labels),
                             ledger_panel,
-                            caret,
+                            collapse,
                             ledger_trailing,
                             mode,
                         ));
@@ -4169,7 +4198,7 @@ impl MeridianApp {
                         strip,
                         &pane_labels(&ledger_labels),
                         ledger_panel,
-                        Some(caret),
+                        Some(collapse),
                         ledger_trailing,
                         mode,
                     ));
@@ -4253,7 +4282,7 @@ impl MeridianApp {
             let drawn = navigator_panel_widget
                 .frame(chrome::region_frame(navigator.frame, ui, mode))
                 .show(ui, |ui| {
-                    let caret = collapse_caret(navigator.edge, navigator_collapsed);
+                    let collapse = rail_collapse(navigator, navigator_collapsed);
                     if navigator_collapsed {
                         // A side rail collapses along its width, so what is left
                         // is that measure of *width* — a stub with room for the
@@ -4263,7 +4292,7 @@ impl MeridianApp {
                         // label and stays bare. The inspector's own stub below
                         // takes one.
                         navigator_strip =
-                            Some(chrome::rail_stub(ui, ui.max_rect(), caret, mode, None));
+                            Some(chrome::rail_stub(ui, ui.max_rect(), collapse, mode, None));
                         return;
                     }
                     ui.set_min_width(ui.available_width());
@@ -4273,7 +4302,7 @@ impl MeridianApp {
                         strip,
                         &pane_labels(&navigator_labels),
                         0,
-                        Some(caret),
+                        Some(collapse),
                         chrome::Trailing::default(),
                         mode,
                     ));
@@ -4316,12 +4345,12 @@ impl MeridianApp {
             let drawn = inspector_panel_widget
                 .frame(chrome::region_frame(inspector.frame, ui, mode))
                 .show(ui, |ui| {
-                    let caret = collapse_caret(inspector.edge, inspector_collapsed);
+                    let collapse = rail_collapse(inspector, inspector_collapsed);
                     if inspector_collapsed {
                         inspector_strip = Some(chrome::rail_stub(
                             ui,
                             ui.max_rect(),
-                            caret,
+                            collapse,
                             mode,
                             Some(inspector_stub_label),
                         ));
@@ -4341,7 +4370,7 @@ impl MeridianApp {
                         strip,
                         &pane_labels(&inspector_labels),
                         inspector_panel,
-                        Some(caret),
+                        Some(collapse),
                         chrome::Trailing::default(),
                         mode,
                     ));
@@ -4690,6 +4719,7 @@ impl MeridianApp {
         }
 
         self.status_rail_ui(&ctx, graph_on_canvas, &mut requests);
+        self.controls = self.name_controls(std::mem::take(&mut bar.controls), door);
 
         self.apply(&ctx, graph_on_canvas, requests);
 
@@ -5141,6 +5171,8 @@ impl MeridianApp {
                     None => HOME_CONTROL_NAME.to_string(),
                 });
                 bar.home_rect = Some(rect);
+                bar.controls
+                    .push(chrome::NamedControl::hovered(rect, HOME_CONTROL_NAME));
                 if response.clicked() {
                     bar.home = true;
                 }
@@ -5172,10 +5204,12 @@ impl MeridianApp {
                         );
                     }
                     if let Some((label, next)) = toggle {
-                        bar.toggle_flow = ui
-                            .button(egui::RichText::new(label).font(ui_font()))
-                            .on_hover_text(format!("switch to {next} flow"))
-                            .clicked();
+                        let response = ui
+                            .button(egui::RichText::new(&label).font(ui_font()))
+                            .on_hover_text(format!("switch to {next} flow"));
+                        bar.toggle_flow = response.clicked();
+                        bar.controls
+                            .push(chrome::NamedControl::labelled(response.rect, label));
                     }
                 });
             }
@@ -5286,6 +5320,58 @@ impl MeridianApp {
         for verb in self.rail.dismissed.clone() {
             requests.push(Request::Verb(verb));
         }
+    }
+
+    /// The list [`Self::named_controls`] reads, from this frame's records:
+    /// `top_bar` is the title band's, handed in because the band's record is
+    /// a local of [`Self::draw`] rather than a field.
+    ///
+    /// The grid pane's switches and the chart pane's records are read only
+    /// off a frame that drew the dock: the front door clears neither, and a
+    /// switch left standing from the last document would name a control the
+    /// door does not draw.
+    fn name_controls(
+        &self,
+        top_bar: Vec<chrome::NamedControl>,
+        door: bool,
+    ) -> Vec<chrome::NamedControl> {
+        let mut controls = top_bar;
+        for (_, strip) in &self.strips {
+            controls.extend(strip.controls.iter().cloned());
+        }
+        for row in &self.protocol.doc.spine_drawn {
+            if row.control {
+                controls.push(chrome::NamedControl::labelled(row.rect, &row.label));
+            }
+            if let Some(chip) = row.chip {
+                controls.push(chrome::NamedControl::hovered(chip.rect, chip.hint));
+            }
+        }
+        for chip in &self.protocol.doc.canvas_chips {
+            controls.push(chrome::NamedControl::labelled(chip.rect, chip.view.label()));
+        }
+        if !door {
+            let doc = &self.charts.doc;
+            if let Some(switch) = &doc.grid_layout_switch {
+                controls.extend(
+                    switch
+                        .states
+                        .iter()
+                        .map(|(state, rect)| chrome::NamedControl::labelled(*rect, state.word())),
+                );
+            }
+            if let Some(switch) = &doc.grid_spot_switch {
+                controls.extend(
+                    switch
+                        .states
+                        .iter()
+                        .map(|(state, rect)| chrome::NamedControl::labelled(*rect, state.word())),
+                );
+            }
+            controls.extend(doc.controls.iter().cloned());
+        }
+        controls.extend(self.rail.controls.iter().cloned());
+        controls
     }
 
     /// What the status rail drew last frame, read-only — the test hook.
@@ -7219,6 +7305,49 @@ fn rail_collapsed(region: &Region) -> f32 {
             region.id
         )
     })
+}
+
+/// A rail's collapse control as its strip draws it: the caret
+/// [`collapse_caret`] points, and the words [`collapse_hint`] offers on hover.
+fn rail_collapse(region: &arrangement::Region, collapsed: bool) -> chrome::Collapse<'static> {
+    chrome::Collapse {
+        caret: collapse_caret(region.edge, collapsed),
+        hint: collapse_hint(region.id, collapsed),
+    }
+}
+
+/// What hovering each collapsible rail's caret says, open and collapsed — the
+/// verb the click takes, and the rail it takes it on.
+///
+/// The caret draws no words, so these are the whole of the control's name,
+/// and the rail's own id is the key rather than its edge: two rails on one
+/// edge would otherwise say the same thing.
+const COLLAPSE_HINTS: [(arrangement::RegionId, &str, &str); 3] = [
+    (
+        arrangement::NAVIGATOR_RAIL,
+        "Hide the navigator",
+        "Show the navigator",
+    ),
+    (
+        arrangement::INSPECTOR_RAIL,
+        "Hide the inspector",
+        "Show the inspector",
+    ),
+    (
+        arrangement::LEDGER_RAIL,
+        "Hide the ledger",
+        "Show the ledger",
+    ),
+];
+
+/// [`COLLAPSE_HINTS`]' words for `rail` in its `collapsed` state — empty for
+/// a rail the table does not name, which the named-controls test reads as a
+/// control with no name rather than this function guessing one.
+fn collapse_hint(rail: arrangement::RegionId, collapsed: bool) -> &'static str {
+    COLLAPSE_HINTS
+        .iter()
+        .find(|(id, _, _)| *id == rail)
+        .map_or("", |(_, open, shut)| if collapsed { shut } else { open })
 }
 
 /// Which way a rail's collapse control points: the direction the rail moves
