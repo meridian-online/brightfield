@@ -1737,8 +1737,8 @@ pub const fn status_rail_height() -> f32 {
 /// `.sense(Sense::hover())`: an anchored `egui::Area` still registers a move
 /// widget over its whole rect, and one that is not movable senses a *click*
 /// there, to raise the layer — so the band read as one unnamed control the
-/// width of the window. A hover sense changes that one widget and nothing
-/// else about the layer, which is why it is preferred to
+/// width of the window. A hover sense changes that one widget's sense and
+/// leaves the layer's own state as it was, which is why it is preferred to
 /// `.interactable(false)`: that also drops the layer from
 /// `Context::layer_id_at`, which `Context::is_pointer_over_egui` reads, while
 /// on egui 0.35 it clears the click no more than this does.

@@ -540,7 +540,7 @@ fn the_status_rails_band_is_not_a_control_and_its_line_still_is() {
         })
         .collect();
     assert!(
-        painted.iter().any(|t| *t == line.name),
+        painted.contains(&line.name),
         "resting on the line at {at:?} painted no {:?}; it painted {painted:?}",
         line.name
     );
