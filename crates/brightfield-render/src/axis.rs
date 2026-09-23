@@ -637,6 +637,74 @@ pub fn render_y_axis(
     }
 }
 
+/// Draw a map's graticule labels where a cartesian plot's tick labels sit: the
+/// `meridians` below the plot area on the x-axis labels' baseline, the
+/// `parallels` right-aligned in the left margin on the y-axis labels' — the
+/// same size, the same offsets and [`ChartInk::label`], so a projected plot
+/// reads its coordinates the way the axes it replaced did. Each tick's
+/// `position` is where its line meets that edge
+/// ([`crate::mark::PlotGraticule::edge_ticks`]).
+///
+/// No axis line and no tick marks: the lines themselves reach the edge, so a
+/// tick mark would restate one and an axis line would frame two sides of four.
+///
+/// A label that would crowd the one drawn before it — within
+/// [`LABEL_CLEARANCE`] along the edge — is skipped, and a meridian label is
+/// nudged inside the tile by `contained_centre`, as a tick label is.
+pub(crate) fn render_graticule_labels(
+    scene: &mut Scene,
+    layout: &ChartLayout,
+    meridians: &[Tick],
+    parallels: &[Tick],
+    ink: ChartInk,
+) {
+    fn by_position(ticks: &[Tick]) -> Vec<&Tick> {
+        let mut sorted: Vec<&Tick> = ticks.iter().collect();
+        sorted.sort_by(|a, b| a.position.total_cmp(&b.position));
+        sorted
+    }
+
+    let baseline = layout.plot_y_end() + TICK_LENGTH + f64::from(LABEL_SIZE);
+    let mut drawn_to = f64::NEG_INFINITY;
+    for tick in by_position(meridians) {
+        let width = measure_width(&tick.label, LABEL_SIZE);
+        let Some(centre) = contained_centre(tick.position, width, layout.width) else {
+            continue;
+        };
+        if centre - width / 2.0 < drawn_to + LABEL_CLEARANCE {
+            continue;
+        }
+        drawn_to = centre + width / 2.0;
+        draw_text(
+            scene,
+            &tick.label,
+            centre,
+            baseline,
+            LABEL_SIZE,
+            ink.label,
+            TextAnchor::Middle,
+        );
+    }
+
+    let x = layout.plot_x_start() - TICK_LENGTH - 3.0;
+    let mut drawn_to = f64::NEG_INFINITY;
+    for tick in by_position(parallels) {
+        if tick.position < drawn_to + LABEL_CLEARANCE {
+            continue;
+        }
+        drawn_to = tick.position + f64::from(LABEL_SIZE);
+        draw_text(
+            scene,
+            &tick.label,
+            x,
+            tick.position + f64::from(LABEL_SIZE) / 3.0,
+            LABEL_SIZE,
+            ink.label,
+            TextAnchor::End,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

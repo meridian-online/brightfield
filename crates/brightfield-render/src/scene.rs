@@ -252,9 +252,15 @@ pub fn build_chart_scene(data: &ChartData<'_>, ink: ChartInk) -> (Scene, ScaleSe
         }
     }
 
+    // A projected plot's graticule, as `draw_multi_mark_scene` draws it.
+    let graticule = crate::mark::PlotGraticule::of(&scales);
+
     // Marks, clipped to the plot area so geometry can't spill onto axes/margins.
     let plot_clip = plot_area_rect(&data.layout);
     scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &plot_clip);
+    if let Some(graticule) = &graticule {
+        graticule.stroke(&mut scene, ink.grid);
+    }
     render_entry(&mut scene, data, &scales);
     scene.pop_layer();
 
@@ -269,6 +275,16 @@ pub fn build_chart_scene(data: &ChartData<'_>, ink: ChartInk) -> (Scene, ScaleSe
             let y_ticks = compute_ticks(y_scale, 5);
             render_y_axis(&mut scene, &data.layout, &y_ticks, None, ink);
         }
+    }
+    if let Some(graticule) = &graticule {
+        let (meridians, parallels) = graticule.edge_ticks();
+        crate::axis::render_graticule_labels(
+            &mut scene,
+            &data.layout,
+            &meridians,
+            &parallels,
+            ink,
+        );
     }
 
     // Colour legend.
@@ -937,9 +953,16 @@ fn draw_multi_mark_scene(
         }
     }
 
+    // A projected plot's graticule: ONE per plot, stroked before any layer so
+    // every layer's marks sit on it, and labelled below where the axes would be.
+    let graticule = crate::mark::PlotGraticule::of(scales);
+
     // Render each mark layer, clipped to the plot area.
     let plot_clip = plot_area_rect(layout);
     scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &plot_clip);
+    if let Some(graticule) = &graticule {
+        graticule.stroke(&mut scene, ink.grid);
+    }
     for entry in entries {
         render_entry(&mut scene, entry, scales);
     }
@@ -956,6 +979,10 @@ fn draw_multi_mark_scene(
             let y_ticks = compute_ticks(y_scale, 5);
             render_y_axis(&mut scene, layout, &y_ticks, titles.y.as_deref(), ink);
         }
+    }
+    if let Some(graticule) = &graticule {
+        let (meridians, parallels) = graticule.edge_ticks();
+        crate::axis::render_graticule_labels(&mut scene, layout, &meridians, &parallels, ink);
     }
 
     // Per-plot title, above the frame (the top margin has grown to make room).

@@ -868,22 +868,12 @@ impl MarkRenderer for DotRenderer {
             None => return,
         };
 
-        // The graticule first, so the points sit on top of it: it is
-        // scaffolding under the data, not data.
-        //
-        // Its extent comes off the SCALE SET, not off this mark's batch. The
-        // scales are the plot's — one set shared by every layer — so a point
-        // map's ghost and its brushed subset compute the same lines and lay them
-        // down on top of each other. Read per batch, the brushed layer's extent
-        // is the selection's, so it picks a finer step off the ladder and draws
-        // a second, denser graticule over the region the reader swept.
+        // No graticule here: it belongs to the PLOT, not to a layer, and the
+        // scene builders draw it once behind every layer ([`PlotGraticule`]).
+        // Drawn from here, a point map's ghost and its brushed subset each laid
+        // the same hairlines down, and two coincident 0.5 px strokes read
+        // darker than one.
         let projection = channel_map.projection();
-        if let Some(projection) = projection {
-            if let Some(extent) = scales.geo_extent() {
-                let lines = graticule(projection, extent);
-                stroke_graticule(scene, &lines, x_scale, y_scale, scales.ink().grid);
-            }
-        }
 
         let x_f64 = column_as_f64(batch, x_col);
         let x_str = column_as_string(batch, x_col);
@@ -909,11 +899,12 @@ impl MarkRenderer for DotRenderer {
     }
 
     /// A PROJECTED dot mark suppresses the cartesian frame, exactly as
-    /// [`GeoRenderer`] does and for the same reason: it is a map, and it draws
-    /// its own scaffolding — the graticule — behind the points. Leaving the
-    /// frame on puts axis ticks at `compute_ticks`'s round numbers over
-    /// meridians and parallels at the graticule ladder's whole degrees, which is
-    /// two grids at two spacings on one picture.
+    /// [`GeoRenderer`] does and for the same reason: it is a map, and its plot
+    /// draws a graticule behind the points instead ([`PlotGraticule`]), labelled
+    /// at the plot area's edges where the tick labels sat. Leaving the frame on
+    /// puts axis ticks at `compute_ticks`'s round numbers over meridians and
+    /// parallels at the graticule ladder's whole degrees, which is two grids at
+    /// two spacings on one picture.
     ///
     /// An UNPROJECTED dot mark is a scatter and keeps its axes, which is what
     /// `a_projected_dot_mark_draws_no_axis_labels` holds the other half of.
@@ -4514,29 +4505,43 @@ pub fn graticule_step(span: f64) -> f64 {
     GRATICULE_STEPS[GRATICULE_STEPS.len() - 1]
 }
 
-/// The meridians and parallels visible in `extent`, projected.
+/// The meridians and parallels visible in `extent`, projected, each axis at the
+/// step its own span picks.
 ///
 /// Both halves of the answer come from the two arguments: the EXTENT decides
 /// which whole-degree lines exist and how far apart they are
 /// ([`graticule_step`]), and the PROJECTION decides where each sampled point
 /// lands. There is no data dependency and no network — this is the reason a
-/// graticule is what a projected mark draws behind itself rather than a basemap;
-/// the tests `the_graticule_lines_are_the_whole_degrees_the_extent_contains` and
-/// `narrowing_the_extent_changes_the_graticule_rather_than_redrawing_it` hold
-/// the extent's half of it.
+/// graticule is what a projected plot draws behind its marks rather than a
+/// basemap; the tests `the_graticule_lines_are_the_whole_degrees_the_extent_contains`
+/// and `narrowing_the_extent_changes_the_graticule_rather_than_redrawing_it`
+/// hold the extent's half of it. A plot draws [`PlotGraticule`], which picks
+/// ONE step for both axes and hands it to [`graticule_at`].
 ///
 /// Meridians come first, then parallels, each in ascending degree order, so two
 /// runs over the same extent produce the same list in the same order.
 #[must_use]
 pub fn graticule(projection: Projection, extent: GeoExtent) -> Vec<GraticuleLine> {
+    graticule_at(
+        projection,
+        extent,
+        graticule_step(extent.lon_span()),
+        graticule_step(extent.lat_span()),
+    )
+}
+
+/// [`graticule`] at a given meridian step and parallel step, in degrees.
+#[must_use]
+pub fn graticule_at(
+    projection: Projection,
+    extent: GeoExtent,
+    lon_step: f64,
+    lat_step: f64,
+) -> Vec<GraticuleLine> {
     let mut out = Vec::new();
     let lat_samples = samples(extent.lat_min, extent.lat_max);
     let lon_samples = samples(extent.lon_min, extent.lon_max);
-    for lon in ticks(
-        extent.lon_min,
-        extent.lon_max,
-        graticule_step(extent.lon_span()),
-    ) {
+    for lon in ticks(extent.lon_min, extent.lon_max, lon_step) {
         push_runs(
             &mut out,
             GraticuleKind::Meridian,
@@ -4545,11 +4550,7 @@ pub fn graticule(projection: Projection, extent: GeoExtent) -> Vec<GraticuleLine
             lat_samples.iter().map(|lat| (lon, *lat)),
         );
     }
-    for lat in ticks(
-        extent.lat_min,
-        extent.lat_max,
-        graticule_step(extent.lat_span()),
-    ) {
+    for lat in ticks(extent.lat_min, extent.lat_max, lat_step) {
         push_runs(
             &mut out,
             GraticuleKind::Parallel,
@@ -4685,6 +4686,197 @@ fn scale_rect(x_scale: &Scale, y_scale: &Scale) -> Option<(f64, f64, f64, f64)> 
         return None;
     };
     Some((xs.min(*xe), ys.min(*ye), xs.max(*xe), ys.max(*ye)))
+}
+
+/// How many intervals the widest axis of a plot's graticule may hold before its
+/// step coarsens: six times [`GRATICULE_MIN_INTERVALS`], so a viewport may hold
+/// six data extents' worth of lines across before the step leaves the data's.
+/// The data's own step holds at any fit a pane gives the California fixture;
+/// what this stops is a zoom-out hatching the plot at a step picked for a
+/// region a fraction of the view's size.
+const GRATICULE_MAX_INTERVALS: f64 = 36.0;
+
+/// How far a clipped line's end may sit from the plot area's edge, in pixels,
+/// and still count as meeting it — the tolerance [`PlotGraticule::edge_ticks`]
+/// reads a label position off.
+const GRATICULE_EDGE_TOLERANCE: f64 = 0.5;
+
+/// The graticule a projected PLOT draws: once, behind every layer, over the
+/// plot area's fitted extent, at one step for both axes.
+///
+/// **One per plot.** The scene builders build one of these from the plot's
+/// shared [`ScaleSet`] and stroke it before any mark draws, so a point map's
+/// ghost and its brushed subset are laid over ONE set of hairlines rather than
+/// one apiece — `a_plot_strokes_its_graticule_once_whatever_its_layer_count`
+/// counts them.
+///
+/// **Over the plot area, not the data.** The x and y domains the scales carry
+/// are the data's projected bbox widened to the pane's aspect
+/// (`aspect_fit_domains`, then any pan or zoom), so inverting them through the
+/// projection gives the geographic rectangle the plot area shows, and the
+/// lines reach its edges on all four sides — Hugh's ruling of 2026-09-23,
+/// frame B. A projection whose axes do not invert separately has no per-axis
+/// inverse to take the rectangle back through, so its graticule stays on the
+/// data's extent and the plot clip trims what overhangs.
+///
+/// **One step, the data's.** The step is the coarser of the two the DATA's
+/// extent picks ([`graticule_step`]), used for meridians and parallels alike,
+/// so an equal-aspect map draws square cells and widening the extent to the
+/// plot area changes how far the lines reach and not how far apart they are.
+/// It coarsens only past [`GRATICULE_MAX_INTERVALS`].
+#[derive(Debug, Clone)]
+pub struct PlotGraticule {
+    /// The geographic rectangle the lines are laid across, in degrees.
+    pub extent: GeoExtent,
+    /// The spacing of both the meridians and the parallels, in degrees.
+    pub step: f64,
+    /// The projected lines, meridians first.
+    pub lines: Vec<GraticuleLine>,
+    x_scale: Scale,
+    y_scale: Scale,
+}
+
+impl PlotGraticule {
+    /// The graticule of the plot `scales` belong to, or `None` for a plot
+    /// nothing projected onto: no projection, no geographic extent (a `geo`
+    /// mark's plot records the projection with no extent), or a positional
+    /// axis that is not linear.
+    #[must_use]
+    pub fn of(scales: &ScaleSet) -> Option<Self> {
+        let projection = scales.projection()?;
+        let data = scales.geo_extent()?;
+        let (x_scale, y_scale) = (scales.get(Channel::X)?, scales.get(Channel::Y)?);
+        let (
+            Scale::Linear {
+                domain_min: u0,
+                domain_max: u1,
+                ..
+            },
+            Scale::Linear {
+                domain_min: v0,
+                domain_max: v1,
+                ..
+            },
+        ) = (x_scale, y_scale)
+        else {
+            return None;
+        };
+        let extent = match (
+            projection.invert_lon(*u0),
+            projection.invert_lon(*u1),
+            projection.invert_lat(*v0),
+            projection.invert_lat(*v1),
+        ) {
+            (Some(lon_a), Some(lon_b), Some(lat_a), Some(lat_b)) => {
+                GeoExtent::new(lon_a, lon_b, lat_a, lat_b)
+            }
+            _ => data,
+        };
+        let step = plot_graticule_step(data, extent);
+        Some(Self {
+            extent,
+            step,
+            lines: graticule_at(projection, extent, step, step),
+            x_scale: x_scale.clone(),
+            y_scale: y_scale.clone(),
+        })
+    }
+
+    /// Stroke every line through the plot's scales in `ink`, clipped to the
+    /// plot area.
+    pub fn stroke(&self, scene: &mut Scene, ink: Color) {
+        stroke_graticule(scene, &self.lines, &self.x_scale, &self.y_scale, ink);
+    }
+
+    /// Where the lines meet the plot area's edges, as the ticks their labels
+    /// are drawn at: each meridian where it meets the BOTTOM edge, positioned
+    /// by pixel x, and each parallel where it meets the LEFT edge, positioned
+    /// by pixel y — the edges the x and y tick labels sat along.
+    ///
+    /// A line that leaves the plot area through another edge — a meridian
+    /// under a curved projection can run out of the side — has no tick, since
+    /// a label on the bottom edge would name a line that is not there.
+    #[must_use]
+    pub fn edge_ticks(&self) -> (Vec<crate::axis::Tick>, Vec<crate::axis::Tick>) {
+        let mut meridians = Vec::new();
+        let mut parallels = Vec::new();
+        let Some(rect) = scale_rect(&self.x_scale, &self.y_scale) else {
+            return (meridians, parallels);
+        };
+        let (left, bottom) = (rect.0, rect.3);
+        for line in &self.lines {
+            let pixels: Vec<(f64, f64)> = line
+                .points
+                .iter()
+                .map(|(u, v)| (self.x_scale.map_f64(*u), self.y_scale.map_f64(*v)))
+                .collect();
+            let ends: Vec<(f64, f64)> = clip_polyline(&pixels, rect)
+                .into_iter()
+                .flat_map(|run| [run[0], run[run.len() - 1]])
+                .collect();
+            let meets = |(x, y): &(f64, f64)| match line.kind {
+                GraticuleKind::Meridian => (y - bottom).abs() <= GRATICULE_EDGE_TOLERANCE,
+                GraticuleKind::Parallel => (x - left).abs() <= GRATICULE_EDGE_TOLERANCE,
+            };
+            let Some(&(x, y)) = ends.iter().find(|p| meets(p)) else {
+                continue;
+            };
+            let (target, position) = match line.kind {
+                GraticuleKind::Meridian => (&mut meridians, x),
+                GraticuleKind::Parallel => (&mut parallels, y),
+            };
+            // A line broken into several runs meets the edge once at most.
+            if target.iter().any(|t| t.value == line.degrees) {
+                continue;
+            }
+            target.push(crate::axis::Tick {
+                value: line.degrees,
+                label: graticule_label(line.degrees, self.step),
+                position,
+            });
+        }
+        (meridians, parallels)
+    }
+}
+
+/// The one step a plot's graticule takes for both axes: the coarser of the two
+/// the data's extent picks, coarsened further along [`GRATICULE_STEPS`] only
+/// while the widest axis of `viewport` would hold more than
+/// [`GRATICULE_MAX_INTERVALS`] of it.
+fn plot_graticule_step(data: GeoExtent, viewport: GeoExtent) -> f64 {
+    let step = graticule_step(data.lon_span().max(data.lat_span()));
+    let widest = viewport.lon_span().max(viewport.lat_span());
+    let rung = GRATICULE_STEPS
+        .iter()
+        .position(|s| (*s - step).abs() < 1e-12)
+        .unwrap_or(GRATICULE_STEPS.len() - 1);
+    GRATICULE_STEPS[..=rung]
+        .iter()
+        .rev()
+        .copied()
+        .find(|s| widest / s <= GRATICULE_MAX_INTERVALS)
+        .unwrap_or(GRATICULE_STEPS[0])
+}
+
+/// A graticule line's label: its degrees, signed, with as many decimals as
+/// `step` needs and a degree sign — `-124°` at a whole-degree step, `37.5°`
+/// at a half-degree one.
+#[must_use]
+pub fn graticule_label(degrees: f64, step: f64) -> String {
+    let decimals = if step >= 1.0 {
+        0
+    } else if step >= 0.1 {
+        1
+    } else {
+        2
+    };
+    let text = format!("{degrees:.decimals$}");
+    // `-0°` reads as a sign error; the equator and the prime meridian are 0°.
+    let text = match text.strip_prefix('-') {
+        Some(rest) if rest.chars().all(|c| c == '0' || c == '.') => rest.to_string(),
+        _ => text,
+    };
+    format!("{text}°")
 }
 
 /// Split a pixel polyline into the runs that lie inside `rect`, interpolating a
