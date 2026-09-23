@@ -7069,11 +7069,13 @@ enum LedgerHolds {
 /// tab strip, the pane's header band and inset, and the compact column band
 /// the grid draws in this spot — then
 /// [`arrangement::LEDGER_GRID_ROWS`] rows at [`crate::data_grid::row_height`],
-/// then the pane's inset and the band the status rail floats in over the
-/// rail's foot. Each term is the function that draws it, so a change to any of
-/// them moves the height with it and the count of rows holds. Never below the
-/// rail's declared default, so the grid's spot opens no shorter than the
-/// record panes.
+/// then the rail's foot. The foot is the band the status rail floats in or the
+/// pane's own inset, whichever is taller, and not the two summed: the floating
+/// band lies over the inset, so summing them leaves a slice of a sixth row
+/// showing above the band. Each term is the function that draws it, so a
+/// change to any of them moves the height with it and the count of rows
+/// holds. Never below the rail's declared default, so the grid's spot opens no
+/// shorter than the record panes.
 ///
 /// # Panics
 ///
@@ -7088,11 +7090,10 @@ fn ledger_open_extent(ledger: &Region, holds: LedgerHolds, mode: Mode) -> f32 {
         + chrome::pane_content_inset()
         + crate::column_header::column_header_frame(GridDensity::Compact, mode).extent();
     let rows = f32::from(arrangement::LEDGER_GRID_ROWS) * crate::data_grid::row_height();
-    let below = chrome::pane_content_inset()
-        + overlay_extent(
-            arrangement::default_arrangement().expect_region(arrangement::STATUS_BAND),
-        );
-    (above + rows + below).ceil().max(declared)
+    let status =
+        overlay_extent(arrangement::default_arrangement().expect_region(arrangement::STATUS_BAND));
+    let foot = chrome::pane_content_inset().max(status);
+    (above + rows + foot).ceil().max(declared)
 }
 
 /// What a rail refuses to narrow past.
