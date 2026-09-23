@@ -1831,6 +1831,41 @@ fn clicking_a_view_chip_on_the_graph_puts_that_view_on_the_canvas() {
         "the canvas drew a different set of chips than the table's one view: \
          a dashboard is a node of the graph, not a chip in the table's foot"
     );
+    // The words the layout laid out, not only the chips a click resolves: a
+    // `dashboard` word in the table's foot would be drawn by the raster and
+    // dropped by `NodeView::from_label` before it reached the list above.
+    let laid: Vec<(String, Vec<String>)> = win
+        .app
+        .protocol_model()
+        .layout()
+        .view_chips
+        .iter()
+        .map(|(node, chips)| {
+            (
+                node.clone(),
+                chips.iter().map(|chip| chip.label.clone()).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        laid,
+        vec![(table.clone(), vec!["grid".to_string()])],
+        "the graph laid out chip words other than the table's grid"
+    );
+    let dashboard = win
+        .app
+        .protocol_model()
+        .dashboard()
+        .cloned()
+        .expect("the table's dashboard is a node of the graph");
+    assert!(
+        win.app
+            .protocol_model()
+            .layout()
+            .positions
+            .contains_key(&dashboard),
+        "the graph the canvas draws has no card for the dashboard node"
+    );
 
     win.click_canvas_chip(NodeView::Grid);
 
