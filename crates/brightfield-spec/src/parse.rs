@@ -1282,9 +1282,10 @@ impl Walker {
                     attribute: key.clone(),
                 });
             }
-            // A plot-level `projectionType` (geo) that names a
-            // projection v1 can't render (or a non-string value) degrades to the
-            // default equirectangular fit — name it so the author sees the
+            // A plot-level `projectionType` that names a projection v1 can't
+            // render (or a non-string value) is not drawn through: a `geo` mark
+            // falls back to the default equirectangular fit and a `dot` mark to
+            // an unprojected scatter — name it so the author sees the
             // unsupported projection. A lifted `$param` is a recorded deferral.
             if key == "projectionType" {
                 self.warn_unknown_projection(&value);

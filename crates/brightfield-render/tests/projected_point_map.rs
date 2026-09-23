@@ -1284,14 +1284,23 @@ fn the_graticule_is_labelled_at_the_plot_areas_edges_in_the_axes_ink() {
             );
         }
 
-        // The axes' label ink, and not the graticule's own.
+        // The axes' label ink, and not the graticule's own: one label-ink
+        // paint per label drawn. A solid brush is one word of `draw_data` per
+        // draw, and nothing else on a projected plot paints in the label ink,
+        // so the count is per label rather than "somewhere in the scene".
         let ink = ChartInk::LIGHT;
         assert_ne!(ink.label, ink.grid, "the fixture needs the two inks apart");
         let packed = |c: peniko::Color| c.premultiply().to_rgba8().to_u32();
-        let paints: Vec<u32> = scene.encoding().draw_data.to_vec();
-        assert!(
-            paints.contains(&packed(ink.label)),
-            "the graticule's labels must be drawn in the axes' label ink"
+        let label_paints = scene
+            .encoding()
+            .draw_data
+            .iter()
+            .filter(|w| **w == packed(ink.label))
+            .count();
+        assert_eq!(
+            label_paints,
+            texts.len(),
+            "every graticule label must be drawn in the axes' label ink"
         );
     }
 

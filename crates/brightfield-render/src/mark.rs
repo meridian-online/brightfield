@@ -4381,10 +4381,10 @@ fn albers_forward(lon: f64, lat: f64) -> (f64, f64) {
 ///
 /// This is the graticule's whole input besides the projection: which lines exist
 /// and how finely they are spaced is decided from the span, and where they land
-/// is decided by the projection. Constructed by
-/// [`GeoRenderer`]/[`DotRenderer`] from the coordinates they are about to draw,
-/// so a mark showing one country gets that country's graticule and not the
-/// world's.
+/// is decided by the projection. Recorded on the plot's scale set from the
+/// coordinates its projected marks draw, so a plot showing one country picks
+/// that country's step and not the world's; [`PlotGraticule`] then lays the
+/// lines across the plot area at that step.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GeoExtent {
     /// West edge, degrees.

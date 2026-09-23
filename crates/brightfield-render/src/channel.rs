@@ -394,7 +394,8 @@ impl ChannelMap {
     /// `crate::mark::DotRenderer` reads this in both halves of its work: its
     /// `MarkRenderer::augment_scales` fits the PROJECTED coordinates rather than
     /// the raw ones, and its `MarkRenderer::render` places each point through
-    /// the projection and draws a graticule behind them.
+    /// the projection. The graticule behind them is the plot's, drawn from the
+    /// scale set ([`crate::mark::PlotGraticule`]).
     #[must_use]
     pub fn projection(&self) -> Option<crate::mark::Projection> {
         self.projection.drawn()
