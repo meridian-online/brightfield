@@ -19,7 +19,7 @@
 #       kinds.
 #
 # A baseline nobody has watched fail is one a reviewer learns to re-record, and
-# nothing else in the tree re-runs the break. This script does: it copies the
+# no other script under scripts/ re-runs the break. This one does: it copies the
 # tree, moves the choice in the copy in each of the two ways below, and asks
 # for a red run that names the test and prints what moved.
 #
@@ -32,8 +32,9 @@
 #      is what the per-column comparison claims to notice.
 #   2. Two of the kinds single_column_kinds() returns swap places in the
 #      registry's declaration order, in chart_kinds.rs. The kinds' slot types
-#      are disjoint, so no tile moves in the fixture: the order test is the only
-#      thing that can see this one.
+#      are disjoint, so no tile and no pixel moves in the fixture: of the tests
+#      in the dashboard_baseline binary, the order test is the one that goes red
+#      for this break.
 #
 # Both directions, like the other gate self-tests here. The intact copy must
 # PASS both tests, each break must turn its test red with the message that names
@@ -61,7 +62,8 @@
 #   --tree DIR   prove the tree in DIR instead of a copy of HEAD, for a change
 #                that is not committed yet. DIR is copied and never written.
 #
-# Exit status: 0 when every case held, 1 when one did not.
+# Exit status: 0 when every case held, 1 when one did not or when a break's
+# anchor no longer matches the source it rewrites, 2 for a bad argument.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -221,6 +223,16 @@ fi
 for f in "$TILE_FILE" "$REGISTRY_FILE" "crates/brightfield-shell/tests/${TEST_BINARY}.rs"; do
   [ -f "$SRC/$f" ] || die "the tree has no ${f}"
 done
+
+# Every file in the copy gets the time of the copy. `git archive` stamps each
+# file with the commit's time and tar keeps the mtimes it is given, and cargo
+# decides what to rebuild by comparing a source file's mtime with the build's.
+# A target directory kept from an earlier run (BRIGHTFIELD_PROVE_TARGET_DIR)
+# that was last built from a newer tree, or from a broken one, then looks newer
+# than these sources and answers for them: a run that proves a tree it never
+# built. Seen with a chooser broken by hand and left built in that directory:
+# the next tree's intact run went red for the leftover, not for its own source.
+find "$SRC" -type f -exec touch {} +
 
 # The bytes of each file a break rewrites, to put back byte for byte. After the
 # copy back the file is touched: cargo decides what to rebuild from mtimes, and
