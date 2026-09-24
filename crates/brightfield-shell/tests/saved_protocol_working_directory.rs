@@ -3,8 +3,8 @@
 //!
 //! A one-step Protocol spells its data file `./name`, relative to the
 //! Protocol's directory — `one_step`'s module docs give the reasons. That
-//! spelling is only as good as the directory it is resolved against, and two
-//! routes resolve it: [`Boot::open_sampled`], which a command line and a
+//! spelling names the right file when it is resolved against the Protocol's
+//! directory, and two routes resolve it: [`Boot::open_sampled`], which a command line and a
 //! front-door row both reach, and the window's Save, which remembers the
 //! Protocol for the next launch to list. Each test below changes the working
 //! directory between writing the Protocol and reopening it, and reads back the

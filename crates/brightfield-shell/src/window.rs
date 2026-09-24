@@ -7418,15 +7418,17 @@ fn reopenable(id: &str) -> bool {
 /// that path made absolute against the working directory it was named from.
 ///
 /// The layout outlives the process and the working directory does not. A path
-/// kept as it was spelled — `../data/arcform.yaml` — names another file, or
-/// none, from the directory the next launch starts in, so [`reopenable`] drops
-/// its row and a saved Protocol is missing from the door it was saved to reach.
+/// kept as it was spelled — `../data/arcform.yaml` — resolves against the
+/// directory the next launch starts in, where [`reopenable`] found no file and
+/// the saved Protocol lost its row on the door it was saved to reach:
+/// `a_protocol_saved_over_a_relative_path_reopens_from_a_third_directory` in
+/// `tests/saved_protocol_working_directory.rs` drives that launch.
 ///
-/// Absolute and not canonical: [`std::path::absolute`] reads the working
-/// directory and nothing else, so a directory reached through a link keeps the
-/// name the reader gave it, and an absolute path with no `.` or doubled
-/// separator in it comes back unchanged. A path with no working directory to
-/// resolve against is kept as spelled.
+/// Absolute and not canonical: [`std::path::absolute`] joins the working
+/// directory without following links, so a directory reached through a link
+/// keeps the name the reader gave it, and an absolute path with no `.` or
+/// doubled separator in it comes back unchanged. A path with no working
+/// directory to resolve against is kept as spelled.
 fn remembered_id(path: &str) -> String {
     std::path::absolute(path).map_or_else(
         |_| path.to_string(),
