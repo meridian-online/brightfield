@@ -4751,4 +4751,41 @@ hconcat:
             other => panic!("expected the flattened string form, got {other:?}"),
         }
     }
+
+    /// **A brush on a log or symlog axis carries that kind into its clause**,
+    /// with the data-space domain and the pixel range it was inverted
+    /// through.
+    ///
+    /// The query layer reads the kind: a clause that called a log gesture
+    /// linear would describe a sweep nobody made, and nothing downstream could
+    /// tell. Read off the descriptor the clause carries.
+    #[test]
+    fn a_log_or_symlog_scale_is_described_by_its_own_kind() {
+        let log = clause_meta_for_scale(&Scale::Log {
+            domain_min: 3.0,
+            domain_max: 35_682.0,
+            range_start: 40.0,
+            range_end: 600.0,
+        });
+        let described = log.scale.expect("a log scale is described");
+        assert_eq!(
+            described.kind, "log",
+            "a log axis described as {described:?}"
+        );
+        assert_eq!(described.domain, Some((3.0, 35_682.0)));
+        assert_eq!(described.range, Some((40.0, 600.0)));
+
+        let symlog = clause_meta_for_scale(&Scale::Symlog {
+            domain_min: -40.0,
+            domain_max: 900.0,
+            range_start: 40.0,
+            range_end: 600.0,
+        });
+        let described = symlog.scale.expect("a symlog scale is described");
+        assert_eq!(
+            described.kind, "symlog",
+            "a symlog axis described as {described:?}"
+        );
+        assert_eq!(described.domain, Some((-40.0, 900.0)));
+    }
 }
