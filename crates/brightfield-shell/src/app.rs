@@ -731,6 +731,16 @@ pub struct ChartDoc {
     /// it** — the sibling list to [`Self::scale_switches`], written by the
     /// chart pane as it draws and read by a GPU-free test.
     pub normalise_switches: Vec<NormaliseSwitchDrawn>,
+    /// **The controls the chart pane drew this frame, each with its name** —
+    /// the toolbar's buttons by their labels, and each tile's scale and
+    /// normalise states by their words.
+    ///
+    /// Cleared by the window at the start of each frame rather than by the
+    /// pane, because a frame whose canvas holds the graph does not draw this
+    /// pane at all, and a list left standing would name controls that are
+    /// not on the screen. Read into
+    /// [`MeridianApp::named_controls`](crate::window::MeridianApp::named_controls).
+    pub controls: Vec<brightfield_workbench::chrome::NamedControl>,
     /// Where each interval slider's track was drawn last frame, as
     /// `(control key, rect)` in window-space logical points — empty until a
     /// frame has laid the rail out, and empty for a spec that declares none.
@@ -904,6 +914,7 @@ impl ChartDoc {
             legend_rect: None,
             scale_switches: Vec::new(),
             normalise_switches: Vec::new(),
+            controls: Vec::new(),
             interval_slider_rects: Vec::new(),
             stacked_tiles: None,
             min_page_height: 0.0,
@@ -951,6 +962,7 @@ impl ChartDoc {
             legend_rect: None,
             scale_switches: Vec::new(),
             normalise_switches: Vec::new(),
+            controls: Vec::new(),
             interval_slider_rects: Vec::new(),
             stacked_tiles: None,
             min_page_height: 0.0,

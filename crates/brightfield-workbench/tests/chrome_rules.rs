@@ -381,7 +381,10 @@ fn a_collapsed_bottom_rail_paints_the_whole_of_its_rect_in_the_strips_own_fill()
             rect,
             &["Steps", "Controls"],
             0,
-            chrome::Caret::Up,
+            chrome::Collapse {
+                caret: chrome::Caret::Up,
+                hint: "Show the ledger",
+            },
             chrome::Trailing::default(),
             Mode::Light,
         )
@@ -436,6 +439,126 @@ fn an_overlay_is_not_painted_in_the_panel_fill() {
     assert_ne!(
         light, dark,
         "one fill for both themes — the overlay is not reading the theme"
+    );
+}
+
+/// **The status rail's band is not a control, and its dismissable line still
+/// is** — named by its hover text, and taken by a click.
+///
+/// An anchored `egui::Area` registers a move widget over its whole rect, and
+/// one that cannot move senses a click there to raise its layer — so without
+/// a sense of its own the band read as one unnamed control the width of the
+/// window. The first half holds that no widget on this frame senses a click
+/// without also sensing a drag.
+///
+/// The second half holds that silencing the band left the line a control:
+/// resting on it paints its hover text, which is its name, and a click on it
+/// dismisses it. A fix that silenced the line with the band — a sense taken
+/// off the label, or the rail drawn outside the hit test — reddens here.
+///
+/// It does not tell a hover sense on the Area from `interactable(false)`, and
+/// that is measured rather than assumed: on egui 0.35 both hover and click go
+/// through the widget hit test, which does not read the layer's flag, so the
+/// line kept its tooltip and its click under either.
+#[test]
+fn the_status_rails_band_is_not_a_control_and_its_line_still_is() {
+    let verb = Verb::new("clear-selection");
+    let entries = vec![StatusEntry {
+        id: "selection",
+        side: StatusSide::Leading,
+        text: "price > 200000".into(),
+        tone: Tone::Neutral,
+        hide: HideAffordance::Verb(verb),
+    }];
+    let ctx = egui::Context::default();
+    ctx.all_styles_mut(|style| style.interaction.tooltip_delay = 0.0);
+    let draw = |events: Vec<egui::Event>| {
+        let mut out = chrome::StatusDrawn::default();
+        let input = egui::RawInput {
+            screen_rect: Some(PANE),
+            events,
+            ..Default::default()
+        };
+        let full = ctx.run_ui(input, |ui| {
+            out = chrome::status_rail_overlay(
+                ui.ctx(),
+                &entries,
+                chrome::status_rail_height(),
+                Mode::Light,
+            );
+        });
+        (out, full.shapes)
+    };
+
+    // Three frames, because an anchored Area is placed by the size it had the
+    // frame before, and on its first frame it has none.
+    draw(Vec::new());
+    draw(Vec::new());
+    let (drawn, _) = draw(Vec::new());
+    let band = drawn.rect.expect("a rail with a line draws its band");
+    let click_only: Vec<(egui::Id, egui::Rect)> = ctx.viewport(|vp| {
+        vp.prev_pass
+            .widgets
+            .layers()
+            .flat_map(|(_, rects)| rects.iter())
+            .filter(|w| {
+                w.enabled
+                    && w.sense.senses_click()
+                    && !w.sense.senses_drag()
+                    && w.interact_rect.is_positive()
+            })
+            .map(|w| (w.id, w.interact_rect))
+            .collect()
+    });
+    assert!(
+        click_only.is_empty(),
+        "the band at {band:?} registered click-only widgets {click_only:?}, which \
+         read as controls with no name"
+    );
+
+    let line = drawn
+        .controls
+        .first()
+        .expect("the dismissable line is recorded as a control")
+        .clone();
+    assert_eq!(line.by, chrome::NamedBy::Hover);
+    assert!(line.name.starts_with("dismiss"), "{:?}", line.name);
+    let at = line.rect.center();
+
+    // Rest the pointer on the line until egui reads it as still, then read
+    // the frame's galleys for the line's name.
+    draw(vec![egui::Event::PointerMoved(at)]);
+    let mut shapes = Vec::new();
+    for _ in 0..8 {
+        shapes = draw(Vec::new()).1;
+    }
+    let painted: Vec<String> = shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) => Some(text.galley.text().to_string()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        painted.contains(&line.name),
+        "resting on the line at {at:?} painted no {:?}; it painted {painted:?}",
+        line.name
+    );
+
+    let button = |pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    };
+    // Press and release on separate frames: the line senses a drag as well,
+    // and egui decides click-or-drag on the release.
+    draw(vec![button(true)]);
+    let (clicked, _) = draw(vec![button(false)]);
+    assert_eq!(
+        clicked.dismissed,
+        vec![verb],
+        "a click on the line at {at:?} did not dismiss it"
     );
 }
 

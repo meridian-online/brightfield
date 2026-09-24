@@ -2469,6 +2469,10 @@ pub struct SpineRowDrawn {
     /// The **graph chip** at the trailing end, on the spine's head row and no
     /// other. `None` everywhere else, and on a head row drawn without one.
     pub chip: Option<GraphChipDrawn>,
+    /// Whether the row is a control — it senses a click, and [`Self::label`]
+    /// is its name — rather than a readout. Read off the same sense the row
+    /// was allocated with, so the record cannot call a readout a control.
+    pub control: bool,
 }
 
 /// The graph chip in the spine's head **as it was drawn**.
@@ -2482,6 +2486,9 @@ pub struct GraphChipDrawn {
     /// no node that has views: the graph is the only thing that canvas can
     /// hold, so there is nowhere for a click to go.
     pub live: bool,
+    /// What hovering it says — [`GRAPH_CHIP_HINT`], the value the tooltip was
+    /// handed.
+    pub hint: &'static str,
 }
 
 /// Everything the DAG raster's pixels depend on.
@@ -2981,6 +2988,7 @@ fn caption_row(ui: &mut egui::Ui, text: &str, mode: Mode) -> SpineRowDrawn {
         on_canvas: None,
         washed: false,
         chip: None,
+        control: false,
     }
 }
 
@@ -3046,7 +3054,8 @@ fn spine_head_row(
     } else {
         egui::Sense::hover()
     };
-    let response = chrome::chip(ui, box_, GRAPH_CHIP, font, filled, sense, mode);
+    let response = chrome::chip(ui, box_, GRAPH_CHIP, font, filled, sense, mode)
+        .on_hover_text(GRAPH_CHIP_HINT);
 
     let ink = chrome::colour(sem.text.muted);
     let painter = ui.painter();
@@ -3092,7 +3101,9 @@ fn spine_head_row(
                 rect: box_,
                 filled,
                 live,
+                hint: GRAPH_CHIP_HINT,
             }),
+            control: false,
         },
         response.clicked(),
     )
@@ -3100,6 +3111,12 @@ fn spine_head_row(
 
 /// The word on the chip in the spine's head.
 const GRAPH_CHIP: &str = "graph";
+
+/// What hovering the graph chip says. One sentence for both of the chip's
+/// states, because the same box puts the graph on the canvas and puts back
+/// what the canvas held; the word on the chip alone does not say which.
+pub const GRAPH_CHIP_HINT: &str =
+    "Switch the canvas between the Protocol's graph and the view it held";
 
 /// One **spine row**: the marker, the name, and the kind at the trailing end —
 /// plus, on the one row whose content the canvas holds, the bar at its leading
@@ -3230,6 +3247,7 @@ fn spine_row(
             on_canvas,
             washed: row.selected,
             chip: None,
+            control: sense.senses_click(),
         },
         response,
     )
@@ -3252,10 +3270,8 @@ fn spine_row(
 fn outline_row(ui: &mut egui::Ui, row: &OutlineRow, mode: Mode) -> (SpineRowDrawn, egui::Response) {
     let sem = semantic(mode.is_dark());
     let b = control::binding(spacing::ROW_DENSE);
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), b.row),
-        egui::Sense::click(),
-    );
+    let sense = egui::Sense::click();
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), b.row), sense);
     if row.selected {
         chrome::selection_wash(ui, rect, mode);
     }
@@ -3314,6 +3330,7 @@ fn outline_row(ui: &mut egui::Ui, row: &OutlineRow, mode: Mode) -> (SpineRowDraw
             on_canvas: None,
             washed: row.selected,
             chip: None,
+            control: sense.senses_click(),
         },
         response,
     )
