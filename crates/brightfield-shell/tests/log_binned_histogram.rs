@@ -586,8 +586,8 @@ height: 400
 "#;
 
 /// The glyph id the bundled label face paints for `c`, learnt by painting it
-/// alone into a scratch scene with the same public `draw_text` every tick
-/// label goes through.
+/// alone into a scratch scene with the public `draw_text` that
+/// `render_x_axis` paints its tick labels with.
 fn label_glyph(c: char) -> u32 {
     let mut scene = vello::Scene::new();
     brightfield_render::text::draw_text(
@@ -611,8 +611,8 @@ fn label_glyph(c: char) -> u32 {
 /// characters through [`label_glyph`], so what is asserted is the words on the
 /// page — `-100 -10 -1 0 1 10 100` left to right — and each is placed where
 /// the scale puts its value. Ticked by `log_tick_values` instead, this axis
-/// paints no negative label at all: a log axis has nothing at or below zero,
-/// and the only `0` it can show is a power of ten too small to print.
+/// paints no negative label, since a log tick lies above zero, and the `0` it
+/// does paint is a power of ten too small to print.
 #[test]
 fn a_symlog_axis_across_zero_is_ticked_at_zero_and_the_negative_decades() {
     let path = scratch().join("signed-rows-symlog.yaml");
