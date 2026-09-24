@@ -1295,3 +1295,134 @@ fn an_authored_spec_keeps_a_source_relative_to_itself_through_a_switch() {
             .get(brightfield_render::channel::Channel::X)
     );
 }
+
+/// `path`, spelled **relative to the process's working directory** by climbing
+/// out of it with `..` as far as the two share a prefix and no further.
+///
+/// Read, never set: `std::env::set_current_dir` is process-wide, the same
+/// reason [`housing_relative`] reads it. Both sides are canonicalized first so
+/// a symlinked temp root spells one path rather than two.
+fn spelled_from_the_working_directory(path: &std::path::Path) -> std::path::PathBuf {
+    let cwd = std::fs::canonicalize(std::env::current_dir().expect("a working directory"))
+        .expect("the working directory canonicalizes");
+    let target = std::fs::canonicalize(path)
+        .unwrap_or_else(|e| panic!("{} canonicalizes: {e}", path.display()));
+    let shared = cwd
+        .components()
+        .zip(target.components())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut out = std::path::PathBuf::new();
+    for _ in cwd.components().skip(shared) {
+        out.push("..");
+    }
+    for part in target.components().skip(shared) {
+        out.push(part);
+    }
+    out
+}
+
+/// A directory of this test's own under cargo's per-target scratch directory
+/// — beside the working directory's tree rather than under the system temp
+/// root, so its relative spelling climbs a couple of levels and not to `/`.
+fn target_scratch_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("tile-scale-switch-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a scratch directory for the fixture");
+    dir
+}
+
+/// **The base survives a second throw.** An authored spec opened by a
+/// relative path, its source named relative to the spec, is thrown linear to
+/// log and then log to symlog, and the tile is still drawn after the second.
+///
+/// The one-throw tests above cannot see a rebuild that drops the base: the
+/// first throw reads the base off the dashboard the boot loaded, and only the
+/// dashboard the first throw BUILT carries whatever the rebuild stored. So a
+/// `LiveDashboard::load` that stored no base answered every test that throws
+/// once and handed the second throw a source resolved against the working
+/// directory, where there is no such file — the reader got the engine's
+/// refusal back where the tile was, one throw later than anything looked.
+///
+/// Opened from a working directory that is not the spec's, by a spelling
+/// relative to it, which is how a reader types a path at a terminal; the
+/// source's own name is asserted absent from that directory first, so a
+/// rebuild that lost the base cannot find a file of the same name by luck.
+#[test]
+fn an_authored_spec_keeps_its_source_through_a_second_switch() {
+    const SOURCE: &str = "second-throw-readings.csv";
+    let dir = target_scratch_dir("authored-second-throw");
+    std::fs::write(
+        dir.join(SOURCE),
+        "v\n1\n2\n5\n9\n20\n40\n90\n200\n400\n900\n",
+    )
+    .expect("the fixture writes");
+    let spec = dir.join("second-throw.yaml");
+    std::fs::write(
+        &spec,
+        format!(
+            "data:\n  rows:\n    file: {SOURCE}\nplot:\n  - mark: rectY\n    \
+             data: {{ from: rows }}\n    x: {{ bin: v }}\n    y: {{ count: }}\n    \
+             fill: steelblue\nwidth: 640\nheight: 400\n"
+        ),
+    )
+    .expect("the spec writes");
+
+    let relative = spelled_from_the_working_directory(&spec);
+    assert!(
+        relative.is_relative() && relative.parent() != Some(std::path::Path::new("")),
+        "{} is not a relative spelling from another directory, so this is the \
+         absolute test again",
+        relative.display()
+    );
+    assert!(
+        !std::path::Path::new(SOURCE).exists(),
+        "{SOURCE} sits in the working directory, so a rebuild that lost the \
+         spec's base would still find it and this test could not fail"
+    );
+
+    let boot = Boot::open(
+        relative.to_str().expect("utf-8 scratch path"),
+        Flow::Vertical,
+        None,
+    )
+    .unwrap_or_else(|e| panic!("open {}: {e}", relative.display()));
+    let mut live = Live::open(boot);
+    live.settle();
+
+    let doc = live.app.chart_doc_mut();
+    let marks = marks_binning(doc, "v");
+    let rows: f64 = mark_bins(doc, marks[0], "v").iter().map(|(_, c)| c).sum();
+    for (throw, kind) in [(1, ScaleType::Log), (2, ScaleType::Symlog)] {
+        let thrown = doc.set_plot_scale(0, PlotAxis::X, kind);
+        // The fault first and by its words, as the one-throw test reads it:
+        // it is what the reader was left looking at.
+        assert_eq!(
+            doc.chart_fault(),
+            None,
+            "throw {throw}, to {kind:?}: the rebuild looked for the source \
+             somewhere other than beside the spec"
+        );
+        assert!(thrown, "throw {throw}, to {kind:?}, was refused");
+    }
+    assert!(
+        matches!(
+            doc.composed.plots[0]
+                .scales
+                .get(brightfield_render::channel::Channel::X),
+            Some(brightfield_render::scale::Scale::Symlog { .. })
+        ),
+        "the plot's x scale after the second switch: {:?}",
+        doc.composed.plots[0]
+            .scales
+            .get(brightfield_render::channel::Channel::X)
+    );
+    // Drawn, and drawn from the same file: every row is still in a bin.
+    let marks = marks_binning(doc, "v");
+    let after: f64 = mark_bins(doc, marks[0], "v").iter().map(|(_, c)| c).sum();
+    assert!(
+        rows > 0.0 && (after - rows).abs() < f64::EPSILON,
+        "the tile bins {after} rows after the second switch and {rows} before it"
+    );
+}
