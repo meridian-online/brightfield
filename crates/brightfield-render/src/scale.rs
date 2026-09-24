@@ -2873,6 +2873,82 @@ mod tests {
         );
     }
 
+    /// **A log axis whose rows grew past its launch extent widens to hold
+    /// them**, in data units, and keeps its launch pixel range.
+    ///
+    /// The pair falls to `anchor_scale`'s kind-mismatch catch-all without its
+    /// log arm, and that catch-all keeps launch: the anchored domain would
+    /// read `[10, 1000]` and a row at 5000 would be clipped off the tile it
+    /// belongs on. The two ends are read off the anchored scale, not
+    /// recomputed, and `fresh` reaches past launch on BOTH sides so a
+    /// one-sided widen cannot pass for the whole rule.
+    #[test]
+    fn anchor_scales_widens_a_log_axis_past_its_launch_extent() {
+        let log = |min, max, range_end| Scale::Log {
+            domain_min: min,
+            domain_max: max,
+            range_start: 0.0,
+            range_end,
+        };
+        let mut launch = ScaleSet::new();
+        launch.insert(Channel::X, log(10.0, 1000.0, 400.0));
+        let mut fresh = ScaleSet::new();
+        fresh.insert(Channel::X, log(2.0, 5000.0, 640.0));
+
+        match anchor_scales(&launch, fresh).get(Channel::X) {
+            Some(Scale::Log {
+                domain_min,
+                domain_max,
+                range_start,
+                range_end,
+            }) => {
+                assert_eq!(
+                    (*domain_min, *domain_max),
+                    (2.0, 5000.0),
+                    "the anchored log domain covers launch [10, 1000] and fresh \
+                     [2, 5000]; [10, 1000] is the launch extent clipping the \
+                     rows that grew past it"
+                );
+                assert_eq!(
+                    (*range_start, *range_end),
+                    (0.0, 400.0),
+                    "the launch pixel range rides through the widen"
+                );
+            }
+            other => panic!("a log pair anchors to a log scale, got {other:?}"),
+        }
+    }
+
+    /// The symlog half of the same rule, over a fresh domain that crosses
+    /// zero: the anchored domain reaches below it because a fresh row does.
+    #[test]
+    fn anchor_scales_widens_a_symlog_axis_across_zero() {
+        let symlog = |min, max| Scale::Symlog {
+            domain_min: min,
+            domain_max: max,
+            range_start: 0.0,
+            range_end: 400.0,
+        };
+        let mut launch = ScaleSet::new();
+        launch.insert(Channel::X, symlog(1.0, 100.0));
+        let mut fresh = ScaleSet::new();
+        fresh.insert(Channel::X, symlog(-50.0, 300.0));
+
+        match anchor_scales(&launch, fresh).get(Channel::X) {
+            Some(Scale::Symlog {
+                domain_min,
+                domain_max,
+                ..
+            }) => assert_eq!(
+                (*domain_min, *domain_max),
+                (-50.0, 300.0),
+                "the anchored symlog domain covers launch [1, 100] and fresh \
+                 [-50, 300]"
+            ),
+            other => panic!("a symlog pair anchors to a symlog scale, got {other:?}"),
+        }
+    }
+
     // --- a launch-baked inset survives every anchored rebuild ---
 
     #[test]

@@ -758,6 +758,40 @@ mod tests {
         assert!(ticks[1].position < ticks[2].position);
     }
 
+    /// **A log axis spanning less than two decades is still labelled**, at
+    /// 1, 2 and 5 of each decade it touches.
+    ///
+    /// Two domains, because the short case has two shapes: `[2, 50]` holds one
+    /// power of ten (10), and `[3, 8]` holds none. Read as decades alone the
+    /// first is one label and the second is an empty axis — a tile whose
+    /// column spans a narrow positive range, thrown to log, would draw no
+    /// numbers at all.
+    #[test]
+    fn a_log_axis_under_two_decades_is_labelled_at_one_two_and_five() {
+        let log = |min, max| Scale::Log {
+            domain_min: min,
+            domain_max: max,
+            range_start: 40.0,
+            range_end: 600.0,
+        };
+        let labels = |scale: &Scale| -> Vec<String> {
+            compute_ticks(scale, 10)
+                .into_iter()
+                .map(|tick| tick.label)
+                .collect()
+        };
+        assert_eq!(
+            labels(&log(2.0, 50.0)),
+            ["2", "5", "10", "20", "50"],
+            "[2, 50] is one decade and a half: 2, 5, 10, 20 and 50 lie inside it"
+        );
+        assert_eq!(
+            labels(&log(3.0, 8.0)),
+            ["5"],
+            "[3, 8] holds no power of ten, and 5 is the one 1-2-5 step inside it"
+        );
+    }
+
     #[test]
     fn time_scale_ticks_stay_within_range() {
         let scale = Scale::Time {

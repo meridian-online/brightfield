@@ -1058,6 +1058,111 @@ fn a_brush_on_another_tile_narrows_the_log_tile_on_its_own_bins() {
     );
 }
 
+/// **A brush swept across the log tile selects the rows under the pointer**:
+/// the two ends the session records are the log inverse of the two pointer
+/// positions.
+///
+/// A sweep on this tile is inverted through its displayed scale, so the rows
+/// the grid lists are the rows whose `population` lies between the two ends.
+/// If the log arm of that inversion interpolated linearly instead, the sweep
+/// over the tile's lower decades would record ends in the thousands and the
+/// grid would list rows that are nowhere under the pointer — with the brush
+/// rectangle still painted in the right place, because the paint never
+/// inverts.
+///
+/// The ends are read off the clause the live session holds, and the oracle is
+/// written out here rather than borrowed from `Scale`: each recorded end is
+/// taken back to a pixel by the log transform itself, `ln v` placed between
+/// `ln min` and `ln max` on the tile's own range, and must land where the
+/// pointer went down and came up. The sweep is placed on the scale's range
+/// rather than on the tile's box, so both ends sit on the plotted area and
+/// not on the axis margin.
+#[test]
+fn a_brush_on_the_log_tile_records_the_log_inverse_of_the_pointer() {
+    use brightfield_engine::SqlPredicate;
+    use brightfield_render::channel::Channel;
+    use brightfield_render::scale::Scale;
+    use brightfield_sql::ir::ScalarValue;
+
+    let mut live = Live::open(housing_boot());
+    live.settle();
+    live.transpose();
+    live.switch_to("population", ScaleType::Log);
+    assert_eq!(live.switch("population").active, ScaleType::Log);
+    let population = live.switch("population").plot;
+
+    let Some(&Scale::Log {
+        domain_min,
+        domain_max,
+        range_start,
+        range_end,
+    }) = live.doc().composed.plots[population].scales.get(Channel::X)
+    else {
+        panic!(
+            "population's tile draws against {:?}, not a log scale",
+            live.doc().composed.plots[population].scales.get(Channel::X)
+        );
+    };
+    assert!(
+        domain_min > 0.0 && domain_max / domain_min > 100.0,
+        "population's log domain [{domain_min}, {domain_max}] must span more \
+         than two decades, or a linear inversion lands too near the log one \
+         to tell apart"
+    );
+
+    // A quarter and two thirds of the way along the scale's own range.
+    let rect = live.app.composed_plot_rects()[population];
+    let fraction_of_box = |along: f64| {
+        let px = range_start + along * (range_end - range_start);
+        (px / f64::from(rect.width())) as f32
+    };
+    let (from, to) = (fraction_of_box(0.25), fraction_of_box(0.67));
+    let pressed = f64::from(live.at(population, from).x - rect.left());
+    let released = f64::from(live.at(population, to).x - rect.left());
+    live.brush(population, from, to);
+    assert_eq!(
+        live.app.composed_plot_rects()[population],
+        rect,
+        "the sweep moved population's tile, so the two pointer positions no \
+         longer name the pixels the brush was inverted from"
+    );
+
+    let doc = live.app.chart_doc_mut();
+    let session = doc
+        .live_coordinator()
+        .expect("the opened file has a live session")
+        .session();
+    let held: Vec<&SqlPredicate> = session
+        .current_selections()
+        .values()
+        .flatten()
+        .map(|(_, predicate)| predicate)
+        .collect();
+    let (lo, hi) = match held.as_slice() {
+        [SqlPredicate::Interval {
+            column,
+            lo: ScalarValue::Float(lo),
+            hi: ScalarValue::Float(hi),
+            ..
+        }] if column.contains("population") => (*lo, *hi),
+        other => panic!("the sweep on population's tile committed {other:?}"),
+    };
+
+    // Each end, taken back to a pixel by the log transform written out.
+    let (ln_min, ln_max) = (domain_min.ln(), domain_max.ln());
+    let pixel_of =
+        |v: f64| range_start + (v.ln() - ln_min) / (ln_max - ln_min) * (range_end - range_start);
+    for (end, value, pointer) in [("lo", lo, pressed), ("hi", hi, released)] {
+        assert!(
+            (pixel_of(value) - pointer).abs() < 0.05,
+            "the brush's {end} end records population {value}, which the log \
+             scale over [{domain_min}, {domain_max}] places at pixel {}; the \
+             pointer was at pixel {pointer}",
+            pixel_of(value)
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // What the recompose carries across the rebuild: the base the sources were
 // resolved against, and the mode the page is inked in.

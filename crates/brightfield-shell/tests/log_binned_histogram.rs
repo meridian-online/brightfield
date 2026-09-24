@@ -551,3 +551,138 @@ fn log_drops_the_rows_at_or_below_zero_and_symlog_keeps_them() {
         "a log domain cannot start at or below zero"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Symlog across zero: the ticks the 37-observation fixture cannot reach
+// ---------------------------------------------------------------------------
+
+/// Seven rows spread over both signs, so the domain the bins snap to reaches
+/// past -100 and past 100. [`SYMLOG_37`] lies above zero, which is why its
+/// tick test cannot see the zero tick or a negative decade: over `[1, 97]`
+/// the signed decades and the plain log decades are the same two labels.
+///
+/// Built here rather than committed under `examples/`, the way the other two
+/// fixtures in this file are: it is a gate fixture shaped to put one row in
+/// each signed decade, not a document anyone opens.
+const SIGNED_ROWS: &str = r#"
+data:
+  observations:
+    - { v: -250 }
+    - { v: -40 }
+    - { v: -3 }
+    - { v: 0 }
+    - { v: 2 }
+    - { v: 30 }
+    - { v: 200 }
+plot:
+  - mark: rectY
+    data: { from: observations }
+    x: { bin: v }
+    y: { count: }
+    fill: steelblue
+xScale: symlog
+width: 640
+height: 400
+"#;
+
+/// The glyph id the bundled label face paints for `c`, learnt by painting it
+/// alone into a scratch scene with the same public `draw_text` every tick
+/// label goes through.
+fn label_glyph(c: char) -> u32 {
+    let mut scene = vello::Scene::new();
+    brightfield_render::text::draw_text(
+        &mut scene,
+        &c.to_string(),
+        0.0,
+        0.0,
+        brightfield_render::text::LABEL_SIZE,
+        peniko::Color::BLACK,
+        brightfield_render::text::TextAnchor::Start,
+    );
+    let glyphs = &scene.encoding().resources.glyphs;
+    assert_eq!(glyphs.len(), 1, "{c:?} paints as one glyph");
+    glyphs[0].id
+}
+
+/// **A symlog axis whose domain crosses zero is ticked at zero and at the
+/// negative decades**, read as the text the x-axis band painted.
+///
+/// Every run of glyphs in the x tick-label row is decoded back into its
+/// characters through [`label_glyph`], so what is asserted is the words on the
+/// page — `-100 -10 -1 0 1 10 100` left to right — and each is placed where
+/// the scale puts its value. Ticked by `log_tick_values` instead, this axis
+/// paints no negative label at all: a log axis has nothing at or below zero,
+/// and the only `0` it can show is a power of ten too small to print.
+#[test]
+fn a_symlog_axis_across_zero_is_ticked_at_zero_and_the_negative_decades() {
+    let path = scratch().join("signed-rows-symlog.yaml");
+    std::fs::write(&path, SIGNED_ROWS).expect("write fixture");
+    let composed = compose_spec(path.to_str().expect("utf-8 path")).expect("the spec composes");
+
+    let scale = x_scale(&composed);
+    let (lo, hi) = match scale {
+        Scale::Symlog {
+            domain_min,
+            domain_max,
+            ..
+        } => (domain_min, domain_max),
+        ref other => panic!("xScale: symlog must reach the drawn scale set, got {other:?}"),
+    };
+    assert!(
+        (-1000.0..=-100.0).contains(&lo) && (100.0..1000.0).contains(&hi),
+        "the fixture's domain [{lo}, {hi}] must hold ±100 and stop short of \
+         ±1000 for the seven labels below to be the whole axis"
+    );
+
+    let characters = "-0123456789.";
+    let glyphs: Vec<(u32, char)> = characters.chars().map(|c| (label_glyph(c), c)).collect();
+    let decode = |id: u32| {
+        glyphs
+            .iter()
+            .find(|(glyph, _)| *glyph == id)
+            .map_or('?', |(_, c)| *c)
+    };
+
+    let plot = composed.plots.first().expect("one plot");
+    let label_size = brightfield_render::text::LABEL_SIZE;
+    // The x tick-label row, found the way the 37-observation tick test finds
+    // it: below the plot's bottom edge by more than a y label can reach.
+    let x_label_row_y = plot.rect.y + plot.layout.plot_y_end() + 10.0;
+    let resources = &composed.scene.encoding().resources;
+    let mut painted: Vec<(f64, String)> = resources
+        .glyph_runs
+        .iter()
+        .filter(|run| {
+            (run.font_size - label_size).abs() < 0.01
+                && run.transform.matrix[0].abs() > 0.5
+                && f64::from(run.transform.translation[1]) > x_label_row_y
+        })
+        .map(|run| {
+            let text: String = resources.glyphs[run.glyphs.clone()]
+                .iter()
+                .map(|g| decode(g.id))
+                .collect();
+            (f64::from(run.transform.translation[0]), text)
+        })
+        .collect();
+    painted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+    let labels: Vec<&str> = painted.iter().map(|(_, text)| text.as_str()).collect();
+    assert_eq!(
+        labels,
+        ["-100", "-10", "-1", "0", "1", "10", "100"],
+        "the x-axis band paints the signed decades with zero among them, left \
+         to right"
+    );
+
+    for (x0, text) in &painted {
+        let value: f64 = text.parse().expect("a numeric label");
+        let width = brightfield_render::text::measure_width(text, label_size);
+        let expected_x0 = plot.rect.x + scale.map_f64(value) - width / 2.0;
+        assert!(
+            (x0 - expected_x0).abs() < 1.0,
+            "the painted {text:?} sits at column {x0}, not at column \
+             {expected_x0} — where the scale places {value}"
+        );
+    }
+}
