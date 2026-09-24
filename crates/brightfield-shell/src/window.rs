@@ -7433,10 +7433,11 @@ fn reopenable(id: &str) -> bool {
 /// A `..` is folded away as well, which [`std::path::absolute`] does not do:
 /// `../data/arcform.yaml` named from `<root>/launch` is
 /// `<root>/data/arcform.yaml`, and left as `<root>/launch/../data/arcform.yaml`
-/// it names the file only while `<root>/launch` exists — [`reopenable`] finds
-/// no file once it is removed — and is a second id for the document when the
-/// next launch names it from another directory, where the row and the layout
-/// saved under the first are not found. [`fold_parent_dirs`] says how.
+/// it names the file while `<root>/launch` exists and stops naming it once
+/// that is removed — [`reopenable`] then finds no file — and is a second id for
+/// the document when the next launch names it from another directory, where the
+/// row and the layout saved under the first are not found.
+/// [`fold_parent_dirs`] says how.
 fn remembered_id(path: &str) -> String {
     std::path::absolute(path).map_or_else(
         |_| path.to_string(),
