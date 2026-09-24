@@ -1392,7 +1392,7 @@ impl Boot {
                 ));
             }
             return Self::data_file(spec).map(|boot| Self {
-                opened_id: Some(spec.to_string()),
+                opened_id: Some(remembered_id(spec)),
                 ..boot
             });
         }
@@ -1426,9 +1426,10 @@ impl Boot {
             // remembered under, and what a front-door row for it would be
             // reopened with, so the lookup below has to key on the same
             // string or the two routes would restore two different layouts
-            // for one document.
+            // for one document. Made absolute, as Save remembers it: see
+            // `remembered_id`.
             return Self::data_file(&data.to_string_lossy()).map(|boot| Self {
-                opened_id: Some(spec.to_string()),
+                opened_id: Some(remembered_id(spec)),
                 ..boot
             });
         }
@@ -1452,7 +1453,7 @@ impl Boot {
                 eprintln!("{spec}: {line}");
             }
             return Ok(Self {
-                opened_id: Some(spec.to_string()),
+                opened_id: Some(remembered_id(spec)),
                 ..Self::protocol(inputs, flow, focus)
             });
         }
@@ -1480,7 +1481,7 @@ impl Boot {
         // Set for the same reason the other three branches are: the id a
         // document was opened under is a property of the route, not of
         // which of the four shapes `spec` turned out to be.
-        boot.opened_id = Some(spec.to_string());
+        boot.opened_id = Some(remembered_id(spec));
         Ok(boot)
     }
 
@@ -6060,8 +6061,11 @@ impl MeridianApp {
                 self.notifications.dismiss(banner);
                 let name = self.protocol.doc.model.protocol.clone();
                 let run = self.recorded_run_state();
+                // `path` is spelled against this process's working
+                // directory — relative when the data file was opened by a
+                // relative path — and the next launch starts in another.
                 self.layout.live_mut().remember(
-                    &path.to_string_lossy(),
+                    &remembered_id(&path.to_string_lossy()),
                     &name,
                     run,
                     self.grid_layout,
@@ -6272,12 +6276,13 @@ impl MeridianApp {
         // string the row was remembered under — and the record is keyed by
         // it. A document this file has no row for opens on its rows, which is
         // what `GridLayout::default()` is.
-        self.grid_layout = self.layout.live().grid_layout_of(path).unwrap_or_default();
+        let id = remembered_id(path);
+        self.grid_layout = self.layout.live().grid_layout_of(&id).unwrap_or_default();
         // Through the move, for the reason the constructor gives: `adopt_boot`
         // has just re-applied the rail defaults, which close the ledger.
-        self.set_grid_spot(self.layout.live().grid_spot_of(path).unwrap_or_default());
+        self.set_grid_spot(self.layout.live().grid_spot_of(&id).unwrap_or_default());
         self.layout.live_mut().remember(
-            path,
+            &id,
             &name,
             run,
             self.grid_layout,
@@ -7407,6 +7412,28 @@ fn canvas_occupants(region: &Region) -> (&'static [Projection], ItemId) {
 /// better answer than a dead row.
 fn reopenable(id: &str) -> bool {
     crate::starts::find(id).is_some() || std::path::Path::new(id).is_file()
+}
+
+/// The id a document opened from a **path** is remembered and looked up under:
+/// that path made absolute against the working directory it was named from.
+///
+/// The layout outlives the process and the working directory does not. A path
+/// kept as it was spelled — `../data/arcform.yaml` — resolves against the
+/// directory the next launch starts in, where [`reopenable`] found no file and
+/// the saved Protocol lost its row on the door it was saved to reach:
+/// `a_protocol_saved_over_a_relative_path_reopens_from_a_third_directory` in
+/// `tests/saved_protocol_working_directory.rs` drives that launch.
+///
+/// Absolute and not canonical: [`std::path::absolute`] joins the working
+/// directory without following links, so a directory reached through a link
+/// keeps the name the reader gave it, and an absolute path with no `.` or
+/// doubled separator in it comes back unchanged. A path with no working
+/// directory to resolve against is kept as spelled.
+fn remembered_id(path: &str) -> String {
+    std::path::absolute(path).map_or_else(
+        |_| path.to_string(),
+        |absolute| absolute.to_string_lossy().into_owned(),
+    )
 }
 
 /// The words a rail's selector strip offers its panes under — each pane's own
