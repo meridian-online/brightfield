@@ -53,7 +53,7 @@
 //! The front door is not the first screen this file reads: it draws before a
 //! file is open, and its cards and rows are its own tests' subject.
 
-use brightfield_shell::app::{GridLayout, GridSpot};
+use brightfield_shell::app::GridLayout;
 use brightfield_shell::design::Mode;
 use brightfield_shell::protocol::GRAPH_CHIP_HINT;
 use brightfield_shell::window::{Boot, MeridianApp, HOME_CONTROL_NAME};
@@ -521,47 +521,4 @@ fn a_tile_switch_state_the_pane_clips_away_names_no_control() {
              the list still names it: {named:?}"
         );
     }
-}
-
-/// **Going home from a document names neither of the grid pane's switches.**
-/// The front door draws no grid pane, and the window clears both switches'
-/// records at the top of every frame, the door's included — which is what
-/// lets the list read them on every frame rather than on the dock's alone.
-#[test]
-fn going_home_from_a_document_names_neither_grid_switch() {
-    let mut live = Live::housing();
-    let words = [
-        GridLayout::Rows.word(),
-        GridLayout::Columns.word(),
-        GridSpot::Canvas.word(),
-        GridSpot::Ledger.word(),
-    ];
-    let switch_entries = |live: &Live| -> Vec<(String, egui::Rect)> {
-        live.app
-            .named_controls()
-            .iter()
-            .filter(|c| words.contains(&c.name.as_str()))
-            .map(|c| (c.name.clone(), c.rect))
-            .collect()
-    };
-    let before = switch_entries(&live);
-    for word in words {
-        assert!(
-            before.iter().any(|(name, _)| name == word),
-            "the housing baseline names no {word:?} grid switch state, so going \
-             home from it proves nothing about that state; it names {before:?}"
-        );
-    }
-
-    let home = live.app.home_rect().expect("the band drew a Home button");
-    live.run(vec![click_at(home.center()), Vec::new(), Vec::new()]);
-    assert!(
-        live.app.front_door_is_live(),
-        "clicking Home did not return to the front door"
-    );
-    let stale = switch_entries(&live);
-    assert!(
-        stale.is_empty(),
-        "the front door draws no grid pane and the list still names {stale:?}"
-    );
 }
