@@ -528,8 +528,13 @@ pub struct ScaleSwitchDrawn {
     /// The control's outer rect — the box the hover text is offered over.
     pub rect: egui::Rect,
     /// One entry per offered state, in the order they were drawn, each with
-    /// the rect a pointer has to be inside to pick it.
+    /// the rect it was painted in; a pointer picks it inside that rect's
+    /// intersection with [`Self::clip`].
     pub states: Vec<(ScaleType, egui::Rect)>,
+    /// The box the pane clips this control to. Each state is interacted over
+    /// its rect's intersection with this, so a pointer lands on a state only
+    /// there, and on a state wholly outside it not at all — [`Self::hits`].
+    pub clip: egui::Rect,
     /// The state the picture on screen was actually composed against, read
     /// off the plot's own scale rather than off the spec — so a switch
     /// showing `log` is a switch over a log picture.
@@ -537,6 +542,20 @@ pub struct ScaleSwitchDrawn {
     /// The words the control offers on hover, verbatim. The same `String` is
     /// handed to the tooltip, so the two cannot drift.
     pub hover: String,
+}
+
+impl ScaleSwitchDrawn {
+    /// Each state with the part of its rect a pointer can land in — the
+    /// intersection with [`Self::clip`] its hit test was handed — skipping a
+    /// state the pane clips to nothing. What
+    /// [`MeridianApp::named_controls`](crate::window::MeridianApp::named_controls)
+    /// names this control at.
+    pub fn hits(&self) -> impl Iterator<Item = (ScaleType, egui::Rect)> + '_ {
+        self.states.iter().filter_map(|(state, rect)| {
+            let hit = rect.intersect(self.clip);
+            hit.is_positive().then_some((*state, hit))
+        })
+    }
 }
 
 /// **One grouped histogram's normalise control, as the last frame drew it.**
@@ -559,8 +578,13 @@ pub struct NormaliseSwitchDrawn {
     /// The control's outer rect — the box the hover text is offered over.
     pub rect: egui::Rect,
     /// One entry per offered state, in the order they were drawn, each with
-    /// the rect a pointer has to be inside to pick it.
+    /// the rect it was painted in; a pointer picks it inside that rect's
+    /// intersection with [`Self::clip`].
     pub states: Vec<(StackOffset, egui::Rect)>,
+    /// The box the pane clips this control to. Each state is interacted over
+    /// its rect's intersection with this, so a pointer lands on a state only
+    /// there, and on a state wholly outside it not at all — [`Self::hits`].
+    pub clip: egui::Rect,
     /// The offset the picture on screen was actually composed against, read
     /// off the plot handle rather than off the spec — so a control reading
     /// *shares* stands over a picture of shares.
@@ -568,6 +592,20 @@ pub struct NormaliseSwitchDrawn {
     /// The words the control offers on hover, verbatim. The same `String` is
     /// handed to the tooltip, so the two cannot drift.
     pub hover: String,
+}
+
+impl NormaliseSwitchDrawn {
+    /// Each state with the part of its rect a pointer can land in — the
+    /// intersection with [`Self::clip`] its hit test was handed — skipping a
+    /// state the pane clips to nothing. What
+    /// [`MeridianApp::named_controls`](crate::window::MeridianApp::named_controls)
+    /// names this control at.
+    pub fn hits(&self) -> impl Iterator<Item = (StackOffset, egui::Rect)> + '_ {
+        self.states.iter().filter_map(|(state, rect)| {
+            let hit = rect.intersect(self.clip);
+            hit.is_positive().then_some((*state, hit))
+        })
+    }
 }
 
 /// The chart view's **document**: the composited dashboard, the canvas it
@@ -637,15 +675,18 @@ pub struct ChartDoc {
     /// drew the grid in both spots, which is the defect this exists to make
     /// visible (`one_grid_draws_in_one_spot_and_a_brush_narrows_it_in_either`).
     pub tables_filed: usize,
-    /// **The grid pane's layout switch, as the last frame drew it** — see
+    /// **The grid pane's layout switch, as this frame drew it** — see
     /// [`LayoutSwitchDrawn`]. `None` on a frame whose canvas drew no grid
-    /// pane, and rewritten by each frame that does, for the reason
-    /// [`Self::scale_switches`] is: a rect left standing from a previous frame
-    /// aims a click at a control that is no longer there.
+    /// pane: cleared by [`Self::begin_controls_frame`], which the window calls
+    /// at the start of every frame, and written by each frame that draws the
+    /// pane. A rect left standing from a previous frame aims a click at a
+    /// control that is no longer there, and names one in
+    /// [`MeridianApp::named_controls`](crate::window::MeridianApp::named_controls).
     pub grid_layout_switch: Option<LayoutSwitchDrawn>,
     /// **The grid's spot switch, as this frame drew it** — see
     /// [`SpotSwitchDrawn`]. `None` on a frame that drew the grid without a
-    /// header band, or drew no grid; cleared by [`Self::begin_grid_frame`].
+    /// header band, or drew no grid; cleared by
+    /// [`Self::begin_controls_frame`] beside [`Self::grid_layout_switch`].
     pub grid_spot_switch: Option<SpotSwitchDrawn>,
     /// **What the transposed layout's rows stated**, in tile order, one entry
     /// per row the last frame drew.
@@ -733,12 +774,13 @@ pub struct ChartDoc {
     pub normalise_switches: Vec<NormaliseSwitchDrawn>,
     /// **The controls the chart pane drew this frame, each with its name** —
     /// the toolbar's buttons by their labels, and each tile's scale and
-    /// normalise states by their words.
+    /// normalise states by their words, at what the pane's clip leaves of
+    /// each state and not at all for a state it clips away.
     ///
-    /// Cleared by the window at the start of each frame rather than by the
-    /// pane, because a frame whose canvas holds the graph does not draw this
-    /// pane at all, and a list left standing would name controls that are
-    /// not on the screen. Read into
+    /// Cleared by [`Self::begin_controls_frame`], which the window calls at
+    /// the start of each frame, rather than by the pane, because a frame whose
+    /// canvas holds the graph does not draw this pane at all, and a list left
+    /// standing would name controls that are not on the screen. Read into
     /// [`MeridianApp::named_controls`](crate::window::MeridianApp::named_controls).
     pub controls: Vec<brightfield_workbench::chrome::NamedControl>,
     /// Where each interval slider's track was drawn last frame, as
@@ -1312,6 +1354,20 @@ impl ChartDoc {
     pub fn begin_grid_frame(&mut self) {
         self.table_drawn = None;
         self.tables_filed = 0;
+    }
+
+    /// Forget the controls the last frame drew on this document — the chart
+    /// pane's list and the grid pane's two switches — before this frame draws
+    /// any.
+    ///
+    /// Called by the window at the top of every frame, the front door's
+    /// included, because the door and a canvas holding the graph draw none of
+    /// them, and a record left standing would name a control that is not on
+    /// the screen. [`MeridianApp::named_controls`](crate::window::MeridianApp::named_controls)
+    /// is assembled from all three, so what they hold is this frame's.
+    pub fn begin_controls_frame(&mut self) {
+        self.controls.clear();
+        self.grid_layout_switch = None;
         self.grid_spot_switch = None;
     }
 

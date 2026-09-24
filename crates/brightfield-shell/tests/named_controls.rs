@@ -4,9 +4,15 @@
 //! The list is [`MeridianApp::named_controls`], which the window assembles
 //! from the records its drawing returns. It is held here against a second,
 //! independent reading of the same frame: the widgets egui registered in the
-//! pass as sensing a click. A click-sensing widget no entry covers is a control
-//! drawn without a name, and an entry with an empty name is a control
-//! registered without one; either reddens `assert_every_control_is_named`.
+//! pass as sensing a click. The two are held against each other both ways,
+//! and each of three failures reddens `assert_every_control_is_named`:
+//!
+//! - a click-sensing widget no entry covers is a control drawn without a name;
+//! - an entry with an empty name is a control registered without one;
+//! - an entry no click-sensing widget sits under names a control this frame
+//!   did not draw — a record left standing from an earlier frame, or one taken
+//!   at a rect the pane clipped away. Without this direction a stale entry
+//!   already covering a spot would clear an unnamed control drawn there later.
 //!
 //! # The line between a control and a surface
 //!
@@ -26,6 +32,22 @@
 //!   the pane, and on the housing baseline the column tiles sit outside the
 //!   hero's pane, so their switches register with an empty interact rect that
 //!   no pointer can land in.
+//!
+//! # What an entry has to sit over
+//!
+//! The reverse direction reads a wider pool: every widget that senses a click
+//! and has area, enabled or not and dragged or not. A greyed control is still
+//! drawn, and the status rail's dismissable line is a selectable label that
+//! senses a drag and is rightly in the list. Hover is no evidence at all:
+//! egui registers a hover-only widget over every `Ui`'s whole rect, so a rule
+//! counting hover would pass over any rect inside the window.
+//!
+//! An entry has to contain such a widget, with the forward rule's half point
+//! of slack, rather than merely touch one — both rasters sense a click, and a
+//! rule satisfied by any widget underneath would be satisfied by the picture.
+//! The one exception is the graph's view chips: the DAG raster hit-tests them
+//! itself and registers no widget of their own, so a chip entry is held to
+//! sitting inside a click-sensing widget, the raster, instead.
 //!
 //! The front door is not the first screen this file reads: it draws before a
 //! file is open, and its cards and rows are its own tests' subject.
@@ -130,17 +152,30 @@ impl Live {
     /// The widgets the last pass registered as controls, by the rule in the
     /// module docs, each as its id and its interact rect in screen space.
     fn click_widgets(&self) -> Vec<(egui::Id, egui::Rect)> {
+        self.widgets(|w| {
+            w.enabled
+                && w.sense.senses_click()
+                && !w.sense.senses_drag()
+                && w.interact_rect.is_positive()
+        })
+    }
+
+    /// The widgets an entry may sit over, by the wider rule in the module
+    /// docs: each that senses a click and has area, disabled and dragged ones
+    /// kept.
+    fn click_sensing_widgets(&self) -> Vec<(egui::Id, egui::Rect)> {
+        self.widgets(|w| w.sense.senses_click() && w.interact_rect.is_positive())
+    }
+
+    /// The widgets the last pass registered that `keep` keeps, each as its id
+    /// and its interact rect in screen space.
+    fn widgets(&self, keep: impl Fn(&egui::WidgetRect) -> bool) -> Vec<(egui::Id, egui::Rect)> {
         let local: Vec<(egui::LayerId, egui::Id, egui::Rect)> = self.ctx.viewport(|vp| {
             vp.prev_pass
                 .widgets
                 .layers()
                 .flat_map(|(_, rects)| rects.iter())
-                .filter(|w| {
-                    w.enabled
-                        && w.sense.senses_click()
-                        && !w.sense.senses_drag()
-                        && w.interact_rect.is_positive()
-                })
+                .filter(|w| keep(w))
                 .map(|w| (w.layer_id, w.id, w.interact_rect))
                 .collect()
         });
@@ -205,9 +240,11 @@ fn painted_texts(shapes: &[egui::epaint::ClippedShape]) -> Vec<String> {
 }
 
 /// **The two halves agree**: each click-sensing widget the pass registered is
-/// inside an entry's rect, and each entry's name has words in it.
+/// inside an entry's rect, each entry's name has words in it, and each entry
+/// has area and a click-sensing widget inside it — or, for a graph view chip,
+/// around it.
 ///
-/// Half a point of slack on the containment, because a button's widget rect
+/// Half a point of slack on each containment, because a button's widget rect
 /// and the rect its caller placed it at are rounded separately.
 fn assert_every_control_is_named(live: &Live, state: &str) {
     let controls = live.app.named_controls();
@@ -239,6 +276,41 @@ fn assert_every_control_is_named(live: &Live, state: &str) {
                 .iter()
                 .map(|c| (c.name.as_str(), c.rect))
                 .collect::<Vec<_>>()
+        );
+    }
+
+    let under = live.click_sensing_widgets();
+    let chips = live.app.canvas_chips();
+    for control in controls {
+        let (name, rect) = (control.name.as_str(), control.rect);
+        assert!(
+            rect.is_positive(),
+            "{state}: the control named {name:?} is recorded at {rect:?}, which \
+             has no area a pointer can land in"
+        );
+        if under
+            .iter()
+            .any(|(_, widget)| rect.expand(0.5).contains_rect(*widget))
+        {
+            continue;
+        }
+        let chip = chips
+            .iter()
+            .any(|chip| chip.rect == rect && chip.view.label() == name);
+        let in_raster = under
+            .iter()
+            .any(|(_, widget)| widget.expand(0.5).contains_rect(rect));
+        assert!(
+            chip && in_raster,
+            "{state}: the control named {name:?} is recorded at {rect:?} and no \
+             click-sensing widget sits under it{}; the widgets that sense a \
+             click are {:?}",
+            if chip {
+                ", nor is this view chip inside a raster that senses one"
+            } else {
+                ""
+            },
+            under.iter().map(|(_, r)| *r).collect::<Vec<_>>()
         );
     }
 }

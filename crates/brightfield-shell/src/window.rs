@@ -3344,9 +3344,13 @@ impl MeridianApp {
     /// the chart pane's toolbar and tile switches, and the status rail's
     /// dismissable lines — rather than kept in a registry any drawing code
     /// could push into, so each entry's name is the value its control was
-    /// drawn with. `every_control_on_the_housing_baseline_carries_a_name`
-    /// holds the list against the widgets egui itself registered as sensing a
-    /// click, which is how a control drawn without an entry is caught.
+    /// drawn with. Each of those records is cleared or rebuilt by the window
+    /// on every frame before it draws, so the list is that frame's and holds
+    /// nothing a frame before it drew.
+    /// `every_control_on_the_housing_baseline_carries_a_name` holds the list
+    /// against the widgets egui itself registered as sensing a click, both
+    /// ways: a control drawn without an entry is caught, and so is an entry
+    /// no control was drawn under.
     #[must_use]
     pub fn named_controls(&self) -> &[chrome::NamedControl] {
         &self.controls
@@ -3715,9 +3719,10 @@ impl MeridianApp {
         self.protocol.doc.spine_body = None;
         // …and the canvas's record of the chips it drew, for the same reason.
         self.protocol.doc.canvas_chips.clear();
-        // …and the chart pane's record of its controls, which a frame with the
-        // graph on the canvas does not draw.
-        self.charts.doc.controls.clear();
+        // …and the chart pane's record of its controls and the grid pane's two
+        // switches, which a frame with the graph or the front door on the
+        // canvas does not draw.
+        self.charts.doc.begin_controls_frame();
 
         // The overlay-opening keys, before the grammar feed so the frame that
         // opens an overlay is already under it.
@@ -4720,7 +4725,7 @@ impl MeridianApp {
         }
 
         self.status_rail_ui(&ctx, graph_on_canvas, &mut requests);
-        self.controls = self.name_controls(std::mem::take(&mut bar.controls), door);
+        self.controls = self.name_controls(std::mem::take(&mut bar.controls));
 
         self.apply(&ctx, graph_on_canvas, requests);
 
@@ -5327,15 +5332,11 @@ impl MeridianApp {
     /// `top_bar` is the title band's, handed in because the band's record is
     /// a local of [`Self::draw`] rather than a field.
     ///
-    /// The grid pane's switches and the chart pane's records are read only
-    /// off a frame that drew the dock: the front door clears neither, and a
-    /// switch left standing from the last document would name a control the
-    /// door does not draw.
-    fn name_controls(
-        &self,
-        top_bar: Vec<chrome::NamedControl>,
-        door: bool,
-    ) -> Vec<chrome::NamedControl> {
+    /// Every record is read on every frame, the front door's included: the
+    /// grid pane's switches and the chart pane's list are cleared at the top
+    /// of [`Self::draw`] by [`ChartDoc::begin_controls_frame`], so a frame that
+    /// drew none of them reads none.
+    fn name_controls(&self, top_bar: Vec<chrome::NamedControl>) -> Vec<chrome::NamedControl> {
         let mut controls = top_bar;
         for (_, strip) in &self.strips {
             controls.extend(strip.controls.iter().cloned());
@@ -5351,26 +5352,24 @@ impl MeridianApp {
         for chip in &self.protocol.doc.canvas_chips {
             controls.push(chrome::NamedControl::labelled(chip.rect, chip.view.label()));
         }
-        if !door {
-            let doc = &self.charts.doc;
-            if let Some(switch) = &doc.grid_layout_switch {
-                controls.extend(
-                    switch
-                        .states
-                        .iter()
-                        .map(|(state, rect)| chrome::NamedControl::labelled(*rect, state.word())),
-                );
-            }
-            if let Some(switch) = &doc.grid_spot_switch {
-                controls.extend(
-                    switch
-                        .states
-                        .iter()
-                        .map(|(state, rect)| chrome::NamedControl::labelled(*rect, state.word())),
-                );
-            }
-            controls.extend(doc.controls.iter().cloned());
+        let doc = &self.charts.doc;
+        if let Some(switch) = &doc.grid_layout_switch {
+            controls.extend(
+                switch
+                    .states
+                    .iter()
+                    .map(|(state, rect)| chrome::NamedControl::labelled(*rect, state.word())),
+            );
         }
+        if let Some(switch) = &doc.grid_spot_switch {
+            controls.extend(
+                switch
+                    .states
+                    .iter()
+                    .map(|(state, rect)| chrome::NamedControl::labelled(*rect, state.word())),
+            );
+        }
+        controls.extend(doc.controls.iter().cloned());
         controls.extend(self.rail.controls.iter().cloned());
         controls
     }
