@@ -17,7 +17,7 @@ use std::time::{Duration, SystemTime};
 use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::{compose_spec, spec_data_files};
 use brightfield_shell::startup::default_layout;
-use brightfield_shell::watch::WATCH_POLL;
+use brightfield_shell::watch::{WatchRole, WATCH_POLL};
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_spec::{parse_spec, Format};
 use brightfield_workbench::{Activity, ActivityIndicator, HONESTY_LINE_MS};
@@ -326,4 +326,120 @@ data:
     let dir = PathBuf::from("/specs/here");
     let files = spec_data_files(&parsed.spec, Some(&dir));
     assert_eq!(files, vec![PathBuf::from("/specs/here/rows.csv")]);
+}
+
+/// `path`, spelled **relative to the process's working directory** by climbing
+/// out of it with `..` as far as the two share a prefix and no further. Read,
+/// never set: `std::env::set_current_dir` is process-wide and this binary's
+/// tests run on parallel threads.
+fn spelled_from_the_working_directory(path: &std::path::Path) -> PathBuf {
+    let cwd = fs::canonicalize(std::env::current_dir().expect("a working directory"))
+        .expect("the working directory canonicalizes");
+    let target =
+        fs::canonicalize(path).unwrap_or_else(|e| panic!("{} canonicalizes: {e}", path.display()));
+    let shared = cwd
+        .components()
+        .zip(target.components())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut out = PathBuf::new();
+    for _ in cwd.components().skip(shared) {
+        out.push("..");
+    }
+    for part in target.components().skip(shared) {
+        out.push(part);
+    }
+    out
+}
+
+/// **A data file opened by a relative path is watched where the first load
+/// found it**, and an edit to it reaches the rail as `watch-data`.
+///
+/// Read back through the watcher `ChartDoc::wire_watch` armed, not through a
+/// directory the test hands `spec_data_files` — the test above is that half,
+/// and it cannot see which directory the window chose. The window's choice is
+/// the one that goes wrong: the document behind a data file is a spec the
+/// open GENERATED into a scratch directory, and a watch list resolved against
+/// that spec's parent names the relative source underneath the scratch
+/// directory, where no file was ever written. The reader then edits the CSV
+/// and the chart never says so.
+///
+/// The copy lives under cargo's per-target scratch directory, beside the
+/// working directory's tree, so its relative spelling climbs a couple of
+/// levels rather than to `/` — and the test asserts that spelling names no
+/// file under the generated spec's directory, since a spelling that happened
+/// to reach the same file from both places could not tell the two bases apart.
+#[test]
+fn a_data_file_opened_by_a_relative_path_is_watched_where_it_was_read() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("status-rail-relative-watch-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("scratch dir");
+    let copy = dir.join("housing.csv");
+    fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data/california_housing_sample.csv"),
+        &copy,
+    )
+    .expect("copy the housing fixture");
+    let relative = spelled_from_the_working_directory(&copy);
+    assert!(
+        relative.is_relative() && relative.parent() != Some(std::path::Path::new("")),
+        "{} is not a relative spelling from another directory",
+        relative.display()
+    );
+
+    let boot = Boot::data_file(relative.to_str().expect("utf-8 scratch path"))
+        .unwrap_or_else(|e| panic!("open {}: {e}", relative.display()));
+    let mut w = Window::open(boot);
+    w.settle();
+
+    let generated = w
+        .app
+        .chart_doc()
+        .spec_path
+        .clone()
+        .expect("an opened data file carries the spec generated for it");
+    let beside_generated = generated
+        .parent()
+        .expect("the generated spec sits in a directory")
+        .join(&relative);
+    assert!(
+        fs::canonicalize(&beside_generated).ok() != fs::canonicalize(&copy).ok(),
+        "{} names the data file from the generated spec's directory too, so \
+         this test cannot tell the two bases apart",
+        relative.display()
+    );
+
+    touch_past(&copy, 100);
+    std::thread::sleep(WATCH_POLL + Duration::from_millis(20));
+    w.run(vec![Vec::new()]);
+
+    assert!(
+        w.app.rail().drawn.contains(&"watch-data"),
+        "the data file was edited on disk and the rail did not say so; it drew \
+         {:?}",
+        w.app.rail().drawn
+    );
+    let watched: Vec<_> = w
+        .app
+        .chart_doc()
+        .watch
+        .changes()
+        .iter()
+        .filter(|c| c.role == WatchRole::Data)
+        .map(|c| c.path.clone())
+        .collect();
+    assert_eq!(
+        watched.len(),
+        1,
+        "one data file changed, and the watcher reported {watched:?}"
+    );
+    assert_eq!(
+        fs::canonicalize(&watched[0]).ok(),
+        fs::canonicalize(&copy).ok(),
+        "the watch reported {} and the file the first load read is {}",
+        watched[0].display(),
+        copy.display()
+    );
 }
