@@ -39,8 +39,8 @@
 //! The reverse direction reads a wider pool: every widget that senses a click
 //! and has area, enabled or not and dragged or not. A greyed control is still
 //! drawn, and the status rail's dismissable line is a selectable label that
-//! senses a drag and is rightly in the list. Hover is no evidence at all:
-//! egui registers a hover-only widget over every `Ui`'s whole rect, so a rule
+//! senses a drag and is rightly in the list. Hover is no evidence: egui
+//! registers a hover-only widget over each `Ui`'s whole rect, so a rule
 //! counting hover would pass over any rect inside the window.
 //!
 //! An entry has to contain such a widget, with the forward rule's half point

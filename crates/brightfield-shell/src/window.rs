@@ -5332,10 +5332,10 @@ impl MeridianApp {
     /// `top_bar` is the title band's, handed in because the band's record is
     /// a local of [`Self::draw`] rather than a field.
     ///
-    /// Every record is read on every frame, the front door's included: the
+    /// Each record is read on each frame, the front door's included: the
     /// grid pane's switches and the chart pane's list are cleared at the top
-    /// of [`Self::draw`] by [`ChartDoc::begin_controls_frame`], so a frame that
-    /// drew none of them reads none.
+    /// of [`Self::draw`] by [`ChartDoc::begin_controls_frame`], so a frame
+    /// that drew neither pane reads no entry left from one that did.
     fn name_controls(&self, top_bar: Vec<chrome::NamedControl>) -> Vec<chrome::NamedControl> {
         let mut controls = top_bar;
         for (_, strip) in &self.strips {

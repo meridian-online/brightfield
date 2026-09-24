@@ -532,8 +532,10 @@ pub struct ScaleSwitchDrawn {
     /// intersection with [`Self::clip`].
     pub states: Vec<(ScaleType, egui::Rect)>,
     /// The box the pane clips this control to. Each state is interacted over
-    /// its rect's intersection with this, so a pointer lands on a state only
-    /// there, and on a state wholly outside it not at all — [`Self::hits`].
+    /// its rect's intersection with this, so a pointer picks a state inside
+    /// that intersection, and a state wholly outside it cannot be picked —
+    /// [`Self::hits`], held by
+    /// `a_tile_switch_state_the_pane_clips_away_names_no_control`.
     pub clip: egui::Rect,
     /// The state the picture on screen was actually composed against, read
     /// off the plot's own scale rather than off the spec — so a switch
@@ -582,8 +584,10 @@ pub struct NormaliseSwitchDrawn {
     /// intersection with [`Self::clip`].
     pub states: Vec<(StackOffset, egui::Rect)>,
     /// The box the pane clips this control to. Each state is interacted over
-    /// its rect's intersection with this, so a pointer lands on a state only
-    /// there, and on a state wholly outside it not at all — [`Self::hits`].
+    /// its rect's intersection with this, so a pointer picks a state inside
+    /// that intersection, and a state wholly outside it cannot be picked —
+    /// [`Self::hits`], held by
+    /// `a_tile_switch_state_the_pane_clips_away_names_no_control`.
     pub clip: egui::Rect,
     /// The offset the picture on screen was actually composed against, read
     /// off the plot handle rather than off the spec — so a control reading
@@ -678,7 +682,7 @@ pub struct ChartDoc {
     /// **The grid pane's layout switch, as this frame drew it** — see
     /// [`LayoutSwitchDrawn`]. `None` on a frame whose canvas drew no grid
     /// pane: cleared by [`Self::begin_controls_frame`], which the window calls
-    /// at the start of every frame, and written by each frame that draws the
+    /// at the start of each frame, and written by each frame that draws the
     /// pane. A rect left standing from a previous frame aims a click at a
     /// control that is no longer there, and names one in
     /// [`MeridianApp::named_controls`](crate::window::MeridianApp::named_controls).
@@ -779,7 +783,7 @@ pub struct ChartDoc {
     ///
     /// Cleared by [`Self::begin_controls_frame`], which the window calls at
     /// the start of each frame, rather than by the pane, because a frame whose
-    /// canvas holds the graph does not draw this pane at all, and a list left
+    /// canvas holds the graph does not draw this pane, and a list left
     /// standing would name controls that are not on the screen. Read into
     /// [`MeridianApp::named_controls`](crate::window::MeridianApp::named_controls).
     pub controls: Vec<brightfield_workbench::chrome::NamedControl>,
@@ -1360,11 +1364,14 @@ impl ChartDoc {
     /// pane's list and the grid pane's two switches — before this frame draws
     /// any.
     ///
-    /// Called by the window at the top of every frame, the front door's
-    /// included, because the door and a canvas holding the graph draw none of
-    /// them, and a record left standing would name a control that is not on
-    /// the screen. [`MeridianApp::named_controls`](crate::window::MeridianApp::named_controls)
-    /// is assembled from all three, so what they hold is this frame's.
+    /// Called by the window at the top of each frame, the front door's
+    /// included, because the door and a canvas holding the graph draw neither
+    /// pane, and a record left standing would name a control that is not on
+    /// the screen: without it
+    /// `with_the_graph_on_the_canvas_every_control_still_carries_a_name`
+    /// finds a stale layout-switch state. These three records are read into
+    /// [`MeridianApp::named_controls`](crate::window::MeridianApp::named_controls),
+    /// so what they hold is this frame's.
     pub fn begin_controls_frame(&mut self) {
         self.controls.clear();
         self.grid_layout_switch = None;
