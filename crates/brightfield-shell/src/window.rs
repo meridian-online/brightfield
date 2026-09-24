@@ -9325,10 +9325,8 @@ plot:
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.subsec_nanos());
-        let dir = std::env::temp_dir().join(format!(
-            "bf-remembered-id-{}-{nanos}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("bf-remembered-id-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(dir.join("data")).expect("a directory");
         std::fs::create_dir_all(dir.join("other/deep")).expect("a nested directory");
         let scratch = Scratch(dir);

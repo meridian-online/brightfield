@@ -659,7 +659,9 @@ fn one_protocol_named_two_ways_is_one_row_and_the_command_line_reopen_finds_its_
     let mut door = Window::with_layout(Boot::empty(), layout);
     assert_eq!(
         housing_rows(&door.app),
-        vec![resolved(&data.join("arcform.yaml")).to_string_lossy().into_owned()],
+        vec![resolved(&data.join("arcform.yaml"))
+            .to_string_lossy()
+            .into_owned()],
         "the front door holds one row for the Protocol, under the one absolute name"
     );
     // Read after the count so that each fails on its own: a lookup that misses
@@ -710,8 +712,11 @@ fn the_command_line_finds_the_layout_remembered_under_the_absolute_name() {
     let data = root.dir("data");
     std::fs::copy(housing(), data.join(HOUSING_FILE)).expect("the housing fixture copies");
     std::fs::write(data.join("readings.csv"), READINGS_CSV).expect("the data file");
-    std::fs::write(data.join("one_step.yaml"), one_step_manifest("./readings.csv"))
-        .expect("the one-step Protocol");
+    std::fs::write(
+        data.join("one_step.yaml"),
+        one_step_manifest("./readings.csv"),
+    )
+    .expect("the one-step Protocol");
     std::fs::write(data.join("chart.yaml"), CHART).expect("the chart spec");
     // From here the id is what `remembered_id` gives, and the cwd it reads is
     // the real path: a temporary directory can be reached through a link.
@@ -761,11 +766,18 @@ fn three_spellings_of_one_manifest_boot_under_one_id() {
     std::fs::write(data.join("readings.csv"), READINGS_CSV).expect("the data file");
     std::fs::write(data.join("x.yaml"), one_step_manifest("./readings.csv")).expect("the Protocol");
     let base = resolved(&root.0);
-    let wanted = base.join("data").join("x.yaml").to_string_lossy().into_owned();
+    let wanted = base
+        .join("data")
+        .join("x.yaml")
+        .to_string_lossy()
+        .into_owned();
 
     let cases: [(&Path, String); 3] = [
         (launch.as_path(), "../data/x.yaml".to_owned()),
-        (base.as_path(), format!("{}/launch/../data/x.yaml", base.display())),
+        (
+            base.as_path(),
+            format!("{}/launch/../data/x.yaml", base.display()),
+        ),
         (base.as_path(), "./data/x.yaml".to_owned()),
     ];
     for (from, spec) in cases {
