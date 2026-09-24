@@ -1266,15 +1266,16 @@ impl Item<ChartDoc> for ChartItem {
             // cannot overlap however wide either one's words are.
             let (normalise, normalise_picked) =
                 draw_normalise_switches(doc, ui, rect, mode, &switches);
+            // Each state is named where a pointer can land on it, so a tile
+            // the pane clips away names nothing.
             doc.controls.extend(switches.iter().flat_map(|switch| {
                 switch
-                    .states
-                    .iter()
-                    .map(|(state, rect)| chrome::NamedControl::labelled(*rect, state.wire_name()))
+                    .hits()
+                    .map(|(state, rect)| chrome::NamedControl::labelled(rect, state.wire_name()))
             }));
             doc.controls.extend(normalise.iter().flat_map(|switch| {
-                switch.states.iter().map(|(state, rect)| {
-                    chrome::NamedControl::labelled(*rect, normalise_state_label(*state))
+                switch.hits().map(|(state, rect)| {
+                    chrome::NamedControl::labelled(rect, normalise_state_label(state))
                 })
             }));
             doc.scale_switches = switches;
@@ -1585,6 +1586,7 @@ fn draw_scale_switch(
             axis,
             rect: outer,
             states,
+            clip,
             active,
             hover,
         },
@@ -1728,6 +1730,7 @@ fn draw_normalise_switch(
             group: group.to_owned(),
             rect: outer,
             states,
+            clip,
             active,
             hover,
         },
