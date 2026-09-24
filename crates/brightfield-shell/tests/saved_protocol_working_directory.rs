@@ -30,6 +30,7 @@ use brightfield_shell::design::Mode;
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_workbench::arrangement::LOCATOR_BAND;
+use brightfield_workbench::{GridLayout, GridSpot, RunState, SavedLayout};
 
 /// Held for the whole of any test that changes the working directory.
 static CWD: Mutex<()> = Mutex::new(());
@@ -271,6 +272,54 @@ impl Window {
         self.settle();
     }
 
+    /// Press the grid pane's layout switch onto its columns state and read
+    /// the state back — `tests/data_file.rs`'s `transpose_the_grid`, aimed at
+    /// the rect the frame recorded so a miss cannot read as a saved layout of
+    /// rows.
+    fn transpose_the_grid(&mut self) {
+        let at = self
+            .app
+            .chart_doc()
+            .grid_layout_switch
+            .as_ref()
+            .expect("the grid pane's header band drew a layout switch")
+            .states
+            .iter()
+            .find(|(state, _)| *state == GridLayout::Columns)
+            .expect("the switch offers a columns state")
+            .1
+            .center();
+        self.click(at);
+        assert_eq!(
+            self.app.grid_layout(),
+            GridLayout::Columns,
+            "the click at {at:?} did not throw the grid's layout switch"
+        );
+    }
+
+    /// Press `spot` on the grid's own spot switch, wherever the grid drew it,
+    /// and read the state back — `tests/grid_spot.rs`'s `click_spot_switch`.
+    fn send_the_grid_to(&mut self, spot: GridSpot) {
+        let at = self
+            .app
+            .chart_doc()
+            .grid_spot_switch
+            .as_ref()
+            .expect("the grid's header band drew its spot switch")
+            .states
+            .iter()
+            .find(|(s, _)| *s == spot)
+            .expect("the switch offers that spot")
+            .1
+            .center();
+        self.click(at);
+        assert_eq!(
+            self.app.grid_spot(),
+            spot,
+            "the click at {at:?} did not throw the grid's spot switch"
+        );
+    }
+
     /// **Save, through the gesture a person has**: the chart palette on
     /// `space`, the verb typed, confirmed with enter —
     /// `one_step_protocol.rs`'s `save_through_the_palette`, which says why a
@@ -455,4 +504,291 @@ fn a_protocol_saved_over_a_relative_path_reopens_from_a_third_directory() {
         "the locator band's crumbs do not lead with the saved Protocol's data file, \
          {HOUSING_FILE}: {drawn:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The id a saved Protocol is remembered under, with the directory it was
+// saved from removed
+// ---------------------------------------------------------------------------
+
+/// **The housing screen opened over `../data/…` from `launch`, read the way a
+/// person leaves it — the grid transposed and sent to the ledger — and saved.**
+/// Returns the layout that Save wrote its row into.
+///
+/// ```text
+/// <root>/launch/                       the working directory the Save is made from
+/// <root>/data/california_housing_sample.csv
+/// <root>/data/arcform.yaml             where Save writes, beside the file
+/// ```
+///
+/// The grid's state is what a later launch has to find under the row, so it
+/// is set to the two values a fresh open does not start in: rows in the
+/// canvas is what an open that found nothing would draw, and this is neither.
+fn save_the_housing_screen_from(cwd: &Cwd, launch: &Path, data: &Path) -> SavedLayout {
+    std::fs::copy(housing(), data.join(HOUSING_FILE)).expect("the housing fixture copies");
+    cwd.enter(launch);
+    let chosen = format!("../data/{HOUSING_FILE}");
+    let boot = Boot::open_sampled(&chosen, Flow::Vertical, None, None)
+        .unwrap_or_else(|e| panic!("open {chosen}: {e}"));
+    let mut first = Window::with_layout(boot, default_layout());
+    first.transpose_the_grid();
+    first.send_the_grid_to(GridSpot::Ledger);
+    first.save_through_the_palette();
+    assert!(
+        data.join("arcform.yaml").is_file(),
+        "Save wrote no Protocol beside the data file at {}",
+        data.display()
+    );
+    first.app.layout().clone()
+}
+
+/// The front door's rows for the housing Protocol.
+fn housing_rows(app: &MeridianApp) -> Vec<String> {
+    app.front_door_rows()
+        .iter()
+        .filter(|r| r.name == HOUSING_PROTOCOL)
+        .map(|r| r.id.clone())
+        .collect()
+}
+
+/// **A Protocol saved over `../data/…` from a directory that is then removed
+/// is still on the front door, and reopens with the grid where it was left.**
+///
+/// ```text
+/// <root>/launch/       working directory 1: Save is made from here, then it is removed
+/// <root>/data/         the Protocol and its data file, which stay
+/// <root>/later/on/     working directory 3: the next launch
+/// ```
+///
+/// The id Save remembers is the path it wrote, made absolute against
+/// `launch/`. Left with the `..` in it — `<root>/launch/../data/arcform.yaml` —
+/// it names a file only while `launch/` exists, so the door filters the row
+/// out and the layout saved under it has no row to be read from.
+#[test]
+fn a_protocol_saved_from_a_directory_that_is_removed_still_reopens_with_its_layout() {
+    let cwd = Cwd::hold();
+    let root = TempDir::new("save-remove-reopen");
+    let launch = root.dir("launch");
+    let data = root.dir("data");
+    let later = root.dir("later/on");
+
+    let layout = save_the_housing_screen_from(&cwd, &launch, &data);
+    cwd.enter(&later);
+    std::fs::remove_dir_all(&launch).expect("the Save-time directory is removed");
+
+    let mut next = Window::with_layout(Boot::empty(), layout);
+    assert!(
+        next.app.front_door_is_live(),
+        "a launch on nothing shows the front door"
+    );
+    let row = next
+        .app
+        .front_door_rows()
+        .iter()
+        .find(|r| r.name == HOUSING_PROTOCOL)
+        .unwrap_or_else(|| {
+            panic!(
+                "the front door has no row for the saved Protocol once {} is removed — the \
+                 layout remembers {:?}",
+                launch.display(),
+                next.app
+                    .layout()
+                    .recents
+                    .iter()
+                    .map(|r| r.id.clone())
+                    .collect::<Vec<_>>()
+            )
+        })
+        .clone();
+    next.click(row.rect.center());
+    assert!(
+        !next.app.front_door_is_live(),
+        "the click on {:?} left the door up — nothing was opened",
+        row.id
+    );
+    assert_eq!(
+        resolved(&opened_data_file(&next.app)),
+        resolved(&data.join(HOUSING_FILE)),
+        "the reopened window read another file"
+    );
+    assert_eq!(
+        (next.app.grid_layout(), next.app.grid_spot()),
+        (GridLayout::Columns, GridSpot::Ledger),
+        "the reopened Protocol lost the grid layout and spot it was saved with"
+    );
+}
+
+/// **One Protocol reached by two relative spellings from two working
+/// directories is one row with one layout.**
+///
+/// ```text
+/// <root>/launch/       Save is made from here, over ../data/…
+/// <root>/other/deep/   the second launch names it ../../data/arcform.yaml
+/// <root>/later/on/     the launch after that reads the front door
+/// ```
+///
+/// The second launch is the command line: it opens the manifest, and the
+/// window it builds has to find the grid layout and spot the first launch
+/// saved under the same document. It saves again, so the second spelling
+/// reaches the layout's rows, and the door of a third launch is read for what
+/// it holds.
+#[test]
+fn one_protocol_named_two_ways_is_one_row_and_the_command_line_reopen_finds_its_layout() {
+    let cwd = Cwd::hold();
+    let root = TempDir::new("two-spellings");
+    let launch = root.dir("launch");
+    let data = root.dir("data");
+    let other = root.dir("other/deep");
+    let later = root.dir("later/on");
+
+    let layout = save_the_housing_screen_from(&cwd, &launch, &data);
+
+    // Working directory 2: the command line, by another relative spelling.
+    cwd.enter(&other);
+    let spec = "../../data/arcform.yaml";
+    let boot = Boot::open_sampled(spec, Flow::Vertical, None, None)
+        .unwrap_or_else(|e| panic!("open {spec} from {}: {e}", other.display()));
+    let mut second = Window::with_layout(boot, layout);
+    let found = (second.app.grid_layout(), second.app.grid_spot());
+    second.save_through_the_palette();
+    let layout = second.app.layout().clone();
+    drop(second);
+
+    // Working directory 3: the next launch, on nothing.
+    cwd.enter(&later);
+    let mut door = Window::with_layout(Boot::empty(), layout);
+    assert_eq!(
+        housing_rows(&door.app),
+        vec![resolved(&data.join("arcform.yaml"))
+            .to_string_lossy()
+            .into_owned()],
+        "the front door holds one row for the Protocol, under the one absolute name"
+    );
+    // Read after the count so that each fails on its own: a lookup that misses
+    // still saves a row, and the count is what says whether it saved a second.
+    assert_eq!(
+        found,
+        (GridLayout::Columns, GridSpot::Ledger),
+        "opened by {spec} from {}, the window did not find the grid layout and spot the \
+         Protocol was saved with — the layout keys its row by the path Save wrote",
+        other.display()
+    );
+    let row = door
+        .app
+        .front_door_rows()
+        .iter()
+        .find(|r| r.name == HOUSING_PROTOCOL)
+        .expect("the row that was just counted")
+        .clone();
+    door.click(row.rect.center());
+    assert_eq!(
+        (door.app.grid_layout(), door.app.grid_spot()),
+        (GridLayout::Columns, GridSpot::Ledger),
+        "the reopen from the door lost the grid layout and spot"
+    );
+}
+
+/// **A document named on the command line by a relative path finds the grid
+/// layout and spot remembered under its absolute path, on three of the four
+/// routes the command line has to a document: a data file, a one-step
+/// Protocol and a chart spec.**
+///
+/// `Boot::open_sampled` classifies its argument four ways, and each sets the
+/// id the window looks its layout up under. The layout here is seeded under
+/// the absolute name, as a Save or a door click leaves it, and the file is
+/// named `../…` from `launch/`; a route that keeps the spelling looks the
+/// layout up under a name nothing wrote and opens on rows in the canvas.
+///
+/// The fourth route, a Protocol manifest with a run behind it, opens only
+/// under an environment variable that is process-wide; no test in this binary
+/// sets it, so that route is not driven here.
+#[test]
+fn the_command_line_finds_the_layout_remembered_under_the_absolute_name() {
+    const CHART: &str = "data:\n  t:\n    - { x: 1, y: 1 }\n    - { x: 2, y: 2 }\n\
+                         plot:\n  - mark: dot\n    data: { from: t }\n    x: x\n    y: y\n";
+    let cwd = Cwd::hold();
+    let root = TempDir::new("routes");
+    let launch = root.dir("launch");
+    let data = root.dir("data");
+    std::fs::copy(housing(), data.join(HOUSING_FILE)).expect("the housing fixture copies");
+    std::fs::write(data.join("readings.csv"), READINGS_CSV).expect("the data file");
+    std::fs::write(
+        data.join("one_step.yaml"),
+        one_step_manifest("./readings.csv"),
+    )
+    .expect("the one-step Protocol");
+    std::fs::write(data.join("chart.yaml"), CHART).expect("the chart spec");
+    // From here the id is what `remembered_id` gives, and the cwd it reads is
+    // the real path: a temporary directory can be reached through a link.
+    let base = resolved(&root.0);
+
+    for (route, file) in [
+        ("a data file", HOUSING_FILE),
+        ("a one-step Protocol", "one_step.yaml"),
+        ("a chart spec", "chart.yaml"),
+    ] {
+        let mut layout = default_layout();
+        layout.remember(
+            &base.join("data").join(file).to_string_lossy(),
+            "remembered",
+            RunState::NeverRun,
+            GridLayout::Columns,
+            GridSpot::Ledger,
+            1_000,
+        );
+        cwd.enter(&launch);
+        let spec = format!("../data/{file}");
+        let boot = Boot::open_sampled(&spec, Flow::Vertical, None, None)
+            .unwrap_or_else(|e| panic!("open {spec}: {e}"));
+        let app = MeridianApp::headless_with_layout(boot, layout, Mode::Light);
+        assert_eq!(
+            (app.grid_layout(), app.grid_spot()),
+            (GridLayout::Columns, GridSpot::Ledger),
+            "{route}, opened by {spec} from {}, did not find the layout remembered under {}",
+            launch.display(),
+            base.join("data").join(file).display()
+        );
+    }
+}
+
+/// **Three spellings of one manifest's path boot under one id.**
+///
+/// The one-step Protocol at `<root>/data/x.yaml`, named `../data/x.yaml` from
+/// `<root>/launch`, `<root>/launch/../data/x.yaml` from `<root>`, and
+/// `./data/x.yaml` from `<root>`; each boots with `<root>/data/x.yaml` as the
+/// id it looks its layout up under.
+#[test]
+fn three_spellings_of_one_manifest_boot_under_one_id() {
+    let cwd = Cwd::hold();
+    let root = TempDir::new("spellings");
+    let launch = root.dir("launch");
+    let data = root.dir("data");
+    std::fs::write(data.join("readings.csv"), READINGS_CSV).expect("the data file");
+    std::fs::write(data.join("x.yaml"), one_step_manifest("./readings.csv")).expect("the Protocol");
+    let base = resolved(&root.0);
+    let wanted = base
+        .join("data")
+        .join("x.yaml")
+        .to_string_lossy()
+        .into_owned();
+
+    let cases: [(&Path, String); 3] = [
+        (launch.as_path(), "../data/x.yaml".to_owned()),
+        (
+            base.as_path(),
+            format!("{}/launch/../data/x.yaml", base.display()),
+        ),
+        (base.as_path(), "./data/x.yaml".to_owned()),
+    ];
+    for (from, spec) in cases {
+        cwd.enter(from);
+        let boot = Boot::open_sampled(&spec, Flow::Vertical, None, None)
+            .unwrap_or_else(|e| panic!("open {spec} from {}: {e}", from.display()));
+        assert_eq!(
+            boot.opened_id.as_deref(),
+            Some(wanted.as_str()),
+            "{spec}, opened from {}",
+            from.display()
+        );
+    }
 }

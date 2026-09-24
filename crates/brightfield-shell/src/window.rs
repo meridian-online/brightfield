@@ -59,7 +59,7 @@
 //! the moment it gains content.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Component, PathBuf};
 
 use egui::containers::{CentralPanel, Panel};
 use egui_tiles::{Behavior, Container, Tile};
@@ -7426,14 +7426,52 @@ fn reopenable(id: &str) -> bool {
 ///
 /// Absolute and not canonical: [`std::path::absolute`] joins the working
 /// directory without following links, so a directory reached through a link
-/// keeps the name the reader gave it, and an absolute path with no `.` or
-/// doubled separator in it comes back unchanged. A path with no working
+/// keeps the name the reader gave it, and an absolute path with no `.`, `..`
+/// or doubled separator in it comes back unchanged. A path with no working
 /// directory to resolve against is kept as spelled.
+///
+/// A `..` is folded away as well, which [`std::path::absolute`] does not do:
+/// `../data/arcform.yaml` named from `<root>/launch` is
+/// `<root>/data/arcform.yaml`, and left as `<root>/launch/../data/arcform.yaml`
+/// it names the file while `<root>/launch` exists and stops naming it once
+/// that is removed — [`reopenable`] then finds no file — and is a second id for
+/// the document when the next launch names it from another directory, where the
+/// row and the layout saved under the first are not found.
+/// [`fold_parent_dirs`] says how.
 fn remembered_id(path: &str) -> String {
     std::path::absolute(path).map_or_else(
         |_| path.to_string(),
-        |absolute| absolute.to_string_lossy().into_owned(),
+        |absolute| fold_parent_dirs(&absolute).to_string_lossy().into_owned(),
     )
+}
+
+/// `absolute` with each `.` and `..` folded into the components around it,
+/// without resolving a link.
+///
+/// A `..` drops the component before it, except after a link: `link/..` is
+/// the parent of where `link` points, not the directory `link` sits in, so
+/// dropping `link` would name a different directory from the one the operating
+/// system reaches. There the link is resolved first and its target's parent is
+/// dropped, so a directory reached through a link keeps its spelled name
+/// wherever a `..` does not cut through it. A `..` at the root is dropped, as
+/// the operating system does.
+fn fold_parent_dirs(absolute: &std::path::Path) -> PathBuf {
+    let mut folded = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if folded.is_symlink() {
+                    if let Ok(target) = std::fs::canonicalize(&folded) {
+                        folded = target;
+                    }
+                }
+                folded.pop();
+            }
+            other => folded.push(other),
+        }
+    }
+    folded
 }
 
 /// The words a rail's selector strip offers its panes under — each pane's own
@@ -9210,5 +9248,107 @@ plot:
         );
         let entry = idle_status_entry(&composed).expect("a loaded chart always says something");
         assert_eq!(entry.text, "loaded · 1 mark");
+    }
+
+    /// **The id a document opened from a path is remembered under has no `.`
+    /// or `..` in it**, so the same file named from two directories is one id
+    /// and the id names the file after the directory it was named from is
+    /// gone.
+    ///
+    /// Three spellings, each read against the working directory this test
+    /// stands in, which it does not move — a unit-test binary has no lock
+    /// around the working directory and `tests/saved_protocol_working_directory.rs`
+    /// does. `here` plays `<root>/launch` for the first two and `<root>` for
+    /// the third:
+    ///
+    /// ```text
+    /// ../data/x.yaml                  from <root>/launch
+    /// <root>/launch/../data/x.yaml    from anywhere
+    /// ./data/x.yaml                   from <root>
+    /// ```
+    ///
+    /// Each comes back as `<root>/data/x.yaml`. Left as
+    /// [`std::path::absolute`] returns them, the first two keep the `..` and
+    /// the first is a second id for the second's file.
+    #[test]
+    fn a_remembered_id_folds_dot_and_dot_dot_away() {
+        let here = std::env::current_dir().expect("a working directory");
+        let above = here.parent().expect("a working directory below the root");
+        let beside = above.join("data").join("x.yaml");
+        let below = here.join("data").join("x.yaml");
+        let id = |path: &std::path::Path| remembered_id(&path.to_string_lossy());
+
+        assert_eq!(
+            remembered_id("../data/x.yaml"),
+            beside.to_string_lossy(),
+            "a relative path with a `..` in it, named from `<root>/launch`"
+        );
+        assert_eq!(
+            id(&here.join("..").join("data").join("x.yaml")),
+            beside.to_string_lossy(),
+            "the same file spelled absolutely, through the directory it was named from"
+        );
+        assert_eq!(
+            remembered_id("./data/x.yaml"),
+            below.to_string_lossy(),
+            "a relative path with a `.` in it, named from `<root>`"
+        );
+        assert_eq!(
+            id(&below),
+            below.to_string_lossy(),
+            "an absolute path with nothing to fold comes back unchanged"
+        );
+    }
+
+    /// **A directory reached through a link keeps the name the reader gave
+    /// it, unless a `..` cuts through the link.**
+    ///
+    /// ```text
+    /// <root>/data/                  a directory
+    /// <root>/other/deep/            a directory
+    /// <root>/link      -> data      a link
+    /// <root>/deeplink  -> other/deep   a link
+    /// ```
+    ///
+    /// `<root>/link/x.yaml` is remembered as spelled: the id is not the
+    /// link's target. `<root>/deeplink/../x.yaml` is the file in `other/`,
+    /// the parent of where `deeplink` points, and not the file in `<root>`
+    /// that dropping `deeplink` and the `..` together would name.
+    #[cfg(unix)]
+    #[test]
+    fn a_remembered_id_keeps_a_links_name_and_follows_it_for_a_dot_dot() {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        let dir =
+            std::env::temp_dir().join(format!("bf-remembered-id-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(dir.join("data")).expect("a directory");
+        std::fs::create_dir_all(dir.join("other/deep")).expect("a nested directory");
+        let scratch = Scratch(dir);
+        // The temporary directory may itself be reached through a link, and
+        // the test compares against paths under this root.
+        let root = std::fs::canonicalize(&scratch.0).expect("the root resolves");
+        std::os::unix::fs::symlink(root.join("data"), root.join("link")).expect("a link");
+        std::os::unix::fs::symlink(root.join("other/deep"), root.join("deeplink"))
+            .expect("a link to a nested directory");
+
+        let through_link = root.join("link").join("x.yaml");
+        assert_eq!(
+            remembered_id(&through_link.to_string_lossy()),
+            through_link.to_string_lossy(),
+            "a path through a link is remembered by the name it was spelled with"
+        );
+        let cut_through = root.join("deeplink").join("..").join("x.yaml");
+        assert_eq!(
+            remembered_id(&cut_through.to_string_lossy()),
+            root.join("other").join("x.yaml").to_string_lossy(),
+            "a `..` after a link is the parent of the link's target"
+        );
     }
 }
