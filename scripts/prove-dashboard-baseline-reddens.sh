@@ -280,7 +280,7 @@ if [ "$before" = "$after" ]; then
   pass "left as it was found"
 else
   flunk "the checkout changed during the run"
-  diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") | sed 's/^/       /' || true
+  diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") | head -n 40 | sed 's/^/       /' || true
 fi
 
 if [ "$fails" -gt 0 ]; then
