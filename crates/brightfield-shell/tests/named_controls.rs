@@ -31,7 +31,8 @@
 //! - **area**: a tile's scale switch is interacted over its segment clipped to
 //!   the pane, and on the housing baseline the column tiles sit outside the
 //!   hero's pane, so their switches register with an empty interact rect that
-//!   no pointer can land in.
+//!   no pointer can land in. The list names no such state —
+//!   `a_tile_switch_state_the_pane_clips_away_names_no_control`.
 //!
 //! # What an entry has to sit over
 //!
@@ -52,6 +53,7 @@
 //! The front door is not the first screen this file reads: it draws before a
 //! file is open, and its cards and rows are its own tests' subject.
 
+use brightfield_shell::app::GridLayout;
 use brightfield_shell::design::Mode;
 use brightfield_shell::protocol::GRAPH_CHIP_HINT;
 use brightfield_shell::window::{Boot, MeridianApp, HOME_CONTROL_NAME};
@@ -436,6 +438,24 @@ fn with_the_graph_on_the_canvas_every_control_still_carries_a_name() {
         "the chip did not put the graph on the canvas"
     );
 
+    // The grid pane is not drawn on this branch, so neither is its layout
+    // switch, however recently it was.
+    for layout in [GridLayout::Rows, GridLayout::Columns] {
+        let word = layout.word();
+        let stale: Vec<_> = live
+            .app
+            .named_controls()
+            .iter()
+            .filter(|c| c.name == word)
+            .map(|c| c.rect)
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "with the graph on the canvas the list names the grid's {word:?} \
+             layout state at {stale:?}, where no grid pane is drawn"
+        );
+    }
+
     let chips = live.app.canvas_chips().to_vec();
     assert!(!chips.is_empty(), "the graph drew no view chip on any node");
     for chip in &chips {
@@ -450,4 +470,55 @@ fn with_the_graph_on_the_canvas_every_control_still_carries_a_name() {
         assert_eq!(entry.by, NamedBy::Label);
     }
     assert_every_control_is_named(&live, "the graph on the canvas");
+}
+
+/// **A tile switch's state the pane clips to nothing names no control.** A
+/// state is interacted over its rect's intersection with the pane's clip,
+/// so when that leaves nothing, no pointer can land on the state and an
+/// entry for it — at the painted rect or at the empty one — names a control
+/// that is not there.
+///
+/// On the housing baseline the column tiles sit outside the hero's pane, so
+/// every switch they draw is such a state; the guard below says so rather
+/// than passing over a page that clipped nothing. A state the clip leaves
+/// some of is held by `assert_every_control_is_named` both ways instead.
+/// Normalise controls are read the same way, though the housing dashboard
+/// composes no grouped histogram and so draws none.
+#[test]
+fn a_tile_switch_state_the_pane_clips_away_names_no_control() {
+    let live = Live::housing();
+    let doc = live.app.chart_doc();
+    let clipped: Vec<(egui::Rect, egui::Rect)> = doc
+        .scale_switches
+        .iter()
+        .flat_map(|s| {
+            s.states
+                .iter()
+                .map(|(_, seg)| (*seg, seg.intersect(s.clip)))
+        })
+        .chain(doc.normalise_switches.iter().flat_map(|s| {
+            s.states
+                .iter()
+                .map(|(_, seg)| (*seg, seg.intersect(s.clip)))
+        }))
+        .filter(|(_, hit)| !hit.is_positive())
+        .collect();
+    assert!(
+        !clipped.is_empty(),
+        "no tile switch state on the housing baseline is clipped to nothing, so \
+         this reads nothing"
+    );
+    let controls = live.app.named_controls();
+    for (seg, hit) in clipped {
+        let named: Vec<_> = controls
+            .iter()
+            .filter(|c| c.rect == seg || c.rect == hit)
+            .map(|c| (c.name.as_str(), c.rect))
+            .collect();
+        assert!(
+            named.is_empty(),
+            "the tile switch state painted at {seg:?} is clipped to nothing and \
+             the list still names it: {named:?}"
+        );
+    }
 }
