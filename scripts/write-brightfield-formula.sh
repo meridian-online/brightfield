@@ -57,7 +57,7 @@ done
 cat <<FORMULA
 class Brightfield < Formula
   desc "Grammar-of-graphics renderer for Meridian data (macOS)"
-  homepage "https://github.com/meridian-online/brightfield"
+  homepage "https://meridian.online/brightfield"
   license "MIT"
 
   depends_on :macos
