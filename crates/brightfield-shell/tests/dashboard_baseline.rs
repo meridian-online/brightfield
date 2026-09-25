@@ -63,7 +63,8 @@
 use std::path::PathBuf;
 
 use brightfield_protocol::layout::Flow;
-use brightfield_shell::capture::capture_png;
+use brightfield_render::channel::Channel;
+use brightfield_shell::capture::{capture_png, capture_vello_only};
 use brightfield_shell::dashboard::{self, ChosenBy, Dashboard, Omission};
 use brightfield_shell::design::Mode;
 use brightfield_shell::window::{Boot, MeridianApp};
@@ -105,6 +106,33 @@ fn fixture() -> PathBuf {
 fn housing() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/california_housing_sample.csv")
 }
+
+/// **[`housing`] again, as a Parquet whose fractional columns are `DECIMAL`**:
+/// `median_income` at scale 4, `median_house_value` at scale 3, and the other
+/// five at scale 2, each cast from the CSV's own text, so every value is the
+/// one the CSV holds. `house_age` and `population` stay `BIGINT`.
+///
+/// Built with DuckDB from the committed CSV:
+///
+/// ```sql
+/// COPY (SELECT CAST(median_income AS DECIMAL(9,4)) AS median_income, …
+///       FROM read_csv('california_housing_sample.csv', all_varchar = true))
+/// TO 'california_housing_decimal.parquet' (FORMAT parquet, COMPRESSION zstd);
+/// ```
+fn housing_decimal() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/california_housing_decimal.parquet")
+}
+
+/// The columns of [`housing_decimal`] DuckDB types `DECIMAL`, sorted by name.
+const HOUSING_DECIMAL_COLUMNS: &[&str] = &[
+    "avg_bedrooms",
+    "avg_occupancy",
+    "avg_rooms",
+    "latitude",
+    "longitude",
+    "median_house_value",
+    "median_income",
+];
 
 /// The tiles [`housing`] earns, in the order the composition places them: the
 /// pair's joint map first, then every one of the file's nine columns in the
@@ -513,6 +541,102 @@ fn the_generated_dashboard_dark_baseline() {
     );
 
     egui_kittest::image_snapshot(&image, "dashboard_dark");
+}
+
+/// **A data file whose columns are `DECIMAL` opens as the dashboard its
+/// `DOUBLE` twin opens as**, scale for scale and pixel for pixel.
+///
+/// [`housing_decimal`] is [`housing`] with seven of its nine columns stored as
+/// `DECIMAL`, and the CSV is its `DOUBLE` twin: DuckDB reads each CSV value as
+/// the double the `DECIMAL` casts to. So the generator makes the same choices,
+/// which [`assert_housing`] holds, and every plot of the composition must carry
+/// the scales and draw the pixels the CSV's plot does. The hero map reads its
+/// two `DECIMAL` coordinates through brightfield-render's `Decimal128` arms;
+/// with those arms gone its scales come back empty and its dots undrawn.
+///
+/// The composed scene is compared rather than the window, because the window's
+/// rails print each column's type and the file's name, which are what differ.
+#[test]
+fn a_decimal_data_file_draws_the_dashboard_its_double_twin_draws() {
+    let open = |path: PathBuf| {
+        let chosen = path.to_str().expect("utf-8 fixture path").to_owned();
+        data_file::open(&chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()))
+    };
+    let decimal = open(housing_decimal());
+    let double = open(housing());
+
+    let mut stored_decimal: Vec<&str> = decimal
+        .dashboard
+        .tiles()
+        .iter()
+        .filter(|t| {
+            matches!(t.chosen_by(), ChosenBy::Storage { type_name } if type_name.starts_with("DECIMAL"))
+        })
+        .map(|t| t.column())
+        .collect();
+    stored_decimal.sort_unstable();
+    assert_eq!(
+        stored_decimal, HOUSING_DECIMAL_COLUMNS,
+        "fixture check: these are the columns whose tiles DuckDB's DECIMAL type \
+         decided, so the file no longer carries the DECIMAL columns this test \
+         is about"
+    );
+    assert_housing(&decimal.dashboard);
+    assert_eq!(
+        decimal.composed.plots.len(),
+        double.composed.plots.len(),
+        "the DECIMAL file composed a different count of plots"
+    );
+
+    for (i, (d, f)) in decimal
+        .composed
+        .plots
+        .iter()
+        .zip(&double.composed.plots)
+        .enumerate()
+    {
+        let column = decimal.dashboard.plot_order()[i].column();
+        for &channel in Channel::all() {
+            assert_eq!(
+                format!("{:?}", d.scales.get(channel)),
+                format!("{:?}", f.scales.get(channel)),
+                "plot {i} ({column}): the DECIMAL file's {channel:?} scale must \
+                 be its DOUBLE twin's"
+            );
+        }
+        assert_eq!(
+            d.scales.geo_extent(),
+            f.scales.geo_extent(),
+            "plot {i} ({column}): the DECIMAL file's map extent must be its \
+             DOUBLE twin's"
+        );
+    }
+
+    let (decimal_png, double_png) = (scratch("decimal_twin"), scratch("double_twin"));
+    capture_vello_only(decimal.composed, SCALE, &decimal_png)
+        .unwrap_or_else(|e| panic!("capture the DECIMAL dashboard: {e}"));
+    capture_vello_only(double.composed, SCALE, &double_png)
+        .unwrap_or_else(|e| panic!("capture the DOUBLE dashboard: {e}"));
+    let read = |png: &PathBuf| {
+        image::open(png)
+            .unwrap_or_else(|e| panic!("read capture {}: {e}", png.display()))
+            .to_rgba8()
+    };
+    let (decimal_img, double_img) = (read(&decimal_png), read(&double_png));
+    assert_eq!(decimal_img.dimensions(), double_img.dimensions());
+    let differing = decimal_img
+        .pixels()
+        .zip(double_img.pixels())
+        .filter(|(a, b)| a != b)
+        .count();
+    assert_eq!(
+        differing,
+        0,
+        "the DECIMAL file's dashboard differs from its DOUBLE twin's in \
+         {differing} pixels; see {} and {}",
+        decimal_png.display(),
+        double_png.display()
+    );
 }
 
 /// **The window a data file opens at does not grow with the count of tiles
