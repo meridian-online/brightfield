@@ -27,12 +27,17 @@
 //! - **Clearing removes it.** A click with no sweep retracts an interval
 //!   contribution, and the ink goes with it.
 
+use brightfield_engine::coordinator::Interaction;
+use brightfield_engine::SqlPredicate;
+use brightfield_render::channel::Channel;
 use brightfield_render::VelloRenderer;
 use brightfield_shell::app::ChartDoc;
 use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::live_spec;
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
+use brightfield_spec::analysis::ComponentPath;
+use brightfield_sql::ir::ScalarValue;
 
 use image::RgbaImage;
 use std::path::PathBuf;
@@ -131,6 +136,39 @@ fn rules(img: &RgbaImage) -> Vec<f64> {
     found
 }
 
+/// The horizontal bound rules left of column `x_end`, as the pixel centre of
+/// each run of adjacent heavily-inked rows.
+///
+/// The transpose of [`rules`], and limited to one plot's columns because the
+/// fixture that needs it has a second plot beside the first. "Heavily inked" is
+/// a third of `x_end`: a rule on an unconstrained x axis spans the plot's whole
+/// width, which is more than that.
+fn row_rules(img: &RgbaImage, x_end: u32) -> Vec<f64> {
+    let want = bound_ink();
+    let floor = x_end / 3;
+    let mut found = Vec::new();
+    let mut run: Option<(usize, usize)> = None;
+    for y in 0..img.height() {
+        let count = (0..x_end.min(img.width()))
+            .filter(|&x| is_bound(img.get_pixel(x, y).0, want))
+            .count() as u32;
+        let y = y as usize;
+        match (count > floor, run) {
+            (true, None) => run = Some((y, y)),
+            (true, Some((start, _))) => run = Some((start, y)),
+            (false, Some((start, end))) => {
+                found.push((start + end) as f64 / 2.0);
+                run = None;
+            }
+            (false, None) => {}
+        }
+    }
+    if let Some((start, end)) = run {
+        found.push((start + end) as f64 / 2.0);
+    }
+    found
+}
+
 // ---------------------------------------------------------------------------
 // The fixture and its gestures
 // ---------------------------------------------------------------------------
@@ -144,7 +182,12 @@ fn example(name: &str) -> PathBuf {
 /// The whole window over an example, live, with a real DuckDB session behind
 /// it and one settled frame drawn.
 fn window(name: &str, ctx: &egui::Context) -> MeridianApp {
-    let path = example(name);
+    window_over(example(name), ctx)
+}
+
+/// [`window`] over a spec at any path — the fixture below lives in
+/// `tests/data/`, not in the shipped examples.
+fn window_over(path: PathBuf, ctx: &egui::Context) -> MeridianApp {
     let path_str = path.to_str().expect("utf-8 path");
     let (live, composed) = live_spec(path_str).expect("the fixture loads live");
     let mut boot = Boot::charts(composed);
@@ -370,4 +413,130 @@ fn the_bands_ink_is_not_the_in_progress_gestures_ink() {
              read as different ink"
         );
     }
+}
+
+/// **A plot keeps the band it can place when the other axis's category is
+/// filtered away.**
+///
+/// The fixture's left plot holds a committed category on x (a real click) and a
+/// committed interval on y (written through the interaction seam — see the
+/// spec's own description for why the pointer cannot make both). The right
+/// plot's brush then filters North out of the left plot's data, the left plot's
+/// band scale is re-inferred without it, and North has no slot to be drawn in.
+///
+/// The interval still has one. A plot that drew nothing here would be a filter
+/// in force with no ink, on the plot that produced it — arriving through the
+/// other axis's failure rather than its own.
+///
+/// This is the first test in the file that observes a categorical selection, so
+/// it holds the categorical floor too: the click is drawn as its slot's two
+/// bounds before anything is filtered.
+#[test]
+fn a_committed_band_survives_the_other_axis_losing_its_category_to_a_sibling_filter() {
+    let ctx = egui::Context::default();
+    let renderer = VelloRenderer::new();
+    let mut app = window_over(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data/categorical_committed_selection.yaml"),
+        &ctx,
+    );
+    let divider = second_plot_start(&app);
+    let left = divider as u32;
+    let rules_on_left = |img: &RgbaImage| -> Vec<f64> {
+        rules(img).into_iter().filter(|&x| x < divider).collect()
+    };
+
+    // The floor, so a harness that finds this ink everywhere says so here.
+    let resting = raster(&renderer, app.chart_doc());
+    assert!(
+        rules_on_left(&resting).is_empty() && row_rules(&resting, left).is_empty(),
+        "a dashboard nobody has clicked draws no selection band"
+    );
+
+    // A real click on North's slot. The slot is read off the scale the click is
+    // resolved through, not guessed as a fraction of the plot.
+    let across = {
+        let plot = &app.chart_doc().composed.plots[0];
+        let centre = plot
+            .scales
+            .get(Channel::X)
+            .and_then(|s| s.map_category("North"))
+            .expect("fixture check: North has a slot before anything is filtered");
+        (centre / plot.rect.width) as f32
+    };
+    click(&mut app, &ctx, 0, across);
+    assert!(
+        app.chart_doc().selection_active(),
+        "fixture check: the click committed a category"
+    );
+    let clicked = raster(&renderer, app.chart_doc());
+    let bounds = rules_on_left(&clicked);
+    assert_eq!(
+        bounds.len(),
+        2,
+        "a committed category is drawn as its slot's two bounds (found {bounds:?})"
+    );
+    assert!(
+        row_rules(&clicked, left).is_empty(),
+        "an x-only selection spans the plot's height and rules no horizontal edge"
+    );
+
+    // The same plot's second clause: a revenue interval inside the range the
+    // data still covers once North has gone.
+    let contributor = ComponentPath(app.chart_doc().composed.plots[0].path.clone());
+    assert!(
+        app.chart_doc_mut().apply_interaction(Interaction::Select {
+            name: "band".to_string(),
+            contributor,
+            predicate: SqlPredicate::Interval {
+                column: "revenue".to_string(),
+                lo: ScalarValue::Float(35.0),
+                hi: ScalarValue::Float(45.0),
+                meta: None,
+            },
+        }),
+        "fixture check: the interval was applied"
+    );
+    frame(&mut app, &ctx, Vec::new());
+
+    // The sibling's filter: brush the right plot over the upper `units` range,
+    // which no North row is in.
+    let (from, to) = {
+        let plot = &app.chart_doc().composed.plots[1];
+        let units = plot.scales.get(Channel::X).expect("the units scale");
+        (
+            (units.map_f64(4.0) / plot.rect.width) as f32,
+            (units.map_f64(9.5) / plot.rect.width) as f32,
+        )
+    };
+    brush(&mut app, &ctx, 1, from, to);
+    let scale = app.chart_doc().composed.plots[0]
+        .scales
+        .get(Channel::X)
+        .expect("the region scale");
+    assert!(
+        scale.map_category("North").is_none(),
+        "fixture check: the sibling's filter removed North, so the re-inferred \
+         band scale has no slot for it"
+    );
+    assert!(
+        scale.map_category("East").is_some(),
+        "fixture check: the plot still has data, so this is a scale that lost a \
+         category and not an empty plot"
+    );
+
+    let filtered = raster(&renderer, app.chart_doc());
+    let horizontal = row_rules(&filtered, left);
+    assert_eq!(
+        horizontal.len(),
+        2,
+        "the interval still places on this plot's scale, so its two bounds are \
+         drawn (found {horizontal:?})"
+    );
+    let vertical = rules_on_left(&filtered);
+    assert!(
+        vertical.is_empty(),
+        "North has no slot, so the category's bounds are not drawn at a guessed \
+         position (found {vertical:?})"
+    );
 }

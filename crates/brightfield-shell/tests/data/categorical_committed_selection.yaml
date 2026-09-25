@@ -1,0 +1,53 @@
+meta:
+  title: A committed category and a committed interval on one plot
+  description: |
+    A test fixture for the committed-selection ink, not a shipped example.
+
+    The left plot bands `region` on x and carries two interactors: `toggleX`
+    (a click picks a category) and `intervalY` (a revenue range). A pointer
+    drives the first interactor declared on a plot and no other, so the second
+    selection is written through the same `Interaction::Select` seam a slider
+    uses, with the plot as its contributor. That is how one plot comes to hold
+    a category on one axis and an interval on the other.
+
+    The right plot brushes `units` into `$scope`, which filters the left plot.
+    Its `units` ranges are disjoint by region, so a brush over the upper range
+    removes North from the left plot's data and its band scale is re-inferred
+    without a slot for North.
+
+    Deliberately in tests/data/ rather than in examples/: examples/ is a
+    shipped corpus with its own exercise gate and its own baselines, and this
+    spec is here to be clicked and read back, not to be looked at.
+params:
+  pick: { select: crossfilter }
+  band: { select: crossfilter }
+  scope: { select: crossfilter }
+data:
+  sales:
+    - { region: North, units: 1,  revenue: 10 }
+    - { region: North, units: 2,  revenue: 14 }
+    - { region: South, units: 5,  revenue: 30 }
+    - { region: South, units: 6,  revenue: 34 }
+    - { region: East,  units: 9,  revenue: 50 }
+    - { region: East,  units: 10, revenue: 54 }
+hconcat:
+  - plot:
+      - mark: dot
+        data: { from: sales, filterBy: $scope }
+        x: region
+        y: revenue
+      - select: toggleX
+        as: $pick
+      - select: intervalY
+        as: $band
+    width: 340
+    height: 300
+  - plot:
+      - mark: dot
+        data: { from: sales }
+        x: units
+        y: revenue
+      - select: intervalX
+        as: $scope
+    width: 340
+    height: 300
