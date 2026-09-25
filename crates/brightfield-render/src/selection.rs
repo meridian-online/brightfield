@@ -170,9 +170,15 @@ pub fn committed_selection_rect(
 
 /// Draw the committed selection `selection` holds on this plot.
 ///
-/// A no-op when nothing is held, when the constrained channel has no scale, or
-/// when the constraint cannot be placed on the scale it names — a band that
-/// cannot be resolved is not drawn at a guessed position.
+/// Each axis is placed on its own. A constrained axis whose scale is missing, or
+/// whose value has no slot on the scale it names — a category a sibling's
+/// filter emptied out of this plot's data — draws no band and no rules; the
+/// other axis's band is still drawn, spanning the plot along the axis that
+/// dropped out. A band that cannot be resolved is not drawn at a guessed
+/// position, and a plot that can place one of two clauses does not lose that
+/// one for the other's sake.
+///
+/// A no-op when nothing is held or when no constrained axis can be placed.
 pub fn render_committed_selection(
     scene: &mut Scene,
     layout: &ChartLayout,
@@ -188,20 +194,23 @@ pub fn render_committed_selection(
         return;
     }
 
-    let axis = |channel: Channel, selected: &Option<Selected>, whole: (f64, f64)| match selected {
-        None => Some(vec![whole]),
-        Some(sel) => {
-            let scale = scales.get(channel)?;
-            let placed = spans(scale, sel);
-            (!placed.is_empty()).then_some(placed)
-        }
+    // `None` for an axis that is unconstrained AND for one whose constraint
+    // cannot be placed: either way that axis contributes no band of its own and
+    // no rules, and spans the plot.
+    let place = |channel: Channel, selected: &Option<Selected>| {
+        let placed = spans(scales.get(channel)?, selected.as_ref()?);
+        (!placed.is_empty()).then_some(placed)
     };
-    let Some(xs) = axis(Channel::X, &selection.x, (px0, px1)) else {
+    let (placed_x, placed_y) = (
+        place(Channel::X, &selection.x),
+        place(Channel::Y, &selection.y),
+    );
+    if placed_x.is_none() && placed_y.is_none() {
         return;
-    };
-    let Some(ys) = axis(Channel::Y, &selection.y, (py0, py1)) else {
-        return;
-    };
+    }
+    let (ruled_x, ruled_y) = (placed_x.is_some(), placed_y.is_some());
+    let xs = placed_x.unwrap_or_else(|| vec![(px0, px1)]);
+    let ys = placed_y.unwrap_or_else(|| vec![(py0, py1)]);
 
     // Clipped to the plot area: a selection made before a pan can name a range
     // that is now partly off-frame, and the band must stop where the frame
@@ -222,13 +231,13 @@ pub fn render_committed_selection(
                 None,
                 &band,
             );
-            if selection.x.is_some() {
+            if ruled_x {
                 for x in [x0, x1] {
                     let rule = Line::new((x, y0), (x, y1));
                     scene.stroke(&stroke, Affine::IDENTITY, ink.selection_bound, None, &rule);
                 }
             }
-            if selection.y.is_some() {
+            if ruled_y {
                 for y in [y0, y1] {
                     let rule = Line::new((x0, y), (x1, y));
                     scene.stroke(&stroke, Affine::IDENTITY, ink.selection_bound, None, &rule);
@@ -347,6 +356,115 @@ mod tests {
             &CommittedSelection::default(),
         );
         assert!(scene.encoding().is_empty(), "no constraint, no geometry");
+    }
+
+    /// One axis that cannot place its value does not take the other axis's band
+    /// with it: the picture is the placeable axis's band alone, which is what a
+    /// selection holding only that clause draws. The measure is the geometry
+    /// laid down, so an unplaced axis that still got its rules — or a draw that
+    /// bailed altogether — reads as a different picture.
+    #[test]
+    fn an_axis_with_no_slot_does_not_take_the_other_axes_band_with_it() {
+        let mut scales = ScaleSet::new();
+        scales.insert(Channel::X, band(&["north", "south"], (40.0, 340.0)));
+        scales.insert(Channel::Y, linear((0.0, 10.0), (260.0, 20.0)));
+        let layout = ChartLayout::new(360.0, 300.0);
+        let interval = Selected::Interval(2.0, 4.0);
+
+        let mut both = Scene::new();
+        render_committed_selection(
+            &mut both,
+            &layout,
+            &scales,
+            &CommittedSelection {
+                x: Some(Selected::Categories(vec!["west".to_string()])),
+                y: Some(interval.clone()),
+            },
+        );
+        let mut alone = Scene::new();
+        render_committed_selection(
+            &mut alone,
+            &layout,
+            &scales,
+            &CommittedSelection {
+                x: None,
+                y: Some(interval),
+            },
+        );
+
+        assert!(
+            !alone.encoding().is_empty(),
+            "fixture check: the y band alone lays down geometry"
+        );
+        let (both, alone) = (both.encoding(), alone.encoding());
+        assert_eq!(
+            (both.n_paths, both.n_path_segments),
+            (alone.n_paths, alone.n_path_segments),
+            "the placeable axis draws its band and the axis with no slot draws nothing"
+        );
+    }
+
+    /// The mirror: the x axis places and the y axis names a category the band
+    /// scale does not carry.
+    #[test]
+    fn a_y_axis_with_no_slot_leaves_the_x_band_standing() {
+        let mut scales = ScaleSet::new();
+        scales.insert(Channel::X, linear((0.0, 10.0), (40.0, 340.0)));
+        scales.insert(Channel::Y, band(&["north", "south"], (260.0, 20.0)));
+        let layout = ChartLayout::new(360.0, 300.0);
+        let interval = Selected::Interval(2.0, 4.0);
+
+        let mut both = Scene::new();
+        render_committed_selection(
+            &mut both,
+            &layout,
+            &scales,
+            &CommittedSelection {
+                x: Some(interval.clone()),
+                y: Some(Selected::Categories(vec!["west".to_string()])),
+            },
+        );
+        let mut alone = Scene::new();
+        render_committed_selection(
+            &mut alone,
+            &layout,
+            &scales,
+            &CommittedSelection {
+                x: Some(interval),
+                y: None,
+            },
+        );
+
+        assert!(
+            !alone.encoding().is_empty(),
+            "fixture check: the x band alone lays down geometry"
+        );
+        let (both, alone) = (both.encoding(), alone.encoding());
+        assert_eq!(
+            (both.n_paths, both.n_path_segments),
+            (alone.n_paths, alone.n_path_segments),
+            "the placeable axis draws its band and the axis with no slot draws nothing"
+        );
+    }
+
+    /// When neither constrained axis can be placed there is no band to draw, and
+    /// the plot is not washed whole in its place.
+    #[test]
+    fn two_axes_with_no_slot_draw_nothing() {
+        let mut scales = ScaleSet::new();
+        scales.insert(Channel::X, band(&["north", "south"], (40.0, 340.0)));
+        scales.insert(Channel::Y, band(&["low", "high"], (260.0, 20.0)));
+        let mut scene = Scene::new();
+        render_committed_selection(
+            &mut scene,
+            &ChartLayout::new(360.0, 300.0),
+            &scales,
+            &CommittedSelection {
+                x: Some(Selected::Categories(vec!["west".to_string()])),
+                y: Some(Selected::Categories(vec!["middle".to_string()])),
+            },
+        );
+        assert!(scene.encoding().is_empty(), "nothing placed, nothing drawn");
     }
 
     /// A constraint on a channel the plot has no scale for draws nothing —
