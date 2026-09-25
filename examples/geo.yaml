@@ -5,8 +5,7 @@ meta:
     projected client-side (equirectangular, the default) and coloured by a
     numeric `rate` through the sequential ramp — a choropleth. No spatial
     extension or network is needed: the `geom` column is inline VARCHAR GeoJSON
-    text that passes through the GeoLowerer UNWRAPPED (no ST_AsGeoJSON), which is
-    what lets this example's PNG baseline hermetically. Geo suppresses the plot
+    text that passes through the GeoLowerer UNWRAPPED (no ST_AsGeoJSON). Geo suppresses the plot
     frame, so the map draws no axes or gridlines; the per-plot title survives.
     (`rate` is written as decimal literals, so DuckDB types the inline column
     DECIMAL — the type a SQL step multiplying by a literal makes too — and the
