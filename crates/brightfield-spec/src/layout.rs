@@ -477,8 +477,8 @@ pub struct SideMargins {
 /// Observable Plot most-specific-wins precedence, per side:
 /// `left = marginLeft ?? margin` (and symmetrically `right`, `top`, `bottom`).
 ///
-/// Literal numbers only, the reading [`resolve_plot_insets`] gives: a `$param`
-/// reference or any non-numeric value is absent for that key and falls through
+/// Literal numbers are read, as [`resolve_plot_insets`] reads them: a `$param`
+/// reference or a non-numeric value is absent for that key and falls through
 /// to the next-most-specific one. A negative number reads as `0.0`, since no
 /// side has less than no margin; a number that is not finite is absent, since
 /// no layout can be drawn from it. A pure reading of the plot node: the plot's

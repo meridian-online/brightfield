@@ -1,14 +1,14 @@
 //! **A spec's declared margins reach the layout its plot is drawn in.**
 //!
 //! `marginTop`, `marginRight`, `marginBottom`, `marginLeft` and the `margin`
-//! shorthand were parsed and then dropped: the pipeline built every plot's
-//! margins from `Margins::default()` grown by its titles, so a plot declaring
-//! `marginLeft: 0` drew its data area 40 px in, exactly where a plot declaring
-//! nothing drew it.
+//! shorthand were parsed and then dropped: the pipeline built a plot's margins
+//! from `Margins::default()` grown by its titles, so a plot declaring
+//! `marginLeft: 0` drew its data area where a plot declaring no margin drew it,
+//! at the default left margin.
 //!
 //! Driven through [`compose_spec_str`], the real composition, and read off
 //! [`PlotHandle::layout`] — the layout the plot's scales, axes and gesture
-//! hit-testing all live in. The plots suppress their axis titles
+//! hit-testing are computed in. The plots suppress their axis titles
 //! (`xLabel: null`, `yLabel: null`) wherever the question is where the
 //! **declared** value lands, because a derived title grows the margin by a
 //! band and this file would otherwise be asserting the band's size at the same
@@ -20,7 +20,7 @@ use brightfield_shell::pipeline::{compose_spec_str, Composed};
 use brightfield_spec::MarkKind;
 
 /// Observable Plot's defaults, which `Margins::default` is and which a plot
-/// that declares nothing must still get.
+/// that declares no margin keeps.
 const DEFAULT_TOP: f64 = 20.0;
 const DEFAULT_RIGHT: f64 = 20.0;
 const DEFAULT_BOTTOM: f64 = 30.0;
