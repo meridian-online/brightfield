@@ -21,7 +21,7 @@ pub use crate::ast::{
     Component, DataSource, ExpressionNode, Input, Interactor, Mark, Meta, ParamNode, ParamRef,
     PlotNode, SelectionNode, Spec, SpecValue, ValueOrParamRef,
 };
-pub use crate::error::{NameSurface, ParseError, SourceSpan};
+pub use crate::error::{FrameFault, FrameSide, NameSurface, ParseError, SourceSpan};
 pub use crate::parse::{
     parse_spec, parse_spec_path, serialise_spec, Format, ParseOutput, ParseWarning,
 };

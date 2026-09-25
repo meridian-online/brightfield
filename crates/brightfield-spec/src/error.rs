@@ -187,6 +187,109 @@ pub enum ParseError {
         /// Location in the source if available.
         span: Option<SourceSpan>,
     },
+
+    /// A plot's frame leaves it no data area to draw in: its `width` or
+    /// `height` is not a positive finite number, or the two margins across one
+    /// of them add up to more than it. Refused here rather than drawn, because
+    /// every consumer downstream — the axes, the scales, the brush — would
+    /// otherwise be handed an inverted frame and have to defend itself.
+    /// See [`crate::layout::plot_frame_fault`] for how the margins are read.
+    #[error("plot `{plot}` has no room to draw: {fault}")]
+    PlotFrame {
+        /// The plot's component path (`root/hconcat[1]`), followed by its
+        /// `name:` when it declares one.
+        plot: String,
+        /// The dimension or the margins at fault.
+        fault: FrameFault,
+        /// Location in the source if available.
+        span: Option<SourceSpan>,
+    },
+}
+
+/// One side of a plot's frame, as [`crate::layout::plot_frame_fault`] resolved
+/// it: the margin the layout will draw that side at, and where it came from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrameSide {
+    /// The spec key that sets this side (`marginLeft`, `marginRight`, …).
+    pub key: &'static str,
+    /// The side's base before any title grows it: what the plot declared, or
+    /// Observable Plot's default when it declared nothing.
+    pub base: f64,
+    /// Whether [`Self::base`] is the plot's own declaration.
+    pub declared: bool,
+    /// The band a title sitting on this side adds; `0.0` when none does.
+    pub title_band: f64,
+}
+
+impl FrameSide {
+    /// The margin the layout draws this side at: the base grown by its title.
+    #[must_use]
+    pub fn px(&self) -> f64 {
+        self.base + self.title_band
+    }
+}
+
+impl std::fmt::Display for FrameSide {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let origin = if self.declared { "declared" } else { "default" };
+        if self.title_band > 0.0 {
+            write!(
+                f,
+                "{} {} ({origin} {} + title band {})",
+                self.key,
+                self.px(),
+                self.base,
+                self.title_band
+            )
+        } else {
+            write!(f, "{} {} ({origin})", self.key, self.base)
+        }
+    }
+}
+
+/// What leaves a plot with no data area — the payload of
+/// [`ParseError::PlotFrame`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum FrameFault {
+    /// `width` or `height` is NaN, infinite, zero or negative.
+    Dimension {
+        /// `width` or `height`.
+        key: &'static str,
+        /// The value the plot declared.
+        value: f64,
+    },
+    /// The two margins across one dimension add up to more than it, so the
+    /// data area along it would be inverted.
+    Margins {
+        /// `width` or `height`.
+        dimension: &'static str,
+        /// The plot's size along that dimension: declared, or the default.
+        size: f64,
+        /// The left or top side.
+        near: FrameSide,
+        /// The right or bottom side.
+        far: FrameSide,
+    },
+}
+
+impl std::fmt::Display for FrameFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Dimension { key, value } => {
+                write!(f, "its {key} {value} is not a positive number")
+            }
+            Self::Margins {
+                dimension,
+                size,
+                near,
+                far,
+            } => write!(
+                f,
+                "{near} + {far} = {} exceed its {dimension} {size}",
+                near.px() + far.px()
+            ),
+        }
+    }
 }
 
 impl ParseError {
@@ -201,7 +304,8 @@ impl ParseError {
             | Self::MalformedParamDef { span, .. }
             | Self::StrictContextUnresolvedRef { span, .. }
             | Self::SchemaViolation { span, .. }
-            | Self::CrossfilterColumnUnprojected { span, .. } => *span,
+            | Self::CrossfilterColumnUnprojected { span, .. }
+            | Self::PlotFrame { span, .. } => *span,
             Self::Io(_) | Self::UnknownFormat { .. } => None,
         }
     }
@@ -256,6 +360,14 @@ mod tests {
                 mark: "root/plot[0]/mark[dot]".into(),
                 column: "delay".into(),
                 alternatives: vec!["p".into(), "q".into()],
+                span: None,
+            },
+            ParseError::PlotFrame {
+                plot: "root".into(),
+                fault: FrameFault::Dimension {
+                    key: "width",
+                    value: 0.0,
+                },
                 span: None,
             },
         ];

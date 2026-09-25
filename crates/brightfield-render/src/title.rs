@@ -128,7 +128,12 @@ pub fn resolve_titles(plot: &PlotNode, channel_maps: &[&ChannelMap]) -> Resolved
 /// Fixed title-band width added to a margin for one present title: the font
 /// height plus padding. A title runs ALONG its axis, so the extent it consumes
 /// IN the margin is this constant cross-axis band, independent of text length.
-pub const TITLE_BAND: f64 = TITLE_SIZE as f64 + 8.0;
+///
+/// The spec crate's constant, so its parse-time fit check grows a plot's
+/// margins by the band this layout reserves; the assertion below keeps it the
+/// title font plus its padding.
+pub const TITLE_BAND: f64 = brightfield_spec::layout::TITLE_BAND;
+const _: () = assert!(TITLE_BAND == TITLE_SIZE as f64 + 8.0);
 
 /// Grow the base margins to reserve a fixed [`TITLE_BAND`] for each present
 /// title: left for a y-title, bottom for an x-title, top for a plot title.

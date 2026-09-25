@@ -2,7 +2,10 @@
 //!
 //! Uses a fixed margin model with Observable Plot defaults.
 
-use brightfield_spec::layout::SideMargins;
+use brightfield_spec::layout::{
+    SideMargins, DEFAULT_MARGIN_BOTTOM, DEFAULT_MARGIN_LEFT, DEFAULT_MARGIN_RIGHT,
+    DEFAULT_MARGIN_TOP,
+};
 
 /// Chart layout computed from element bounds and margin settings.
 #[derive(Debug, Clone, Copy)]
@@ -49,13 +52,15 @@ pub struct Margins {
 }
 
 impl Default for Margins {
+    /// Observable Plot's defaults, from the spec crate, whose parse-time fit
+    /// check (`brightfield_spec::layout::plot_frame_fault`) judges a plot
+    /// against the same four numbers this layout draws it in.
     fn default() -> Self {
-        // Observable Plot defaults.
         Self {
-            top: 20.0,
-            right: 20.0,
-            bottom: 30.0,
-            left: 40.0,
+            top: DEFAULT_MARGIN_TOP,
+            right: DEFAULT_MARGIN_RIGHT,
+            bottom: DEFAULT_MARGIN_BOTTOM,
+            left: DEFAULT_MARGIN_LEFT,
         }
     }
 }
