@@ -530,7 +530,7 @@ pub const TITLE_BAND: f64 = 20.0;
 ///
 /// 1. its `width` or `height` is NaN, infinite, zero or negative — the plot's
 ///    own attribute, or [`DEFAULT_PLOT_WIDTH`] / [`DEFAULT_PLOT_HEIGHT`] when
-///    it declares none;
+///    it declares no size;
 /// 2. its left and right margins add up to more than its width, or its top
 ///    and bottom to more than its height, so the data area along that
 ///    dimension is inverted.

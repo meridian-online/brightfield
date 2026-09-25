@@ -5,10 +5,11 @@
 //! stays clear.
 //!
 //! GPU-free: `ChartDoc::gesture_ink` records the rectangle the brush paints on
-//! every frame a drag is in progress, which is what lets this read it without
-//! a device — the standing `tests/canvas_pane_group.rs` gives it. Every kind,
-//! against a plot built for the question, is pinned in `chart_item`'s own
-//! tests; this is the gesture end to end, on a shipped example.
+//! each frame a drag is in progress, which is what lets this read it without
+//! a device — the standing `tests/canvas_pane_group.rs` gives it. The six
+//! brush kinds, against a plot built for the question, are pinned by
+//! `no_brush_kind_paints_outside_the_data_area` in `chart_item`; this is the
+//! gesture end to end, on a shipped example.
 
 use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::live_spec;
@@ -19,8 +20,8 @@ use brightfield_spec::analysis::BrushKind;
 use std::path::PathBuf;
 
 /// `examples/crossfilter.yaml`: two dot plots over temperature, each with an
-/// `intervalX` brush and derived x and y titles — the temperature range at
-/// every power value this gesture exists to select.
+/// `intervalX` brush and derived x and y titles — a temperature range,
+/// whatever the power, which is what this gesture exists to select.
 fn crossfilter() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/crossfilter.yaml")
 }

@@ -200,8 +200,8 @@ pub enum ParseError {
         /// `name:` when it declares one.
         plot: String,
         /// The dimension or the margins at fault — boxed, since it carries
-        /// both margins with their origins and would otherwise make every
-        /// `ParseError` the size of this one variant.
+        /// both margins with their origins and would otherwise set the size of
+        /// `ParseError` itself, which clippy's `result_large_err` refuses.
         fault: Box<FrameFault>,
         /// Location in the source if available.
         span: Option<SourceSpan>,
