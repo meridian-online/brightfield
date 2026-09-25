@@ -135,6 +135,7 @@ fn column_as_f64(batch: &RecordBatch, col_name: &str) -> Option<Vec<Option<f64>>
     match col.data_type() {
         DataType::Float64 => cast_numeric!(Float64Array),
         DataType::Float32 => cast_numeric!(Float32Array),
+        DataType::Decimal128(..) => crate::scale::decimal_column_as_f64(col),
         DataType::Int64 => cast_numeric!(Int64Array),
         DataType::Int32 => cast_numeric!(Int32Array),
         DataType::Int16 => cast_numeric!(Int16Array),

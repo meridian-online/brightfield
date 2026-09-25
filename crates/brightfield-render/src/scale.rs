@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use arrow::array::{Array, Float64Array, StringArray, TimestampMicrosecondArray};
+use arrow::array::{Array, Decimal128Array, Float64Array, StringArray, TimestampMicrosecondArray};
 use arrow::datatypes::{DataType, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use brightfield_spec::layout::{FixedDomains, ScaleType};
@@ -1732,6 +1732,7 @@ pub fn positional_axis_class(
                 // category and a timestamp is not.
                 DataType::Utf8 | DataType::Date32 => saw_band = true,
                 DataType::Float64
+                | DataType::Decimal128(..)
                 | DataType::Int64
                 | DataType::Int32
                 | DataType::Int16
@@ -1747,6 +1748,51 @@ pub fn positional_axis_class(
     } else {
         None
     }
+}
+
+/// `10^n` for every scale a `DECIMAL` can carry, each written as a literal so
+/// it is the correctly rounded double rather than a product of roundings.
+const POW10: [f64; 39] = [
+    1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16,
+    1e17, 1e18, 1e19, 1e20, 1e21, 1e22, 1e23, 1e24, 1e25, 1e26, 1e27, 1e28, 1e29, 1e30, 1e31, 1e32,
+    1e33, 1e34, 1e35, 1e36, 1e37, 1e38,
+];
+
+/// One `DECIMAL` cell — its unscaled integer and its scale — as the `DOUBLE`
+/// DuckDB casts it to.
+///
+/// DuckDB's own cast, which is what the engine's facts query measures a
+/// column through: an unscaled value a double holds exactly is divided by
+/// `10^scale` once; a wider one converts its integer and fractional parts
+/// apart, so the quotient is not rounded twice.
+pub(crate) fn decimal128_as_f64(unscaled: i128, scale: i8) -> f64 {
+    let pow = POW10[usize::from(scale.unsigned_abs()).min(POW10.len() - 1)];
+    if scale <= 0 {
+        return unscaled as f64 * pow;
+    }
+    const EXACT: i128 = 1 << 53;
+    if (-EXACT..=EXACT).contains(&unscaled) {
+        return unscaled as f64 / pow;
+    }
+    let whole = 10i128.pow(u32::from(scale.unsigned_abs()).min(38));
+    (unscaled / whole) as f64 + (unscaled % whole) as f64 / pow
+}
+
+/// A `Decimal128` column's values as `f64`, null for null — the arm every f64
+/// reader in this crate shares.
+///
+/// DuckDB hands a `DECIMAL(p, s)` column over as Arrow `Decimal128`, and a SQL
+/// step makes one whenever it multiplies by a literal (`x * 10.0`). A reader
+/// without this arm skips the column, and the plot draws nothing for a column
+/// the engine has already measured.
+pub(crate) fn decimal_column_as_f64(col: &dyn Array) -> Option<Vec<Option<f64>>> {
+    let arr = col.as_any().downcast_ref::<Decimal128Array>()?;
+    let scale = arr.scale();
+    Some(
+        (0..arr.len())
+            .map(|i| (!arr.is_null(i)).then(|| decimal128_as_f64(arr.value(i), scale)))
+            .collect(),
+    )
 }
 
 fn infer_column_scale(
@@ -1771,6 +1817,26 @@ fn infer_column_scale(
                     }
                 }
             }
+            if min.is_infinite() {
+                return None;
+            }
+            Some(Scale::Linear {
+                domain_min: min,
+                domain_max: max,
+                range_start,
+                range_end,
+            })
+        }
+        // Read as the `DOUBLE` it casts to, so the domain is the one the
+        // engine's facts query measured the column at.
+        DataType::Decimal128(..) => {
+            let vals = decimal_column_as_f64(col)?;
+            let (min, max) = vals
+                .iter()
+                .flatten()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
+                    (lo.min(v), hi.max(v))
+                });
             if min.is_infinite() {
                 return None;
             }
