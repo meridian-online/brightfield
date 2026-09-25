@@ -199,8 +199,10 @@ pub enum ParseError {
         /// The plot's component path (`root/hconcat[1]`), followed by its
         /// `name:` when it declares one.
         plot: String,
-        /// The dimension or the margins at fault.
-        fault: FrameFault,
+        /// The dimension or the margins at fault — boxed, since it carries
+        /// both margins with their origins and would otherwise make every
+        /// `ParseError` the size of this one variant.
+        fault: Box<FrameFault>,
         /// Location in the source if available.
         span: Option<SourceSpan>,
     },
@@ -364,10 +366,10 @@ mod tests {
             },
             ParseError::PlotFrame {
                 plot: "root".into(),
-                fault: FrameFault::Dimension {
+                fault: Box::new(FrameFault::Dimension {
                     key: "width",
                     value: 0.0,
-                },
+                }),
                 span: None,
             },
         ];

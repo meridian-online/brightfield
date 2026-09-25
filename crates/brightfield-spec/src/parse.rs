@@ -848,7 +848,7 @@ fn refuse_unframed_plots(spec: &Spec) -> Result<(), ParseError> {
         if let Some(fault) = crate::layout::plot_frame_fault(plot) {
             return Err(ParseError::PlotFrame {
                 plot: crate::layout::plot_label(&path, plot),
-                fault,
+                fault: Box::new(fault),
                 span: None,
             });
         }
