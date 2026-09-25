@@ -1750,8 +1750,9 @@ pub fn positional_axis_class(
     }
 }
 
-/// `10^n` for every scale a `DECIMAL` can carry, each written as a literal so
-/// it is the correctly rounded double rather than a product of roundings.
+/// `10^n` for the scales 0 to 38 a `DECIMAL` can carry, each written as a
+/// literal so it is the correctly rounded double rather than a product of
+/// roundings.
 const POW10: [f64; 39] = [
     1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15, 1e16,
     1e17, 1e18, 1e19, 1e20, 1e21, 1e22, 1e23, 1e24, 1e25, 1e26, 1e27, 1e28, 1e29, 1e30, 1e31, 1e32,
@@ -1778,8 +1779,8 @@ pub(crate) fn decimal128_as_f64(unscaled: i128, scale: i8) -> f64 {
     (unscaled / whole) as f64 + (unscaled % whole) as f64 / pow
 }
 
-/// A `Decimal128` column's values as `f64`, null for null — the arm every f64
-/// reader in this crate shares.
+/// A `Decimal128` column's values as `f64`, null for null — the arm
+/// `infer_column_scale` and both `column_as_f64` readers share.
 ///
 /// DuckDB hands a `DECIMAL(p, s)` column over as Arrow `Decimal128`, and a SQL
 /// step makes one whenever it multiplies by a literal (`x * 10.0`). A reader
@@ -3477,8 +3478,8 @@ mod tests {
 
     /// **A `DECIMAL` axis is continuous, as its `DOUBLE` twin's is.** A
     /// classifier that does not count it returns `None`, the axis takes no
-    /// default inset, and every mark on it lands a few pixels away from where
-    /// the same column cast to `DOUBLE` puts it.
+    /// default inset, and the marks on it land a few pixels away from where the
+    /// same column cast to `DOUBLE` puts them.
     #[test]
     fn a_decimal_axis_is_continuous_like_its_double_twin() {
         let batch = decimal_twin_batch();

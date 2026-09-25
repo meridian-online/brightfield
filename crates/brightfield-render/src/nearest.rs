@@ -598,9 +598,9 @@ mod tests {
     }
 
     /// **Hover finds the same row, at the same pixel, on a `DECIMAL` column
-    /// as on its `DOUBLE` twin.** The scales come from the twin, so this reads
-    /// this module's `Decimal128` arm and nothing else; without it the hover
-    /// finds no point on a plot that draws them.
+    /// as on its `DOUBLE` twin.** The scales come from the twin, so the arm this
+    /// reads is this module's `Decimal128` arm; without it the hover finds no
+    /// point on a plot that draws them.
     #[test]
     fn hover_finds_the_same_point_on_a_decimal_column_as_on_its_double_twin() {
         let batch = crate::scale::decimal_twin_batch();
