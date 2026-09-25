@@ -544,10 +544,10 @@ pub const TITLE_BAND: f64 = 20.0;
 /// that axis to a column, a transform, an aggregate or a `$param`. The render
 /// crate's channel map titles an axis bound to a column, a bin, an aggregate
 /// or a `$param`, and all four are counted here. It binds nothing to title for
-/// an expression, an object or a sort, or for an aggregate that names no
-/// column, and those are counted too: there the parse reserves a band the
-/// layout then does not draw, which refuses a plot within one band of fitting
-/// rather than drawing it inverted.
+/// an expression, an object or a sort, or for a sum, mean, minimum or maximum
+/// that names no column, and those are counted too: there the parse reserves
+/// a band the layout then does not draw, which refuses a plot within one band
+/// of fitting rather than drawing it inverted.
 ///
 /// Judged on the size the spec declares. The window can still hand a plot a
 /// smaller allocation than that, and the sampling notice's band is grown at
