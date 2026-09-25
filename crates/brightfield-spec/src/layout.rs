@@ -550,8 +550,20 @@ pub const TITLE_BAND: f64 = 20.0;
 /// smaller allocation than that, and the sampling notice's band is grown at
 /// composition, when it is known whether the plot was sampled; neither is
 /// visible from the spec.
+///
+/// **A plot holding no mark is not judged.** It draws no data area — the
+/// composition places no chart for it — and Mosaic sizes a plot that only
+/// hosts a legend to a zero-size frame on purpose: the curated `legends.yaml`
+/// writes `width: 0` for exactly that.
 #[must_use]
 pub fn plot_frame_fault(plot: &PlotNode) -> Option<FrameFault> {
+    if !plot
+        .items
+        .iter()
+        .any(|item| matches!(item, Component::Mark(_)))
+    {
+        return None;
+    }
     let width = plot_width(plot);
     let height = plot_height(plot);
     for (key, value) in [("width", width), ("height", height)] {
