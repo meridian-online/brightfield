@@ -1889,9 +1889,13 @@ fn crosshair_segments(
     ])
 }
 
-/// The brush rectangle a drag paints, clamped to its plot and axis-locked to
-/// the binding's brush kind (an x-interval sweeps full plot height, a
-/// y-interval full width).
+/// The brush rectangle a drag paints, clamped to its plot's data area and
+/// axis-locked to the binding's brush kind (an x-interval sweeps the data
+/// area's full height, a y-interval its full width).
+///
+/// The data area, not the allocation: the margins around it hold the tick
+/// labels and the axis titles, and a rectangle spanning the allocation paints
+/// over them. See [`PlotHandle::data_area`].
 ///
 /// The two corners are [`Drag::corners`] — the press and the pointer for an
 /// ordinary sweep, the committed rectangle displaced by the pointer's travel
@@ -1904,8 +1908,9 @@ fn drag_rect(plot: &PlotHandle, drag: Drag) -> brightfield_render::canvas_host::
     let (a, b) = drag.corners();
     let (x0, x1) = min_max(a.x, b.x);
     let (y0, y1) = min_max(a.y, b.y);
-    let (px0, px1) = (plot.rect.x, plot.rect.x + plot.rect.width);
-    let (py0, py1) = (plot.rect.y, plot.rect.y + plot.rect.height);
+    let area = plot.data_area();
+    let (px0, px1) = (area.x, area.x + area.width);
+    let (py0, py1) = (area.y, area.y + area.height);
     let (x0, x1, y0, y1) = match kind {
         Some(BrushKind::IntervalX | BrushKind::PointX) => (x0.max(px0), x1.min(px1), py0, py1),
         Some(BrushKind::IntervalY | BrushKind::PointY) => (px0, px1, y0.max(py0), y1.min(py1)),
