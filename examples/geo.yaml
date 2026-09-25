@@ -5,18 +5,17 @@ meta:
     projected client-side (equirectangular, the default) and coloured by a
     numeric `rate` through the sequential ramp — a choropleth. No spatial
     extension or network is needed: the `geom` column is inline VARCHAR GeoJSON
-    text that passes through the GeoLowerer UNWRAPPED (no ST_AsGeoJSON), which is
-    what lets this example's PNG baseline hermetically. Geo suppresses the plot
+    text that passes through the GeoLowerer UNWRAPPED (no ST_AsGeoJSON). Geo suppresses the plot
     frame, so the map draws no axes or gridlines; the per-plot title survives.
-    (`rate` is integer-valued so DuckDB types the inline column INT, which the
-    renderer's numeric-fill reader understands — inline decimal literals type as
-    DECIMAL, which it does not read, and would fall back to the flat default.)
+    (`rate` is written as decimal literals, so DuckDB types the inline column
+    DECIMAL — the type a SQL step multiplying by a literal makes too — and the
+    ramp reads it as the DOUBLE it casts to.)
 data:
   regions:
-    - { name: south-west, rate: 2,  geom: '{"type":"Polygon","coordinates":[[[0,0],[12,0],[12,14],[0,14],[0,0]]]}' }
-    - { name: north-west, rate: 8,  geom: '{"type":"Polygon","coordinates":[[[0,14],[12,14],[12,30],[0,30],[0,14]]]}' }
-    - { name: central,    rate: 5,  geom: '{"type":"Polygon","coordinates":[[[12,0],[26,3],[24,27],[12,30],[12,0]]]}' }
-    - { name: east,       rate: 10, geom: '{"type":"MultiPolygon","coordinates":[[[[26,3],[40,0],[40,30],[24,27],[26,3]]]]}' }
+    - { name: south-west, rate: 2.5, geom: '{"type":"Polygon","coordinates":[[[0,0],[12,0],[12,14],[0,14],[0,0]]]}' }
+    - { name: north-west, rate: 7.75, geom: '{"type":"Polygon","coordinates":[[[0,14],[12,14],[12,30],[0,30],[0,14]]]}' }
+    - { name: central,    rate: 5.25, geom: '{"type":"Polygon","coordinates":[[[12,0],[26,3],[24,27],[12,30],[12,0]]]}' }
+    - { name: east,       rate: 9.5, geom: '{"type":"MultiPolygon","coordinates":[[[[26,3],[40,0],[40,30],[24,27],[26,3]]]]}' }
 plot:
   - mark: geo
     data: { from: regions }

@@ -3,7 +3,9 @@
 //! This module provides data extraction only — the shell-side tooltip
 //! widget that renders this content is deferred to a follow-up card.
 
-use arrow::array::{Array, Float64Array, Int64Array, StringArray, TimestampMicrosecondArray};
+use arrow::array::{
+    Array, Decimal128Array, Float64Array, Int64Array, StringArray, TimestampMicrosecondArray,
+};
 use arrow::datatypes::{DataType, TimeUnit};
 use arrow::record_batch::RecordBatch;
 
@@ -45,6 +47,15 @@ fn format_cell(col: &dyn Array, row: usize) -> String {
         DataType::Float64 => {
             let arr = col.as_any().downcast_ref::<Float64Array>().unwrap();
             format!("{:.2}", arr.value(row))
+        }
+        // Printed as the `DOUBLE` it casts to, so a `DECIMAL` column reads the
+        // same as that column cast.
+        DataType::Decimal128(..) => {
+            let arr = col.as_any().downcast_ref::<Decimal128Array>().unwrap();
+            format!(
+                "{:.2}",
+                crate::scale::decimal128_as_f64(arr.value(row), arr.scale())
+            )
         }
         DataType::Int64 => {
             let arr = col.as_any().downcast_ref::<Int64Array>().unwrap();
@@ -126,5 +137,18 @@ mod tests {
         let content = TooltipContent::from_row(&batch, 0).unwrap();
         assert_eq!(content.fields[0].0, "timestamp");
         assert_eq!(content.fields[1].0, "price");
+    }
+
+    /// **A `DECIMAL` cell prints as its `DOUBLE` twin does**, not as a
+    /// `<Decimal128(18, 2)>` placeholder.
+    #[test]
+    fn a_decimal_cell_prints_as_its_double_twin_does() {
+        let batch = crate::scale::decimal_twin_batch();
+        let content = TooltipContent::from_row(&batch, 0).unwrap();
+        assert_eq!(content.fields[1], ("f".to_string(), "12.34".to_string()));
+        for row in 0..batch.num_rows() {
+            let content = TooltipContent::from_row(&batch, row).unwrap();
+            assert_eq!(content.fields[0].1, content.fields[1].1, "row {row}");
+        }
     }
 }

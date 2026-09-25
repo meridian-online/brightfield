@@ -5962,9 +5962,9 @@ plot:
     }
 
     /// Review regression (#1): a FRACTIONAL param on a positional
-    /// channel must produce a DOUBLE column, not DECIMAL — the renderer's
-    /// column_as_f64 reads Float/Int but not Decimal, so a bare `3.5 AS "k"`
-    /// would silently render nothing. The projection CASTs to DOUBLE.
+    /// channel must produce a DOUBLE column, not DECIMAL — a bare `3.5 AS "k"`
+    /// types DECIMAL in DuckDB, and the param is a float. The projection CASTs
+    /// to DOUBLE.
     #[test]
     fn pefr_float_param_channel_is_double_typed() {
         use duckdb::arrow::datatypes::DataType;
@@ -5983,6 +5983,40 @@ plot:
             "fractional param channel must be DOUBLE-typed, got {:?}",
             col.data_type()
         );
+    }
+
+    /// **A `DECIMAL` column reaches the renderer as Arrow `Decimal128`** — a
+    /// SQL step that multiplies by a literal, and `examples/geo.yaml`'s fill,
+    /// an inline column of decimal literals.
+    ///
+    /// brightfield-render's f64 readers each carry a `Decimal128` arm, pinned
+    /// there against the column's `DOUBLE` twin. This is the other half: a cast
+    /// to `DOUBLE` added on the engine side would leave those arms unreached,
+    /// and every picture test built on a `DECIMAL` column green over readers
+    /// that no longer read one. It fails here first.
+    #[test]
+    fn a_decimal_column_reaches_the_renderer_as_decimal128() {
+        use duckdb::arrow::datatypes::DataType;
+        let step = "data:\n  steps:\n    query: |\n      SELECT i * 10.0 AS y FROM range(4) AS t(i)\nplot:\n  - mark: dot\n    data: { from: steps }\n    x: y\n    y: y\n";
+        let geo = include_str!("../../../examples/geo.yaml");
+        for (name, yaml, col) in [
+            ("a SQL step", step, "y"),
+            ("examples/geo.yaml", geo, "rate"),
+        ] {
+            let (spec, analysis) = parse_and_analyse(yaml);
+            let engine = Engine::new();
+            let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+            let results = session.execute_all();
+            let batches = results[0].as_ref().expect("the mark executes");
+            let ty = batches[0]
+                .column_by_name(col)
+                .expect("the column is projected")
+                .data_type();
+            assert!(
+                matches!(ty, DataType::Decimal128(..)),
+                "{name}'s `{col}` must reach the renderer as Decimal128, got {ty:?}"
+            );
+        }
     }
 
     /// Review regression (#3): navigation (pan/zoom via update_extent)
