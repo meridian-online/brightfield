@@ -455,10 +455,10 @@ fn positional_domain(
 /// the domain alone: `narrow` spans `[0, 100.8]` on x and `[0, 101.2]` on y,
 /// `wide` spans `[0, 10080]` and `[0, 10120]`, and their union is `wide`'s.
 ///
-/// `CAST(... AS DOUBLE)` before the arithmetic, deliberately: a DuckDB decimal
-/// literal makes the product a DECIMAL, and a decimal column contributes no
-/// drawn domain at all — which would empty this fixture of the very thing it
-/// measures rather than failing it.
+/// `CAST(... AS DOUBLE)` before the arithmetic keeps both datasets `DOUBLE`,
+/// so the fixture measures whose extent a plot keeps and nothing about how a
+/// column's type is read: without it the decimal literal makes `wide`'s
+/// product a `DECIMAL`, which `tests/decimal_column.rs` covers.
 const TWO_MARK_POSITIONAL_DATA: &str = "data:
   narrow:
     query: |

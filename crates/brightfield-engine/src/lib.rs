@@ -5986,8 +5986,8 @@ plot:
     }
 
     /// **A `DECIMAL` column reaches the renderer as Arrow `Decimal128`** — a
-    /// SQL step that multiplies by a literal, and an inline column of decimal
-    /// literals, which is what `examples/geo.yaml`'s fill is.
+    /// SQL step that multiplies by a literal, and `examples/geo.yaml`'s fill,
+    /// an inline column of decimal literals.
     ///
     /// brightfield-render's f64 readers each carry a `Decimal128` arm, pinned
     /// there against the column's `DOUBLE` twin. This is the other half: a cast
@@ -5997,20 +5997,24 @@ plot:
     #[test]
     fn a_decimal_column_reaches_the_renderer_as_decimal128() {
         use duckdb::arrow::datatypes::DataType;
-        let yaml = "data:\n  steps:\n    query: |\n      SELECT i * 10.0 AS y FROM range(4) AS t(i)\n  inline:\n    - { rate: 2.5 }\n    - { rate: 10.25 }\nplot:\n  - mark: dot\n    data: { from: steps }\n    x: y\n    y: y\n  - mark: dot\n    data: { from: inline }\n    x: rate\n    y: rate\n";
-        let (spec, analysis) = parse_and_analyse(yaml);
-        let engine = Engine::new();
-        let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
-        let results = session.execute_all();
-        for (mark, col) in [(0, "y"), (1, "rate")] {
-            let batches = results[mark].as_ref().expect("the mark executes");
+        let step = "data:\n  steps:\n    query: |\n      SELECT i * 10.0 AS y FROM range(4) AS t(i)\nplot:\n  - mark: dot\n    data: { from: steps }\n    x: y\n    y: y\n";
+        let geo = include_str!("../../../examples/geo.yaml");
+        for (name, yaml, col) in [
+            ("a SQL step", step, "y"),
+            ("examples/geo.yaml", geo, "rate"),
+        ] {
+            let (spec, analysis) = parse_and_analyse(yaml);
+            let engine = Engine::new();
+            let mut session = engine.load_spec(spec, analysis, None).unwrap().session;
+            let results = session.execute_all();
+            let batches = results[0].as_ref().expect("the mark executes");
             let ty = batches[0]
                 .column_by_name(col)
-                .expect("the positional column is projected")
+                .expect("the column is projected")
                 .data_type();
             assert!(
                 matches!(ty, DataType::Decimal128(..)),
-                "mark {mark}'s `{col}` must reach the renderer as Decimal128, got {ty:?}"
+                "{name}'s `{col}` must reach the renderer as Decimal128, got {ty:?}"
             );
         }
     }
