@@ -50,7 +50,7 @@ use brightfield_spec::analysis::{
 use brightfield_spec::ast::{Component, MarkData, ParamNode, PlotNode, SpaceNode, SpecValue};
 use brightfield_spec::layout::{
     collect_plot_nodes, placed_plots, resolve_fixed_domains, resolve_plot_insets,
-    resolve_plot_stack_offset, Rect, StackOffset,
+    resolve_plot_margins, resolve_plot_stack_offset, Rect, StackOffset,
 };
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, Spec};
@@ -2222,12 +2222,21 @@ fn compose_from_results(
         let insets = resolve_insets_for_marks(explicit_insets, &inset_entries, DEFAULT_SCALE_INSET);
         drop(inset_entries);
 
+        // The margins the spec declared, laid over the defaults: what the
+        // author wrote is the floor and what the plot's own furniture needs
+        // grows it, never the other way round.
+        let declared_margins = plot_nodes
+            .iter()
+            .find(|(p, _)| *p == plot.path)
+            .map(|(_, node)| resolve_plot_margins(node))
+            .unwrap_or_default();
+
         // Two bands, reserved the same way: one for the axis titles, one for
         // the sampling notice. Growing the margin is what makes the device
         // removable later without disturbing anything else's geometry.
         let plot_sample = chart_data.iter().find_map(|d| d.sample);
         let margins = sample_band_margins(
-            grow_margins(Margins::default(), &titles),
+            grow_margins(Margins::default().with_declared(declared_margins), &titles),
             plot_sample.is_some(),
         );
         let layout = ChartLayout::with_margins_and_insets(
