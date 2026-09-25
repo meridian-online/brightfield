@@ -1795,6 +1795,34 @@ pub(crate) fn decimal_column_as_f64(col: &dyn Array) -> Option<Vec<Option<f64>>>
     )
 }
 
+/// A `DECIMAL(18, 2)` column `d` beside its `DOUBLE` twin `f`, row for row:
+/// a fraction, a negative, a null, a three-digit whole and a half. Each f64
+/// reader's `Decimal128` arm is pinned by reading `d` and `f` and requiring
+/// the same answer from both.
+#[cfg(test)]
+pub(crate) fn decimal_twin_batch() -> RecordBatch {
+    use arrow::datatypes::{Field, Schema};
+    use std::sync::Arc;
+    let unscaled = [Some(1234_i128), Some(-50), None, Some(99_999), Some(250)];
+    let double = [Some(12.34), Some(-0.5), None, Some(999.99), Some(2.5)];
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("d", DataType::Decimal128(18, 2), true),
+        Field::new("f", DataType::Float64, true),
+    ]));
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(
+                Decimal128Array::from(unscaled.to_vec())
+                    .with_precision_and_scale(18, 2)
+                    .unwrap(),
+            ),
+            Arc::new(Float64Array::from(double.to_vec())),
+        ],
+    )
+    .unwrap()
+}
+
 fn infer_column_scale(
     col: &dyn Array,
     range_start: f64,
@@ -3421,6 +3449,66 @@ mod tests {
                 "appending the second list to the first would leave `mike` after `zulu`"
             ),
             other => panic!("expected a colour scale, got {other:?}"),
+        }
+    }
+
+    /// **A `DECIMAL` column infers the scale its `DOUBLE` twin does.** Without
+    /// the `Decimal128` arm `infer_column_scale` returns no scale for it, and
+    /// the plot draws an empty axis over a column the engine has measured.
+    #[test]
+    fn a_decimal_column_infers_the_scale_its_double_twin_does() {
+        let batch = decimal_twin_batch();
+        let x_scale = |col: &str| {
+            let mut cm = ChannelMap::new();
+            cm.insert(Channel::X, col.to_string());
+            match infer_scales(&batch, &cm, (40.0, 600.0), (400.0, 20.0)).get(Channel::X) {
+                Some(Scale::Linear {
+                    domain_min,
+                    domain_max,
+                    range_start,
+                    range_end,
+                }) => (*domain_min, *domain_max, *range_start, *range_end),
+                other => panic!("{col}: expected a linear x scale, got {other:?}"),
+            }
+        };
+        assert_eq!(x_scale("f"), (-0.5, 999.99, 40.0, 600.0), "fixture check");
+        assert_eq!(x_scale("d"), x_scale("f"));
+    }
+
+    /// **A `DECIMAL` axis is continuous, as its `DOUBLE` twin's is.** A
+    /// classifier that does not count it returns `None`, the axis takes no
+    /// default inset, and every mark on it lands a few pixels away from where
+    /// the same column cast to `DOUBLE` puts it.
+    #[test]
+    fn a_decimal_axis_is_continuous_like_its_double_twin() {
+        let batch = decimal_twin_batch();
+        for col in ["d", "f"] {
+            let mut cm = ChannelMap::new();
+            cm.insert(Channel::X, col.to_string());
+            assert_eq!(
+                positional_axis_class(&[(&batch, &cm)], Channel::X),
+                Some(AxisClass::Continuous),
+                "{col}"
+            );
+        }
+    }
+
+    /// **A `DECIMAL` wider than a double holds exactly converts its whole and
+    /// its fraction apart, as DuckDB's cast does.** `692721592851106.19` is
+    /// `69272159285110619` at scale 2, past `2^53`: one division rounds the
+    /// unscaled integer first and lands on `…106.1`, a neighbour of the
+    /// correctly rounded `…106.2` the cast returns.
+    #[test]
+    fn a_wide_decimal_converts_its_whole_and_its_fraction_apart() {
+        for (unscaled, text) in [
+            (69_272_159_285_110_619_i128, "692721592851106.19"),
+            (-69_272_159_285_110_619_i128, "-692721592851106.19"),
+        ] {
+            assert_eq!(
+                decimal128_as_f64(unscaled, 2),
+                text.parse::<f64>().unwrap(),
+                "{text}"
+            );
         }
     }
 }

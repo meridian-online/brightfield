@@ -9462,4 +9462,39 @@ mod tests {
             "no fill channel → the (Harbour slot 1) default mark colour, not NULL ink"
         );
     }
+
+    /// **A `DECIMAL` column reads as the values of its `DOUBLE` twin**, so a
+    /// dot or line mark places each row where the cast column would. Without
+    /// the arm every row's position resolves to nothing and the axis draws
+    /// with no marks under it.
+    #[test]
+    fn a_decimal_column_reads_as_the_values_of_its_double_twin() {
+        let batch = crate::scale::decimal_twin_batch();
+        let twin = column_as_f64(&batch, "f");
+        assert!(twin.is_some(), "fixture check: the DOUBLE twin reads");
+        assert_eq!(column_as_f64(&batch, "d"), twin);
+    }
+
+    /// **A geo mark filled by a `DECIMAL` column builds the ramp its `DOUBLE`
+    /// twin does**, rather than falling back to the flat default fill.
+    #[test]
+    fn a_decimal_geo_fill_builds_the_ramp_its_double_twin_does() {
+        let batch = crate::scale::decimal_twin_batch();
+        let ramp = |col: &str| {
+            let mut cm = ChannelMap::new();
+            cm.insert(Channel::Fill, col.to_string());
+            let mut scales = ScaleSet::new();
+            build_geo_fill_ramp(&mut scales, &batch, &cm, SequentialScheme::Viridis);
+            match scales.get(Channel::Fill) {
+                Some(Scale::Sequential {
+                    domain_min,
+                    domain_max,
+                    ..
+                }) => (*domain_min, *domain_max),
+                other => panic!("{col}: expected a sequential fill ramp, got {other:?}"),
+            }
+        };
+        assert_eq!(ramp("f"), (-0.5, 999.99), "fixture check");
+        assert_eq!(ramp("d"), ramp("f"));
+    }
 }

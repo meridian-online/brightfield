@@ -596,4 +596,32 @@ mod tests {
         };
         assert_eq!(band_category_at(&linear, 0.5), None);
     }
+
+    /// **Hover finds the same row, at the same pixel, on a `DECIMAL` column
+    /// as on its `DOUBLE` twin.** The scales come from the twin, so this reads
+    /// this module's `Decimal128` arm and nothing else; without it the hover
+    /// finds no point on a plot that draws them.
+    #[test]
+    fn hover_finds_the_same_point_on_a_decimal_column_as_on_its_double_twin() {
+        let batch = crate::scale::decimal_twin_batch();
+        let map = |col: &str| {
+            let mut cm = ChannelMap::new();
+            cm.insert(Channel::X, col.to_string());
+            cm.insert(Channel::Y, col.to_string());
+            cm
+        };
+        let scales = infer_scales(&batch, &map("f"), (40.0, 600.0), (450.0, 20.0));
+        for cursor in [
+            Point::new(40.0, 450.0),
+            Point::new(60.0, 430.0),
+            Point::new(600.0, 20.0),
+        ] {
+            let hit = |col: &str| {
+                find_nearest(cursor, &batch, &map(col), &scales, NearestMode::XY, None)
+                    .map(|h| (h.row, h.point))
+            };
+            assert!(hit("f").is_some(), "fixture check at {cursor:?}");
+            assert_eq!(hit("d"), hit("f"), "at {cursor:?}");
+        }
+    }
 }
