@@ -456,6 +456,56 @@ pub fn resolve_plot_insets(plot: &PlotNode) -> SideInsets {
     }
 }
 
+/// A plot's four per-side margins as its spec declared them.
+///
+/// `None` = the spec left that side alone, so the caller lays its own default
+/// there; `Some(v)` = a value the author wrote, including an explicit
+/// `Some(0.0)`, the Mosaic-exact way to ask for no margin at all.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SideMargins {
+    /// Left margin in pixels.
+    pub left: Option<f64>,
+    /// Right margin in pixels.
+    pub right: Option<f64>,
+    /// Top margin in pixels.
+    pub top: Option<f64>,
+    /// Bottom margin in pixels.
+    pub bottom: Option<f64>,
+}
+
+/// Resolve a plot's four per-side margins from its own attributes with
+/// Observable Plot most-specific-wins precedence, per side:
+/// `left = marginLeft ?? margin` (and symmetrically `right`, `top`, `bottom`).
+///
+/// Literal numbers are read, as [`resolve_plot_insets`] reads them: a `$param`
+/// reference or a non-numeric value is absent for that key and falls through
+/// to the next-most-specific one. A negative number reads as `0.0`, since no
+/// side has less than no margin; a number that is not finite is absent, since
+/// no layout can be drawn from it. A pure reading of the plot node: the plot's
+/// titles grow what this returns downstream, and `plotDefaults` is not consulted
+/// (it is applied to no plot).
+#[must_use]
+pub fn resolve_plot_margins(plot: &PlotNode) -> SideMargins {
+    let num = |key: &str| -> Option<f64> {
+        plot.attributes
+            .get(key)
+            .and_then(|v| match v {
+                SpecValue::Integer(n) => Some(*n as f64),
+                SpecValue::Float(f) => Some(*f),
+                _ => None,
+            })
+            .filter(|v| v.is_finite())
+            .map(|v| v.max(0.0))
+    };
+    let global = num("margin");
+    SideMargins {
+        left: num("marginLeft").or(global),
+        right: num("marginRight").or(global),
+        top: num("marginTop").or(global),
+        bottom: num("marginBottom").or(global),
+    }
+}
+
 /// One axis title's resolved decision, from a plot's `xLabel` / `yLabel`
 /// attribute. Pure: the DERIVE case is turned into a concrete field name at the
 /// render site (which holds the channel map). This resolver only decides which
@@ -2359,6 +2409,81 @@ hconcat:
         ]);
         // xInsetLeft is non-numeric → falls through to xInset(6).
         assert_eq!(resolve_plot_insets(&p).left, Some(6.0));
+    }
+
+    // --- plot margin attribute resolution (most-specific-wins) ---
+
+    #[test]
+    fn each_margin_key_reaches_its_own_side_and_only_that_side() {
+        // Four distinct values, so a swapped pair of sides cannot pass.
+        let p = plot_with(&[
+            ("marginTop", SpecValue::Integer(1)),
+            ("marginRight", SpecValue::Integer(2)),
+            ("marginBottom", SpecValue::Integer(3)),
+            ("marginLeft", SpecValue::Float(4.5)),
+        ]);
+        assert_eq!(
+            resolve_plot_margins(&p),
+            SideMargins {
+                top: Some(1.0),
+                right: Some(2.0),
+                bottom: Some(3.0),
+                left: Some(4.5),
+            }
+        );
+        // One declared side leaves the other three absent, so the caller's
+        // default still applies to them.
+        let only_left = resolve_plot_margins(&plot_with(&[("marginLeft", SpecValue::Integer(0))]));
+        assert_eq!(
+            only_left.left,
+            Some(0.0),
+            "an explicit 0 is a value, not absent"
+        );
+        assert_eq!(
+            (only_left.top, only_left.right, only_left.bottom),
+            (None, None, None)
+        );
+    }
+
+    #[test]
+    fn the_margin_shorthand_sets_every_side_and_a_side_key_overrides_it() {
+        let p = plot_with(&[
+            ("margin", SpecValue::Integer(7)),
+            ("marginBottom", SpecValue::Integer(9)),
+        ]);
+        assert_eq!(
+            resolve_plot_margins(&p),
+            SideMargins {
+                top: Some(7.0),
+                right: Some(7.0),
+                bottom: Some(9.0),
+                left: Some(7.0),
+            }
+        );
+    }
+
+    #[test]
+    fn a_margin_that_is_not_a_usable_number_is_not_a_declared_margin() {
+        // No margin attributes at all → nothing declared.
+        assert_eq!(
+            resolve_plot_margins(&plot_with(&[])),
+            SideMargins::default()
+        );
+        // A non-numeric side key falls through to the shorthand, as insets do.
+        let p = plot_with(&[
+            ("margin", SpecValue::Integer(6)),
+            ("marginLeft", SpecValue::String("wide".into())),
+        ]);
+        assert_eq!(resolve_plot_margins(&p).left, Some(6.0));
+        // A negative number reads as no margin; a non-finite one is absent.
+        let p = plot_with(&[
+            ("marginLeft", SpecValue::Integer(-12)),
+            ("marginRight", SpecValue::Float(f64::INFINITY)),
+            ("marginTop", SpecValue::Float(f64::NAN)),
+        ]);
+        let got = resolve_plot_margins(&p);
+        assert_eq!(got.left, Some(0.0));
+        assert_eq!((got.right, got.top), (None, None));
     }
 
     #[test]

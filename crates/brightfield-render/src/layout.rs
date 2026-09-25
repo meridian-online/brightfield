@@ -2,6 +2,8 @@
 //!
 //! Uses a fixed margin model with Observable Plot defaults.
 
+use brightfield_spec::layout::SideMargins;
+
 /// Chart layout computed from element bounds and margin settings.
 #[derive(Debug, Clone, Copy)]
 pub struct ChartLayout {
@@ -54,6 +56,25 @@ impl Default for Margins {
             right: 20.0,
             bottom: 30.0,
             left: 40.0,
+        }
+    }
+}
+
+impl Margins {
+    /// These margins with every side the spec declared laid over them, and
+    /// every side it left alone kept as it is.
+    ///
+    /// The declared margin is a floor, not the final answer: the caller grows
+    /// the result by what the plot's titles and notices need
+    /// ([`grow_margins`](crate::title::grow_margins),
+    /// [`sample_band_margins`](crate::sample_notice::sample_band_margins)).
+    #[must_use]
+    pub fn with_declared(self, declared: SideMargins) -> Self {
+        Self {
+            top: declared.top.unwrap_or(self.top),
+            right: declared.right.unwrap_or(self.right),
+            bottom: declared.bottom.unwrap_or(self.bottom),
+            left: declared.left.unwrap_or(self.left),
         }
     }
 }
@@ -241,5 +262,32 @@ mod tests {
         assert!((y1 - 23.0).abs() < f64::EPSILON); // 20 + top 3
 
         assert_eq!(layout.insets(), insets);
+    }
+
+    #[test]
+    fn declared_sides_replace_the_base_and_undeclared_sides_keep_it() {
+        // A base no default equals, so a side that fell back to `Margins::default`
+        // instead of the base would show.
+        let base = Margins {
+            top: 11.0,
+            right: 12.0,
+            bottom: 13.0,
+            left: 14.0,
+        };
+        let m = base.with_declared(SideMargins {
+            left: Some(0.0),
+            bottom: Some(50.0),
+            ..SideMargins::default()
+        });
+        assert!(
+            (m.left - 0.0).abs() < f64::EPSILON,
+            "an explicit 0 lands as 0"
+        );
+        assert!((m.bottom - 50.0).abs() < f64::EPSILON);
+        assert!((m.top - 11.0).abs() < f64::EPSILON, "undeclared top kept");
+        assert!(
+            (m.right - 12.0).abs() < f64::EPSILON,
+            "undeclared right kept"
+        );
     }
 }
