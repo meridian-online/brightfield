@@ -2446,7 +2446,7 @@ hconcat:
     }
 
     #[test]
-    fn the_shorthand_sets_every_side_and_a_side_key_overrides_it() {
+    fn the_margin_shorthand_sets_every_side_and_a_side_key_overrides_it() {
         let p = plot_with(&[
             ("margin", SpecValue::Integer(7)),
             ("marginBottom", SpecValue::Integer(9)),
