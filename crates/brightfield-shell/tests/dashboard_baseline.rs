@@ -109,8 +109,9 @@ fn housing() -> PathBuf {
 
 /// **[`housing`] again, as a Parquet whose fractional columns are `DECIMAL`**:
 /// `median_income` at scale 4, `median_house_value` at scale 3, and the other
-/// five at scale 2, each cast from the CSV's own text, so every value is the
-/// one the CSV holds. `house_age` and `population` stay `BIGINT`.
+/// five at scale 2, each cast from the CSV's own text rather than from the
+/// doubles DuckDB parses that text to. `house_age` and `population` stay
+/// `BIGINT`.
 ///
 /// Built with DuckDB from the committed CSV:
 ///
