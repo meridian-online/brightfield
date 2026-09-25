@@ -541,10 +541,13 @@ pub const TITLE_BAND: f64 = 20.0;
 /// plot names it (`xLabel: Temperature`, `title:`), not when it suppresses it
 /// (`xLabel: null`), and — for a derived axis title, whose text the render
 /// crate reads off the lowered channel map — when some mark in the plot binds
-/// that axis to a column, a transform or an aggregate. That last reading can
-/// count a band the render crate then does not draw (a transform whose lowered
-/// column is a reserved one), which errs toward refusing a plot within one
-/// band of fitting rather than toward drawing it inverted.
+/// that axis to a column, a transform, an aggregate or a `$param`. The render
+/// crate's channel map titles an axis bound to a column, a bin, an aggregate
+/// or a `$param`, and all four are counted here. It binds nothing to title for
+/// an expression, an object or a sort, or for an aggregate that names no
+/// column, and those are counted too: there the parse reserves a band the
+/// layout then does not draw, which refuses a plot within one band of fitting
+/// rather than drawing it inverted.
 ///
 /// Judged on the size the spec declares. The window can still hand a plot a
 /// smaller allocation than that, and the sampling notice's band is grown at
@@ -632,9 +635,11 @@ fn draws_axis_title(plot: &PlotNode, decision: &AxisTitle, channel: &str) -> boo
             };
             match mark.options.get(channel) {
                 Some(ValueOrParamRef::Value(value)) => may_name_an_axis(value),
-                // A `$param` channel is skipped by the render crate's channel
-                // map until it resolves, so it binds nothing to title.
-                Some(ValueOrParamRef::Param(_)) | None => false,
+                // The lowerer projects a positional `$param` as a column named
+                // for the param, and the render crate binds the axis to that
+                // column and titles it with the param's name.
+                Some(ValueOrParamRef::Param(_)) => true,
+                None => false,
             }
         }),
     }

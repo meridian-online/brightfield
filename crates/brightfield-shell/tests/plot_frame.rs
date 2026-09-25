@@ -150,34 +150,53 @@ fn the_diagnostic_names_a_nested_plot_by_its_path_and_its_name() {
     }
 }
 
-/// **The parse counts every title band the layout draws.** For three mark
+/// **The parse counts every title band the layout draws.** For five mark
 /// shapes — a dot plot on two columns, a histogram binning one column and
-/// counting, and bars summing one column by a category — the plot is composed
-/// once at a size that fits, and the margins the composition actually laid it
-/// out with are read back. One pixel less than those margins, along either
-/// dimension, must be refused: a parse that counted fewer title bands than the
-/// layout grows would let that plot load onto an inverted data area.
+/// counting, bars summing one column by a category, and a dot plot with its x
+/// and then its y bound to a `$param` — the plot is composed once at a size
+/// that fits, and the margins the composition actually laid it out with are
+/// read back. One pixel less than those margins, along either dimension, must
+/// be refused: a parse that counted fewer title bands than the layout grows
+/// would let that plot load onto an inverted data area.
 ///
-/// The histogram is the shape this exists for: its x title comes from a bin
-/// transform, which the parse reads as `SpecValue::Bin`, not as a column name.
+/// Between them the shapes bind a positional axis in each form the render
+/// crate's channel map titles: a column, a bin, an aggregate and a `$param`.
+/// The parse reads the bin as `SpecValue::Bin` and the param as a
+/// `ValueOrParamRef::Param`, neither of them a column name, which is why each
+/// has a shape of its own.
 #[test]
 fn the_parse_counts_every_title_band_the_layout_draws() {
+    const PARAM: &str = "params:\n  p: 3\n";
     let shapes = [
         (
             "dots",
+            "",
             "mark: dot\n    data: { from: t }\n    x: a\n    y: b",
         ),
         (
             "histogram",
+            "",
             "mark: rectY\n    data: { from: t }\n    x: { bin: a }\n    y: { count: }",
         ),
         (
             "summed bars",
+            "",
             "mark: barY\n    data: { from: t }\n    x: c\n    y: { sum: b }",
         ),
+        (
+            "dots on a param x",
+            PARAM,
+            "mark: dot\n    data: { from: t }\n    x: $p\n    y: b",
+        ),
+        (
+            "dots on a param y",
+            PARAM,
+            "mark: dot\n    data: { from: t }\n    x: a\n    y: $p",
+        ),
     ];
-    for (shape, mark) in shapes {
-        let spec = |w: f64, h: f64| format!("{DATA}plot:\n  - {mark}\nwidth: {w}\nheight: {h}\n");
+    for (shape, params, mark) in shapes {
+        let spec =
+            |w: f64, h: f64| format!("{params}{DATA}plot:\n  - {mark}\nwidth: {w}\nheight: {h}\n");
         let composed = compose_spec_str(&spec(400.0, 300.0), None)
             .unwrap_or_else(|e| panic!("{shape} composes at 400 x 300: {e}"));
         let m = composed.plots[0].layout.margins();
