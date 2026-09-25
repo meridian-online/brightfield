@@ -15,7 +15,9 @@
 //! time; the one test that wants the growth asks for it by name.
 
 use brightfield_render::title::TITLE_BAND;
+use brightfield_shell::data_file;
 use brightfield_shell::pipeline::{compose_spec_str, Composed};
+use brightfield_spec::MarkKind;
 
 /// Observable Plot's defaults, which `Margins::default` is and which a plot
 /// that declares nothing must still get.
@@ -168,4 +170,50 @@ fn each_plot_takes_its_own_declared_margins() {
     assert_eq!(margins_of(&composed, 0).3, 0.0);
     assert_eq!(margins_of(&composed, 1).3, 60.0);
     assert_eq!(margins_of(&composed, 2).3, DEFAULT_LEFT);
+}
+
+/// **The registry's one declared margin reaches its tile.** The ranked
+/// category bars kind writes `marginLeft: 90` into the plot it emits, because
+/// category names run along the y axis and the default margin is sized for tick
+/// numbers (`ranked_bars.rs`). The dashboard generated over the four-shapes
+/// fixture holds one such tile, and it is laid out at that margin grown by its
+/// y title's band, where it used to be laid out at the default grown by the same
+/// band and its category names had 50 px less room.
+///
+/// The tile beside it, a column histogram, declares no margin and is the
+/// control: it stays at the default plus its band.
+#[test]
+fn the_ranked_bars_tile_is_laid_out_at_the_margin_its_kind_declares() {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/dashboard_baseline.csv");
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let opened = data_file::open(chosen).unwrap_or_else(|e| panic!("open {chosen}: {e}"));
+    let plots = &opened.composed.plots;
+
+    let bars: Vec<_> = plots
+        .iter()
+        .filter(|p| p.marks.contains(&MarkKind::BarX))
+        .collect();
+    assert_eq!(
+        bars.len(),
+        1,
+        "the fixture's one categorical column draws one ranked-bars tile"
+    );
+    assert_eq!(
+        bars[0].layout.margins().left,
+        90.0 + TITLE_BAND,
+        "the kind's declared marginLeft, grown by its y title"
+    );
+
+    let control: Vec<_> = plots
+        .iter()
+        .filter(|p| p.marks.contains(&MarkKind::BarY))
+        .collect();
+    assert!(
+        !control.is_empty(),
+        "a column tile beside the ranked bars to compare with"
+    );
+    for plot in control {
+        assert_eq!(plot.layout.margins().left, DEFAULT_LEFT + TITLE_BAND);
+    }
 }
