@@ -442,9 +442,8 @@ fn a_committed_band_survives_the_other_axis_losing_its_category_to_a_sibling_fil
     );
     let divider = second_plot_start(&app);
     let left = divider as u32;
-    let rules_on_left = |img: &RgbaImage| -> Vec<f64> {
-        rules(img).into_iter().filter(|&x| x < divider).collect()
-    };
+    let rules_on_left =
+        |img: &RgbaImage| -> Vec<f64> { rules(img).into_iter().filter(|&x| x < divider).collect() };
 
     // The floor, so a harness that finds this ink everywhere says so here.
     let resting = raster(&renderer, app.chart_doc());
