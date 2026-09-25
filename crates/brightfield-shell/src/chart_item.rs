@@ -1889,29 +1889,41 @@ fn crosshair_segments(
     ])
 }
 
-/// The brush rectangle a drag paints, clamped to its plot and axis-locked to
-/// the binding's brush kind (an x-interval sweeps full plot height, a
-/// y-interval full width).
+/// The brush rectangle a drag paints, clamped to its plot's data area and
+/// axis-locked to the binding's brush kind (an x-interval sweeps the data
+/// area's full height, a y-interval its full width).
+///
+/// The data area, not the allocation: the margins around it hold the tick
+/// labels and the axis titles, and a rectangle spanning the allocation paints
+/// over them. See [`PlotHandle::data_area`].
 ///
 /// The two corners are [`Drag::corners`] — the press and the pointer for an
 /// ordinary sweep, the committed rectangle displaced by the pointer's travel
 /// for a move — so this reads identically for both and the axis lock applies
-/// the same way to either: an x-interval's rectangle is full plot height
-/// whether it was just swept or is being slid sideways.
+/// the same way to either: an x-interval's rectangle is the data area's full
+/// height whether it was just swept or is being slid sideways.
 fn drag_rect(plot: &PlotHandle, drag: Drag) -> brightfield_render::canvas_host::SurfaceRect {
     use brightfield_render::canvas_host::SurfaceRect;
     let kind = plot.gesture.as_ref().map(|g| g.kind);
     let (a, b) = drag.corners();
     let (x0, x1) = min_max(a.x, b.x);
     let (y0, y1) = min_max(a.y, b.y);
-    let (px0, px1) = (plot.rect.x, plot.rect.x + plot.rect.width);
-    let (py0, py1) = (plot.rect.y, plot.rect.y + plot.rect.height);
-    let (x0, x1, y0, y1) = match kind {
-        Some(BrushKind::IntervalX | BrushKind::PointX) => (x0.max(px0), x1.min(px1), py0, py1),
-        Some(BrushKind::IntervalY | BrushKind::PointY) => (px0, px1, y0.max(py0), y1.min(py1)),
-        _ => (x0.max(px0), x1.min(px1), y0.max(py0), y1.min(py1)),
+    let area = plot.data_area();
+    let (px0, px1) = (area.x, area.x + area.width);
+    let (py0, py1) = (area.y, area.y + area.height);
+    // The axis the kind locks spans the data area; a free one follows the
+    // pointer. Both are then put inside the data area the same way.
+    let (x0, x1) = match kind {
+        Some(BrushKind::IntervalY | BrushKind::PointY) => (px0, px1),
+        _ => (x0, x1),
     };
-    SurfaceRect::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
+    let (y0, y1) = match kind {
+        Some(BrushKind::IntervalX | BrushKind::PointX) => (py0, py1),
+        _ => (y0, y1),
+    };
+    let (x0, x1) = within(x0, x1, px0, px1);
+    let (y0, y1) = within(y0, y1, py0, py1);
+    SurfaceRect::new(x0, y0, x1 - x0, y1 - y0)
 }
 
 fn min_max(a: f64, b: f64) -> (f64, f64) {
@@ -1920,6 +1932,20 @@ fn min_max(a: f64, b: f64) -> (f64, f64) {
     } else {
         (b, a)
     }
+}
+
+/// The span `a..=b` (`a <= b`) put inside `lo..=hi`: both edges moved in, so a
+/// span lying wholly past one edge collapses onto that edge rather than
+/// keeping its position outside with no size, which the brush's one-pixel
+/// border still draws as a line.
+///
+/// `min` and `max` rather than `f64::clamp`, which panics when `lo > hi`: a
+/// plot the window placed smaller than its margins has an inverted data area,
+/// and there the span collapses to the point `hi` instead of widening into a
+/// band across the margins.
+fn within(a: f64, b: f64, lo: f64, hi: f64) -> (f64, f64) {
+    let a = a.max(lo).min(hi);
+    (a, b.min(hi).max(a))
 }
 
 /// Whether raster-local point `p` falls inside `r` — the press-inside-the-
@@ -2648,6 +2674,212 @@ mod tests {
         assert_eq!(run_state_role(RunState::StaleUpstream), Role::Warning);
         assert_eq!(run_state_role(RunState::Failed), Role::Danger);
         assert_eq!(run_state_role(RunState::NeverRun), Role::Neutral);
+    }
+
+    // -- The brush rectangle: inside the data area, whatever the kind -------
+
+    /// A dot plot composed through the real pipeline, with a derived x title,
+    /// a derived y title and a plot title, so the bottom, left and top margins
+    /// each hold a title band beside the tick labels: the furniture a brush
+    /// rectangle spanning the allocation paints over.
+    fn titled_plot(kind: BrushKind) -> PlotHandle {
+        let source = "data:\n  t:\n    - { temp: 1, power: 2 }\n    - { temp: 4, power: 9 }\n\
+                      plot:\n  - mark: dot\n    data: { from: t }\n    x: temp\n    y: power\n\
+                      title: Readings\nwidth: 400\nheight: 300\n";
+        let mut composed =
+            crate::pipeline::compose_spec_str(source, None).expect("the titled plot composes");
+        assert_eq!(composed.plots.len(), 1, "one plot placed");
+        let mut plot = composed.plots.remove(0);
+        plot.gesture = Some(GestureBinding {
+            selection: "brush".to_string(),
+            contributor: ComponentPath("root".to_string()),
+            kind,
+            x_column: Some("temp".to_string()),
+            y_column: Some("power".to_string()),
+        });
+        plot
+    }
+
+    fn sweep(from: kurbo::Point, to: kurbo::Point) -> Drag {
+        Drag {
+            plot: 0,
+            start: from,
+            current: to,
+            by: egui::Vec2::ZERO,
+            move_from: None,
+        }
+    }
+
+    /// The data area read straight off the margins the plot was laid out
+    /// with, rather than through [`PlotHandle::data_area`] — which is what
+    /// `drag_rect` reads, so measuring against it would pass whatever it
+    /// returned.
+    fn inside_the_margins(plot: &PlotHandle) -> Rect {
+        let m = plot.layout.margins();
+        Rect::new(
+            plot.rect.x + m.left,
+            plot.rect.y + m.top,
+            plot.rect.width - m.left - m.right,
+            plot.rect.height - m.top - m.bottom,
+        )
+    }
+
+    const ALL_BRUSH_KINDS: [BrushKind; 6] = [
+        BrushKind::IntervalX,
+        BrushKind::IntervalY,
+        BrushKind::IntervalXY,
+        BrushKind::Point,
+        BrushKind::PointX,
+        BrushKind::PointY,
+    ];
+
+    /// The margins the rectangle must stay out of are really there: the data
+    /// area sits inside the allocation by at least the default margin plus a
+    /// title band on the left, the bottom and the top. Without this the
+    /// containment test below could pass on a plot whose data area IS its
+    /// allocation, where there is no margin to paint into.
+    #[test]
+    fn the_titled_plot_holds_labels_and_titles_outside_its_data_area() {
+        use brightfield_render::layout::Margins;
+        use brightfield_render::title::TITLE_BAND;
+        let plot = titled_plot(BrushKind::IntervalX);
+        let (rect, area) = (plot.rect, plot.data_area());
+        let d = Margins::default();
+        assert!(
+            area.x - rect.x >= d.left + TITLE_BAND,
+            "left: {rect:?} vs {area:?}"
+        );
+        assert!(
+            area.y - rect.y >= d.top + TITLE_BAND,
+            "top: {rect:?} vs {area:?}"
+        );
+        assert!(
+            (rect.y + rect.height) - (area.y + area.height) >= d.bottom + TITLE_BAND,
+            "bottom: {rect:?} vs {area:?}"
+        );
+        assert!(area.width > 0.0 && area.height > 0.0, "{area:?}");
+    }
+
+    /// **No brush kind paints outside the data area.** Three drags per kind:
+    /// one swept from beyond the allocation's top-left to beyond its
+    /// bottom-right, one from the middle of the data area into the bottom-left
+    /// corner where the tick labels and both axis titles are, and a move of a
+    /// committed rectangle pushed down past the plot. Each painted rectangle is
+    /// asserted to lie within the data area — containment, so a rectangle that
+    /// reaches into a margin by any amount fails, whichever edge it crosses.
+    #[test]
+    fn no_brush_kind_paints_outside_the_data_area() {
+        for kind in ALL_BRUSH_KINDS {
+            let plot = titled_plot(kind);
+            let (rect, area) = (plot.rect, inside_the_margins(&plot));
+            let (right, bottom) = (rect.x + rect.width, rect.y + rect.height);
+            let middle = kurbo::Point::new(area.x + area.width / 2.0, area.y + area.height / 2.0);
+            let committed = kurbo::Rect::new(
+                middle.x - 10.0,
+                middle.y - 10.0,
+                middle.x + 10.0,
+                middle.y + 10.0,
+            );
+            let drags = [
+                (
+                    "a sweep past every edge",
+                    sweep(
+                        kurbo::Point::new(rect.x - 50.0, rect.y - 50.0),
+                        kurbo::Point::new(right + 50.0, bottom + 50.0),
+                    ),
+                ),
+                (
+                    "a sweep into the labelled corner",
+                    sweep(middle, kurbo::Point::new(rect.x + 4.0, bottom - 4.0)),
+                ),
+                (
+                    "a move pushed down past the plot",
+                    Drag {
+                        move_from: Some(committed),
+                        ..sweep(middle, kurbo::Point::new(middle.x, bottom + 200.0))
+                    },
+                ),
+            ];
+            for (what, drag) in drags {
+                let painted = drag_rect(&plot, drag);
+                let eps = 1e-9;
+                assert!(
+                    painted.x >= area.x - eps
+                        && painted.y >= area.y - eps
+                        && painted.x + painted.width <= area.x + area.width + eps
+                        && painted.y + painted.height <= area.y + area.height + eps,
+                    "{kind:?}, {what}: painted {painted:?} reaches outside the data area \
+                     {area:?} of the allocation {rect:?}"
+                );
+            }
+        }
+    }
+
+    /// **An x-range brush spans the data area's full height and stops at its
+    /// edge** — the full height is what the gesture means, a temperature range
+    /// at every power — and a y-range brush its full width. Asserted as
+    /// equality with the data area's extent, so a rectangle that falls short
+    /// fails here as surely as one that overshoots fails above.
+    #[test]
+    fn an_axis_locked_brush_spans_the_data_area_on_its_free_axis() {
+        for kind in ALL_BRUSH_KINDS {
+            let plot = titled_plot(kind);
+            let area = inside_the_margins(&plot);
+            let from = kurbo::Point::new(area.x + area.width * 0.3, area.y + area.height * 0.4);
+            let to = kurbo::Point::new(area.x + area.width * 0.6, area.y + area.height * 0.7);
+            let painted = drag_rect(&plot, sweep(from, to));
+            let full_height =
+                (painted.y - area.y).abs() < 1e-9 && (painted.height - area.height).abs() < 1e-9;
+            let full_width =
+                (painted.x - area.x).abs() < 1e-9 && (painted.width - area.width).abs() < 1e-9;
+            match kind {
+                BrushKind::IntervalX | BrushKind::PointX => {
+                    assert!(full_height, "{kind:?}: {painted:?} against {area:?}");
+                    assert!(
+                        !full_width,
+                        "{kind:?} follows the pointer across: {painted:?}"
+                    );
+                }
+                BrushKind::IntervalY | BrushKind::PointY => {
+                    assert!(full_width, "{kind:?}: {painted:?} against {area:?}");
+                    assert!(
+                        !full_height,
+                        "{kind:?} follows the pointer down: {painted:?}"
+                    );
+                }
+                BrushKind::IntervalXY | BrushKind::Point => {
+                    assert!(!full_width && !full_height, "{kind:?}: {painted:?}");
+                }
+            }
+        }
+    }
+
+    /// **A plot placed smaller than its margins paints no band.** The parse
+    /// refuses a spec that declares such a plot, but the window can still
+    /// place one smaller than it declared, and then the data area is inverted.
+    /// No kind may panic there, and none may turn its locked axis into a band
+    /// across the margins — the axis-locked rectangle has no data area to span.
+    #[test]
+    fn an_inverted_data_area_paints_nothing_and_does_not_panic() {
+        for kind in ALL_BRUSH_KINDS {
+            let mut plot = plot(ScaleSet::new(), kind);
+            // Default margins are 40 + 20 across and 20 + 30 down.
+            plot.rect = Rect::new(0.0, 0.0, 50.0, 40.0);
+            plot.layout = ChartLayout::new(50.0, 40.0);
+            let area = plot.data_area();
+            assert!(area.width < 0.0 && area.height < 0.0, "inverted: {area:?}");
+            let painted = drag_rect(
+                &plot,
+                sweep(
+                    kurbo::Point::new(-10.0, -10.0),
+                    kurbo::Point::new(60.0, 50.0),
+                ),
+            );
+            assert!(
+                painted.width == 0.0 && painted.height == 0.0,
+                "{kind:?}: an inverted data area {area:?} painted {painted:?}"
+            );
+        }
     }
 
     /// The toolbar declaration follows the document: hidden (row disappears)

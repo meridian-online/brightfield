@@ -780,7 +780,9 @@ pub struct ParseOutput {
 /// input is not a well-formed document in the declared format;
 /// [`ParseError::UnknownName`] for vocabulary not in the registry; and
 /// various [`ParseError::SchemaViolation`] / [`ParseError::MalformedDataDef`]
-/// / [`ParseError::MalformedParamDef`] variants for structural failures.
+/// / [`ParseError::MalformedParamDef`] variants for structural failures; and
+/// [`ParseError::PlotFrame`] for a plot whose size or margins leave it no data
+/// area.
 pub fn parse_spec(source: &str, format: Format) -> Result<ParseOutput, ParseError> {
     let value: serde_yaml::Value = match format {
         Format::Yaml => serde_yaml::from_str(source).map_err(|e| ParseError::YamlSyntax {
@@ -801,6 +803,7 @@ pub fn parse_spec(source: &str, format: Format) -> Result<ParseOutput, ParseErro
 
     let mut walker = Walker::default();
     let spec = walker.walk_spec(&value)?;
+    refuse_unframed_plots(&spec)?;
     Ok(ParseOutput {
         spec,
         warnings: walker.warnings,
@@ -834,6 +837,23 @@ pub fn parse_spec_path(path: impl AsRef<Path>) -> Result<ParseOutput, ParseError
     let mut output = parse_spec(&source, format)?;
     output.base_dir = path.parent().map(std::path::Path::to_path_buf);
     Ok(output)
+}
+
+/// Refuse the first plot, in component-path order, whose frame leaves it no
+/// data area — see [`crate::layout::plot_frame_fault`]. The plots judged are
+/// the ones the composition places ([`crate::layout::collect_plot_nodes`]), so
+/// the path in the diagnostic is the path a caller would find the plot at.
+fn refuse_unframed_plots(spec: &Spec) -> Result<(), ParseError> {
+    for (path, plot) in crate::layout::collect_plot_nodes(spec) {
+        if let Some(fault) = crate::layout::plot_frame_fault(plot) {
+            return Err(ParseError::PlotFrame {
+                plot: crate::layout::plot_label(&path, plot),
+                fault: Box::new(fault),
+                span: None,
+            });
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

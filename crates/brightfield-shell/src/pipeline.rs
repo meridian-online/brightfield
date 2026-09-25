@@ -174,6 +174,28 @@ pub struct PlotHandle {
     pub navigated_empty: bool,
 }
 
+impl PlotHandle {
+    /// **The plot's data area**, on the same plane as [`Self::rect`]: the
+    /// placed allocation less the margins its [`Self::layout`] was drawn with,
+    /// which hold the tick labels and the axis and plot titles. What a gesture
+    /// on this plot paints inside.
+    ///
+    /// The parse refuses a spec whose declared size cannot hold its margins
+    /// (`brightfield_spec::layout::plot_frame_fault`), but the window can
+    /// place a plot smaller than it declared, and this returns what the layout
+    /// holds either way — so a caller clamping into it takes `min` and `max`
+    /// rather than `f64::clamp`, which panics on an inverted range.
+    #[must_use]
+    pub fn data_area(&self) -> Rect {
+        Rect::new(
+            self.rect.x + self.layout.plot_x_start(),
+            self.rect.y + self.layout.plot_y_start(),
+            self.layout.plot_width(),
+            self.layout.plot_height(),
+        )
+    }
+}
+
 /// **Which of a plot's layers a hover reads, and what that layer encodes.**
 ///
 /// A generated tile is two marks over one table: a ghost that never narrows,

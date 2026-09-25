@@ -15,6 +15,7 @@
 use crate::ast::{
     Component, ConcatNode, Input, Mark, PlotNode, SpaceNode, Spec, SpecValue, ValueOrParamRef,
 };
+use crate::error::{FrameFault, FrameSide};
 use crate::vocab::InputKind;
 use indexmap::IndexMap;
 
@@ -503,6 +504,176 @@ pub fn resolve_plot_margins(plot: &PlotNode) -> SideMargins {
         right: num("marginRight").or(global),
         top: num("marginTop").or(global),
         bottom: num("marginBottom").or(global),
+    }
+}
+
+/// Observable Plot's default top margin, in pixels — the side a plot that
+/// declares no `marginTop` is laid out at before its title grows it. The
+/// render crate's `Margins::default` reads these four, so the fit check below
+/// and the layout the plot is drawn in start from the same numbers.
+pub const DEFAULT_MARGIN_TOP: f64 = 20.0;
+/// Observable Plot's default right margin, in pixels. See [`DEFAULT_MARGIN_TOP`].
+pub const DEFAULT_MARGIN_RIGHT: f64 = 20.0;
+/// Observable Plot's default bottom margin, in pixels. See [`DEFAULT_MARGIN_TOP`].
+pub const DEFAULT_MARGIN_BOTTOM: f64 = 30.0;
+/// Observable Plot's default left margin, in pixels. See [`DEFAULT_MARGIN_TOP`].
+pub const DEFAULT_MARGIN_LEFT: f64 = 40.0;
+
+/// The band one present title adds to the margin it sits in: the left for a
+/// y title, the bottom for an x title, the top for a plot title. The render
+/// crate's `title::TITLE_BAND` is this constant, tied there to its title font.
+pub const TITLE_BAND: f64 = 20.0;
+
+/// **Why this plot has no data area to draw in**, or `None` when it has one.
+///
+/// Two faults, in the order they are checked:
+///
+/// 1. its `width` or `height` is NaN, infinite, zero or negative — the plot's
+///    own attribute, or [`DEFAULT_PLOT_WIDTH`] / [`DEFAULT_PLOT_HEIGHT`] when
+///    it declares no size;
+/// 2. its left and right margins add up to more than its width, or its top
+///    and bottom to more than its height, so the data area along that
+///    dimension is inverted.
+///
+/// The margins are the ones the layout builds: each side the plot declares
+/// ([`resolve_plot_margins`]) laid over Observable Plot's default, then grown
+/// by [`TITLE_BAND`] on each side a title sits. A title is counted when the
+/// plot names it (`xLabel: Temperature`, `title:`), not when it suppresses it
+/// (`xLabel: null`), and — for a derived axis title, whose text the render
+/// crate reads off the lowered channel map — when some mark in the plot binds
+/// that axis to a column, a transform, an aggregate or a `$param`. The render
+/// crate's channel map titles an axis bound to a column, a bin, an aggregate
+/// or a `$param`, and all four are counted here. It binds nothing to title for
+/// an expression, an object or a sort, or for a sum, mean, minimum or maximum
+/// that names no column, and those are counted too: there the parse reserves
+/// a band the layout then does not draw, which refuses a plot within one band
+/// of fitting rather than drawing it inverted.
+///
+/// Judged on the size the spec declares. The window can still hand a plot a
+/// smaller allocation than that, and the sampling notice's band is grown at
+/// composition, when it is known whether the plot was sampled; neither is
+/// visible from the spec.
+///
+/// **A plot holding no mark is not judged.** It draws no data area — the
+/// composition places no chart for it — and Mosaic sizes a plot that only
+/// hosts a legend to a zero-size frame on purpose: the curated `legends.yaml`
+/// writes `width: 0` for exactly that.
+#[must_use]
+pub fn plot_frame_fault(plot: &PlotNode) -> Option<FrameFault> {
+    if !plot
+        .items
+        .iter()
+        .any(|item| matches!(item, Component::Mark(_)))
+    {
+        return None;
+    }
+    let width = plot_width(plot);
+    let height = plot_height(plot);
+    for (key, value) in [("width", width), ("height", height)] {
+        if !(value.is_finite() && value > 0.0) {
+            return Some(FrameFault::Dimension { key, value });
+        }
+    }
+
+    let declared = resolve_plot_margins(plot);
+    let titles = resolve_axis_titles(plot);
+    let band = |present: bool| if present { TITLE_BAND } else { 0.0 };
+    let side = |key, declared: Option<f64>, default, title_band| FrameSide {
+        key,
+        base: declared.unwrap_or(default),
+        declared: declared.is_some(),
+        title_band,
+    };
+
+    let left = side(
+        "marginLeft",
+        declared.left,
+        DEFAULT_MARGIN_LEFT,
+        band(draws_axis_title(plot, &titles.y, "y")),
+    );
+    let right = side("marginRight", declared.right, DEFAULT_MARGIN_RIGHT, 0.0);
+    let top = side(
+        "marginTop",
+        declared.top,
+        DEFAULT_MARGIN_TOP,
+        band(titles.plot.is_some()),
+    );
+    let bottom = side(
+        "marginBottom",
+        declared.bottom,
+        DEFAULT_MARGIN_BOTTOM,
+        band(draws_axis_title(plot, &titles.x, "x")),
+    );
+
+    for (dimension, size, near, far) in [
+        ("width", width, left, right),
+        ("height", height, top, bottom),
+    ] {
+        if near.px() + far.px() > size {
+            return Some(FrameFault::Margins {
+                dimension,
+                size,
+                near,
+                far,
+            });
+        }
+    }
+    None
+}
+
+/// Whether the layout reserves a title band for one positional axis — see
+/// [`plot_frame_fault`] for why a derived title is counted from the marks'
+/// bindings rather than from the lowered channel map the title's text comes
+/// from.
+fn draws_axis_title(plot: &PlotNode, decision: &AxisTitle, channel: &str) -> bool {
+    match decision {
+        AxisTitle::Override(_) => true,
+        AxisTitle::Suppress => false,
+        AxisTitle::Derive => plot.items.iter().any(|item| {
+            let Component::Mark(mark) = item else {
+                return false;
+            };
+            match mark.options.get(channel) {
+                Some(ValueOrParamRef::Value(value)) => may_name_an_axis(value),
+                // The lowerer projects a positional `$param` as a column named
+                // for the param, and the render crate binds the axis to that
+                // column and titles it with the param's name.
+                Some(ValueOrParamRef::Param(_)) => true,
+                None => false,
+            }
+        }),
+    }
+}
+
+/// Whether a positional channel's value can bind the axis to something a
+/// derived title is read from. Exhaustive with no wildcard, so a new
+/// [`SpecValue`] variant chooses here before it compiles. A transform left out
+/// would under-count: [`SpecValue::Bin`]'s binned column is one the render
+/// crate titles.
+fn may_name_an_axis(value: &SpecValue) -> bool {
+    match value {
+        SpecValue::String(_)
+        | SpecValue::Object(_)
+        | SpecValue::Expression(_)
+        | SpecValue::Aggregate { .. }
+        | SpecValue::Bin { .. }
+        | SpecValue::Sort { .. } => true,
+        SpecValue::Null
+        | SpecValue::Bool(_)
+        | SpecValue::Integer(_)
+        | SpecValue::Float(_)
+        | SpecValue::Array(_)
+        | SpecValue::Param(_) => false,
+    }
+}
+
+/// How a diagnostic names a plot: its component path, and its `name:` when it
+/// declares one, since the name is what the author wrote and the path is not.
+#[must_use]
+pub fn plot_label(path: &str, plot: &PlotNode) -> String {
+    match plot.attributes.get("name") {
+        Some(SpecValue::String(name)) if !name.is_empty() => format!("{path} (`{name}`)"),
+        _ => path.to_string(),
     }
 }
 
