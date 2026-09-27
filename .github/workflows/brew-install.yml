@@ -23,8 +23,6 @@
 name: brew-install
 
 on:
-  push:
-    branches: [release-installs-formula-published-fails]
   workflow_call:
     inputs:
       tag:
@@ -55,5 +53,5 @@ jobs:
       # inside a `run:` substitutes before the shell sees it.
       - name: brew install the formula for the tag, then run its test
         env:
-          TAG: ${{ inputs.tag || 'v0.1.5' }}
+          TAG: ${{ inputs.tag }}
         run: scripts/check-brew-install.sh --tag "$TAG"
