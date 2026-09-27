@@ -2873,11 +2873,11 @@ impl MeridianApp {
 
     /// The status lines `key`'s live item raises right now — the other half
     /// of [`Self::chart_pane_toolbar`], and for the same reason: a status
-    /// entry a pane raises from state it only holds after a drawn frame (the
-    /// editor's `editor-warning`, once a switch has abandoned a buffer) only
+    /// entry a pane raises from state it holds after a drawn frame (the
+    /// editor's `editor-warning`, once a switch has abandoned a buffer)
     /// exists once `describe` has run against that state, so a test that
     /// wants it has to ask the live app rather than `chart_registry()`'s
-    /// freshly constructed, never-drawn items.
+    /// freshly constructed items, which no frame has drawn.
     #[must_use]
     pub fn chart_pane_status(&self, key: PaneKey) -> Vec<StatusEntry> {
         self.charts

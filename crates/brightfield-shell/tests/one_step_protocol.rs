@@ -1152,7 +1152,7 @@ fn the_inspector_rail_draws_no_save_while_the_palette_offers_one() {
 /// a person's fingers take, not `buffer_mut` standing in for one, and the
 /// switch is `MeridianApp::open_data_file` — the front door's own entry
 /// point — called a second time on the window January already opened, rather
-/// than a second `Window` proving nothing about one session holding two
+/// than a second `Window`, which would not show one session holding two
 /// files.
 #[test]
 fn a_second_data_file_reopens_the_editor_pane_through_the_ledger_rail_and_abandons_an_unsaved_edit()
@@ -1233,8 +1233,8 @@ fn a_second_data_file_reopens_the_editor_pane_through_the_ledger_rail_and_abando
 
     // February's data file, opened into the same window January is already
     // open in — the entry point a second front-door pick reaches through.
-    // A one-step Protocol closes the ledger rail to its strip on every
-    // adopted boot, February's included, so the reader has to open the
+    // A one-step Protocol closes the ledger rail to its strip when a boot
+    // is adopted, February's included, so the reader has to open the
     // editor's tab again to look at it — the same click `pick_rail_tab`
     // above stood in for, driven a second time.
     win.app.open_data_file(&ctx, &feb.to_string_lossy());
