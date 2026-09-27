@@ -185,6 +185,133 @@ fn a_composed_spec_reaches_the_editor_through_the_document() {
     );
 }
 
+/// **AC1–AC3.** A second document naming a *different* spec file reopens
+/// the pane to it — never keeps drawing the first file's spec — and an
+/// unsaved edit against the first is abandoned with a warning naming it,
+/// not carried into the new buffer and not written anywhere unasked.
+///
+/// One `EditorPane`, one document, its `spec_path` changed between two
+/// drawn frames: the same identity the window hands the pane when a second
+/// data file is opened without restarting, since items are instantiated
+/// once per window (`charts.instantiate()`,
+/// `crates/brightfield-shell/src/window.rs:2346`) rather than once per
+/// document. The guard this used to fail was `self.file.is_none()` — true
+/// only on the pane's very first file — so this frame is the one that
+/// exercises it.
+#[test]
+fn a_second_document_reopens_the_editor_pane_and_abandons_an_unsaved_edit() {
+    let jan_path = temp_spec("switch-january", "title: January\n");
+    let feb_path = temp_spec("switch-february", "title: February\n");
+
+    let mut doc = ChartDoc::empty();
+    doc.spec_path = Some(jan_path.clone());
+    let mut pane = EditorPane::new();
+    let ctx = egui::Context::default();
+    let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(480.0, 320.0));
+
+    let frame = |doc: &mut ChartDoc, pane: &mut EditorPane, events: Vec<egui::Event>| {
+        let raw = egui::RawInput {
+            screen_rect: Some(screen),
+            events,
+            ..Default::default()
+        };
+        let mut requests = Vec::new();
+        let _ = ctx.run_ui(raw, |ui| {
+            brightfield_shell::design::apply(ui.ctx(), Mode::Light);
+            let mut icx = ItemCtx::new(
+                Mode::Light,
+                PaneKey::new(EDITOR),
+                egui_tiles::TileId::from_u64(1),
+                true,
+                &mut requests,
+            );
+            pane.ui(doc, ui, &mut icx);
+        });
+    };
+
+    // Frame 1: the pane's first drawn frame opens January.
+    frame(&mut doc, &mut pane, Vec::new());
+    assert_eq!(
+        pane.path(),
+        Some(jan_path.as_path()),
+        "the first drawn frame did not open January's own spec"
+    );
+
+    // Frame 2: click into the surface to focus it — the same widget a real
+    // keystroke reaches, not `buffer_mut` standing in for one.
+    let click = egui::pos2(120.0, 12.0);
+    frame(
+        &mut doc,
+        &mut pane,
+        vec![
+            egui::Event::PointerMoved(click),
+            egui::Event::PointerButton {
+                pos: click,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::PointerButton {
+                pos: click,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+    );
+    // Frame 3: the keystroke.
+    frame(
+        &mut doc,
+        &mut pane,
+        vec![egui::Event::Text("# unsaved\n".to_string())],
+    );
+    assert!(
+        pane.can_save(),
+        "the click and keystroke did not reach the editor's buffer, so the \
+         switch below abandons nothing and proves nothing"
+    );
+    let jan_bytes_before = fs::read_to_string(&jan_path).expect("January's spec reads");
+
+    // February's document replaces January's in the same window.
+    doc.spec_path = Some(feb_path.clone());
+    frame(&mut doc, &mut pane, Vec::new());
+
+    // AC1: the pane shows February's spec, never January's.
+    assert_eq!(
+        pane.path(),
+        Some(feb_path.as_path()),
+        "the editor kept showing January's spec beside February's document"
+    );
+    assert_eq!(
+        pane.buffer(),
+        Some("title: February\n"),
+        "February's buffer carries January's abandoned edit"
+    );
+
+    // AC2: the switch raised a standing warning naming January's path,
+    // and the abandoned edit was never written to January's own file.
+    let subject = pane.subject(&doc);
+    let warned = subject
+        .status
+        .iter()
+        .any(|s| s.id == "editor-warning" && s.text.contains(&*jan_path.to_string_lossy()));
+    assert!(
+        warned,
+        "switching documents with an unsaved edit raised no warning naming {}",
+        jan_path.display()
+    );
+    let jan_bytes_after = fs::read_to_string(&jan_path).expect("January's spec still reads");
+    assert_eq!(
+        jan_bytes_before, jan_bytes_after,
+        "the abandoned edit reached January's own spec file on disk"
+    );
+    assert!(
+        !pane.can_save(),
+        "February's fresh buffer reads as dirty, so January's buffer rode \
+         along under it"
+    );
+}
+
 /// What the editor declares, the shell draws — and nothing else. With a
 /// file open: the file names the tab, the breadcrumb walks to it, keys
 /// resolve in the editor context, and the one toolbar control is Save,

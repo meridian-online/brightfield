@@ -2871,6 +2871,22 @@ impl MeridianApp {
             .unwrap_or_default()
     }
 
+    /// The status lines `key`'s live item raises right now — the other half
+    /// of [`Self::chart_pane_toolbar`], and for the same reason: a status
+    /// entry a pane raises from state it holds after a drawn frame (the
+    /// editor's `editor-warning`, once a switch has abandoned a buffer)
+    /// exists once `describe` has run against that state, so a test that
+    /// wants it has to ask the live app rather than `chart_registry()`'s
+    /// freshly constructed items, which no frame has drawn.
+    #[must_use]
+    pub fn chart_pane_status(&self, key: PaneKey) -> Vec<StatusEntry> {
+        self.charts
+            .items
+            .get(&key)
+            .map(|item| item.describe(&self.charts.doc).status)
+            .unwrap_or_default()
+    }
+
     /// One pane's own [`Subject`] title, whichever document owns it.
     ///
     /// The words a region's selector strip offers its panes under come from

@@ -1142,6 +1142,141 @@ fn the_inspector_rail_draws_no_save_while_the_palette_offers_one() {
     data.key(egui::Key::Escape);
 }
 
+/// **A second data file opened in the same window reopens the editor pane on
+/// its own generated spec, through the live window a person actually
+/// drives — not a bare pane mutated by hand.**
+///
+/// Reaches the editor the way [`the_inspector_rail_draws_no_save_while_the_palette_offers_one`]
+/// does: `pick_rail_tab(LEDGER_RAIL, 3)` then `focus_pane`, both on a real
+/// `Window`. The buffer is dirtied through the same click-and-keystroke route
+/// a person's fingers take, not `buffer_mut` standing in for one, and the
+/// switch is `MeridianApp::open_data_file` — the front door's own entry
+/// point — called a second time on the window January already opened, rather
+/// than a second `Window`, which would not show one session holding two
+/// files.
+#[test]
+fn a_second_data_file_reopens_the_editor_pane_through_the_ledger_rail_and_abandons_an_unsaved_edit()
+{
+    use brightfield_workbench::arrangement::LEDGER_RAIL;
+
+    let jan_dir = TempDir::new("ledger-switch-january");
+    let feb_dir = TempDir::new("ledger-switch-february");
+    let jan = jan_dir.write("january.csv", HARBOUR_CSV);
+    let feb = feb_dir.write("february.csv", HARBOUR_CSV);
+
+    let mut win =
+        Window::over(Boot::data_file(&jan.to_string_lossy()).expect("the file opens as a boot"));
+    let ctx = win.ctx.clone();
+
+    // Reach the editor the way a person does: pick its tab on the ledger
+    // rail, then focus it. `pick_rail_tab` alone is what makes the pane
+    // draw and open January's spec on its first drawn frame.
+    win.pick_rail_tab(LEDGER_RAIL, 3);
+    assert!(
+        win.app.focus_pane(brightfield_workbench::PaneKey::new(
+            brightfield_shell::editor::EDITOR
+        )),
+        "the editor pane is not in this window's tree"
+    );
+    win.settle();
+    // The ledger rail opens closed to its strip on a one-step Protocol (a
+    // data file) — reopened here for the room a real click into the code
+    // surface needs, the same move `reopen_if_collapsed` exists for.
+    win.reopen_if_collapsed(LEDGER_RAIL);
+
+    assert_eq!(
+        win.app
+            .chart_pane_title(brightfield_workbench::PaneKey::new(
+                brightfield_shell::editor::EDITOR
+            )),
+        Some("january.yaml".to_string()),
+        "the first drawn frame did not open January's own generated spec"
+    );
+    let jan_spec = win
+        .app
+        .chart_doc()
+        .spec_path
+        .clone()
+        .expect("the first document carries the spec it was composed from");
+
+    // Click into the editor's own body — below the rail's selector strip,
+    // near its leading edge — and type, the same widget a real keystroke
+    // reaches rather than a document field standing in for one.
+    let rail_rect = win
+        .app
+        .region_rect(LEDGER_RAIL)
+        .expect("the ledger rail drew open");
+    let body_top = rail_rect.top() + brightfield_workbench::chrome::rail_selector_height();
+    // Past the gutter's line-number column, not into it — the gutter is a
+    // hover-sense-only allocation and a click there reaches no widget.
+    let edit_at = egui::pos2(rail_rect.left() + 150.0, body_top + 32.0);
+    win.run(vec![
+        egui::Event::PointerMoved(edit_at),
+        button_at(edit_at, true),
+        button_at(edit_at, false),
+    ]);
+    win.settle();
+    win.type_text("# unsaved\n");
+
+    let toolbar_before = win
+        .app
+        .chart_pane_toolbar(brightfield_workbench::PaneKey::new(
+            brightfield_shell::editor::EDITOR,
+        ));
+    assert!(
+        toolbar_before
+            .iter()
+            .any(|t| t.id == "editor-save" && t.enabled),
+        "the click and keystroke did not reach the editor's buffer, so the \
+         switch below abandons nothing and proves nothing: {toolbar_before:?}"
+    );
+
+    // February's data file, opened into the same window January is already
+    // open in — the entry point a second front-door pick reaches through.
+    // A one-step Protocol closes the ledger rail to its strip when a boot
+    // is adopted, February's included, so the reader has to open the
+    // editor's tab again to look at it — the same click `pick_rail_tab`
+    // above stood in for, driven a second time.
+    win.app.open_data_file(&ctx, &feb.to_string_lossy());
+    win.settle();
+    win.pick_rail_tab(LEDGER_RAIL, 3);
+    assert!(
+        win.app.focus_pane(brightfield_workbench::PaneKey::new(
+            brightfield_shell::editor::EDITOR
+        )),
+        "the editor pane is not in the window February was opened into"
+    );
+    win.settle();
+
+    // AC1, through the live window: the pane shows February's spec, never
+    // January's.
+    assert_eq!(
+        win.app
+            .chart_pane_title(brightfield_workbench::PaneKey::new(
+                brightfield_shell::editor::EDITOR
+            )),
+        Some("february.yaml".to_string()),
+        "the editor kept showing January's spec beside February's document"
+    );
+
+    // AC2, through the live window: the switch raised a standing warning
+    // naming January's generated spec.
+    let status_after = win
+        .app
+        .chart_pane_status(brightfield_workbench::PaneKey::new(
+            brightfield_shell::editor::EDITOR,
+        ));
+    let warned = status_after
+        .iter()
+        .any(|s| s.id == "editor-warning" && s.text.contains(&*jan_spec.to_string_lossy()));
+    assert!(
+        warned,
+        "switching data files with an unsaved edit raised no warning naming \
+         {}: {status_after:?}",
+        jan_spec.display()
+    );
+}
+
 /// **Going Home takes the Save offer with the document — at the door, and in
 /// the start opened after it.**
 ///
