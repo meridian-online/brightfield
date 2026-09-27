@@ -241,6 +241,19 @@ jobs:
       - name: formula-asset check self-test
         run: ./scripts/check-formula-asset-selftest.sh
 
+      # The installed-copy check is the same shape as the one above: it needs a
+      # published release and a real Homebrew, so it runs from release.yml on a
+      # tag (or by dispatch, .github/workflows/brew-install.yml) and this
+      # self-test is what runs on a pull request. It runs the real script
+      # against a stand-in `brew`, a throwaway git repository standing in for the
+      # tap, and a stand-in installed binary whose answers it chooses, and it
+      # requires the script to go red for the installed copy failing `brew test`,
+      # for the installed copy's own type-source check failing, and for each way
+      # the check cannot tell which release it is looking at. It also reads
+      # release.yml for the job that puts that failure in the release run.
+      - name: installed-copy check self-test
+        run: ./scripts/check-brew-install-selftest.sh
+
   # THE ONE GATE IN THIS WORKFLOW THAT NEEDS A RUST TOOLCHAIN, and it is a job
   # of its own so that the scan above keeps the property its comment claims.
   #

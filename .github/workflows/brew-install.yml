@@ -1,0 +1,57 @@
+# Install the published Homebrew formula on a hosted runner and run the copy
+# Homebrew installed. The check itself is scripts/check-brew-install.sh; this
+# file is the runner it needs.
+#
+# Two ways in, deliberately:
+#
+#   workflow_call   from release.yml's `brew-install` job, after `update-homebrew`
+#                   has pushed the formula, so a release run is red when the
+#                   installed copy fails the formula's own test. The release
+#                   assets are already published by then; what goes red is the
+#                   run, which is the report.
+#   workflow_dispatch   by hand, with a published tag, to run the same check
+#                   against a release that already exists. Without it the check
+#                   runs when a tag is pushed, which a branch cannot do.
+#
+# macos-15 is the hosted arm64 image, the one release.yml builds the aarch64
+# artifact on. There is no Intel macOS runner in this repository, so the Intel
+# formula block is asset-verified by check-formula-asset.sh and not run here; the
+# comment above `update-homebrew` in release.yml says where that stands.
+#
+# No secret is passed in or read: the tap is public.
+
+name: brew-install
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Published release tag whose tap formula is installed, e.g. v1.2.3"
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Published release tag whose tap formula is installed, e.g. v1.2.3"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  brew-install:
+    name: Install the published formula and run its test
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      # The script is this repository's; the formula and the release assets it
+      # installs are the tap's and the release's.
+      - uses: actions/checkout@v4
+
+      # Through the environment, never interpolated into the script: `${{ }}`
+      # inside a `run:` substitutes before the shell sees it.
+      - name: brew install the formula for the tag, then run its test
+        env:
+          TAG: ${{ inputs.tag }}
+        run: scripts/check-brew-install.sh --tag "$TAG"

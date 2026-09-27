@@ -47,6 +47,13 @@
 # of its own, so this workflow is where a formula addressing a file that is not
 # there has to stop. The comment above that job says what the check covers on
 # the Intel side and what it deliberately does not.
+#
+# The `brew-install` job runs after it and reads what the jobs before it do not:
+# the copy `brew install` puts in the Cellar. It installs the formula the
+# previous job pushed, on a hosted arm64 runner, and runs the formula's own test
+# and `--check-type-source` against the installed binary. It is a call to
+# .github/workflows/brew-install.yml, which can also be dispatched by hand for a
+# release that already exists.
 
 name: release
 
@@ -513,3 +520,26 @@ jobs:
           git diff --staged --quiet && echo "No changes" && exit 0
           git commit -m "Update brightfield to ${GITHUB_REF_NAME}"
           git push
+
+  # The copy Homebrew installs, run, in the release it belongs to.
+  #
+  # The steps above read the package before Homebrew has touched it. This is the
+  # first that reads what `brew install` leaves in the Cellar: it installs
+  # the formula `update-homebrew` just pushed and runs `brew test brightfield`
+  # and `brightfield --check-type-source` on the installed copy, on a hosted
+  # arm64 runner (.github/workflows/brew-install.yml, scripts/check-brew-install.sh).
+  #
+  # `needs: update-homebrew` because the formula it installs is the one that job
+  # pushes. A failure here turns this run red; it cannot unpublish the release,
+  # whose assets and formula are already out, so it reports the state a person
+  # who runs `brew install` is in. Run it against an existing release without a
+  # tag push with `gh workflow run brew-install.yml -f tag=<published tag>`.
+  #
+  # No secrets are passed: the tap is public and the check installs from it as
+  # anyone would, which is the point of running it.
+  brew-install:
+    name: Install the published formula
+    needs: update-homebrew
+    uses: ./.github/workflows/brew-install.yml
+    with:
+      tag: ${{ github.ref_name }}
