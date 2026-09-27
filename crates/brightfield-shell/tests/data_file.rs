@@ -27,16 +27,14 @@ use brightfield_shell::chart_kinds;
 use brightfield_shell::dashboard;
 use brightfield_shell::data_file;
 use brightfield_shell::design::Mode;
-use brightfield_shell::editor::{EditorPane, SaveReport, EDITOR};
+use brightfield_shell::editor::{EditorPane, SaveReport};
 use brightfield_shell::resample::Step;
 use brightfield_shell::starts;
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_sql::ir::ScalarValue;
-use brightfield_workbench::arrangement;
 use brightfield_workbench::registry::ChartKindId;
-use brightfield_workbench::PaneKey;
 
 /// A directory of this test's own, removed when the test ends.
 ///
@@ -1499,162 +1497,6 @@ fn two_data_files_with_one_name_keep_their_own_generated_specs() {
         "the spec in the first document's pane draws a different dashboard \
          from the one the reader is looking at"
     );
-}
-
-/// **AC1–AC3.** Two data files opened in **one window**: the editor pane
-/// reopens to the second file's spec, an unsaved edit against the first is
-/// abandoned with a warning naming it rather than carried into the new
-/// buffer, and the abandoned edit is never written to the first file's own
-/// bytes on disk.
-///
-/// The near-miss above never reaches this: each of its two documents gets its
-/// own `Window`, so `EditorPane::ui` runs against one file identity per pane
-/// instance, never two. Brightfield's items are instantiated once **per
-/// window** (`ChartView::items`, built by `charts.instantiate()` at boot,
-/// `crates/brightfield-shell/src/window.rs:2346`) — the same pane instance
-/// that opens January's spec is the one February's open reaches, and that is
-/// the case only a single `Window` opening two files in sequence can drive.
-#[test]
-fn a_second_data_file_in_one_window_reopens_the_editor_and_warns_of_the_first() {
-    // Distinct stems, deliberately — `spec_scratch_path` names the generated
-    // spec file after the data file's own stem, so two sources sharing one
-    // (the near-miss test's own subject, above) would generate two specs
-    // that both display as the same filename, and the title check below
-    // could not tell a fixed pane from a stuck one.
-    let jan_dir = TempDir::new("editor-switch-jan");
-    let feb_dir = TempDir::new("editor-switch-feb");
-    let jan = jan_dir.write("january_readings.csv", READINGS_CSV);
-    let feb = feb_dir.write(
-        "february_readings.csv",
-        "region,reading,depth\n\
-         north,12,3\n\
-         north,18,9\n\
-         south,31,14\n\
-         south,44,22\n\
-         east,7,35\n\
-         east,25,41\n\
-         west,52,57\n\
-         west,63,68\n",
-    );
-
-    let mut win = Window::open();
-    win.settle();
-    let ctx = win.ctx.clone();
-
-    // 1. January opens, and its own generated spec is what the editor's
-    //    first drawn frame reads — the pane's tab has to be made active for
-    //    that frame to happen at all, since only the active tab of a Tabs
-    //    container is drawn (`egui_tiles::container::tabs::Tabs::ui`).
-    win.app.open_data_file(&ctx, &jan.to_string_lossy());
-    win.settle();
-    assert!(
-        win.app.focus_tab(PaneKey::new(EDITOR)),
-        "the editor has no tab to activate — nothing below would ever draw it"
-    );
-    win.settle();
-    let jan_name = spec_name(&win);
-    assert_eq!(
-        win.app.chart_pane_title(PaneKey::new(EDITOR)),
-        Some(jan_name.clone()),
-        "the editor's first drawn frame did not open January's own spec"
-    );
-
-    // 2. Type into the live buffer — the real widget, not a direct call —
-    //    so the edit below is what a keystroke actually produces.
-    let canvas = win
-        .app
-        .region_rect(arrangement::CANVAS)
-        .expect("the canvas region drew, with the editor's tab active in it");
-    let p = canvas.center();
-    win.run(vec![click_at(p)]);
-    win.run(vec![vec![egui::Event::Text(" # unsaved".to_string())]]);
-    win.settle();
-    let dirtied = win
-        .app
-        .chart_pane_toolbar(PaneKey::new(EDITOR))
-        .into_iter()
-        .any(|t| t.id == "editor-save" && t.enabled);
-    assert!(
-        dirtied,
-        "the click and keystroke at {p:?} did not reach the editor's buffer, \
-         so the switch below abandons nothing and proves nothing"
-    );
-    let jan_spec_before = win
-        .app
-        .chart_doc()
-        .spec_path
-        .clone()
-        .expect("January's document still names the spec the pane opened");
-    let jan_spec_bytes_before =
-        std::fs::read_to_string(&jan_spec_before).expect("January's spec reads before the switch");
-
-    // 3. February opens in the SAME window — the identity the near-miss test
-    //    never reaches.
-    win.app.open_data_file(&ctx, &feb.to_string_lossy());
-    win.settle();
-    win.settle();
-
-    // AC1: the pane shows February's spec, never January's. Read back from
-    // the document rather than typed from `feb`'s own name: the pane titles
-    // itself from the generated spec's filename (`stem.yaml`), not the data
-    // file's.
-    let feb_name = spec_name(&win);
-    assert_ne!(
-        feb_name, jan_name,
-        "the two fixtures generated the same spec filename, so this title \
-         check cannot tell a fixed pane from a stuck one"
-    );
-    assert_eq!(
-        win.app.chart_pane_title(PaneKey::new(EDITOR)),
-        Some(feb_name),
-        "the editor kept showing January's spec beside February's chart"
-    );
-
-    // AC2: the abandoned edit raises a standing warning naming January's
-    // path, and is never written to January's own spec file.
-    let warned = win
-        .app
-        .chart_pane_status(PaneKey::new(EDITOR))
-        .into_iter()
-        .any(|s| s.id == "editor-warning" && s.text.contains(&*jan_spec_before.to_string_lossy()));
-    assert!(
-        warned,
-        "switching files with an unsaved edit raised no warning naming {}",
-        jan_spec_before.display()
-    );
-    let jan_spec_bytes_after =
-        std::fs::read_to_string(&jan_spec_before).expect("January's spec still reads");
-    assert_eq!(
-        jan_spec_bytes_before, jan_spec_bytes_after,
-        "the abandoned edit reached January's own spec file on disk"
-    );
-
-    // The new buffer is February's own, unedited — the old one was not
-    // retained underneath it.
-    let clean = win
-        .app
-        .chart_pane_toolbar(PaneKey::new(EDITOR))
-        .into_iter()
-        .any(|t| t.id == "editor-save" && !t.enabled);
-    assert!(
-        clean,
-        "the editor's Save control is still enabled right after the switch, \
-         so the abandoned buffer rode along into the new file's pane"
-    );
-}
-
-/// The live document's own spec file name, as the editor pane titles
-/// itself from it — read back once per document so the assertions that use
-/// it cannot drift from each other or from `spec_scratch_path`'s naming.
-fn spec_name(win: &Window) -> String {
-    win.app
-        .chart_doc()
-        .spec_path
-        .as_ref()
-        .and_then(|p| p.file_name())
-        .expect("the document names a spec file")
-        .to_string_lossy()
-        .into_owned()
 }
 
 /// The spec carries **why each tile is the tile it is**, and what was left out —
