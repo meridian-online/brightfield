@@ -266,6 +266,11 @@ pub fn find(id: ChartKindId) -> Option<&'static ChartKind<String>> {
 /// rather than a dead control. Crossfilter self-exclusion drops a plot's own
 /// clause from its own query, so the tile keeps its whole distribution while
 /// whatever else subscribes to [`SELECTION`] narrows.
+///
+/// **The two-layer body is [`crate::dashboard::ghosted_histogram_body`]**,
+/// shared with the dashboard tile of the same column. This builder wraps it
+/// under its own `params:` header and passes it no frame, so the block keeps
+/// its own default size and unpinned axis rather than the tile's fixed one.
 fn binned_histogram() -> ChartKind<String> {
     ChartKind {
         id: BINNED_HISTOGRAM,
@@ -279,24 +284,9 @@ fn binned_histogram() -> ChartKind<String> {
             let mut out = String::from("params:\n");
             let _ = writeln!(out, "  {SELECTION}: {{ select: crossfilter }}");
             out.push_str("plot:\n");
-            // The ghost, first so the subset covers it: the whole table, with
-            // no `filterBy:` to narrow it.
-            let _ = writeln!(out, "  - mark: rectY");
-            let _ = writeln!(out, "    data: {{ from: {SOURCE} }}");
-            let _ = writeln!(out, "    x: {{ bin: {column} }}");
-            let _ = writeln!(out, "    y: {{ count: }}");
-            let _ = writeln!(out, "    fill: \"{}\"", GHOST_INK.hex());
-            // The subset: the same transform, through the selection, in the
-            // mark ink a layer binding no colour channel takes.
-            let _ = writeln!(out, "  - mark: rectY");
-            let _ = writeln!(
-                out,
-                "    data: {{ from: {SOURCE}, filterBy: ${SELECTION} }}"
-            );
-            let _ = writeln!(out, "    x: {{ bin: {column} }}");
-            let _ = writeln!(out, "    y: {{ count: }}");
-            let _ = writeln!(out, "  - select: intervalX");
-            let _ = writeln!(out, "    as: ${SELECTION}");
+            out.push_str(&crate::dashboard::ghosted_histogram_body(
+                "  ", SOURCE, &column, None, false, None,
+            ));
             out
         },
     }

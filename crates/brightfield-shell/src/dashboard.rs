@@ -371,12 +371,12 @@ pub fn role_of_label(label: &str) -> Option<ColumnRole> {
 /// The role a profiled column's semantic type implies, and the label it came
 /// from.
 ///
-/// `None` for the four states that are not a trusted label: nobody was asked,
-/// the source could not answer, it answered *unlabelled* — and
-/// [`SemanticType::Unusable`], where a label came back and the column's own
-/// values contradict it. The last is the one worth stating: a label the values
-/// fail is not weak evidence about the column, it is evidence about the
-/// classifier, so the storage type takes the decision back.
+/// `None` for a label that is not trusted: nobody was asked, the source could
+/// not answer, it answered *unlabelled* — and [`SemanticType::Unusable`],
+/// where a label came back and the column's own values contradict it. The
+/// last is the one worth stating: a label the values fail is not weak
+/// evidence about the column, it is evidence about the classifier, so the
+/// storage type takes the decision back.
 #[must_use]
 pub fn role_of(semantic: &SemanticType) -> Option<(&str, ColumnRole)> {
     match semantic {
@@ -1204,35 +1204,28 @@ fn tile_yaml(tile: &Tile, indent: usize, width: u32, height: u32) -> String {
 /// with [`meridian_design::colour::Rgba::hex`], which round-trips the scale's own
 /// 8-bit channels exactly.
 ///
-/// **Read from the scale rather than copied from the histogram kind**, which
-/// reads the same step for the same device — see [`histogram_tile`] for why
-/// there are two emitters of one device and what closes that.
+/// **Read once, here.** [`ghosted_histogram_body`] is the only place that
+/// reads this token for the histogram device now — the registry's
+/// `binned-histogram` kind no longer keeps its own copy of the same step, and
+/// [`histogram_tile`]'s header says how the two routes reach it.
 const GHOST_INK: meridian_design::colour::Rgba = meridian_design::scales::GRAY_LIGHT[7];
 
 /// A measure's distribution, brushable, with **the unfiltered total kept behind
 /// the filtered subset**.
 ///
-/// Two `rectY` layers over one table and one `x: { bin: }` / `y: { count: }`
-/// transform. The first reads [`SOURCE`] straight and never narrows — the ghost,
-/// drawn in the private `GHOST_INK`; the second reads it through `filterBy:` the shared
-/// selection and lands on top in the default mark ink. They share the plot's
-/// scales, so the count axis is fixed by the total and a brushed tile reads as a
-/// fraction of the bars behind it. One filtered layer draws a perfectly good
-/// histogram after a brush and gives the reader no way to see what fraction of
-/// the data it is; `examples/rect-bin-count-ghost.yaml` is the same device
-/// authored by hand.
+/// The tile's own frame over [`ghosted_histogram_body`]'s two layers: `xDomain:
+/// Fixed` so the bin edges are not re-derived from whatever the *other* tiles
+/// left (the bars would move sideways under the pointer and two frames of one
+/// column would not be comparable), plus the tile's label and its declared
+/// size.
 ///
-/// `xDomain: Fixed` does the same job one axis over: without it the bin edges
-/// would be re-derived from whatever the *other* tiles left, so the bars would
-/// move sideways under the pointer and two frames of one column would not be
-/// comparable.
-///
-/// **Public, and that is the seam.** This device is emitted in two places — here
-/// as a tile, and by the `binned-histogram` kind as a standalone document — and
-/// prose is all that holds them in step. Publishing the tile form is what lets
-/// that end in one call rather than a third copy: a kind's builder can wrap this
-/// body under its own `params:` header. Until it does, a change to the device
-/// has to be made twice, and this comment is where a reader finds that out.
+/// **This shares a body with [`crate::chart_kinds::binned_histogram`].** Until
+/// [`ghosted_histogram_body`] existed, the device was written out twice — here
+/// as a tile, and by the `binned-histogram` kind as a standalone document —
+/// held in step only by prose, and prose does not redden. Now there is one
+/// function that writes the two `rectY` layers, the ghost ink and the
+/// selection binding; this function supplies it the tile's frame, and the kind
+/// supplies none of it, keeping its own default size and unpinned axis.
 #[must_use]
 pub fn histogram_tile(column: &str, indent: usize) -> String {
     histogram_tile_sized(column, indent, TILE_WIDTH, TILE_HEIGHT)
@@ -1247,32 +1240,85 @@ pub fn histogram_tile_sized(column: &str, indent: usize, width: u32, height: u32
     let table = yaml_string(SOURCE);
     let mut out = String::new();
     let _ = writeln!(out, "{pad}- plot:");
+    out.push_str(&ghosted_histogram_body(
+        &format!("{pad}  "),
+        &table,
+        &col,
+        Some((width, height)),
+        true,
+        Some(&col),
+    ));
+    out
+}
+
+/// The ghosted two-layer histogram body: the two `rectY` layers over one table
+/// and one `x: { bin: }` / `y: { count: }` transform, the ghost ink and the
+/// crossfilter selection binding — shared by [`histogram_tile_sized`]'s
+/// dashboard tile and [`crate::chart_kinds::binned_histogram`]'s registry
+/// block, so a change to either cannot leave the other silently different.
+///
+/// The first layer reads `table` straight and never narrows — the ghost, drawn
+/// in [`GHOST_INK`]; the second reads it through `filterBy:` the shared
+/// selection and lands on top in the default mark ink. They share the plot's
+/// scales, so the count axis is fixed by the total and a brushed tile reads as
+/// a fraction of the bars behind it. One filtered layer draws a perfectly good
+/// histogram after a brush and gives the reader no way to see what fraction of
+/// the data it is; `examples/rect-bin-count-ghost.yaml` is the same device
+/// authored by hand.
+///
+/// `pad` is the indent of the `- mark:`/`- select:` list items, so a caller
+/// nesting the body one level deeper (the tile, under its own `- plot:` line)
+/// passes a deeper pad than one emitting it at a document's top level (the
+/// kind, under its own bare `plot:` key). `table` and `column` arrive already
+/// YAML-quoted, in whichever style the caller already used, so this function
+/// does not decide a quoting convention for either route.
+///
+/// `size`, `fixed_x_domain` and `x_label` are the tile's own framing, each
+/// independently optional: the registry kind passes `None`/`false`/`None` and
+/// keeps its own default size and unpinned axis; [`histogram_tile_sized`]
+/// passes all three, sized to the tile's declared box. Plot attributes are
+/// siblings of the layer list, so they sit at `pad`'s own indent — one level
+/// shallower than each layer's own fields, one level deeper and they read as
+/// more options on the last interactor, which is a spec that parses and does
+/// something else.
+pub(crate) fn ghosted_histogram_body(
+    pad: &str,
+    table: &str,
+    column: &str,
+    size: Option<(u32, u32)>,
+    fixed_x_domain: bool,
+    x_label: Option<&str>,
+) -> String {
+    let mut out = String::new();
     // The ghost, first so the subset covers it: the whole table, with no
     // `filterBy:` to narrow it.
-    let _ = writeln!(out, "{pad}  - mark: rectY");
-    let _ = writeln!(out, "{pad}    data: {{ from: {table} }}");
-    let _ = writeln!(out, "{pad}    x: {{ bin: {col} }}");
-    let _ = writeln!(out, "{pad}    y: {{ count: }}");
-    let _ = writeln!(out, "{pad}    fill: \"{}\"", GHOST_INK.hex());
+    let _ = writeln!(out, "{pad}- mark: rectY");
+    let _ = writeln!(out, "{pad}  data: {{ from: {table} }}");
+    let _ = writeln!(out, "{pad}  x: {{ bin: {column} }}");
+    let _ = writeln!(out, "{pad}  y: {{ count: }}");
+    let _ = writeln!(out, "{pad}  fill: \"{}\"", GHOST_INK.hex());
     // The subset: the same transform, through the selection, in the mark ink a
     // layer binding no colour channel takes.
-    let _ = writeln!(out, "{pad}  - mark: rectY");
+    let _ = writeln!(out, "{pad}- mark: rectY");
     let _ = writeln!(
         out,
-        "{pad}    data: {{ from: {table}, filterBy: ${SELECTION} }}"
+        "{pad}  data: {{ from: {table}, filterBy: ${SELECTION} }}"
     );
-    let _ = writeln!(out, "{pad}    x: {{ bin: {col} }}");
-    let _ = writeln!(out, "{pad}    y: {{ count: }}");
+    let _ = writeln!(out, "{pad}  x: {{ bin: {column} }}");
+    let _ = writeln!(out, "{pad}  y: {{ count: }}");
     // The producer: dragging an x-range publishes it into the shared selection.
-    let _ = writeln!(out, "{pad}  - select: intervalX");
-    let _ = writeln!(out, "{pad}    as: ${SELECTION}");
-    // Plot attributes are siblings of `plot:`, so they sit at its indent — one
-    // level deeper and they read as more options on the last interactor, which
-    // is a spec that parses and does something else.
-    let _ = writeln!(out, "{pad}  xDomain: Fixed");
-    let _ = writeln!(out, "{pad}  xLabel: {col}");
-    let _ = writeln!(out, "{pad}  width: {width}");
-    let _ = writeln!(out, "{pad}  height: {height}");
+    let _ = writeln!(out, "{pad}- select: intervalX");
+    let _ = writeln!(out, "{pad}  as: ${SELECTION}");
+    if fixed_x_domain {
+        let _ = writeln!(out, "{pad}xDomain: Fixed");
+    }
+    if let Some(label) = x_label {
+        let _ = writeln!(out, "{pad}xLabel: {label}");
+    }
+    if let Some((width, height)) = size {
+        let _ = writeln!(out, "{pad}width: {width}");
+        let _ = writeln!(out, "{pad}height: {height}");
+    }
     out
 }
 
@@ -1345,8 +1391,7 @@ pub fn time_bars_tile_sized(column: &str, indent: usize, width: u32, height: u32
 /// it" is discharged in the artefact.** A reader with the spec in front of them
 /// can see that `amount` was binned because a label called it a currency
 /// amount, and that `region` was ranked because no trusted label came back and
-/// DuckDB stored it as text. The four states that count as no trusted label are
-/// [`role_of`]'s.
+/// DuckDB stored it as text — [`role_of`]'s call, not restated here.
 fn tile_comment(tile: &Tile) -> String {
     let because = match tile.chosen_by() {
         ChosenBy::Meaning { label, role } => {
