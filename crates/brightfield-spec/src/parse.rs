@@ -154,6 +154,7 @@ pub const LIFT_SURFACE_FIELDS: &[&str] = &[
     "marginLeft",
     "xDomain",
     "yDomain",
+    "xyDomain",
     "fxDomain",
     "fyDomain",
     "xRange",
@@ -868,6 +869,12 @@ struct Walker {
     /// because YAML key order is the author's and `plot:` may precede `data:`.
     /// See `inline_source_columns`.
     inline_columns: InlineColumns,
+    /// `plotDefaults:` — set on `self` (not only on the `Spec` being built) so
+    /// `walk_plot` can read it: the per-key loop over the root map in
+    /// `walk_spec` always finishes before `walk_component` walks into any
+    /// plot, regardless of where `plotDefaults:` sits in the file, so this is
+    /// fully populated (or left empty) by the time a plot is walked.
+    plot_defaults: PlotDefaults,
 }
 
 impl Walker {
@@ -903,7 +910,9 @@ impl Walker {
                 "params" => spec.params = self.walk_params_block(val)?,
                 "config" => spec.config = Config(self.walk_open_map(val, "config")?),
                 "plotDefaults" => {
-                    spec.plot_defaults = PlotDefaults(self.walk_open_map(val, "plotDefaults")?);
+                    let defaults = PlotDefaults(self.walk_open_map(val, "plotDefaults")?);
+                    self.plot_defaults = defaults.clone();
+                    spec.plot_defaults = defaults;
                 }
                 _ => {
                     // Anything else is a root-level component key (plot, vconcat,
@@ -1311,6 +1320,12 @@ impl Walker {
                 self.warn_unknown_projection(&value);
             }
             attributes.insert(key, value);
+        }
+        // `plotDefaults:` fills in whatever this plot left unset — key-agnostic,
+        // the whole bag, not a chosen few — so a value already on the plot
+        // always wins over the same key's default.
+        for (key, value) in self.plot_defaults.iter() {
+            attributes.entry(key.clone()).or_insert_with(|| value.clone());
         }
         let node = PlotNode {
             items: plot_items,
