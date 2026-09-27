@@ -232,7 +232,7 @@ fn warning_wire_name(warning: &ParseWarning) -> String {
         ParseWarning::ColourNameShadowsColumn { name, .. } => name.clone(),
         ParseWarning::NonNumericInset { attribute }
         | ParseWarning::NonStringLabel { attribute }
-        | ParseWarning::NonPositiveTickCount { attribute } => attribute.clone(),
+        | ParseWarning::InvalidTickCount { attribute } => attribute.clone(),
         ParseWarning::UnknownProjection { value } => value.clone(),
         ParseWarning::AspectRatioWithProjection { mark }
         | ParseWarning::MarkCannotProject { mark, .. } => mark.clone(),
@@ -273,7 +273,7 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         // which shows a mark-level value is not judged as a projection name.
         | ParseWarning::UnknownProjection { .. }
         | ParseWarning::NonStringLabel { .. }
-        | ParseWarning::NonPositiveTickCount { .. } => "plot",
+        | ParseWarning::InvalidTickCount { .. } => "plot",
         ParseWarning::UnknownAggregate { .. }
         | ParseWarning::UnconsumedChannelTransform { .. }
         | ParseWarning::ColourNameShadowsColumn { .. } => "channel",

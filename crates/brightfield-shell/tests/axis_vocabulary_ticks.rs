@@ -345,8 +345,10 @@ fn asking_for_five_draws_what_asking_for_nothing_draws() {
 /// **A bad count draws the default ticks and says why.** `xTicks: -3` is the
 /// spec's own example; zero, a fraction and a word are the other shapes of the
 /// same mistake, and a list is what Mosaic writes for a form this build does
-/// not read yet. Each is named in the load diagnostics the warning banner
-/// draws from — by its key — and leaves that axis on the default.
+/// not read yet. A count past the bound is the slip of extra zeros: taken at
+/// its word it would ask for a hundred thousand labelled ticks. Each is named
+/// in the load diagnostics the warning banner draws from — by its key — and
+/// leaves that axis on the default.
 #[test]
 fn a_count_that_is_not_a_whole_number_above_zero_is_named_and_ignored() {
     let default = compose("");
@@ -356,7 +358,9 @@ fn a_count_that_is_not_a_whole_number_above_zero_is_named_and_ignored() {
         ("xTicks", "2.5"),
         ("xTicks", "many"),
         ("xTicks", "[0, 50, 100]"),
+        ("xTicks", "100001"),
         ("yTicks", "-3"),
+        ("yTicks", "100001"),
     ] {
         let composed = compose(&format!("{key}: {value}"));
         let named = composed

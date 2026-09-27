@@ -813,9 +813,9 @@ pub const DEFAULT_TICK_COUNT: usize = 5;
 /// A pure spec reading, mirroring [`FixedDomains`] and [`AxisTitles`]: it says
 /// what the author asked for, and holds no opinion about what a scale then
 /// does with it. `None` covers both "the key is absent" and "the key is
-/// present but not a request this build can act on" — a non-whole, zero,
-/// negative or non-numeric value, which
-/// [`crate::parse::ParseWarning::NonPositiveTickCount`] has already named at
+/// present but not a request this build can act on" — see
+/// [`tick_count_target`] for what is — which
+/// [`crate::parse::ParseWarning::InvalidTickCount`] has already named at
 /// parse time, exactly as [`resolve_plot_insets`]'s malformed inset is named
 /// by `NonNumericInset` rather than by this resolver.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -842,19 +842,39 @@ impl TickCounts {
     }
 }
 
-/// The attribute value a `xTicks` / `yTicks` request must be to set a target
-/// count: a literal whole number above zero. Mirrors [`resolve_plot_insets`]'s
-/// literal-only numeric reading, but a tick count additionally has to be
-/// POSITIVE and WHOLE — d3's tick rule (`nice_step`,
-/// `crates/brightfield-render/src/axis.rs`) takes the count as a target to
-/// aim a 1/2/5 step at, and a target of zero, a negative one, or a fractional
-/// one is not a target that rule can aim at.
-fn tick_count_target(value: &SpecValue) -> Option<usize> {
-    match value {
-        SpecValue::Integer(n) if *n > 0 => Some(*n as usize),
-        SpecValue::Float(f) if *f > 0.0 && f.fract() == 0.0 => Some(*f as usize),
-        _ => None,
-    }
+/// The most ticks one axis is asked to aim for.
+///
+/// A count reaches the tick loop as a step of `span / count` and the loop
+/// draws one labelled tick per step, so a count with no upper bound is an
+/// allocation with none: `xTicks: 1000000000` would try to build a billion
+/// labelled ticks on the thread that draws the window. A count past this is
+/// judged the malformed value it almost certainly is — a slip of extra zeros —
+/// and named, rather than clamped to a number the author did not write.
+pub const MAX_TICK_COUNT: usize = 1000;
+
+/// The one judge of a `xTicks` / `yTicks` value: the target count it sets, or
+/// `None` when it sets none.
+///
+/// A target is a literal whole number from 1 to [`MAX_TICK_COUNT`], written as
+/// an integer or as a float with no fractional part. d3's tick rule
+/// (`nice_step`, `crates/brightfield-render/src/axis.rs`) takes the count as a
+/// target to aim a 1/2/5 step at, and a target of zero, a negative one or a
+/// fractional one is not one it can aim at.
+///
+/// `None` is not itself a warning: a lifted `$param` is a recorded deferral and
+/// resolves to it silently. The parser asks this same function to decide which
+/// `None`s are malformed values to name, so the resolver and the warning cannot
+/// disagree about what a valid count is.
+#[must_use]
+pub fn tick_count_target(value: &SpecValue) -> Option<usize> {
+    let whole = match value {
+        SpecValue::Integer(n) => usize::try_from(*n).ok()?,
+        // Saturating cast: a float too large for `usize` lands on `usize::MAX`
+        // and fails the range check below like any other oversized count.
+        SpecValue::Float(f) if f.fract() == 0.0 => *f as usize,
+        _ => return None,
+    };
+    (1..=MAX_TICK_COUNT).contains(&whole).then_some(whole)
 }
 
 /// Resolve a plot's `xTicks` / `yTicks` target tick count from its
@@ -3322,6 +3342,8 @@ xDomain: [0, 100]
             SpecValue::Integer(-3),
             SpecValue::Float(2.5),
             SpecValue::Float(-1.0),
+            SpecValue::Float(f64::NAN),
+            SpecValue::Float(f64::INFINITY),
             SpecValue::String("10".to_string()),
             SpecValue::Bool(true),
             SpecValue::Null,
@@ -3334,6 +3356,24 @@ xDomain: [0, 100]
                 "xTicks: {value:?} is not a positive whole number and must not set a target"
             );
         }
+    }
+
+    /// **The bound is inclusive at the top and exact.** [`MAX_TICK_COUNT`] is
+    /// a count an axis can be asked for and one past it is not, as an integer
+    /// and as a whole float — so the bound is where it is written, not a
+    /// neighbouring number.
+    #[test]
+    fn the_bound_is_inclusive_and_one_past_it_is_not_a_target() {
+        let at = MAX_TICK_COUNT;
+        let past = i64::try_from(MAX_TICK_COUNT).expect("the bound fits an i64") + 1;
+        assert_eq!(tick_count_target(&SpecValue::Integer(past - 1)), Some(at));
+        assert_eq!(tick_count_target(&SpecValue::Integer(past)), None);
+        assert_eq!(
+            tick_count_target(&SpecValue::Float((past - 1) as f64)),
+            Some(at)
+        );
+        assert_eq!(tick_count_target(&SpecValue::Float(past as f64)), None);
+        assert_eq!(tick_count_target(&SpecValue::Integer(1)), Some(1));
     }
 
     /// A tick count written under `plotDefaults` reaches a plot that sets no

@@ -426,12 +426,17 @@ pub enum ParseWarning {
     },
 
     /// A plot-level tick-count attribute (`xTicks`, `yTicks`) carried a value
-    /// that is not a literal whole number above zero. The count degrades to
-    /// the axis's default — the target `nice_step`
-    /// (`crates/brightfield-render/src/axis.rs`) draws when nothing asks for
-    /// one — and this names it so an author sees the typo rather than
-    /// silently losing the count (axis tick-count round).
-    NonPositiveTickCount {
+    /// that is not a literal whole number from 1 to
+    /// [`crate::layout::MAX_TICK_COUNT`] — zero, a negative or fractional
+    /// number, a count past the bound, or a non-numeric value. Mosaic also
+    /// takes an interval or a list of tick values at these keys; a build that
+    /// does not read those names them here too. The axis degrades to its
+    /// default count, and this names the key so an author sees the typo rather
+    /// than silently losing the count (axis tick-count round).
+    ///
+    /// [`crate::layout::tick_count_target`] is the sole judge of what is valid,
+    /// so a form a later build reads narrows this warning in the same edit.
+    InvalidTickCount {
         /// The offending attribute key.
         attribute: String,
     },
@@ -692,9 +697,10 @@ impl fmt::Display for ParseWarning {
                 f,
                 "plot attribute `{attribute}` is not a string — the label falls back to its derived form"
             ),
-            Self::NonPositiveTickCount { attribute } => write!(
+            Self::InvalidTickCount { attribute } => write!(
                 f,
-                "plot attribute `{attribute}` is not a whole number above zero — ticks fall back to the default count"
+                "plot attribute `{attribute}` is not a whole number from 1 to {} — ticks fall back to the default count",
+                crate::layout::MAX_TICK_COUNT
             ),
             Self::UnknownProjection { value } => write!(
                 f,
@@ -926,6 +932,20 @@ impl Walker {
                 "config" => spec.config = Config(self.walk_open_map(val, "config")?),
                 "plotDefaults" => {
                     let defaults = PlotDefaults(self.walk_open_map(val, "plotDefaults")?);
+                    // A default is merged into each plot AFTER `walk_plot`'s own
+                    // per-attribute checks, so a malformed tick count written
+                    // here would reach every plot and be dropped without a word.
+                    // Name it once, where it is declared.
+                    for key in PLOT_TICK_COUNT_KEYS {
+                        if defaults
+                            .get(key)
+                            .is_some_and(|v| !is_tick_count_or_deferred(v))
+                        {
+                            self.warnings.push(ParseWarning::InvalidTickCount {
+                                attribute: key.to_string(),
+                            });
+                        }
+                    }
                     self.plot_defaults = defaults.clone();
                     spec.plot_defaults = defaults;
                 }
@@ -1331,11 +1351,8 @@ impl Walker {
             // default tick count; name it so the author sees the typo. A
             // lifted `$param` is a recorded deferral, not a typo — don't warn,
             // mirroring the inset and label checks above.
-            const PLOT_TICK_COUNT_KEYS: [&str; 2] = ["xTicks", "yTicks"];
-            if PLOT_TICK_COUNT_KEYS.contains(&key.as_str())
-                && !is_tick_count_or_deferred(&value)
-            {
-                self.warnings.push(ParseWarning::NonPositiveTickCount {
+            if PLOT_TICK_COUNT_KEYS.contains(&key.as_str()) && !is_tick_count_or_deferred(&value) {
+                self.warnings.push(ParseWarning::InvalidTickCount {
                     attribute: key.clone(),
                 });
             }
@@ -2279,16 +2296,16 @@ fn is_count_transform(m: &serde_yaml::Mapping) -> bool {
     entries.next().is_none() && k.as_str() == Some("count") && v.is_null()
 }
 
-/// Whether a `xTicks` / `yTicks` value is a request `walk_plot`'s
-/// [`ParseWarning::NonPositiveTickCount`] check should stay silent about: a
-/// literal whole number above zero, which sets a target, or a lifted
-/// `$param`, a recorded deferral rather than a typo. Anything else — zero, a
-/// negative number, a fraction, or a non-numeric value — is the malformed
-/// case the warning names.
+/// The plot attributes that set an axis's target tick count.
+const PLOT_TICK_COUNT_KEYS: [&str; 2] = ["xTicks", "yTicks"];
+
+/// Whether a `xTicks` / `yTicks` value is one [`ParseWarning::InvalidTickCount`]
+/// should stay silent about: a valid target, as
+/// [`crate::layout::tick_count_target`] judges it, or a lifted `$param`, a
+/// recorded deferral rather than a typo. Anything else is the malformed case
+/// the warning names.
 fn is_tick_count_or_deferred(value: &SpecValue) -> bool {
-    matches!(value, SpecValue::Param(_))
-        || matches!(value, SpecValue::Integer(n) if *n > 0)
-        || matches!(value, SpecValue::Float(f) if *f > 0.0 && f.fract() == 0.0)
+    matches!(value, SpecValue::Param(_)) || crate::layout::tick_count_target(value).is_some()
 }
 
 /// Column names per inline data source, keyed by the `data:` entry's name.
@@ -3289,7 +3306,7 @@ plot:
     }
 
     #[test]
-    fn nonpositive_tick_count_warns_but_valid_and_param_defer() {
+    fn invalid_tick_count_warns_but_valid_and_param_defer() {
         // AC4: a tick count that is not a whole number above zero degrades to
         // the default count AND names itself — mirroring the NonNumericInset /
         // NonStringLabel parse-time checks. `xTicks: -3` is the card's own
@@ -3299,16 +3316,16 @@ plot:
         let n = out
             .warnings
             .iter()
-            .filter(|w| matches!(w, ParseWarning::NonPositiveTickCount { attribute } if attribute == "xTicks"))
+            .filter(|w| matches!(w, ParseWarning::InvalidTickCount { attribute } if attribute == "xTicks"))
             .count();
         assert_eq!(
             n, 1,
-            "one NonPositiveTickCount naming `xTicks`; got {:?}",
+            "one InvalidTickCount naming `xTicks`; got {:?}",
             out.warnings
         );
 
         // A valid whole number above zero, on either axis: silent.
-        for ok in ["xTicks: 10", "yTicks: 4", "xTicks: 2.0"] {
+        for ok in ["xTicks: 10", "yTicks: 4", "xTicks: 2.0", "xTicks: 1000"] {
             let src = format!(
                 "data:\n  t:\n    - {{ x: 1, y: 2 }}\nplot:\n  - {{ mark: dot, data: {{ from: t }}, x: x, y: y }}\n{ok}\n"
             );
@@ -3316,7 +3333,7 @@ plot:
             assert!(
                 !o.warnings
                     .iter()
-                    .any(|w| matches!(w, ParseWarning::NonPositiveTickCount { .. })),
+                    .any(|w| matches!(w, ParseWarning::InvalidTickCount { .. })),
                 "`{ok}` must not warn; got {:?}",
                 o.warnings
             );
@@ -3329,13 +3346,14 @@ plot:
             !out3
                 .warnings
                 .iter()
-                .any(|w| matches!(w, ParseWarning::NonPositiveTickCount { .. })),
+                .any(|w| matches!(w, ParseWarning::InvalidTickCount { .. })),
             "a $param tick count defers silently; got {:?}",
             out3.warnings
         );
 
-        // Zero and a fraction each warn too, not just a negative literal.
-        for bad_value in ["xTicks: 0", "yTicks: 2.5"] {
+        // Zero, a fraction and a count past the bound each warn too, not just a
+        // negative literal; the bound itself is a count and stays silent.
+        for bad_value in ["xTicks: 0", "yTicks: 2.5", "xTicks: 1001"] {
             let src = format!(
                 "data:\n  t:\n    - {{ x: 1, y: 2 }}\nplot:\n  - {{ mark: dot, data: {{ from: t }}, x: x, y: y }}\n{bad_value}\n"
             );
@@ -3343,11 +3361,47 @@ plot:
             assert!(
                 o.warnings
                     .iter()
-                    .any(|w| matches!(w, ParseWarning::NonPositiveTickCount { .. })),
+                    .any(|w| matches!(w, ParseWarning::InvalidTickCount { .. })),
                 "`{bad_value}` must warn; got {:?}",
                 o.warnings
             );
         }
+    }
+
+    /// A malformed tick count under `plotDefaults` is named once, where it is
+    /// declared — not once per plot it reaches, and not never: the merge into
+    /// each plot runs after `walk_plot`'s own check, so without this a bad
+    /// default would be dropped without a word on every plot.
+    #[test]
+    fn a_bad_plot_defaults_tick_count_warns_once_however_many_plots_inherit_it() {
+        let two_plots = |defaults: &str| {
+            format!(
+                "data:\n  t:\n    - {{ x: 1, y: 2 }}\nplotDefaults:\n  {defaults}\nvconcat:\n  \
+                 - plot:\n      - {{ mark: dot, data: {{ from: t }}, x: x, y: y }}\n  \
+                 - plot:\n      - {{ mark: dot, data: {{ from: t }}, x: x, y: y }}\n"
+            )
+        };
+        let bad = parse_spec(&two_plots("xTicks: -3"), Format::Yaml).expect("parses");
+        let named = bad
+            .warnings
+            .iter()
+            .filter(|w| matches!(w, ParseWarning::InvalidTickCount { attribute } if attribute == "xTicks"))
+            .count();
+        assert_eq!(
+            named, 1,
+            "one InvalidTickCount for the one default; got {:?}",
+            bad.warnings
+        );
+
+        let good = parse_spec(&two_plots("xTicks: 3"), Format::Yaml).expect("parses");
+        assert!(
+            !good
+                .warnings
+                .iter()
+                .any(|w| matches!(w, ParseWarning::InvalidTickCount { .. })),
+            "a valid default must not warn; got {:?}",
+            good.warnings
+        );
     }
 
     #[test]
