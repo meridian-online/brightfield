@@ -24,6 +24,7 @@ use brightfield_render::scale::{Scale, ScaleSet, ViewExtent};
 use brightfield_shell::pipeline::{Composed, LiveDashboard};
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_spec::ast::Component;
+use brightfield_spec::layout::{collect_plot_nodes, resolve_fixed_domains};
 use brightfield_spec::{parse_spec, Format, Spec};
 use brightfield_sql::ir::ScalarValue;
 
@@ -478,5 +479,213 @@ fn the_same_vendored_spec_unpinned_lets_the_cross_filter_move_its_x_domain() {
         after.1 < at_rest.1,
         "with the pin removed the axis follows the drawn rows, so the \
          cross-filter narrows it — {at_rest:?} stayed {after:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// plotDefaults reaches the plots that declare it
+// ---------------------------------------------------------------------------
+
+/// The vendored SPLOM spec's own `data/penguins.parquet` source, which this
+/// repository does not carry, replaced by a stand-in with the five columns
+/// its marks read: `bill_length`, `bill_depth`, `flipper_length`,
+/// `body_mass` and `species`.
+const PENGUINS_STAND_IN: &str = r"
+data:
+  penguins:
+    - { bill_length: 39.1, bill_depth: 18.7, flipper_length: 181, body_mass: 3750, species: Adelie }
+    - { bill_length: 46.5, bill_depth: 17.9, flipper_length: 192, body_mass: 3500, species: Chinstrap }
+    - { bill_length: 50.0, bill_depth: 16.3, flipper_length: 230, body_mass: 5700, species: Gentoo }
+    - { bill_length: 38.2, bill_depth: 20.0, flipper_length: 190, body_mass: 3900, species: Adelie }
+    - { bill_length: 49.0, bill_depth: 19.5, flipper_length: 210, body_mass: 4300, species: Chinstrap }
+    - { bill_length: 47.5, bill_depth: 14.2, flipper_length: 215, body_mass: 5000, species: Gentoo }
+";
+
+/// The vendored SPLOM file's own source text, unmodified.
+fn vendored_splom_source() -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../brightfield-spec/vendor/mosaic-specs/yaml/splom.yaml");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"))
+}
+
+/// `source` with its top-level `plotDefaults:` block deleted — a text-level
+/// mutation, not a post-parse one: the merge this card adds runs during
+/// parsing, so clearing `Spec::plot_defaults` after the fact would not undo
+/// it. Deletes the `plotDefaults:` line and every line indented under it.
+fn without_plot_defaults(source: &str) -> String {
+    let mut out = Vec::new();
+    let mut in_block = false;
+    for line in source.lines() {
+        if line == "plotDefaults:" {
+            in_block = true;
+            continue;
+        }
+        if in_block {
+            if line.is_empty() || line.starts_with(' ') || line.starts_with('\t') {
+                continue;
+            }
+            in_block = false;
+        }
+        out.push(line);
+    }
+    out.join("\n")
+}
+
+/// `source`, parsed, with its unreachable `data/penguins.parquet` source
+/// replaced by [`PENGUINS_STAND_IN`].
+fn splom_spec_from(source: &str) -> Spec {
+    let mut spec = parse_spec(source, Format::Yaml)
+        .unwrap_or_else(|e| panic!("parse: {e}"))
+        .spec;
+    spec.data = parse_spec(PENGUINS_STAND_IN, Format::Yaml)
+        .expect("the stand-in table parses")
+        .spec
+        .data;
+    spec
+}
+
+/// The vendored SPLOM spec, with its unreachable parquet source replaced by
+/// [`PENGUINS_STAND_IN`]. The `plotDefaults` block — `xDomain: Fixed`,
+/// `yDomain: Fixed` and `colorDomain: Fixed` among its keys — is what the
+/// vendored file declares, parsed by the ordinary parser;
+/// `unsetting_the_splom_plot_defaults_block_removes_the_pin` is what shows
+/// none of its 16 plots sets an `xDomain` or `yDomain` of its own — strip
+/// the block and no plot stays pinned.
+fn vendored_splom() -> Spec {
+    splom_spec_from(&vendored_splom_source())
+}
+
+/// **AC2.** The vendored `splom.yaml` declares `xDomain: Fixed` and
+/// `yDomain: Fixed` under `plotDefaults` and nowhere else — no plot sets
+/// either key itself. `the_vendored_splom_spec_pins_both_axes_from_plot_defaults`
+/// loads it through `LiveDashboard::load` and checks that every one of its
+/// 16 plots is pinned on both axes.
+#[test]
+fn the_vendored_splom_spec_pins_both_axes_from_plot_defaults() {
+    let spec = vendored_splom();
+    let live = LiveDashboard::load(spec, None).expect("the SPLOM spec loads live");
+    let plots = collect_plot_nodes(live.spec());
+    assert_eq!(
+        plots.len(),
+        16,
+        "fixture check: the SPLOM composes 16 plots"
+    );
+    for (at, plot) in plots {
+        let pinned = resolve_fixed_domains(plot);
+        assert!(
+            pinned.x && pinned.y,
+            "{at}: splom.yaml declares xDomain/yDomain: Fixed under plotDefaults \
+             and this plot sets neither itself; the resolver read {pinned:?}"
+        );
+    }
+}
+
+/// **The mutation guard for the test above.** The same vendored spec with its
+/// `plotDefaults` block deleted from the source — the state of the tree
+/// before this card's merge existed — pins nothing, because no plot in the
+/// fixture carries its own `xDomain`/`yDomain`.
+#[test]
+fn unsetting_the_splom_plot_defaults_block_removes_the_pin() {
+    let source = without_plot_defaults(&vendored_splom_source());
+    let spec = splom_spec_from(&source);
+    assert!(
+        spec.plot_defaults.is_empty(),
+        "fixture check: the plotDefaults block was not actually removed"
+    );
+    let live = LiveDashboard::load(spec, None).expect("the unpinned SPLOM spec loads live");
+    let plots = collect_plot_nodes(live.spec());
+    assert_eq!(
+        plots.len(),
+        16,
+        "fixture check: the SPLOM composes 16 plots"
+    );
+    for (at, plot) in plots {
+        let pinned = resolve_fixed_domains(plot);
+        assert!(
+            pinned.is_empty(),
+            "{at}: with plotDefaults unset and no per-plot xDomain/yDomain, \
+             nothing should be pinned; the resolver read {pinned:?}"
+        );
+    }
+}
+
+/// **AC1's third precedence pair, sourced from `plotDefaults` instead of a
+/// plot's own attributes.** The same rule the earlier per-plot-pin test in
+/// this file exercises: a reader's pan or zoom outranks a pin whether that
+/// pin came from the plot itself or, as here, instead reached the plot
+/// through the whole-bag `plotDefaults` merge — `resolve_fixed_domains`
+/// reads `plot.attributes` alone and cannot tell the two apart, so
+/// downstream code treats a `plotDefaults`-sourced pin exactly like the
+/// plot's own.
+#[test]
+fn a_plot_defaults_sourced_pin_still_moves_when_the_reader_navigates_it() {
+    let source = r"
+params:
+  brush: { select: crossfilter }
+plotDefaults:
+  yDomain: Fixed
+data:
+  readings:
+    - { site: Alder,  temp: 2,  load: 30 }
+    - { site: Birch,  temp: 6,  load: 18 }
+    - { site: Cedar,  temp: 10, load: 45 }
+    - { site: Dogwood, temp: 14, load: 22 }
+    - { site: Elm,    temp: 18, load: 12 }
+    - { site: Fir,    temp: 22, load: 38 }
+hconcat:
+  - plot:
+      - mark: dot
+        data: { from: readings }
+        x: temp
+        y: load
+      - select: intervalX
+        as: $brush
+    width: 320
+    height: 240
+  - plot:
+      - mark: barY
+        data: { from: readings, filterBy: $brush }
+        x: site
+        y: load
+    width: 320
+    height: 240
+";
+    let mut live =
+        LiveDashboard::load_str(source, None).expect("the plotDefaults-pinned spec loads live");
+    let before = live.present().expect("first composite");
+
+    let bar_chart = collect_plot_nodes(live.spec())
+        .into_iter()
+        .find(|(at, _)| at.ends_with("hconcat[1]"))
+        .expect("the bar chart plot node")
+        .1;
+    assert!(
+        resolve_fixed_domains(bar_chart).y,
+        "fixture check: the bar chart should be pinned on y through \
+         plotDefaults before navigation is even tried"
+    );
+
+    let pinned = linear_domain(plot_scales(&before, 1), Channel::Y)
+        .expect("the bar chart's y axis is continuous");
+
+    let navigated = (pinned.0, pinned.1 / 2.0);
+    let path = before.plots[1].path.clone();
+    live.set_view_extent(
+        &path,
+        ViewExtent {
+            x: None,
+            y: Some(navigated),
+        },
+    );
+    let after = live
+        .present()
+        .expect("re-composite at the navigated extent");
+    let drawn = linear_domain(plot_scales(&after, 1), Channel::Y)
+        .expect("the navigated y axis is still continuous");
+
+    assert_eq!(
+        drawn, navigated,
+        "the reader navigated this axis; the plotDefaults-sourced pin put it \
+         back to {pinned:?}"
     );
 }
