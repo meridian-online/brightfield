@@ -28,16 +28,16 @@ use brightfield_shell::pipeline::{Composed, LiveDashboard};
 // The fixture
 // ---------------------------------------------------------------------------
 
-/// Two columns that each run from 0 to 100, so both axes infer the same
-/// `[0, 100]` domain. `ATTRS` marks where the plot attributes go, so the arms
+/// Two columns that each run from 0 to `MAX`, so both axes infer the same
+/// `[0, MAX]` domain. `ATTRS` marks where the plot attributes go, so the arms
 /// differ by those lines and nothing else.
 const TEMPLATE: &str = r"
 data:
   pts:
-    - { a: 0,   b: 0 }
-    - { a: 25,  b: 60 }
-    - { a: 70,  b: 30 }
-    - { a: 100, b: 100 }
+    - { a: 0,       b: 0 }
+    - { a: QUARTER, b: SIXTY }
+    - { a: SEVENTY, b: THIRTY }
+    - { a: MAX,     b: MAX }
 plot:
   - mark: dot
     data: { from: pts }
@@ -48,12 +48,23 @@ height: 300
 ATTRS
 ";
 
-fn compose(attrs: &str) -> Composed {
-    let spec = TEMPLATE.replace("ATTRS", attrs);
+/// A plot whose axes run from 0 to `max`, with `attrs` as its plot attributes.
+fn compose_to(max: f64, attrs: &str) -> Composed {
+    let spec = TEMPLATE
+        .replace("QUARTER", &format!("{}", max * 0.25))
+        .replace("SIXTY", &format!("{}", max * 0.6))
+        .replace("SEVENTY", &format!("{}", max * 0.7))
+        .replace("THIRTY", &format!("{}", max * 0.3))
+        .replace("MAX", &format!("{max}"))
+        .replace("ATTRS", attrs);
     LiveDashboard::load_str(&spec, None)
         .expect("the spec loads")
         .present()
         .expect("the spec composes")
+}
+
+fn compose(attrs: &str) -> Composed {
+    compose_to(100.0, attrs)
 }
 
 fn scale(composed: &Composed, channel: Channel) -> &Scale {
@@ -195,21 +206,25 @@ fn multiples(step: usize) -> Vec<f64> {
     (0..=100).step_by(step).map(|v| v as f64).collect()
 }
 
-/// Fixture check: the axis under test is a linear one over `[0, 100]`. A
+/// Fixture check: the axis under test is a linear one over `[0, max]`. A
 /// domain that drifted (padded, niced, log) would move every expected value,
 /// and each assertion below would then be a claim about the fixture.
-fn assert_domain_is_0_to_100(composed: &Composed, channel: Channel) {
+fn assert_domain_is_0_to(composed: &Composed, channel: Channel, max: f64) {
     match scale(composed, channel) {
         Scale::Linear {
             domain_min,
             domain_max,
             ..
         } => assert!(
-            domain_min.abs() < 1e-9 && (domain_max - 100.0).abs() < 1e-9,
-            "fixture check: {channel:?} should span [0, 100], spans [{domain_min}, {domain_max}]"
+            domain_min.abs() < 1e-9 && (domain_max - max).abs() < 1e-9,
+            "fixture check: {channel:?} should span [0, {max}], spans [{domain_min}, {domain_max}]"
         ),
         other => panic!("fixture check: {channel:?} should be linear, is {other:?}"),
     }
+}
+
+fn assert_domain_is_0_to_100(composed: &Composed, channel: Channel) {
+    assert_domain_is_0_to(composed, channel, 100.0);
 }
 
 // ---------------------------------------------------------------------------
@@ -325,6 +340,34 @@ fn a_spec_that_sets_neither_key_draws_the_default_ticks() {
         &expected_y_labels(&composed, &values),
         &values,
     );
+}
+
+/// **The default is five, not merely something that draws six ticks on 0 to
+/// 100.** On that domain every target from three to six picks a step of 20, so
+/// the arm above cannot tell five from four or from six. These two domains can:
+/// on `[0, 15]` a target of four picks a step of 5 where five picks 2, and on
+/// `[0, 8]` a target of six picks a step of 1 where five picks 2. Between them
+/// they hold the default to five from both sides.
+#[test]
+fn the_default_is_a_target_of_five_not_four_or_six() {
+    for (max, step) in [(15.0, 2), (8.0, 2)] {
+        let composed = compose_to(max, "");
+        assert_domain_is_0_to(&composed, Channel::X, max);
+        assert_domain_is_0_to(&composed, Channel::Y, max);
+        let values: Vec<f64> = (0..=max as usize).step_by(step).map(|v| v as f64).collect();
+        assert_labels(
+            "x",
+            &painted_x_labels(&composed),
+            &expected_x_labels(&composed, &values),
+            &values,
+        );
+        assert_labels(
+            "y",
+            &painted_y_labels(&composed),
+            &expected_y_labels(&composed, &values),
+            &values,
+        );
+    }
 }
 
 /// A target of five is the default, so asking for five draws what asking for

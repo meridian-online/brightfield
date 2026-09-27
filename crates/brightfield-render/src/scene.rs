@@ -2160,18 +2160,18 @@ mod tests {
         );
     }
 
-    /// **The gridlines and the axis tick marks follow one count.** A tick is
-    /// drawn twice — a gridline behind the marks and a tick mark on the axis in
-    /// front of them — and both are computed from `TickCounts`. The shell's
-    /// tests read the tick LABELS, which only the axis draws, so a grid that
-    /// kept drawing the default count while the axis followed the request would
-    /// pass all of them. Here the path segments each scene carries are
-    /// compared instead. The marks and the axis line do not move with the
-    /// count, and asking the x axis for `10` rather than `2` on a 0 to 100
-    /// domain adds eight ticks (three become eleven), so the scene gains eight
-    /// gridlines AND eight tick marks. What one stroked line costs the encoder
-    /// is measured on a lone line rather than assumed, and a grid left at the
-    /// default would add half what is asserted.
+    /// **The gridlines and the axis tick marks follow one count, on each
+    /// axis.** A tick is drawn twice — a gridline behind the marks and a tick
+    /// mark on the axis in front of them — and both are computed from
+    /// `TickCounts`. The shell's tests read the tick LABELS, which only the
+    /// axis draws, so a grid that kept drawing the default count while the axis
+    /// followed the request would pass all of them. Here the path segments each
+    /// scene carries are compared instead. The marks and the axis line do not
+    /// move with the count, and asking one axis for `10` rather than `2` on a 0
+    /// to 100 domain adds eight ticks (three become eleven), so the scene gains
+    /// eight gridlines AND eight tick marks. What one stroked line costs the
+    /// encoder is measured on a lone line rather than assumed, and a grid left
+    /// at the default would add half what is asserted.
     #[test]
     fn gridlines_and_tick_marks_follow_the_same_count() {
         let schema = Arc::new(Schema::new(vec![
@@ -2200,30 +2200,34 @@ mod tests {
             sample: None,
             beyond_frame: false,
         };
-        let segments = |x: Option<usize>| {
+        let segments = |tick_counts: TickCounts| {
             let (scene, scales) = build_multi_mark_scene_pinned(
                 &[&data],
                 false,
                 &ResolvedTitles::default(),
                 &UnsampledDomains::default(),
                 &PinnedDomains::default(),
-                TickCounts { x, y: None },
+                tick_counts,
                 ChartInk::LIGHT,
             );
-            let Some(Scale::Linear {
-                domain_min,
-                domain_max,
-                ..
-            }) = scales.get(Channel::X).cloned()
-            else {
-                panic!("fixture check: x should be a linear scale");
-            };
-            assert!(
-                domain_min.abs() < 1e-9 && (domain_max - 100.0).abs() < 1e-9,
-                "fixture check: x should span [0, 100], spans [{domain_min}, {domain_max}]"
-            );
+            for channel in [Channel::X, Channel::Y] {
+                let Some(Scale::Linear {
+                    domain_min,
+                    domain_max,
+                    ..
+                }) = scales.get(channel).cloned()
+                else {
+                    panic!("fixture check: {channel:?} should be a linear scale");
+                };
+                assert!(
+                    domain_min.abs() < 1e-9 && (domain_max - 100.0).abs() < 1e-9,
+                    "fixture check: {channel:?} should span [0, 100], spans \
+                     [{domain_min}, {domain_max}]"
+                );
+            }
             scene.encoding().n_path_segments
         };
+
         let mut lone = Scene::new();
         lone.stroke(
             &Stroke::new(1.0),
@@ -2235,14 +2239,29 @@ mod tests {
         let per_line = lone.encoding().n_path_segments;
         assert!(per_line > 0, "fixture check: a stroked line has segments");
 
-        let two = segments(Some(2));
-        let ten = segments(Some(10));
-        assert_eq!(
-            ten - two,
-            per_line * 2 * 8,
-            "eight more ticks are eight more gridlines AND eight more tick marks, at \
-             {per_line} segments a line; {two} segments at 2 and {ten} at 10"
-        );
+        for (axis, at) in [
+            (
+                "x",
+                (|n| TickCounts {
+                    x: Some(n),
+                    y: None,
+                }) as fn(usize) -> TickCounts,
+            ),
+            ("y", |n| TickCounts {
+                x: None,
+                y: Some(n),
+            }),
+        ] {
+            let two = segments(at(2));
+            let ten = segments(at(10));
+            assert_eq!(
+                ten - two,
+                per_line * 2 * 8,
+                "on the {axis} axis, eight more ticks are eight more gridlines AND eight \
+                 more tick marks, at {per_line} segments a line; {two} segments at 2 and \
+                 {ten} at 10"
+            );
+        }
     }
 
     #[test]

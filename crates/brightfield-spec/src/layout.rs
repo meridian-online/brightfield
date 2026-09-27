@@ -3319,6 +3319,20 @@ xDomain: [0, 100]
         assert_eq!(resolve_tick_counts(&plot_with(&[])), TickCounts::default());
     }
 
+    /// A plot that asks for nothing is drawn at [`DEFAULT_TICK_COUNT`], and that
+    /// is five: the target every `compute_ticks` call site drew before either
+    /// key was read. The drawn ticks are pinned by the shell's default-arm tests
+    /// on domains where four and six would draw differently; this pins the
+    /// number they are pinning.
+    #[test]
+    fn a_plot_that_asks_for_nothing_is_drawn_at_five() {
+        assert_eq!(DEFAULT_TICK_COUNT, 5);
+        let none = resolve_tick_counts(&plot_with(&[]));
+        assert_eq!((none.x_target(), none.y_target()), (5, 5));
+        let one = resolve_tick_counts(&plot_with(&[("xTicks", SpecValue::Integer(7))]));
+        assert_eq!((one.x_target(), one.y_target()), (7, 5));
+    }
+
     /// A whole float (`xTicks: 2.0`) sets the same target an integer would —
     /// the AST's numeric split by literal syntax, not by the author's
     /// intent, is not a second instruction.
