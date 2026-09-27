@@ -1616,9 +1616,7 @@ fn a_second_data_file_in_one_window_reopens_the_editor_and_warns_of_the_first() 
         .app
         .chart_pane_status(PaneKey::new(EDITOR))
         .into_iter()
-        .any(|s| {
-            s.id == "editor-warning" && s.text.contains(&*jan_spec_before.to_string_lossy())
-        });
+        .any(|s| s.id == "editor-warning" && s.text.contains(&*jan_spec_before.to_string_lossy()));
     assert!(
         warned,
         "switching files with an unsaved edit raised no warning naming {}",
