@@ -2160,6 +2160,91 @@ mod tests {
         );
     }
 
+    /// **The gridlines and the axis tick marks follow one count.** A tick is
+    /// drawn twice — a gridline behind the marks and a tick mark on the axis in
+    /// front of them — and both are computed from `TickCounts`. The shell's
+    /// tests read the tick LABELS, which only the axis draws, so a grid that
+    /// kept drawing the default count while the axis followed the request would
+    /// pass all of them. Here the path segments each scene carries are
+    /// compared instead. The marks and the axis line do not move with the
+    /// count, and asking the x axis for `10` rather than `2` on a 0 to 100
+    /// domain adds eight ticks (three become eleven), so the scene gains eight
+    /// gridlines AND eight tick marks. What one stroked line costs the encoder
+    /// is measured on a lone line rather than assumed, and a grid left at the
+    /// default would add half what is asserted.
+    #[test]
+    fn gridlines_and_tick_marks_follow_the_same_count() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.0, 100.0])),
+                Arc::new(Float64Array::from(vec![0.0, 100.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        let dot = DotRenderer;
+        let data = ChartData {
+            batch: &batch,
+            channel_map: &cm,
+            renderer: &dot,
+            layout: ChartLayout::new(600.0, 300.0),
+            view_extent: None,
+            highlight: None,
+            sample: None,
+            beyond_frame: false,
+        };
+        let segments = |x: Option<usize>| {
+            let (scene, scales) = build_multi_mark_scene_pinned(
+                &[&data],
+                false,
+                &ResolvedTitles::default(),
+                &UnsampledDomains::default(),
+                &PinnedDomains::default(),
+                TickCounts { x, y: None },
+                ChartInk::LIGHT,
+            );
+            let Some(Scale::Linear {
+                domain_min,
+                domain_max,
+                ..
+            }) = scales.get(Channel::X).cloned()
+            else {
+                panic!("fixture check: x should be a linear scale");
+            };
+            assert!(
+                domain_min.abs() < 1e-9 && (domain_max - 100.0).abs() < 1e-9,
+                "fixture check: x should span [0, 100], spans [{domain_min}, {domain_max}]"
+            );
+            scene.encoding().n_path_segments
+        };
+        let mut lone = Scene::new();
+        lone.stroke(
+            &Stroke::new(1.0),
+            Affine::IDENTITY,
+            ChartInk::LIGHT.grid,
+            None,
+            &kurbo::Line::new((0.0, 0.0), (10.0, 0.0)),
+        );
+        let per_line = lone.encoding().n_path_segments;
+        assert!(per_line > 0, "fixture check: a stroked line has segments");
+
+        let two = segments(Some(2));
+        let ten = segments(Some(10));
+        assert_eq!(
+            ten - two,
+            per_line * 2 * 8,
+            "eight more ticks are eight more gridlines AND eight more tick marks, at \
+             {per_line} segments a line; {two} segments at 2 and {ten} at 10"
+        );
+    }
+
     #[test]
     fn build_chart_scene_with_highlight() {
         let schema = Arc::new(Schema::new(vec![
