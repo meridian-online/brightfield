@@ -425,6 +425,17 @@ pub enum ParseWarning {
         attribute: String,
     },
 
+    /// A plot-level tick-count attribute (`xTicks`, `yTicks`) carried a value
+    /// that is not a literal whole number above zero. The count degrades to
+    /// the axis's default — the target `nice_step`
+    /// (`crates/brightfield-render/src/axis.rs`) draws when nothing asks for
+    /// one — and this names it so an author sees the typo rather than
+    /// silently losing the count (axis tick-count round).
+    NonPositiveTickCount {
+        /// The offending attribute key.
+        attribute: String,
+    },
+
     /// A plot's `projectionType` carried a value outside Mosaic's
     /// `ProjectionName` vocabulary, or a non-string value. The plot then names
     /// no projection at all — it draws as a cartesian plot — and this names the
@@ -680,6 +691,10 @@ impl fmt::Display for ParseWarning {
             Self::NonStringLabel { attribute } => write!(
                 f,
                 "plot attribute `{attribute}` is not a string — the label falls back to its derived form"
+            ),
+            Self::NonPositiveTickCount { attribute } => write!(
+                f,
+                "plot attribute `{attribute}` is not a whole number above zero — ticks fall back to the default count"
             ),
             Self::UnknownProjection { value } => write!(
                 f,
@@ -1308,6 +1323,19 @@ impl Walker {
                 )
             {
                 self.warnings.push(ParseWarning::NonStringLabel {
+                    attribute: key.clone(),
+                });
+            }
+            // A plot-level tick-count attribute (`xTicks`, `yTicks`) that is
+            // not a literal whole number above zero degrades to the axis's
+            // default tick count; name it so the author sees the typo. A
+            // lifted `$param` is a recorded deferral, not a typo — don't warn,
+            // mirroring the inset and label checks above.
+            const PLOT_TICK_COUNT_KEYS: [&str; 2] = ["xTicks", "yTicks"];
+            if PLOT_TICK_COUNT_KEYS.contains(&key.as_str())
+                && !is_tick_count_or_deferred(&value)
+            {
+                self.warnings.push(ParseWarning::NonPositiveTickCount {
                     attribute: key.clone(),
                 });
             }
@@ -2249,6 +2277,18 @@ fn is_count_transform(m: &serde_yaml::Mapping) -> bool {
         return false;
     };
     entries.next().is_none() && k.as_str() == Some("count") && v.is_null()
+}
+
+/// Whether a `xTicks` / `yTicks` value is a request `walk_plot`'s
+/// [`ParseWarning::NonPositiveTickCount`] check should stay silent about: a
+/// literal whole number above zero, which sets a target, or a lifted
+/// `$param`, a recorded deferral rather than a typo. Anything else — zero, a
+/// negative number, a fraction, or a non-numeric value — is the malformed
+/// case the warning names.
+fn is_tick_count_or_deferred(value: &SpecValue) -> bool {
+    matches!(value, SpecValue::Param(_))
+        || matches!(value, SpecValue::Integer(n) if *n > 0)
+        || matches!(value, SpecValue::Float(f) if *f > 0.0 && f.fract() == 0.0)
 }
 
 /// Column names per inline data source, keyed by the `data:` entry's name.
@@ -3246,6 +3286,68 @@ plot:
             "a boolean title warns naming `title`; got {:?}",
             obt.warnings
         );
+    }
+
+    #[test]
+    fn nonpositive_tick_count_warns_but_valid_and_param_defer() {
+        // AC4: a tick count that is not a whole number above zero degrades to
+        // the default count AND names itself — mirroring the NonNumericInset /
+        // NonStringLabel parse-time checks. `xTicks: -3` is the card's own
+        // example.
+        let bad = "data:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\nxTicks: -3\n";
+        let out = parse_spec(bad, Format::Yaml).expect("parses despite a bad tick count");
+        let n = out
+            .warnings
+            .iter()
+            .filter(|w| matches!(w, ParseWarning::NonPositiveTickCount { attribute } if attribute == "xTicks"))
+            .count();
+        assert_eq!(
+            n, 1,
+            "one NonPositiveTickCount naming `xTicks`; got {:?}",
+            out.warnings
+        );
+
+        // A valid whole number above zero, on either axis: silent.
+        for ok in ["xTicks: 10", "yTicks: 4", "xTicks: 2.0"] {
+            let src = format!(
+                "data:\n  t:\n    - {{ x: 1, y: 2 }}\nplot:\n  - {{ mark: dot, data: {{ from: t }}, x: x, y: y }}\n{ok}\n"
+            );
+            let o = parse_spec(&src, Format::Yaml).expect("parses");
+            assert!(
+                !o.warnings
+                    .iter()
+                    .any(|w| matches!(w, ParseWarning::NonPositiveTickCount { .. })),
+                "`{ok}` must not warn; got {:?}",
+                o.warnings
+            );
+        }
+
+        // A lifted $param is a recorded deferral, not a typo — no warning.
+        let param = "params:\n  n: 5\ndata:\n  t:\n    - { x: 1, y: 2 }\nplot:\n  - { mark: dot, data: { from: t }, x: x, y: y }\nxTicks: $n\n";
+        let out3 = parse_spec(param, Format::Yaml).expect("parses");
+        assert!(
+            !out3
+                .warnings
+                .iter()
+                .any(|w| matches!(w, ParseWarning::NonPositiveTickCount { .. })),
+            "a $param tick count defers silently; got {:?}",
+            out3.warnings
+        );
+
+        // Zero and a fraction each warn too, not just a negative literal.
+        for bad_value in ["xTicks: 0", "yTicks: 2.5"] {
+            let src = format!(
+                "data:\n  t:\n    - {{ x: 1, y: 2 }}\nplot:\n  - {{ mark: dot, data: {{ from: t }}, x: x, y: y }}\n{bad_value}\n"
+            );
+            let o = parse_spec(&src, Format::Yaml).expect("parses despite a bad tick count");
+            assert!(
+                o.warnings
+                    .iter()
+                    .any(|w| matches!(w, ParseWarning::NonPositiveTickCount { .. })),
+                "`{bad_value}` must warn; got {:?}",
+                o.warnings
+            );
+        }
     }
 
     #[test]
