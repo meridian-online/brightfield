@@ -869,11 +869,11 @@ struct Walker {
     /// because YAML key order is the author's and `plot:` may precede `data:`.
     /// See `inline_source_columns`.
     inline_columns: InlineColumns,
-    /// `plotDefaults:` — set on `self` (not only on the `Spec` being built) so
-    /// `walk_plot` can read it: the per-key loop over the root map in
-    /// `walk_spec` always finishes before `walk_component` walks into any
-    /// plot, regardless of where `plotDefaults:` sits in the file, so this is
-    /// fully populated (or left empty) by the time a plot is walked.
+    /// `plotDefaults:` — set on `self`, in addition to the `Spec` being
+    /// built, so `walk_plot` can read it: the per-key loop over the root
+    /// map in `walk_spec` finishes before `walk_component` walks into any
+    /// plot, regardless of where `plotDefaults:` sits in the file, so this
+    /// is fully populated (or left empty) by the time a plot is walked.
     plot_defaults: PlotDefaults,
 }
 

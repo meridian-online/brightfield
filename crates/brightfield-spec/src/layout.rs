@@ -3201,12 +3201,12 @@ xDomain: [0, 100]
 
     /// **AC5 — a spec that declares no `plotDefaults` resolves the same plot
     /// attributes and the same `FixedDomains` as before this change.** One
-    /// line per plot, across every vendored and curated spec whose
+    /// line per plot, across the vendored and curated specs whose
     /// `plotDefaults` bag is empty, captured against the tree at
-    /// `origin/main` = `cd7a4c6` — before `Walker::walk_plot` merged
-    /// anything into a plot's attributes. The merge in `walk_plot` iterates
-    /// `self.plot_defaults`, so an empty bag contributes nothing regardless
-    /// of a plot's own attributes; this pins that down as an exact,
+    /// `origin/main` = `cd7a4c6` — before `Walker::walk_plot` touched a
+    /// plot's attributes. The merge in `walk_plot` iterates
+    /// `self.plot_defaults`, so an empty bag leaves a plot's own attributes
+    /// untouched; this pins that down as an exact,
     /// reviewable value rather than an assumption. A bug that let a default
     /// leak onto the wrong plot, or that mutated attributes even off an
     /// empty bag, would redden this — an omitted spec here is a gap in the

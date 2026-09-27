@@ -545,17 +545,20 @@ fn splom_spec_from(source: &str) -> Spec {
 }
 
 /// The vendored SPLOM spec, with its unreachable parquet source replaced by
-/// [`PENGUINS_STAND_IN`]. Every `plotDefaults` key — `xDomain: Fixed`,
-/// `yDomain: Fixed` and `colorDomain: Fixed` among them — is what the
-/// vendored file declares, parsed by the ordinary parser; none of its 16
-/// plots sets an `xDomain` or `yDomain` of its own.
+/// [`PENGUINS_STAND_IN`]. The `plotDefaults` block — `xDomain: Fixed`,
+/// `yDomain: Fixed` and `colorDomain: Fixed` among its keys — is what the
+/// vendored file declares, parsed by the ordinary parser;
+/// `unsetting_the_splom_plot_defaults_block_removes_the_pin` is what shows
+/// none of its 16 plots sets an `xDomain` or `yDomain` of its own — strip
+/// the block and no plot stays pinned.
 fn vendored_splom() -> Spec {
     splom_spec_from(&vendored_splom_source())
 }
 
 /// **AC2.** The vendored `splom.yaml` declares `xDomain: Fixed` and
 /// `yDomain: Fixed` under `plotDefaults` and nowhere else — no plot sets
-/// either key itself. Loaded through `LiveDashboard::load`, every one of its
+/// either key itself. `the_vendored_splom_spec_pins_both_axes_from_plot_defaults`
+/// loads it through `LiveDashboard::load` and checks that every one of its
 /// 16 plots is pinned on both axes.
 #[test]
 fn the_vendored_splom_spec_pins_both_axes_from_plot_defaults() {
@@ -609,10 +612,11 @@ fn unsetting_the_splom_plot_defaults_block_removes_the_pin() {
 /// **AC1's third precedence pair, sourced from `plotDefaults` instead of a
 /// plot's own attributes.** The same rule the earlier per-plot-pin test in
 /// this file exercises: a reader's pan or zoom outranks a pin whether that
-/// pin came from the plot itself or, as here, only reached the plot through
-/// the whole-bag `plotDefaults` merge — `resolve_fixed_domains` reads
-/// `plot.attributes` alone and cannot tell the two apart, so nothing
-/// downstream can treat them differently either.
+/// pin came from the plot itself or, as here, instead reached the plot
+/// through the whole-bag `plotDefaults` merge — `resolve_fixed_domains`
+/// reads `plot.attributes` alone and cannot tell the two apart, so
+/// downstream code treats a `plotDefaults`-sourced pin exactly like the
+/// plot's own.
 #[test]
 fn a_plot_defaults_sourced_pin_still_moves_when_the_reader_navigates_it() {
     let source = r"
