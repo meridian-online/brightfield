@@ -39,6 +39,19 @@
 # installed and fails the thing the bundle is for, which is why
 # scripts/check-formula-layout.sh reads the install block rather than the
 # Cellar's file list.
+#
+# WHY `preserve_rpath`. Homebrew rewrites the install name of each dylib it
+# installs to a path under its own prefix, and re-signs the file. The finetype
+# extension is a dylib, so without this line the installed extension is not the
+# file `bundle-manifest.sha256` records and the application refuses it: measured
+# on brightfield 0.1.5 installed by Homebrew, `--check-type-source` exited 1 with
+# "not the file that was packaged". scripts/package.sh gives the extension an
+# `@rpath/` install name (scripts/set-extension-rpath-id.sh), and
+# `preserve_rpath` is Homebrew's public switch for leaving such a name alone.
+# Neither half works without the other. The `respond_to?` guard keeps the
+# formula loading on a Homebrew that predates the method (Homebrew commit
+# 2bd0b81a1a); there the install is the degraded one this replaces rather than
+# an error. scripts/check-formula-layout.sh refuses a formula without the line.
 set -euo pipefail
 
 TAG="${1:?usage: scripts/write-brightfield-formula.sh TAG BASE_URL ARM_SHA256 INTEL_SHA256}"
@@ -61,6 +74,11 @@ class Brightfield < Formula
   license "MIT"
 
   depends_on :macos
+
+  # Leave the finetype extension's @rpath install name as packaged: rewriting
+  # it changes the file, and the application then refuses the extension as not
+  # the one bundle-manifest.sha256 records.
+  preserve_rpath if respond_to?(:preserve_rpath)
 
   on_macos do
     if Hardware::CPU.arm?

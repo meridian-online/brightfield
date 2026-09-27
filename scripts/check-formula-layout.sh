@@ -75,4 +75,14 @@ printf '%s\n' "$BLOCK" | grep -q 'bin.write_exec_script' \
   A symlink in bin/ is not equivalent: current_exe() on macOS does not resolve one,
   so the binary looks for its bundle in bin/ and finds nothing."
 
-echo "check-formula-layout: ${FORMULA} installs the tree into libexec and execs it from bin."
+# THE THIRD WAY, which installs every file in the right place and still changes
+# one of them: without `preserve_rpath` Homebrew rewrites the finetype
+# extension's install name and re-signs it, the extension is no longer the file
+# bundle-manifest.sha256 records, and the application refuses it. Read on the
+# class body, uncommented, because a commented-out line reads the same to grep.
+grep -vE '^[[:space:]]*#' "$FORMULA" | grep -Eq '^[[:space:]]*preserve_rpath([[:space:]]|$)' \
+  || fail "${FORMULA} does not declare preserve_rpath. Homebrew then rewrites the finetype
+  extension's @rpath install name and re-signs it, so the installed extension is not the
+  file bundle-manifest.sha256 records and the application refuses it."
+
+echo "check-formula-layout: ${FORMULA} installs the tree into libexec, execs it from bin, and preserves the extension's @rpath name."

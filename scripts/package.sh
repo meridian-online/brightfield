@@ -298,10 +298,17 @@ fi
 # user can check it by hand. What it detects is a bundle that changed after
 # packaging — a truncated unpack, a partial copy, a stale file. It is not a
 # signature: it lives in the directory it describes.
+#
+# The extension's install name is changed to `@rpath/…` BEFORE the manifest is
+# written, so the manifest records the renamed file. Homebrew rewrites any other
+# install name when it installs the tarball, which left a Homebrew install
+# refusing its own extension; scripts/set-extension-rpath-id.sh says why and
+# how, and scripts/write-brightfield-formula.sh carries the other half.
 stage_finetype() {
   local dest="$1"
   [ -n "$FINETYPE_BUNDLE" ] || return 0
   cp -RL "$FINETYPE_BUNDLE" "$dest"
+  scripts/set-extension-rpath-id.sh "$dest/finetype.duckdb_extension"
   rm -f "$dest/bundle-manifest.sha256"
   # Relative paths, sorted, so the manifest is identical for identical input
   # and a diff between two packaging runs means something. The manifest EXCLUDES

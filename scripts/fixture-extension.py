@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Write a fixture DuckDB loadable extension: a body plus a metadata trailer.
 
-    scripts/fixture-extension.py OUT PLATFORM DUCKDB_VERSION EXT_VERSION ABI
+    scripts/fixture-extension.py OUT PLATFORM DUCKDB_VERSION EXT_VERSION ABI [BODY]
 
-Not an extension anything can LOAD — the body is filler. It carries a real
+Not an extension anything can LOAD — the body is filler, or the bytes of BODY
+when it is given: scripts/package-artifact-staging-selftest.sh passes a real
+compiled dylib, because scripts/package.sh renames the staged extension's
+install name and refuses a file that is not a Mach-O dylib. It carries a real
 trailer, which is what `scripts/check-bundled-extension.sh` and
 `brightfield_engine::semantic::read_stamp` read, so the guards over a bundle
 can be exercised on every pull request with no network and no 17 MB model.
@@ -27,10 +30,11 @@ import sys
 
 
 def main() -> int:
-    if len(sys.argv) != 6:
+    if len(sys.argv) not in (6, 7):
         print(__doc__.strip().splitlines()[2].strip(), file=sys.stderr)
         return 2
     out, platform, duckdb_version, ext_version, abi = sys.argv[1:6]
+    body_path = sys.argv[6] if len(sys.argv) == 7 else None
 
     def pad(s: str) -> bytes:
         raw = s.encode()
@@ -38,7 +42,11 @@ def main() -> int:
             raise SystemExit(f"fixture-extension: {s!r} does not fit a 32-byte field")
         return raw.ljust(32, b"\0")
 
-    body = b"a plausible shared library body" * 40
+    if body_path is None:
+        body = b"a plausible shared library body" * 40
+    else:
+        with open(body_path, "rb") as fh:
+            body = fh.read()
     trailer = b"\0" * 96
     trailer += pad(abi) + pad(ext_version) + pad(duckdb_version) + pad(platform) + pad("4")
     trailer += b"\0" * 256

@@ -56,7 +56,7 @@ if [ "$(uname -s)" != "Darwin" ]; then
 	exit 0
 fi
 
-for tool in cc otool codesign plutil hdiutil shasum rustc rsync; do
+for tool in cc otool install_name_tool codesign plutil hdiutil shasum rustc rsync; do
 	command -v "$tool" >/dev/null 2>&1 || {
 		echo "package-artifact-staging-selftest: ${tool} is missing on a Darwin host" >&2
 		exit 1
@@ -90,7 +90,18 @@ out="$TMP/out"
 # the pinned tag, so packaging gets past its own refusals and reaches staging.
 BUNDLE="$TMP/bundle"
 mkdir -p "$BUNDLE/model/model2vec" "$BUNDLE/model/value_model2vec"
-"$HERE/fixture-extension.py" "$BUNDLE/finetype.duckdb_extension" "$PLATFORM" v1.2.0 "${TAG#v}" C_STRUCT
+# The extension's body is a real dylib, compiled here, with an install name
+# that is an absolute build path the way finetype's CI leaves one: package.sh
+# renames it to `@rpath/…` before writing the manifest, and refuses a file that
+# is not a Mach-O dylib.
+printf 'int fixture_extension(void) { return 0; }\n' >"$TMP/fixture-extension.c"
+cc -dynamiclib -install_name /fixture/build/deps/libfixture.dylib \
+	-o "$TMP/fixture-extension.dylib" "$TMP/fixture-extension.c" || {
+	echo "selftest: could not compile the fixture extension's dylib" >&2
+	exit 1
+}
+"$HERE/fixture-extension.py" "$BUNDLE/finetype.duckdb_extension" "$PLATFORM" v1.2.0 "${TAG#v}" C_STRUCT \
+	"$TMP/fixture-extension.dylib"
 printf 'weights' >"$BUNDLE/model/model.safetensors"
 printf '{"value_embed_model": "value_model2vec"}' >"$BUNDLE/model/config.json"
 printf '{}' >"$BUNDLE/model/label_map.json"
@@ -272,6 +283,50 @@ for kind in tar.gz dmg; do
 	fi
 done
 
+# extension_named_in KIND — the staged extension in KIND carries an `@rpath/`
+# install name, and the bundle matches the manifest packaging wrote beside it.
+# An absolute install name is what Homebrew rewrites on install, which changes
+# the file and makes the application refuse it; see
+# scripts/set-extension-rpath-id.sh.
+extension_named_in() {
+	local kind="$1" dir status=0 id
+	rm -rf "$LOOK"
+	mkdir -p "$LOOK"
+	case "$kind" in
+	tar.gz)
+		tar -xzf "$COPY/dist/${NAME}.tar.gz" -C "$LOOK" || return 1
+		dir="$LOOK/${NAME}/finetype"
+		;;
+	dmg)
+		attach_image "$COPY/dist/${NAME}.dmg" "$LOOK" || return 1
+		dir="$LOOK/Brightfield.app/Contents/Resources/finetype"
+		;;
+	esac
+	id="$(otool -D "$dir/finetype.duckdb_extension" 2>&1 | sed -n 2p)"
+	case "$id" in
+	@rpath/libfixture.dylib) ;;
+	*)
+		echo "the ${kind}'s extension has install name '${id}', not @rpath/libfixture.dylib" >>"$out"
+		status=1
+		;;
+	esac
+	(cd "$dir" && shasum -a 256 -c bundle-manifest.sha256) >>"$out" 2>&1 || status=1
+	if [ "$kind" = dmg ]; then
+		hdiutil detach "$LOOK" -quiet >/dev/null 2>&1 || hdiutil detach "$LOOK" -force -quiet >/dev/null 2>&1 || true
+	fi
+	return "$status"
+}
+
+for kind in tar.gz dmg; do
+	if extension_named_in "$kind"; then
+		echo "  ok   the ${kind}'s extension carries an @rpath install name and matches its manifest"
+	else
+		echo "  FAIL the ${kind}'s extension would be renamed by Homebrew, or does not match its manifest:"
+		sed 's/^/       /' "$out"
+		failures=$((failures + 1))
+	fi
+done
+
 # THE STRUCTURAL PIN OF THIS FILE. Everything above is satisfied by a read-back
 # that decided not to run the binary — and then the two cases above would be
 # reading a file tree, which is the reading that already existed. The marker is
@@ -347,6 +402,32 @@ broken_case "the tarball's staging call is deleted" \
 	'stage_finetype "$STAGE/finetype"' \
 	':' \
 	tar.gz "carries no type source at finetype" dmg
+
+echo "== packaging that leaves the extension's install name for Homebrew to rewrite"
+# The rename deleted from stage_finetype: packaging still completes, the read-back
+# still passes (the manifest matches the unrenamed file), and a Homebrew install
+# of the result refuses its own extension. Both artifacts must be refused here.
+copy_checkout
+if mutate '  scripts/set-extension-rpath-id.sh "$dest/finetype.duckdb_extension"' '  :'; then
+	if ! run_packaging; then
+		echo "  FAIL the rename deleted: packaging itself broke:"
+		sed 's/^/       /' "$out"
+		failures=$((failures + 1))
+	else
+		for kind in tar.gz dmg; do
+			if extension_named_in "$kind"; then
+				echo "  FAIL the rename deleted: the ${kind}'s extension still reads as renamed"
+				failures=$((failures + 1))
+			elif ! grep -qF "not @rpath/libfixture.dylib" "$out"; then
+				echo "  FAIL the rename deleted: the ${kind} was refused for another reason:"
+				sed 's/^/       /' "$out"
+				failures=$((failures + 1))
+			else
+				echo "  ok   the rename deleted: the ${kind}'s extension is refused for its install name"
+			fi
+		done
+	fi
+fi
 
 # broken_engine_case NAME OLD MISSING_KIND NEEDLE PRESENT_KIND — one staging
 # call deleted; the artifact it fed must be refused naming the path, and the

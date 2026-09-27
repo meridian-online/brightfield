@@ -537,6 +537,10 @@ jobs:
   #
   # No secrets are passed: the tap is public and the check installs from it as
   # anyone would, which is the point of running it.
+  #
+  # This job reads the install after publication. A pull request that changes
+  # packaging or the formula installs its own package through Homebrew before
+  # that, in .github/workflows/brew-install-branch.yml.
   brew-install:
     name: Install the published formula
     needs: update-homebrew
