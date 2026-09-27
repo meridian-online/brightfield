@@ -1144,10 +1144,24 @@ impl Item<ChartDoc> for EditorPane {
         // The document carries which spec file composed it; the first drawn
         // frame is where that path becomes an open buffer. Once a file is
         // open the pane keeps it — a start replacing the dashboard clears the
-        // document's path, not an editor holding unsaved keystrokes.
-        if self.file.is_none() {
-            if let Some(path) = &doc.spec_path {
-                self.open_file(path.clone());
+        // document's path, not an editor holding unsaved keystrokes. But a
+        // second data file opened in the same window is a different path,
+        // not a cleared one, and the pane reopens to it: an unsaved edit is
+        // never carried into the new buffer and never written anywhere
+        // unasked — it is abandoned with a warning naming the path it was
+        // lost from.
+        if let Some(path) = doc.spec_path.clone() {
+            let current = self.file.as_ref().map(|f| f.path.clone());
+            if current.as_deref() != Some(path.as_path()) {
+                let abandoned = current.filter(|_| matches!(self.dirty(), Dirty::Edited));
+                self.open_file(path);
+                if let Some(abandoned) = abandoned {
+                    self.warning = Some(format!(
+                        "switched to a different file with unsaved edits — {} \
+                         was not saved",
+                        abandoned.display()
+                    ));
+                }
             }
         }
         self.poll_disk();

@@ -2871,6 +2871,20 @@ impl MeridianApp {
             .unwrap_or_default()
     }
 
+    /// The status entries `key`'s live item declares right now — the third
+    /// hook alongside [`Self::chart_pane_title`] and [`Self::chart_pane_toolbar`],
+    /// for the same reason: a pane's standing warning (e.g. the editor's
+    /// `editor-warning`) only exists after `describe` has run against a
+    /// document that has actually drawn a frame.
+    #[must_use]
+    pub fn chart_pane_status(&self, key: PaneKey) -> Vec<StatusEntry> {
+        self.charts
+            .items
+            .get(&key)
+            .map(|item| item.describe(&self.charts.doc).status)
+            .unwrap_or_default()
+    }
+
     /// One pane's own [`Subject`] title, whichever document owns it.
     ///
     /// The words a region's selector strip offers its panes under come from
@@ -6864,6 +6878,30 @@ impl MeridianApp {
             );
             self.door_thumbs.push((start.id, tex));
         }
+    }
+
+    /// Make `key`'s tab the active one in whatever tab strip holds it.
+    ///
+    /// A test hook: the mouse-click half of what [`Self::set_active_tab`]
+    /// drives from the Protocol's sheet flag. The chart/editor pair has no
+    /// model flag of its own — a person reaches the editor tab with a click
+    /// egui_tiles already handles — so a test that needs `EditorPane::ui` to
+    /// have actually run (rather than reading a never-drawn pane's declared
+    /// shape) activates its tab through here instead of computing the tab
+    /// button's screen rect.
+    pub fn focus_tab(&mut self, key: PaneKey) -> bool {
+        let tree = self.ws_mut().tree_mut();
+        let Some(tile) = tile_of(tree, key) else {
+            return false;
+        };
+        let Some(tabs_id) = tabs_holding(tree, tile) else {
+            return false;
+        };
+        let Some(Tile::Container(Container::Tabs(tabs))) = tree.tiles.get_mut(tabs_id) else {
+            return false;
+        };
+        tabs.set_active(tile);
+        true
     }
 
     /// Before rendering: make the active Canvas/Steps tab authoritative from the
