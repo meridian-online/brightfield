@@ -3214,8 +3214,8 @@ xDomain: [0, 100]
     /// bump, a new curated fixture) that silently drops a line would also
     /// redden it.
     #[test]
-    fn a_spec_with_no_plot_defaults_resolves_the_same_plot_attributes_and_fixed_domains_as_before(
-    ) {
+    fn a_spec_with_no_plot_defaults_resolves_the_same_plot_attributes_and_fixed_domains_as_before()
+    {
         const BASELINE: &str = r#"aeromagnetic-survey.yaml::root/vconcat[2] FixedDomains { x: false, y: false } {"colorScale": String("diverging"), "colorDomain": String("Fixed")}
 airline-travelers.yaml::root FixedDomains { x: false, y: false } {"yGrid": Bool(true), "yLabel": String("↑ Travelers per day"), "yTickFormat": String("s")}
 area-sine.yaml::root/vconcat[0] FixedDomains { x: false, y: true } {"yDomain": String("Fixed"), "colorDomain": String("Fixed"), "xLabel": Null, "width": Integer(680), "height": Integer(180)}
@@ -3307,8 +3307,8 @@ overview-detail.yaml::root/vconcat[1] FixedDomains { x: false, y: true } {"yDoma
 seattle-temp.yaml::root FixedDomains { x: false, y: false } {"xTickFormat": String("%b"), "yLabel": String("Temperature Range (°C)"), "width": Integer(680), "height": Integer(300)}
 sorted-bars.yaml::root/vconcat[2] FixedDomains { x: false, y: false } {"xLabel": String("Gold Medals"), "yLabel": String("Nationality"), "yLabelAnchor": String("top"), "marginTop": Integer(15)}"#;
 
-        let vendored = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("vendor/mosaic-specs/yaml");
+        let vendored =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/mosaic-specs/yaml");
         let curated = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../brightfield-conformance/vendor/curated/yaml");
 
@@ -3322,8 +3322,8 @@ sorted-bars.yaml::root/vconcat[2] FixedDomains { x: false, y: false } {"xLabel":
                 .collect();
             entries.sort();
             for path in entries {
-                let src = std::fs::read_to_string(&path)
-                    .unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+                let src =
+                    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
                 let Ok(parsed) = parse_spec(&src, Format::Yaml) else {
                     continue; // corpus_totality is the gate for parse failures
                 };

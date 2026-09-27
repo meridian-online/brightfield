@@ -1325,7 +1325,9 @@ impl Walker {
         // the whole bag, not a chosen few — so a value already on the plot
         // always wins over the same key's default.
         for (key, value) in self.plot_defaults.iter() {
-            attributes.entry(key.clone()).or_insert_with(|| value.clone());
+            attributes
+                .entry(key.clone())
+                .or_insert_with(|| value.clone());
         }
         let node = PlotNode {
             items: plot_items,

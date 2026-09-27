@@ -534,7 +534,9 @@ fn without_plot_defaults(source: &str) -> String {
 /// `source`, parsed, with its unreachable `data/penguins.parquet` source
 /// replaced by [`PENGUINS_STAND_IN`].
 fn splom_spec_from(source: &str) -> Spec {
-    let mut spec = parse_spec(source, Format::Yaml).unwrap_or_else(|e| panic!("parse: {e}")).spec;
+    let mut spec = parse_spec(source, Format::Yaml)
+        .unwrap_or_else(|e| panic!("parse: {e}"))
+        .spec;
     spec.data = parse_spec(PENGUINS_STAND_IN, Format::Yaml)
         .expect("the stand-in table parses")
         .spec
@@ -560,7 +562,11 @@ fn the_vendored_splom_spec_pins_both_axes_from_plot_defaults() {
     let spec = vendored_splom();
     let live = LiveDashboard::load(spec, None).expect("the SPLOM spec loads live");
     let plots = collect_plot_nodes(live.spec());
-    assert_eq!(plots.len(), 16, "fixture check: the SPLOM composes 16 plots");
+    assert_eq!(
+        plots.len(),
+        16,
+        "fixture check: the SPLOM composes 16 plots"
+    );
     for (at, plot) in plots {
         let pinned = resolve_fixed_domains(plot);
         assert!(
@@ -585,7 +591,11 @@ fn unsetting_the_splom_plot_defaults_block_removes_the_pin() {
     );
     let live = LiveDashboard::load(spec, None).expect("the unpinned SPLOM spec loads live");
     let plots = collect_plot_nodes(live.spec());
-    assert_eq!(plots.len(), 16, "fixture check: the SPLOM composes 16 plots");
+    assert_eq!(
+        plots.len(),
+        16,
+        "fixture check: the SPLOM composes 16 plots"
+    );
     for (at, plot) in plots {
         let pinned = resolve_fixed_domains(plot);
         assert!(
