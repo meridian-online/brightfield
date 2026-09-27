@@ -3100,6 +3100,28 @@ plot:
         }
     }
 
+    /// **AC3.** `xyDomain` carries a `$param` reference the way `fxDomain` and
+    /// `fyDomain` already do. The two parametrised tests above cover this
+    /// once `xyDomain` is IN [`LIFT_SURFACE_FIELDS`], but they iterate the
+    /// array rather than naming a field, so removing an entry only shrinks
+    /// the loop instead of failing it; this test names `xyDomain` directly
+    /// and reddens if it is ever removed from the list.
+    #[test]
+    fn xy_domain_lifts_a_param_reference() {
+        let out = parse_spec("mark: dot\nxyDomain: $foo\n", Format::Yaml).expect("parse");
+        let root = out.spec.root.expect("root");
+        let m = match root {
+            Component::Mark(m) => m,
+            other => panic!("root was not a Mark: {other:?}"),
+        };
+        match m.options.get("xyDomain") {
+            Some(ValueOrParamRef::Param(r)) => {
+                assert_eq!(r.to_wire(), "$foo", "xyDomain lifted, but wrong name");
+            }
+            other => panic!("xyDomain did not lift a $param reference: {other:?}"),
+        }
+    }
+
     /// unknown keys under `meta` parse successfully and emit
     /// exactly one `ParseWarning::UnknownOption { path: "meta", key }`.
     /// Post-D2 contract (narrowed from fatal SchemaViolation).

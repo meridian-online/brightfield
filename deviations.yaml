@@ -129,20 +129,22 @@ deviations:
       render, on whatever data the marks then hold, and later filtering
       leaves it where it is.
     brightfield_behaviour: |
-      `Fixed` is read from a plot's own `xDomain` and `yDomain`, and the
-      capture moment is Mosaic's: the pin is taken from the scales the
-      plot's FIRST composition drew against, so a plot whose first render is
-      already filtered pins the filtered domain. The pin holds the domain
-      through a filter, a selection and a re-query, and a band scale keeps
-      its category ORDER, so a filtered-away category keeps its slot rather
-      than closing the gap.
+      `Fixed` is read from a plot's own `xDomain` and `yDomain` — which now
+      includes whatever `plotDefaults` set and the plot itself left unset,
+      merged in at parse time before this reading runs — and the capture
+      moment is Mosaic's: the pin is taken from the scales the plot's FIRST
+      composition drew against, so a plot whose first render is already
+      filtered pins the filtered domain. The pin holds the domain through a
+      filter, a selection and a re-query, and a band scale keeps its
+      category ORDER, so a filtered-away category keeps its slot rather than
+      closing the gap.
 
-      Four positions are NOT read, and a spec using one gets a domain
+      Three positions are still NOT read, and a spec using one gets a domain
       inferred from the rows it is currently drawing: the `xyDomain`
-      shorthand, the facet axes `fxDomain` / `fyDomain`, `Fixed` written
-      under `plotDefaults`, and any spelling other than the exact string
-      `Fixed`. An explicit two-element domain (`xDomain: [0, 100]`) is a
-      different instruction and is likewise not read here.
+      both-axes shorthand, the facet axes `fxDomain` / `fyDomain`, and any
+      spelling other than the exact string `Fixed`. An explicit two-element
+      domain (`xDomain: [0, 100]`) is a different instruction and is
+      likewise not read here.
 
       One brightfield-local rule sits on top: pan and zoom are offered on
       any plot with a continuous positional scale, and an axis the reader
@@ -154,11 +156,13 @@ deviations:
       make a spec render differently here than in Mosaic, which is the one
       thing `Fixed` exists to prevent.
 
-      The unread positions are scoped by what the renderer can act on rather
-      than by what the parser accepts. Facets are not rendered, so `fxDomain`
-      / `fyDomain` name axes that do not exist here; `plotDefaults` is parsed
-      and round-tripped but applied to no plot, so honouring one key from it
-      would make that block half-live and hide the rest.
+      The remaining unread positions are scoped by what the renderer can act
+      on rather than by what the parser accepts: facets are not rendered, so
+      `fxDomain` / `fyDomain` name axes that do not exist here. `plotDefaults`
+      no longer belongs on this list — it reaches a plot's attributes as a
+      whole, key-agnostic bag rather than a chosen few, so `Fixed` written
+      there is read exactly like a value the plot set itself, not one key
+      honoured while the rest of the block stayed dark.
 
       Navigation takes precedence because the two instructions come from
       different people about different events. `Fixed` is the author saying
