@@ -122,6 +122,15 @@ swap_install "$TMP/described.rb" '    # This used to call bin.write_exec_script 
 expect_fail "the exec script named in a comment and never called" \
 	"does not reach the binary through an exec script" "$TMP/described.rb"
 
+echo "== a formula that lets Homebrew rename the extension"
+# The generated formula with the preserve_rpath line deleted, and with it
+# commented out: both install every file in the right place, and Homebrew then
+# rewrites the extension's install name and the manifest refuses it.
+grep -v 'preserve_rpath if' "$TMP/generated.rb" >"$TMP/norpath.rb"
+expect_fail "no preserve_rpath" "does not declare preserve_rpath" "$TMP/norpath.rb"
+sed 's/^\( *\)preserve_rpath if/\1# preserve_rpath if/' "$TMP/generated.rb" >"$TMP/commented.rb"
+expect_fail "preserve_rpath commented out" "does not declare preserve_rpath" "$TMP/commented.rb"
+
 echo "== a formula that is not there"
 expect_fail "a path that does not resolve" "no formula at" "$TMP/absent.rb"
 
@@ -130,4 +139,4 @@ if [[ "$failures" -ne 0 ]]; then
 	echo "check-formula-layout-selftest: ${failures} case(s) did not behave as required." >&2
 	exit 1
 fi
-echo "check-formula-layout-selftest: the generated formula installs the tree, and the two wrong shapes are refused."
+echo "check-formula-layout-selftest: the generated formula installs the tree and keeps the extension's name, and the wrong shapes are refused."
