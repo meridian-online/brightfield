@@ -20,8 +20,8 @@
 #   3. either run red alone fails, and the failure names the run that was red:
 #      the two are read separately, so neither can hide behind the other;
 #   4. the formula installed is the one the tap wrote for the tag, even when the
-#      tap has since moved on, and a tag the tap holds no formula for is a hard
-#      failure that installs nothing;
+#      tap has since moved on or was cloned shallow, and a tag the tap holds no
+#      formula for is a hard failure that installs nothing;
 #   5. an install that fails, or that puts a different version on the machine,
 #      fails before `brew test` runs, so the two runs never read some other copy;
 #   6. usage errors, a missing brew, a tap that will not tap, and a run outside
@@ -256,6 +256,16 @@ run 0 "an older tag installs the formula the tap wrote for it, not the tap's tip
 has "the version installed is the older tag's" "installed: brightfield 0.1.5"
 has "the log names the tap commit the formula came from" "formula from meridian-online/tap commit"
 
+# A shallow clone holds the tip and nothing older, so an older tag's commit is
+# there only after the script deepens it.
+# Cut from the tap's branch tip, not from wherever an earlier case left the
+# checkout: a clone that already holds the commit needs no deepening.
+rm -rf "$TMP/shallow"
+git -C "$TAPDIR" checkout -q main
+git clone -q --depth 1 "file://$TAPDIR" "$TMP/shallow"
+run 0 "a shallow tap checkout is deepened to find an older tag's formula" "FAKE_TAPDIR=$TMP/shallow" -- --tag v0.1.5
+has "the version installed is the older tag's" "installed: brightfield 0.1.5"
+
 run 2 "a tag the tap holds no formula for" -- --tag v0.2.0
 has "the message says the tap holds none" "holds no formula written for v0.2.0"
 not_called "and nothing was installed" "install"
@@ -274,6 +284,7 @@ not_called "and nothing was installed" "install"
 echo
 echo "the install itself"
 run 1 "an install that fails" FAKE_INSTALL_RC=1 -- --tag v0.1.6
+has "the message says the formula did not install" "did not install"
 not_called "brew test did not run" "test"
 
 run 1 "an install that puts a different version on the machine" FAKE_INSTALLED_VERSION=0.0.9 -- --tag v0.1.6
@@ -285,16 +296,30 @@ not_called "brew test did not run" "test"
 # ---------------------------------------------------------------------------
 echo
 echo "the check cannot run"
+# Each refusal is pinned by its message as well as its exit code: exit 2 is also
+# what a tag the tap has no formula for returns, so a refusal that stopped firing
+# could still exit 2 further down and look the same.
 run 2 "no --tag" -- --allow-local
+has "the refusal names the tag" "--tag must look like v1.2.3"
+not_called "and brew was not touched" "--version"
 run 2 "a --tag with no value" -- --tag
+has "the refusal names the missing value" "--tag needs a value"
 run 2 "a tag that is not a version" -- --tag 'v1.2.3; echo pwned'
+has "the refusal names the tag" "--tag must look like v1.2.3"
+not_called "and brew was not touched" "--version"
 run 2 "a tag without the v" -- --tag 0.1.6
+has "the refusal names the tag" "--tag must look like v1.2.3"
 run 2 "an unknown argument" -- --tag v0.1.6 --nope
+has "the refusal names the argument" "unknown argument: --nope"
 run 2 "a tap that is not OWNER/NAME" -- --tag v0.1.6 --tap 'not a tap'
+has "the refusal names the tap" "--tap must look like OWNER/NAME"
 run 2 "a tap that will not tap" FAKE_TAP_RC=1 -- --tag v0.1.6
+has "the refusal says the tap would not tap" "could not tap meridian-online/tap"
 not_called "and nothing was installed" "install"
 run 2 "no brew on PATH" PATH=/usr/bin:/bin -- --tag v0.1.6
+has "the refusal says brew is missing" "brew is not on PATH"
 run 2 "outside CI" CI=false -- --tag v0.1.6
+has "the refusal says why" "refusing to run outside CI"
 not_called "and brew was not touched" "--version"
 run 0 "outside CI, when asked for" CI=false -- --tag v0.1.6 --allow-local
 
