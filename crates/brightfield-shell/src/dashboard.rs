@@ -1213,19 +1213,19 @@ const GHOST_INK: meridian_design::colour::Rgba = meridian_design::scales::GRAY_L
 /// A measure's distribution, brushable, with **the unfiltered total kept behind
 /// the filtered subset**.
 ///
-/// The tile's own frame over [`ghosted_histogram_body`]'s two layers: `xDomain:
-/// Fixed` so the bin edges are not re-derived from whatever the *other* tiles
-/// left (the bars would move sideways under the pointer and two frames of one
-/// column would not be comparable), plus the tile's label and its declared
-/// size.
+/// The tile's own frame over the two-layer body's own function (private to
+/// this crate): `xDomain: Fixed` so the bin edges are not re-derived from
+/// whatever the *other* tiles left (the bars would move sideways under the
+/// pointer and two frames of one column would not be comparable), plus the
+/// tile's label and its declared size.
 ///
-/// **This shares a body with [`crate::chart_kinds::binned_histogram`].** Until
-/// [`ghosted_histogram_body`] existed, the device was written out twice — here
-/// as a tile, and by the `binned-histogram` kind as a standalone document —
-/// held in step only by prose, and prose does not redden. Now there is one
-/// function that writes the two `rectY` layers, the ghost ink and the
-/// selection binding; this function supplies it the tile's frame, and the kind
-/// supplies none of it, keeping its own default size and unpinned axis.
+/// **This shares a body with the `binned-histogram` kind.** Until that shared
+/// function existed, the device was written out twice — here as a tile, and
+/// by the kind as a standalone document — held in step only by prose, and
+/// prose does not redden. Now there is one function that writes the two
+/// `rectY` layers, the ghost ink and the selection binding; this function
+/// supplies it the tile's frame, and the kind supplies none of it, keeping
+/// its own default size and unpinned axis.
 #[must_use]
 pub fn histogram_tile(column: &str, indent: usize) -> String {
     histogram_tile_sized(column, indent, TILE_WIDTH, TILE_HEIGHT)
@@ -1254,8 +1254,9 @@ pub fn histogram_tile_sized(column: &str, indent: usize, width: u32, height: u32
 /// The ghosted two-layer histogram body: the two `rectY` layers over one table
 /// and one `x: { bin: }` / `y: { count: }` transform, the ghost ink and the
 /// crossfilter selection binding — shared by [`histogram_tile_sized`]'s
-/// dashboard tile and [`crate::chart_kinds::binned_histogram`]'s registry
-/// block, so a change to either cannot leave the other silently different.
+/// dashboard tile and the `binned-histogram` kind's registry block (private
+/// to `chart_kinds`), so a change to either cannot leave the other silently
+/// different.
 ///
 /// The first layer reads `table` straight and never narrows — the ghost, drawn
 /// in [`GHOST_INK`]; the second reads it through `filterBy:` the shared
