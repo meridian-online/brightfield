@@ -1204,10 +1204,10 @@ fn tile_yaml(tile: &Tile, indent: usize, width: u32, height: u32) -> String {
 /// with [`meridian_design::colour::Rgba::hex`], which round-trips the scale's own
 /// 8-bit channels exactly.
 ///
-/// **Read once, here.** [`ghosted_histogram_body`] is the only place that
-/// reads this token for the histogram device now — the registry's
-/// `binned-histogram` kind no longer keeps its own copy of the same step, and
-/// [`histogram_tile`]'s header says how the two routes reach it.
+/// **Read once, here.** [`ghosted_histogram_body`] is the histogram device's
+/// one reader of this token now — the registry's `binned-histogram` kind no
+/// longer keeps its own copy of the same step, and [`histogram_tile`]'s
+/// header says how the two routes reach it.
 const GHOST_INK: meridian_design::colour::Rgba = meridian_design::scales::GRAY_LIGHT[7];
 
 /// A measure's distribution, brushable, with **the unfiltered total kept behind
@@ -1258,9 +1258,10 @@ pub fn histogram_tile_sized(column: &str, indent: usize, width: u32, height: u32
 /// to `chart_kinds`), so a change to either cannot leave the other silently
 /// different.
 ///
-/// The first layer reads `table` straight and never narrows — the ghost, drawn
-/// in [`GHOST_INK`]; the second reads it through `filterBy:` the shared
-/// selection and lands on top in the default mark ink. They share the plot's
+/// The first layer reads `table` straight, with no `filterBy:` clause to
+/// narrow it — the ghost, drawn in [`GHOST_INK`]; the second reads it through
+/// `filterBy:` the shared selection and lands on top in the default mark ink.
+/// They share the plot's
 /// scales, so the count axis is fixed by the total and a brushed tile reads as
 /// a fraction of the bars behind it. One filtered layer draws a perfectly good
 /// histogram after a brush and gives the reader no way to see what fraction of
@@ -1277,7 +1278,8 @@ pub fn histogram_tile_sized(column: &str, indent: usize, width: u32, height: u32
 /// `size`, `fixed_x_domain` and `x_label` are the tile's own framing, each
 /// independently optional: the registry kind passes `None`/`false`/`None` and
 /// keeps its own default size and unpinned axis; [`histogram_tile_sized`]
-/// passes all three, sized to the tile's declared box. Plot attributes are
+/// supplies its own frame values instead, sized to the tile's declared box.
+/// Plot attributes are
 /// siblings of the layer list, so they sit at `pad`'s own indent — one level
 /// shallower than each layer's own fields, one level deeper and they read as
 /// more options on the last interactor, which is a spec that parses and does
