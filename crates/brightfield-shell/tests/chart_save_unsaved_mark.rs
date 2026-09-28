@@ -71,6 +71,8 @@ struct Live {
     app: MeridianApp,
     ctx: egui::Context,
     screen: egui::Rect,
+    /// Every title the window has asked the OS window to take, in order.
+    titles: Vec<String>,
 }
 
 impl Live {
@@ -80,6 +82,7 @@ impl Live {
             app: MeridianApp::headless(boot, Mode::Light),
             ctx: egui::Context::default(),
             screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size.0, size.1)),
+            titles: Vec::new(),
         }
     }
 
@@ -90,7 +93,14 @@ impl Live {
                 events,
                 ..Default::default()
             };
-            let _ = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
+            let out = self.ctx.run_ui(raw, |ui| self.app.draw(ui));
+            for viewport in out.viewport_output.values() {
+                for command in &viewport.commands {
+                    if let egui::ViewportCommand::Title(title) = command {
+                        self.titles.push(title.clone());
+                    }
+                }
+            }
         }
     }
 
@@ -254,6 +264,27 @@ fn throwing_a_tiles_scale_switch_marks_the_title() {
     );
 }
 
+/// **The OS window's title follows the mark.** The top bar reads the title
+/// each frame; the OS title is pushed, and a switch is thrown after every
+/// opener that pushes one, so the window has to push it again itself.
+#[test]
+fn throwing_a_switch_re_titles_the_os_window() {
+    let mut live = Live::open(housing_boot());
+    live.settle();
+    live.transpose();
+    let before = clean_title(&live);
+    live.titles.clear();
+
+    live.switch_to("population", ScaleType::Log);
+
+    assert_eq!(
+        live.titles.last(),
+        Some(&marked(&before)),
+        "the OS window was asked for {:?} and the mark never reached it",
+        live.titles
+    );
+}
+
 /// **AC1, on the y axis.** The generated tiles bin their x axis, so no click
 /// reaches a `yScale` write; the document's own entry point is the one the
 /// control calls, and it takes the axis.
@@ -376,6 +407,10 @@ fn opening_brushing_and_moving_focus_leave_the_title_unmarked() {
     let plot = live.plot_of("population");
     live.brush(plot, 0.2, 0.6);
     live.settle();
+    assert!(
+        live.app.chart_doc().selection_sql().is_some(),
+        "the sweep committed no selection, so it is not a brush the title was asked about"
+    );
     assert_eq!(live.app.title(), before, "a brush marked the title");
 
     assert!(live.app.focus_pane(PaneKey::new(EDITOR)));
