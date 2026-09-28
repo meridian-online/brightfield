@@ -1142,7 +1142,7 @@ const WIDGET_TEXT_SIZE: f32 = 12.0;
 /// `WIDGET_TEXT_SIZE` (approximately half the cap height).
 const WIDGET_BASELINE_NUDGE: f64 = 4.0;
 
-/// Draw a resting `style: menu` widget: a rounded box with the
+/// Draw a resting `style: menu` widget: a square box with the
 /// current value's label and a downward chevron affordance. Used by the
 /// headless PNG dump to preview the closed menu exactly as the window hosts
 /// it (the render_slider convention).
@@ -1155,7 +1155,7 @@ pub fn render_menu(
     label: &str,
     ink: ChartInk,
 ) {
-    let bx = RoundedRect::new(x + 0.5, y + 0.5, x + width - 0.5, y + height - 0.5, 4.0);
+    let bx = Rect::new(x + 0.5, y + 0.5, x + width - 0.5, y + height - 0.5);
     scene.fill(Fill::NonZero, Affine::IDENTITY, ink.widget_fill, None, &bx);
     scene.stroke(
         &Stroke::new(1.0),
@@ -1244,7 +1244,7 @@ pub fn render_radio(
     }
 }
 
-/// Draw a resting `style: checkbox` widget: a rounded box with
+/// Draw a resting `style: checkbox` widget: a square box with
 /// a Maritime check glyph when checked, plus a label (the bound param's
 /// name — widget `label:` rendering is its own polish item).
 ///
@@ -1265,7 +1265,7 @@ pub fn render_checkbox(
 ) {
     let cy = y + height / 2.0;
     let (bx0, by0) = (x + 4.0, cy - 7.0);
-    let bx = RoundedRect::new(bx0, by0, bx0 + 14.0, by0 + 14.0, 3.0);
+    let bx = Rect::new(bx0, by0, bx0 + 14.0, by0 + 14.0);
     scene.fill(Fill::NonZero, Affine::IDENTITY, ink.widget_fill, None, &bx);
     scene.stroke(
         &Stroke::new(1.0),
@@ -1420,6 +1420,83 @@ mod tests {
             "the label renders"
         );
         assert_eq!(crate::mark::count_scene_glyphs(&unchecked), 4);
+    }
+
+    /// Curve segments (quadratic or cubic) in each path the scene encoded, in
+    /// draw order. A rounded corner and a circle each cost curves; a box with
+    /// square corners is four lines and costs none. Glyphs are runs in the
+    /// scene's resources, not outlines in the path stream, so a label adds
+    /// nothing here.
+    ///
+    /// Read closed shapes only. Vello closes an OPEN stroked path, such as the
+    /// checkbox's check glyph, with one synthetic quadratic segment back to its
+    /// start, so that path reports a curve though it has no corner to round.
+    fn curves_per_path(scene: &Scene) -> Vec<usize> {
+        // `vello_encoding::PathTag::PATH`, the marker that closes one path. It
+        // is not re-exported by `vello`, and no segment tag carries its bit.
+        const PATH_MARKER: u8 = 0x10;
+        let mut per_path = Vec::new();
+        let mut curves = 0;
+        for tag in &scene.encoding().path_tags {
+            if tag.0 & PATH_MARKER != 0 {
+                per_path.push(curves);
+                curves = 0;
+            } else if tag.path_segment_type().0 >= 2 {
+                curves += 1;
+            }
+        }
+        per_path
+    }
+
+    // The slider is the positive control for `curves_per_path`, and the round
+    // half of the widget set on purpose: its track keeps its round ends and its
+    // thumb stays a circle, each read as its own path, because a total over both
+    // would stay non-zero while either one went square.
+    #[test]
+    fn render_slider_track_and_thumb_stay_round() {
+        let mut scene = Scene::new();
+        render_slider(&mut scene, 0.0, 400.0, 200.0, 32.0, 0.5, ChartInk::LIGHT);
+        let curves = curves_per_path(&scene);
+        assert_eq!(curves.len(), 2, "a track and a thumb");
+        assert!(curves[0] > 0, "the track has round ends: {curves:?}");
+        assert!(curves[1] > 0, "the thumb is a circle: {curves:?}");
+    }
+
+    // The menu's box is square: its fill and its border, the first two of the
+    // three paths it draws, carry no curve. The chevron is the third.
+    #[test]
+    fn render_menu_box_has_square_corners() {
+        let mut scene = Scene::new();
+        render_menu(&mut scene, 0.0, 400.0, 200.0, 32.0, "east", ChartInk::LIGHT);
+        let curves = curves_per_path(&scene);
+        assert_eq!(curves.len(), 3, "box fill, box border, chevron");
+        assert_eq!(curves[..2], [0, 0], "the box is four straight lines");
+    }
+
+    // The checkbox's box is square whether or not the check is drawn over it:
+    // its fill and its border, the first two paths, carry no curve. The check,
+    // when there is one, is the third and is not read (see `curves_per_path`).
+    #[test]
+    fn render_checkbox_box_has_square_corners() {
+        for (checked, paths) in [(false, 2), (true, 3)] {
+            let mut scene = Scene::new();
+            render_checkbox(
+                &mut scene,
+                0.0,
+                400.0,
+                32.0,
+                checked,
+                "flag",
+                ChartInk::LIGHT,
+            );
+            let curves = curves_per_path(&scene);
+            assert_eq!(curves.len(), paths, "checked={checked}");
+            assert_eq!(
+                curves[..2],
+                [0, 0],
+                "checked={checked}: the box is four straight lines"
+            );
+        }
     }
     use arrow::array::{Float64Array, StringArray, TimestampMicrosecondArray};
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
