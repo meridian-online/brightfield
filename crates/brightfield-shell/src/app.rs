@@ -866,6 +866,14 @@ pub struct ChartDoc {
     /// `no marks rendered successfully`; that is the mechanism, not the event,
     /// and the caller is the only place with enough context to say the event.
     interaction_fault: Option<ChartFault>,
+    /// Whether the live spec holds a change the spec's file does not — read
+    /// through [`Self::has_unsaved_edit`].
+    ///
+    /// Set by [`Self::set_plot_attribute`] when a tile's switch rewrote the
+    /// spec, and cleared by [`Self::open`], which replaces the document the
+    /// edit was made to. A save does not clear it, because no save writes the
+    /// edit back yet: the file does not catch up.
+    unsaved_edit: bool,
     /// The pan/zoom gesture in progress and the settle rule that decides when
     /// it becomes a query. Public because a headless test drives it through the
     /// same entry points the chart pane uses.
@@ -976,6 +984,7 @@ impl ChartDoc {
             active_selections: Vec::new(),
             interval_drags: IntervalDrags::new(),
             interaction_fault: None,
+            unsaved_edit: false,
             nav: NavGesture::new(),
             axis_lock: AxisLock::default(),
             nav_plot: 0,
@@ -1024,6 +1033,7 @@ impl ChartDoc {
             active_selections: Vec::new(),
             interval_drags: IntervalDrags::new(),
             interaction_fault: None,
+            unsaved_edit: false,
             nav: NavGesture::new(),
             axis_lock: AxisLock::default(),
             nav_plot: 0,
@@ -1072,6 +1082,8 @@ impl ChartDoc {
         // spec's chart — the defect `open_chart` exists to prevent, re-made
         // one field down.
         self.interaction_fault = None;
+        // …and an edit made to the replaced document is not this one's.
+        self.unsaved_edit = false;
         // …and the extent described the replaced document's plots.
         self.nav.clear();
         self.nav_notice = None;
@@ -1146,6 +1158,18 @@ impl ChartDoc {
     #[must_use]
     pub fn is_live(&self) -> bool {
         self.live.is_some()
+    }
+
+    /// Whether a tile's switch has changed this document's live spec since it
+    /// was opened — a change the spec's file does not carry, and one the
+    /// window says is unsaved.
+    ///
+    /// A switch the chart refused is not one: the spec it left standing is the
+    /// file's. Neither is a pick of the state the control already showed,
+    /// which writes the value the spec holds.
+    #[must_use]
+    pub const fn has_unsaved_edit(&self) -> bool {
+        self.unsaved_edit
     }
 
     /// Lay the dashboard out into a box of `size` logical points and re-present
@@ -1276,7 +1300,10 @@ impl ChartDoc {
     ///
     /// The one write path both tile controls take, so what survives a pick —
     /// the viewport, the hero bound, the ink mode; not the engine session —
-    /// cannot come to depend on which control was thrown.
+    /// cannot come to depend on which control was thrown. It marks the
+    /// document [`Self::has_unsaved_edit`] after the rebuild succeeds: a
+    /// refused switch leaves the previous page standing, and a page rebuilt
+    /// over the spec it already had is not an edit.
     fn set_plot_attribute(&mut self, plot: usize, key: &str, value: &str, refused: &str) -> bool {
         let Some(handle) = self.composed.plots.get(plot) else {
             return false;
@@ -1298,6 +1325,10 @@ impl ChartDoc {
             });
             return false;
         }
+        // A pick of the state already showing writes the value the spec holds,
+        // and that is not an edit: it rebuilds the page and leaves the file
+        // exactly as it was.
+        let changed = spec != *live.spec();
 
         let viewport = live.viewport();
         let mode = live.mode();
@@ -1320,6 +1351,7 @@ impl ChartDoc {
             Ok((live, composed)) => {
                 self.live = Some(live);
                 self.composed = composed;
+                self.unsaved_edit |= changed;
                 self.canvas.invalidate();
                 true
             }

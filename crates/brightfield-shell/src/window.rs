@@ -165,6 +165,14 @@ pub const INSPECTOR_RAIL_MIN_WIDTH: f32 = arrangement::INSPECTOR_RAIL_MIN_WIDTH;
 /// refactor.
 pub const TAGLINE: &str = "Watch insight assemble.";
 
+/// What [`MeridianApp::title`] appends when the window holds an edit its file
+/// does not.
+///
+/// The window's one sign for unsaved work is the dot the editor pane's tab
+/// draws; this is that dot as a title can carry it. It is the bullet
+/// character rather than a drawn shape, because a title is text.
+pub const UNSAVED_MARK: &str = "\u{2022}";
+
 /// What the Start zone promises an opened data file becomes.
 ///
 /// Every clause is a claim about behaviour, not a description of a screen: the
@@ -1837,6 +1845,10 @@ pub struct MeridianApp {
     protocol: ProtocolView,
     mode: Mode,
     fonts_installed: bool,
+    /// Whether the last `ViewportCommand::Title` this window sent carried
+    /// [`UNSAVED_MARK`] — so `draw` re-titles the OS window when a switch
+    /// flips the mark. The opens send their own titles.
+    title_marked: bool,
     /// Where each region of the arrangement was drawn in the last frame this
     /// window drew, in window-space logical points — empty until a frame has
     /// been laid out, and holding only the regions that drew.
@@ -2383,6 +2395,7 @@ impl MeridianApp {
             },
             mode,
             fonts_installed: false,
+            title_marked: false,
             regions: Vec::new(),
             collapsed: BTreeSet::new(),
             strips: Vec::new(),
@@ -2788,8 +2801,27 @@ impl MeridianApp {
     /// `a_restored_session_is_titled_for_the_surface_it_draws` asserts the
     /// agreement rather than either answer, because a literal on both sides
     /// would go on matching itself after either drifted.
+    ///
+    /// **It carries [`UNSAVED_MARK`] after the subject when the chart document
+    /// holds an edit its file does not** — a tile's scale or normalise switch
+    /// thrown since the file was opened. The mark follows the document, not
+    /// the canvas: the graph on the canvas is another view of a window whose
+    /// chart is still unsaved. The front door has no document to hold an
+    /// edit, and going Home replaces the chart document, which clears it.
     #[must_use]
     pub fn title(&self) -> String {
+        let subject = self.subject_title();
+        if self.charts.doc.has_unsaved_edit() && !self.front_door_is_live() {
+            format!("{subject} {UNSAVED_MARK}")
+        } else {
+            subject
+        }
+    }
+
+    /// [`Self::title`] without the unsaved mark: the name of the subject, for
+    /// the places that say what the window holds rather than what state it is
+    /// in — the locator band's last crumb.
+    fn subject_title(&self) -> String {
         // The front door replaces the regions, so it has no document subject
         // to name — and the top bar draws this unconditionally. Reaching the
         // door from a graph would otherwise show "Protocol · " (the emptied
@@ -3036,14 +3068,14 @@ impl MeridianApp {
                 .doc
                 .model
                 .view_crumbs(node, *view)
-                .unwrap_or_else(|| vec![self.title()]),
+                .unwrap_or_else(|| vec![self.subject_title()]),
             CanvasHolds::Dashboard { node, .. } => self
                 .protocol
                 .doc
                 .model
                 .dashboard_crumbs(node)
-                .unwrap_or_else(|| vec![self.title()]),
-            CanvasHolds::Chart => vec![self.title()],
+                .unwrap_or_else(|| vec![self.subject_title()]),
+            CanvasHolds::Chart => vec![self.subject_title()],
         }
     }
 
@@ -3668,6 +3700,16 @@ impl MeridianApp {
             self.fonts_installed = true;
         }
         let mode = self.mode;
+
+        // The OS window's title, when the unsaved mark flipped since the last
+        // one sent. The top bar reads `title` each frame; the OS title is
+        // pushed, and a tile's switch is thrown mid-frame, after the openers
+        // that push one have run.
+        let marked = self.charts.doc.has_unsaved_edit();
+        if marked != self.title_marked {
+            self.title_marked = marked;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+        }
 
         // **The grid's density is a fact about this frame's layout, so it is
         // cleared at the head of each frame.** The canvas branches below each
