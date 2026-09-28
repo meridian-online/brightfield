@@ -2560,6 +2560,17 @@ pub fn serialise_spec(spec: &Spec) -> Result<String, String> {
     serde_yaml::to_string(spec).map_err(|e| e.to_string())
 }
 
+/// One [`SpecValue`] as YAML, spelled the way [`serialise_spec`] spells it
+/// inside a whole spec, with the trailing newline.
+///
+/// A scalar comes back as one line (`log\n`, `'yes'\n` for a string YAML
+/// would otherwise read as a boolean); an array or object comes back in block
+/// style over several lines. A caller writing the value into a line of an
+/// existing file decides what it can place.
+pub fn serialise_value(value: &SpecValue) -> Result<String, String> {
+    serde_yaml::to_string(&SerSpecValue(value)).map_err(|e| e.to_string())
+}
+
 impl Serialize for Spec {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         // Rough field count for hint only.
