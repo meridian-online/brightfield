@@ -413,11 +413,23 @@ fn opening_brushing_and_moving_focus_leave_the_title_unmarked() {
     );
     assert_eq!(live.app.title(), before, "a brush marked the title");
 
+    // Read at each stop, not once at the end: a title that marked while the
+    // editor held focus and cleared when the chart took it back would pass a
+    // read taken after the second move.
     assert!(live.app.focus_pane(PaneKey::new(EDITOR)));
     live.settle();
+    assert_eq!(
+        live.app.title(),
+        before,
+        "moving focus to the editor pane marked the title"
+    );
     assert!(live.app.focus_pane(PaneKey::new(CHART)));
     live.settle();
-    assert_eq!(live.app.title(), before, "a move of focus marked the title");
+    assert_eq!(
+        live.app.title(),
+        before,
+        "moving focus to the chart pane marked the title"
+    );
 }
 
 /// **A write of the value the spec already holds is not an edit.** The switch
