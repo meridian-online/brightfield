@@ -1302,8 +1302,8 @@ impl ChartDoc {
     /// the viewport, the hero bound, the ink mode; not the engine session —
     /// cannot come to depend on which control was thrown. It marks the
     /// document [`Self::has_unsaved_edit`] after the rebuild succeeds: a
-    /// refused switch leaves the previous page standing, and a page with no
-    /// change behind it has nothing to save.
+    /// refused switch leaves the previous page standing, and a page rebuilt
+    /// over the spec it already had is not an edit.
     fn set_plot_attribute(&mut self, plot: usize, key: &str, value: &str, refused: &str) -> bool {
         let Some(handle) = self.composed.plots.get(plot) else {
             return false;
