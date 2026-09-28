@@ -2,7 +2,7 @@
 //!
 //! A switch rewrites the live spec and rebuilds the page from it, and the
 //! file on disk keeps the spec it had. The window says so by appending
-//! [`UNSAVED_MARK`] to [`MeridianApp::title`], and every assertion here reads
+//! [`UNSAVED_MARK`] to [`MeridianApp::title`], and the assertions here read
 //! that title: the sentence a reader sees, rather than the flag behind it.
 //!
 //! # What is covered and what is not

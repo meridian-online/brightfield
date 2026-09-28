@@ -1847,7 +1847,7 @@ pub struct MeridianApp {
     fonts_installed: bool,
     /// Whether the last `ViewportCommand::Title` this window sent carried
     /// [`UNSAVED_MARK`] — so `draw` re-titles the OS window when a switch
-    /// flips the mark, and only then. The opens send their own titles.
+    /// flips the mark. The opens send their own titles.
     title_marked: bool,
     /// Where each region of the arrangement was drawn in the last frame this
     /// window drew, in window-space logical points — empty until a frame has
