@@ -348,7 +348,11 @@ fn a_switch_the_chart_refuses_leaves_the_title_unmarked() {
         .app
         .chart_doc_mut()
         .set_plot_scale(off_the_end, PlotAxis::X, ScaleType::Log));
-    assert_eq!(live.app.title(), before, "a plot that is not there marked it");
+    assert_eq!(
+        live.app.title(),
+        before,
+        "a plot that is not there marked it"
+    );
 
     // An authored spec whose data file is gone by the time the switch rebuilds.
     let dir = scratch_dir("engine-refusal");
