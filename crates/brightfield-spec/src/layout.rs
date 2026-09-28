@@ -802,6 +802,94 @@ pub fn resolve_fixed_domains(plot: &PlotNode) -> FixedDomains {
     }
 }
 
+/// The tick count a renderer draws when a plot sets neither key — the count
+/// the scene builder's `compute_ticks` calls drew before this resolver
+/// existed, and what [`TickCounts::x_target`]/[`TickCounts::y_target`] fall
+/// back to.
+pub const DEFAULT_TICK_COUNT: usize = 5;
+
+/// Which positional axes carry a `xTicks` / `yTicks` target tick count, and
+/// what it is.
+///
+/// A pure spec reading, mirroring [`FixedDomains`] and [`AxisTitles`]: it says
+/// what the author asked for, and holds no opinion about what a scale then
+/// does with it. `None` covers both "the key is absent" and "the key is
+/// present but not a request this build can act on" — see
+/// [`tick_count_target`] for what is — which
+/// [`crate::parse::ParseWarning::InvalidTickCount`] has already named at
+/// parse time, exactly as [`resolve_plot_insets`]'s malformed inset is named
+/// by `NonNumericInset` rather than by this resolver.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TickCounts {
+    /// `xTicks`'s target count, when the plot wrote a valid one.
+    pub x: Option<usize>,
+    /// `yTicks`'s target count, when the plot wrote a valid one.
+    pub y: Option<usize>,
+}
+
+impl TickCounts {
+    /// The x axis's target tick count: what the plot asked for, or
+    /// [`DEFAULT_TICK_COUNT`].
+    #[must_use]
+    pub fn x_target(self) -> usize {
+        self.x.unwrap_or(DEFAULT_TICK_COUNT)
+    }
+
+    /// The y axis's target tick count: what the plot asked for, or
+    /// [`DEFAULT_TICK_COUNT`].
+    #[must_use]
+    pub fn y_target(self) -> usize {
+        self.y.unwrap_or(DEFAULT_TICK_COUNT)
+    }
+}
+
+/// The most ticks one axis is asked to aim for.
+///
+/// A count reaches the tick loop as a step of `span / count` and the loop
+/// draws one labelled tick per step, so a count with no upper bound is an
+/// allocation with none: `xTicks: 1000000000` would try to build a billion
+/// labelled ticks on the thread that draws the window. A count past this is
+/// judged the malformed value it almost certainly is — a slip of extra zeros —
+/// and named, rather than clamped to a number the author did not write.
+pub const MAX_TICK_COUNT: usize = 1000;
+
+/// The one judge of a `xTicks` / `yTicks` value: the target count it sets, or
+/// `None` when the value is not a target.
+///
+/// A target is a literal whole number from 1 to [`MAX_TICK_COUNT`], written as
+/// an integer or as a float with no fractional part. d3's tick rule
+/// (`nice_step`, `crates/brightfield-render/src/axis.rs`) takes the count as a
+/// target to aim a 1/2/5 step at, and a target of zero, a negative one or a
+/// fractional one is not one it can aim at.
+///
+/// `None` is not itself a warning: a lifted `$param` is a recorded deferral and
+/// resolves to it silently. The parser asks this same function to decide which
+/// `None`s are malformed values to name, so the resolver and the warning cannot
+/// disagree about what a valid count is.
+#[must_use]
+pub fn tick_count_target(value: &SpecValue) -> Option<usize> {
+    let whole = match value {
+        SpecValue::Integer(n) => usize::try_from(*n).ok()?,
+        // Saturating cast: a float too large for `usize` lands on `usize::MAX`
+        // and fails the range check below like any other oversized count.
+        SpecValue::Float(f) if f.fract() == 0.0 => *f as usize,
+        _ => return None,
+    };
+    (1..=MAX_TICK_COUNT).contains(&whole).then_some(whole)
+}
+
+/// Resolve a plot's `xTicks` / `yTicks` target tick count from its
+/// attributes. Literal-only and per-axis, the same reading
+/// [`resolve_fixed_domains`] gives its keys.
+#[must_use]
+pub fn resolve_tick_counts(plot: &PlotNode) -> TickCounts {
+    let target = |key: &str| plot.attributes.get(key).and_then(tick_count_target);
+    TickCounts {
+        x: target("xTicks"),
+        y: target("yTicks"),
+    }
+}
+
 /// Which positional axis a plot attribute speaks about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlotAxis {
@@ -3196,6 +3284,140 @@ xDomain: [0, 100]
             !resolve_fixed_domains(nodes[0].1).x,
             "the plot's own xDomain is an explicit two-element domain, not \
              Fixed; the plotDefaults entry must not overwrite it with a pin"
+        );
+    }
+
+    // --- tick count (`xTicks` / `yTicks`) ---
+
+    /// Each positional axis is read on its own key, and neither reaches
+    /// across — mirroring [`fixed_is_read_per_axis`].
+    #[test]
+    fn tick_count_is_read_per_axis() {
+        assert_eq!(
+            resolve_tick_counts(&plot_with(&[("xTicks", SpecValue::Integer(2))])),
+            TickCounts {
+                x: Some(2),
+                y: None
+            }
+        );
+        assert_eq!(
+            resolve_tick_counts(&plot_with(&[("yTicks", SpecValue::Integer(4))])),
+            TickCounts {
+                x: None,
+                y: Some(4)
+            }
+        );
+        assert_eq!(
+            resolve_tick_counts(&plot_with(&[
+                ("xTicks", SpecValue::Integer(10)),
+                ("yTicks", SpecValue::Integer(4)),
+            ])),
+            TickCounts {
+                x: Some(10),
+                y: Some(4)
+            }
+        );
+        assert_eq!(resolve_tick_counts(&plot_with(&[])), TickCounts::default());
+    }
+
+    /// A plot that sets neither key is drawn at [`DEFAULT_TICK_COUNT`], and that
+    /// is five: the target the scene builder's `compute_ticks` calls drew
+    /// before either key was read. The drawn ticks are pinned by the shell's default-arm tests
+    /// on domains where four and six would draw differently; this pins the
+    /// number they are pinning.
+    #[test]
+    fn a_plot_that_asks_for_nothing_is_drawn_at_five() {
+        assert_eq!(DEFAULT_TICK_COUNT, 5);
+        let none = resolve_tick_counts(&plot_with(&[]));
+        assert_eq!((none.x_target(), none.y_target()), (5, 5));
+        let one = resolve_tick_counts(&plot_with(&[("xTicks", SpecValue::Integer(7))]));
+        assert_eq!((one.x_target(), one.y_target()), (7, 5));
+    }
+
+    /// A whole float (`xTicks: 2.0`) sets the same target an integer would —
+    /// the AST's numeric split by literal syntax, not by the author's
+    /// intent, is not a second instruction.
+    #[test]
+    fn a_whole_float_sets_a_target_same_as_the_integer() {
+        assert_eq!(
+            resolve_tick_counts(&plot_with(&[("xTicks", SpecValue::Float(2.0))])).x,
+            Some(2)
+        );
+    }
+
+    /// **A value that is not a target leaves that axis at the default —
+    /// AC4's warned case.** Zero, negative, fractional and non-numeric are
+    /// each a value `nice_step` cannot aim a step at; a `$param` is a
+    /// recorded deferral (`resolve_fixed_domains`'s own exclusion), not
+    /// a bad request, and defers the same way.
+    #[test]
+    fn only_a_positive_whole_number_sets_a_target() {
+        for value in [
+            SpecValue::Integer(0),
+            SpecValue::Integer(-3),
+            SpecValue::Float(2.5),
+            SpecValue::Float(-1.0),
+            SpecValue::Float(f64::NAN),
+            SpecValue::Float(f64::INFINITY),
+            SpecValue::String("10".to_string()),
+            SpecValue::Bool(true),
+            SpecValue::Null,
+            SpecValue::Param(ParamRef::new("n")),
+        ] {
+            let p = plot_with(&[("xTicks", value.clone())]);
+            assert_eq!(
+                resolve_tick_counts(&p).x,
+                None,
+                "xTicks: {value:?} is not a positive whole number and must not set a target"
+            );
+        }
+    }
+
+    /// **The bound is inclusive at the top and exact.** [`MAX_TICK_COUNT`] is
+    /// a count an axis can be asked for and one past it is not, as an integer
+    /// and as a whole float — so the bound is where it is written, not a
+    /// neighbouring number.
+    #[test]
+    fn the_bound_is_inclusive_and_one_past_it_is_not_a_target() {
+        let at = MAX_TICK_COUNT;
+        let past = i64::try_from(MAX_TICK_COUNT).expect("the bound fits an i64") + 1;
+        assert_eq!(tick_count_target(&SpecValue::Integer(past - 1)), Some(at));
+        assert_eq!(tick_count_target(&SpecValue::Integer(past)), None);
+        assert_eq!(
+            tick_count_target(&SpecValue::Float((past - 1) as f64)),
+            Some(at)
+        );
+        assert_eq!(tick_count_target(&SpecValue::Float(past as f64)), None);
+        assert_eq!(tick_count_target(&SpecValue::Integer(1)), Some(1));
+    }
+
+    /// A tick count written under `plotDefaults` reaches a plot that sets no
+    /// `xTicks`/`yTicks` of its own, exactly as
+    /// [`a_plot_defaults_pin_reaches_a_plot_that_does_not_set_its_own`]
+    /// verifies for `xDomain`: `Walker::walk_plot` merges the whole
+    /// `plotDefaults` bag key-agnostically, before either resolver ever
+    /// runs.
+    #[test]
+    fn a_plot_defaults_tick_count_reaches_a_plot_that_does_not_set_its_own() {
+        let parsed = parse_spec(
+            r"
+data:
+  t:
+    - { x: 1, y: 2 }
+plotDefaults:
+  xTicks: 3
+plot:
+  - { mark: dot, data: { from: t }, x: x, y: y }
+",
+            Format::Yaml,
+        )
+        .expect("parse");
+        let nodes = collect_plot_nodes(&parsed.spec);
+        assert_eq!(nodes.len(), 1, "one plot");
+        assert_eq!(
+            resolve_tick_counts(nodes[0].1).x,
+            Some(3),
+            "the plot sets no xTicks of its own; the plotDefaults value should reach it"
         );
     }
 

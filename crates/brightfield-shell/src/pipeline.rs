@@ -50,7 +50,7 @@ use brightfield_spec::analysis::{
 use brightfield_spec::ast::{Component, MarkData, ParamNode, PlotNode, SpaceNode, SpecValue};
 use brightfield_spec::layout::{
     collect_plot_nodes, placed_plots, resolve_fixed_domains, resolve_plot_insets,
-    resolve_plot_margins, resolve_plot_stack_offset, Rect, StackOffset,
+    resolve_plot_margins, resolve_plot_stack_offset, resolve_tick_counts, Rect, StackOffset,
 };
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, Spec};
@@ -2282,14 +2282,31 @@ fn compose_from_results(
             .unwrap_or_default();
         let plot_pins = pins.get(&plot.path).cloned().unwrap_or_default();
 
+        // What this plot's spec asked each positional axis's ticks to target
+        // — `xTicks`/`yTicks`. A plot that asks for neither reads back its
+        // default via `TickCounts::x_target`/`y_target` inside the draw call
+        // below, same as before this resolver existed.
+        let tick_counts = plot_nodes
+            .iter()
+            .find(|(p, _)| *p == plot.path)
+            .map(|(_, node)| resolve_tick_counts(node))
+            .unwrap_or_default();
+
         let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
         // `draw_inline_legend = false`: the legend is NOT baked into the data
         // scene. The shell draws it as a native margin panel outside the plot
         // rect, from the scales returned here — one legend per chart, one
         // source of truth, and no in-plot swatch block a margin copy could
         // drift from or that could sit on top of the marks.
-        let (scene, scales) =
-            build_multi_mark_scene_pinned(&refs, false, &titles, &plot_domains, &plot_pins, ink);
+        let (scene, scales) = build_multi_mark_scene_pinned(
+            &refs,
+            false,
+            &titles,
+            &plot_domains,
+            &plot_pins,
+            tick_counts,
+            ink,
+        );
         drop(refs);
         drop(chart_data);
 

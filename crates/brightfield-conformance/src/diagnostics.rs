@@ -231,7 +231,8 @@ fn warning_wire_name(warning: &ParseWarning) -> String {
         // and the one they can search their own file for.
         ParseWarning::ColourNameShadowsColumn { name, .. } => name.clone(),
         ParseWarning::NonNumericInset { attribute }
-        | ParseWarning::NonStringLabel { attribute } => attribute.clone(),
+        | ParseWarning::NonStringLabel { attribute }
+        | ParseWarning::InvalidTickCount { attribute } => attribute.clone(),
         ParseWarning::UnknownProjection { value } => value.clone(),
         ParseWarning::AspectRatioWithProjection { mark }
         | ParseWarning::MarkCannotProject { mark, .. } => mark.clone(),
@@ -271,7 +272,8 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         // `a_mark_level_projection_is_a_key_nothing_reads` (brightfield-spec),
         // which shows a mark-level value is not judged as a projection name.
         | ParseWarning::UnknownProjection { .. }
-        | ParseWarning::NonStringLabel { .. } => "plot",
+        | ParseWarning::NonStringLabel { .. }
+        | ParseWarning::InvalidTickCount { .. } => "plot",
         ParseWarning::UnknownAggregate { .. }
         | ParseWarning::UnconsumedChannelTransform { .. }
         | ParseWarning::ColourNameShadowsColumn { .. } => "channel",
@@ -406,6 +408,32 @@ mod tests {
         assert!(
             lines.iter().any(|l| l.contains("count")),
             "the param type mismatch reaches the surface: {lines:?}"
+        );
+    }
+
+    /// **AC4 — a bad tick count is named in the warning banner with its
+    /// key.** `xTicks: -3` is the card's own example: advisory (the plot
+    /// still draws, at the default count), naming `xTicks` as the wire name
+    /// and `plot` as the surface, mirroring
+    /// `dfconf_blocking_entry_names_the_wire_name_and_surface`'s shape for the
+    /// advisory tier.
+    #[test]
+    fn dfconf_advisory_entry_names_a_bad_tick_count() {
+        let d = diagnose(
+            "data:\n  t: { file: t.parquet }\nplot:\n  - mark: dot\n    data: { from: t }\n    \
+             x: a\n    y: b\nxTicks: -3\n",
+        );
+        assert!(d.blocking().is_empty(), "the plot still draws: {d:?}");
+        let advisory = d.advisory();
+        let hit = advisory
+            .iter()
+            .find(|diag| diag.wire_name == "xTicks")
+            .unwrap_or_else(|| panic!("no advisory names `xTicks`: {:?}", d.lines()));
+        assert_eq!(hit.surface, "plot");
+        assert!(
+            hit.message.contains("xTicks"),
+            "the sentence names it too: {}",
+            hit.message
         );
     }
 }

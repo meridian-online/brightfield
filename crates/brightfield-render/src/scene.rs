@@ -2,6 +2,7 @@
 //! into a single vello::Scene.
 
 use arrow::record_batch::RecordBatch;
+use brightfield_spec::layout::TickCounts;
 use kurbo::{Affine, BezPath, Circle, Rect, RoundedRect, Stroke};
 use peniko::Fill;
 use vello::Scene;
@@ -528,12 +529,14 @@ pub fn build_multi_mark_scene_with_domains(
         titles,
         domains,
         &PinnedDomains::default(),
+        TickCounts::default(),
         ink,
     )
 }
 
 /// [`build_multi_mark_scene_with_domains`] with the positional domains this
-/// plot's spec asked to hold still — see [`PinnedDomains`].
+/// plot's spec asked to hold still — see [`PinnedDomains`] — and the target
+/// tick count each positional axis asked for — see [`TickCounts`].
 ///
 /// The pin lands AFTER inference and after [`apply_unsampled_domains`], so the
 /// author's instruction outranks both what the drawn rows imply and what a
@@ -542,16 +545,21 @@ pub fn build_multi_mark_scene_with_domains(
 /// has navigated is dropped from the pin here rather than overwritten, so a
 /// pinned plot pans and zooms like an unpinned one. A filter is the dashboard
 /// moving; a pan is the reader moving, and only the first is what `Fixed`
-/// declines.
+/// declines. `tick_counts` carries no domain and lands at the draw step below,
+/// alongside the pinned or unpinned scales it draws against.
 ///
 /// An empty `pins` reproduces [`build_multi_mark_scene_with_domains`] scale for
 /// scale — [`apply_pinned_domains`] writes nothing without a pin to write.
+///
+/// A default `tick_counts` draws the count each call site drew before this
+/// parameter existed — see [`brightfield_spec::layout::DEFAULT_TICK_COUNT`].
 pub fn build_multi_mark_scene_pinned(
     entries: &[&ChartData<'_>],
     draw_inline_legend: bool,
     titles: &ResolvedTitles,
     domains: &UnsampledDomains,
     pins: &PinnedDomains,
+    tick_counts: TickCounts,
     ink: ChartInk,
 ) -> (Scene, ScaleSet) {
     if entries.is_empty() {
@@ -563,7 +571,7 @@ pub fn build_multi_mark_scene_pinned(
         &domains_yielding_to_navigation(domains, entries[0]),
     );
     apply_pinned_domains(&mut scales, &pins_yielding_to_navigation(pins, entries[0]));
-    let scene = draw_multi_mark_scene(entries, draw_inline_legend, titles, &scales);
+    let scene = draw_multi_mark_scene(entries, draw_inline_legend, titles, tick_counts, &scales);
     (scene, scales)
 }
 
@@ -915,11 +923,14 @@ fn infer_multi_mark_scales(entries: &[&ChartData<'_>], ink: ChartInk) -> ScaleSe
 /// [`build_multi_mark_scene`] (which infers `scales` first) and
 /// [`build_multi_mark_scene_anchored`] (which folds a fresh inference against a
 /// launch set), so both render byte-identical geometry from the same scale set.
-/// Callers guarantee `entries` is non-empty.
+/// `tick_counts` is the plot's `xTicks`/`yTicks` target for both the grid and
+/// the axis below — one resolved value, so the two cannot disagree about how
+/// many ticks this plot draws. Callers guarantee `entries` is non-empty.
 fn draw_multi_mark_scene(
     entries: &[&ChartData<'_>],
     draw_inline_legend: bool,
     titles: &ResolvedTitles,
+    tick_counts: TickCounts,
     scales: &ScaleSet,
 ) -> Scene {
     let layout = &entries[0].layout;
@@ -938,11 +949,11 @@ fn draw_multi_mark_scene(
     // Grid lines (behind marks).
     if !suppress_frame {
         if let Some(x_scale) = scales.get(Channel::X) {
-            let x_ticks = compute_ticks(x_scale, 5);
+            let x_ticks = compute_ticks(x_scale, tick_counts.x_target());
             render_x_grid(&mut scene, layout, &x_ticks, ink);
         }
         if let Some(y_scale) = scales.get(Channel::Y) {
-            let y_ticks = compute_ticks(y_scale, 5);
+            let y_ticks = compute_ticks(y_scale, tick_counts.y_target());
             render_y_grid(&mut scene, layout, &y_ticks, ink);
         }
     }
@@ -966,11 +977,11 @@ fn draw_multi_mark_scene(
     // resolved to a field name upstream; None = suppressed / underivable).
     if !suppress_frame {
         if let Some(x_scale) = scales.get(Channel::X) {
-            let x_ticks = compute_ticks(x_scale, 5);
+            let x_ticks = compute_ticks(x_scale, tick_counts.x_target());
             render_x_axis(&mut scene, layout, &x_ticks, titles.x.as_deref(), ink);
         }
         if let Some(y_scale) = scales.get(Channel::Y) {
-            let y_ticks = compute_ticks(y_scale, 5);
+            let y_ticks = compute_ticks(y_scale, tick_counts.y_target());
             render_y_axis(&mut scene, layout, &y_ticks, titles.y.as_deref(), ink);
         }
     }
@@ -1015,6 +1026,12 @@ fn draw_multi_mark_scene(
 /// changing a `$param`) can surface rows outside the launch domain; the anchor
 /// widens to keep them on-plot instead of clipping them into invisibility.
 /// Returns `(empty scene, launch.clone())` for empty `entries`.
+///
+/// Draws at [`brightfield_spec::layout::DEFAULT_TICK_COUNT`] — like
+/// [`PinnedDomains`], a plot's `xTicks`/`yTicks` request reaches the static
+/// composition [`build_multi_mark_scene_pinned`] draws
+/// (`crates/brightfield-shell/src/pipeline.rs`), not this live rebuild path;
+/// the caller does not carry the request to hand in.
 pub fn build_multi_mark_scene_anchored(
     entries: &[&ChartData<'_>],
     draw_inline_legend: bool,
@@ -1026,7 +1043,13 @@ pub fn build_multi_mark_scene_anchored(
     }
     let fresh = infer_multi_mark_scales(entries, launch.ink());
     let anchored = crate::scale::anchor_scales(launch, fresh);
-    let scene = draw_multi_mark_scene(entries, draw_inline_legend, titles, &anchored);
+    let scene = draw_multi_mark_scene(
+        entries,
+        draw_inline_legend,
+        titles,
+        TickCounts::default(),
+        &anchored,
+    );
     (scene, anchored)
 }
 
@@ -2136,6 +2159,110 @@ mod tests {
             anch_titled.encoding().draw_tags.len() > anch_untitled.encoding().draw_tags.len(),
             "an anchored rebuild re-emits titles"
         );
+    }
+
+    /// **The gridlines and the axis tick marks follow one count, on each
+    /// axis.** A tick is drawn twice — a gridline behind the marks and a tick
+    /// mark on the axis in front of them — and both are computed from
+    /// `TickCounts`. The shell's tests read the tick LABELS, which only the
+    /// axis draws, so a grid that kept drawing the default count while the axis
+    /// followed the request would pass all of them. Here the path segments each
+    /// scene carries are compared instead. The marks and the axis line do not
+    /// move with the count, and asking one axis for `10` rather than `2` on a 0
+    /// to 100 domain adds eight ticks (three become eleven), so the scene gains
+    /// eight gridlines AND eight tick marks. What one stroked line costs the
+    /// encoder is measured on a lone line rather than assumed, and a grid left
+    /// at the default would add half what is asserted.
+    #[test]
+    fn gridlines_and_tick_marks_follow_the_same_count() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.0, 100.0])),
+                Arc::new(Float64Array::from(vec![0.0, 100.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        let dot = DotRenderer;
+        let data = ChartData {
+            batch: &batch,
+            channel_map: &cm,
+            renderer: &dot,
+            layout: ChartLayout::new(600.0, 300.0),
+            view_extent: None,
+            highlight: None,
+            sample: None,
+            beyond_frame: false,
+        };
+        let segments = |tick_counts: TickCounts| {
+            let (scene, scales) = build_multi_mark_scene_pinned(
+                &[&data],
+                false,
+                &ResolvedTitles::default(),
+                &UnsampledDomains::default(),
+                &PinnedDomains::default(),
+                tick_counts,
+                ChartInk::LIGHT,
+            );
+            for channel in [Channel::X, Channel::Y] {
+                let Some(Scale::Linear {
+                    domain_min,
+                    domain_max,
+                    ..
+                }) = scales.get(channel).cloned()
+                else {
+                    panic!("fixture check: {channel:?} should be a linear scale");
+                };
+                assert!(
+                    domain_min.abs() < 1e-9 && (domain_max - 100.0).abs() < 1e-9,
+                    "fixture check: {channel:?} should span [0, 100], spans \
+                     [{domain_min}, {domain_max}]"
+                );
+            }
+            scene.encoding().n_path_segments
+        };
+
+        let mut lone = Scene::new();
+        lone.stroke(
+            &Stroke::new(1.0),
+            Affine::IDENTITY,
+            ChartInk::LIGHT.grid,
+            None,
+            &kurbo::Line::new((0.0, 0.0), (10.0, 0.0)),
+        );
+        let per_line = lone.encoding().n_path_segments;
+        assert!(per_line > 0, "fixture check: a stroked line has segments");
+
+        for (axis, at) in [
+            (
+                "x",
+                (|n| TickCounts {
+                    x: Some(n),
+                    y: None,
+                }) as fn(usize) -> TickCounts,
+            ),
+            ("y", |n| TickCounts {
+                x: None,
+                y: Some(n),
+            }),
+        ] {
+            let two = segments(at(2));
+            let ten = segments(at(10));
+            assert_eq!(
+                ten - two,
+                per_line * 2 * 8,
+                "on the {axis} axis, eight more ticks are eight more gridlines AND eight \
+                 more tick marks, at {per_line} segments a line; {two} segments at 2 and \
+                 {ten} at 10"
+            );
+        }
     }
 
     #[test]
