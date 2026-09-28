@@ -545,13 +545,14 @@ pub fn build_multi_mark_scene_with_domains(
 /// has navigated is dropped from the pin here rather than overwritten, so a
 /// pinned plot pans and zooms like an unpinned one. A filter is the dashboard
 /// moving; a pan is the reader moving, and only the first is what `Fixed`
-/// declines. `tick_counts` carries no domain and lands only at the draw step
-/// below, alongside the pinned/unpinned scales it draws either one against.
+/// declines. `tick_counts` carries no domain and lands at the draw step below,
+/// alongside the pinned or unpinned scales it draws against.
 ///
 /// An empty `pins` reproduces [`build_multi_mark_scene_with_domains`] scale for
-/// scale — [`apply_pinned_domains`] writes nothing without a pin to write. A
-/// default `tick_counts` draws the same count every call site drew before
-/// this parameter existed — see [`brightfield_spec::layout::DEFAULT_TICK_COUNT`].
+/// scale — [`apply_pinned_domains`] writes nothing without a pin to write.
+///
+/// A default `tick_counts` draws the count each call site drew before this
+/// parameter existed — see [`brightfield_spec::layout::DEFAULT_TICK_COUNT`].
 pub fn build_multi_mark_scene_pinned(
     entries: &[&ChartData<'_>],
     draw_inline_legend: bool,
@@ -1027,8 +1028,8 @@ fn draw_multi_mark_scene(
 /// Returns `(empty scene, launch.clone())` for empty `entries`.
 ///
 /// Draws at [`brightfield_spec::layout::DEFAULT_TICK_COUNT`] — like
-/// [`PinnedDomains`], a plot's `xTicks`/`yTicks` request reaches only the
-/// static composition [`build_multi_mark_scene_pinned`] draws
+/// [`PinnedDomains`], a plot's `xTicks`/`yTicks` request reaches the static
+/// composition [`build_multi_mark_scene_pinned`] draws
 /// (`crates/brightfield-shell/src/pipeline.rs`), not this live rebuild path;
 /// the caller does not carry the request to hand in.
 pub fn build_multi_mark_scene_anchored(

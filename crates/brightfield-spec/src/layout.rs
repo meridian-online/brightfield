@@ -802,9 +802,10 @@ pub fn resolve_fixed_domains(plot: &PlotNode) -> FixedDomains {
     }
 }
 
-/// The tick count a renderer draws when a plot asks for none — the count
-/// every `compute_ticks` call site drew before this resolver existed, and
-/// what [`TickCounts::x_target`]/[`TickCounts::y_target`] fall back to.
+/// The tick count a renderer draws when a plot sets neither key — the count
+/// the scene builder's `compute_ticks` calls drew before this resolver
+/// existed, and what [`TickCounts::x_target`]/[`TickCounts::y_target`] fall
+/// back to.
 pub const DEFAULT_TICK_COUNT: usize = 5;
 
 /// Which positional axes carry a `xTicks` / `yTicks` target tick count, and
@@ -853,7 +854,7 @@ impl TickCounts {
 pub const MAX_TICK_COUNT: usize = 1000;
 
 /// The one judge of a `xTicks` / `yTicks` value: the target count it sets, or
-/// `None` when it sets none.
+/// `None` when the value is not a target.
 ///
 /// A target is a literal whole number from 1 to [`MAX_TICK_COUNT`], written as
 /// an integer or as a float with no fractional part. d3's tick rule
@@ -3319,9 +3320,9 @@ xDomain: [0, 100]
         assert_eq!(resolve_tick_counts(&plot_with(&[])), TickCounts::default());
     }
 
-    /// A plot that asks for nothing is drawn at [`DEFAULT_TICK_COUNT`], and that
-    /// is five: the target every `compute_ticks` call site drew before either
-    /// key was read. The drawn ticks are pinned by the shell's default-arm tests
+    /// A plot that sets neither key is drawn at [`DEFAULT_TICK_COUNT`], and that
+    /// is five: the target the scene builder's `compute_ticks` calls drew
+    /// before either key was read. The drawn ticks are pinned by the shell's default-arm tests
     /// on domains where four and six would draw differently; this pins the
     /// number they are pinning.
     #[test]
@@ -3344,7 +3345,7 @@ xDomain: [0, 100]
         );
     }
 
-    /// **Every other value at these keys leaves that axis at the default —
+    /// **A value that is not a target leaves that axis at the default —
     /// AC4's warned case.** Zero, negative, fractional and non-numeric are
     /// each a value `nice_step` cannot aim a step at; a `$param` is a
     /// recorded deferral (`resolve_fixed_domains`'s own exclusion), not

@@ -30,7 +30,7 @@ use brightfield_shell::pipeline::{Composed, LiveDashboard};
 
 /// Two columns that each run from 0 to `MAX`, so both axes infer the same
 /// `[0, MAX]` domain. `ATTRS` marks where the plot attributes go, so the arms
-/// differ by those lines and nothing else.
+/// differ by those lines.
 const TEMPLATE: &str = r"
 data:
   pts:

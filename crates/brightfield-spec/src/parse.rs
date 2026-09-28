@@ -934,8 +934,8 @@ impl Walker {
                     let defaults = PlotDefaults(self.walk_open_map(val, "plotDefaults")?);
                     // A default is merged into each plot AFTER `walk_plot`'s own
                     // per-attribute checks, so a malformed tick count written
-                    // here would reach every plot and be dropped without a word.
-                    // Name it once, where it is declared.
+                    // here would reach the plots that inherit it and be dropped
+                    // without a word. Name it once, where it is declared.
                     for key in PLOT_TICK_COUNT_KEYS {
                         if defaults
                             .get(key)
@@ -3369,9 +3369,9 @@ plot:
     }
 
     /// A malformed tick count under `plotDefaults` is named once, where it is
-    /// declared — not once per plot it reaches, and not never: the merge into
-    /// each plot runs after `walk_plot`'s own check, so without this a bad
-    /// default would be dropped without a word on every plot.
+    /// declared, however many plots inherit it: the merge into each plot runs
+    /// after `walk_plot`'s own check, so a bad default would otherwise be
+    /// dropped without a word on the plots that inherit it.
     #[test]
     fn a_bad_plot_defaults_tick_count_warns_once_however_many_plots_inherit_it() {
         let two_plots = |defaults: &str| {
