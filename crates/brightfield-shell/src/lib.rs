@@ -59,8 +59,8 @@
 //!   Protocol in a child process of this binary, on a worker, and the run
 //!   records it leaves beside the spec, read back newest first.
 //! - [`shelf_edit`] — a column put on a chart's x or y, as the list of chart
-//!   edits that make it: every layer that binds the channel moves, and a map
-//!   taken off its coordinate pair loses its projection.
+//!   edits that make it: the layers that bind the channel move together, and
+//!   a map taken off its coordinate pair loses its projection.
 //! - [`overlays`] — the picker delegates: the domain halves of the command
 //!   palette, help sheet, jump lists and argument prompt, over the
 //!   framework-free corpora in `brightfield-keys` / `brightfield-model`.

@@ -11,9 +11,10 @@
 //! `a_column_put_on_the_maps_x_moves_both_layers_and_takes_the_projection_out`
 //! holds it on the map's two layers.
 //!
-//! **And the map is a map only while its x and y hold the table's coordinate
-//! pair**, the longitude and latitude [`crate::dashboard`]'s generator drew it
-//! from. A column's type does not decide it: `median_income` is quantitative,
+//! **And the map is drawn as a map while its x and y hold the table's
+//! coordinate pair**, the longitude and latitude the generator in
+//! [`crate::dashboard`] drew it from, and as a dot plot when they do not. A
+//! column's type does not decide it: `median_income` is quantitative,
 //! as `longitude` is. A column put on either axis that takes the plot off the
 //! pair takes `projectionType` out with it, so the page draws a dot plot with
 //! axes to read that column by; putting the pair back puts the projection
