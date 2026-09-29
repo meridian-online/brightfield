@@ -12,8 +12,8 @@
 //! unmarked, on both refusals that leave the previous page standing; a file
 //! opened, a brush swept, a focus moved and a pick of the state already showing
 //! leaving it unmarked; and a second file opened after an edit starting clean.
-//! Not covered: Save clearing the mark, because Save does not write the chart
-//! yet — the mark stays until the document is replaced.
+//! Not covered: Save clearing the mark, which `tests/chart_save_writes_chart.rs`
+//! holds.
 
 use brightfield_protocol::layout::Flow;
 use brightfield_shell::app::{GridLayout, CHART};
