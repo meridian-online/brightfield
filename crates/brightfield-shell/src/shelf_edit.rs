@@ -7,7 +7,9 @@
 //! `x:` and `y:` (see [`crate::chart_kinds::point_map_tile_sized`]). A column
 //! put on the map's x has to move both, or the highlighted points leave the
 //! grey cloud behind. So [`put_column`] moves the channel on every mark of the
-//! plot that binds it, and on the first mark when none does.
+//! plot that binds it, and on the first mark when none does:
+//! `a_column_put_on_the_maps_x_moves_both_layers_and_takes_the_projection_out`
+//! holds it on the map's two layers.
 //!
 //! **And the map is a map only while its x and y hold the table's coordinate
 //! pair**, the longitude and latitude [`crate::dashboard`]'s generator drew it
@@ -72,7 +74,7 @@ impl std::error::Error for ShelfRefusal {}
 /// The list holds, in order:
 ///
 /// 1. a [`ChartEdit::SetChannel`] for each mark on the plot that binds the
-///    channel to anything but `column` already, in the plot's mark order, or
+///    channel to a value other than `column`, in the plot's mark order, or
 ///    one for the first mark when no mark binds it;
 /// 2. a [`ChartEdit::RemovePlotAttribute`] of `projectionType` when the plot
 ///    held the coordinate pair before and does not after, or a
@@ -131,7 +133,7 @@ pub fn put_column(
         })
         .collect();
 
-    // Every edit goes onto a copy first, so a refusal part-way leaves `spec`
+    // The edits go onto a copy first, so a refusal part-way leaves the spec
     // as it was.
     let mut edited = spec.clone();
     for e in &edits {
@@ -182,7 +184,10 @@ fn column_of<'a>(mark: &'a Mark, channel: &str) -> Option<&'a str> {
 }
 
 /// Whether the plot draws the coordinate pair: at least one of its marks binds
-/// x or y, and every mark that binds either binds x to `lon` and y to `lat`.
+/// x or y, and each mark that binds either binds x to `lon` and y to `lat`.
+/// `putting_longitude_back_on_x_gives_the_spec_the_generator_wrote` reads it
+/// turning true, and the two tests that take the projection out read it
+/// turning false.
 fn holds_pair(plot: &PlotNode, lon: &str, lat: &str) -> bool {
     let positional: Vec<&Mark> = plot
         .items
