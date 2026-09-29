@@ -1840,7 +1840,7 @@ width: 320
 height: 240
 ";
 
-    // The same plot with no `yScale`: nothing for a removal of it to take out.
+    // The same plot with no `yScale` key, so a removal of it finds the key absent.
     const LINEAR_Y: &str = "\
 data:
   t: SELECT 1 AS a, 2 AS b
