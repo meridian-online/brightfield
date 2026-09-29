@@ -69,8 +69,9 @@ impl std::error::Error for ShelfRefusal {}
 /// applied.
 ///
 /// `table` is the profile of the table the chart reads: `column` must be one
-/// of its columns, and its coordinate pair, as [`coordinate_pair`] finds it,
-/// decides whether the plot is a map afterwards.
+/// of its columns, and its coordinate pair, as the crate-private
+/// `dashboard::coordinate_pair` finds it, decides whether the plot is a map
+/// afterwards.
 ///
 /// The list holds, in order:
 ///
