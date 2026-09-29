@@ -23,7 +23,7 @@ pub use crate::ast::{
 };
 pub use crate::error::{FrameFault, FrameSide, NameSurface, ParseError, SourceSpan};
 pub use crate::parse::{
-    parse_spec, parse_spec_path, serialise_spec, Format, ParseOutput, ParseWarning,
+    parse_spec, parse_spec_path, serialise_spec, serialise_value, Format, ParseOutput, ParseWarning,
 };
 pub use crate::vocab::{ComponentKind, ImplStatus, InputKind, InteractorKind, MarkKind};
 

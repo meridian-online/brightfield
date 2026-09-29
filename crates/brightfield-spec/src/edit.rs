@@ -125,6 +125,20 @@ impl ChartEdit {
         }
     }
 
+    /// The edit's kind as the command log spells it (`change-mark-type`,
+    /// `set-plot-attribute`), with no target and no value — the head of
+    /// [`ChartEdit::summary`], and the name a refusal of the whole kind gives.
+    #[must_use]
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            ChartEdit::ChangeMarkType { .. } => "change-mark-type",
+            ChartEdit::AddMark { .. } => "add-mark",
+            ChartEdit::SetChannel { .. } => "set-channel",
+            ChartEdit::RemoveMark { .. } => "remove-mark",
+            ChartEdit::SetPlotAttribute { .. } => "set-plot-attribute",
+        }
+    }
+
     /// Whether this edit changes the mark COUNT (AddMark / RemoveMark) — the
     /// transient apply must rebuild the coordinator + engine flat-index maps
     /// for a count-changing edit.
@@ -154,20 +168,21 @@ impl ChartEdit {
     /// (`change-mark-type: -> bar`).
     #[must_use]
     pub fn summary(&self) -> String {
+        let kind = self.kind_name();
         match self {
             ChartEdit::ChangeMarkType { new_kind, .. } => {
-                format!("change-mark-type: -> {}", new_kind.wire_name())
+                format!("{kind}: -> {}", new_kind.wire_name())
             }
-            ChartEdit::AddMark { kind, .. } => format!("add-mark: {}", kind.wire_name()),
+            ChartEdit::AddMark { kind: mark, .. } => format!("{kind}: {}", mark.wire_name()),
             ChartEdit::SetChannel {
                 channel, column, ..
             } => {
-                format!("set-channel: {channel} -> {column}")
+                format!("{kind}: {channel} -> {column}")
             }
-            ChartEdit::RemoveMark { .. } => "remove-mark".to_string(),
+            ChartEdit::RemoveMark { .. } => kind.to_string(),
             ChartEdit::SetPlotAttribute { key, value, .. } => match value {
-                SpecValue::String(s) => format!("set-plot-attribute: {key} -> {s}"),
-                other => format!("set-plot-attribute: {key} -> {other:?}"),
+                SpecValue::String(s) => format!("{kind}: {key} -> {s}"),
+                other => format!("{kind}: {key} -> {other:?}"),
             },
         }
     }
@@ -667,6 +682,45 @@ fn descend<'a>(component: &'a Component, here: &str, target: &str) -> Option<&'a
             .find_map(|(i, child)| descend(child, &format!("{here}/vconcat[{i}]"), target)),
         _ => None,
     }
+}
+
+/// The route from the spec's root to the plot identified by `path`, as the
+/// spec's text nests it: one `(concat key, item index)` step per level, so
+/// `root/hconcat[0]/vconcat[1]` is `[("hconcat", 0), ("vconcat", 1)]` and the
+/// root plot is the empty route. `None` when `path` names no plot.
+///
+/// It walks the same tree [`plot_at_path`] walks, and the route reads as a
+/// path into the text because the parser keeps a concat's items in their list
+/// order — an `hspace` or a `legend` holds its index like a plot does — and
+/// because the root component's keys sit at the document root beside `meta:`
+/// and `data:`.
+#[must_use]
+pub fn plot_route(spec: &Spec, path: &str) -> Option<Vec<(&'static str, usize)>> {
+    let root = spec.root.as_ref()?;
+    let mut route = Vec::new();
+    route_to(root, "root", path, &mut route).then_some(route)
+}
+
+fn route_to(
+    component: &Component,
+    here: &str,
+    target: &str,
+    route: &mut Vec<(&'static str, usize)>,
+) -> bool {
+    let (key, items) = match component {
+        Component::Plot(_) => return here == target,
+        Component::HConcat(c) => ("hconcat", &c.items),
+        Component::VConcat(c) => ("vconcat", &c.items),
+        _ => return false,
+    };
+    for (i, child) in items.iter().enumerate() {
+        route.push((key, i));
+        if route_to(child, &format!("{here}/{key}[{i}]"), target, route) {
+            return true;
+        }
+        route.pop();
+    }
+    false
 }
 
 /// Mutable twin of [`plot_at_path`].
