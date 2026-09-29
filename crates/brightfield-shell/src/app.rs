@@ -976,7 +976,12 @@ pub enum ChartSaveError {
         refusal: brightfield_protocol::ChartTextRefusal,
     },
     /// The chart file could not be written.
-    Write(brightfield_model::panel_capture::PanelCaptureError),
+    Write {
+        /// The chart file the write was for.
+        path: std::path::PathBuf,
+        /// The filesystem's answer.
+        error: std::io::Error,
+    },
 }
 
 impl std::fmt::Display for ChartSaveError {
@@ -989,7 +994,9 @@ impl std::fmt::Display for ChartSaveError {
             Self::Unplaced { edit, refusal } => {
                 write!(f, "could not place {edit} in the chart file: {refusal}")
             }
-            Self::Write(e) => e.fmt(f),
+            Self::Write { path, error } => {
+                write!(f, "could not write {}: {error}", path.display())
+            }
         }
     }
 }
@@ -1293,7 +1300,11 @@ impl ChartDoc {
                     refusal,
                 })?;
         }
-        let written = write_panel_text(dir, name, &placed).map_err(ChartSaveError::Write)?;
+        let written =
+            write_panel_text(dir, name, &placed).map_err(|error| ChartSaveError::Write {
+                path: target,
+                error,
+            })?;
         let path = std::path::absolute(&written).unwrap_or(written);
         self.pending_edits.clear();
         if self.spec_path.as_deref() == Some(path.as_path()) {

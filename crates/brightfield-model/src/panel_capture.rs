@@ -118,12 +118,12 @@ pub fn panel_file(dir: &Path, name: &str) -> PathBuf {
 ///
 /// # Errors
 ///
-/// [`PanelCaptureError::Io`] when the directory cannot be created or the write
-/// or the rename fails; the destination is left as it was.
-pub fn write_panel_text(dir: &Path, name: &str, text: &str) -> Result<PathBuf, PanelCaptureError> {
-    std::fs::create_dir_all(dir.join(PANELS_DIR)).map_err(PanelCaptureError::Io)?;
+/// The filesystem's error when the directory cannot be created or the write or
+/// the rename fails; the destination is left as it was.
+pub fn write_panel_text(dir: &Path, name: &str, text: &str) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(dir.join(PANELS_DIR))?;
     let path = panel_file(dir, name);
-    save_spec_atomic(text, &path).map_err(PanelCaptureError::Io)?;
+    save_spec_atomic(text, &path)?;
     Ok(path)
 }
 

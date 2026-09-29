@@ -642,12 +642,14 @@ fn a_save_that_wrote_the_chart_clears_the_unsaved_mark() {
     assert_eq!(session.chart_banner(), None);
 }
 
-/// **AC5, a failure.** A Save that could not write the chart leaves the mark
-/// and says why, and the next Save that can clears both.
+/// **AC5, a failure to read.** A Save that could not write the chart leaves
+/// the mark and says why, and the next Save that can clears both.
 ///
 /// The failure is a regular file where the `panels/` folder belongs, so the
-/// chart file cannot be read or created; the Protocol beside it is written all
-/// the same, which is the point of keeping the two apart.
+/// text the edit goes into cannot be read; the Protocol beside it is written
+/// all the same, which is the point of keeping the two apart. The failure of
+/// the write itself, after the text is read and the edit placed, is the next
+/// test's.
 #[test]
 fn a_save_that_could_not_write_the_chart_keeps_the_mark_and_says_why() {
     let mut session = Session::open("ac5-keeps");
@@ -688,6 +690,84 @@ fn a_save_that_could_not_write_the_chart_keeps_the_mark_and_says_why() {
     );
     assert_eq!(session.chart_banner(), None, "the banner stayed up");
     assert!(session.chart_text().contains("xScale: log"));
+}
+
+/// Puts a directory's permissions back when dropped, so a test that made one
+/// read-only leaves a folder its `TempDir` can remove even when an assertion
+/// fails.
+#[cfg(unix)]
+struct Restore(PathBuf);
+
+#[cfg(unix)]
+impl Drop for Restore {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+    }
+}
+
+/// **AC5, a failure to write.** The edit is read, placed and ready, and the
+/// write into `panels/` is refused: the mark stays and the window says why.
+///
+/// The `panels/` folder is there and read-only, so no chart file is there to
+/// read, the scratch spec is read instead, the edit goes into it, and creating
+/// the file is what fails. A window that cleared the held edits before the
+/// write landed would lose the mark here and lose the edit with it; the read
+/// failure above cannot show that, because it returns before the write. A
+/// process that ignores directory permissions cannot make this failure, so the
+/// test says so and stands down there.
+#[cfg(unix)]
+#[test]
+fn a_save_whose_write_is_refused_keeps_the_mark_and_says_why() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut session = Session::open("ac5-write");
+    session.transpose();
+    session.throw("population", ScaleType::Log);
+    let panels = session.folder.join("panels");
+    std::fs::create_dir_all(&panels).expect("panels/");
+    let _restore = Restore(panels.clone());
+    std::fs::set_permissions(&panels, std::fs::Permissions::from_mode(0o555))
+        .expect("panels/ is made read-only");
+    let probe = panels.join(".probe");
+    if std::fs::write(&probe, "").is_ok() {
+        let _ = std::fs::remove_file(&probe);
+        eprintln!("this process ignores directory permissions; the write cannot be refused");
+        return;
+    }
+
+    session.save();
+
+    assert!(
+        session.marked(),
+        "the title is {:?} after a write that was refused",
+        session.title()
+    );
+    let said = session.chart_banner().unwrap_or_else(|| {
+        panic!(
+            "no banner says the chart was not saved: {:?}",
+            session.banners()
+        )
+    });
+    assert!(
+        said.contains("panels"),
+        "the banner does not say where the write failed: {said:?}"
+    );
+    assert!(!session.chart_file().exists());
+
+    std::fs::set_permissions(&panels, std::fs::Permissions::from_mode(0o755))
+        .expect("panels/ is made writable again");
+    session.save();
+
+    assert!(
+        !session.marked(),
+        "the edit was lost with the refused write: the title is {:?} after a Save that could",
+        session.title()
+    );
+    assert!(
+        session.chart_text().contains("xScale: log"),
+        "the edit held across the refused write is not in the chart file"
+    );
 }
 
 // ---------------------------------------------------------------------------
