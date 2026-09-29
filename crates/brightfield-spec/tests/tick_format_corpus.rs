@@ -1,8 +1,8 @@
 //! **Each tick format the vendored corpus carries is one this build reads or
 //! defers, and none is warned about.**
 //!
-//! The corpus is the vendored Mosaic examples, so every `xTickFormat` and
-//! `yTickFormat` in it is one a real author wrote. This walks the plots of each
+//! The corpus is the vendored Mosaic examples, so the `xTickFormat` and
+//! `yTickFormat` values in it are ones a real author wrote. This walks the plots of each
 //! and asks the two judges the parser and the renderer share: a number format
 //! is read by [`tick_number_format`], the date format the corpus also carries
 //! (`%b`) is deferred, and the parse produces no `InvalidTickFormat` for any

@@ -72,10 +72,10 @@ enum Symbol {
 
 /// A parsed d3-format number specifier.
 ///
-/// Every field holds what the analyst wrote, so [`NumberFormat::tick_format`]
-/// can tell a specifier that names a precision from one that leaves it to the
-/// axis. d3-format's aliases (`n`, an empty type, an unknown letter) are applied
-/// when a number is formatted, not here.
+/// The precision is kept as the analyst wrote it, or absent, so
+/// [`NumberFormat::tick_format`] can tell a specifier that names a precision
+/// from one that leaves it to the axis. d3-format's aliases (`n`, an empty type,
+/// an unknown letter) are applied when a number is formatted, not here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NumberFormat {
     fill: char,

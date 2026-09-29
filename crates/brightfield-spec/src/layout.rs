@@ -897,7 +897,7 @@ pub fn resolve_tick_counts(plot: &PlotNode) -> TickCounts {
 /// A pure spec reading, like [`TickCounts`]: it says what the author asked for
 /// and holds no opinion about what a scale then does with it. `None` covers
 /// the key being absent, being a date format (a different reading, see
-/// [`tick_number_format`]) and being a value that is no format at all, which
+/// [`tick_number_format`]) and being a value that is no format, which
 /// [`crate::parse::ParseWarning::InvalidTickFormat`] has already named at parse
 /// time.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -3592,7 +3592,7 @@ plot:
         }
     }
 
-    /// A `plotDefaults` format reaches a plot that writes none of its own,
+    /// A `plotDefaults` format reaches a plot that writes no format of its own,
     /// exactly as a `plotDefaults` tick count does: `Walker::walk_plot` merges
     /// the whole bag key-agnostically before either resolver runs.
     #[test]

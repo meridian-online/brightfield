@@ -284,8 +284,8 @@ fn a_format_with_no_precision_follows_the_tick_step() {
     );
 }
 
-/// A format under `plotDefaults` reaches a plot that names none of its own,
-/// through the same resolver a format on the plot does.
+/// A format under `plotDefaults` reaches a plot that names no format of its
+/// own, through the same resolver a format on the plot does.
 #[test]
 fn a_plot_defaults_tick_format_reaches_the_plot() {
     let composed = compose_to(2000.0, "plotDefaults:\n  xTickFormat: s");

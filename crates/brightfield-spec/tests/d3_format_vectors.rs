@@ -48,10 +48,11 @@ fn format_prints_what_d3_format_prints() {
     );
 }
 
-/// Every axis in the table gets the tick text d3-scale's `tickFormat` gives it:
-/// the precision follows the step between ticks, and an SI axis shares one
-/// prefix. The step is the one d3 drew its own ticks at, so what is compared is
-/// the inference from a step, which is the part that is the port's own.
+/// This walks the axes in the table and holds each one's tick text to what
+/// d3-scale's `tickFormat` gives it: the precision follows the step between
+/// ticks, and an SI axis shares one prefix. The step is the one d3 drew its own
+/// ticks at, so what is compared is the inference from a step, which is the part
+/// that is the port's own.
 #[test]
 fn tick_text_is_what_d3_scale_tick_format_gives() {
     let mut wrong = Vec::new();

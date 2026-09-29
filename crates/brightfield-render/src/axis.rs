@@ -83,8 +83,8 @@ pub fn compute_ticks(scale: &Scale, target_count: usize) -> Vec<Tick> {
 /// axis takes d3-scale's precision from the step its ticks are drawn at, and a
 /// log or symlog axis prints each decade as d3-format does. A band axis prints
 /// its categories, and a time axis waits on the date format's own reading, so
-/// neither takes a number format. `None` draws the text every axis drew before
-/// a format could be asked for.
+/// neither takes a number format. `None` draws the text an axis drew before a
+/// format could be asked for.
 pub fn compute_ticks_formatted(
     scale: &Scale,
     target_count: usize,
