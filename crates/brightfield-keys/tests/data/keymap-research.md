@@ -96,6 +96,45 @@ because they walk the graph's edges, not pixel geometry.
 > CTEs under the cursor, so the row is now `toggle-fold`: same key, same scores, same rationale — a
 > longname that no longer named half of what the key does was a help sheet and a palette that lied.
 
+### The shelf — a chart's band and its open list, in a key context of their own
+
+A chart's shelf is a band of one cell per channel (mark, x, y, colour) at the head of its tile, and an
+open list of columns or settings under a cell. It takes the Protocol panel's precedent: a key context of
+its own (`Shelf`), so its `h`, `l`, `m`, `x`, `y` and `c` never collide with the Workspace's pop-out,
+dive-in, mark, axis-lock and colour bindings, or with the Protocol panel's producer, consumer and yank.
+An open list takes letters as verbs (lazygit, Linear, Gmail), and `/` gives the query the keys.
+Motion and back-out are **View**-tier; keeping a choice sets a channel, so it is **Data**-tier, as
+`set-channel` is. `h` and `l` are the cell or the value beside as drawn, left and right, and stop at the
+mark's cell rather than popping out, because Esc is the way out.
+
+| longname | key(s) | freq / mnem / conv | motor note |
+|----------|--------|--------------------|------------|
+| `go-to-mark-cell` | `m` | 3 / 5 / 3 | `m` = mark, printed on the cell; the Shelf context keeps it apart from `change-mark-type` |
+| `go-to-x-cell` | `x` | 3 / 5 / 3 | `x` = the x channel, printed on the cell; the Shelf context keeps it apart from `cycle-axis-lock` |
+| `go-to-y-cell` | `y` | 3 / 5 / 3 | `y` = the y channel, printed on the cell; the Shelf context keeps it apart from `yank-address` |
+| `go-to-colour-cell` | `c` | 3 / 5 / 3 | `c` = colour, printed on the cell; the Shelf context keeps it apart from `cycle-colour-scheme` |
+| `move-shelf-next-row` | `j` · `down` | 5 / 4 / 5 | home-row `j` = down/next (vim, lazygit); the arrow is its twin; agrees with the Workspace's and the Protocol panel's `j` |
+| `move-shelf-prev-row` | `k` · `up` | 5 / 4 / 5 | home-row `k` = up/prev (vim, lazygit); the arrow is its twin; agrees with the Workspace's and the Protocol panel's `k` |
+| `move-shelf-left` | `h` · `left` | 5 / 4 / 5 | home-row `h` = left (vim), as drawn: mark, x, y, colour run left to right; stops at the mark |
+| `move-shelf-right` | `l` · `right` | 5 / 4 / 5 | home-row `l` = right (vim), as drawn; the Protocol panel's `l` is likewise the node drawn to the right |
+| `narrow-shelf-list` | `/` | 4 / 4 / 5 | `/` = search/narrow (vim, less, lazygit); the query takes letters as text until Esc; the Workspace's `/` is `focus-jump` |
+| `keep-shelf-choice` | `enter` | 5 / 4 / 5 | enter = keep the row under the cursor, in the list and in the query (telescope, fzf); a Data verb |
+| `back-out-of-shelf` | `escape` | 5 / 4 / 5 | esc = back out one level (the Esc ladder): a value not kept, the query, the list, the shelf |
+
+`undo` gains two bindings in the Shelf context, `u` and `cmd-z`, with its scores unchanged: `u` works
+from any state in the shelf, and `cmd-z` from the query, where a letter is typed. `set-channel`'s row is
+unchanged in its key and scores; its help line names the shelf where it named an argument overlay.
+
+The Outline's rows answer in the Protocol context, where `z a` is `toggle-fold`. A column's row has
+nothing to fold and a spine row has no column to put, so `z x`, `z y` and `z c` act on a column's row and
+do nothing on a spine row, and `z a` is left as it is. They are Data-tier, as `set-channel` is.
+
+| longname | key(s) | freq / mnem / conv | motor note |
+|----------|--------|--------------------|------------|
+| `put-column-on-x` | `z x` | 3 / 4 / 3 | `z` chord beside `z a`; the channel's own letter is the second key |
+| `put-column-on-y` | `z y` | 3 / 4 / 3 | `z` chord beside `z a`; the channel's own letter is the second key |
+| `put-column-on-colour` | `z c` | 3 / 4 / 3 | `z` chord beside `z a`; vim's `zc` closes a fold, which a column's row has none of; `u` takes it back |
+
 Reserved verbs are deliberately unscored (no key yet), shown greyed in the palette until their keys land:
 needs-keyboard-target (`filter-view`, `cross-filter-all`, `toggle-point-select`, `set-param`) and
 needs-command-log (`change-mark-type`, `add-mark`, `set-channel`, `remove-mark`, `undo`).

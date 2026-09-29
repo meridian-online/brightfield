@@ -124,14 +124,21 @@ mod tests {
     use crate::registry::registry;
 
     #[test]
-    fn query_colour_ranks_cycle_colour_scheme_first() {
+    fn query_colour_finds_cycle_colour_scheme_with_its_key() {
+        // Not "ranks first": the shelf's `go-to-colour-cell` also names colour, and
+        // `fuzzy_score` matches each query letter at its first occurrence, so a name
+        // whose first `c` opens the word outscores `cycle-colour-scheme`, whose
+        // first `c` is the `c` of `cycle`. The palette is offered this verb by
+        // meaning; the ranking among the verbs that name colour is the scorer's.
         let reg = registry();
         let recency = RecencyCounter::new();
         let hits = palette_filter(&reg, Altitude::View, "colour", &recency);
-        assert_eq!(
-            hits.first().map(|c| c.longname),
-            Some("cycle-colour-scheme")
-        );
+        let hit = hits
+            .iter()
+            .find(|c| c.longname == "cycle-colour-scheme")
+            .expect("a colour query finds the colour preview verb");
+        assert!(hit.enabled);
+        assert_eq!(hit.primary_key, Some("c"));
     }
 
     #[test]
