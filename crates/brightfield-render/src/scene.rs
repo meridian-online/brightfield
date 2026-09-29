@@ -2,12 +2,14 @@
 //! into a single vello::Scene.
 
 use arrow::record_batch::RecordBatch;
-use brightfield_spec::layout::TickCounts;
+use brightfield_spec::layout::{TickCounts, TickFormats};
 use kurbo::{Affine, BezPath, Circle, Rect, RoundedRect, Stroke};
 use peniko::Fill;
 use vello::Scene;
 
-use crate::axis::{compute_ticks, render_plot_title, render_x_axis, render_y_axis};
+use crate::axis::{
+    compute_ticks, compute_ticks_formatted, render_plot_title, render_x_axis, render_y_axis,
+};
 use crate::channel::{Channel, ChannelMap};
 use crate::grid::{render_x_grid, render_y_grid};
 use crate::ink::ChartInk;
@@ -530,13 +532,15 @@ pub fn build_multi_mark_scene_with_domains(
         domains,
         &PinnedDomains::default(),
         TickCounts::default(),
+        TickFormats::default(),
         ink,
     )
 }
 
 /// [`build_multi_mark_scene_with_domains`] with the positional domains this
 /// plot's spec asked to hold still — see [`PinnedDomains`] — and the target
-/// tick count each positional axis asked for — see [`TickCounts`].
+/// tick count and tick format each positional axis asked for — see
+/// [`TickCounts`] and [`TickFormats`].
 ///
 /// The pin lands AFTER inference and after [`apply_unsampled_domains`], so the
 /// author's instruction outranks both what the drawn rows imply and what a
@@ -545,14 +549,22 @@ pub fn build_multi_mark_scene_with_domains(
 /// has navigated is dropped from the pin here rather than overwritten, so a
 /// pinned plot pans and zooms like an unpinned one. A filter is the dashboard
 /// moving; a pan is the reader moving, and only the first is what `Fixed`
-/// declines. `tick_counts` carries no domain and lands at the draw step below,
-/// alongside the pinned or unpinned scales it draws against.
+/// declines. `tick_counts` and `tick_formats` carry no domain and land at the
+/// draw step below, alongside the pinned or unpinned scales they draw against.
 ///
 /// An empty `pins` reproduces [`build_multi_mark_scene_with_domains`] scale for
 /// scale — [`apply_pinned_domains`] writes nothing without a pin to write.
 ///
 /// A default `tick_counts` draws the count each call site drew before this
-/// parameter existed — see [`brightfield_spec::layout::DEFAULT_TICK_COUNT`].
+/// parameter existed — see [`brightfield_spec::layout::DEFAULT_TICK_COUNT`] —
+/// and a default `tick_formats` draws the text they drew.
+// Eight, because the static composition takes eight independent inputs: the
+// entries, whether the legend is drawn inline, the resolved titles, the two
+// ways a domain is held still (unsampled and pinned), the tick count and tick
+// format the axes asked for, and the ink. Each is resolved elsewhere and read
+// here once, so a struct would be a name for the argument list rather than for
+// a thing.
+#[allow(clippy::too_many_arguments)]
 pub fn build_multi_mark_scene_pinned(
     entries: &[&ChartData<'_>],
     draw_inline_legend: bool,
@@ -560,6 +572,7 @@ pub fn build_multi_mark_scene_pinned(
     domains: &UnsampledDomains,
     pins: &PinnedDomains,
     tick_counts: TickCounts,
+    tick_formats: TickFormats,
     ink: ChartInk,
 ) -> (Scene, ScaleSet) {
     if entries.is_empty() {
@@ -571,7 +584,14 @@ pub fn build_multi_mark_scene_pinned(
         &domains_yielding_to_navigation(domains, entries[0]),
     );
     apply_pinned_domains(&mut scales, &pins_yielding_to_navigation(pins, entries[0]));
-    let scene = draw_multi_mark_scene(entries, draw_inline_legend, titles, tick_counts, &scales);
+    let scene = draw_multi_mark_scene(
+        entries,
+        draw_inline_legend,
+        titles,
+        tick_counts,
+        tick_formats,
+        &scales,
+    );
     (scene, scales)
 }
 
@@ -925,12 +945,16 @@ fn infer_multi_mark_scales(entries: &[&ChartData<'_>], ink: ChartInk) -> ScaleSe
 /// launch set), so both render byte-identical geometry from the same scale set.
 /// `tick_counts` is the plot's `xTicks`/`yTicks` target for both the grid and
 /// the axis below — one resolved value, so the two cannot disagree about how
-/// many ticks this plot draws. Callers guarantee `entries` is non-empty.
+/// many ticks this plot draws. `tick_formats` is the plot's
+/// `xTickFormat`/`yTickFormat`, which sets the axis's tick text and, through the
+/// width of that text, which ticks the axis has room to label. Callers
+/// guarantee `entries` is non-empty.
 fn draw_multi_mark_scene(
     entries: &[&ChartData<'_>],
     draw_inline_legend: bool,
     titles: &ResolvedTitles,
     tick_counts: TickCounts,
+    tick_formats: TickFormats,
     scales: &ScaleSet,
 ) -> Scene {
     let layout = &entries[0].layout;
@@ -949,11 +973,11 @@ fn draw_multi_mark_scene(
     // Grid lines (behind marks).
     if !suppress_frame {
         if let Some(x_scale) = scales.get(Channel::X) {
-            let x_ticks = compute_ticks(x_scale, tick_counts.x_target());
+            let x_ticks = compute_ticks_formatted(x_scale, tick_counts.x_target(), tick_formats.x);
             render_x_grid(&mut scene, layout, &x_ticks, ink);
         }
         if let Some(y_scale) = scales.get(Channel::Y) {
-            let y_ticks = compute_ticks(y_scale, tick_counts.y_target());
+            let y_ticks = compute_ticks_formatted(y_scale, tick_counts.y_target(), tick_formats.y);
             render_y_grid(&mut scene, layout, &y_ticks, ink);
         }
     }
@@ -977,11 +1001,11 @@ fn draw_multi_mark_scene(
     // resolved to a field name upstream; None = suppressed / underivable).
     if !suppress_frame {
         if let Some(x_scale) = scales.get(Channel::X) {
-            let x_ticks = compute_ticks(x_scale, tick_counts.x_target());
+            let x_ticks = compute_ticks_formatted(x_scale, tick_counts.x_target(), tick_formats.x);
             render_x_axis(&mut scene, layout, &x_ticks, titles.x.as_deref(), ink);
         }
         if let Some(y_scale) = scales.get(Channel::Y) {
-            let y_ticks = compute_ticks(y_scale, tick_counts.y_target());
+            let y_ticks = compute_ticks_formatted(y_scale, tick_counts.y_target(), tick_formats.y);
             render_y_axis(&mut scene, layout, &y_ticks, titles.y.as_deref(), ink);
         }
     }
@@ -1027,9 +1051,10 @@ fn draw_multi_mark_scene(
 /// widens to keep them on-plot instead of clipping them into invisibility.
 /// Returns `(empty scene, launch.clone())` for empty `entries`.
 ///
-/// Draws at [`brightfield_spec::layout::DEFAULT_TICK_COUNT`] — like
-/// [`PinnedDomains`], a plot's `xTicks`/`yTicks` request reaches the static
-/// composition [`build_multi_mark_scene_pinned`] draws
+/// Draws at [`brightfield_spec::layout::DEFAULT_TICK_COUNT`], in the axis's own
+/// tick text — like [`PinnedDomains`], a plot's `xTicks`/`yTicks` and
+/// `xTickFormat`/`yTickFormat` requests reach the static composition
+/// [`build_multi_mark_scene_pinned`] draws
 /// (`crates/brightfield-shell/src/pipeline.rs`), not this live rebuild path;
 /// the caller does not carry the request to hand in.
 pub fn build_multi_mark_scene_anchored(
@@ -1048,6 +1073,7 @@ pub fn build_multi_mark_scene_anchored(
         draw_inline_legend,
         titles,
         TickCounts::default(),
+        TickFormats::default(),
         &anchored,
     );
     (scene, anchored)
@@ -2286,6 +2312,7 @@ mod tests {
                 &UnsampledDomains::default(),
                 &PinnedDomains::default(),
                 tick_counts,
+                TickFormats::default(),
                 ChartInk::LIGHT,
             );
             for channel in [Channel::X, Channel::Y] {

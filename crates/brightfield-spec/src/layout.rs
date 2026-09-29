@@ -16,6 +16,7 @@ use crate::ast::{
     Component, ConcatNode, Input, Mark, PlotNode, SpaceNode, Spec, SpecValue, ValueOrParamRef,
 };
 use crate::error::{FrameFault, FrameSide};
+use crate::number_format::NumberFormat;
 use crate::vocab::InputKind;
 use indexmap::IndexMap;
 
@@ -887,6 +888,77 @@ pub fn resolve_tick_counts(plot: &PlotNode) -> TickCounts {
     TickCounts {
         x: target("xTicks"),
         y: target("yTicks"),
+    }
+}
+
+/// Which positional axes carry an `xTickFormat` / `yTickFormat` this build
+/// reads as a number format, and what it is.
+///
+/// A pure spec reading, like [`TickCounts`]: it says what the author asked for
+/// and holds no opinion about what a scale then does with it. `None` covers
+/// the key being absent, being a date format (a different reading, see
+/// [`tick_number_format`]) and being a value that is no format, which
+/// [`crate::parse::ParseWarning::InvalidTickFormat`] has already named at parse
+/// time.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TickFormats {
+    /// `xTickFormat`'s number format, when the plot wrote one.
+    pub x: Option<NumberFormat>,
+    /// `yTickFormat`'s number format, when the plot wrote one.
+    pub y: Option<NumberFormat>,
+}
+
+/// The one judge of a `xTickFormat` / `yTickFormat` value: the number format it
+/// is, or `None` when it is not one.
+///
+/// A number format is a string in d3-format's grammar, as
+/// [`NumberFormat::parse`] reads it. `None` is not itself a warning: a date
+/// format and a lifted `$param` resolve to it silently, and the parser asks
+/// [`is_tick_format_or_deferred`] which `None`s are malformed values to name,
+/// so the resolver and the warning cannot disagree about what a valid format
+/// is.
+#[must_use]
+pub fn tick_number_format(value: &SpecValue) -> Option<NumberFormat> {
+    match value {
+        SpecValue::String(spec) => NumberFormat::parse(spec),
+        _ => None,
+    }
+}
+
+/// Whether a `xTickFormat` / `yTickFormat` value is one the parser should stay
+/// silent about: a number format, as [`tick_number_format`] judges it, or a
+/// value this build defers rather than reads.
+///
+/// Two values are deferred. A lifted `$param` is a recorded deferral, not a
+/// typo. A string holding a `%` directive (`%b`, `%Y-%m`) is a date format,
+/// which is a Mosaic format this build does not read yet and which draws the
+/// axis's default text; naming it as malformed would say a valid Mosaic spec
+/// is broken. `null` is Mosaic's "no format", as it is for a label.
+///
+/// A `%` ends a d3-format specifier (`%`, `+.1%`) and so never has a character
+/// after it there; a `%` with one is a date directive. Reading date formats
+/// replaces the second deferral with a reading of them.
+#[must_use]
+pub fn is_tick_format_or_deferred(value: &SpecValue) -> bool {
+    match value {
+        SpecValue::Param(_) | SpecValue::Null => true,
+        SpecValue::String(spec) => {
+            NumberFormat::parse(spec).is_some()
+                || spec.match_indices('%').any(|(at, _)| at + 1 < spec.len())
+        }
+        _ => false,
+    }
+}
+
+/// Resolve a plot's `xTickFormat` / `yTickFormat` from its attributes.
+/// Literal-only and per-axis, the same reading [`resolve_tick_counts`] gives
+/// its keys.
+#[must_use]
+pub fn resolve_tick_formats(plot: &PlotNode) -> TickFormats {
+    let read = |key: &str| plot.attributes.get(key).and_then(tick_number_format);
+    TickFormats {
+        x: read("xTickFormat"),
+        y: read("yTickFormat"),
     }
 }
 
@@ -3418,6 +3490,132 @@ plot:
             resolve_tick_counts(nodes[0].1).x,
             Some(3),
             "the plot sets no xTicks of its own; the plotDefaults value should reach it"
+        );
+    }
+
+    // --- xTickFormat / yTickFormat ---
+
+    fn format_attr(key: &'static str, spec: &str) -> PlotNode {
+        plot_with(&[(key, SpecValue::String(spec.to_string()))])
+    }
+
+    /// Each axis reads its own key, and a key the plot does not write resolves
+    /// to nothing rather than to a default: what an axis then draws is the
+    /// renderer's to say.
+    #[test]
+    fn a_tick_format_is_read_per_axis() {
+        let x = resolve_tick_formats(&format_attr("xTickFormat", "s"));
+        assert_eq!(x.x, NumberFormat::parse("s"));
+        assert!(
+            x.x.is_some() && x.y.is_none(),
+            "only x wrote a format: {x:?}"
+        );
+
+        let y = resolve_tick_formats(&format_attr("yTickFormat", "+.1f"));
+        assert_eq!(y.y, NumberFormat::parse("+.1f"));
+        assert!(
+            y.x.is_none() && y.y.is_some(),
+            "only y wrote a format: {y:?}"
+        );
+
+        assert_eq!(
+            resolve_tick_formats(&plot_with(&[])),
+            TickFormats::default()
+        );
+    }
+
+    /// A value that is no number format resolves to none, whether it is a
+    /// typo, a date format this build does not read yet, or not a string.
+    #[test]
+    fn a_value_that_is_no_number_format_resolves_to_none() {
+        for spec in ["~~", ".f", "%b", "%Y-%m-%d"] {
+            assert_eq!(
+                resolve_tick_formats(&format_attr("xTickFormat", spec)).x,
+                None,
+                "`{spec}` is no number format"
+            );
+        }
+        for value in [
+            SpecValue::Integer(3),
+            SpecValue::Bool(true),
+            SpecValue::Null,
+        ] {
+            assert_eq!(
+                resolve_tick_formats(&plot_with(&[("xTickFormat", value.clone())])).x,
+                None,
+                "{value:?} is no number format"
+            );
+        }
+    }
+
+    /// The parser stays silent about exactly the values the reader accepts and
+    /// the values this build defers, and speaks about the rest. The reader and
+    /// the warning are one judgement asked twice, so a value the reader accepts
+    /// is never one the warning names.
+    #[test]
+    fn what_the_parser_warns_about_and_what_the_reader_accepts_do_not_overlap() {
+        let s = |v: &str| SpecValue::String(v.to_string());
+        // (value, the reader accepts it, the parser is silent about it)
+        let cases = [
+            (s("s"), true, true),
+            (s(".2s"), true, true),
+            (s("+f"), true, true),
+            (s("%"), true, true),
+            (s("+.1%"), true, true),
+            (s("d"), true, true),
+            (s(""), true, true),
+            (s("%b"), false, true),
+            (s("%Y-%m-%d"), false, true),
+            (SpecValue::Null, false, true),
+            (s("~~"), false, false),
+            (s(".f"), false, false),
+            (s("ss"), false, false),
+            (SpecValue::Integer(5), false, false),
+            (SpecValue::Bool(false), false, false),
+            (SpecValue::Array(vec![]), false, false),
+        ];
+        for (value, reads, silent) in cases {
+            assert_eq!(
+                tick_number_format(&value).is_some(),
+                reads,
+                "the reader on {value:?}"
+            );
+            assert_eq!(
+                is_tick_format_or_deferred(&value),
+                silent,
+                "the parser's silence on {value:?}"
+            );
+            assert!(
+                !reads || silent,
+                "{value:?} is read and must never also be warned about"
+            );
+        }
+    }
+
+    /// A `plotDefaults` format reaches a plot that writes no format of its own,
+    /// exactly as a `plotDefaults` tick count does: `Walker::walk_plot` merges
+    /// the whole bag key-agnostically before either resolver runs.
+    #[test]
+    fn a_plot_defaults_tick_format_reaches_a_plot_that_does_not_set_its_own() {
+        let parsed = parse_spec(
+            r"
+data:
+  t:
+    - { x: 1, y: 2 }
+plotDefaults:
+  yTickFormat: '%'
+plot:
+  - { mark: dot, data: { from: t }, x: x, y: y }
+",
+            Format::Yaml,
+        )
+        .expect("parse");
+        let nodes = collect_plot_nodes(&parsed.spec);
+        assert_eq!(nodes.len(), 1, "one plot");
+        assert_eq!(
+            resolve_tick_formats(nodes[0].1).y,
+            NumberFormat::parse("%"),
+            "the plot sets no yTickFormat of its own; the plotDefaults value should reach it"
         );
     }
 
