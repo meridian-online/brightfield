@@ -284,6 +284,32 @@ pub fn apply(spec: &mut Spec, edit: &ChartEdit) -> Result<(), RefuseReason> {
     Ok(())
 }
 
+/// Apply a structural edit to the working Spec IN PLACE for a caller that then
+/// **loads the page afresh from the edited spec**, or return
+/// `Err(RefuseReason)` WITHOUT mutating when the edit has no target.
+///
+/// [`apply`]'s chrome refusals ([`RefuseReason::WouldChangeInset`],
+/// [`RefuseReason::WouldChangeAxisTitle`], [`RefuseReason::WouldChangeLegend`])
+/// exist for a reload from disk, which swaps new plot scenes into chrome that
+/// was laid out when the window launched. A page loaded afresh lays its
+/// margins, titles and legends out again from the spec it is given, so an
+/// axis title that changes is drawn rather than bounced. The shell's tile
+/// controls rebuild the page that way after every edit.
+///
+/// What stays refused is what no page could be built over: a plot path that
+/// names no plot ([`RefuseReason::PlotNotFound`]), a mark ordinal past the
+/// plot's marks ([`RefuseReason::NoSuchMark`]), and a removal of a plot's last
+/// mark ([`RefuseReason::WouldEmptyPlot`]) — the checks [`classify_edit`]
+/// makes before it compares any chrome, shared rather than restated.
+///
+/// The reload-from-disk path keeps calling [`apply`], and its refusals are
+/// unchanged by this entry point existing.
+pub fn apply_for_fresh_load(spec: &mut Spec, edit: &ChartEdit) -> Result<(), RefuseReason> {
+    check_target(spec, edit)?;
+    apply_unchecked(spec, edit);
+    Ok(())
+}
+
 /// Mutate the spec IN PLACE for `edit`, ASSUMING [`classify_edit`]'s structural
 /// preconditions already hold (the plot + target mark exist). Never called by
 /// the app directly — [`apply`] gates first — but shared with the classifier,
@@ -376,27 +402,7 @@ fn apply_unchecked(spec: &mut Spec, edit: &ChartEdit) {
 /// applies no inset default there, so a baseline flip is inert): it may
 /// over-refuse, which is the safe side (never a silent bounce).
 pub fn classify_edit(spec: &Spec, edit: &ChartEdit) -> Result<(), RefuseReason> {
-    let plot = plot_at_path(spec, edit.plot_path()).ok_or(RefuseReason::PlotNotFound)?;
-    let mark_count = plot
-        .items
-        .iter()
-        .filter(|c| matches!(c, Component::Mark(_)))
-        .count();
-
-    // Structural preconditions.
-    match edit {
-        ChartEdit::ChangeMarkType { mark_ordinal, .. }
-        | ChartEdit::SetChannel { mark_ordinal, .. }
-        | ChartEdit::RemoveMark { mark_ordinal, .. }
-            if *mark_ordinal >= mark_count =>
-        {
-            return Err(RefuseReason::NoSuchMark);
-        }
-        ChartEdit::RemoveMark { .. } if mark_count <= 1 => {
-            return Err(RefuseReason::WouldEmptyPlot);
-        }
-        _ => {}
-    }
+    let plot = check_target(spec, edit)?;
 
     // Apply the edit to a clone ONCE — both the colour-legend gate and the
     // inset/title chrome comparison diff the launch-fixed chrome against it.
@@ -443,6 +449,29 @@ pub fn classify_edit(spec: &Spec, edit: &ChartEdit) -> Result<(), RefuseReason> 
         return Err(RefuseReason::WouldChangeAxisTitle);
     }
     Ok(())
+}
+
+/// The structural preconditions every edit meets before anything is applied or
+/// compared: the plot exists, the target mark exists, and a removal leaves the
+/// plot a mark. Hands back the plot, which [`classify_edit`] goes on to diff.
+fn check_target<'a>(spec: &'a Spec, edit: &ChartEdit) -> Result<&'a PlotNode, RefuseReason> {
+    let plot = plot_at_path(spec, edit.plot_path()).ok_or(RefuseReason::PlotNotFound)?;
+    let mark_count = plot
+        .items
+        .iter()
+        .filter(|c| matches!(c, Component::Mark(_)))
+        .count();
+    match edit {
+        ChartEdit::ChangeMarkType { mark_ordinal, .. }
+        | ChartEdit::SetChannel { mark_ordinal, .. }
+        | ChartEdit::RemoveMark { mark_ordinal, .. }
+            if *mark_ordinal >= mark_count =>
+        {
+            Err(RefuseReason::NoSuchMark)
+        }
+        ChartEdit::RemoveMark { .. } if mark_count <= 1 => Err(RefuseReason::WouldEmptyPlot),
+        _ => Ok(plot),
+    }
 }
 
 /// The launch-fixed chrome a plot contributes to `chrome_divergence` that a
