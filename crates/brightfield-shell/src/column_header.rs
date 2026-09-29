@@ -194,11 +194,6 @@ const FLOOR_FULL: f32 = 128.0;
 /// fill, out of 255 — the mark colour at 60%.
 const VALID_ALPHA: u8 = 0x99;
 
-/// The alpha a storage tint takes over the header fill, out of 255: 7% in
-/// light and 10% in dark, the two the contract names.
-const TINT_ALPHA_LIGHT: u8 = 0x12;
-const TINT_ALPHA_DARK: u8 = 0x1a;
-
 /// The floor a rug column's alpha is clamped up to, so a bucket holding one
 /// row still shows.
 const RUG_ALPHA_FLOOR: f32 = 0.12;
@@ -279,14 +274,11 @@ pub fn column_header_frame(density: GridDensity, mode: Mode) -> ColumnHeaderFram
     } else {
         viz::CATEGORICAL_LIGHT
     };
-    let tint_alpha = if dark {
-        TINT_ALPHA_DARK
-    } else {
-        TINT_ALPHA_LIGHT
-    };
+    // The strength of a storage tint is the design system's: which hue marks
+    // which storage type is this header's, how strong the hue is is not.
     let mut tints = [egui::Color32::TRANSPARENT; 8];
     for (slot, token) in tints.iter_mut().zip(palette.iter()) {
-        *slot = chrome::colour(token.with_alpha_u8(tint_alpha));
+        *slot = chrome::colour(viz::chrome_tint(*token, dark));
     }
     ColumnHeaderFrame {
         density,

@@ -30,7 +30,7 @@ duckdb = { version = "1.2", features = ["bundled"] }
 # no-UI-framework, no-vello property. It is here for one reason: the layout's
 # three spacing constants ARE design-system spacing, and two of the three had
 # drifted off the ladder while they were bare floats in `layout.rs`.
-meridian-design = { git = "https://github.com/meridian-online/design", rev = "6564c329a7bb3b89ffe0ea750a4cc1dfe63971aa" }
+meridian-design = { git = "https://github.com/meridian-online/design", rev = "194322fe70b84e336d9910f78a7afa409d073e82" }
 brightfield-sql = { path = "../brightfield-sql" }
 # The chart parser and its edit reducer, for `chart_text`: a chart edit is
 # written into a chart file's text through arc's splice, and the parser is what
