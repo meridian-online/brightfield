@@ -350,6 +350,10 @@ fn a_band_is_inset_on_the_ladder_and_a_rail_is_not_inset_at_all() {
 /// fill, the rect has to be taller than the strip, and the strip has to have
 /// stopped short of the rect's bottom edge.
 ///
+/// The strip keeps its rule collapsed, as it does open — it is the line-tab
+/// strip's own underline, not a division from a pane — and the rule stops at
+/// the strip's foot, so the clearance is one fill with no line across it.
+///
 /// Watched failing: delete the `rect_filled` in `chrome::collapsed_rail` —
 /// which is exactly what this drew before — and the painted bound stops at
 /// the strip's own bottom edge.
@@ -357,7 +361,11 @@ fn a_band_is_inset_on_the_ladder_and_a_rail_is_not_inset_at_all() {
 fn a_collapsed_bottom_rail_paints_the_whole_of_its_rect_in_the_strips_own_fill() {
     let sem = meridian_design::semantic(Mode::Light.is_dark());
     let bar = chrome::colour(sem.tabs.bar_background);
-    let rule = chrome::colour(sem.borders.subtle);
+    let rule = chrome::colour(sem.borders.divider);
+    assert_ne!(
+        bar, rule,
+        "the rule and the fill are one ink, so nothing below could find the rule"
+    );
     // The ledger rail's declared collapsed measure, taken at the bottom of
     // this frame the way the window takes it at the bottom of itself.
     let height = chrome::rail_selector_height() + chrome::status_rail_height();
@@ -411,11 +419,13 @@ fn a_collapsed_bottom_rail_paints_the_whole_of_its_rect_in_the_strips_own_fill()
          clearance below it and the fill above proves nothing",
         drawn.rect
     );
+    let ruled = painted(&primitives, rule)
+        .expect("the collapsed strip drew no rule, so it no longer reads as tabs");
     assert!(
-        painted(&primitives, rule).is_none(),
-        "a rule was drawn along the strip's bottom edge, which divides one fill \
-         into two objects again — collapsed there is no body under the strip \
-         for it to divide from"
+        ruled.max.y <= drawn.rect.max.y + FEATHER,
+        "the strip's rule reached {ruled:?}, below the strip's own foot at {}: it is \
+         the tab strip's underline, and the clearance under it is left as one fill",
+        drawn.rect.max.y
     );
 }
 
@@ -775,4 +785,299 @@ fn background_click_seen_at(click: egui::Pos2) -> bool {
     );
 
     saw
+}
+
+// ---------------------------------------------------------------------------
+// A rail's names are line tabs
+// ---------------------------------------------------------------------------
+
+const RAIL_NAMES: [&str; 3] = ["Steps", "Controls", "Notes"];
+
+/// Where the fixture strip is drawn: the rail's own measure, across the pane.
+fn strip_rect() -> egui::Rect {
+    egui::Rect::from_min_size(
+        egui::pos2(0.0, 50.0),
+        egui::vec2(PANE.width(), chrome::rail_selector_height()),
+    )
+}
+
+/// One frame of a rail's strip on a `Context` the caller keeps, so a press and
+/// its release can be two frames of the same window.
+fn strip_frame(
+    ctx: &egui::Context,
+    names: &[&str],
+    active: usize,
+    width: f32,
+    events: Vec<egui::Event>,
+) -> (chrome::StripDrawn, Vec<egui::Shape>) {
+    // The theme the app installs, so `line_tabs` — which reads light or dark off
+    // the `Ui`'s visuals — draws in the same mode the strip is asked to.
+    meridian_egui::theme::apply(ctx, Mode::Light);
+    let mut drawn = None;
+    let full = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(PANE),
+            events,
+            ..Default::default()
+        },
+        |ui| {
+            let rect = egui::Rect::from_min_size(
+                strip_rect().min,
+                egui::vec2(width, strip_rect().height()),
+            );
+            drawn = Some(chrome::rail_selector(
+                ui,
+                rect,
+                names,
+                active,
+                Some(chrome::Collapse {
+                    caret: chrome::Caret::Up,
+                    hint: "Show the ledger",
+                }),
+                chrome::Trailing {
+                    summary: Some("not run"),
+                    action: None,
+                },
+                Mode::Light,
+            ));
+        },
+    );
+    (
+        drawn.expect("the frame body always runs"),
+        flat(full.shapes),
+    )
+}
+
+/// A frame's shapes with the nested ones taken out, so a test reads the rects
+/// and text the frame asked to paint rather than the containers around them.
+fn flat(shapes: Vec<egui::epaint::ClippedShape>) -> Vec<egui::Shape> {
+    fn walk(shape: egui::Shape, out: &mut Vec<egui::Shape>) {
+        match shape {
+            egui::Shape::Vec(inner) => inner.into_iter().for_each(|s| walk(s, out)),
+            other => out.push(other),
+        }
+    }
+    let mut out = Vec::new();
+    for clipped in shapes {
+        walk(clipped.shape, &mut out);
+    }
+    out
+}
+
+/// Every rect the frame filled in exactly `ink`.
+fn filled(shapes: &[egui::Shape], ink: egui::Color32) -> Vec<egui::Rect> {
+    shapes
+        .iter()
+        .filter_map(|shape| match shape {
+            egui::Shape::Rect(rect) if rect.fill == ink => Some(rect.rect),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The ink a frame set `word` in, read off the text shape that carries it.
+fn ink_of(shapes: &[egui::Shape], word: &str) -> Option<egui::Color32> {
+    shapes.iter().find_map(|shape| match shape {
+        egui::Shape::Text(text) if text.galley.text() == word => {
+            Some(text.galley.job.sections[0].format.color)
+        }
+        _ => None,
+    })
+}
+
+/// A rail's names are `meridian-egui`'s line tabs: the open name in the text
+/// ink over a bar `TAB_BAR_WIDTH` tall that stands on the strip's foot, the
+/// others in the secondary ink, one rule under the whole strip — names, summary
+/// and control alike — and no box, outline or corner on anything.
+///
+/// The bar's span is asserted against the rect the strip *reports* for the open
+/// name. That rect is measured here from the words, and `line_tabs` lays the
+/// same words out itself and reports nothing, so the two agreeing is what keeps
+/// a click aimed at a reported rect landing on the word drawn there.
+///
+/// Watched failing: hand `line_tabs` an open index past the names and there is
+/// no bar; delete the strip's trailing rule and the rule stops short of the
+/// summary; add a pixel to `chrome::line_tab_width` and the bar no longer spans
+/// the reported rect.
+#[test]
+fn a_rails_names_are_line_tabs_the_open_one_over_a_bar_and_one_rule_under_the_strip() {
+    let sem = meridian_design::semantic(false);
+    assert_eq!(
+        control::TAB_BAR_WIDTH,
+        2.0,
+        "the bar under the open name is drawn 2px, and this asserts the token says so"
+    );
+    assert_ne!(
+        sem.text.primary, sem.text.secondary,
+        "the open and closed inks are one colour here, so the ink check below is empty"
+    );
+
+    let ctx = egui::Context::default();
+    let (drawn, shapes) = strip_frame(&ctx, &RAIL_NAMES, 1, PANE.width(), Vec::new());
+    let strip = drawn.rect;
+    assert_eq!(
+        drawn.names.len(),
+        RAIL_NAMES.len(),
+        "every name fits at this width"
+    );
+
+    let bars = filled(&shapes, chrome::colour(sem.tabs.active_bar));
+    assert_eq!(bars.len(), 1, "one open name, one bar: {bars:?}");
+    let bar = bars[0];
+    assert!(
+        (bar.height() - control::TAB_BAR_WIDTH).abs() < 0.01,
+        "the bar is {} tall",
+        bar.height()
+    );
+    assert!(
+        (bar.bottom() - strip.bottom()).abs() < 0.01,
+        "the bar stands on the strip's foot at {}, not at {}",
+        strip.bottom(),
+        bar.bottom()
+    );
+    assert!(
+        (bar.left() - drawn.names[1].left()).abs() < 0.01
+            && (bar.right() - drawn.names[1].right()).abs() < 0.01,
+        "the bar spans {:?}, not the open name's reported rect {:?}",
+        bar.x_range(),
+        drawn.names[1].x_range()
+    );
+
+    let mut rules = filled(&shapes, chrome::colour(sem.borders.divider));
+    rules.sort_by(|a, b| a.min.x.total_cmp(&b.min.x));
+    let first = rules.first().expect("no rule under the strip");
+    assert!(
+        rules
+            .iter()
+            .all(|r| (r.bottom() - strip.bottom()).abs() < 0.01
+                && (r.height() - first.height()).abs() < 0.01),
+        "the rule is in pieces of different thickness or off the strip's foot: {rules:?}"
+    );
+    assert!(
+        (first.left() - strip.left()).abs() < 0.01,
+        "the rule starts at {}, not at the strip's left edge {}",
+        first.left(),
+        strip.left()
+    );
+    assert!(
+        rules
+            .windows(2)
+            .all(|pair| pair[1].left() <= pair[0].right() + 0.01),
+        "the rule has a gap in it: {rules:?}"
+    );
+    let reach = rules.iter().map(|r| r.right()).fold(f32::MIN, f32::max);
+    assert!(
+        (reach - strip.right()).abs() < 0.01,
+        "the rule reaches {reach}, short of the strip's right edge {} where the \
+         control is",
+        strip.right()
+    );
+
+    let boxed: Vec<_> = shapes
+        .iter()
+        .filter_map(|shape| match shape {
+            egui::Shape::Rect(r)
+                if r.stroke.width > 0.0 || r.corner_radius != egui::CornerRadius::ZERO =>
+            {
+                Some(r.rect)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        boxed.is_empty(),
+        "a rect with an outline or a corner was drawn: {boxed:?}"
+    );
+
+    for (i, name) in RAIL_NAMES.iter().enumerate() {
+        let want = if i == 1 {
+            sem.text.primary
+        } else {
+            sem.text.secondary
+        };
+        assert_eq!(
+            ink_of(&shapes, name),
+            Some(chrome::colour(want)),
+            "{name} is not in the {} ink",
+            if i == 1 { "primary" } else { "secondary" }
+        );
+    }
+}
+
+/// A click on a name picks it — the open name as well as a closed one.
+///
+/// `line_tabs` reports a click on a closed tab only, because the open tab is
+/// where its caller already is. A rail's caller is not there: a name picked in
+/// a collapsed rail reopens it, and the name on show in a collapsed rail is the
+/// open one.
+///
+/// Watched failing: drop the strip's own read of the open name and picking the
+/// open name reports nothing; read only that and picking a closed name does.
+#[test]
+fn a_click_on_any_of_a_rails_names_is_a_pick_the_open_one_included() {
+    let button = |at, pressed| egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    };
+    for want in 0..RAIL_NAMES.len() {
+        let ctx = egui::Context::default();
+        let (drawn, _) = strip_frame(&ctx, &RAIL_NAMES, 1, PANE.width(), Vec::new());
+        let at = drawn.names[want].center();
+        strip_frame(
+            &ctx,
+            &RAIL_NAMES,
+            1,
+            PANE.width(),
+            vec![egui::Event::PointerMoved(at)],
+        );
+        let (pressed, _) = strip_frame(&ctx, &RAIL_NAMES, 1, PANE.width(), vec![button(at, true)]);
+        assert_eq!(pressed.picked, None, "a press alone picked a name");
+        let (released, _) =
+            strip_frame(&ctx, &RAIL_NAMES, 1, PANE.width(), vec![button(at, false)]);
+        assert_eq!(
+            released.picked,
+            Some(want),
+            "a click at {at:?}, on {}, did not pick it",
+            RAIL_NAMES[want]
+        );
+    }
+}
+
+/// A name that would reach under the collapse control or the summary is not
+/// drawn: it would be a target the pointer cannot reach.
+///
+/// Measured against the strip's own trailing end rather than against a width
+/// written here: the strip is drawn wide enough for all three names, then at the
+/// width where the third would end under the summary.
+///
+/// Watched failing: delete the `break` in `chrome::strip`'s measuring loop and
+/// the narrow strip reports all three names, one of them under the control.
+#[test]
+fn a_name_that_would_reach_under_the_control_is_dropped() {
+    let ctx = egui::Context::default();
+    let (wide, _) = strip_frame(&ctx, &RAIL_NAMES, 0, PANE.width(), Vec::new());
+    assert_eq!(wide.names.len(), 3);
+    let summary = wide.summary.expect("the fixture strip carries a summary");
+    let last = wide.names[2];
+    // Narrow the strip until the summary, which sits against its trailing end,
+    // starts one point inside the third name — past the second's end.
+    let narrow = PANE.width() - (summary.left() - last.right()) - 1.0;
+    let (drawn, shapes) = strip_frame(&ctx, &RAIL_NAMES, 0, narrow, Vec::new());
+    let summary = drawn
+        .summary
+        .expect("the narrow strip still carries its summary");
+    assert_eq!(
+        drawn.names.len(),
+        2,
+        "the third name ends at {} against a summary at {}",
+        last.right() - (PANE.width() - narrow),
+        summary.left()
+    );
+    assert!(drawn.names.iter().all(|n| n.right() <= summary.left()));
+    assert!(
+        ink_of(&shapes, RAIL_NAMES[2]).is_none(),
+        "the dropped name was drawn anyway"
+    );
 }
