@@ -5,12 +5,13 @@
 //! writes a whole spec afresh and keeps no comment, so it cannot put an edit
 //! into a file an analyst has read or written in. [`write_chart_edit`] writes
 //! the same edit into the text the spec was parsed from, as a change to one
-//! line, and every other byte — the header comment, the comment on each tile,
-//! an analyst's own notes — comes back as it was.
+//! line, and the bytes around it — the header comment, the comment on each
+//! tile, an analyst's own notes — come back as they were
+//! (`a_scale_switch_on_a_generated_tile_adds_one_line_inside_its_plot`).
 //!
 //! **The splice is arcform's.** [`arc::spec::apply_yaml_edits`] is the one
-//! format-preserving YAML writer in the estate, and this module adds none of its
-//! own: it maps the edit to a path and a value and hands both over. The path
+//! format-preserving YAML writer in the estate, and this module does not edit
+//! YAML itself: it maps the edit to a path and a value and hands both over. The path
 //! comes from [`plot_route`], which walks the same tree the reducer walks.
 //!
 //! **What is written.** A [`ChartEdit::SetPlotAttribute`], the edit the scale
@@ -23,8 +24,8 @@
 //! [`apply`] makes of the parsed input. That is checked before the text is
 //! returned, so a value the splice cannot place the way the parser reads it
 //! back is a refusal and not a file. An edit [`apply`] refuses is refused here
-//! for the same reason, and an edit that leaves the spec as it was writes
-//! nothing and returns the input.
+//! for the same reason, and an edit that leaves the spec as it was returns the
+//! input unchanged.
 
 use std::fmt;
 

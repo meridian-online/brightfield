@@ -690,8 +690,8 @@ fn descend<'a>(component: &'a Component, here: &str, target: &str) -> Option<&'a
 /// root plot is the empty route. `None` when `path` names no plot.
 ///
 /// It walks the same tree [`plot_at_path`] walks, and the route reads as a
-/// path into the text because the parser keeps every item of a concat's list
-/// in order — an `hspace` or a `legend` holds its index like a plot does — and
+/// path into the text because the parser keeps a concat's items in their list
+/// order — an `hspace` or a `legend` holds its index like a plot does — and
 /// because the root component's keys sit at the document root beside `meta:`
 /// and `data:`.
 #[must_use]
