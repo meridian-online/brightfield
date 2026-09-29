@@ -1393,4 +1393,36 @@ mod tests {
              when it is not"
         );
     }
+
+    /// A storage tint is its hue at the strength the design system names for
+    /// the mode.
+    ///
+    /// The hue comes from the design system's palette and the strength from its
+    /// two alpha constants, both stated here and neither read back from the
+    /// frame, so a header that draws a tint at any other strength fails.
+    #[test]
+    fn a_storage_tint_is_the_design_systems_strength_of_its_hue() {
+        for mode in [Mode::Light, Mode::Dark] {
+            let (palette, alpha) = if mode.is_dark() {
+                (viz::CATEGORICAL_DARK, viz::CHROME_TINT_ALPHA_DARK)
+            } else {
+                (viz::CATEGORICAL_LIGHT, viz::CHROME_TINT_ALPHA_LIGHT)
+            };
+            let frame = column_header_frame(GridDensity::Compact, mode);
+            assert!(
+                frame.tints.len() <= palette.len(),
+                "{mode:?}: the header draws {} tints from a palette of {}",
+                frame.tints.len(),
+                palette.len()
+            );
+            for (index, hue) in palette.iter().take(frame.tints.len()).enumerate() {
+                assert_eq!(
+                    frame.tint(index),
+                    chrome::colour(hue.with_alpha_u8(alpha)),
+                    "{mode:?}: tint {index} is not its hue at the design \
+                     system's strength"
+                );
+            }
+        }
+    }
 }
