@@ -33,6 +33,12 @@ pub enum BindingContext {
     /// holds focus. A distinct context so the panel's topological
     /// `h`/`l`/`j`/`k` never collide with the chart grammar's nav bindings.
     Protocol,
+    /// Shelf-scoped: fires only while a chart's shelf holds focus. A distinct
+    /// context, as the Protocol panel's is, so the shelf's `h`/`l`/`m`/`x`/`y`/`c`
+    /// (the cell or value beside, and a jump to a channel's cell) never collide
+    /// with the chart grammar's pop-out, dive-in, mark, axis-lock and colour
+    /// bindings.
+    Shelf,
     /// Global (`context = None`): fires from any focus (palette twin, focus
     /// toggle, save/reload-from-anywhere).
     Global,
@@ -234,6 +240,10 @@ pub fn registry() -> Vec<VerbEntry> {
     let proto = |k: &'static str| BindingSpec {
         keystrokes: k,
         context: BindingContext::Protocol,
+    };
+    let shelf = |k: &'static str| BindingSpec {
+        keystrokes: k,
+        context: BindingContext::Shelf,
     };
 
     vec![
@@ -552,8 +562,8 @@ pub fn registry() -> Vec<VerbEntry> {
             drives: D::SpecEdit,
             status: VerbStatus::Built,
             reserved_reason: None,
-            help: "Bind a channel to a column on the focused view (prompts), applied live",
-            scores: Some(Scores { frequency: 3, mnemonic: 3, convention: 3, motor_note: "e = encode/edit-channel; argument overlay picks channel then column" }),
+            help: "Go to the focused view's shelf and put a column on a channel, applied live",
+            scores: Some(Scores { frequency: 3, mnemonic: 3, convention: 3, motor_note: "e = encode/edit-channel; opens the shelf, whose cells pick the channel and whose list picks the column" }),
         },
         VerbEntry {
             longname: "remove-mark",
@@ -574,13 +584,13 @@ pub fn registry() -> Vec<VerbEntry> {
             // exactly the misclassification the tier taxonomy exists to prevent.
             longname: "undo",
             tier: CommandTier::Data,
-            binding_specs: vec![ws("u")],
+            binding_specs: vec![ws("u"), shelf("u"), shelf("cmd-z")],
             scope_applicability: DASHBOARD_AND_VIEW.to_vec(),
             drives: D::SpecEdit,
             status: VerbStatus::Built,
             reserved_reason: None,
             help: "Undo the last uncommitted edit (cannot cross a commit)",
-            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 5, motor_note: "u = undo (vim); snapshot-stack pop, stops at a commit barrier" }),
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 5, motor_note: "u = undo (vim); snapshot-stack pop, stops at a commit barrier; in the shelf u works from any state and cmd-z from the query, where a letter is typed" }),
         },
         // ---- protocol altitude: the asset-graph grammar. All the
         //      motion/fold/drill verbs are View-tier (never logged); the object
@@ -683,6 +693,171 @@ pub fn registry() -> Vec<VerbEntry> {
             reserved_reason: None,
             help: "Yank the focused asset's dotted address to the clipboard",
             scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 4, motor_note: "y = yank (vim); a Data verb — logged by longname + dotted address" }),
+        },
+        // ---- the Outline's column rows: put the column under the cursor on a
+        //      channel. `z` opens a chord beside `z a`, and the rows answer in the
+        //      Protocol context. Each acts on a column's row and does nothing on a
+        //      spine row; a column's row has nothing to fold, so `z a` is left
+        //      as it is. Data-tier: each sets a channel, as `set-channel` does. ----
+        VerbEntry {
+            longname: "put-column-on-x",
+            tier: CommandTier::Data,
+            binding_specs: vec![proto("z x")],
+            scope_applicability: vec![Protocol],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Put the Outline's column under the cursor on the x channel of the focused view's shelf",
+            scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 3, motor_note: "z x = column to x; the z chord sits beside z a, and the channel's own letter is the second key; acts on a column's row and does nothing on a spine row" }),
+        },
+        VerbEntry {
+            longname: "put-column-on-y",
+            tier: CommandTier::Data,
+            binding_specs: vec![proto("z y")],
+            scope_applicability: vec![Protocol],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Put the Outline's column under the cursor on the y channel of the focused view's shelf",
+            scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 3, motor_note: "z y = column to y; the z chord sits beside z a, and the channel's own letter is the second key; acts on a column's row and does nothing on a spine row" }),
+        },
+        VerbEntry {
+            longname: "put-column-on-colour",
+            tier: CommandTier::Data,
+            binding_specs: vec![proto("z c")],
+            scope_applicability: vec![Protocol],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Put the Outline's column under the cursor on the colour channel of the focused view's shelf",
+            scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 3, motor_note: "z c = column to colour; the z chord sits beside z a, and vim's zc, which closes a fold, has nothing to close on a column's row; u takes it back" }),
+        },
+        // ---- the shelf: a band of one cell per channel at the head of a chart's
+        //      tile, and an open list of columns or settings under a cell. An open
+        //      list takes letters as verbs and `/` gives the query the keys. These
+        //      resolve in the Shelf context, apart from the Workspace's and the
+        //      Protocol panel's bindings on the same keys. Motion and back-out are
+        //      View-tier; keeping a choice sets a channel, so it is Data-tier. ----
+        VerbEntry {
+            longname: "go-to-mark-cell",
+            tier: CommandTier::View,
+            binding_specs: vec![shelf("m")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Go to the shelf's mark cell, keeping the list's tab",
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 3, motor_note: "m = mark, printed on the cell; the Shelf context keeps it apart from the Workspace's change-mark-type" }),
+        },
+        VerbEntry {
+            longname: "go-to-x-cell",
+            tier: CommandTier::View,
+            binding_specs: vec![shelf("x")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Go to the shelf's x cell, keeping the list's tab",
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 3, motor_note: "x = the x channel, printed on the cell; the Shelf context keeps it apart from the Workspace's cycle-axis-lock" }),
+        },
+        VerbEntry {
+            longname: "go-to-y-cell",
+            tier: CommandTier::View,
+            binding_specs: vec![shelf("y")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Go to the shelf's y cell, keeping the list's tab",
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 3, motor_note: "y = the y channel, printed on the cell; the Shelf context keeps it apart from the Protocol panel's yank-address" }),
+        },
+        VerbEntry {
+            longname: "go-to-colour-cell",
+            tier: CommandTier::View,
+            binding_specs: vec![shelf("c")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Go to the shelf's colour cell, keeping the list's tab",
+            scores: Some(Scores { frequency: 3, mnemonic: 5, convention: 3, motor_note: "c = colour, printed on the cell; the Shelf context keeps it apart from the Workspace's cycle-colour-scheme" }),
+        },
+        VerbEntry {
+            longname: "move-shelf-next-row",
+            tier: CommandTier::View,
+            binding_specs: vec![shelf("j"), shelf("down")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Move to the next row of the shelf's open list",
+            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "home-row j = down/next (vim, lazygit); the arrow is its twin, and both agree with the Workspace's j and the Protocol panel's j" }),
+        },
+        VerbEntry {
+            longname: "move-shelf-prev-row",
+            tier: CommandTier::View,
+            binding_specs: vec![shelf("k"), shelf("up")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Move to the previous row of the shelf's open list",
+            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "home-row k = up/prev (vim, lazygit); the arrow is its twin, and both agree with the Workspace's k and the Protocol panel's k" }),
+        },
+        VerbEntry {
+            longname: "move-shelf-left",
+            tier: CommandTier::View,
+            binding_specs: vec![shelf("h"), shelf("left")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "On the band, the cell to the left; on a settings row, the value to the left; stops at the mark's cell",
+            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "home-row h = left (vim), as drawn: mark, x, y, colour run left to right; stops at the mark rather than popping out, because Esc is the way out" }),
+        },
+        VerbEntry {
+            longname: "move-shelf-right",
+            tier: CommandTier::View,
+            binding_specs: vec![shelf("l"), shelf("right")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "On the band, the cell to the right; on a settings row, the value to the right",
+            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "home-row l = right (vim), as drawn: mark, x, y, colour run left to right; the Protocol panel's l is likewise the node drawn to the right" }),
+        },
+        VerbEntry {
+            longname: "narrow-shelf-list",
+            tier: CommandTier::View,
+            binding_specs: vec![shelf("/")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Narrow the shelf's open list to the rows matching what is typed; Esc clears",
+            scores: Some(Scores { frequency: 4, mnemonic: 4, convention: 5, motor_note: "/ = search/narrow (vim, less, lazygit); the query takes letters as text until Esc, and the Workspace's / is focus-jump, a search by name" }),
+        },
+        VerbEntry {
+            longname: "keep-shelf-choice",
+            tier: CommandTier::Data,
+            binding_specs: vec![shelf("enter")],
+            scope_applicability: vec![View],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Keep the row under the cursor: the previewed column goes on the channel, or the value is set",
+            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "enter = keep the row under the cursor, in the list and in the query (telescope, fzf); a Data verb, since it sets a channel" }),
+        },
+        VerbEntry {
+            longname: "back-out-of-shelf",
+            tier: CommandTier::View,
+            binding_specs: vec![shelf("escape")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Back out one level: a value not kept, then the query, then the list, then the shelf",
+            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "esc = back out one level (the Esc ladder); the same steps down as clear-selection and protocol-drill-out" }),
         },
         // ---- pane toggles: the show/hide verbs the item registries name.
         //      Reserved rather than bound: the pane toggles cannot be performed
@@ -1072,6 +1247,20 @@ mod tests {
             "protocol-drill-out",
             "open-steps-sheet",
             "yank-address",
+            "put-column-on-x",
+            "put-column-on-y",
+            "put-column-on-colour",
+            "go-to-mark-cell",
+            "go-to-x-cell",
+            "go-to-y-cell",
+            "go-to-colour-cell",
+            "move-shelf-next-row",
+            "move-shelf-prev-row",
+            "move-shelf-left",
+            "move-shelf-right",
+            "narrow-shelf-list",
+            "keep-shelf-choice",
+            "back-out-of-shelf",
             "toggle-outline-rail",
             "toggle-inspector-rail",
             "toggle-controls-rail",
@@ -1096,7 +1285,8 @@ mod tests {
             .filter(|v| v.tier.is_logged())
             .map(|v| v.longname)
             .collect();
-        // The Data-tier set is exactly the addressed spec-edit verbs plus undo.
+        // The Data-tier set is exactly the addressed spec-edit verbs plus undo,
+        // the Outline's put-a-column-on-a-channel verbs, and the shelf's keep.
         let mut got = durable.clone();
         got.sort_unstable();
         let mut expected = vec![
@@ -1110,6 +1300,10 @@ mod tests {
             "toggle-point-select",
             "set-param",
             "yank-address",
+            "put-column-on-x",
+            "put-column-on-y",
+            "put-column-on-colour",
+            "keep-shelf-choice",
         ];
         expected.sort_unstable();
         assert_eq!(got, expected, "only durable-writing (Data) verbs write");

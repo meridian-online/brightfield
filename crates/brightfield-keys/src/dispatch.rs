@@ -9,7 +9,7 @@
 
 use crate::registry::{BindingContext, BoundKey};
 
-/// The three focus/overlay situations dispatch resolves against.
+/// The focus/overlay situations dispatch resolves against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchContext {
     /// The canvas holds focus (bare workspace verbs live).
@@ -21,6 +21,10 @@ pub enum DispatchContext {
     /// The protocol asset-graph panel holds focus — its topological
     /// grammar resolves here, isolated from the chart canvas's bare verbs.
     ProtocolFocused,
+    /// A chart's shelf holds focus — the band's cells and the open list under
+    /// one. Its grammar resolves here, isolated from the chart canvas's bare
+    /// verbs and from the protocol panel's.
+    ShelfFocused,
 }
 
 /// Whether a binding in `binding` context resolves in the `dispatch` situation.
@@ -29,7 +33,11 @@ pub enum DispatchContext {
 /// - a Global (`context = None`) binding resolves from BOTH canvas and editor;
 /// - a Workspace bare verb resolves ONLY when the canvas is focused — never under
 ///   the editor, never under an open overlay;
-/// - an Editor binding resolves only when the editor is focused.
+/// - an Editor binding resolves only when the editor is focused;
+/// - a Protocol binding resolves only when the protocol panel is focused;
+/// - a Shelf binding resolves only when a shelf is focused, so `h` and `l` are
+///   the cell beside there, `pop-out` and `dive-in` under the canvas, and
+///   `protocol-producer` and `protocol-consumer` under the protocol panel.
 #[must_use]
 pub fn fires(binding: BindingContext, dispatch: DispatchContext) -> bool {
     matches!(
@@ -38,6 +46,7 @@ pub fn fires(binding: BindingContext, dispatch: DispatchContext) -> bool {
             | (BindingContext::Workspace, DispatchContext::CanvasFocused)
             | (BindingContext::Editor, DispatchContext::EditorFocused)
             | (BindingContext::Protocol, DispatchContext::ProtocolFocused)
+            | (BindingContext::Shelf, DispatchContext::ShelfFocused)
     )
 }
 
