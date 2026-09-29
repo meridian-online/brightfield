@@ -1061,8 +1061,8 @@ fn a_click_on_a_closed_pane_tab_opens_it() {
 /// The tab has to sense a drag under the id `egui_tiles` gave it, because that
 /// id is how `egui_tiles` knows which tile is being dragged.
 ///
-/// Watched failing: sense only clicks in `PaneChrome::tab_ui`, or interact under
-/// an id of its own, and the notes pane's parent is the one it started with.
+/// Watched failing: sense a click and not a drag in `PaneChrome::tab_ui`, or
+/// interact under an id of its own, and the notes pane's parent is the one it started with.
 #[test]
 fn dragging_a_pane_tab_onto_the_rail_moves_the_pane() {
     let (ctx, mut ws, mut doc, mut items) = settled();

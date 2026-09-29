@@ -888,11 +888,11 @@ fn ink_of(shapes: &[egui::Shape], word: &str) -> Option<egui::Color32> {
 /// A rail's names are `meridian-egui`'s line tabs: the open name in the text
 /// ink over a bar `TAB_BAR_WIDTH` tall that stands on the strip's foot, the
 /// others in the secondary ink, one rule under the whole strip — names, summary
-/// and control alike — and no box, outline or corner on anything.
+/// and control alike — and no rect with an outline or a corner.
 ///
 /// The bar's span is asserted against the rect the strip *reports* for the open
 /// name. That rect is measured here from the words, and `line_tabs` lays the
-/// same words out itself and reports nothing, so the two agreeing is what keeps
+/// same words out itself and reports no rect, so the two agreeing is what keeps
 /// a click aimed at a reported rect landing on the word drawn there.
 ///
 /// Watched failing: hand `line_tabs` an open index past the names and there is
@@ -1006,8 +1006,8 @@ fn a_rails_names_are_line_tabs_the_open_one_over_a_bar_and_one_rule_under_the_st
 
 /// A click on a name picks it — the open name as well as a closed one.
 ///
-/// `line_tabs` reports a click on a closed tab only, because the open tab is
-/// where its caller already is. A rail's caller is not there: a name picked in
+/// `line_tabs` reports a click on a closed tab and not on the open tab, because
+/// the open tab is where its caller already is. A rail's caller is not there: a name picked in
 /// a collapsed rail reopens it, and the name on show in a collapsed rail is the
 /// open one.
 ///
@@ -1021,7 +1021,7 @@ fn a_click_on_any_of_a_rails_names_is_a_pick_the_open_one_included() {
         pressed,
         modifiers: egui::Modifiers::default(),
     };
-    for want in 0..RAIL_NAMES.len() {
+    for (want, name) in RAIL_NAMES.iter().enumerate() {
         let ctx = egui::Context::default();
         let (drawn, _) = strip_frame(&ctx, &RAIL_NAMES, 1, PANE.width(), Vec::new());
         let at = drawn.names[want].center();
@@ -1040,7 +1040,7 @@ fn a_click_on_any_of_a_rails_names_is_a_pick_the_open_one_included() {
             released.picked,
             Some(want),
             "a click at {at:?}, on {}, did not pick it",
-            RAIL_NAMES[want]
+            name
         );
     }
 }
@@ -1053,7 +1053,7 @@ fn a_click_on_any_of_a_rails_names_is_a_pick_the_open_one_included() {
 /// width where the third would end under the summary.
 ///
 /// Watched failing: delete the `break` in `chrome::strip`'s measuring loop and
-/// the narrow strip reports all three names, one of them under the control.
+/// the narrow strip reports the three names, one of them under the control.
 #[test]
 fn a_name_that_would_reach_under_the_control_is_dropped() {
     let ctx = egui::Context::default();

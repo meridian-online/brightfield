@@ -173,7 +173,7 @@ impl<D: ?Sized> egui_tiles::Behavior<PaneKey> for PaneChrome<'_, D> {
     /// are drawn through ([`chrome::rail_selector`]), painted here from the same
     /// tokens rather than through `line_tabs` itself: `egui_tiles` asks for one
     /// tab at a time and needs a tab that can be dragged, and `line_tabs` draws
-    /// a whole strip and senses only clicks. What is left of `egui_tiles`' own
+    /// a whole strip and reports a click but not a drag. What is left of `egui_tiles`' own
     /// tab is what it needs — the sensed rect, and the gap a dragged tab leaves.
     /// No tab in the product closes (`is_tab_closable` stays at its default), so
     /// no close button is drawn.
@@ -245,8 +245,8 @@ impl<D: ?Sized> egui_tiles::Behavior<PaneKey> for PaneChrome<'_, D> {
     ///
     /// `egui_tiles` calls this once per tab bar, after it has filled the bar and
     /// before it lays the tabs out, so the open tab's bar is drawn over the rule
-    /// it stands on. It is where the rule is drawn because nothing else in a
-    /// `Behavior` runs once per strip, and the bar's rect is this `Ui`'s.
+    /// it stands on. It is where the rule is drawn because this is the hook in a
+    /// `Behavior` that runs once per strip, and the bar's rect is this `Ui`'s.
     fn top_bar_right_ui(
         &mut self,
         _tiles: &Tiles<PaneKey>,

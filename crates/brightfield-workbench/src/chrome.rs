@@ -719,9 +719,9 @@ fn strip(
     });
 
     // The names are `meridian-egui`'s line tabs: words in a row over one rule,
-    // the open one over a bar. `line_tabs` lays out every name it is handed and
-    // reports no rect for any of them, so the words are measured here the way it
-    // lays them out and only the ones that end before `room` does are handed
+    // the open one over a bar. `line_tabs` lays out the names it is handed and
+    // hands back no rect for a name, so the words are measured here the way it
+    // lays them out and the ones that end before `room` does are handed
     // over: a name drawn under the control would be a target the pointer cannot
     // reach, which reads as a dead control.
     let font = line_tab_font(ui);
@@ -771,8 +771,8 @@ fn strip(
         controls.push(NamedControl::labelled(hit, *name));
         drawn.push(hit);
     }
-    // `line_tabs` reports a click on a closed name and none on the open one,
-    // because the open one is where its caller already is. A rail's caller is
+    // `line_tabs` reports a click on a closed name and does not report one on
+    // the open name, because the open one is where its caller already is. A rail's caller is
     // not: a name picked in a collapsed rail reopens it, and the open name is
     // the one on show there, so a click on it is a pick too.
     let picked = tabs.clicked.or_else(|| {
