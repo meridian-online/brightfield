@@ -1417,6 +1417,96 @@ mod tests {
     }
 
     #[test]
+    fn the_shelf_context_carries_a_verb_for_each_of_the_shelfs_keys() {
+        let reg = registry();
+        let bound = keymap_bindings(&reg);
+        let in_shelf = |keys: &str| -> Vec<&'static str> {
+            bound
+                .iter()
+                .filter(|b| b.context == BindingContext::Shelf && b.keystrokes == keys)
+                .map(|b| b.longname)
+                .collect()
+        };
+        let expected = [
+            // The mark, x, y and colour cells.
+            ("m", "go-to-mark-cell"),
+            ("x", "go-to-x-cell"),
+            ("y", "go-to-y-cell"),
+            ("c", "go-to-colour-cell"),
+            // The next and previous row.
+            ("j", "move-shelf-next-row"),
+            ("down", "move-shelf-next-row"),
+            ("k", "move-shelf-prev-row"),
+            ("up", "move-shelf-prev-row"),
+            // The cell or value beside.
+            ("h", "move-shelf-left"),
+            ("left", "move-shelf-left"),
+            ("l", "move-shelf-right"),
+            ("right", "move-shelf-right"),
+            // Narrowing, keeping, and backing out one level.
+            ("/", "narrow-shelf-list"),
+            ("enter", "keep-shelf-choice"),
+            ("escape", "back-out-of-shelf"),
+        ];
+        for (keys, longname) in expected {
+            assert_eq!(in_shelf(keys), vec![longname], "Shelf context, `{keys}`");
+            let verb = reg.iter().find(|v| v.longname == longname).unwrap();
+            assert!(!verb.help.is_empty(), "{longname} has no help line");
+            let scores = verb
+                .scores
+                .as_ref()
+                .unwrap_or_else(|| panic!("{longname} has no scores"));
+            for score in [scores.frequency, scores.mnemonic, scores.convention] {
+                assert!((1..=5).contains(&score), "{longname} score {score}");
+            }
+            assert!(
+                !scores.motor_note.is_empty(),
+                "{longname} has no motor note"
+            );
+        }
+        // The context holds these bindings and `undo`'s two; a stray binding
+        // would be a key the help sheet lists that nothing here accounts for.
+        let in_shelf_count = bound
+            .iter()
+            .filter(|b| b.context == BindingContext::Shelf)
+            .count();
+        assert_eq!(in_shelf_count, expected.len() + 2, "Shelf bindings");
+    }
+
+    #[test]
+    fn set_channels_help_line_names_the_shelf_not_an_argument_overlay() {
+        let reg = registry();
+        let help = reg
+            .iter()
+            .find(|v| v.longname == "set-channel")
+            .unwrap()
+            .help;
+        assert!(help.contains("shelf"), "set-channel help: {help}");
+        assert!(
+            !help.contains("overlay") && !help.contains("prompts"),
+            "set-channel help still names an overlay: {help}"
+        );
+    }
+
+    #[test]
+    fn no_two_verbs_in_one_context_share_a_keystroke_sequence() {
+        let bound = keymap_bindings(&registry());
+        // `BindingContext` is not `Hash`, so this is a plain pairwise scan.
+        for (i, a) in bound.iter().enumerate() {
+            for b in &bound[i + 1..] {
+                assert!(
+                    !(a.context == b.context && a.keystrokes == b.keystrokes),
+                    "{} and {} both bind `{}` in {:?}",
+                    a.longname,
+                    b.longname,
+                    a.keystrokes,
+                    a.context
+                );
+            }
+        }
+    }
+
+    #[test]
     fn cycle_colour_scheme_is_view_only_preview() {
         let reg = registry();
         let c = reg

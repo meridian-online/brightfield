@@ -170,6 +170,106 @@ mod tests {
     }
 
     #[test]
+    fn h_and_l_are_the_cell_beside_in_the_shelf_and_keep_their_other_meanings() {
+        let t = table();
+        // Exact vectors, not `contains`: a Workspace or Protocol binding that
+        // leaked into the shelf's dispatch context would add a second verb.
+        assert_eq!(
+            t.resolves("h", DispatchContext::ShelfFocused),
+            vec!["move-shelf-left"]
+        );
+        assert_eq!(
+            t.resolves("l", DispatchContext::ShelfFocused),
+            vec!["move-shelf-right"]
+        );
+        assert_eq!(
+            t.resolves("h", DispatchContext::CanvasFocused),
+            vec!["pop-out"]
+        );
+        assert_eq!(
+            t.resolves("l", DispatchContext::CanvasFocused),
+            vec!["dive-in"]
+        );
+        assert_eq!(
+            t.resolves("h", DispatchContext::ProtocolFocused),
+            vec!["protocol-producer"]
+        );
+        assert_eq!(
+            t.resolves("l", DispatchContext::ProtocolFocused),
+            vec!["protocol-consumer"]
+        );
+    }
+
+    #[test]
+    fn each_binding_context_fires_in_its_own_dispatch_context_and_global_in_all() {
+        use BindingContext::{Editor, Global, Protocol, Shelf, Workspace};
+        use DispatchContext::{
+            CanvasFocused, EditorFocused, OverlayOpen, ProtocolFocused, ShelfFocused,
+        };
+        // Written as a `match`, so a new binding context does not compile until
+        // this test says which dispatch context it fires in.
+        let own = |binding: BindingContext| match binding {
+            Workspace => Some(CanvasFocused),
+            Editor => Some(EditorFocused),
+            Protocol => Some(ProtocolFocused),
+            Shelf => Some(ShelfFocused),
+            Global => None,
+        };
+        for binding in [Workspace, Editor, Protocol, Shelf, Global] {
+            for dispatch in [
+                CanvasFocused,
+                EditorFocused,
+                OverlayOpen,
+                ProtocolFocused,
+                ShelfFocused,
+            ] {
+                let expected = own(binding).is_none_or(|own| own == dispatch);
+                assert_eq!(
+                    fires(binding, dispatch),
+                    expected,
+                    "{binding:?} binding under {dispatch:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn undo_fires_on_u_in_the_shelf_as_in_the_workspace_and_on_cmd_z_in_the_shelf() {
+        let t = table();
+        assert!(t
+            .resolves("u", DispatchContext::ShelfFocused)
+            .contains(&"undo"));
+        assert!(t
+            .resolves("u", DispatchContext::CanvasFocused)
+            .contains(&"undo"));
+        assert!(t
+            .resolves("cmd-z", DispatchContext::ShelfFocused)
+            .contains(&"undo"));
+    }
+
+    #[test]
+    fn z_then_a_channel_puts_the_outlines_column_and_z_a_still_folds() {
+        let t = table();
+        for (keys, verb) in [
+            ("z x", "put-column-on-x"),
+            ("z y", "put-column-on-y"),
+            ("z c", "put-column-on-colour"),
+            ("z a", "toggle-fold"),
+        ] {
+            assert_eq!(
+                t.resolves(keys, DispatchContext::ProtocolFocused),
+                vec![verb],
+                "{keys} in the Protocol panel"
+            );
+            // The chord belongs to the panel: the canvas has no `z` binding.
+            assert!(
+                t.resolves(keys, DispatchContext::CanvasFocused).is_empty(),
+                "{keys} leaked into the canvas"
+            );
+        }
+    }
+
+    #[test]
     fn toggle_chord_is_unshadowed() {
         let bound = keymap_bindings(&registry());
         // Exactly one binding claims cmd-e, and it is the focus toggle.
