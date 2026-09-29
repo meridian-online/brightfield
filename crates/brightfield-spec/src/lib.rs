@@ -14,6 +14,7 @@ pub mod edit;
 pub mod error;
 pub mod expr;
 pub mod layout;
+pub mod number_format;
 pub mod parse;
 pub mod vocab;
 

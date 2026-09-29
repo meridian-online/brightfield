@@ -232,7 +232,8 @@ fn warning_wire_name(warning: &ParseWarning) -> String {
         ParseWarning::ColourNameShadowsColumn { name, .. } => name.clone(),
         ParseWarning::NonNumericInset { attribute }
         | ParseWarning::NonStringLabel { attribute }
-        | ParseWarning::InvalidTickCount { attribute } => attribute.clone(),
+        | ParseWarning::InvalidTickCount { attribute }
+        | ParseWarning::InvalidTickFormat { attribute, .. } => attribute.clone(),
         ParseWarning::UnknownProjection { value } => value.clone(),
         ParseWarning::AspectRatioWithProjection { mark }
         | ParseWarning::MarkCannotProject { mark, .. } => mark.clone(),
@@ -273,7 +274,8 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         // which shows a mark-level value is not judged as a projection name.
         | ParseWarning::UnknownProjection { .. }
         | ParseWarning::NonStringLabel { .. }
-        | ParseWarning::InvalidTickCount { .. } => "plot",
+        | ParseWarning::InvalidTickCount { .. }
+        | ParseWarning::InvalidTickFormat { .. } => "plot",
         ParseWarning::UnknownAggregate { .. }
         | ParseWarning::UnconsumedChannelTransform { .. }
         | ParseWarning::ColourNameShadowsColumn { .. } => "channel",
@@ -435,5 +437,51 @@ mod tests {
             "the sentence names it too: {}",
             hit.message
         );
+    }
+
+    /// **A bad tick format is named in the warning banner with its key and
+    /// its value.** `xTickFormat: "~~"` is the card's own example: advisory
+    /// (the axis still draws, its default text), naming `xTickFormat` as the
+    /// wire name, `plot` as the surface, and the value in the sentence, since
+    /// the key alone does not say what to change.
+    #[test]
+    fn dfconf_advisory_entry_names_a_bad_tick_format_and_its_value() {
+        let d = diagnose(
+            "data:\n  t: { file: t.parquet }\nplot:\n  - mark: dot\n    data: { from: t }\n    \
+             x: a\n    y: b\nxTickFormat: \"~~\"\n",
+        );
+        assert!(d.blocking().is_empty(), "the plot still draws: {d:?}");
+        let advisory = d.advisory();
+        let hit = advisory
+            .iter()
+            .find(|diag| diag.wire_name == "xTickFormat")
+            .unwrap_or_else(|| panic!("no advisory names `xTickFormat`: {:?}", d.lines()));
+        assert_eq!(hit.surface, "plot");
+        assert!(
+            hit.message.contains("xTickFormat") && hit.message.contains("~~"),
+            "the sentence names the key and the value: {}",
+            hit.message
+        );
+    }
+
+    /// A format a spec is entitled to write draws with no warning: the four
+    /// number formats of the vendored corpus, and the date format it also
+    /// carries, which is read by a later part and must not read as broken in
+    /// the meantime.
+    #[test]
+    fn dfconf_a_readable_or_deferred_tick_format_says_nothing() {
+        for format in ["s", "d", "%", "+f", ".2s", "%b", "%Y-%m"] {
+            let d = diagnose(&format!(
+                "data:\n  t: {{ file: t.parquet }}\nplot:\n  - mark: dot\n    data: {{ from: t }}\n    \
+                 x: a\n    y: b\nyTickFormat: '{format}'\n"
+            ));
+            assert!(
+                d.advisory()
+                    .iter()
+                    .all(|diag| diag.wire_name != "yTickFormat"),
+                "`{format}` is a format and must not be warned about: {:?}",
+                d.lines()
+            );
+        }
     }
 }

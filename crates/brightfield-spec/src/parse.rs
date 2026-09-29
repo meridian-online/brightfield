@@ -441,6 +441,26 @@ pub enum ParseWarning {
         attribute: String,
     },
 
+    /// A plot-level tick-format attribute (`xTickFormat`, `yTickFormat`) carried
+    /// a value that is not a d3-format number specifier: `~~`, `.f`, a number,
+    /// a list. A date format (`%b`) and a `$param` are not this, since a build
+    /// that does not read a date format yet leaves it to draw the default text
+    /// without a word. The axis degrades to its default tick text, and this
+    /// names the key and the value so an author sees the typo rather than
+    /// silently losing the format.
+    ///
+    /// [`crate::layout::is_tick_format_or_deferred`] is the sole judge of what
+    /// to stay silent about, and [`crate::number_format::NumberFormat::parse`]
+    /// of what a number format is, so a form a later build reads narrows this
+    /// warning in the same edit.
+    InvalidTickFormat {
+        /// The offending attribute key.
+        attribute: String,
+        /// What the attribute held, as written: the string itself, a number's
+        /// digits, or `<non-string>` for a list or map.
+        value: String,
+    },
+
     /// A plot's `projectionType` carried a value outside Mosaic's
     /// `ProjectionName` vocabulary, or a non-string value. The plot then names
     /// no projection at all — it draws as a cartesian plot — and this names the
@@ -702,6 +722,10 @@ impl fmt::Display for ParseWarning {
                 "plot attribute `{attribute}` is not a whole number from 1 to {} — ticks fall back to the default count",
                 crate::layout::MAX_TICK_COUNT
             ),
+            Self::InvalidTickFormat { attribute, value } => write!(
+                f,
+                "plot attribute `{attribute}` is `{value}`, which is not a number format — ticks draw their default text"
+            ),
             Self::UnknownProjection { value } => write!(
                 f,
                 "projection `{value}` is not supported — the plot draws unprojected"
@@ -943,6 +967,17 @@ impl Walker {
                         {
                             self.warnings.push(ParseWarning::InvalidTickCount {
                                 attribute: key.to_string(),
+                            });
+                        }
+                    }
+                    for key in PLOT_TICK_FORMAT_KEYS {
+                        if let Some(v) = defaults
+                            .get(key)
+                            .filter(|v| !crate::layout::is_tick_format_or_deferred(v))
+                        {
+                            self.warnings.push(ParseWarning::InvalidTickFormat {
+                                attribute: key.to_string(),
+                                value: tick_format_text(v),
                             });
                         }
                     }
@@ -1354,6 +1389,18 @@ impl Walker {
             if PLOT_TICK_COUNT_KEYS.contains(&key.as_str()) && !is_tick_count_or_deferred(&value) {
                 self.warnings.push(ParseWarning::InvalidTickCount {
                     attribute: key.clone(),
+                });
+            }
+            // A plot-level tick-format attribute (`xTickFormat`, `yTickFormat`)
+            // that is not a d3-format number specifier degrades to the axis's
+            // default tick text; name it, with what was written. A `$param`,
+            // `null` and a date format are deferrals, not typos.
+            if PLOT_TICK_FORMAT_KEYS.contains(&key.as_str())
+                && !crate::layout::is_tick_format_or_deferred(&value)
+            {
+                self.warnings.push(ParseWarning::InvalidTickFormat {
+                    attribute: key.clone(),
+                    value: tick_format_text(&value),
                 });
             }
             // A plot-level `projectionType` that names a projection v1 can't
@@ -2298,6 +2345,21 @@ fn is_count_transform(m: &serde_yaml::Mapping) -> bool {
 
 /// The plot attributes that set an axis's target tick count.
 const PLOT_TICK_COUNT_KEYS: [&str; 2] = ["xTicks", "yTicks"];
+
+/// The plot attributes that set an axis's tick format.
+const PLOT_TICK_FORMAT_KEYS: [&str; 2] = ["xTickFormat", "yTickFormat"];
+
+/// A tick-format value as [`ParseWarning::InvalidTickFormat`] shows it: what
+/// the author wrote, where it can be written on one line.
+fn tick_format_text(value: &SpecValue) -> String {
+    match value {
+        SpecValue::String(s) => s.clone(),
+        SpecValue::Integer(n) => n.to_string(),
+        SpecValue::Float(f) => f.to_string(),
+        SpecValue::Bool(b) => b.to_string(),
+        _ => "<non-string>".to_string(),
+    }
+}
 
 /// Whether a `xTicks` / `yTicks` value is one [`ParseWarning::InvalidTickCount`]
 /// should stay silent about: a valid target, as
@@ -3410,6 +3472,110 @@ plot:
                 .warnings
                 .iter()
                 .any(|w| matches!(w, ParseWarning::InvalidTickCount { .. })),
+            "a valid default must not warn; got {:?}",
+            good.warnings
+        );
+    }
+
+    fn tick_format_warnings(out: &ParseOutput) -> Vec<(&str, &str)> {
+        out.warnings
+            .iter()
+            .filter_map(|w| match w {
+                ParseWarning::InvalidTickFormat { attribute, value } => {
+                    Some((attribute.as_str(), value.as_str()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A tick format that is no number format degrades to the axis's default
+    /// text AND names the key and the value: `xTickFormat: "~~"` is the card's
+    /// own example. A format the reader takes, a date format, `null` and a
+    /// lifted `$param` say nothing.
+    #[test]
+    fn invalid_tick_format_warns_but_a_format_a_date_and_a_param_defer() {
+        let spec = |attr: &str| {
+            format!(
+                "params:\n  f: s\ndata:\n  t:\n    - {{ x: 1, y: 2 }}\nplot:\n  - {{ mark: dot, data: {{ from: t }}, x: x, y: y }}\n{attr}\n"
+            )
+        };
+
+        let out = parse_spec(&spec("xTickFormat: \"~~\""), Format::Yaml).expect("parses");
+        assert_eq!(
+            tick_format_warnings(&out),
+            [("xTickFormat", "~~")],
+            "one warning naming the key and the value; got {:?}",
+            out.warnings
+        );
+
+        // Either axis, and a value that is not a string.
+        let out = parse_spec(&spec("yTickFormat: 5"), Format::Yaml).expect("parses");
+        assert_eq!(tick_format_warnings(&out), [("yTickFormat", "5")]);
+        let out = parse_spec(&spec("xTickFormat: [s]"), Format::Yaml).expect("parses");
+        assert_eq!(
+            tick_format_warnings(&out),
+            [("xTickFormat", "<non-string>")]
+        );
+
+        // The formats of the vendored corpus, the specifiers d3-format reads
+        // that it does not, a date format, `null` and a `$param`: silent.
+        for ok in [
+            "xTickFormat: s",
+            "yTickFormat: d",
+            "yTickFormat: '%'",
+            "yTickFormat: '+f'",
+            "xTickFormat: '.2s'",
+            "xTickFormat: ',d'",
+            "xTickFormat: '$,.2f'",
+            "xTickFormat: '%b'",
+            "xTickFormat: '%Y-%m-%d'",
+            "xTickFormat: null",
+            "xTickFormat: $f",
+        ] {
+            let out = parse_spec(&spec(ok), Format::Yaml).expect("parses");
+            assert!(
+                tick_format_warnings(&out).is_empty(),
+                "`{ok}` must not warn; got {:?}",
+                out.warnings
+            );
+        }
+
+        // Other unreadable specifiers warn too, not just the one in the card.
+        for bad in [".f", "d3", "++f", "1,0d"] {
+            let out =
+                parse_spec(&spec(&format!("xTickFormat: '{bad}'")), Format::Yaml).expect("parses");
+            assert_eq!(
+                tick_format_warnings(&out),
+                [("xTickFormat", bad)],
+                "`{bad}` must warn"
+            );
+        }
+    }
+
+    /// A malformed tick format under `plotDefaults` is named once, where it is
+    /// declared, however many plots inherit it, for the reason a bad tick count
+    /// is: the merge into each plot runs after `walk_plot`'s own check.
+    #[test]
+    fn a_bad_plot_defaults_tick_format_warns_once_however_many_plots_inherit_it() {
+        let two_plots = |defaults: &str| {
+            format!(
+                "data:\n  t:\n    - {{ x: 1, y: 2 }}\nplotDefaults:\n  {defaults}\nvconcat:\n  \
+                 - plot:\n      - {{ mark: dot, data: {{ from: t }}, x: x, y: y }}\n  \
+                 - plot:\n      - {{ mark: dot, data: {{ from: t }}, x: x, y: y }}\n"
+            )
+        };
+        let bad = parse_spec(&two_plots("yTickFormat: \"~~\""), Format::Yaml).expect("parses");
+        assert_eq!(
+            tick_format_warnings(&bad),
+            [("yTickFormat", "~~")],
+            "one warning for the one default; got {:?}",
+            bad.warnings
+        );
+
+        let good = parse_spec(&two_plots("yTickFormat: s"), Format::Yaml).expect("parses");
+        assert!(
+            tick_format_warnings(&good).is_empty(),
             "a valid default must not warn; got {:?}",
             good.warnings
         );
