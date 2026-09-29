@@ -37,14 +37,15 @@ const INHERITED_CHANNELS: &[&str] = &["x", "y", "x1", "x2", "y1", "y2"];
 /// A typed structural mutation applied to the working [`Spec`] by [`apply`] —
 /// the framework-free AST-mutation API the keyboard grammar named as missing.
 ///
-/// Five variants (the reserved undo verb is an [`UndoStack`] pop, not an
+/// Six variants (the reserved undo verb is an [`UndoStack`] pop, not an
 /// edit). Each edit is TYPED (never an exec-string, per the VisiData warning),
 /// walks the live AST via a plot [`ComponentPath`], and is bracketed by a
 /// whole-`Spec` clone snapshot so undo is total and near-free. Four target the
-/// focused plot's primary mark; [`ChartEdit::SetPlotAttribute`] targets the
-/// plot's own attribute map instead. Three variants are count-STABLE
-/// ([`ChartEdit::ChangeMarkType`], [`ChartEdit::SetChannel`],
-/// [`ChartEdit::SetPlotAttribute`]) and two are count-CHANGING
+/// focused plot's primary mark; [`ChartEdit::SetPlotAttribute`] and
+/// [`ChartEdit::RemovePlotAttribute`] target the plot's own attribute map
+/// instead. Four variants are count-STABLE ([`ChartEdit::ChangeMarkType`],
+/// [`ChartEdit::SetChannel`], [`ChartEdit::SetPlotAttribute`],
+/// [`ChartEdit::RemovePlotAttribute`]) and two are count-CHANGING
 /// ([`ChartEdit::AddMark`], [`ChartEdit::RemoveMark`]); the transient apply
 /// treats them differently (the coordinator flat-index rebuild).
 #[derive(Debug, Clone, PartialEq)]
@@ -110,6 +111,26 @@ pub enum ChartEdit {
         /// The value to write.
         value: SpecValue,
     },
+    /// Take `key` out of the focused plot's own attribute map, so the plot
+    /// draws that attribute's default. Count-stable, and like
+    /// [`ChartEdit::SetPlotAttribute`] it targets no mark.
+    ///
+    /// Writing the default's value back is not the same edit: `yScale: linear`
+    /// leaves a key that says the analyst chose a linear scale, where the spec
+    /// they started from said nothing. The key is removed in place
+    /// (order-preserving), so every other attribute keeps its position.
+    ///
+    /// A key the plot does not carry is a no-op that leaves the spec equal.
+    /// The gate is the one [`ChartEdit::SetPlotAttribute`] has: dropping an
+    /// `xLabel` turns an overridden or suppressed axis title back into a
+    /// derived one, which comes back [`RefuseReason::WouldChangeAxisTitle`]
+    /// with the spec untouched.
+    RemovePlotAttribute {
+        /// Plot-node path of the focused plot.
+        plot: ComponentPath,
+        /// The attribute key to remove, as the spec spells it (`yScale`).
+        key: String,
+    },
 }
 
 impl ChartEdit {
@@ -121,7 +142,8 @@ impl ChartEdit {
             | ChartEdit::AddMark { plot, .. }
             | ChartEdit::SetChannel { plot, .. }
             | ChartEdit::RemoveMark { plot, .. }
-            | ChartEdit::SetPlotAttribute { plot, .. } => plot.0.as_str(),
+            | ChartEdit::SetPlotAttribute { plot, .. }
+            | ChartEdit::RemovePlotAttribute { plot, .. } => plot.0.as_str(),
         }
     }
 
@@ -136,6 +158,7 @@ impl ChartEdit {
             ChartEdit::SetChannel { .. } => "set-channel",
             ChartEdit::RemoveMark { .. } => "remove-mark",
             ChartEdit::SetPlotAttribute { .. } => "set-plot-attribute",
+            ChartEdit::RemovePlotAttribute { .. } => "remove-plot-attribute",
         }
     }
 
@@ -160,7 +183,9 @@ impl ChartEdit {
             ChartEdit::ChangeMarkType { mark_ordinal, .. }
             | ChartEdit::SetChannel { mark_ordinal, .. }
             | ChartEdit::RemoveMark { mark_ordinal, .. } => *mark_ordinal,
-            ChartEdit::AddMark { .. } | ChartEdit::SetPlotAttribute { .. } => 0,
+            ChartEdit::AddMark { .. }
+            | ChartEdit::SetPlotAttribute { .. }
+            | ChartEdit::RemovePlotAttribute { .. } => 0,
         }
     }
 
@@ -184,6 +209,7 @@ impl ChartEdit {
                 SpecValue::String(s) => format!("{kind}: {key} -> {s}"),
                 other => format!("{kind}: {key} -> {other:?}"),
             },
+            ChartEdit::RemovePlotAttribute { key, .. } => format!("{kind}: {key}"),
         }
     }
 }
@@ -299,6 +325,11 @@ fn apply_unchecked(spec: &mut Spec, edit: &ChartEdit) {
         }
         ChartEdit::SetPlotAttribute { key, value, .. } => {
             p.attributes.insert(key.clone(), value.clone());
+        }
+        ChartEdit::RemovePlotAttribute { key, .. } => {
+            // `shift_remove`, not `swap_remove`: the last attribute must not
+            // take the removed one's place in the map's order.
+            p.attributes.shift_remove(key);
         }
         ChartEdit::SetChannel {
             mark_ordinal,
@@ -1791,5 +1822,266 @@ hconcat:
             Err(RefuseReason::PlotNotFound)
         );
         assert_eq!(spec, before);
+    }
+
+    // A plot an analyst put on a log y scale. `yScale` is the FIRST attribute
+    // and two follow it, so the order the map keeps is observable: removing a
+    // key with `swap_remove` would put `height` where `yScale` was.
+    const LOG_Y: &str = "\
+data:
+  t: SELECT 1 AS a, 2 AS b
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    y: b
+yScale: log
+width: 320
+height: 240
+";
+
+    // The same plot with no `yScale` key, so a removal of it finds the key absent.
+    const LINEAR_Y: &str = "\
+data:
+  t: SELECT 1 AS a, 2 AS b
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    y: b
+width: 320
+height: 240
+";
+
+    // The plot the point-map chart kind writes: a ghost layer, the subset
+    // through the shared selection, the brush that publishes it, and the
+    // projection at plot level. The map is a spec crate fixture here because
+    // the generator lives in `brightfield-shell`, which depends on this crate.
+    const HERO_MAP: &str = "\
+params:
+  brush: { select: crossfilter }
+data:
+  t: SELECT -122.4 AS longitude, 37.8 AS latitude
+plot:
+  - mark: dot
+    data: { from: t }
+    x: longitude
+    y: latitude
+    fill: \"#cccccc\"
+  - mark: dot
+    data: { from: t, filterBy: $brush }
+    x: longitude
+    y: latitude
+  - select: intervalXY
+    as: $brush
+projectionType: equirectangular
+width: 640
+height: 400
+";
+
+    fn remove_attribute(path: &str, key: &str) -> ChartEdit {
+        ChartEdit::RemovePlotAttribute {
+            plot: cp(path),
+            key: key.to_string(),
+        }
+    }
+
+    fn attribute_keys(spec: &Spec, path: &str) -> Vec<String> {
+        plot_at_path(spec, path)
+            .expect("plot")
+            .attributes
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// The key leaves the plot, and **nothing else** does: the marks are
+    /// byte-equal and the attributes that were after it keep their order,
+    /// which reddens if the map swaps the last key into the hole.
+    #[test]
+    fn removing_a_plot_attribute_leaves_the_plot_without_the_key() {
+        let mut spec = parse(LOG_Y);
+        let before = spec.clone();
+        assert_eq!(
+            attribute_keys(&spec, "root"),
+            ["yScale", "width", "height"],
+            "the fixture reads its attributes in file order"
+        );
+
+        apply(&mut spec, &remove_attribute("root", "yScale")).expect("gate-clean");
+
+        let edited = plot_at_path(&spec, "root").expect("plot");
+        assert_eq!(edited.attributes.get("yScale"), None, "the key is gone");
+        assert_eq!(
+            attribute_keys(&spec, "root"),
+            ["width", "height"],
+            "the other attributes keep their order"
+        );
+        assert_eq!(
+            edited.attributes.get("width"),
+            plot_at_path(&before, "root")
+                .expect("plot")
+                .attributes
+                .get("width"),
+            "a neighbouring attribute keeps its value"
+        );
+        assert_eq!(
+            edited.items,
+            plot_at_path(&before, "root").expect("plot").items,
+            "no mark on the plot moved"
+        );
+    }
+
+    /// The hero map is drawn through `projectionType`, and a column that is
+    /// not a coordinate put on its x needs that key out of the plot. The
+    /// removal is gate-clean: a projection changes no axis title or inset the
+    /// classifier compares.
+    #[test]
+    fn removing_the_projection_from_the_hero_map_leaves_a_plot_without_one() {
+        let mut spec = parse(HERO_MAP);
+        assert_eq!(
+            plot_at_path(&spec, "root")
+                .expect("plot")
+                .attributes
+                .get("projectionType"),
+            Some(&SpecValue::String("equirectangular".to_string())),
+            "the fixture's plot is projected"
+        );
+        let marks_before = plot_at_path(&spec, "root").expect("plot").items.clone();
+
+        apply(&mut spec, &remove_attribute("root", "projectionType")).expect("gate-clean");
+
+        let edited = plot_at_path(&spec, "root").expect("plot");
+        assert_eq!(
+            edited.attributes.get("projectionType"),
+            None,
+            "the map's plot no longer declares a projection"
+        );
+        assert_eq!(
+            attribute_keys(&spec, "root"),
+            ["width", "height"],
+            "the size the map was drawn at is kept"
+        );
+        assert_eq!(edited.items, marks_before, "the map's layers are untouched");
+    }
+
+    /// A removal of a key the plot never carried is not an error and not a
+    /// change: the spec is equal afterwards, including the attributes that
+    /// ARE there, which is the half that reddens if the arm clears the map.
+    #[test]
+    fn removing_an_attribute_the_plot_does_not_carry_leaves_the_spec_equal() {
+        let mut spec = parse(LINEAR_Y);
+        let before = spec.clone();
+        assert_eq!(
+            apply(&mut spec, &remove_attribute("root", "yScale")),
+            Ok(())
+        );
+        assert_eq!(spec, before);
+        assert_eq!(attribute_keys(&spec, "root"), ["width", "height"]);
+    }
+
+    /// One undo on the stack puts the plot back on `yScale: log`: the edit is
+    /// bracketed by a snapshot like every other, so the removal is not a
+    /// one-way door for the analyst who only tried the scale.
+    #[test]
+    fn one_undo_after_removing_an_attribute_restores_it() {
+        let mut spec = parse(LOG_Y);
+        let before = spec.clone();
+        let mut undo = UndoStack::new();
+
+        undo.push(spec.clone());
+        apply(&mut spec, &remove_attribute("root", "yScale")).expect("gate-clean");
+        assert_eq!(
+            plot_at_path(&spec, "root")
+                .expect("plot")
+                .attributes
+                .get("yScale"),
+            None,
+            "the removal happened before the undo"
+        );
+        assert_eq!(
+            undo.uncommitted_len(),
+            1,
+            "the removal is one undoable edit"
+        );
+
+        match undo.undo() {
+            UndoOutcome::Restored(restored) => spec = *restored,
+            other => panic!("one undo restores the pre-removal spec, got {other:?}"),
+        }
+        assert_eq!(
+            plot_at_path(&spec, "root")
+                .expect("plot")
+                .attributes
+                .get("yScale"),
+            Some(&SpecValue::String("log".to_string())),
+            "the plot is back on the log scale"
+        );
+        assert_eq!(spec, before);
+        assert_eq!(
+            attribute_keys(&spec, "root"),
+            ["yScale", "width", "height"],
+            "and the key is back where it was"
+        );
+    }
+
+    /// A removal of `xLabel` is refused with the reason a WRITE of `xLabel` is
+    /// refused with, the spec untouched. Dropping the label turns an
+    /// overridden (or suppressed) axis title back into one derived from the
+    /// column, which grows launch-fixed chrome — so the generic variant is no
+    /// way around [`classify_edit`] in this direction either. A plot with no
+    /// label to drop is the no-op of the test above, not a refusal.
+    #[test]
+    fn removing_an_axis_label_is_refused_as_writing_one_is() {
+        let mut written = parse(PAIR);
+        let write_refusal = apply(
+            &mut written,
+            &ChartEdit::SetPlotAttribute {
+                plot: cp("root/hconcat[0]"),
+                key: "xLabel".to_string(),
+                value: SpecValue::String("Something else".to_string()),
+            },
+        );
+        assert_eq!(write_refusal, Err(RefuseReason::WouldChangeAxisTitle));
+
+        for (what, yaml, path, key) in [
+            ("an overridden x title", PAIR, "root/hconcat[0]", "xLabel"),
+            ("an overridden y title", PAIR, "root/hconcat[0]", "yLabel"),
+            (
+                "a suppressed x title",
+                "data:\n  t: SELECT 1 AS a, 2 AS b\nplot:\n  - mark: dot\n    data: { from: t }\n    x: a\n    y: b\nxLabel: null\n",
+                "root",
+                "xLabel",
+            ),
+        ] {
+            let mut spec = parse(yaml);
+            let before = spec.clone();
+            assert_eq!(
+                apply(&mut spec, &remove_attribute(path, key)),
+                write_refusal,
+                "removing {what}"
+            );
+            assert_eq!(spec, before, "a refused removal of {what} changes nothing");
+        }
+
+        let mut unlabelled = parse(LINEAR_Y);
+        let before = unlabelled.clone();
+        assert_eq!(
+            apply(&mut unlabelled, &remove_attribute("root", "xLabel")),
+            Ok(())
+        );
+        assert_eq!(unlabelled, before, "no label to drop, nothing to refuse");
+    }
+
+    /// The variant targets no mark and changes no count, so the coordinator
+    /// applies it in place and never rebuilds its flat-index maps for it.
+    #[test]
+    fn a_plot_attribute_removal_is_count_stable() {
+        let edit = remove_attribute("root", "yScale");
+        assert!(!edit.is_count_changing());
+        assert_eq!(edit.mark_ordinal(), 0);
+        assert_eq!(edit.plot_path(), "root");
+        assert_eq!(edit.kind_name(), "remove-plot-attribute");
+        assert_eq!(edit.summary(), "remove-plot-attribute: yScale");
     }
 }
