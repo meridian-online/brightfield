@@ -4,7 +4,7 @@
 //! corner and a wash did. This file asks the surfaces the shell draws whether
 //! they carry it, because a pinned revision can name the look and a call site
 //! can still hand a radius of its own to a painter, or draw a ring outside the
-//! edge it belongs to. Every claim below is made of what a frame painted: a
+//! edge it belongs to. The claims below are made of what a frame painted: a
 //! `RectShape` says its rect, its corner, its stroke and where the stroke sits,
 //! so "the ring lies inside its edge" is a claim about that shape and not about
 //! pixels an antialiasing fringe would blur.
