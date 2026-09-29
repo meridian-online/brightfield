@@ -969,8 +969,8 @@ pub enum ChartSaveError {
     },
     /// An edit could not be placed into the file's text, so none was written.
     Unplaced {
-        /// The edit and the tile it was made on, as
-        /// [`ChartDoc::describe_edit`] words them.
+        /// The edit and the tile it was made on, as the private
+        /// `ChartDoc::describe_edit` words them.
         edit: String,
         /// Why the text would not take it.
         refusal: brightfield_protocol::ChartTextRefusal,
@@ -1238,7 +1238,7 @@ impl ChartDoc {
     /// is there, and otherwise the file [`Self::spec_path`] names, which for a
     /// data file's first Save is the scratch spec the generator wrote at open.
     /// Each edit goes in through
-    /// [`write_chart_edit`](brightfield_protocol::write_chart_edit), a change
+    /// [`write_chart_edit`], a change
     /// to one line, so the generator's comments and an analyst's own come
     /// through as they were; the spec is not written afresh from the picture.
     ///
