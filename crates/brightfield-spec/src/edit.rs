@@ -37,14 +37,15 @@ const INHERITED_CHANNELS: &[&str] = &["x", "y", "x1", "x2", "y1", "y2"];
 /// A typed structural mutation applied to the working [`Spec`] by [`apply`] —
 /// the framework-free AST-mutation API the keyboard grammar named as missing.
 ///
-/// Five variants (the reserved undo verb is an [`UndoStack`] pop, not an
+/// Six variants (the reserved undo verb is an [`UndoStack`] pop, not an
 /// edit). Each edit is TYPED (never an exec-string, per the VisiData warning),
 /// walks the live AST via a plot [`ComponentPath`], and is bracketed by a
 /// whole-`Spec` clone snapshot so undo is total and near-free. Four target the
-/// focused plot's primary mark; [`ChartEdit::SetPlotAttribute`] targets the
-/// plot's own attribute map instead. Three variants are count-STABLE
-/// ([`ChartEdit::ChangeMarkType`], [`ChartEdit::SetChannel`],
-/// [`ChartEdit::SetPlotAttribute`]) and two are count-CHANGING
+/// focused plot's primary mark; [`ChartEdit::SetPlotAttribute`] and
+/// [`ChartEdit::RemovePlotAttribute`] target the plot's own attribute map
+/// instead. Four variants are count-STABLE ([`ChartEdit::ChangeMarkType`],
+/// [`ChartEdit::SetChannel`], [`ChartEdit::SetPlotAttribute`],
+/// [`ChartEdit::RemovePlotAttribute`]) and two are count-CHANGING
 /// ([`ChartEdit::AddMark`], [`ChartEdit::RemoveMark`]); the transient apply
 /// treats them differently (the coordinator flat-index rebuild).
 #[derive(Debug, Clone, PartialEq)]
@@ -110,6 +111,26 @@ pub enum ChartEdit {
         /// The value to write.
         value: SpecValue,
     },
+    /// Take `key` out of the focused plot's own attribute map, so the plot
+    /// draws that attribute's default. Count-stable, and like
+    /// [`ChartEdit::SetPlotAttribute`] it targets no mark.
+    ///
+    /// Writing the default's value back is not the same edit: `yScale: linear`
+    /// leaves a key that says the analyst chose a linear scale, where the spec
+    /// they started from said nothing. The key is removed in place
+    /// (order-preserving), so every other attribute keeps its position.
+    ///
+    /// A key the plot does not carry is a no-op that leaves the spec equal.
+    /// The gate is the one [`ChartEdit::SetPlotAttribute`] has: dropping an
+    /// `xLabel` turns an overridden or suppressed axis title back into a
+    /// derived one, which comes back [`RefuseReason::WouldChangeAxisTitle`]
+    /// with the spec untouched.
+    RemovePlotAttribute {
+        /// Plot-node path of the focused plot.
+        plot: ComponentPath,
+        /// The attribute key to remove, as the spec spells it (`yScale`).
+        key: String,
+    },
 }
 
 impl ChartEdit {
@@ -121,7 +142,8 @@ impl ChartEdit {
             | ChartEdit::AddMark { plot, .. }
             | ChartEdit::SetChannel { plot, .. }
             | ChartEdit::RemoveMark { plot, .. }
-            | ChartEdit::SetPlotAttribute { plot, .. } => plot.0.as_str(),
+            | ChartEdit::SetPlotAttribute { plot, .. }
+            | ChartEdit::RemovePlotAttribute { plot, .. } => plot.0.as_str(),
         }
     }
 
@@ -136,6 +158,7 @@ impl ChartEdit {
             ChartEdit::SetChannel { .. } => "set-channel",
             ChartEdit::RemoveMark { .. } => "remove-mark",
             ChartEdit::SetPlotAttribute { .. } => "set-plot-attribute",
+            ChartEdit::RemovePlotAttribute { .. } => "remove-plot-attribute",
         }
     }
 
@@ -160,7 +183,9 @@ impl ChartEdit {
             ChartEdit::ChangeMarkType { mark_ordinal, .. }
             | ChartEdit::SetChannel { mark_ordinal, .. }
             | ChartEdit::RemoveMark { mark_ordinal, .. } => *mark_ordinal,
-            ChartEdit::AddMark { .. } | ChartEdit::SetPlotAttribute { .. } => 0,
+            ChartEdit::AddMark { .. }
+            | ChartEdit::SetPlotAttribute { .. }
+            | ChartEdit::RemovePlotAttribute { .. } => 0,
         }
     }
 
@@ -184,6 +209,7 @@ impl ChartEdit {
                 SpecValue::String(s) => format!("{kind}: {key} -> {s}"),
                 other => format!("{kind}: {key} -> {other:?}"),
             },
+            ChartEdit::RemovePlotAttribute { key, .. } => format!("{kind}: {key}"),
         }
     }
 }
@@ -299,6 +325,11 @@ fn apply_unchecked(spec: &mut Spec, edit: &ChartEdit) {
         }
         ChartEdit::SetPlotAttribute { key, value, .. } => {
             p.attributes.insert(key.clone(), value.clone());
+        }
+        ChartEdit::RemovePlotAttribute { key, .. } => {
+            // `shift_remove`, not `swap_remove`: the last attribute must not
+            // take the removed one's place in the map's order.
+            p.attributes.shift_remove(key);
         }
         ChartEdit::SetChannel {
             mark_ordinal,
