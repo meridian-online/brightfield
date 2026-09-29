@@ -49,7 +49,7 @@ use brightfield_shell::design::Mode;
 use brightfield_shell::gallery::{catalog, region_catalog, region_row, solo, Component};
 use brightfield_workbench::subject::RunState;
 use egui_kittest::Harness;
-use meridian_design::control::{HEIGHT_XS, ICON_XS};
+use meridian_design::control::{HEIGHT_XS, ICON_XS, KEYCAP_FOOT_WIDTH};
 use meridian_design::spacing::{CHIP_PADDING_X, ICON_LABEL_GAP, SPACE_1, SPACE_2, SPACE_3};
 
 /// The hairline every box in the design system is stroked with. Spelled out
@@ -79,76 +79,111 @@ fn near(a: f32, b: f32) -> bool {
 // Reading the frame
 // ---------------------------------------------------------------------------
 
-/// Which primitive a chip-radius box came from, told apart by HOW it draws
-/// rather than by the geometry under test.
+/// Which primitive a chip box came from, told apart by HOW it draws rather
+/// than by the geometry under test.
 ///
-/// The status pill lays its capsule down as two rects over one rectangle — an
+/// The chrome is square, so a chip's corner radius no longer says which boxes
+/// are chips: every panel and every row is drawn at the same radius of zero.
+/// What still tells the two primitives apart is their recipe.
+///
+/// The status pill lays its capsule down as two rects over one rectangle: an
 /// opaque fill with no stroke, then a hairline stroke over a transparent fill.
-/// The keycap is an `egui::Frame`, which emits a single rect carrying both. So
-/// the discriminator is the pair (fill, stroke width), and it is independent of
-/// every inset this file measures.
+/// The hairline is part of the recipe: a fill ringed at the focus ring's width
+/// is a focused control, and holds no label.
+///
+/// The keycap is one sunken fill with its rules laid on the fill's own edges:
+/// a hairline across the top and a [`KEYCAP_FOOT_WIDTH`] foot across the
+/// bottom, flush to the fill's corners.
+///
+/// Both recipes are stated here from the design system's constants, and
+/// neither reads an inset this file measures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Primitive {
     /// A status pill: icon, gap, label, inside a capsule.
     Pill,
-    /// A keycap chip: a monospace galley inside a stroked box.
+    /// A keycap chip: a monospace galley inside a fill ruled on its edges.
     Keycap,
 }
 
-/// The chip-radius boxes and the text runs a frame painted.
+/// One rect the frame painted: where, whether it fills, and the width of the
+/// stroke it carries.
+#[derive(Clone, Copy)]
+struct Boxed {
+    rect: egui::Rect,
+    filled: bool,
+    stroke_width: f32,
+}
+
+/// The chip boxes and the text runs a frame painted.
 struct Painted {
-    /// Boxes drawn at the chip corner radius, deduplicated: the pill's stroke
-    /// pass repeats the geometry its fill pass already reported.
+    /// Boxes drawn by either chip recipe, in paint order.
     chips: Vec<(egui::Rect, Primitive)>,
     /// Every text run, with the string it laid out.
     texts: Vec<(egui::Rect, String)>,
 }
 
 fn painted<S>(harness: &Harness<'_, S>) -> Painted {
-    let chip_radius = egui::CornerRadius::from(meridian_design::radius::CHIP);
-
-    fn walk(shape: &egui::Shape, radius: egui::CornerRadius, out: &mut Painted) {
+    fn walk(shape: &egui::Shape, rects: &mut Vec<Boxed>, texts: &mut Vec<(egui::Rect, String)>) {
         match shape {
-            egui::Shape::Rect(r) if r.corner_radius == radius => {
-                out.push_chip(r.rect, r.fill, r.stroke.width);
-            }
-            egui::Shape::Text(t) => out.texts.push((
+            egui::Shape::Rect(r) => rects.push(Boxed {
+                rect: r.rect,
+                filled: r.fill.a() > 0,
+                stroke_width: r.stroke.width,
+            }),
+            egui::Shape::Text(t) => texts.push((
                 egui::Rect::from_min_size(t.pos, t.galley.size()),
                 t.galley.text().to_owned(),
             )),
-            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, radius, out)),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, rects, texts)),
             _ => {}
         }
     }
 
-    let mut out = Painted {
-        chips: Vec::new(),
-        texts: Vec::new(),
-    };
+    let mut rects = Vec::new();
+    let mut texts = Vec::new();
     for clipped in &harness.output().shapes {
-        walk(&clipped.shape, chip_radius, &mut out);
+        walk(&clipped.shape, &mut rects, &mut texts);
     }
-    out
+    Painted {
+        chips: recognise(&rects),
+        texts,
+    }
+}
+
+/// The same rectangle, to float noise.
+fn same_rect(a: egui::Rect, b: egui::Rect) -> bool {
+    near(a.min.x, b.min.x)
+        && near(a.min.y, b.min.y)
+        && near(a.max.x, b.max.x)
+        && near(a.max.y, b.max.y)
+}
+
+/// Every box a chip recipe drew, read out of the rects a frame painted.
+fn recognise(rects: &[Boxed]) -> Vec<(egui::Rect, Primitive)> {
+    let mut chips = Vec::new();
+    for fill in rects.iter().filter(|b| b.filled && b.stroke_width == 0.0) {
+        let r = fill.rect;
+        let ruled = |rule: egui::Rect| {
+            rects
+                .iter()
+                .any(|b| b.filled && b.stroke_width == 0.0 && same_rect(b.rect, rule))
+        };
+        let top = egui::Rect::from_min_max(r.min, egui::pos2(r.right(), r.top() + HAIRLINE));
+        let foot =
+            egui::Rect::from_min_max(egui::pos2(r.left(), r.bottom() - KEYCAP_FOOT_WIDTH), r.max);
+        let stroked = rects
+            .iter()
+            .any(|b| !b.filled && near(b.stroke_width, HAIRLINE) && same_rect(b.rect, r));
+        if stroked {
+            chips.push((r, Primitive::Pill));
+        } else if ruled(top) && ruled(foot) {
+            chips.push((r, Primitive::Keycap));
+        }
+    }
+    chips
 }
 
 impl Painted {
-    /// Record a chip box under the primitive that drew it.
-    ///
-    /// A transparent fill is the pill's stroke pass, which repeats geometry
-    /// already recorded, so it is dropped rather than deduplicated by position
-    /// — two chips genuinely sharing a rectangle would be a frame worth seeing.
-    fn push_chip(&mut self, rect: egui::Rect, fill: egui::Color32, stroke_width: f32) {
-        if fill.a() == 0 {
-            return;
-        }
-        let primitive = if stroke_width > 0.0 {
-            Primitive::Keycap
-        } else {
-            Primitive::Pill
-        };
-        self.chips.push((rect, primitive));
-    }
-
     /// Each chip box paired with the one text run whose centre it holds, keyed
     /// by that run's string.
     ///
@@ -288,8 +323,8 @@ fn assert_keycap(where_: &str, mode: Mode, chip: &Chip) {
         Primitive::Keycap,
         "{where_} {mode:?} {keystroke:?}: measured as a keycap but drawn as a pill"
     );
-    // The hairline is in the expectation because the keycap's box is a stroked
-    // `egui::Frame` and the painted rect carries the stroke outside the margin.
+    // The hairline is in the expectation because the keycap's side rule sits
+    // inside the painted rect, between the box's edge and its padding.
     let expected = CHIP_PADDING_X + HAIRLINE;
     let leading = text.left() - box_.left();
     let trailing = box_.right() - text.right();

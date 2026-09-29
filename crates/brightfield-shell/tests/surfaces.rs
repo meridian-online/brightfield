@@ -1000,7 +1000,8 @@ fn shadow_reach(mode: Mode) -> f32 {
 
 /// The card's three **inner padding bands**: the strip between the hairline and
 /// the title row, and the left and right gutters between the hairline and the
-/// content, each inset past the rounded corners at both ends.
+/// content, each inset past the hairline at both ends. The card is square, so
+/// its corners have no curve to inset past.
 ///
 /// Blank by construction — `card_frame` opens the card with
 /// `Margin::same(modal_padding)` and `chrome_contents` draws the title first —
@@ -1016,7 +1017,7 @@ fn shadow_reach(mode: Mode) -> f32 {
 /// those two, which is what the caller's own guard says when it fires.
 fn card_padding_bands(card: egui::Rect) -> [Region; 3] {
     let t = &meridian_egui::TOKENS;
-    let inset = t.radius_panel + 1.0;
+    let inset = 1.0;
     [
         Region {
             x0: (card.min.x + inset).ceil() as u32,
