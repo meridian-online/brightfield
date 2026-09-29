@@ -7,7 +7,7 @@
 //! folder: the text the generator wrote at open on a first Save, and the edits
 //! made since the last Save placed into the text on disk on every Save after.
 //!
-//! Every test drives Save through the gesture a person has — the chart palette
+//! The tests here drive Save through the gesture a person has — the chart palette
 //! on `space`, `save-spec` typed, enter — because a direct call to
 //! `save_protocol` proves the method and not the product
 //! (`tests/saved_protocol_working_directory.rs` says why), and reads the
@@ -16,11 +16,11 @@
 //!
 //! # Which switches, and which gestures
 //!
-//! Every scale switch a generated dashboard draws sits on its tile's binned
+//! A scale switch a generated dashboard draws sits on its tile's binned
 //! axis, which for the housing file is x, so the gesture writes `xScale`. A
 //! `yScale` is written through `ChartDoc::set_plot_scale`, the entry point
 //! `tests/chart_save_unsaved_mark.rs` drives for the same reason. No generated
-//! tile carries a colour group, so the normalise control is never drawn in a
+//! tile carries a colour group, so the normalise control is not drawn in a
 //! data-file window, and `stackOffset` is written through
 //! `ChartDoc::set_plot_stack_offset` in the same way.
 //!
@@ -701,7 +701,7 @@ fn a_save_that_could_not_write_the_chart_keeps_the_mark_and_says_why() {
 /// The analyst has replaced the saved chart with a single plot; the window's
 /// picture still has every tile, and a switch thrown on one of them is an edit
 /// the file has nowhere to put. The edit that could not be placed is the
-/// second Save's only one, so the banner naming the `house_age` tile is the
+/// second Save's sole edit, so the banner naming the `house_age` tile is the
 /// edit named, not a leftover.
 #[test]
 fn a_chart_file_that_lost_the_plot_is_left_byte_identical_and_the_edit_is_named() {

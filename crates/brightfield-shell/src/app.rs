@@ -953,7 +953,7 @@ struct CanvasKey {
     dark: bool,
 }
 
-/// Why [`ChartDoc::save_chart_beside`] wrote nothing. Each variant's
+/// Why [`ChartDoc::save_chart_beside`] did not write the chart. Each variant's
 /// [`fmt::Display`](std::fmt::Display) is the reason the window says.
 #[derive(Debug)]
 pub enum ChartSaveError {
@@ -1238,14 +1238,16 @@ impl ChartDoc {
     /// **All or nothing.** The edits are placed in order into a copy of the
     /// text, and the file is written once, after every one has gone in. An edit
     /// the text cannot take — a plot the file no longer holds — is
-    /// [`ChartSaveError::Unplaced`], naming it, and nothing is written: the
-    /// chart file is left byte-identical, and the edits stay held, so the
-    /// window's unsaved mark stays.
+    /// [`ChartSaveError::Unplaced`], naming it, and no file is written: the
+    /// chart file is left byte-identical
+    /// (`a_chart_file_that_lost_the_plot_is_left_byte_identical_and_the_edit_is_named`),
+    /// and the edits stay held, so the window's unsaved mark stays.
     ///
     /// With no edit held the text is written as it is, which is the scratch
     /// text for a chart file that is not there yet and the file's own bytes
     /// for one that is — [`save_spec_atomic`](brightfield_model::spec_save::save_spec_atomic)
-    /// touches nothing then.
+    /// leaves the file untouched then
+    /// (`a_save_with_no_edit_leaves_a_chart_file_that_is_there_byte_identical`).
     ///
     /// A Save that wrote the file names it as this document's spec, so the
     /// editor pane shows what was saved, and watches it in place of the

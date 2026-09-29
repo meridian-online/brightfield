@@ -7,8 +7,8 @@
 //!
 //! A panel that [`capture_panel`] creates whole is brightfield's own artifact,
 //! machine-authored end to end, so capture is a plain canonical re-serialisation
-//! ([`serialise_spec`]): **regeneration IS conformance**, and a byte-preserving
-//! writer has nothing to preserve. The round-trip is the contract —
+//! ([`serialise_spec`]): **regeneration IS conformance**, and there is no
+//! comment in it for a byte-preserving writer to keep. The round-trip is the contract —
 //! `parse -> edit -> serialise -> re-parse` yields the same chart AST.
 //!
 //! **That holds for a chart brightfield creates and not for one it edits.** A
@@ -106,8 +106,9 @@ pub fn panel_file(dir: &Path, name: &str) -> PathBuf {
 
 /// Write `text` as the panel file for `name` under `dir`, through
 /// [`save_spec_atomic`]: a sibling temp file renamed over the destination, so a
-/// reader never sees half a file, and `text` equal to the file's bytes touches
-/// nothing. Returns the file's path, [`panel_file`]'s answer joined onto `dir`.
+/// reader does not see half a file, and `text` equal to the file's bytes leaves
+/// the file untouched. Returns the file's path, [`panel_file`]'s answer joined
+/// onto `dir`.
 ///
 /// The bytes are `text`'s and only `text`'s — no parse, no re-serialisation —
 /// which is what lets a caller that has placed an edit into a file's own text
