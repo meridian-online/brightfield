@@ -50,7 +50,8 @@ use brightfield_spec::analysis::{
 use brightfield_spec::ast::{Component, MarkData, ParamNode, PlotNode, SpaceNode, SpecValue};
 use brightfield_spec::layout::{
     collect_plot_nodes, placed_plots, resolve_fixed_domains, resolve_plot_insets,
-    resolve_plot_margins, resolve_plot_stack_offset, resolve_tick_counts, Rect, StackOffset,
+    resolve_plot_margins, resolve_plot_stack_offset, resolve_tick_counts, resolve_tick_formats,
+    Rect, StackOffset,
 };
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, Spec};
@@ -2292,6 +2293,16 @@ fn compose_from_results(
             .map(|(_, node)| resolve_tick_counts(node))
             .unwrap_or_default();
 
+        // What this plot's spec asked each positional axis's tick TEXT to
+        // follow — `xTickFormat`/`yTickFormat`, when it wrote a number format.
+        // A plot that asks for neither draws the text its axes drew before a
+        // format could be asked for.
+        let tick_formats = plot_nodes
+            .iter()
+            .find(|(p, _)| *p == plot.path)
+            .map(|(_, node)| resolve_tick_formats(node))
+            .unwrap_or_default();
+
         let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
         // `draw_inline_legend = false`: the legend is NOT baked into the data
         // scene. The shell draws it as a native margin panel outside the plot
@@ -2305,6 +2316,7 @@ fn compose_from_results(
             &plot_domains,
             &plot_pins,
             tick_counts,
+            tick_formats,
             ink,
         );
         drop(refs);

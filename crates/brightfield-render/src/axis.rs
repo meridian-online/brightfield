@@ -3,6 +3,7 @@
 //! Tick computation is a pure function: `compute_ticks(scale, target_count) ->
 //! Vec<Tick>`. The scene builder draws ticks as lines and labels as text.
 
+use brightfield_spec::number_format::{NumberFormat, TickFormat};
 use kurbo::{Affine, Line, Point};
 use vello::Scene;
 
@@ -72,6 +73,23 @@ pub fn render_plot_title(scene: &mut Scene, layout: &ChartLayout, title: &str, i
 ///
 /// Returns tick marks with positions and labels appropriate for the scale type.
 pub fn compute_ticks(scale: &Scale, target_count: usize) -> Vec<Tick> {
+    compute_ticks_formatted(scale, target_count, None)
+}
+
+/// [`compute_ticks`], with the tick text a plot's `xTickFormat` / `yTickFormat`
+/// asked for.
+///
+/// `format` sets the text of a number axis, linear, log or symlog: a linear
+/// axis takes d3-scale's precision from the step its ticks are drawn at, and a
+/// log or symlog axis prints each decade as d3-format does. A band axis prints
+/// its categories, and a time axis waits on the date format's own reading, so
+/// neither takes a number format. `None` draws the text every axis drew before
+/// a format could be asked for.
+pub fn compute_ticks_formatted(
+    scale: &Scale,
+    target_count: usize,
+    format: Option<NumberFormat>,
+) -> Vec<Tick> {
     match scale {
         Scale::Linear {
             domain_min,
@@ -84,6 +102,7 @@ pub fn compute_ticks(scale: &Scale, target_count: usize) -> Vec<Tick> {
             *range_start,
             *range_end,
             target_count,
+            format,
         ),
         Scale::Band {
             categories,
@@ -112,7 +131,11 @@ pub fn compute_ticks(scale: &Scale, target_count: usize) -> Vec<Tick> {
             domain_min,
             domain_max,
             ..
-        } => positioned(scale, &log_tick_values(*domain_min, *domain_max)),
+        } => positioned(
+            scale,
+            &log_tick_values(*domain_min, *domain_max),
+            format.map(NumberFormat::decade_format),
+        ),
         // Symlog's ticks are SIGNED decades with zero among them — the choice
         // recorded for this build. Zero is the value the transform exists to
         // keep, so an axis that could not label it would be hiding the reason
@@ -121,7 +144,11 @@ pub fn compute_ticks(scale: &Scale, target_count: usize) -> Vec<Tick> {
             domain_min,
             domain_max,
             ..
-        } => positioned(scale, &symlog_tick_values(*domain_min, *domain_max)),
+        } => positioned(
+            scale,
+            &symlog_tick_values(*domain_min, *domain_max),
+            format.map(NumberFormat::decade_format),
+        ),
         // Colour ramps (categorical or sequential) have no positional axis ticks.
         Scale::Colour { .. } | Scale::Sequential { .. } => Vec::new(),
     }
@@ -129,16 +156,22 @@ pub fn compute_ticks(scale: &Scale, target_count: usize) -> Vec<Tick> {
 
 /// Turn tick VALUES into ticks, placing each one through the scale itself so
 /// the label and the bar it stands under cannot be positioned by two different
-/// rules.
-fn positioned(scale: &Scale, values: &[f64]) -> Vec<Tick> {
+/// rules. `text` is the format the plot asked for, if it asked.
+fn positioned(scale: &Scale, values: &[f64], text: Option<TickFormat>) -> Vec<Tick> {
     values
         .iter()
         .map(|value| Tick {
             value: *value,
-            label: format_number(*value),
+            label: tick_text(text.as_ref(), *value),
             position: scale.map_f64(*value),
         })
         .collect()
+}
+
+/// The text of the tick at `value`: the plot's format when it asked for one,
+/// and the axis's own text when it did not.
+fn tick_text(text: Option<&TickFormat>, value: f64) -> String {
+    text.map_or_else(|| format_number(value), |format| format.format(value))
 }
 
 /// The powers of ten inside `[lo, hi]`.
@@ -198,6 +231,7 @@ fn compute_linear_ticks(
     range_start: f64,
     range_end: f64,
     target_count: usize,
+    format: Option<NumberFormat>,
 ) -> Vec<Tick> {
     let span = domain_max - domain_min;
     if span.abs() < f64::EPSILON || target_count == 0 {
@@ -205,6 +239,9 @@ fn compute_linear_ticks(
     }
 
     let step = nice_step(span, target_count);
+    // The precision follows the step these ticks are DRAWN at, so the text can
+    // never carry a digit the ticks do not differ by, nor lose one they do.
+    let text = format.map(|f| f.tick_format(domain_min, domain_max, step));
     let first = (domain_min / step).ceil() * step;
 
     let mut ticks = Vec::new();
@@ -212,7 +249,7 @@ fn compute_linear_ticks(
     while value <= domain_max + step * 0.001 {
         let t = (value - domain_min) / span;
         let position = range_start + t * (range_end - range_start);
-        let label = format_number(value);
+        let label = tick_text(text.as_ref(), value);
         ticks.push(Tick {
             value,
             label,
@@ -790,6 +827,144 @@ mod tests {
             ["5"],
             "[3, 8] holds no power of ten, and 5 is the one 1-2-5 step inside it"
         );
+    }
+
+    /// A number axis's tick text under a plot's format, from the step its ticks
+    /// are drawn at: the same two axes d3-scale's `tickFormat` is given in its
+    /// own tests of the rule.
+    fn labels_under(scale: &Scale, spec: Option<&str>) -> Vec<String> {
+        let format = spec.map(|s| NumberFormat::parse(s).expect("a number format"));
+        compute_ticks_formatted(scale, 5, format)
+            .into_iter()
+            .map(|tick| tick.label)
+            .collect()
+    }
+
+    fn linear(min: f64, max: f64) -> Scale {
+        Scale::Linear {
+            domain_min: min,
+            domain_max: max,
+            range_start: 40.0,
+            range_end: 600.0,
+        }
+    }
+
+    /// AC2: with no precision named, the precision follows the tick step. An
+    /// SI axis shares the one prefix its larger end takes, so its zero reads
+    /// `0.0k` and not `0`.
+    #[test]
+    fn a_format_with_no_precision_follows_the_ticks_own_step() {
+        assert_eq!(
+            labels_under(&linear(0.0, 2000.0), Some("s")),
+            ["0.0k", "0.5k", "1.0k", "1.5k", "2.0k"]
+        );
+        assert_eq!(
+            labels_under(&linear(0.0, 1.0), Some("%")),
+            ["0%", "20%", "40%", "60%", "80%", "100%"]
+        );
+        // The same format over a wider step reads fewer decimals.
+        assert_eq!(
+            labels_under(&linear(0.0, 100.0), Some("+f")),
+            ["+0", "+20", "+40", "+60", "+80", "+100"]
+        );
+    }
+
+    /// AC1: a format that names its precision prints each value as d3-format
+    /// does, whatever the step.
+    #[test]
+    fn a_format_with_a_precision_prints_each_tick_as_written() {
+        assert_eq!(
+            labels_under(&linear(0.0, 2_000_000.0), Some(".2s")),
+            ["0.0", "500k", "1.0M", "1.5M", "2.0M"]
+        );
+        assert_eq!(
+            labels_under(&linear(0.0, 2_000_000.0), Some(",d")),
+            ["0", "500,000", "1,000,000", "1,500,000", "2,000,000"]
+        );
+        assert_eq!(
+            labels_under(&linear(0.0, 1.0), Some(".0%")),
+            ["0%", "20%", "40%", "60%", "80%", "100%"]
+        );
+    }
+
+    /// AC5 at the axis: no format draws the text every axis drew before a
+    /// format could be asked for, integers as integers and other values to one
+    /// decimal place.
+    #[test]
+    fn no_format_draws_the_text_an_axis_always_drew() {
+        for scale in [linear(0.0, 2000.0), linear(0.0, 1.0), linear(-3.0, 4.0)] {
+            for tick in compute_ticks_formatted(&scale, 5, None) {
+                assert_eq!(
+                    tick.label,
+                    format_number(tick.value),
+                    "with no format a tick reads as the axis has always read it"
+                );
+            }
+        }
+        assert_eq!(
+            labels_under(&linear(0.0, 1.0), None),
+            ["0", "0.2", "0.4", "0.6", "0.8", "1"]
+        );
+    }
+
+    /// A log or symlog axis sits on decades, not on a step, so each decade
+    /// prints as the format says with its zeros trimmed, and a negative decade
+    /// leads with the minus sign d3-format prints.
+    #[test]
+    fn a_log_or_symlog_axis_prints_each_decade_under_the_format() {
+        let log = Scale::Log {
+            domain_min: 1.0,
+            domain_max: 10_000.0,
+            range_start: 40.0,
+            range_end: 600.0,
+        };
+        assert_eq!(
+            labels_under(&log, Some("s")),
+            ["1", "10", "100", "1k", "10k"]
+        );
+        assert_eq!(
+            labels_under(&log, Some(".1f")),
+            ["1.0", "10.0", "100.0", "1000.0", "10000.0"]
+        );
+        let symlog = Scale::Symlog {
+            domain_min: -100.0,
+            domain_max: 100.0,
+            range_start: 40.0,
+            range_end: 600.0,
+        };
+        assert_eq!(
+            labels_under(&symlog, Some("d")),
+            [
+                "\u{2212}100",
+                "\u{2212}10",
+                "\u{2212}1",
+                "0",
+                "1",
+                "10",
+                "100"
+            ]
+        );
+    }
+
+    /// A band axis prints its categories and a time axis its seconds, whatever
+    /// number format the plot names: neither is a number axis, and a date
+    /// format has a reading of its own.
+    #[test]
+    fn a_band_or_time_axis_ignores_a_number_format() {
+        let band = Scale::Band {
+            categories: vec!["a".to_string(), "b".to_string()],
+            range_start: 40.0,
+            range_end: 600.0,
+            padding: 0.1,
+        };
+        assert_eq!(labels_under(&band, Some("s")), ["a", "b"]);
+        let time = Scale::Time {
+            domain_min_us: 1_000_000,
+            domain_max_us: 4_000_000,
+            range_start: 40.0,
+            range_end: 600.0,
+        };
+        assert_eq!(labels_under(&time, Some("s")), labels_under(&time, None));
     }
 
     #[test]
