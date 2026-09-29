@@ -25,7 +25,7 @@
 //! **Colour goes on the highlighted layer only.** The map's ghost layer is the
 //! whole table in one ink, drawn so the selection has a cloud to cover, and a
 //! `fill:` column on it would paint that cloud instead of the points the
-//! analyst selected. So [`put_colour`] binds `fill` on every mark that reads
+//! analyst selected. So [`put_colour`] binds `fill` on the marks that read
 //! through a selection (`filterBy:`), and on the first mark when none does.
 //! The page's legend is drawn from the plot's fill scale, and nothing here
 //! places it. The dot renderer builds a fill scale a legend can be drawn from

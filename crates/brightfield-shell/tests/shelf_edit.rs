@@ -660,8 +660,9 @@ fn ghost_ink(o: &Opened) -> String {
 }
 
 /// **`house_value` on the map's colour**: the highlighted layer reads
-/// `fill: house_value`, the ghost layer keeps its literal ink, and nothing else
-/// on the plot moves — the map is still projected at the size it was drawn at.
+/// `fill: house_value`, the ghost layer keeps its literal ink, and x, y and the
+/// plot's attributes stay as they were — the map is still projected at the size
+/// it was drawn at.
 #[test]
 fn a_column_put_on_the_maps_colour_paints_the_highlighted_layer_and_keeps_the_ghost_ink() {
     let o = open("colour-highlighted");
@@ -805,10 +806,10 @@ fn fill_domain(app: &MeridianApp) -> Option<(f64, f64)> {
 /// **A page loaded from the edited spec reads the colour column into the hero's
 /// fill scale, and a column put on colour afterwards replaces it there.** The
 /// generated map has no fill scale. The scale's kind is the mark renderer's to
-/// decide and is not read here: a legend is drawn only from a sequential or a
-/// categorical fill scale (`legend::LegendSpec::from_scales`), and the dot
-/// renderer builds neither for a column of numbers, so the page draws the
-/// highlighted points in the mark ink and no legend for `house_value`.
+/// decide and is not read here: `legend::LegendSpec::from_scales` draws a legend
+/// from a sequential or a categorical fill scale, and the dot renderer builds
+/// neither for a column of numbers, so the page draws the highlighted points in
+/// the mark ink and no legend for `house_value`.
 #[test]
 fn a_page_loaded_from_it_reads_the_colour_column_into_its_fill_scale() {
     let o = open("colour-page");
@@ -829,7 +830,7 @@ fn a_page_loaded_from_it_reads_the_colour_column_into_its_fill_scale() {
     );
     let (lo, hi) = fill_domain(&page(&[VALUE])).expect("the colour column made no fill scale");
     assert!(
-        lo <= 0.0 && hi >= 230.0 && hi < 300.0,
+        lo <= 0.0 && (230.0..300.0).contains(&hi),
         "the fill scale spans [{lo}, {hi}], which is not {VALUE}'s 0..=230"
     );
     let (lo, hi) =
