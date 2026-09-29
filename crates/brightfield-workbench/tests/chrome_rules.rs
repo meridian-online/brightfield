@@ -182,8 +182,8 @@ fn a_tabbed_pane_gets_no_header_band_and_keeps_the_space() {
 /// moment it is meant to be telling the user where they are.
 ///
 /// Asserted as an equality against `PANEL_PADDING.max(RING_BLEED)` rather
-/// than as `>= RING_BLEED`, which was theatre: the padding is 12 and the
-/// bleed is 3, so `>= 3.0` holds however the inset is computed and the
+/// than as `>= RING_BLEED`, which was theatre: the padding exceeds the
+/// bleed, so `>= RING_BLEED` holds however the inset is computed and the
 /// assertion could not fail. This pins the inset exactly, so any change to
 /// how it is derived — `.min` for `.max`, a different token, an arithmetic
 /// slip — reddens it.
@@ -191,7 +191,7 @@ fn a_tabbed_pane_gets_no_header_band_and_keeps_the_space() {
 /// Stated plainly, because the reviewer asked for a mutation this test
 /// catches and one of them it cannot: **deleting `.max(focus::RING_BLEED)`
 /// alone is not detectable by any test**, at these token values. The max is a
-/// no-op while `PANEL_PADDING` (12) exceeds `RING_BLEED` (3); the call
+/// no-op while `PANEL_PADDING` exceeds `RING_BLEED`; the call
 /// documents which of the two constraints is binding and keeps the frame
 /// correct if the padding ever shrinks, and no assertion can distinguish it
 /// from its own result today.
