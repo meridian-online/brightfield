@@ -26,9 +26,10 @@
 //! whole table in one ink, drawn so the selection has a cloud to cover, and a
 //! `fill:` column on it would paint that cloud instead of the points the
 //! analyst selected. So [`put_colour`] binds `fill` on the marks that read
-//! through a selection (`filterBy:`), and on the first mark when none does.
-//! The page's legend is drawn from the plot's fill scale, and nothing here
-//! places it. The dot renderer builds a fill scale a legend can be drawn from
+//! through a selection (`filterBy:`), and on the first mark when no mark reads
+//! through one, which `a_plot_with_no_selected_layer_takes_the_colour_on_its_first_mark`
+//! holds. The page's legend is drawn from the plot's fill scale, and this
+//! module does not place it. The dot renderer builds a fill scale a legend can be drawn from
 //! for a column of strings and does not for a column of numbers, so a number
 //! column put on colour reaches the page as a linear fill scale over the
 //! column's range, in the mark ink and with no legend.
