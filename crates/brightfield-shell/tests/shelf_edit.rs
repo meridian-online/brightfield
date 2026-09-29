@@ -1,12 +1,13 @@
 //! **A column put on the map's x or y moves both its layers, and one that is
-//! not a coordinate draws a dot plot.**
+//! not a coordinate draws a dot plot. A column put on its colour paints the
+//! highlighted points, and a legend follows it.**
 //!
 //! The tests here start from the dashboard the generator writes for a table
 //! whose columns hold a coordinate pair, opened the way a data file is opened,
-//! and edit its hero map through `shelf_edit::put_column` with the table's
-//! own profile. The spec half reads the edited AST; the page half loads a page
-//! from it the way the shell's tile controls do, and sweeps a rectangle over
-//! it in a headless window.
+//! and edit its hero map through `shelf_edit::put_column` and
+//! `shelf_edit::put_colour` with the table's own profile. The spec half reads
+//! the edited AST; the page half loads a page from it the way the shell's tile
+//! controls do, and sweeps a rectangle over it in a headless window.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -18,7 +19,7 @@ use brightfield_shell::chart_kinds;
 use brightfield_shell::data_file::{self, OpenedFile};
 use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::LiveDashboard;
-use brightfield_shell::shelf_edit::{put_column, ShelfRefusal};
+use brightfield_shell::shelf_edit::{put_colour, put_column, ShelfRefusal};
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_spec::analysis::ComponentPath;
@@ -636,5 +637,205 @@ fn a_page_loaded_from_it_draws_a_dot_plot_and_a_swept_rectangle_narrows_the_othe
     assert_eq!(
         hero_after, hero_rest,
         "the hero narrowed on its own selection"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Colour — the spec: the highlighted layer takes the column, the ghost keeps
+// its ink
+// ---------------------------------------------------------------------------
+
+/// The highlighted layer's ordinal on the hero: the second of the map's two.
+const HIGHLIGHTED: usize = 1;
+
+/// The ink the generated map's ghost layer is drawn in, which is the fill it
+/// carries before any edit.
+fn ghost_ink(o: &Opened) -> String {
+    let ink = layers(&o.generated, &o.hero, "fill")[0].1.clone();
+    assert!(
+        ink.starts_with('#'),
+        "the generated ghost layer's fill is {ink}, not a literal ink"
+    );
+    ink
+}
+
+/// **`house_value` on the map's colour**: the highlighted layer reads
+/// `fill: house_value`, the ghost layer keeps its literal ink, and nothing else
+/// on the plot moves — the map is still projected at the size it was drawn at.
+#[test]
+fn a_column_put_on_the_maps_colour_paints_the_highlighted_layer_and_keeps_the_ghost_ink() {
+    let o = open("colour-highlighted");
+    let mut spec = o.generated.clone();
+
+    put_colour(&mut spec, &o.hero, VALUE, &o.table).expect("the table has the column");
+
+    assert_eq!(
+        layers(&spec, &o.hero, "fill"),
+        [
+            (MarkKind::Dot, ghost_ink(&o)),
+            (MarkKind::Dot, VALUE.to_string())
+        ],
+        "the highlighted layer should read fill: {VALUE} and the ghost keep its ink"
+    );
+    for channel in ["x", "y"] {
+        assert_eq!(
+            layers(&spec, &o.hero, channel),
+            layers(&o.generated, &o.hero, channel),
+            "a gesture that put a column on colour moved {channel}"
+        );
+    }
+    assert_eq!(
+        plot(&spec, &o.hero).attributes,
+        plot(&o.generated, &o.hero).attributes,
+        "a gesture that put a column on colour changed the plot's attributes, \
+         which are the map's projection and its size"
+    );
+}
+
+/// **The edit is the list of edits applied, and replaying it on the generated
+/// spec gives the edited one** — the highlighted layer's fill and nothing else,
+/// as x's and y's lists are the marks they moved.
+#[test]
+fn the_colour_edit_is_the_list_of_chart_edits_applied_and_replays_to_the_same_spec() {
+    let o = open("colour-list");
+    let mut spec = o.generated.clone();
+
+    let edits = put_colour(&mut spec, &o.hero, VALUE, &o.table).expect("the table has the column");
+
+    assert_eq!(
+        edits,
+        [set(&o.hero, HIGHLIGHTED, "fill", VALUE)],
+        "the list should be the highlighted layer's fill and no other"
+    );
+    let mut replayed = o.generated.clone();
+    for e in &edits {
+        edit::apply_for_fresh_load(&mut replayed, e).expect("each edit has its target");
+    }
+    assert_eq!(
+        replayed, spec,
+        "the listed edits, replayed on the generated spec, give another spec"
+    );
+}
+
+/// **Another column put on colour replaces the first**, on the highlighted
+/// layer alone, and the ghost keeps its ink. The same column put again is no
+/// edit.
+#[test]
+fn another_column_put_on_the_maps_colour_replaces_the_first() {
+    let o = open("colour-replaced");
+    let mut spec = o.generated.clone();
+    put_colour(&mut spec, &o.hero, VALUE, &o.table).expect("the table has the column");
+
+    let edits = put_colour(&mut spec, &o.hero, INCOME, &o.table).expect("the table has the column");
+
+    assert_eq!(
+        edits,
+        [set(&o.hero, HIGHLIGHTED, "fill", INCOME)],
+        "replacing the colour should be one edit, on the highlighted layer"
+    );
+    assert_eq!(
+        layers(&spec, &o.hero, "fill"),
+        [
+            (MarkKind::Dot, ghost_ink(&o)),
+            (MarkKind::Dot, INCOME.to_string())
+        ],
+        "the second column did not replace the first"
+    );
+
+    let before = spec.clone();
+    let again = put_colour(&mut spec, &o.hero, INCOME, &o.table).expect("the table has the column");
+    assert_eq!(again, [], "a column put where it already is made edits");
+    assert_eq!(spec, before);
+}
+
+/// **A plot with no layer reading through a selection takes the colour on its
+/// first mark**, as x and y take a column when no mark binds them.
+#[test]
+fn a_plot_with_no_selected_layer_takes_the_colour_on_its_first_mark() {
+    let o = open("colour-first-mark");
+    let mut spec = o.generated.clone();
+    let path = o.hero.0.clone();
+    let hero = brightfield_spec::edit::plot_at_path_mut(&mut spec, &path).expect("the hero");
+    for c in &mut hero.items {
+        if let Component::Mark(m) = c {
+            if let Some(brightfield_spec::ast::MarkData::From { filter_by, .. }) = &mut m.data {
+                *filter_by = None;
+            }
+        }
+    }
+
+    let edits = put_colour(&mut spec, &o.hero, VALUE, &o.table).expect("the table has the column");
+
+    assert_eq!(edits, [set(&o.hero, 0, "fill", VALUE)]);
+}
+
+/// **A column the table does not have is refused in words that name it**, and
+/// the spec is left as it was.
+#[test]
+fn a_colour_the_table_does_not_have_is_refused_by_name() {
+    let o = open("colour-no-such-column");
+    let mut spec = o.generated.clone();
+
+    let refused = put_colour(&mut spec, &o.hero, "house_valu", &o.table)
+        .expect_err("the table has no column house_valu");
+
+    assert_eq!(
+        refused,
+        ShelfRefusal::NoSuchColumn("house_valu".to_string())
+    );
+    assert!(
+        refused.to_string().contains("house_valu"),
+        "the refusal does not name the column: {refused}"
+    );
+    assert_eq!(spec, o.generated, "a refused column changed the spec");
+}
+
+// ---------------------------------------------------------------------------
+// Colour — the page: the column reaches the plot's fill scale
+// ---------------------------------------------------------------------------
+
+/// The ends of the fill scale the hero was drawn against, when it has one.
+fn fill_domain(app: &MeridianApp) -> Option<(f64, f64)> {
+    let scale = app.chart_doc().composed.plots[0]
+        .scales
+        .get(brightfield_render::channel::Channel::Fill)?;
+    Some((scale.domain_min()?, scale.domain_max()?))
+}
+
+/// **A page loaded from the edited spec reads the colour column into the hero's
+/// fill scale, and a column put on colour afterwards replaces it there.** The
+/// generated map has no fill scale. The scale's kind is the mark renderer's to
+/// decide and is not read here: a legend is drawn only from a sequential or a
+/// categorical fill scale (`legend::LegendSpec::from_scales`), and the dot
+/// renderer builds neither for a column of numbers, so the page draws the
+/// highlighted points in the mark ink and no legend for `house_value`.
+#[test]
+fn a_page_loaded_from_it_reads_the_colour_column_into_its_fill_scale() {
+    let o = open("colour-page");
+    let ctx = egui::Context::default();
+    let base = o.file.live.base_dir().map(Path::to_path_buf);
+    let page = |columns: &[&str]| {
+        let mut spec = o.generated.clone();
+        for column in columns {
+            put_colour(&mut spec, &o.hero, column, &o.table).expect("the table has the column");
+        }
+        window_over(spec, base.as_deref(), &ctx)
+    };
+
+    assert_eq!(
+        fill_domain(&page(&[])),
+        None,
+        "the generated map already has a fill scale"
+    );
+    let (lo, hi) = fill_domain(&page(&[VALUE])).expect("the colour column made no fill scale");
+    assert!(
+        lo <= 0.0 && hi >= 230.0 && hi < 300.0,
+        "the fill scale spans [{lo}, {hi}], which is not {VALUE}'s 0..=230"
+    );
+    let (lo, hi) =
+        fill_domain(&page(&[VALUE, INCOME])).expect("the replaced colour made no fill scale");
+    assert!(
+        lo >= 0.0 && hi <= 13.5 && lo < hi,
+        "the fill scale spans [{lo}, {hi}] after {INCOME} replaced {VALUE}; it should span {INCOME}'s 1..=12.5"
     );
 }

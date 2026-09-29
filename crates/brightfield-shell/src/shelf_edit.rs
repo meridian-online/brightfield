@@ -26,9 +26,12 @@
 //! whole table in one ink, drawn so the selection has a cloud to cover, and a
 //! `fill:` column on it would paint that cloud instead of the points the
 //! analyst selected. So [`put_colour`] binds `fill` on every mark that reads
-//! through a selection (`filterBy:`), and on the first mark when none does. A
-//! page loaded from the edited spec draws a colour legend from the fill scale
-//! the plot then has; nothing here places it.
+//! through a selection (`filterBy:`), and on the first mark when none does.
+//! The page's legend is drawn from the plot's fill scale, and nothing here
+//! places it. The dot renderer builds a fill scale a legend can be drawn from
+//! for a column of strings and does not for a column of numbers, so a number
+//! column put on colour reaches the page as a linear fill scale over the
+//! column's range, in the mark ink and with no legend.
 //! `a_column_put_on_the_maps_colour_paints_the_highlighted_layer_and_keeps_the_ghost_ink`
 //! holds it on the map's two layers.
 //!
