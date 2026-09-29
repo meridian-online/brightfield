@@ -558,6 +558,13 @@ pub fn build_multi_mark_scene_with_domains(
 /// A default `tick_counts` draws the count each call site drew before this
 /// parameter existed — see [`brightfield_spec::layout::DEFAULT_TICK_COUNT`] —
 /// and a default `tick_formats` draws the text they drew.
+// Eight, because the static composition takes eight independent inputs: the
+// entries, whether the legend is drawn inline, the resolved titles, the two
+// ways a domain is held still (unsampled and pinned), the tick count and tick
+// format the axes asked for, and the ink. Each is resolved elsewhere and read
+// here once, so a struct would be a name for the argument list rather than for
+// a thing.
+#[allow(clippy::too_many_arguments)]
 pub fn build_multi_mark_scene_pinned(
     entries: &[&ChartData<'_>],
     draw_inline_legend: bool,
