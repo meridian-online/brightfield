@@ -49,7 +49,9 @@ const DOMAINS = [
   [0, 0.1, 5], [0, 25000, 5],
 ];
 out.push("/// `(specifier, domain start, domain stop, step, tick values, tick text)`.");
-out.push("pub const TICK_VECTORS: &[(&str, f64, f64, f64, &[f64], &[&str])] = &[");
+out.push("pub type TickVector = (&'static str, f64, f64, f64, &'static [f64], &'static [&'static str]);");
+out.push("");
+out.push("pub const TICK_VECTORS: &[TickVector] = &[");
 for (const spec of TICK_SPECS) {
   for (const [a, b, count] of DOMAINS) {
     const step = tickStep(a, b, count);

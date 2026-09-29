@@ -565,7 +565,16 @@ pub const FORMAT_VECTORS: &[(&str, f64, &str)] = &[
 ];
 
 /// `(specifier, domain start, domain stop, step, tick values, tick text)`.
-pub const TICK_VECTORS: &[(&str, f64, f64, f64, &[f64], &[&str])] = &[
+pub type TickVector = (
+    &'static str,
+    f64,
+    f64,
+    f64,
+    &'static [f64],
+    &'static [&'static str],
+);
+
+pub const TICK_VECTORS: &[TickVector] = &[
     (
         "s",
         0.0,
