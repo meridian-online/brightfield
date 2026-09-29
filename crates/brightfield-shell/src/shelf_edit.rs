@@ -1,5 +1,5 @@
-//! Putting a column on a chart's x or y: the shelf's edit, as the list of
-//! [`ChartEdit`]s that make it.
+//! Putting a column on a chart's x, y or colour: the shelf's edit, as the list
+//! of [`ChartEdit`]s that make it.
 //!
 //! **One gesture on the shelf can take more than one line of the spec.** The
 //! generated map draws one picture in two dot layers, the whole table in
@@ -22,6 +22,16 @@
 //! projection it has, because a projection the edit did not cause is the
 //! analyst's.
 //!
+//! **Colour goes on the highlighted layer only.** The map's ghost layer is the
+//! whole table in one ink, drawn so the selection has a cloud to cover, and a
+//! `fill:` column on it would paint that cloud instead of the points the
+//! analyst selected. So [`put_colour`] binds `fill` on every mark that reads
+//! through a selection (`filterBy:`), and on the first mark when none does. A
+//! page loaded from the edited spec draws a colour legend from the fill scale
+//! the plot then has; nothing here places it.
+//! `a_column_put_on_the_maps_colour_paints_the_highlighted_layer_and_keeps_the_ghost_ink`
+//! holds it on the map's two layers.
+//!
 //! **The edit comes back as the edits applied, in order**, because Save writes
 //! the edits since the last Save into the chart file's text one at a time.
 //! They are applied through [`edit::apply_for_fresh_load`] and not
@@ -33,7 +43,9 @@ use std::fmt;
 
 use brightfield_engine::ColumnProfile;
 use brightfield_spec::analysis::ComponentPath;
-use brightfield_spec::ast::{Component, Mark, PlotNode, Spec, SpecValue, ValueOrParamRef};
+use brightfield_spec::ast::{
+    Component, Mark, MarkData, PlotNode, Spec, SpecValue, ValueOrParamRef,
+};
 use brightfield_spec::edit::{self, plot_at_path, ChartEdit, RefuseReason};
 use brightfield_spec::layout::PlotAxis;
 
@@ -42,6 +54,9 @@ use crate::dashboard::coordinate_pair;
 
 /// The plot attribute a map is drawn through, as Mosaic spells it.
 const PROJECTION_KEY: &str = "projectionType";
+
+/// The channel a colour column is bound through, as Mosaic spells it.
+const COLOUR_KEY: &str = "fill";
 
 /// Why a column could not be put on a channel. The spec is left as it was.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,14 +123,7 @@ pub fn put_column(
         .map(|(lon, lat, _)| (table[lon].name.as_str(), table[lat].name.as_str()));
     let was_map = pair.is_some_and(|(lon, lat)| holds_pair(target, lon, lat));
 
-    let marks: Vec<&Mark> = target
-        .items
-        .iter()
-        .filter_map(|c| match c {
-            Component::Mark(m) => Some(m),
-            _ => None,
-        })
-        .collect();
+    let marks = marks_of(target);
     if marks.is_empty() {
         return Err(ShelfRefusal::Edit(RefuseReason::NoSuchMark));
     }
@@ -168,12 +176,97 @@ pub fn put_column(
     Ok(edits)
 }
 
+/// **Put `column` on the colour of the plot at `plot`**, editing `spec` in
+/// place, and return the [`ChartEdit`]s applied, in the order they were
+/// applied.
+///
+/// The list holds a [`ChartEdit::SetChannel`] of `fill` for each mark that
+/// reads through a selection (`filterBy:`) and does not already bind `fill` to
+/// `column`, in the plot's mark order, or one for the first mark when no mark
+/// reads through a selection. A column put on a colour that already holds
+/// another replaces it, and one already where it is put yields no edits and
+/// leaves the spec equal. No edit touches a mark that does not read through a
+/// selection when one does, so the map's ghost layer keeps its ink.
+///
+/// # Errors
+///
+/// [`ShelfRefusal::NoSuchColumn`] when the table has no `column`, and
+/// [`ShelfRefusal::Edit`] when the plot path names no plot or the plot has no
+/// mark. Either way `spec` is left as it was.
+pub fn put_colour(
+    spec: &mut Spec,
+    plot: &ComponentPath,
+    column: &str,
+    table: &[ColumnProfile],
+) -> Result<Vec<ChartEdit>, ShelfRefusal> {
+    if !table.iter().any(|c| c.name == column) {
+        return Err(ShelfRefusal::NoSuchColumn(column.to_string()));
+    }
+    let target =
+        plot_at_path(spec, &plot.0).ok_or(ShelfRefusal::Edit(RefuseReason::PlotNotFound))?;
+    let marks = marks_of(target);
+    if marks.is_empty() {
+        return Err(ShelfRefusal::Edit(RefuseReason::NoSuchMark));
+    }
+    let highlighted: Vec<usize> = (0..marks.len())
+        .filter(|&i| reads_selection(marks[i]))
+        .collect();
+    let painted = if highlighted.is_empty() {
+        vec![0]
+    } else {
+        highlighted
+    };
+
+    let edits: Vec<ChartEdit> = painted
+        .into_iter()
+        .filter(|&i| column_of(marks[i], COLOUR_KEY) != Some(column))
+        .map(|mark_ordinal| ChartEdit::SetChannel {
+            plot: plot.clone(),
+            mark_ordinal,
+            channel: COLOUR_KEY.to_string(),
+            column: column.to_string(),
+        })
+        .collect();
+
+    // The edits go onto a copy first, so a refusal part-way leaves the spec
+    // as it was.
+    let mut edited = spec.clone();
+    for e in &edits {
+        edit::apply_for_fresh_load(&mut edited, e).map_err(ShelfRefusal::Edit)?;
+    }
+    *spec = edited;
+    Ok(edits)
+}
+
 /// The channel key an axis is bound through.
 fn channel_key(axis: PlotAxis) -> &'static str {
     match axis {
         PlotAxis::X => "x",
         PlotAxis::Y => "y",
     }
+}
+
+/// The plot's marks, in order.
+fn marks_of(plot: &PlotNode) -> Vec<&Mark> {
+    plot.items
+        .iter()
+        .filter_map(|c| match c {
+            Component::Mark(m) => Some(m),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether the mark's data reads through a selection: the highlighted layer of
+/// a ghost-and-subset plot, whose `data:` carries a `filterBy:`.
+fn reads_selection(mark: &Mark) -> bool {
+    matches!(
+        mark.data,
+        Some(MarkData::From {
+            filter_by: Some(_),
+            ..
+        })
+    )
 }
 
 /// The column a mark binds `channel` to, when it binds it to a plain column
