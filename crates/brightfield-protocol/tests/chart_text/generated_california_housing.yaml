@@ -1,0 +1,185 @@
+# Brightfield wrote this dashboard by walking california_housing_sample.csv's own columns: one
+# tile per column, each chosen from what that column holds, and every
+# tile brushing into one shared crossfilter selection. Nobody authored
+# it — and it is an ordinary spec, so change anything in it.
+meta:
+  title: "california_housing_sample.csv"
+params:
+  sel: { select: crossfilter }
+data:
+  opened:
+    file: '/data/california_housing_sample.csv'
+hconcat:
+  - vconcat:
+    # longitude: a coordinate pair with latitude, found by its name → point-map
+    - plot:
+      - mark: dot
+        data: { from: opened }
+        x: 'longitude'
+        y: 'latitude'
+        fill: "#b7b3ae"
+      - mark: dot
+        data: { from: opened, filterBy: $sel }
+        x: 'longitude'
+        y: 'latitude'
+      - select: intervalXY
+        as: $sel
+      projectionType: equirectangular
+      width: 620
+      height: 620
+    - vspace: 0
+  - hspace: 42
+  - vconcat:
+    # median_income: no trusted label, and DuckDB stored it as DOUBLE → binned-histogram
+    - plot:
+      - mark: rectY
+        data: { from: "opened" }
+        x: { bin: "median_income" }
+        y: { count: }
+        fill: "#b7b3ae"
+      - mark: rectY
+        data: { from: "opened", filterBy: $sel }
+        x: { bin: "median_income" }
+        y: { count: }
+      - select: intervalX
+        as: $sel
+      xDomain: Fixed
+      xLabel: "median_income"
+      width: 380
+      height: 100
+    # house_age: no trusted label, and DuckDB stored it as BIGINT → binned-histogram
+    - plot:
+      - mark: rectY
+        data: { from: "opened" }
+        x: { bin: "house_age" }
+        y: { count: }
+        fill: "#b7b3ae"
+      - mark: rectY
+        data: { from: "opened", filterBy: $sel }
+        x: { bin: "house_age" }
+        y: { count: }
+      - select: intervalX
+        as: $sel
+      xDomain: Fixed
+      xLabel: "house_age"
+      width: 380
+      height: 100
+    # avg_rooms: no trusted label, and DuckDB stored it as DOUBLE → binned-histogram
+    - plot:
+      - mark: rectY
+        data: { from: "opened" }
+        x: { bin: "avg_rooms" }
+        y: { count: }
+        fill: "#b7b3ae"
+      - mark: rectY
+        data: { from: "opened", filterBy: $sel }
+        x: { bin: "avg_rooms" }
+        y: { count: }
+      - select: intervalX
+        as: $sel
+      xDomain: Fixed
+      xLabel: "avg_rooms"
+      width: 380
+      height: 100
+    # avg_bedrooms: no trusted label, and DuckDB stored it as DOUBLE → binned-histogram
+    - plot:
+      - mark: rectY
+        data: { from: "opened" }
+        x: { bin: "avg_bedrooms" }
+        y: { count: }
+        fill: "#b7b3ae"
+      - mark: rectY
+        data: { from: "opened", filterBy: $sel }
+        x: { bin: "avg_bedrooms" }
+        y: { count: }
+      - select: intervalX
+        as: $sel
+      xDomain: Fixed
+      xLabel: "avg_bedrooms"
+      width: 380
+      height: 100
+    # population: no trusted label, and DuckDB stored it as BIGINT → binned-histogram
+    - plot:
+      - mark: rectY
+        data: { from: "opened" }
+        x: { bin: "population" }
+        y: { count: }
+        fill: "#b7b3ae"
+      - mark: rectY
+        data: { from: "opened", filterBy: $sel }
+        x: { bin: "population" }
+        y: { count: }
+      - select: intervalX
+        as: $sel
+      xDomain: Fixed
+      xLabel: "population"
+      width: 380
+      height: 100
+    # avg_occupancy: no trusted label, and DuckDB stored it as DOUBLE → binned-histogram
+    - plot:
+      - mark: rectY
+        data: { from: "opened" }
+        x: { bin: "avg_occupancy" }
+        y: { count: }
+        fill: "#b7b3ae"
+      - mark: rectY
+        data: { from: "opened", filterBy: $sel }
+        x: { bin: "avg_occupancy" }
+        y: { count: }
+      - select: intervalX
+        as: $sel
+      xDomain: Fixed
+      xLabel: "avg_occupancy"
+      width: 380
+      height: 100
+    # latitude: no trusted label, and DuckDB stored it as DOUBLE → binned-histogram
+    - plot:
+      - mark: rectY
+        data: { from: "opened" }
+        x: { bin: "latitude" }
+        y: { count: }
+        fill: "#b7b3ae"
+      - mark: rectY
+        data: { from: "opened", filterBy: $sel }
+        x: { bin: "latitude" }
+        y: { count: }
+      - select: intervalX
+        as: $sel
+      xDomain: Fixed
+      xLabel: "latitude"
+      width: 380
+      height: 100
+    # longitude: no trusted label, and DuckDB stored it as DOUBLE → binned-histogram
+    - plot:
+      - mark: rectY
+        data: { from: "opened" }
+        x: { bin: "longitude" }
+        y: { count: }
+        fill: "#b7b3ae"
+      - mark: rectY
+        data: { from: "opened", filterBy: $sel }
+        x: { bin: "longitude" }
+        y: { count: }
+      - select: intervalX
+        as: $sel
+      xDomain: Fixed
+      xLabel: "longitude"
+      width: 380
+      height: 100
+    # median_house_value: no trusted label, and DuckDB stored it as DOUBLE → binned-histogram
+    - plot:
+      - mark: rectY
+        data: { from: "opened" }
+        x: { bin: "median_house_value" }
+        y: { count: }
+        fill: "#b7b3ae"
+      - mark: rectY
+        data: { from: "opened", filterBy: $sel }
+        x: { bin: "median_house_value" }
+        y: { count: }
+      - select: intervalX
+        as: $sel
+      xDomain: Fixed
+      xLabel: "median_house_value"
+      width: 380
+      height: 100

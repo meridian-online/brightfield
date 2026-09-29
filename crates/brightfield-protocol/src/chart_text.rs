@@ -157,10 +157,9 @@ pub fn write_chart_edit(text: &str, edit: &ChartEdit) -> Result<String, ChartTex
             value: spelled,
         },
     };
-    let written =
-        apply_yaml_edits(text, &[splice]).map_err(|e| ChartTextRefusal::Splice {
-            detail: e.to_string(),
-        })?;
+    let written = apply_yaml_edits(text, &[splice]).map_err(|e| ChartTextRefusal::Splice {
+        detail: e.to_string(),
+    })?;
 
     let reads_back = parse_spec(&written, Format::Yaml).ok().map(|out| out.spec);
     if reads_back.as_ref() != Some(&edited) {
