@@ -6091,7 +6091,15 @@ impl MeridianApp {
     }
 
     /// Write this window's Protocol to disk: `arcform.yaml` and its one model,
-    /// in the data file's own directory.
+    /// in the data file's own directory, and the chart beside them.
+    ///
+    /// **The chart is written after the Protocol and is its own success.** The
+    /// edits made to it since the last Save go into `panels/<name>.yaml` under
+    /// the same directory, through [`ChartDoc::save_chart_beside`], and the
+    /// unsaved mark clears when they are in. A chart that could not be written
+    /// leaves the mark and raises a banner of its own saying why, over a
+    /// Protocol that was written: the two files are not one transaction, and
+    /// the return value is the Protocol's.
     ///
     /// **The entry point a test drives and the entry point the Save verb
     /// reaches through**, the same arrangement [`Self::open_data_file`] has and
@@ -6131,6 +6139,7 @@ impl MeridianApp {
                 );
                 self.toasts
                     .push(Toast::new(Severity::Success, format!("Saved {name}")));
+                self.save_chart_beside_protocol(&source);
             }
             Err(e) => {
                 eprintln!("could not save the Protocol: {e}");
@@ -6142,6 +6151,29 @@ impl MeridianApp {
         }
         ctx.request_repaint();
         Some(written)
+    }
+
+    /// The chart half of [`Self::save_protocol`]: write the edits held since
+    /// the last Save into the chart file beside `source`'s Protocol, and say
+    /// why when they cannot be written.
+    ///
+    /// The banner is keyed, so a second failed Save replaces the first
+    /// failure's words rather than stacking beside them, and a Save that
+    /// writes the chart takes it down.
+    fn save_chart_beside_protocol(&mut self, source: &crate::one_step::OneStepProtocol) {
+        let banner = NotificationId::new("save-chart");
+        match self.charts.doc.save_chart_beside(&source.dir, &source.name) {
+            Ok(()) => {
+                self.notifications.dismiss(banner);
+            }
+            Err(e) => {
+                eprintln!("could not save the chart: {e}");
+                self.notifications.raise(
+                    Notification::new(banner, Severity::Error, "Could not save this chart")
+                        .body(e.to_string()),
+                );
+            }
+        }
     }
 
     /// **Run the Protocol this window holds** — the `run-protocol` verb, and

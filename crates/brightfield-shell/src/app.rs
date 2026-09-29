@@ -60,6 +60,8 @@ use brightfield_engine::coordinator::{Coordinator, Interaction};
 use brightfield_engine::nearest::{NearestProbe, NearestRead};
 use brightfield_engine::{AxisExtent, NavigationExtent};
 use brightfield_keys::BindingContext;
+use brightfield_model::panel_capture::{panel_file, write_panel_text};
+use brightfield_protocol::write_chart_edit;
 use brightfield_render::canvas_host::{ChartSurface, Color, PixelSize};
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_spec::ast::SpecValue;
@@ -866,14 +868,19 @@ pub struct ChartDoc {
     /// `no marks rendered successfully`; that is the mechanism, not the event,
     /// and the caller is the only place with enough context to say the event.
     interaction_fault: Option<ChartFault>,
-    /// Whether the live spec holds a change the spec's file does not — read
-    /// through [`Self::has_unsaved_edit`].
+    /// The edits made to the live spec since the last Save, in the order they
+    /// were made — what [`Self::has_unsaved_edit`] reads, and what
+    /// [`Self::save_chart_beside`] places into the text on disk.
     ///
-    /// Set by [`Self::set_plot_attribute`] when a tile's switch rewrote the
-    /// spec, and cleared by [`Self::open`], which replaces the document the
-    /// edit was made to. A save does not clear it, because no save writes the
-    /// edit back yet: the file does not catch up.
-    unsaved_edit: bool,
+    /// **The edits, and not the spec.** The live spec is what the picture was
+    /// composed from and holds none of the comments in the file it came from;
+    /// writing it out would lose them. Each edit is placed into the file's own
+    /// text instead, as a change to one line.
+    ///
+    /// Pushed by [`Self::set_plot_attribute`] when a tile's switch rewrote the
+    /// spec, and emptied by [`Self::open`], which replaces the document the
+    /// edits were made to, and by a Save that wrote them.
+    pending_edits: Vec<ChartEdit>,
     /// The pan/zoom gesture in progress and the settle rule that decides when
     /// it becomes a query. Public because a headless test drives it through the
     /// same entry points the chart pane uses.
@@ -946,6 +953,56 @@ struct CanvasKey {
     dark: bool,
 }
 
+/// Why [`ChartDoc::save_chart_beside`] did not write the chart. Each variant's
+/// [`fmt::Display`](std::fmt::Display) is the reason the window says.
+#[derive(Debug)]
+pub enum ChartSaveError {
+    /// Edits are held and the document has no file text to place them in: no
+    /// chart file beside the Protocol and no spec file behind the document.
+    NoText,
+    /// The text the edits go into could not be read.
+    Read {
+        /// The file that would not read.
+        path: std::path::PathBuf,
+        /// The filesystem's answer.
+        error: std::io::Error,
+    },
+    /// An edit could not be placed into the file's text, so none was written.
+    Unplaced {
+        /// The edit and the tile it was made on, as the private
+        /// `ChartDoc::describe_edit` words them.
+        edit: String,
+        /// Why the text would not take it.
+        refusal: brightfield_protocol::ChartTextRefusal,
+    },
+    /// The chart file could not be written.
+    Write {
+        /// The chart file the write was for.
+        path: std::path::PathBuf,
+        /// The filesystem's answer.
+        error: std::io::Error,
+    },
+}
+
+impl std::fmt::Display for ChartSaveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoText => f.write_str("the chart has no file text to write the edit into"),
+            Self::Read { path, error } => {
+                write!(f, "could not read {}: {error}", path.display())
+            }
+            Self::Unplaced { edit, refusal } => {
+                write!(f, "could not place {edit} in the chart file: {refusal}")
+            }
+            Self::Write { path, error } => {
+                write!(f, "could not write {}: {error}", path.display())
+            }
+        }
+    }
+}
+
+impl std::error::Error for ChartSaveError {}
+
 impl ChartDoc {
     /// A document over `composed`, rastering through `host`.
     #[must_use]
@@ -984,7 +1041,7 @@ impl ChartDoc {
             active_selections: Vec::new(),
             interval_drags: IntervalDrags::new(),
             interaction_fault: None,
-            unsaved_edit: false,
+            pending_edits: Vec::new(),
             nav: NavGesture::new(),
             axis_lock: AxisLock::default(),
             nav_plot: 0,
@@ -1033,7 +1090,7 @@ impl ChartDoc {
             active_selections: Vec::new(),
             interval_drags: IntervalDrags::new(),
             interaction_fault: None,
-            unsaved_edit: false,
+            pending_edits: Vec::new(),
             nav: NavGesture::new(),
             axis_lock: AxisLock::default(),
             nav_plot: 0,
@@ -1083,7 +1140,7 @@ impl ChartDoc {
         // one field down.
         self.interaction_fault = None;
         // …and an edit made to the replaced document is not this one's.
-        self.unsaved_edit = false;
+        self.pending_edits.clear();
         // …and the extent described the replaced document's plots.
         self.nav.clear();
         self.nav_notice = None;
@@ -1161,15 +1218,120 @@ impl ChartDoc {
     }
 
     /// Whether a tile's switch has changed this document's live spec since it
-    /// was opened — a change the spec's file does not carry, and one the
-    /// window says is unsaved.
+    /// was opened or last saved — a change the chart file does not carry, and
+    /// one the window says is unsaved.
     ///
     /// A switch the chart refused is not one: the spec it left standing is the
     /// file's. Neither is a pick of the state the control already showed,
-    /// which writes the value the spec holds.
+    /// which writes the value the spec holds. A Save that wrote the edits
+    /// clears it ([`Self::save_chart_beside`]); one that could not leaves it.
     #[must_use]
     pub const fn has_unsaved_edit(&self) -> bool {
-        self.unsaved_edit
+        !self.pending_edits.is_empty()
+    }
+
+    /// **Save the chart beside the Protocol: write the edits made since the
+    /// last Save into the chart file's text.**
+    ///
+    /// The chart file is [`panel_file`]`(dir, name)`. The text the edits are
+    /// placed into is the text on disk at this Save — the chart file when one
+    /// is there, and otherwise the file [`Self::spec_path`] names, which for a
+    /// data file's first Save is the scratch spec the generator wrote at open.
+    /// Each edit goes in through
+    /// [`write_chart_edit`], a change
+    /// to one line, so the generator's comments and an analyst's own come
+    /// through as they were; the spec is not written afresh from the picture.
+    ///
+    /// **All or nothing.** The edits are placed in order into a copy of the
+    /// text, and the file is written once, after every one has gone in. An edit
+    /// the text cannot take — a plot the file no longer holds — is
+    /// [`ChartSaveError::Unplaced`], naming it, and no file is written: the
+    /// chart file is left byte-identical
+    /// (`a_chart_file_that_lost_the_plot_is_left_byte_identical_and_the_edit_is_named`),
+    /// and the edits stay held, so the window's unsaved mark stays.
+    ///
+    /// With no edit held the text is written as it is, which is the scratch
+    /// text for a chart file that is not there yet and the file's own bytes
+    /// for one that is — [`save_spec_atomic`](brightfield_model::spec_save::save_spec_atomic)
+    /// leaves the file untouched then
+    /// (`a_save_with_no_edit_leaves_a_chart_file_that_is_there_byte_identical`).
+    ///
+    /// A Save that wrote the file names it as this document's spec, so the
+    /// editor pane shows what was saved, and watches it in place of the
+    /// scratch file.
+    ///
+    /// # Errors
+    ///
+    /// [`ChartSaveError`] for an edit that cannot be placed, a file that cannot
+    /// be read, and a write that fails. The document is as it was.
+    pub fn save_chart_beside(
+        &mut self,
+        dir: &std::path::Path,
+        name: &str,
+    ) -> Result<(), ChartSaveError> {
+        let target = panel_file(dir, name);
+        let text = match std::fs::read_to_string(&target) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let Some(from) = self.spec_path.clone() else {
+                    // Nothing to write when nothing was edited; an edit with
+                    // no text to go into is one the window cannot keep.
+                    return if self.pending_edits.is_empty() {
+                        Ok(())
+                    } else {
+                        Err(ChartSaveError::NoText)
+                    };
+                };
+                std::fs::read_to_string(&from)
+                    .map_err(|error| ChartSaveError::Read { path: from, error })?
+            }
+            Err(error) => {
+                return Err(ChartSaveError::Read {
+                    path: target,
+                    error,
+                })
+            }
+        };
+        let mut placed = text;
+        for edit in &self.pending_edits {
+            placed =
+                write_chart_edit(&placed, edit).map_err(|refusal| ChartSaveError::Unplaced {
+                    edit: self.describe_edit(edit),
+                    refusal,
+                })?;
+        }
+        let written =
+            write_panel_text(dir, name, &placed).map_err(|error| ChartSaveError::Write {
+                path: target,
+                error,
+            })?;
+        let path = std::path::absolute(&written).unwrap_or(written);
+        self.pending_edits.clear();
+        if self.spec_path.as_deref() == Some(path.as_path()) {
+            // The watch already holds this file; the write was ours.
+            self.watch.note_own_write(&path);
+        } else {
+            self.spec_path = Some(path);
+            self.wire_watch();
+        }
+        Ok(())
+    }
+
+    /// What `edit` is about, in words a reader who never saw a plot path can
+    /// follow: the edit and the tile it was made on, by the column the tile
+    /// draws, or by the plot's path for a plot no tile is recorded for.
+    fn describe_edit(&self, edit: &ChartEdit) -> String {
+        let plot = edit.plot_path();
+        let tile = self
+            .composed
+            .plots
+            .iter()
+            .position(|p| p.path == plot)
+            .and_then(|i| self.tile_columns.get(i));
+        match tile {
+            Some(facts) => format!("{} on the {} tile", edit.summary(), facts.column),
+            None => format!("{} on the plot at {plot}", edit.summary()),
+        }
     }
 
     /// Lay the dashboard out into a box of `size` logical points and re-present
@@ -1300,10 +1462,11 @@ impl ChartDoc {
     ///
     /// The one write path both tile controls take, so what survives a pick —
     /// the viewport, the hero bound, the ink mode; not the engine session —
-    /// cannot come to depend on which control was thrown. It marks the
-    /// document [`Self::has_unsaved_edit`] after the rebuild succeeds: a
-    /// refused switch leaves the previous page standing, and a page rebuilt
-    /// over the spec it already had is not an edit.
+    /// cannot come to depend on which control was thrown. It holds the edit
+    /// for the next Save, which marks the document [`Self::has_unsaved_edit`],
+    /// after the rebuild succeeds: a refused switch leaves the previous page
+    /// standing, and a page rebuilt over the spec it already had is not an
+    /// edit.
     fn set_plot_attribute(&mut self, plot: usize, key: &str, value: &str, refused: &str) -> bool {
         let Some(handle) = self.composed.plots.get(plot) else {
             return false;
@@ -1351,7 +1514,9 @@ impl ChartDoc {
             Ok((live, composed)) => {
                 self.live = Some(live);
                 self.composed = composed;
-                self.unsaved_edit |= changed;
+                if changed {
+                    self.pending_edits.push(edit);
+                }
                 self.canvas.invalidate();
                 true
             }
