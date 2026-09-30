@@ -1216,15 +1216,28 @@ fn the_modal_card_rect_is_the_card() {
 
 /// A modal layer the crate shows that the assertions above deliberately do not
 /// reach, and why. An entry here is a disclosed gap, not a covered one.
-const UNCHECKED_MODALS: &[(&str, &str)] = &[(
-    "gallery-modal",
-    "the component gallery's own specimen card: the floating half of a demo \
-     that rests docked, reached by a control in a dev-flagged pane, on the \
-     narrow width rung rather than the default one the two assertions read. \
-     It floats on the same egui::Modal as the rest, so the settle in \
-     capture::run_ui_frames reaches it; what it has is no baseline of its \
-     own — the gallery gate's two goldens pin the docked card, not this",
-)];
+const UNCHECKED_MODALS: &[(&str, &str)] = &[
+    (
+        "gallery-modal",
+        "the component gallery's own specimen card: the floating half of a demo \
+         that rests docked, reached by a control in a dev-flagged pane, on the \
+         narrow width rung rather than the default one the two assertions read. \
+         It floats on the same egui::Modal as the rest, so the settle in \
+         capture::run_ui_frames reaches it; what it has is no baseline of its \
+         own — the gallery gate's two goldens pin the docked card, not this",
+    ),
+    (
+        "bf-overlay-close-question",
+        "the question a close request raises over a window that carries an \
+         unsaved chart edit. It opens from a close request, not a keystroke, \
+         and an OverlayCase opens its overlay with its `key` field and has no \
+         field for a close request, so this harness cannot drive it. It has no \
+         frame either: a design pass for this surface may redraw it, so a \
+         baseline is not committed ahead of that pass. What it has is the \
+         tests that open it by a close request and read its title and its \
+         three answers, not a picture of its own",
+    ),
+];
 
 /// [`OVERLAY_CASES`] plus [`UNCHECKED_MODALS`] account for the
 /// `ModalLayer::show` call sites in this crate's whole `src/`.

@@ -698,6 +698,68 @@ impl PickerDelegate for ArgPrompt {
 }
 
 // ---------------------------------------------------------------------------
+// CloseQuestion
+// ---------------------------------------------------------------------------
+
+/// What a person answered when the window asked whether to close over a chart
+/// edit that is not saved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseAnswer {
+    /// Write the chart as the Save verb does, then close.
+    Save,
+    /// Close without writing anything.
+    Discard,
+    /// Stay: the window as it was, the edit still drawn and the mark still
+    /// in the title.
+    Cancel,
+}
+
+/// The headline of the question, the title row of its card.
+pub const CLOSE_QUESTION_TITLE: &str = "Close with an unsaved chart edit?";
+
+/// The one line of the question's body.
+pub const CLOSE_QUESTION_BODY: &str = "This window holds a chart edit that has not been saved.";
+
+/// The label of each answer, in the order they are drawn.
+pub const CLOSE_ANSWERS: [(CloseAnswer, &str); 3] = [
+    (CloseAnswer::Save, "Save"),
+    (CloseAnswer::Discard, "Discard"),
+    (CloseAnswer::Cancel, "Cancel"),
+];
+
+/// Draw the body of the close question and report the answer clicked, if any.
+///
+/// The body of a [`ModalLayer`](meridian_egui::ModalLayer) card the host
+/// draws: this owns the words and the three buttons, and the host owns what an
+/// answer does. Escape and a click on the backdrop are the layer's own
+/// dismissal, which the host reads as [`CloseAnswer::Cancel`].
+///
+/// Save takes the keyboard focus while nothing else holds it, so enter
+/// answers the question the way the least destructive button does; a tab to
+/// another button moves it and enter then answers that one.
+pub fn close_question_body(ui: &mut egui::Ui) -> Option<CloseAnswer> {
+    use meridian_egui::MeridianUi as _;
+    let gap = ui.tokens().section_gap;
+    let control_gap = ui.tokens().control_gap;
+    ui.label(CLOSE_QUESTION_BODY);
+    ui.add_space(gap);
+    let mut answer = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = control_gap;
+        for (which, label) in CLOSE_ANSWERS {
+            let button = ui.button(label);
+            if which == CloseAnswer::Save && ui.memory(|m| m.focused().is_none()) {
+                button.request_focus();
+            }
+            if button.clicked() {
+                answer = Some(which);
+            }
+        }
+    });
+    answer
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
 

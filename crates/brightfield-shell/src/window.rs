@@ -90,7 +90,10 @@ use crate::data_grid::{DATA, ROWS};
 use crate::design::Mode;
 use crate::editor::EDITOR;
 use crate::inspector::{ColumnTable, InspectorPane, Selection, TableHandle};
-use crate::overlays::{CommandPalette, HelpSheet, JumpTarget, JumpToNode};
+use crate::overlays::{
+    close_question_body, CloseAnswer, CommandPalette, HelpSheet, JumpTarget, JumpToNode,
+    CLOSE_QUESTION_TITLE,
+};
 use crate::pipeline::Composed;
 use crate::protocol::{
     hint_ui, load_protocol_offline, mono_font, protocol_registry, ui_font, NodeView, ProtocolDoc,
@@ -1705,6 +1708,11 @@ enum Overlay {
     Help(Picker<HelpSheet>),
     /// The node jump (`/`): fuzzy finder over the graph in view.
     Jump(Picker<JumpToNode>),
+    /// The question a close request raises over a window that carries the
+    /// unsaved mark: save, discard or cancel. It holds no state of its own —
+    /// what it asks about is the chart document's pending edits — and it is
+    /// drawn from [`crate::overlays::close_question_body`].
+    CloseQuestion,
 }
 
 /// The registry-bound keystrokes that open overlays, resolved once at boot.
@@ -1891,6 +1899,17 @@ pub struct MeridianApp {
     /// [`UNSAVED_MARK`] — so `draw` re-titles the OS window when a switch
     /// flips the mark. The opens send their own titles.
     title_marked: bool,
+    /// Whether the next close request is to pass without a question: the
+    /// window has already decided to close (a save that wrote, or a discard)
+    /// or its host is closing it on its own account (the screenshot
+    /// countdown).
+    ///
+    /// Needed because the window's own `ViewportCommand::Close` comes back
+    /// through the next frame's input as a close request like the operating
+    /// system's, and a discarded edit is still pending on that frame: without
+    /// the latch the question would be asked again by the close it answered.
+    /// See [`Self::allow_close`].
+    closing: bool,
     /// Where each region of the arrangement was drawn in the last frame this
     /// window drew, in window-space logical points — empty until a frame has
     /// been laid out, and holding only the regions that drew.
@@ -2438,6 +2457,7 @@ impl MeridianApp {
             mode,
             fonts_installed: false,
             title_marked: false,
+            closing: false,
             regions: Vec::new(),
             collapsed: BTreeSet::new(),
             strips: Vec::new(),
@@ -2853,11 +2873,21 @@ impl MeridianApp {
     #[must_use]
     pub fn title(&self) -> String {
         let subject = self.subject_title();
-        if self.charts.doc.has_unsaved_edit() && !self.front_door_is_live() {
+        if self.carries_unsaved_mark() {
             format!("{subject} {UNSAVED_MARK}")
         } else {
             subject
         }
+    }
+
+    /// Whether this window's title carries [`UNSAVED_MARK`]: the chart document
+    /// holds an edit its file does not, and the window is not on the front
+    /// door, which has no document to hold one. The one definition of *unsaved*
+    /// the title and the close request share, so a window that asks before it
+    /// closes is exactly a window that says it has something to lose.
+    #[must_use]
+    pub fn carries_unsaved_mark(&self) -> bool {
+        self.charts.doc.has_unsaved_edit() && !self.front_door_is_live()
     }
 
     /// [`Self::title`] without the unsaved mark: the name of the subject, for
@@ -3731,6 +3761,10 @@ impl MeridianApp {
         // reloads the Protocol document, and a frame should draw the state the
         // run left rather than one frame of the state before it.
         self.poll_run(&ctx);
+        // A close request that arrived with this frame, read ahead of the
+        // draw: it is the operating system's, or the window's own close
+        // coming back, and `Self::closing` tells them apart.
+        self.observe_close_request(&ctx);
         // The mark, once per window: both the controls that draw it are below
         // this line and either can be the first to run, so neither owns the
         // load.
@@ -5132,11 +5166,121 @@ impl MeridianApp {
                     None => close = shown.dismissed,
                 }
             }
+            Overlay::CloseQuestion => {
+                // The card's own exits are its answers: escape and a click on
+                // the backdrop are the third of them, cancel.
+                let chrome = ModalChrome::new()
+                    .title(CLOSE_QUESTION_TITLE)
+                    .narrow()
+                    .esc_hint("cancel");
+                let shown = ModalLayer::show(ctx, "bf-overlay-close-question", &chrome, |ui| {
+                    close_question_body(ui)
+                });
+                let answer = shown
+                    .inner
+                    .or(shown.dismissed.then_some(CloseAnswer::Cancel));
+                close = answer.is_some();
+                if let Some(answer) = answer {
+                    self.answer_close_question(ctx, answer);
+                }
+            }
         }
         if close {
             ctx.request_repaint();
         } else {
             self.overlay = Some(overlay);
+        }
+    }
+
+    /// **Read a close request and, over a window that carries the unsaved
+    /// mark, answer it with the question instead of the close.**
+    ///
+    /// The request is `ViewportInfo::close_requested` in this frame's input:
+    /// the window's close button, and `ViewportCommand::Close` sent by anyone,
+    /// this window included. eframe closes the root viewport unless the frame
+    /// sends `ViewportCommand::CancelClose`, so a window that read no request
+    /// closed and took its edit with it. This sends the cancel and opens
+    /// [`Overlay::CloseQuestion`] in the window's one modal slot, replacing
+    /// whatever overlay was open; a second request while the question is up
+    /// is cancelled again and leaves it as it is.
+    ///
+    /// A window without the mark, and one whose close was already decided
+    /// ([`Self::allow_close`]), is not touched: the request goes through
+    /// uncancelled, which is how eframe closes it.
+    fn observe_close_request(&mut self, ctx: &egui::Context) {
+        if !ctx.input(|i| i.viewport().close_requested()) {
+            return;
+        }
+        if self.closing || !self.carries_unsaved_mark() {
+            return;
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        self.overlay = Some(Overlay::CloseQuestion);
+        ctx.request_repaint();
+    }
+
+    /// Let the next close request through without a question — for a close the
+    /// window's host makes on its own account, as the screenshot countdown's
+    /// is, and for the two answers of the question that close the window.
+    pub fn allow_close(&mut self) {
+        self.closing = true;
+    }
+
+    /// **What each answer of the close question does** — the entry point the
+    /// question's buttons reach through, and one a test may drive.
+    ///
+    /// - [`CloseAnswer::Save`] writes as the Save verb does
+    ///   ([`Self::save_protocol`]: `arcform.yaml`, its model and the chart
+    ///   beside them) and closes the window when the chart is in, which is
+    ///   when the mark is gone. A write that failed leaves the window open,
+    ///   with the banner the write raised saying why; the question is closed
+    ///   so the banner can be read, and the next close request asks again.
+    /// - [`CloseAnswer::Discard`] closes without a write: the files on disk
+    ///   are not touched, and the pending edits are dropped with the window.
+    /// - [`CloseAnswer::Cancel`] leaves the window as it was: the edit stays
+    ///   drawn, the mark stays in the title.
+    pub fn answer_close_question(&mut self, ctx: &egui::Context, answer: CloseAnswer) {
+        match answer {
+            CloseAnswer::Cancel => {}
+            CloseAnswer::Discard => self.close_window(ctx),
+            CloseAnswer::Save => {
+                if self.save_for_close(ctx) {
+                    self.close_window(ctx);
+                }
+            }
+        }
+        ctx.request_repaint();
+    }
+
+    /// Close this window: let the request through and raise it.
+    fn close_window(&mut self, ctx: &egui::Context) {
+        self.allow_close();
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    /// Save for the close question, answering whether the chart is written.
+    ///
+    /// [`Self::save_protocol`] raises its own banner for a Protocol or a chart
+    /// it could not write, so those two say why already. It answers `None` for
+    /// a window with no Protocol behind it — a chart spec, a shipped start —
+    /// where the Save verb writes no file and this cannot write one either;
+    /// that window says so in the chart banner rather than closing over an
+    /// edit it did not keep.
+    fn save_for_close(&mut self, ctx: &egui::Context) -> bool {
+        match self.save_protocol(ctx) {
+            Some(Ok(_)) => !self.charts.doc.has_unsaved_edit(),
+            Some(Err(_)) => false,
+            None => {
+                self.notifications.raise(
+                    Notification::new(
+                        NotificationId::new("save-chart"),
+                        Severity::Error,
+                        "Could not save this chart",
+                    )
+                    .body("This window has no Protocol to save the chart beside."),
+                );
+                false
+            }
         }
     }
 
@@ -5148,6 +5292,7 @@ impl MeridianApp {
             Overlay::Palette(_) => "palette",
             Overlay::Help(_) => "help",
             Overlay::Jump(_) => "jump",
+            Overlay::CloseQuestion => "close-question",
         })
     }
 
