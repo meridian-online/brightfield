@@ -159,7 +159,9 @@ pub fn write_chart_edit(text: &str, edit: &ChartEdit) -> Result<String, ChartTex
         ChartEdit::SetPlotAttribute { plot, key, .. }
         | ChartEdit::RemovePlotAttribute { plot, key } => (plot, key),
         ChartEdit::SetChannel { plot, channel, .. } => (plot, channel),
-        ChartEdit::ChangeMarkType { .. } | ChartEdit::AddMark { .. } | ChartEdit::RemoveMark { .. } => {
+        ChartEdit::ChangeMarkType { .. }
+        | ChartEdit::AddMark { .. }
+        | ChartEdit::RemoveMark { .. } => {
             return Err(ChartTextRefusal::UnwrittenKind {
                 kind: edit.kind_name(),
             })
@@ -233,7 +235,9 @@ pub fn write_chart_edit(text: &str, edit: &ChartEdit) -> Result<String, ChartTex
             splices.push(set_key(text, mark, channel, spelled));
             splices
         }
-        ChartEdit::ChangeMarkType { .. } | ChartEdit::AddMark { .. } | ChartEdit::RemoveMark { .. } => {
+        ChartEdit::ChangeMarkType { .. }
+        | ChartEdit::AddMark { .. }
+        | ChartEdit::RemoveMark { .. } => {
             return Err(ChartTextRefusal::UnwrittenKind {
                 kind: edit.kind_name(),
             })

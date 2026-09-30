@@ -70,7 +70,9 @@ fn open(name: &str) -> Opened {
     let dir = TempDir::new(name);
     let path = dir.0.join(FILE);
     std::fs::copy(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data").join(FILE),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data")
+            .join(FILE),
         &path,
     )
     .expect("the housing fixture copies");
@@ -197,8 +199,9 @@ fn the_shelfs_x_edit_put_back_gives_the_generated_text() {
     )
     .expect("the shelf takes longitude");
     assert!(
-        back.iter()
-            .any(|e| matches!(e, ChartEdit::SetPlotAttribute { key, .. } if key == "projectionType")),
+        back.iter().any(
+            |e| matches!(e, ChartEdit::SetPlotAttribute { key, .. } if key == "projectionType")
+        ),
         "the pair back on the plot sets the projection again: {back:?}"
     );
     assert_eq!(write_all(&rebound, &back), opened.text);

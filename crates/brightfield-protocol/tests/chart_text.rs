@@ -490,7 +490,10 @@ fn putting_median_income_on_x_changes_both_layers_and_takes_the_projection_out()
         vec![
             (Some(x("longitude")), Some(x("median_income"))),
             (Some(x("longitude")), Some(x("median_income"))),
-            (Some("      projectionType: equirectangular".to_string()), None),
+            (
+                Some("      projectionType: equirectangular".to_string()),
+                None
+            ),
         ]
     );
     let expected = GENERATED
@@ -503,7 +506,11 @@ fn putting_median_income_on_x_changes_both_layers_and_takes_the_projection_out()
     for edit in income_on_x() {
         edit::apply_for_fresh_load(&mut spec, &edit).expect("the shelf's edits apply");
     }
-    assert_eq!(parse(&written), spec, "the text reads back as the edited chart");
+    assert_eq!(
+        parse(&written),
+        spec,
+        "the text reads back as the edited chart"
+    );
 }
 
 /// **`longitude` put back on x after that** gives the text the generator
@@ -563,7 +570,10 @@ fn a_column_the_quotes_cannot_hold_is_written_in_the_serialisers_spelling() {
     let text = WITH_SCALE.replace("        y: b\n", "        y: 'b'\n");
     let edit = channel("root/vconcat[0]", 0, "y", "it's");
     let written = write_chart_edit(&text, &edit).expect("the edit is written");
-    assert_eq!(written, text.replace("        y: 'b'\n", "        y: it's\n"));
+    assert_eq!(
+        written,
+        text.replace("        y: 'b'\n", "        y: it's\n")
+    );
     assert_eq!(parse(&written), applied_fresh(&text, &edit));
 }
 
@@ -596,7 +606,10 @@ vconcat:
     let written = write_chart_edit(text, &edit).expect("the edit is written");
     assert_eq!(
         written,
-        text.replace("    # log until the outliers are gone\n    yScale: log\n", "")
+        text.replace(
+            "    # log until the outliers are gone\n    yScale: log\n",
+            ""
+        )
     );
     assert_eq!(parse(&written), applied_fresh(text, &edit));
 }
