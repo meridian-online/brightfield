@@ -513,7 +513,10 @@ mod tests {
              x: a\n    y: b\nyGrid: false\n",
         );
         assert!(
-            quiet.advisory().iter().all(|diag| diag.wire_name != "yGrid"),
+            quiet
+                .advisory()
+                .iter()
+                .all(|diag| diag.wire_name != "yGrid"),
             "a literal switch is not a warning: {:?}",
             quiet.lines()
         );

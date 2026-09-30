@@ -2458,7 +2458,8 @@ mod tests {
                 })
                 .collect()
         };
-        let near = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() < 1e-3 && (a.1 - b.1).abs() < 1e-3;
+        let near =
+            |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() < 1e-3 && (a.1 - b.1).abs() < 1e-3;
 
         let (both_scene, scales) = build(GridLines { x: true, y: true });
         let none = points(&build(GridLines { x: false, y: false }).0);
@@ -2490,11 +2491,7 @@ mod tests {
         ] {
             let drawn = points(&build(grid).0);
             let added = drawn.len() - none.len();
-            let start = drawn
-                .iter()
-                .zip(&none)
-                .take_while(|(a, b)| a == b)
-                .count();
+            let start = drawn.iter().zip(&none).take_while(|(a, b)| a == b).count();
             assert_eq!(
                 drawn[start + added..],
                 none[start..],

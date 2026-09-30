@@ -248,7 +248,11 @@ fn y_grid_draws_a_horizontal_rule_at_each_y_tick_or_none() {
     let composed = compose("yGrid: true");
     let on = painted("yGrid: true");
     assert_a_rule_at_each_y_tick(&on.horizontal(), &composed, "`yGrid: true`");
-    assert_a_rule_at_each_x_tick(&on.vertical(), &composed, "`yGrid: true` leaves x at its default");
+    assert_a_rule_at_each_x_tick(
+        &on.vertical(),
+        &composed,
+        "`yGrid: true` leaves x at its default",
+    );
 
     let off = painted("yGrid: false");
     assert!(
@@ -270,7 +274,11 @@ fn x_grid_draws_a_vertical_rule_at_each_x_tick_or_none() {
     let composed = compose("xGrid: true");
     let on = painted("xGrid: true");
     assert_a_rule_at_each_x_tick(&on.vertical(), &composed, "`xGrid: true`");
-    assert_a_rule_at_each_y_tick(&on.horizontal(), &composed, "`xGrid: true` leaves y at its default");
+    assert_a_rule_at_each_y_tick(
+        &on.horizontal(),
+        &composed,
+        "`xGrid: true` leaves y at its default",
+    );
 
     let off = painted("xGrid: false");
     assert!(
@@ -379,7 +387,11 @@ fn label_anchors(composed: &Composed) -> Vec<(f64, f64)> {
 fn the_rules_are_under_the_marks_and_inside_the_data_area_clear_of_the_labels() {
     let composed = compose("grid: true");
     let both = painted("grid: true");
-    assert_eq!(both.rules.len(), X_TICKS + Y_TICKS, "fixture check: the rules");
+    assert_eq!(
+        both.rules.len(),
+        X_TICKS + Y_TICKS,
+        "fixture check: the rules"
+    );
 
     let (left, right, top, bottom) = data_area(&composed);
     for rule in &both.rules {
