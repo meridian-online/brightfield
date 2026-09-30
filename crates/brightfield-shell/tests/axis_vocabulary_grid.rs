@@ -8,14 +8,16 @@
 //! Assertions read the rules that were PAINTED. A spec is composed once with
 //! `grid: false`, which draws none, and once as asked; the points the second
 //! scene's path stream holds beyond the first are the rules, because the axis
-//! lines, the tick marks and the mark are in both. A switch resolved correctly
-//! and dropped before the draw would pass a check that read the resolver, and a
-//! rule at the wrong value or short of the data area would pass one that only
-//! counted them. Each rule is therefore matched against where the tick it
-//! belongs to sits, and against the data area's edges.
+//! lines, the tick marks and the mark are in both. That run is compared with
+//! the rules the spec should paint — one at each tick of an axis that draws,
+//! from one edge of the data area to the other — stroked through the same
+//! encoder, so the comparison does not assume how many points the encoder
+//! spends on a line. A switch resolved correctly and dropped before the draw
+//! would pass a check that read the resolver, and a rule at the wrong value or
+//! short of the data area would pass one that only counted them.
 //!
 //! The axes are given different tick counts — three x ticks and eleven y ticks
-//! on a 0 to 100 domain — so a switch wired to the other axis draws the wrong
+//! on a 0 to 100 domain — so a switch wired to the other axis paints the wrong
 //! number of rules. An asked-for arm is paired with the other axis left alone
 //! and with the same spec asking for nothing, since a fixture whose default is
 //! the setting asked for would pass without the key being read.
@@ -78,9 +80,8 @@ type Rule = [(f64, f64); 2];
 /// `Encoding::path_data` is a flat run of `f32` bits, two words per point, and
 /// each plot's scene is appended to the dashboard's with its placement in the
 /// transform stream, so these are the plot's own coordinates.
-fn points(composed: &Composed) -> Vec<(f64, f64)> {
-    composed
-        .scene
+fn scene_points(scene: &vello::Scene) -> Vec<(f64, f64)> {
+    scene
         .encoding()
         .path_data
         .chunks_exact(2)
@@ -93,37 +94,25 @@ fn points(composed: &Composed) -> Vec<(f64, f64)> {
         .collect()
 }
 
+fn points(composed: &Composed) -> Vec<(f64, f64)> {
+    scene_points(&composed.scene)
+}
+
 /// The rules a spec paints: the run of points its scene holds beyond the scene
-/// of the same plot with `grid: false`, read two points to a rule, and where in
-/// the stream that run sits.
+/// of the same plot with `grid: false`, and where in the stream that run sits.
 struct Painted {
     /// The whole point stream of the spec's scene.
     stream: Vec<(f64, f64)>,
-    /// Index in `stream` of the first point of the first rule.
+    /// Index in `stream` of the first point of the run.
     start: usize,
-    rules: Vec<Rule>,
+    /// The points the spec's scene holds beyond the bare one.
+    run: Vec<(f64, f64)>,
 }
 
 impl Painted {
-    /// Index in `stream` one past the last point of the last rule.
+    /// Index in `stream` one past the last point of the run.
     fn end(&self) -> usize {
-        self.start + self.rules.len() * 2
-    }
-
-    fn horizontal(&self) -> Vec<Rule> {
-        self.rules
-            .iter()
-            .copied()
-            .filter(|r| r[0].1 == r[1].1)
-            .collect()
-    }
-
-    fn vertical(&self) -> Vec<Rule> {
-        self.rules
-            .iter()
-            .copied()
-            .filter(|r| r[0].0 == r[1].0)
-            .collect()
+        self.start + self.run.len()
     }
 }
 
@@ -133,24 +122,21 @@ fn painted(attrs: &str) -> Painted {
     let added = stream
         .len()
         .checked_sub(bare.len())
-        .expect("a spec never paints fewer points than the same plot with no gridlines");
-    let start = stream.iter().zip(&bare).take_while(|(a, b)| a == b).count();
-    assert_eq!(
-        stream[start + added..],
-        bare[start..],
-        "`{attrs}`: what the gridline switches add is one run of points, and the rest of the \
-         scene is unchanged"
-    );
-    assert_eq!(added % 2, 0, "a rule is two points");
-    let rules = stream[start..start + added]
-        .chunks_exact(2)
-        .map(|pair| [pair[0], pair[1]])
-        .collect();
-    Painted {
-        stream,
-        start,
-        rules,
-    }
+        .expect("a spec paints at least the points of the same plot with no gridlines");
+    // The earliest start after which the rest of the scene is what it is with no
+    // gridlines. The common prefix alone can overshoot, when a rule's first point
+    // is also the next point of the scene without it.
+    let common = stream.iter().zip(&bare).take_while(|(a, b)| a == b).count();
+    let start = (0..=common)
+        .find(|&at| stream[at + added..] == bare[at..])
+        .unwrap_or_else(|| {
+            panic!(
+                "`{attrs}`: what the gridline switches add is not one run of points with the \
+                 rest of the scene unchanged"
+            )
+        });
+    let run = stream[start..start + added].to_vec();
+    Painted { stream, start, run }
 }
 
 /// The first plot's data area, in the plot's own coordinates:
@@ -172,68 +158,101 @@ fn scale(composed: &Composed, channel: Channel) -> &Scale {
         .expect("the plot drew this channel")
 }
 
-/// Where the axis puts each tick, in the plot's own coordinates.
-fn tick_positions(composed: &Composed, channel: Channel, target: usize) -> Vec<f64> {
-    compute_ticks(scale(composed, channel), target)
+/// The vertical rules the plot should paint: one at each x tick, from the top
+/// of the data area to its bottom.
+fn x_rules(composed: &Composed) -> Vec<Rule> {
+    let (_, _, top, bottom) = data_area(composed);
+    let ticks = compute_ticks(scale(composed, Channel::X), 2);
+    assert_eq!(ticks.len(), X_TICKS, "fixture check: the x ticks");
+    ticks
         .iter()
-        .map(|tick| tick.position)
+        .map(|tick| [(tick.position, top), (tick.position, bottom)])
         .collect()
 }
 
-fn near(a: f64, b: f64) -> bool {
-    (a - b).abs() < 1e-3
-}
-
-/// Whether `rule` runs the whole data area horizontally at `y`.
-fn is_horizontal_rule_at(rule: &Rule, y: f64, area: (f64, f64, f64, f64)) -> bool {
-    let (left, right, _, _) = area;
-    near(rule[0].0, left) && near(rule[1].0, right) && near(rule[0].1, y) && near(rule[1].1, y)
-}
-
-/// Whether `rule` runs the whole data area vertically at `x`.
-fn is_vertical_rule_at(rule: &Rule, x: f64, area: (f64, f64, f64, f64)) -> bool {
-    let (_, _, top, bottom) = area;
-    near(rule[0].0, x) && near(rule[1].0, x) && near(rule[0].1, top) && near(rule[1].1, bottom)
-}
-
-/// Assert that `rules` are exactly the horizontal rules at each y tick of
-/// `composed`, in tick order and across the data area.
-fn assert_a_rule_at_each_y_tick(rules: &[Rule], composed: &Composed, what: &str) {
-    let ticks = tick_positions(composed, Channel::Y, 10);
+/// The horizontal rules the plot should paint: one at each y tick, from the
+/// left of the data area to its right.
+fn y_rules(composed: &Composed) -> Vec<Rule> {
+    let (left, right, _, _) = data_area(composed);
+    let ticks = compute_ticks(scale(composed, Channel::Y), 10);
     assert_eq!(ticks.len(), Y_TICKS, "fixture check: the y ticks");
-    assert_eq!(
-        rules.len(),
-        Y_TICKS,
-        "{what}: one horizontal rule at each of the {Y_TICKS} y ticks; got {rules:?}"
-    );
-    let area = data_area(composed);
-    for (rule, tick) in rules.iter().zip(&ticks) {
-        assert!(
-            is_horizontal_rule_at(rule, *tick, area),
-            "{what}: the rule {rule:?} should run the data area at the y tick {tick} \
-             (data area {area:?})"
-        );
-    }
+    ticks
+        .iter()
+        .map(|tick| [(left, tick.position), (right, tick.position)])
+        .collect()
 }
 
-/// Assert that `rules` are exactly the vertical rules at each x tick of
-/// `composed`, in tick order and across the data area.
-fn assert_a_rule_at_each_x_tick(rules: &[Rule], composed: &Composed, what: &str) {
-    let ticks = tick_positions(composed, Channel::X, 2);
-    assert_eq!(ticks.len(), X_TICKS, "fixture check: the x ticks");
-    assert_eq!(
-        rules.len(),
-        X_TICKS,
-        "{what}: one vertical rule at each of the {X_TICKS} x ticks; got {rules:?}"
-    );
-    let area = data_area(composed);
-    for (rule, tick) in rules.iter().zip(&ticks) {
-        assert!(
-            is_vertical_rule_at(rule, *tick, area),
-            "{what}: the rule {rule:?} should run the data area at the x tick {tick} \
-             (data area {area:?})"
+/// The points the encoder holds for `rules`, stroked one after another as the
+/// grid strokes them.
+fn encoded(rules: &[Rule]) -> Vec<(f64, f64)> {
+    let mut scene = vello::Scene::new();
+    for rule in rules {
+        scene.stroke(
+            &kurbo::Stroke::new(0.5),
+            kurbo::Affine::IDENTITY,
+            peniko::Color::BLACK,
+            None,
+            &kurbo::Line::new(rule[0], rule[1]),
         );
     }
+    scene_points(&scene)
+}
+
+/// How many points the encoder spends on one stroked line, measured on a lone
+/// one rather than assumed.
+fn points_per_rule() -> usize {
+    let n = encoded(&[[(0.0, 0.0), (10.0, 0.0)]]).len();
+    assert!(n >= 2, "fixture check: a stroked line has points");
+    n
+}
+
+/// A run of points read a rule at a time, each point rounded to a thousandth of
+/// a pixel, the rules sorted: two runs compare as sets of rules, not as the
+/// order the x and y sets were drawn in.
+fn as_rules(run: &[(f64, f64)]) -> Vec<Vec<(i64, i64)>> {
+    let per_rule = points_per_rule();
+    assert_eq!(
+        run.len() % per_rule,
+        0,
+        "a run of {} points is not a whole number of rules at {per_rule} points a rule",
+        run.len()
+    );
+    let mut rules: Vec<Vec<(i64, i64)>> = run
+        .chunks(per_rule)
+        .map(|rule| {
+            rule.iter()
+                .map(|p| ((p.0 * 1000.0).round() as i64, (p.1 * 1000.0).round() as i64))
+                .collect()
+        })
+        .collect();
+    rules.sort();
+    rules
+}
+
+/// Assert that `attrs` paints exactly the rules of the axes named: one at each
+/// tick of an axis that draws, none on one that does not, each running the data
+/// area at its tick.
+fn assert_paints(attrs: &str, x: bool, y: bool) {
+    let composed = compose(attrs);
+    let mut expected: Vec<Rule> = Vec::new();
+    if x {
+        expected.extend(x_rules(&composed));
+    }
+    if y {
+        expected.extend(y_rules(&composed));
+    }
+    let axes = match (x, y) {
+        (true, true) => "both axes",
+        (true, false) => "the x axis alone",
+        (false, true) => "the y axis alone",
+        (false, false) => "neither axis",
+    };
+    assert_eq!(
+        as_rules(&painted(attrs).run),
+        as_rules(&encoded(&expected)),
+        "`{attrs}` should paint the rules of {axes}: one at each tick of an axis that draws, \
+         none on one that does not, each running the data area at its tick"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -245,52 +264,16 @@ fn assert_a_rule_at_each_x_tick(rules: &[Rule], composed: &Composed, what: &str)
 /// arm, so its vertical rules are what an unset key draws.
 #[test]
 fn y_grid_draws_a_horizontal_rule_at_each_y_tick_or_none() {
-    let composed = compose("yGrid: true");
-    let on = painted("yGrid: true");
-    assert_a_rule_at_each_y_tick(&on.horizontal(), &composed, "`yGrid: true`");
-    assert_a_rule_at_each_x_tick(
-        &on.vertical(),
-        &composed,
-        "`yGrid: true` leaves x at its default",
-    );
-
-    let off = painted("yGrid: false");
-    assert!(
-        off.horizontal().is_empty(),
-        "`yGrid: false` draws no horizontal rule; got {:?}",
-        off.horizontal()
-    );
-    assert_a_rule_at_each_x_tick(
-        &off.vertical(),
-        &compose("yGrid: false"),
-        "`yGrid: false` leaves x at its default",
-    );
+    assert_paints("yGrid: true", true, true);
+    assert_paints("yGrid: false", true, false);
 }
 
 /// **`xGrid: true` draws one vertical rule at each x tick, and `xGrid: false`
 /// draws none.** The y axis names no key in either arm.
 #[test]
 fn x_grid_draws_a_vertical_rule_at_each_x_tick_or_none() {
-    let composed = compose("xGrid: true");
-    let on = painted("xGrid: true");
-    assert_a_rule_at_each_x_tick(&on.vertical(), &composed, "`xGrid: true`");
-    assert_a_rule_at_each_y_tick(
-        &on.horizontal(),
-        &composed,
-        "`xGrid: true` leaves y at its default",
-    );
-
-    let off = painted("xGrid: false");
-    assert!(
-        off.vertical().is_empty(),
-        "`xGrid: false` draws no vertical rule; got {:?}",
-        off.vertical()
-    );
-    assert_a_rule_at_each_y_tick(
-        &off.horizontal(),
-        &compose("xGrid: false"),
-        "`xGrid: false` leaves y at its default",
-    );
+    assert_paints("xGrid: true", true, true);
+    assert_paints("xGrid: false", false, true);
 }
 
 // ---------------------------------------------------------------------------
@@ -303,54 +286,12 @@ fn x_grid_draws_a_vertical_rule_at_each_x_tick_or_none() {
 /// alone draws neither.
 #[test]
 fn the_bare_grid_draws_both_sets_and_the_key_that_names_an_axis_wins() {
-    let composed = compose("grid: true");
-
-    let both = painted("grid: true");
-    assert_a_rule_at_each_x_tick(&both.vertical(), &composed, "`grid: true`");
-    assert_a_rule_at_each_y_tick(&both.horizontal(), &composed, "`grid: true`");
-
-    let y_only = painted("grid: true\nxGrid: false");
-    assert!(
-        y_only.vertical().is_empty(),
-        "`grid: true` with `xGrid: false` draws no vertical rule; got {:?}",
-        y_only.vertical()
-    );
-    assert_a_rule_at_each_y_tick(
-        &y_only.horizontal(),
-        &composed,
-        "`grid: true` with `xGrid: false`",
-    );
-
-    let x_only = painted("grid: true\nyGrid: false");
-    assert!(
-        x_only.horizontal().is_empty(),
-        "`grid: true` with `yGrid: false` draws no horizontal rule; got {:?}",
-        x_only.horizontal()
-    );
-    assert_a_rule_at_each_x_tick(
-        &x_only.vertical(),
-        &composed,
-        "`grid: true` with `yGrid: false`",
-    );
-
-    let x_back_on = painted("grid: false\nxGrid: true");
-    assert!(
-        x_back_on.horizontal().is_empty(),
-        "`grid: false` with `xGrid: true` draws no horizontal rule; got {:?}",
-        x_back_on.horizontal()
-    );
-    assert_a_rule_at_each_x_tick(
-        &x_back_on.vertical(),
-        &composed,
-        "`grid: false` with `xGrid: true`",
-    );
-
-    let neither = painted("grid: false");
-    assert!(
-        neither.rules.is_empty(),
-        "`grid: false` draws no rule; got {:?}",
-        neither.rules
-    );
+    assert_paints("grid: true", true, true);
+    assert_paints("grid: true\nxGrid: false", false, true);
+    assert_paints("grid: true\nyGrid: false", true, false);
+    assert_paints("grid: false\nxGrid: true", true, false);
+    assert_paints("grid: false\nyGrid: true", false, true);
+    assert_paints("grid: false", false, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -380,29 +321,23 @@ fn label_anchors(composed: &Composed) -> Vec<(f64, f64)> {
 }
 
 /// **The rules sit inside the data area, under the marks, and clear of the axis
-/// labels.** A rule's ends are on the data area's edges; the tick labels are
-/// read off the same scene and none of them is inside that area; and the rules
-/// are drawn before the dot, so the dot is on top of them.
+/// labels.** The rules' ends are the data area's edges, which
+/// [`assert_paints`] holds; the tick labels are read off the same scene and none
+/// of them is inside that area; and the rules are drawn before the dot, so the
+/// dot is on top of them.
 #[test]
 fn the_rules_are_under_the_marks_and_inside_the_data_area_clear_of_the_labels() {
+    assert_paints("grid: true", true, true);
+
     let composed = compose("grid: true");
     let both = painted("grid: true");
-    assert_eq!(
-        both.rules.len(),
-        X_TICKS + Y_TICKS,
-        "fixture check: the rules"
+    assert!(
+        both.run.len() >= (X_TICKS + Y_TICKS) * 2,
+        "fixture check: the rules are in the scene; the run holds {} points",
+        both.run.len()
     );
 
     let (left, right, top, bottom) = data_area(&composed);
-    for rule in &both.rules {
-        for (x, y) in rule {
-            assert!(
-                *x >= left - 1e-3 && *x <= right + 1e-3 && *y >= top - 1e-3 && *y <= bottom + 1e-3,
-                "the rule {rule:?} leaves the data area {left}..{right} by {top}..{bottom}"
-            );
-        }
-    }
-
     let plot = &composed.plots[0];
     let (origin_x, origin_y) = (plot.rect.x, plot.rect.y);
     let labels = label_anchors(&composed);
@@ -457,11 +392,9 @@ fn the_rules_are_under_the_marks_and_inside_the_data_area_clear_of_the_labels() 
 /// what keeps a spec written before these keys were read unchanged.
 #[test]
 fn a_spec_that_sets_none_of_the_three_draws_both_sets_as_it_did() {
-    let unset = compose("");
-    let on = painted("");
-    assert_a_rule_at_each_x_tick(&on.vertical(), &unset, "an unset plot");
-    assert_a_rule_at_each_y_tick(&on.horizontal(), &unset, "an unset plot");
+    assert_paints("", true, true);
 
+    let unset = compose("");
     let stream = points(&unset);
     for asked in ["grid: true", "xGrid: true\nyGrid: true"] {
         assert_eq!(
@@ -485,24 +418,8 @@ fn a_spec_that_sets_none_of_the_three_draws_both_sets_as_it_did() {
 /// switch the plot writes wins over it.
 #[test]
 fn a_plot_defaults_switch_reaches_the_plot_and_the_plots_own_wins() {
-    let inherited = painted("plotDefaults:\n  yGrid: false");
-    assert!(
-        inherited.horizontal().is_empty(),
-        "the plot inherits `yGrid: false`; got {:?}",
-        inherited.horizontal()
-    );
-    assert_a_rule_at_each_x_tick(
-        &inherited.vertical(),
-        &compose("plotDefaults:\n  yGrid: false"),
-        "an inherited `yGrid: false` leaves x at its default",
-    );
-
-    let overridden = painted("plotDefaults:\n  yGrid: false\nyGrid: true");
-    assert_a_rule_at_each_y_tick(
-        &overridden.horizontal(),
-        &compose("plotDefaults:\n  yGrid: false\nyGrid: true"),
-        "the plot's own `yGrid: true` over an inherited `false`",
-    );
+    assert_paints("plotDefaults:\n  yGrid: false", true, false);
+    assert_paints("plotDefaults:\n  yGrid: false\nyGrid: true", true, true);
 }
 
 /// **A value that is no `true` or `false` is named in the warning banner with

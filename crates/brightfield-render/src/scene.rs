@@ -2458,8 +2458,6 @@ mod tests {
                 })
                 .collect()
         };
-        let near =
-            |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() < 1e-3 && (a.1 - b.1).abs() < 1e-3;
 
         let (both_scene, scales) = build(GridLines { x: true, y: true });
         let none = points(&build(GridLines { x: false, y: false }).0);
@@ -2483,6 +2481,46 @@ mod tests {
         let vertical = |x: f64| [(x, top), (x, bottom)];
         let horizontal = |y: f64| [(left, y), (right, y)];
 
+        // A stroked line takes more than two points in the path stream, so what
+        // the rules should encode to is measured by stroking them through the
+        // encoder, as the grid does, rather than assumed. Runs are then compared
+        // a rule at a time, each point rounded to a thousandth of a pixel and
+        // the rules sorted, so the comparison holds the set of rules and not the
+        // order the x and y sets are drawn in.
+        let encoded = |rules: &[[(f64, f64); 2]]| -> Vec<(f64, f64)> {
+            let mut scene = Scene::new();
+            for rule in rules {
+                scene.stroke(
+                    &Stroke::new(0.5),
+                    Affine::IDENTITY,
+                    ChartInk::LIGHT.grid,
+                    None,
+                    &kurbo::Line::new(rule[0], rule[1]),
+                );
+            }
+            points(&scene)
+        };
+        let per_rule = encoded(&[vertical(x_ticks[0].position)]).len();
+        assert!(per_rule >= 2, "fixture check: a stroked line has points");
+        let as_rules = |run: &[(f64, f64)]| -> Vec<Vec<(i64, i64)>> {
+            assert_eq!(
+                run.len() % per_rule,
+                0,
+                "a run of {} points is not a whole number of rules at {per_rule} points a rule",
+                run.len()
+            );
+            let mut rules: Vec<Vec<(i64, i64)>> = run
+                .chunks(per_rule)
+                .map(|rule| {
+                    rule.iter()
+                        .map(|p| ((p.0 * 1000.0).round() as i64, (p.1 * 1000.0).round() as i64))
+                        .collect()
+                })
+                .collect();
+            rules.sort();
+            rules
+        };
+
         for (grid, label) in [
             (GridLines { x: true, y: true }, "both axes"),
             (GridLines { x: true, y: false }, "x only"),
@@ -2491,38 +2529,33 @@ mod tests {
         ] {
             let drawn = points(&build(grid).0);
             let added = drawn.len() - none.len();
-            let start = drawn.iter().zip(&none).take_while(|(a, b)| a == b).count();
-            assert_eq!(
-                drawn[start + added..],
-                none[start..],
-                "{label}: what the switches add is one run of points and the rest of the \
-                 scene is unchanged"
-            );
+            // Where the run sits: the earliest start after which the rest of the
+            // scene is what it is without the rules. The common prefix alone can
+            // overshoot, when a rule's first point is also the next point of
+            // the scene without it.
+            let common = drawn.iter().zip(&none).take_while(|(a, b)| a == b).count();
+            let start = (0..=common)
+                .find(|&at| drawn[at + added..] == none[at..])
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{label}: what the switches add is not one run of points with the rest \
+                         of the scene unchanged"
+                    )
+                });
 
-            let mut expected: Vec<(f64, f64)> = Vec::new();
+            let mut expected: Vec<[(f64, f64); 2]> = Vec::new();
             if grid.x {
-                for tick in &x_ticks {
-                    expected.extend(vertical(tick.position));
-                }
+                expected.extend(x_ticks.iter().map(|tick| vertical(tick.position)));
             }
             if grid.y {
-                for tick in &y_ticks {
-                    expected.extend(horizontal(tick.position));
-                }
+                expected.extend(y_ticks.iter().map(|tick| horizontal(tick.position)));
             }
-            let run = &drawn[start..start + added];
             assert_eq!(
-                run.len(),
-                expected.len(),
-                "{label}: one rule at each tick of an axis that draws, and none on one that does not"
+                as_rules(&drawn[start..start + added]),
+                as_rules(&encoded(&expected)),
+                "{label}: one rule at each tick of an axis that draws, none on one that does \
+                 not, each running the full data area at its tick"
             );
-            for (i, (got, want)) in run.iter().zip(&expected).enumerate() {
-                assert!(
-                    near(*got, *want),
-                    "{label}: point {i} of the rules is {got:?}, expected {want:?} — a rule runs \
-                     the full data area at its tick"
-                );
-            }
 
             // Under the marks: the dot's outline comes after the last rule.
             let dot_at = |scale: &Scale, value: f64| match scale {
