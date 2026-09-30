@@ -1692,7 +1692,7 @@ impl Session {
         self.count_rows(index, &rows_sql)
     }
 
-    /// [`Self::step_rows_count`] over only the rows `condition` keeps — the
+    /// [`Self::step_rows_count`] narrowed to the rows `condition` keeps — the
     /// count a grid sizes its scroll range from while it shows a view of the
     /// step.
     ///
@@ -1731,9 +1731,11 @@ impl Session {
     /// the last, so a condition carrying `; CREATE TABLE …` would run that
     /// statement on this session's connection. [`condition_statement_count`]
     /// counts `SELECT 1 WHERE <condition>` with DuckDB's own parser — the probe
-    /// `arc` counts before it records a condition — and only a count of one is
-    /// composed. The grid therefore never shows a view that `arc` could not
-    /// record.
+    /// `arc` counts before it records a condition — and a count of one is
+    /// composed while any other is refused, as
+    /// `a_condition_carrying_a_second_statement_is_refused_and_runs_nothing` in
+    /// `crates/brightfield-engine/tests/rows_under_condition.rs` reads. The
+    /// grid's read and `arc`'s record therefore refuse by one rule.
     ///
     /// The probe, not the composed query, is what is counted, because the
     /// probe is the text `arc` counts: the composed query's count depends on
@@ -1748,8 +1750,11 @@ impl Session {
     ///
     /// A condition may end in a `--` comment, `house_age > 40 -- note`. Written
     /// inline, the comment would run to the end of the query and swallow what
-    /// the caller wraps after it — the `LIMIT` and `OFFSET` of a window — so a
-    /// page would hold every row the condition keeps. The newline after the
+    /// the caller wraps after it — the `LIMIT` and `OFFSET` of a window — so
+    /// the first 1,000-row page would hold the 3,402 rows that condition keeps,
+    /// as `a_trailing_comment_swallows_neither_the_limit_nor_the_offset` in
+    /// `crates/brightfield-engine/tests/rows_under_condition.rs` measures when
+    /// the condition is written inline. The newline after the
     /// condition ends the comment. The parentheses keep it a condition: text
     /// that continues a query instead, `true UNION ALL SELECT …`, is a syntax
     /// error inside them rather than rows from somewhere else.
@@ -1850,7 +1855,7 @@ impl Session {
         self.window_rows(index, &rows_sql, offset, limit)
     }
 
-    /// [`Self::execute_step_rows_window`] over only the rows `condition`
+    /// [`Self::execute_step_rows_window`] narrowed to the rows `condition`
     /// keeps — the page a grid shows while it shows a view of the step. The
     /// view changes no state; see [`Self::step_rows_count_where`], whose rule
     /// for `condition` this read shares.
@@ -3828,11 +3833,12 @@ fn condition_statement_count(condition: &str) -> Result<usize, String> {
         return Err("the condition holds a NUL byte, which DuckDB cannot be handed".to_string());
     };
     // SAFETY: `db` and `con` stay null until DuckDB fills them and are checked
-    // for success before use; `extracted` is destroyed on every path once
-    // `duckdb_extract_statements` has been called, as DuckDB's API requires;
+    // for success before use; `extracted` is destroyed once
+    // `duckdb_extract_statements` has been called, whatever it returned, as
+    // DuckDB's API requires;
     // each handle is destroyed exactly once, in reverse order of creation. The
     // error string is copied out before `extracted`, which owns it, is
-    // destroyed. The only call made on the connection is
+    // destroyed. The one call made on the connection is
     // `duckdb_extract_statements`, which parses and runs nothing.
     unsafe {
         let mut db: ffi::duckdb_database = std::ptr::null_mut();

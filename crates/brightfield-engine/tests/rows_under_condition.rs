@@ -28,7 +28,7 @@ const HOUSING: &str = concat!(
     "/../brightfield-shell/assets/starts/california_housing.parquet"
 );
 
-/// Every row in [`HOUSING`].
+/// The rows [`HOUSING`] holds, counted with the DuckDB CLI.
 const ALL_ROWS: u64 = 16_640;
 
 /// The table a refused condition would create if any of it ran.
