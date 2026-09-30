@@ -48,6 +48,7 @@ use std::sync::OnceLock;
 use brightfield_keys::dispatch::{resolution_table, DispatchContext, ResolutionTable};
 use brightfield_keys::registry::{keymap_bindings, registry, BindingContext};
 use brightfield_spec::ast::{Mark, PlotNode, SpecValue, ValueOrParamRef};
+use brightfield_spec::vocab::is_colour_literal;
 use brightfield_workbench::channel::{self, ShelfChannel, BAND_HEIGHT};
 use brightfield_workbench::chrome;
 use meridian_design::{control, semantic, spacing, typography};
@@ -67,6 +68,9 @@ pub const PREVIEW: &str = "preview";
 /// What a channel bound to something other than a plain column reads: an
 /// aggregate, a transform, an expression or a param.
 pub const AN_EXPRESSION: &str = "an expression";
+
+/// The channel a colour column is bound through, as a spec writes it.
+const COLOUR_KEY: &str = "fill";
 
 /// The room a cell keeps between its edge and its contents.
 const PAD: f32 = spacing::SPACE_4;
@@ -138,7 +142,7 @@ impl ShelfChannels {
             mark: first.kind.wire_name().to_string(),
             x: bound("x", &marks),
             y: bound("y", &marks),
-            colour: bound("fill", painted),
+            colour: bound(COLOUR_KEY, painted),
         })
     }
 
@@ -155,8 +159,16 @@ impl ShelfChannels {
 }
 
 /// How `mark` binds `channel`: a plain column name, or something else.
+///
+/// **A colour written as a literal is no column.** The spec language writes
+/// `fill: steelblue` and `fill: weather` in one slot, and the string decides
+/// which: the renderer binds a literal as the mark's constant ink and anything
+/// else as a column. The map's ghost layer carries one, so reading it as a
+/// column would put a hex code in the colour cell. The cell reads as empty, as
+/// a channel with no column does.
 fn binding(mark: &Mark, channel: &str) -> Binding {
     match column_of(mark, channel) {
+        Some(name) if channel == COLOUR_KEY && is_colour_literal(name) => Binding::Unset,
         Some(name) => Binding::Column(name.to_string()),
         None => match mark.options.get(channel) {
             None | Some(ValueOrParamRef::Value(SpecValue::Null)) => Binding::Unset,
