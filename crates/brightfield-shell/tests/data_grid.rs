@@ -805,6 +805,123 @@ fn grid_snapshot(mode: Mode, name: &str) {
     harness.snapshot(name);
 }
 
+// ---------------------------------------------------------------------------
+// 4. The row under the pointer.
+// ---------------------------------------------------------------------------
+
+/// Every filled rect a frame painted **that reaches the screen**, flattened out
+/// of the shape tree.
+///
+/// The table offers each row to the delegate once per scrolling region, and a
+/// table with no sticky columns has a region whose clip shows nothing: a fill
+/// painted there is in the list and nowhere on the screen, so it is not counted.
+fn filled_rects(shapes: &[egui::epaint::ClippedShape]) -> Vec<egui::epaint::RectShape> {
+    fn walk(shape: &egui::Shape, clip: egui::Rect, out: &mut Vec<egui::epaint::RectShape>) {
+        match shape {
+            egui::Shape::Rect(r)
+                if r.fill != egui::Color32::TRANSPARENT && clip.intersect(r.rect).area() > 0.0 =>
+            {
+                out.push(r.clone());
+            }
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, clip, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for clipped in shapes {
+        walk(&clipped.shape, clipped.clip_rect, &mut out);
+    }
+    out
+}
+
+/// The fills painted over exactly `row` — the row's own rect, not a panel
+/// behind it.
+fn fills_over(shapes: &[egui::epaint::ClippedShape], row: egui::Rect) -> Vec<egui::Color32> {
+    filled_rects(shapes)
+        .into_iter()
+        .filter(|r| {
+            (r.rect.min - row.min).abs().max_elem() < 0.01
+                && (r.rect.max - row.max).abs().max_elem() < 0.01
+        })
+        .map(|r| r.fill)
+        .collect()
+}
+
+/// **A grid row fills under the pointer, and a striped row gives its stripe
+/// up for the fill and takes it back when the pointer leaves.**
+///
+/// Read off the paint list, against the exact rect the table reported for each
+/// row: at rest the even row draws nothing and the odd row draws its stripe; with
+/// the pointer on the odd row that one rect is the rows token's hover fill and
+/// the stripe is gone from it; with the pointer gone the stripe is back.
+#[test]
+fn a_grid_row_fills_under_the_pointer_and_keeps_its_stripe_elsewhere() {
+    let hover = brightfield_shell::design::to_color32(
+        meridian_design::semantic(false).rows.hover_background,
+    );
+    let mut harness = grid_harness(live_doc(BRUSH_DASHBOARD));
+    harness.run();
+    let rows = harness
+        .state()
+        .0
+        .grid_drawn()
+        .expect("the grid laid a table out")
+        .row_cells
+        .clone();
+    let rect_of = |n: u64| {
+        rows.iter()
+            .find(|(r, _, _)| *r == n)
+            .map(|(_, rect, _)| *rect)
+    };
+    let even = rect_of(0).expect("the table drew row 0");
+    let odd = rect_of(1).expect("the table drew row 1");
+
+    let rest = filled_rects(&harness.output().shapes);
+    assert!(
+        rest.iter().all(|r| r.fill != hover),
+        "a hover fill was painted with the pointer nowhere"
+    );
+    let shapes = &harness.output().shapes;
+    assert!(
+        fills_over(shapes, even).is_empty(),
+        "row 0 drew a fill at rest"
+    );
+    let stripe = fills_over(shapes, odd);
+    assert_eq!(
+        stripe.len(),
+        1,
+        "row 1 drew {stripe:?} at rest, not its stripe"
+    );
+    assert_ne!(stripe[0], hover, "the stripe is the hover fill");
+
+    harness.hover_at(odd.center());
+    harness.run();
+    let shapes = &harness.output().shapes;
+    assert_eq!(
+        fills_over(shapes, odd),
+        vec![hover],
+        "the row under the pointer is filled with the rows token's hover fill and nothing else"
+    );
+    assert!(
+        fills_over(shapes, even).is_empty(),
+        "the row the pointer is not on drew a fill"
+    );
+
+    harness.hover_at(even.center());
+    harness.run();
+    let shapes = &harness.output().shapes;
+    assert_eq!(
+        fills_over(shapes, even),
+        vec![hover],
+        "the pointer moved to row 0"
+    );
+    assert_eq!(
+        fills_over(shapes, odd),
+        stripe,
+        "row 1 did not take its stripe back when the pointer left it"
+    );
+}
+
 #[test]
 fn data_grid_light_snapshot() {
     grid_snapshot(Mode::Light, "data_grid_light");
