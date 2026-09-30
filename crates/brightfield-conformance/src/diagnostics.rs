@@ -158,6 +158,45 @@ impl LoadDiagnostics {
         }
     }
 
+    /// What a composition found once the data had typed its axes: the warnings
+    /// that no parse or analysis of the spec text alone could raise, worded as
+    /// every other warning is. Advisory throughout: each is a thing that drew
+    /// degraded, and none is a thing that did not draw.
+    #[must_use]
+    pub fn from_composition(warnings: &[ParseWarning]) -> Self {
+        Self {
+            source: None,
+            support: SupportReport::default(),
+            diagnostics: warnings
+                .iter()
+                .map(|warning| Diagnostic {
+                    severity: DiagnosticSeverity::Advisory,
+                    wire_name: warning_wire_name(warning),
+                    surface: warning_surface(warning),
+                    message: warning.to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    /// These diagnostics with `found` after them, dropping any of `found` that
+    /// is already here. The source and the preflight walk are these ones': what
+    /// a composition found has neither.
+    ///
+    /// A composition is rebuilt on every gesture and so is what it found, while
+    /// the load's diagnostics are kept; putting the two together each time
+    /// rather than storing one in the other is what stops a repaint repeating a
+    /// line.
+    #[must_use]
+    pub fn merged(mut self, found: Self) -> Self {
+        for diagnostic in found.diagnostics {
+            if !self.diagnostics.contains(&diagnostic) {
+                self.diagnostics.push(diagnostic);
+            }
+        }
+        self
+    }
+
     /// `true` iff the load found nothing to say.
     #[must_use]
     pub fn is_empty(&self) -> bool {

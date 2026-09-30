@@ -14,7 +14,9 @@
 
 use std::path::PathBuf;
 
-use brightfield_spec::layout::{collect_plot_nodes, read_tick_format, AxisFormat, TickFormatReading};
+use brightfield_spec::layout::{
+    collect_plot_nodes, read_tick_format, AxisFormat, TickFormatReading,
+};
 use brightfield_spec::{parse_spec_path, ParseWarning, SpecValue};
 
 fn corpus() -> Vec<PathBuf> {

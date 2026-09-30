@@ -27,6 +27,7 @@ use brightfield_engine::nearest::{NearestProbe, NearestRead};
 use brightfield_engine::{
     assemble_batches, DeclinedMark, Engine, NavigationExtent, RowsAudience, ScanTally, Session,
 };
+use brightfield_render::axis::{axis_kind, tick_format_crosses_axis, AxisKind};
 use brightfield_render::canvas_host::SurfaceRect;
 use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::ink::ChartInk;
@@ -51,10 +52,10 @@ use brightfield_spec::ast::{Component, MarkData, ParamNode, PlotNode, SpaceNode,
 use brightfield_spec::layout::{
     collect_plot_nodes, placed_plots, resolve_fixed_domains, resolve_plot_insets,
     resolve_plot_margins, resolve_plot_stack_offset, resolve_tick_counts, resolve_tick_formats,
-    Rect, StackOffset,
+    AxisFormat, Rect, StackOffset, TickFormats,
 };
 use brightfield_spec::vocab::MarkKind;
-use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, Spec};
+use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, ParseWarning, Spec};
 use brightfield_sql::emit::as_bound_selection_default;
 use brightfield_sql::ir::{Predicate, SampleRate, ScalarValue};
 use brightfield_sql::lower::{compile_selection, NO_SELF_EXCLUDE};
@@ -646,9 +647,13 @@ impl Composed {
     /// `self` for the reason [`Composed::with_run_state`] does: the
     /// attachment happens at the compose call site rather than as a mutation
     /// something else can forget to make.
+    ///
+    /// What the composition itself found (a tick format on an axis of the
+    /// other kind, known only once the data has typed the axes) is kept and put
+    /// after the load's, so attaching the load's diagnostics does not drop it.
     #[must_use]
     pub fn with_diagnostics(mut self, diagnostics: LoadDiagnostics) -> Self {
-        self.diagnostics = diagnostics;
+        self.diagnostics = diagnostics.merged(std::mem::take(&mut self.diagnostics));
         self
     }
 
@@ -1996,6 +2001,9 @@ fn compose_from_results(
     let mut channel_maps: Vec<ChannelMap> = Vec::with_capacity(marks.len());
     let mut kinds = Vec::with_capacity(marks.len());
     let mut mark_faults: Vec<MarkFault> = Vec::new();
+    // Tick formats that sit on an axis of the other kind, found per plot once
+    // its scales exist. See [`crossed_tick_formats`].
+    let mut crossed_formats: Vec<ParseWarning> = Vec::new();
     for (i, result) in results.into_iter().enumerate() {
         // Assemble EVERY materialised chunk into the one batch this mark draws,
         // not just the first ~2048-row chunk. A row-per-mark chart wider than one
@@ -2316,11 +2324,22 @@ fn compose_from_results(
             &plot_domains,
             &plot_pins,
             tick_counts,
-            tick_formats,
+            tick_formats.clone(),
             ink,
         );
         drop(refs);
         drop(chart_data);
+
+        for warning in plot_nodes
+            .iter()
+            .find(|(p, _)| *p == plot.path)
+            .map(|(_, node)| crossed_tick_formats(node, &tick_formats, &scales))
+            .unwrap_or_default()
+        {
+            if !crossed_formats.contains(&warning) {
+                crossed_formats.push(warning);
+            }
+        }
 
         if !fixed.is_empty() {
             let mut held = plot_pins;
@@ -2445,8 +2464,10 @@ fn compose_from_results(
         // Attached by the load path, which is the only place that holds the
         // ParseOutput. `compose_from_results` is also reached on every
         // re-present after an interaction, where re-deriving diagnostics from
-        // the spec alone would silently lose the parse warnings.
-        diagnostics: LoadDiagnostics::default(),
+        // the spec alone would silently lose the parse warnings. What is set here
+        // is only what this composition found itself, which `with_diagnostics`
+        // keeps when the load's are put beside it.
+        diagnostics: LoadDiagnostics::from_composition(&crossed_formats),
         // Live-queried this very composition — no materialised run output is
         // being previewed, so no currency claim is made (or owed). A caller
         // previewing run output annotates with `with_run_state`, ingesting
@@ -2460,6 +2481,48 @@ fn compose_from_results(
         // already fetched, and has no session to query.
         rows: None,
     })
+}
+
+/// The warnings for a plot's tick formats that sit on an axis of the other kind:
+/// a number format on a date axis, a date format on a number axis.
+///
+/// Known only here, where the data has typed the scales, and asked of
+/// [`tick_format_crosses_axis`], the same judge the axis draws through: a format
+/// it draws is never one this names, and a format it drops for its kind always is.
+/// The axis then draws its default text, which is what the warning says.
+fn crossed_tick_formats(
+    node: &PlotNode,
+    formats: &TickFormats,
+    scales: &ScaleSet,
+) -> Vec<ParseWarning> {
+    let mut out = Vec::new();
+    for (key, channel, format) in [
+        ("xTickFormat", Channel::X, &formats.x),
+        ("yTickFormat", Channel::Y, &formats.y),
+    ] {
+        let (Some(format), Some(scale)) = (format, scales.get(channel)) else {
+            continue;
+        };
+        if !tick_format_crosses_axis(scale, format) {
+            continue;
+        }
+        let Some(SpecValue::String(value)) = node.attributes.get(key) else {
+            continue;
+        };
+        out.push(ParseWarning::TickFormatOnWrongAxis {
+            attribute: key.to_string(),
+            value: value.clone(),
+            format: match format {
+                AxisFormat::Number(_) => "number",
+                AxisFormat::Date(_) => "date",
+            }
+            .to_string(),
+            axis: axis_kind(scale)
+                .map_or("positional", AxisKind::word)
+                .to_string(),
+        });
+    }
+    out
 }
 
 /// The `(ghost, subset)` mark indices of the first ghost/subset device this

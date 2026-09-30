@@ -925,8 +925,8 @@ mod tests {
     /// are drawn at: the same two axes d3-scale's `tickFormat` is given in its
     /// own tests of the rule.
     fn labels_under(scale: &Scale, spec: Option<&str>) -> Vec<String> {
-        let format = spec
-            .map(|s| AxisFormat::Number(NumberFormat::parse(s).expect("a number format")));
+        let format =
+            spec.map(|s| AxisFormat::Number(NumberFormat::parse(s).expect("a number format")));
         compute_ticks_formatted(scale, 5, format.as_ref())
             .into_iter()
             .map(|tick| tick.label)

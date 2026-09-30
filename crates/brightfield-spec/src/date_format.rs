@@ -316,7 +316,14 @@ impl Instant {
             'g' => out.push_str(&zero(self.iso_year() % 100, 2)),
             'G' => out.push_str(&zero(self.iso_year() % 10_000, 4)),
             'H' => out.push_str(&zero(self.hour, 2)),
-            'I' => out.push_str(&zero(if self.hour % 12 == 0 { 12 } else { self.hour % 12 }, 2)),
+            'I' => out.push_str(&zero(
+                if self.hour % 12 == 0 {
+                    12
+                } else {
+                    self.hour % 12
+                },
+                2,
+            )),
             'j' => out.push_str(&zero(self.yday + 1, 3)),
             'L' => out.push_str(&zero(self.milli, 3)),
             'm' => out.push_str(&zero(self.month, 2)),
@@ -344,7 +351,8 @@ impl Instant {
     /// A composite directive's expansion: fixed text that is a specifier of this
     /// module's own.
     fn write_all(&self, spec: &str, out: &mut String) {
-        let format = DateFormat::parse(spec).expect("a composite directive is a readable specifier");
+        let format =
+            DateFormat::parse(spec).expect("a composite directive is a readable specifier");
         for segment in &format.segments {
             match segment {
                 Segment::Literal(text) => out.push_str(text),
@@ -462,10 +470,7 @@ mod tests {
 
     #[test]
     fn a_day_is_read_only_as_a_real_iso_date() {
-        assert_eq!(
-            iso_date_micros("2024-03-01"),
-            Some(at(2024, 3, 1, 0, 0, 0))
-        );
+        assert_eq!(iso_date_micros("2024-03-01"), Some(at(2024, 3, 1, 0, 0, 0)));
         for not in [
             "2024-3-01",
             "2024-02-30",
