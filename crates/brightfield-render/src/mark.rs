@@ -786,7 +786,7 @@ fn dot_position(
 /// [`Scale::Sequential`] they map through.
 ///
 /// `None` from [`NumberFill::of`] answers a fill that is not a number column on a
-/// ramp — a colour literal, a string column, no fill channel at all — and those
+/// ramp — a colour literal, a string column, no fill channel — and those
 /// keep [`resolve_colour`], which painted them before a dot had a ramp. A fill
 /// scale reaches here when [`DotRenderer::augment_scales`] (or a co-rendered
 /// mark) left it a `Sequential`, so a `Time` scale under a timestamp fill, or a
