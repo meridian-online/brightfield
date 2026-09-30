@@ -3761,9 +3761,9 @@ impl MeridianApp {
         // reloads the Protocol document, and a frame should draw the state the
         // run left rather than one frame of the state before it.
         self.poll_run(&ctx);
-        // A close request that arrived with this frame, before anything can
-        // draw over it: it is the operating system's, or the window's own
-        // close coming back, and `Self::closing` tells them apart.
+        // A close request that arrived with this frame, read ahead of the
+        // draw: it is the operating system's, or the window's own close
+        // coming back, and `Self::closing` tells them apart.
         self.observe_close_request(&ctx);
         // The mark, once per window: both the controls that draw it are below
         // this line and either can be the first to run, so neither owns the
