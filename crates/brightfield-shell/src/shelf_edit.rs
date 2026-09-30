@@ -29,12 +29,15 @@
 //! through a selection (`filterBy:`), and on the first mark when no mark reads
 //! through one, which `a_plot_with_no_selected_layer_takes_the_colour_on_its_first_mark`
 //! holds. The page's legend is drawn from the plot's fill scale, and this
-//! module does not place it. The dot renderer builds a fill scale a legend can be drawn from
-//! for a column of strings and does not for a column of numbers, so a number
-//! column put on colour reaches the page as a linear fill scale over the
-//! column's range, in the mark ink and with no legend.
+//! module does not place it. The dot renderer builds a fill scale a legend can
+//! be drawn from for a column of strings and for a column of numbers, so the
+//! column put on colour reaches the page as a legend over its range, and the
+//! highlighted points are painted by it.
 //! `a_column_put_on_the_maps_colour_paints_the_highlighted_layer_and_keeps_the_ghost_ink`
-//! holds it on the map's two layers.
+//! holds the spec on the map's two layers, and
+//! `a_column_put_on_the_maps_colour_draws_a_legend_beside_the_plot_and_a_replaced_colour_moves_it`
+//! and `the_highlighted_points_wear_the_ramp_and_the_ghost_points_keep_their_ink`
+//! hold the page.
 //!
 //! **The edit comes back as the edits applied, in order**, because Save writes
 //! the edits since the last Save into the chart file's text one at a time.
