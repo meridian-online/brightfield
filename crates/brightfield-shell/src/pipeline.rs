@@ -2488,8 +2488,9 @@ fn compose_from_results(
 /// a number format on a date axis, a date format on a number axis.
 ///
 /// Known here, where the data has typed the scales, and asked of
-/// [`tick_format_crosses_axis`], the same judge the axis draws through: a format
-/// it draws is never one this names, and a format it drops for its kind always is.
+/// [`tick_format_crosses_axis`], the same judge the axis draws through, so a
+/// format the axis drops for its kind is named here
+/// (`a_format_of_the_other_kind_is_named_and_the_axis_draws_its_default_text`).
 /// The axis then draws its default text, which is what the warning says.
 fn crossed_tick_formats(
     node: &PlotNode,
