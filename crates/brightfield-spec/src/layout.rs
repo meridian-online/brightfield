@@ -983,6 +983,67 @@ pub fn resolve_tick_formats(plot: &PlotNode) -> TickFormats {
     }
 }
 
+/// Which positional axes draw gridlines behind the marks.
+///
+/// A pure spec reading, like [`TickCounts`]: it says what the author asked for
+/// and holds no opinion about what a scene then does with it. Each axis
+/// resolves in three steps: the key that names the axis (`xGrid`, `yGrid`)
+/// when it holds a switch, else the bare `grid` when it holds one, else the
+/// default, which is to draw. A plot that sets none of the three draws the
+/// gridlines it drew before these keys were read, and the axis key outranks
+/// the bare one: `grid: true` with `xGrid: false` draws the horizontal rules
+/// and leaves the vertical ones out.
+///
+/// A value that is no switch reads as absent — [`grid_switch`] is the judge,
+/// and [`crate::parse::ParseWarning::InvalidGridSwitch`] names it at parse
+/// time, exactly as [`resolve_tick_counts`]'s malformed count is named by
+/// `InvalidTickCount` rather than by this resolver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GridLines {
+    /// Whether the x axis draws its vertical rules, one at each x tick.
+    pub x: bool,
+    /// Whether the y axis draws its horizontal rules, one at each y tick.
+    pub y: bool,
+}
+
+impl Default for GridLines {
+    /// Both axes draw: the gridlines a plot drew before `grid`, `xGrid` and
+    /// `yGrid` were read.
+    fn default() -> Self {
+        Self { x: true, y: true }
+    }
+}
+
+/// The one judge of a `grid` / `xGrid` / `yGrid` value: the switch it sets.
+///
+/// A literal `true` or `false` is a switch. A colour string, a number, a list,
+/// `null` and a lifted `$param` are no switch this build reads. `None` is not
+/// itself a warning: a lifted `$param` is a recorded deferral and resolves to
+/// it silently. The parser asks this same function to decide which `None`s are
+/// malformed values to name, so the resolver and the warning cannot disagree
+/// about what a valid switch is.
+#[must_use]
+pub fn grid_switch(value: &SpecValue) -> Option<bool> {
+    match value {
+        SpecValue::Bool(on) => Some(*on),
+        _ => None,
+    }
+}
+
+/// Resolve a plot's `grid` / `xGrid` / `yGrid` from its attributes.
+/// Literal-only and per-axis, the same reading [`resolve_tick_counts`] gives
+/// its keys, with the axis key outranking the bare one.
+#[must_use]
+pub fn resolve_grid_lines(plot: &PlotNode) -> GridLines {
+    let read = |key: &str| plot.attributes.get(key).and_then(grid_switch);
+    let both = read("grid");
+    let default = GridLines::default();
+    GridLines {
+        x: read("xGrid").or(both).unwrap_or(default.x),
+        y: read("yGrid").or(both).unwrap_or(default.y),
+    }
+}
+
 /// Which positional axis a plot attribute speaks about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlotAxis {
@@ -3511,6 +3572,154 @@ plot:
             resolve_tick_counts(nodes[0].1).x,
             Some(3),
             "the plot sets no xTicks of its own; the plotDefaults value should reach it"
+        );
+    }
+
+    // --- gridlines (`grid` / `xGrid` / `yGrid`) ---
+
+    /// A plot that sets none of the three keys draws gridlines on both axes,
+    /// the reading it had before the keys were read. A plot that only asks for
+    /// them on is asking for what it already got.
+    #[test]
+    fn a_plot_that_sets_no_grid_key_draws_gridlines_on_both_axes() {
+        let both = GridLines { x: true, y: true };
+        assert_eq!(GridLines::default(), both);
+        assert_eq!(resolve_grid_lines(&plot_with(&[])), both);
+        assert_eq!(
+            resolve_grid_lines(&plot_with(&[("grid", SpecValue::Bool(true))])),
+            both
+        );
+        assert_eq!(
+            resolve_grid_lines(&plot_with(&[("yGrid", SpecValue::Bool(true))])),
+            both,
+            "`yGrid: true` alone leaves x at its default rather than turning it off"
+        );
+    }
+
+    /// Each axis is read on its own key, and neither reaches across.
+    #[test]
+    fn an_axis_grid_key_is_read_on_its_own_axis() {
+        assert_eq!(
+            resolve_grid_lines(&plot_with(&[("yGrid", SpecValue::Bool(false))])),
+            GridLines { x: true, y: false }
+        );
+        assert_eq!(
+            resolve_grid_lines(&plot_with(&[("xGrid", SpecValue::Bool(false))])),
+            GridLines { x: false, y: true }
+        );
+        assert_eq!(
+            resolve_grid_lines(&plot_with(&[
+                ("xGrid", SpecValue::Bool(false)),
+                ("yGrid", SpecValue::Bool(false)),
+            ])),
+            GridLines { x: false, y: false }
+        );
+    }
+
+    /// **The key that names an axis outranks the bare `grid`.** `grid: true`
+    /// with `xGrid: false` draws the horizontal rules and not the vertical
+    /// ones, and the mirror case turns one axis on under a bare `grid: false`.
+    #[test]
+    fn the_key_that_names_an_axis_outranks_the_bare_grid() {
+        let on = SpecValue::Bool(true);
+        let off = SpecValue::Bool(false);
+        let cases: [(&[(&str, &SpecValue)], GridLines); 5] = [
+            (&[("grid", &off)], GridLines { x: false, y: false }),
+            (
+                &[("grid", &on), ("xGrid", &off)],
+                GridLines { x: false, y: true },
+            ),
+            (
+                &[("grid", &on), ("yGrid", &off)],
+                GridLines { x: true, y: false },
+            ),
+            (
+                &[("grid", &off), ("xGrid", &on)],
+                GridLines { x: true, y: false },
+            ),
+            (
+                &[("grid", &off), ("xGrid", &on), ("yGrid", &on)],
+                GridLines { x: true, y: true },
+            ),
+        ];
+        for (attrs, expected) in cases {
+            let owned: Vec<(&str, SpecValue)> =
+                attrs.iter().map(|(k, v)| (*k, (*v).clone())).collect();
+            assert_eq!(
+                resolve_grid_lines(&plot_with(&owned)),
+                expected,
+                "the reading of {attrs:?}"
+            );
+        }
+    }
+
+    /// A value that is no switch reads as absent, so the axis falls through to
+    /// the bare `grid` and then to the default. The judge is
+    /// [`grid_switch`], the same one the parser's warning asks.
+    #[test]
+    fn a_value_that_is_no_grid_switch_reads_as_absent() {
+        let draws = GridLines { x: true, y: true };
+        let no_switches = [
+            SpecValue::String("off".to_string()),
+            SpecValue::String("false".to_string()),
+            SpecValue::Integer(0),
+            SpecValue::Null,
+            SpecValue::Array(vec![]),
+            SpecValue::Param(ParamRef::new("g")),
+        ];
+        for value in no_switches {
+            assert_eq!(grid_switch(&value), None, "the judge on {value:?}");
+            assert_eq!(
+                resolve_grid_lines(&plot_with(&[("yGrid", value.clone())])),
+                draws,
+                "`yGrid: {value:?}` is read as absent, so the default draws"
+            );
+            assert_eq!(
+                resolve_grid_lines(&plot_with(&[
+                    ("grid", SpecValue::Bool(false)),
+                    ("yGrid", value.clone()),
+                ])),
+                GridLines { x: false, y: false },
+                "`yGrid: {value:?}` is read as absent, so the bare `grid: false` decides"
+            );
+        }
+        assert_eq!(grid_switch(&SpecValue::Bool(true)), Some(true));
+        assert_eq!(grid_switch(&SpecValue::Bool(false)), Some(false));
+    }
+
+    /// A `plotDefaults` switch reaches a plot that writes none of its own, and
+    /// a switch the plot writes wins over it — the merge in `walk_plot` is
+    /// key-agnostic and keeps the plot's own value.
+    #[test]
+    fn a_plot_defaults_grid_key_reaches_a_plot_that_does_not_set_its_own() {
+        let parsed = parse_spec(
+            r"
+data:
+  t:
+    - { x: 1, y: 2 }
+plotDefaults:
+  yGrid: false
+vconcat:
+  - plot:
+      - { mark: dot, data: { from: t }, x: x, y: y }
+  - plot:
+      - { mark: dot, data: { from: t }, x: x, y: y }
+    yGrid: true
+",
+            Format::Yaml,
+        )
+        .expect("parse");
+        let nodes = collect_plot_nodes(&parsed.spec);
+        assert_eq!(nodes.len(), 2, "two plots");
+        assert_eq!(
+            resolve_grid_lines(nodes[0].1),
+            GridLines { x: true, y: false },
+            "the first plot sets no yGrid of its own; the plotDefaults value should reach it"
+        );
+        assert_eq!(
+            resolve_grid_lines(nodes[1].1),
+            GridLines { x: true, y: true },
+            "the second plot writes yGrid: true, which wins over the default"
         );
     }
 

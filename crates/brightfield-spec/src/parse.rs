@@ -441,6 +441,20 @@ pub enum ParseWarning {
         attribute: String,
     },
 
+    /// A plot-level gridline attribute (`grid`, `xGrid`, `yGrid`) carried a
+    /// value that is neither a literal `true` nor a literal `false`: a colour
+    /// string, a number, `null`, a list. This build reads no other value at
+    /// these keys, so the key is ignored and the plot draws the gridlines it
+    /// draws without it. This names the key so an author sees the typo rather
+    /// than silently losing the setting.
+    ///
+    /// [`crate::layout::grid_switch`] is the sole judge of what a switch is,
+    /// so a form a later build reads narrows this warning in the same edit.
+    InvalidGridSwitch {
+        /// The offending attribute key.
+        attribute: String,
+    },
+
     /// A plot-level tick-format attribute (`xTickFormat`, `yTickFormat`) carried
     /// a value that is neither a d3-format number specifier nor a d3-time-format
     /// date specifier: `~~`, `.f`, a number, a list. The axis degrades to its
@@ -755,6 +769,10 @@ impl fmt::Display for ParseWarning {
                 "plot attribute `{attribute}` is not a whole number from 1 to {} — ticks fall back to the default count",
                 crate::layout::MAX_TICK_COUNT
             ),
+            Self::InvalidGridSwitch { attribute } => write!(
+                f,
+                "plot attribute `{attribute}` is not `true` or `false` — the key is ignored and gridlines draw as they do without it"
+            ),
             Self::InvalidTickFormat { attribute, value } => write!(
                 f,
                 "plot attribute `{attribute}` is `{value}`, which is neither a number format nor a date format — ticks draw their default text"
@@ -1023,6 +1041,16 @@ impl Walker {
                     for key in PLOT_TICK_FORMAT_KEYS {
                         if let Some(v) = defaults.get(key) {
                             self.warn_tick_format(key, v);
+                        }
+                    }
+                    for key in PLOT_GRID_KEYS {
+                        if defaults
+                            .get(key)
+                            .is_some_and(|v| !is_grid_switch_or_deferred(v))
+                        {
+                            self.warnings.push(ParseWarning::InvalidGridSwitch {
+                                attribute: key.to_string(),
+                            });
                         }
                     }
                     self.plot_defaults = defaults.clone();
@@ -1442,6 +1470,15 @@ impl Walker {
             // `null` are deferrals, not typos.
             if PLOT_TICK_FORMAT_KEYS.contains(&key.as_str()) {
                 self.warn_tick_format(&key, &value);
+            }
+            // A plot-level gridline attribute (`grid`, `xGrid`, `yGrid`) that is
+            // no literal `true` or `false` is ignored and the plot draws its
+            // default gridlines; name it so the author sees the typo. A lifted
+            // `$param` is a recorded deferral, not a typo — don't warn.
+            if PLOT_GRID_KEYS.contains(&key.as_str()) && !is_grid_switch_or_deferred(&value) {
+                self.warnings.push(ParseWarning::InvalidGridSwitch {
+                    attribute: key.clone(),
+                });
             }
             // A plot-level `projectionType` that names a projection v1 can't
             // render (or a non-string value) is not drawn through: a `geo` mark
@@ -2413,6 +2450,10 @@ const PLOT_TICK_COUNT_KEYS: [&str; 2] = ["xTicks", "yTicks"];
 /// The plot attributes that set an axis's tick format.
 const PLOT_TICK_FORMAT_KEYS: [&str; 2] = ["xTickFormat", "yTickFormat"];
 
+/// The plot attributes that switch gridlines on or off: the bare `grid` for
+/// both axes, and each axis's own key.
+const PLOT_GRID_KEYS: [&str; 3] = ["grid", "xGrid", "yGrid"];
+
 /// A tick-format value as [`ParseWarning::InvalidTickFormat`] shows it: what
 /// the author wrote, where it can be written on one line.
 fn tick_format_text(value: &SpecValue) -> String {
@@ -2432,6 +2473,15 @@ fn tick_format_text(value: &SpecValue) -> String {
 /// the warning names.
 fn is_tick_count_or_deferred(value: &SpecValue) -> bool {
     matches!(value, SpecValue::Param(_)) || crate::layout::tick_count_target(value).is_some()
+}
+
+/// Whether a `grid` / `xGrid` / `yGrid` value is one
+/// [`ParseWarning::InvalidGridSwitch`] should stay silent about: a switch, as
+/// [`crate::layout::grid_switch`] judges it, or a lifted `$param`, a recorded
+/// deferral rather than a typo. Anything else is the malformed case the
+/// warning names.
+fn is_grid_switch_or_deferred(value: &SpecValue) -> bool {
+    matches!(value, SpecValue::Param(_)) || crate::layout::grid_switch(value).is_some()
 }
 
 /// Column names per inline data source, keyed by the `data:` entry's name.
@@ -3536,6 +3586,86 @@ plot:
                 .warnings
                 .iter()
                 .any(|w| matches!(w, ParseWarning::InvalidTickCount { .. })),
+            "a valid default must not warn; got {:?}",
+            good.warnings
+        );
+    }
+
+    fn grid_switch_warnings(out: &ParseOutput) -> Vec<&str> {
+        out.warnings
+            .iter()
+            .filter_map(|w| match w {
+                ParseWarning::InvalidGridSwitch { attribute } => Some(attribute.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A gridline attribute that is no literal `true` or `false` is ignored by
+    /// the resolver and named by the parser, so a plot that meant to leave its
+    /// gridlines out and wrote `"off"` hears that the key was dropped. A literal
+    /// switch and a lifted `$param` stay silent.
+    #[test]
+    fn an_invalid_grid_switch_warns_but_a_switch_and_a_param_stay_silent() {
+        let spec = |attr: &str| {
+            format!(
+                "params:\n  g: true\ndata:\n  t:\n    - {{ x: 1, y: 2 }}\nplot:\n  - {{ mark: dot, data: {{ from: t }}, x: x, y: y }}\n{attr}\n"
+            )
+        };
+        for (attr, key) in [
+            ("yGrid: 'off'", "yGrid"),
+            ("xGrid: 0", "xGrid"),
+            ("grid: null", "grid"),
+            ("grid: '#eeeeee'", "grid"),
+            ("yGrid: [1, 2]", "yGrid"),
+        ] {
+            let out = parse_spec(&spec(attr), Format::Yaml).expect("parses despite a bad switch");
+            assert_eq!(
+                grid_switch_warnings(&out),
+                vec![key],
+                "`{attr}` must warn once, naming `{key}`; got {:?}",
+                out.warnings
+            );
+        }
+        for silent in [
+            "grid: true",
+            "grid: false",
+            "xGrid: false",
+            "yGrid: true",
+            "yGrid: $g",
+        ] {
+            let out = parse_spec(&spec(silent), Format::Yaml).expect("parses");
+            assert!(
+                grid_switch_warnings(&out).is_empty(),
+                "`{silent}` must not warn; got {:?}",
+                out.warnings
+            );
+        }
+    }
+
+    /// A malformed gridline switch under `plotDefaults` is named once, where it
+    /// is declared, however many plots inherit it — the same reasoning as
+    /// [`a_bad_plot_defaults_tick_count_warns_once_however_many_plots_inherit_it`].
+    #[test]
+    fn a_bad_plot_defaults_grid_switch_warns_once_however_many_plots_inherit_it() {
+        let two_plots = |defaults: &str| {
+            format!(
+                "data:\n  t:\n    - {{ x: 1, y: 2 }}\nplotDefaults:\n  {defaults}\nvconcat:\n  \
+                 - plot:\n      - {{ mark: dot, data: {{ from: t }}, x: x, y: y }}\n  \
+                 - plot:\n      - {{ mark: dot, data: {{ from: t }}, x: x, y: y }}\n"
+            )
+        };
+        let bad = parse_spec(&two_plots("yGrid: 'off'"), Format::Yaml).expect("parses");
+        assert_eq!(
+            grid_switch_warnings(&bad),
+            vec!["yGrid"],
+            "one InvalidGridSwitch for the one default; got {:?}",
+            bad.warnings
+        );
+
+        let good = parse_spec(&two_plots("yGrid: false"), Format::Yaml).expect("parses");
+        assert!(
+            grid_switch_warnings(&good).is_empty(),
             "a valid default must not warn; got {:?}",
             good.warnings
         );
