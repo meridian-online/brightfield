@@ -186,19 +186,6 @@ fn a_spec_that_sets_no_tick_format_draws_the_text_it_always_drew() {
     );
 }
 
-/// A date format is a Mosaic format this build does not read yet. It draws the
-/// default text and says nothing, so a valid spec is not reported as broken
-/// while the format waits on its reader.
-#[test]
-fn a_date_tick_format_draws_the_default_text_and_says_nothing() {
-    let composed = compose_to(100.0, "xTickFormat: '%b'");
-    assert_eq!(
-        painted_x(&composed),
-        strs(&["0", "20", "40", "60", "80", "100"])
-    );
-    assert!(said(&composed).is_empty(), "{:?}", said(&composed));
-}
-
 // ---------------------------------------------------------------------------
 // AC1 — a precision in the format
 // ---------------------------------------------------------------------------

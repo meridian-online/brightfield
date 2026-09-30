@@ -442,23 +442,56 @@ pub enum ParseWarning {
     },
 
     /// A plot-level tick-format attribute (`xTickFormat`, `yTickFormat`) carried
-    /// a value that is not a d3-format number specifier: `~~`, `.f`, a number,
-    /// a list. A date format (`%b`) and a `$param` are not this, since a build
-    /// that does not read a date format yet leaves it to draw the default text
-    /// without a word. The axis degrades to its default tick text, and this
-    /// names the key and the value so an author sees the typo rather than
-    /// silently losing the format.
+    /// a value that is neither a d3-format number specifier nor a d3-time-format
+    /// date specifier: `~~`, `.f`, a number, a list. The axis degrades to its
+    /// default tick text, and this names the key and the value so an author sees
+    /// the typo rather than silently losing the format.
     ///
-    /// [`crate::layout::is_tick_format_or_deferred`] is the sole judge of what
-    /// to stay silent about, and [`crate::number_format::NumberFormat::parse`]
-    /// of what a number format is, so a form a later build reads narrows this
-    /// warning in the same edit.
+    /// [`crate::layout::read_tick_format`] is the sole judge of what a format is,
+    /// so a form a later build reads narrows this warning in the same edit.
     InvalidTickFormat {
         /// The offending attribute key.
         attribute: String,
         /// What the attribute held, as written: the string itself, a number's
         /// digits, or `<non-string>` for a list or map.
         value: String,
+    },
+
+    /// A plot-level tick-format attribute held a date specifier with a directive
+    /// this build does not read: `%K`, or a `%` with nothing after it. The axis
+    /// degrades to its default tick text, and this names the key, the value and
+    /// the directive, because a date specifier is otherwise a valid one and the
+    /// directive alone says what to change.
+    ///
+    /// [`crate::date_format::DateFormat::parse`] is the sole judge of which
+    /// directives are read.
+    UnreadDateDirective {
+        /// The offending attribute key.
+        attribute: String,
+        /// The specifier as written.
+        value: String,
+        /// The directive this build does not read, with its `%` and any padding
+        /// modifier: `%K`, `%-K`.
+        directive: String,
+    },
+
+    /// A plot-level tick format is a kind the axis it sits on cannot draw: a
+    /// number format on a date axis, or a date format on a number axis. The
+    /// axis draws its default text. This is known only once the data has typed
+    /// the axis, so it is raised where the composition finds the scales, not at
+    /// parse time; it names the key, the value and both kinds.
+    ///
+    /// `brightfield_render::axis::tick_format_crosses_axis` is the sole judge, and
+    /// the axis draws through it, so the warning and the drawing cannot disagree.
+    TickFormatOnWrongAxis {
+        /// The offending attribute key.
+        attribute: String,
+        /// The specifier as written.
+        value: String,
+        /// The kind of format it is: `number` or `date`.
+        format: String,
+        /// The kind of axis it sits on: `number` or `date`.
+        axis: String,
     },
 
     /// A plot's `projectionType` carried a value outside Mosaic's
@@ -724,7 +757,24 @@ impl fmt::Display for ParseWarning {
             ),
             Self::InvalidTickFormat { attribute, value } => write!(
                 f,
-                "plot attribute `{attribute}` is `{value}`, which is not a number format — ticks draw their default text"
+                "plot attribute `{attribute}` is `{value}`, which is neither a number format nor a date format — ticks draw their default text"
+            ),
+            Self::UnreadDateDirective {
+                attribute,
+                value,
+                directive,
+            } => write!(
+                f,
+                "plot attribute `{attribute}` is `{value}`, and `{directive}` in it is not a date directive this build reads — ticks draw their default text"
+            ),
+            Self::TickFormatOnWrongAxis {
+                attribute,
+                value,
+                format,
+                axis,
+            } => write!(
+                f,
+                "plot attribute `{attribute}` is `{value}`, a {format} format on a {axis} axis — ticks draw their default text"
             ),
             Self::UnknownProjection { value } => write!(
                 f,
@@ -971,14 +1021,8 @@ impl Walker {
                         }
                     }
                     for key in PLOT_TICK_FORMAT_KEYS {
-                        if let Some(v) = defaults
-                            .get(key)
-                            .filter(|v| !crate::layout::is_tick_format_or_deferred(v))
-                        {
-                            self.warnings.push(ParseWarning::InvalidTickFormat {
-                                attribute: key.to_string(),
-                                value: tick_format_text(v),
-                            });
+                        if let Some(v) = defaults.get(key) {
+                            self.warn_tick_format(key, v);
                         }
                     }
                     self.plot_defaults = defaults.clone();
@@ -1392,16 +1436,12 @@ impl Walker {
                 });
             }
             // A plot-level tick-format attribute (`xTickFormat`, `yTickFormat`)
-            // that is not a d3-format number specifier degrades to the axis's
-            // default tick text; name it, with what was written. A `$param`,
-            // `null` and a date format are deferrals, not typos.
-            if PLOT_TICK_FORMAT_KEYS.contains(&key.as_str())
-                && !crate::layout::is_tick_format_or_deferred(&value)
-            {
-                self.warnings.push(ParseWarning::InvalidTickFormat {
-                    attribute: key.clone(),
-                    value: tick_format_text(&value),
-                });
+            // that is no number format and no date format, or a date format with
+            // a directive this build does not read, degrades to the axis's
+            // default tick text; name it, with what was written. A `$param` and
+            // `null` are deferrals, not typos.
+            if PLOT_TICK_FORMAT_KEYS.contains(&key.as_str()) {
+                self.warn_tick_format(&key, &value);
             }
             // A plot-level `projectionType` that names a projection v1 can't
             // render (or a non-string value) is not drawn through: a `geo` mark
@@ -1763,6 +1803,30 @@ impl Walker {
                 channel: field.to_string(),
                 transform: key.to_string(),
             });
+    }
+
+    /// Raise the warning a `xTickFormat` / `yTickFormat` value earns, if any.
+    ///
+    /// ONE function for the plot attribute and `plotDefaults`, asking
+    /// [`crate::layout::read_tick_format`] — the same question the resolver
+    /// asks — so a value the axis drops is a value that was named. A format this
+    /// build reads, `null` and a lifted `$param` say nothing.
+    fn warn_tick_format(&mut self, key: &str, value: &SpecValue) {
+        use crate::layout::{read_tick_format, TickFormatReading};
+        match read_tick_format(value) {
+            TickFormatReading::Format(_) | TickFormatReading::Deferred => {}
+            TickFormatReading::Invalid => self.warnings.push(ParseWarning::InvalidTickFormat {
+                attribute: key.to_string(),
+                value: tick_format_text(value),
+            }),
+            TickFormatReading::UnreadDirective(directive) => {
+                self.warnings.push(ParseWarning::UnreadDateDirective {
+                    attribute: key.to_string(),
+                    value: tick_format_text(value),
+                    directive,
+                });
+            }
+        }
     }
 
     /// Raise [`ParseWarning::UnknownProjection`] when `value` is a
@@ -3489,10 +3553,10 @@ plot:
             .collect()
     }
 
-    /// A tick format that is no number format degrades to the axis's default
-    /// text AND names the key and the value: `xTickFormat: "~~"` is the card's
-    /// own example. A format the reader takes, a date format, `null` and a
-    /// lifted `$param` say nothing.
+    /// A tick format that is neither a number format nor a date format degrades
+    /// to the axis's default text AND names the key and the value:
+    /// `xTickFormat: "~~"` is the card's own example. A format the reader takes,
+    /// a date format, `null` and a lifted `$param` say nothing.
     #[test]
     fn invalid_tick_format_warns_but_a_format_a_date_and_a_param_defer() {
         let spec = |attr: &str| {
@@ -3519,7 +3583,8 @@ plot:
         );
 
         // The formats of the vendored corpus, the specifiers d3-format reads
-        // that it does not, a date format, `null` and a `$param`: silent.
+        // that it does not, the date formats this build reads, `null` and a
+        // `$param`: silent.
         for ok in [
             "xTickFormat: s",
             "yTickFormat: d",
@@ -3551,6 +3616,59 @@ plot:
                 "`{bad}` must warn"
             );
         }
+    }
+
+    fn unread_directive_warnings(out: &ParseOutput) -> Vec<(&str, &str, &str)> {
+        out.warnings
+            .iter()
+            .filter_map(|w| match w {
+                ParseWarning::UnreadDateDirective {
+                    attribute,
+                    value,
+                    directive,
+                } => Some((attribute.as_str(), value.as_str(), directive.as_str())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A date format with a directive this build does not read degrades to the
+    /// axis's default text AND names the key, the value and the directive. It
+    /// is a different warning from a value that is no format at all, and the two
+    /// never both fire for one value.
+    #[test]
+    fn a_date_format_with_an_unread_directive_names_the_key_the_value_and_the_directive() {
+        let spec = |attr: &str| {
+            format!(
+                "data:\n  t:\n    - {{ x: 1, y: 2 }}\nplot:\n  - {{ mark: dot, data: {{ from: t }}, x: x, y: y }}\n{attr}\n"
+            )
+        };
+
+        for (written, directive) in [
+            ("%K", "%K"),
+            ("%Y-%-K", "%-K"),
+            ("%b %", "%"),
+            ("%Y-%m-%F", "%F"),
+        ] {
+            let out = parse_spec(&spec(&format!("yTickFormat: '{written}'")), Format::Yaml)
+                .expect("parses");
+            assert_eq!(
+                unread_directive_warnings(&out),
+                [("yTickFormat", written, directive)],
+                "`{written}` must name `{directive}`; got {:?}",
+                out.warnings
+            );
+            assert!(
+                tick_format_warnings(&out).is_empty(),
+                "`{written}` is a date format and not `InvalidTickFormat`: {:?}",
+                out.warnings
+            );
+        }
+
+        // A value that names no directive at all is the other warning.
+        let out = parse_spec(&spec("xTickFormat: 'abc'"), Format::Yaml).expect("parses");
+        assert!(unread_directive_warnings(&out).is_empty());
+        assert_eq!(tick_format_warnings(&out), [("xTickFormat", "abc")]);
     }
 
     /// A malformed tick format under `plotDefaults` is named once, where it is
