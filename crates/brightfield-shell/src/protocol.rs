@@ -2464,8 +2464,8 @@ pub struct SpineRowDrawn {
     pub kind_rect: Option<egui::Rect>,
     /// The bar drawn at the leading edge of the one row whose content the
     /// canvas holds, in the secondary ink — or, on a row that is also picked,
-    /// the picked bar in the focus ink. `None` on every other row, a picked
-    /// one included: the bar a picked row draws is not this fact.
+    /// the picked bar in the focus ink. `None` on a row the canvas does not
+    /// hold, a picked one included: the bar a picked row draws is not this fact.
     pub on_canvas: Option<egui::Rect>,
     /// Whether this row was drawn picked — the cursor fill and its bar. Named
     /// for the wash it once drew.

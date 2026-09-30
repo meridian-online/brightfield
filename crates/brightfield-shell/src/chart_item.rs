@@ -2907,7 +2907,7 @@ mod tests {
             "a hidden-only toolbar summons no row"
         );
     }
-    /// Every rect a shape carries, however deep in a `Shape::Vec` a frame put it.
+    /// The rects a shape carries, however deep in a `Shape::Vec` a frame put them.
     fn collect_rects(shape: &egui::Shape, out: &mut Vec<egui::epaint::RectShape>) {
         match shape {
             egui::Shape::Rect(r) => out.push(r.clone()),
