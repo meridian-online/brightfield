@@ -6,7 +6,7 @@
 
 use brightfield_protocol::{write_chart_edit, ChartTextRefusal};
 use brightfield_spec::analysis::ComponentPath;
-use brightfield_spec::edit::{apply, ChartEdit, RefuseReason};
+use brightfield_spec::edit::{self, apply, ChartEdit, RefuseReason};
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, Format, Spec, SpecValue};
 
@@ -38,12 +38,82 @@ fn set(plot: &str, key: &str, value: &str) -> ChartEdit {
     }
 }
 
+fn channel(plot: &str, mark_ordinal: usize, channel: &str, column: &str) -> ChartEdit {
+    ChartEdit::SetChannel {
+        plot: ComponentPath(plot.to_string()),
+        mark_ordinal,
+        channel: channel.to_string(),
+        column: column.to_string(),
+    }
+}
+
+fn remove(plot: &str, key: &str) -> ChartEdit {
+    ChartEdit::RemovePlotAttribute {
+        plot: ComponentPath(plot.to_string()),
+        key: key.to_string(),
+    }
+}
+
+/// `text` with each of `edits` written into the text the one before it left,
+/// the way Save places the edits since the last Save.
+fn write_all(text: &str, edits: &[ChartEdit]) -> String {
+    edits.iter().fold(text.to_string(), |text, edit| {
+        write_chart_edit(&text, edit).unwrap_or_else(|e| panic!("{edit:?} is written: {e}"))
+    })
+}
+
+/// The lines of `before` and `after` that differ, as `(-line, +line)` pairs
+/// read top to bottom, with `None` on the side a line was taken out of or
+/// added to. A line that stays is not listed, so an edit that changes one line
+/// gives one pair.
+fn changed_lines(before: &str, after: &str) -> Vec<(Option<String>, Option<String>)> {
+    let (a, b): (Vec<&str>, Vec<&str>) = (before.lines().collect(), after.lines().collect());
+    // Longest common subsequence, so a line added or taken out does not read
+    // as every line below it changing.
+    let mut lcs = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for i in (0..a.len()).rev() {
+        for j in (0..b.len()).rev() {
+            lcs[i][j] = if a[i] == b[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+    let (mut i, mut j, mut out) = (0, 0, Vec::new());
+    while i < a.len() || j < b.len() {
+        if i < a.len() && j < b.len() && a[i] == b[j] {
+            i += 1;
+            j += 1;
+        } else if i < a.len() && (j == b.len() || lcs[i + 1][j] >= lcs[i][j + 1]) {
+            out.push((Some(a[i].to_string()), None));
+            i += 1;
+        } else {
+            // A line taken out and the line added in its place are one change.
+            match out.last_mut() {
+                Some((Some(_), added @ None)) => *added = Some(b[j].to_string()),
+                _ => out.push((None, Some(b[j].to_string()))),
+            }
+            j += 1;
+        }
+    }
+    out
+}
+
 fn parse(text: &str) -> Spec {
     parse_spec(text, Format::Yaml).expect("parses").spec
 }
 
 /// The spec `apply` makes of `text`'s parse — what the written text has to
 /// read back as.
+/// The spec `apply_for_fresh_load` makes of `text`'s parse — the reducer the
+/// writer checks against.
+fn applied_fresh(text: &str, edit: &ChartEdit) -> Spec {
+    let mut spec = parse(text);
+    edit::apply_for_fresh_load(&mut spec, edit).expect("the reducer accepts the edit");
+    spec
+}
+
 fn applied(text: &str, edit: &ChartEdit) -> Spec {
     let mut spec = parse(text);
     apply(&mut spec, edit).expect("apply accepts the edit");
@@ -197,8 +267,9 @@ fn a_plot_two_levels_down_is_changed_in_place() {
 
 // ------------------------------------------------------------------ AC5
 
-/// Each of the four mark edits is refused with a reason that names its kind,
-/// and no text comes back.
+/// Change mark type, add mark and remove mark are each refused with a reason
+/// that names the kind, and no text comes back. A set channel is not among
+/// them: `a_set_channel_is_not_refused_by_kind` holds that.
 #[test]
 fn a_mark_edit_is_refused_by_kind() {
     let plot = || ComponentPath("root/vconcat[0]".to_string());
@@ -217,15 +288,6 @@ fn a_mark_edit_is_refused_by_kind() {
                 kind: MarkKind::Line,
             },
             "add-mark",
-        ),
-        (
-            ChartEdit::SetChannel {
-                plot: plot(),
-                mark_ordinal: 0,
-                channel: "y".to_string(),
-                column: "c".to_string(),
-            },
-            "set-channel",
         ),
         (
             ChartEdit::RemoveMark {
@@ -326,16 +388,37 @@ fn an_edit_that_changes_nothing_writes_nothing() {
     );
 }
 
-/// An edit `apply` refuses is refused here for the same reason, and nothing is
-/// written.
+/// An edit the reducer finds no target for is refused for the reducer's
+/// reason, and nothing is written.
 #[test]
-fn an_edit_apply_refuses_is_refused_with_its_reason() {
-    let edit = set("root/vconcat[0]", "xLabel", "income");
+fn an_edit_with_no_target_is_refused_with_the_reducers_reason() {
+    let edit = channel("root/vconcat[0]", 3, "x", "c");
     assert_eq!(
         write_chart_edit(WITH_SCALE, &edit),
         Err(ChartTextRefusal::Refused {
-            reason: RefuseReason::WouldChangeAxisTitle
+            reason: RefuseReason::NoSuchMark
         })
+    );
+}
+
+/// An edit that changes an axis title is written: Save writes the edits the
+/// page was drawn with, and the page is loaded afresh after each, so the title
+/// refusal `apply` makes for a reload from disk is not the text's.
+#[test]
+fn an_edit_that_changes_an_axis_title_is_written() {
+    let edit = set("root/vconcat[0]", "xLabel", "income");
+    assert_eq!(
+        apply(&mut parse(WITH_SCALE), &edit),
+        Err(RefuseReason::WouldChangeAxisTitle),
+        "the reload-from-disk gate still refuses it"
+    );
+    let written = write_chart_edit(WITH_SCALE, &edit).expect("the edit is written");
+    assert_eq!(
+        written,
+        WITH_SCALE.replace(
+            "    width: 300\n  # the second tile\n",
+            "    width: 300\n    xLabel: income\n  # the second tile\n",
+        )
     );
 }
 
@@ -367,4 +450,203 @@ fn text_that_reads_back_as_another_chart_is_refused() {
             key: "plot".to_string()
         })
     );
+}
+
+// ------------------------------------------------ the shelf's edits, written
+
+/// What the shelf's edit returns for `median_income` put on the generated
+/// map's x: a set channel on each of its two layers, then the projection taken
+/// out, in that order.
+fn income_on_x() -> Vec<ChartEdit> {
+    vec![
+        channel(HERO, 0, "x", "median_income"),
+        channel(HERO, 1, "x", "median_income"),
+        remove(HERO, "projectionType"),
+    ]
+}
+
+/// What the shelf's edit returns for `longitude` put back on the map's x: a
+/// set channel on each layer, then the projection set, since the plot holds
+/// the coordinate pair again.
+fn longitude_on_x() -> Vec<ChartEdit> {
+    vec![
+        channel(HERO, 0, "x", "longitude"),
+        channel(HERO, 1, "x", "longitude"),
+        set(HERO, "projectionType", "equirectangular"),
+    ]
+}
+
+/// **`median_income` on the generated map's x** changes both layers' `x:`
+/// lines, keeping the quotes the generator wrote them in, and takes the
+/// `projectionType:` line out. Every other line, the header comment and the
+/// comment on each tile included, is byte for byte.
+#[test]
+fn putting_median_income_on_x_changes_both_layers_and_takes_the_projection_out() {
+    let written = write_all(GENERATED, &income_on_x());
+
+    let x = |column: &str| format!("        x: '{column}'");
+    assert_eq!(
+        changed_lines(GENERATED, &written),
+        vec![
+            (Some(x("longitude")), Some(x("median_income"))),
+            (Some(x("longitude")), Some(x("median_income"))),
+            (
+                Some("      projectionType: equirectangular".to_string()),
+                None
+            ),
+        ]
+    );
+    let expected = GENERATED
+        .replace("        x: 'longitude'\n", "        x: 'median_income'\n")
+        .replace("      projectionType: equirectangular\n", "");
+    assert_eq!(written, expected);
+    assert!(written.starts_with("# Brightfield wrote this dashboard"));
+
+    let mut spec = parse(GENERATED);
+    for edit in income_on_x() {
+        edit::apply_for_fresh_load(&mut spec, &edit).expect("the shelf's edits apply");
+    }
+    assert_eq!(
+        parse(&written),
+        spec,
+        "the text reads back as the edited chart"
+    );
+}
+
+/// **`longitude` put back on x after that** gives the text the generator
+/// wrote: the layers' `x:` lines return to their quotes and the projection to
+/// the line it was taken from.
+#[test]
+fn putting_longitude_back_on_x_gives_the_text_the_generator_wrote() {
+    let rebound = write_all(GENERATED, &income_on_x());
+    assert_ne!(rebound, GENERATED);
+    assert_eq!(write_all(&rebound, &longitude_on_x()), GENERATED);
+}
+
+/// **`median_house_value` on the map's colour** adds one
+/// `fill: median_house_value` line to the highlighted layer, the one that reads
+/// through the selection, and changes no other line.
+#[test]
+fn a_column_on_the_maps_colour_adds_one_fill_line_to_the_highlighted_layer() {
+    let edit = channel(HERO, 1, "fill", "median_house_value");
+    let written = write_chart_edit(GENERATED, &edit).expect("the edit is written");
+
+    assert_eq!(
+        changed_lines(GENERATED, &written),
+        vec![(None, Some("        fill: median_house_value".to_string()))]
+    );
+    // The line lands inside the second layer, after its `y:`, and not in the
+    // ghost layer, which keeps its one `fill:`.
+    let highlighted = "      - mark: dot\n        data: { from: opened, filterBy: $sel }\n        x: 'longitude'\n        y: 'latitude'\n";
+    assert_eq!(
+        written,
+        GENERATED.replace(
+            highlighted,
+            &format!("{highlighted}        fill: median_house_value\n")
+        )
+    );
+    assert_eq!(parse(&written), applied_fresh(GENERATED, &edit));
+}
+
+/// A set channel is written, not refused by kind, on a mark that carries the
+/// channel and on one that does not.
+#[test]
+fn a_set_channel_is_not_refused_by_kind() {
+    for edit in [
+        channel("root/vconcat[0]", 0, "y", "c"),
+        channel("root/vconcat[0]", 0, "stroke", "c"),
+    ] {
+        let written = write_chart_edit(WITH_SCALE, &edit)
+            .unwrap_or_else(|e| panic!("{edit:?} is written: {e}"));
+        assert_ne!(written, WITH_SCALE);
+        assert_eq!(parse(&written), applied_fresh(WITH_SCALE, &edit));
+    }
+}
+
+/// A column whose name the value's quotes cannot hold is written in the
+/// serialiser's spelling instead, and reads back as the column.
+#[test]
+fn a_column_the_quotes_cannot_hold_is_written_in_the_serialisers_spelling() {
+    let text = WITH_SCALE.replace("        y: b\n", "        y: 'b'\n");
+    let edit = channel("root/vconcat[0]", 0, "y", "it's");
+    let written = write_chart_edit(&text, &edit).expect("the edit is written");
+    assert_eq!(
+        written,
+        text.replace("        y: 'b'\n", "        y: it's\n")
+    );
+    assert_eq!(parse(&written), applied_fresh(&text, &edit));
+}
+
+/// Taking out an attribute takes out its line and, by arcform's rule of
+/// comment ownership, a comment flush above it; the comment after the plot's
+/// last attribute, the comment on a kept line and the comment on each tile
+/// stay.
+#[test]
+fn a_comment_flush_above_a_removed_line_goes_with_it_and_the_rest_stay() {
+    let text = "\
+vconcat:
+  # the tile
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        y: b
+    # log until the outliers are gone
+    yScale: log
+    width: 300   # the column's width
+    # a note under the last attribute
+  # the next tile
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        y: c
+";
+    let edit = remove("root/vconcat[0]", "yScale");
+    let written = write_chart_edit(text, &edit).expect("the edit is written");
+    assert_eq!(
+        written,
+        text.replace(
+            "    # log until the outliers are gone\n    yScale: log\n",
+            ""
+        )
+    );
+    assert_eq!(parse(&written), applied_fresh(text, &edit));
+}
+
+/// An attribute the plot takes from `plotDefaults:` has no line in the plot to
+/// take out, and the removal is refused rather than written as nothing.
+#[test]
+fn a_removal_of_an_attribute_the_plot_inherits_is_refused() {
+    let text = format!("plotDefaults:\n  yScale: log\n{WITH_SCALE}");
+    let edit = remove("root/vconcat[1]", "yScale");
+    let refusal = write_chart_edit(&text, &edit).expect_err("the removal is refused");
+    assert_eq!(
+        refusal,
+        ChartTextRefusal::Inherited {
+            key: "yScale".to_string()
+        }
+    );
+    assert!(refusal.to_string().contains("plotDefaults"), "{refusal}");
+}
+
+/// A mark ordinal counts marks, not the `plot:` list's items: with an
+/// interactor listed first, the first mark is the list's second item, and the
+/// channel lands on it.
+#[test]
+fn a_channel_on_a_mark_listed_after_an_interactor_lands_on_that_mark() {
+    let text = "\
+plot:
+  - select: intervalX
+    as: $s
+  - mark: dot
+    data: { from: t }
+    x: a
+    y: b
+width: 300
+";
+    let edit = channel("root", 0, "y", "c");
+    let written = write_chart_edit(text, &edit).expect("the edit is written");
+    assert_eq!(written, text.replace("    y: b\n", "    y: c\n"));
+    assert_eq!(parse(&written), applied_fresh(text, &edit));
 }

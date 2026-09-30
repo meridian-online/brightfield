@@ -15,8 +15,8 @@
 //! chart file written from a data file carries the dashboard generator's
 //! comments, and an analyst may add their own beside them; the canonical
 //! re-serialisation keeps no comment, so it cannot be how an edit reaches such
-//! a file. An edit is written into the file's text as a change to one line, by
-//! `brightfield_protocol::write_chart_edit`, and [`panel_file`] and
+//! a file. An edit is written into the file's text as a change to the line it
+//! names, by `brightfield_protocol::write_chart_edit`, and [`panel_file`] and
 //! [`write_panel_text`] are the path and the write that route shares with
 //! capture: the same `panels/<name>.yaml` under the same slug of the name.
 //!
