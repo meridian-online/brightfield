@@ -717,6 +717,18 @@ fn nth_mark_item_index(plot: &PlotNode, ordinal: usize) -> Option<usize> {
         .nth(ordinal)
 }
 
+/// The index in the plot's `plot:` list of the `ordinal`-th mark, which is the
+/// mark a [`ChartEdit`] with that `mark_ordinal` targets. `None` if the plot
+/// has fewer than `ordinal + 1` marks.
+///
+/// The index reads as a place in the spec's text because the parser keeps the
+/// `plot:` list's items in their list order, a `select:` or a `legend:`
+/// holding its index as a mark does.
+#[must_use]
+pub fn mark_item_index(plot: &PlotNode, ordinal: usize) -> Option<usize> {
+    nth_mark_item_index(plot, ordinal)
+}
+
 /// Walk the component tree to the plot node identified by `path` (the
 /// plot-node path scheme of [`crate::layout::collect_plot_nodes`] /
 /// [`crate::analysis::plot_node_path`]: `root`, `root/vconcat[0]`,
