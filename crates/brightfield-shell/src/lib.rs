@@ -61,6 +61,9 @@
 //! - [`shelf_edit`] — a column put on a chart's x or y, as the list of chart
 //!   edits that make it: the layers that bind the channel move together, and
 //!   a map taken off its coordinate pair loses its projection.
+//! - [`shelf`] — the shelf band: a cell for the mark and one for each channel
+//!   it takes, naming the column on it and the key that reaches it, drawn into
+//!   a `Ui` and answering the registry's Shelf-context keys and a click.
 //! - [`overlays`] — the picker delegates: the domain halves of the command
 //!   palette, help sheet, jump lists and argument prompt, over the
 //!   framework-free corpora in `brightfield-keys` / `brightfield-model`.
@@ -101,6 +104,7 @@ pub mod ranked_bars;
 pub mod remote;
 pub mod resample;
 pub mod run;
+pub mod shelf;
 pub mod shelf_edit;
 mod sql_ident;
 pub mod starts;
