@@ -805,6 +805,18 @@ fn a_cell_keeps_its_width_when_its_column_changes() {
     long.x = Binding::Column("an_extraordinarily_long_column_name_for_the_x_axis".to_string());
     long.colour = Binding::Column("median_house_value".to_string());
     band.set_channels(long);
+    let replaced = stage.draw(&mut band);
+    // The columns did change on the screen, or the widths below compare a band
+    // with itself: x's name is cut where it was whole, and colour holds a column.
+    assert!(
+        texts_in(&replaced, replaced.drawn.cells[ShelfChannel::X.index()])
+            .iter()
+            .any(|t| t.text.starts_with("an_extra") && t.elided),
+        "x still reads its first column"
+    );
+    text_in(&replaced, ShelfChannel::Colour, "median_house_value");
+    assert_eq!(short, replaced.drawn.cells);
+
     band.activate(ShelfChannel::X);
     band.set_preview(
         ShelfChannel::X,
