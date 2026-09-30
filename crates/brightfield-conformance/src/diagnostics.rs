@@ -233,7 +233,9 @@ fn warning_wire_name(warning: &ParseWarning) -> String {
         ParseWarning::NonNumericInset { attribute }
         | ParseWarning::NonStringLabel { attribute }
         | ParseWarning::InvalidTickCount { attribute }
-        | ParseWarning::InvalidTickFormat { attribute, .. } => attribute.clone(),
+        | ParseWarning::InvalidTickFormat { attribute, .. }
+        | ParseWarning::UnreadDateDirective { attribute, .. }
+        | ParseWarning::TickFormatOnWrongAxis { attribute, .. } => attribute.clone(),
         ParseWarning::UnknownProjection { value } => value.clone(),
         ParseWarning::AspectRatioWithProjection { mark }
         | ParseWarning::MarkCannotProject { mark, .. } => mark.clone(),
@@ -275,7 +277,9 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         | ParseWarning::UnknownProjection { .. }
         | ParseWarning::NonStringLabel { .. }
         | ParseWarning::InvalidTickCount { .. }
-        | ParseWarning::InvalidTickFormat { .. } => "plot",
+        | ParseWarning::InvalidTickFormat { .. }
+        | ParseWarning::UnreadDateDirective { .. }
+        | ParseWarning::TickFormatOnWrongAxis { .. } => "plot",
         ParseWarning::UnknownAggregate { .. }
         | ParseWarning::UnconsumedChannelTransform { .. }
         | ParseWarning::ColourNameShadowsColumn { .. } => "channel",

@@ -10,6 +10,7 @@
 
 pub mod analysis;
 pub mod ast;
+pub mod date_format;
 pub mod edit;
 pub mod error;
 pub mod expr;

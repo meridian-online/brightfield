@@ -3,10 +3,9 @@
 //!
 //! The corpus is the vendored Mosaic examples, so the `xTickFormat` and
 //! `yTickFormat` values in it are ones a real author wrote. This walks the plots of each
-//! and asks the two judges the parser and the renderer share: a number format
-//! is read by [`tick_number_format`], the date format the corpus also carries
-//! (`%b`) is deferred, and the parse produces no `InvalidTickFormat` for any
-//! file.
+//! and asks the one judge the parser and the renderer share, [`read_tick_format`]:
+//! a number format is read as one, the date format the corpus also carries
+//! (`%b`) is read as one, and the parse warns of no tick format in any file.
 //!
 //! The walk finds its own formats rather than naming them, but it also names
 //! the four number formats and the one date format the corpus held when this
@@ -15,9 +14,7 @@
 
 use std::path::PathBuf;
 
-use brightfield_spec::layout::{
-    collect_plot_nodes, is_tick_format_or_deferred, tick_number_format,
-};
+use brightfield_spec::layout::{collect_plot_nodes, read_tick_format, AxisFormat, TickFormatReading};
 use brightfield_spec::{parse_spec_path, ParseWarning, SpecValue};
 
 fn corpus() -> Vec<PathBuf> {
@@ -35,7 +32,7 @@ fn corpus() -> Vec<PathBuf> {
 #[test]
 fn every_tick_format_in_the_corpus_is_read_or_deferred_and_none_is_warned_about() {
     let mut numbers: Vec<String> = Vec::new();
-    let mut deferred: Vec<String> = Vec::new();
+    let mut dates: Vec<String> = Vec::new();
 
     for path in corpus() {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
@@ -46,7 +43,13 @@ fn every_tick_format_in_the_corpus_is_read_or_deferred_and_none_is_warned_about(
         let warned: Vec<&ParseWarning> = parsed
             .warnings
             .iter()
-            .filter(|w| matches!(w, ParseWarning::InvalidTickFormat { .. }))
+            .filter(|w| {
+                matches!(
+                    w,
+                    ParseWarning::InvalidTickFormat { .. }
+                        | ParseWarning::UnreadDateDirective { .. }
+                )
+            })
             .collect();
         assert!(
             warned.is_empty(),
@@ -61,14 +64,10 @@ fn every_tick_format_in_the_corpus_is_read_or_deferred_and_none_is_warned_about(
                 let SpecValue::String(text) = value else {
                     panic!("{name}::{at} {key} is not a string: {value:?}");
                 };
-                assert!(
-                    is_tick_format_or_deferred(value),
-                    "{name}::{at} {key}: `{text}` is neither read nor deferred"
-                );
-                if tick_number_format(value).is_some() {
-                    numbers.push(text.clone());
-                } else {
-                    deferred.push(text.clone());
+                match read_tick_format(value) {
+                    TickFormatReading::Format(AxisFormat::Number(_)) => numbers.push(text.clone()),
+                    TickFormatReading::Format(AxisFormat::Date(_)) => dates.push(text.clone()),
+                    other => panic!("{name}::{at} {key}: `{text}` is not read: {other:?}"),
                 }
             }
         }
@@ -76,16 +75,16 @@ fn every_tick_format_in_the_corpus_is_read_or_deferred_and_none_is_warned_about(
 
     numbers.sort();
     numbers.dedup();
-    deferred.sort();
-    deferred.dedup();
+    dates.sort();
+    dates.dedup();
     assert_eq!(
         numbers,
         ["%", "+f", "d", "s"],
         "the number formats the corpus carries, each read"
     );
     assert_eq!(
-        deferred,
+        dates,
         ["%b"],
-        "the date format the corpus carries, deferred and not warned about"
+        "the date format the corpus carries, read and not warned about"
     );
 }

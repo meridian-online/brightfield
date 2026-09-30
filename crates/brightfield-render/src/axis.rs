@@ -3,6 +3,8 @@
 //! Tick computation is a pure function: `compute_ticks(scale, target_count) ->
 //! Vec<Tick>`. The scene builder draws ticks as lines and labels as text.
 
+use brightfield_spec::date_format::{iso_date_micros, DateFormat};
+use brightfield_spec::layout::AxisFormat;
 use brightfield_spec::number_format::{NumberFormat, TickFormat};
 use kurbo::{Affine, Line, Point};
 use vello::Scene;
@@ -76,20 +78,98 @@ pub fn compute_ticks(scale: &Scale, target_count: usize) -> Vec<Tick> {
     compute_ticks_formatted(scale, target_count, None)
 }
 
+/// The kind of text an axis prints, which decides what a plot's `xTickFormat` /
+/// `yTickFormat` can be for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AxisKind {
+    /// A linear, log or symlog axis: numbers, and a d3-format specifier.
+    Number,
+    /// A timestamp axis, or a band of calendar days: dates, and a
+    /// d3-time-format specifier.
+    Date,
+    /// A band of names. It takes no format, as it never has.
+    Category,
+}
+
+impl AxisKind {
+    /// The word the warning banner uses for this kind.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Number => "number",
+            Self::Date => "date",
+            Self::Category => "category",
+        }
+    }
+}
+
+/// The kind of axis a scale draws, or `None` for a colour ramp, which draws no
+/// positional axis.
+///
+/// A `DATE` column takes a band scale whose categories are its days spelled
+/// `YYYY-MM-DD`, and this build has no other record of that: a band is a date
+/// axis exactly when every one of its categories is such a day, so a text column
+/// of ISO dates reads as one too.
+#[must_use]
+pub fn axis_kind(scale: &Scale) -> Option<AxisKind> {
+    match scale {
+        Scale::Linear { .. } | Scale::Log { .. } | Scale::Symlog { .. } => Some(AxisKind::Number),
+        Scale::Time { .. } => Some(AxisKind::Date),
+        Scale::Band { categories, .. } => Some(if day_categories(categories).is_some() {
+            AxisKind::Date
+        } else {
+            AxisKind::Category
+        }),
+        Scale::Colour { .. } | Scale::Sequential { .. } => None,
+    }
+}
+
+/// The instant each category names, when every category is a calendar day.
+fn day_categories(categories: &[String]) -> Option<Vec<i64>> {
+    if categories.is_empty() {
+        return None;
+    }
+    categories.iter().map(|c| iso_date_micros(c)).collect()
+}
+
+/// Whether `format` is a kind the axis `scale` draws cannot take: a number
+/// format on a date axis, or a date format on a number axis. It is the one judge
+/// the axis draws through and the composition warns through, so a format the axis
+/// drops is a format that was named. An axis of names, and a colour ramp, cross
+/// nothing: neither has ever taken a format, and neither says so.
+#[must_use]
+pub fn tick_format_crosses_axis(scale: &Scale, format: &AxisFormat) -> bool {
+    matches!(
+        (axis_kind(scale), format),
+        (Some(AxisKind::Date), AxisFormat::Number(_))
+            | (Some(AxisKind::Number), AxisFormat::Date(_))
+    )
+}
+
 /// [`compute_ticks`], with the tick text a plot's `xTickFormat` / `yTickFormat`
 /// asked for.
 ///
-/// `format` sets the text of a number axis, linear, log or symlog: a linear
-/// axis takes d3-scale's precision from the step its ticks are drawn at, and a
-/// log or symlog axis prints each decade as d3-format does. A band axis prints
-/// its categories, and a time axis waits on the date format's own reading, so
-/// neither takes a number format. `None` draws the text an axis drew before a
-/// format could be asked for.
+/// A number format sets the text of a number axis, linear, log or symlog: a
+/// linear axis takes d3-scale's precision from the step its ticks are drawn at,
+/// and a log or symlog axis prints each decade as d3-format does. A date format
+/// sets the text of a date axis, a timestamp's ticks or a date column's days,
+/// printed in UTC. A format of the other kind, a band of names, and `None` draw
+/// the text an axis drew before a format could be asked for. The tick POSITIONS
+/// never follow a format: a timestamp axis still steps in 1, 2 or 5 times a power
+/// of ten microseconds and a date column still has a tick per day.
 pub fn compute_ticks_formatted(
     scale: &Scale,
     target_count: usize,
-    format: Option<NumberFormat>,
+    format: Option<&AxisFormat>,
 ) -> Vec<Tick> {
+    let number = match format {
+        Some(AxisFormat::Number(number)) => Some(*number),
+        _ => None,
+    };
+    let date = match format {
+        Some(AxisFormat::Date(date)) => Some(date),
+        _ => None,
+    };
     match scale {
         Scale::Linear {
             domain_min,
@@ -102,14 +182,14 @@ pub fn compute_ticks_formatted(
             *range_start,
             *range_end,
             target_count,
-            format,
+            number,
         ),
         Scale::Band {
             categories,
             range_start,
             range_end,
             padding,
-        } => compute_band_ticks(categories, *range_start, *range_end, *padding),
+        } => compute_band_ticks(categories, *range_start, *range_end, *padding, date),
         Scale::Time {
             domain_min_us,
             domain_max_us,
@@ -121,6 +201,7 @@ pub fn compute_ticks_formatted(
             *range_start,
             *range_end,
             target_count,
+            date,
         ),
         // A log axis's ticks are the DECADES, not a nice decimal step: the
         // whole point of the transform is that equal pixel distances are equal
@@ -134,7 +215,7 @@ pub fn compute_ticks_formatted(
         } => positioned(
             scale,
             &log_tick_values(*domain_min, *domain_max),
-            format.map(NumberFormat::decade_format),
+            number.map(NumberFormat::decade_format),
         ),
         // Symlog's ticks are SIGNED decades with zero among them — the choice
         // recorded for this build. Zero is the value the transform exists to
@@ -147,7 +228,7 @@ pub fn compute_ticks_formatted(
         } => positioned(
             scale,
             &symlog_tick_values(*domain_min, *domain_max),
-            format.map(NumberFormat::decade_format),
+            number.map(NumberFormat::decade_format),
         ),
         // Colour ramps (categorical or sequential) have no positional axis ticks.
         Scale::Colour { .. } | Scale::Sequential { .. } => Vec::new(),
@@ -260,11 +341,15 @@ fn compute_linear_ticks(
     ticks
 }
 
+/// A band's ticks: one per category, at its centre. `date` is a date format
+/// the plot asked for; it sets the text only when every category is a calendar
+/// day (see [`axis_kind`]), and otherwise the categories print as they are.
 fn compute_band_ticks(
     categories: &[String],
     range_start: f64,
     range_end: f64,
     padding: f64,
+    date: Option<&DateFormat>,
 ) -> Vec<Tick> {
     let n = categories.len() as f64;
     if n == 0.0 {
@@ -272,6 +357,7 @@ fn compute_band_ticks(
     }
     let total = range_end - range_start;
     let band = total / n;
+    let days = date.and_then(|format| day_categories(categories).map(|days| (format, days)));
 
     categories
         .iter()
@@ -283,7 +369,9 @@ fn compute_band_ticks(
                 + band * (1.0 - padding) / 2.0;
             Tick {
                 value: i as f64,
-                label: cat.clone(),
+                label: days
+                    .as_ref()
+                    .map_or_else(|| cat.clone(), |(format, days)| format.format(days[i])),
                 position: centre,
             }
         })
@@ -296,6 +384,7 @@ fn compute_time_ticks(
     range_start: f64,
     range_end: f64,
     target_count: usize,
+    date: Option<&DateFormat>,
 ) -> Vec<Tick> {
     let span_us = (domain_max_us - domain_min_us) as f64;
     if span_us.abs() < f64::EPSILON || target_count == 0 {
@@ -310,9 +399,12 @@ fn compute_time_ticks(
     while value_us <= domain_max_us {
         let t = (value_us - domain_min_us) as f64 / span_us;
         let position = range_start + t * (range_end - range_start);
-        // Format as seconds for simplicity in v1.
-        let seconds = value_us as f64 / 1_000_000.0;
-        let label = format!("{seconds:.1}s");
+        // A plot's date format prints the instant; with none, seconds since the
+        // epoch, which is all a timestamp axis drew before a format could be asked.
+        let label = date.map_or_else(
+            || format!("{:.1}s", value_us as f64 / 1_000_000.0),
+            |format| format.format(value_us),
+        );
         ticks.push(Tick {
             value: value_us as f64,
             label,
@@ -833,8 +925,9 @@ mod tests {
     /// are drawn at: the same two axes d3-scale's `tickFormat` is given in its
     /// own tests of the rule.
     fn labels_under(scale: &Scale, spec: Option<&str>) -> Vec<String> {
-        let format = spec.map(|s| NumberFormat::parse(s).expect("a number format"));
-        compute_ticks_formatted(scale, 5, format)
+        let format = spec
+            .map(|s| AxisFormat::Number(NumberFormat::parse(s).expect("a number format")));
+        compute_ticks_formatted(scale, 5, format.as_ref())
             .into_iter()
             .map(|tick| tick.label)
             .collect()

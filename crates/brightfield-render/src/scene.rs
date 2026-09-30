@@ -973,11 +973,11 @@ fn draw_multi_mark_scene(
     // Grid lines (behind marks).
     if !suppress_frame {
         if let Some(x_scale) = scales.get(Channel::X) {
-            let x_ticks = compute_ticks_formatted(x_scale, tick_counts.x_target(), tick_formats.x);
+            let x_ticks = compute_ticks_formatted(x_scale, tick_counts.x_target(), tick_formats.x.as_ref());
             render_x_grid(&mut scene, layout, &x_ticks, ink);
         }
         if let Some(y_scale) = scales.get(Channel::Y) {
-            let y_ticks = compute_ticks_formatted(y_scale, tick_counts.y_target(), tick_formats.y);
+            let y_ticks = compute_ticks_formatted(y_scale, tick_counts.y_target(), tick_formats.y.as_ref());
             render_y_grid(&mut scene, layout, &y_ticks, ink);
         }
     }
@@ -1001,11 +1001,11 @@ fn draw_multi_mark_scene(
     // resolved to a field name upstream; None = suppressed / underivable).
     if !suppress_frame {
         if let Some(x_scale) = scales.get(Channel::X) {
-            let x_ticks = compute_ticks_formatted(x_scale, tick_counts.x_target(), tick_formats.x);
+            let x_ticks = compute_ticks_formatted(x_scale, tick_counts.x_target(), tick_formats.x.as_ref());
             render_x_axis(&mut scene, layout, &x_ticks, titles.x.as_deref(), ink);
         }
         if let Some(y_scale) = scales.get(Channel::Y) {
-            let y_ticks = compute_ticks_formatted(y_scale, tick_counts.y_target(), tick_formats.y);
+            let y_ticks = compute_ticks_formatted(y_scale, tick_counts.y_target(), tick_formats.y.as_ref());
             render_y_axis(&mut scene, layout, &y_ticks, titles.y.as_deref(), ink);
         }
     }
