@@ -2907,4 +2907,98 @@ mod tests {
             "a hidden-only toolbar summons no row"
         );
     }
+    /// Every rect a shape carries, however deep in a `Shape::Vec` a frame put it.
+    fn collect_rects(shape: &egui::Shape, out: &mut Vec<egui::epaint::RectShape>) {
+        match shape {
+            egui::Shape::Rect(r) => out.push(r.clone()),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect_rects(s, out)),
+            _ => {}
+        }
+    }
+
+    /// **The hover readout is drawn square and hard**: a 1px rule in the
+    /// default border ink, no corner, and the overlay's shadow — the card's own
+    /// rect offset by the token, with no blur.
+    ///
+    /// Read off the paint list of the frame the readout is drawn in, in both
+    /// modes: the card is the rect that carries the rule, and the shadow is
+    /// found by its own rect and colour, so neither is taken for the other.
+    #[test]
+    fn the_hover_readout_draws_a_one_pixel_rule_and_a_hard_shadow_with_no_corner() {
+        for mode in [Mode::Light, Mode::Dark] {
+            let dark = mode.is_dark();
+            let sem = semantic(dark);
+            let shadow = Elevation::Overlay
+                .shadow(dark)
+                .expect("an overlay casts a shadow");
+            let readout = HoverReadout {
+                at: egui::pos2(100.0, 100.0),
+                lines: vec!["a: 1".to_string(), "b: 2".to_string()],
+            };
+            let ctx = egui::Context::default();
+            let mut rects = Vec::new();
+            for _ in 0..2 {
+                let raw = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(400.0, 300.0),
+                    )),
+                    ..Default::default()
+                };
+                let out = ctx.run_ui(raw, |ui| hover_readout(ui.ctx(), &readout, mode));
+                rects.clear();
+                for clipped in &out.shapes {
+                    collect_rects(&clipped.shape, &mut rects);
+                }
+            }
+            let card: Vec<&egui::epaint::RectShape> =
+                rects.iter().filter(|r| !r.stroke.is_empty()).collect();
+            assert_eq!(
+                card.len(),
+                1,
+                "{mode:?}: the readout drew {} ruled rects",
+                card.len()
+            );
+            let card = card[0];
+            assert_eq!(
+                card.stroke.width, 1.0,
+                "{mode:?}: the rule is {} wide",
+                card.stroke.width
+            );
+            assert_eq!(
+                card.stroke.color,
+                chrome::colour(sem.borders.default_),
+                "{mode:?}: the rule is not the default border ink"
+            );
+            assert_eq!(
+                card.corner_radius,
+                egui::CornerRadius::ZERO,
+                "{mode:?}: the readout carries a corner"
+            );
+            let hard = rects
+                .iter()
+                .find(|r| r.fill == chrome::colour(shadow.colour) && r.rect != card.rect)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{mode:?}: the readout drew no shadow in {:?}",
+                        shadow.colour
+                    )
+                });
+            assert_eq!(hard.blur_width, 0.0, "{mode:?}: the shadow is blurred");
+            assert_eq!(
+                hard.corner_radius,
+                egui::CornerRadius::ZERO,
+                "{mode:?}: the shadow carries a corner"
+            );
+            assert!(
+                (hard.rect.min - card.rect.min - egui::vec2(shadow.x, shadow.y))
+                    .abs()
+                    .max_elem()
+                    < 0.51,
+                "{mode:?}: the shadow {:?} is not the card {:?} offset by the token",
+                hard.rect,
+                card.rect
+            );
+        }
+    }
 }

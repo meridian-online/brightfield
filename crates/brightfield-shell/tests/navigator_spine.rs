@@ -1294,8 +1294,8 @@ fn the_spines_measurements_hold_at_both_windows() {
             .expect("the dashboard is on the canvas");
         let row = win.row("dashboard").rect;
         assert!(
-            (bar.width() - 2.0).abs() < 0.01,
-            "at {size:?} the on-canvas bar is {} points wide, not two",
+            (bar.width() - 3.0).abs() < 0.01,
+            "at {size:?} the on-canvas bar is {} points wide, not three",
             bar.width()
         );
         assert!(

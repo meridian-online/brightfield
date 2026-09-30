@@ -12,7 +12,9 @@
 //! WHICH SURFACES. The gallery's specimens of the status pill, the key, the
 //! picker, the modal card and the focus ring, the toast the feedback specimen
 //! raises, and the two overlays the window opens on a key: the command palette
-//! and the help sheet.
+//! and the help sheet. And the rows of the Protocol's spine and of the Outline,
+//! drawn in the shipped window over a data file: what each draws at rest, under
+//! the pointer, when picked, and when the canvas holds it.
 //!
 //! WHAT IS NOT CLAIMED. A round mark stays round (a dot, a slider's thumb), and
 //! none of these surfaces draws one.
@@ -22,11 +24,13 @@
 
 use brightfield_shell::design::{to_color32, Mode};
 use brightfield_shell::gallery::{catalog, solo, Component};
+use brightfield_shell::protocol::{SpineRole, SpineRowDrawn};
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
 use egui::epaint::{RectShape, StrokeKind};
 use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
+use meridian_design::control::ROW_BAR_WIDTH;
 use meridian_design::focus::RING_WIDTH;
 use meridian_design::semantic;
 
@@ -290,6 +294,301 @@ fn a_focused_controls_ring_is_inside_its_edge() {
             swatch.iter().any(|s| ringed.iter().any(|r| r.rect == *s)),
             "{mode:?}: the exemplar's ring is not on the swatch it rings: \
              swatches {swatch:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The rows of the Protocol's spine and of the Outline.
+// ---------------------------------------------------------------------------
+
+/// The committed table the rail's rows are drawn over: nine columns, so the
+/// Outline lists them and the spine lists a file, a table and a dashboard.
+fn housing_boot() -> Boot {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data/california_housing_sample.csv");
+    Boot::data_file(path.to_str().expect("utf-8 fixture path"))
+        .unwrap_or_else(|e| panic!("open {}: {e}", path.display()))
+}
+
+/// A window over [`housing_boot`] that keeps one context for its life, because
+/// a pointer is resolved against the widgets the frame before it registered.
+struct Rail {
+    app: MeridianApp,
+    ctx: egui::Context,
+    screen: egui::Rect,
+    mode: Mode,
+}
+
+impl Rail {
+    fn open(mode: Mode) -> Self {
+        let boot = housing_boot();
+        let size = boot.window_size();
+        let mut rail = Self {
+            app: MeridianApp::headless(boot, mode),
+            ctx: egui::Context::default(),
+            screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(size.0, size.1)),
+            mode,
+        };
+        for _ in 0..3 {
+            rail.frame(Vec::new());
+        }
+        rail
+    }
+
+    /// One frame with `events`, and every shape it painted.
+    fn frame(&mut self, events: Vec<egui::Event>) -> Vec<egui::epaint::ClippedShape> {
+        let raw = egui::RawInput {
+            screen_rect: Some(self.screen),
+            events,
+            ..Default::default()
+        };
+        self.ctx.run_ui(raw, |ui| self.app.draw(ui)).shapes
+    }
+
+    /// The pointer nowhere; the settled frame's rects.
+    fn at_rest(&mut self) -> Vec<RectShape> {
+        self.frame(vec![egui::Event::PointerGone]);
+        rect_shapes(&self.frame(Vec::new()))
+    }
+
+    /// The pointer on `at`, two frames later; the settled frame's rects.
+    fn hover(&mut self, at: egui::Pos2) -> Vec<RectShape> {
+        self.frame(vec![egui::Event::PointerMoved(at)]);
+        rect_shapes(&self.frame(Vec::new()))
+    }
+
+    /// A click on `at` and the pointer taken away, so the row that was picked
+    /// is not also the row under the pointer.
+    fn click_then_leave(&mut self, at: egui::Pos2) -> Vec<RectShape> {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        self.frame(vec![egui::Event::PointerMoved(at)]);
+        self.frame(vec![button(true)]);
+        self.frame(vec![button(false)]);
+        self.frame(Vec::new());
+        self.at_rest()
+    }
+
+    fn rows(&self) -> Vec<SpineRowDrawn> {
+        self.app.spine_rows().to_vec()
+    }
+
+    fn row(&self, label: &str) -> SpineRowDrawn {
+        self.rows()
+            .into_iter()
+            .find(|row| row.label == label)
+            .unwrap_or_else(|| panic!("the rail drew no row labelled {label:?}"))
+    }
+
+    fn ink(&self) -> &'static semantic::Semantic {
+        semantic(self.mode.is_dark())
+    }
+}
+
+fn same_rect(a: egui::Rect, b: egui::Rect) -> bool {
+    (a.min - b.min).abs().max_elem() < 0.01 && (a.max - b.max).abs().max_elem() < 0.01
+}
+
+/// The fills painted over exactly `rect` — that rect and no panel behind it.
+fn fills_over(rects: &[RectShape], rect: egui::Rect) -> Vec<egui::Color32> {
+    rects
+        .iter()
+        .filter(|r| r.fill != egui::Color32::TRANSPARENT && same_rect(r.rect, rect))
+        .map(|r| r.fill)
+        .collect()
+}
+
+/// The bar a row draws on its leading edge: the design system's row-bar width
+/// and the row's own height.
+fn bar_of(row: &SpineRowDrawn) -> egui::Rect {
+    egui::Rect::from_min_size(row.rect.min, egui::vec2(ROW_BAR_WIDTH, row.rect.height()))
+}
+
+/// **A row of the spine and of the Outline draws no fill at rest and the rows
+/// token's hover fill under the pointer** — the spine's asset rows and the
+/// Outline's column rows, in both modes.
+///
+/// A row that senses no click, a step, takes no hover fill: the spine draws
+/// it as a readout, and a fill under the pointer would say a click does
+/// something.
+#[test]
+fn a_row_of_the_spine_and_the_outline_is_flat_at_rest_and_fills_under_the_pointer() {
+    for mode in MODES {
+        let mut rail = Rail::open(mode);
+        let hover = to_color32(rail.ink().rows.hover_background);
+        let rest = rail.at_rest();
+        let rows = rail.rows();
+
+        let acts: Vec<&SpineRowDrawn> = rows
+            .iter()
+            .filter(|r| r.control && r.on_canvas.is_none())
+            .collect();
+        let asset = acts
+            .iter()
+            .find(|r| r.role == SpineRole::Asset)
+            .unwrap_or_else(|| panic!("{mode:?}: no asset row that acts and is off the canvas"));
+        let column = acts
+            .iter()
+            .find(|r| r.role == SpineRole::Column)
+            .unwrap_or_else(|| panic!("{mode:?}: the Outline drew no column row"));
+        for row in &rows {
+            assert!(
+                fills_over(&rest, row.rect).is_empty(),
+                "{mode:?}: {:?} ({:?}) drew a fill at rest: {:?}",
+                row.label,
+                row.role,
+                fills_over(&rest, row.rect)
+            );
+        }
+
+        for target in [asset, column] {
+            let under = rail.hover(target.rect.center());
+            assert_eq!(
+                fills_over(&under, target.rect),
+                vec![hover],
+                "{mode:?}: {:?} ({:?}) under the pointer",
+                target.label,
+                target.role
+            );
+            assert!(
+                !under.iter().any(|r| same_rect(r.rect, bar_of(target))),
+                "{mode:?}: {:?} drew a bar for a pointer, which is not the cursor",
+                target.label
+            );
+            for other in rows.iter().filter(|r| r.rect != target.rect) {
+                assert!(
+                    fills_over(&under, other.rect).is_empty(),
+                    "{mode:?}: {:?} drew a fill with the pointer on {:?}",
+                    other.label,
+                    target.label
+                );
+            }
+        }
+
+        let step = rows
+            .iter()
+            .find(|r| r.role == SpineRole::Step)
+            .unwrap_or_else(|| panic!("{mode:?}: the spine drew no step row"));
+        assert!(!step.control, "{mode:?}: the step row senses a click");
+        let under = rail.hover(step.rect.center());
+        assert!(
+            fills_over(&under, step.rect).is_empty(),
+            "{mode:?}: a step row, which no click acts on, drew a hover fill"
+        );
+    }
+}
+
+/// **A picked row draws the cursor fill and a 3px bar in the focus ink on its
+/// leading edge, with no outline and no corner** — an asset of the spine and a
+/// column of the Outline, each picked by a click.
+#[test]
+fn a_picked_row_draws_the_cursor_fill_and_a_three_wide_bar_in_the_focus_ink() {
+    for mode in MODES {
+        let mut rail = Rail::open(mode);
+        rail.at_rest();
+        let cursor = to_color32(rail.ink().rows.cursor_background);
+        let focus = to_color32(rail.ink().borders.focus);
+        let asset = rail
+            .rows()
+            .into_iter()
+            .find(|r| r.role == SpineRole::Asset && r.control && r.on_canvas.is_none())
+            .expect("an asset row that acts and is off the canvas");
+        for label in [asset.label.as_str(), "house_age"] {
+            let mut rail = Rail::open(mode);
+            let at = rail.row(label).rect.center();
+            let rects = rail.click_then_leave(at);
+            let row = rail.row(label);
+            assert!(row.washed, "{mode:?}: a click on {label:?} did not pick it");
+            assert_eq!(
+                fills_over(&rects, row.rect),
+                vec![cursor],
+                "{mode:?}: the picked row {label:?} is filled with the cursor fill and nothing else"
+            );
+            let bar = bar_of(&row);
+            assert!(
+                (bar.width() - 3.0).abs() < 0.01,
+                "{mode:?}: the bar is {} wide",
+                bar.width()
+            );
+            assert_eq!(
+                fills_over(&rects, bar),
+                vec![focus],
+                "{mode:?}: the picked row {label:?} carries a 3px bar in the focus ink"
+            );
+            let on_row: Vec<&RectShape> = rects
+                .iter()
+                .filter(|r| same_rect(r.rect, row.rect))
+                .collect();
+            assert!(
+                on_row
+                    .iter()
+                    .all(|r| r.stroke.is_empty() && r.corner_radius == egui::CornerRadius::ZERO),
+                "{mode:?}: the picked row {label:?} draws an outline or a corner: {on_row:?}"
+            );
+        }
+    }
+}
+
+/// **The spine row the canvas holds carries a 3px bar in the secondary ink and
+/// no fill**, and so does the head row while the canvas holds the graph — the
+/// other place the bar is drawn.
+#[test]
+fn the_row_the_canvas_holds_carries_a_three_wide_bar_in_the_secondary_ink_and_no_fill() {
+    for mode in MODES {
+        let mut rail = Rail::open(mode);
+        let secondary = to_color32(rail.ink().text.secondary);
+        let focus = to_color32(rail.ink().borders.focus);
+        let rects = rail.at_rest();
+        let dashboard = rail.row("dashboard");
+        let bar = dashboard.on_canvas.expect("the canvas holds the dashboard");
+        assert!(
+            same_rect(bar, bar_of(&dashboard)),
+            "{mode:?}: the bar is {bar:?}"
+        );
+        assert!(
+            (bar.width() - 3.0).abs() < 0.01,
+            "{mode:?}: the bar is {} wide",
+            bar.width()
+        );
+        assert_eq!(
+            fills_over(&rects, bar),
+            vec![secondary],
+            "{mode:?}: the row the canvas holds draws its bar in the secondary ink"
+        );
+        assert!(
+            fills_over(&rects, dashboard.rect).is_empty(),
+            "{mode:?}: the row the canvas holds draws a fill at rest"
+        );
+        assert!(
+            !fills_over(&rects, bar).contains(&focus),
+            "{mode:?}: the bar is the picked ink"
+        );
+
+        let chip = rail
+            .rows()
+            .first()
+            .and_then(|head| head.chip.as_ref())
+            .expect("the spine's head row draws the graph chip")
+            .rect;
+        let rects = rail.click_then_leave(chip.center());
+        let head = rail.rows().first().cloned().expect("the head row");
+        let bar = head
+            .on_canvas
+            .expect("the canvas holds the graph, so the head carries the bar");
+        assert!(
+            (bar.width() - 3.0).abs() < 0.01,
+            "{mode:?}: the head's bar is {} wide",
+            bar.width()
+        );
+        assert_eq!(
+            fills_over(&rects, bar),
+            vec![secondary],
+            "{mode:?}: the head row draws its bar in the secondary ink"
         );
     }
 }

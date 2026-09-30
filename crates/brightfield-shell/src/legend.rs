@@ -317,4 +317,47 @@ mod tests {
         );
         assert!(legend.labels().is_empty(), "a ramp has ends, not entries");
     }
+    /// **A categorical swatch is drawn square** — the corner is the token's
+    /// zero and not a literal of the call site's.
+    #[test]
+    fn a_categorical_swatch_is_drawn_without_a_corner() {
+        let spec = LegendSpec::from_scales(&colour_scale()).expect("a colour scale has a legend");
+        let LegendSpec::Categorical { entries } = &spec else {
+            panic!("a categorical scale drew {spec:?}");
+        };
+        let inks: Vec<egui::Color32> = entries.iter().map(|e| chart_ink(e.colour)).collect();
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(300.0, 200.0),
+            )),
+            ..Default::default()
+        };
+        let out = ctx.run_ui(raw, |ui| {
+            let painter = ui.painter().clone();
+            draw_block(&painter, egui::pos2(10.0, 10.0), &spec, Mode::Light);
+        });
+        let mut swatches = Vec::new();
+        for clipped in &out.shapes {
+            if let egui::Shape::Rect(r) = &clipped.shape {
+                if inks.contains(&r.fill) {
+                    swatches.push(r.clone());
+                }
+            }
+        }
+        assert_eq!(
+            swatches.len(),
+            inks.len(),
+            "one swatch per entry: {swatches:?}"
+        );
+        for swatch in &swatches {
+            assert_eq!(
+                swatch.corner_radius,
+                egui::CornerRadius::ZERO,
+                "the swatch at {:?} carries a corner",
+                swatch.rect
+            );
+        }
+    }
 }

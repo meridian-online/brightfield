@@ -717,8 +717,8 @@ pub struct SpineRow {
     pub marker: SpineMarker,
     /// Which band the row belongs to.
     pub role: SpineRole,
-    /// Whether this row is the current selection — the wash, and never the
-    /// on-canvas bar.
+    /// Whether this row is the current selection — the cursor fill and its
+    /// bar, and never the on-canvas bar.
     pub selected: bool,
     /// The asset a click addresses: the asset itself on an asset row — a
     /// dashboard's own node on a dashboard's row — the node a view belongs to
@@ -946,9 +946,9 @@ impl ProtocolModel {
     pub fn new(inputs: ProtocolInputs, flow: Flow) -> Self {
         let nav = ProtocolNav::new(&inputs.graph_collapsed);
         // **A data file opens with nothing selected.** The rail carries two
-        // marks — a bar on the row whose content is on the canvas, a wash on
-        // the row a reader picked — and a boot cursor washed into the spine
-        // puts the second one on a row nobody chose, next to the first. The
+        // marks — a bar on the row whose content is on the canvas, a fill and
+        // a bar on the row a reader picked — and a boot cursor picked into the
+        // spine puts the second one on a row nobody chose, next to the first. The
         // keyboard cursor still starts where the nav puts it: `selected` is
         // what the rails draw, `nav.cursor()` is where `hjkl` resume from, and
         // the first keystroke seeds one from the other.
@@ -957,7 +957,7 @@ impl ProtocolModel {
         // carries the spec Save would write, and `OneStepProtocol::inputs` is
         // what sets it. A Protocol read from a manifest keeps the boot
         // selection it has had: there is no dashboard on its canvas for the bar
-        // to stand on, so the wash is the mark it draws.
+        // to stand on, so the picked mark is the one it draws.
         //
         // Both halves are read off a frame by
         // `a_fresh_open_holds_the_dashboard_and_marks_the_row_that_says_so` and
@@ -5936,5 +5936,99 @@ steps:
             RunState::Fresh,
             "data channel: the typed hash-clean skip is proof of freshness"
         );
+    }
+    /// One spine row painted alone, and the rects it painted.
+    fn painted_spine_row(
+        row: &SpineRow,
+        on_canvas: bool,
+        mode: Mode,
+    ) -> (SpineRowDrawn, Vec<egui::epaint::RectShape>) {
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(300.0, 100.0),
+            )),
+            ..Default::default()
+        };
+        let mut drawn = None;
+        let out = ctx.run_ui(raw, |ui| {
+            drawn = Some(spine_row(ui, row, on_canvas, mode).0);
+        });
+        let rects = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Rect(r) => Some(r.clone()),
+                _ => None,
+            })
+            .collect();
+        (drawn.expect("the row was drawn"), rects)
+    }
+
+    fn fills_at(rects: &[egui::epaint::RectShape], at: egui::Rect) -> Vec<egui::Color32> {
+        rects
+            .iter()
+            .filter(|r| {
+                r.fill != egui::Color32::TRANSPARENT
+                    && (r.rect.min - at.min).abs().max_elem() < 0.01
+                    && (r.rect.max - at.max).abs().max_elem() < 0.01
+            })
+            .map(|r| r.fill)
+            .collect()
+    }
+
+    /// **A row that is both picked and on the canvas draws as picked**: the
+    /// cursor fill and a bar in the focus ink, and no bar in the secondary ink
+    /// beside it. The record still says the canvas holds it, and a picked row
+    /// the canvas does not hold draws the same marks and says it does not.
+    #[test]
+    fn a_row_that_is_picked_and_on_the_canvas_draws_as_picked() {
+        for mode in [Mode::Light, Mode::Dark] {
+            let sem = semantic(mode.is_dark());
+            let row = SpineRow {
+                label: "table".to_string(),
+                kind: "table".to_string(),
+                depth: 0,
+                marker: SpineMarker::Filled,
+                role: SpineRole::Asset,
+                selected: true,
+                id: None,
+                view: None,
+            };
+            let (both, rects) = painted_spine_row(&row, true, mode);
+            let bar = row_bar(both.rect);
+            assert_eq!(
+                both.on_canvas,
+                Some(bar),
+                "{mode:?}: the record lost the fact that the canvas holds the row"
+            );
+            assert_eq!(
+                fills_at(&rects, both.rect),
+                vec![chrome::colour(sem.rows.cursor_background)],
+                "{mode:?}: the picked row's fill"
+            );
+            assert_eq!(
+                fills_at(&rects, bar),
+                vec![chrome::colour(sem.borders.focus)],
+                "{mode:?}: the picked row draws one bar, in the focus ink"
+            );
+
+            let (picked, alone) = painted_spine_row(&row, false, mode);
+            assert_eq!(
+                picked.on_canvas, None,
+                "{mode:?}: a picked row off the canvas"
+            );
+            assert_eq!(
+                fills_at(&alone, picked.rect),
+                fills_at(&rects, both.rect),
+                "{mode:?}: the canvas changed how a picked row is filled"
+            );
+            assert_eq!(
+                fills_at(&alone, bar),
+                fills_at(&rects, bar),
+                "{mode:?}: the canvas changed a picked row's bar"
+            );
+        }
     }
 }
