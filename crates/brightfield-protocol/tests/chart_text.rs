@@ -629,3 +629,24 @@ fn a_removal_of_an_attribute_the_plot_inherits_is_refused() {
     );
     assert!(refusal.to_string().contains("plotDefaults"), "{refusal}");
 }
+
+/// A mark ordinal counts marks, not the `plot:` list's items: with an
+/// interactor listed first, the first mark is the list's second item, and the
+/// channel lands on it.
+#[test]
+fn a_channel_on_a_mark_listed_after_an_interactor_lands_on_that_mark() {
+    let text = "\
+plot:
+  - select: intervalX
+    as: $s
+  - mark: dot
+    data: { from: t }
+    x: a
+    y: b
+width: 300
+";
+    let edit = channel("root", 0, "y", "c");
+    let written = write_chart_edit(text, &edit).expect("the edit is written");
+    assert_eq!(written, text.replace("    y: b\n", "    y: c\n"));
+    assert_eq!(parse(&written), applied_fresh(text, &edit));
+}
