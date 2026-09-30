@@ -1689,6 +1689,98 @@ impl Session {
         audience: RowsAudience,
     ) -> Result<u64, EngineError> {
         let rows_sql = self.step_rows_sql(index, audience)?;
+        self.count_rows(index, &rows_sql)
+    }
+
+    /// [`Self::step_rows_count`] over only the rows `condition` keeps — the
+    /// count a grid sizes its scroll range from while it shows a view of the
+    /// step.
+    ///
+    /// **A view is an argument to the read, not state.** Nothing about the
+    /// session changes: no selection is published, no parameter moves, and
+    /// the next read without a condition, or a chart drawn from the same step,
+    /// sees every row it saw before.
+    ///
+    /// `condition` is any SQL condition, used as written, under the rule `arc`
+    /// records a condition by: DuckDB must parse `SELECT 1 WHERE <condition>`
+    /// as exactly one statement, or the condition is refused before anything
+    /// holding it reaches the connection.
+    ///
+    /// # Errors
+    ///
+    /// [`EngineError::ConditionRefused`] for a condition that fails that rule;
+    /// otherwise as [`Self::step_rows_count`], including DuckDB's own
+    /// [`EngineError::QueryFailed`] for a condition that is one statement but
+    /// does not bind to the step's columns.
+    pub fn step_rows_count_where(
+        &self,
+        index: usize,
+        audience: RowsAudience,
+        condition: &str,
+    ) -> Result<u64, EngineError> {
+        let rows_sql = self.step_rows_sql_where(index, audience, condition)?;
+        self.count_rows(index, &rows_sql)
+    }
+
+    /// The emitted rows SQL for a mark's step, narrowed to the rows
+    /// `condition` keeps.
+    ///
+    /// # The rule a condition is held to
+    ///
+    /// The duckdb crate's `prepare` runs every statement in its text before
+    /// the last, so a condition carrying `; CREATE TABLE …` would run that
+    /// statement on this session's connection. [`condition_statement_count`]
+    /// counts `SELECT 1 WHERE <condition>` with DuckDB's own parser — the probe
+    /// `arc` counts before it records a condition — and only a count of one is
+    /// composed. The grid therefore never shows a view that `arc` could not
+    /// record.
+    ///
+    /// The probe, not the composed query, is what is counted, because the
+    /// probe is the text `arc` counts: the composed query's count depends on
+    /// this function's own text around the condition, and a rule stated over
+    /// it would be a second rule for Save and the grid to disagree by. The
+    /// probe's parentheses also matter: `SELECT 1 WHERE` opens none, so a
+    /// condition that closes the ones composed around it below — to end the
+    /// read's statement and balance a statement of its own after it — does not
+    /// parse as a probe and is refused.
+    ///
+    /// # Why the condition sits on a line of its own, in parentheses
+    ///
+    /// A condition may end in a `--` comment, `house_age > 40 -- note`. Written
+    /// inline, the comment would run to the end of the query and swallow what
+    /// the caller wraps after it — the `LIMIT` and `OFFSET` of a window — so a
+    /// page would hold every row the condition keeps. The newline after the
+    /// condition ends the comment. The parentheses keep it a condition: text
+    /// that continues a query instead, `true UNION ALL SELECT …`, is a syntax
+    /// error inside them rather than rows from somewhere else.
+    fn step_rows_sql_where(
+        &self,
+        index: usize,
+        audience: RowsAudience,
+        condition: &str,
+    ) -> Result<String, EngineError> {
+        let refused = |refusal| EngineError::ConditionRefused {
+            condition: condition.to_string(),
+            refusal,
+        };
+        match condition_statement_count(condition) {
+            Ok(1) => {}
+            Ok(statements) => {
+                return Err(refused(error::ConditionRefusal::SecondStatement {
+                    statements,
+                }))
+            }
+            Err(message) => return Err(refused(error::ConditionRefusal::Unparseable { message })),
+        }
+        let rows_sql = self.step_rows_sql(index, audience)?;
+        Ok(format!(
+            "SELECT * FROM ({rows_sql}) AS bf_step_rows_where WHERE (\n{condition}\n)"
+        ))
+    }
+
+    /// `count(*)` over `rows_sql`, for the mark at `index` — the body both
+    /// [`Self::step_rows_count`] and [`Self::step_rows_count_where`] run.
+    fn count_rows(&self, index: usize, rows_sql: &str) -> Result<u64, EngineError> {
         let sql = format!("SELECT count(*) AS n FROM ({rows_sql}) AS bf_step_rows");
         let batches = self.query_arrow_raw(&sql).map_err(|e| {
             self.classify_query_failure(index, &self.mark_kind_at(index), sql.clone(), e)
@@ -1755,6 +1847,38 @@ impl Session {
         audience: RowsAudience,
     ) -> Result<Vec<RecordBatch>, EngineError> {
         let rows_sql = self.step_rows_sql(index, audience)?;
+        self.window_rows(index, &rows_sql, offset, limit)
+    }
+
+    /// [`Self::execute_step_rows_window`] over only the rows `condition`
+    /// keeps — the page a grid shows while it shows a view of the step. The
+    /// view changes no state; see [`Self::step_rows_count_where`], whose rule
+    /// for `condition` this read shares.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::step_rows_count_where`].
+    pub fn execute_step_rows_window_where(
+        &self,
+        index: usize,
+        offset: u64,
+        limit: u64,
+        audience: RowsAudience,
+        condition: &str,
+    ) -> Result<Vec<RecordBatch>, EngineError> {
+        let rows_sql = self.step_rows_sql_where(index, audience, condition)?;
+        self.window_rows(index, &rows_sql, offset, limit)
+    }
+
+    /// `ORDER BY ALL LIMIT limit OFFSET offset` over `rows_sql`, for the mark
+    /// at `index` — the body both window reads run.
+    fn window_rows(
+        &self,
+        index: usize,
+        rows_sql: &str,
+        offset: u64,
+        limit: u64,
+    ) -> Result<Vec<RecordBatch>, EngineError> {
         let sql = format!(
             "SELECT * FROM ({rows_sql}) AS bf_step_rows \
              ORDER BY ALL LIMIT {limit} OFFSET {offset}"
@@ -3684,6 +3808,64 @@ fn read_distributions(batches: &[RecordBatch], asks: &[DistributionAsk]) -> Vec<
         }
     }
     out
+}
+
+/// How many statements DuckDB's own parser reads in `SELECT 1 WHERE
+/// <condition>`, or DuckDB's message when it cannot parse it.
+///
+/// It asks the parser through `duckdb_extract_statements` on a fresh in-memory
+/// database, the same probe and the same call `arc` makes before it records a
+/// condition. Nothing extracted is prepared, bound or executed, so a condition
+/// carrying `CREATE TABLE …` after a `;` is counted here and never run. A fresh
+/// database rather than the session's connection, because the rule is `arc`'s
+/// and `arc`'s parser has none of the session's extensions loaded.
+///
+/// A condition holding a NUL byte cannot reach DuckDB's C API at all, and is
+/// reported as unparseable in this function's words rather than DuckDB's.
+fn condition_statement_count(condition: &str) -> Result<usize, String> {
+    use duckdb::ffi;
+    let Ok(probe) = std::ffi::CString::new(format!("SELECT 1 WHERE {condition}")) else {
+        return Err("the condition holds a NUL byte, which DuckDB cannot be handed".to_string());
+    };
+    // SAFETY: `db` and `con` stay null until DuckDB fills them and are checked
+    // for success before use; `extracted` is destroyed on every path once
+    // `duckdb_extract_statements` has been called, as DuckDB's API requires;
+    // each handle is destroyed exactly once, in reverse order of creation. The
+    // error string is copied out before `extracted`, which owns it, is
+    // destroyed. The only call made on the connection is
+    // `duckdb_extract_statements`, which parses and runs nothing.
+    unsafe {
+        let mut db: ffi::duckdb_database = std::ptr::null_mut();
+        if ffi::duckdb_open(std::ptr::null(), &mut db) != ffi::DuckDBSuccess {
+            ffi::duckdb_close(&mut db);
+            return Err("DuckDB could not open a database to parse the condition in".to_string());
+        }
+        let mut con: ffi::duckdb_connection = std::ptr::null_mut();
+        if ffi::duckdb_connect(db, &mut con) != ffi::DuckDBSuccess {
+            ffi::duckdb_disconnect(&mut con);
+            ffi::duckdb_close(&mut db);
+            return Err("DuckDB could not connect to parse the condition".to_string());
+        }
+        let mut extracted: ffi::duckdb_extracted_statements = std::ptr::null_mut();
+        // `0` on a parse error, else the number of statements.
+        let count = ffi::duckdb_extract_statements(con, probe.as_ptr(), &mut extracted);
+        let outcome = if count == 0 {
+            let message = ffi::duckdb_extract_statements_error(extracted);
+            Err(if message.is_null() {
+                "DuckDB could not parse the condition and gave no reason".to_string()
+            } else {
+                std::ffi::CStr::from_ptr(message)
+                    .to_string_lossy()
+                    .into_owned()
+            })
+        } else {
+            Ok(count as usize)
+        };
+        ffi::duckdb_destroy_extracted(&mut extracted);
+        ffi::duckdb_disconnect(&mut con);
+        ffi::duckdb_close(&mut db);
+        outcome
+    }
 }
 
 #[cfg(test)]
