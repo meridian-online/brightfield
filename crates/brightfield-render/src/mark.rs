@@ -782,14 +782,131 @@ fn dot_position(
     ))
 }
 
+/// A dot's number fill, read once per draw: the column's values beside the
+/// [`Scale::Sequential`] they map through.
+///
+/// `None` from [`NumberFill::of`] is every fill that is not a number column on a
+/// ramp — a colour literal, a string column, no fill channel at all — and each
+/// of those keeps [`resolve_colour`], which is what painted them before a dot
+/// had a ramp. Only a fill scale that [`DotRenderer::augment_scales`] (or a
+/// co-rendered mark) left as a `Sequential` reaches here, so a `Time` scale
+/// under a timestamp fill, or a `Colour` scale under a string one, stays on the
+/// path it was on.
+struct NumberFill<'a> {
+    ramp: &'a Scale,
+    values: Vec<Option<f64>>,
+    null: Color,
+}
+
+impl<'a> NumberFill<'a> {
+    fn of(scales: &'a ScaleSet, channel_map: &ChannelMap, batch: &RecordBatch) -> Option<Self> {
+        // A colour literal is answered before any column is read, exactly as
+        // `resolve_colour` orders it: a ghost layer's grey is not a column.
+        if channel_map.colour(Channel::Fill).is_some() {
+            return None;
+        }
+        let column = channel_map.get(Channel::Fill)?;
+        let ramp = scales
+            .get(Channel::Fill)
+            .filter(|scale| matches!(scale, Scale::Sequential { .. }))?;
+        Some(Self {
+            ramp,
+            values: column_as_f64(batch, column)?,
+            null: scales.ink().null,
+        })
+    }
+
+    /// The colour of `row`: its value along the ramp, or the null ink when the
+    /// value is NULL — never a colour the ramp could produce, which would read
+    /// as a data value.
+    fn colour(&self, row: usize) -> Color {
+        match self.values.get(row).copied().flatten() {
+            Some(value) => Color::new(self.ramp.map_continuous(value)),
+            None => self.null,
+        }
+    }
+}
+
+impl DotRenderer {
+    /// Build the fill ramp for a number-column fill.
+    ///
+    /// Generic column inference types a number fill `Linear`, which nothing
+    /// paints from, so — as [`CellRenderer::augment_scales`] does for its own
+    /// fill — the `Linear` is REPLACED with a `Sequential`, anchored `[0, max]`
+    /// when the column's minimum is not negative and `[min, max]` otherwise. A
+    /// `Sequential` already in the set (a co-rendered mark's, or this mark's own
+    /// earlier call, since a plot runs this once per layer and again after a
+    /// navigation) has its domain unioned and keeps its stops. Every other fill
+    /// scale is left alone: a categorical `Colour`, a `Time`, and no scale at
+    /// all for a layer whose fill is a colour literal — the ghost of a
+    /// two-layer tile — so that layer's call cannot undo the ramp another
+    /// layer's column built.
+    ///
+    /// The ramp is [`SequentialScheme::default`]: a dot is built by
+    /// [`crate::mark::configured_renderer`]'s fallthrough, which carries no
+    /// scheme, so a plot's `colorScheme` does not reach a dot's ramp.
+    fn augment_fill_ramp(scales: &mut ScaleSet, batch: &RecordBatch, channel_map: &ChannelMap) {
+        if channel_map.colour(Channel::Fill).is_some() {
+            return;
+        }
+        let Some(column) = channel_map.get(Channel::Fill) else {
+            return;
+        };
+        // A string fill reads as None here, leaving the Colour path untouched.
+        let Some(values) = column_as_f64(batch, column) else {
+            return;
+        };
+        let lo = values
+            .iter()
+            .flatten()
+            .cloned()
+            .fold(f64::INFINITY, f64::min);
+        let hi = values
+            .iter()
+            .flatten()
+            .cloned()
+            .fold(f64::NEG_INFINITY, f64::max);
+        if !(lo.is_finite() && hi.is_finite()) {
+            return;
+        }
+        let (d0, d1) = if lo >= 0.0 { (0.0, hi) } else { (lo, hi) };
+
+        let ramp = match scales.get(Channel::Fill) {
+            Some(Scale::Sequential {
+                domain_min,
+                domain_max,
+                stops,
+            }) => Scale::Sequential {
+                domain_min: domain_min.min(d0),
+                domain_max: domain_max.max(d1),
+                stops: stops.clone(),
+            },
+            Some(Scale::Linear { .. }) | None => Scale::Sequential {
+                domain_min: d0,
+                domain_max: d1,
+                stops: SequentialScheme::default().stops(),
+            },
+            Some(_) => return,
+        };
+        scales.insert(Channel::Fill, ramp);
+    }
+}
+
 /// Renders dot/scatter marks as circles at x/y positions.
+///
+/// **A number column on `fill` is painted along a sequential ramp**, and
+/// [`crate::scale::Scale::Sequential`] under the fill channel is what the shell's
+/// legend reads, so the ramp and its legend are one scale. A string column
+/// paints by category and a colour literal is that colour, as they always were.
 pub struct DotRenderer;
 
 impl MarkRenderer for DotRenderer {
-    /// Equal-aspect the X/Y domains when the mark asked for it
+    /// Build the fill ramp a number-column fill paints along
+    /// ([`DotRenderer::augment_fill_ramp`]), then equal-aspect the X/Y domains
+    /// when the mark asked for it
     /// ([`ChannelMap::equal_aspect`]) — the point-map's device, a `dot` with
-    /// `aspectRatio: 1`, and a no-op for a `dot` mark that did not ask,
-    /// scatter included — held by
+    /// `aspectRatio: 1`, and a no-op on the X/Y domains for a `dot` mark that
+    /// did not ask, scatter included — held by
     /// `augment_scales_without_the_flag_leaves_scales_untouched` in this
     /// module's own tests.
     ///
@@ -804,11 +921,12 @@ impl MarkRenderer for DotRenderer {
     fn augment_scales(
         &self,
         scales: &mut ScaleSet,
-        _batch: &RecordBatch,
+        batch: &RecordBatch,
         channel_map: &ChannelMap,
         x_range: (f64, f64),
         y_range: (f64, f64),
     ) {
+        Self::augment_fill_ramp(scales, batch, channel_map);
         // A projected mark aspect-fits for the same reason an equal-aspect one
         // does, and by the same arithmetic: the difference is the UNITS its
         // domains are already in, which `infer_scales` decided — degrees for an
@@ -882,6 +1000,7 @@ impl MarkRenderer for DotRenderer {
         let y_f64 = column_as_f64(batch, y_col);
         let y_str = column_as_string(batch, y_col);
 
+        let fill = NumberFill::of(scales, channel_map, batch);
         let n = batch.num_rows();
         for i in 0..n {
             let xf = x_f64.as_ref().and_then(|v| v[i]);
@@ -893,7 +1012,10 @@ impl MarkRenderer for DotRenderer {
                 continue;
             };
 
-            let colour = resolve_colour(scales, channel_map, batch, i);
+            let colour = match &fill {
+                Some(fill) => fill.colour(i),
+                None => resolve_colour(scales, channel_map, batch, i),
+            };
             let colour = apply_highlight(colour, i, highlight);
             let circle = Circle::new((px, py), DOT_RADIUS);
             scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &circle);
@@ -946,6 +1068,7 @@ impl MarkRenderer for DotRenderer {
         let y_f64 = column_as_f64(batch, y_col);
         let y_str = column_as_string(batch, y_col);
 
+        let fill = NumberFill::of(scales, channel_map, batch);
         let n = batch.num_rows();
         for i in 0..n {
             let xf = x_f64.as_ref().and_then(|v| v[i]);
@@ -968,7 +1091,10 @@ impl MarkRenderer for DotRenderer {
                 (target_px, target_py)
             };
 
-            let colour = resolve_colour(scales, channel_map, batch, i);
+            let colour = match &fill {
+                Some(fill) => fill.colour(i),
+                None => resolve_colour(scales, channel_map, batch, i),
+            };
             let colour = apply_highlight(colour, i, highlight);
             let circle = Circle::new((px, py), DOT_RADIUS);
             scene.fill(Fill::NonZero, Affine::IDENTITY, colour, None, &circle);
