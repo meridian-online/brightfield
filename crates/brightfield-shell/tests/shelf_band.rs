@@ -262,7 +262,7 @@ fn text_colours(frame: &Frame) -> Vec<(String, egui::Color32)> {
 }
 
 /// The text painted inside `cell`, by where its ink is centred.
-fn texts_in<'a>(frame: &'a Frame, cell: egui::Rect) -> Vec<&'a DrawnText> {
+fn texts_in(frame: &Frame, cell: egui::Rect) -> Vec<&DrawnText> {
     frame
         .texts
         .iter()
