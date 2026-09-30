@@ -24,9 +24,9 @@ hconcat:
         y: 'latitude'
       - select: intervalXY
         as: $sel
-      projectionType: equirectangular
       width: 620
       height: 620
+      projectionType: equirectangular
     - vspace: 0
   - hspace: 42
   - vconcat:

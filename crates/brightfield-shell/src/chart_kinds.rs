@@ -533,12 +533,17 @@ pub fn point_map_tile_sized(
     // a projected plot draws no axes to title, and its graticule's labels say
     // what the coordinates are.
     //
+    let _ = writeln!(out, "{pad}  width: {width}");
+    let _ = writeln!(out, "{pad}  height: {height}");
     // The projection, at PLOT level — Mosaic's own vocabulary and the only
     // level it exists at. Every mark on the plot draws through it, so the ghost
     // and the subset cannot come to be in different coordinate systems.
+    //
+    // Last, because it is the attribute the shelf takes out when a column that
+    // is not a coordinate goes on an axis, and puts back with the pair. The
+    // chart file's text writer adds a line after a mapping's last entry, so a
+    // projection written last returns to the line it was taken from.
     let _ = writeln!(out, "{pad}  projectionType: {POINT_MAP_PROJECTION}");
-    let _ = writeln!(out, "{pad}  width: {width}");
-    let _ = writeln!(out, "{pad}  height: {height}");
     out
 }
 
