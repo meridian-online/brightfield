@@ -2,11 +2,11 @@
 //!
 //! Generic column inference types a number fill `Linear`, which no mark's paint
 //! reads, and `DotRenderer` built no ramp of its own — so a dot bound to
-//! `median_house_value` drew every point in the default ink and the picture did
+//! a house-value column drew its points in the default ink and the picture did
 //! not change when the column did. These tests read what the renderer *drew*, as
 //! `tests/mode_blind_ink.rs` does: the colours vello encoded into `draw_data`,
 //! one word per filled circle, in row order. A test that inspected the scale
-//! alone could not see a paint that never consulted it.
+//! alone could not see a paint that did not consult it.
 //!
 //! The oracle for a ramped point is the ramp's own end stops
 //! ([`SequentialScheme::stops`]) and its own [`Scale::map_continuous`]; the
@@ -113,7 +113,7 @@ fn scales_of(batch: &RecordBatch, cm: &ChannelMap) -> ScaleSet {
 fn drawn(batch: &RecordBatch, cm: &ChannelMap, scales: &ScaleSet) -> Vec<u32> {
     let mut scene = Scene::new();
     DotRenderer.render(&mut scene, batch, cm, scales, None);
-    scene.encoding().draw_data.iter().copied().collect()
+    scene.encoding().draw_data.to_vec()
 }
 
 /// A colour as the scene encodes it, by drawing one circle in it.
@@ -126,7 +126,7 @@ fn packed(colour: Color) -> u32 {
         None,
         &Circle::new((0.0, 0.0), 1.0),
     );
-    let words: Vec<u32> = scene.encoding().draw_data.iter().copied().collect();
+    let words: Vec<u32> = scene.encoding().draw_data.to_vec();
     assert_eq!(words.len(), 1, "one solid fill encodes one colour word");
     words[0]
 }
@@ -202,7 +202,7 @@ fn a_number_fill_paints_each_point_along_the_ramp_and_a_null_in_the_null_ink() {
 }
 
 /// A layer per entry through the scene builder the dashboard uses, returning
-/// the plot's scales — where every layer's `augment_scales` runs against one
+/// the plot's scales — where the layers' `augment_scales` calls run against one
 /// shared set.
 fn plot_scales(layers: &[(&RecordBatch, &ChannelMap)]) -> ScaleSet {
     let entries: Vec<ChartData<'_>> = layers
@@ -311,7 +311,7 @@ fn a_string_fill_still_paints_by_category_and_builds_no_ramp() {
     );
 }
 
-/// **AC3, a literal and no fill.** A literal fill paints every point in that
+/// **AC3, a literal and no fill.** A literal fill paints the points in that
 /// literal and leaves the plot with no fill scale; a dot with no fill channel
 /// draws the default ink.
 #[test]
@@ -328,7 +328,7 @@ fn a_literal_fill_and_no_fill_paint_as_they_did() {
     assert_eq!(
         drawn(&batch, &cm, &scales),
         vec![packed(GHOST); 3],
-        "a literal fill is that colour for every row"
+        "a literal fill is that colour on each row"
     );
 
     let cm = column_channels(None);
@@ -352,7 +352,7 @@ fn the_interpolated_draw_paints_the_same_ramp_as_the_still_one() {
 
     let mut scene = Scene::new();
     DotRenderer.render_interpolated(&mut scene, &batch, &cm, &scales, &[], 1.0, None);
-    let interpolated: Vec<u32> = scene.encoding().draw_data.iter().copied().collect();
+    let interpolated: Vec<u32> = scene.encoding().draw_data.to_vec();
 
     let still = drawn(&batch, &cm, &scales);
     assert_eq!(interpolated.len(), 4, "one circle per row");

@@ -785,13 +785,12 @@ fn dot_position(
 /// A dot's number fill, read once per draw: the column's values beside the
 /// [`Scale::Sequential`] they map through.
 ///
-/// `None` from [`NumberFill::of`] is every fill that is not a number column on a
-/// ramp — a colour literal, a string column, no fill channel at all — and each
-/// of those keeps [`resolve_colour`], which is what painted them before a dot
-/// had a ramp. Only a fill scale that [`DotRenderer::augment_scales`] (or a
-/// co-rendered mark) left as a `Sequential` reaches here, so a `Time` scale
-/// under a timestamp fill, or a `Colour` scale under a string one, stays on the
-/// path it was on.
+/// `None` from [`NumberFill::of`] answers a fill that is not a number column on a
+/// ramp — a colour literal, a string column, no fill channel at all — and those
+/// keep [`resolve_colour`], which painted them before a dot had a ramp. A fill
+/// scale reaches here when [`DotRenderer::augment_scales`] (or a co-rendered
+/// mark) left it a `Sequential`, so a `Time` scale under a timestamp fill, or a
+/// `Colour` scale under a string one, stays on the path it was on.
 struct NumberFill<'a> {
     ramp: &'a Scale,
     values: Vec<Option<f64>>,
@@ -830,15 +829,15 @@ impl<'a> NumberFill<'a> {
 impl DotRenderer {
     /// Build the fill ramp for a number-column fill.
     ///
-    /// Generic column inference types a number fill `Linear`, which nothing
-    /// paints from, so — as [`CellRenderer::augment_scales`] does for its own
+    /// Generic column inference types a number fill `Linear`, which the dot's
+    /// paint does not read, so — as [`CellRenderer::augment_scales`] does for its own
     /// fill — the `Linear` is REPLACED with a `Sequential`, anchored `[0, max]`
     /// when the column's minimum is not negative and `[min, max]` otherwise. A
     /// `Sequential` already in the set (a co-rendered mark's, or this mark's own
     /// earlier call, since a plot runs this once per layer and again after a
-    /// navigation) has its domain unioned and keeps its stops. Every other fill
-    /// scale is left alone: a categorical `Colour`, a `Time`, and no scale at
-    /// all for a layer whose fill is a colour literal — the ghost of a
+    /// navigation) has its domain unioned and keeps its stops. The other kinds of
+    /// fill scale stay as they are: a categorical `Colour`, a `Time`, and the
+    /// absence of one for a layer whose fill is a colour literal — the ghost of a
     /// two-layer tile — so that layer's call cannot undo the ramp another
     /// layer's column built.
     ///
@@ -897,12 +896,12 @@ impl DotRenderer {
 /// **A number column on `fill` is painted along a sequential ramp**, and
 /// [`crate::scale::Scale::Sequential`] under the fill channel is what the shell's
 /// legend reads, so the ramp and its legend are one scale. A string column
-/// paints by category and a colour literal is that colour, as they always were.
+/// paints by category and a colour literal is that colour, as before.
 pub struct DotRenderer;
 
 impl MarkRenderer for DotRenderer {
     /// Build the fill ramp a number-column fill paints along
-    /// ([`DotRenderer::augment_fill_ramp`]), then equal-aspect the X/Y domains
+    /// (`DotRenderer::augment_fill_ramp`), then equal-aspect the X/Y domains
     /// when the mark asked for it
     /// ([`ChannelMap::equal_aspect`]) — the point-map's device, a `dot` with
     /// `aspectRatio: 1`, and a no-op on the X/Y domains for a `dot` mark that

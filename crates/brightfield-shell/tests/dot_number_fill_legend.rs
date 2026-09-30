@@ -4,7 +4,7 @@
 //!
 //! The shell's legend reads the plot's *fill scale* (`LegendSpec::from_scales`),
 //! and a dot's number fill used to leave that scale a `Linear` — which the
-//! legend maps to nothing — so the page drew no legend and no reserved band. The
+//! legend derives no legend from — so the page drew no legend and no reserved band. The
 //! paint itself is held in `brightfield-render`'s `tests/dot_number_fill.rs`,
 //! over the renderer; this file holds the other half through the real pipeline:
 //! spec text → DuckDB → per-plot scales → the legend and the band it reserves.
@@ -19,8 +19,8 @@ use brightfield_shell::legend::{band_width, LegendSpec};
 use brightfield_shell::pipeline::{compose_spec_str, Composed};
 use brightfield_shell::window::{chart_window_size, Boot, MeridianApp};
 
-/// The column the dot is filled by. Every value is positive, so the ramp is
-/// anchored at zero and ends at the maximum — [`VALUES`]'s own.
+/// The column the dot is filled by. The values are positive, so the ramp is
+/// anchored at zero and ends at the maximum, which is 4.9.
 const VALUES: [f64; 5] = [0.825, 2.291, 1.5, 4.9, 3.2];
 
 fn rows() -> String {
@@ -72,8 +72,8 @@ fn laid_out(composed: Composed) -> ChartDoc {
 }
 
 /// **AC1.** A dot filled by a number column draws a sequential legend, and the
-/// legend is the fill scale the marks were painted against — its ends span every
-/// value in the column — in a band beside the raster, not on it.
+/// legend is the fill scale the marks were painted against — its ends span the
+/// column's values — in a band beside the raster, not on it.
 #[test]
 fn a_number_fill_on_a_dot_draws_a_sequential_legend_beside_the_plot() {
     let composed = compose(&dot("v"));
@@ -149,7 +149,7 @@ fn a_literal_ghost_layer_leaves_the_second_layers_ramp_and_its_legend() {
 }
 
 /// **AC3, through the pipeline.** A literal fill draws no legend and reserves no
-/// band; a string column draws the categorical legend it always did.
+/// band; a string column draws the categorical legend it drew before.
 #[test]
 fn a_literal_fill_and_a_string_fill_draw_the_legends_they_drew_before() {
     let literal = compose(&dot("\"#aaaaaa\""));
