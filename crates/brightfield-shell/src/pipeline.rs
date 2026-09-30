@@ -2466,8 +2466,8 @@ fn compose_from_results(
         // ParseOutput. `compose_from_results` is also reached on every
         // re-present after an interaction, where re-deriving diagnostics from
         // the spec alone would silently lose the parse warnings. What is set here
-        // is only what this composition found itself, which `with_diagnostics`
-        // keeps when the load's are put beside it.
+        // is what this composition found itself, which `with_diagnostics` keeps
+        // when the load's are put beside it (`a_repaint_says_a_crossed_format_once`).
         diagnostics: LoadDiagnostics::from_composition(&crossed_formats),
         // Live-queried this very composition — no materialised run output is
         // being previewed, so no currency claim is made (or owed). A caller
@@ -2487,7 +2487,7 @@ fn compose_from_results(
 /// The warnings for a plot's tick formats that sit on an axis of the other kind:
 /// a number format on a date axis, a date format on a number axis.
 ///
-/// Known only here, where the data has typed the scales, and asked of
+/// Known here, where the data has typed the scales, and asked of
 /// [`tick_format_crosses_axis`], the same judge the axis draws through: a format
 /// it draws is never one this names, and a format it drops for its kind always is.
 /// The axis then draws its default text, which is what the warning says.

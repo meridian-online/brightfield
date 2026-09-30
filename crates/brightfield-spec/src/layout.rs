@@ -941,8 +941,9 @@ pub enum TickFormatReading {
 ///
 /// A string is a number format when d3-format's grammar reads it
 /// ([`NumberFormat::parse`]). Otherwise it is a date format when it holds a
-/// `%` directive and every directive in it is one d3-time-format reads
-/// ([`DateFormat::parse`]). A `%` ends a d3-format specifier (`%`, `+.1%`) and so
+/// `%` directive and each directive in it is one d3-time-format reads
+/// ([`DateFormat::parse`]), as `what_the_parser_warns_about_and_what_the_reader_accepts_do_not_overlap`
+/// holds. A `%` ends a d3-format specifier (`%`, `+.1%`) and so
 /// never has a character after it there, which is what tells a date directive
 /// from a number specifier's percent sign: `abc%` is a mistyped number format, and
 /// `%K` a date format with a directive this build does not read.

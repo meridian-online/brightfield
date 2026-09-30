@@ -108,8 +108,9 @@ impl AxisKind {
 ///
 /// A `DATE` column takes a band scale whose categories are its days spelled
 /// `YYYY-MM-DD`, and this build has no other record of that: a band is a date
-/// axis exactly when every one of its categories is such a day, so a text column
-/// of ISO dates reads as one too.
+/// axis when each of its categories is such a day and a band of names when one
+/// is not, as `a_format_crosses_an_axis_of_the_other_kind_and_no_other` holds, so
+/// a text column of ISO dates reads as a date axis too.
 #[must_use]
 pub fn axis_kind(scale: &Scale) -> Option<AxisKind> {
     match scale {
@@ -342,8 +343,10 @@ fn compute_linear_ticks(
 }
 
 /// A band's ticks: one per category, at its centre. `date` is a date format
-/// the plot asked for; it sets the text only when every category is a calendar
-/// day (see [`axis_kind`]), and otherwise the categories print as they are.
+/// the plot asked for. It sets the text when each category is a calendar day
+/// (see [`axis_kind`]), and the categories print as they are when one is not,
+/// as `a_date_format_prints_a_time_axis_and_a_band_of_days_and_leaves_names_alone`
+/// holds.
 fn compute_band_ticks(
     categories: &[String],
     range_start: f64,

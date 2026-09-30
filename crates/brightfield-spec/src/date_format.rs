@@ -18,7 +18,7 @@
 //! chart that prints `K` where its author asked for something else is wrong
 //! without saying so. A `%` with nothing after it is the same refusal.
 //!
-//! The English locale is the only one: `Mon` and `March`, `AM` and `PM`, and the
+//! The locale is English: `Mon` and `March`, `AM` and `PM`, and the
 //! composite directives `%c`, `%x` and `%X` read as d3-time-format's `en-US`.
 //!
 //! An instant is microseconds since the Unix epoch, which is what an Arrow
@@ -89,8 +89,8 @@ impl DateFormat {
     /// at the end).
     ///
     /// A specifier with no directive in it (`abc`) reads as text that prints as
-    /// it stands; whether that is a date format at all is the caller's to
-    /// judge, as [`crate::layout::read_tick_format`] does.
+    /// it stands; whether that is a date format is the caller's to judge, as
+    /// [`crate::layout::read_tick_format`] does.
     ///
     /// # Errors
     ///
@@ -377,7 +377,7 @@ fn padded(value: i64, pad: Pad, default: char, width: usize) -> String {
     match fill {
         Some(fill) if digits.len() < width => {
             let mut out = String::from(sign);
-            out.extend(std::iter::repeat(fill).take(width - digits.len()));
+            out.extend(std::iter::repeat_n(fill, width - digits.len()));
             out.push_str(&digits);
             out
         }
