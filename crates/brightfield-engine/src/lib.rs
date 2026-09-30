@@ -3839,7 +3839,10 @@ fn condition_statement_count(condition: &str) -> Result<usize, String> {
     // each handle is destroyed exactly once, in reverse order of creation. The
     // error string is copied out before `extracted`, which owns it, is
     // destroyed. The one call made on the connection is
-    // `duckdb_extract_statements`, which parses and runs nothing.
+    // `duckdb_extract_statements`, which parses the probe and runs nothing in
+    // it; `a_condition_carrying_a_second_statement_is_refused_and_runs_nothing`
+    // in `crates/brightfield-engine/tests/rows_under_condition.rs` reads the
+    // session's catalog after a refused `CREATE TABLE`.
     unsafe {
         let mut db: ffi::duckdb_database = std::ptr::null_mut();
         if ffi::duckdb_open(std::ptr::null(), &mut db) != ffi::DuckDBSuccess {
