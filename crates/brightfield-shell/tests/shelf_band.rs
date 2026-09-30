@@ -206,7 +206,7 @@ impl Stage {
     }
 }
 
-/// The leaves of every shape the frame painted, with the `Vec`s opened.
+/// The leaves of each shape the frame painted, with the `Vec`s opened.
 fn leaves(frame: &Frame) -> Vec<&Shape> {
     fn open<'a>(shape: &'a Shape, out: &mut Vec<&'a Shape>) {
         match shape {

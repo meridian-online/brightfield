@@ -21,8 +21,8 @@
 //! and a chevron on the word's line. The word *preview* stands beside the word
 //! while the column is a preview, and a channel with no column reads *add a
 //! column*. A column's name longer than the room it has ends in an ellipsis,
-//! and the cell keeps its width: [`channel::cell_widths`] reads the band's width
-//! and nothing the cell holds.
+//! and the cell keeps its width, which [`channel::cell_widths`] takes from the
+//! band's width alone.
 //!
 //! # Colour
 //!
@@ -40,8 +40,9 @@
 //! open cell. The keycap a cell prints is read from the registry's binding for
 //! the verb that goes to it, so a key moved there moves on the band.
 //! `the_cell_keys_printed_on_the_band_are_the_registrys` holds it. The list of
-//! columns that opens under a cell, its query, `j` `k` and `Enter` are the
-//! list's and this module answers none of them.
+//! columns that opens under a cell, its query, `j` `k` and `Enter` belong to
+//! the list, and the band returns `false` for them, as
+//! `a_key_with_a_modifier_and_the_lists_keys_are_not_the_bands` holds.
 
 use std::sync::OnceLock;
 
@@ -113,11 +114,12 @@ impl ShelfChannels {
     /// The channels `plot`'s marks take, or `None` when it has no mark.
     ///
     /// The mark is the first mark's kind. x and y are read from the first mark
-    /// that binds them, as [`crate::shelf_edit::put_column`] moves every mark
+    /// that binds them, as [`crate::shelf_edit::put_column`] moves each mark
     /// that binds the channel. Colour is read where
     /// [`crate::shelf_edit::put_colour`] writes it: the first mark that reads
-    /// through a selection, or the first mark when none does, so the map's ghost
-    /// layer, which never takes a colour, is not the layer the cell reads.
+    /// through a selection, or the first mark when no mark does, so the map's
+    /// ghost layer, which takes a literal ink and no column, is not the layer
+    /// the cell reads: `colour_is_read_from_the_layer_the_shelf_writes_it_on`.
     #[must_use]
     pub fn of_plot(plot: &PlotNode) -> Option<Self> {
         let marks = marks_of(plot);
