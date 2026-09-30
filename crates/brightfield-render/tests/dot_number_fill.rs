@@ -340,3 +340,33 @@ fn a_literal_fill_and_no_fill_paint_as_they_did() {
         "a dot with no fill draws the default ink"
     );
 }
+
+/// **AC1, the animated draw.** A transition between two states draws through
+/// `render_interpolated`, a second copy of the per-row loop; it must paint the
+/// same ramp as `render` or a dot would change colour scheme mid-animation.
+#[test]
+fn the_interpolated_draw_paints_the_same_ramp_as_the_still_one() {
+    let batch = number_batch(&[Some(0.0), Some(50.0), Some(100.0), None]);
+    let cm = column_channels(Some("v"));
+    let scales = scales_of(&batch, &cm);
+
+    let mut scene = Scene::new();
+    DotRenderer.render_interpolated(&mut scene, &batch, &cm, &scales, &[], 1.0, None);
+    let interpolated: Vec<u32> = scene.encoding().draw_data.iter().copied().collect();
+
+    let still = drawn(&batch, &cm, &scales);
+    assert_eq!(interpolated.len(), 4, "one circle per row");
+    assert_eq!(
+        interpolated, still,
+        "the two draws disagree on a point's colour"
+    );
+    assert_ne!(
+        interpolated[0], interpolated[2],
+        "the ramp is flat across the column's ends"
+    );
+    assert_eq!(
+        interpolated[3],
+        packed(ChartInk::LIGHT.null),
+        "a null draws null ink"
+    );
+}
