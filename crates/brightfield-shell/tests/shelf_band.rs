@@ -42,8 +42,8 @@ use brightfield_shell::text_ink::{self, DrawnText};
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_spec::ast::{Component, Spec, SpecValue, ValueOrParamRef};
 use brightfield_spec::edit::{self, plot_at_path, ChartEdit};
-use brightfield_spec::vocab::is_colour_literal;
 use brightfield_spec::layout::PlotAxis;
+use brightfield_spec::vocab::is_colour_literal;
 use brightfield_workbench::channel::ShelfChannel;
 use brightfield_workbench::chrome;
 use egui::epaint::{ClippedShape, Shape};
@@ -183,8 +183,10 @@ impl Stage {
         let mut collisions = None;
         let output = self.ctx.run_ui(raw, |ui| {
             ui.scope_builder(
-                egui::UiBuilder::new()
-                    .max_rect(egui::Rect::from_min_size(ORIGIN, egui::vec2(self.width, HEIGHT))),
+                egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                    ORIGIN,
+                    egui::vec2(self.width, HEIGHT),
+                )),
                 |ui| drawn = Some(band.show(ui, self.mode)),
             );
             texts = text_ink::frame_text(ui.ctx());
@@ -541,7 +543,11 @@ fn the_cell_keys_printed_on_the_band_are_the_registrys() {
             })
             .map(|(rect, _)| rect)
             .collect();
-        assert_eq!(caps.len(), 1, "{channel:?}: no keycap round {key:?}: {caps:?}");
+        assert_eq!(
+            caps.len(),
+            1,
+            "{channel:?}: no keycap round {key:?}: {caps:?}"
+        );
         assert!(caps[0].width() < 40.0, "{channel:?}: {:?}", caps[0]);
         assert!(
             (caps[0].left() - (cell.left() + PAD)).abs() < 0.5,
@@ -682,7 +688,10 @@ fn each_cell_is_tinted_in_its_channels_hue_at_the_design_systems_strength() {
                 painted.contains(&(cell, expected)),
                 "{mode:?} {channel:?}: no fill of {expected:?} over {cell:?}"
             );
-            assert!(!seen.contains(&expected), "{mode:?}: two cells share a tint");
+            assert!(
+                !seen.contains(&expected),
+                "{mode:?}: two cells share a tint"
+            );
             seen.push(expected);
         }
     }
@@ -710,8 +719,14 @@ fn the_open_cell_adds_a_bar_in_its_hue_along_its_foot_and_no_other_cell_does() {
             assert_eq!(bars.len(), 1, "{mode:?} {open:?}: bars {bars:?}");
             let bar = bars[0];
             assert!(near(bar.left(), cell.left()), "{mode:?} {open:?}: {bar:?}");
-            assert!(near(bar.right(), cell.right()), "{mode:?} {open:?}: {bar:?}");
-            assert!(near(bar.bottom(), cell.bottom()), "{mode:?} {open:?}: {bar:?}");
+            assert!(
+                near(bar.right(), cell.right()),
+                "{mode:?} {open:?}: {bar:?}"
+            );
+            assert!(
+                near(bar.bottom(), cell.bottom()),
+                "{mode:?} {open:?}: {bar:?}"
+            );
             assert!(
                 near(bar.height(), control::TAB_BAR_WIDTH),
                 "{mode:?} {open:?}: {bar:?}"
@@ -754,9 +769,7 @@ fn every_label_is_in_a_text_ink_and_none_is_in_a_hue() {
             paint(sem.text.secondary),
             paint(sem.text.muted),
         ];
-        let hues: Vec<egui::Color32> = (0..8)
-            .map(|slot| paint(categorical(mode, slot)))
-            .collect();
+        let hues: Vec<egui::Color32> = (0..8).map(|slot| paint(categorical(mode, slot))).collect();
         let stage = Stage::new(mode, WIDTH);
         let mut band = ShelfBand::new(map_channels());
         band.activate(ShelfChannel::X);
@@ -793,7 +806,10 @@ fn a_cell_keeps_its_width_when_its_column_changes() {
     long.colour = Binding::Column("median_house_value".to_string());
     band.set_channels(long);
     band.activate(ShelfChannel::X);
-    band.set_preview(ShelfChannel::X, "another_column_of_a_length_no_cell_can_hold");
+    band.set_preview(
+        ShelfChannel::X,
+        "another_column_of_a_length_no_cell_can_hold",
+    );
     let changed = stage.draw(&mut band).drawn.cells;
     assert_eq!(short, changed);
 
@@ -846,7 +862,10 @@ fn a_previewed_long_name_leaves_the_word_preview_clear_of_the_channels_word() {
     let stage = Stage::new(Mode::Light, WIDTH);
     let mut band = ShelfBand::new(map_channels());
     band.activate(ShelfChannel::Y);
-    band.set_preview(ShelfChannel::Y, "an_extraordinarily_long_column_name_for_the_y_axis");
+    band.set_preview(
+        ShelfChannel::Y,
+        "an_extraordinarily_long_column_name_for_the_y_axis",
+    );
     let frame = stage.draw(&mut band);
     assert!(has_text(&frame, ShelfChannel::Y, PREVIEW));
     assert_eq!(frame.collisions, None);
@@ -991,7 +1010,10 @@ fn a_click_on_a_cell_opens_it() {
             .find(|(_, fill)| *fill == hue)
             .map(|(rect, _)| rect)
             .expect("the open cell's bar");
-        assert!(near(bar.left(), cells[channel.index()].left()), "{channel:?}");
+        assert!(
+            near(bar.left(), cells[channel.index()].left()),
+            "{channel:?}"
+        );
     }
 
     // A frame with no click reports none.
@@ -1022,8 +1044,10 @@ fn baseline(name: &str, mode: Mode, open: Option<(ShelfChannel, &'static str)>) 
         .build_ui(move |ui| {
             design::apply(ui.ctx(), mode);
             ui.scope_builder(
-                egui::UiBuilder::new()
-                    .max_rect(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(WIDTH, HEIGHT))),
+                egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(WIDTH, HEIGHT),
+                )),
                 |ui| {
                     band.show(ui, mode);
                 },
