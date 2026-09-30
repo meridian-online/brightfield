@@ -5176,7 +5176,9 @@ impl MeridianApp {
                 let shown = ModalLayer::show(ctx, "bf-overlay-close-question", &chrome, |ui| {
                     close_question_body(ui)
                 });
-                let answer = shown.inner.or(shown.dismissed.then_some(CloseAnswer::Cancel));
+                let answer = shown
+                    .inner
+                    .or(shown.dismissed.then_some(CloseAnswer::Cancel));
                 close = answer.is_some();
                 if let Some(answer) = answer {
                     self.answer_close_question(ctx, answer);

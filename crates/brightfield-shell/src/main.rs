@@ -1374,6 +1374,94 @@ mod tests {
         assert!(latch.pending);
     }
 
+    /// **The countdown's close asks no question**, over a window that carries
+    /// the unsaved mark.
+    ///
+    /// Driven through the host's own frame, because the exemption is a
+    /// hand-off between two of its parts: the latch sends `Close` and the
+    /// window has to know by the frame that reads it back as a request. The
+    /// frames are the three a countdown run has — the request, the capture
+    /// arriving, the close returning — and the window is the housing file with
+    /// one chart edit thrown, the state the operating system's close button
+    /// would be stopped in (`tests/chart_save_close_asks.rs`).
+    #[test]
+    fn the_countdown_closes_a_marked_window_with_no_question() {
+        let dir = std::env::temp_dir().join(format!("bf-shot-close-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch folder");
+        let data = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data/california_housing_sample.csv");
+        let boot = brightfield_shell::window::Boot::data_file(data.to_str().expect("utf-8"))
+            .expect("the housing file opens");
+        let mut app = BrightfieldApp {
+            app: MeridianApp::headless(boot, Mode::Light),
+            shot: ShotLatch::new(
+                dir.join("shot.png"),
+                Some(0),
+                Arc::new(AtomicBool::new(false)),
+            ),
+            layout_path: None,
+            fit: None,
+        };
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0));
+        let mut frame = |app: &mut BrightfieldApp, events: Vec<egui::Event>, close: bool| {
+            let mut raw = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            };
+            if close {
+                raw.viewports
+                    .entry(egui::ViewportId::ROOT)
+                    .or_default()
+                    .events
+                    .push(egui::ViewportEvent::Close);
+            }
+            let out = ctx.run_ui(raw, |ui| app.frame(ui));
+            out.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .clone()
+        };
+        // The document is composed at open, so its first plot is there for the
+        // edit, and the countdown is armed at zero: it fires on the first tick.
+        assert!(app.app.chart_doc_mut().set_plot_scale(
+            0,
+            brightfield_spec::layout::PlotAxis::Y,
+            brightfield_spec::layout::ScaleType::Log
+        ));
+        assert!(app.app.carries_unsaved_mark(), "the window is not marked");
+
+        // Frame one: the countdown requests the capture.
+        frame(&mut app, Vec::new(), false);
+        assert!(
+            app.shot.pending,
+            "the countdown did not request the capture"
+        );
+        // Frame two: the capture arrives, is written, and the latch closes.
+        let image = std::sync::Arc::new(egui::ColorImage::filled([4, 4], egui::Color32::WHITE));
+        let sent = frame(
+            &mut app,
+            vec![egui::Event::Screenshot {
+                viewport_id: egui::ViewportId::ROOT,
+                user_data: egui::UserData::default(),
+                image,
+            }],
+            false,
+        );
+        assert!(
+            sent.contains(&egui::ViewportCommand::Close),
+            "the countdown did not close the window: {sent:?}"
+        );
+        // Frame three: eframe hands the close back as a request.
+        let sent = frame(&mut app, Vec::new(), true);
+        assert!(
+            !sent.contains(&egui::ViewportCommand::CancelClose),
+            "the countdown's own close was stopped by the question"
+        );
+        assert_eq!(app.app.open_overlay(), None, "the countdown's close asked");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// An interactive latch (no `--shot-after`) never counts, never requests.
     #[test]
     fn interactive_latch_is_inert_without_f12() {

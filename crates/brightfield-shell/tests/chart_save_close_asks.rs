@@ -453,7 +453,10 @@ fn save_writes_the_chart_as_the_save_verb_does_and_closes() {
     // The Save verb's own write, in a window of its own, is the reference.
     let mut reference = Session::marked("ac2-verb");
     reference.save_verb();
-    assert!(reference.chart_file().exists(), "the Save verb wrote no chart");
+    assert!(
+        reference.chart_file().exists(),
+        "the Save verb wrote no chart"
+    );
     let verb_chart = reference.written(&reference.chart_file());
     let verb_arcform = reference.written(&reference.arcform_file());
 
@@ -472,8 +475,14 @@ fn save_writes_the_chart_as_the_save_verb_does_and_closes() {
         verb_arcform,
         "arcform.yaml the question wrote is not the one the Save verb writes"
     );
-    assert!(!session.carries_mark(), "the chart is in and the mark stayed");
-    assert!(session.sent.close, "the window did not close after the save");
+    assert!(
+        !session.carries_mark(),
+        "the chart is in and the mark stayed"
+    );
+    assert!(
+        session.sent.close,
+        "the window did not close after the save"
+    );
     let back = session.feed_the_close_back();
     assert!(
         !back.cancel_close && session.app.open_overlay().is_none(),
@@ -700,7 +709,10 @@ fn a_save_whose_protocol_write_fails_keeps_the_window_open_and_says_why() {
     session.request_close();
     session.answer("Save");
 
-    assert!(!session.sent.close, "the window closed over an unwritten Protocol");
+    assert!(
+        !session.sent.close,
+        "the window closed over an unwritten Protocol"
+    );
     assert!(session.carries_mark());
     assert!(
         session.banner(PROTOCOL_BANNER).is_some(),
@@ -741,7 +753,10 @@ fn a_save_in_a_window_with_no_protocol_keeps_it_open_and_says_why() {
     assert_eq!(session.app.open_overlay(), Some(QUESTION));
     session.answer("Save");
 
-    assert!(!session.sent.close, "the window closed over an edit nothing kept");
+    assert!(
+        !session.sent.close,
+        "the window closed over an edit nothing kept"
+    );
     assert!(session.carries_mark());
     let said = session
         .banner(CHART_BANNER)
