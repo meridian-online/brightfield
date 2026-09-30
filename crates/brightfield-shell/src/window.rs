@@ -7613,15 +7613,23 @@ fn load_saved_chart(
 /// working directory of that launch, which is neither this launch's nor the
 /// chart's own folder. The Protocol is spelled against its own folder
 /// (`./name`) and so does not have the problem. The two spellings name one
-/// file, so the base is recovered from them: the chart's `file:` is a trailing
-/// run of `data`'s own path, and what comes before that run is the directory
-/// the chart was written from.
+/// file, so the base is recovered from them: the chart's `file:` is some
+/// leading `..` components and then a trailing run of `data`'s own path, and
+/// what comes before that run is the directory the chart was written from.
+///
+/// A leading `..` has to resolve on disk, so the base cannot be the directory
+/// the chart was written from — the window that wrote it may have gone, and
+/// the path the engine is handed has to pass through directories that exist.
+/// It descends instead through the run's own directories, which are the
+/// Protocol's ancestors: `../data/x.csv` opened from a sibling of `data` is
+/// resolved against `<parent>/data`, whose `..` is `<parent>`.
 ///
 /// `None` is what an absolute `file:` gets — it needs no base — and what a
-/// `file:` that is not a trailing run of `data` gets, a `..` in it or a
-/// different file altogether: it resolves against the working directory, as it
-/// did in the window that wrote it, and a path that does not resolve there is
-/// the engine's refusal, reported rather than repaired.
+/// `file:` that is not such a run of `data` gets: a different file altogether,
+/// a `..` after a name, or more `..` than the run has directories to descend
+/// through. It resolves against the working directory, as it did in the window
+/// that wrote it, and a path that does not resolve there is the engine's
+/// refusal, reported rather than repaired.
 fn saved_chart_base(spec: &brightfield_spec::Spec, data: &std::path::Path) -> Option<PathBuf> {
     use brightfield_spec::ast::DataSourceKind;
     let held: Vec<Component> = data
@@ -7636,14 +7644,24 @@ fn saved_chart_base(spec: &brightfield_spec::Spec, data: &std::path::Path) -> Op
             .components()
             .filter(|c| !matches!(c, Component::CurDir))
             .collect();
-        if spelled.is_empty() || !spelled.iter().all(|c| matches!(c, Component::Normal(_))) {
+        let ups = spelled
+            .iter()
+            .take_while(|c| matches!(c, Component::ParentDir))
+            .count();
+        let run = &spelled[ups..];
+        if run.is_empty() || !run.iter().all(|c| matches!(c, Component::Normal(_))) {
             return None;
         }
-        let before = held.len().checked_sub(spelled.len())?;
-        if held[before..] != spelled[..] {
+        // The run's last component is the file; the ones before it are the
+        // directories a leading `..` can be resolved through.
+        if ups > run.len() - 1 {
             return None;
         }
-        let base: PathBuf = held[..before].iter().collect();
+        let before = held.len().checked_sub(run.len())?;
+        if held[before..] != *run {
+            return None;
+        }
+        let base: PathBuf = held[..before].iter().chain(&run[..ups]).collect();
         (!base.as_os_str().is_empty()).then_some(base)
     })
 }

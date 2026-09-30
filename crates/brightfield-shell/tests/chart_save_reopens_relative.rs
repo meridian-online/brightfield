@@ -410,3 +410,38 @@ fn a_protocol_saved_from_beside_its_data_file_reopens_from_another_directory() {
     let manifest = folder.join("arcform.yaml");
     assert_reopens_over(manifest.to_str().expect("utf-8 path"), &data);
 }
+
+/// **AC6, a `..` in the chart's `file:`.** Saved from `<root>/launch` over
+/// `../data/<file>`, which leaves `file: '../data/<file>'` in the chart, and
+/// reopened after `launch` has been removed, from a directory whose own
+/// `../data/<file>` is a decoy. The `..` has to be resolved through directories
+/// that exist, and to land on the file beside the Protocol.
+///
+/// ```text
+/// <root>/launch/                                      cwd 1, removed after the Save
+/// <root>/data/                                        the Protocol and its file
+/// <root>/later/on/                                    cwd 2
+/// <root>/later/data/california_housing_sample.csv     a decoy: cwd 2's ../data/…
+/// ```
+#[test]
+fn a_protocol_saved_over_a_dotdot_path_reopens_after_that_directory_is_gone() {
+    let cwd = Cwd::hold();
+    let root = TempDir::new("dotdot");
+    let launch = root.dir("launch");
+    let folder = root.dir("data");
+    let data = housing_in(&folder);
+    let later = root.dir("later/on");
+    std::fs::write(root.dir("later/data").join(HOUSING_FILE), DECOY_CSV).expect("the decoy");
+
+    cwd.enter(&launch);
+    let chart = open_and_save(&format!("../data/{HOUSING_FILE}"));
+    assert!(
+        chart.contains(&format!("file: '../data/{HOUSING_FILE}'")),
+        "the fixture is not the dotdot case: the chart spells its file as\n{chart}"
+    );
+
+    cwd.enter(&later);
+    std::fs::remove_dir_all(&launch).expect("the Save-time directory is removed");
+    let manifest = folder.join("arcform.yaml");
+    assert_reopens_over(manifest.to_str().expect("utf-8 path"), &data);
+}
