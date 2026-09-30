@@ -245,6 +245,12 @@ struct ShotLatch {
     /// Raised only when the automatic capture's PNG is actually on disk; the
     /// exit gate `main` reads after the event loop returns.
     saved: Arc<AtomicBool>,
+    /// Raised when this latch sent the `ViewportCommand::Close` that ends a
+    /// countdown run. The window reads it and lets that close through without
+    /// the question a close over an unsaved chart edit raises: the countdown
+    /// run is a check with nobody to answer, and a check that stops at a
+    /// question is a hang.
+    closing: bool,
 }
 
 impl ShotLatch {
@@ -255,6 +261,7 @@ impl ShotLatch {
             countdown: shot_after,
             auto: shot_after.is_some(),
             saved,
+            closing: false,
         }
     }
 
@@ -294,6 +301,7 @@ impl ShotLatch {
                     }
                 }
                 if self.auto {
+                    self.closing = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             }
@@ -374,6 +382,31 @@ const fn cap_applies(kept_geometry: bool, boot_is_empty: bool) -> bool {
 
 impl eframe::App for BrightfieldApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.frame(ui);
+    }
+
+    /// Write the layout on the way out, debounce or not.
+    ///
+    /// `on_exit` and not `App::save`: eframe's `persistence` feature is off in
+    /// this build, which makes `save` a no-op the integration never calls —
+    /// wiring the flush there would look right, compile, and never run. This
+    /// signature is the `#[cfg(not(feature = "glow"))]` arm; enabling glow
+    /// would grow a `gl` parameter and break this loudly, which is the right
+    /// direction for it to break in.
+    fn on_exit(&mut self) {
+        if let Some(path) = &self.layout_path {
+            if let Some(Err(e)) = self.app.flush_layout(path) {
+                eprintln!("layout flush failed: {e}");
+            }
+        }
+    }
+}
+
+impl BrightfieldApp {
+    /// One frame of the host: what `eframe::App::ui` does, held here because
+    /// that method's `eframe::Frame` is not constructible outside an
+    /// operating-system window and nothing of it is used.
+    fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
 
         // The size this window was created at was read outwards from the graph
@@ -397,6 +430,12 @@ impl eframe::App for BrightfieldApp {
 
         self.app.draw(ui);
         self.shot.tick(&ctx);
+        // The countdown's close is the host's own and asks nothing: the frame
+        // after this one reads it as a close request, and the window has to
+        // know by then. See `ShotLatch::closing`.
+        if self.shot.closing {
+            self.app.allow_close();
+        }
 
         // After the draw, so this frame's drags are already in the tree.
         self.app.observe_window(&ctx);
@@ -413,22 +452,6 @@ impl eframe::App for BrightfieldApp {
             // for.
             if self.app.layout_armed() {
                 ctx.request_repaint_after(Duration::from_millis(SAVE_DEBOUNCE_MS));
-            }
-        }
-    }
-
-    /// Write the layout on the way out, debounce or not.
-    ///
-    /// `on_exit` and not `App::save`: eframe's `persistence` feature is off in
-    /// this build, which makes `save` a no-op the integration never calls —
-    /// wiring the flush there would look right, compile, and never run. This
-    /// signature is the `#[cfg(not(feature = "glow"))]` arm; enabling glow
-    /// would grow a `gl` parameter and break this loudly, which is the right
-    /// direction for it to break in.
-    fn on_exit(&mut self) {
-        if let Some(path) = &self.layout_path {
-            if let Some(Err(e)) = self.app.flush_layout(path) {
-                eprintln!("layout flush failed: {e}");
             }
         }
     }
