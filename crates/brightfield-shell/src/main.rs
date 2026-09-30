@@ -1404,7 +1404,7 @@ mod tests {
         };
         let ctx = egui::Context::default();
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0));
-        let mut frame = |app: &mut BrightfieldApp, events: Vec<egui::Event>, close: bool| {
+        let frame = |app: &mut BrightfieldApp, events: Vec<egui::Event>, close: bool| {
             let mut raw = egui::RawInput {
                 screen_rect: Some(screen),
                 events,
