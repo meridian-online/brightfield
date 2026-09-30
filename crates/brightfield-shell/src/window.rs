@@ -65,6 +65,7 @@ use egui::containers::{CentralPanel, Panel};
 use egui_tiles::{Behavior, Container, Tile};
 
 use brightfield_keys::{Altitude, RecencyCounter};
+use brightfield_model::panel_capture::panel_file;
 use brightfield_protocol::graph::AssetId;
 use brightfield_protocol::layout::{Flow, Layout};
 use brightfield_sql::ir::SampleRate;
@@ -1288,6 +1289,45 @@ impl Boot {
         ))
     }
 
+    /// [`Boot::data_file`] for the data file a **saved Protocol** names, drawing
+    /// the chart Save wrote beside the Protocol when there is one.
+    ///
+    /// The file is opened as a data file first, because that is what gives the
+    /// window its rails, its Protocol source (Save needs it to write again) and
+    /// the facts of each tile. The chart file is then looked for where Save
+    /// writes it — [`panel_file`] over the Protocol's own directory and name,
+    /// the call [`ChartDoc::save_chart_beside`] makes — and, when it is there,
+    /// it replaces the generated dashboard: the live session, the composition
+    /// and the spec path the editor pane opens and the watch follows. A folder
+    /// with no chart file opens as a data file does, with a generated
+    /// dashboard.
+    ///
+    /// The chart is loaded as a chart spec named by its path is: a file that
+    /// does not parse is refused with the message that route gives, and one the
+    /// engine will not load is refused with the engine's. Neither falls back to
+    /// a generated dashboard, which would draw a picture the analyst did not
+    /// save over the file they did; and neither writes, so the chart file's
+    /// bytes are as they were.
+    ///
+    /// # Errors
+    ///
+    /// As [`Boot::data_file`], plus a chart file that will not parse or load.
+    fn saved_protocol(chosen: &str) -> Result<Self, String> {
+        let mut opened = crate::data_file::open(chosen)?;
+        let chart = panel_file(&opened.protocol.dir, &opened.protocol.name);
+        if chart.is_file() {
+            // Absolute, as Save names the file it wrote: the chart document's
+            // spec path then equals what a later Save compares it to, and the
+            // watch stays on the file rather than being re-pointed at it.
+            let chart = std::path::absolute(&chart).unwrap_or(chart);
+            let (live, composed) = load_saved_chart(&chart, &opened.protocol.data)?;
+            opened.live = live;
+            opened.composed = composed;
+            opened.spec_file = Some(chart);
+        }
+        Ok(Self::of_opened_file(opened))
+    }
+
     /// What an opened data file becomes, for **both** routes that open one.
     ///
     /// The document, the session behind it, the generated spec the editor pane
@@ -1412,7 +1452,9 @@ impl Boot {
         // Protocol reopenable, and it is why the run-less-manifest gate below
         // does not stand in front of it: nothing here renders the declaration.
         // The manifest is read to find the file and then discarded; the graph
-        // the rails draw is the one derived from the profile.
+        // the rails draw is the one derived from the profile. The chart Save
+        // wrote beside it is not discarded: [`Boot::saved_protocol`] draws it
+        // in place of the generated dashboard when it is there.
         //
         // The shape is the whole predicate — see
         // `crate::one_step::data_file_named_by` for why it is a shape and not
@@ -1436,7 +1478,7 @@ impl Boot {
             // string or the two routes would restore two different layouts
             // for one document. Made absolute, as Save remembers it: see
             // `remembered_id`.
-            return Self::data_file(&data.to_string_lossy()).map(|boot| Self {
+            return Self::saved_protocol(&data.to_string_lossy()).map(|boot| Self {
                 opened_id: Some(remembered_id(spec)),
                 ..boot
             });
@@ -7532,6 +7574,78 @@ fn remembered_id(path: &str) -> String {
         |_| path.to_string(),
         |absolute| fold_parent_dirs(&absolute).to_string_lossy().into_owned(),
     )
+}
+
+/// Load the chart Save wrote at `chart`, drawing over `data`, the data file its
+/// Protocol names — [`Boot::saved_protocol`]'s half that reads the file.
+///
+/// The same steps a chart spec opened by name takes
+/// ([`crate::pipeline::live_spec_sampled`]), with one difference: the base a
+/// relative `file:` resolves against is [`saved_chart_base`]'s and not the
+/// chart's own folder, which is `panels/`, one below the data file.
+fn load_saved_chart(
+    chart: &std::path::Path,
+    data: &std::path::Path,
+) -> Result<(crate::pipeline::LiveDashboard, Composed), String> {
+    let parsed =
+        brightfield_spec::parse_spec_path(chart).map_err(|e| format!("parse error: {e}"))?;
+    let base = saved_chart_base(&parsed.spec, data);
+    let name = chart.file_name().map_or_else(
+        || chart.to_string_lossy().into_owned(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let mut live =
+        crate::pipeline::LiveDashboard::load_parsed(parsed, Some(name), base.as_deref())?;
+    let composed = live.present()?;
+    // The command line's copy of the diagnostics the window raises as banners,
+    // as the chart route prints them.
+    for line in composed.diagnostics.lines() {
+        eprintln!("{}: {line}", chart.display());
+    }
+    Ok((live, composed))
+}
+
+/// The directory a saved chart's relative `file:` sources resolve against, so
+/// the chart draws over the data file its Protocol names — `None` for the
+/// working directory.
+///
+/// Save spells `file:` as the caller spelled the data file: relative to the
+/// working directory of that launch, which is neither this launch's nor the
+/// chart's own folder. The Protocol is spelled against its own folder
+/// (`./name`) and so does not have the problem. The two spellings name one
+/// file, so the base is recovered from them: the chart's `file:` is a trailing
+/// run of `data`'s own path, and what comes before that run is the directory
+/// the chart was written from.
+///
+/// `None` is what an absolute `file:` gets — it needs no base — and what a
+/// `file:` that is not a trailing run of `data` gets, a `..` in it or a
+/// different file altogether: it resolves against the working directory, as it
+/// did in the window that wrote it, and a path that does not resolve there is
+/// the engine's refusal, reported rather than repaired.
+fn saved_chart_base(spec: &brightfield_spec::Spec, data: &std::path::Path) -> Option<PathBuf> {
+    use brightfield_spec::ast::DataSourceKind;
+    let held: Vec<Component> = data
+        .components()
+        .filter(|c| !matches!(c, Component::CurDir))
+        .collect();
+    spec.data.values().find_map(|source| {
+        let DataSourceKind::File(file) = &source.kind else {
+            return None;
+        };
+        let spelled: Vec<Component> = std::path::Path::new(file)
+            .components()
+            .filter(|c| !matches!(c, Component::CurDir))
+            .collect();
+        if spelled.is_empty() || !spelled.iter().all(|c| matches!(c, Component::Normal(_))) {
+            return None;
+        }
+        let before = held.len().checked_sub(spelled.len())?;
+        if held[before..] != spelled[..] {
+            return None;
+        }
+        let base: PathBuf = held[..before].iter().collect();
+        (!base.as_os_str().is_empty()).then_some(base)
+    })
 }
 
 /// `absolute` with each `.` and `..` folded into the components around it,
