@@ -380,32 +380,10 @@ const fn cap_applies(kept_geometry: bool, boot_is_empty: bool) -> bool {
     !kept_geometry && !boot_is_empty
 }
 
-impl eframe::App for BrightfieldApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.frame(ui);
-    }
-
-    /// Write the layout on the way out, debounce or not.
-    ///
-    /// `on_exit` and not `App::save`: eframe's `persistence` feature is off in
-    /// this build, which makes `save` a no-op the integration never calls —
-    /// wiring the flush there would look right, compile, and never run. This
-    /// signature is the `#[cfg(not(feature = "glow"))]` arm; enabling glow
-    /// would grow a `gl` parameter and break this loudly, which is the right
-    /// direction for it to break in.
-    fn on_exit(&mut self) {
-        if let Some(path) = &self.layout_path {
-            if let Some(Err(e)) = self.app.flush_layout(path) {
-                eprintln!("layout flush failed: {e}");
-            }
-        }
-    }
-}
-
 impl BrightfieldApp {
     /// One frame of the host: what `eframe::App::ui` does, held here because
     /// that method's `eframe::Frame` is not constructible outside an
-    /// operating-system window and nothing of it is used.
+    /// operating-system window and this host does not read it.
     fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
 
@@ -452,6 +430,28 @@ impl BrightfieldApp {
             // for.
             if self.app.layout_armed() {
                 ctx.request_repaint_after(Duration::from_millis(SAVE_DEBOUNCE_MS));
+            }
+        }
+    }
+}
+
+impl eframe::App for BrightfieldApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.frame(ui);
+    }
+
+    /// Write the layout on the way out, debounce or not.
+    ///
+    /// `on_exit` and not `App::save`: eframe's `persistence` feature is off in
+    /// this build, which makes `save` a no-op the integration never calls —
+    /// wiring the flush there would look right, compile, and never run. This
+    /// signature is the `#[cfg(not(feature = "glow"))]` arm; enabling glow
+    /// would grow a `gl` parameter and break this loudly, which is the right
+    /// direction for it to break in.
+    fn on_exit(&mut self) {
+        if let Some(path) = &self.layout_path {
+            if let Some(Err(e)) = self.app.flush_layout(path) {
+                eprintln!("layout flush failed: {e}");
             }
         }
     }

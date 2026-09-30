@@ -3763,7 +3763,7 @@ impl MeridianApp {
         self.poll_run(&ctx);
         // A close request that arrived with this frame, before anything can
         // draw over it: it is the operating system's, or the window's own
-        // `Close` coming back — `Self::closing` tells them apart.
+        // close coming back, and `Self::closing` tells them apart.
         self.observe_close_request(&ctx);
         // The mark, once per window: both the controls that draw it are below
         // this line and either can be the first to run, so neither owns the
@@ -5231,14 +5231,14 @@ impl MeridianApp {
     ///
     /// - [`CloseAnswer::Save`] writes as the Save verb does
     ///   ([`Self::save_protocol`]: `arcform.yaml`, its model and the chart
-    ///   beside them) and closes the window only when the chart is in: the
-    ///   mark is gone. A write that failed leaves the window open, with the
-    ///   banner the write raised saying why; the question is closed so the
-    ///   banner can be read, and the next close request asks again.
-    /// - [`CloseAnswer::Discard`] closes without a write: nothing on disk is
-    ///   touched, the pending edits are dropped with the window.
-    /// - [`CloseAnswer::Cancel`] changes nothing: the edit stays drawn, the
-    ///   mark stays in the title.
+    ///   beside them) and closes the window when the chart is in, which is
+    ///   when the mark is gone. A write that failed leaves the window open,
+    ///   with the banner the write raised saying why; the question is closed
+    ///   so the banner can be read, and the next close request asks again.
+    /// - [`CloseAnswer::Discard`] closes without a write: the files on disk
+    ///   are not touched, and the pending edits are dropped with the window.
+    /// - [`CloseAnswer::Cancel`] leaves the window as it was: the edit stays
+    ///   drawn, the mark stays in the title.
     pub fn answer_close_question(&mut self, ctx: &egui::Context, answer: CloseAnswer) {
         match answer {
             CloseAnswer::Cancel => {}
@@ -5261,11 +5261,11 @@ impl MeridianApp {
     /// Save for the close question, answering whether the chart is written.
     ///
     /// [`Self::save_protocol`] raises its own banner for a Protocol or a chart
-    /// it could not write, so those two say why already. What it answers
-    /// `None` to is a window with no Protocol behind it — a chart spec, a
-    /// shipped start — where the Save verb writes nothing and this cannot
-    /// either; that window says so in the chart banner rather than closing
-    /// over an edit it did not keep.
+    /// it could not write, so those two say why already. It answers `None` for
+    /// a window with no Protocol behind it — a chart spec, a shipped start —
+    /// where the Save verb writes no file and this cannot write one either;
+    /// that window says so in the chart banner rather than closing over an
+    /// edit it did not keep.
     fn save_for_close(&mut self, ctx: &egui::Context) -> bool {
         match self.save_protocol(ctx) {
             Some(Ok(_)) => !self.charts.doc.has_unsaved_edit(),
