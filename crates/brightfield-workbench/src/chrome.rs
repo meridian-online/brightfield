@@ -469,9 +469,9 @@ pub struct Collapse<'a> {
 
 /// What one frame of a rail's strip drew, and what the pointer did to it.
 ///
-/// Returned rather than kept, for the reason [`ToggleDrawn`] is: a test aims a
-/// click at a rect the frame reports, and a control nobody can find is
-/// indistinguishable from one that is not drawn.
+/// Returned rather than kept: a test aims a click at a rect the frame reports,
+/// and a control nobody can find is indistinguishable from one that is not
+/// drawn.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StripDrawn {
     /// The strip's outer rect.
@@ -564,12 +564,10 @@ pub fn rail_split(rect: egui::Rect) -> (egui::Rect, egui::Rect) {
 /// the arrangement declares collapsible — the control that puts the rail away
 /// and brings it back.
 ///
-/// Drawn as names with a rule under the live one — the shape a reader already
-/// reads as "one of these", and deliberately not the shape
-/// [`projection_toggle`] takes. The two controls address different things (a
-/// rail's panes are alternatives; the canvas's projections are two readings of
-/// one thing) and drawing them alike is what made the window read as two rows
-/// of identical tabs.
+/// Drawn through `meridian-egui`'s line tabs: the names in a row over one rule,
+/// the open one in the primary ink with a bar under it. It is the same strip a
+/// pane's tabs are drawn as ([`crate::PaneChrome`]), so the two rows of tabs on
+/// one window read as one kind of control.
 ///
 /// The collapse control takes a square of [`rail_selector_height`] at the
 /// strip's trailing end and the names get what is left, so a name that would
@@ -598,16 +596,7 @@ pub fn rail_selector(
     trailing: Trailing<'_>,
     mode: Mode,
 ) -> StripDrawn {
-    strip(
-        ui,
-        rect,
-        names,
-        active,
-        collapse,
-        trailing,
-        Below::Body,
-        mode,
-    )
+    strip(ui, rect, names, active, collapse, trailing, mode)
 }
 
 /// What a bottom rail collapsed to a rect taller than its own strip draws:
@@ -629,11 +618,11 @@ pub fn rail_selector(
 /// side rail's stub covers the whole of the rect it was given, which is why
 /// this showed on the ledger and not on the two side rails.
 ///
-/// **No rule along the strip's bottom edge, and that is the one judgement
-/// here beyond the fill.** The rule [`rail_selector`] draws divides the strip
-/// from the pane under it; collapsed there is no pane, so a full-width
-/// hairline across a single fill would put the division back in ink after the
-/// fill removed it.
+/// **The strip keeps its rule here, as it does open.** The rule is the line-tab
+/// strip's own — the words stand on it and the open name's bar sits over it —
+/// and not a division between the strip and a pane, so a collapsed strip that
+/// dropped it would stop reading as tabs. The clearance below is in the strip's
+/// own fill, so the rule is the one line on that fill.
 ///
 /// Takes the whole collapsed rect rather than a pre-split strip, so where the
 /// strip sits inside it is decided here rather than at the call site — the
@@ -652,36 +641,27 @@ pub fn collapsed_rail(
     ui.painter()
         .rect_filled(rect, radius::NONE, colour(sem.tabs.bar_background));
     let (head, _) = rail_split(rect);
-    strip(
-        ui,
-        head,
-        names,
-        active,
-        Some(collapse),
-        trailing,
-        Below::Clearance,
-        mode,
-    )
+    strip(ui, head, names, active, Some(collapse), trailing, mode)
 }
 
-/// What is under a rail's selector strip, which is what decides whether the
-/// strip rules its own bottom edge.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Below {
-    /// The rail's body — a pane, which the rule separates from the strip.
-    Body,
-    /// The collapsed rail's clearance, which holds no pane and is already
-    /// painted in the strip's own fill by [`collapsed_rail`].
-    Clearance,
+/// The rule under a line-tab strip, in logical points: the thickness of the
+/// rule `meridian-egui`'s `line_tabs` draws under its own names, which a strip
+/// with something at its trailing end extends to match.
+pub(crate) const LINE_TAB_RULE: f32 = 1.0;
+
+/// The face a line tab's word is set in — the one `line_tabs` sets its own in,
+/// so a word measured here is the width it lays out.
+pub(crate) fn line_tab_font(ui: &egui::Ui) -> egui::FontId {
+    egui::TextStyle::Button.resolve(ui.style())
+}
+
+/// The width one word takes in a line-tab strip: its text with the ladder's
+/// padding on both sides, which is how `line_tabs` sizes each word's cell.
+pub(crate) fn line_tab_width(word: &egui::Galley) -> f32 {
+    word.size().x + 2.0 * meridian_egui::TOKENS.space[4]
 }
 
 /// The selector strip itself, shared by the open and collapsed drawings.
-// Eight, because the strip is one drawing with eight independent inputs: the
-// `ui` it paints into, the box, the names, which is live, whether it collapses
-// and which way, what it summarises, what is under it, and the mode. A struct
-// here would be a name for the argument list rather than for a thing — every
-// field is read once, by this function, at one call.
-#[allow(clippy::too_many_arguments)]
 fn strip(
     ui: &mut egui::Ui,
     rect: egui::Rect,
@@ -689,18 +669,11 @@ fn strip(
     active: usize,
     collapse: Option<Collapse<'_>>,
     trailing: Trailing<'_>,
-    below: Below,
     mode: Mode,
 ) -> StripDrawn {
     let sem = semantic(mode.is_dark());
     ui.painter()
         .rect_filled(rect, radius::NONE, colour(sem.tabs.bar_background));
-    if below == Below::Body {
-        ui.painter().line_segment(
-            [rect.left_bottom(), rect.right_bottom()],
-            egui::Stroke::new(1.0, colour(sem.borders.subtle)),
-        );
-    }
 
     let mut control = None;
     let mut toggled = false;
@@ -745,61 +718,73 @@ fn strip(
         drawn
     });
 
-    let font = ui_font();
-    let pad = spacing::SPACE_4;
-    let mut x = rect.left() + pad;
-    let mut picked = None;
-    let mut drawn = Vec::with_capacity(names.len());
-    for (i, name) in names.iter().enumerate() {
+    // The names are `meridian-egui`'s line tabs: words in a row over one rule,
+    // the open one over a bar. `line_tabs` lays out the names it is handed and
+    // hands back no rect for a name, so the words are measured here the way it
+    // lays them out and the ones that end before `room` does are handed
+    // over: a name drawn under the control would be a target the pointer cannot
+    // reach, which reads as a dead control.
+    let font = line_tab_font(ui);
+    let mut fit = 0;
+    let mut ends = Vec::with_capacity(names.len());
+    let mut x = rect.left();
+    for name in names {
         let galley = ui.painter().layout_no_wrap(
             (*name).to_owned(),
             font.clone(),
             egui::Color32::PLACEHOLDER,
         );
-        let width = galley.size().x;
-        let hit = egui::Rect::from_min_max(
-            egui::pos2(x - spacing::SPACE_1, rect.top()),
-            egui::pos2(x + width + spacing::SPACE_1, rect.bottom()),
-        );
-        if room.right() < hit.right() {
-            // No room left before the control. Stopping is the honest answer:
-            // a name drawn under the control would be a target the pointer
-            // cannot reach, which reads as a dead control.
+        x += line_tab_width(&galley);
+        if room.right() < x {
             break;
         }
-        drawn.push(hit);
+        ends.push(x);
+        fit += 1;
+    }
+    let names_rect = egui::Rect::from_min_max(rect.min, egui::pos2(room.right(), rect.bottom()));
+    let mut tabs_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt(("rail-selector", rect.min.x as i32, rect.min.y as i32))
+            .max_rect(names_rect),
+    );
+    let tabs = meridian_egui::line_tabs(
+        &mut tabs_ui,
+        meridian_egui::LineTabs::new(&names[..fit], active),
+    );
+    // The rule runs under the whole strip, and `line_tabs` draws it as far as
+    // the names' room: the rest is the summary's and the control's end.
+    let tail = egui::Rect::from_min_max(
+        egui::pos2(names_rect.right(), rect.bottom() - LINE_TAB_RULE),
+        rect.right_bottom(),
+    );
+    ui.painter()
+        .rect_filled(tail, radius::NONE, colour(sem.borders.divider));
+
+    let mut drawn = Vec::with_capacity(fit);
+    let mut left = rect.left();
+    for (name, right) in names.iter().zip(&ends) {
+        let hit = egui::Rect::from_min_max(
+            egui::pos2(left, tabs.response.rect.top()),
+            egui::pos2(*right, tabs.response.rect.bottom()),
+        );
+        left = *right;
         controls.push(NamedControl::labelled(hit, *name));
-        let response = ui.interact(
+        drawn.push(hit);
+    }
+    // `line_tabs` reports a click on a closed name and does not report one on
+    // the open name, because the open one is where its caller already is. A rail's caller is
+    // not: a name picked in a collapsed rail reopens it, and the open name is
+    // the one on show there, so a click on it is a pick too.
+    let picked = tabs.clicked.or_else(|| {
+        let hit = *drawn.get(active)?;
+        let open = ui.interact(
             hit,
-            ui.id().with(("rail-selector", rect.left_top().x as i32, i)),
+            ui.id()
+                .with(("rail-selector-open", rect.min.x as i32, rect.min.y as i32)),
             egui::Sense::click(),
         );
-        if response.clicked() {
-            picked = Some(i);
-        }
-        let ink = if i == active {
-            sem.tabs.active_foreground
-        } else if response.hovered() {
-            sem.text.secondary
-        } else {
-            sem.tabs.foreground
-        };
-        ui.painter().galley(
-            egui::pos2(x, rect.center().y - galley.size().y / 2.0),
-            galley,
-            colour(ink),
-        );
-        if i == active {
-            ui.painter().line_segment(
-                [
-                    egui::pos2(x, rect.bottom() - 1.5),
-                    egui::pos2(x + width, rect.bottom() - 1.5),
-                ],
-                egui::Stroke::new(1.5, colour(sem.borders.focus)),
-            );
-        }
-        x += width + spacing::SPACE_5;
-    }
+        open.clicked().then_some(active)
+    });
 
     StripDrawn {
         rect,
@@ -1067,120 +1052,6 @@ fn collapse_control(
     response.clicked()
 }
 
-/// What one frame of a [`projection_toggle`] drew, and what it was asked for.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ToggleDrawn {
-    /// The control's outer rect.
-    pub rect: egui::Rect,
-    /// One rect per entry, in the order they were named — what a test aims a
-    /// click at, and what it counts to find a third entry.
-    pub segments: Vec<egui::Rect>,
-    /// The entry the pointer picked this frame.
-    pub picked: Option<usize>,
-}
-
-/// The canvas's one toggle between the projections of a step.
-///
-/// A segmented control: a bordered capsule with the live half filled, drawn
-/// left-aligned at `at`. It is the one control on the window with this shape,
-/// which is the point — a tab strip and a rail's selector strip both say
-/// "pick one of these panes", while this says "the same thing, read two ways".
-///
-/// `sem.borders.control` is the border rather than the hairline because the
-/// design system names a segmented group as the case that token exists for: a
-/// boundary a user must find in order to know the control is there.
-pub fn projection_toggle(
-    ui: &mut egui::Ui,
-    at: egui::Pos2,
-    names: &[&str],
-    active: usize,
-    mode: Mode,
-) -> ToggleDrawn {
-    let sem = semantic(mode.is_dark());
-    let font = ui_font();
-    let height = control::HEIGHT_SM;
-    let pad = spacing::SPACE_5;
-
-    let widths: Vec<f32> = names
-        .iter()
-        .map(|name| {
-            ui.painter()
-                .layout_no_wrap((*name).to_owned(), font.clone(), egui::Color32::PLACEHOLDER)
-                .size()
-                .x
-                + 2.0 * pad
-        })
-        .collect();
-    let total: f32 = widths.iter().sum();
-    let outer = egui::Rect::from_min_size(
-        egui::pos2(at.x, at.y - height / 2.0),
-        egui::vec2(total, height),
-    );
-
-    ui.painter().rect_filled(
-        outer,
-        radius::CONTROL,
-        colour(sem.tabs.segmented_background),
-    );
-    ui.painter().rect_stroke(
-        outer,
-        radius::CONTROL,
-        egui::Stroke::new(1.0, colour(sem.borders.control)),
-        egui::StrokeKind::Inside,
-    );
-
-    let mut drawn = ToggleDrawn {
-        rect: outer,
-        segments: Vec::with_capacity(names.len()),
-        picked: None,
-    };
-    let mut x = outer.left();
-    for (i, name) in names.iter().enumerate() {
-        let seg =
-            egui::Rect::from_min_size(egui::pos2(x, outer.top()), egui::vec2(widths[i], height));
-        x += widths[i];
-        let response = ui.interact(
-            seg,
-            ui.id().with(("projection-toggle", i)),
-            egui::Sense::click(),
-        );
-        if response.clicked() {
-            drawn.picked = Some(i);
-        }
-        if i == active {
-            ui.painter().rect_filled(
-                seg.shrink(2.0),
-                radius::CHIP,
-                colour(sem.tabs.active_background),
-            );
-        } else if i > 0 {
-            ui.painter().line_segment(
-                [
-                    egui::pos2(seg.left(), seg.top() + spacing::SPACE_2),
-                    egui::pos2(seg.left(), seg.bottom() - spacing::SPACE_2),
-                ],
-                egui::Stroke::new(1.0, colour(sem.borders.subtle)),
-            );
-        }
-        let ink = if i == active {
-            sem.tabs.active_foreground
-        } else if response.hovered() {
-            sem.text.secondary
-        } else {
-            sem.tabs.foreground
-        };
-        ui.painter().text(
-            seg.center(),
-            egui::Align2::CENTER_CENTER,
-            *name,
-            font.clone(),
-            colour(ink),
-        );
-        drawn.segments.push(seg);
-    }
-    drawn
-}
-
 /// Draw a module's own chrome inside the module's rect, and return the `Ui`
 /// the module's body may draw into.
 ///
@@ -1314,24 +1185,8 @@ pub fn orphan_pane(ui: &mut egui::Ui, key: PaneKey, mode: Mode) {
 }
 
 // ---------------------------------------------------------------------------
-// Focus and selection — two functions, not five treatments
+// Selection — one treatment, not five
 // ---------------------------------------------------------------------------
-
-/// The focus ring.
-///
-/// egui 0.35 folds `has_focus()` into the same visuals bucket as *pressed*,
-/// so a focused-but-not-pressed control is indistinguishable from an idle one
-/// unless the ring is painted deliberately. That is why this exists rather
-/// than the framework's own treatment being used.
-pub fn focus_ring(ui: &egui::Ui, rect: egui::Rect, mode: Mode) {
-    let sem = semantic(mode.is_dark());
-    ui.painter().rect_stroke(
-        rect.shrink(focus::RING_OFFSET),
-        focus::ring_radius(radius::CONTROL),
-        egui::Stroke::new(focus::RING_WIDTH, colour(sem.borders.focus)),
-        egui::StrokeKind::Inside,
-    );
-}
 
 /// The selection wash.
 ///

@@ -52,9 +52,11 @@
 
 use std::collections::HashSet;
 
-use egui_tiles::{SimplificationOptions, TileId, UiResponse};
+use egui_tiles::{SimplificationOptions, TabState, TileId, Tiles, UiResponse};
+use meridian_design::control::TAB_BAR_WIDTH;
+use meridian_design::semantic;
 
-use crate::chrome;
+use crate::chrome::{self, colour};
 use crate::item::{ItemCtx, ItemMap, PaneKey, Request};
 use crate::subject::Action;
 use crate::Mode;
@@ -161,6 +163,108 @@ impl<D: ?Sized> egui_tiles::Behavior<PaneKey> for PaneChrome<'_, D> {
             Some(item) => item.subject(self.doc).title.into(),
             None => pane.to_string().into(),
         }
+    }
+
+    /// One tab, drawn as a line tab: the title with no box and no outline round
+    /// it, in the secondary ink, and the open one in the primary ink with a
+    /// [`TAB_BAR_WIDTH`] bar under it.
+    ///
+    /// The strip is `meridian-egui`'s line-tab treatment, the one a rail's names
+    /// are drawn through ([`chrome::rail_selector`]), painted here from the same
+    /// tokens rather than through `line_tabs` itself: `egui_tiles` asks for one
+    /// tab at a time and needs a tab that can be dragged, and `line_tabs` draws
+    /// a whole strip and reports a click but not a drag. What is left of `egui_tiles`' own
+    /// tab is what it needs — the sensed rect, and the gap a dragged tab leaves.
+    /// No tab in the product closes (`is_tab_closable` stays at its default), so
+    /// no close button is drawn.
+    fn tab_ui(
+        &mut self,
+        tiles: &mut Tiles<PaneKey>,
+        ui: &mut egui::Ui,
+        id: egui::Id,
+        tile_id: TileId,
+        state: &TabState,
+    ) -> egui::Response {
+        let sem = semantic(self.mode.is_dark());
+        let galley = self.tab_title_for_tile(tiles, tile_id).into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            chrome::line_tab_font(ui),
+        );
+        let (_, cell) = ui.allocate_space(egui::vec2(
+            chrome::line_tab_width(&galley),
+            ui.available_height(),
+        ));
+
+        let draggable = self.is_tile_draggable(tiles, tile_id);
+        let response = ui.interact(
+            cell,
+            id,
+            if draggable {
+                egui::Sense::click_and_drag()
+            } else {
+                egui::Sense::click()
+            },
+        );
+        let response = if draggable {
+            response.on_hover_cursor(self.tab_hover_cursor_icon())
+        } else {
+            response
+        };
+
+        // A tab being dragged leaves a gap where it was.
+        if ui.is_rect_visible(cell) && !state.is_being_dragged {
+            let ink = if state.active {
+                sem.text.primary
+            } else {
+                sem.text.secondary
+            };
+            if state.active {
+                let bar = egui::Rect::from_min_max(
+                    egui::pos2(cell.left(), cell.bottom() - TAB_BAR_WIDTH),
+                    cell.right_bottom(),
+                );
+                ui.painter()
+                    .rect_filled(bar, 0.0, colour(sem.tabs.active_bar));
+            }
+            // Centred above the bar, so the open tab's bar is not a line through
+            // its own title.
+            let centre_y = cell.top() + (cell.height() - TAB_BAR_WIDTH) / 2.0;
+            let top = meridian_egui::widgets::optically_centred_galley_top(&galley, centre_y);
+            ui.painter().galley(
+                egui::pos2(cell.left() + meridian_egui::TOKENS.space[4], top),
+                galley,
+                colour(ink),
+            );
+        }
+        response
+    }
+
+    /// The strip's one rule, under the tabs and across the whole of the bar.
+    ///
+    /// `egui_tiles` calls this once per tab bar, after it has filled the bar and
+    /// before it lays the tabs out, so the open tab's bar is drawn over the rule
+    /// it stands on. It is where the rule is drawn because this is the hook in a
+    /// `Behavior` that runs once per strip, and the bar's rect is this `Ui`'s.
+    fn top_bar_right_ui(
+        &mut self,
+        _tiles: &Tiles<PaneKey>,
+        ui: &mut egui::Ui,
+        _tile_id: TileId,
+        _tabs: &egui_tiles::Tabs,
+        _scroll_offset: &mut f32,
+    ) {
+        let bar = ui.max_rect();
+        let rule = egui::Rect::from_min_max(
+            egui::pos2(bar.left(), bar.bottom() - chrome::LINE_TAB_RULE),
+            bar.max,
+        );
+        ui.painter().rect_filled(
+            rule,
+            0.0,
+            colour(semantic(self.mode.is_dark()).borders.divider),
+        );
     }
 
     /// Draw one pane: its chrome from its subject, then its body.

@@ -205,6 +205,41 @@ fn draw(
     items: &mut ItemMap<Doc>,
     input: egui::RawInput,
 ) -> (Vec<Request>, Vec<egui::ClippedPrimitive>) {
+    let (requests, full) = run_frame(ctx, ws, doc, items, input);
+    let primitives = ctx.tessellate(full.shapes, full.pixels_per_point);
+    (requests, primitives)
+}
+
+/// [`draw`] without the tessellation: the shapes the frame asked to paint, for a
+/// test about a rect's size or a title's ink rather than about vertices.
+fn draw_shapes(
+    ctx: &egui::Context,
+    ws: &mut Workspace,
+    doc: &mut Doc,
+    items: &mut ItemMap<Doc>,
+    input: egui::RawInput,
+) -> Vec<egui::Shape> {
+    fn walk(shape: egui::Shape, out: &mut Vec<egui::Shape>) {
+        match shape {
+            egui::Shape::Vec(inner) => inner.into_iter().for_each(|s| walk(s, out)),
+            other => out.push(other),
+        }
+    }
+    let (_, full) = run_frame(ctx, ws, doc, items, input);
+    let mut out = Vec::new();
+    for clipped in full.shapes {
+        walk(clipped.shape, &mut out);
+    }
+    out
+}
+
+fn run_frame(
+    ctx: &egui::Context,
+    ws: &mut Workspace,
+    doc: &mut Doc,
+    items: &mut ItemMap<Doc>,
+    input: egui::RawInput,
+) -> (Vec<Request>, egui::FullOutput) {
     let mut requests = Vec::new();
     let mut affordances = Vec::new();
     let tabbed = ws.tabbed_tiles();
@@ -228,8 +263,7 @@ fn draw(
             ws.tree_mut().ui(&mut behavior, ui);
         }
     });
-    let primitives = ctx.tessellate(full.shapes, full.pixels_per_point);
-    (requests, primitives)
+    (requests, full)
 }
 
 // ---------------------------------------------------------------------------
@@ -827,5 +861,232 @@ fn two_pane_chromes_in_one_frame_both_record_their_affordances() {
         recorded.contains(&rail_key),
         "the rail drew a way in and the behaviour built after it wiped the \
          record: {recorded:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A pane's tabs are line tabs
+// ---------------------------------------------------------------------------
+
+/// A frame of the fixture with the pointer events given, on a context that has
+/// already drawn once, so widgets have their rects from the frame before.
+fn tab_frame(
+    ctx: &egui::Context,
+    ws: &mut Workspace,
+    doc: &mut Doc,
+    items: &mut ItemMap<Doc>,
+    events: Vec<egui::Event>,
+) -> Vec<egui::Shape> {
+    draw_shapes(
+        ctx,
+        ws,
+        doc,
+        items,
+        egui::RawInput {
+            events,
+            ..Default::default()
+        },
+    )
+}
+
+/// The rect and ink a frame set `word` in, read off the text shape that carries
+/// it.
+fn title_of(shapes: &[egui::Shape], word: &str) -> Option<(egui::Rect, egui::Color32)> {
+    shapes.iter().find_map(|shape| match shape {
+        egui::Shape::Text(text) if text.galley.text() == word => Some((
+            egui::Rect::from_min_size(text.pos, text.galley.size()),
+            text.fallback_color,
+        )),
+        _ => None,
+    })
+}
+
+fn pointer_button(at: egui::Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos: at,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    }
+}
+
+/// The fixture as a test wants it: a context that has drawn twice, and the
+/// document, items and workspace to keep drawing.
+fn settled() -> (egui::Context, Workspace, Doc, ItemMap<Doc>) {
+    let ctx = egui::Context::default();
+    let mut ws = workspace();
+    let mut doc = Doc {
+        title: "Chart".into(),
+        rows: vec!["a"],
+        ..Doc::default()
+    };
+    let mut items = registry().instantiate();
+    for _ in 0..2 {
+        tab_frame(&ctx, &mut ws, &mut doc, &mut items, Vec::new());
+    }
+    (ctx, ws, doc, items)
+}
+
+/// A pane's tabs are line tabs: the open title in the primary ink over a bar
+/// `TAB_BAR_WIDTH` tall, the other in the secondary ink, one rule across the
+/// whole strip, and no box, outline or corner on any tab.
+///
+/// The bar is asserted to sit under the title in the primary ink, and to stand
+/// on the rule's own foot, so a bar drawn under the wrong tab or off the strip
+/// does not pass for one drawn right. Boxes are looked for in the tab bar's
+/// band alone: the pane frames below it draw borders of their own.
+///
+/// Watched failing: delete the `if state.active` bar in `PaneChrome::tab_ui` and
+/// no bar is found; delete `top_bar_right_ui` and no rule is; put the old
+/// `rect_stroke` back round a tab and the box check names it.
+#[test]
+fn a_panes_tabs_are_line_tabs_the_open_one_over_a_bar_with_no_box_and_no_outline() {
+    let sem = meridian_design::semantic(false);
+    assert_eq!(
+        meridian_design::control::TAB_BAR_WIDTH,
+        2.0,
+        "the bar under the open tab is drawn 2px, and this asserts the token says so"
+    );
+    let (ctx, mut ws, mut doc, mut items) = settled();
+    let shapes = tab_frame(&ctx, &mut ws, &mut doc, &mut items, Vec::new());
+
+    let bars = filled_in(&shapes, chrome::colour(sem.tabs.active_bar));
+    assert_eq!(bars.len(), 1, "two tabs, one open, so one bar: {bars:?}");
+    let bar = bars[0];
+    assert!(
+        (bar.height() - meridian_design::control::TAB_BAR_WIDTH).abs() < 0.01,
+        "the bar is {} tall",
+        bar.height()
+    );
+
+    let (open_title, open_ink) = title_of(&shapes, "Chart").expect("the canvas tab has a title");
+    let (shut_title, shut_ink) = title_of(&shapes, "Notes").expect("the notes tab has a title");
+    assert_eq!(open_ink, chrome::colour(sem.text.primary));
+    assert_eq!(shut_ink, chrome::colour(sem.text.secondary));
+    assert!(
+        bar.x_range().contains(open_title.center().x)
+            && !bar.x_range().contains(shut_title.center().x),
+        "the bar spans {:?}, which is not under the open tab's title at {:?}",
+        bar.x_range(),
+        open_title.x_range()
+    );
+
+    let rules = filled_in(&shapes, chrome::colour(sem.borders.divider));
+    let rule = rules
+        .iter()
+        .find(|r| (r.bottom() - bar.bottom()).abs() < 0.01)
+        .unwrap_or_else(|| panic!("no rule on the strip's foot at {}: {rules:?}", bar.bottom()));
+    assert!(
+        rule.right() > shut_title.right(),
+        "the rule ends at {}, under the last tab's title, not across the strip",
+        rule.right()
+    );
+
+    let boxed: Vec<_> = shapes
+        .iter()
+        .filter_map(|shape| match shape {
+            egui::Shape::Rect(r)
+                if r.rect.bottom() <= bar.bottom() + 0.01
+                    && (r.stroke.width > 0.0 || r.corner_radius != egui::CornerRadius::ZERO) =>
+            {
+                Some(r.rect)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        boxed.is_empty(),
+        "a rect with an outline or a corner was drawn in the tab bar: {boxed:?}"
+    );
+}
+
+fn filled_in(shapes: &[egui::Shape], ink: egui::Color32) -> Vec<egui::Rect> {
+    shapes
+        .iter()
+        .filter_map(|shape| match shape {
+            egui::Shape::Rect(rect) if rect.fill == ink => Some(rect.rect),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A click on a pane's closed tab opens it.
+///
+/// Read off the tree rather than off the picture: the tile is active in the
+/// tree afterwards and was not before.
+///
+/// Watched failing: give `tab_ui`'s response no click sense (`Sense::hover()`)
+/// and the tile stays where it was.
+#[test]
+fn a_click_on_a_closed_pane_tab_opens_it() {
+    let (ctx, mut ws, mut doc, mut items) = settled();
+    let notes = ws.tile_of(key(NOTES)).expect("a tile");
+    assert!(
+        !ws.tree().active_tiles().contains(&notes),
+        "the notes tab is open before anything was clicked, so the click proves nothing"
+    );
+    let shapes = tab_frame(&ctx, &mut ws, &mut doc, &mut items, Vec::new());
+    let at = title_of(&shapes, "Notes").expect("a title").0.center();
+    tab_frame(
+        &ctx,
+        &mut ws,
+        &mut doc,
+        &mut items,
+        vec![egui::Event::PointerMoved(at)],
+    );
+    tab_frame(
+        &ctx,
+        &mut ws,
+        &mut doc,
+        &mut items,
+        vec![pointer_button(at, true)],
+    );
+    tab_frame(
+        &ctx,
+        &mut ws,
+        &mut doc,
+        &mut items,
+        vec![pointer_button(at, false)],
+    );
+    tab_frame(&ctx, &mut ws, &mut doc, &mut items, Vec::new());
+    assert!(
+        ws.tree().active_tiles().contains(&notes),
+        "a click on the notes tab at {at:?} left it closed"
+    );
+}
+
+/// Dragging a pane's tab moves the pane: a tab pressed and carried onto the
+/// rail and let go there is in another container afterwards.
+///
+/// The tab has to sense a drag under the id `egui_tiles` gave it, because that
+/// id is how `egui_tiles` knows which tile is being dragged.
+///
+/// Watched failing: sense a click and not a drag in `PaneChrome::tab_ui`, or
+/// interact under an id of its own, and the notes pane's parent is the one it started with.
+#[test]
+fn dragging_a_pane_tab_onto_the_rail_moves_the_pane() {
+    let (ctx, mut ws, mut doc, mut items) = settled();
+    let notes = ws.tile_of(key(NOTES)).expect("a tile");
+    let before = ws.tree().tiles.parent_of(notes);
+    assert!(before.is_some(), "the notes tab has no parent to leave");
+
+    let shapes = tab_frame(&ctx, &mut ws, &mut doc, &mut items, Vec::new());
+    let start = title_of(&shapes, "Notes").expect("a title").0.center();
+    let end = egui::pos2(SCREEN.max.x - 80.0, SCREEN.center().y);
+    let mut frame = |events| tab_frame(&ctx, &mut ws, &mut doc, &mut items, events);
+    frame(vec![egui::Event::PointerMoved(start)]);
+    frame(vec![pointer_button(start, true)]);
+    for step in 1..=8 {
+        let at = start + (end - start) * (step as f32 / 8.0);
+        frame(vec![egui::Event::PointerMoved(at)]);
+    }
+    frame(Vec::new());
+    frame(vec![pointer_button(end, false)]);
+    frame(Vec::new());
+    assert_ne!(
+        ws.tree().tiles.parent_of(notes),
+        before,
+        "the notes tab was carried from {start:?} to {end:?} and let go, and its pane \
+         is still where it began"
     );
 }
