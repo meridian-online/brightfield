@@ -1,12 +1,13 @@
 //! **A column put on the map's x or y moves both its layers, and one that is
-//! not a coordinate draws a dot plot.**
+//! not a coordinate draws a dot plot. A column put on its colour paints the
+//! highlighted points, and a legend follows it.**
 //!
 //! The tests here start from the dashboard the generator writes for a table
 //! whose columns hold a coordinate pair, opened the way a data file is opened,
-//! and edit its hero map through `shelf_edit::put_column` with the table's
-//! own profile. The spec half reads the edited AST; the page half loads a page
-//! from it the way the shell's tile controls do, and sweeps a rectangle over
-//! it in a headless window.
+//! and edit its hero map through `shelf_edit::put_column` and
+//! `shelf_edit::put_colour` with the table's own profile. The spec half reads
+//! the edited AST; the page half loads a page from it the way the shell's tile
+//! controls do, and sweeps a rectangle over it in a headless window.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -14,11 +15,13 @@ use std::path::{Path, PathBuf};
 use brightfield_engine::{ColumnProfile, ProfileOutcome, RowsAudience, SqlPredicate};
 use brightfield_render::layout::Margins;
 use brightfield_render::title::TITLE_BAND;
+use brightfield_render::VelloRenderer;
 use brightfield_shell::chart_kinds;
 use brightfield_shell::data_file::{self, OpenedFile};
 use brightfield_shell::design::Mode;
+use brightfield_shell::legend::{band_width, LegendSpec};
 use brightfield_shell::pipeline::LiveDashboard;
-use brightfield_shell::shelf_edit::{put_column, ShelfRefusal};
+use brightfield_shell::shelf_edit::{put_colour, put_column, ShelfRefusal};
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_spec::analysis::ComponentPath;
@@ -636,5 +639,376 @@ fn a_page_loaded_from_it_draws_a_dot_plot_and_a_swept_rectangle_narrows_the_othe
     assert_eq!(
         hero_after, hero_rest,
         "the hero narrowed on its own selection"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Colour — the spec: the highlighted layer takes the column, the ghost keeps
+// its ink
+// ---------------------------------------------------------------------------
+
+/// The highlighted layer's ordinal on the hero: the second of the map's two.
+const HIGHLIGHTED: usize = 1;
+
+/// The ink the generated map's ghost layer is drawn in, which is the fill it
+/// carries before any edit.
+fn ghost_ink(o: &Opened) -> String {
+    let ink = layers(&o.generated, &o.hero, "fill")[0].1.clone();
+    assert!(
+        ink.starts_with('#'),
+        "the generated ghost layer's fill is {ink}, not a literal ink"
+    );
+    ink
+}
+
+/// **`house_value` on the map's colour**: the highlighted layer reads
+/// `fill: house_value`, the ghost layer keeps its literal ink, and x, y and the
+/// plot's attributes stay as they were — the map is still projected at the size
+/// it was drawn at.
+#[test]
+fn a_column_put_on_the_maps_colour_paints_the_highlighted_layer_and_keeps_the_ghost_ink() {
+    let o = open("colour-highlighted");
+    let mut spec = o.generated.clone();
+
+    put_colour(&mut spec, &o.hero, VALUE, &o.table).expect("the table has the column");
+
+    assert_eq!(
+        layers(&spec, &o.hero, "fill"),
+        [
+            (MarkKind::Dot, ghost_ink(&o)),
+            (MarkKind::Dot, VALUE.to_string())
+        ],
+        "the highlighted layer should read fill: {VALUE} and the ghost keep its ink"
+    );
+    for channel in ["x", "y"] {
+        assert_eq!(
+            layers(&spec, &o.hero, channel),
+            layers(&o.generated, &o.hero, channel),
+            "a gesture that put a column on colour moved {channel}"
+        );
+    }
+    assert_eq!(
+        plot(&spec, &o.hero).attributes,
+        plot(&o.generated, &o.hero).attributes,
+        "a gesture that put a column on colour changed the plot's attributes, \
+         which are the map's projection and its size"
+    );
+}
+
+/// **The edit is the list of edits applied, and replaying it on the generated
+/// spec gives the edited one** — the highlighted layer's fill and nothing else,
+/// as x's and y's lists are the marks they moved.
+#[test]
+fn the_colour_edit_is_the_list_of_chart_edits_applied_and_replays_to_the_same_spec() {
+    let o = open("colour-list");
+    let mut spec = o.generated.clone();
+
+    let edits = put_colour(&mut spec, &o.hero, VALUE, &o.table).expect("the table has the column");
+
+    assert_eq!(
+        edits,
+        [set(&o.hero, HIGHLIGHTED, "fill", VALUE)],
+        "the list should be the highlighted layer's fill and no other"
+    );
+    let mut replayed = o.generated.clone();
+    for e in &edits {
+        edit::apply_for_fresh_load(&mut replayed, e).expect("each edit has its target");
+    }
+    assert_eq!(
+        replayed, spec,
+        "the listed edits, replayed on the generated spec, give another spec"
+    );
+}
+
+/// **Another column put on colour replaces the first**, on the highlighted
+/// layer alone, and the ghost keeps its ink. The same column put again is no
+/// edit.
+#[test]
+fn another_column_put_on_the_maps_colour_replaces_the_first() {
+    let o = open("colour-replaced");
+    let mut spec = o.generated.clone();
+    put_colour(&mut spec, &o.hero, VALUE, &o.table).expect("the table has the column");
+
+    let edits = put_colour(&mut spec, &o.hero, INCOME, &o.table).expect("the table has the column");
+
+    assert_eq!(
+        edits,
+        [set(&o.hero, HIGHLIGHTED, "fill", INCOME)],
+        "replacing the colour should be one edit, on the highlighted layer"
+    );
+    assert_eq!(
+        layers(&spec, &o.hero, "fill"),
+        [
+            (MarkKind::Dot, ghost_ink(&o)),
+            (MarkKind::Dot, INCOME.to_string())
+        ],
+        "the second column did not replace the first"
+    );
+
+    let before = spec.clone();
+    let again = put_colour(&mut spec, &o.hero, INCOME, &o.table).expect("the table has the column");
+    assert_eq!(again, [], "a column put where it already is made edits");
+    assert_eq!(spec, before);
+}
+
+/// **A plot with no layer reading through a selection takes the colour on its
+/// first mark**, as x and y take a column when no mark binds them.
+#[test]
+fn a_plot_with_no_selected_layer_takes_the_colour_on_its_first_mark() {
+    let o = open("colour-first-mark");
+    let mut spec = o.generated.clone();
+    let path = o.hero.0.clone();
+    let hero = brightfield_spec::edit::plot_at_path_mut(&mut spec, &path).expect("the hero");
+    for c in &mut hero.items {
+        if let Component::Mark(m) = c {
+            if let Some(brightfield_spec::ast::MarkData::From { filter_by, .. }) = &mut m.data {
+                *filter_by = None;
+            }
+        }
+    }
+
+    let edits = put_colour(&mut spec, &o.hero, VALUE, &o.table).expect("the table has the column");
+
+    assert_eq!(edits, [set(&o.hero, 0, "fill", VALUE)]);
+}
+
+/// **A column the table does not have is refused in words that name it**, and
+/// the spec is left as it was.
+#[test]
+fn a_colour_the_table_does_not_have_is_refused_by_name() {
+    let o = open("colour-no-such-column");
+    let mut spec = o.generated.clone();
+
+    let refused = put_colour(&mut spec, &o.hero, "house_valu", &o.table)
+        .expect_err("the table has no column house_valu");
+
+    assert_eq!(
+        refused,
+        ShelfRefusal::NoSuchColumn("house_valu".to_string())
+    );
+    assert!(
+        refused.to_string().contains("house_valu"),
+        "the refusal does not name the column: {refused}"
+    );
+    assert_eq!(spec, o.generated, "a refused column changed the spec");
+}
+
+// ---------------------------------------------------------------------------
+// Colour — the page: the legend follows the column, and the points wear it
+// ---------------------------------------------------------------------------
+
+/// The legend the shell derives from the hero's scales, which is what it draws
+/// and what it reserves a band for. Read here and not the scale's domain: a
+/// page whose fill scale is a `Linear` over the column has a domain and draws
+/// no legend, and a test that read the domain passed on it.
+fn hero_legend(app: &MeridianApp) -> Option<LegendSpec> {
+    LegendSpec::from_scales(&app.chart_doc().composed.plots[0].scales)
+}
+
+/// **A page loaded from the edited spec draws a sequential legend for the colour
+/// column beside the plot, and a column put on colour afterwards moves the
+/// legend's ends.** The legend spans the column, the band the page reserved for
+/// it holds it, and the band is clear of the raster the map is drawn on.
+#[test]
+fn a_column_put_on_the_maps_colour_draws_a_legend_beside_the_plot_and_a_replaced_colour_moves_it() {
+    let o = open("colour-legend");
+    let ctx = egui::Context::default();
+    let base = o.file.live.base_dir().map(Path::to_path_buf);
+    let page = |columns: &[&str]| {
+        let mut spec = o.generated.clone();
+        for column in columns {
+            put_colour(&mut spec, &o.hero, column, &o.table).expect("the table has the column");
+        }
+        window_over(spec, base.as_deref(), &ctx)
+    };
+    let beside_the_plot = |app: &MeridianApp| {
+        let doc = app.chart_doc();
+        let (legend, raster) = (
+            doc.legend_rect.expect("the page recorded no legend band"),
+            doc.raster_rect.expect("the page recorded no raster"),
+        );
+        assert!(
+            band_width(&doc.composed) > 0.0,
+            "a legend was derived and no band was reserved for it"
+        );
+        assert!(
+            !legend.intersects(raster),
+            "the legend band {legend:?} overlaps the raster {raster:?}: a legend is on the data"
+        );
+    };
+
+    let plain = page(&[]);
+    assert_eq!(
+        hero_legend(&plain),
+        None,
+        "the generated map already draws a legend"
+    );
+    assert_eq!(
+        plain.chart_doc().legend_rect,
+        None,
+        "the generated map already reserves a legend band"
+    );
+
+    let by_value = page(&[VALUE]);
+    let Some(LegendSpec::Sequential { min, max, stops }) = hero_legend(&by_value) else {
+        panic!(
+            "{VALUE} on colour drew no sequential legend; the fill scale is {:?}",
+            by_value.chart_doc().composed.plots[0]
+                .scales
+                .get(brightfield_render::channel::Channel::Fill)
+        );
+    };
+    assert!(
+        min <= 0.0 && max >= 230.0,
+        "the legend spans [{min}, {max}], which does not span {VALUE}'s 0..=230"
+    );
+    assert!(stops.len() >= 2, "a ramp needs two stops to be a gradient");
+    beside_the_plot(&by_value);
+
+    let by_income = page(&[VALUE, INCOME]);
+    let Some(LegendSpec::Sequential { min, max, .. }) = hero_legend(&by_income) else {
+        panic!("{INCOME} put on colour after {VALUE} drew no sequential legend");
+    };
+    assert!(
+        min <= 1.0 && (12.5..13.5).contains(&max),
+        "the legend spans [{min}, {max}] after {INCOME} replaced {VALUE}; it should span \
+         {INCOME}'s 1..=12.5 and not stay on {VALUE}'s 0..=230"
+    );
+    beside_the_plot(&by_income);
+}
+
+/// The hero's tile that draws `median_income`'s histogram, among the plots the
+/// page composes: the map is 0, then `longitude`'s, `latitude`'s and this one.
+const INCOME_HISTOGRAM: usize = 3;
+
+/// How far a pixel channel may sit from an ink and still be that ink: the
+/// anti-aliased edge of a dot is a blend and is not counted.
+const INK_TOLERANCE: f32 = 6.0;
+
+/// `#rrggbb` as three channels in 0..=255.
+fn rgb(hex: &str) -> [f32; 3] {
+    let byte = |i: usize| f32::from(u8::from_str_radix(&hex[i..i + 2], 16).expect("a hex byte"));
+    [byte(1), byte(3), byte(5)]
+}
+
+/// The colour a ramp's control points give at `t` along it, in 0..=255.
+fn ramp_at(stops: &[[f32; 4]], t: f32) -> [f32; 3] {
+    let last = stops.len() - 1;
+    let at = t * last as f32;
+    let i = (at.floor() as usize).min(last - 1);
+    let u = at - i as f32;
+    let channel = |c: usize| (stops[i][c] + (stops[i + 1][c] - stops[i][c]) * u) * 255.0;
+    [channel(0), channel(1), channel(2)]
+}
+
+fn is_ink(pixel: [f32; 3], ink: [f32; 3]) -> bool {
+    (0..3).all(|c| (pixel[c] - ink[c]).abs() <= INK_TOLERANCE)
+}
+
+/// The pixels of the hero's data area as the page presents them, rendered off
+/// the composed scene through the renderer the window and the PNG export use.
+fn hero_pixels(app: &MeridianApp) -> Vec<[f32; 3]> {
+    let doc = app.chart_doc();
+    let (w, h) = (doc.composed.width, doc.composed.height);
+    let buffer = VelloRenderer::new()
+        .lock()
+        .expect("renderer poisoned")
+        .render_to_pixels(&doc.composed.scene, w, h);
+    let hero = &doc.composed.plots[0];
+    let (x0, x1) = (
+        (hero.rect.x + hero.layout.plot_x_start()) as usize,
+        (hero.rect.x + hero.layout.plot_x_end()) as usize,
+    );
+    let (y0, y1) = (
+        (hero.rect.y + hero.layout.plot_y_start()) as usize,
+        (hero.rect.y + hero.layout.plot_y_end()) as usize,
+    );
+    let mut out = Vec::new();
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let i = (y * w as usize + x) * 4;
+            out.push([
+                f32::from(buffer[i]),
+                f32::from(buffer[i + 1]),
+                f32::from(buffer[i + 2]),
+            ]);
+        }
+    }
+    out
+}
+
+/// **The highlighted points are painted by the column's ramp and the ghost
+/// points keep their ink.** At rest the highlighted layer covers the ghost, so
+/// the ghost is seen where a range swept on another tile narrows the highlighted
+/// layer: the rows outside the range are drawn by the ghost layer alone. The
+/// page is read in pixels, and the assertions are made in colour: a spec that
+/// names the column and a scale that holds it were both true of the page whose
+/// picture the column did not change.
+#[test]
+fn the_highlighted_points_wear_the_ramp_and_the_ghost_points_keep_their_ink() {
+    let o = open("colour-pixels");
+    let ctx = egui::Context::default();
+    let base = o.file.live.base_dir().map(Path::to_path_buf);
+    let swept = |colour: Option<&str>| {
+        let mut spec = o.generated.clone();
+        if let Some(column) = colour {
+            put_colour(&mut spec, &o.hero, column, &o.table).expect("the table has the column");
+        }
+        let mut app = window_over(spec, base.as_deref(), &ctx);
+        sweep(&mut app, &ctx, INCOME_HISTOGRAM, (0.0, 0.05), (0.5, 0.95));
+        let kept = step_rows(&mut app, HIGHLIGHTED);
+        assert!(
+            0 < kept && kept < ROWS as u64,
+            "the range swept on {INCOME}'s histogram left {kept} of {ROWS} rows in the highlighted layer"
+        );
+        app
+    };
+    let ghost = rgb(&ghost_ink(&o));
+
+    let plain = swept(None);
+    let coloured = swept(Some(VALUE));
+    let Some(LegendSpec::Sequential { stops, .. }) = hero_legend(&coloured) else {
+        panic!("{VALUE} on colour drew no sequential legend, so there is no ramp to read");
+    };
+    let ramp: Vec<[f32; 3]> = (0..=100)
+        .map(|k| ramp_at(&stops, k as f32 / 100.0))
+        .collect();
+    // Which of the hundred-odd samples along the ramp a pixel is, if any.
+    let along = |pixel: [f32; 3]| ramp.iter().position(|&c| is_ink(pixel, c));
+
+    let (plain_picture, picture) = (hero_pixels(&plain), hero_pixels(&coloured));
+    let wearing = |picture: &[[f32; 3]]| picture.iter().filter(|&&p| along(p).is_some()).count();
+    let ghosts = |picture: &[[f32; 3]]| picture.iter().filter(|&&p| is_ink(p, ghost)).count();
+
+    // The floor: the page without the colour edit has ghost ink and no ramp
+    // colour, so a measurement that finds ramp colours everywhere says so here.
+    assert_eq!(
+        wearing(&plain_picture),
+        0,
+        "the page without a colour edit already draws in ramp colours"
+    );
+    let ghost_before = ghosts(&plain_picture);
+    assert!(
+        ghost_before > 0,
+        "the swept page draws no ghost ink to keep"
+    );
+
+    let mut positions: Vec<usize> = picture.iter().filter_map(|&p| along(p)).collect();
+    positions.sort_unstable();
+    positions.dedup();
+    assert!(
+        positions.len() > 1,
+        "the highlighted points wear {} position(s) along the ramp: {VALUE} on colour \
+         should paint them by value",
+        positions.len()
+    );
+    // The same rows are outside the range in both pages, so the same ghost
+    // points are drawn. Their pixels are not identical: the legend's band
+    // narrows the raster, and a dot lands on other sub-pixels.
+    let ghost_after = ghosts(&picture);
+    assert!(
+        ghost_after * 10 >= ghost_before * 9,
+        "the ghost layer kept {ghost_after} pixels of its ink with {VALUE} on colour and \
+         {ghost_before} without: the column painted the ghost points too"
     );
 }
