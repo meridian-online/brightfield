@@ -51,6 +51,19 @@ pub enum EngineError {
         cause: duckdb::Error,
     },
 
+    /// A condition handed to a step-rows read was refused before any SQL
+    /// holding it reached the connection, so nothing in it ran.
+    ///
+    /// Distinct from [`Self::QueryFailed`], which is DuckDB refusing a query
+    /// the engine did send: this one means the engine did not send it.
+    #[error("the condition `{condition}` was refused: {refusal}")]
+    ConditionRefused {
+        /// The condition, exactly as it was handed to the read.
+        condition: String,
+        /// Which rule refused it.
+        refusal: ConditionRefusal,
+    },
+
     /// Upstream SQL emission failed.
     #[error("emit failed: {cause}")]
     EmitFailed {
@@ -131,5 +144,33 @@ pub enum EngineError {
         /// The underlying failure, stringified (a DuckDB error or an
         /// unsupported-type explanation).
         reason: String,
+    },
+}
+
+/// Why a step-rows read refused its condition — see
+/// [`EngineError::ConditionRefused`].
+///
+/// The rule is the one `arc` applies before it records a condition: probed as
+/// `SELECT 1 WHERE <condition>`, the condition must be exactly one statement to
+/// DuckDB's own parser. Each variant is one way of failing that rule.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ConditionRefusal {
+    /// DuckDB cannot parse the probe at all.
+    #[error("{message}")]
+    Unparseable {
+        /// DuckDB's own parser message, verbatim.
+        message: String,
+    },
+
+    /// DuckDB parses the probe as more than one statement: the condition holds
+    /// a `;` outside a string or a comment, and whatever follows it would run
+    /// on the connection as a statement of its own.
+    #[error(
+        "DuckDB reads it as {statements} statements — a `;` outside a string or a comment \
+         ends the read's statement and begins another"
+    )]
+    SecondStatement {
+        /// How many statements DuckDB split the probe into.
+        statements: usize,
     },
 }
