@@ -112,9 +112,17 @@ fn probe_table_exists(session: &mut Session) -> bool {
 
 /// The refusal a read of `condition` returned, from both reads, asserted to
 /// be the same and to name the condition as written.
-fn refusal_of(session: &Session, condition: &str) -> ConditionRefusal {
+///
+/// **Whether anything ran is asserted first**, before either result is read:
+/// a condition that got a statement onto the connection has failed the one
+/// guarantee this file is for, whatever either read then returned.
+fn refusal_of(session: &mut Session, condition: &str) -> ConditionRefusal {
     let count = session.step_rows_count_where(0, RowsAudience::Reader, condition);
     let window = session.execute_step_rows_window_where(0, 0, 100, RowsAudience::Reader, condition);
+    assert!(
+        !probe_table_exists(session),
+        "a read under `{condition}` created `{PROBE_TABLE}`"
+    );
     let from_count = match count {
         Err(EngineError::ConditionRefused {
             condition: named,
@@ -223,12 +231,8 @@ fn a_condition_carrying_a_second_statement_is_refused_and_runs_nothing() {
     let mut session = session();
     let plain = format!("house_age > 1; CREATE TABLE {PROBE_TABLE} AS SELECT 1");
     assert_eq!(
-        refusal_of(&session, &plain),
+        refusal_of(&mut session, &plain),
         ConditionRefusal::SecondStatement { statements: 2 }
-    );
-    assert!(
-        !probe_table_exists(&mut session),
-        "`{plain}` created the table"
     );
 
     // An unparseable tail fails the whole probe, so DuckDB counts no
@@ -236,14 +240,10 @@ fn a_condition_carrying_a_second_statement_is_refused_and_runs_nothing() {
     let tailed = format!("house_age > 1; CREATE TABLE {PROBE_TABLE} AS SELECT 1; zzz");
     assert!(
         matches!(
-            refusal_of(&session, &tailed),
+            refusal_of(&mut session, &tailed),
             ConditionRefusal::Unparseable { .. }
         ),
         "`{tailed}` is refused as unparseable"
-    );
-    assert!(
-        !probe_table_exists(&mut session),
-        "`{tailed}` created the table"
     );
 }
 
@@ -263,14 +263,10 @@ fn a_condition_that_closes_the_reads_parentheses_is_refused_and_runs_nothing() {
     );
     assert!(
         matches!(
-            refusal_of(&session, &escaping),
+            refusal_of(&mut session, &escaping),
             ConditionRefusal::Unparseable { .. }
         ),
         "`{escaping}` is refused as unparseable"
-    );
-    assert!(
-        !probe_table_exists(&mut session),
-        "`{escaping}` created the table"
     );
 }
 
@@ -295,7 +291,7 @@ fn a_trailing_comment_swallows_neither_the_limit_nor_the_offset() {
 /// same probe; a condition of two clauses is read as written.
 #[test]
 fn an_unparseable_condition_carries_duckdbs_message_and_a_compound_one_reads_as_written() {
-    let session = session();
+    let mut session = session();
     let condition = "house_age >";
     let duckdb_says = match duckdb::Connection::open_in_memory()
         .expect("an in-memory database opens")
@@ -310,7 +306,7 @@ fn an_unparseable_condition_carries_duckdbs_message_and_a_compound_one_reads_as_
         "DuckDB's message is a syntax error: {duckdb_says}"
     );
     assert_eq!(
-        refusal_of(&session, condition),
+        refusal_of(&mut session, condition),
         ConditionRefusal::Unparseable {
             message: duckdb_says
         }
