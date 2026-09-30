@@ -750,7 +750,10 @@ impl egui_table::TableDelegate for MeridianTableDelegate<'_> {
 
     fn row_ui(&mut self, ui: &mut egui::Ui, row_nr: u64) {
         // The full-width underlays, painted before any cell draws over them:
-        // the one selection wash for the cursor row, a zebra stripe otherwise.
+        // the one selection wash for the cursor row, the hover fill under the
+        // pointer, a zebra stripe otherwise. The cursor row keeps its wash
+        // under the pointer, as a picked row keeps its mark; a striped row
+        // under the pointer takes the hover fill in place of its stripe.
         // The retired egui::Grid had to reserve a wash slot and fill it after
         // layout because a grid row's width is unknown until its widest cell
         // is measured; here the row rect is handed in whole.
@@ -758,6 +761,10 @@ impl egui_table::TableDelegate for MeridianTableDelegate<'_> {
         self.drawn.row_cells.push((row_nr, rect, ui.clip_rect()));
         if self.source.selected_row() == Some(row_nr) {
             chrome::selection_wash(ui, rect, self.mode);
+        } else if ui.rect_contains_pointer(rect) {
+            let sem = semantic(self.mode.is_dark());
+            ui.painter()
+                .rect_filled(rect, 0.0, chrome::colour(sem.rows.hover_background));
         } else if row_nr % 2 == 1 {
             ui.painter()
                 .rect_filled(rect, 0.0, ui.visuals().faint_bg_color);

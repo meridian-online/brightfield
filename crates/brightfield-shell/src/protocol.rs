@@ -2462,9 +2462,13 @@ pub struct SpineRowDrawn {
     /// The rect the trailing text occupied, `None` on a row with no trailing
     /// text.
     pub kind_rect: Option<egui::Rect>,
-    /// The on-canvas bar, on the one row whose content the canvas holds.
+    /// The bar drawn at the leading edge of the one row whose content the
+    /// canvas holds, in the secondary ink — or, on a row that is also picked,
+    /// the picked bar in the focus ink. `None` on every other row, a picked
+    /// one included: the bar a picked row draws is not this fact.
     pub on_canvas: Option<egui::Rect>,
-    /// Whether the selection wash was painted under this row.
+    /// Whether this row was drawn picked — the cursor fill and its bar. Named
+    /// for the wash it once drew.
     pub washed: bool,
     /// The **graph chip** at the trailing end, on the spine's head row and no
     /// other. `None` everywhere else, and on a head row drawn without one.
@@ -3009,7 +3013,7 @@ fn caption_row(ui: &mut egui::Ui, text: &str, mode: Mode) -> SpineRowDrawn {
 /// marked while the canvas held it — and a spine with no bar anywhere is a
 /// spine that has stopped answering *what am I looking at*. It is this row's
 /// bar now: the head names the whole Protocol, and the graph is the whole
-/// Protocol. Drawn by the same two points of focus ink at the leading edge that
+/// Protocol. Drawn by the same bar in the secondary ink at the leading edge that
 /// [`spine_row`] draws, so the mark means one thing wherever it appears.
 ///
 /// # The two states, and the third thing that is not a state
@@ -3059,14 +3063,16 @@ fn spine_head_row(
 
     let ink = chrome::colour(sem.text.muted);
     let painter = ui.painter();
-    let on_canvas = filled.then(|| {
-        let bar = egui::Rect::from_min_max(
-            rect.left_top(),
-            egui::pos2(rect.left() + ON_CANVAS_BAR_WIDTH, rect.bottom()),
-        );
-        painter.rect_filled(bar, 0.0, chrome::colour(sem.borders.focus));
-        bar
-    });
+    let on_canvas = paint_row_marks(
+        painter,
+        rect,
+        RowMarks {
+            picked: false,
+            hovered: false,
+            on_canvas: filled,
+        },
+        mode,
+    );
     let left = rect.left() + spacing::SPACE_4;
     let galley = painter.layout_no_wrap(text.to_owned(), caption_font(), ink);
     let name_rect = egui::Rect::from_min_size(
@@ -3125,11 +3131,13 @@ pub const GRAPH_CHIP_HINT: &str =
 /// # The two marks
 ///
 /// `on_canvas` and [`SpineRow::selected`] are two different facts and are drawn
-/// by two different mechanisms, deliberately. The wash is a fill under the whole
-/// row and says *this is what you picked*; the bar is two points of
-/// [`semantic()`]'s focus ink at the leading edge and says *this is what is on the
-/// canvas*. A reader who has picked a column while looking at the dashboard is
-/// being told two things at once, and one treatment could only tell them one.
+/// by two different marks, deliberately. A picked row takes the cursor fill and
+/// a bar in [`semantic()`]'s focus ink, and says *this is what you picked*; the
+/// row the canvas holds keeps a bar of the same width in the secondary ink, with
+/// no fill, and says *this is what is on the canvas*. A reader who has picked a
+/// column while looking at the dashboard is being told two things at once, and
+/// one treatment could only tell them one. A row that is both draws as picked —
+/// see [`paint_row_marks`].
 ///
 /// # Why the marker is not the outline's status dot
 ///
@@ -3154,19 +3162,23 @@ fn spine_row(
         _ => egui::Sense::hover(),
     };
     let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), b.row), sense);
-    if row.selected {
-        chrome::selection_wash(ui, rect, mode);
-    }
-
     let painter = ui.painter();
-    let on_canvas = on_canvas.then(|| {
-        let bar = egui::Rect::from_min_max(
-            rect.left_top(),
-            egui::pos2(rect.left() + ON_CANVAS_BAR_WIDTH, rect.bottom()),
-        );
-        painter.rect_filled(bar, 0.0, chrome::colour(sem.borders.focus));
-        bar
-    });
+    // The hover fill is a row's answer to a pointer that could act on it, so
+    // only a row that senses a click draws one; a readout row stays flat under
+    // the pointer, for the reason its sense is `hover`.
+    let bar = paint_row_marks(
+        painter,
+        rect,
+        RowMarks {
+            picked: row.selected,
+            hovered: sense.senses_click() && response.hovered(),
+            on_canvas,
+        },
+        mode,
+    );
+    // The bar the record carries is the on-canvas fact, so a picked row that
+    // is not on the canvas draws a bar and reports none.
+    let on_canvas = if on_canvas { bar } else { None };
 
     // The marker's leading edge sits `SPACE_4` in, so its centre is one radius
     // past that — and the name clears the whole marker whether one was drawn or
@@ -3254,10 +3266,10 @@ fn spine_row(
 }
 
 /// One outline row: status dot, label, kind — and, when it is the selection,
-/// the one selection wash.
+/// the cursor fill and the bar in the focus ink.
 ///
 /// The row rect is allocated *before* anything is painted into it, which is
-/// what lets the wash sit under the content rather than beside it. The version
+/// what lets the fill sit under the content rather than beside it. The version
 /// this replaces used `Ui::selectable_label`, whose wash is the framework's,
 /// and then swapped the label ink on top of it — two signals for one state, one
 /// of them not from the token layer at all.
@@ -3272,11 +3284,17 @@ fn outline_row(ui: &mut egui::Ui, row: &OutlineRow, mode: Mode) -> (SpineRowDraw
     let b = control::binding(spacing::ROW_DENSE);
     let sense = egui::Sense::click();
     let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), b.row), sense);
-    if row.selected {
-        chrome::selection_wash(ui, rect, mode);
-    }
-
     let painter = ui.painter();
+    paint_row_marks(
+        painter,
+        rect,
+        RowMarks {
+            picked: row.selected,
+            hovered: response.hovered(),
+            on_canvas: false,
+        },
+        mode,
+    );
     let dot = b.icon / 4.0;
     let mut x = rect.left() + b.pad_x + f32::from(row.depth) * spacing::SPACE_4;
     if row.depth == 0 {
@@ -3336,14 +3354,68 @@ fn outline_row(ui: &mut egui::Ui, row: &OutlineRow, mode: Mode) -> (SpineRowDraw
     )
 }
 
-/// The **width of the on-canvas bar**, in logical points: two, at the leading
-/// edge of the row whose content the canvas holds.
+/// What a row of the spine or the Outline is, as far as its paint goes.
+#[derive(Clone, Copy)]
+struct RowMarks {
+    /// The reader picked it: it is the cursor row.
+    picked: bool,
+    /// The pointer is over a row that would act on a click.
+    hovered: bool,
+    /// The canvas holds this row's content.
+    on_canvas: bool,
+}
+
+/// The bar on the leading edge of a row: [`control::ROW_BAR_WIDTH`] wide and as
+/// tall as the row.
 ///
 /// Narrow on purpose. It marks a row without indenting one, so the rows above
 /// and below it stay on the same ladder — a wider rule would have to take its
 /// width out of the row's content and the list would step in and out as the
 /// canvas moved.
-const ON_CANVAS_BAR_WIDTH: f32 = 2.0;
+fn row_bar(rect: egui::Rect) -> egui::Rect {
+    egui::Rect::from_min_max(
+        rect.left_top(),
+        egui::pos2(rect.left() + control::ROW_BAR_WIDTH, rect.bottom()),
+    )
+}
+
+/// Paint what a row says about itself under its content, and hand back the bar
+/// if it drew one.
+///
+/// Square: a fill and a bar, no corner, no outline.
+///
+/// | the row is | fill | bar |
+/// |---|---|---|
+/// | at rest | none | none |
+/// | under the pointer | `rows.hover_background` | none |
+/// | on the canvas | none, or the hover fill under the pointer | `text.secondary` |
+/// | picked | `rows.cursor_background` | `rows.cursor_bar`, the focus ink |
+///
+/// The two marks are two facts and stay two — a reader who has picked a column
+/// while looking at the dashboard is being told both. **A row that is both
+/// picked and on the canvas draws as picked**, because the picked row is where
+/// the keys act and the row would otherwise need a bar in two inks at one edge.
+fn paint_row_marks(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    marks: RowMarks,
+    mode: Mode,
+) -> Option<egui::Rect> {
+    let sem = semantic(mode.is_dark());
+    let bar = row_bar(rect);
+    if marks.picked {
+        painter.rect_filled(rect, 0.0, chrome::colour(sem.rows.cursor_background));
+        painter.rect_filled(bar, 0.0, chrome::colour(sem.rows.cursor_bar));
+        return Some(bar);
+    }
+    if marks.hovered {
+        painter.rect_filled(rect, 0.0, chrome::colour(sem.rows.hover_background));
+    }
+    marks.on_canvas.then(|| {
+        painter.rect_filled(bar, 0.0, chrome::colour(sem.text.secondary));
+        bar
+    })
+}
 
 /// The radius of a spine row's marker, in logical points.
 ///

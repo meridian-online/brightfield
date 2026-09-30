@@ -852,7 +852,8 @@ fn hover_probe(plot: &PlotHandle, layer: &HoverLayer, p: kurbo::Point) -> Option
 /// The frame is the workbench's own overlay treatment plus the shadow
 /// [`Elevation::Overlay`] declares — read off the design system rather than
 /// typed here, so a change to what an overlay looks like moves this with the
-/// rest of the chrome.
+/// rest of the chrome. Square and hard: a one-pixel rule in the default border
+/// ink, the corner the token names, and a shadow with no blur.
 fn hover_readout(ctx: &egui::Context, readout: &HoverReadout, mode: Mode) {
     let dark = mode.is_dark();
     let sem = semantic(dark);
@@ -861,6 +862,7 @@ fn hover_readout(ctx: &egui::Context, readout: &HoverReadout, mode: Mode) {
             spacing::SPACE_4 as i8,
             spacing::SPACE_3 as i8,
         ))
+        .stroke(egui::Stroke::new(1.0, chrome::colour(sem.borders.default_)))
         .corner_radius(radius::CONTROL);
     if let Some(shadow) = Elevation::Overlay.shadow(dark) {
         frame = frame.shadow(egui::epaint::Shadow {

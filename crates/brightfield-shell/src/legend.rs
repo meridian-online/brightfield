@@ -179,7 +179,7 @@ fn draw_block(painter: &egui::Painter, origin: egui::Pos2, legend: &LegendSpec, 
                     egui::pos2(origin.x, top),
                     egui::vec2(swatch, swatch),
                 );
-                painter.rect_filled(rect, 2.0, chart_ink(entry.colour));
+                painter.rect_filled(rect, 0.0, chart_ink(entry.colour));
                 let galley = painter.layout(entry.label.clone(), font.clone(), ink, LABEL_COLUMN);
                 painter.galley(
                     egui::pos2(
