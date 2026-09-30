@@ -8,7 +8,7 @@
 //! calendar port goes wrong. `d3_time_format_vectors/gen-vectors.mjs` generated it,
 //! and these tests hold the Rust port to it, string for string.
 
-use brightfield_spec::date_format::DateFormat;
+use brightfield_spec::date_format::{DateFormat, DIRECTIVES};
 
 #[path = "d3_time_format_vectors/table.rs"]
 mod table;
@@ -44,12 +44,12 @@ fn format_prints_what_d3_time_format_prints() {
     );
 }
 
-/// The table covers every directive this build reads, so a directive added to
-/// the port without a vector, or one the table forgot, is a failure here and
-/// not a silent gap.
+/// The table covers every directive this build reads, asked of the port's own
+/// list, so a directive added to the port without a vector, or one the table
+/// forgot, is a failure here and not a silent gap.
 #[test]
 fn the_table_holds_every_directive_the_port_reads() {
-    for directive in "aAbBcdefgGHIjLmMpqQsSuUVwWxXyYZ%".chars() {
+    for directive in DIRECTIVES.chars() {
         let spec = format!("%{directive}");
         assert!(
             table::DATE_VECTORS.iter().any(|(s, _, _)| *s == spec),

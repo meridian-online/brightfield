@@ -1040,8 +1040,8 @@ mod tests {
     }
 
     /// A band axis prints its categories and a time axis its seconds, whatever
-    /// number format the plot names: neither is a number axis, and a date
-    /// format has a reading of its own.
+    /// number format the plot names: neither is a number axis. (The plot is told
+    /// so: [`tick_format_crosses_axis`] names a number format on a time axis.)
     #[test]
     fn a_band_or_time_axis_ignores_a_number_format() {
         let band = Scale::Band {
@@ -1058,6 +1058,106 @@ mod tests {
             range_end: 600.0,
         };
         assert_eq!(labels_under(&time, Some("s")), labels_under(&time, None));
+    }
+
+    fn band(categories: &[&str]) -> Scale {
+        Scale::Band {
+            categories: categories.iter().map(|c| (*c).to_string()).collect(),
+            range_start: 40.0,
+            range_end: 600.0,
+            padding: 0.1,
+        }
+    }
+
+    fn date(spec: &str) -> AxisFormat {
+        AxisFormat::Date(DateFormat::parse(spec).expect("a date format"))
+    }
+
+    /// A date format prints a time axis's instants and a band of days, in UTC, at
+    /// the ticks the axis already had; a band of names, or of days with one name
+    /// among them, prints its categories as it did.
+    #[test]
+    fn a_date_format_prints_a_time_axis_and_a_band_of_days_and_leaves_names_alone() {
+        // 2024-03-01T14:00:00Z to 14:10:00Z, in microseconds.
+        let start = 1_709_301_600_000_000_i64;
+        let time = Scale::Time {
+            domain_min_us: start,
+            domain_max_us: start + 600_000_000,
+            range_start: 40.0,
+            range_end: 600.0,
+        };
+        let format = date("%H:%M");
+        let drawn = compute_ticks_formatted(&time, 5, Some(&format));
+        let bare = compute_ticks_formatted(&time, 5, None);
+        assert_eq!(
+            drawn.iter().map(|t| t.position).collect::<Vec<_>>(),
+            bare.iter().map(|t| t.position).collect::<Vec<_>>(),
+            "a format changes the text and never the place"
+        );
+        assert!(
+            drawn.iter().any(|t| t.label == "14:05"),
+            "{:?}",
+            drawn.iter().map(|t| &t.label).collect::<Vec<_>>()
+        );
+
+        let days = band(&["2024-03-01", "2024-04-01"]);
+        let month = date("%b");
+        let labels = |scale: &Scale, format: Option<&AxisFormat>| -> Vec<String> {
+            compute_ticks_formatted(scale, 5, format)
+                .into_iter()
+                .map(|t| t.label)
+                .collect()
+        };
+        assert_eq!(labels(&days, Some(&month)), ["Mar", "Apr"]);
+        assert_eq!(labels(&days, None), ["2024-03-01", "2024-04-01"]);
+
+        let names = band(&["north", "south"]);
+        assert_eq!(labels(&names, Some(&month)), ["north", "south"]);
+        let mixed = band(&["2024-03-01", "south"]);
+        assert_eq!(
+            labels(&mixed, Some(&month)),
+            ["2024-03-01", "south"],
+            "one name among the days makes it a band of names, not a half-formatted one"
+        );
+    }
+
+    /// The judge the axis draws through and the composition warns through: a
+    /// number format crosses a date axis and a date format crosses a number
+    /// axis, and nothing else crosses: not a format on its own kind of axis, not
+    /// an axis of names, not a colour ramp.
+    #[test]
+    fn a_format_crosses_an_axis_of_the_other_kind_and_no_other() {
+        let number = AxisFormat::Number(NumberFormat::parse("s").expect("number"));
+        let month = date("%b");
+        let time = Scale::Time {
+            domain_min_us: 0,
+            domain_max_us: 1_000_000,
+            range_start: 0.0,
+            range_end: 1.0,
+        };
+        let days = band(&["2024-03-01"]);
+        let names = band(&["a"]);
+        let linear = Scale::Linear {
+            domain_min: 0.0,
+            domain_max: 1.0,
+            range_start: 0.0,
+            range_end: 1.0,
+        };
+
+        assert!(tick_format_crosses_axis(&time, &number));
+        assert!(tick_format_crosses_axis(&days, &number));
+        assert!(tick_format_crosses_axis(&linear, &month));
+
+        assert!(!tick_format_crosses_axis(&time, &month));
+        assert!(!tick_format_crosses_axis(&days, &month));
+        assert!(!tick_format_crosses_axis(&linear, &number));
+        assert!(!tick_format_crosses_axis(&names, &number));
+        assert!(!tick_format_crosses_axis(&names, &month));
+
+        assert_eq!(axis_kind(&time), Some(AxisKind::Date));
+        assert_eq!(axis_kind(&days), Some(AxisKind::Date));
+        assert_eq!(axis_kind(&names), Some(AxisKind::Category));
+        assert_eq!(axis_kind(&linear), Some(AxisKind::Number));
     }
 
     #[test]

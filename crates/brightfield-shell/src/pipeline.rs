@@ -2302,7 +2302,8 @@ fn compose_from_results(
             .unwrap_or_default();
 
         // What this plot's spec asked each positional axis's tick TEXT to
-        // follow — `xTickFormat`/`yTickFormat`, when it wrote a number format.
+        // follow — `xTickFormat`/`yTickFormat`, when it wrote a number or a date
+        // format.
         // A plot that asks for neither draws the text its axes drew before a
         // format could be asked for.
         let tick_formats = plot_nodes

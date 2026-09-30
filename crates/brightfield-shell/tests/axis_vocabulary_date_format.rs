@@ -361,9 +361,9 @@ fn a_format_of_the_other_kind_is_named_and_the_axis_draws_its_default_text() {
     assert!(said(&numbers("xTickFormat: s")).is_empty());
 }
 
-/// What the banner says survives a repaint once and is not said twice: a
-/// re-present rebuilds the composition, and the load's diagnostics are attached
-/// to each, so a line found by the composition must neither be lost nor doubled.
+/// A re-present rebuilds the composition, and the load's diagnostics are
+/// attached to each: a line the composition found must survive the attachment,
+/// and be said once, on the first paint and on every repaint after it.
 #[test]
 fn a_repaint_says_a_crossed_format_once() {
     let mut live = LiveDashboard::load_str(&DAYS.replace("ATTRS", "xTickFormat: s"), None)

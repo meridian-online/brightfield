@@ -53,8 +53,8 @@ const MONTHS: [&str; 12] = [
 ];
 
 /// The directives d3-time-format reads. Any other character after a `%` is one
-/// this build refuses.
-const DIRECTIVES: &str = "aAbBcdefgGHIjLmMpqQsSuUVwWxXyYZ%";
+/// this build refuses. A test holds each to a vector printed by d3-time-format.
+pub const DIRECTIVES: &str = "aAbBcdefgGHIjLmMpqQsSuUVwWxXyYZ%";
 
 /// How a directive's number is padded: the character it fills with, or none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
