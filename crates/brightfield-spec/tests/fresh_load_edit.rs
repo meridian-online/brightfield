@@ -316,3 +316,227 @@ fn a_plot_has_a_colour_legend_when_its_items_or_a_standalone_legend_hold_one() {
         "a path that names no plot reads as covered"
     );
 }
+
+fn remove_legend(plot: &str) -> ChartEdit {
+    ChartEdit::RemoveColourLegend {
+        plot: ComponentPath(plot.to_string()),
+    }
+}
+
+fn parse(source: &str) -> Spec {
+    parse_spec(source, Format::Yaml)
+        .unwrap_or_else(|e| panic!("the fixture parses: {e}"))
+        .spec
+}
+
+/// A plot that holds a colour legend between its two marks, with an interactor
+/// after them: the shape where taking the item out would move a neighbour if
+/// the edit took out the wrong index or rebuilt the list.
+const LEGEND_BETWEEN: &str = "\
+params:
+  brush: { select: crossfilter }
+data:
+  t: SELECT 1 AS a, 2 AS b
+plot:
+  - mark: dot
+    data: { from: t }
+    x: a
+    fill: b
+  - legend: color
+  - mark: line
+    data: { from: t }
+    x: a
+    y: b
+  - select: intervalXY
+    as: $brush
+width: 300
+";
+
+/// **The removal leaves the plot's items without a colour legend, and each mark
+/// and each other item is where it was.** The expected spec is the one it
+/// started from with that one item taken out by index, so a mark or the
+/// interactor that moved, or a second item that went, is a difference.
+#[test]
+fn a_colour_legend_removal_takes_the_item_out_and_leaves_each_other_item_where_it_was() {
+    let before = parse(LEGEND_BETWEEN);
+    assert_eq!(legends(&before, "root"), [LegendChannel::Color]);
+    let mut spec = before.clone();
+
+    apply_for_fresh_load(&mut spec, &remove_legend("root")).expect("the plot is there");
+
+    assert!(
+        legends(&spec, "root").is_empty(),
+        "the plot still holds a legend: {:?}",
+        legends(&spec, "root")
+    );
+    let mut expected = before.clone();
+    brightfield_spec::edit::plot_at_path_mut(&mut expected, "root")
+        .expect("the root plot")
+        .items
+        .remove(1);
+    assert_eq!(spec, expected, "the edit changed more than the one item");
+    let items = &plot_at_path(&spec, "root").expect("the root plot").items;
+    assert_eq!(
+        items.len(),
+        3,
+        "the plot should keep its two marks and its interactor"
+    );
+}
+
+/// **The reload-from-disk path takes the item out too**, and puts the spec in
+/// the same state: an inline legend is not chrome the reload gate compares.
+#[test]
+fn the_reload_from_disk_path_takes_a_colour_legend_out_as_well() {
+    let before = parse(LEGEND_BETWEEN);
+    let mut fresh = before.clone();
+    let mut reload = before.clone();
+
+    apply_for_fresh_load(&mut fresh, &remove_legend("root")).expect("the plot is there");
+    classify_edit(&reload, &remove_legend("root")).expect("the reload gate has no objection");
+    apply(&mut reload, &remove_legend("root")).expect("the plot is there");
+
+    assert_eq!(reload, fresh, "the two paths disagree on the removal");
+    assert!(legends(&reload, "root").is_empty());
+}
+
+/// **A plot that holds no colour legend is left equal.** The hero map has
+/// three items and none of them a legend, so an edit that took the last item
+/// or any one regardless of what it is would change it.
+#[test]
+fn a_colour_legend_removal_on_a_plot_that_holds_none_changes_no_part_of_the_spec() {
+    let before = hero();
+    let mut spec = before.clone();
+
+    apply_for_fresh_load(&mut spec, &remove_legend("root")).expect("the plot is there");
+
+    assert_eq!(
+        spec, before,
+        "a removal with nothing to take out changed the spec"
+    );
+}
+
+/// **It takes out what the append puts in, and no more.** A legend for another
+/// channel among the plot's items stays, and so does a standalone colour legend
+/// that names the plot with `for:`: it is not an item of the plot, and the
+/// plot is still covered by it.
+#[test]
+fn a_colour_legend_removal_leaves_another_channels_legend_and_one_outside_the_plot() {
+    let mut spec = parse(
+        "\
+data:
+  t: SELECT 1 AS a, 2 AS b
+vconcat:
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        fill: b
+      - legend: opacity
+      - legend: color
+    name: tile
+  - legend: color
+    for: tile
+",
+    );
+    let plot = "root/vconcat[0]";
+    assert_eq!(
+        legends(&spec, plot),
+        [LegendChannel::Opacity, LegendChannel::Color]
+    );
+
+    apply_for_fresh_load(&mut spec, &remove_legend(plot)).expect("the plot is there");
+
+    assert_eq!(
+        legends(&spec, plot),
+        [LegendChannel::Opacity],
+        "the removal took out a legend that is not the plot's colour legend"
+    );
+    assert!(
+        colour_legend_covers(&spec, plot),
+        "the standalone colour legend that names the plot went"
+    );
+}
+
+/// **A plot's several colour legend items all go**, so the plot holds none
+/// after the edit and the edit to put one back writes a single item.
+#[test]
+fn a_colour_legend_removal_takes_every_colour_legend_item_the_plot_holds() {
+    let mut spec = parse(
+        "data:\n  t: SELECT 1 AS a\nplot:\n  - legend: color\n  - mark: dot\n    data: { from: t }\n    x: a\n  - legend: color\n",
+    );
+    assert_eq!(
+        legends(&spec, "root"),
+        [LegendChannel::Color, LegendChannel::Color]
+    );
+
+    apply_for_fresh_load(&mut spec, &remove_legend("root")).expect("the plot is there");
+
+    assert!(
+        legends(&spec, "root").is_empty(),
+        "a colour legend item stayed"
+    );
+    assert_eq!(
+        plot_at_path(&spec, "root").expect("the plot").items.len(),
+        1
+    );
+}
+
+/// **Put back with the edit to right, the item is the plot's last**, after the
+/// marks and the interactor, wherever it stood before it was taken out, and
+/// nothing else about the spec changed from the plot without it.
+#[test]
+fn a_colour_legend_taken_out_and_put_back_is_the_plots_last_item() {
+    let before = parse(LEGEND_BETWEEN);
+    let mut spec = before.clone();
+
+    apply_for_fresh_load(&mut spec, &remove_legend("root")).expect("the plot is there");
+    let without = spec.clone();
+    apply_for_fresh_load(&mut spec, &add_legend("root")).expect("the plot is there");
+
+    let items = &plot_at_path(&spec, "root").expect("the root plot").items;
+    assert!(
+        matches!(items.last(), Some(Component::Legend(l)) if l.channel == LegendChannel::Color),
+        "the last item is {:?}, not the colour legend",
+        items.last()
+    );
+    let mut taken_off = spec.clone();
+    brightfield_spec::edit::plot_at_path_mut(&mut taken_off, "root")
+        .expect("the root plot")
+        .items
+        .pop();
+    assert_eq!(
+        taken_off, without,
+        "putting the item back changed more than the item"
+    );
+
+    // On the plot the legend already closes, the two edits give the spec back.
+    let mut closing = hero();
+    apply_for_fresh_load(&mut closing, &add_legend("root")).expect("the plot is there");
+    let with = closing.clone();
+    apply_for_fresh_load(&mut closing, &remove_legend("root")).expect("the plot is there");
+    assert_eq!(closing, hero(), "the removal did not undo the append");
+    apply_for_fresh_load(&mut closing, &add_legend("root")).expect("the plot is there");
+    assert_eq!(
+        closing, with,
+        "the append after a removal is not the first append"
+    );
+}
+
+/// **A removal is a count-stable edit that names no mark**, and a path that
+/// names no plot is refused with the spec equal, as for every other kind.
+#[test]
+fn a_colour_legend_removal_is_count_stable_names_no_mark_and_needs_a_plot() {
+    let edit = remove_legend("root");
+    assert!(!edit.is_count_changing(), "a legend is not a mark");
+    assert_eq!(edit.kind_name(), "remove-colour-legend");
+    assert_eq!(edit.summary(), "remove-colour-legend");
+    assert_eq!(edit.plot_path(), "root");
+
+    let mut spec = parse(LEGEND_BETWEEN);
+    let before = spec.clone();
+    assert_eq!(
+        apply_for_fresh_load(&mut spec, &remove_legend("root/vconcat[3]")),
+        Err(RefuseReason::PlotNotFound)
+    );
+    assert_eq!(spec, before, "the refused removal changed the spec");
+}
