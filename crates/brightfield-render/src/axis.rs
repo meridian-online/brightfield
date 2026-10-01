@@ -437,6 +437,76 @@ fn nice_step(span: f64, target_count: usize) -> f64 {
     nice * magnitude
 }
 
+/// The most times [`nice_linear_domain`] widens a domain before it stops.
+/// A domain settles when widening it no longer changes the step; the cap bounds
+/// the loop if a pair of ends never does, and is the cap d3's `scale.nice` puts
+/// on its own.
+const MAX_NICE_PASSES: usize = 10;
+
+/// Round `x` outward to a multiple of `step`: up when `up`, else down.
+///
+/// A step is 1, 2 or 5 times a power of ten, so one below 1 is the reciprocal of
+/// a whole number and its multiples are divided out of an integer rather than
+/// built by repeated addition. A value already on a multiple is left there: the
+/// quotient can land a few ulps off the whole number it should be, and rounding
+/// that outward would move the end a whole step.
+fn snap_to_step(x: f64, step: f64, up: bool) -> f64 {
+    let inverse = (step < 1.0).then(|| (1.0 / step).round());
+    let scaled = match inverse {
+        Some(inverse) => x * inverse,
+        None => x / step,
+    };
+    let nearest = scaled.round();
+    let whole = if (scaled - nearest).abs() <= 1e-9 * nearest.abs().max(1.0) {
+        nearest
+    } else if up {
+        scaled.ceil()
+    } else {
+        scaled.floor()
+    };
+    // `+ 0.0` turns a negative zero into zero, so an axis that starts at 0 does
+    // not carry a sign.
+    let snapped = match inverse {
+        Some(inverse) => whole / inverse,
+        None => whole * step,
+    };
+    snapped + 0.0
+}
+
+/// The linear domain `[min, max]` widened outward to round ends, as a plot's
+/// `xNice` / `yNice` asks.
+///
+/// The ends are multiples of the step [`compute_linear_ticks`] draws its ticks
+/// at for `target_count`, so each end of the axis is a tick the analyst can read
+/// off: the top one is a number they can say aloud. Observable Plot rounds to
+/// d3's default of ten ticks whatever the axis draws, and that step can differ
+/// from the one the axis ticks at, which would leave an end between two ticks.
+///
+/// Widened until the step settles, so the result is a fixed point: asking again
+/// of a domain this returned gives it back. That is what lets a domain a plot
+/// pinned after rounding be rounded again on every later composition without
+/// moving.
+///
+/// A span with no width, a count of zero and an end that is not a finite number
+/// are returned as they came, for the reason [`compute_linear_ticks`] draws no
+/// ticks on them.
+pub(crate) fn nice_linear_domain(min: f64, max: f64, target_count: usize) -> (f64, f64) {
+    if !min.is_finite() || !max.is_finite() || (max - min).abs() < f64::EPSILON || target_count == 0
+    {
+        return (min, max);
+    }
+    let (mut lo, mut hi) = (min, max);
+    for _ in 0..MAX_NICE_PASSES {
+        let step = nice_step(hi - lo, target_count);
+        let (next_lo, next_hi) = (snap_to_step(lo, step, false), snap_to_step(hi, step, true));
+        if next_lo == lo && next_hi == hi {
+            break;
+        }
+        (lo, hi) = (next_lo, next_hi);
+    }
+    (lo, hi)
+}
+
 /// Format a number for tick labels.
 pub(crate) fn format_number(value: f64) -> String {
     if (value - value.round()).abs() < 1e-9 {

@@ -2,13 +2,14 @@
 //! into a single vello::Scene.
 
 use arrow::record_batch::RecordBatch;
-use brightfield_spec::layout::{GridLines, TickCounts, TickFormats};
+use brightfield_spec::layout::{AxisEnds, GridLines, TickCounts, TickFormats};
 use kurbo::{Affine, BezPath, Circle, Rect, RoundedRect, Stroke};
 use peniko::Fill;
 use vello::Scene;
 
 use crate::axis::{
-    compute_ticks, compute_ticks_formatted, render_plot_title, render_x_axis, render_y_axis,
+    compute_ticks, compute_ticks_formatted, nice_linear_domain, render_plot_title, render_x_axis,
+    render_y_axis,
 };
 use crate::channel::{Channel, ChannelMap};
 use crate::grid::{render_x_grid, render_y_grid};
@@ -534,6 +535,7 @@ pub fn build_multi_mark_scene_with_domains(
         TickCounts::default(),
         TickFormats::default(),
         GridLines::default(),
+        AxisEnds::default(),
         ink,
     )
 }
@@ -541,12 +543,17 @@ pub fn build_multi_mark_scene_with_domains(
 /// [`build_multi_mark_scene_with_domains`] with the positional domains this
 /// plot's spec asked to hold still — see [`PinnedDomains`] — the target
 /// tick count and tick format each positional axis asked for — see
-/// [`TickCounts`] and [`TickFormats`] — and whether each axis draws its
-/// gridlines — see [`GridLines`].
+/// [`TickCounts`] and [`TickFormats`] — whether each axis draws its
+/// gridlines — see [`GridLines`] — and whether each axis is carried to zero or
+/// to round ends — see [`AxisEnds`].
 ///
 /// The pin lands AFTER inference and after [`apply_unsampled_domains`], so the
 /// author's instruction outranks both what the drawn rows imply and what a
-/// sample restoration put back. It lands BEFORE nothing: the reader's own
+/// sample restoration put back. The axis ends land after the pin, in Observable
+/// Plot's order: zero first, then round ends, on the domain it holds whether the
+/// scale inferred it or the spec fixed it. A pin is captured from the scales
+/// this function returns, so what `Fixed` holds still is the domain with its
+/// ends already carried, and asking for the same ends of it again moves nothing. It lands BEFORE nothing: the reader's own
 /// navigation gesture is applied inside the inference, and an axis the reader
 /// has navigated is dropped from the pin here rather than overwritten, so a
 /// pinned plot pans and zooms like an unpinned one. A filter is the dashboard
@@ -562,10 +569,11 @@ pub fn build_multi_mark_scene_with_domains(
 /// parameter existed — see [`brightfield_spec::layout::DEFAULT_TICK_COUNT`] —
 /// a default `tick_formats` draws the text they drew, and a default `grid`
 /// draws the gridlines on both axes, as they drew.
-// Nine, because the static composition takes nine independent inputs: the
+// Ten, because the static composition takes ten independent inputs: the
 // entries, whether the legend is drawn inline, the resolved titles, the two
 // ways a domain is held still (unsampled and pinned), the tick count and tick
-// format the axes asked for, whether each axis draws gridlines, and the ink.
+// format the axes asked for, whether each axis draws gridlines, where each axis
+// starts and ends, and the ink.
 // Each is resolved elsewhere and read here once, so a struct would be a name
 // for the argument list rather than for a thing.
 #[allow(clippy::too_many_arguments)]
@@ -578,6 +586,7 @@ pub fn build_multi_mark_scene_pinned(
     tick_counts: TickCounts,
     tick_formats: TickFormats,
     grid: GridLines,
+    axis_ends: AxisEnds,
     ink: ChartInk,
 ) -> (Scene, ScaleSet) {
     if entries.is_empty() {
@@ -589,6 +598,7 @@ pub fn build_multi_mark_scene_pinned(
         &domains_yielding_to_navigation(domains, entries[0]),
     );
     apply_pinned_domains(&mut scales, &pins_yielding_to_navigation(pins, entries[0]));
+    apply_axis_ends(&mut scales, axis_ends, tick_counts, entries[0]);
     let scene = draw_multi_mark_scene(
         entries,
         draw_inline_legend,
@@ -599,6 +609,64 @@ pub fn build_multi_mark_scene_pinned(
         &scales,
     );
     (scene, scales)
+}
+
+/// Carry each linear positional axis to zero, then to round ends, as the plot's
+/// spec asked — `xZero` and `xNice`, `yZero` and `yNice`.
+///
+/// `zero` widens a domain that stops short of zero to reach it, and leaves one
+/// that holds zero as it is: a request cannot cut an axis off, which is why a
+/// bar's value axis, already carried to zero by `zero_baseline_channel`, starts
+/// at zero with `yZero: false` as it does with the key absent. `nice` widens each
+/// end to the step the axis ticks at for this plot's target count. Zero goes
+/// first, as in Observable Plot, so a domain carried to zero is rounded from zero.
+///
+/// An axis the reader has navigated is left where the reader put it, for the
+/// reason [`pins_yielding_to_navigation`] drops a pin: rounding a zoomed frame
+/// outward would undo the zoom. Log, symlog, time and band scales are left as
+/// they are; their ends are not a linear step's to round.
+fn apply_axis_ends(
+    scales: &mut ScaleSet,
+    ends: AxisEnds,
+    tick_counts: TickCounts,
+    entry: &ChartData<'_>,
+) {
+    let navigated = entry.view_extent;
+    for (channel, end, target, reader_moved) in [
+        (
+            Channel::X,
+            ends.x,
+            tick_counts.x_target(),
+            navigated.is_some_and(|extent| extent.x.is_some()),
+        ),
+        (
+            Channel::Y,
+            ends.y,
+            tick_counts.y_target(),
+            navigated.is_some_and(|extent| extent.y.is_some()),
+        ),
+    ] {
+        if end.is_empty() || reader_moved {
+            continue;
+        }
+        let Some(scale) = scales.get(channel) else {
+            continue;
+        };
+        if !matches!(scale, Scale::Linear { .. }) {
+            continue;
+        }
+        let mut carried = scale.clone();
+        if end.zero {
+            carried = extend_domain_to_zero(&carried);
+        }
+        if end.nice {
+            if let (Some(min), Some(max)) = (carried.domain_min(), carried.domain_max()) {
+                let (lo, hi) = nice_linear_domain(min, max, target);
+                carried = override_scale_domain(&carried, lo, hi);
+            }
+        }
+        scales.insert(channel, carried);
+    }
 }
 
 /// `domains` with every positional axis the reader has navigated dropped.
@@ -1066,11 +1134,15 @@ fn draw_multi_mark_scene(
 ///
 /// Draws at [`brightfield_spec::layout::DEFAULT_TICK_COUNT`], in the axis's own
 /// tick text, with gridlines on both axes — like [`PinnedDomains`], a plot's
-/// `xTicks`/`yTicks`, `xTickFormat`/`yTickFormat` and `grid`/`xGrid`/`yGrid`
-/// requests reach the static composition
+/// `xTicks`/`yTicks`, `xTickFormat`/`yTickFormat`, `grid`/`xGrid`/`yGrid` and
+/// `xZero`/`xNice`/`yZero`/`yNice` requests reach the static composition
 /// [`build_multi_mark_scene_pinned`] draws
 /// (`crates/brightfield-shell/src/pipeline.rs`), not this live rebuild path;
-/// the caller does not carry the request to hand in.
+/// the caller does not carry the request to hand in. The launch set it folds
+/// against is the live coordinator's own, inferred by
+/// [`build_multi_mark_scene`] without the request
+/// (`crates/brightfield-ui/src/crossfilter.rs`), so after a gesture an axis that
+/// asked for zero or round ends is drawn at the data's own.
 pub fn build_multi_mark_scene_anchored(
     entries: &[&ChartData<'_>],
     draw_inline_legend: bool,
@@ -2329,6 +2401,7 @@ mod tests {
                 tick_counts,
                 TickFormats::default(),
                 GridLines::default(),
+                AxisEnds::default(),
                 ChartInk::LIGHT,
             );
             for channel in [Channel::X, Channel::Y] {
@@ -2442,6 +2515,7 @@ mod tests {
                 counts,
                 TickFormats::default(),
                 grid,
+                AxisEnds::default(),
                 ChartInk::LIGHT,
             )
         };

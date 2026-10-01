@@ -50,9 +50,9 @@ use brightfield_spec::analysis::{
 };
 use brightfield_spec::ast::{Component, MarkData, ParamNode, PlotNode, SpaceNode, SpecValue};
 use brightfield_spec::layout::{
-    collect_plot_nodes, placed_plots, resolve_fixed_domains, resolve_grid_lines,
-    resolve_plot_insets, resolve_plot_margins, resolve_plot_stack_offset, resolve_tick_counts,
-    resolve_tick_formats, AxisFormat, Rect, StackOffset, TickFormats,
+    collect_plot_nodes, placed_plots, resolve_axis_ends, resolve_fixed_domains,
+    resolve_grid_lines, resolve_plot_insets, resolve_plot_margins, resolve_plot_stack_offset,
+    resolve_tick_counts, resolve_tick_formats, AxisFormat, Rect, StackOffset, TickFormats,
 };
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, ParseWarning, Spec};
@@ -2321,6 +2321,16 @@ fn compose_from_results(
             .map(|(_, node)| resolve_grid_lines(node))
             .unwrap_or_default();
 
+        // Where this plot's spec asked each positional axis to start and end —
+        // `xZero`, `xNice`, `yZero`, `yNice`. A plot that asks for none carries
+        // its axes no further than its data and its marks take them, as before
+        // these keys were read.
+        let axis_ends = plot_nodes
+            .iter()
+            .find(|(p, _)| *p == plot.path)
+            .map(|(_, node)| resolve_axis_ends(node))
+            .unwrap_or_default();
+
         let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
         // `draw_inline_legend = false`: the legend is NOT baked into the data
         // scene. The shell draws it as a native margin panel outside the plot
@@ -2336,6 +2346,7 @@ fn compose_from_results(
             tick_counts,
             tick_formats.clone(),
             grid,
+            axis_ends,
             ink,
         );
         drop(refs);
