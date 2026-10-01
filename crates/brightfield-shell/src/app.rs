@@ -1264,7 +1264,7 @@ impl ChartDoc {
     /// write replaces is recorded in the chart file's own local history before
     /// the write, and the text written after it
     /// ([`ChartVersions`](brightfield_protocol::ChartVersions)). The history
-    /// never holds the Save back: a store that cannot be opened leaves the chart
+    /// does not hold the Save back: a store that cannot be opened leaves the chart
     /// written and comes back as the `Ok` value, for the window to say.
     ///
     /// # Errors

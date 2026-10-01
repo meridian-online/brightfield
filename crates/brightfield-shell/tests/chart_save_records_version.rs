@@ -105,8 +105,7 @@ impl Session {
         let boot = Boot::data_file(data.to_str().expect("utf-8 path"))
             .unwrap_or_else(|e| panic!("open {}: {e}", data.display()));
         let mut session = Self {
-            app: MeridianApp::headless(boot, Mode::Light)
-                .keeping_history(Some(store(&root.0))),
+            app: MeridianApp::headless(boot, Mode::Light).keeping_history(Some(store(&root.0))),
             ctx: egui::Context::default(),
             screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
             folder,
@@ -404,7 +403,10 @@ fn the_protocols_own_history_lists_what_it_listed_before_two_saves() {
         .history()
         .entries(&session.folder)
         .expect("the Protocol's history lists");
-    assert_eq!(after, before, "the two Saves changed the Protocol's history");
+    assert_eq!(
+        after, before,
+        "the two Saves changed the Protocol's history"
+    );
 }
 
 // ---------------------------------------------------------------------------

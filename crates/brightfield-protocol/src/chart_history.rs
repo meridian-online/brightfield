@@ -19,7 +19,7 @@
 //!
 //! **Where the store is.** [`HistoryStore::Arcform`] is arcform's conventional
 //! root, `$ARCFORM_HISTORY_DIR` when set and `~/.arcform/history` otherwise,
-//! and never inside the Protocol's folder. [`HistoryStore::At`] names a root,
+//! and outside the Protocol's folder. [`HistoryStore::At`] names a root,
 //! which is how a test keeps its entries out of the home directory.
 //!
 //! # The debounce, and why a Save can be recorded as a checkpoint
@@ -33,8 +33,8 @@
 //! merge off for exactly this reason, and its file-keyed calls offer no such
 //! switch. So when the replaced text is held only by a save the next save would
 //! merge over, [`ChartVersions::finish`] records the written text as a
-//! checkpoint, which never merges. Every Save's text is then a version; only
-//! the kind of the entry differs in that case.
+//! checkpoint, which does not merge. A Save's text is then a version in that case
+//! too, under a different kind.
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -97,8 +97,9 @@ impl HistoryStore {
     /// folder.
     pub fn open(&self) -> Result<LocalHistory, NotRecorded> {
         let history = match self {
-            Self::Arcform => LocalHistory::open_default()
-                .map_err(|e| NotRecorded::new(format!("the history folder cannot be opened: {e}")))?,
+            Self::Arcform => LocalHistory::open_default().map_err(|e| {
+                NotRecorded::new(format!("the history folder cannot be opened: {e}"))
+            })?,
             Self::At(root) => LocalHistory::at_root(root),
         };
         let way = HistoryWay::new(WAY)
@@ -129,10 +130,10 @@ pub struct ChartVersions {
 
 impl ChartVersions {
     /// Record `replaced`, the text on disk the coming write replaces, as a
-    /// checkpoint in `file`'s own history. `None` is a write that replaces
-    /// nothing, the first Save of a chart file.
+    /// checkpoint in `file`'s own history. `None` is a write that replaces no
+    /// text, the first Save of a chart file.
     ///
-    /// Call it before the write. It never fails: a store that cannot be opened
+    /// Call it before the write. It returns no error: a store that cannot be opened
     /// or an entry that cannot be written is held and answered by
     /// [`Self::finish`].
     #[must_use]

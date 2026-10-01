@@ -2108,8 +2108,7 @@ pub struct MeridianApp {
     runner: Option<crate::run::Runner>,
     /// Where each Save of the chart records a version. `None` until
     /// [`MeridianApp::keeping_history`] gives one, so a window built without it,
-    /// as a suite builds one, writes nothing outside the folder it saves into —
-    /// see [`brightfield_protocol::HistoryStore`].
+    /// as a suite builds one, records no version — see [`brightfield_protocol::HistoryStore`].
     history: Option<brightfield_protocol::HistoryStore>,
     /// The files the **open document's** remote sources were fetched into.
     ///
@@ -3657,9 +3656,9 @@ impl MeridianApp {
     ///
     /// `main` passes [`brightfield_protocol::HistoryStore::Arcform`], arcform's
     /// own store; a suite passes a root of its own, so no test writes under the
-    /// home directory. A window given `None` records nothing and says nothing
-    /// about it: the Save that cannot record is the one given a store it cannot
-    /// open, which says so — see [`Self::save_protocol`].
+    /// home directory. A window given `None` records no version and raises no
+    /// banner for it: the Save that says so is the one given a store it cannot
+    /// open — see [`Self::save_protocol`].
     #[must_use]
     pub fn keeping_history(mut self, history: Option<brightfield_protocol::HistoryStore>) -> Self {
         self.history = history;
