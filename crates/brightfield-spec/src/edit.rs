@@ -37,19 +37,20 @@ const INHERITED_CHANNELS: &[&str] = &["x", "y", "x1", "x2", "y1", "y2"];
 /// A typed structural mutation applied to the working [`Spec`] by [`apply`] —
 /// the framework-free AST-mutation API the keyboard grammar named as missing.
 ///
-/// Seven variants (the reserved undo verb is an [`UndoStack`] pop, not an
-/// edit). Each edit is TYPED (never an exec-string, per the VisiData warning),
-/// walks the live AST via a plot [`ComponentPath`], and is bracketed by a
-/// whole-`Spec` clone snapshot so undo is total and near-free. Four target the
-/// focused plot's primary mark; [`ChartEdit::SetPlotAttribute`] and
-/// [`ChartEdit::RemovePlotAttribute`] target the plot's own attribute map
-/// instead, and [`ChartEdit::AddColourLegend`] appends a legend to its list of
-/// items. Five variants are count-STABLE ([`ChartEdit::ChangeMarkType`],
-/// [`ChartEdit::SetChannel`], [`ChartEdit::SetPlotAttribute`],
-/// [`ChartEdit::RemovePlotAttribute`], [`ChartEdit::AddColourLegend`]) and two
-/// are count-CHANGING ([`ChartEdit::AddMark`], [`ChartEdit::RemoveMark`]); the
-/// transient apply treats them differently (the coordinator flat-index
-/// rebuild). The count is the plot's marks: a legend is not one.
+/// The reserved undo verb is an [`UndoStack`] pop, not an edit. Each edit is
+/// TYPED (never an exec-string, per the VisiData warning), walks the live AST
+/// via a plot [`ComponentPath`], and is bracketed by a whole-`Spec` clone
+/// snapshot so undo is total and near-free. [`ChartEdit::ChangeMarkType`],
+/// [`ChartEdit::AddMark`], [`ChartEdit::SetChannel`] and
+/// [`ChartEdit::RemoveMark`] target the focused plot's primary mark;
+/// [`ChartEdit::SetPlotAttribute`] and [`ChartEdit::RemovePlotAttribute`]
+/// target the plot's own attribute map instead, and
+/// [`ChartEdit::AddColourLegend`] and [`ChartEdit::RemoveColourLegend`] put a
+/// legend into the plot's list of items and take it out. [`ChartEdit::AddMark`]
+/// and [`ChartEdit::RemoveMark`] are count-CHANGING and every other variant is
+/// count-STABLE; the transient apply treats the two groups differently (the
+/// coordinator flat-index rebuild). The count is the plot's marks: a legend is
+/// not one.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChartEdit {
     /// Retype the focused plot's primary mark (`dot` -> `bar`). Count-stable.
@@ -148,6 +149,21 @@ pub enum ChartEdit {
         /// Plot-node path of the focused plot.
         plot: ComponentPath,
     },
+    /// Take the colour legend out of the focused plot's items, so the plot's
+    /// picture takes the room it drew. Count-stable, and like
+    /// [`ChartEdit::AddColourLegend`] it targets no mark: each mark and each
+    /// other item stays where it was.
+    ///
+    /// Every item of the plot that is a colour legend goes, so the plot holds
+    /// none after the edit. A plot that holds none is left equal. A legend for
+    /// another channel is not a colour legend and stays, and a colour legend
+    /// outside the plot that names it with `for:` is not an item of the plot
+    /// and stays too: the edit takes out what [`ChartEdit::AddColourLegend`]
+    /// puts in, and no more.
+    RemoveColourLegend {
+        /// Plot-node path of the focused plot.
+        plot: ComponentPath,
+    },
 }
 
 impl ChartEdit {
@@ -161,7 +177,8 @@ impl ChartEdit {
             | ChartEdit::RemoveMark { plot, .. }
             | ChartEdit::SetPlotAttribute { plot, .. }
             | ChartEdit::RemovePlotAttribute { plot, .. }
-            | ChartEdit::AddColourLegend { plot } => plot.0.as_str(),
+            | ChartEdit::AddColourLegend { plot }
+            | ChartEdit::RemoveColourLegend { plot } => plot.0.as_str(),
         }
     }
 
@@ -178,6 +195,7 @@ impl ChartEdit {
             ChartEdit::SetPlotAttribute { .. } => "set-plot-attribute",
             ChartEdit::RemovePlotAttribute { .. } => "remove-plot-attribute",
             ChartEdit::AddColourLegend { .. } => "add-colour-legend",
+            ChartEdit::RemoveColourLegend { .. } => "remove-colour-legend",
         }
     }
 
@@ -205,7 +223,8 @@ impl ChartEdit {
             ChartEdit::AddMark { .. }
             | ChartEdit::SetPlotAttribute { .. }
             | ChartEdit::RemovePlotAttribute { .. }
-            | ChartEdit::AddColourLegend { .. } => 0,
+            | ChartEdit::AddColourLegend { .. }
+            | ChartEdit::RemoveColourLegend { .. } => 0,
         }
     }
 
@@ -224,7 +243,9 @@ impl ChartEdit {
             } => {
                 format!("{kind}: {channel} -> {column}")
             }
-            ChartEdit::RemoveMark { .. } | ChartEdit::AddColourLegend { .. } => kind.to_string(),
+            ChartEdit::RemoveMark { .. }
+            | ChartEdit::AddColourLegend { .. }
+            | ChartEdit::RemoveColourLegend { .. } => kind.to_string(),
             ChartEdit::SetPlotAttribute { key, value, .. } => match value {
                 SpecValue::String(s) => format!("{kind}: {key} -> {s}"),
                 other => format!("{kind}: {key} -> {other:?}"),
@@ -385,6 +406,11 @@ fn apply_unchecked(spec: &mut Spec, edit: &ChartEdit) {
                     options: IndexMap::new(),
                 }));
             }
+        }
+        ChartEdit::RemoveColourLegend { .. } => {
+            // `retain` keeps the survivors in their order, so each mark and
+            // each other item stays where it was relative to the rest.
+            p.items.retain(|c| !is_colour_legend(c));
         }
         ChartEdit::SetChannel {
             mark_ordinal,
@@ -636,12 +662,30 @@ fn plot_name(plot: &PlotNode) -> Option<&str> {
     }
 }
 
-/// Whether the plot's own items hold a colour legend — the item
-/// [`ChartEdit::AddColourLegend`] appends.
+/// Whether `item` is a colour legend — the item [`ChartEdit::AddColourLegend`]
+/// appends and [`ChartEdit::RemoveColourLegend`] takes out.
+fn is_colour_legend(item: &Component) -> bool {
+    matches!(item, Component::Legend(l) if l.channel == LegendChannel::Color)
+}
+
+/// Whether the plot's own items hold a colour legend.
 fn holds_colour_legend(plot: &PlotNode) -> bool {
+    plot.items.iter().any(is_colour_legend)
+}
+
+/// The indices, in item order, of the plot's items that are a colour legend —
+/// the items [`ChartEdit::RemoveColourLegend`] takes out.
+///
+/// Each index is a place in the plot's `plot:` list as the text writes it, for
+/// the reason [`mark_item_index`] gives.
+#[must_use]
+pub fn colour_legend_item_indices(plot: &PlotNode) -> Vec<usize> {
     plot.items
         .iter()
-        .any(|c| matches!(c, Component::Legend(l) if l.channel == LegendChannel::Color))
+        .enumerate()
+        .filter(|(_, c)| is_colour_legend(c))
+        .map(|(i, _)| i)
+        .collect()
 }
 
 /// Whether the plot at `plot_path` already has a colour legend drawn for it, so

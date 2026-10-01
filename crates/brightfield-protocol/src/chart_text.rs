@@ -14,7 +14,7 @@
 //! YAML itself: it maps the edit to a path and a value and hands both over. The path
 //! comes from [`plot_route`], which walks the same tree the reducer walks.
 //!
-//! **What is written.** Four of [`ChartEdit`]'s seven kinds, each as a change
+//! **What is written.** The [`ChartEdit`] kinds listed here, each as a change
 //! to the lines it names and no other:
 //!
 //! - A [`ChartEdit::SetPlotAttribute`], the edit the scale and normalise
@@ -38,6 +38,15 @@
 //!   columns short of that. A list whose items are written in flow style gives
 //!   no such line, and is refused; so is a list whose item the `- ` is not two
 //!   columns wide for, because the text then reads back as another chart.
+//! - A [`ChartEdit::RemoveColourLegend`], the edit that takes the item the one
+//!   above wrote back out. Each colour legend item of the plot's list is taken
+//!   out with arcform's delete of a list item, which removes the item's own
+//!   lines, a comment flush above it by arcform's rule of comment ownership,
+//!   and the blank lines that followed it; the lines around it stay as they
+//!   were. A plot that holds none is the spec as it was, so the text comes
+//!   back unchanged. Written back with [`ChartEdit::AddColourLegend`] the item
+//!   lands after the list's last item, so it returns to its place when it was
+//!   the last.
 //! - A [`ChartEdit::RemovePlotAttribute`], the edit that takes a map's
 //!   projection out. The key's line is taken out. By arcform's rule of comment
 //!   ownership a comment flush above the line, indented no deeper than it, is
@@ -71,7 +80,8 @@ use std::fmt;
 
 use arc::spec::{apply_yaml_edits, PathPart, SpecEdit};
 use brightfield_spec::edit::{
-    apply_for_fresh_load, mark_item_index, plot_at_path, plot_route, ChartEdit, RefuseReason,
+    apply_for_fresh_load, colour_legend_item_indices, mark_item_index, plot_at_path, plot_route,
+    ChartEdit, RefuseReason,
 };
 use brightfield_spec::{parse_spec, serialise_value, Format, SpecValue};
 
@@ -169,7 +179,9 @@ pub fn write_chart_edit(text: &str, edit: &ChartEdit) -> Result<String, ChartTex
         ChartEdit::SetPlotAttribute { plot, key, .. }
         | ChartEdit::RemovePlotAttribute { plot, key } => (plot, key.as_str()),
         ChartEdit::SetChannel { plot, channel, .. } => (plot, channel.as_str()),
-        ChartEdit::AddColourLegend { plot } => (plot, LEGEND_KEY),
+        ChartEdit::AddColourLegend { plot } | ChartEdit::RemoveColourLegend { plot } => {
+            (plot, LEGEND_KEY)
+        }
         ChartEdit::ChangeMarkType { .. }
         | ChartEdit::AddMark { .. }
         | ChartEdit::RemoveMark { .. } => {
@@ -201,12 +213,12 @@ pub fn write_chart_edit(text: &str, edit: &ChartEdit) -> Result<String, ChartTex
         .flat_map(|(concat, index)| [PathPart::from(concat), PathPart::from(index)])
         .collect();
 
-    // The splices to try, in order; the first whose text reads back as the
-    // edited spec is the one written.
+    // The splices to try, in order, each a batch applied in sequence; the
+    // first whose text reads back as the edited spec is the one written.
     let splices = match edit {
         ChartEdit::SetPlotAttribute { key, value, .. } => {
             let spelled = one_line(key, value)?;
-            vec![set_key(text, route, key, spelled)]
+            vec![vec![set_key(text, route, key, spelled)]]
         }
         ChartEdit::RemovePlotAttribute { key, .. } => {
             if current_value(text, &route, key).is_none() {
@@ -214,7 +226,7 @@ pub fn write_chart_edit(text: &str, edit: &ChartEdit) -> Result<String, ChartTex
             }
             let mut path = route;
             path.push(PathPart::from(key.as_str()));
-            vec![SpecEdit::Delete { path }]
+            vec![vec![SpecEdit::Delete { path }]]
         }
         ChartEdit::SetChannel {
             mark_ordinal,
@@ -237,13 +249,13 @@ pub fn write_chart_edit(text: &str, edit: &ChartEdit) -> Result<String, ChartTex
             if let Some(serde_yaml::Value::String(from)) = current_value(text, &mark, channel) {
                 let mut path = mark.clone();
                 path.push(PathPart::from(channel.as_str()));
-                splices.push(SpecEdit::RewriteFragment {
+                splices.push(vec![SpecEdit::RewriteFragment {
                     path,
                     from,
                     to: column.clone(),
-                });
+                }]);
             }
-            splices.push(set_key(text, mark, channel, spelled));
+            splices.push(vec![set_key(text, mark, channel, spelled)]);
             splices
         }
         ChartEdit::AddColourLegend { .. } => {
@@ -255,10 +267,30 @@ pub fn write_chart_edit(text: &str, edit: &ChartEdit) -> Result<String, ChartTex
             let mut list = route;
             list.push(PathPart::from("plot"));
             let indent = item_indent(text, &list, last)?;
-            vec![SpecEdit::Append {
+            vec![vec![SpecEdit::Append {
                 path: list,
                 item: format!("{indent}- {COLOUR_LEGEND_ITEM}"),
-            }]
+            }]]
+        }
+        ChartEdit::RemoveColourLegend { .. } => {
+            let items = plot_at_path(&parsed, &plot.0)
+                .map(colour_legend_item_indices)
+                .unwrap_or_default();
+            let mut list = route;
+            list.push(PathPart::from("plot"));
+            // Last item first: each edit in a batch sees the text the one
+            // before it left, so an item above the one being taken out has
+            // not moved when its turn comes.
+            let deletes = items
+                .into_iter()
+                .rev()
+                .map(|index| {
+                    let mut path = list.clone();
+                    path.push(PathPart::from(index));
+                    SpecEdit::Delete { path }
+                })
+                .collect();
+            vec![deletes]
         }
         ChartEdit::ChangeMarkType { .. }
         | ChartEdit::AddMark { .. }
@@ -273,7 +305,7 @@ pub fn write_chart_edit(text: &str, edit: &ChartEdit) -> Result<String, ChartTex
         key: key.to_string(),
     };
     for splice in splices {
-        match apply_yaml_edits(text, &[splice]) {
+        match apply_yaml_edits(text, &splice) {
             Ok(written) => {
                 let reads_back = parse_spec(&written, Format::Yaml).ok().map(|out| out.spec);
                 if reads_back.as_ref() == Some(&edited) {
