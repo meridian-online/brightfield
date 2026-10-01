@@ -1515,6 +1515,20 @@ mod tests {
         }
     }
 
+    /// **A value already on a step is not moved a whole step.** `1.12 * 50` is
+    /// `56.00000000000001`, so a bare `ceil` of it would carry the top of 0.8 to
+    /// 1.12 out to 1.14 at ten ticks, and a sum like `0.1 + 0.2` would add a step
+    /// at five. The ends are left on the multiple they were a few ulps from.
+    #[test]
+    fn a_value_already_on_a_step_is_not_moved_a_whole_step() {
+        assert_eq!(nice_linear_domain(0.8, 1.12, 10), (0.8, 1.12));
+        assert_eq!(nice_linear_domain(0.1, 0.1 + 0.2, 5), (0.1, 0.3));
+        assert_eq!(
+            nice_linear_domain(0.34, 1.400_000_000_000_000_1, 5),
+            (0.2, 1.4)
+        );
+    }
+
     /// The domains rounding leaves as it found them: a span with no width, a
     /// count of zero, and an end that is not a finite number.
     #[test]
