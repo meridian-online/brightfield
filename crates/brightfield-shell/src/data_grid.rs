@@ -372,8 +372,8 @@ pub struct TableDrawn {
     /// drawn with no cursor — see [`CursorDrawn`].
     pub cursor: Option<CursorDrawn>,
     /// The cell a press landed on this frame, for a table drawn with a cursor
-    /// to answer. `None` on a frame with no press on a cell, and always for a
-    /// table drawn without one.
+    /// to answer. `None` on a frame with no press on a cell, and for a table
+    /// drawn without one.
     pub pressed: Option<GridCursor>,
 }
 
@@ -623,7 +623,8 @@ pub type SetWidths = std::collections::BTreeMap<String, f32>;
 /// And with the cell cursor `cursor`, where the caller has one: its cell
 /// ringed, its row and column on a quiet ground, its column's header with the
 /// focus ink along its foot, and a press on a cell reported back as
-/// [`TableDrawn::pressed`]. `None` draws none of it.
+/// [`TableDrawn::pressed`]. Passed `None`, the table is drawn as the Steps
+/// sheet draws it.
 #[allow(clippy::too_many_arguments)]
 pub fn show_table_sized(
     ui: &mut egui::Ui,

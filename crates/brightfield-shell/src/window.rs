@@ -2193,8 +2193,8 @@ pub struct MeridianApp {
     /// [`Self::home_binding`]: the shell wires the binding the registry
     /// declares and invents none. Empty for a verb the registry leaves unbound.
     nav_bindings: Vec<(&'static str, &'static str)>,
-    /// The grid's keystroke tokens paired with their verb longnames: every
-    /// binding the registry declares in its Grid context, read at boot — same
+    /// The grid's keystroke tokens paired with their verb longnames: the
+    /// bindings the registry declares in its Grid context, read at boot — same
     /// rule as [`Self::nav_bindings`].
     grid_bindings: Vec<(&'static str, &'static str)>,
     /// The per-session palette recency: verbs run from the palette rank
