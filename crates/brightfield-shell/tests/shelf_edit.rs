@@ -196,6 +196,14 @@ fn set(path: &ComponentPath, mark_ordinal: usize, channel: &str, column: &str) -
     }
 }
 
+fn scheme(path: &ComponentPath, name: &str) -> ChartEdit {
+    ChartEdit::SetPlotAttribute {
+        plot: path.clone(),
+        key: "colorScheme".to_string(),
+        value: SpecValue::String(name.to_string()),
+    }
+}
+
 fn drop_projection(path: &ComponentPath) -> ChartEdit {
     ChartEdit::RemovePlotAttribute {
         plot: path.clone(),
@@ -663,8 +671,8 @@ fn ghost_ink(o: &Opened) -> String {
 
 /// **`house_value` on the map's colour**: the highlighted layer reads
 /// `fill: house_value`, the ghost layer keeps its literal ink, and x, y and the
-/// plot's attributes stay as they were — the map is still projected at the size
-/// it was drawn at.
+/// plot's attributes stay as they were but for the `colorScheme` a number
+/// column names — the map is still projected at the size it was drawn at.
 #[test]
 fn a_column_put_on_the_maps_colour_paints_the_highlighted_layer_and_keeps_the_ghost_ink() {
     let o = open("colour-highlighted");
@@ -687,17 +695,23 @@ fn a_column_put_on_the_maps_colour_paints_the_highlighted_layer_and_keeps_the_gh
             "a gesture that put a column on colour moved {channel}"
         );
     }
+    let mut attributes = plot(&spec, &o.hero).attributes.clone();
     assert_eq!(
-        plot(&spec, &o.hero).attributes,
+        attributes.shift_remove("colorScheme"),
+        Some(SpecValue::String("viridis".to_string())),
+        "a number column put on colour should name the scheme the dot draws it in"
+    );
+    assert_eq!(
+        attributes,
         plot(&o.generated, &o.hero).attributes,
-        "a gesture that put a column on colour changed the plot's attributes, \
-         which are the map's projection and its size"
+        "a gesture that put a column on colour changed the plot's attributes \
+         but for its colorScheme, which are the map's projection and its size"
     );
 }
 
 /// **The edit is the list of edits applied, and replaying it on the generated
-/// spec gives the edited one** — the highlighted layer's fill and nothing else,
-/// as x's and y's lists are the marks they moved.
+/// spec gives the edited one** — the highlighted layer's fill, then the scheme
+/// a number column names, as x's and y's lists are the marks they moved.
 #[test]
 fn the_colour_edit_is_the_list_of_chart_edits_applied_and_replays_to_the_same_spec() {
     let o = open("colour-list");
@@ -707,8 +721,11 @@ fn the_colour_edit_is_the_list_of_chart_edits_applied_and_replays_to_the_same_sp
 
     assert_eq!(
         edits,
-        [set(&o.hero, HIGHLIGHTED, "fill", VALUE)],
-        "the list should be the highlighted layer's fill and no other"
+        [
+            set(&o.hero, HIGHLIGHTED, "fill", VALUE),
+            scheme(&o.hero, "viridis")
+        ],
+        "the list should be the highlighted layer's fill and then the scheme"
     );
     let mut replayed = o.generated.clone();
     for e in &edits {
@@ -769,7 +786,10 @@ fn a_plot_with_no_selected_layer_takes_the_colour_on_its_first_mark() {
 
     let edits = put_colour(&mut spec, &o.hero, VALUE, &o.table).expect("the table has the column");
 
-    assert_eq!(edits, [set(&o.hero, 0, "fill", VALUE)]);
+    assert_eq!(
+        edits,
+        [set(&o.hero, 0, "fill", VALUE), scheme(&o.hero, "viridis")]
+    );
 }
 
 /// **A column the table does not have is refused in words that name it**, and
