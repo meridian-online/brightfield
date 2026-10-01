@@ -699,6 +699,7 @@ pub fn show_table_sized(
         header,
         frame,
         pointable: cursor.is_some(),
+        ground_shown: std::collections::BTreeMap::new(),
         drawn: TableDrawn {
             header_cells: Vec::new(),
             columns: num_columns,
@@ -897,6 +898,9 @@ struct MeridianTableDelegate<'a> {
     /// Whether a press on a cell is taken as the cursor's — true for a table
     /// drawn with a [`TableCursor`].
     pointable: bool,
+    /// How much of each row the offer its ground was recorded from showed —
+    /// see `row_ui`.
+    ground_shown: std::collections::BTreeMap<u64, f32>,
     /// What this frame laid out, filled in as the header cells draw.
     drawn: TableDrawn,
 }
@@ -984,7 +988,18 @@ impl egui_table::TableDelegate for MeridianTableDelegate<'_> {
         } else {
             RowGround::Plain
         };
-        self.drawn.row_grounds.insert(row_nr, ground);
+        // Kept from the offer that shows most of the row, as `row_cells` is
+        // reduced: `egui_table` offers a row once more on an invisible sizing
+        // pass, where no pointer is over it, and that offer comes last.
+        let shown = ui.clip_rect().intersect(rect).area().max(0.0);
+        if self
+            .ground_shown
+            .get(&row_nr)
+            .is_none_or(|was| shown >= *was)
+        {
+            self.ground_shown.insert(row_nr, shown);
+            self.drawn.row_grounds.insert(row_nr, ground);
+        }
     }
 
     fn cell_ui(&mut self, ui: &mut egui::Ui, cell: &egui_table::CellInfo) {
