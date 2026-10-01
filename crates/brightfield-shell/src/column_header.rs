@@ -896,12 +896,9 @@ pub fn draw_column_band(
             egui::Stroke::new(1.0, frame.rule),
         );
     } else if let Some(moments) = facts.moments.as_ref() {
-        let rect = egui::Rect::from_min_size(
-            egui::pos2(plot.left(), plot.top() + (RUG_ROW - RUG_HEIGHT) / 2.0),
-            egui::vec2(plot.width(), RUG_HEIGHT),
-        );
-        rug_alphas = draw_rug(painter, rect, moments, frame);
-        rug = Some(rect);
+        let drawn = draw_rug_in(painter, plot, moments, frame);
+        rug = Some(drawn.rect);
+        rug_alphas = drawn.alphas;
     }
     y += frame.plot_row();
 
@@ -1114,6 +1111,45 @@ fn draw_bars(
         }
     }
     out
+}
+
+/// A rug as it was drawn: the rect it filled, and one alpha per pixel column in
+/// the order they were painted — the empty ones recorded as zero.
+///
+/// What the crate-private `draw_rug_in` returns, so that a surface drawing a
+/// rug beside the grid head's — the Outline's column list is one — records it
+/// the way [`ColumnBandDrawn::rug`] and [`ColumnBandDrawn::rug_alphas`] do, and
+/// a test compares the two off the drawing rather than off the values they
+/// were drawn from.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RugDrawn {
+    /// The rug's rect.
+    pub rect: egui::Rect,
+    /// One alpha per rug column.
+    pub alphas: Vec<f32>,
+}
+
+/// The rug a column of `moments` draws, inside `row`: the compact band's own
+/// painter, geometry and ink, for the grid head and the Outline's column list
+/// alike.
+///
+/// `row` is the whole row the rug sits in — [`RUG_ROW`] tall in the grid head,
+/// [`spacing::ROW_DENSE`] tall in the Outline — and the rug is [`RUG_HEIGHT`]
+/// tall and centred in it, the full width of it. `frame` is the compact
+/// density's, from [`column_header_frame`], so the two surfaces take the rug's
+/// ink and alpha from one place.
+pub(crate) fn draw_rug_in(
+    painter: &egui::Painter,
+    row: egui::Rect,
+    moments: &ColumnMoments,
+    frame: &ColumnHeaderFrame,
+) -> RugDrawn {
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(row.left(), row.top() + (row.height() - RUG_HEIGHT) / 2.0),
+        egui::vec2(row.width(), RUG_HEIGHT),
+    );
+    let alphas = draw_rug(painter, rect, moments, frame);
+    RugDrawn { rect, alphas }
 }
 
 /// The rug: one pixel column per point of the cell's width, each inked at the
