@@ -700,9 +700,10 @@ fn a_colour_legend_on_the_generated_map_adds_one_line_after_the_last_item() {
     );
 }
 
-/// A hand-kept chart indents its lists another way, and keeps a comment under
-/// the last item. The line takes the indent the list's items already have, goes
-/// above the comment that closes the list, and leaves every other byte alone.
+/// A hand-kept chart indents its lists another way than the generator does, and
+/// keeps a comment under the last item. The line takes the indent the list's
+/// items already have, which is not the generated map's, goes above the comment
+/// that closes the list, and leaves every other byte alone.
 #[test]
 fn a_colour_legend_takes_the_indent_of_the_list_it_joins_and_leaves_the_comments() {
     let text = "\
@@ -710,17 +711,17 @@ fn a_colour_legend_takes_the_indent_of_the_list_it_joins_and_leaves_the_comments
 vconcat:
   # the first tile
   - plot:
-      - mark: dot
-        data: { from: t }   # the readings
-        x: a
-        fill: b
-      # the marks end here
+        - mark: dot
+          data: { from: t }   # the readings
+          x: a
+          fill: b
+        # the marks end here
     width: 300
   # the second tile
   - plot:
-      - mark: dot
-        data: { from: t }
-        x: a
+        - mark: dot
+          data: { from: t }
+          x: a
     width: 300
 ";
     let edit = legend("root/vconcat[0]");
@@ -729,8 +730,8 @@ vconcat:
     assert_eq!(
         written,
         text.replace(
-            "        fill: b\n",
-            "        fill: b\n      - legend: color\n"
+            "          fill: b\n",
+            "          fill: b\n        - legend: color\n"
         )
     );
     assert_eq!(parse(&written), applied_fresh(text, &edit));
@@ -759,7 +760,7 @@ fn a_colour_legend_on_a_flow_list_is_refused() {
     let refusal = write_chart_edit(text, &legend("root")).expect_err("a flow list is refused");
 
     assert!(
-        matches!(refusal, ChartTextRefusal::Splice { .. }),
-        "the refusal is {refusal:?}"
+        matches!(&refusal, ChartTextRefusal::Splice { detail } if detail.contains("block list")),
+        "the refusal is {refusal:?}, not the writer's own for a list it cannot indent"
     );
 }
