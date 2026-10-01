@@ -1541,12 +1541,17 @@ mod tests {
         assert!(lo == 3.0 && hi.is_nan());
     }
 
-    /// An axis that starts at zero is drawn from zero, with no sign on it: a
-    /// negative zero would print as `-0` on a label that reads the sign.
+    /// An axis that ends at zero ends at zero with no sign on it: rounding a
+    /// small negative top up lands on `ceil(-0.02)`, which is a negative zero,
+    /// and a negative zero would print as `-0` on a label that reads the sign.
     #[test]
     fn a_rounded_end_at_zero_carries_no_sign() {
-        let (lo, _) = nice_linear_domain(-0.4, 0.4, 5);
-        assert!(lo < 0.0, "fixture check: this domain crosses zero");
+        let (lo, hi) = nice_linear_domain(-47.0, -0.2, 5);
+        assert!(
+            lo < 0.0,
+            "fixture check: the domain is below zero, got {lo:?}"
+        );
+        assert!(hi == 0.0 && hi.is_sign_positive(), "got {hi:?}");
         let (lo, _) = nice_linear_domain(0.2, 47.0, 5);
         assert!(lo == 0.0 && lo.is_sign_positive(), "got {lo:?}");
     }
