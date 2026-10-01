@@ -156,6 +156,9 @@ pub fn capture_png_at_with_layout(
 
     let (win_w, win_h) = size;
     let mut app = MeridianApp::with_layout(boot, layout, chart_host, protocol_host, mode);
+    // The shelf band is authoring chrome: a picture of the dashboard derives
+    // from the spec alone, so the capture draws none.
+    app.set_shelf_band_drawn(false);
 
     let ctx = egui::Context::default();
     let screen = egui::vec2(win_w, win_h);
