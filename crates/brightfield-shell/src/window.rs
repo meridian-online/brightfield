@@ -70,6 +70,7 @@ use brightfield_protocol::graph::AssetId;
 use brightfield_protocol::layout::{Flow, Layout};
 use brightfield_sql::ir::SampleRate;
 use brightfield_workbench::arrangement::{self, Occupant, Projection, Region, RegionId};
+use brightfield_workbench::channel::{ShelfChannel, BAND_HEIGHT};
 use brightfield_workbench::workspace::{tabs_holding, tile_of};
 use brightfield_workbench::{
     chrome, Activity, ActivityIndicator, DirtyTracker, HideAffordance, ItemId, ItemMap, PaneChrome,
@@ -100,6 +101,7 @@ use crate::protocol::{
     ProtocolInputs, ProtocolModel, SpineRole, SpineRow, CANVAS as PROTOCOL_CANVAS,
     INSPECTOR as PROTOCOL_INSPECTOR, LOG, OUTLINE, QUALITY, STEPS,
 };
+use crate::shelf::{BandDrawn, ListReport, ShelfBand, ShelfChannels};
 
 // ---------------------------------------------------------------------------
 // The window's own chrome budget.
@@ -1792,6 +1794,45 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
     }
 }
 
+/// The egui key the registry's `set-channel` is bound to, which hands the
+/// hero pane's keys to the shelf band.
+///
+/// Read off the registry like every token the shell wires, so a key moved there
+/// moves here; a token this does not map is a key that opens no cell, which fails
+/// safe as [`consume_token`] does.
+fn shelf_entry_key() -> Option<egui::Key> {
+    static TOKEN: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
+    let token = *TOKEN.get_or_init(|| {
+        brightfield_keys::registry()
+            .iter()
+            .find(|v| v.longname == "set-channel")
+            .and_then(brightfield_keys::VerbEntry::primary_key)
+    });
+    match token? {
+        "e" => Some(egui::Key::E),
+        _ => None,
+    }
+}
+
+/// Whether the shelf takes `event` out of the frame's input when it holds the
+/// keys: a bare key press, and the text a keystroke makes. With the query
+/// typing, a shifted key is text too, so a `?` typed in it is not a help sheet.
+/// A key with the command, control or alt held is the window's and is left.
+fn shelf_owns(event: &egui::Event, querying: bool) -> bool {
+    match event {
+        egui::Event::Key {
+            pressed: true,
+            modifiers,
+            ..
+        } => {
+            modifiers.is_none()
+                || (querying && !modifiers.command && !modifiers.ctrl && !modifiers.alt)
+        }
+        egui::Event::Text(_) => true,
+        _ => false,
+    }
+}
+
 /// The navigation family's `(keystroke token, longname)` pairs, off the
 /// registry. A verb the registry leaves unbound simply does not appear, so it
 /// stays reachable from the palette and unreachable by key — which is what
@@ -1861,6 +1902,51 @@ struct ChartView {
     /// inspector. Written whenever a document is adopted; see
     /// [`wire_columns`].
     inspector_table: TableHandle,
+    /// The hero pane's shelf: the band carved under its header, and who holds
+    /// the keys. See [`ShelfHold`].
+    shelf: ShelfHold,
+}
+
+/// **The hero pane's shelf, as the window holds it.**
+///
+/// The band's own state — which cell is open, which column is a preview — is
+/// [`ShelfBand`]'s. What this adds is what only the window knows: whether the
+/// band has the keys, the title the Outline's list is headed with, and what the
+/// band drew on the last frame, so a click on a cell and a key that opens one
+/// reach the same list.
+///
+/// **Three levels, and `Esc` takes one a press.** The pane holds the keys until
+/// `e` hands them to the band; a cell opened from the band opens the Outline's
+/// list, which then holds them; `Esc` leaves the list for the band, and the band
+/// for the pane. `back-out-of-shelf` is the registry's verb for each step.
+#[derive(Default)]
+struct ShelfHold {
+    /// The band over the hero's channels, built on the first frame that has a
+    /// hero to read them from.
+    band: Option<ShelfBand>,
+    /// Whether the band has the keys: the first level, and the second while no
+    /// list is open.
+    holds: bool,
+    /// The title the Outline's list is headed with: the hero pane's own.
+    tile: String,
+    /// What the band drew on the last frame. `None` on a frame that drew no band:
+    /// cleared with the frame's other records and written by
+    /// [`carve_shelf_band`].
+    drawn: Option<BandDrawn>,
+    /// Whether the window draws the band at all. A capture clears it: the band
+    /// is authoring chrome, and a picture of the dashboard derives from the spec
+    /// alone.
+    enabled: bool,
+}
+
+impl ShelfHold {
+    /// A shelf that draws, with no cell open and the keys with the pane.
+    fn new() -> Self {
+        Self {
+            enabled: true,
+            ..Self::default()
+        }
+    }
 }
 
 /// Hand the chart document the columns its **tiles** draw, and the inspector
@@ -2476,6 +2562,7 @@ impl MeridianApp {
                 items: chart_items,
                 inspector_selection,
                 inspector_table,
+                shelf: ShelfHold::new(),
             },
             protocol: ProtocolView {
                 doc: protocol_doc,
@@ -3900,6 +3987,10 @@ impl MeridianApp {
         // canvas does not draw.
         self.charts.doc.begin_controls_frame();
 
+        // The shelf's keys, ahead of every other bare key: while the band or
+        // its list holds them, they are not the frame verbs' or an overlay
+        // opener's.
+        self.shelf_keys(&ctx, graph_on_canvas);
         // The overlay-opening keys, before the grammar feed so the frame that
         // opens an overlay is already under it.
         self.overlay_open_keys(&ctx, graph_on_canvas);
@@ -5107,6 +5198,197 @@ impl MeridianApp {
         }
     }
 
+    /// Whether the hero's pane is the focused one — the pane the shelf band
+    /// hangs in, and the situation `e` is taken in.
+    fn hero_has_focus(&self) -> bool {
+        self.ws().focus() == Some(PaneKey::new(CHART))
+    }
+
+    /// **Give the shelf band and its list their keys**, ahead of every other
+    /// bare key.
+    ///
+    /// Three levels, one a press. With the hero's pane focused, `e` — the
+    /// registry's key for `set-channel` — hands the keys to the band; the band's
+    /// own keys then open a cell, and a cell opens the Outline's list of that
+    /// channel's columns, which takes the keys from there. `Esc` steps back the
+    /// same way: the list's query, the list, the band's cell, the band, then the
+    /// pane. While the shelf holds them its bare keys are its own and no other
+    /// handler sees them, so `x` opens the x cell and does not cycle the axis
+    /// lock; with the pane holding them `x` is the axis lock's as before.
+    ///
+    /// **Why this runs before [`Self::overlay_open_keys`]**: `/` is the list's
+    /// query and the registry's jump, and a space or a `?` typed into a query is
+    /// text and not a palette or a help sheet.
+    ///
+    /// The shelf lets go where the pane does: another pane takes focus, the
+    /// graph takes the canvas, or the frame before drew no band.
+    fn shelf_keys(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
+        let last = self.charts.shelf.drawn.take();
+        // A click on a cell opened it on the band, which is the same way in as
+        // the key: the pane is focused, the band holds the keys, the list opens.
+        if last.as_ref().is_some_and(|d| d.clicked.is_some()) {
+            self.ws_mut().set_focus(PaneKey::new(CHART));
+            self.charts.shelf.holds = true;
+            self.shelf_sync_list();
+        }
+        if graph_on_canvas || last.is_none() || !self.hero_has_focus() {
+            self.shelf_release();
+            return;
+        }
+        if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        let events = ctx.input(|i| i.events.clone());
+        let mut owned = self.charts.shelf.holds;
+        let mut at = 0;
+        while at < events.len() {
+            if self.protocol.doc.model.column_list().is_some() {
+                let reports = self.protocol.doc.model.feed_column_list(&events[at..]);
+                self.shelf_apply(reports);
+                break;
+            }
+            let event = &events[at];
+            at += 1;
+            let egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } = event
+            else {
+                continue;
+            };
+            if !modifiers.is_none() {
+                continue;
+            }
+            if self.charts.shelf.holds {
+                owned = true;
+                self.shelf_band_key(*key, *modifiers);
+            } else if shelf_entry_key() == Some(*key) {
+                self.charts.shelf.holds = true;
+                owned = true;
+            }
+        }
+        if owned {
+            let querying = self
+                .protocol
+                .doc
+                .model
+                .column_list()
+                .is_some_and(crate::shelf::ColumnList::querying);
+            ctx.input_mut(|i| i.events.retain(|e| !shelf_owns(e, querying)));
+        }
+    }
+
+    /// A bare key while the band has the keys and no list is open.
+    ///
+    /// `Esc` with no cell open hands the keys back to the pane, which is the
+    /// level the band's own `back-out-of-shelf` has no cell left to leave.
+    fn shelf_band_key(&mut self, key: egui::Key, modifiers: egui::Modifiers) {
+        let Some(band) = self.charts.shelf.band.as_mut() else {
+            return;
+        };
+        if key == egui::Key::Escape && band.active().is_none() {
+            self.charts.shelf.holds = false;
+            return;
+        }
+        band.press(key, modifiers);
+        self.shelf_sync_list();
+    }
+
+    /// Open the Outline's list on the band's open cell, or close it where the
+    /// band has none that lists columns. The mark's cell lists marks, which
+    /// the list does not draw yet, so it has no list.
+    fn shelf_sync_list(&mut self) {
+        let Some(band) = self.charts.shelf.band.as_ref() else {
+            return;
+        };
+        match band.active() {
+            Some(channel) if channel != ShelfChannel::Mark => {
+                let open = self.protocol.doc.model.column_list().map(|l| l.channel());
+                if open != Some(channel) {
+                    self.protocol.doc.model.open_column_list(
+                        &self.charts.shelf.tile,
+                        channel,
+                        band.channels().clone(),
+                    );
+                }
+            }
+            _ => self.protocol.doc.model.close_column_list(),
+        }
+    }
+
+    /// Act on what the list's keys decided: `Esc` closes it and the band's cell
+    /// with it, and a channel named by letter or by `h` `l` opens that cell. A
+    /// cursor move and a kept column are not acted on here: the chart is not
+    /// drawn with a previewed or a kept column yet.
+    fn shelf_apply(&mut self, reports: Vec<ListReport>) {
+        let Some(band) = self.charts.shelf.band.as_mut() else {
+            return;
+        };
+        for report in reports {
+            match report {
+                ListReport::BackedOut => {
+                    band.leave();
+                    self.protocol.doc.model.close_column_list();
+                }
+                ListReport::GoTo(channel) | ListReport::Beside(channel) => {
+                    band.activate(channel);
+                    if channel == ShelfChannel::Mark {
+                        self.protocol.doc.model.close_column_list();
+                    }
+                }
+                ListReport::Moved(_) | ListReport::Kept(_) => {}
+            }
+        }
+    }
+
+    /// Hand every key back to the pane: the band's cell closes, its list closes
+    /// and the band lets go.
+    fn shelf_release(&mut self) {
+        if let Some(band) = self.charts.shelf.band.as_mut() {
+            band.leave();
+        }
+        if self.charts.shelf.holds {
+            self.charts.shelf.holds = false;
+            self.protocol.doc.model.close_column_list();
+        }
+    }
+
+    /// The band under the hero's header, as the last frame drew it. `None` on a
+    /// frame whose canvas drew no band: a document with no live spec, a window
+    /// whose shelf is switched off, or a canvas that is not the dashboard.
+    #[must_use]
+    pub fn shelf_drawn(&self) -> Option<&BandDrawn> {
+        self.charts.shelf.drawn.as_ref()
+    }
+
+    /// The shelf band's state, once a frame has drawn it.
+    #[must_use]
+    pub fn shelf_band(&self) -> Option<&ShelfBand> {
+        self.charts.shelf.band.as_ref()
+    }
+
+    /// Whether the band has the keys, as `e` gives them and `Esc` takes them
+    /// back.
+    #[must_use]
+    pub fn shelf_holds_keys(&self) -> bool {
+        self.charts.shelf.holds
+    }
+
+    /// Draw the shelf band under the hero's header, or draw none.
+    ///
+    /// The band is authoring chrome: a picture of the dashboard that derives
+    /// from the spec alone, as `brightfield-shot` makes it, draws none, and the
+    /// capture path switches it off. It is on in a live window.
+    pub fn set_shelf_band_drawn(&mut self, drawn: bool) {
+        self.charts.shelf.enabled = drawn;
+        if !drawn {
+            self.shelf_release();
+            self.charts.shelf.drawn = None;
+        }
+    }
+
     /// Whether the table's grid is the focused pane — the situation its key
     /// context, the registry's Grid, resolves in.
     fn grid_has_focus(&self) -> bool {
@@ -5708,6 +5990,13 @@ impl MeridianApp {
                     .iter()
                     .map(|(state, rect)| chrome::NamedControl::labelled(*rect, state.word())),
             );
+        }
+        // The shelf band's cells sense a click, each named by the channel's
+        // word it draws.
+        if let Some(band) = &self.charts.shelf.drawn {
+            controls.extend(ShelfChannel::ALL.iter().map(|channel| {
+                chrome::NamedControl::labelled(band.cells[channel.index()], channel.word())
+            }));
         }
         controls.extend(doc.controls.iter().cloned());
         controls.extend(self.rail.controls.iter().cloned());
@@ -8392,7 +8681,8 @@ fn draw_canvas_pane_group(
         brightfield_keys::BindingContext::Workspace,
     );
 
-    let map_body = pane_body(ui, map_rect, &map_subject, mode);
+    let hero_body = pane_body(ui, map_rect, &map_subject, mode);
+    let map_body = carve_shelf_band(ui, hero_body, charts, &map_subject.title, mode);
     // The grid pane's frame comes after the page below, so its own fill and
     // header band are not painted over by anything the composition overruns
     // its clip with.
@@ -8442,7 +8732,7 @@ fn draw_canvas_pane_group(
             panes: vec![CanvasPane {
                 name: "map",
                 rect: map_rect,
-                header: pane_header_of(map_rect, map_body),
+                header: pane_header_of(map_rect, hero_body),
                 body: map_body,
             }],
             rows_note: None,
@@ -8479,7 +8769,7 @@ fn draw_canvas_pane_group(
     let map_pane = CanvasPane {
         name: "map",
         rect: map_rect,
-        header: pane_header_of(map_rect, map_body),
+        header: pane_header_of(map_rect, hero_body),
         body: map_body,
     };
     if !grid_here {
@@ -8605,7 +8895,8 @@ fn draw_transposed_pane_group(
         brightfield_workbench::subject::Icon("table"),
         brightfield_keys::BindingContext::Workspace,
     );
-    let map_body = pane_body(ui, map_rect, &map_subject, mode);
+    let hero_body = pane_body(ui, map_rect, &map_subject, mode);
+    let map_body = carve_shelf_band(ui, hero_body, charts, &map_subject.title, mode);
     // Framed before the page rather than after it, which is the opposite of
     // the untransposed layout's order and for the same reason: this pane draws
     // part of the page, so its fill and its header band have to be down before
@@ -8661,7 +8952,7 @@ fn draw_transposed_pane_group(
             CanvasPane {
                 name: "map",
                 rect: map_rect,
-                header: pane_header_of(map_rect, map_body),
+                header: pane_header_of(map_rect, hero_body),
                 body: map_body,
             },
             CanvasPane {
@@ -8748,6 +9039,59 @@ fn pane_body(ui: &mut egui::Ui, rect: egui::Rect, subject: &Subject, mode: Mode)
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
     chrome::pane_frame(&mut pane, subject, true, mode).max_rect()
+}
+
+/// **The shelf band, carved out of the head of the hero pane's body**, and the
+/// body that is left.
+///
+/// The band is [`BAND_HEIGHT`] high and the pane's width, directly under the
+/// pane's header, and the hero's plot gives up that height: the rect handed back
+/// is `body` with its top moved down by it, and the page is composed in that.
+/// The header is derived from the body `pane_body` returned, not from this one,
+/// so the band does not read as a taller header.
+///
+/// **The channels come from the hero's own plot**, the first the composition
+/// placed, read out of the live spec. A document with no live dashboard behind it
+/// (a shipped start, a capture's) has no spec to read and gets no band, as does a
+/// window whose shelf is switched off: both hand `body` back whole.
+fn carve_shelf_band(
+    ui: &mut egui::Ui,
+    body: egui::Rect,
+    charts: &mut ChartView,
+    title: &str,
+    mode: Mode,
+) -> egui::Rect {
+    charts.shelf.drawn = None;
+    if !charts.shelf.enabled {
+        return body;
+    }
+    let Some(channels) = hero_shelf_channels(&charts.doc) else {
+        return body;
+    };
+    let height = BAND_HEIGHT.min(body.height());
+    let band_rect = egui::Rect::from_min_size(body.min, egui::vec2(body.width(), height));
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(band_rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    let band = charts
+        .shelf
+        .band
+        .get_or_insert_with(|| ShelfBand::new(channels.clone()));
+    band.set_channels(channels);
+    charts.shelf.drawn = Some(band.show(&mut child, mode));
+    charts.shelf.tile = title.to_string();
+    egui::Rect::from_min_max(egui::pos2(body.left(), body.top() + height), body.max)
+}
+
+/// What the hero's plot takes on the shelf's channels, read from the live spec
+/// at the path the composition placed the hero at.
+fn hero_shelf_channels(doc: &ChartDoc) -> Option<ShelfChannels> {
+    let path = &doc.composed.plots.first()?.path;
+    let spec = doc.live_dashboard()?.spec();
+    let plot = brightfield_spec::edit::plot_at_path(spec, path)?;
+    ShelfChannels::of_plot(plot)
 }
 
 /// Draw the grid pane's layout switch on `band`, record it on the document and
