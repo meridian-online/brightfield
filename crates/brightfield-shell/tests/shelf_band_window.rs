@@ -13,6 +13,7 @@
 //! not a field a key wrote.
 
 use brightfield_shell::app::CHART;
+use brightfield_shell::capture::capture_png;
 use brightfield_shell::data_grid::DATA;
 use brightfield_shell::design::Mode;
 use brightfield_shell::navigation::AxisLock;
@@ -354,4 +355,111 @@ fn the_band_is_44_high_under_the_heros_header_and_the_hero_gives_up_that_height(
         without.app.canvas_panes().pane("grid").expect("grid pane"),
     );
     assert_eq!(ga, gb, "the grid pane is laid out as before");
+}
+
+/// Every filled rect a frame painted, flattened in paint order, with its fill.
+fn collect_fills(shape: &egui::Shape, out: &mut Vec<(egui::Rect, egui::Color32)>) {
+    match shape {
+        egui::Shape::Rect(rect) if rect.fill.a() > 0 => out.push((rect.rect, rect.fill)),
+        egui::Shape::Vec(shapes) => {
+            for shape in shapes {
+                collect_fills(shape, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `over` laid on `ground`, as the painter composites a premultiplied fill.
+fn composite(over: egui::Color32, ground: egui::Color32) -> [u8; 3] {
+    let keep = 1.0 - f32::from(over.a()) / 255.0;
+    let mix = |o: u8, g: u8| {
+        (f32::from(o) + f32::from(g) * keep)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    [
+        mix(over.r(), ground.r()),
+        mix(over.g(), ground.g()),
+        mix(over.b(), ground.b()),
+    ]
+}
+
+/// **The ground each of the band's cells is painted on**, as a live window
+/// draws it: the cell's fill laid over the band's own, read off the shapes a
+/// headless frame handed the painter.
+fn cell_grounds() -> Vec<[u8; 3]> {
+    let path = housing();
+    let boot = Boot::data_file(path.to_str().expect("utf-8 path")).expect("the sample opens");
+    let mut app = MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light);
+    let ctx = egui::Context::default();
+    let raw = |events| egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1440.0, 900.0),
+        )),
+        events,
+        ..Default::default()
+    };
+    let mut shapes = Vec::new();
+    for _ in 0..4 {
+        let out = ctx.run_ui(raw(Vec::new()), |ui| app.draw(ui));
+        shapes = out.shapes.into_iter().map(|c| c.shape).collect();
+    }
+    let drawn = app.shelf_drawn().expect("the live window draws the band");
+    let mut fills = Vec::new();
+    shapes.iter().for_each(|s| collect_fills(s, &mut fills));
+    let at = |rect: egui::Rect| {
+        fills
+            .iter()
+            .rev()
+            .find(|(r, _)| *r == rect)
+            .map(|(_, fill)| *fill)
+            .expect("the band painted a fill over that rect")
+    };
+    let ground = at(drawn.rect);
+    ShelfChannel::ALL
+        .iter()
+        .map(|c| composite(at(drawn.cells[c.index()]), ground))
+        .collect()
+}
+
+/// How many pixels of `image` are within `slack` of `colour` on each channel.
+fn pixels_of(image: &image::RgbaImage, colour: [u8; 3], slack: u8) -> usize {
+    image
+        .pixels()
+        .filter(|p| (0..3).all(|i| p.0[i].abs_diff(colour[i]) <= slack))
+        .count()
+}
+
+/// **AC4.** A headless render of the dashboard, as `brightfield-shot` makes it,
+/// draws no band: no ground a live window gives the mark, x and y cells is on
+/// the page. A cell is the width of a third of the pane or more and 44 high, so
+/// a band would put thousands of pixels on each; the few that match by chance
+/// are the allowance. The colour cell is left out of the count: its ground is
+/// the warm off-white other surfaces of the window share.
+#[test]
+fn a_headless_capture_of_the_dashboard_draws_no_band() {
+    std::env::remove_var(brightfield_shell::devtools::DEVTOOLS_VAR);
+    let grounds = cell_grounds();
+    let path = housing();
+    let boot = Boot::data_file(path.to_str().expect("utf-8 path")).expect("the sample opens");
+    let out =
+        std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("shelf_band_window.capture.png");
+    capture_png(boot, Mode::Light, 1.0, &out, Vec::new()).expect("the capture ran");
+    let image = image::open(&out)
+        .expect("the capture reads back")
+        .to_rgba8();
+
+    for channel in [ShelfChannel::Mark, ShelfChannel::X, ShelfChannel::Y] {
+        let ground = grounds[channel.index()];
+        let matched = pixels_of(&image, ground, 2);
+        assert!(
+            matched < 200,
+            "{} pixels of the capture are the {} cell's ground {ground:?}: \
+             the capture drew a band",
+            matched,
+            channel.word()
+        );
+    }
 }

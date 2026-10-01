@@ -5994,6 +5994,13 @@ impl MeridianApp {
                     .map(|(state, rect)| chrome::NamedControl::labelled(*rect, state.word())),
             );
         }
+        // The shelf band's cells sense a click, each named by the channel's
+        // word it draws.
+        if let Some(band) = &self.charts.shelf.drawn {
+            controls.extend(ShelfChannel::ALL.iter().map(|channel| {
+                chrome::NamedControl::labelled(band.cells[channel.index()], channel.word())
+            }));
+        }
         controls.extend(doc.controls.iter().cloned());
         controls.extend(self.rail.controls.iter().cloned());
         controls
