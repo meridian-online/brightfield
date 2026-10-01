@@ -2,7 +2,7 @@
 //! into a single vello::Scene.
 
 use arrow::record_batch::RecordBatch;
-use brightfield_spec::layout::{TickCounts, TickFormats};
+use brightfield_spec::layout::{GridLines, TickCounts, TickFormats};
 use kurbo::{Affine, BezPath, Circle, Rect, RoundedRect, Stroke};
 use peniko::Fill;
 use vello::Scene;
@@ -533,14 +533,16 @@ pub fn build_multi_mark_scene_with_domains(
         &PinnedDomains::default(),
         TickCounts::default(),
         TickFormats::default(),
+        GridLines::default(),
         ink,
     )
 }
 
 /// [`build_multi_mark_scene_with_domains`] with the positional domains this
-/// plot's spec asked to hold still — see [`PinnedDomains`] — and the target
+/// plot's spec asked to hold still — see [`PinnedDomains`] — the target
 /// tick count and tick format each positional axis asked for — see
-/// [`TickCounts`] and [`TickFormats`].
+/// [`TickCounts`] and [`TickFormats`] — and whether each axis draws its
+/// gridlines — see [`GridLines`].
 ///
 /// The pin lands AFTER inference and after [`apply_unsampled_domains`], so the
 /// author's instruction outranks both what the drawn rows imply and what a
@@ -549,21 +551,23 @@ pub fn build_multi_mark_scene_with_domains(
 /// has navigated is dropped from the pin here rather than overwritten, so a
 /// pinned plot pans and zooms like an unpinned one. A filter is the dashboard
 /// moving; a pan is the reader moving, and only the first is what `Fixed`
-/// declines. `tick_counts` and `tick_formats` carry no domain and land at the
-/// draw step below, alongside the pinned or unpinned scales they draw against.
+/// declines. `tick_counts`, `tick_formats` and `grid` carry no domain and land
+/// at the draw step below, alongside the pinned or unpinned scales they draw
+/// against.
 ///
 /// An empty `pins` reproduces [`build_multi_mark_scene_with_domains`] scale for
 /// scale — [`apply_pinned_domains`] writes nothing without a pin to write.
 ///
 /// A default `tick_counts` draws the count each call site drew before this
 /// parameter existed — see [`brightfield_spec::layout::DEFAULT_TICK_COUNT`] —
-/// and a default `tick_formats` draws the text they drew.
-// Eight, because the static composition takes eight independent inputs: the
+/// a default `tick_formats` draws the text they drew, and a default `grid`
+/// draws the gridlines on both axes, as they drew.
+// Nine, because the static composition takes nine independent inputs: the
 // entries, whether the legend is drawn inline, the resolved titles, the two
 // ways a domain is held still (unsampled and pinned), the tick count and tick
-// format the axes asked for, and the ink. Each is resolved elsewhere and read
-// here once, so a struct would be a name for the argument list rather than for
-// a thing.
+// format the axes asked for, whether each axis draws gridlines, and the ink.
+// Each is resolved elsewhere and read here once, so a struct would be a name
+// for the argument list rather than for a thing.
 #[allow(clippy::too_many_arguments)]
 pub fn build_multi_mark_scene_pinned(
     entries: &[&ChartData<'_>],
@@ -573,6 +577,7 @@ pub fn build_multi_mark_scene_pinned(
     pins: &PinnedDomains,
     tick_counts: TickCounts,
     tick_formats: TickFormats,
+    grid: GridLines,
     ink: ChartInk,
 ) -> (Scene, ScaleSet) {
     if entries.is_empty() {
@@ -590,6 +595,7 @@ pub fn build_multi_mark_scene_pinned(
         titles,
         tick_counts,
         tick_formats,
+        grid,
         &scales,
     );
     (scene, scales)
@@ -947,14 +953,17 @@ fn infer_multi_mark_scales(entries: &[&ChartData<'_>], ink: ChartInk) -> ScaleSe
 /// the axis below — one resolved value, so the two cannot disagree about how
 /// many ticks this plot draws. `tick_formats` is the plot's
 /// `xTickFormat`/`yTickFormat`, which sets the axis's tick text and, through the
-/// width of that text, which ticks the axis has room to label. Callers
-/// guarantee `entries` is non-empty.
+/// width of that text, which ticks the axis has room to label. `grid` is the
+/// plot's `grid`/`xGrid`/`yGrid`: it decides whether an axis draws the gridlines
+/// behind the marks, and leaves the axis line, its tick marks and its labels
+/// where they were. Callers guarantee `entries` is non-empty.
 fn draw_multi_mark_scene(
     entries: &[&ChartData<'_>],
     draw_inline_legend: bool,
     titles: &ResolvedTitles,
     tick_counts: TickCounts,
     tick_formats: TickFormats,
+    grid: GridLines,
     scales: &ScaleSet,
 ) -> Scene {
     let layout = &entries[0].layout;
@@ -970,14 +979,14 @@ fn draw_multi_mark_scene(
         .iter()
         .any(|e| e.renderer.suppresses_frame(e.channel_map));
 
-    // Grid lines (behind marks).
+    // Grid lines (behind marks), on each axis the plot did not switch off.
     if !suppress_frame {
-        if let Some(x_scale) = scales.get(Channel::X) {
+        if let Some(x_scale) = scales.get(Channel::X).filter(|_| grid.x) {
             let x_ticks =
                 compute_ticks_formatted(x_scale, tick_counts.x_target(), tick_formats.x.as_ref());
             render_x_grid(&mut scene, layout, &x_ticks, ink);
         }
-        if let Some(y_scale) = scales.get(Channel::Y) {
+        if let Some(y_scale) = scales.get(Channel::Y).filter(|_| grid.y) {
             let y_ticks =
                 compute_ticks_formatted(y_scale, tick_counts.y_target(), tick_formats.y.as_ref());
             render_y_grid(&mut scene, layout, &y_ticks, ink);
@@ -1056,8 +1065,9 @@ fn draw_multi_mark_scene(
 /// Returns `(empty scene, launch.clone())` for empty `entries`.
 ///
 /// Draws at [`brightfield_spec::layout::DEFAULT_TICK_COUNT`], in the axis's own
-/// tick text — like [`PinnedDomains`], a plot's `xTicks`/`yTicks` and
-/// `xTickFormat`/`yTickFormat` requests reach the static composition
+/// tick text, with gridlines on both axes — like [`PinnedDomains`], a plot's
+/// `xTicks`/`yTicks`, `xTickFormat`/`yTickFormat` and `grid`/`xGrid`/`yGrid`
+/// requests reach the static composition
 /// [`build_multi_mark_scene_pinned`] draws
 /// (`crates/brightfield-shell/src/pipeline.rs`), not this live rebuild path;
 /// the caller does not carry the request to hand in.
@@ -1078,6 +1088,7 @@ pub fn build_multi_mark_scene_anchored(
         titles,
         TickCounts::default(),
         TickFormats::default(),
+        GridLines::default(),
         &anchored,
     );
     (scene, anchored)
@@ -2317,6 +2328,7 @@ mod tests {
                 &PinnedDomains::default(),
                 tick_counts,
                 TickFormats::default(),
+                GridLines::default(),
                 ChartInk::LIGHT,
             );
             for channel in [Channel::X, Channel::Y] {
@@ -2371,6 +2383,208 @@ mod tests {
                  {ten} at 10"
             );
         }
+    }
+
+    /// **A plot draws gridlines on the axes its `GridLines` names: one rule at
+    /// each tick, across the data area, under the marks.**
+    ///
+    /// The rules are read back out of the scene's path stream rather than
+    /// counted. A scene is built once with no gridlines and once per switch
+    /// combination, and the points the second holds that the first does not
+    /// are the rules — the axis lines, tick marks and the mark itself are in
+    /// both. That run is compared segment by segment with
+    /// where the ticks the axis draws sit, so a rule at the wrong value, on
+    /// the wrong axis or short of the data area fails here where a count of
+    /// segments would pass.
+    ///
+    /// The two axes are given different tick counts (three x ticks, eleven y
+    /// ticks on a 0 to 100 domain), so a switch wired to the other axis draws
+    /// the wrong number of rules and is caught by the count alone.
+    #[test]
+    fn gridlines_draw_on_the_axes_asked_across_the_data_area_and_under_the_marks() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("x", DataType::Float64, false),
+            Field::new("y", DataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Float64Array::from(vec![0.0, 100.0, 30.0])),
+                Arc::new(Float64Array::from(vec![0.0, 100.0, 70.0])),
+            ],
+        )
+        .unwrap();
+        let mut cm = ChannelMap::new();
+        cm.insert(Channel::X, "x".to_string());
+        cm.insert(Channel::Y, "y".to_string());
+        let dot = DotRenderer;
+        let data = ChartData {
+            batch: &batch,
+            channel_map: &cm,
+            renderer: &dot,
+            layout: ChartLayout::new(600.0, 300.0),
+            view_extent: None,
+            highlight: None,
+            sample: None,
+            beyond_frame: false,
+        };
+        let counts = TickCounts {
+            x: Some(2),
+            y: Some(10),
+        };
+        let build = |grid: GridLines| {
+            build_multi_mark_scene_pinned(
+                &[&data],
+                false,
+                &ResolvedTitles::default(),
+                &UnsampledDomains::default(),
+                &PinnedDomains::default(),
+                counts,
+                TickFormats::default(),
+                grid,
+                ChartInk::LIGHT,
+            )
+        };
+        let points = |scene: &Scene| -> Vec<(f64, f64)> {
+            scene
+                .encoding()
+                .path_data
+                .chunks_exact(2)
+                .map(|pair| {
+                    (
+                        f64::from(f32::from_bits(pair[0])),
+                        f64::from(f32::from_bits(pair[1])),
+                    )
+                })
+                .collect()
+        };
+
+        let (both_scene, scales) = build(GridLines { x: true, y: true });
+        let none = points(&build(GridLines { x: false, y: false }).0);
+        let both = points(&both_scene);
+
+        let (x_scale, y_scale) = (
+            scales.get(Channel::X).expect("x scale"),
+            scales.get(Channel::Y).expect("y scale"),
+        );
+        let x_ticks = compute_ticks(x_scale, 2);
+        let y_ticks = compute_ticks(y_scale, 10);
+        assert_eq!(
+            (x_ticks.len(), y_ticks.len()),
+            (3, 11),
+            "fixture check: 2 and 10 on a 0 to 100 domain give ticks at 0, 50, 100 and at the tens"
+        );
+
+        let layout = data.layout;
+        let (left, right) = (layout.plot_x_start(), layout.plot_x_end());
+        let (top, bottom) = (layout.plot_y_start(), layout.plot_y_end());
+        let vertical = |x: f64| [(x, top), (x, bottom)];
+        let horizontal = |y: f64| [(left, y), (right, y)];
+
+        // A stroked line takes more than two points in the path stream, so what
+        // the rules should encode to is measured by stroking them through the
+        // encoder, as the grid does, rather than assumed. Runs are then compared
+        // a rule at a time, each point rounded to a thousandth of a pixel and
+        // the rules sorted, so the comparison holds the set of rules and not the
+        // order the x and y sets are drawn in.
+        let encoded = |rules: &[[(f64, f64); 2]]| -> Vec<(f64, f64)> {
+            let mut scene = Scene::new();
+            for rule in rules {
+                scene.stroke(
+                    &Stroke::new(0.5),
+                    Affine::IDENTITY,
+                    ChartInk::LIGHT.grid,
+                    None,
+                    &kurbo::Line::new(rule[0], rule[1]),
+                );
+            }
+            points(&scene)
+        };
+        let per_rule = encoded(&[vertical(x_ticks[0].position)]).len();
+        assert!(per_rule >= 2, "fixture check: a stroked line has points");
+        let as_rules = |run: &[(f64, f64)]| -> Vec<Vec<(i64, i64)>> {
+            assert_eq!(
+                run.len() % per_rule,
+                0,
+                "a run of {} points is not a whole number of rules at {per_rule} points a rule",
+                run.len()
+            );
+            let mut rules: Vec<Vec<(i64, i64)>> = run
+                .chunks(per_rule)
+                .map(|rule| {
+                    rule.iter()
+                        .map(|p| ((p.0 * 1000.0).round() as i64, (p.1 * 1000.0).round() as i64))
+                        .collect()
+                })
+                .collect();
+            rules.sort();
+            rules
+        };
+
+        for (grid, label) in [
+            (GridLines { x: true, y: true }, "both axes"),
+            (GridLines { x: true, y: false }, "x only"),
+            (GridLines { x: false, y: true }, "y only"),
+            (GridLines { x: false, y: false }, "neither axis"),
+        ] {
+            let drawn = points(&build(grid).0);
+            let added = drawn.len() - none.len();
+            // Where the run sits: the earliest start after which the rest of the
+            // scene is what it is without the rules. The common prefix alone can
+            // overshoot, when a rule's first point is also the next point of
+            // the scene without it.
+            let common = drawn.iter().zip(&none).take_while(|(a, b)| a == b).count();
+            let start = (0..=common)
+                .find(|&at| drawn[at + added..] == none[at..])
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{label}: what the switches add is not one run of points with the rest \
+                         of the scene unchanged"
+                    )
+                });
+
+            let mut expected: Vec<[(f64, f64); 2]> = Vec::new();
+            if grid.x {
+                expected.extend(x_ticks.iter().map(|tick| vertical(tick.position)));
+            }
+            if grid.y {
+                expected.extend(y_ticks.iter().map(|tick| horizontal(tick.position)));
+            }
+            assert_eq!(
+                as_rules(&drawn[start..start + added]),
+                as_rules(&encoded(&expected)),
+                "{label}: one rule at each tick of an axis that draws, none on one that does \
+                 not, each running the full data area at its tick"
+            );
+
+            // Under the marks: the dot's outline comes after the last rule.
+            let dot_at = |scale: &Scale, value: f64| match scale {
+                Scale::Linear {
+                    domain_min,
+                    domain_max,
+                    ..
+                } => {
+                    let t = (value - domain_min) / (domain_max - domain_min);
+                    scale.range_start() + t * (scale.range_end() - scale.range_start())
+                }
+                other => panic!("fixture check: expected a linear scale, got {other:?}"),
+            };
+            let centre = (dot_at(x_scale, 30.0), dot_at(y_scale, 70.0));
+            let first_dot_point = drawn
+                .iter()
+                .position(|p| (p.0 - centre.0).hypot(p.1 - centre.1) < 12.0)
+                .expect("the dot at (30, 70) is in the path stream");
+            assert!(
+                first_dot_point >= start + added,
+                "{label}: the rules end at point {} and the first point of the dot is at {first_dot_point}; \
+                 a rule drawn after the dot would sit on top of it",
+                start + added
+            );
+        }
+
+        // A plot that asks for nothing draws what it drew before the switches.
+        let asked_for_nothing = points(&build(GridLines::default()).0);
+        assert_eq!(asked_for_nothing, both, "the default is both axes");
     }
 
     #[test]

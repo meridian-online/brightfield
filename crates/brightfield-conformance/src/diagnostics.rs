@@ -272,6 +272,7 @@ fn warning_wire_name(warning: &ParseWarning) -> String {
         ParseWarning::NonNumericInset { attribute }
         | ParseWarning::NonStringLabel { attribute }
         | ParseWarning::InvalidTickCount { attribute }
+        | ParseWarning::InvalidGridSwitch { attribute }
         | ParseWarning::InvalidTickFormat { attribute, .. }
         | ParseWarning::UnreadDateDirective { attribute, .. }
         | ParseWarning::TickFormatOnWrongAxis { attribute, .. } => attribute.clone(),
@@ -316,6 +317,7 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         | ParseWarning::UnknownProjection { .. }
         | ParseWarning::NonStringLabel { .. }
         | ParseWarning::InvalidTickCount { .. }
+        | ParseWarning::InvalidGridSwitch { .. }
         | ParseWarning::InvalidTickFormat { .. }
         | ParseWarning::UnreadDateDirective { .. }
         | ParseWarning::TickFormatOnWrongAxis { .. } => "plot",
@@ -479,6 +481,44 @@ mod tests {
             hit.message.contains("xTicks"),
             "the sentence names it too: {}",
             hit.message
+        );
+    }
+
+    /// **A gridline switch that is no `true` or `false` is named in the warning
+    /// banner with its key.** `yGrid: 'off'` is an analyst's likely slip:
+    /// advisory (the plot still draws, with the gridlines it draws without the
+    /// key), naming `yGrid` as the wire name and `plot` as the surface, so the
+    /// setting that was dropped is not dropped in silence.
+    #[test]
+    fn dfconf_advisory_entry_names_a_bad_grid_switch() {
+        let d = diagnose(
+            "data:\n  t: { file: t.parquet }\nplot:\n  - mark: dot\n    data: { from: t }\n    \
+             x: a\n    y: b\nyGrid: 'off'\n",
+        );
+        assert!(d.blocking().is_empty(), "the plot still draws: {d:?}");
+        let advisory = d.advisory();
+        let hit = advisory
+            .iter()
+            .find(|diag| diag.wire_name == "yGrid")
+            .unwrap_or_else(|| panic!("no advisory names `yGrid`: {:?}", d.lines()));
+        assert_eq!(hit.surface, "plot");
+        assert!(
+            hit.message.contains("yGrid"),
+            "the sentence names it too: {}",
+            hit.message
+        );
+
+        let quiet = diagnose(
+            "data:\n  t: { file: t.parquet }\nplot:\n  - mark: dot\n    data: { from: t }\n    \
+             x: a\n    y: b\nyGrid: false\n",
+        );
+        assert!(
+            quiet
+                .advisory()
+                .iter()
+                .all(|diag| diag.wire_name != "yGrid"),
+            "a literal switch is not a warning: {:?}",
+            quiet.lines()
         );
     }
 
