@@ -4,8 +4,8 @@
 //! `build.rs` by path, which runs it over the vendored schema to generate
 //! `SCHEMA_AXIS_ATTRIBUTES`. One function serves both so the list the parser
 //! warns from and the list a test derives from an edited schema cannot be
-//! derived two different ways. It depends on `serde_json` and `std` and nothing
-//! of the crate's, because the build script has nothing else.
+//! derived two different ways. It uses `serde_json` and `std` alone, because
+//! those are what the build script is compiled with.
 
 /// Whether a plot attribute name is an axis attribute: the bare `grid`, or `x`
 /// or `y` followed by a capital letter. Facet axes (`fxLabel`, `fyGrid`) start
