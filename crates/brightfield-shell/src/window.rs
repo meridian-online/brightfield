@@ -1798,7 +1798,7 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
 /// hero pane's keys to the shelf band.
 ///
 /// Read off the registry like every token the shell wires, so a key moved there
-/// moves here; a token this does not map is a key nothing opens on, which fails
+/// moves here; a token this does not map is a key that opens no cell, which fails
 /// safe as [`consume_token`] does.
 fn shelf_entry_key() -> Option<egui::Key> {
     static TOKEN: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
@@ -1929,7 +1929,7 @@ struct ShelfHold {
     holds: bool,
     /// The title the Outline's list is headed with: the hero pane's own.
     tile: String,
-    /// What the band drew on the last frame. `None` on a frame that drew none:
+    /// What the band drew on the last frame. `None` on a frame that drew no band:
     /// cleared with the frame's other records and written by
     /// [`carve_shelf_band`].
     drawn: Option<BandDrawn>,
@@ -5286,7 +5286,7 @@ impl MeridianApp {
     /// A bare key while the band has the keys and no list is open.
     ///
     /// `Esc` with no cell open hands the keys back to the pane, which is the
-    /// level the band's own `back-out-of-shelf` has nothing left to leave.
+    /// level the band's own `back-out-of-shelf` has no cell left to leave.
     fn shelf_band_key(&mut self, key: egui::Key, modifiers: egui::Modifiers) {
         let Some(band) = self.charts.shelf.band.as_mut() else {
             return;
@@ -5359,7 +5359,7 @@ impl MeridianApp {
     }
 
     /// The band under the hero's header, as the last frame drew it. `None` on a
-    /// frame whose canvas drew none: a document with no live spec, a window
+    /// frame whose canvas drew no band: a document with no live spec, a window
     /// whose shelf is switched off, or a canvas that is not the dashboard.
     #[must_use]
     pub fn shelf_drawn(&self) -> Option<&BandDrawn> {
@@ -9082,7 +9082,7 @@ fn carve_shelf_band(
 }
 
 /// The height the hero pane gives its band this frame: [`BAND_HEIGHT`] where
-/// [`carve_shelf_band`] will draw one, and nothing where it will not.
+/// [`carve_shelf_band`] will draw one, and zero where it will not.
 fn shelf_band_room(charts: &ChartView) -> f32 {
     if charts.shelf.enabled && hero_shelf_channels(&charts.doc).is_some() {
         BAND_HEIGHT
