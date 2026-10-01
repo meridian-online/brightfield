@@ -53,6 +53,12 @@ fn legend(plot: &str) -> ChartEdit {
     }
 }
 
+fn unlegend(plot: &str) -> ChartEdit {
+    ChartEdit::RemoveColourLegend {
+        plot: ComponentPath(plot.to_string()),
+    }
+}
+
 fn remove(plot: &str, key: &str) -> ChartEdit {
     ChartEdit::RemovePlotAttribute {
         plot: ComponentPath(plot.to_string()),
@@ -762,5 +768,161 @@ fn a_colour_legend_on_a_flow_list_is_refused() {
     assert!(
         matches!(&refusal, ChartTextRefusal::Splice { detail } if detail.contains("block list")),
         "the refusal is {refusal:?}, not the writer's own for a list it cannot indent"
+    );
+}
+
+// ----------------------------------------------- the colour legend, taken out
+
+/// On the generated map, taking the colour legend out of a file that holds it
+/// is the one `- legend: color` line gone, and the rest of the file — the header
+/// comment, the comment above each tile — is byte-identical. The text parses
+/// to the spec the reducer makes, and it is the text the generator wrote:
+/// writing the legend in and taking it out leaves nothing behind.
+#[test]
+fn taking_the_colour_legend_off_the_generated_map_takes_out_one_line() {
+    let with = write_chart_edit(GENERATED, &legend(HERO)).expect("the legend is written in");
+    let edit = unlegend(HERO);
+
+    let written = write_chart_edit(&with, &edit).expect("the edit is written");
+
+    assert_eq!(
+        changed_lines(&with, &written),
+        [(Some("      - legend: color".to_string()), None)],
+        "the edit changed a line other than the one it took out"
+    );
+    assert_eq!(written, GENERATED);
+    assert!(written.starts_with("# Brightfield wrote this dashboard"));
+    assert!(written.contains(NEXT_TILE_COMMENT), "a tile's comment went");
+    assert_eq!(written.matches("legend:").count(), 0);
+    assert_eq!(parse(&written), applied_fresh(&with, &edit));
+    let hero = edit::plot_at_path(&parse(&written), HERO)
+        .expect("the hero")
+        .clone();
+    assert!(
+        hero.items
+            .iter()
+            .all(|c| !matches!(c, brightfield_spec::ast::Component::Legend(_))),
+        "the hero still holds a legend: {:?}",
+        hero.items
+    );
+}
+
+/// A hand-kept chart keeps its legend between two marks and a blank line after
+/// it. The removal takes out the legend's line and that blank line, so the
+/// marks do not stand a line further apart, and not another line of the plot:
+/// the comment at the head of the file, the comment on the mark's line, and the
+/// comment above the second mark are in the text still. Put back with the edit
+/// to right, the line comes back after the list's last item, above the comment
+/// that closes the list.
+#[test]
+fn taking_a_colour_legend_off_a_hand_kept_chart_takes_its_line_and_the_blank_one_after() {
+    let text = "\
+# A hand-kept chart.
+vconcat:
+  # the first tile
+  - plot:
+        - mark: dot
+          data: { from: t }   # the readings
+          x: a
+          fill: b
+        - legend: color
+
+        # the line over it
+        - mark: line
+          data: { from: t }
+          x: a
+          y: b
+        # the marks end here
+    width: 300
+  # the second tile
+  - plot:
+        - mark: dot
+          data: { from: t }
+          x: a
+    width: 300
+";
+    let edit = unlegend("root/vconcat[0]");
+
+    let written = write_chart_edit(text, &edit).expect("the edit is written");
+
+    assert_eq!(written, text.replace("        - legend: color\n\n", ""));
+    assert_eq!(
+        changed_lines(text, &written),
+        [
+            (Some("        - legend: color".to_string()), None),
+            (Some(String::new()), None),
+        ],
+        "the edit changed a line other than the legend's and the blank one after it"
+    );
+    for kept in [
+        "# A hand-kept chart.",
+        "# the first tile",
+        "# the readings",
+        "# the line over it",
+        "# the marks end here",
+        "# the second tile",
+    ] {
+        assert!(written.contains(kept), "the comment {kept:?} went");
+    }
+    assert_eq!(parse(&written), applied_fresh(text, &edit));
+
+    let put_back = write_chart_edit(&written, &legend("root/vconcat[0]")).expect("it is put back");
+    assert_eq!(
+        put_back,
+        written.replace(
+            "          y: b\n",
+            "          y: b\n        - legend: color\n"
+        ),
+        "the item should return at the end of the plot's list, above the comment closing it"
+    );
+}
+
+/// A plot that holds no colour legend is the spec as it was, so the text comes
+/// back byte for byte.
+#[test]
+fn taking_a_colour_legend_off_a_plot_that_holds_none_returns_the_text_unchanged() {
+    let written = write_chart_edit(GENERATED, &unlegend(HERO)).expect("the edit is written");
+
+    assert_eq!(written, GENERATED);
+}
+
+/// A plot that lists two colour legends has both taken out, and the legend for
+/// another channel between them stays. The second is taken out of the text the
+/// first left, so the batch goes last item first.
+#[test]
+fn taking_the_colour_legend_off_a_plot_that_lists_it_twice_takes_both_lines() {
+    let text = "\
+plot:
+  - legend: color
+  - mark: dot
+    data: { from: t }
+    x: a
+  - legend: opacity
+  - legend: color
+width: 300
+";
+    let edit = unlegend("root");
+
+    let written = write_chart_edit(text, &edit).expect("the edit is written");
+
+    assert_eq!(
+        written,
+        "plot:\n  - mark: dot\n    data: { from: t }\n    x: a\n  - legend: opacity\nwidth: 300\n"
+    );
+    assert_eq!(parse(&written), applied_fresh(text, &edit));
+}
+
+/// A flow list has lines for neither the item nor its neighbours, and arcform
+/// refuses to take an element out of one, so the edit is refused and not
+/// written into the wrong place.
+#[test]
+fn taking_a_colour_legend_off_a_flow_list_is_refused() {
+    let text = "plot: [ { mark: dot, data: { from: t }, x: a }, { legend: color } ]\nwidth: 300\n";
+
+    let refusal = write_chart_edit(text, &unlegend("root")).expect_err("a flow list is refused");
+
+    assert!(
+        matches!(&refusal, ChartTextRefusal::Splice { .. }),
+        "the refusal is {refusal:?}, not arcform's own for a flow collection"
     );
 }
