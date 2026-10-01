@@ -14,7 +14,7 @@
 //! YAML itself: it maps the edit to a path and a value and hands both over. The path
 //! comes from [`plot_route`], which walks the same tree the reducer walks.
 //!
-//! **What is written.** Three of [`ChartEdit`]'s six kinds, each as a change
+//! **What is written.** Four of [`ChartEdit`]'s seven kinds, each as a change
 //! to the lines it names and no other:
 //!
 //! - A [`ChartEdit::SetPlotAttribute`], the edit the scale and normalise
@@ -28,6 +28,16 @@
 //!   cannot place, or one that is not a column name, is replaced in the
 //!   whole-spec serialiser's spelling. A mark without the channel gains one
 //!   line after its last key.
+//! - A [`ChartEdit::AddColourLegend`], the edit the shelf makes when a column
+//!   goes on colour. One `- legend: color` line is added after the last item of
+//!   the plot's list, indented as the list's own items are, and above a
+//!   comment that closes the list. A plot that already holds the item
+//!   is the spec as it was, so the text comes back unchanged. The indent is
+//!   read from arcform: a throwaway key is added to the last item, the line it
+//!   lands on says how far in the item's keys sit, and the item goes two
+//!   columns short of that. A list whose items are written in flow style gives
+//!   no such line, and is refused; so is a list whose item the `- ` is not two
+//!   columns wide for, because the text then reads back as another chart.
 //! - A [`ChartEdit::RemovePlotAttribute`], the edit that takes a map's
 //!   projection out. The key's line is taken out. By arcform's rule of comment
 //!   ownership a comment flush above the line, indented no deeper than it, is
@@ -157,8 +167,9 @@ impl std::error::Error for ChartTextRefusal {}
 pub fn write_chart_edit(text: &str, edit: &ChartEdit) -> Result<String, ChartTextRefusal> {
     let (plot, key) = match edit {
         ChartEdit::SetPlotAttribute { plot, key, .. }
-        | ChartEdit::RemovePlotAttribute { plot, key } => (plot, key),
-        ChartEdit::SetChannel { plot, channel, .. } => (plot, channel),
+        | ChartEdit::RemovePlotAttribute { plot, key } => (plot, key.as_str()),
+        ChartEdit::SetChannel { plot, channel, .. } => (plot, channel.as_str()),
+        ChartEdit::AddColourLegend { plot } => (plot, LEGEND_KEY),
         ChartEdit::ChangeMarkType { .. }
         | ChartEdit::AddMark { .. }
         | ChartEdit::RemoveMark { .. } => {
@@ -235,6 +246,20 @@ pub fn write_chart_edit(text: &str, edit: &ChartEdit) -> Result<String, ChartTex
             splices.push(set_key(text, mark, channel, spelled));
             splices
         }
+        ChartEdit::AddColourLegend { .. } => {
+            let last = plot_at_path(&parsed, &plot.0)
+                .and_then(|p| p.items.len().checked_sub(1))
+                .ok_or_else(|| ChartTextRefusal::Splice {
+                    detail: "the plot's list has no item to place a legend after".to_string(),
+                })?;
+            let mut list = route;
+            list.push(PathPart::from("plot"));
+            let indent = item_indent(text, &list, last)?;
+            vec![SpecEdit::Append {
+                path: list,
+                item: format!("{indent}- {COLOUR_LEGEND_ITEM}"),
+            }]
+        }
         ChartEdit::ChangeMarkType { .. }
         | ChartEdit::AddMark { .. }
         | ChartEdit::RemoveMark { .. } => {
@@ -244,7 +269,9 @@ pub fn write_chart_edit(text: &str, edit: &ChartEdit) -> Result<String, ChartTex
         }
     };
 
-    let mut refusal = ChartTextRefusal::ReadsBackDifferently { key: key.clone() };
+    let mut refusal = ChartTextRefusal::ReadsBackDifferently {
+        key: key.to_string(),
+    };
     for splice in splices {
         match apply_yaml_edits(text, &[splice]) {
             Ok(written) => {
@@ -252,7 +279,9 @@ pub fn write_chart_edit(text: &str, edit: &ChartEdit) -> Result<String, ChartTex
                 if reads_back.as_ref() == Some(&edited) {
                     return Ok(written);
                 }
-                refusal = ChartTextRefusal::ReadsBackDifferently { key: key.clone() };
+                refusal = ChartTextRefusal::ReadsBackDifferently {
+                    key: key.to_string(),
+                };
             }
             Err(e) => {
                 refusal = ChartTextRefusal::Splice {
@@ -262,6 +291,49 @@ pub fn write_chart_edit(text: &str, edit: &ChartEdit) -> Result<String, ChartTex
         }
     }
     Err(refusal)
+}
+
+/// The key a colour legend item is written under, the one a refusal names.
+const LEGEND_KEY: &str = "legend";
+
+/// The colour legend's item, as it is written after the `- `.
+const COLOUR_LEGEND_ITEM: &str = "legend: color";
+
+/// The key [`item_indent`] adds to an item to see where arcform puts it.
+const INDENT_PROBE_KEY: &str = "indent_probe";
+
+/// The leading spaces the items of the block list at `list` are written with,
+/// where `last` is the index of the list's last item.
+///
+/// arcform indents a key it adds to a mapping like that mapping's other keys,
+/// and for an item written `- mark: dot` those keys sit two columns past the
+/// item's own `- `. So a probe key is added to the last item, the line it lands
+/// on is read, and the probe is thrown away with the text it was added to.
+/// arcform's own reader of this, `sequence_item_indent`, is not exported.
+fn item_indent(text: &str, list: &[PathPart], last: usize) -> Result<String, ChartTextRefusal> {
+    let mut item = list.to_vec();
+    item.push(PathPart::from(last));
+    let probed = apply_yaml_edits(
+        text,
+        &[SpecEdit::Add {
+            path: item,
+            key: INDENT_PROBE_KEY.to_string(),
+            value: "0".to_string(),
+        }],
+    )
+    .map_err(|e| ChartTextRefusal::Splice {
+        detail: e.to_string(),
+    })?;
+    probed
+        .lines()
+        .find(|line| line.trim_start().starts_with(INDENT_PROBE_KEY))
+        .and_then(|line| {
+            let keys = line.len() - line.trim_start().len();
+            keys.checked_sub(2).map(|items| " ".repeat(items))
+        })
+        .ok_or_else(|| ChartTextRefusal::Splice {
+            detail: "the plot's items are not written as a block list of mappings".to_string(),
+        })
 }
 
 /// The splice that writes `key: spelled` into the mapping at `route`: the
