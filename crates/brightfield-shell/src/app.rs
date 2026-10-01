@@ -61,7 +61,7 @@ use brightfield_engine::nearest::{NearestProbe, NearestRead};
 use brightfield_engine::{AxisExtent, NavigationExtent};
 use brightfield_keys::BindingContext;
 use brightfield_model::panel_capture::{panel_file, write_panel_text};
-use brightfield_protocol::write_chart_edit;
+use brightfield_protocol::{write_chart_edit, ChartVersions, HistoryStore, NotRecorded};
 use brightfield_render::canvas_host::{ChartSurface, Color, PixelSize};
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_spec::ast::SpecValue;
@@ -1260,6 +1260,13 @@ impl ChartDoc {
     /// editor pane shows what was saved, and watches it in place of the
     /// scratch file.
     ///
+    /// **Each Save records a version.** With a `history` store the text the
+    /// write replaces is recorded in the chart file's own local history before
+    /// the write, and the text written after it
+    /// ([`ChartVersions`](brightfield_protocol::ChartVersions)). The history
+    /// never holds the Save back: a store that cannot be opened leaves the chart
+    /// written and comes back as the `Ok` value, for the window to say.
+    ///
     /// # Errors
     ///
     /// [`ChartSaveError`] for an edit that cannot be placed, a file that cannot
@@ -1268,22 +1275,24 @@ impl ChartDoc {
         &mut self,
         dir: &std::path::Path,
         name: &str,
-    ) -> Result<(), ChartSaveError> {
+        history: Option<&HistoryStore>,
+    ) -> Result<Option<NotRecorded>, ChartSaveError> {
         let target = panel_file(dir, name);
-        let text = match std::fs::read_to_string(&target) {
-            Ok(text) => text,
+        let (text, on_disk) = match std::fs::read_to_string(&target) {
+            Ok(text) => (text, true),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let Some(from) = self.spec_path.clone() else {
                     // Nothing to write when nothing was edited; an edit with
                     // no text to go into is one the window cannot keep.
                     return if self.pending_edits.is_empty() {
-                        Ok(())
+                        Ok(None)
                     } else {
                         Err(ChartSaveError::NoText)
                     };
                 };
-                std::fs::read_to_string(&from)
-                    .map_err(|error| ChartSaveError::Read { path: from, error })?
+                let text = std::fs::read_to_string(&from)
+                    .map_err(|error| ChartSaveError::Read { path: from, error })?;
+                (text, false)
             }
             Err(error) => {
                 return Err(ChartSaveError::Read {
@@ -1292,7 +1301,7 @@ impl ChartDoc {
                 })
             }
         };
-        let mut placed = text;
+        let mut placed = text.clone();
         for edit in &self.pending_edits {
             placed =
                 write_chart_edit(&placed, edit).map_err(|refusal| ChartSaveError::Unplaced {
@@ -1300,11 +1309,17 @@ impl ChartDoc {
                     refusal,
                 })?;
         }
+        // Begun after every edit has gone in, so a Save that places nothing
+        // records nothing; the text recorded as replaced is the file's, and a
+        // chart file that is not there yet replaces none.
+        let versions = history
+            .map(|store| ChartVersions::begin(store, &target, on_disk.then_some(text.as_str())));
         let written =
             write_panel_text(dir, name, &placed).map_err(|error| ChartSaveError::Write {
                 path: target,
                 error,
             })?;
+        let not_recorded = versions.and_then(|versions| versions.finish(&placed).err());
         let path = std::path::absolute(&written).unwrap_or(written);
         self.pending_edits.clear();
         if self.spec_path.as_deref() == Some(path.as_path()) {
@@ -1314,7 +1329,7 @@ impl ChartDoc {
             self.spec_path = Some(path);
             self.wire_watch();
         }
-        Ok(())
+        Ok(not_recorded)
     }
 
     /// What `edit` is about, in words a reader who never saw a plot path can

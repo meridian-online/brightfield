@@ -29,6 +29,7 @@
 //! panel and the headless shot).
 
 pub mod chain;
+pub mod chart_history;
 pub mod chart_text;
 pub mod collapse;
 pub mod contract;
@@ -49,6 +50,7 @@ use std::fs;
 use std::path::Path;
 
 pub use chain::{chain_tails, contract_chains};
+pub use chart_history::{ChartVersions, HistoryStore, NotRecorded};
 pub use chart_text::{write_chart_edit, ChartTextRefusal};
 pub use collapse::collapse_families;
 pub use contract::{
