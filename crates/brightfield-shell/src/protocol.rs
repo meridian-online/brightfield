@@ -62,6 +62,7 @@ use brightfield_protocol::{
 use brightfield_render::canvas_host::{Color, PixelSize};
 
 use brightfield_keys::BindingContext;
+use brightfield_workbench::channel::ShelfChannel;
 use brightfield_workbench::registry::{DockSide, Slot};
 use brightfield_workbench::subject::RunState;
 use brightfield_workbench::{
@@ -74,6 +75,7 @@ use meridian_design::{control, semantic, spacing};
 use crate::canvas::{CanvasSlot, EguiCanvasHost};
 use crate::design::Mode;
 use crate::one_step::{ColumnFacts, OneStepProtocol};
+use crate::shelf::{ColumnList, ColumnListRequest, ListColumn, ListReport, ShelfChannels};
 use crate::starts;
 use crate::text_ink;
 
@@ -749,7 +751,7 @@ fn viewable_nodes(graph: &AssetGraph) -> impl Iterator<Item = &AssetId> {
 }
 
 /// A caption row's text: its clauses, separated.
-fn caption(clauses: &[&str]) -> String {
+pub(crate) fn caption(clauses: &[&str]) -> String {
     clauses.join(CAPTION_SEPARATOR)
 }
 
@@ -931,6 +933,12 @@ pub struct ProtocolModel {
     /// — an item is handed its own document and no other — so the pick is
     /// recorded here and carried across after the frame.
     column_pick: Option<String>,
+    /// The list of a channel's columns, while a shelf cell is active. The
+    /// Outline draws it in place of the plain column rows.
+    column_list: Option<ColumnList>,
+    /// What a click on a row of that list decided, drained by the window with
+    /// what the list's keys decided.
+    list_reports: Vec<ListReport>,
     /// Bumps on every re-layout — the raster cache invalidates on a scope/drill
     /// change too, not just an expand/flow flip.
     layout_gen: u64,
@@ -993,6 +1001,8 @@ impl ProtocolModel {
             source: inputs.source,
             selected_column: None,
             column_pick: None,
+            column_list: None,
+            list_reports: Vec::new(),
             nav,
             sheet,
             family_ids,
@@ -1802,6 +1812,49 @@ impl ProtocolModel {
     /// this frame.
     pub fn take_column_pick(&mut self) -> Option<String> {
         self.column_pick.take()
+    }
+
+    /// Open the Outline's list of `channel`'s columns, headed with `tile`, the
+    /// cursor on the column `channels` binds to the channel.
+    pub fn open_column_list(&mut self, tile: &str, channel: ShelfChannel, channels: ShelfChannels) {
+        let columns = self
+            .columns
+            .iter()
+            .map(|c| ListColumn {
+                name: c.column.clone(),
+                kind: c.leaf.clone(),
+            })
+            .collect();
+        self.column_list = Some(ColumnList::new(ColumnListRequest {
+            tile: tile.to_string(),
+            channel,
+            channels,
+            columns,
+        }));
+        self.list_reports.clear();
+    }
+
+    /// Close the list: the Outline draws its plain column rows again.
+    pub fn close_column_list(&mut self) {
+        self.column_list = None;
+        self.list_reports.clear();
+    }
+
+    /// The open list, if a shelf cell is active.
+    #[must_use]
+    pub fn column_list(&self) -> Option<&ColumnList> {
+        self.column_list.as_ref()
+    }
+
+    /// Hand the open list `events`, and take what it reports, with what a click
+    /// on one of its rows reported since the last call. Empty when no list is
+    /// open.
+    pub fn feed_column_list(&mut self, events: &[egui::Event]) -> Vec<ListReport> {
+        let mut out = std::mem::take(&mut self.list_reports);
+        if let Some(list) = self.column_list.as_mut() {
+            out.extend(list.feed_events(events));
+        }
+        out
     }
 
     /// Record that `column`'s outline row was clicked.
@@ -2868,6 +2921,11 @@ impl Item<ProtocolDoc> for OutlinePane {
             .cloned()
             .zip(doc.model.table().cloned());
         let mut graph_picked = false;
+        // The list a shelf cell opens takes the columns' place while it is open.
+        // It is taken out of the model for the frame, because drawing it moves
+        // its cursor on a click.
+        let mut list = doc.model.column_list.take();
+        let mut list_reports: Vec<ListReport> = Vec::new();
         // Whether the chip is a control here. A Protocol with no node that has
         // views — every Protocol read from a manifest — has nothing for the
         // canvas to hold but the graph, so the chip there is a readout of that
@@ -2917,6 +2975,12 @@ impl Item<ProtocolDoc> for OutlinePane {
                     }
                 }
                 ui.add_space(spacing::SPACE_4);
+                if let Some(list) = list.as_mut() {
+                    let shown = list.show(ui, cx.mode);
+                    drawn.extend(list_records(&shown));
+                    list_reports = shown.reports;
+                    return;
+                }
                 drawn.push(caption_row(ui, &outline_caption, cx.mode));
                 for row in &columns {
                     let (record, response) = outline_row(ui, row, cx.mode);
@@ -2929,6 +2993,11 @@ impl Item<ProtocolDoc> for OutlinePane {
                     }
                 }
             });
+        doc.model.column_list = list;
+        if !list_reports.is_empty() {
+            doc.model.list_reports.extend(list_reports);
+            cx.request_repaint();
+        }
         doc.spine_drawn = drawn;
         if let Some(id) = clicked {
             doc.model.select_id(id);
@@ -2946,6 +3015,41 @@ impl Item<ProtocolDoc> for OutlinePane {
             cx.request_repaint();
         }
     }
+}
+
+/// The rows of a drawn column list as the pane records them: the heading as a
+/// caption and each column as a column row, the one under the cursor washed.
+fn list_records(shown: &crate::shelf::ListDrawn) -> Vec<SpineRowDrawn> {
+    let heading = SpineRowDrawn {
+        label: shown.heading_text.clone(),
+        kind: String::new(),
+        depth: 0,
+        marker: SpineMarker::None,
+        role: SpineRole::Caption,
+        rect: shown.heading,
+        name_rect: shown.heading_name,
+        kind_rect: None,
+        on_canvas: None,
+        washed: false,
+        chip: None,
+        control: false,
+    };
+    std::iter::once(heading)
+        .chain(shown.rows.iter().map(|row| SpineRowDrawn {
+            label: row.column.clone(),
+            kind: row.kind.clone(),
+            depth: 1,
+            marker: SpineMarker::None,
+            role: SpineRole::Column,
+            rect: row.rect,
+            name_rect: row.name_rect,
+            kind_rect: Some(row.kind_rect),
+            on_canvas: None,
+            washed: row.bar.is_some(),
+            chip: None,
+            control: true,
+        }))
+        .collect()
 }
 
 /// A **caption row**: one dense row naming the band under it, in the mono face
@@ -3431,7 +3535,7 @@ const SPINE_MARKER_RADIUS: f32 = 2.5;
 /// One step down because a caption names the band under it rather than
 /// competing with it. Mono because a caption's clauses line up between the two
 /// captions this pane draws, and a proportional face lines nothing up.
-fn caption_font() -> egui::FontId {
+pub(crate) fn caption_font() -> egui::FontId {
     egui::FontId::monospace(meridian_design::typography::UI_SIZE - 1.0)
 }
 

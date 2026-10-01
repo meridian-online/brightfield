@@ -56,9 +56,9 @@ use meridian_design::{control, semantic, spacing, typography};
 use meridian_egui::{icons, key_chip};
 
 use crate::design::Mode;
-use crate::protocol::ui_font;
+use crate::protocol::{caption, caption_font, ui_font};
 use crate::shelf_edit::{column_of, marks_of, reads_selection};
-use crate::text_ink;
+use crate::text_ink::{self, TwoEndedRow};
 
 /// What a channel with no column reads.
 pub const ADD_A_COLUMN: &str = "add a column";
@@ -566,8 +566,8 @@ fn shelf_keys() -> &'static ResolutionTable {
     TABLE.get_or_init(|| resolution_table(&keymap_bindings(&registry())))
 }
 
-/// The registry's keystroke for an egui key the band answers, with no modifier
-/// held.
+/// The registry's keystroke for an egui key the Shelf context binds, with no
+/// modifier held: the band's and the list's.
 fn key_token(key: egui::Key) -> Option<&'static str> {
     use egui::Key;
     Some(match key {
@@ -576,10 +576,668 @@ fn key_token(key: egui::Key) -> Option<&'static str> {
         Key::Y => "y",
         Key::C => "c",
         Key::H => "h",
+        Key::J => "j",
+        Key::K => "k",
         Key::L => "l",
+        Key::Slash => "/",
         Key::ArrowLeft => "left",
         Key::ArrowRight => "right",
+        Key::ArrowUp => "up",
+        Key::ArrowDown => "down",
+        Key::Enter => "enter",
         Key::Escape => "escape",
         _ => return None,
     })
+}
+
+// ---------------------------------------------------------------------------
+// The column list.
+// ---------------------------------------------------------------------------
+
+/// One column of the table, as the list offers it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListColumn {
+    /// The column's name.
+    pub name: String,
+    /// What the row says at its trailing end: the column's type.
+    pub kind: String,
+}
+
+/// What the window asks the list to open on.
+#[derive(Clone, Debug)]
+pub struct ColumnListRequest {
+    /// The tile the cell belongs to, as the heading names it.
+    pub tile: String,
+    /// The channel whose list opens.
+    pub channel: ShelfChannel,
+    /// What each channel of the tile's mark is bound to, so the cursor opens on
+    /// the column the channel holds and a switch of channel finds the next one's.
+    pub channels: ShelfChannels,
+    /// The table's columns, in the table's order.
+    pub columns: Vec<ListColumn>,
+}
+
+/// What a key or a click decided, for the window to act on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ListReport {
+    /// The cursor moved to this column, which the chart draws as a preview.
+    Moved(String),
+    /// `Enter` kept this column.
+    Kept(String),
+    /// `Esc` with the query empty: the reader backs out of the list.
+    BackedOut,
+    /// A channel's letter named this channel. The list is on it when it lists
+    /// columns, which the mark's cell does not.
+    GoTo(ShelfChannel),
+    /// `h` or `l` named the channel beside, and the list stays open. The list is
+    /// on it when it lists columns.
+    Beside(ShelfChannel),
+}
+
+/// The list of a channel's columns, with a query line.
+///
+/// Two states say who has the keys. While the rows have them, a letter is a
+/// verb: `j` `k` move the cursor, `h` `l` and the channel letters go to another
+/// channel, `/` gives the keys to the query. While the query has them, a letter
+/// is text, and only `Enter`, `Esc`, `Backspace` and the up and down arrows act.
+/// The rows hold no query: leaving the query clears it.
+#[derive(Clone, Debug)]
+pub struct ColumnList {
+    tile: String,
+    channel: ShelfChannel,
+    channels: ShelfChannels,
+    columns: Vec<ListColumn>,
+    query: String,
+    querying: bool,
+    /// The row under the cursor, as an index into `columns`.
+    cursor: Option<usize>,
+    /// The cursor moved, so the next frame scrolls its row into view.
+    scroll: bool,
+}
+
+impl ColumnList {
+    /// A list open on `request`'s channel, the cursor on the column it holds.
+    #[must_use]
+    pub fn new(request: ColumnListRequest) -> Self {
+        let mut list = Self {
+            tile: request.tile,
+            channel: request.channel,
+            channels: request.channels,
+            columns: request.columns,
+            query: String::new(),
+            querying: false,
+            cursor: None,
+            scroll: true,
+        };
+        list.cursor = list.held();
+        list
+    }
+
+    /// The channel the list is on.
+    #[must_use]
+    pub fn channel(&self) -> ShelfChannel {
+        self.channel
+    }
+
+    /// The tile the heading names.
+    #[must_use]
+    pub fn tile(&self) -> &str {
+        &self.tile
+    }
+
+    /// What has been typed.
+    #[must_use]
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    /// Whether the query has the keys.
+    #[must_use]
+    pub fn querying(&self) -> bool {
+        self.querying
+    }
+
+    /// The column under the cursor.
+    #[must_use]
+    pub fn cursor(&self) -> Option<&str> {
+        self.cursor.map(|i| self.columns[i].name.as_str())
+    }
+
+    /// The columns in the order the list draws them: those the query matches,
+    /// then the rest. With no query it is the table's order.
+    #[must_use]
+    pub fn display(&self) -> Vec<&str> {
+        self.order()
+            .0
+            .into_iter()
+            .map(|i| self.columns[i].name.as_str())
+            .collect()
+    }
+
+    /// The index of the column the list's channel holds.
+    fn held(&self) -> Option<usize> {
+        let Some(Binding::Column(name)) = self.channels.binding(self.channel) else {
+            return None;
+        };
+        self.columns.iter().position(|c| &c.name == name)
+    }
+
+    /// The columns in drawing order, and how many of them the query matched.
+    ///
+    /// A name that begins with the letters leads one that only contains them,
+    /// and every column is listed: a column the query does not match is below
+    /// the divider, not gone.
+    fn order(&self) -> (Vec<usize>, usize) {
+        if self.query.is_empty() {
+            return ((0..self.columns.len()).collect(), 0);
+        }
+        let named = |i: &usize| self.columns[*i].name.to_lowercase();
+        let all: Vec<usize> = (0..self.columns.len()).collect();
+        let mut order: Vec<usize> = all
+            .iter()
+            .copied()
+            .filter(|i| named(i).starts_with(&self.query))
+            .collect();
+        order.extend(
+            all.iter()
+                .copied()
+                .filter(|i| !named(i).starts_with(&self.query) && named(i).contains(&self.query)),
+        );
+        let matched = order.len();
+        order.extend(all.iter().copied().filter(|i| !named(i).contains(&self.query)));
+        (order, matched)
+    }
+
+    /// Put the cursor on `to`, and report the column when it is a new one.
+    fn land(&mut self, to: Option<usize>, out: &mut Vec<ListReport>) {
+        if self.cursor == to {
+            return;
+        }
+        self.cursor = to;
+        self.scroll = true;
+        if let Some(i) = to {
+            out.push(ListReport::Moved(self.columns[i].name.clone()));
+        }
+    }
+
+    /// Move the cursor `by` rows through the rows as drawn, and stop at the ends.
+    fn step(&mut self, by: isize, out: &mut Vec<ListReport>) {
+        let (order, _) = self.order();
+        let Some(last) = order.len().checked_sub(1) else {
+            return;
+        };
+        let at = self.cursor.and_then(|c| order.iter().position(|i| *i == c));
+        let next = match at {
+            None if by > 0 => 0,
+            None => last,
+            Some(i) => i.saturating_add_signed(by).min(last),
+        };
+        self.land(Some(order[next]), out);
+    }
+
+    /// The query changed: the cursor goes to the best match, and with an empty
+    /// query back to the column the channel holds.
+    fn requery(&mut self, out: &mut Vec<ListReport>) {
+        let to = if self.query.is_empty() {
+            self.held()
+        } else {
+            let (order, matched) = self.order();
+            (matched > 0).then(|| order[0])
+        };
+        self.land(to, out);
+    }
+
+    /// `Enter`: keep the row under the cursor.
+    fn keep(&mut self, out: &mut Vec<ListReport>) {
+        if let Some(name) = self.cursor() {
+            out.push(ListReport::Kept(name.to_string()));
+            self.querying = false;
+        }
+    }
+
+    /// `Esc`: the query first, and with none, the list.
+    fn back(&mut self, out: &mut Vec<ListReport>) {
+        if self.querying || !self.query.is_empty() {
+            self.querying = false;
+            self.query.clear();
+            self.requery(out);
+        } else {
+            out.push(ListReport::BackedOut);
+        }
+    }
+
+    /// Name `to`, and move the list onto it when it lists columns.
+    fn go_to(&mut self, to: ShelfChannel, beside: bool, out: &mut Vec<ListReport>) {
+        if to == self.channel {
+            return;
+        }
+        if to != ShelfChannel::Mark {
+            self.channel = to;
+            self.query.clear();
+            self.querying = false;
+            self.cursor = self.held();
+            self.scroll = true;
+        }
+        out.push(if beside {
+            ListReport::Beside(to)
+        } else {
+            ListReport::GoTo(to)
+        });
+    }
+
+    /// The channel `by` places from this one, where there is one.
+    fn go_beside(&mut self, by: isize, out: &mut Vec<ListReport>) {
+        let to = self
+            .channel
+            .index()
+            .checked_add_signed(by)
+            .and_then(|i| ShelfChannel::ALL.get(i));
+        if let Some(to) = to {
+            self.go_to(*to, true, out);
+        }
+    }
+
+    /// Answer the registry's Shelf-context verb `verb`, and say whether the list
+    /// answers it.
+    fn dispatch(&mut self, verb: &str, out: &mut Vec<ListReport>) -> bool {
+        match verb {
+            "move-shelf-next-row" => self.step(1, out),
+            "move-shelf-prev-row" => self.step(-1, out),
+            "move-shelf-left" => self.go_beside(-1, out),
+            "move-shelf-right" => self.go_beside(1, out),
+            "narrow-shelf-list" => self.querying = true,
+            "keep-shelf-choice" => self.keep(out),
+            "back-out-of-shelf" => self.back(out),
+            "go-to-mark-cell" => self.go_to(ShelfChannel::Mark, false, out),
+            "go-to-x-cell" => self.go_to(ShelfChannel::X, false, out),
+            "go-to-y-cell" => self.go_to(ShelfChannel::Y, false, out),
+            "go-to-colour-cell" => self.go_to(ShelfChannel::Colour, false, out),
+            _ => return false,
+        }
+        true
+    }
+
+    /// Resolve `key` through the registry's Shelf context and answer the first
+    /// verb the list takes.
+    fn resolve(&mut self, key: egui::Key, out: &mut Vec<ListReport>) {
+        let Some(token) = key_token(key) else {
+            return;
+        };
+        for verb in shelf_keys().resolves(token, DispatchContext::ShelfFocused) {
+            if self.dispatch(verb, out) {
+                return;
+            }
+        }
+    }
+
+    /// A key press, with no modifier held. While the query has the keys a letter
+    /// is text, so the registry is asked only about the keys that are not one.
+    fn press(&mut self, key: egui::Key, modifiers: egui::Modifiers, out: &mut Vec<ListReport>) {
+        if !modifiers.is_none() {
+            return;
+        }
+        if !self.querying {
+            self.resolve(key, out);
+            return;
+        }
+        match key {
+            egui::Key::Backspace => {
+                if self.query.pop().is_none() {
+                    self.querying = false;
+                }
+                self.requery(out);
+            }
+            egui::Key::Enter
+            | egui::Key::Escape
+            | egui::Key::ArrowUp
+            | egui::Key::ArrowDown => self.resolve(key, out),
+            _ => {}
+        }
+    }
+
+    /// Text typed while the query has the keys.
+    fn type_text(&mut self, text: &str, out: &mut Vec<ListReport>) {
+        for ch in text.chars().filter(|c| !c.is_control()) {
+            self.query.extend(ch.to_lowercase());
+        }
+        self.requery(out);
+    }
+
+    /// Take the events a frame brought, in order, and report what they did.
+    ///
+    /// A key press goes through the registry while the rows have the keys. Text
+    /// goes to the query while the query has them, and is dropped otherwise, so
+    /// the letter that named a channel is not also typed. The one text that is
+    /// not dropped is `/`, for a keyboard whose slash needs a modifier and so
+    /// arrives as text alone. The `/` text that follows the `/` key press in one
+    /// frame is the same keystroke and is not typed into the query it opened.
+    pub fn feed_events(&mut self, events: &[egui::Event]) -> Vec<ListReport> {
+        let mut out = Vec::new();
+        let mut opened_by_key = false;
+        for event in events {
+            match event {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => {
+                    let was = self.querying;
+                    self.press(*key, *modifiers, &mut out);
+                    opened_by_key = !was && self.querying;
+                }
+                egui::Event::Text(text) if self.querying => {
+                    if std::mem::take(&mut opened_by_key) && text == "/" {
+                        continue;
+                    }
+                    self.type_text(text, &mut out);
+                }
+                egui::Event::Text(text) if text == "/" => self.querying = true,
+                _ => {}
+            }
+        }
+        out
+    }
+}
+
+/// One row of the list as it was drawn.
+#[derive(Clone, Debug)]
+pub struct ListRowDrawn {
+    /// The column's name.
+    pub column: String,
+    /// What the row said at its trailing end.
+    pub kind: String,
+    /// The whole row.
+    pub rect: egui::Rect,
+    /// Where the name's ink was laid out.
+    pub name_rect: egui::Rect,
+    /// Where the type's ink was laid out.
+    pub kind_rect: egui::Rect,
+    /// The bar down the row's leading edge, on the row under the cursor.
+    pub bar: Option<egui::Rect>,
+}
+
+/// What the list drew in one frame.
+#[derive(Clone, Debug)]
+pub struct ListDrawn {
+    /// The whole section, from the heading to the foot.
+    pub rect: egui::Rect,
+    /// The heading's row.
+    pub heading: egui::Rect,
+    /// What the heading read.
+    pub heading_text: String,
+    /// Where the heading's ink was laid out.
+    pub heading_name: egui::Rect,
+    /// The query line.
+    pub query: egui::Rect,
+    /// Each column, in the order drawn.
+    pub rows: Vec<ListRowDrawn>,
+    /// The divider between the matches and the rest, with a query typed.
+    pub divider: Option<egui::Rect>,
+    /// The foot, where the keys of the state the list is in are printed.
+    pub foot: egui::Rect,
+    /// What a click decided this frame.
+    pub reports: Vec<ListReport>,
+}
+
+/// What the query line says before anything is typed.
+pub const QUERY_PLACEHOLDER: &str = "search columns";
+
+/// The keys the foot prints while the rows have the keys.
+const ROW_HINTS: [(&str, &str); 5] = [
+    ("/", "search"),
+    ("j k", "move"),
+    ("h l", "channel"),
+    ("Enter", "keep"),
+    ("Esc", "back"),
+];
+
+/// The keys the foot prints while the query has them.
+const QUERY_HINTS: [(&str, &str); 3] = [("\u{2191}\u{2193}", "move"), ("Enter", "keep"), ("Esc", "clear")];
+
+impl ColumnList {
+    /// Draw the list into `ui`, which it takes the whole width of, and answer a
+    /// click on a row by moving the cursor there.
+    ///
+    /// The Meridian theme has to be applied to `ui`'s context, for the key
+    /// chips' tokens and the faces. The row under the cursor wears a bar in the
+    /// channel's hue, [`control::ROW_BAR_WIDTH`] wide, and the foot prints `/`
+    /// only while the rows have the keys.
+    pub fn show(&mut self, ui: &mut egui::Ui, mode: Mode) -> ListDrawn {
+        let sem = semantic(mode.is_dark());
+        let b = control::binding(spacing::ROW_DENSE);
+        let painter = ui.painter().clone();
+        let width = ui.available_width();
+        let muted = chrome::colour(sem.text.muted);
+        let primary = chrome::colour(sem.text.primary);
+
+        // The heading names the channel and the tile.
+        let (heading, _) = ui.allocate_exact_size(egui::vec2(width, b.row), egui::Sense::hover());
+        let heading_text = caption(&[
+            "OUTLINE",
+            &format!("{} of {}", self.channel.word(), self.tile),
+        ]);
+        let galley = text_ink::fit(
+            &painter,
+            &heading_text,
+            caption_font(),
+            width - 2.0 * spacing::SPACE_4,
+            muted,
+        );
+        let heading_name = egui::Rect::from_min_size(
+            egui::pos2(
+                heading.left() + spacing::SPACE_4,
+                heading.center().y - galley.size().y / 2.0,
+            ),
+            galley.size(),
+        );
+        painter.galley(heading_name.min, galley, muted);
+
+        // The query line: a sunken field, ruled under in the focus ink while it
+        // has the keys.
+        let (line, _) =
+            ui.allocate_exact_size(egui::vec2(width, spacing::ROW_GRID), egui::Sense::hover());
+        let field = line.shrink2(egui::vec2(spacing::SPACE_3, 2.0));
+        painter.rect_filled(field, 0.0, chrome::colour(sem.surfaces.sunken));
+        let (rule, rule_ink) = if self.querying {
+            (2.0, sem.borders.focus)
+        } else {
+            (1.0, sem.borders.control)
+        };
+        painter.rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(field.left(), field.bottom() - rule),
+                field.right_bottom(),
+            ),
+            0.0,
+            chrome::colour(rule_ink),
+        );
+        let text_left = field.left() + spacing::SPACE_3;
+        let room = field.right() - spacing::SPACE_3 - text_left;
+        if self.query.is_empty() && !self.querying {
+            let hint = text_ink::fit(&painter, QUERY_PLACEHOLDER, caption_font(), room, muted);
+            let at = egui::pos2(text_left, field.center().y - hint.size().y / 2.0);
+            painter.galley(at, hint, muted);
+        } else {
+            let typed = text_ink::fit(&painter, &self.query, caption_font(), room, primary);
+            let at = egui::pos2(text_left, field.center().y - typed.size().y / 2.0);
+            let (typed_right, typed_height) = (at.x + typed.size().x, typed.size().y);
+            painter.galley(at, typed, primary);
+            if self.querying {
+                painter.line_segment(
+                    [
+                        egui::pos2(typed_right + 1.0, at.y),
+                        egui::pos2(typed_right + 1.0, at.y + typed_height),
+                    ],
+                    egui::Stroke::new(1.0, primary),
+                );
+            }
+        }
+
+        // The rows: the matches, a divider, the rest.
+        let (order, matched) = self.order();
+        let searching = !self.query.is_empty();
+        if searching && matched == 0 {
+            let (note, _) =
+                ui.allocate_exact_size(egui::vec2(width, b.row), egui::Sense::hover());
+            let text = format!("no column's name holds \"{}\"", self.query);
+            let galley = text_ink::fit(
+                &painter,
+                &text,
+                caption_font(),
+                width - 2.0 * spacing::SPACE_4,
+                muted,
+            );
+            let at = egui::pos2(
+                note.left() + spacing::SPACE_4,
+                note.center().y - galley.size().y / 2.0,
+            );
+            painter.galley(at, galley, muted);
+        }
+        let hue = chrome::colour(channel::hue(self.channel, mode));
+        let mut rows = Vec::with_capacity(order.len());
+        let mut divider = None;
+        let mut clicked = None;
+        for (n, &i) in order.iter().enumerate() {
+            if searching && n == matched {
+                let gap = 2.0 * spacing::SPACE_2 + 1.0;
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(width, gap), egui::Sense::hover());
+                painter.line_segment(
+                    [
+                        egui::pos2(rect.left() + spacing::SPACE_4, rect.center().y),
+                        egui::pos2(rect.right() - spacing::SPACE_4, rect.center().y),
+                    ],
+                    egui::Stroke::new(1.0, chrome::colour(sem.borders.subtle)),
+                );
+                divider = Some(rect);
+            }
+            let column = &self.columns[i];
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(width, b.row), egui::Sense::click());
+            let on = self.cursor == Some(i);
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::WidgetType::SelectableLabel,
+                    true,
+                    on,
+                    column.name.clone(),
+                )
+            });
+            let mut bar = None;
+            if on {
+                painter.rect_filled(rect, 0.0, chrome::colour(sem.rows.cursor_background));
+                let strip = egui::Rect::from_min_max(
+                    rect.left_top(),
+                    egui::pos2(rect.left() + control::ROW_BAR_WIDTH, rect.bottom()),
+                );
+                painter.rect_filled(strip, 0.0, hue);
+                bar = Some(strip);
+                if self.scroll {
+                    ui.scroll_to_rect(rect, None);
+                }
+            } else if response.hovered() {
+                painter.rect_filled(rect, 0.0, chrome::colour(sem.rows.hover_background));
+            }
+            if response.clicked() {
+                clicked = Some(i);
+            }
+            let ends = text_ink::row_ends(
+                &painter,
+                egui::Rect::from_min_max(
+                    egui::pos2(rect.left() + b.pad_x + spacing::SPACE_4, rect.top()),
+                    egui::pos2(rect.right() - b.pad_x, rect.bottom()),
+                ),
+                &TwoEndedRow {
+                    leading: &column.name,
+                    trailing: &column.kind,
+                    font: ui_font(),
+                    gap: spacing::SPACE_3,
+                    leading_ink: primary,
+                    trailing_ink: muted,
+                },
+            );
+            rows.push(ListRowDrawn {
+                column: column.name.clone(),
+                kind: column.kind.clone(),
+                rect,
+                name_rect: ends.leading,
+                kind_rect: ends.trailing,
+                bar,
+            });
+        }
+        self.scroll = false;
+
+        let foot = self.show_foot(ui, mode);
+        let rect = egui::Rect::from_min_max(heading.min, egui::pos2(heading.right(), foot.bottom()));
+        painter.rect_stroke(
+            rect,
+            0.0,
+            egui::Stroke::new(1.0, chrome::colour(sem.borders.focus)),
+            egui::StrokeKind::Inside,
+        );
+
+        let mut reports = Vec::new();
+        if let Some(i) = clicked {
+            self.land(Some(i), &mut reports);
+        }
+        ListDrawn {
+            rect,
+            heading,
+            heading_text,
+            heading_name,
+            query: line,
+            rows,
+            divider,
+            foot,
+            reports,
+        }
+    }
+
+    /// The foot: a key chip and a word for each key the state the list is in
+    /// answers, wrapped to the width.
+    fn show_foot(&self, ui: &mut egui::Ui, mode: Mode) -> egui::Rect {
+        let sem = semantic(mode.is_dark());
+        let muted = chrome::colour(sem.text.muted);
+        let pairs: &[(&str, &str)] = if self.querying {
+            &QUERY_HINTS
+        } else {
+            &ROW_HINTS
+        };
+        let avail = ui.available_rect_before_wrap();
+        let inner = egui::Rect::from_min_max(
+            egui::pos2(
+                avail.left() + spacing::SPACE_4,
+                avail.top() + spacing::SPACE_3,
+            ),
+            egui::pos2(avail.right() - spacing::SPACE_4, avail.bottom()),
+        );
+        let mut hints = ui.new_child(
+            egui::UiBuilder::new().max_rect(inner).layout(
+                egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+            ),
+        );
+        hints.spacing_mut().item_spacing = egui::vec2(spacing::SPACE_3, spacing::SPACE_2);
+        for (key, word) in pairs {
+            key_chip(&mut hints, key);
+            hints.add(
+                egui::Label::new(
+                    egui::RichText::new(*word)
+                        .font(egui::FontId::monospace(typography::UI_SIZE - 2.5))
+                        .color(muted),
+                )
+                .selectable(false),
+            );
+            hints.add_space(spacing::SPACE_3);
+        }
+        let foot = egui::Rect::from_min_max(
+            avail.min,
+            egui::pos2(
+                avail.right(),
+                hints.min_rect().bottom() + spacing::SPACE_3,
+            ),
+        );
+        ui.allocate_rect(foot, egui::Sense::hover());
+        foot
+    }
 }
