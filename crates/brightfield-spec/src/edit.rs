@@ -25,7 +25,7 @@ use indexmap::IndexMap;
 
 use crate::analysis::ComponentPath;
 use crate::ast::{Component, LegendNode, Mark, PlotNode, Spec, SpecValue, ValueOrParamRef};
-use crate::layout::{collect_plot_nodes, resolve_axis_titles, AxisTitle};
+use crate::layout::{collect_legend_nodes, collect_plot_nodes, resolve_axis_titles, AxisTitle};
 use crate::vocab::{LegendChannel, MarkKind};
 
 /// Positional channel keys inherited by an added mark from the plot's primary
@@ -37,17 +37,19 @@ const INHERITED_CHANNELS: &[&str] = &["x", "y", "x1", "x2", "y1", "y2"];
 /// A typed structural mutation applied to the working [`Spec`] by [`apply`] —
 /// the framework-free AST-mutation API the keyboard grammar named as missing.
 ///
-/// Six variants (the reserved undo verb is an [`UndoStack`] pop, not an
+/// Seven variants (the reserved undo verb is an [`UndoStack`] pop, not an
 /// edit). Each edit is TYPED (never an exec-string, per the VisiData warning),
 /// walks the live AST via a plot [`ComponentPath`], and is bracketed by a
 /// whole-`Spec` clone snapshot so undo is total and near-free. Four target the
 /// focused plot's primary mark; [`ChartEdit::SetPlotAttribute`] and
 /// [`ChartEdit::RemovePlotAttribute`] target the plot's own attribute map
-/// instead. Four variants are count-STABLE ([`ChartEdit::ChangeMarkType`],
+/// instead, and [`ChartEdit::AddColourLegend`] appends a legend to its list of
+/// items. Five variants are count-STABLE ([`ChartEdit::ChangeMarkType`],
 /// [`ChartEdit::SetChannel`], [`ChartEdit::SetPlotAttribute`],
-/// [`ChartEdit::RemovePlotAttribute`]) and two are count-CHANGING
-/// ([`ChartEdit::AddMark`], [`ChartEdit::RemoveMark`]); the transient apply
-/// treats them differently (the coordinator flat-index rebuild).
+/// [`ChartEdit::RemovePlotAttribute`], [`ChartEdit::AddColourLegend`]) and two
+/// are count-CHANGING ([`ChartEdit::AddMark`], [`ChartEdit::RemoveMark`]); the
+/// transient apply treats them differently (the coordinator flat-index
+/// rebuild). The count is the plot's marks: a legend is not one.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChartEdit {
     /// Retype the focused plot's primary mark (`dot` -> `bar`). Count-stable.
@@ -131,6 +133,21 @@ pub enum ChartEdit {
         /// The attribute key to remove, as the spec spells it (`yScale`).
         key: String,
     },
+    /// Append `legend: color` to the focused plot's items, after the last of
+    /// them. Count-stable, and targets no mark: a legend is a plot item and
+    /// not a mark, which is why [`ChartEdit::AddMark`] cannot write it.
+    ///
+    /// Mosaic draws the item to the right of the plot's picture, so no concat
+    /// is written for it. A plot whose items already hold a colour legend is
+    /// left equal: the edit is idempotent, and a second one is not a second
+    /// legend. A colour legend that sits outside the plot and names it with
+    /// `for:` is not an item of the plot and is not looked for here; whether
+    /// to write this edit over one is the caller's question
+    /// ([`colour_legend_covers`]).
+    AddColourLegend {
+        /// Plot-node path of the focused plot.
+        plot: ComponentPath,
+    },
 }
 
 impl ChartEdit {
@@ -143,7 +160,8 @@ impl ChartEdit {
             | ChartEdit::SetChannel { plot, .. }
             | ChartEdit::RemoveMark { plot, .. }
             | ChartEdit::SetPlotAttribute { plot, .. }
-            | ChartEdit::RemovePlotAttribute { plot, .. } => plot.0.as_str(),
+            | ChartEdit::RemovePlotAttribute { plot, .. }
+            | ChartEdit::AddColourLegend { plot } => plot.0.as_str(),
         }
     }
 
@@ -159,6 +177,7 @@ impl ChartEdit {
             ChartEdit::RemoveMark { .. } => "remove-mark",
             ChartEdit::SetPlotAttribute { .. } => "set-plot-attribute",
             ChartEdit::RemovePlotAttribute { .. } => "remove-plot-attribute",
+            ChartEdit::AddColourLegend { .. } => "add-colour-legend",
         }
     }
 
@@ -185,7 +204,8 @@ impl ChartEdit {
             | ChartEdit::RemoveMark { mark_ordinal, .. } => *mark_ordinal,
             ChartEdit::AddMark { .. }
             | ChartEdit::SetPlotAttribute { .. }
-            | ChartEdit::RemovePlotAttribute { .. } => 0,
+            | ChartEdit::RemovePlotAttribute { .. }
+            | ChartEdit::AddColourLegend { .. } => 0,
         }
     }
 
@@ -204,7 +224,7 @@ impl ChartEdit {
             } => {
                 format!("{kind}: {channel} -> {column}")
             }
-            ChartEdit::RemoveMark { .. } => kind.to_string(),
+            ChartEdit::RemoveMark { .. } | ChartEdit::AddColourLegend { .. } => kind.to_string(),
             ChartEdit::SetPlotAttribute { key, value, .. } => match value {
                 SpecValue::String(s) => format!("{kind}: {key} -> {s}"),
                 other => format!("{kind}: {key} -> {other:?}"),
@@ -356,6 +376,15 @@ fn apply_unchecked(spec: &mut Spec, edit: &ChartEdit) {
             // `shift_remove`, not `swap_remove`: the last attribute must not
             // take the removed one's place in the map's order.
             p.attributes.shift_remove(key);
+        }
+        ChartEdit::AddColourLegend { .. } => {
+            if !holds_colour_legend(p) {
+                p.items.push(Component::Legend(LegendNode {
+                    channel: LegendChannel::Color,
+                    status: LegendChannel::Color.status(),
+                    options: IndexMap::new(),
+                }));
+            }
         }
         ChartEdit::SetChannel {
             mark_ordinal,
@@ -568,10 +597,7 @@ fn colour_legend_chrome_changes(
     focused_before: &PlotNode,
     focused_after: &PlotNode,
 ) -> bool {
-    let focused_name = focused_before.attributes.get("name").and_then(|v| match v {
-        SpecValue::String(s) => Some(s.as_str()),
-        _ => None,
-    });
+    let focused_name = plot_name(focused_before);
     // A single within-plot edit adds or removes no legends, so the before spec's
     // legend set is authoritative; only the colour-plot COUNT and the focused
     // plot's own colour-encoding can move.
@@ -599,6 +625,54 @@ fn colour_legend_chrome_changes(
         }
     });
     changed
+}
+
+/// The plot's `name:` attribute, the string a standalone legend's `for:` names
+/// it by.
+fn plot_name(plot: &PlotNode) -> Option<&str> {
+    match plot.attributes.get("name") {
+        Some(SpecValue::String(s)) => Some(s.as_str()),
+        _ => None,
+    }
+}
+
+/// Whether the plot's own items hold a colour legend — the item
+/// [`ChartEdit::AddColourLegend`] appends.
+fn holds_colour_legend(plot: &PlotNode) -> bool {
+    plot.items
+        .iter()
+        .any(|c| matches!(c, Component::Legend(l) if l.channel == LegendChannel::Color))
+}
+
+/// Whether the plot at `plot_path` already has a colour legend drawn for it, so
+/// that [`ChartEdit::AddColourLegend`] would put a second one on the page.
+///
+/// Three things count: a colour legend among the plot's own items; a
+/// standalone colour legend whose `for:` names the plot's `name:`; and a
+/// standalone colour legend with no `for:`, which `resolve_legends` places for
+/// the dashboard's one colour-encoded plot, so it covers this plot only when
+/// the plot is that one. A `for:` that is a `$param` cannot be resolved from the
+/// spec alone and covers nothing, the stance [`classify_edit`] takes, and a
+/// path that names no plot has nothing covered.
+#[must_use]
+pub fn colour_legend_covers(spec: &Spec, plot_path: &str) -> bool {
+    let Some(plot) = plot_at_path(spec, plot_path) else {
+        return false;
+    };
+    if holds_colour_legend(plot) {
+        return true;
+    }
+    let name = plot_name(plot);
+    collect_legend_nodes(spec).iter().any(|(_, legend)| {
+        legend.channel == LegendChannel::Color
+            && match legend.options.get("for") {
+                Some(ValueOrParamRef::Value(SpecValue::String(named))) => {
+                    Some(named.as_str()) == name
+                }
+                None => count_colour_encoded_plots(spec) == 1 && plot_is_colour_encoded(plot),
+                Some(_) => false,
+            }
+    })
 }
 
 /// The number of colour-encoded plots in a spec — the count `resolve_legends`
