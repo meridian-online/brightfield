@@ -425,6 +425,82 @@ impl Scale {
             Self::Colour { .. } | Self::Sequential { .. } => 0.0,
         }
     }
+
+    /// This scale with its pixel range run the other way: the domain's low end
+    /// lands where its high end did, and the other way about. The domain is
+    /// untouched, so what the axis covers is what it covered.
+    ///
+    /// A band scale's categories keep their order and take the slots from the
+    /// far end, which is what swapping the range does to a band: the first
+    /// category sits where the last did. Every positional reader of a scale
+    /// takes the range as a signed pair, because the y range already runs from
+    /// the bottom edge to the top (see `ChartLayout::y_range`), so a mark, a
+    /// tick, a gridline and a brush read a reversed scale with no case of their
+    /// own.
+    ///
+    /// A colour or sequential scale has no pixel range and is returned as it
+    /// is.
+    #[must_use]
+    pub fn reversed(&self) -> Self {
+        match self.clone() {
+            Self::Linear {
+                domain_min,
+                domain_max,
+                range_start,
+                range_end,
+            } => Self::Linear {
+                domain_min,
+                domain_max,
+                range_start: range_end,
+                range_end: range_start,
+            },
+            Self::Log {
+                domain_min,
+                domain_max,
+                range_start,
+                range_end,
+            } => Self::Log {
+                domain_min,
+                domain_max,
+                range_start: range_end,
+                range_end: range_start,
+            },
+            Self::Symlog {
+                domain_min,
+                domain_max,
+                range_start,
+                range_end,
+            } => Self::Symlog {
+                domain_min,
+                domain_max,
+                range_start: range_end,
+                range_end: range_start,
+            },
+            Self::Band {
+                categories,
+                range_start,
+                range_end,
+                padding,
+            } => Self::Band {
+                categories,
+                range_start: range_end,
+                range_end: range_start,
+                padding,
+            },
+            Self::Time {
+                domain_min_us,
+                domain_max_us,
+                range_start,
+                range_end,
+            } => Self::Time {
+                domain_min_us,
+                domain_max_us,
+                range_start: range_end,
+                range_end: range_start,
+            },
+            other @ (Self::Colour { .. } | Self::Sequential { .. }) => other,
+        }
+    }
 }
 
 /// Optional override of data-inferred scale domains per axis.

@@ -274,6 +274,7 @@ fn warning_wire_name(warning: &ParseWarning) -> String {
         | ParseWarning::InvalidTickCount { attribute }
         | ParseWarning::InvalidGridSwitch { attribute }
         | ParseWarning::InvalidAxisEndSwitch { attribute }
+        | ParseWarning::InvalidAxisReverseSwitch { attribute }
         | ParseWarning::InvalidTickFormat { attribute, .. }
         | ParseWarning::UnreadDateDirective { attribute, .. }
         | ParseWarning::TickFormatOnWrongAxis { attribute, .. } => attribute.clone(),
@@ -320,6 +321,7 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         | ParseWarning::InvalidTickCount { .. }
         | ParseWarning::InvalidGridSwitch { .. }
         | ParseWarning::InvalidAxisEndSwitch { .. }
+        | ParseWarning::InvalidAxisReverseSwitch { .. }
         | ParseWarning::InvalidTickFormat { .. }
         | ParseWarning::UnreadDateDirective { .. }
         | ParseWarning::TickFormatOnWrongAxis { .. } => "plot",
@@ -557,6 +559,44 @@ mod tests {
                 .advisory()
                 .iter()
                 .all(|diag| diag.wire_name != "yZero"),
+            "a literal switch is not a warning: {:?}",
+            quiet.lines()
+        );
+    }
+
+    /// **An axis-reverse switch that is no `true` or `false` is named in the
+    /// warning banner with its key.** `yReverse: 'yes'` is an analyst's likely
+    /// slip: advisory (the plot still draws, with the axis running the way it
+    /// does without the key), naming `yReverse` as the wire name and `plot` as
+    /// the surface, so the setting that was dropped is not dropped in silence.
+    #[test]
+    fn dfconf_advisory_entry_names_a_bad_axis_reverse_switch() {
+        let d = diagnose(
+            "data:\n  t: { file: t.parquet }\nplot:\n  - mark: dot\n    data: { from: t }\n    \
+             x: a\n    y: b\nyReverse: 'yes'\n",
+        );
+        assert!(d.blocking().is_empty(), "the plot still draws: {d:?}");
+        let advisory = d.advisory();
+        let hit = advisory
+            .iter()
+            .find(|diag| diag.wire_name == "yReverse")
+            .unwrap_or_else(|| panic!("no advisory names `yReverse`: {:?}", d.lines()));
+        assert_eq!(hit.surface, "plot");
+        assert!(
+            hit.message.contains("yReverse"),
+            "the sentence names it too: {}",
+            hit.message
+        );
+
+        let quiet = diagnose(
+            "data:\n  t: { file: t.parquet }\nplot:\n  - mark: dot\n    data: { from: t }\n    \
+             x: a\n    y: b\nyReverse: true\n",
+        );
+        assert!(
+            quiet
+                .advisory()
+                .iter()
+                .all(|diag| diag.wire_name != "yReverse"),
             "a literal switch is not a warning: {:?}",
             quiet.lines()
         );

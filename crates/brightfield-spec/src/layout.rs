@@ -1132,6 +1132,63 @@ pub fn resolve_axis_ends(plot: &PlotNode) -> AxisEnds {
     }
 }
 
+/// Which positional axes a plot's spec asked to draw from high to low:
+/// `xReverse` and `yReverse`.
+///
+/// A pure spec reading, mirroring [`AxisEnds`]: it says what the author asked
+/// for and holds no opinion about the scale it lands on. The default reverses
+/// neither axis, which is what a plot drew before the two keys were read — x
+/// from the left edge to the right, y from the bottom edge to the top.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AxisReverse {
+    /// The x axis draws its lowest value at the right.
+    pub x: bool,
+    /// The y axis draws its lowest value at the top.
+    pub y: bool,
+}
+
+impl AxisReverse {
+    /// Whether neither axis is reversed — the shape of a plot that writes
+    /// neither key, and the one a caller may skip work for.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        !self.x && !self.y
+    }
+}
+
+/// The one judge of an `xReverse` / `yReverse` value: the switch it sets.
+///
+/// A literal `true` or `false` is a switch. A string, a number, a list, `null`
+/// and a lifted `$param` are no switch. `None` is not itself a warning: a
+/// lifted `$param` is a recorded deferral and resolves to it silently. The
+/// parser asks this same function to decide which `None`s are malformed values
+/// to name, so the resolver and the warning cannot disagree about what a valid
+/// switch is.
+#[must_use]
+pub fn axis_reverse_switch(value: &SpecValue) -> Option<bool> {
+    match value {
+        SpecValue::Bool(on) => Some(*on),
+        _ => None,
+    }
+}
+
+/// Resolve a plot's `xReverse` / `yReverse` from its attributes. Literal-only
+/// and per-axis, the same reading [`resolve_axis_ends`] gives its keys; a key
+/// that is absent, or is no switch, reverses nothing.
+#[must_use]
+pub fn resolve_axis_reverse(plot: &PlotNode) -> AxisReverse {
+    let on = |key: &str| {
+        plot.attributes
+            .get(key)
+            .and_then(axis_reverse_switch)
+            .unwrap_or(false)
+    };
+    AxisReverse {
+        x: on("xReverse"),
+        y: on("yReverse"),
+    }
+}
+
 /// Which positional axis a plot attribute speaks about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlotAxis {
@@ -3725,6 +3782,56 @@ plot:
         }
         assert_eq!(axis_end_switch(&SpecValue::Bool(true)), Some(true));
         assert_eq!(axis_end_switch(&SpecValue::Bool(false)), Some(false));
+    }
+
+    // --- which way an axis runs (`xReverse` / `yReverse`) ---
+
+    /// A plot that writes neither key reverses nothing, which is what it drew
+    /// before the keys were read, and `false` asks for the same.
+    #[test]
+    fn a_plot_that_sets_no_reverse_key_reverses_nothing() {
+        assert!(resolve_axis_reverse(&plot_with(&[])).is_empty());
+        let both_false = [
+            ("xReverse", SpecValue::Bool(false)),
+            ("yReverse", SpecValue::Bool(false)),
+        ];
+        assert!(
+            resolve_axis_reverse(&plot_with(&both_false)).is_empty(),
+            "`false` on each key asks for what an unset plot gets"
+        );
+    }
+
+    /// Each key reverses its own axis and neither reaches across: `yReverse`
+    /// does not reverse x, and `xReverse` does not reverse y.
+    #[test]
+    fn each_reverse_key_reverses_its_own_axis_only() {
+        let only = |key: &str| resolve_axis_reverse(&plot_with(&[(key, SpecValue::Bool(true))]));
+        assert_eq!(only("xReverse"), AxisReverse { x: true, y: false });
+        assert_eq!(only("yReverse"), AxisReverse { x: false, y: true });
+    }
+
+    /// A value that is no switch reads as absent, so no axis is reversed. The
+    /// judge is [`axis_reverse_switch`], the same one the parser's warning asks.
+    #[test]
+    fn a_value_that_is_no_reverse_switch_reads_as_absent() {
+        let no_switches = [
+            SpecValue::String("true".to_string()),
+            SpecValue::Integer(1),
+            SpecValue::Null,
+            SpecValue::Array(vec![]),
+            SpecValue::Param(ParamRef::new("z")),
+        ];
+        for value in no_switches {
+            assert_eq!(axis_reverse_switch(&value), None, "the judge on {value:?}");
+            for key in ["xReverse", "yReverse"] {
+                assert!(
+                    resolve_axis_reverse(&plot_with(&[(key, value.clone())])).is_empty(),
+                    "`{key}: {value:?}` is read as absent"
+                );
+            }
+        }
+        assert_eq!(axis_reverse_switch(&SpecValue::Bool(true)), Some(true));
+        assert_eq!(axis_reverse_switch(&SpecValue::Bool(false)), Some(false));
     }
 
     // --- gridlines (`grid` / `xGrid` / `yGrid`) ---

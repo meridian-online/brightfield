@@ -50,9 +50,10 @@ use brightfield_spec::analysis::{
 };
 use brightfield_spec::ast::{Component, MarkData, ParamNode, PlotNode, SpaceNode, SpecValue};
 use brightfield_spec::layout::{
-    collect_plot_nodes, placed_plots, resolve_axis_ends, resolve_fixed_domains, resolve_grid_lines,
-    resolve_plot_insets, resolve_plot_margins, resolve_plot_stack_offset, resolve_tick_counts,
-    resolve_tick_formats, AxisFormat, Rect, StackOffset, TickFormats,
+    collect_plot_nodes, placed_plots, resolve_axis_ends, resolve_axis_reverse,
+    resolve_fixed_domains, resolve_grid_lines, resolve_plot_insets, resolve_plot_margins,
+    resolve_plot_stack_offset, resolve_tick_counts, resolve_tick_formats, AxisFormat, Rect,
+    StackOffset, TickFormats,
 };
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, ParseWarning, Spec};
@@ -2331,6 +2332,17 @@ fn compose_from_results(
             .map(|(_, node)| resolve_axis_ends(node))
             .unwrap_or_default();
 
+        // Which way this plot's spec asked each positional axis to run —
+        // `xReverse`, `yReverse`. A plot that asks for neither draws x from the
+        // left edge to the right and y from the bottom to the top, as before
+        // these keys were read. The scales this builds are the ones the plot
+        // handle keeps, so the brush inverts a pixel through the axis as drawn.
+        let axis_reverse = plot_nodes
+            .iter()
+            .find(|(p, _)| *p == plot.path)
+            .map(|(_, node)| resolve_axis_reverse(node))
+            .unwrap_or_default();
+
         let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
         // `draw_inline_legend = false`: the legend is NOT baked into the data
         // scene. The shell draws it as a native margin panel outside the plot
@@ -2347,6 +2359,7 @@ fn compose_from_results(
             tick_formats.clone(),
             grid,
             axis_ends,
+            axis_reverse,
             ink,
         );
         drop(refs);
