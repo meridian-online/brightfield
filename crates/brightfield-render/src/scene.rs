@@ -626,10 +626,10 @@ pub fn build_multi_mark_scene_pinned(
 /// Run each positional axis from its high end to its low end, as the plot's
 /// spec asked — `xReverse` and `yReverse`.
 ///
-/// The scale's pixel range is swapped ([`Scale::reversed`]) and nothing else is
-/// done: every mark, tick, gridline and hover read, and the brush's inverse,
-/// take the scale as it stands in the set this returns, so there is no second
-/// place a reversal has to be remembered. An axis the reader has navigated stays
+/// The scale's pixel range is swapped ([`Scale::reversed`]) and the domain is
+/// left alone. The marks, ticks, gridlines and hover reads, and the brush's
+/// inverse, take the scale as it stands in the set this returns, so the
+/// reversal is made in this one place. An axis the reader has navigated stays
 /// reversed, since a pan or a zoom picks which values the axis covers and not
 /// which way it runs.
 ///

@@ -432,11 +432,12 @@ impl Scale {
     ///
     /// A band scale's categories keep their order and take the slots from the
     /// far end, which is what swapping the range does to a band: the first
-    /// category sits where the last did. Every positional reader of a scale
-    /// takes the range as a signed pair, because the y range already runs from
-    /// the bottom edge to the top (see `ChartLayout::y_range`), so a mark, a
-    /// tick, a gridline and a brush read a reversed scale with no case of their
-    /// own.
+    /// category sits where the last did. The marks, ticks, gridlines and brush
+    /// that read a scale's range take it as a signed pair, because the y range
+    /// already runs from the bottom edge to the top (see
+    /// `ChartLayout::y_range`), so a reversed scale needs no case of its own in
+    /// them. The shell's `tests/axis_vocabulary_reverse.rs` holds that for dots,
+    /// bars, tick marks and the brush.
     ///
     /// A colour or sequential scale has no pixel range and is returned as it
     /// is.

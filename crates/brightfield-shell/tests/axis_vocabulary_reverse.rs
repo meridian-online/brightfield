@@ -173,8 +173,8 @@ fn mirrored(default: &Composed, channel: Channel, px: f64) -> f64 {
 
 /// The mean of the path points within twelve pixels of `near`: a dot's outline
 /// sits around its centre, and the gridline and axis points the plot paints sit
-/// at the frame, further than that from any dot here. `None` when nothing is
-/// painted that near.
+/// at the frame, further than that from any dot here. `None` when no path point
+/// is that near.
 fn painted_dot(composed: &Composed, near: (f64, f64)) -> Option<(f64, f64)> {
     let hits: Vec<(f64, f64)> = scene_points(composed)
         .into_iter()
@@ -191,7 +191,7 @@ fn painted_dot(composed: &Composed, near: (f64, f64)) -> Option<(f64, f64)> {
 }
 
 /// Where each of [`DOTS`] is painted when the plot is composed from `attrs`, by
-/// searching the path stream around `anchor(a, b)`. A dot with nothing painted
+/// searching the path stream around `anchor(a, b)`. A dot with no path point
 /// near its anchor is `None`.
 fn painted_dots(
     composed: &Composed,
@@ -214,7 +214,7 @@ fn drawn_points(composed: &Composed) -> Vec<(f64, f64)> {
 }
 
 /// The x of each x-axis tick mark: the drawn paths' lowest points. A tick mark
-/// runs down from the axis line, and nothing else this plot draws reaches
+/// runs down from the axis line, and no other path this plot draws reaches
 /// further down (the gridlines stop at the axis line), so the points at the
 /// greatest y are the tick marks' ends.
 fn bottom_tick_xs(composed: &Composed) -> Vec<f64> {
