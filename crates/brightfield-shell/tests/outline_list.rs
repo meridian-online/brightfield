@@ -32,9 +32,13 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use brightfield_protocol::layout::Flow;
+use brightfield_shell::column_header::{column_header_frame, draw_column_band, GridDensity};
 use brightfield_shell::data_file;
 use brightfield_shell::design::{self, Mode};
-use brightfield_shell::protocol::{protocol_registry, ProtocolDoc, ProtocolModel, OUTLINE};
+use brightfield_shell::one_step::ColumnFacts;
+use brightfield_shell::protocol::{
+    protocol_registry, ProtocolDoc, ProtocolModel, SpineRole, SpineRowDrawn, OUTLINE,
+};
 use brightfield_shell::shelf::{
     Binding, ColumnList, ColumnListRequest, ListColumn, ListDrawn, ListReport, ShelfChannels,
     QUERY_PLACEHOLDER,
@@ -45,7 +49,7 @@ use brightfield_workbench::chrome;
 use brightfield_workbench::ItemCtx;
 use egui::epaint::{ClippedShape, Shape};
 use egui_kittest::{Harness, SnapshotOptions};
-use meridian_design::viz;
+use meridian_design::{spacing, viz};
 
 /// The Outline rail's default width.
 const WIDTH: f32 = 240.0;
@@ -74,22 +78,44 @@ fn open() -> data_file::OpenedFile {
         .unwrap_or_else(|e| panic!("open {}: {e}", path.display()))
 }
 
+/// A mix of types: a date, two texts and a count, so the list has a numeric row
+/// beside three that are not.
+fn mixed() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data/dashboard_baseline.csv")
+}
+
+/// The profile facts of the table `path` opens as, in the table's order: what
+/// the grid head draws a column from, and what the list is offered.
+fn facts_of(path: &std::path::Path) -> Vec<ColumnFacts> {
+    data_file::open(path.to_str().expect("utf-8 fixture path"))
+        .unwrap_or_else(|e| panic!("open {}: {e}", path.display()))
+        .protocol
+        .inputs()
+        .expect("the opened file's protocol")
+        .columns
+}
+
+fn housing_facts() -> &'static [ColumnFacts] {
+    static FACTS: OnceLock<Vec<ColumnFacts>> = OnceLock::new();
+    FACTS.get_or_init(|| facts_of(&housing()))
+}
+
+/// `facts` as the Outline's list is offered them.
+fn offered(facts: &[ColumnFacts]) -> Vec<ListColumn> {
+    facts
+        .iter()
+        .map(|c| ListColumn {
+            name: c.column.clone(),
+            kind: c.leaf.clone(),
+            moments: c.moments.clone(),
+        })
+        .collect()
+}
+
 /// The table's columns as the Outline lists them, in the table's order.
 fn columns() -> &'static [ListColumn] {
     static COLUMNS: OnceLock<Vec<ListColumn>> = OnceLock::new();
-    COLUMNS.get_or_init(|| {
-        open()
-            .protocol
-            .inputs()
-            .expect("the opened file's protocol")
-            .columns
-            .into_iter()
-            .map(|c| ListColumn {
-                name: c.column,
-                kind: c.leaf,
-            })
-            .collect()
-    })
+    COLUMNS.get_or_init(|| offered(housing_facts()))
 }
 
 fn names() -> Vec<&'static str> {
@@ -340,21 +366,22 @@ fn the_list_lists_each_column_of_the_table_in_the_tables_order() {
     let mut list = list(ShelfChannel::X);
     let frame = stage.draw(&mut list);
     assert_eq!(drawn_names(&frame), names());
-    for (row, column) in frame.drawn.rows.iter().zip(columns()) {
-        assert_eq!(
-            row.kind, column.kind,
-            "{}'s type is at its trailing end",
-            row.column
-        );
+    for row in &frame.drawn.rows {
         let said = texts_in(&frame, row.rect);
         assert!(
-            said.contains(&row.column.as_str()) && said.contains(&column.kind.as_str()),
-            "{} and its type are drawn in its row; the row holds {said:?}",
+            said.contains(&row.column.as_str()),
+            "{} is drawn in its row; the row holds {said:?}",
             row.column
         );
+        let trailing = row
+            .rug
+            .as_ref()
+            .map(|rug| rug.rect)
+            .or(row.kind_rect)
+            .unwrap_or_else(|| panic!("{} draws neither a rug nor its type", row.column));
         assert!(
-            row.name_rect.right() <= row.kind_rect.left() + 0.01,
-            "{}'s name and type do not share ink",
+            row.name_rect.right() <= trailing.left() + 0.01,
+            "{}'s name and what stands at its trailing end do not share ink",
             row.column
         );
     }
@@ -390,6 +417,284 @@ fn the_row_the_cursor_is_on_is_the_one_drawn_with_the_bar_and_no_other() {
         .map(|r| r.column.as_str())
         .collect();
     assert_eq!(barred, ["population"]);
+}
+
+// ---------------------------------------------------------------------------
+// The rug: a numeric column's row draws its spread where its type would stand.
+// ---------------------------------------------------------------------------
+
+/// What the grid head draws of `facts` at its compact density, read off the
+/// drawing: the rug's rect and the alpha of each pixel column, in a cell wide
+/// enough that the rug is `width` points across.
+fn grid_head_rug(stage: &Stage, facts: &ColumnFacts, width: f32) -> (egui::Rect, Vec<f32>) {
+    let frame = column_header_frame(GridDensity::Compact, stage.mode);
+    let cell = egui::Rect::from_min_size(
+        ORIGIN,
+        egui::vec2(width + 2.0 * spacing::SPACE_4, frame.extent()),
+    );
+    let raw = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(cell.right() + ORIGIN.x, cell.bottom() + ORIGIN.y),
+        )),
+        ..Default::default()
+    };
+    let mut drawn = None;
+    let _ = stage.ctx.run_ui(raw, |ui| {
+        drawn = Some(draw_column_band(ui.painter(), cell, 0, facts, 0, &frame));
+    });
+    let drawn = drawn.expect("the grid head drew");
+    (
+        drawn
+            .rug
+            .expect("a numeric column's compact head draws a rug"),
+        drawn.rug_alphas,
+    )
+}
+
+/// The channels a tile over the mixed table takes, the count on x.
+fn mixed_channels() -> ShelfChannels {
+    ShelfChannels {
+        mark: "dot".to_string(),
+        x: Binding::Column("reading".to_string()),
+        y: Binding::Column("day".to_string()),
+        colour: Binding::Column("region".to_string()),
+    }
+}
+
+fn mixed_list() -> ColumnList {
+    ColumnList::new(ColumnListRequest {
+        tile: "hero".to_string(),
+        channel: ShelfChannel::X,
+        channels: mixed_channels(),
+        columns: offered(&facts_of(&mixed())),
+    })
+}
+
+/// The one-pixel-wide fills the frame painted inside `rug`, left to right: the
+/// rug's columns as they reached the painter.
+fn painted_rug(frame: &Frame, rug: egui::Rect) -> Vec<(egui::Rect, egui::Color32)> {
+    let mut out: Vec<_> = fills(frame)
+        .into_iter()
+        .filter(|(r, _)| near(r.width(), 1.0) && rug.expand(0.01).contains_rect(*r))
+        .collect();
+    out.sort_by(|a, b| a.0.left().total_cmp(&b.0.left()));
+    out
+}
+
+#[test]
+fn the_fixtures_measure_the_columns_the_rug_claims_name() {
+    // The claims below read a row against its column's profile, so a fixture
+    // that stopped measuring a column, or started measuring a text, reddens
+    // here and not in a claim that happens to pass over it.
+    assert!(
+        housing_facts().iter().all(|c| c.moments.is_some()),
+        "a housing column has no moments: {:?}",
+        housing_facts()
+            .iter()
+            .filter(|c| c.moments.is_none())
+            .map(|c| c.column.as_str())
+            .collect::<Vec<_>>()
+    );
+    let mixed = facts_of(&mixed());
+    let measured: Vec<&str> = mixed
+        .iter()
+        .filter(|c| c.moments.is_some())
+        .map(|c| c.column.as_str())
+        .collect();
+    assert_eq!(measured, ["reading"]);
+    let names: Vec<&str> = mixed.iter().map(|c| c.column.as_str()).collect();
+    assert_eq!(names, ["day", "region", "reading", "sensor"]);
+}
+
+#[test]
+fn a_numeric_row_draws_a_rug_where_its_type_would_stand() {
+    let stage = Stage::new(Mode::Light);
+    let mut list = list(ShelfChannel::X);
+    let frame = stage.draw(&mut list);
+    assert_eq!(frame.drawn.rows.len(), columns().len());
+    for (row, column) in frame.drawn.rows.iter().zip(columns()) {
+        let rug = row
+            .rug
+            .as_ref()
+            .unwrap_or_else(|| panic!("{} draws no rug", row.column));
+        assert_eq!(row.kind, None, "{} still names its type", row.column);
+        assert_eq!(row.kind_rect, None, "{} still lays out a type", row.column);
+        let said = texts_in(&frame, row.rect);
+        assert!(
+            !said.contains(&column.kind.as_str()),
+            "{}'s row says its type, {:?}, beside the rug: {said:?}",
+            row.column,
+            column.kind
+        );
+        assert!(
+            row.rect.contains_rect(rug.rect) && rug.rect.center().x > row.rect.center().x,
+            "{}'s rug stands in the trailing half of its row",
+            row.column
+        );
+        assert!(
+            row.name_rect.right() <= rug.rect.left() + 0.01,
+            "{}'s name and its rug do not share ink",
+            row.column
+        );
+
+        // The rug is painted and not only reported: the fills that reached the
+        // painter are the columns the record names, at the alphas it names.
+        let painted = painted_rug(&frame, rug.rect);
+        let inked: Vec<f32> = rug.alphas.iter().copied().filter(|a| *a > 0.0).collect();
+        assert!(!inked.is_empty(), "{}'s rug is empty", row.column);
+        assert_eq!(
+            painted.len(),
+            inked.len(),
+            "{}: the painter was handed a different number of rug columns than the row records",
+            row.column
+        );
+        for ((_, fill), alpha) in painted.iter().zip(&inked) {
+            assert!(
+                (f32::from(fill.a()) / 255.0 - alpha).abs() < 0.01,
+                "{}: a rug column was painted at alpha {} and recorded at {alpha}",
+                row.column,
+                fill.a()
+            );
+        }
+    }
+}
+
+#[test]
+fn a_row_that_is_not_numeric_keeps_its_type() {
+    let stage = Stage::new(Mode::Light);
+    let facts = facts_of(&mixed());
+    let mut list = mixed_list();
+    let frame = stage.draw(&mut list);
+    assert_eq!(drawn_names(&frame), ["day", "region", "reading", "sensor"]);
+    assert_eq!(
+        frame.drawn.rows.iter().filter(|r| r.rug.is_some()).count(),
+        1,
+        "one column of the four is numeric, and it alone draws a rug"
+    );
+    for (row, facts) in frame.drawn.rows.iter().zip(&facts) {
+        if facts.moments.is_some() {
+            let rug = row.rug.as_ref().expect("the numeric row draws a rug");
+            assert!(
+                row.kind.is_none() && row.kind_rect.is_none(),
+                "{} draws its rug and its type",
+                row.column
+            );
+            assert!(!painted_rug(&frame, rug.rect).is_empty());
+            continue;
+        }
+        assert_eq!(
+            row.kind.as_deref(),
+            Some(facts.leaf.as_str()),
+            "{} keeps its type",
+            row.column
+        );
+        assert!(row.rug.is_none(), "{} draws a rug", row.column);
+        let said = texts_in(&frame, row.rect);
+        assert!(
+            said.contains(&facts.leaf.as_str()),
+            "{}'s type is drawn in its row; the row holds {said:?}",
+            row.column
+        );
+        let kind_rect = row.kind_rect.expect("a row with a type lays it out");
+        assert!(
+            row.name_rect.right() <= kind_rect.left() + 0.01,
+            "{}'s name and type do not share ink",
+            row.column
+        );
+        let ink_in_row = fills(&frame)
+            .into_iter()
+            .filter(|(r, _)| near(r.width(), 1.0) && row.rect.contains_rect(*r))
+            .count();
+        assert_eq!(ink_in_row, 0, "{} was painted a rug", row.column);
+    }
+}
+
+#[test]
+fn a_rug_in_the_list_is_drawn_from_the_values_the_grid_heads_rug_is() {
+    let stage = Stage::new(Mode::Light);
+    let mut list = list(ShelfChannel::X);
+    let frame = stage.draw(&mut list);
+    for (row, facts) in frame.drawn.rows.iter().zip(housing_facts()) {
+        let rug = row.rug.as_ref().expect("a numeric row draws a rug");
+        let (head, head_alphas) = grid_head_rug(&stage, facts, rug.rect.width());
+        assert!(
+            near(head.width(), rug.rect.width()),
+            "{}: the two rugs are compared at one width, and the head's is {} against the list's {}",
+            row.column,
+            head.width(),
+            rug.rect.width()
+        );
+        assert_eq!(
+            rug.alphas, head_alphas,
+            "{}: the list's rug and the grid head's are drawn from different values",
+            row.column
+        );
+    }
+    // The comparison can tell two columns apart: the nine rugs are not one.
+    let first = &frame.drawn.rows[0].rug.as_ref().expect("a rug").alphas;
+    assert!(
+        frame
+            .drawn
+            .rows
+            .iter()
+            .any(|r| r.rug.as_ref().is_some_and(|rug| rug.alphas != *first)),
+        "every column drew the same rug, so equality with the head says nothing"
+    );
+}
+
+/// The Outline's column rows, as the pane recorded them.
+fn pane_columns(doc: &ProtocolDoc) -> Vec<SpineRowDrawn> {
+    doc.spine_drawn
+        .iter()
+        .filter(|r| r.role == SpineRole::Column)
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn the_outline_pane_draws_the_rugs_while_a_list_is_open_and_the_types_when_none_is() {
+    let stage = Stage::new(Mode::Light);
+    let mut doc = doc();
+    let ctx = settled_pane(&mut doc);
+
+    // With no list open a numeric row says its type, as it did before there was
+    // a list to open: the type the profile gave it, and no rug.
+    let plain = pane_columns(&doc);
+    assert_eq!(plain.len(), housing_facts().len());
+    for (row, facts) in plain.iter().zip(housing_facts()) {
+        assert_eq!(row.kind, facts.leaf, "{} says its type", row.label);
+        assert!(row.kind_rect.is_some(), "{} lays its type out", row.label);
+        assert!(row.rug.is_none(), "{} draws a rug", row.label);
+    }
+
+    // With one open, the rows are the pane's own and the rugs are the values
+    // the grid head is drawn from, reached through the model's own opening of
+    // the list and not through a request a test built.
+    doc.model
+        .open_column_list("hero", ShelfChannel::X, channels());
+    run_pane(&mut doc, &ctx, Mode::Light);
+    let listed = pane_columns(&doc);
+    assert_eq!(listed.len(), housing_facts().len());
+    for (row, facts) in listed.iter().zip(housing_facts()) {
+        let rug = row
+            .rug
+            .as_ref()
+            .unwrap_or_else(|| panic!("{} draws no rug in the pane", row.label));
+        assert_eq!(row.kind, "", "{} still says its type", row.label);
+        assert_eq!(row.kind_rect, None);
+        let (_, head_alphas) = grid_head_rug(&stage, facts, rug.rect.width());
+        assert_eq!(
+            rug.alphas, head_alphas,
+            "{}: the pane's rug and the grid head's are drawn from different values",
+            row.label
+        );
+    }
+
+    // Closed again, the rows say their types.
+    doc.model.close_column_list();
+    run_pane(&mut doc, &ctx, Mode::Light);
+    assert_eq!(pane_columns(&doc), plain);
 }
 
 // ---------------------------------------------------------------------------
@@ -514,14 +819,17 @@ fn a_name_that_begins_with_the_letters_leads_one_that_only_contains_them() {
         ListColumn {
             name: "unit".into(),
             kind: "text".into(),
+            moments: None,
         },
         ListColumn {
             name: "name".into(),
             kind: "text".into(),
+            moments: None,
         },
         ListColumn {
             name: "price".into(),
             kind: "text".into(),
+            moments: None,
         },
     ];
     let mut list = ColumnList::new(request);
@@ -1066,7 +1374,11 @@ fn options() -> SnapshotOptions {
 /// Draw the list through the wgpu renderer and compare it with the committed
 /// baseline `name`.
 fn baseline(name: &str, mode: Mode, word: Option<&'static str>) {
-    let mut list = list(ShelfChannel::X);
+    baseline_of(name, mode, list(ShelfChannel::X), word);
+}
+
+/// [`baseline`] over `list`, which a test opens on the columns it names.
+fn baseline_of(name: &str, mode: Mode, mut list: ColumnList, word: Option<&'static str>) {
     if let Some(word) = word {
         list.feed_events(&slash());
         for ch in word.chars() {
@@ -1109,4 +1421,14 @@ fn the_list_with_inc_typed_light_matches_its_baseline() {
 #[test]
 fn the_list_with_inc_typed_dark_matches_its_baseline() {
     baseline("outline_list_inc_dark", Mode::Dark, Some("inc"));
+}
+
+#[test]
+fn the_list_with_one_numeric_row_among_others_light_matches_its_baseline() {
+    baseline_of("outline_list_mixed_light", Mode::Light, mixed_list(), None);
+}
+
+#[test]
+fn the_list_with_one_numeric_row_among_others_dark_matches_its_baseline() {
+    baseline_of("outline_list_mixed_dark", Mode::Dark, mixed_list(), None);
 }

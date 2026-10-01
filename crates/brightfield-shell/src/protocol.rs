@@ -73,6 +73,7 @@ use brightfield_workbench::{
 use meridian_design::{control, semantic, spacing};
 
 use crate::canvas::{CanvasSlot, EguiCanvasHost};
+use crate::column_header::RugDrawn;
 use crate::design::Mode;
 use crate::one_step::{ColumnFacts, OneStepProtocol};
 use crate::shelf::{ColumnList, ColumnListRequest, ListColumn, ListReport, ShelfChannels};
@@ -1823,6 +1824,7 @@ impl ProtocolModel {
             .map(|c| ListColumn {
                 name: c.column.clone(),
                 kind: c.leaf.clone(),
+                moments: c.moments.clone(),
             })
             .collect();
         self.column_list = Some(ColumnList::new(ColumnListRequest {
@@ -2515,6 +2517,10 @@ pub struct SpineRowDrawn {
     /// The rect the trailing text occupied, `None` on a row with no trailing
     /// text.
     pub kind_rect: Option<egui::Rect>,
+    /// The rug the row drew at its trailing end in place of its type — a
+    /// numeric column's row while the Outline lists a channel's columns. `None`
+    /// on every other row, which states no spread.
+    pub rug: Option<RugDrawn>,
     /// The bar drawn at the leading edge of the one row whose content the
     /// canvas holds, in the secondary ink — or, on a row that is also picked,
     /// the picked bar in the focus ink. `None` on a row the canvas does not
@@ -3029,6 +3035,7 @@ fn list_records(shown: &crate::shelf::ListDrawn) -> Vec<SpineRowDrawn> {
         rect: shown.heading,
         name_rect: shown.heading_name,
         kind_rect: None,
+        rug: None,
         on_canvas: None,
         washed: false,
         chip: None,
@@ -3037,13 +3044,14 @@ fn list_records(shown: &crate::shelf::ListDrawn) -> Vec<SpineRowDrawn> {
     std::iter::once(heading)
         .chain(shown.rows.iter().map(|row| SpineRowDrawn {
             label: row.column.clone(),
-            kind: row.kind.clone(),
+            kind: row.kind.clone().unwrap_or_default(),
             depth: 1,
             marker: SpineMarker::None,
             role: SpineRole::Column,
             rect: row.rect,
             name_rect: row.name_rect,
-            kind_rect: Some(row.kind_rect),
+            kind_rect: row.kind_rect,
+            rug: row.rug.clone(),
             on_canvas: None,
             washed: row.bar.is_some(),
             chip: None,
@@ -3093,6 +3101,7 @@ fn caption_row(ui: &mut egui::Ui, text: &str, mode: Mode) -> SpineRowDrawn {
         rect,
         name_rect,
         kind_rect: None,
+        rug: None,
         on_canvas: None,
         washed: false,
         chip: None,
@@ -3205,6 +3214,7 @@ fn spine_head_row(
             rect,
             name_rect,
             kind_rect: None,
+            rug: None,
             on_canvas,
             washed: false,
             chip: Some(GraphChipDrawn {
@@ -3360,6 +3370,7 @@ fn spine_row(
             rect,
             name_rect,
             kind_rect: Some(kind_rect),
+            rug: None,
             on_canvas,
             washed: row.selected,
             chip: None,
@@ -3449,6 +3460,7 @@ fn outline_row(ui: &mut egui::Ui, row: &OutlineRow, mode: Mode) -> (SpineRowDraw
             rect,
             name_rect,
             kind_rect: Some(kind_rect),
+            rug: None,
             on_canvas: None,
             washed: row.selected,
             chip: None,

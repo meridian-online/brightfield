@@ -55,6 +55,9 @@ use brightfield_workbench::chrome;
 use meridian_design::{control, semantic, spacing, typography};
 use meridian_egui::{icons, key_chip};
 
+use brightfield_engine::ColumnMoments;
+
+use crate::column_header::{column_header_frame, draw_rug_in, GridDensity, RugDrawn};
 use crate::design::Mode;
 use crate::protocol::{caption, caption_font, ui_font};
 use crate::shelf_edit::{column_of, marks_of, reads_selection};
@@ -595,12 +598,18 @@ fn key_token(key: egui::Key) -> Option<&'static str> {
 // ---------------------------------------------------------------------------
 
 /// One column of the table, as the list offers it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ListColumn {
     /// The column's name.
     pub name: String,
-    /// What the row says at its trailing end: the column's type.
+    /// What the row says at its trailing end: the column's type — unless
+    /// [`Self::moments`] is held, which the row draws a rug of in its place.
     pub kind: String,
+    /// The numbers behind the column's spread, from the same profile the grid
+    /// head's rug is drawn from. `Some` for a column the engine defines moments
+    /// over, which is a numeric column with a value in it; `None` for any other,
+    /// whose row keeps its type.
+    pub moments: Option<ColumnMoments>,
 }
 
 /// What the window asks the list to open on.
@@ -950,14 +959,18 @@ impl ColumnList {
 pub struct ListRowDrawn {
     /// The column's name.
     pub column: String,
-    /// What the row said at its trailing end.
-    pub kind: String,
+    /// What the row said at its trailing end. `None` on a row that drew a rug
+    /// there instead.
+    pub kind: Option<String>,
     /// The whole row.
     pub rect: egui::Rect,
     /// Where the name's ink was laid out.
     pub name_rect: egui::Rect,
-    /// Where the type's ink was laid out.
-    pub kind_rect: egui::Rect,
+    /// Where the type's ink was laid out, `None` where [`Self::kind`] is.
+    pub kind_rect: Option<egui::Rect>,
+    /// The rug the row drew in the type's place, `None` on a row that kept its
+    /// type.
+    pub rug: Option<RugDrawn>,
     /// The bar down the row's leading edge, on the row under the cursor.
     pub bar: Option<egui::Rect>,
 }
@@ -984,6 +997,11 @@ pub struct ListDrawn {
     /// What a click decided this frame.
     pub reports: Vec<ListReport>,
 }
+
+/// How wide the rug is on a numeric column's row, at the trailing end. The
+/// rail is 160 wide at least, and what this leaves the name is what a name is
+/// fitted to.
+const LIST_RUG_WIDTH: f32 = 64.0;
 
 /// What the query line says before anything is typed.
 pub const QUERY_PLACEHOLDER: &str = "search columns";
@@ -1104,6 +1122,8 @@ impl ColumnList {
             painter.galley(at, galley, muted);
         }
         let hue = chrome::colour(channel::hue(self.channel, mode));
+        // The grid head's compact band, whose rug a numeric row draws.
+        let rug_frame = column_header_frame(GridDensity::Compact, mode);
         let mut rows = Vec::with_capacity(order.len());
         let mut divider = None;
         let mut clicked = None;
@@ -1151,27 +1171,55 @@ impl ColumnList {
             if response.clicked() {
                 clicked = Some(i);
             }
-            let ends = text_ink::row_ends(
-                &painter,
-                egui::Rect::from_min_max(
-                    egui::pos2(rect.left() + b.pad_x + spacing::SPACE_4, rect.top()),
-                    egui::pos2(rect.right() - b.pad_x, rect.bottom()),
-                ),
-                &TwoEndedRow {
-                    leading: &column.name,
-                    trailing: &column.kind,
-                    font: ui_font(),
-                    gap: spacing::SPACE_3,
-                    leading_ink: primary,
-                    trailing_ink: muted,
-                },
+            let content = egui::Rect::from_min_max(
+                egui::pos2(rect.left() + b.pad_x + spacing::SPACE_4, rect.top()),
+                egui::pos2(rect.right() - b.pad_x, rect.bottom()),
             );
+            // A column the engine measured draws its spread where its type
+            // would stand, and the name is fitted to what the rug leaves. A
+            // column it did not measure draws its type, as the list did before
+            // it drew rugs.
+            let (name_rect, kind, kind_rect, rug) = if let Some(moments) = column.moments.as_ref() {
+                let rug_cell = egui::Rect::from_min_max(
+                    egui::pos2(content.right() - LIST_RUG_WIDTH, content.top()),
+                    content.right_bottom(),
+                );
+                let rug = draw_rug_in(&painter, rug_cell, moments, &rug_frame);
+                let room = rug_cell.left() - spacing::SPACE_3 - content.left();
+                let galley = text_ink::fit(&painter, &column.name, ui_font(), room, primary);
+                let at = egui::Rect::from_min_size(
+                    egui::pos2(content.left(), content.center().y - galley.size().y / 2.0),
+                    galley.size(),
+                );
+                painter.galley(at.min, galley, primary);
+                (at, None, None, Some(rug))
+            } else {
+                let ends = text_ink::row_ends(
+                    &painter,
+                    content,
+                    &TwoEndedRow {
+                        leading: &column.name,
+                        trailing: &column.kind,
+                        font: ui_font(),
+                        gap: spacing::SPACE_3,
+                        leading_ink: primary,
+                        trailing_ink: muted,
+                    },
+                );
+                (
+                    ends.leading,
+                    Some(column.kind.clone()),
+                    Some(ends.trailing),
+                    None,
+                )
+            };
             rows.push(ListRowDrawn {
                 column: column.name.clone(),
-                kind: column.kind.clone(),
+                kind,
                 rect,
-                name_rect: ends.leading,
-                kind_rect: ends.trailing,
+                name_rect,
+                kind_rect,
+                rug,
                 bar,
             });
         }
