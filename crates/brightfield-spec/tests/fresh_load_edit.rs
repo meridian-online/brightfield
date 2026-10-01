@@ -11,8 +11,10 @@
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_spec::ast::{Component, SpecValue, ValueOrParamRef};
 use brightfield_spec::edit::{
-    apply, apply_for_fresh_load, classify_edit, plot_at_path, ChartEdit, RefuseReason,
+    apply, apply_for_fresh_load, classify_edit, colour_legend_covers, plot_at_path, ChartEdit,
+    RefuseReason,
 };
+use brightfield_spec::vocab::LegendChannel;
 use brightfield_spec::{parse_spec, Format, Spec};
 
 /// The generated map's shape: a ghost dot layer and a subset dot layer, each
@@ -157,4 +159,161 @@ fn a_fresh_load_edit_still_refuses_an_edit_with_no_target() {
         );
         assert_eq!(spec, before, "the refused {edit:?} changed the spec");
     }
+}
+
+fn add_legend(plot: &str) -> ChartEdit {
+    ChartEdit::AddColourLegend {
+        plot: ComponentPath(plot.to_string()),
+    }
+}
+
+/// The plot's legend items, as the channel each draws, in item order.
+fn legends(spec: &Spec, plot: &str) -> Vec<LegendChannel> {
+    plot_at_path(spec, plot)
+        .expect("the plot")
+        .items
+        .iter()
+        .filter_map(|c| match c {
+            Component::Legend(l) => Some(l.channel),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **A colour legend is appended as the plot's last item**, after the marks and
+/// after the interactor that closes the map's list, and nothing else about the
+/// spec changes: taking the item off again gives the spec it was appended to.
+#[test]
+fn a_colour_legend_edit_appends_a_legend_as_the_plots_last_item() {
+    let before = hero();
+    let mut spec = before.clone();
+
+    apply_for_fresh_load(&mut spec, &add_legend("root")).expect("the plot is there");
+
+    let items = &plot_at_path(&spec, "root").expect("the root plot").items;
+    assert_eq!(items.len(), 4, "a legend should add one item to the three");
+    let Some(Component::Legend(legend)) = items.last() else {
+        panic!("the last item is {:?}, not a legend", items.last());
+    };
+    assert_eq!(legend.channel, LegendChannel::Color);
+    assert!(
+        legend.options.is_empty(),
+        "the legend carries options: {:?}",
+        legend.options
+    );
+
+    let mut taken_off = spec.clone();
+    brightfield_spec::edit::plot_at_path_mut(&mut taken_off, "root")
+        .expect("the root plot")
+        .items
+        .pop();
+    assert_eq!(taken_off, before, "the edit changed more than the item");
+}
+
+/// **A plot that already holds the item is left equal**, so a second edit is not
+/// a second legend. A legend for another channel is not the colour legend and
+/// does not stop it.
+#[test]
+fn a_colour_legend_edit_on_a_plot_that_holds_the_item_changes_no_part_of_the_spec() {
+    let mut spec = hero();
+    apply_for_fresh_load(&mut spec, &add_legend("root")).expect("the plot is there");
+    let once = spec.clone();
+
+    apply_for_fresh_load(&mut spec, &add_legend("root")).expect("the plot is there");
+
+    assert_eq!(spec, once, "a second edit changed the spec");
+    assert_eq!(legends(&spec, "root"), [LegendChannel::Color]);
+
+    let mut opacity = parse_spec(
+        "data:\n  t: SELECT 1 AS a\nplot:\n  - mark: dot\n    data: { from: t }\n    x: a\n  - legend: opacity\n",
+        Format::Yaml,
+    )
+    .expect("the fixture parses")
+    .spec;
+    apply_for_fresh_load(&mut opacity, &add_legend("root")).expect("the plot is there");
+    assert_eq!(
+        legends(&opacity, "root"),
+        [LegendChannel::Opacity, LegendChannel::Color],
+        "an opacity legend stopped the colour legend being added"
+    );
+}
+
+/// **An edit with no plot to take it is refused**, with the spec left equal.
+#[test]
+fn a_colour_legend_edit_on_no_plot_is_refused() {
+    let mut spec = hero();
+    let before = spec.clone();
+
+    assert_eq!(
+        apply_for_fresh_load(&mut spec, &add_legend("root/vconcat[3]")),
+        Err(RefuseReason::PlotNotFound)
+    );
+    assert_eq!(spec, before);
+}
+
+/// Two items in a column, the first a plot named `m` and coloured by `fill`,
+/// and the second the line the test names.
+fn column_with(second: &str) -> Spec {
+    let source = format!(
+        "data:\n  t: SELECT 1 AS a, 2 AS b\nvconcat:\n  - plot:\n      - mark: dot\n        data: {{ from: t }}\n        x: a\n        fill: b\n    name: m\n  - {second}\n"
+    );
+    parse_spec(&source, Format::Yaml)
+        .unwrap_or_else(|e| panic!("the fixture parses: {e}"))
+        .spec
+}
+
+const COLUMN_PLOT: &str = "root/vconcat[0]";
+
+/// **A colour legend is drawn for a plot when its items hold one, when a
+/// standalone one names it with `for:`, and when a standalone one names no plot
+/// and the plot is the dashboard's one coloured plot**; not when the standalone
+/// one names another plot, and not when it is for another channel.
+#[test]
+fn a_plot_has_a_colour_legend_when_its_items_or_a_standalone_legend_hold_one() {
+    let mut item = column_with("vspace: 8");
+    assert!(
+        !colour_legend_covers(&item, COLUMN_PLOT),
+        "a plot with no legend anywhere reads as covered"
+    );
+    apply_for_fresh_load(&mut item, &add_legend(COLUMN_PLOT)).expect("the plot is there");
+    assert!(
+        colour_legend_covers(&item, COLUMN_PLOT),
+        "the item the edit appended is not read as a legend"
+    );
+
+    let cases = [
+        (
+            "legend: color\n    for: m",
+            true,
+            "a standalone legend that names the plot",
+        ),
+        (
+            "legend: color\n    for: other",
+            false,
+            "a standalone legend that names another plot",
+        ),
+        (
+            "legend: color",
+            true,
+            "a standalone legend with no for: over the one coloured plot",
+        ),
+        (
+            "legend: opacity\n    for: m",
+            false,
+            "a standalone legend for another channel",
+        ),
+    ];
+    for (legend, covered, what) in cases {
+        let spec = column_with(legend);
+        assert_eq!(
+            colour_legend_covers(&spec, COLUMN_PLOT),
+            covered,
+            "{what}: should be covered={covered}"
+        );
+    }
+
+    assert!(
+        !colour_legend_covers(&hero(), "root/vconcat[3]"),
+        "a path that names no plot reads as covered"
+    );
 }
