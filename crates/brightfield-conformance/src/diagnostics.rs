@@ -277,7 +277,8 @@ fn warning_wire_name(warning: &ParseWarning) -> String {
         | ParseWarning::InvalidAxisReverseSwitch { attribute }
         | ParseWarning::InvalidTickFormat { attribute, .. }
         | ParseWarning::UnreadDateDirective { attribute, .. }
-        | ParseWarning::TickFormatOnWrongAxis { attribute, .. } => attribute.clone(),
+        | ParseWarning::TickFormatOnWrongAxis { attribute, .. }
+        | ParseWarning::UnreadAxisAttribute { attribute, .. } => attribute.clone(),
         ParseWarning::UnknownProjection { value } => value.clone(),
         ParseWarning::AspectRatioWithProjection { mark }
         | ParseWarning::MarkCannotProject { mark, .. } => mark.clone(),
@@ -324,7 +325,8 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         | ParseWarning::InvalidAxisReverseSwitch { .. }
         | ParseWarning::InvalidTickFormat { .. }
         | ParseWarning::UnreadDateDirective { .. }
-        | ParseWarning::TickFormatOnWrongAxis { .. } => "plot",
+        | ParseWarning::TickFormatOnWrongAxis { .. }
+        | ParseWarning::UnreadAxisAttribute { .. } => "plot",
         ParseWarning::UnknownAggregate { .. }
         | ParseWarning::UnconsumedChannelTransform { .. }
         | ParseWarning::ColourNameShadowsColumn { .. } => "channel",

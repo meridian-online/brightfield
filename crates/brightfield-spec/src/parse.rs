@@ -484,6 +484,24 @@ pub enum ParseWarning {
         attribute: String,
     },
 
+    /// A plot, or `plotDefaults:`, set an axis attribute Mosaic's schema
+    /// declares and this build does not read: `xTickRotate`, `yAxis`,
+    /// `xLabelAnchor`. The plot draws as it does without the key. This names the
+    /// key and the plot that carries it, so an author can tell a gap in
+    /// brightfield from a typing mistake and trust the rest of the chart.
+    ///
+    /// [`crate::axis_vocabulary::unread_axis_attributes`] is the sole judge, so
+    /// a resolver that learns a name narrows this warning in the same edit.
+    UnreadAxisAttribute {
+        /// The attribute key, as written.
+        attribute: String,
+        /// The plot that sets it, as [`crate::layout::plot_label`] names one:
+        /// its component path, and its `name:` when it declares one. `None`
+        /// when the key is under `plotDefaults:`, which is named once there
+        /// rather than at each plot that inherits it.
+        plot: Option<String>,
+    },
+
     /// A plot-level tick-format attribute (`xTickFormat`, `yTickFormat`) carried
     /// a value that is neither a d3-format number specifier nor a d3-time-format
     /// date specifier: `~~`, `.f`, a number, a list. The axis degrades to its
@@ -810,6 +828,16 @@ impl fmt::Display for ParseWarning {
                 f,
                 "plot attribute `{attribute}` is not `true` or `false` — the key is ignored and the axis runs the way it does without it"
             ),
+            Self::UnreadAxisAttribute { attribute, plot } => match plot {
+                Some(plot) => write!(
+                    f,
+                    "plot {plot} sets `{attribute}`, an axis attribute this build does not read — the plot draws without it"
+                ),
+                None => write!(
+                    f,
+                    "`plotDefaults` sets `{attribute}`, an axis attribute this build does not read — each plot draws without it"
+                ),
+            },
             Self::InvalidTickFormat { attribute, value } => write!(
                 f,
                 "plot attribute `{attribute}` is `{value}`, which is neither a number format nor a date format — ticks draw their default text"
@@ -1025,6 +1053,11 @@ struct Walker {
     /// plot, regardless of where `plotDefaults:` sits in the file, so this
     /// is fully populated (or left empty) by the time a plot is walked.
     plot_defaults: PlotDefaults,
+    /// The component path of the node being walked, one segment per level:
+    /// `root`, then `vconcat[i]` / `hconcat[i]`. Joined with `/` it is the path
+    /// [`crate::layout::collect_plot_nodes`] gives the same plot, so a warning
+    /// that names a plot names it where a caller would find it.
+    component_path: Vec<String>,
 }
 
 impl Walker {
@@ -1110,6 +1143,18 @@ impl Walker {
                             });
                         }
                     }
+                    // An axis attribute no resolver reads is named here, once,
+                    // for the same reason: each plot that inherits it would
+                    // otherwise drop it in silence.
+                    for attribute in crate::axis_vocabulary::unread_axis_attributes(
+                        defaults.keys().map(String::as_str),
+                        crate::axis_vocabulary::SCHEMA_AXIS_ATTRIBUTES,
+                    ) {
+                        self.warnings.push(ParseWarning::UnreadAxisAttribute {
+                            attribute: attribute.to_string(),
+                            plot: None,
+                        });
+                    }
                     self.plot_defaults = defaults.clone();
                     spec.plot_defaults = defaults;
                 }
@@ -1123,7 +1168,9 @@ impl Walker {
 
         if !root_map.is_empty() {
             let root_value = serde_yaml::Value::Mapping(root_map);
+            self.component_path.push("root".to_string());
             spec.root = Some(self.walk_component(&root_value)?);
+            self.component_path.pop();
         }
 
         // Version mismatch warning (major.minor only).
@@ -1406,10 +1453,10 @@ impl Walker {
             return Ok(Component::Plot(self.walk_plot(items, map)?));
         }
         if let Some(items) = has("vconcat") {
-            return Ok(Component::VConcat(self.walk_concat(items)?));
+            return Ok(Component::VConcat(self.walk_concat(items, "vconcat")?));
         }
         if let Some(items) = has("hconcat") {
-            return Ok(Component::HConcat(self.walk_concat(items)?));
+            return Ok(Component::HConcat(self.walk_concat(items, "hconcat")?));
         }
         if let Some(val) = has("hspace") {
             return Ok(Component::HSpace(SpaceNode {
@@ -1569,6 +1616,16 @@ impl Walker {
             }
             attributes.insert(key, value);
         }
+        // The axis attributes this plot sets itself and no resolver reads,
+        // taken before `plotDefaults:` fills in the rest: an inherited key was
+        // named once, under `plotDefaults:`, and is not named again here.
+        let unread: Vec<String> = crate::axis_vocabulary::unread_axis_attributes(
+            attributes.keys().map(String::as_str),
+            crate::axis_vocabulary::SCHEMA_AXIS_ATTRIBUTES,
+        )
+        .into_iter()
+        .map(str::to_string)
+        .collect();
         // `plotDefaults:` fills in whatever this plot left unset — key-agnostic,
         // the whole bag, not a chosen few — so a value already on the plot
         // always wins over the same key's default.
@@ -1581,6 +1638,15 @@ impl Walker {
             items: plot_items,
             attributes,
         };
+        if !unread.is_empty() {
+            let label = crate::layout::plot_label(&self.component_path.join("/"), &node);
+            for attribute in unread {
+                self.warnings.push(ParseWarning::UnreadAxisAttribute {
+                    attribute,
+                    plot: Some(label.clone()),
+                });
+            }
+        }
         self.warn_plot_projection(&node);
         Ok(node)
     }
@@ -1658,7 +1724,11 @@ impl Walker {
         }
     }
 
-    fn walk_concat(&mut self, items: &serde_yaml::Value) -> Result<ConcatNode, ParseError> {
+    fn walk_concat(
+        &mut self,
+        items: &serde_yaml::Value,
+        kind: &str,
+    ) -> Result<ConcatNode, ParseError> {
         let seq = match items {
             serde_yaml::Value::Sequence(s) => s,
             _ => {
@@ -1670,8 +1740,10 @@ impl Walker {
             }
         };
         let mut out = Vec::with_capacity(seq.len());
-        for item in seq {
+        for (i, item) in seq.iter().enumerate() {
+            self.component_path.push(format!("{kind}[{i}]"));
             out.push(self.walk_component(item)?);
+            self.component_path.pop();
         }
         Ok(ConcatNode { items: out })
     }
