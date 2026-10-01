@@ -39,6 +39,12 @@
 //! and `the_highlighted_points_wear_the_ramp_and_the_ghost_points_keep_their_ink`
 //! hold the page.
 //!
+//! **A number column on colour also names the scheme it is drawn in.** The
+//! renderer's default scheme is not Mosaic's, so [`put_colour`] follows the
+//! `fill` edit with a `colorScheme` edit when the plot carries no scheme, and the
+//! saved chart reads the same in a renderer that has a different default. A
+//! column of strings is drawn by category and takes no scheme.
+//!
 //! **The edit comes back as the edits applied, in order**, because Save writes
 //! the edits since the last Save into the chart file's text one at a time.
 //! They are applied through [`edit::apply_for_fresh_load`] and not
@@ -49,6 +55,7 @@
 use std::fmt;
 
 use brightfield_engine::ColumnProfile;
+use brightfield_render::scale::SequentialScheme;
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_spec::ast::{
     Component, Mark, MarkData, PlotNode, Spec, SpecValue, ValueOrParamRef,
@@ -56,7 +63,7 @@ use brightfield_spec::ast::{
 use brightfield_spec::edit::{self, plot_at_path, ChartEdit, RefuseReason};
 use brightfield_spec::layout::PlotAxis;
 
-use crate::chart_kinds::POINT_MAP_PROJECTION;
+use crate::chart_kinds::{type_base, POINT_MAP_PROJECTION};
 use crate::dashboard::coordinate_pair;
 
 /// The plot attribute a map is drawn through, as Mosaic spells it.
@@ -64,6 +71,10 @@ const PROJECTION_KEY: &str = "projectionType";
 
 /// The channel a colour column is bound through, as Mosaic spells it.
 const COLOUR_KEY: &str = "fill";
+
+/// The plot attribute a continuous colour is drawn in a scheme through, as
+/// Mosaic spells it.
+const SCHEME_KEY: &str = "colorScheme";
 
 /// Why a column could not be put on a channel. The spec is left as it was.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,13 +198,27 @@ pub fn put_column(
 /// place, and return the [`ChartEdit`]s applied, in the order they were
 /// applied.
 ///
-/// The list holds a [`ChartEdit::SetChannel`] of `fill` for each mark that
-/// reads through a selection (`filterBy:`) and does not already bind `fill` to
-/// `column`, in the plot's mark order, or one for the first mark when no mark
-/// reads through a selection. A column put on a colour that already holds
-/// another replaces it, and one already where it is put yields no edits and
+/// The list holds, in order:
+///
+/// 1. a [`ChartEdit::SetChannel`] of `fill` for each mark that reads through a
+///    selection (`filterBy:`) and does not already bind `fill` to `column`, in
+///    the plot's mark order, or one for the first mark when no mark reads
+///    through a selection;
+/// 2. a [`ChartEdit::SetPlotAttribute`] of `colorScheme` to the scheme the
+///    renderer draws a ramp in, when the first list is not empty, `column` is
+///    one the dot paints along a ramp, and the plot carries no `colorScheme`.
+///
+/// A column put on a colour that already holds another replaces it, and one
+/// already where it is put yields no edits, the scheme edit included, and
 /// leaves the spec equal. No edit touches a mark that does not read through a
 /// selection when one does, so the map's ghost layer keeps its ink.
+///
+/// **Why the scheme is written.** brightfield's default scheme is not
+/// Mosaic's, so a saved chart that names none is drawn by Mosaic in a ramp
+/// brightfield did not show. The file names it. A `colorScheme` the plot
+/// already carries is the analyst's, or a chart saved before this edit wrote
+/// one, and is left alone; a column of strings paints by category and no ramp
+/// names it.
 ///
 /// # Errors
 ///
@@ -224,7 +249,7 @@ pub fn put_colour(
         highlighted
     };
 
-    let edits: Vec<ChartEdit> = painted
+    let mut edits: Vec<ChartEdit> = painted
         .into_iter()
         .filter(|&i| column_of(marks[i], COLOUR_KEY) != Some(column))
         .map(|mark_ordinal| ChartEdit::SetChannel {
@@ -235,6 +260,22 @@ pub fn put_colour(
         })
         .collect();
 
+    // A column already on the colour yields no fill edit, so it names no
+    // scheme either: the plot reads as the analyst left it.
+    let names_scheme = !edits.is_empty()
+        && !target.attributes.contains_key(SCHEME_KEY)
+        && table
+            .iter()
+            .find(|c| c.name == column)
+            .is_some_and(|c| is_ramp_type(&c.type_name));
+    if names_scheme {
+        edits.push(ChartEdit::SetPlotAttribute {
+            plot: plot.clone(),
+            key: SCHEME_KEY.to_string(),
+            value: SpecValue::String(SequentialScheme::default().wire_name().to_string()),
+        });
+    }
+
     // The edits go onto a copy first, so a refusal part-way leaves the spec
     // as it was.
     let mut edited = spec.clone();
@@ -243,6 +284,46 @@ pub fn put_colour(
     }
     *spec = edited;
     Ok(edits)
+}
+
+/// Whether the dot paints a column of this DuckDB type along a ramp: the types
+/// `column_as_f64` in `brightfield-render` reads as numbers, which are the
+/// integers, the floats, `DECIMAL`, and the microsecond `TIMESTAMP`.
+///
+/// **Not [`crate::chart_kinds`]'s `is_binnable_type`**, which asks what the
+/// bin arithmetic can subtract and so leaves the timestamps out. `HUGEINT` and
+/// `UHUGEINT` are here because both reach the renderer as `Decimal128`. A `DATE`
+/// reaches it as `Date32` and a `TIME` as `Time64`, which that reader does not
+/// read, and the second-, millisecond- and nanosecond-precision timestamps
+/// arrive in units it does not read either, so those are not here.
+///
+/// **A timestamp is here because that reader reads it, and the dot does not
+/// yet draw a ramp for one**: `augment_fill_ramp` leaves the `Time` scale the
+/// column was typed with, so a page loaded from the edit draws no ramp for a
+/// timestamp fill. `a_column_names_the_scheme_when_the_page_loaded_from_the_edit_draws_it_as_a_ramp`
+/// holds the other columns to the page and leaves this one out for that reason.
+fn is_ramp_type(duckdb_type: &str) -> bool {
+    matches!(
+        type_base(duckdb_type).as_str(),
+        "TINYINT"
+            | "SMALLINT"
+            | "INTEGER"
+            | "BIGINT"
+            | "HUGEINT"
+            | "UTINYINT"
+            | "USMALLINT"
+            | "UINTEGER"
+            | "UBIGINT"
+            | "UHUGEINT"
+            | "FLOAT"
+            | "REAL"
+            | "DOUBLE"
+            | "DECIMAL"
+            | "NUMERIC"
+            | "TIMESTAMP"
+            | "DATETIME"
+            | "TIMESTAMPTZ"
+    )
 }
 
 /// The channel key an axis is bound through.

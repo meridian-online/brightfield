@@ -207,11 +207,32 @@ fn the_shelfs_x_edit_put_back_gives_the_generated_text() {
     assert_eq!(write_all(&rebound, &back), opened.text);
 }
 
+/// The map's last plot attribute in the generator's text, after which the
+/// writer adds a plot attribute the map does not carry.
+const LAST_ATTRIBUTE: &str = "      projectionType: equirectangular\n";
+
+/// The map's highlighted layer, whose `fill:` line the colour edit adds.
+const HIGHLIGHTED: &str = "        data: { from: opened, filterBy: $sel }\n        x: 'longitude'\n        y: 'latitude'\n";
+
+/// `text` with the two lines a number column on the map's colour adds: a
+/// `fill:` on the highlighted layer, and the scheme after the plot's last
+/// attribute.
+fn with_colour(text: &str, column: &str, last_attribute: &str) -> String {
+    text.replace(
+        HIGHLIGHTED,
+        &format!("{HIGHLIGHTED}        fill: {column}\n"),
+    )
+    .replace(
+        last_attribute,
+        &format!("{last_attribute}      colorScheme: viridis\n"),
+    )
+}
+
 /// **`median_house_value` on the map's colour, written**: one
-/// `fill: median_house_value` line in the highlighted layer, and no other line
-/// changed.
+/// `fill: median_house_value` line in the highlighted layer and one
+/// `colorScheme: viridis` line in the plot, and no other line changed.
 #[test]
-fn the_shelfs_colour_edit_on_the_generated_map_adds_one_fill_line() {
+fn the_shelfs_colour_edit_on_the_generated_map_adds_one_fill_line_and_one_scheme_line() {
     let mut opened = open("colour");
     let edits = put_colour(
         &mut opened.spec,
@@ -222,20 +243,63 @@ fn the_shelfs_colour_edit_on_the_generated_map_adds_one_fill_line() {
     .expect("the shelf takes median_house_value");
     let written = write_all(&opened.text, &edits);
 
-    let highlighted = "        data: { from: opened, filterBy: $sel }\n        x: 'longitude'\n        y: 'latitude'\n";
-    assert_eq!(opened.text.matches(highlighted).count(), 1);
+    assert_eq!(opened.text.matches(HIGHLIGHTED).count(), 1);
+    assert_eq!(opened.text.matches(LAST_ATTRIBUTE).count(), 1);
     assert_eq!(
         written,
-        opened.text.replace(
-            highlighted,
-            &format!("{highlighted}        fill: median_house_value\n")
-        )
+        with_colour(&opened.text, "median_house_value", LAST_ATTRIBUTE)
     );
     assert_eq!(
         parse_spec(&written, Format::Yaml)
             .expect("the written text parses")
             .spec,
         opened.spec,
+        "the text reads back as the spec the shelf made"
+    );
+}
+
+/// **A file's comments are as they were after the scheme line is written**, an
+/// own-line comment inside the plot and a comment after its last attribute
+/// among them: the lines that hold a `#` are the same lines in the same
+/// order, and the text reads back as the spec the shelf made.
+#[test]
+fn the_scheme_line_is_written_among_a_files_comments_and_leaves_them() {
+    let opened = open("comments");
+    let commented_last = "      projectionType: equirectangular # drawn as a map\n";
+    let text = opened.text.replace(LAST_ATTRIBUTE, commented_last).replace(
+        "      width: 620\n",
+        "      # the size the map is drawn at\n      width: 620\n",
+    );
+    assert_eq!(text.matches("drawn as a map").count(), 1);
+    assert_eq!(text.matches("the size the map is drawn at").count(), 1);
+    let mut spec = parse_spec(&text, Format::Yaml)
+        .expect("the commented text parses")
+        .spec;
+
+    let edits = put_colour(&mut spec, &opened.hero, "median_house_value", &opened.table)
+        .expect("the shelf takes median_house_value");
+    let written = write_all(&text, &edits);
+
+    let with_comment = |t: &str| -> Vec<String> {
+        t.lines()
+            .filter(|l| l.contains('#'))
+            .map(str::to_string)
+            .collect()
+    };
+    assert_eq!(
+        with_comment(&written),
+        with_comment(&text),
+        "writing the scheme changed a line that holds a comment"
+    );
+    assert_eq!(
+        written,
+        with_colour(&text, "median_house_value", commented_last)
+    );
+    assert_eq!(
+        parse_spec(&written, Format::Yaml)
+            .expect("the written text parses")
+            .spec,
+        spec,
         "the text reads back as the spec the shelf made"
     );
 }
