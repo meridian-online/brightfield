@@ -167,9 +167,9 @@ const PROBE_VALUES: &[&str] = &[
     "''",
 ];
 
-/// **`READ_AXIS_ATTRIBUTES` is what the layout resolvers read: each name on it
-/// changes what a resolver returns for some value, and each schema name off it
-/// changes nothing for any.**
+/// **`READ_AXIS_ATTRIBUTES` is what the layout resolvers read: a name on it
+/// changes what a resolver returns for at least one probe value, and a schema
+/// name off it leaves each resolver's result as it was for each probe value.**
 #[test]
 fn the_read_list_is_what_the_layout_resolvers_read() {
     let base = parse_spec(&probe_spec(""), Format::Yaml).expect("the bare probe parses");
