@@ -213,7 +213,7 @@ fn column(name: &str, type_name: &str) -> ColumnProfile {
 // ---------------------------------------------------------------------------
 
 /// **A float column and an integer column each write the scheme after the
-/// `fill`**, on a plot that carries none, and the spec afterwards carries
+/// `fill`**, on a plot that carries no scheme, and the spec afterwards carries
 /// `colorScheme: viridis` on it.
 #[test]
 fn a_number_column_put_on_the_colour_of_a_plot_with_no_scheme_writes_viridis_after_the_fill() {
@@ -279,8 +279,8 @@ fn a_string_column_put_on_the_colour_of_a_plot_with_no_scheme_names_none() {
     );
 }
 
-/// **A column already on colour, put there again, is no edit at all**: no
-/// `fill` and no scheme, on a plot that carries a `colorScheme` and on one
+/// **A column already on colour, put there again, is no edit**: not a
+/// `fill` and not a scheme, on a plot that carries a `colorScheme` and on one
 /// that does not, the second being a chart saved before the scheme was
 /// written. The spec is left equal.
 #[test]

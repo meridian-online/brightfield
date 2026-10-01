@@ -41,7 +41,7 @@
 //!
 //! **A number column on colour also names the scheme it is drawn in.** The
 //! renderer's default scheme is not Mosaic's, so [`put_colour`] follows the
-//! `fill` edit with a `colorScheme` edit when the plot carries none, and the
+//! `fill` edit with a `colorScheme` edit when the plot carries no scheme, and the
 //! saved chart reads the same in a renderer that has a different default. A
 //! column of strings is drawn by category and takes no scheme.
 //!
@@ -291,11 +291,11 @@ pub fn put_colour(
 /// integers, the floats, `DECIMAL`, and the microsecond `TIMESTAMP`.
 ///
 /// **Not [`crate::chart_kinds`]'s `is_binnable_type`**, which asks what the
-/// bin arithmetic can subtract and so leaves every timestamp out. `HUGEINT` and
+/// bin arithmetic can subtract and so leaves the timestamps out. `HUGEINT` and
 /// `UHUGEINT` are here because both reach the renderer as `Decimal128`. A `DATE`
-/// reaches it as `Date32` and a `TIME` as `Time64`, which that reader returns
-/// nothing for, and the second-, millisecond- and nanosecond-precision
-/// timestamps arrive in units it does not read, so none of those is here.
+/// reaches it as `Date32` and a `TIME` as `Time64`, which that reader does not
+/// read, and the second-, millisecond- and nanosecond-precision timestamps
+/// arrive in units it does not read either, so those are not here.
 ///
 /// **A timestamp is here because that reader reads it, and the dot does not
 /// yet draw a ramp for one**: `augment_fill_ramp` leaves the `Time` scale the
