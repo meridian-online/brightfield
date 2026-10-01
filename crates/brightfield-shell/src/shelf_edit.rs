@@ -291,10 +291,17 @@ pub fn put_colour(
 /// integers, the floats, `DECIMAL`, and the microsecond `TIMESTAMP`.
 ///
 /// **Not [`crate::chart_kinds`]'s `is_binnable_type`**, which asks what the
-/// bin arithmetic can subtract and so leaves every timestamp out. A `DATE`
-/// reaches the renderer as `Date32`, which that reader returns nothing for, and
-/// the second-, millisecond- and nanosecond-precision timestamps arrive in
-/// units it does not read, so none of those is here.
+/// bin arithmetic can subtract and so leaves every timestamp out. `HUGEINT` and
+/// `UHUGEINT` are here because both reach the renderer as `Decimal128`. A `DATE`
+/// reaches it as `Date32` and a `TIME` as `Time64`, which that reader returns
+/// nothing for, and the second-, millisecond- and nanosecond-precision
+/// timestamps arrive in units it does not read, so none of those is here.
+///
+/// **A timestamp is here because that reader reads it, and the dot does not
+/// yet draw a ramp for one**: `augment_fill_ramp` leaves the `Time` scale the
+/// column was typed with, so a page loaded from the edit draws no ramp for a
+/// timestamp fill. `a_column_names_the_scheme_when_the_page_loaded_from_the_edit_draws_it_as_a_ramp`
+/// holds the other columns to the page and leaves this one out for that reason.
 fn is_ramp_type(duckdb_type: &str) -> bool {
     matches!(
         type_base(duckdb_type).as_str(),
@@ -302,10 +309,12 @@ fn is_ramp_type(duckdb_type: &str) -> bool {
             | "SMALLINT"
             | "INTEGER"
             | "BIGINT"
+            | "HUGEINT"
             | "UTINYINT"
             | "USMALLINT"
             | "UINTEGER"
             | "UBIGINT"
+            | "UHUGEINT"
             | "FLOAT"
             | "REAL"
             | "DOUBLE"
