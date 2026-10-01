@@ -549,11 +549,7 @@ pub fn build_multi_mark_scene_with_domains(
 ///
 /// The pin lands AFTER inference and after [`apply_unsampled_domains`], so the
 /// author's instruction outranks both what the drawn rows imply and what a
-/// sample restoration put back. The axis ends land after the pin, in Observable
-/// Plot's order: zero first, then round ends, on the domain it holds whether the
-/// scale inferred it or the spec fixed it. A pin is captured from the scales
-/// this function returns, so what `Fixed` holds still is the domain with its
-/// ends already carried, and asking for the same ends of it again moves nothing. It lands BEFORE nothing: the reader's own
+/// sample restoration put back. It lands BEFORE nothing: the reader's own
 /// navigation gesture is applied inside the inference, and an axis the reader
 /// has navigated is dropped from the pin here rather than overwritten, so a
 /// pinned plot pans and zooms like an unpinned one. A filter is the dashboard
@@ -561,6 +557,12 @@ pub fn build_multi_mark_scene_with_domains(
 /// declines. `tick_counts`, `tick_formats` and `grid` carry no domain and land
 /// at the draw step below, alongside the pinned or unpinned scales they draw
 /// against.
+///
+/// `axis_ends` lands after the pin, in Observable Plot's order: zero first, then
+/// round ends, on the domain the scale holds whether it inferred that domain or
+/// the spec fixed it. A pin is captured from the scales this function returns,
+/// so a fixed domain is held with its ends already carried, and applying the
+/// same ends to it again leaves it as it is.
 ///
 /// An empty `pins` reproduces [`build_multi_mark_scene_with_domains`] scale for
 /// scale — [`apply_pinned_domains`] writes nothing without a pin to write.

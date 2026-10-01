@@ -1445,6 +1445,99 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
+    // Round ends — `nice_linear_domain`
+    // -----------------------------------------------------------------
+
+    /// Domains the rounding is asked about: whole and fractional, negative and
+    /// straddling zero, narrow beside their offset, and wide. The fractional
+    /// ones are where a quotient lands a few ulps off the whole number it should
+    /// be, so a rounding that used a bare `floor` or `ceil` would move an end a
+    /// whole step.
+    const NICE_DOMAINS: [(f64, f64); 14] = [
+        (3.0, 97.0),
+        (7.0, 43.0),
+        (40.0, 90.0),
+        (0.3, 0.9),
+        (0.12, 0.87),
+        (0.07, 0.43),
+        (-3.7, 12.2),
+        (-97.0, -3.0),
+        (-0.4, 0.4),
+        (1234.5, 1299.5),
+        (0.000_31, 0.000_77),
+        (1.0e6, 1.0e6 + 4321.0),
+        (0.0, 47.0),
+        (14.0, 26.0),
+    ];
+
+    /// **A rounded domain contains the data, and asking again moves nothing.**
+    /// The second is what lets a domain a plot pinned after rounding be rounded
+    /// again on every later composition without drifting a step each time.
+    #[test]
+    fn a_rounded_domain_holds_the_data_and_is_a_fixed_point() {
+        for (min, max) in NICE_DOMAINS {
+            for target in [2, 3, 5, 10] {
+                let (lo, hi) = nice_linear_domain(min, max, target);
+                assert!(
+                    lo <= min && hi >= max,
+                    "({min}, {max}) at {target} ticks rounds to ({lo}, {hi}), which cuts the data"
+                );
+                assert_eq!(
+                    nice_linear_domain(lo, hi, target),
+                    (lo, hi),
+                    "({min}, {max}) at {target} ticks rounds to ({lo}, {hi}), and rounding that \
+                     again moves it"
+                );
+            }
+        }
+    }
+
+    /// **A rounded end is a tick.** The axis draws a tick at each end of the
+    /// domain `nice_linear_domain` returns, at the count it rounded for, so the
+    /// top of the axis is a labelled number and the bottom is too.
+    #[test]
+    fn each_end_of_a_rounded_domain_is_a_tick() {
+        for (min, max) in NICE_DOMAINS {
+            for target in [2, 3, 5, 10] {
+                let (lo, hi) = nice_linear_domain(min, max, target);
+                let ticks = compute_linear_ticks(lo, hi, 0.0, 100.0, target, None);
+                let (first, last) = (
+                    ticks.first().expect("the domain has ticks").value,
+                    ticks.last().expect("the domain has ticks").value,
+                );
+                let tolerance = (hi - lo) * 1e-9;
+                assert!(
+                    (first - lo).abs() <= tolerance && (last - hi).abs() <= tolerance,
+                    "({min}, {max}) at {target} ticks rounds to ({lo}, {hi}) but its ticks run \
+                     from {first} to {last}"
+                );
+            }
+        }
+    }
+
+    /// The domains rounding leaves as it found them: a span with no width, a
+    /// count of zero, and an end that is not a finite number.
+    #[test]
+    fn rounding_leaves_a_domain_it_cannot_step_as_it_found_it() {
+        assert_eq!(nice_linear_domain(5.0, 5.0, 5), (5.0, 5.0));
+        assert_eq!(nice_linear_domain(3.0, 97.0, 0), (3.0, 97.0));
+        let (lo, hi) = nice_linear_domain(f64::NEG_INFINITY, 97.0, 5);
+        assert!(lo.is_infinite() && hi == 97.0);
+        let (lo, hi) = nice_linear_domain(3.0, f64::NAN, 5);
+        assert!(lo == 3.0 && hi.is_nan());
+    }
+
+    /// An axis that starts at zero is drawn from zero, with no sign on it: a
+    /// negative zero would print as `-0` on a label that reads the sign.
+    #[test]
+    fn a_rounded_end_at_zero_carries_no_sign() {
+        let (lo, _) = nice_linear_domain(-0.4, 0.4, 5);
+        assert!(lo < 0.0, "fixture check: this domain crosses zero");
+        let (lo, _) = nice_linear_domain(0.2, 47.0, 5);
+        assert!(lo == 0.0 && lo.is_sign_positive(), "got {lo:?}");
+    }
+
+    // -----------------------------------------------------------------
     // Thin before you rotate — a time axis at a dashboard tile's width
     // -----------------------------------------------------------------
 

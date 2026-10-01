@@ -153,7 +153,7 @@ fn first_domain(composed: &Composed, channel: Channel) -> (f64, f64) {
     domain(composed, 0, channel)
 }
 
-/// Every coordinate pair the scene's path stream holds, in draw order, in the
+/// The coordinate pairs the scene's path stream holds, in draw order, in the
 /// plot's own coordinates (`Encoding::path_data` is a flat run of `f32` bits,
 /// two words per point).
 fn scene_points(composed: &Composed) -> Vec<(f64, f64)> {
@@ -232,12 +232,7 @@ fn y_zero_starts_a_dot_plots_y_axis_at_zero() {
 
     // Painted: the dot at (70, 65) sits where an axis from 0 puts it, and not
     // where the axis it had put it.
-    let x_px = pixel_at(
-        &asked,
-        Channel::X,
-        first_domain(&asked, Channel::X),
-        70.0,
-    );
+    let x_px = pixel_at(&asked, Channel::X, first_domain(&asked, Channel::X), 70.0);
     let expected = pixel_at(&asked, Channel::Y, (0.0, y_hi), 65.0);
     let moved = pixel_at(&asked, Channel::Y, (unset_lo, unset_hi), 65.0);
     assert!(
@@ -286,12 +281,7 @@ fn y_nice_ends_a_dot_plots_y_axis_on_round_numbers() {
         "`yNice` names the y axis; the x axis draws as it did"
     );
 
-    let x_px = pixel_at(
-        &asked,
-        Channel::X,
-        first_domain(&asked, Channel::X),
-        50.0,
-    );
+    let x_px = pixel_at(&asked, Channel::X, first_domain(&asked, Channel::X), 50.0);
     let expected = pixel_at(&asked, Channel::Y, (0.0, 100.0), 60.0);
     let moved = pixel_at(&asked, Channel::Y, (3.0, 97.0), 60.0);
     assert!(
@@ -315,17 +305,17 @@ fn y_nice_ends_a_dot_plots_y_axis_on_round_numbers() {
 /// draws its ticks at for the plot's target count, so the axis has a tick at
 /// each of its ends and the top one is a number an analyst can say aloud. The
 /// same data rounds to different ends under different counts, which is how a
-/// rounding that ignored the count would show: 12 to 47 under the default five
-/// ticks steps by 5 and runs 10 to 50, and under `yTicks: 10` steps by 2 and runs
-/// 12 to 48.
+/// rounding that ignored the count would show: 7 to 43 under the default five
+/// ticks steps by 10 and runs 0 to 50, and under `yTicks: 10` steps by 5 and
+/// runs 5 to 45.
 #[test]
 fn a_rounded_end_is_a_tick_at_the_plots_own_tick_count() {
     const TEMPLATE: &str = r"
 data:
   pts:
-    - { a: 1, b: 12 }
-    - { a: 2, b: 30 }
-    - { a: 3, b: 47 }
+    - { a: 1, b: 7 }
+    - { a: 2, b: 25 }
+    - { a: 3, b: 43 }
 plot:
   - mark: dot
     data: { from: pts }
@@ -336,8 +326,8 @@ height: 300
 ATTRS
 ";
     for (attrs, target, expected) in [
-        ("yNice: true", 5, (10.0, 50.0)),
-        ("yNice: true\nyTicks: 10", 10, (12.0, 48.0)),
+        ("yNice: true", 5, (0.0, 50.0)),
+        ("yNice: true\nyTicks: 10", 10, (5.0, 45.0)),
     ] {
         let composed = compose_from(TEMPLATE, attrs);
         let ends = first_domain(&composed, Channel::Y);
@@ -362,7 +352,10 @@ ATTRS
 #[test]
 fn zero_is_applied_before_round_ends() {
     assert_eq!(
-        first_domain(&compose_from(ABOVE_ZERO, "yZero: true\nyNice: true"), Channel::Y),
+        first_domain(
+            &compose_from(ABOVE_ZERO, "yZero: true\nyNice: true"),
+            Channel::Y
+        ),
         (0.0, 100.0)
     );
     assert_eq!(
@@ -431,7 +424,10 @@ fn x_zero_and_x_nice_hold_on_the_x_axis() {
         .filter(|p| (p.0 - expected_x).hypot(p.1 - y_px) < 12.0)
         .map(|p| p.0)
         .collect();
-    assert!(!hits.is_empty(), "no dot is painted near the expected place");
+    assert!(
+        !hits.is_empty(),
+        "no dot is painted near the expected place"
+    );
     let painted = hits.iter().sum::<f64>() / hits.len() as f64;
     assert!(
         (painted - expected_x).abs() < 0.75,
@@ -474,7 +470,10 @@ fn a_bars_value_axis_starts_at_zero_whatever_y_zero_says() {
 fn a_spec_that_sets_none_of_the_four_draws_what_it_drew() {
     for template in [ABOVE_ZERO, OFF_ROUND, BARS] {
         let unset = compose_from(template, "");
-        let off = compose_from(template, "xZero: false\nyZero: false\nxNice: false\nyNice: false");
+        let off = compose_from(
+            template,
+            "xZero: false\nyZero: false\nxNice: false\nyNice: false",
+        );
         assert_eq!(
             scene_points(&unset),
             scene_points(&off),
@@ -522,7 +521,7 @@ fn brush(live: &mut LiveDashboard, from: &str, lo: f64, hi: f64) -> Composed {
 /// `Fixed` holds still is the one with its ends already carried.** Mosaic reads
 /// a fixed domain back from the rendered scale, after Observable Plot has applied
 /// zero and round ends, and Plot applies them again to the explicit domain it is
-/// handed, which moves nothing. So a filter that narrows the data leaves a fixed
+/// handed, which leaves it as it is. So a filter that narrows the data leaves a fixed
 /// axis at the rounded ends of the first composition, and the same plot
 /// without `Fixed` rounds the filtered data afresh.
 #[test]
@@ -584,7 +583,9 @@ fn a_navigated_axis_is_not_carried_back_to_zero_or_round_ends() {
             y: Some(zoom),
         },
     );
-    let after = live.present().expect("re-composite at the navigated extent");
+    let after = live
+        .present()
+        .expect("re-composite at the navigated extent");
     assert_eq!(
         first_domain(&after, Channel::Y),
         zoom,

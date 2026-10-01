@@ -50,9 +50,9 @@ use brightfield_spec::analysis::{
 };
 use brightfield_spec::ast::{Component, MarkData, ParamNode, PlotNode, SpaceNode, SpecValue};
 use brightfield_spec::layout::{
-    collect_plot_nodes, placed_plots, resolve_axis_ends, resolve_fixed_domains,
-    resolve_grid_lines, resolve_plot_insets, resolve_plot_margins, resolve_plot_stack_offset,
-    resolve_tick_counts, resolve_tick_formats, AxisFormat, Rect, StackOffset, TickFormats,
+    collect_plot_nodes, placed_plots, resolve_axis_ends, resolve_fixed_domains, resolve_grid_lines,
+    resolve_plot_insets, resolve_plot_margins, resolve_plot_stack_offset, resolve_tick_counts,
+    resolve_tick_formats, AxisFormat, Rect, StackOffset, TickFormats,
 };
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, ParseWarning, Spec};
