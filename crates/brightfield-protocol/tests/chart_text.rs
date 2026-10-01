@@ -662,8 +662,8 @@ width: 300
 /// On the generated map, a colour legend is one `- legend: color` line after
 /// the last item of the hero's list, in the list's own indent, and the rest of
 /// the file — the header comment and the comment above each tile — is
-/// byte-identical. The text parses to the spec the reducer makes, whose last
-/// item on the hero is the legend.
+/// byte-identical. The text parses with no warning to the spec the reducer
+/// makes, whose last item on the hero is the legend.
 #[test]
 fn a_colour_legend_on_the_generated_map_adds_one_line_after_the_last_item() {
     let edit = legend(HERO);
@@ -680,7 +680,13 @@ fn a_colour_legend_on_the_generated_map_adds_one_line_after_the_last_item() {
     assert!(written.starts_with("# Brightfield wrote this dashboard"));
     assert!(written.contains(NEXT_TILE_COMMENT), "a tile's comment went");
 
-    let spec = parse(&written);
+    let parsed = parse_spec(&written, Format::Yaml).expect("the written text parses");
+    assert!(
+        parsed.warnings.is_empty(),
+        "the file holding the legend item parses with warnings: {:?}",
+        parsed.warnings
+    );
+    let spec = parsed.spec;
     assert_eq!(spec, applied_fresh(GENERATED, &edit));
     let hero = edit::plot_at_path(&spec, HERO).expect("the hero");
     assert!(
