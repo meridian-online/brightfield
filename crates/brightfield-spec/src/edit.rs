@@ -647,11 +647,10 @@ fn holds_colour_legend(plot: &PlotNode) -> bool {
 /// Whether the plot at `plot_path` already has a colour legend drawn for it, so
 /// that [`ChartEdit::AddColourLegend`] would put a second one on the page.
 ///
-/// Three things count: a colour legend among the plot's own items; a
-/// standalone colour legend whose `for:` names the plot's `name:`; and a
-/// standalone colour legend with no `for:`, which `resolve_legends` places for
-/// the dashboard's one colour-encoded plot, so it covers this plot only when
-/// the plot is that one. A `for:` that is a `$param` cannot be resolved from the
+/// Two things count: a colour legend among the plot's own items, and a
+/// standalone colour legend whose `for:` names the plot's `name:`. A standalone
+/// colour legend with no `for:` names no plot and covers none, so a plot beside
+/// one is given its own. A `for:` that is a `$param` cannot be resolved from the
 /// spec alone and covers nothing, the stance [`classify_edit`] takes, and a
 /// path that names no plot has nothing covered.
 #[must_use]
@@ -662,16 +661,15 @@ pub fn colour_legend_covers(spec: &Spec, plot_path: &str) -> bool {
     if holds_colour_legend(plot) {
         return true;
     }
-    let name = plot_name(plot);
+    let Some(name) = plot_name(plot) else {
+        return false;
+    };
     collect_legend_nodes(spec).iter().any(|(_, legend)| {
         legend.channel == LegendChannel::Color
-            && match legend.options.get("for") {
-                Some(ValueOrParamRef::Value(SpecValue::String(named))) => {
-                    Some(named.as_str()) == name
-                }
-                None => count_colour_encoded_plots(spec) == 1 && plot_is_colour_encoded(plot),
-                Some(_) => false,
-            }
+            && matches!(
+                legend.options.get("for"),
+                Some(ValueOrParamRef::Value(SpecValue::String(named))) if named == name
+            )
     })
 }
 

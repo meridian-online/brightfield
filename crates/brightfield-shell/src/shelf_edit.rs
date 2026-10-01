@@ -227,12 +227,11 @@ pub fn put_column(
 ///
 /// **Why the legend is written.** The page draws a legend for the colour, and a
 /// chart saved from brightfield and opened in Mosaic shows none unless the file
-/// holds one. The legend is looked for after the `fill` is bound, because a
-/// standalone legend with no `for:` covers a plot only while it is the
-/// dashboard's one coloured plot, and that is true of this plot after the
-/// edit and not before. A column already on the colour gives no `fill` edit and
-/// so no legend edit: the plot reads as the analyst left it, a chart saved
-/// before this edit wrote a legend included.
+/// holds one. A plot that has a colour legend drawn for it already, among its
+/// items or in a standalone one that names it with `for:`, is given no second.
+/// A column already on the colour gives no `fill` edit and so no legend edit:
+/// the plot reads as the analyst left it, a chart saved before this edit wrote
+/// a legend included.
 ///
 /// # Errors
 ///
@@ -297,7 +296,6 @@ pub fn put_colour(
         edit::apply_for_fresh_load(&mut edited, e).map_err(ShelfRefusal::Edit)?;
     }
 
-    // The legend is asked of the copy, after the `fill` is on it.
     if !edits.is_empty() && !edit::colour_legend_covers(&edited, &plot.0) {
         let legend = ChartEdit::AddColourLegend { plot: plot.clone() };
         edit::apply_for_fresh_load(&mut edited, &legend).map_err(ShelfRefusal::Edit)?;

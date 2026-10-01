@@ -264,10 +264,9 @@ fn column_with(second: &str) -> Spec {
 
 const COLUMN_PLOT: &str = "root/vconcat[0]";
 
-/// **A colour legend is drawn for a plot when its items hold one, when a
-/// standalone one names it with `for:`, and when a standalone one names no plot
-/// and the plot is the dashboard's one coloured plot**; not when the standalone
-/// one names another plot, and not when it is for another channel.
+/// **A colour legend is drawn for a plot when its items hold one and when a
+/// standalone one names it with `for:`**; not when the standalone one names
+/// another plot, names none, or is for another channel.
 #[test]
 fn a_plot_has_a_colour_legend_when_its_items_or_a_standalone_legend_hold_one() {
     let mut item = column_with("vspace: 8");
@@ -294,8 +293,8 @@ fn a_plot_has_a_colour_legend_when_its_items_or_a_standalone_legend_hold_one() {
         ),
         (
             "legend: color",
-            true,
-            "a standalone legend with no for: over the one coloured plot",
+            false,
+            "a standalone legend that names no plot",
         ),
         (
             "legend: opacity\n    for: m",
@@ -316,22 +315,4 @@ fn a_plot_has_a_colour_legend_when_its_items_or_a_standalone_legend_hold_one() {
         !colour_legend_covers(&hero(), "root/vconcat[3]"),
         "a path that names no plot reads as covered"
     );
-}
-
-/// **A standalone legend with no `for:` covers no plot when two are coloured**:
-/// `resolve_legends` places it only for a dashboard's one coloured plot, so
-/// with a second the plot would draw none of its own and needs the item.
-#[test]
-fn a_standalone_legend_with_no_for_covers_no_plot_when_two_are_coloured() {
-    let source = "data:\n  t: SELECT 1 AS a, 2 AS b\nvconcat:\n  - plot:\n      - mark: dot\n        data: { from: t }\n        x: a\n        fill: b\n  - plot:\n      - mark: dot\n        data: { from: t }\n        x: a\n        fill: b\n  - legend: color\n";
-    let spec = parse_spec(source, Format::Yaml)
-        .unwrap_or_else(|e| panic!("the fixture parses: {e}"))
-        .spec;
-
-    for plot in ["root/vconcat[0]", "root/vconcat[1]"] {
-        assert!(
-            !colour_legend_covers(&spec, plot),
-            "{plot} reads as covered by a legend that is placed for neither"
-        );
-    }
 }
