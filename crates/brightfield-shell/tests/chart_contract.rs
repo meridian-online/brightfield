@@ -16,6 +16,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use brightfield_shell::app::{chart_registry, chart_registry_with, ChartDoc, CHART, CONTROLS};
+use brightfield_shell::data_grid::DATA;
 use brightfield_shell::design::Mode;
 use brightfield_shell::editor::EDITOR;
 use brightfield_shell::pipeline::{compose_spec, Composed};
@@ -121,7 +122,8 @@ fn no_pane_is_empty_over_a_real_dashboard() {
 /// Each pane names itself once, and resolves its keys in its own context:
 /// the chart grammar's for the chart and its controls, the editor's for the
 /// editor — a text buffer that resolved `cmd-c` through chart bindings
-/// would copy the wrong thing.
+/// would copy the wrong thing — and the grid's for the grid, whose arrows
+/// move its cursor rather than pan the chart.
 ///
 /// The title is the whole of the pane's name now. Before this increment the
 /// controls rail's own body opened with a bold `Controls` label and the chart
@@ -135,6 +137,8 @@ fn each_pane_names_itself_once_and_binds_in_its_own_context() {
         .map(|(id, s)| {
             let expected = if id == EDITOR {
                 brightfield_keys::BindingContext::Editor
+            } else if id == DATA {
+                brightfield_keys::BindingContext::Grid
             } else {
                 brightfield_keys::BindingContext::Workspace
             };
