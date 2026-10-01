@@ -639,7 +639,8 @@ pub enum ListReport {
 /// Two states say who has the keys. While the rows have them, a letter is a
 /// verb: `j` `k` move the cursor, `h` `l` and the channel letters go to another
 /// channel, `/` gives the keys to the query. While the query has them, a letter
-/// is text, and only `Enter`, `Esc`, `Backspace` and the up and down arrows act.
+/// is text, and `Enter`, `Esc`, `Backspace` and the up and down arrows act as
+/// keys: `a_letter_typed_in_the_query_is_text_and_not_a_verb` holds it.
 /// The rows hold no query: leaving the query clears it.
 #[derive(Clone, Debug)]
 pub struct ColumnList {
@@ -799,7 +800,8 @@ impl ColumnList {
         }
     }
 
-    /// `Esc`: the query first, and with none, the list.
+    /// `Esc`: clear the query first, and with the query empty, back out of the
+    /// list: `esc_with_the_query_empty_reports_backing_out`.
     fn back(&mut self, out: &mut Vec<ListReport>) {
         if self.querying || !self.query.is_empty() {
             self.querying = false;
@@ -1009,7 +1011,8 @@ impl ColumnList {
     /// The Meridian theme has to be applied to `ui`'s context, for the key
     /// chips' tokens and the faces. The row under the cursor wears a bar in the
     /// channel's hue, [`control::ROW_BAR_WIDTH`] wide, and the foot prints `/`
-    /// only while the rows have the keys.
+    /// while the rows have the keys and not while the query has them:
+    /// `the_foot_prints_slash_while_the_rows_have_the_keys_and_not_while_the_query_has_them`.
     pub fn show(&mut self, ui: &mut egui::Ui, mode: Mode) -> ListDrawn {
         let sem = semantic(mode.is_dark());
         let b = control::binding(spacing::ROW_DENSE);

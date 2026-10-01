@@ -7,8 +7,8 @@
 //!
 //! - **Keys** go in as `egui` events through `ColumnList::feed_events`, as the
 //!   window hands them: a key press followed by the text the same keystroke
-//!   makes, because a real frame brings both and a list that typed the letter it
-//!   had just obeyed would show only against the pair. What is read back is the
+//!   makes, because a real frame brings both, and a list that typed the letter it
+//!   had just obeyed passes a test that sends the key alone. What is read back is the
 //!   `ListReport`s, which are what the window acts on, and the state a report
 //!   leaves behind.
 //! - **Geometry and words** are read off the laid-out frame: the rectangles the
