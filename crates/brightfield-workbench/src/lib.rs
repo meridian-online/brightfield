@@ -74,10 +74,13 @@
 //! - [`behavior`] — [`PaneChrome`], the one `egui_tiles::Behavior`.
 //! - [`persist`] — the versioned layout file and its debounced writer.
 //! - [`chrome`] — the one drawing file.
+//! - [`channel`] — the channels a chart's shelf names, the hue each wears and
+//!   the extents of the band that holds a cell for each. No egui types.
 
 pub mod activity;
 pub mod arrangement;
 pub mod behavior;
+pub mod channel;
 pub mod chrome;
 pub mod item;
 pub mod persist;

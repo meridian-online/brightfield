@@ -254,7 +254,7 @@ fn channel_key(axis: PlotAxis) -> &'static str {
 }
 
 /// The plot's marks, in order.
-fn marks_of(plot: &PlotNode) -> Vec<&Mark> {
+pub(crate) fn marks_of(plot: &PlotNode) -> Vec<&Mark> {
     plot.items
         .iter()
         .filter_map(|c| match c {
@@ -266,7 +266,7 @@ fn marks_of(plot: &PlotNode) -> Vec<&Mark> {
 
 /// Whether the mark's data reads through a selection: the highlighted layer of
 /// a ghost-and-subset plot, whose `data:` carries a `filterBy:`.
-fn reads_selection(mark: &Mark) -> bool {
+pub(crate) fn reads_selection(mark: &Mark) -> bool {
     matches!(
         mark.data,
         Some(MarkData::From {
@@ -278,7 +278,7 @@ fn reads_selection(mark: &Mark) -> bool {
 
 /// The column a mark binds `channel` to, when it binds it to a plain column
 /// name rather than to an aggregate, a transform or a param.
-fn column_of<'a>(mark: &'a Mark, channel: &str) -> Option<&'a str> {
+pub(crate) fn column_of<'a>(mark: &'a Mark, channel: &str) -> Option<&'a str> {
     match mark.options.get(channel) {
         Some(ValueOrParamRef::Value(SpecValue::String(name))) => Some(name.as_str()),
         _ => None,
