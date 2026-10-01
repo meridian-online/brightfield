@@ -37,8 +37,8 @@ const INHERITED_CHANNELS: &[&str] = &["x", "y", "x1", "x2", "y1", "y2"];
 /// A typed structural mutation applied to the working [`Spec`] by [`apply`] —
 /// the framework-free AST-mutation API the keyboard grammar named as missing.
 ///
-/// The reserved undo verb is an [`UndoStack`] pop, not an edit. Each edit is
-/// TYPED (never an exec-string, per the VisiData warning), walks the live AST
+/// The reserved undo verb is an [`UndoStack`] pop, not an edit. An edit is
+/// TYPED (not an exec-string, per the VisiData warning), walks the live AST
 /// via a plot [`ComponentPath`], and is bracketed by a whole-`Spec` clone
 /// snapshot so undo is total and near-free. [`ChartEdit::ChangeMarkType`],
 /// [`ChartEdit::AddMark`], [`ChartEdit::SetChannel`] and
@@ -47,10 +47,12 @@ const INHERITED_CHANNELS: &[&str] = &["x", "y", "x1", "x2", "y1", "y2"];
 /// target the plot's own attribute map instead, and
 /// [`ChartEdit::AddColourLegend`] and [`ChartEdit::RemoveColourLegend`] put a
 /// legend into the plot's list of items and take it out. [`ChartEdit::AddMark`]
-/// and [`ChartEdit::RemoveMark`] are count-CHANGING and every other variant is
-/// count-STABLE; the transient apply treats the two groups differently (the
-/// coordinator flat-index rebuild). The count is the plot's marks: a legend is
-/// not one.
+/// and [`ChartEdit::RemoveMark`] are count-CHANGING; [`ChartEdit::ChangeMarkType`],
+/// [`ChartEdit::SetChannel`], [`ChartEdit::SetPlotAttribute`],
+/// [`ChartEdit::RemovePlotAttribute`], [`ChartEdit::AddColourLegend`] and
+/// [`ChartEdit::RemoveColourLegend`] are count-STABLE. The transient apply
+/// treats the two groups differently (the coordinator flat-index rebuild). The
+/// count is the plot's marks: a legend is not one.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChartEdit {
     /// Retype the focused plot's primary mark (`dot` -> `bar`). Count-stable.
