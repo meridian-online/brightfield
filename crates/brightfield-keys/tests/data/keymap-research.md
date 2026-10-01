@@ -135,6 +135,24 @@ do nothing on a spine row, and `z a` is left as it is. They are Data-tier, as `s
 | `put-column-on-y` | `z y` | 3 / 4 / 3 | `z` chord beside `z a`; the channel's own letter is the second key |
 | `put-column-on-colour` | `z c` | 3 / 4 / 3 | `z` chord beside `z a`; vim's `zc` closes a fold, which a column's row has none of; `u` takes it back |
 
+### The grid's cursor — a cell of the table, in a key context of its own
+
+The table's grid has a cursor on one cell, so on a row and a column at once. A press on a cell puts the
+cursor there and gives the grid focus. It takes the shelf's precedent: a key context of its own (`Grid`),
+so its `h`, `j`, `k`, `l` and arrows move the cursor one cell and never reach the Workspace's pop-out,
+dive-in and pan bindings on the same keys. With the grid focused the zoom, axis-lock and reset keys
+(`=`, `-`, `x`, `0`) resolve to nothing, so the chart beside the grid keeps its extent. VisiData moves
+its cursor on the same keys, and every spreadsheet on the arrows. A move past the table's last row or
+column leaves the cursor where it is. All four are **View**-tier: the cursor is where the analyst is
+looking, and moving it writes nothing.
+
+| longname | key(s) | freq / mnem / conv | motor note |
+|----------|--------|--------------------|------------|
+| `move-cursor-down` | `j` · `down` | 5 / 4 / 5 | home-row `j` = down (vim, VisiData); the arrow is its twin, as in every spreadsheet; agrees with the shelf's and the Protocol panel's `j` |
+| `move-cursor-up` | `k` · `up` | 5 / 4 / 5 | home-row `k` = up (vim, VisiData); the arrow is its twin, as in every spreadsheet; agrees with the shelf's and the Protocol panel's `k` |
+| `move-cursor-left` | `h` · `left` | 5 / 4 / 5 | home-row `h` = left (vim, VisiData); the arrow is its twin; the Grid context keeps it apart from the Workspace's `pop-out` and `pan-left` |
+| `move-cursor-right` | `l` · `right` | 5 / 4 / 5 | home-row `l` = right (vim, VisiData); the arrow is its twin; the Grid context keeps it apart from the Workspace's `dive-in` and `pan-right` |
+
 Reserved verbs are deliberately unscored (no key yet), shown greyed in the palette until their keys land:
 needs-keyboard-target (`filter-view`, `cross-filter-all`, `toggle-point-select`, `set-param`) and
 needs-command-log (`change-mark-type`, `add-mark`, `set-channel`, `remove-mark`, `undo`).

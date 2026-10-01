@@ -25,6 +25,10 @@ pub enum DispatchContext {
     /// one. Its grammar resolves here, isolated from the chart canvas's bare
     /// verbs and from the protocol panel's.
     ShelfFocused,
+    /// The table's grid holds focus — its cursor is on a cell, and its
+    /// grammar resolves here, isolated from the chart canvas's bare verbs, so
+    /// the arrows move the cursor rather than pan the chart.
+    GridFocused,
 }
 
 /// Whether a binding in `binding` context resolves in the `dispatch` situation.
@@ -37,7 +41,9 @@ pub enum DispatchContext {
 /// - a Protocol binding resolves only when the protocol panel is focused;
 /// - a Shelf binding resolves only when a shelf is focused, so `h` and `l` are
 ///   the cell beside there, `pop-out` and `dive-in` under the canvas, and
-///   `protocol-producer` and `protocol-consumer` under the protocol panel.
+///   `protocol-producer` and `protocol-consumer` under the protocol panel;
+/// - a Grid binding resolves only when the grid is focused, so `h` and `l`
+///   move its cursor there and the arrows pan the chart only elsewhere.
 #[must_use]
 pub fn fires(binding: BindingContext, dispatch: DispatchContext) -> bool {
     matches!(
@@ -47,6 +53,7 @@ pub fn fires(binding: BindingContext, dispatch: DispatchContext) -> bool {
             | (BindingContext::Editor, DispatchContext::EditorFocused)
             | (BindingContext::Protocol, DispatchContext::ProtocolFocused)
             | (BindingContext::Shelf, DispatchContext::ShelfFocused)
+            | (BindingContext::Grid, DispatchContext::GridFocused)
     )
 }
 
@@ -201,10 +208,49 @@ mod tests {
     }
 
     #[test]
+    fn the_grid_moves_its_cursor_on_the_keys_that_pan_and_dive_elsewhere() {
+        let t = table();
+        // Exact vectors: a Workspace binding leaking into the grid's dispatch
+        // context would add a second verb, and the arrow would both move the
+        // cursor and pan the chart.
+        for (keys, verb) in [
+            ("j", "move-cursor-down"),
+            ("down", "move-cursor-down"),
+            ("k", "move-cursor-up"),
+            ("up", "move-cursor-up"),
+            ("h", "move-cursor-left"),
+            ("left", "move-cursor-left"),
+            ("l", "move-cursor-right"),
+            ("right", "move-cursor-right"),
+        ] {
+            assert_eq!(
+                t.resolves(keys, DispatchContext::GridFocused),
+                vec![verb],
+                "`{keys}` with the grid focused"
+            );
+        }
+        assert_eq!(
+            t.resolves("left", DispatchContext::CanvasFocused),
+            vec!["pan-left"]
+        );
+        assert_eq!(
+            t.resolves("l", DispatchContext::CanvasFocused),
+            vec!["dive-in"]
+        );
+        // And the zoom, axis-lock and reset keys resolve to nothing there.
+        for keys in ["=", "-", "x", "0"] {
+            assert!(
+                t.resolves(keys, DispatchContext::GridFocused).is_empty(),
+                "`{keys}` resolves with the grid focused"
+            );
+        }
+    }
+
+    #[test]
     fn each_binding_context_fires_in_its_own_dispatch_context_and_global_in_all() {
-        use BindingContext::{Editor, Global, Protocol, Shelf, Workspace};
+        use BindingContext::{Editor, Global, Grid, Protocol, Shelf, Workspace};
         use DispatchContext::{
-            CanvasFocused, EditorFocused, OverlayOpen, ProtocolFocused, ShelfFocused,
+            CanvasFocused, EditorFocused, GridFocused, OverlayOpen, ProtocolFocused, ShelfFocused,
         };
         // Written as a `match`, so a new binding context does not compile until
         // this test says which dispatch context it fires in.
@@ -213,15 +259,17 @@ mod tests {
             Editor => Some(EditorFocused),
             Protocol => Some(ProtocolFocused),
             Shelf => Some(ShelfFocused),
+            Grid => Some(GridFocused),
             Global => None,
         };
-        for binding in [Workspace, Editor, Protocol, Shelf, Global] {
+        for binding in [Workspace, Editor, Protocol, Shelf, Grid, Global] {
             for dispatch in [
                 CanvasFocused,
                 EditorFocused,
                 OverlayOpen,
                 ProtocolFocused,
                 ShelfFocused,
+                GridFocused,
             ] {
                 let expected = own(binding).is_none_or(|own| own == dispatch);
                 assert_eq!(

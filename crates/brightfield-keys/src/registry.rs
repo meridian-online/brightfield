@@ -39,6 +39,11 @@ pub enum BindingContext {
     /// with the chart grammar's pop-out, dive-in, mark, axis-lock and colour
     /// bindings.
     Shelf,
+    /// Grid-scoped: fires only while the table's grid holds focus. A distinct
+    /// context, as the shelf's is, so the grid's `h`/`j`/`k`/`l` and arrows
+    /// (the cell beside the cursor) never collide with the chart grammar's
+    /// pop-out, dive-in and pan bindings.
+    Grid,
     /// Global (`context = None`): fires from any focus (palette twin, focus
     /// toggle, save/reload-from-anywhere).
     Global,
@@ -244,6 +249,10 @@ pub fn registry() -> Vec<VerbEntry> {
     let shelf = |k: &'static str| BindingSpec {
         keystrokes: k,
         context: BindingContext::Shelf,
+    };
+    let grid = |k: &'static str| BindingSpec {
+        keystrokes: k,
+        context: BindingContext::Grid,
     };
 
     vec![
@@ -859,6 +868,55 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Back out one level: a value not kept, then the query, then the list, then the shelf",
             scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "esc = back out one level (the Esc ladder); the same steps down as clear-selection and protocol-drill-out" }),
         },
+        // ---- the grid's cursor: one cell of the table, so a row and a column at
+        //      once, moved a cell at a time. These resolve in the Grid context,
+        //      apart from the Workspace's dive-in, pop-out and pan bindings on
+        //      the same keys. View-tier: the cursor is where the analyst is
+        //      looking, and moving it changes no data. ----
+        VerbEntry {
+            longname: "move-cursor-down",
+            tier: CommandTier::View,
+            binding_specs: vec![grid("j"), grid("down")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Move the grid's cursor to the cell below; stops at the table's last row",
+            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "home-row j = down (vim, VisiData); the arrow is its twin, as in every spreadsheet; agrees with the shelf's and the Protocol panel's j" }),
+        },
+        VerbEntry {
+            longname: "move-cursor-up",
+            tier: CommandTier::View,
+            binding_specs: vec![grid("k"), grid("up")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Move the grid's cursor to the cell above; stops at the table's first row",
+            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "home-row k = up (vim, VisiData); the arrow is its twin, as in every spreadsheet; agrees with the shelf's and the Protocol panel's k" }),
+        },
+        VerbEntry {
+            longname: "move-cursor-left",
+            tier: CommandTier::View,
+            binding_specs: vec![grid("h"), grid("left")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Move the grid's cursor to the cell on the left; stops at the first column",
+            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "home-row h = left (vim, VisiData); the arrow is its twin; the Grid context keeps it apart from the Workspace's pop-out and pan-left" }),
+        },
+        VerbEntry {
+            longname: "move-cursor-right",
+            tier: CommandTier::View,
+            binding_specs: vec![grid("l"), grid("right")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Move the grid's cursor to the cell on the right; stops at the last column",
+            scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "home-row l = right (vim, VisiData); the arrow is its twin; the Grid context keeps it apart from the Workspace's dive-in and pan-right" }),
+        },
         // ---- pane toggles: the show/hide verbs the item registries name.
         //      Reserved rather than bound: the pane toggles cannot be performed
         //      until the workspace shell owns the window and its layout, and a
@@ -1261,6 +1319,10 @@ mod tests {
             "narrow-shelf-list",
             "keep-shelf-choice",
             "back-out-of-shelf",
+            "move-cursor-down",
+            "move-cursor-up",
+            "move-cursor-left",
+            "move-cursor-right",
             "toggle-outline-rail",
             "toggle-inspector-rail",
             "toggle-controls-rail",
@@ -1471,6 +1533,48 @@ mod tests {
             .filter(|b| b.context == BindingContext::Shelf)
             .count();
         assert_eq!(in_shelf_count, expected.len() + 2, "Shelf bindings");
+    }
+
+    #[test]
+    fn the_grid_context_moves_the_cursor_a_cell_on_each_of_its_keys() {
+        let reg = registry();
+        let bound = keymap_bindings(&reg);
+        let in_grid = |keys: &str| -> Vec<&'static str> {
+            bound
+                .iter()
+                .filter(|b| b.context == BindingContext::Grid && b.keystrokes == keys)
+                .map(|b| b.longname)
+                .collect()
+        };
+        let expected = [
+            ("j", "move-cursor-down"),
+            ("down", "move-cursor-down"),
+            ("k", "move-cursor-up"),
+            ("up", "move-cursor-up"),
+            ("h", "move-cursor-left"),
+            ("left", "move-cursor-left"),
+            ("l", "move-cursor-right"),
+            ("right", "move-cursor-right"),
+        ];
+        for (keys, longname) in expected {
+            assert_eq!(in_grid(keys), vec![longname], "Grid context, `{keys}`");
+            let verb = reg.iter().find(|v| v.longname == longname).unwrap();
+            assert_eq!(verb.tier, CommandTier::View, "{longname} writes nothing");
+            let scores = verb
+                .scores
+                .as_ref()
+                .unwrap_or_else(|| panic!("{longname} has no scores"));
+            for score in [scores.frequency, scores.mnemonic, scores.convention] {
+                assert!((1..=5).contains(&score), "{longname} score {score}");
+            }
+        }
+        // Exactly these: a stray binding in the context would be a key the
+        // grid answers that nothing here accounts for.
+        let in_grid_count = bound
+            .iter()
+            .filter(|b| b.context == BindingContext::Grid)
+            .count();
+        assert_eq!(in_grid_count, expected.len(), "Grid bindings");
     }
 
     #[test]
