@@ -651,8 +651,8 @@ fn holds_colour_legend(plot: &PlotNode) -> bool {
 /// standalone colour legend whose `for:` names the plot's `name:`. A standalone
 /// colour legend with no `for:` names no plot and covers none, so a plot beside
 /// one is given its own. A `for:` that is a `$param` cannot be resolved from the
-/// spec alone and covers nothing, the stance [`classify_edit`] takes, and a
-/// path that names no plot has nothing covered.
+/// spec alone, so it covers no plot, and [`classify_edit`] leaves the same
+/// `for:` to the reload gate. A path that names no plot is not covered.
 #[must_use]
 pub fn colour_legend_covers(spec: &Spec, plot_path: &str) -> bool {
     let Some(plot) = plot_at_path(spec, plot_path) else {
