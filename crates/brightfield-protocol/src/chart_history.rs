@@ -31,7 +31,7 @@
 //! save) and the text the second Save replaces (a checkpoint arcform skips as a
 //! duplicate of it). arcform's own roads record their after-image with the
 //! merge off for exactly this reason, and its file-keyed calls offer no such
-//! switch. So when the replaced text is held only by a save the next save would
+//! switch. So when the replaced text is held by a save the next save would
 //! merge over, [`ChartVersions::finish`] records the written text as a
 //! checkpoint, which does not merge. A Save's text is then a version in that case
 //! too, under a different kind.
