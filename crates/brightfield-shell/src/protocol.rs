@@ -2520,7 +2520,8 @@ pub struct SpineRowDrawn {
     pub kind_rect: Option<egui::Rect>,
     /// The rug the row drew at its trailing end in place of its type — a
     /// numeric column's row while the Outline lists a channel's columns. `None`
-    /// on every other row, which states no spread.
+    /// on a column row that kept its type and on the rows that list no column,
+    /// which state no spread.
     pub rug: Option<RugDrawn>,
     /// The bar drawn at the leading edge of the one row whose content the
     /// canvas holds, in the secondary ink — or, on a row that is also picked,
