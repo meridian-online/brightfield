@@ -371,6 +371,10 @@ pub struct TableDrawn {
     /// The cell cursor's marks as this frame drew them, or `None` for a table
     /// drawn with no cursor — see [`CursorDrawn`].
     pub cursor: Option<CursorDrawn>,
+    /// One named control per cell a press can put the cursor on, named by the
+    /// value the cell drew — for the window's list of the controls it drew.
+    /// Empty for a table drawn without a cursor.
+    pub controls: Vec<brightfield_workbench::chrome::NamedControl>,
     /// The cell a press landed on this frame, for a table drawn with a cursor
     /// to answer. `None` on a frame with no press on a cell, and for a table
     /// drawn without one.
@@ -718,6 +722,7 @@ pub fn show_table_sized(
                 column_ground: Vec::new(),
                 ground: cursor_ground(mode),
             }),
+            controls: Vec::new(),
             pressed: None,
         },
     };
@@ -1009,12 +1014,27 @@ impl egui_table::TableDelegate for MeridianTableDelegate<'_> {
             row: cell.row_nr,
             col: cell.col_nr,
         };
-        if self.pointable
-            && ui
-                .interact(rect, ui.id().with("cell-press"), egui::Sense::click())
-                .clicked()
+        let value = self.source.cell_text(cell.row_nr, cell.col_nr);
+        // A press takes a cell that drew a value, and the value is the cell's
+        // name in the window's list of controls. A cell whose row the source
+        // has not fetched yet draws nothing to press on, for the one frame
+        // before it does.
+        if let Some(name) = value
+            .as_ref()
+            .map(|v| v.text.clone())
+            .filter(|_| self.pointable)
+            .filter(|text| !text.trim().is_empty())
         {
-            self.drawn.pressed = Some(here);
+            let response = ui.interact(rect, ui.id().with("cell-press"), egui::Sense::click());
+            if response.clicked() {
+                self.drawn.pressed = Some(here);
+            }
+            self.drawn
+                .controls
+                .push(brightfield_workbench::chrome::NamedControl::labelled(
+                    response.interact_rect,
+                    name,
+                ));
         }
         let at = self.cursor_at();
         // The column's half of the cross: the cursor column's cell on the quiet
@@ -1032,7 +1052,9 @@ impl egui_table::TableDelegate for MeridianTableDelegate<'_> {
                 }
             }
         }
-        self.cell_content(ui, cell);
+        if let Some(value) = value {
+            self.cell_content(ui, cell.col_nr, value);
+        }
         // The ring, last, so it is drawn over the cell's ground, the selection
         // wash and the value alike.
         if at == Some(here) {
@@ -1091,14 +1113,11 @@ impl MeridianTableDelegate<'_> {
     }
 
     /// A data cell's content: its value, in the ink the source gives it.
-    fn cell_content(&self, ui: &mut egui::Ui, cell: &egui_table::CellInfo) {
-        let Some(column) = self.source.columns().get(cell.col_nr) else {
+    fn cell_content(&self, ui: &mut egui::Ui, col: usize, value: CellText) {
+        let Some(column) = self.source.columns().get(col) else {
             return;
         };
         let numeric = column.numeric;
-        let Some(value) = self.source.cell_text(cell.row_nr, cell.col_nr) else {
-            return;
-        };
         let sem = semantic(self.mode.is_dark());
         let ink = match value.ink {
             CellInk::Primary => sem.text.primary,
@@ -1846,6 +1865,9 @@ impl Item<ChartDoc> for DataGridItem {
                 self.widths_over.clone_from(&names);
             }
             drag_column_edges(ui, drawn, &names, &mut self.set_widths, mode);
+            // The cells a press can take, into the window's list of the
+            // controls this frame drew.
+            doc.controls.extend(drawn.controls.iter().cloned());
             // A press on a cell puts the cursor there and gives the grid the
             // keyboard. The ring draws from the next frame, which the repaint
             // asks for.
