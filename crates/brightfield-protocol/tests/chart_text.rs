@@ -47,6 +47,12 @@ fn channel(plot: &str, mark_ordinal: usize, channel: &str, column: &str) -> Char
     }
 }
 
+fn legend(plot: &str) -> ChartEdit {
+    ChartEdit::AddColourLegend {
+        plot: ComponentPath(plot.to_string()),
+    }
+}
+
 fn remove(plot: &str, key: &str) -> ChartEdit {
     ChartEdit::RemovePlotAttribute {
         plot: ComponentPath(plot.to_string()),
@@ -649,4 +655,112 @@ width: 300
     let written = write_chart_edit(text, &edit).expect("the edit is written");
     assert_eq!(written, text.replace("    y: b\n", "    y: c\n"));
     assert_eq!(parse(&written), applied_fresh(text, &edit));
+}
+
+// ------------------------------------------------------- the colour legend
+
+/// On the generated map, a colour legend is one `- legend: color` line after
+/// the last item of the hero's list, in the list's own indent, and the rest of
+/// the file — the header comment and the comment above each tile — is
+/// byte-identical. The text parses with no warning to the spec the reducer
+/// makes, whose last item on the hero is the legend.
+#[test]
+fn a_colour_legend_on_the_generated_map_adds_one_line_after_the_last_item() {
+    let edit = legend(HERO);
+    let written = write_chart_edit(GENERATED, &edit).expect("the edit is written");
+
+    // The hero's plot attributes follow its list, so the line goes before them.
+    let expected = insert_before(GENERATED, "      width: 620", "      - legend: color");
+    assert_eq!(written, expected);
+    assert_eq!(
+        changed_lines(GENERATED, &written),
+        [(None, Some("      - legend: color".to_string()))],
+        "the edit changed a line other than the one it added"
+    );
+    assert!(written.starts_with("# Brightfield wrote this dashboard"));
+    assert!(written.contains(NEXT_TILE_COMMENT), "a tile's comment went");
+
+    let parsed = parse_spec(&written, Format::Yaml).expect("the written text parses");
+    assert!(
+        parsed.warnings.is_empty(),
+        "the file holding the legend item parses with warnings: {:?}",
+        parsed.warnings
+    );
+    let spec = parsed.spec;
+    assert_eq!(spec, applied_fresh(GENERATED, &edit));
+    let hero = edit::plot_at_path(&spec, HERO).expect("the hero");
+    assert!(
+        matches!(
+            hero.items.last(),
+            Some(brightfield_spec::ast::Component::Legend(l))
+                if l.channel == brightfield_spec::vocab::LegendChannel::Color
+        ),
+        "the last item of the hero is {:?}, not the colour legend",
+        hero.items.last()
+    );
+}
+
+/// A hand-kept chart indents its lists another way than the generator does, and
+/// keeps a comment under the last item. The line takes the indent the list's
+/// items already have, which is not the generated map's, goes above the comment
+/// that closes the list, and leaves every other byte alone.
+#[test]
+fn a_colour_legend_takes_the_indent_of_the_list_it_joins_and_leaves_the_comments() {
+    let text = "\
+# A hand-kept chart.
+vconcat:
+  # the first tile
+  - plot:
+        - mark: dot
+          data: { from: t }   # the readings
+          x: a
+          fill: b
+        # the marks end here
+    width: 300
+  # the second tile
+  - plot:
+        - mark: dot
+          data: { from: t }
+          x: a
+    width: 300
+";
+    let edit = legend("root/vconcat[0]");
+    let written = write_chart_edit(text, &edit).expect("the edit is written");
+
+    assert_eq!(
+        written,
+        text.replace(
+            "          fill: b\n",
+            "          fill: b\n        - legend: color\n"
+        )
+    );
+    assert_eq!(parse(&written), applied_fresh(text, &edit));
+}
+
+/// A plot that already holds the item is the spec as it was, so the text comes
+/// back byte for byte, and a second edit on the text the first wrote changes
+/// nothing.
+#[test]
+fn a_colour_legend_on_a_plot_that_holds_one_returns_the_text_unchanged() {
+    let edit = legend(HERO);
+    let once = write_chart_edit(GENERATED, &edit).expect("the edit is written");
+
+    let twice = write_chart_edit(&once, &edit).expect("the edit is written again");
+
+    assert_eq!(twice, once, "a second legend was written");
+    assert_eq!(once.matches("legend: color").count(), 1);
+}
+
+/// A plot whose items are written as a flow list has no line to put the legend
+/// on, and the edit is refused rather than written into the wrong place.
+#[test]
+fn a_colour_legend_on_a_flow_list_is_refused() {
+    let text = "plot: [ { mark: dot, data: { from: t }, x: a } ]\nwidth: 300\n";
+
+    let refusal = write_chart_edit(text, &legend("root")).expect_err("a flow list is refused");
+
+    assert!(
+        matches!(&refusal, ChartTextRefusal::Splice { detail } if detail.contains("block list")),
+        "the refusal is {refusal:?}, not the writer's own for a list it cannot indent"
+    );
 }

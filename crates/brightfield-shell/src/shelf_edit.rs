@@ -28,11 +28,13 @@
 //! analyst selected. So [`put_colour`] binds `fill` on the marks that read
 //! through a selection (`filterBy:`), and on the first mark when no mark reads
 //! through one, which `a_plot_with_no_selected_layer_takes_the_colour_on_its_first_mark`
-//! holds. The page's legend is drawn from the plot's fill scale, and this
-//! module does not place it. The dot renderer builds a fill scale a legend can
-//! be drawn from for a column of strings and for a column of numbers, so the
-//! column put on colour reaches the page as a legend over its range, and the
-//! highlighted points are painted by it.
+//! holds. The legend is an item of the plot, `- legend: color`, which Mosaic
+//! draws to the right of the plot's picture, and [`put_colour`] appends it
+//! after the `fill`, so the legend the page draws is in the file. The dot
+//! renderer builds a fill scale a legend can be drawn from for a column of
+//! strings and for a column of numbers, so the column put on colour reaches
+//! the page as a legend over its range, and the highlighted points are painted
+//! by it.
 //! `a_column_put_on_the_maps_colour_paints_the_highlighted_layer_and_keeps_the_ghost_ink`
 //! holds the spec on the map's two layers, and
 //! `a_column_put_on_the_maps_colour_draws_a_legend_beside_the_plot_and_a_replaced_colour_moves_it`
@@ -206,12 +208,15 @@ pub fn put_column(
 ///    through a selection;
 /// 2. a [`ChartEdit::SetPlotAttribute`] of `colorScheme` to the scheme the
 ///    renderer draws a ramp in, when the first list is not empty, `column` is
-///    one the dot paints along a ramp, and the plot carries no `colorScheme`.
+///    one the dot paints along a ramp, and the plot carries no `colorScheme`;
+/// 3. a [`ChartEdit::AddColourLegend`], when the first list is not empty and no
+///    colour legend is drawn for the plot already ([`edit::colour_legend_covers`]).
 ///
 /// A column put on a colour that already holds another replaces it, and one
-/// already where it is put yields no edits, the scheme edit included, and
-/// leaves the spec equal. No edit touches a mark that does not read through a
-/// selection when one does, so the map's ghost layer keeps its ink.
+/// already where it is put yields no edits, the scheme and legend edits
+/// included, and leaves the spec equal. No edit touches a mark that does not
+/// read through a selection when one does, so the map's ghost layer keeps its
+/// ink.
 ///
 /// **Why the scheme is written.** brightfield's default scheme is not
 /// Mosaic's, so a saved chart that names none is drawn by Mosaic in a ramp
@@ -219,6 +224,14 @@ pub fn put_column(
 /// already carries is the analyst's, or a chart saved before this edit wrote
 /// one, and is left alone; a column of strings paints by category and no ramp
 /// names it.
+///
+/// **Why the legend is written.** The page draws a legend for the colour, and a
+/// chart saved from brightfield and opened in Mosaic shows none unless the file
+/// holds one. A plot that has a colour legend drawn for it already, among its
+/// items or in a standalone one that names it with `for:`, is given no second.
+/// A column already on the colour gives no `fill` edit and so no legend edit:
+/// the plot reads as the analyst left it, a chart saved before this edit wrote
+/// a legend included.
 ///
 /// # Errors
 ///
@@ -281,6 +294,12 @@ pub fn put_colour(
     let mut edited = spec.clone();
     for e in &edits {
         edit::apply_for_fresh_load(&mut edited, e).map_err(ShelfRefusal::Edit)?;
+    }
+
+    if !edits.is_empty() && !edit::colour_legend_covers(&edited, &plot.0) {
+        let legend = ChartEdit::AddColourLegend { plot: plot.clone() };
+        edit::apply_for_fresh_load(&mut edited, &legend).map_err(ShelfRefusal::Edit)?;
+        edits.push(legend);
     }
     *spec = edited;
     Ok(edits)

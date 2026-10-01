@@ -188,6 +188,10 @@ fn scheme(path: &ComponentPath, name: &str) -> ChartEdit {
     }
 }
 
+fn legend(path: &ComponentPath) -> ChartEdit {
+    ChartEdit::AddColourLegend { plot: path.clone() }
+}
+
 fn named(name: &str) -> Option<SpecValue> {
     Some(SpecValue::String(name.to_string()))
 }
@@ -232,8 +236,12 @@ fn a_number_column_put_on_the_colour_of_a_plot_with_no_scheme_writes_viridis_aft
 
         assert_eq!(
             edits,
-            [fill(&o.hero, column), scheme(&o.hero, "viridis")],
-            "{column} on colour should be the fill and then the scheme"
+            [
+                fill(&o.hero, column),
+                scheme(&o.hero, "viridis"),
+                legend(&o.hero)
+            ],
+            "{column} on colour should be the fill, the scheme and then the legend"
         );
         assert_eq!(
             scheme_of(&spec, &o.hero),
@@ -255,7 +263,7 @@ fn a_number_column_put_on_the_colour_of_a_plot_that_names_a_scheme_keeps_the_sch
 
     assert_eq!(
         edits,
-        [fill(&o.hero, INCOME)],
+        [fill(&o.hero, INCOME), legend(&o.hero)],
         "a plot that names its scheme was given another"
     );
     assert_eq!(scheme_of(&spec, &o.hero), named("blues"));
@@ -271,7 +279,7 @@ fn a_string_column_put_on_the_colour_of_a_plot_with_no_scheme_names_none() {
 
     let edits = put_colour(&mut spec, &o.hero, COUNTY, &o.table).expect("the table has it");
 
-    assert_eq!(edits, [fill(&o.hero, COUNTY)]);
+    assert_eq!(edits, [fill(&o.hero, COUNTY), legend(&o.hero)]);
     assert_eq!(
         scheme_of(&spec, &o.hero),
         None,

@@ -25,9 +25,10 @@ use brightfield_shell::shelf_edit::{put_colour, put_column, ShelfRefusal};
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
 use brightfield_spec::analysis::ComponentPath;
-use brightfield_spec::ast::{Component, PlotNode, Spec, SpecValue, ValueOrParamRef};
-use brightfield_spec::edit::{self, plot_at_path, ChartEdit, RefuseReason};
+use brightfield_spec::ast::{Component, LegendNode, PlotNode, Spec, SpecValue, ValueOrParamRef};
+use brightfield_spec::edit::{self, plot_at_path, plot_at_path_mut, ChartEdit, RefuseReason};
 use brightfield_spec::layout::{resolve_axis_titles, AxisTitle, PlotAxis};
+use brightfield_spec::vocab::LegendChannel;
 use brightfield_spec::MarkKind;
 use brightfield_sql::ir::ScalarValue;
 
@@ -202,6 +203,47 @@ fn scheme(path: &ComponentPath, name: &str) -> ChartEdit {
         key: "colorScheme".to_string(),
         value: SpecValue::String(name.to_string()),
     }
+}
+
+fn legend(path: &ComponentPath) -> ChartEdit {
+    ChartEdit::AddColourLegend { plot: path.clone() }
+}
+
+/// The channel each legend item of the plot draws, in item order.
+fn legend_items(spec: &Spec, path: &ComponentPath) -> Vec<LegendChannel> {
+    plot(spec, path)
+        .items
+        .iter()
+        .filter_map(|c| match c {
+            Component::Legend(l) => Some(l.channel),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `spec` with a standalone colour legend in the column the hero sits in, after
+/// the hero, that names a plot `names` by `for:`; the hero is called `hero`.
+fn with_standalone_legend(spec: &mut Spec, hero: &ComponentPath, names: &str) {
+    plot_at_path_mut(spec, &hero.0)
+        .expect("the hero")
+        .attributes
+        .insert("name".to_string(), SpecValue::String("hero".to_string()));
+    let Some(Component::HConcat(row)) = &mut spec.root else {
+        panic!("the generated dashboard's root is not a row");
+    };
+    let Some(Component::VConcat(column)) = row.items.first_mut() else {
+        panic!("the hero's column is not first in the row");
+    };
+    let mut standalone = LegendNode {
+        channel: LegendChannel::Color,
+        status: LegendChannel::Color.status(),
+        options: Default::default(),
+    };
+    standalone.options.insert(
+        "for".to_string(),
+        ValueOrParamRef::Value(SpecValue::String(names.to_string())),
+    );
+    column.items.push(Component::Legend(standalone));
 }
 
 fn drop_projection(path: &ComponentPath) -> ChartEdit {
@@ -711,7 +753,8 @@ fn a_column_put_on_the_maps_colour_paints_the_highlighted_layer_and_keeps_the_gh
 
 /// **The edit is the list of edits applied, and replaying it on the generated
 /// spec gives the edited one** — the highlighted layer's fill, then the scheme
-/// a number column names, as x's and y's lists are the marks they moved.
+/// a number column names, then the legend, as x's and y's lists are the marks
+/// they moved.
 #[test]
 fn the_colour_edit_is_the_list_of_chart_edits_applied_and_replays_to_the_same_spec() {
     let o = open("colour-list");
@@ -723,9 +766,10 @@ fn the_colour_edit_is_the_list_of_chart_edits_applied_and_replays_to_the_same_sp
         edits,
         [
             set(&o.hero, HIGHLIGHTED, "fill", VALUE),
-            scheme(&o.hero, "viridis")
+            scheme(&o.hero, "viridis"),
+            legend(&o.hero)
         ],
-        "the list should be the highlighted layer's fill and then the scheme"
+        "the list should be the highlighted layer's fill, the scheme and then the legend"
     );
     let mut replayed = o.generated.clone();
     for e in &edits {
@@ -788,7 +832,94 @@ fn a_plot_with_no_selected_layer_takes_the_colour_on_its_first_mark() {
 
     assert_eq!(
         edits,
-        [set(&o.hero, 0, "fill", VALUE), scheme(&o.hero, "viridis")]
+        [
+            set(&o.hero, 0, "fill", VALUE),
+            scheme(&o.hero, "viridis"),
+            legend(&o.hero)
+        ]
+    );
+}
+
+/// **A column put on a plot's colour ends with the edit that puts a colour
+/// legend among the plot's items**, after the other edits, and the spec
+/// afterwards holds that legend as the plot's last item, once.
+#[test]
+fn a_column_put_on_the_maps_colour_ends_with_a_colour_legend_as_the_plots_last_item() {
+    let o = open("colour-legend-item");
+    let mut spec = o.generated.clone();
+    assert_eq!(
+        legend_items(&spec, &o.hero),
+        [],
+        "the generated map already holds a legend"
+    );
+
+    let edits = put_colour(&mut spec, &o.hero, VALUE, &o.table).expect("the table has the column");
+
+    assert_eq!(
+        edits.last(),
+        Some(&legend(&o.hero)),
+        "the colour edit does not end with the legend: {edits:?}"
+    );
+    assert_eq!(
+        edits
+            .iter()
+            .filter(|e| matches!(e, ChartEdit::AddColourLegend { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(legend_items(&spec, &o.hero), [LegendChannel::Color]);
+    assert!(
+        matches!(
+            plot(&spec, &o.hero).items.last(),
+            Some(Component::Legend(_))
+        ),
+        "the legend is not the plot's last item: {:?}",
+        plot(&spec, &o.hero).items.last()
+    );
+}
+
+/// **A plot with a colour legend drawn for it already is given no second**: not
+/// when its items hold one, as they do after an earlier colour, and not when a
+/// standalone one names it with `for:`. A standalone legend that names another
+/// plot draws nothing for this one, so the legend is written.
+#[test]
+fn a_plot_with_a_colour_legend_drawn_for_it_already_is_given_no_second() {
+    let o = open("colour-legend-covered");
+    let has_legend_edit = |edits: &[ChartEdit]| {
+        edits
+            .iter()
+            .any(|e| matches!(e, ChartEdit::AddColourLegend { .. }))
+    };
+
+    let mut in_items = o.generated.clone();
+    put_colour(&mut in_items, &o.hero, VALUE, &o.table).expect("the table has the column");
+    let edits =
+        put_colour(&mut in_items, &o.hero, INCOME, &o.table).expect("the table has the column");
+    assert!(!has_legend_edit(&edits), "a second legend edit: {edits:?}");
+    assert_eq!(legend_items(&in_items, &o.hero), [LegendChannel::Color]);
+
+    let mut named = o.generated.clone();
+    with_standalone_legend(&mut named, &o.hero, "hero");
+    let edits =
+        put_colour(&mut named, &o.hero, INCOME, &o.table).expect("the table has the column");
+    assert!(
+        !has_legend_edit(&edits),
+        "a legend edit over a standalone legend that names the plot: {edits:?}"
+    );
+    assert_eq!(
+        legend_items(&named, &o.hero),
+        [],
+        "the plot was given a legend beside the standalone one"
+    );
+
+    let mut elsewhere = o.generated.clone();
+    with_standalone_legend(&mut elsewhere, &o.hero, "another");
+    let edits =
+        put_colour(&mut elsewhere, &o.hero, INCOME, &o.table).expect("the table has the column");
+    assert_eq!(
+        edits.last(),
+        Some(&legend(&o.hero)),
+        "a standalone legend for another plot stopped this one's legend"
     );
 }
 
@@ -895,6 +1026,49 @@ fn a_column_put_on_the_maps_colour_draws_a_legend_beside_the_plot_and_a_replaced
          {INCOME}'s 1..=12.5 and not stay on {VALUE}'s 0..=230"
     );
     beside_the_plot(&by_income);
+}
+
+/// **A page loaded from a chart that holds the legend item draws the legend it
+/// draws without the item**: the same legend over the same range, in the same
+/// band, clear of the same raster.
+#[test]
+fn a_page_loaded_from_a_chart_holding_the_legend_item_draws_the_legend_it_drew_without_it() {
+    let o = open("colour-legend-page");
+    let ctx = egui::Context::default();
+    let base = o.file.live.base_dir().map(Path::to_path_buf);
+    let mut with = o.generated.clone();
+    put_colour(&mut with, &o.hero, VALUE, &o.table).expect("the table has the column");
+    let mut without = with.clone();
+    let taken = plot_at_path_mut(&mut without, &o.hero.0)
+        .expect("the hero")
+        .items
+        .pop();
+    assert!(
+        matches!(taken, Some(Component::Legend(_))),
+        "the last item of the edited hero is {taken:?}, not the legend"
+    );
+
+    let with = window_over(with, base.as_deref(), &ctx);
+    let without = window_over(without, base.as_deref(), &ctx);
+
+    assert!(
+        matches!(hero_legend(&with), Some(LegendSpec::Sequential { .. })),
+        "the chart holding the item drew no sequential legend: {:?}",
+        hero_legend(&with)
+    );
+    assert_eq!(hero_legend(&with), hero_legend(&without));
+    assert_eq!(
+        with.chart_doc().legend_rect,
+        without.chart_doc().legend_rect
+    );
+    assert_eq!(
+        with.chart_doc().raster_rect,
+        without.chart_doc().raster_rect
+    );
+    assert_eq!(
+        band_width(&with.chart_doc().composed),
+        band_width(&without.chart_doc().composed)
+    );
 }
 
 /// The hero's tile that draws `median_income`'s histogram, among the plots the

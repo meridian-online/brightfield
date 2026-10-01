@@ -214,14 +214,20 @@ const LAST_ATTRIBUTE: &str = "      projectionType: equirectangular\n";
 /// The map's highlighted layer, whose `fill:` line the colour edit adds.
 const HIGHLIGHTED: &str = "        data: { from: opened, filterBy: $sel }\n        x: 'longitude'\n        y: 'latitude'\n";
 
-/// `text` with the two lines a number column on the map's colour adds: a
-/// `fill:` on the highlighted layer, and the scheme after the plot's last
-/// attribute.
+/// The map's last item, the interactor the list ends on, after which the
+/// writer adds the plot's legend.
+const LAST_ITEM: &str = "      - select: intervalXY\n        as: $sel\n";
+
+/// `text` with the three lines a number column on the map's colour adds: a
+/// `fill:` on the highlighted layer, the scheme after the plot's last
+/// attribute, and the legend after the plot's last item.
 fn with_colour(text: &str, column: &str, last_attribute: &str) -> String {
+    assert_eq!(text.matches(LAST_ITEM).count(), 1);
     text.replace(
         HIGHLIGHTED,
         &format!("{HIGHLIGHTED}        fill: {column}\n"),
     )
+    .replace(LAST_ITEM, &format!("{LAST_ITEM}      - legend: color\n"))
     .replace(
         last_attribute,
         &format!("{last_attribute}      colorScheme: viridis\n"),
@@ -229,10 +235,11 @@ fn with_colour(text: &str, column: &str, last_attribute: &str) -> String {
 }
 
 /// **`median_house_value` on the map's colour, written**: one
-/// `fill: median_house_value` line in the highlighted layer and one
-/// `colorScheme: viridis` line in the plot, and no other line changed.
+/// `fill: median_house_value` line in the highlighted layer, one
+/// `colorScheme: viridis` line in the plot and one `- legend: color` line at
+/// the end of its list, and no other line changed.
 #[test]
-fn the_shelfs_colour_edit_on_the_generated_map_adds_one_fill_line_and_one_scheme_line() {
+fn the_shelfs_colour_edit_on_the_generated_map_adds_a_fill_line_a_scheme_line_and_a_legend_line() {
     let mut opened = open("colour");
     let edits = put_colour(
         &mut opened.spec,
@@ -258,12 +265,12 @@ fn the_shelfs_colour_edit_on_the_generated_map_adds_one_fill_line_and_one_scheme
     );
 }
 
-/// **A file's comments are as they were after the scheme line is written**, an
-/// own-line comment inside the plot and a comment after its last attribute
-/// among them: the lines that hold a `#` are the same lines in the same
-/// order, and the text reads back as the spec the shelf made.
+/// **A file's comments are as they were after the colour edit is written**, an
+/// own-line comment between the plot's list and its attributes and a comment
+/// after its last attribute among them: the lines that hold a `#` are the same
+/// lines in the same order, and the text reads back as the spec the shelf made.
 #[test]
-fn the_scheme_line_is_written_among_a_files_comments_and_leaves_them() {
+fn the_colour_lines_are_written_among_a_files_comments_and_leave_them() {
     let opened = open("comments");
     let commented_last = "      projectionType: equirectangular # drawn as a map\n";
     let text = opened.text.replace(LAST_ATTRIBUTE, commented_last).replace(
@@ -289,7 +296,7 @@ fn the_scheme_line_is_written_among_a_files_comments_and_leaves_them() {
     assert_eq!(
         with_comment(&written),
         with_comment(&text),
-        "writing the scheme changed a line that holds a comment"
+        "writing the colour changed a line that holds a comment"
     );
     assert_eq!(
         written,
