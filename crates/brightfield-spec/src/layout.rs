@@ -3687,7 +3687,7 @@ plot:
         assert_eq!(grid_switch(&SpecValue::Bool(false)), Some(false));
     }
 
-    /// A `plotDefaults` switch reaches a plot that writes none of its own, and
+    /// A `plotDefaults` switch reaches a plot that does not write its own, and
     /// a switch the plot writes wins over it — the merge in `walk_plot` is
     /// key-agnostic and keeps the plot's own value.
     #[test]

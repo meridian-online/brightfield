@@ -414,7 +414,7 @@ fn a_spec_that_sets_none_of_the_three_draws_both_sets_as_it_did() {
 // plotDefaults, and a value that is no switch
 // ---------------------------------------------------------------------------
 
-/// A `plotDefaults` switch reaches a plot that writes none of its own, and a
+/// A `plotDefaults` switch reaches a plot that does not write its own, and a
 /// switch the plot writes wins over it.
 #[test]
 fn a_plot_defaults_switch_reaches_the_plot_and_the_plots_own_wins() {
