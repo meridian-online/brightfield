@@ -1044,6 +1044,94 @@ pub fn resolve_grid_lines(plot: &PlotNode) -> GridLines {
     }
 }
 
+/// What one positional axis asks of where it starts and ends: `xZero` and
+/// `xNice`, or `yZero` and `yNice`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AxisEnd {
+    /// The axis carries its domain to zero if the data stops short of it. It
+    /// extends a domain and does not narrow one: a data range that already holds
+    /// zero is left as it is.
+    pub zero: bool,
+    /// The axis ends on round numbers — the steps its ticks are drawn at — and
+    /// widens its domain outward to reach them.
+    pub nice: bool,
+}
+
+impl AxisEnd {
+    /// Whether the axis asks for neither, the state in which the renderer has
+    /// nothing to do to its domain.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        !self.zero && !self.nice
+    }
+}
+
+/// Where a plot's positional axes start and end — `xZero`, `xNice`, `yZero`
+/// and `yNice`.
+///
+/// A pure spec reading, mirroring [`GridLines`] and [`TickCounts`]: it says what
+/// the author asked for and holds no opinion about the scale it lands on. The
+/// default asks for nothing on either axis, which is what a plot drew before the
+/// four keys were read.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AxisEnds {
+    /// The x axis's request.
+    pub x: AxisEnd,
+    /// The y axis's request.
+    pub y: AxisEnd,
+}
+
+impl AxisEnds {
+    /// Whether neither axis asks for anything — the shape of a plot that
+    /// writes no one of the four keys, and the one a caller may skip work for.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.x.is_empty() && self.y.is_empty()
+    }
+}
+
+/// The one judge of an `xZero` / `yZero` / `xNice` / `yNice` value: the switch
+/// it sets.
+///
+/// A literal `true` or `false` is a switch. Observable Plot also reads a number
+/// or an interval at a `nice` key, as the count or the step to round to; this
+/// build reads neither, and neither is a switch. A string, a list, `null` and a
+/// lifted `$param` are no switch either. `None` is not itself a warning: a
+/// lifted `$param` is a recorded deferral and resolves to it silently. The
+/// parser asks this same function to decide which `None`s are malformed values
+/// to name, so the resolver and the warning cannot disagree about what a valid
+/// switch is.
+#[must_use]
+pub fn axis_end_switch(value: &SpecValue) -> Option<bool> {
+    match value {
+        SpecValue::Bool(on) => Some(*on),
+        _ => None,
+    }
+}
+
+/// Resolve a plot's `xZero` / `xNice` / `yZero` / `yNice` from its attributes.
+/// Literal-only and per-axis, the same reading [`resolve_grid_lines`] gives its
+/// keys; a key that is absent, or is no switch, asks for nothing.
+#[must_use]
+pub fn resolve_axis_ends(plot: &PlotNode) -> AxisEnds {
+    let on = |key: &str| {
+        plot.attributes
+            .get(key)
+            .and_then(axis_end_switch)
+            .unwrap_or(false)
+    };
+    AxisEnds {
+        x: AxisEnd {
+            zero: on("xZero"),
+            nice: on("xNice"),
+        },
+        y: AxisEnd {
+            zero: on("yZero"),
+            nice: on("yNice"),
+        },
+    }
+}
+
 /// Which positional axis a plot attribute speaks about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlotAxis {
@@ -3573,6 +3661,70 @@ plot:
             Some(3),
             "the plot sets no xTicks of its own; the plotDefaults value should reach it"
         );
+    }
+
+    // --- where an axis starts and ends (`xZero` / `xNice` / `yZero` / `yNice`) ---
+
+    /// A plot that writes none of the four keys asks for nothing, which is what
+    /// it drew before the keys were read, and `false` asks for the same.
+    #[test]
+    fn a_plot_that_sets_no_axis_end_key_asks_for_nothing() {
+        assert!(resolve_axis_ends(&plot_with(&[])).is_empty());
+        let all_false: Vec<(&str, SpecValue)> = ["xZero", "xNice", "yZero", "yNice"]
+            .into_iter()
+            .map(|key| (key, SpecValue::Bool(false)))
+            .collect();
+        assert!(
+            resolve_axis_ends(&plot_with(&all_false)).is_empty(),
+            "`false` on each key asks for what an unset plot gets"
+        );
+    }
+
+    /// Each key sets its own switch on its own axis, and neither reaches across:
+    /// `yZero` does not set `yNice`, and `xNice` does not set `yNice`.
+    #[test]
+    fn each_axis_end_key_sets_its_own_switch_on_its_own_axis() {
+        let only = |key: &str| resolve_axis_ends(&plot_with(&[(key, SpecValue::Bool(true))]));
+        let zero = AxisEnd {
+            zero: true,
+            nice: false,
+        };
+        let nice = AxisEnd {
+            zero: false,
+            nice: true,
+        };
+        let none = AxisEnd::default();
+        assert_eq!(only("xZero"), AxisEnds { x: zero, y: none });
+        assert_eq!(only("xNice"), AxisEnds { x: nice, y: none });
+        assert_eq!(only("yZero"), AxisEnds { x: none, y: zero });
+        assert_eq!(only("yNice"), AxisEnds { x: none, y: nice });
+    }
+
+    /// A value that is no switch reads as absent, so the axis asks for nothing.
+    /// The judge is [`axis_end_switch`], the same one the parser's warning asks.
+    /// A number at a `nice` key is a count to Observable Plot and is no switch
+    /// here.
+    #[test]
+    fn a_value_that_is_no_axis_end_switch_reads_as_absent() {
+        let no_switches = [
+            SpecValue::String("true".to_string()),
+            SpecValue::Integer(1),
+            SpecValue::Integer(5),
+            SpecValue::Null,
+            SpecValue::Array(vec![]),
+            SpecValue::Param(ParamRef::new("z")),
+        ];
+        for value in no_switches {
+            assert_eq!(axis_end_switch(&value), None, "the judge on {value:?}");
+            for key in ["xZero", "xNice", "yZero", "yNice"] {
+                assert!(
+                    resolve_axis_ends(&plot_with(&[(key, value.clone())])).is_empty(),
+                    "`{key}: {value:?}` is read as absent"
+                );
+            }
+        }
+        assert_eq!(axis_end_switch(&SpecValue::Bool(true)), Some(true));
+        assert_eq!(axis_end_switch(&SpecValue::Bool(false)), Some(false));
     }
 
     // --- gridlines (`grid` / `xGrid` / `yGrid`) ---

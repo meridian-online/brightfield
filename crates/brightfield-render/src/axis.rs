@@ -437,6 +437,76 @@ fn nice_step(span: f64, target_count: usize) -> f64 {
     nice * magnitude
 }
 
+/// The most times [`nice_linear_domain`] widens a domain before it stops.
+/// A domain settles when widening it no longer changes the step; the cap bounds
+/// the loop if a pair of ends never does, and is the cap d3's `scale.nice` puts
+/// on its own.
+const MAX_NICE_PASSES: usize = 10;
+
+/// Round `x` outward to a multiple of `step`: up when `up`, else down.
+///
+/// A step is 1, 2 or 5 times a power of ten, so one below 1 is the reciprocal of
+/// a whole number and its multiples are divided out of an integer rather than
+/// built by repeated addition. A value already on a multiple is left there: the
+/// quotient can land a few ulps off the whole number it should be, and rounding
+/// that outward would move the end a whole step.
+fn snap_to_step(x: f64, step: f64, up: bool) -> f64 {
+    let inverse = (step < 1.0).then(|| (1.0 / step).round());
+    let scaled = match inverse {
+        Some(inverse) => x * inverse,
+        None => x / step,
+    };
+    let nearest = scaled.round();
+    let whole = if (scaled - nearest).abs() <= 1e-9 * nearest.abs().max(1.0) {
+        nearest
+    } else if up {
+        scaled.ceil()
+    } else {
+        scaled.floor()
+    };
+    // `+ 0.0` turns a negative zero into zero, so an axis that starts at 0 does
+    // not carry a sign.
+    let snapped = match inverse {
+        Some(inverse) => whole / inverse,
+        None => whole * step,
+    };
+    snapped + 0.0
+}
+
+/// The linear domain `[min, max]` widened outward to round ends, as a plot's
+/// `xNice` / `yNice` asks.
+///
+/// The ends are multiples of the step [`compute_linear_ticks`] draws its ticks
+/// at for `target_count`, so each end of the axis is a tick the analyst can read
+/// off: the top one is a number they can say aloud. Observable Plot rounds to
+/// d3's default of ten ticks whatever the axis draws, and that step can differ
+/// from the one the axis ticks at, which would leave an end between two ticks.
+///
+/// Widened until the step settles, so the result is a fixed point: asking again
+/// of a domain this returned gives it back. That is what lets a domain a plot
+/// pinned after rounding be rounded again on every later composition without
+/// moving.
+///
+/// A span with no width, a count of zero and an end that is not a finite number
+/// are returned as they came, for the reason [`compute_linear_ticks`] draws no
+/// ticks on them.
+pub(crate) fn nice_linear_domain(min: f64, max: f64, target_count: usize) -> (f64, f64) {
+    if !min.is_finite() || !max.is_finite() || (max - min).abs() < f64::EPSILON || target_count == 0
+    {
+        return (min, max);
+    }
+    let (mut lo, mut hi) = (min, max);
+    for _ in 0..MAX_NICE_PASSES {
+        let step = nice_step(hi - lo, target_count);
+        let (next_lo, next_hi) = (snap_to_step(lo, step, false), snap_to_step(hi, step, true));
+        if next_lo == lo && next_hi == hi {
+            break;
+        }
+        (lo, hi) = (next_lo, next_hi);
+    }
+    (lo, hi)
+}
+
 /// Format a number for tick labels.
 pub(crate) fn format_number(value: f64) -> String {
     if (value - value.round()).abs() < 1e-9 {
@@ -1372,6 +1442,118 @@ mod tests {
             (step - 200.0).abs() < f64::EPSILON,
             "expected step 200, got {step}"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // Round ends — `nice_linear_domain`
+    // -----------------------------------------------------------------
+
+    /// Domains the rounding is asked about: whole and fractional, negative and
+    /// straddling zero, narrow beside their offset, and wide. The fractional
+    /// ones are where a quotient lands a few ulps off the whole number it should
+    /// be, so a rounding that used a bare `floor` or `ceil` would move an end a
+    /// whole step.
+    const NICE_DOMAINS: [(f64, f64); 14] = [
+        (3.0, 97.0),
+        (7.0, 43.0),
+        (40.0, 90.0),
+        (0.3, 0.9),
+        (0.12, 0.87),
+        (0.07, 0.43),
+        (-3.7, 12.2),
+        (-97.0, -3.0),
+        (-0.4, 0.4),
+        (1234.5, 1299.5),
+        (0.000_31, 0.000_77),
+        (1.0e6, 1.0e6 + 4321.0),
+        (0.0, 47.0),
+        (14.0, 26.0),
+    ];
+
+    /// **A rounded domain contains the data, and asking again moves nothing.**
+    /// The second is what lets a domain a plot pinned after rounding be rounded
+    /// again on every later composition without drifting a step each time.
+    #[test]
+    fn a_rounded_domain_holds_the_data_and_is_a_fixed_point() {
+        for (min, max) in NICE_DOMAINS {
+            for target in [2, 3, 5, 10] {
+                let (lo, hi) = nice_linear_domain(min, max, target);
+                assert!(
+                    lo <= min && hi >= max,
+                    "({min}, {max}) at {target} ticks rounds to ({lo}, {hi}), which cuts the data"
+                );
+                assert_eq!(
+                    nice_linear_domain(lo, hi, target),
+                    (lo, hi),
+                    "({min}, {max}) at {target} ticks rounds to ({lo}, {hi}), and rounding that \
+                     again moves it"
+                );
+            }
+        }
+    }
+
+    /// **A rounded end is a tick.** The axis draws a tick at each end of the
+    /// domain `nice_linear_domain` returns, at the count it rounded for, so the
+    /// top of the axis is a labelled number and the bottom is too.
+    #[test]
+    fn each_end_of_a_rounded_domain_is_a_tick() {
+        for (min, max) in NICE_DOMAINS {
+            for target in [2, 3, 5, 10] {
+                let (lo, hi) = nice_linear_domain(min, max, target);
+                let ticks = compute_linear_ticks(lo, hi, 0.0, 100.0, target, None);
+                let (first, last) = (
+                    ticks.first().expect("the domain has ticks").value,
+                    ticks.last().expect("the domain has ticks").value,
+                );
+                let tolerance = (hi - lo) * 1e-9;
+                assert!(
+                    (first - lo).abs() <= tolerance && (last - hi).abs() <= tolerance,
+                    "({min}, {max}) at {target} ticks rounds to ({lo}, {hi}) but its ticks run \
+                     from {first} to {last}"
+                );
+            }
+        }
+    }
+
+    /// **A value already on a step is not moved a whole step.** `1.12 * 50` is
+    /// `56.00000000000001`, so a bare `ceil` of it would carry the top of 0.8 to
+    /// 1.12 out to 1.14 at ten ticks, and a sum like `0.1 + 0.2` would add a step
+    /// at five. The ends are left on the multiple they were a few ulps from.
+    #[test]
+    fn a_value_already_on_a_step_is_not_moved_a_whole_step() {
+        assert_eq!(nice_linear_domain(0.8, 1.12, 10), (0.8, 1.12));
+        assert_eq!(nice_linear_domain(0.1, 0.1 + 0.2, 5), (0.1, 0.3));
+        assert_eq!(
+            nice_linear_domain(0.34, 1.400_000_000_000_000_1, 5),
+            (0.2, 1.4)
+        );
+    }
+
+    /// The domains rounding leaves as it found them: a span with no width, a
+    /// count of zero, and an end that is not a finite number.
+    #[test]
+    fn rounding_leaves_a_domain_it_cannot_step_as_it_found_it() {
+        assert_eq!(nice_linear_domain(5.0, 5.0, 5), (5.0, 5.0));
+        assert_eq!(nice_linear_domain(3.0, 97.0, 0), (3.0, 97.0));
+        let (lo, hi) = nice_linear_domain(f64::NEG_INFINITY, 97.0, 5);
+        assert!(lo.is_infinite() && hi == 97.0);
+        let (lo, hi) = nice_linear_domain(3.0, f64::NAN, 5);
+        assert!(lo == 3.0 && hi.is_nan());
+    }
+
+    /// An axis that ends at zero ends at zero with no sign on it: rounding a
+    /// small negative top up lands on `ceil(-0.02)`, which is a negative zero,
+    /// and a negative zero would print as `-0` on a label that reads the sign.
+    #[test]
+    fn a_rounded_end_at_zero_carries_no_sign() {
+        let (lo, hi) = nice_linear_domain(-47.0, -0.2, 5);
+        assert!(
+            lo < 0.0,
+            "fixture check: the domain is below zero, got {lo:?}"
+        );
+        assert!(hi == 0.0 && hi.is_sign_positive(), "got {hi:?}");
+        let (lo, _) = nice_linear_domain(0.2, 47.0, 5);
+        assert!(lo == 0.0 && lo.is_sign_positive(), "got {lo:?}");
     }
 
     // -----------------------------------------------------------------
