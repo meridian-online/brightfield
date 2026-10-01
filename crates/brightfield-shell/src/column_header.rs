@@ -1116,11 +1116,11 @@ fn draw_bars(
 /// A rug as it was drawn: the rect it filled, and one alpha per pixel column in
 /// the order they were painted — the empty ones recorded as zero.
 ///
-/// What [`draw_rug_in`] returns, so that a surface drawing a rug beside the
-/// grid head's — the Outline's column list is one — records it the way
-/// [`ColumnBandDrawn::rug`] and [`ColumnBandDrawn::rug_alphas`] do, and a test
-/// compares the two off the drawing rather than off the values they were
-/// drawn from.
+/// What the crate-private `draw_rug_in` returns, so that a surface drawing a
+/// rug beside the grid head's — the Outline's column list is one — records it
+/// the way [`ColumnBandDrawn::rug`] and [`ColumnBandDrawn::rug_alphas`] do, and
+/// a test compares the two off the drawing rather than off the values they
+/// were drawn from.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RugDrawn {
     /// The rug's rect.
