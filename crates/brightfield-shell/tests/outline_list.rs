@@ -341,7 +341,11 @@ fn the_list_lists_each_column_of_the_table_in_the_tables_order() {
     let frame = stage.draw(&mut list);
     assert_eq!(drawn_names(&frame), names());
     for (row, column) in frame.drawn.rows.iter().zip(columns()) {
-        assert_eq!(row.kind, column.kind, "{}'s type is at its trailing end", row.column);
+        assert_eq!(
+            row.kind, column.kind,
+            "{}'s type is at its trailing end",
+            row.column
+        );
         let said = texts_in(&frame, row.rect);
         assert!(
             said.contains(&row.column.as_str()) && said.contains(&column.kind.as_str()),
@@ -463,7 +467,11 @@ fn slash_then_inc_lists_median_income_above_a_divider_and_the_other_columns_belo
     let stage = Stage::new(Mode::Light);
     let mut list = list(ShelfChannel::X);
     search(&mut list, "inc");
-    assert_eq!(list.query(), "inc", "the slash that opened the query is not in it");
+    assert_eq!(
+        list.query(),
+        "inc",
+        "the slash that opened the query is not in it"
+    );
     assert!(list.querying());
     let frame = stage.draw(&mut list);
 
@@ -616,9 +624,17 @@ fn with_the_query_empty_y_switches_the_list_to_ys_and_nothing_is_written_into_th
     let reports = list.feed_events(&typed(egui::Key::Y, "y"));
     assert_eq!(reports, [ListReport::GoTo(ShelfChannel::Y)]);
     assert_eq!(list.channel(), ShelfChannel::Y);
-    assert_eq!(list.query(), "", "the letter that named the channel is not typed");
+    assert_eq!(
+        list.query(),
+        "",
+        "the letter that named the channel is not typed"
+    );
     assert!(!list.querying());
-    assert_eq!(list.cursor(), Some("latitude"), "the cursor is on the column y holds");
+    assert_eq!(
+        list.cursor(),
+        Some("latitude"),
+        "the cursor is on the column y holds"
+    );
     let frame = stage.draw(&mut list);
     assert_eq!(frame.drawn.heading_text, "OUTLINE   ·   y axis of hero");
     assert_eq!(drawn_names(&frame), names());
@@ -697,7 +713,11 @@ fn h_and_l_report_the_channel_beside_with_the_list_kept_open() {
         list.feed_events(&typed(egui::Key::H, "h")),
         [ListReport::Beside(ShelfChannel::Y)]
     );
-    assert_eq!(list.query(), "", "a letter that moved the list is not typed");
+    assert_eq!(
+        list.query(),
+        "",
+        "a letter that moved the list is not typed"
+    );
     let frame = stage.draw(&mut list);
     assert_eq!(frame.drawn.heading_text, "OUTLINE   ·   y axis of hero");
     assert_eq!(drawn_names(&frame), names(), "the list is open, whole");
@@ -754,8 +774,15 @@ fn the_row_under_the_cursor_carries_a_three_point_bar_in_the_channels_hue() {
                 .find(|r| r.column == held)
                 .expect("the held column is listed");
             let bar = row.bar.expect("the cursor's row has a bar");
-            assert!(near(bar.width(), 3.0), "{channel:?} {mode:?}: {}", bar.width());
-            assert!(near(bar.height(), row.rect.height()), "{channel:?} {mode:?}");
+            assert!(
+                near(bar.width(), 3.0),
+                "{channel:?} {mode:?}: {}",
+                bar.width()
+            );
+            assert!(
+                near(bar.height(), row.rect.height()),
+                "{channel:?} {mode:?}"
+            );
             assert!(near(bar.left(), row.rect.left()), "{channel:?} {mode:?}");
             let hue = categorical(mode, slot);
             let painted: Vec<egui::Rect> = fills(&frame)
@@ -784,7 +811,10 @@ fn the_foot_prints_slash_while_the_rows_have_the_keys_and_not_while_the_query_ha
 
     let rows = stage.draw(&mut list);
     let on_rows = texts_in(&rows, rows.drawn.foot);
-    assert!(on_rows.contains(&"/"), "the foot prints / on the rows: {on_rows:?}");
+    assert!(
+        on_rows.contains(&"/"),
+        "the foot prints / on the rows: {on_rows:?}"
+    );
     assert!(on_rows.contains(&"Enter"), "{on_rows:?}");
     assert!(on_rows.contains(&"Esc"), "{on_rows:?}");
 
@@ -823,11 +853,20 @@ fn no_two_texts_in_the_list_are_drawn_into_one_place() {
             let mut list = list(ShelfChannel::X);
             list.feed_events(&events);
             let frame = stage.draw(&mut list);
-            assert_eq!(frame.collisions, None, "{mode:?}, querying={}", list.querying());
+            assert_eq!(
+                frame.collisions,
+                None,
+                "{mode:?}, querying={}",
+                list.querying()
+            );
         }
         let mut list = list(ShelfChannel::X);
         search(&mut list, "inc");
-        assert_eq!(stage.draw(&mut list).collisions, None, "{mode:?}, with inc typed");
+        assert_eq!(
+            stage.draw(&mut list).collisions,
+            None,
+            "{mode:?}, with inc typed"
+        );
     }
 }
 
@@ -871,7 +910,10 @@ fn a_click_on_a_row_moves_the_cursor_there_and_reports_the_column() {
 // ---------------------------------------------------------------------------
 
 fn doc() -> ProtocolDoc {
-    let inputs = open().protocol.inputs().expect("the opened file's protocol");
+    let inputs = open()
+        .protocol
+        .inputs()
+        .expect("the opened file's protocol");
     ProtocolDoc::headless(ProtocolModel::new(inputs, Flow::Vertical))
 }
 
@@ -891,7 +933,13 @@ fn run_pane(doc: &mut ProtocolDoc, ctx: &egui::Context, mode: Mode) {
     let _ = ctx.run_ui(raw, |ui| {
         egui::CentralPanel::default().show(ui, |ui| {
             let mut requests = Vec::new();
-            let mut cx = ItemCtx::new(mode, key, egui_tiles::TileId::from_u64(1), true, &mut requests);
+            let mut cx = ItemCtx::new(
+                mode,
+                key,
+                egui_tiles::TileId::from_u64(1),
+                true,
+                &mut requests,
+            );
             items
                 .get_mut(&key)
                 .expect("the registry holds the Outline")
@@ -912,7 +960,8 @@ fn settled_pane(doc: &mut ProtocolDoc) -> egui::Context {
 fn the_outline_pane_draws_the_list_in_place_of_the_columns_while_a_shelf_cell_is_active() {
     let mut doc = doc();
     let ctx = settled_pane(&mut doc);
-    doc.model.open_column_list("hero", ShelfChannel::X, channels());
+    doc.model
+        .open_column_list("hero", ShelfChannel::X, channels());
     run_pane(&mut doc, &ctx, Mode::Light);
 
     let captions: Vec<&str> = doc
@@ -937,7 +986,11 @@ fn the_outline_pane_draws_the_list_in_place_of_the_columns_while_a_shelf_cell_is
         .collect();
     let listed: Vec<&str> = columns.iter().map(|(n, _)| *n).collect();
     assert_eq!(listed, names());
-    let under_cursor: Vec<&str> = columns.iter().filter(|(_, w)| *w).map(|(n, _)| *n).collect();
+    let under_cursor: Vec<&str> = columns
+        .iter()
+        .filter(|(_, w)| *w)
+        .map(|(n, _)| *n)
+        .collect();
     assert_eq!(under_cursor, ["population"]);
 }
 
@@ -946,7 +999,8 @@ fn the_outline_pane_feeds_the_list_the_windows_events_and_takes_back_its_reports
     let mut doc = doc();
     let ctx = settled_pane(&mut doc);
     assert_eq!(doc.model.feed_column_list(&typed(egui::Key::J, "j")), []);
-    doc.model.open_column_list("hero", ShelfChannel::X, channels());
+    doc.model
+        .open_column_list("hero", ShelfChannel::X, channels());
     run_pane(&mut doc, &ctx, Mode::Light);
     assert_eq!(
         doc.model.feed_column_list(&typed(egui::Key::J, "j")),
@@ -959,7 +1013,11 @@ fn the_outline_pane_feeds_the_list_the_windows_events_and_takes_back_its_reports
         .filter(|r| r.washed && r.role == brightfield_shell::protocol::SpineRole::Column)
         .map(|r| r.label.as_str())
         .collect();
-    assert_eq!(washed, ["avg_occupancy"], "the pane draws where the keys put the cursor");
+    assert_eq!(
+        washed,
+        ["avg_occupancy"],
+        "the pane draws where the keys put the cursor"
+    );
 }
 
 #[test]
@@ -979,13 +1037,15 @@ fn with_no_shelf_cell_active_the_outline_draws_as_it_does_today() {
         .collect();
     assert_eq!(rows, names());
     assert!(
-        today.iter().all(|r| !r.washed
-            || r.role != brightfield_shell::protocol::SpineRole::Column),
+        today
+            .iter()
+            .all(|r| !r.washed || r.role != brightfield_shell::protocol::SpineRole::Column),
         "no column row is washed: nothing has the cursor"
     );
 
     // Opened and closed again, the pane is what it was.
-    doc.model.open_column_list("hero", ShelfChannel::X, channels());
+    doc.model
+        .open_column_list("hero", ShelfChannel::X, channels());
     run_pane(&mut doc, &ctx, Mode::Light);
     assert_ne!(doc.spine_drawn, today, "the open list changes the pane");
     doc.model.close_column_list();

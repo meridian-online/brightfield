@@ -744,7 +744,11 @@ impl ColumnList {
                 .filter(|i| !named(i).starts_with(&self.query) && named(i).contains(&self.query)),
         );
         let matched = order.len();
-        order.extend(all.iter().copied().filter(|i| !named(i).contains(&self.query)));
+        order.extend(
+            all.iter()
+                .copied()
+                .filter(|i| !named(i).contains(&self.query)),
+        );
         (order, matched)
     }
 
@@ -887,10 +891,9 @@ impl ColumnList {
                 }
                 self.requery(out);
             }
-            egui::Key::Enter
-            | egui::Key::Escape
-            | egui::Key::ArrowUp
-            | egui::Key::ArrowDown => self.resolve(key, out),
+            egui::Key::Enter | egui::Key::Escape | egui::Key::ArrowUp | egui::Key::ArrowDown => {
+                self.resolve(key, out)
+            }
             _ => {}
         }
     }
@@ -993,7 +996,11 @@ const ROW_HINTS: [(&str, &str); 5] = [
 ];
 
 /// The keys the foot prints while the query has them.
-const QUERY_HINTS: [(&str, &str); 3] = [("\u{2191}\u{2193}", "move"), ("Enter", "keep"), ("Esc", "clear")];
+const QUERY_HINTS: [(&str, &str); 3] = [
+    ("\u{2191}\u{2193}", "move"),
+    ("Enter", "keep"),
+    ("Esc", "clear"),
+];
 
 impl ColumnList {
     /// Draw the list into `ui`, which it takes the whole width of, and answer a
@@ -1078,8 +1085,7 @@ impl ColumnList {
         let (order, matched) = self.order();
         let searching = !self.query.is_empty();
         if searching && matched == 0 {
-            let (note, _) =
-                ui.allocate_exact_size(egui::vec2(width, b.row), egui::Sense::hover());
+            let (note, _) = ui.allocate_exact_size(egui::vec2(width, b.row), egui::Sense::hover());
             let text = format!("no column's name holds \"{}\"", self.query);
             let galley = text_ink::fit(
                 &painter,
@@ -1169,7 +1175,8 @@ impl ColumnList {
         self.scroll = false;
 
         let foot = self.show_foot(ui, mode);
-        let rect = egui::Rect::from_min_max(heading.min, egui::pos2(heading.right(), foot.bottom()));
+        let rect =
+            egui::Rect::from_min_max(heading.min, egui::pos2(heading.right(), foot.bottom()));
         painter.rect_stroke(
             rect,
             0.0,
