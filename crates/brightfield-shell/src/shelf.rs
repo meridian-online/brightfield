@@ -1195,49 +1195,90 @@ impl ColumnList {
     }
 
     /// The foot: a key chip and a word for each key the state the list is in
-    /// answers, wrapped to the width.
+    /// answers, a pair to a unit and wrapped between pairs to the width.
     fn show_foot(&self, ui: &mut egui::Ui, mode: Mode) -> egui::Rect {
-        let sem = semantic(mode.is_dark());
-        let muted = chrome::colour(sem.text.muted);
+        let muted = chrome::colour(semantic(mode.is_dark()).text.muted);
         let pairs: &[(&str, &str)] = if self.querying {
             &QUERY_HINTS
         } else {
             &ROW_HINTS
         };
         let avail = ui.available_rect_before_wrap();
-        let inner = egui::Rect::from_min_max(
-            egui::pos2(
-                avail.left() + spacing::SPACE_4,
-                avail.top() + spacing::SPACE_3,
-            ),
-            egui::pos2(avail.right() - spacing::SPACE_4, avail.bottom()),
-        );
-        let mut hints = ui.new_child(
-            egui::UiBuilder::new().max_rect(inner).layout(
-                egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
-            ),
-        );
-        hints.spacing_mut().item_spacing = egui::vec2(spacing::SPACE_3, spacing::SPACE_2);
-        for (key, word) in pairs {
-            key_chip(&mut hints, key);
-            hints.add(
-                egui::Label::new(
-                    egui::RichText::new(*word)
-                        .font(egui::FontId::monospace(typography::UI_SIZE - 2.5))
-                        .color(muted),
-                )
-                .selectable(false),
-            );
-            hints.add_space(spacing::SPACE_3);
+        let room = avail.width() - 2.0 * spacing::SPACE_4;
+        let row_height = ui.spacing().interact_size.y;
+        let widths: Vec<f32> = pairs
+            .iter()
+            .map(|(key, word)| hint_width(ui, key, word, muted))
+            .collect();
+
+        let mut rows: Vec<Vec<usize>> = vec![Vec::new()];
+        let mut used = 0.0;
+        for (i, width) in widths.iter().enumerate() {
+            let row = rows.last_mut().expect("a row");
+            let next = if row.is_empty() {
+                *width
+            } else {
+                used + spacing::SPACE_4 + *width
+            };
+            if !row.is_empty() && next > room {
+                rows.push(vec![i]);
+                used = *width;
+            } else {
+                row.push(i);
+                used = next;
+            }
         }
-        let foot = egui::Rect::from_min_max(
-            avail.min,
-            egui::pos2(
-                avail.right(),
-                hints.min_rect().bottom() + spacing::SPACE_3,
-            ),
-        );
+
+        let mut top = avail.top() + spacing::SPACE_3;
+        for row in rows {
+            let at = egui::Rect::from_min_size(
+                egui::pos2(avail.left() + spacing::SPACE_4, top),
+                egui::vec2(room, row_height),
+            );
+            let mut line = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(at)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            line.spacing_mut().item_spacing.x = spacing::SPACE_3;
+            for (n, i) in row.into_iter().enumerate() {
+                if n > 0 {
+                    line.add_space(spacing::SPACE_4 - spacing::SPACE_3);
+                }
+                hint(&mut line, pairs[i].0, pairs[i].1, muted);
+            }
+            top += row_height + spacing::SPACE_2;
+        }
+        let foot = egui::Rect::from_min_max(avail.min, egui::pos2(avail.right(), top));
         ui.allocate_rect(foot, egui::Sense::hover());
         foot
     }
+}
+
+/// One key of the foot: its chip, and the word for what it does.
+fn hint(ui: &mut egui::Ui, key: &str, word: &str, ink: egui::Color32) {
+    key_chip(ui, key);
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(word)
+                .font(egui::FontId::monospace(typography::UI_SIZE - 2.5))
+                .color(ink),
+        )
+        .selectable(false),
+    );
+}
+
+/// How wide [`hint`] is, laid out unseen: a chip's width is the design
+/// system's, and the foot breaks its rows on it rather than on a guess.
+fn hint_width(ui: &mut egui::Ui, key: &str, word: &str, ink: egui::Color32) -> f32 {
+    let at = egui::Rect::from_min_size(ui.max_rect().min, egui::vec2(1000.0, 1000.0));
+    let mut unseen = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(at)
+            .layout(egui::Layout::left_to_right(egui::Align::Center))
+            .invisible(),
+    );
+    unseen.spacing_mut().item_spacing.x = spacing::SPACE_3;
+    hint(&mut unseen, key, word, ink);
+    unseen.min_rect().width()
 }
