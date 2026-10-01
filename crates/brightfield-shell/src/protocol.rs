@@ -2500,7 +2500,8 @@ pub struct SpineRowDrawn {
     /// What the row said at its leading end.
     pub label: String,
     /// What it said at its trailing end — empty on a caption row, which is one
-    /// string across the row.
+    /// string across the row, and on a column row of the open list that drew a
+    /// rug there in its place ([`Self::rug`]).
     pub kind: String,
     /// How far it was indented.
     pub depth: u8,
