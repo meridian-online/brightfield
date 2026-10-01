@@ -1769,6 +1769,11 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         // reason the overlay openers are: the shell may not invent a binding,
         // so the token comes off the registry and only its egui spelling lives
         // in this table.
+        // The grid's cursor keys: the home row, beside the arrows below.
+        "h" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::H)),
+        "j" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::J)),
+        "k" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::K)),
+        "l" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::L)),
         "left" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowLeft)),
         "right" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowRight)),
         "up" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::ArrowUp)),
@@ -1798,6 +1803,20 @@ fn navigation_bindings() -> Vec<(&'static str, &'static str)> {
         .filter_map(|longname| {
             let entry = reg.iter().find(|v| v.longname == *longname)?;
             Some((entry.primary_key()?, entry.longname))
+        })
+        .collect()
+}
+
+/// The grid's `(keystroke token, longname)` pairs: every binding the registry
+/// declares in its Grid context, the arrow twins included.
+fn grid_bindings() -> Vec<(&'static str, &'static str)> {
+    brightfield_keys::registry()
+        .iter()
+        .flat_map(|verb| {
+            verb.binding_specs
+                .iter()
+                .filter(|spec| spec.context == brightfield_keys::BindingContext::Grid)
+                .map(move |spec| (spec.keystrokes, verb.longname))
         })
         .collect()
 }
@@ -2174,6 +2193,10 @@ pub struct MeridianApp {
     /// [`Self::home_binding`]: the shell wires the binding the registry
     /// declares and invents none. Empty for a verb the registry leaves unbound.
     nav_bindings: Vec<(&'static str, &'static str)>,
+    /// The grid's keystroke tokens paired with their verb longnames: every
+    /// binding the registry declares in its Grid context, read at boot — same
+    /// rule as [`Self::nav_bindings`].
+    grid_bindings: Vec<(&'static str, &'static str)>,
     /// The per-session palette recency: verbs run from the palette rank
     /// higher on its next empty-query open. Session-scoped by design (the
     /// sanctioned v1 simplification); it resets each launch.
@@ -2520,6 +2543,7 @@ impl MeridianApp {
                 .find(|v| v.longname == RUN_PROTOCOL)
                 .and_then(brightfield_keys::VerbEntry::primary_key),
             nav_bindings: navigation_bindings(),
+            grid_bindings: grid_bindings(),
             recency: RecencyCounter::new(),
             notifications: NotificationLayer::new(),
             last_chart_fault: None,
@@ -3889,6 +3913,9 @@ impl MeridianApp {
         self.grid_key(&ctx);
         // The run, on the same gate and for the same reason.
         self.run_key(&ctx);
+        // The grid's cursor keys, ahead of the frame verbs: with the grid
+        // focused its keys are the cursor's, and the frame verbs stand down.
+        self.grid_cursor_keys(&ctx, graph_on_canvas);
         // The frame verbs, on the same gate and only where the chart holds the
         // canvas: they are bare keys, so an overlay or a text field must own
         // the keyboard first.
@@ -5061,12 +5088,54 @@ impl MeridianApp {
     /// holding the keyboard — plus the chart being the thing on the canvas,
     /// because a frame verb over the asset graph has no frame to move and its
     /// bare keys would shadow the graph's own grammar.
+    ///
+    /// And not while the grid holds focus: its arrows are the cursor's, and a
+    /// zoom, axis-lock or reset typed at the table would move a chart the
+    /// reader is not looking at.
     fn navigation_keys(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
-        if graph_on_canvas || self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
+        if graph_on_canvas
+            || self.overlay.is_some()
+            || ctx.egui_wants_keyboard_input()
+            || self.grid_has_focus()
+        {
             return;
         }
         for (token, longname) in self.nav_bindings.clone() {
             if consume_token(ctx, token) && navigation_verb(&mut self.charts.doc, longname) {
+                ctx.request_repaint();
+            }
+        }
+    }
+
+    /// Whether the table's grid is the focused pane — the situation its key
+    /// context, the registry's Grid, resolves in.
+    fn grid_has_focus(&self) -> bool {
+        self.ws().focus() == Some(PaneKey::new(DATA))
+    }
+
+    /// Move the grid's cursor for whichever of the grid's keys is down this
+    /// frame.
+    ///
+    /// Gated as [`Self::navigation_keys`] is — the chart on the canvas, no
+    /// overlay open, no widget holding the keyboard — and on the grid holding
+    /// focus, which a press on one of its cells gives it. Each binding comes
+    /// off the registry's Grid context ([`Self::grid_bindings`]), so the keys
+    /// the help sheet lists for the grid are the keys that move it. A key is
+    /// consumed whether or not the cursor could move, so a move off the
+    /// table's edge does not fall through to a frame verb.
+    fn grid_cursor_keys(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
+        if graph_on_canvas
+            || self.overlay.is_some()
+            || ctx.egui_wants_keyboard_input()
+            || !self.grid_has_focus()
+        {
+            return;
+        }
+        for (token, longname) in self.grid_bindings.clone() {
+            let Some(step) = crate::data_grid::CursorStep::of_verb(longname) else {
+                continue;
+            };
+            if consume_token(ctx, token) && self.charts.doc.move_grid_cursor(step) {
                 ctx.request_repaint();
             }
         }
@@ -5573,6 +5642,14 @@ impl MeridianApp {
         } else if entries.is_empty() && !graph_on_canvas {
             if let Some(idle) = idle_status_entry(&self.charts.doc.composed) {
                 entries.push(idle);
+            }
+        }
+        // The cursor's address leads the band, after the idle line is decided
+        // so that line still stands beside it: where the reader is in the
+        // table is not news the idle line gives way to.
+        if !graph_on_canvas {
+            if let Some(address) = grid_cursor_status_entry(&self.charts.doc) {
+                entries.insert(0, address);
             }
         }
 
@@ -7260,6 +7337,39 @@ fn plural(n: usize, one: &str, many: &str) -> String {
         format!("{n} {many}")
     }
 }
+
+/// The status band's line naming where the grid's cursor is: its row among the
+/// rows the grid shows, its column's name and the cell's value —
+/// `row 4 of 240 · house_age · 28`.
+///
+/// Read off this frame's grid record, so the line names the cell the frame
+/// drew the ring on, and a frame whose grid drew nowhere says nothing. A value
+/// the grid holds no row for is left out rather than guessed.
+fn grid_cursor_status_entry(doc: &ChartDoc) -> Option<StatusEntry> {
+    use brightfield_model::profile_model::thousands;
+    let table = doc.grid_drawn()?;
+    let cursor = table.cursor.as_ref()?;
+    let mut text = format!(
+        "row {} of {}",
+        thousands(cursor.at.row + 1),
+        thousands(table.rows)
+    );
+    for part in [&cursor.column, &cursor.value].into_iter().flatten() {
+        text.push_str(" · ");
+        text.push_str(part);
+    }
+    Some(StatusEntry {
+        id: GRID_CURSOR_STATUS_ID,
+        side: StatusSide::Leading,
+        text,
+        tone: Tone::Neutral,
+        hide: HideAffordance::WithRail,
+    })
+}
+
+/// The stable id [`grid_cursor_status_entry`] writes — the handle a test reads
+/// the cursor's address by.
+pub const GRID_CURSOR_STATUS_ID: &str = "grid-cursor";
 
 /// The stable id [`idle_status_entry`] writes, and the one
 /// [`status_rail_ui`](MeridianApp::status_rail_ui) reads back for the test

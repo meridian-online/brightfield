@@ -721,6 +721,20 @@ pub struct ChartDoc {
     /// `the_grid_as_the_canvas_view_draws_the_full_band` read the two, and
     /// `a_table_with_no_column_facts_draws_the_plain_header` reads the third.
     pub grid_density: Option<crate::column_header::GridDensity>,
+    /// **Where the grid's cursor is** — one cell of the table, so a row and a
+    /// column at once — or `None` before a press has put it on a cell.
+    ///
+    /// On the document rather than in the grid pane because what reads the
+    /// cursor's column and value is another pane, and the shell hands out one
+    /// `&mut ChartDoc` per pane draw. Written by the grid on a press and by
+    /// [`Self::move_grid_cursor`] on a key; cleared when the document is
+    /// replaced, since it named a cell of the replaced document's table. It
+    /// is not the selection — see [`crate::data_grid::GridCursor`].
+    pub grid_cursor: Option<crate::data_grid::GridCursor>,
+    /// Whether the grid's next draw scrolls so the cursor's cell is drawn. Set
+    /// by a key's move and spent by that draw — see
+    /// [`crate::data_grid::TableCursor::reveal`].
+    pub grid_cursor_reveal: bool,
     /// **Whether a pointer gesture is holding a page origin**, as of the last
     /// frame the chart pane drew.
     ///
@@ -1015,6 +1029,8 @@ impl ChartDoc {
             table_drawn: None,
             tables_filed: 0,
             grid_density: None,
+            grid_cursor: None,
+            grid_cursor_reveal: false,
             grid_layout_switch: None,
             grid_spot_switch: None,
             transposed_rows: Vec::new(),
@@ -1064,6 +1080,8 @@ impl ChartDoc {
             table_drawn: None,
             tables_filed: 0,
             grid_density: None,
+            grid_cursor: None,
+            grid_cursor_reveal: false,
             grid_layout_switch: None,
             grid_spot_switch: None,
             transposed_rows: Vec::new(),
@@ -1164,6 +1182,8 @@ impl ChartDoc {
         self.table_drawn = None;
         self.tables_filed = 0;
         self.grid_density = None;
+        self.grid_cursor = None;
+        self.grid_cursor_reveal = false;
         self.grid_layout_switch = None;
         self.grid_spot_switch = None;
         self.transposed_rows = Vec::new();
@@ -1588,6 +1608,27 @@ impl ChartDoc {
         self.controls.clear();
         self.grid_layout_switch = None;
         self.grid_spot_switch = None;
+    }
+
+    /// Move the grid's cursor one cell along `step`, and say whether it moved.
+    ///
+    /// Bounded by the table the grid last drew: a move past its last row or
+    /// last column, or before its first, leaves the cursor where it was. A move
+    /// asks the grid's next draw to scroll the cursor's cell into view. With
+    /// no cursor, or no table drawn, nothing moves.
+    ///
+    /// Called before this frame's grid draws, so [`Self::grid_drawn`] is the
+    /// last frame's table — the one the reader pressed the key over.
+    pub fn move_grid_cursor(&mut self, step: crate::data_grid::CursorStep) -> bool {
+        let (Some(at), Some(table)) = (self.grid_cursor, self.table_drawn.as_ref()) else {
+            return false;
+        };
+        let Some(to) = at.moved(step, table.rows, table.columns) else {
+            return false;
+        };
+        self.grid_cursor = Some(to);
+        self.grid_cursor_reveal = true;
+        true
     }
 
     /// File what the grid's table laid out this frame, and count the filing.

@@ -363,6 +363,18 @@ pub struct TableDrawn {
     /// `most_visible_per_row` in this module, because a row is offered once per
     /// scrolling region as a header cell is.
     pub row_cells: Vec<(u64, egui::Rect, egui::Rect)>,
+    /// What each data row the table laid out this frame was drawn standing
+    /// on, by the row's index — see [`RowGround`]. Written where the ground is
+    /// painted, so it is what the frame drew rather than what a caller asked
+    /// for.
+    pub row_grounds: std::collections::BTreeMap<u64, RowGround>,
+    /// The cell cursor's marks as this frame drew them, or `None` for a table
+    /// drawn with no cursor — see [`CursorDrawn`].
+    pub cursor: Option<CursorDrawn>,
+    /// The cell a press landed on this frame, for a table drawn with a cursor
+    /// to answer. `None` on a frame with no press on a cell, and always for a
+    /// table drawn without one.
+    pub pressed: Option<GridCursor>,
 }
 
 impl TableDrawn {
@@ -413,6 +425,161 @@ impl TableDrawn {
     }
 }
 
+/// Where the grid's cursor is: one cell of the table, so a row and a column at
+/// once.
+///
+/// Held on the document rather than in the grid — see
+/// [`ChartDoc::grid_cursor`](crate::app::ChartDoc::grid_cursor) — because
+/// what reads the cursor's column and value is another pane. It is not the
+/// selection: a selected row is one the analyst chose, and the cursor is
+/// where they are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GridCursor {
+    /// The row's index in the table, from 0.
+    pub row: u64,
+    /// The column's index in the table, from 0.
+    pub col: usize,
+}
+
+/// One cell's move of the cursor, as the grid's keys ask for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CursorStep {
+    /// To the cell below.
+    Down,
+    /// To the cell above.
+    Up,
+    /// To the cell on the left.
+    Left,
+    /// To the cell on the right.
+    Right,
+}
+
+impl CursorStep {
+    /// The step a verb of the registry's Grid context asks for, or `None` for
+    /// a verb that is not one of the cursor's.
+    #[must_use]
+    pub fn of_verb(longname: &str) -> Option<Self> {
+        Some(match longname {
+            "move-cursor-down" => Self::Down,
+            "move-cursor-up" => Self::Up,
+            "move-cursor-left" => Self::Left,
+            "move-cursor-right" => Self::Right,
+            _ => return None,
+        })
+    }
+}
+
+impl GridCursor {
+    /// The cursor one cell along `step` in a table of `rows` rows and
+    /// `columns` columns, or `None` where that cell is past the table's edge —
+    /// a move off the table leaves the cursor where it was.
+    #[must_use]
+    pub fn moved(self, step: CursorStep, rows: u64, columns: usize) -> Option<Self> {
+        let to = match step {
+            CursorStep::Down => Self {
+                row: self.row.checked_add(1)?,
+                ..self
+            },
+            CursorStep::Up => Self {
+                row: self.row.checked_sub(1)?,
+                ..self
+            },
+            CursorStep::Left => Self {
+                col: self.col.checked_sub(1)?,
+                ..self
+            },
+            CursorStep::Right => Self {
+                col: self.col.checked_add(1)?,
+                ..self
+            },
+        };
+        (to.row < rows && to.col < columns).then_some(to)
+    }
+}
+
+/// The cell cursor a table is drawn with: where it is, and whether this draw
+/// scrolls the table so its cell is drawn.
+///
+/// Handed to [`show_table_sized`] by the grid, and not by the Steps sheet,
+/// whose cursor is its selected row. A table drawn without one draws no
+/// cursor's marks and answers no press on a cell.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TableCursor {
+    /// Where the cursor is, or `None` before a press has put it on a cell.
+    pub at: Option<GridCursor>,
+    /// Whether this draw scrolls the table just far enough that the cursor's
+    /// cell is drawn — set by a key's move, and by nothing else, so a reader
+    /// scrolling with the wheel is not pulled back to the cursor.
+    pub reveal: bool,
+}
+
+/// What a data row of the table was drawn standing on, under its cells.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowGround {
+    /// The selection wash, for the row the source reports selected. It is
+    /// kept on the cursor's row; the cursor's ring is drawn over it.
+    Selection,
+    /// The cursor's row: the row hover ground at [`CURSOR_GROUND_OPACITY`].
+    Cursor,
+    /// The row under the pointer: the row hover ground, whole.
+    Hover,
+    /// The zebra stripe of an odd row.
+    Stripe,
+    /// Nothing painted: an even row with no other claim on it.
+    Plain,
+}
+
+/// The cell cursor's marks as one frame of a table drew them.
+///
+/// Each mark is recorded where it is painted, with the stroke or fill it was
+/// painted in, so a criterion reads what the frame drew rather than what the
+/// cursor asked for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CursorDrawn {
+    /// The cell the cursor is on.
+    pub at: GridCursor,
+    /// The name of the cursor's column, or `None` where the table has no
+    /// column at that index.
+    pub column: Option<String>,
+    /// The cursor cell's value as the grid writes it, or `None` where the
+    /// cell is outside the rows the source holds.
+    pub value: Option<String>,
+    /// The cursor cell's rect and the stroke its ring was drawn in, or `None`
+    /// where the cell was not among the cells drawn this frame.
+    pub ring: Option<(egui::Rect, egui::Stroke)>,
+    /// The strip along the foot of the cursor column's header and the fill it
+    /// was drawn in, or `None` where that header was not drawn.
+    pub header_foot: Option<(egui::Rect, egui::Color32)>,
+    /// The rows, other than the cursor's own, whose cell in the cursor's column
+    /// took the ground — the column's half of the cross.
+    pub column_ground: Vec<u64>,
+    /// The ground the cursor's row and column were drawn on.
+    pub ground: egui::Color32,
+}
+
+/// The width of the ring around the cursor's cell, in logical points.
+pub const CURSOR_RING_WIDTH: f32 = 1.5;
+
+/// The height of the focus ink along the foot of the cursor column's header,
+/// in logical points.
+pub const CURSOR_FOOT_HEIGHT: f32 = 2.0;
+
+/// The opacity the row hover ground is drawn at under the cursor's row and
+/// down its column, so the cursor's cross reads quieter than the row under the
+/// pointer.
+pub const CURSOR_GROUND_OPACITY: f32 = 0.7;
+
+/// The ground the cursor's row and column stand on, in `mode`.
+fn cursor_ground(mode: Mode) -> egui::Color32 {
+    let sem = semantic(mode.is_dark());
+    chrome::colour(sem.rows.hover_background).gamma_multiply(CURSOR_GROUND_OPACITY)
+}
+
+/// The focus ink, in `mode` — the cursor's ring and its header's foot.
+fn focus_ink(mode: Mode) -> egui::Color32 {
+    chrome::colour(semantic(mode.is_dark()).borders.focus)
+}
+
 /// How far inside its clip a header cell may fall and still count as whole,
 /// in logical points. The scroll area's own rounding, not a tolerance for a
 /// column that is really cut off: a half-point is a hairline and a clipped
@@ -433,7 +600,16 @@ pub fn show_table(
     widths: ColumnWidths,
     header: HeaderStyle<'_>,
 ) -> TableDrawn {
-    show_table_sized(ui, salt, mode, source, widths, header, &SetWidths::new())
+    show_table_sized(
+        ui,
+        salt,
+        mode,
+        source,
+        widths,
+        header,
+        &SetWidths::new(),
+        None,
+    )
 }
 
 /// The widths a reader has dragged columns to, by column name — what a column
@@ -443,6 +619,12 @@ pub type SetWidths = std::collections::BTreeMap<String, f32>;
 /// [`show_table`], with the widths a reader has set standing in for the natural
 /// width of the columns they name. [`ColumnWidths::Natural`] reads `set`; a
 /// declared table ignores it and is resized by `egui_table`'s own handle.
+///
+/// And with the cell cursor `cursor`, where the caller has one: its cell
+/// ringed, its row and column on a quiet ground, its column's header with the
+/// focus ink along its foot, and a press on a cell reported back as
+/// [`TableDrawn::pressed`]. `None` draws none of it.
+#[allow(clippy::too_many_arguments)]
 pub fn show_table_sized(
     ui: &mut egui::Ui,
     salt: &str,
@@ -451,6 +633,7 @@ pub fn show_table_sized(
     widths: ColumnWidths,
     header: HeaderStyle<'_>,
     set: &SetWidths,
+    cursor: Option<TableCursor>,
 ) -> TableDrawn {
     let binding = control::binding(spacing::ROW_DENSE);
     let frame = header.frame(mode);
@@ -508,12 +691,14 @@ pub fn show_table_sized(
             })
             .collect(),
     };
+    let at = cursor.and_then(|c| c.at);
     let mut delegate = MeridianTableDelegate {
         source,
         mode,
         binding,
         header,
         frame,
+        pointable: cursor.is_some(),
         drawn: TableDrawn {
             header_cells: Vec::new(),
             columns: num_columns,
@@ -521,17 +706,50 @@ pub fn show_table_sized(
             header_height,
             band: Vec::new(),
             row_cells: Vec::new(),
+            row_grounds: std::collections::BTreeMap::new(),
+            cursor: at.map(|at| CursorDrawn {
+                at,
+                column: None,
+                value: None,
+                ring: None,
+                header_foot: None,
+                column_ground: Vec::new(),
+                ground: cursor_ground(mode),
+            }),
+            pressed: None,
         },
     };
-    let _ = egui_table::Table::new()
+    let mut table = egui_table::Table::new()
         .id_salt(salt)
         .num_rows(num_rows)
         .headers([egui_table::HeaderRow::new(header_height)])
-        .columns(columns)
-        .show(ui, &mut delegate);
+        .columns(columns);
+    // Scrolled only on the frame a key moved the cursor, and only as far as
+    // brings its cell into view: a table told to scroll to the cursor on every
+    // frame could not be scrolled away from it with the wheel.
+    if let (Some(at), true) = (at, cursor.is_some_and(|c| c.reveal)) {
+        table = table
+            .scroll_to_row(at.row, None)
+            .scroll_to_column(at.col, None);
+    }
+    let _ = table.show(ui, &mut delegate);
     delegate.drawn.header_cells = widest_per_column(&delegate.drawn.header_cells);
     delegate.drawn.band = widest_band_per_column(&delegate.drawn.band);
     delegate.drawn.row_cells = most_visible_per_row(&delegate.drawn.row_cells);
+    // The cursor's column and value, read off the source rather than off the
+    // cell the table drew: a cursor scrolled out of view still has an
+    // address, and the source answers for the rows it holds either way.
+    if let Some(drawn) = delegate.drawn.cursor.as_mut() {
+        drawn.column = delegate
+            .source
+            .columns()
+            .get(drawn.at.col)
+            .map(|c| c.name.clone());
+        drawn.value = delegate
+            .source
+            .cell_text(drawn.at.row, drawn.at.col)
+            .map(|c| c.text);
+    }
     delegate.drawn
 }
 
@@ -676,11 +894,19 @@ struct MeridianTableDelegate<'a> {
     /// band cannot answer a token differently. `None` under
     /// [`HeaderStyle::Plain`].
     frame: Option<ColumnHeaderFrame>,
+    /// Whether a press on a cell is taken as the cursor's — true for a table
+    /// drawn with a [`TableCursor`].
+    pointable: bool,
     /// What this frame laid out, filled in as the header cells draw.
     drawn: TableDrawn,
 }
 
 impl MeridianTableDelegate<'_> {
+    /// The cell the cursor is on, if this table draws one.
+    fn cursor_at(&self) -> Option<GridCursor> {
+        self.drawn.cursor.as_ref().map(|c| c.at)
+    }
+
     /// Lay one cell out: leading pad, vertical centre, and right alignment for
     /// numerics — magnitude alignment, per the density guideline, with no
     /// monospace anywhere near it.
@@ -708,6 +934,106 @@ impl egui_table::TableDelegate for MeridianTableDelegate<'_> {
     }
 
     fn header_cell_ui(&mut self, ui: &mut egui::Ui, cell: &egui_table::HeaderCellInfo) {
+        self.header_content(ui, cell);
+        // The cursor column's header carries the focus ink along its foot,
+        // painted after the content so the band's own fill cannot cover it.
+        if self.cursor_at().map(|c| c.col) == Some(cell.col_range.start) {
+            let rect = ui.max_rect();
+            let foot = egui::Rect::from_min_max(
+                egui::pos2(rect.left(), rect.bottom() - CURSOR_FOOT_HEIGHT),
+                rect.right_bottom(),
+            );
+            let ink = focus_ink(self.mode);
+            ui.painter().rect_filled(foot, 0.0, ink);
+            if let Some(drawn) = self.drawn.cursor.as_mut() {
+                drawn.header_foot = Some((foot, ink));
+            }
+        }
+    }
+
+    fn row_ui(&mut self, ui: &mut egui::Ui, row_nr: u64) {
+        // The full-width underlays, painted before any cell draws over them:
+        // the one selection wash for the selected row, the cursor's quiet
+        // ground on its row, the hover fill under the pointer, a zebra stripe
+        // otherwise. The selected row keeps its wash under the cursor and
+        // under the pointer, as a picked row keeps its mark; the cursor's row
+        // keeps its ground under the pointer, so the row the pointer is on is
+        // drawn apart from the row the cursor is on. A striped row under the
+        // pointer takes the hover fill in place of its stripe.
+        // The retired egui::Grid had to reserve a wash slot and fill it after
+        // layout because a grid row's width is unknown until its widest cell
+        // is measured; here the row rect is handed in whole.
+        let rect = ui.max_rect();
+        self.drawn.row_cells.push((row_nr, rect, ui.clip_rect()));
+        let sem = semantic(self.mode.is_dark());
+        let ground = if self.source.selected_row() == Some(row_nr) {
+            chrome::selection_wash(ui, rect, self.mode);
+            RowGround::Selection
+        } else if self.cursor_at().map(|c| c.row) == Some(row_nr) {
+            ui.painter()
+                .rect_filled(rect, 0.0, cursor_ground(self.mode));
+            RowGround::Cursor
+        } else if ui.rect_contains_pointer(rect) {
+            ui.painter()
+                .rect_filled(rect, 0.0, chrome::colour(sem.rows.hover_background));
+            RowGround::Hover
+        } else if row_nr % 2 == 1 {
+            ui.painter()
+                .rect_filled(rect, 0.0, ui.visuals().faint_bg_color);
+            RowGround::Stripe
+        } else {
+            RowGround::Plain
+        };
+        self.drawn.row_grounds.insert(row_nr, ground);
+    }
+
+    fn cell_ui(&mut self, ui: &mut egui::Ui, cell: &egui_table::CellInfo) {
+        let rect = ui.max_rect();
+        let here = GridCursor {
+            row: cell.row_nr,
+            col: cell.col_nr,
+        };
+        if self.pointable
+            && ui
+                .interact(rect, ui.id().with("cell-press"), egui::Sense::click())
+                .clicked()
+        {
+            self.drawn.pressed = Some(here);
+        }
+        let at = self.cursor_at();
+        // The column's half of the cross: the cursor column's cell on the quiet
+        // ground, in every row but the cursor's own, which its row's ground
+        // already covers, and a selected row, which keeps its wash.
+        if let Some(at) = at {
+            if at.col == cell.col_nr
+                && at.row != cell.row_nr
+                && self.source.selected_row() != Some(cell.row_nr)
+            {
+                let ground = cursor_ground(self.mode);
+                ui.painter().rect_filled(rect, 0.0, ground);
+                if let Some(drawn) = self.drawn.cursor.as_mut() {
+                    drawn.column_ground.push(cell.row_nr);
+                }
+            }
+        }
+        self.cell_content(ui, cell);
+        // The ring, last, so it is drawn over the cell's ground, the selection
+        // wash and the value alike.
+        if at == Some(here) {
+            let stroke = egui::Stroke::new(CURSOR_RING_WIDTH, focus_ink(self.mode));
+            ui.painter()
+                .rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Inside);
+            if let Some(drawn) = self.drawn.cursor.as_mut() {
+                drawn.ring = Some((rect, stroke));
+            }
+        }
+    }
+}
+
+impl MeridianTableDelegate<'_> {
+    /// A header cell's content: the band, where this table has one, or the
+    /// column's name.
+    fn header_content(&mut self, ui: &mut egui::Ui, cell: &egui_table::HeaderCellInfo) {
         // The cell's own box and the clip it is drawn under, recorded before
         // the paint below: `egui_table` hands each header cell the rect the
         // column occupies and shrinks the clip to what survives the scroll, so
@@ -748,30 +1074,8 @@ impl egui_table::TableDelegate for MeridianTableDelegate<'_> {
         });
     }
 
-    fn row_ui(&mut self, ui: &mut egui::Ui, row_nr: u64) {
-        // The full-width underlays, painted before any cell draws over them:
-        // the one selection wash for the cursor row, the hover fill under the
-        // pointer, a zebra stripe otherwise. The cursor row keeps its wash
-        // under the pointer, as a picked row keeps its mark; a striped row
-        // under the pointer takes the hover fill in place of its stripe.
-        // The retired egui::Grid had to reserve a wash slot and fill it after
-        // layout because a grid row's width is unknown until its widest cell
-        // is measured; here the row rect is handed in whole.
-        let rect = ui.max_rect();
-        self.drawn.row_cells.push((row_nr, rect, ui.clip_rect()));
-        if self.source.selected_row() == Some(row_nr) {
-            chrome::selection_wash(ui, rect, self.mode);
-        } else if ui.rect_contains_pointer(rect) {
-            let sem = semantic(self.mode.is_dark());
-            ui.painter()
-                .rect_filled(rect, 0.0, chrome::colour(sem.rows.hover_background));
-        } else if row_nr % 2 == 1 {
-            ui.painter()
-                .rect_filled(rect, 0.0, ui.visuals().faint_bg_color);
-        }
-    }
-
-    fn cell_ui(&mut self, ui: &mut egui::Ui, cell: &egui_table::CellInfo) {
+    /// A data cell's content: its value, in the ink the source gives it.
+    fn cell_content(&self, ui: &mut egui::Ui, cell: &egui_table::CellInfo) {
         let Some(column) = self.source.columns().get(cell.col_nr) else {
             return;
         };
@@ -1397,7 +1701,7 @@ impl Item<ChartDoc> for DataGridItem {
     /// a state the record cannot vouch for stops the rows being fetched.
     /// Dropping the rail entry costs the grid nothing it was telling anyone.
     fn describe(&self, _doc: &ChartDoc) -> Subject {
-        Subject::new("Data", ICON_DATA, BindingContext::Workspace)
+        Subject::new("Data", ICON_DATA, BindingContext::Grid)
     }
 
     fn ui(&mut self, doc: &mut ChartDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
@@ -1482,6 +1786,13 @@ impl Item<ChartDoc> for DataGridItem {
             },
             _ => HeaderStyle::Plain,
         };
+        // The cursor, read off the document before the session borrows it.
+        // A key's move asks for one scroll to the cursor's cell, and this draw
+        // is where it is spent.
+        let cursor = TableCursor {
+            at: doc.grid_cursor,
+            reveal: std::mem::take(&mut doc.grid_cursor_reveal),
+        };
         doc.activity.begin(Activity::EngineQuery);
         let mut drawn = None;
         let mut names = Vec::new();
@@ -1503,6 +1814,7 @@ impl Item<ChartDoc> for DataGridItem {
                         ColumnWidths::Natural,
                         header,
                         set,
+                        Some(cursor),
                     )
                 })
                 .inner,
@@ -1518,6 +1830,23 @@ impl Item<ChartDoc> for DataGridItem {
                 self.widths_over.clone_from(&names);
             }
             drag_column_edges(ui, drawn, &names, &mut self.set_widths, mode);
+            // A press on a cell puts the cursor there and gives the grid the
+            // keyboard. The ring draws from the next frame, which the repaint
+            // asks for.
+            if let Some(cell) = drawn.pressed {
+                doc.grid_cursor = Some(cell);
+                cx.take_focus();
+                cx.request_repaint();
+            }
+            // A table that has narrowed under the cursor — a brush, a smaller
+            // result — keeps the cursor on its last row or column rather than
+            // on a cell it no longer has.
+            if let Some(at) = doc.grid_cursor.as_mut() {
+                if drawn.rows > 0 && drawn.columns > 0 {
+                    at.row = at.row.min(drawn.rows - 1);
+                    at.col = at.col.min(drawn.columns - 1);
+                }
+            }
         }
         // What the frame laid out, back on the document: the frame around this
         // pane draws the readout that says how much of the table is on screen,
