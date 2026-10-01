@@ -408,11 +408,11 @@ fn the_fixtures_columns_take_the_scheme_by_the_type_the_engine_profiled_them_as(
 /// scheme over no ramp or draws a ramp and names none.
 ///
 /// **The timestamp column is left out, and that is a disagreement and not an
-/// oversight.** The shelf names a scheme for `logged_at` (the card's sixth
-/// criterion lists the microsecond timestamp, and the renderer's number reader
-/// reads it) and a page loaded from that edit draws no ramp for it: the
-/// column's `Time` scale is not one `augment_fill_ramp` replaces. Measured
-/// by putting `logged_at` in the loop below, which ends this test at it.
+/// oversight.** The shelf names a scheme for `logged_at` (its type list names
+/// the microsecond timestamp, which the renderer's number reader reads) and a
+/// page loaded from that edit draws no ramp for it: the column's `Time` scale
+/// is not one `augment_fill_ramp` replaces. Measured by putting `logged_at` in
+/// the loop below, which ends this test at it.
 #[test]
 fn a_column_names_the_scheme_when_the_page_loaded_from_the_edit_draws_it_as_a_ramp() {
     let o = open("page");
