@@ -7367,7 +7367,7 @@ fn grid_cursor_status_entry(doc: &ChartDoc) -> Option<StatusEntry> {
     })
 }
 
-/// The stable id [`grid_cursor_status_entry`] writes — the handle a test reads
+/// The stable id `grid_cursor_status_entry` writes — the handle a test reads
 /// the cursor's address by.
 pub const GRID_CURSOR_STATUS_ID: &str = "grid-cursor";
 
