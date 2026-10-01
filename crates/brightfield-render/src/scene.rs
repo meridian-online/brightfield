@@ -2,7 +2,7 @@
 //! into a single vello::Scene.
 
 use arrow::record_batch::RecordBatch;
-use brightfield_spec::layout::{AxisEnds, GridLines, TickCounts, TickFormats};
+use brightfield_spec::layout::{AxisEnds, AxisReverse, GridLines, TickCounts, TickFormats};
 use kurbo::{Affine, BezPath, Circle, Rect, RoundedRect, Stroke};
 use peniko::Fill;
 use vello::Scene;
@@ -536,6 +536,7 @@ pub fn build_multi_mark_scene_with_domains(
         TickFormats::default(),
         GridLines::default(),
         AxisEnds::default(),
+        AxisReverse::default(),
         ink,
     )
 }
@@ -544,8 +545,9 @@ pub fn build_multi_mark_scene_with_domains(
 /// plot's spec asked to hold still — see [`PinnedDomains`] — the target
 /// tick count and tick format each positional axis asked for — see
 /// [`TickCounts`] and [`TickFormats`] — whether each axis draws its
-/// gridlines — see [`GridLines`] — and whether each axis is carried to zero or
-/// to round ends — see [`AxisEnds`].
+/// gridlines — see [`GridLines`] — whether each axis is carried to zero or to
+/// round ends — see [`AxisEnds`] — and whether each axis runs from high to low
+/// — see [`AxisReverse`].
 ///
 /// The pin lands AFTER inference and after [`apply_unsampled_domains`], so the
 /// author's instruction outranks both what the drawn rows imply and what a
@@ -564,6 +566,12 @@ pub fn build_multi_mark_scene_with_domains(
 /// so a fixed domain is held with its ends already carried, and applying the
 /// same ends to it again leaves it as it is.
 ///
+/// `axis_reverse` lands last, on the scales the ends and the pin have settled:
+/// it moves where the domain lands on the screen and no value in it, so a pin
+/// captured from the scales this function returns holds the same domain
+/// whichever way the axis runs, and a plot composed again starts from a fresh
+/// inference and reverses it again.
+///
 /// An empty `pins` reproduces [`build_multi_mark_scene_with_domains`] scale for
 /// scale — [`apply_pinned_domains`] writes nothing without a pin to write.
 ///
@@ -571,11 +579,11 @@ pub fn build_multi_mark_scene_with_domains(
 /// parameter existed — see [`brightfield_spec::layout::DEFAULT_TICK_COUNT`] —
 /// a default `tick_formats` draws the text they drew, and a default `grid`
 /// draws the gridlines on both axes, as they drew.
-// Ten, because the static composition takes ten independent inputs: the
+// Eleven, because the static composition takes eleven independent inputs: the
 // entries, whether the legend is drawn inline, the resolved titles, the two
 // ways a domain is held still (unsampled and pinned), the tick count and tick
 // format the axes asked for, whether each axis draws gridlines, where each axis
-// starts and ends, and the ink.
+// starts and ends, which way each axis runs, and the ink.
 // Each is resolved elsewhere and read here once, so a struct would be a name
 // for the argument list rather than for a thing.
 #[allow(clippy::too_many_arguments)]
@@ -589,6 +597,7 @@ pub fn build_multi_mark_scene_pinned(
     tick_formats: TickFormats,
     grid: GridLines,
     axis_ends: AxisEnds,
+    axis_reverse: AxisReverse,
     ink: ChartInk,
 ) -> (Scene, ScaleSet) {
     if entries.is_empty() {
@@ -601,6 +610,7 @@ pub fn build_multi_mark_scene_pinned(
     );
     apply_pinned_domains(&mut scales, &pins_yielding_to_navigation(pins, entries[0]));
     apply_axis_ends(&mut scales, axis_ends, tick_counts, entries[0]);
+    apply_axis_reverse(&mut scales, axis_reverse);
     let scene = draw_multi_mark_scene(
         entries,
         draw_inline_legend,
@@ -611,6 +621,36 @@ pub fn build_multi_mark_scene_pinned(
         &scales,
     );
     (scene, scales)
+}
+
+/// Run each positional axis from its high end to its low end, as the plot's
+/// spec asked — `xReverse` and `yReverse`.
+///
+/// The scale's pixel range is swapped ([`Scale::reversed`]) and the domain is
+/// left alone. The marks, ticks, gridlines and hover reads, and the brush's
+/// inverse, take the scale as it stands in the set this returns, so the
+/// reversal is made in this one place. An axis the reader has navigated stays
+/// reversed, since a pan or a zoom picks which values the axis covers and not
+/// which way it runs.
+///
+/// A plot with a map projection is left as it is. Its x and y are the
+/// projection's planar units, which Observable Plot does not offer a scale
+/// option on, and the graticule and the brush's second inversion read the
+/// projection against the pixel range.
+fn apply_axis_reverse(scales: &mut ScaleSet, reverse: AxisReverse) {
+    if reverse.is_empty() || scales.projection().is_some() {
+        return;
+    }
+    for (channel, on) in [(Channel::X, reverse.x), (Channel::Y, reverse.y)] {
+        if !on {
+            continue;
+        }
+        let Some(scale) = scales.get(channel) else {
+            continue;
+        };
+        let flipped = scale.reversed();
+        scales.insert(channel, flipped);
+    }
 }
 
 /// Carry each linear positional axis to zero, then to round ends, as the plot's
@@ -1137,14 +1177,15 @@ fn draw_multi_mark_scene(
 /// Draws at [`brightfield_spec::layout::DEFAULT_TICK_COUNT`], in the axis's own
 /// tick text, with gridlines on both axes — like [`PinnedDomains`], a plot's
 /// `xTicks`/`yTicks`, `xTickFormat`/`yTickFormat`, `grid`/`xGrid`/`yGrid` and
-/// `xZero`/`xNice`/`yZero`/`yNice` requests reach the static composition
-/// [`build_multi_mark_scene_pinned`] draws
+/// `xZero`/`xNice`/`yZero`/`yNice` and `xReverse`/`yReverse` requests reach the
+/// static composition [`build_multi_mark_scene_pinned`] draws
 /// (`crates/brightfield-shell/src/pipeline.rs`), not this live rebuild path;
 /// the caller does not carry the request to hand in. The launch set it folds
 /// against is the live coordinator's own, inferred by
 /// [`build_multi_mark_scene`] without the request
 /// (`crates/brightfield-ui/src/crossfilter.rs`), so after a gesture an axis that
-/// asked for zero or round ends is drawn at the data's own.
+/// asked for zero or round ends is drawn at the data's own, and one that asked
+/// to run from high to low runs the default way.
 pub fn build_multi_mark_scene_anchored(
     entries: &[&ChartData<'_>],
     draw_inline_legend: bool,
@@ -2404,6 +2445,7 @@ mod tests {
                 TickFormats::default(),
                 GridLines::default(),
                 AxisEnds::default(),
+                AxisReverse::default(),
                 ChartInk::LIGHT,
             );
             for channel in [Channel::X, Channel::Y] {
@@ -2518,6 +2560,7 @@ mod tests {
                 TickFormats::default(),
                 grid,
                 AxisEnds::default(),
+                AxisReverse::default(),
                 ChartInk::LIGHT,
             )
         };

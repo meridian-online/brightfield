@@ -470,6 +470,20 @@ pub enum ParseWarning {
         attribute: String,
     },
 
+    /// A plot-level axis-reverse attribute (`xReverse`, `yReverse`) carried a
+    /// value that is neither a literal `true` nor a literal `false`: a string, a
+    /// number, `null`, a list. This build reads no other value at these keys, so
+    /// the key is ignored and the axis runs the way it does without it. This
+    /// names the key so an author sees the typo rather than silently losing the
+    /// setting.
+    ///
+    /// [`crate::layout::axis_reverse_switch`] is the sole judge of what a switch
+    /// is, so a form a later build reads narrows this warning in the same edit.
+    InvalidAxisReverseSwitch {
+        /// The offending attribute key.
+        attribute: String,
+    },
+
     /// A plot-level tick-format attribute (`xTickFormat`, `yTickFormat`) carried
     /// a value that is neither a d3-format number specifier nor a d3-time-format
     /// date specifier: `~~`, `.f`, a number, a list. The axis degrades to its
@@ -792,6 +806,10 @@ impl fmt::Display for ParseWarning {
                 f,
                 "plot attribute `{attribute}` is not `true` or `false` — the key is ignored and the axis starts and ends as it does without it"
             ),
+            Self::InvalidAxisReverseSwitch { attribute } => write!(
+                f,
+                "plot attribute `{attribute}` is not `true` or `false` — the key is ignored and the axis runs the way it does without it"
+            ),
             Self::InvalidTickFormat { attribute, value } => write!(
                 f,
                 "plot attribute `{attribute}` is `{value}`, which is neither a number format nor a date format — ticks draw their default text"
@@ -1078,6 +1096,16 @@ impl Walker {
                             .is_some_and(|v| !is_axis_end_switch_or_deferred(v))
                         {
                             self.warnings.push(ParseWarning::InvalidAxisEndSwitch {
+                                attribute: key.to_string(),
+                            });
+                        }
+                    }
+                    for key in PLOT_AXIS_REVERSE_KEYS {
+                        if defaults
+                            .get(key)
+                            .is_some_and(|v| !is_axis_reverse_switch_or_deferred(v))
+                        {
+                            self.warnings.push(ParseWarning::InvalidAxisReverseSwitch {
                                 attribute: key.to_string(),
                             });
                         }
@@ -1517,6 +1545,17 @@ impl Walker {
             if PLOT_AXIS_END_KEYS.contains(&key.as_str()) && !is_axis_end_switch_or_deferred(&value)
             {
                 self.warnings.push(ParseWarning::InvalidAxisEndSwitch {
+                    attribute: key.clone(),
+                });
+            }
+            // A plot-level axis-reverse attribute (`xReverse`, `yReverse`) that
+            // is no literal `true` or `false` is ignored and the axis runs the
+            // way it does without it; name it so the author sees the typo. A
+            // lifted `$param` is a recorded deferral, not a typo — don't warn.
+            if PLOT_AXIS_REVERSE_KEYS.contains(&key.as_str())
+                && !is_axis_reverse_switch_or_deferred(&value)
+            {
+                self.warnings.push(ParseWarning::InvalidAxisReverseSwitch {
                     attribute: key.clone(),
                 });
             }
@@ -2498,6 +2537,10 @@ const PLOT_GRID_KEYS: [&str; 3] = ["grid", "xGrid", "yGrid"];
 /// axis's own `Zero` and `Nice` key.
 const PLOT_AXIS_END_KEYS: [&str; 4] = ["xZero", "xNice", "yZero", "yNice"];
 
+/// The plot attributes that run an axis from high to low: each axis's own
+/// `Reverse` key.
+const PLOT_AXIS_REVERSE_KEYS: [&str; 2] = ["xReverse", "yReverse"];
+
 /// A tick-format value as [`ParseWarning::InvalidTickFormat`] shows it: what
 /// the author wrote, where it can be written on one line.
 fn tick_format_text(value: &SpecValue) -> String {
@@ -2535,6 +2578,15 @@ fn is_grid_switch_or_deferred(value: &SpecValue) -> bool {
 /// the warning names.
 fn is_axis_end_switch_or_deferred(value: &SpecValue) -> bool {
     matches!(value, SpecValue::Param(_)) || crate::layout::axis_end_switch(value).is_some()
+}
+
+/// Whether an `xReverse` / `yReverse` value is one
+/// [`ParseWarning::InvalidAxisReverseSwitch`] should stay silent about: a
+/// switch, as [`crate::layout::axis_reverse_switch`] judges it, or a lifted
+/// `$param`, a recorded deferral rather than a typo. Anything else is the
+/// malformed case the warning names.
+fn is_axis_reverse_switch_or_deferred(value: &SpecValue) -> bool {
+    matches!(value, SpecValue::Param(_)) || crate::layout::axis_reverse_switch(value).is_some()
 }
 
 /// Column names per inline data source, keyed by the `data:` entry's name.
@@ -3719,6 +3771,85 @@ plot:
         let good = parse_spec(&two_plots("yNice: true"), Format::Yaml).expect("parses");
         assert!(
             axis_end_switch_warnings(&good).is_empty(),
+            "a valid default must not warn; got {:?}",
+            good.warnings
+        );
+    }
+
+    fn axis_reverse_switch_warnings(out: &ParseOutput) -> Vec<&str> {
+        out.warnings
+            .iter()
+            .filter_map(|w| match w {
+                ParseWarning::InvalidAxisReverseSwitch { attribute } => Some(attribute.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// An axis-reverse attribute that is no literal `true` or `false` is ignored
+    /// by the resolver and named by the parser, so a plot that meant to flip its
+    /// axis and wrote `"yes"` hears that the key was dropped. A literal switch
+    /// and a lifted `$param` stay silent.
+    #[test]
+    fn an_invalid_axis_reverse_switch_warns_but_a_switch_and_a_param_stay_silent() {
+        let spec = |attr: &str| {
+            format!(
+                "params:\n  z: true\ndata:\n  t:\n    - {{ x: 1, y: 2 }}\nplot:\n  - {{ mark: dot, data: {{ from: t }}, x: x, y: y }}\n{attr}\n"
+            )
+        };
+        for (attr, key) in [
+            ("yReverse: 'yes'", "yReverse"),
+            ("xReverse: 1", "xReverse"),
+            ("yReverse: null", "yReverse"),
+            ("xReverse: [1, 2]", "xReverse"),
+        ] {
+            let out = parse_spec(&spec(attr), Format::Yaml).expect("parses despite a bad switch");
+            assert_eq!(
+                axis_reverse_switch_warnings(&out),
+                vec![key],
+                "`{attr}` must warn once, naming `{key}`; got {:?}",
+                out.warnings
+            );
+        }
+        for silent in [
+            "yReverse: true",
+            "yReverse: false",
+            "xReverse: true",
+            "xReverse: false",
+            "yReverse: $z",
+        ] {
+            let out = parse_spec(&spec(silent), Format::Yaml).expect("parses");
+            assert!(
+                axis_reverse_switch_warnings(&out).is_empty(),
+                "`{silent}` must not warn; got {:?}",
+                out.warnings
+            );
+        }
+    }
+
+    /// A malformed axis-reverse switch under `plotDefaults` is named once, where
+    /// it is declared, however many plots inherit it — the same reasoning as
+    /// [`a_bad_plot_defaults_axis_end_switch_warns_once_however_many_plots_inherit_it`].
+    #[test]
+    fn a_bad_plot_defaults_axis_reverse_switch_warns_once_however_many_plots_inherit_it() {
+        let two_plots = |defaults: &str| {
+            format!(
+                "data:\n  t:\n    - {{ x: 1, y: 2 }}\nplotDefaults:\n  {defaults}\nvconcat:\n  \
+                 - plot:\n      - {{ mark: dot, data: {{ from: t }}, x: x, y: y }}\n  \
+                 - plot:\n      - {{ mark: dot, data: {{ from: t }}, x: x, y: y }}\n"
+            )
+        };
+        let bad = parse_spec(&two_plots("yReverse: 'yes'"), Format::Yaml).expect("parses");
+        assert_eq!(
+            axis_reverse_switch_warnings(&bad),
+            vec!["yReverse"],
+            "one InvalidAxisReverseSwitch for the one default; got {:?}",
+            bad.warnings
+        );
+
+        let good = parse_spec(&two_plots("yReverse: true"), Format::Yaml).expect("parses");
+        assert!(
+            axis_reverse_switch_warnings(&good).is_empty(),
             "a valid default must not warn; got {:?}",
             good.warnings
         );

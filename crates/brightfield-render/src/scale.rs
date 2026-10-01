@@ -425,6 +425,83 @@ impl Scale {
             Self::Colour { .. } | Self::Sequential { .. } => 0.0,
         }
     }
+
+    /// This scale with its pixel range run the other way: the domain's low end
+    /// lands where its high end did, and the other way about. The domain is
+    /// untouched, so what the axis covers is what it covered.
+    ///
+    /// A band scale's categories keep their order and take the slots from the
+    /// far end, which is what swapping the range does to a band: the first
+    /// category sits where the last did. The marks, ticks, gridlines and brush
+    /// that read a scale's range take it as a signed pair, because the y range
+    /// already runs from the bottom edge to the top (see
+    /// `ChartLayout::y_range`), so a reversed scale needs no case of its own in
+    /// them. The shell's `tests/axis_vocabulary_reverse.rs` holds that for dots,
+    /// bars, tick marks and the brush.
+    ///
+    /// A colour or sequential scale has no pixel range and is returned as it
+    /// is.
+    #[must_use]
+    pub fn reversed(&self) -> Self {
+        match self.clone() {
+            Self::Linear {
+                domain_min,
+                domain_max,
+                range_start,
+                range_end,
+            } => Self::Linear {
+                domain_min,
+                domain_max,
+                range_start: range_end,
+                range_end: range_start,
+            },
+            Self::Log {
+                domain_min,
+                domain_max,
+                range_start,
+                range_end,
+            } => Self::Log {
+                domain_min,
+                domain_max,
+                range_start: range_end,
+                range_end: range_start,
+            },
+            Self::Symlog {
+                domain_min,
+                domain_max,
+                range_start,
+                range_end,
+            } => Self::Symlog {
+                domain_min,
+                domain_max,
+                range_start: range_end,
+                range_end: range_start,
+            },
+            Self::Band {
+                categories,
+                range_start,
+                range_end,
+                padding,
+            } => Self::Band {
+                categories,
+                range_start: range_end,
+                range_end: range_start,
+                padding,
+            },
+            Self::Time {
+                domain_min_us,
+                domain_max_us,
+                range_start,
+                range_end,
+            } => Self::Time {
+                domain_min_us,
+                domain_max_us,
+                range_start: range_end,
+                range_end: range_start,
+            },
+            other @ (Self::Colour { .. } | Self::Sequential { .. }) => other,
+        }
+    }
 }
 
 /// Optional override of data-inferred scale domains per axis.
@@ -3511,5 +3588,111 @@ mod tests {
                 "{text}"
             );
         }
+    }
+
+    /// **A reversed scale puts every value where the mirror of its pixel range
+    /// puts it, and leaves the domain alone.** Linear, log, symlog and time
+    /// carry a signed range pair; a band's slots fall from the far end; a colour
+    /// ramp has no pixel range and is returned as it was. The mirror is taken
+    /// from the unreversed scale, so the check is not the swap read back.
+    #[test]
+    fn a_reversed_scale_mirrors_every_positional_value_and_keeps_its_domain() {
+        let (start, end) = (40.0, 540.0);
+        let positional = [
+            Scale::Linear {
+                domain_min: 2.0,
+                domain_max: 12.0,
+                range_start: start,
+                range_end: end,
+            },
+            Scale::Log {
+                domain_min: 1.0,
+                domain_max: 1000.0,
+                range_start: start,
+                range_end: end,
+            },
+            Scale::Symlog {
+                domain_min: -5.0,
+                domain_max: 50.0,
+                range_start: start,
+                range_end: end,
+            },
+            Scale::Time {
+                domain_min_us: 1_000_000,
+                domain_max_us: 9_000_000,
+                range_start: start,
+                range_end: end,
+            },
+        ];
+        for scale in positional {
+            let flipped = scale.reversed();
+            assert_eq!(
+                (flipped.domain_min(), flipped.domain_max()),
+                (scale.domain_min(), scale.domain_max()),
+                "the domain is the same: {scale:?}"
+            );
+            let (lo, hi) = (scale.domain_min().unwrap(), scale.domain_max().unwrap());
+            for t in [0.0, 0.1, 0.5, 0.75, 1.0] {
+                let value = lo + t * (hi - lo);
+                let mirror = start + end - scale.map_f64(value);
+                assert!(
+                    (flipped.map_f64(value) - mirror).abs() < 1e-6,
+                    "{value} lands at {} on {flipped:?}; the mirror of {} is {mirror}",
+                    flipped.map_f64(value),
+                    scale.map_f64(value)
+                );
+            }
+            assert!(
+                (flipped.map_f64(lo) - end).abs() < 1e-6
+                    && (flipped.map_f64(hi) - start).abs() < 1e-6,
+                "the lowest value is at the range's far end: {flipped:?}"
+            );
+            // Reversing twice is the scale it started as.
+            assert_eq!(
+                (
+                    flipped.reversed().range_start(),
+                    flipped.reversed().range_end()
+                ),
+                (scale.range_start(), scale.range_end())
+            );
+        }
+
+        let band = Scale::Band {
+            categories: vec!["a".into(), "b".into(), "c".into()],
+            range_start: start,
+            range_end: end,
+            padding: 0.2,
+        };
+        let flipped = band.reversed();
+        for name in ["a", "b", "c"] {
+            let mirror = start + end - band.map_category(name).unwrap();
+            assert!(
+                (flipped.map_category(name).unwrap() - mirror).abs() < 1e-6,
+                "{name} takes the mirrored slot"
+            );
+        }
+        assert!(
+            flipped.map_category("a").unwrap() > flipped.map_category("c").unwrap(),
+            "the first category is at the far end"
+        );
+        let Scale::Band { categories, .. } = &flipped else {
+            panic!("a band stays a band")
+        };
+        assert_eq!(
+            categories,
+            &["a", "b", "c"],
+            "the categories keep their order"
+        );
+
+        let ramp = Scale::Sequential {
+            domain_min: 0.0,
+            domain_max: 1.0,
+            stops: vec![[0.0, 0.0, 0.0, 1.0], [1.0, 1.0, 1.0, 1.0]],
+        };
+        assert_eq!(
+            format!("{:?}", ramp.reversed()),
+            format!("{ramp:?}"),
+            "a colour ramp has no pixel range to run the other way"
+        );
     }
 }
