@@ -1097,7 +1097,8 @@ fn main() -> Result<(), String> {
                 // dialog. The capture tiers build the same app without it.
                 app: MeridianApp::with_layout(boot, layout, chart_host, protocol_host, mode)
                     .allowing_dialogs()
-                    .running_with(brightfield_shell::run::Runner::this_binary()),
+                    .running_with(brightfield_shell::run::Runner::this_binary())
+                    .keeping_history(Some(brightfield_protocol::HistoryStore::Arcform)),
                 shot: ShotLatch::new(shot_out, shot_after, saved),
                 layout_path: path,
                 fit,

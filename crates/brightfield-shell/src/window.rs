@@ -2106,6 +2106,10 @@ pub struct MeridianApp {
     /// gives one — see [`crate::run::Runner`] for why a window does not assume
     /// the process it is in.
     runner: Option<crate::run::Runner>,
+    /// Where each Save of the chart records a version. `None` until
+    /// [`MeridianApp::keeping_history`] gives one, so a window built without it,
+    /// as a suite builds one, records no version — see [`brightfield_protocol::HistoryStore`].
+    history: Option<brightfield_protocol::HistoryStore>,
     /// The files the **open document's** remote sources were fetched into.
     ///
     /// Held for the life of the document rather than the life of the open: the
@@ -2491,6 +2495,7 @@ impl MeridianApp {
             fetching: None,
             running: None,
             runner: None,
+            history: None,
             remote_files: None,
             door_open_file: None,
             pick_requested: false,
@@ -3644,6 +3649,19 @@ impl MeridianApp {
     #[must_use]
     pub fn running_with(mut self, runner: Option<crate::run::Runner>) -> Self {
         self.runner = runner;
+        self
+    }
+
+    /// Give this window the store each Save of the chart records a version in.
+    ///
+    /// `main` passes [`brightfield_protocol::HistoryStore::Arcform`], arcform's
+    /// own store; a suite passes a root of its own, so no test writes under the
+    /// home directory. A window given `None` records no version and raises no
+    /// banner for it: the Save that says so is the one given a store it cannot
+    /// open — see [`Self::save_protocol`].
+    #[must_use]
+    pub fn keeping_history(mut self, history: Option<brightfield_protocol::HistoryStore>) -> Self {
+        self.history = history;
         self
     }
 
@@ -6349,9 +6367,33 @@ impl MeridianApp {
     /// writes the chart takes it down.
     fn save_chart_beside_protocol(&mut self, source: &crate::one_step::OneStepProtocol) {
         let banner = NotificationId::new("save-chart");
-        match self.charts.doc.save_chart_beside(&source.dir, &source.name) {
-            Ok(()) => {
+        let history_banner = NotificationId::new("save-history");
+        match self
+            .charts
+            .doc
+            .save_chart_beside(&source.dir, &source.name, self.history.as_ref())
+        {
+            Ok(not_recorded) => {
                 self.notifications.dismiss(banner);
+                // The chart was written either way; the history is the part
+                // that can fail, and it says so rather than staying quiet. A
+                // Save that recorded takes a failed one's banner down.
+                match not_recorded {
+                    None => {
+                        self.notifications.dismiss(history_banner);
+                    }
+                    Some(why) => {
+                        eprintln!("no version of the chart was recorded: {why}");
+                        self.notifications.raise(
+                            Notification::new(
+                                history_banner,
+                                Severity::Warning,
+                                "No version of this chart was recorded",
+                            )
+                            .body(format!("The chart was saved. {why}")),
+                        );
+                    }
+                }
             }
             Err(e) => {
                 eprintln!("could not save the chart: {e}");
