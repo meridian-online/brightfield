@@ -4826,14 +4826,11 @@ impl MeridianApp {
                             let inset =
                                 chrome::header_band_height() + 2.0 * chrome::pane_content_inset();
                             let toolbar = chart_toolbar_band(&charts.doc.composed);
-                            // The band the hero gave its head to is room the
-                            // hero's page is not composed in.
-                            let shelf = shelf_band_room(charts);
                             let (floor, content_h) = if transposed {
                                 let rows_room = rects.grid.height() - inset;
                                 (
                                     crate::dashboard::row_stack_extent(rows_room, tiles)
-                                        .max(rects.hero.height() - inset - toolbar - shelf),
+                                        .max(rects.hero.height() - inset - toolbar),
                                     rows_room,
                                 )
                             } else {
@@ -9086,16 +9083,6 @@ fn carve_shelf_band(
     charts.shelf.drawn = Some(band.show(&mut child, mode));
     charts.shelf.tile = title.to_string();
     egui::Rect::from_min_max(egui::pos2(body.left(), body.top() + height), body.max)
-}
-
-/// The height the hero pane gives its band this frame: [`BAND_HEIGHT`] where
-/// [`carve_shelf_band`] will draw one, and zero where it will not.
-fn shelf_band_room(charts: &ChartView) -> f32 {
-    if charts.shelf.enabled && hero_shelf_channels(&charts.doc).is_some() {
-        BAND_HEIGHT
-    } else {
-        0.0
-    }
 }
 
 /// What the hero's plot takes on the shelf's channels, read from the live spec

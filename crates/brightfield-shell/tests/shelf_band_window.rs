@@ -62,14 +62,21 @@ struct Window {
 impl Window {
     /// A window with the hero pane focused, the band drawn or switched off.
     fn open(band: bool) -> Self {
+        Self::open_at(band, 900.0)
+    }
+
+    /// [`Self::open`] in a window `height` points high.
+    fn open_at(band: bool, height: f32) -> Self {
         let path = housing();
         let boot = Boot::data_file(path.to_str().expect("utf-8 path")).expect("the sample opens");
         let mut win = Self {
             app: MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light),
             ctx: egui::Context::default(),
-            screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0)),
+            screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, height)),
         };
-        win.app.set_shelf_band_drawn(band);
+        if !band {
+            win.app.set_shelf_band_drawn(false);
+        }
         win.settle();
         assert!(
             win.app.focus_pane(PaneKey::new(CHART)),
@@ -107,6 +114,31 @@ impl Window {
     fn press(&mut self, key: egui::Key) {
         self.run(vec![key_down(key)]);
         self.run(Vec::new());
+    }
+
+    /// Throw the grid pane's layout switch to its columns state, by a click.
+    fn transpose(&mut self) {
+        let at = self
+            .app
+            .chart_doc()
+            .grid_layout_switch
+            .as_ref()
+            .expect("the grid pane drew a layout switch")
+            .states
+            .iter()
+            .find(|(state, _)| *state == brightfield_workbench::GridLayout::Columns)
+            .expect("the switch offers a columns state")
+            .1
+            .center();
+        self.run(vec![egui::Event::PointerMoved(at)]);
+        self.run(vec![button(at, true)]);
+        self.run(vec![button(at, false)]);
+        self.settle();
+        assert_eq!(
+            self.app.grid_layout(),
+            brightfield_workbench::GridLayout::Columns,
+            "the click did not throw the switch"
+        );
     }
 
     fn active(&self) -> Option<ShelfChannel> {
@@ -460,6 +492,49 @@ fn a_headless_capture_of_the_dashboard_draws_no_band() {
              the capture drew a band",
             matched,
             channel.word()
+        );
+    }
+}
+
+/// **AC3, with the grid transposed.** The rows pane is laid out as before and
+/// the page is composed at the same height with the band as without, in a
+/// window that is short, one that is as tall as the rows and one taller than
+/// them. The hero's own room is the one that gives up the band's 44.
+///
+/// The page's height is the taller of the rows' stack and the two panes' rooms,
+/// and the grid pane's room is the hero pane's, so the band takes nothing from
+/// it: a page floor that counted the band as added room would compose it 44
+/// taller in the window the rows leave room in.
+#[test]
+fn with_the_grid_transposed_the_rows_pane_and_the_page_are_as_before() {
+    for height in [900.0, 1500.0, 2200.0] {
+        let mut with = Window::open_at(true, height);
+        let mut without = Window::open_at(false, height);
+        with.transpose();
+        without.transpose();
+
+        let (a, b) = (
+            with.app.chart_doc().pane_views.as_ref().expect("views"),
+            without.app.chart_doc().pane_views.as_ref().expect("views"),
+        );
+        assert_eq!(
+            a.second, b.second,
+            "{height}: the rows pane is where it was"
+        );
+        assert_eq!(
+            a.first.height(),
+            b.first.height() - BAND_HEIGHT,
+            "{height}: the hero's room gives up the band's height"
+        );
+        assert_eq!(
+            with.app.canvas_panes().pane("grid"),
+            without.app.canvas_panes().pane("grid"),
+            "{height}: the grid pane is laid out as before"
+        );
+        assert_eq!(
+            with.app.chart_doc().composed.height,
+            without.app.chart_doc().composed.height,
+            "{height}: the page is composed at the height it was"
         );
     }
 }
