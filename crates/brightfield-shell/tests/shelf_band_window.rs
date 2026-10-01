@@ -12,7 +12,8 @@
 //! record, the panes' rects, the model the Outline reads its list from — and
 //! not a field a key wrote.
 
-use brightfield_shell::app::CHART;
+use brightfield_protocol::layout::Flow;
+use brightfield_shell::app::{PaneViews, CHART};
 use brightfield_shell::capture::capture_png;
 use brightfield_shell::data_grid::DATA;
 use brightfield_shell::design::Mode;
@@ -20,7 +21,7 @@ use brightfield_shell::navigation::AxisLock;
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, CanvasPane, MeridianApp};
 use brightfield_workbench::channel::{ShelfChannel, BAND_HEIGHT};
-use brightfield_workbench::PaneKey;
+use brightfield_workbench::{PaneKey, RunState};
 
 /// The housing sample every window criterion opens.
 fn housing() -> std::path::PathBuf {
@@ -69,8 +70,36 @@ impl Window {
     fn open_at(band: bool, height: f32) -> Self {
         let path = housing();
         let boot = Boot::data_file(path.to_str().expect("utf-8 path")).expect("the sample opens");
+        Self::settled_in(boot, default_layout(), band, height)
+    }
+
+    /// A window opened the way a relaunch opens over a document last left with
+    /// its grid in the ledger rail and transposed, `height` points high.
+    fn open_ledger_columns(band: bool, height: f32) -> Self {
+        let path = housing();
+        let chosen = path.to_str().expect("utf-8 path");
+        let mut layout = default_layout();
+        layout.remember(
+            chosen,
+            "Housing",
+            RunState::NeverRun,
+            brightfield_workbench::GridLayout::Columns,
+            brightfield_workbench::GridSpot::Ledger,
+            1_000,
+        );
+        let boot =
+            Boot::open_sampled(chosen, Flow::Vertical, None, None).expect("the sample opens");
+        Self::settled_in(boot, layout, band, height)
+    }
+
+    fn settled_in(
+        boot: Boot,
+        layout: brightfield_workbench::SavedLayout,
+        band: bool,
+        height: f32,
+    ) -> Self {
         let mut win = Self {
-            app: MeridianApp::headless_with_layout(boot, default_layout(), Mode::Light),
+            app: MeridianApp::headless_with_layout(boot, layout, Mode::Light),
             ctx: egui::Context::default(),
             screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, height)),
         };
@@ -148,6 +177,15 @@ impl Window {
     /// The channel the Outline's list is open on, if one is open.
     fn list_channel(&self) -> Option<ShelfChannel> {
         self.app.protocol_model().column_list().map(|l| l.channel())
+    }
+
+    /// The hero's plot as the frame drew it, in window space.
+    fn hero_plot(&self) -> egui::Rect {
+        *self
+            .app
+            .composed_plot_rects()
+            .first()
+            .expect("the dashboard drew its hero's plot")
     }
 
     fn map_pane(&self) -> CanvasPane {
@@ -496,15 +534,50 @@ fn a_headless_capture_of_the_dashboard_draws_no_band() {
     }
 }
 
+/// **The hero's plot as a frame drew it, against the pane's body**: the band
+/// took its height off the plot once, and the plot still reaches the foot of
+/// the body it was composed in.
+///
+/// The control is the window with no band, whose plot also stands flush with
+/// its body's foot, so a plot short of the foot with the band is the band's
+/// height taken a second time and not a plot that never reached it. The pane's
+/// own view is not what is read: a room taken twice leaves the view whole and
+/// the plot short.
+fn assert_the_hero_gives_up_the_band_once(label: &str, with: &Window, without: &Window) {
+    let (a, b) = (with.hero_plot(), without.hero_plot());
+    let (a_body, b_body) = (with.map_pane().body, without.map_pane().body);
+    assert!(
+        (b.bottom() - b_body.bottom()).abs() < 0.5,
+        "{label}: with no band the hero's plot {b:?} stands off the foot of its body {b_body:?}"
+    );
+    assert!(
+        (a.bottom() - a_body.bottom()).abs() < 0.5,
+        "{label}: with the band the hero's plot {a:?} ends {} points short of the foot of its \
+         body {a_body:?}",
+        a_body.bottom() - a.bottom()
+    );
+    assert!(
+        (b.height() - a.height() - BAND_HEIGHT).abs() < 0.5,
+        "{label}: the hero's plot is {} high with the band and {} without, so it gave up {} \
+         where the band is {BAND_HEIGHT}",
+        a.height(),
+        b.height(),
+        b.height() - a.height()
+    );
+}
+
 /// **AC3, with the grid transposed.** The rows pane is laid out as before and
 /// the page is composed at the same height with the band as without, in a
 /// window that is short, one that is as tall as the rows and one taller than
-/// them. The hero's own room is the one that gives up the band's 44.
+/// them. The hero's own room is the one that gives up the band's 44, and it
+/// gives it up once.
 ///
 /// The page's height is the taller of the rows' stack and the two panes' rooms,
 /// and the grid pane's room is the hero pane's, so the band takes nothing from
 /// it: a page floor that counted the band as added room would compose it 44
-/// taller in the window the rows leave room in.
+/// taller in the window the rows leave room in. The hero's plot is read off the
+/// composed rects, because the view the pane hands the document stays whole
+/// when the room is taken from it twice.
 #[test]
 fn with_the_grid_transposed_the_rows_pane_and_the_page_are_as_before() {
     for height in [900.0, 1500.0, 2200.0] {
@@ -536,5 +609,85 @@ fn with_the_grid_transposed_the_rows_pane_and_the_page_are_as_before() {
             without.app.chart_doc().composed.height,
             "{height}: the page is composed at the height it was"
         );
+        assert_the_hero_gives_up_the_band_once(&format!("{height}, transposed"), &with, &without);
     }
+}
+
+/// **AC3, with the grid in the ledger and transposed.** The hero pane is the
+/// whole canvas and the rows are drawn in the ledger rail, the second view of
+/// the same group; the hero's plot gives up the band's height once there too.
+#[test]
+fn with_the_grid_in_the_ledger_transposed_the_hero_gives_up_the_band_once() {
+    for height in [900.0, 1500.0, 2200.0] {
+        let with = Window::open_ledger_columns(true, height);
+        let without = Window::open_ledger_columns(false, height);
+        for win in [&with, &without] {
+            assert_eq!(
+                win.app.grid_spot(),
+                brightfield_workbench::GridSpot::Ledger,
+                "{height}: the window opened with its grid in the ledger"
+            );
+            assert_eq!(
+                win.app.grid_layout(),
+                brightfield_workbench::GridLayout::Columns,
+                "{height}: and transposed"
+            );
+        }
+        assert!(
+            with.app.shelf_drawn().is_some(),
+            "{height}: the hero pane drew its band"
+        );
+        assert_eq!(
+            with.app.canvas_panes().pane("grid"),
+            None,
+            "{height}: the canvas drew no grid pane, so the rows are the ledger's"
+        );
+        assert_the_hero_gives_up_the_band_once(
+            &format!("{height}, in the ledger"),
+            &with,
+            &without,
+        );
+    }
+}
+
+/// **The class, at the seam**: the hero is composed at the room it is offered
+/// whatever height the second view stands at. A sibling pane taller than the
+/// hero's, as the transposed layout's rows are beside a hero with a band above
+/// it and as a ledger grown past the canvas would be, does not shorten the
+/// hero.
+///
+/// The same room is offered twice, once with the second view the first's own
+/// height and once with it 300 taller; the hero's composed plot is the same
+/// height both times. Driven here on `reflow_to` itself because a frame
+/// rewrites the views before it reads them, so no frame can hold the second
+/// view at a height the layout would not give it.
+#[test]
+fn a_second_view_taller_than_the_first_does_not_shorten_the_hero() {
+    let mut win = Window::open_ledger_columns(true, 900.0);
+    let views = win
+        .app
+        .chart_doc()
+        .pane_views
+        .expect("the dashboard drew its views");
+    let offered = egui::vec2(views.first.width(), views.first.height() - 28.0);
+
+    let doc = win.app.chart_doc_mut();
+    doc.pane_views = Some(PaneViews {
+        second: views.first,
+        ..views
+    });
+    doc.reflow_to(offered);
+    let level = doc.composed.plots[0].rect.height;
+
+    doc.pane_views = Some(PaneViews {
+        second: views.first.expand2(egui::vec2(0.0, 150.0)),
+        ..views
+    });
+    doc.reflow_to(offered);
+    assert_eq!(
+        doc.composed.plots[0].rect.height, level,
+        "the hero's plot is {} high with a second view 300 taller and {level} with one level \
+         with it: the sibling's height took room off the hero",
+        doc.composed.plots[0].rect.height
+    );
 }

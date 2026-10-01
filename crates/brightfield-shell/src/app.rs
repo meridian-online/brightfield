@@ -1390,24 +1390,18 @@ impl ChartDoc {
     /// column's alone. Both are written before the re-present, and either being
     /// news is what makes one happen.
     ///
-    /// **And the hero's room is [`PaneViews::first`]'s, not `size`'s, when the
-    /// two views differ in height.** The group as it stands draws both panes
-    /// at the canvas's full height, side by side rather than one under the
-    /// other — [`crate::window::canvas_pane_rects`] — so this
-    /// subtraction is zero today and `hero_room` is `room`. It stays rather
-    /// than being deleted with the arrangement that needed it: a view left
-    /// shorter than its sibling for some other reason should still leave the
-    /// hero its own pane's height rather than the taller one's, and
-    /// `the_hero_is_composed_whole_inside_the_map_pane` is what would catch a
-    /// regression back to one pane borrowing the other's room.
+    /// **And the hero's room is `size`'s height as offered.** The caller offers
+    /// the height the first view has left after the chart's own toolbar, and
+    /// the first view's body already stands below anything carved from the head
+    /// of its pane, the shelf band. The second view's height does not enter: a
+    /// sibling pane taller than the hero's, as the transposed layout's rows are
+    /// beside a hero with a band above it, leaves the hero the room its own
+    /// pane has, and the band is taken from that room once.
+    /// `with_the_grid_transposed_the_rows_pane_and_the_page_are_as_before`
+    /// reads the hero's plot against the foot of its pane, and
+    /// `the_hero_is_composed_whole_inside_the_map_pane` holds it inside.
     pub fn reflow_to(&mut self, size: egui::Vec2) -> bool {
         let room = size.y.floor().max(MIN_CHART_EXTENT);
-        let hero_room = self
-            .pane_views
-            .map_or(room, |v| {
-                room - (v.second.height() - v.first.height()).max(0.0)
-            })
-            .max(MIN_CHART_EXTENT);
         let page = size
             .y
             .max(self.min_page_height)
@@ -1422,7 +1416,7 @@ impl ChartDoc {
         let Some(live) = self.live.as_mut() else {
             return false;
         };
-        let bound = live.set_hero_bound(f64::from((page - hero_room).max(0.0)));
+        let bound = live.set_hero_bound(f64::from((page - room).max(0.0)));
         let widths =
             live.set_page_widths(f64::from(self.page_widths.0), f64::from(self.page_widths.1));
         if !live.set_viewport(box_) && !bound && !widths {
