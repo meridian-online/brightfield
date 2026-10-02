@@ -1945,8 +1945,8 @@ struct ShelfHold {
     /// list's.
     chip_preview: Option<(ShelfChannel, String)>,
     /// The card the list was drawn as on the last frame, with the navigator rail
-    /// shut. `None` on a frame that drew the list in the Outline, or none:
-    /// cleared with the frame's other records and written by
+    /// shut. `None` on a frame that drew the list in the Outline, or had no list
+    /// open: cleared with the frame's other records and written by
     /// [`MeridianApp::shelf_card`].
     card: Option<CardDrawn>,
 }

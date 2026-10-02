@@ -512,7 +512,7 @@ fn the_lists_keys_act_on_the_card_as_they_do_in_the_outline() {
 
     // With the query cleared the cursor is back on the column x holds; `j`
     // moves it off, and the hero draws the column it lands on as a preview,
-    // which keeps nothing until `Enter`.
+    // which is not an edit until `Enter` keeps it.
     win.type_letter(egui::Key::J, "j");
     let chosen = win.cursor().expect("the cursor is on a column");
     assert!(
