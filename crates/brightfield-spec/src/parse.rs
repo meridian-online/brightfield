@@ -557,7 +557,7 @@ pub enum ParseWarning {
 
     /// A plot-level colour attribute (`colorScheme`) carried a value brightfield
     /// cannot draw: a scheme name it has no ramp for (`magma`, `ylgnbu`, a
-    /// misspelt `viridis`), or a value that is no name at all. The plot draws
+    /// misspelt `viridis`), or a value that is no name. The plot draws
     /// its default ramp as if the key were absent, and this names the key and
     /// the value so an author sees why the colours are not the file's.
     ///

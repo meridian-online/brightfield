@@ -144,7 +144,7 @@ fn a_plot_defaults_scheme_is_judged_once_where_it_is_declared() {
         "named once for two plots"
     );
     // A `$param` cannot be written in `plotDefaults`: the parser refuses it, so
-    // it never reaches the judge there.
+    // the judge does not see one there.
     for held in ["blues", "null"] {
         let found = two_plots(&format!("  colorScheme: {held}\n"));
         assert!(found.is_empty(), "`{held}` in plotDefaults: {found:?}");

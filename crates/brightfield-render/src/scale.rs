@@ -2680,7 +2680,8 @@ mod tests {
                 "{scheme:?} round-trips through its wire name"
             );
         }
-        // Unknown / wrong-case names yield None; the caller warns + defaults.
+        // Unknown / wrong-case names yield None; the parser warns of them
+        // (`ParseWarning::UnreadColourKey`) and the plot draws the default.
         assert_eq!(SequentialScheme::from_wire("magma"), None);
         assert_eq!(SequentialScheme::from_wire("Viridis"), None);
         // The default scheme is viridis.
