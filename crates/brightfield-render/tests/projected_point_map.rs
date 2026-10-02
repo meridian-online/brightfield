@@ -351,7 +351,12 @@ fn narrowing_the_extent_changes_the_graticule_rather_than_redrawing_it() {
 fn the_drawn_scene_carries_a_meridian_at_each_projected_longitude() {
     let batch = batch(FIXTURE);
     let cm = channels(Some(Projection::Mercator));
-    let (scene, set) = plot(&[&batch], &cm, &DotRenderer::default(), ChartLayout::new(640.0, 480.0));
+    let (scene, set) = plot(
+        &[&batch],
+        &cm,
+        &DotRenderer::default(),
+        ChartLayout::new(640.0, 480.0),
+    );
     let (Some(x_scale), Some(y_scale)) = (set.get(Channel::X), set.get(Channel::Y)) else {
         panic!("a projected dot mark must have both positional scales");
     };
@@ -400,7 +405,8 @@ fn an_unprojected_dot_mark_draws_no_graticule() {
     );
 
     let projected = channels(Some(Projection::Mercator));
-    let (projected_scene, projected_set) = plot(&[&batch], &projected, &DotRenderer::default(), layout);
+    let (projected_scene, projected_set) =
+        plot(&[&batch], &projected, &DotRenderer::default(), layout);
     let lines = PlotGraticule::of(&projected_set)
         .expect("control: a projected plot has one")
         .lines;
@@ -1616,7 +1622,12 @@ fn the_graticule_is_clipped_to_the_plot_area() {
 
     let batch = batch(&[(-120.0, 30.0), (-75.0, 45.0), (-100.0, 48.0), (-80.0, 26.0)]);
     let cm = channels(Some(Projection::Albers));
-    let (_, set) = plot(&[&batch], &cm, &DotRenderer::default(), ChartLayout::new(640.0, 480.0));
+    let (_, set) = plot(
+        &[&batch],
+        &cm,
+        &DotRenderer::default(),
+        ChartLayout::new(640.0, 480.0),
+    );
     let graticule = PlotGraticule::of(&set).expect("a projected plot has a graticule");
     let rect = plot_rect(&set);
     let outside = |p: &(f64, f64)| {
