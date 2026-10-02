@@ -124,6 +124,41 @@ fn a_tick_rotation_draws_and_the_banner_names_it_and_its_plot() {
     );
 }
 
+/// **A facet axis's attribute draws, and the banner names it and its plot: the
+/// schema declares `fxLabel` and `fyTickFormat`, and no resolver reads either.
+/// A `null` is named as an `x` or `y` name set to `null` is, and a name that
+/// starts as a facet axis's does and is not in the schema says nothing.**
+#[test]
+fn a_facet_axis_attribute_draws_and_the_banner_names_it_and_its_plot() {
+    let unset = compose("");
+    for attrs in ["fxLabel: Region", "fyTickFormat: '%b'", "fxLabel: null"] {
+        let key = attrs.split(':').next().expect("a key");
+        let asked = compose(attrs);
+        assert_eq!(
+            points(&asked),
+            points(&unset),
+            "`{attrs}`: the plot draws as it does without the key"
+        );
+        let lines = said(&asked);
+        assert_eq!(lines.len(), 1, "one line for `{attrs}`; got {lines:?}");
+        assert!(
+            lines[0].contains(&format!("`{key}`")) && lines[0].contains("root (`rotated`)"),
+            "the line names the key and the plot; got {:?}",
+            lines[0]
+        );
+    }
+    let lines = said(&compose("yAxis: null"));
+    assert!(
+        lines.len() == 1 && lines[0].contains("`yAxis`"),
+        "an `x` or `y` name set to `null` is named today; got {lines:?}"
+    );
+    let lines = said(&compose("fxFlavour: 1\nfacetLabel: x"));
+    assert!(
+        lines.is_empty(),
+        "a name the schema does not declare says nothing; got {lines:?}"
+    );
+}
+
 /// **The line names the plot that sets the key and not its neighbour.**
 #[test]
 fn the_banner_names_the_plot_that_carries_it_not_its_neighbour() {

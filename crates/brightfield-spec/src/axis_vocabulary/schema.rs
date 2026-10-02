@@ -8,14 +8,16 @@
 //! those are what the build script is compiled with.
 
 /// Whether a plot attribute name is an axis attribute: the bare `grid`, or `x`
-/// or `y` followed by a capital letter. Facet axes (`fxLabel`, `fyGrid`) start
-/// with `f`, and `xyDomain` has a lower-case second letter, so neither counts.
+/// or `y` followed by a capital letter, or a facet axis's name, which is that
+/// behind an `f` (`fxLabel`, `fyTickFormat`). `xyDomain` has a lower-case second
+/// letter and `facetGrid` has no `x` or `y` after its `f`, so neither counts.
 #[must_use]
 pub fn is_axis_attribute_name(name: &str) -> bool {
     if name == "grid" {
         return true;
     }
-    let mut chars = name.chars();
+    let position = name.strip_prefix('f').unwrap_or(name);
+    let mut chars = position.chars();
     matches!(chars.next(), Some('x' | 'y')) && chars.next().is_some_and(|c| c.is_ascii_uppercase())
 }
 

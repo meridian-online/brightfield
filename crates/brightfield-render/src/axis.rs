@@ -125,6 +125,37 @@ pub fn axis_kind(scale: &Scale) -> Option<AxisKind> {
     }
 }
 
+/// The word the warning banner uses for the axis a scale draws, finer than
+/// [`AxisKind::word`]: a linear, a log and a symlog axis read as a number axis
+/// there, and an instruction that one takes and another does not has to name
+/// which it met. `None` for a colour ramp, which draws no positional axis.
+#[must_use]
+pub fn axis_scale_word(scale: &Scale) -> Option<&'static str> {
+    match scale {
+        Scale::Linear { .. } => Some("linear"),
+        Scale::Log { .. } => Some("log"),
+        Scale::Symlog { .. } => Some("symlog"),
+        Scale::Time { .. }
+        | Scale::Band { .. }
+        | Scale::Colour { .. }
+        | Scale::Sequential { .. }
+        | Scale::Diverging { .. } => axis_kind(scale).map(AxisKind::word),
+    }
+}
+
+/// Whether the axis `scale` draws aims its ticks at the count a plot's `xTicks`
+/// / `yTicks` asks for. A linear and a time axis step toward it; a band has a
+/// tick per category and a log or symlog axis a tick per decade, so a count
+/// reaches none of them.
+///
+/// It is the one judge the composition warns through, and
+/// `tick_count_applies_where_the_ticks_follow_the_count` holds it to
+/// [`compute_ticks_formatted`] by drawing each kind of scale at two counts.
+#[must_use]
+pub fn tick_count_applies(scale: &Scale) -> bool {
+    matches!(scale, Scale::Linear { .. } | Scale::Time { .. })
+}
+
 /// The instant each category names, when every category is a calendar day.
 fn day_categories(categories: &[String]) -> Option<Vec<i64>> {
     if categories.is_empty() {
@@ -1231,6 +1262,124 @@ mod tests {
         assert_eq!(axis_kind(&days), Some(AxisKind::Date));
         assert_eq!(axis_kind(&names), Some(AxisKind::Category));
         assert_eq!(axis_kind(&linear), Some(AxisKind::Number));
+    }
+
+    /// The banner's word for an axis tells a log axis from a linear one, which
+    /// `axis_kind` does not: both are a number axis there.
+    #[test]
+    fn the_word_for_an_axis_tells_a_log_axis_from_a_linear_one() {
+        let span = |make: fn(f64, f64, f64, f64) -> Scale| make(1.0, 100.0, 0.0, 1.0);
+        let linear = span(
+            |domain_min, domain_max, range_start, range_end| Scale::Linear {
+                domain_min,
+                domain_max,
+                range_start,
+                range_end,
+            },
+        );
+        let log = span(
+            |domain_min, domain_max, range_start, range_end| Scale::Log {
+                domain_min,
+                domain_max,
+                range_start,
+                range_end,
+            },
+        );
+        let symlog = span(
+            |domain_min, domain_max, range_start, range_end| Scale::Symlog {
+                domain_min,
+                domain_max,
+                range_start,
+                range_end,
+            },
+        );
+        let time = Scale::Time {
+            domain_min_us: 0,
+            domain_max_us: 1_000_000,
+            range_start: 0.0,
+            range_end: 1.0,
+        };
+        assert_eq!(axis_scale_word(&linear), Some("linear"));
+        assert_eq!(axis_scale_word(&log), Some("log"));
+        assert_eq!(axis_scale_word(&symlog), Some("symlog"));
+        assert_eq!(axis_scale_word(&time), Some("date"));
+        assert_eq!(axis_scale_word(&band(&["2024-03-01"])), Some("date"));
+        assert_eq!(axis_scale_word(&band(&["north"])), Some("category"));
+    }
+
+    /// The judge the composition warns through is the axis's own behaviour: a
+    /// scale takes the count exactly when drawing it at a count of two and at a
+    /// count of twenty puts its ticks in different places or words. Each kind of
+    /// positional scale is drawn both ways, so a scale that learns to follow the
+    /// count, or stops, fails here rather than drifting from the warning.
+    #[test]
+    fn tick_count_applies_where_the_ticks_follow_the_count() {
+        let scales = [
+            (
+                "linear",
+                Scale::Linear {
+                    domain_min: 0.0,
+                    domain_max: 1000.0,
+                    range_start: 40.0,
+                    range_end: 600.0,
+                },
+            ),
+            (
+                "time",
+                Scale::Time {
+                    domain_min_us: 0,
+                    domain_max_us: 86_400_000_000,
+                    range_start: 40.0,
+                    range_end: 600.0,
+                },
+            ),
+            (
+                "log",
+                Scale::Log {
+                    domain_min: 1.0,
+                    domain_max: 1_000_000.0,
+                    range_start: 40.0,
+                    range_end: 600.0,
+                },
+            ),
+            (
+                "symlog",
+                Scale::Symlog {
+                    domain_min: -1000.0,
+                    domain_max: 1000.0,
+                    range_start: 40.0,
+                    range_end: 600.0,
+                },
+            ),
+            ("band of names", band(&["north", "south", "east", "west"])),
+            (
+                "band of days",
+                band(&["2024-03-01", "2024-04-01", "2024-05-01"]),
+            ),
+        ];
+        for (name, scale) in &scales {
+            let drawn = |count: usize| -> Vec<(u64, String, u64)> {
+                compute_ticks(scale, count)
+                    .iter()
+                    .map(|t| (t.value.to_bits(), t.label.clone(), t.position.to_bits()))
+                    .collect()
+            };
+            let follows_the_count = drawn(2) != drawn(20);
+            assert_eq!(
+                tick_count_applies(scale),
+                follows_the_count,
+                "{name}: the judge says the count applies = {}, the ticks say {follows_the_count}",
+                tick_count_applies(scale)
+            );
+        }
+        assert!(
+            scales
+                .iter()
+                .filter(|(_, scale)| tick_count_applies(scale))
+                .count()
+                == 2,
+            "the linear and the time axis take the count"
+        );
     }
 
     #[test]

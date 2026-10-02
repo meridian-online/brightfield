@@ -278,6 +278,8 @@ fn warning_wire_name(warning: &ParseWarning) -> String {
         | ParseWarning::InvalidTickFormat { attribute, .. }
         | ParseWarning::UnreadDateDirective { attribute, .. }
         | ParseWarning::TickFormatOnWrongAxis { attribute, .. }
+        | ParseWarning::AxisAttributeOnWrongAxis { attribute, .. }
+        | ParseWarning::AxisReverseUnderProjection { attribute, .. }
         | ParseWarning::UnreadColourKey { attribute, .. }
         | ParseWarning::UnreadAxisAttribute { attribute, .. } => attribute.clone(),
         ParseWarning::UnknownProjection { value } => value.clone(),
@@ -327,6 +329,8 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         | ParseWarning::InvalidTickFormat { .. }
         | ParseWarning::UnreadDateDirective { .. }
         | ParseWarning::TickFormatOnWrongAxis { .. }
+        | ParseWarning::AxisAttributeOnWrongAxis { .. }
+        | ParseWarning::AxisReverseUnderProjection { .. }
         | ParseWarning::UnreadColourKey { .. }
         | ParseWarning::UnreadAxisAttribute { .. } => "plot",
         ParseWarning::UnknownAggregate { .. }
@@ -699,6 +703,46 @@ mod tests {
             merged.lines()[..load.lines().len()],
             load.lines()[..],
             "the load's lines come first, as they were"
+        );
+    }
+
+    /// An axis instruction that changes nothing on the axis it meets is known
+    /// only to a composition, which hands it in as a warning. It reads as an
+    /// advisory headed by the key, on the plot, and names the plot and the kind
+    /// of axis it met.
+    #[test]
+    fn dfconf_an_inert_axis_instruction_from_a_composition_is_an_advisory_on_the_plot() {
+        let on_a_log_axis = ParseWarning::AxisAttributeOnWrongAxis {
+            attribute: "yNice".to_string(),
+            plot: "root (`sales`)".to_string(),
+            axis: "log".to_string(),
+        };
+        let under_a_projection = ParseWarning::AxisReverseUnderProjection {
+            attribute: "xReverse".to_string(),
+            plot: "root/vconcat[1]".to_string(),
+        };
+        let found = LoadDiagnostics::from_composition(&[on_a_log_axis, under_a_projection]);
+        assert!(found.blocking().is_empty());
+        let advisory = found.advisory();
+        assert_eq!(advisory.len(), 2, "{:?}", found.lines());
+        assert_eq!(advisory[0].wire_name, "yNice");
+        assert_eq!(advisory[1].wire_name, "xReverse");
+        for diag in &advisory {
+            assert_eq!(diag.surface, "plot");
+        }
+        assert!(
+            advisory[0].message.contains("root (`sales`)")
+                && advisory[0].message.contains("`yNice`")
+                && advisory[0].message.contains("a log axis"),
+            "{}",
+            advisory[0].message
+        );
+        assert!(
+            advisory[1].message.contains("root/vconcat[1]")
+                && advisory[1].message.contains("`xReverse`")
+                && advisory[1].message.contains("a plot with a map projection"),
+            "{}",
+            advisory[1].message
         );
     }
 

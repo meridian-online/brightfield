@@ -6,8 +6,8 @@
 //! brightfield. Two lists settle it.
 //!
 //! - [`SCHEMA_AXIS_ATTRIBUTES`] is Mosaic's: the axis attribute names its
-//!   published schema declares on a plot, generated at build time from
-//!   `vendor/mosaic-schema/` by `build.rs` through
+//!   published schema declares on a plot, a facet axis's among them, generated
+//!   at build time from `vendor/mosaic-schema/` by `build.rs` through
 //!   [`schema::schema_axis_attribute_names`].
 //! - [`READ_AXIS_ATTRIBUTES`] is brightfield's: the names the resolvers in
 //!   [`crate::layout`] read.

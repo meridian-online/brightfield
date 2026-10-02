@@ -555,6 +555,43 @@ pub enum ParseWarning {
         axis: String,
     },
 
+    /// A plot sets an x or y axis instruction that the axis it meets does not
+    /// act on: `yNice` or `yZero` on a log, symlog, date or category axis, since
+    /// a linear axis's ends follow them and no other kind's, or `xTicks` on a
+    /// log, symlog or category axis,
+    /// whose ticks are decades and names and not a count's. The plot draws as it
+    /// does without the key. Known only once the data has typed the axis, so it
+    /// is raised where the composition finds the scales, not at parse time; it
+    /// names the key, the plot that carries it and the kind of axis.
+    ///
+    /// `brightfield_render::scene::axis_ends_apply` and
+    /// `brightfield_render::axis::tick_count_applies` are the judges, and the
+    /// axis draws through them, so the warning and the drawing cannot disagree.
+    AxisAttributeOnWrongAxis {
+        /// The attribute key: `xZero`, `xNice`, `xTicks` or the `y` of each.
+        attribute: String,
+        /// The plot that sets it, as [`crate::layout::plot_label`] names one.
+        plot: String,
+        /// The kind of axis it had no effect on, as
+        /// `brightfield_render::axis::axis_scale_word` words it: `log`,
+        /// `symlog`, `date` or `category`.
+        axis: String,
+    },
+
+    /// A plot with a map projection sets `xReverse` or `yReverse`. A projection
+    /// replaces the plot's x and y with planar units, and the plot draws as it
+    /// does without the key. Known once the composition has built the scales;
+    /// it names the key and the plot.
+    ///
+    /// `brightfield_render::scene::axis_reverse_applies` is the judge, and the
+    /// draw goes through it.
+    AxisReverseUnderProjection {
+        /// The attribute key: `xReverse` or `yReverse`.
+        attribute: String,
+        /// The plot that sets it, as [`crate::layout::plot_label`] names one.
+        plot: String,
+    },
+
     /// A plot-level colour attribute (`colorScheme`, `colorScale`, `colorPivot`)
     /// carried a value brightfield cannot draw: a scheme name it has no ramp for
     /// (`magma`, `ylgnbu`, a misspelt `viridis`), a scale type it does not draw
@@ -883,6 +920,18 @@ impl fmt::Display for ParseWarning {
             } => write!(
                 f,
                 "plot attribute `{attribute}` is `{value}`, a {format} format on a {axis} axis — ticks draw their default text"
+            ),
+            Self::AxisAttributeOnWrongAxis {
+                attribute,
+                plot,
+                axis,
+            } => write!(
+                f,
+                "plot {plot} sets `{attribute}`, which changes nothing on a {axis} axis — the plot draws as it does without it"
+            ),
+            Self::AxisReverseUnderProjection { attribute, plot } => write!(
+                f,
+                "plot {plot} sets `{attribute}`, which changes nothing on a plot with a map projection — the plot draws as it does without it"
             ),
             Self::UnreadColourKey { attribute, value } => write!(
                 f,

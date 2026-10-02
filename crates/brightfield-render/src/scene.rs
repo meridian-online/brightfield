@@ -623,6 +623,28 @@ pub fn build_multi_mark_scene_pinned(
     (scene, scales)
 }
 
+/// Whether a plot's `xReverse` / `yReverse` can turn its axes: not when the
+/// plot has a map projection, whose x and y are the projection's planar units.
+///
+/// It is the judge `apply_axis_reverse` draws through (a private function) and
+/// the composition warns through, so a reversal the plot drops is a reversal
+/// that was named.
+#[must_use]
+pub fn axis_reverse_applies(scales: &ScaleSet) -> bool {
+    scales.projection().is_none()
+}
+
+/// Whether a plot's `xZero` / `xNice` / `yZero` / `yNice` can move the ends of
+/// the axis `scale` draws: a linear axis's alone, since a log, symlog, time or
+/// band axis's ends are not a linear step's to round or a zero's to reach.
+///
+/// It is the judge `apply_axis_ends` draws through (a private function) and the
+/// composition warns through.
+#[must_use]
+pub fn axis_ends_apply(scale: &Scale) -> bool {
+    matches!(scale, Scale::Linear { .. })
+}
+
 /// Run each positional axis from its high end to its low end, as the plot's
 /// spec asked — `xReverse` and `yReverse`.
 ///
@@ -636,9 +658,10 @@ pub fn build_multi_mark_scene_pinned(
 /// A plot with a map projection is left as it is. Its x and y are the
 /// projection's planar units, which Observable Plot does not offer a scale
 /// option on, and the graticule and the brush's second inversion read the
-/// projection against the pixel range.
+/// projection against the pixel range. [`axis_reverse_applies`] is that
+/// judgement, and the composition warns through it.
 fn apply_axis_reverse(scales: &mut ScaleSet, reverse: AxisReverse) {
-    if reverse.is_empty() || scales.projection().is_some() {
+    if reverse.is_empty() || !axis_reverse_applies(scales) {
         return;
     }
     for (channel, on) in [(Channel::X, reverse.x), (Channel::Y, reverse.y)] {
@@ -694,7 +717,7 @@ fn apply_axis_ends(
         let Some(scale) = scales.get(channel) else {
             continue;
         };
-        if !matches!(scale, Scale::Linear { .. }) {
+        if !axis_ends_apply(scale) {
             continue;
         }
         let mut carried = scale.clone();
