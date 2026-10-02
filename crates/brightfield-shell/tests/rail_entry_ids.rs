@@ -248,6 +248,13 @@ const RAIL_IDS: &[(&str, Owner, Reach)] = &[
         Reach::Declared("needs a press on a cell of a live grid; `tests/grid_cursor.rs` reads it"),
     ),
     (
+        "shelf-last-edit",
+        Owner::One("<window>"),
+        Reach::Declared(
+            "needs a column kept from the shelf's list; `tests/shelf_undo.rs` reads it",
+        ),
+    ),
+    (
         "gallery-status-rail-predicate",
         Owner::One("<dev gallery>"),
         Reach::Declared("a specimen handed to `chrome::status_rail`, never to a Subject"),
