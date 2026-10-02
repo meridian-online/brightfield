@@ -1182,35 +1182,82 @@ fn no_two_texts_in_the_list_are_drawn_into_one_place() {
 // A click on a row.
 // ---------------------------------------------------------------------------
 
-#[test]
-fn a_click_on_a_row_moves_the_cursor_there_and_reports_the_column() {
-    let stage = Stage::new(Mode::Light);
-    let mut list = list(ShelfChannel::X);
-    let laid_out = stage.draw(&mut list);
-    let target = laid_out
+/// The centre of `column`'s row, as `list` draws it on `stage`.
+fn row_centre(stage: &Stage, list: &mut ColumnList, column: &str) -> egui::Pos2 {
+    stage
+        .draw(list)
         .drawn
         .rows
         .iter()
-        .find(|r| r.column == "house_age")
-        .expect("house_age is listed")
+        .find(|r| r.column == column)
+        .unwrap_or_else(|| panic!("{column} is listed"))
         .rect
-        .center();
-    let pointer = |pressed: bool| egui::Event::PointerButton {
-        pos: target,
+        .center()
+}
+
+fn press_at(at: egui::Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton {
+        pos: at,
         button: egui::PointerButton::Primary,
         pressed,
         modifiers: egui::Modifiers::NONE,
-    };
+    }
+}
+
+/// **A click on a row keeps its column.** The cursor lands on it and the list
+/// reports it moved there and kept, in that order, so the window draws it and
+/// keeps it as `Enter` would.
+#[test]
+fn a_click_on_a_row_moves_the_cursor_there_and_keeps_the_column() {
+    let stage = Stage::new(Mode::Light);
+    let mut list = list(ShelfChannel::X);
+    let target = row_centre(&stage, &mut list, "house_age");
     stage.frame(&mut list, vec![egui::Event::PointerMoved(target)]);
-    stage.frame(&mut list, vec![pointer(true)]);
-    let released = stage.frame(&mut list, vec![pointer(false)]);
-    assert_eq!(released.drawn.reports, [moved("house_age")]);
+    stage.frame(&mut list, vec![press_at(target, true)]);
+    let released = stage.frame(&mut list, vec![press_at(target, false)]);
+    assert_eq!(
+        released.drawn.reports,
+        [
+            moved("house_age"),
+            ListReport::Kept("house_age".to_string())
+        ]
+    );
     assert_eq!(list.cursor(), Some("house_age"));
     assert_eq!(
         stage.draw(&mut list).drawn.reports,
         [],
         "a frame with no click reports none"
     );
+}
+
+/// **The pointer moving over a row moves the cursor to it**, and the list
+/// reports the column as moved to — the preview a key's move makes — and not
+/// kept. A pointer resting on a row does not take the cursor back from the
+/// keys: `j` moves it off the row the pointer is on and it stays there.
+#[test]
+fn the_pointer_moving_over_a_row_moves_the_cursor_and_a_resting_pointer_does_not() {
+    let stage = Stage::new(Mode::Light);
+    let mut list = list(ShelfChannel::X);
+    let target = row_centre(&stage, &mut list, "house_age");
+    stage.frame(
+        &mut list,
+        vec![egui::Event::PointerMoved(target - egui::vec2(0.0, 2.0))],
+    );
+    let over = stage.frame(&mut list, vec![egui::Event::PointerMoved(target)]);
+    assert_eq!(over.drawn.reports, [moved("house_age")]);
+    assert_eq!(list.cursor(), Some("house_age"));
+
+    let after_j = list.feed_events(&typed(egui::Key::J, "j"));
+    assert_eq!(after_j.len(), 1, "`j` moves the cursor one row");
+    let moved_to = list.cursor().map(str::to_owned);
+    assert_ne!(moved_to.as_deref(), Some("house_age"));
+    let resting = stage.draw(&mut list);
+    assert_eq!(
+        resting.drawn.reports,
+        [],
+        "a pointer standing on a row does not move the cursor"
+    );
+    assert_eq!(list.cursor(), moved_to.as_deref());
 }
 
 // ---------------------------------------------------------------------------

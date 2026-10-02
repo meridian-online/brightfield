@@ -629,9 +629,10 @@ pub struct ColumnListRequest {
 /// What a key or a click decided, for the window to act on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ListReport {
-    /// The cursor moved to this column, which the chart draws as a preview.
+    /// The cursor moved to this column — by a key, or by the pointer moving
+    /// over its row — which the chart draws as a preview.
     Moved(String),
-    /// `Enter` kept this column.
+    /// `Enter`, or a click on its row, kept this column.
     Kept(String),
     /// `Esc` with the query empty: the reader backs out of the list.
     BackedOut,
@@ -801,12 +802,21 @@ impl ColumnList {
         self.land(to, out);
     }
 
-    /// `Enter`: keep the row under the cursor.
+    /// `Enter`, or a click on a row: keep the row under the cursor. The
+    /// column kept is the channel's own from here, so a query cleared later
+    /// brings the cursor back to it and not to the column it replaced.
     fn keep(&mut self, out: &mut Vec<ListReport>) {
-        if let Some(name) = self.cursor() {
-            out.push(ListReport::Kept(name.to_string()));
-            self.querying = false;
+        let Some(name) = self.cursor().map(str::to_string) else {
+            return;
+        };
+        match self.channel {
+            ShelfChannel::X => self.channels.x = Binding::Column(name.clone()),
+            ShelfChannel::Y => self.channels.y = Binding::Column(name.clone()),
+            ShelfChannel::Colour => self.channels.colour = Binding::Column(name.clone()),
+            ShelfChannel::Mark => {}
         }
+        out.push(ListReport::Kept(name));
+        self.querying = false;
     }
 
     /// `Esc`: clear the query first, and with the query empty, back out of the
@@ -1023,8 +1033,10 @@ const QUERY_HINTS: [(&str, &str); 3] = [
 ];
 
 impl ColumnList {
-    /// Draw the list into `ui`, which it takes the whole width of, and answer a
-    /// click on a row by moving the cursor there.
+    /// Draw the list into `ui`, which it takes the whole width of, and answer
+    /// the pointer: moving over a row moves the cursor there, which the chart
+    /// draws as a preview, and a click on a row keeps it. The pointer and the
+    /// keys move one cursor, so the two routes end on the same rows.
     ///
     /// The Meridian theme has to be applied to `ui`'s context, for the key
     /// chips' tokens and the faces. The row under the cursor wears a bar in the
@@ -1127,6 +1139,11 @@ impl ColumnList {
         let mut rows = Vec::with_capacity(order.len());
         let mut divider = None;
         let mut clicked = None;
+        let mut pointed = None;
+        // The pointer moves the cursor only while it moves: a list scrolled
+        // under a pointer standing still, or a key pressed with the pointer
+        // resting on a row, leaves the cursor where the keys put it.
+        let moving = ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO);
         for (n, &i) in order.iter().enumerate() {
             if searching && n == matched {
                 let gap = 2.0 * spacing::SPACE_2 + 1.0;
@@ -1170,6 +1187,8 @@ impl ColumnList {
             }
             if response.clicked() {
                 clicked = Some(i);
+            } else if moving && response.hovered() {
+                pointed = Some(i);
             }
             let content = egui::Rect::from_min_max(
                 egui::pos2(rect.left() + b.pad_x + spacing::SPACE_4, rect.top()),
@@ -1238,6 +1257,9 @@ impl ColumnList {
         let mut reports = Vec::new();
         if let Some(i) = clicked {
             self.land(Some(i), &mut reports);
+            self.keep(&mut reports);
+        } else if pointed.is_some() {
+            self.land(pointed, &mut reports);
         }
         ListDrawn {
             rect,
