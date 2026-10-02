@@ -557,9 +557,28 @@ fn a_columns_row_under_the_pointer_trades_its_type_for_three_chips() {
 /// column on colour and the band's colour cell says so; the window is not
 /// marked unsaved. The pointer leaving the chip puts the kept chart back and
 /// adds nothing to what Save writes.
+///
+/// Run with no pane focused and with the hero's pane focused. With the hero's
+/// pane unfocused the shelf lets go every frame and backs out of any preview it
+/// does not know to be a chip's, which would put the kept chart back even if
+/// leaving the chip did not; with the hero's pane focused only the chip's own
+/// back-out does.
 #[test]
 fn the_pointer_on_a_chip_previews_the_column_and_leaving_it_puts_the_kept_chart_back() {
+    for hero_focused in [false, true] {
+        preview_and_back_out(hero_focused);
+    }
+}
+
+fn preview_and_back_out(hero_focused: bool) {
     let mut win = Window::fixture();
+    if hero_focused {
+        assert!(
+            win.app.focus_pane(PaneKey::new(CHART)),
+            "the hero's pane takes focus"
+        );
+        win.settle();
+    }
     let kept = win.spec();
     let chip = win.chip(VALUE, ShelfChannel::Colour);
 
@@ -590,7 +609,10 @@ fn the_pointer_on_a_chip_previews_the_column_and_leaving_it_puts_the_kept_chart_
         "the row stopped drawing its chips"
     );
 
-    assert_unpainted(&win, "after the pointer left the chip");
+    assert_unpainted(
+        &win,
+        &format!("after the pointer left the chip, hero focused: {hero_focused}"),
+    );
     assert_eq!(
         win.app.chart_doc().shelf_preview(),
         None,
