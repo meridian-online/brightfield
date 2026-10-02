@@ -165,7 +165,9 @@ fn a_version_names_its_kind_and_the_way_it_was_reached() {
     let unnamed = LocalHistory::at_root(scratch.root());
 
     let brightfield = scratch.store().open().expect("store opens");
-    brightfield.record_save_for_file(&file, "a: 1\n").expect("1");
+    brightfield
+        .record_save_for_file(&file, "a: 1\n")
+        .expect("1");
     unnamed
         .record_checkpoint_for_file(&file, "a: 2\n")
         .expect("2");
@@ -281,7 +283,11 @@ fn three_comment_lines_changed_in_place_are_an_edit_outside_the_channels_with_a_
     scratch.save(&Chart::default().text());
     scratch.save(
         &Chart {
-            notes: ["a changed note", "the first, changed", "the second, changed"],
+            notes: [
+                "a changed note",
+                "the first, changed",
+                "the second, changed",
+            ],
             ..Chart::default()
         }
         .text(),
@@ -506,7 +512,10 @@ fn a_listing_writes_no_file_under_the_chart_files_folder() {
     }
     assert_eq!(snapshot(&folder), before);
     assert_eq!(
-        before.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
+        before
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
         vec!["chart.yaml"],
         "the folder holds the chart file and nothing else"
     );

@@ -527,10 +527,11 @@ fn diff_keys<'a>(
             .find(|(k, _)| *k == key)
             .map(|(_, shown)| shown.clone())
     };
-    let keys = old
-        .iter()
-        .map(|(k, _)| *k)
-        .chain(new.iter().map(|(k, _)| *k).filter(|k| value_in(&old, k).is_none()));
+    let keys = old.iter().map(|(k, _)| *k).chain(
+        new.iter()
+            .map(|(k, _)| *k)
+            .filter(|k| value_in(&old, k).is_none()),
+    );
     keys.filter_map(|key| {
         let (before, after) = (value_in(&old, key), value_in(&new, key));
         (before != after).then(|| (key.clone(), before, after))
