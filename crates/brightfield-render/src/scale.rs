@@ -2892,12 +2892,7 @@ mod tests {
 
     #[test]
     fn scheme_stops_and_wire_roundtrip() {
-        for scheme in [
-            SequentialScheme::Viridis,
-            SequentialScheme::Blues,
-            SequentialScheme::Turbo,
-            SequentialScheme::Meridian,
-        ] {
+        for scheme in SequentialScheme::ALL {
             let stops = scheme.stops();
             assert!(stops.len() >= 5, "{scheme:?} has >= 5 stops");
             for s in &stops {
@@ -2922,26 +2917,19 @@ mod tests {
         assert_eq!(SequentialScheme::default(), SequentialScheme::Viridis);
     }
 
-    /// The schemes this renderer draws, walked off its own cycle (`next`) so a
-    /// variant added to the enum and not to a list here is still found, are the
-    /// names the parser's warning accepts, in the same order, and each is read
-    /// back by `from_wire`. Nothing the parser accepts is undrawn, and nothing
-    /// drawn is warned of.
+    /// The schemes this renderer draws — `SequentialScheme::ALL`, which `next`
+    /// and `from_wire` both read — are the names the parser's warning accepts,
+    /// in the same order, each is read back by `from_wire`, and the colour-cycle
+    /// visits each once. A name on the parser's list and not on `ALL`, or on
+    /// `ALL` and not on the parser's list, fails here. (A variant left off both
+    /// is named by no file and cycled by no key, so nothing draws it and nothing
+    /// warns of it: the two lists still agree.)
     #[test]
     fn a_scheme_is_drawn_exactly_when_the_parser_does_not_warn_of_it() {
-        let mut cycle = vec![SequentialScheme::default()];
-        loop {
-            let next = cycle.last().copied().unwrap().next();
-            if next == cycle[0] {
-                break;
-            }
-            assert!(
-                cycle.len() < 64,
-                "the colour-cycle never returned to its start"
-            );
-            cycle.push(next);
-        }
-        let drawn: Vec<&str> = cycle.iter().map(|s| s.wire_name()).collect();
+        let drawn: Vec<&str> = SequentialScheme::ALL
+            .iter()
+            .map(|s| s.wire_name())
+            .collect();
         assert_eq!(
             drawn,
             brightfield_spec::layout::DRAWN_COLOUR_SCHEMES,
@@ -2953,28 +2941,37 @@ mod tests {
                 "`{name}` is in the parser's list and the renderer must draw it"
             );
         }
+        let mut walked = vec![SequentialScheme::default()];
+        for _ in 1..SequentialScheme::ALL.len() {
+            walked.push(walked.last().copied().unwrap().next());
+        }
+        assert_eq!(
+            walked,
+            SequentialScheme::ALL,
+            "the cycle visits each scheme in order"
+        );
+        assert_eq!(
+            walked.last().copied().unwrap().next(),
+            SequentialScheme::default(),
+            "and returns to its start"
+        );
     }
 
     #[test]
-    fn next_cycles_viridis_blues_turbo_meridian() {
-        // The transient colour-cycle order (meridian added
-        // by design phase 4 PR B), wrapping back to the start after four
-        // presses.
+    fn next_cycles_viridis_blues_turbo_meridian_rdbu() {
+        // The transient colour-cycle order (meridian added by design phase 4
+        // PR B, rdbu after it), wrapping back to the start after five presses.
         assert_eq!(SequentialScheme::Viridis.next(), SequentialScheme::Blues);
         assert_eq!(SequentialScheme::Blues.next(), SequentialScheme::Turbo);
         assert_eq!(SequentialScheme::Turbo.next(), SequentialScheme::Meridian);
-        assert_eq!(SequentialScheme::Meridian.next(), SequentialScheme::Viridis);
-        // Four cycles from any start return to it.
-        for start in [
-            SequentialScheme::Viridis,
-            SequentialScheme::Blues,
-            SequentialScheme::Turbo,
-            SequentialScheme::Meridian,
-        ] {
+        assert_eq!(SequentialScheme::Meridian.next(), SequentialScheme::Rdbu);
+        assert_eq!(SequentialScheme::Rdbu.next(), SequentialScheme::Viridis);
+        // Five cycles from any start return to it.
+        for start in SequentialScheme::ALL {
             assert_eq!(
-                start.next().next().next().next(),
+                start.next().next().next().next().next(),
                 start,
-                "{start:?} cycles in 4"
+                "{start:?} cycles in 5"
             );
         }
     }
@@ -3180,6 +3177,225 @@ mod tests {
         assert_eq!(a.range_start(), 0.0);
         assert_eq!(a.range_end(), 0.0);
         assert!(a.inverse_f64(5.0).is_none());
+    }
+
+    // ---- diverging ----
+
+    const A: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+    const M: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
+    const B: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+
+    fn diverging(domain_min: f64, domain_max: f64, pivot: f64) -> Scale {
+        Scale::Diverging {
+            domain_min,
+            domain_max,
+            pivot,
+            stops: vec![A, M, B],
+        }
+    }
+
+    /// Each arm is mapped over its OWN span, so the pivot is the middle colour
+    /// and the poles sit at the domain's ends, even when the domain is uneven
+    /// about the pivot. A sequential scale over the same stops would put the
+    /// middle colour at the domain's middle, 5, not at the pivot, 2.
+    #[test]
+    fn a_diverging_scale_maps_each_arm_over_its_own_span() {
+        let scale = diverging(0.0, 10.0, 2.0);
+        assert_eq!(scale.map_continuous(0.0), A, "the low end is the low pole");
+        assert_eq!(
+            scale.map_continuous(2.0),
+            M,
+            "the pivot is the middle colour"
+        );
+        assert_eq!(
+            scale.map_continuous(10.0),
+            B,
+            "the high end is the high pole"
+        );
+        assert_eq!(
+            scale.map_continuous(1.0),
+            [0.25, 0.25, 0.25, 1.0],
+            "halfway down the lower arm is halfway from the pole to the middle"
+        );
+        assert_eq!(
+            scale.map_continuous(6.0),
+            [0.75, 0.75, 0.75, 1.0],
+            "halfway up the upper arm is halfway from the middle to the pole"
+        );
+        assert_eq!(
+            scale.map_continuous(-5.0),
+            A,
+            "below the domain clamps to the pole"
+        );
+        assert_eq!(
+            scale.map_continuous(99.0),
+            B,
+            "above the domain clamps to the pole"
+        );
+    }
+
+    /// A domain that stops at the pivot on one side has no span there; a value
+    /// at the pivot is still the middle colour and does not divide by zero.
+    #[test]
+    fn a_diverging_arm_with_no_span_maps_to_the_middle_colour() {
+        let scale = diverging(2.0, 10.0, 2.0);
+        assert_eq!(scale.map_continuous(2.0), M);
+        assert_eq!(scale.map_continuous(1.0), M);
+        assert_eq!(scale.map_continuous(10.0), B);
+        let scale = diverging(0.0, 2.0, 2.0);
+        assert_eq!(scale.map_continuous(2.0), M);
+        assert_eq!(scale.map_continuous(5.0), M);
+        assert_eq!(scale.map_continuous(0.0), A);
+    }
+
+    /// The pivot is the one written; else 0 where the rows hold a negative and a
+    /// positive value; else the median.
+    #[test]
+    fn the_pivot_is_written_or_zero_across_the_origin_or_the_median() {
+        assert_eq!(diverging_pivot(&[1.0, 2.0, 3.0], Some(7.5)), Some(7.5));
+        assert_eq!(diverging_pivot(&[-3.0, 1.0, 1.0, 10.0], None), Some(0.0));
+        assert_eq!(diverging_pivot(&[1.0, 2.0, 9.0], None), Some(2.0));
+        assert_eq!(diverging_pivot(&[5.0, 6.0, 7.0, 8.0], None), Some(6.5));
+        assert_eq!(diverging_pivot(&[0.0, 4.0, 8.0], None), Some(4.0));
+        assert_eq!(diverging_pivot(&[-5.0, -3.0, -1.0], None), Some(-3.0));
+        assert_eq!(diverging_pivot(&[f64::NAN, 3.0], None), Some(3.0));
+        assert_eq!(diverging_pivot(&[], None), None);
+    }
+
+    /// The domain is even about the pivot, the greater of the two reaches.
+    #[test]
+    fn a_diverging_domain_is_even_about_its_pivot() {
+        let stops = vec![A, M, B];
+        for (values, written, ends) in [
+            (vec![0.0, 1.0, 2.0, 3.0, 9.0], Some(2.0), (-5.0, 9.0)),
+            (vec![-5.0, -1.0, 0.0, 1.0], Some(0.0), (-5.0, 5.0)),
+            (vec![-2.0, 7.0], None, (-7.0, 7.0)),
+        ] {
+            let Some(Scale::Diverging {
+                domain_min,
+                domain_max,
+                pivot,
+                ..
+            }) = diverging_scale(&values, written, stops.clone())
+            else {
+                panic!("{values:?}: no diverging scale");
+            };
+            assert_eq!((domain_min, domain_max), ends, "{values:?}");
+            assert_eq!(pivot - domain_min, domain_max - pivot, "{values:?}");
+        }
+        assert!(diverging_scale(&[], None, stops).is_none());
+    }
+
+    /// With no scheme the ramp is the design system's blue arm, the midpoint for
+    /// the mode, and its red arm; the arms are the same in both modes and the
+    /// midpoint is the one colour that moves. A scheme written is its own ramp.
+    #[test]
+    fn the_default_ramp_is_the_designs_arms_about_the_midpoint_for_the_mode() {
+        use meridian_design::viz::{
+            DIVERGING_BLUE_ARM, DIVERGING_MID_DARK, DIVERGING_MID_LIGHT, DIVERGING_RED_ARM,
+        };
+        let comps = |c: meridian_design::colour::Rgba| [c.r, c.g, c.b, c.a];
+        let light = diverging_stops(None, &ChartInk::LIGHT);
+        let dark = diverging_stops(None, &ChartInk::DARK);
+        assert_eq!(light.len(), 11);
+        assert_eq!(
+            light[0],
+            comps(DIVERGING_BLUE_ARM[0]),
+            "the blue pole is first"
+        );
+        assert_eq!(
+            light[4],
+            comps(DIVERGING_BLUE_ARM[4]),
+            "the blue arm ends lightest"
+        );
+        assert_eq!(light[5], comps(DIVERGING_MID_LIGHT), "the light midpoint");
+        assert_eq!(dark[5], comps(DIVERGING_MID_DARK), "the dark midpoint");
+        assert_eq!(
+            light[6],
+            comps(DIVERGING_RED_ARM[0]),
+            "the red arm starts lightest"
+        );
+        assert_eq!(
+            light[10],
+            comps(DIVERGING_RED_ARM[4]),
+            "the red pole is last"
+        );
+        assert_eq!(
+            light[..5],
+            dark[..5],
+            "the blue arm does not move with the mode"
+        );
+        assert_eq!(
+            light[6..],
+            dark[6..],
+            "the red arm does not move with the mode"
+        );
+        assert_ne!(light[5], dark[5]);
+        for scheme in SequentialScheme::ALL {
+            assert_eq!(
+                diverging_stops(Some(scheme), &ChartInk::DARK),
+                scheme.stops(),
+                "{scheme:?}: a written scheme is its own ramp, whatever the mode"
+            );
+        }
+    }
+
+    /// `rdbu` is ColorBrewer's: red at the low end, white in the middle, blue at
+    /// the high end — the reverse of the design pair.
+    #[test]
+    fn rdbu_runs_red_to_blue_through_white() {
+        let stops = SequentialScheme::Rdbu.stops();
+        let [lr, _, lb, _] = stops[0];
+        let [hr, _, hb, _] = stops[stops.len() - 1];
+        assert!(lr > lb, "the low end is red");
+        assert!(hb > hr, "the high end is blue");
+        assert_eq!(
+            stops.len() % 2,
+            1,
+            "odd, so the middle stop sits at the pivot"
+        );
+        assert_eq!(stops[stops.len() / 2][..3], [0.9686, 0.9686, 0.9686]);
+    }
+
+    /// A diverging scale rebuilt after a gesture keeps the launch pivot and
+    /// widens about it, so the ends stay as far from the pivot on one side as
+    /// on the other.
+    #[test]
+    fn anchoring_a_diverging_scale_widens_it_about_the_launch_pivot() {
+        let launch = diverging(-3.0, 7.0, 2.0);
+        let fresh = diverging(-20.0, 24.0, 2.0);
+        let Scale::Diverging {
+            domain_min,
+            domain_max,
+            pivot,
+            ..
+        } = anchor_scale(&launch, &fresh)
+        else {
+            panic!("a diverging scale anchors to a diverging scale");
+        };
+        assert_eq!((domain_min, domain_max, pivot), (-20.0, 24.0, 2.0));
+        // A subset of the launch domain leaves it as it was.
+        let Scale::Diverging {
+            domain_min,
+            domain_max,
+            ..
+        } = anchor_scale(&launch, &diverging(0.0, 4.0, 2.0))
+        else {
+            panic!("diverging");
+        };
+        assert_eq!((domain_min, domain_max), (-3.0, 7.0));
+    }
+
+    /// A ramp's two ends are its first and last stops exactly, and the position
+    /// between them is a lerp.
+    #[test]
+    fn a_ramp_returns_its_end_stops_exactly() {
+        let stops = [A, M, B];
+        assert_eq!(ramp_at(&stops, 0.0), A);
+        assert_eq!(ramp_at(&stops, 1.0), B);
+        assert_eq!(ramp_at(&stops, 0.5), M);
+        assert_eq!(ramp_at(&stops, 1.5), B, "clamped");
+        assert_eq!(ramp_at(&[], 0.5), [0.0, 0.0, 0.0, 1.0]);
     }
 
     // --- F1: anchor_scales widen-only matrix ---
