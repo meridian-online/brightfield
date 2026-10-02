@@ -90,8 +90,10 @@ fn painted(composed: &Composed) -> (egui::Rect, Vec<Ink>) {
     let mut ink = Vec::new();
     for clipped in &out.shapes {
         match &clipped.shape {
+            // The glyphs laid out, not `Galley::text`, which is the whole text
+            // before any of it is cut short.
             egui::Shape::Text(t) => ink.push(Ink::Text(
-                t.galley.text().to_string(),
+                t.galley.rows.iter().map(|r| r.row.text()).collect(),
                 t.galley.rect.translate(t.pos.to_vec2()),
             )),
             egui::Shape::Rect(r) => ink.push(Ink::Fill(r.rect, r.fill)),
@@ -204,8 +206,9 @@ fn a_diverging_ramp_runs_from_top_to_bottom_with_the_pivot_at_its_middle() {
         "reading",
         "colorScale: diverging\ncolorPivot: 4\n",
     ));
-    let Some(LegendSpec::Diverging { min, max, pivot, .. }) =
-        LegendSpec::of_plot(&composed.plots[0])
+    let Some(LegendSpec::Diverging {
+        min, max, pivot, ..
+    }) = LegendSpec::of_plot(&composed.plots[0])
     else {
         panic!("a diverging fill with the item draws a diverging legend");
     };
@@ -270,7 +273,10 @@ fn a_string_column_draws_its_name_over_one_swatch_row_per_category() {
             "label {i} {label:?} is not level with its swatch {rect:?}"
         );
         if i > 0 {
-            assert!(rect.min.y > swatches[i - 1].0.min.y, "swatch {i} is not below the last");
+            assert!(
+                rect.min.y > swatches[i - 1].0.min.y,
+                "swatch {i} is not below the last"
+            );
         }
     }
     assert!(
