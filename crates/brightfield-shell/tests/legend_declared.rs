@@ -17,7 +17,7 @@
 
 use brightfield_shell::app::ChartDoc;
 use brightfield_shell::design::Mode;
-use brightfield_shell::legend::{band_width, LegendSpec};
+use brightfield_shell::legend::{band_width, blocks, LegendSpec};
 use brightfield_shell::pipeline::{compose_spec_str, Composed, LiveDashboard};
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::window::{Boot, MeridianApp};
@@ -66,9 +66,14 @@ fn compose(source: &str) -> Composed {
         .unwrap_or_else(|e| panic!("the spec must compose: {e}\n{source}"))
 }
 
-/// What each plot of the page draws, in plot order: `None` for no legend.
+/// What each plot of the page draws, in plot order: `None` for no legend. Read
+/// off the blocks the band holds, which is the list the page paints from.
 fn drawn(composed: &Composed) -> Vec<Option<LegendSpec>> {
-    composed.plots.iter().map(LegendSpec::of_plot).collect()
+    let mut out = vec![None; composed.plots.len()];
+    for (i, legend) in blocks(composed) {
+        out[i] = Some(legend);
+    }
+    out
 }
 
 /// `source` settled in [`WINDOW`] over a live document, so the pane re-lays the

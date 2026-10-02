@@ -193,25 +193,36 @@ pub(crate) fn declare_legends(spec: &Spec, plots: &mut [PlotHandle]) {
     }
 }
 
+/// The legend blocks the page draws, as `(plot index, legend)`, in plot order:
+/// one for each plot the file puts a legend on whose scales call for one.
+///
+/// [`band_width`] and [`draw_band`] both read this list and nothing else, so
+/// the band is reserved exactly when a block is drawn into it, and a block is
+/// drawn for exactly the plots that reserved it.
+#[must_use]
+pub fn blocks(composed: &Composed) -> Vec<(usize, LegendSpec)> {
+    composed
+        .plots
+        .iter()
+        .enumerate()
+        .filter_map(|(i, plot)| LegendSpec::of_plot(plot).map(|legend| (i, legend)))
+        .collect()
+}
+
 /// The width the chart pane's legend band consumes, in logical points — `0.0`
-/// when the file puts no legend on any plot of `composed` whose scales call
-/// for one, which is what keeps a legendless dashboard's window byte-identical
-/// to what it was before the band existed, and gives a plot with no legend item
-/// the width the band would have held. Includes the gap between the raster and
-/// the band.
+/// when [`blocks`] holds none, which is what keeps a legendless dashboard's
+/// window byte-identical to what it was before the band existed, and gives a
+/// plot with no legend item the width the band would have held. Includes the
+/// gap between the raster and the band.
 ///
 /// Read by [`crate::window::chart_window_size`], so the band is a term of the
 /// window arithmetic rather than a bite out of the raster's budget.
 #[must_use]
 pub fn band_width(composed: &Composed) -> f32 {
-    if composed
-        .plots
-        .iter()
-        .any(|p| LegendSpec::of_plot(p).is_some())
-    {
-        spacing::CONTROL_GAP + block_width()
-    } else {
+    if blocks(composed).is_empty() {
         0.0
+    } else {
+        spacing::CONTROL_GAP + block_width()
     }
 }
 
@@ -230,11 +241,8 @@ pub fn draw_band(
     mode: Mode,
 ) {
     let painter = ui.painter_at(band);
-    for plot in &composed.plots {
-        let Some(legend) = LegendSpec::of_plot(plot) else {
-            continue;
-        };
-        let y = raster_top + plot.rect.y as f32;
+    for (i, legend) in blocks(composed) {
+        let y = raster_top + composed.plots[i].rect.y as f32;
         draw_block(&painter, egui::pos2(band.left(), y), &legend, mode);
     }
 }
