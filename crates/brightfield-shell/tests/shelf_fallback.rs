@@ -321,10 +321,12 @@ fn with_the_rail_open_the_outline_draws_the_list_and_no_card_is_hung() {
     );
 }
 
-/// **AC1.** `e x` with the rail shut hangs the list as a card 320 wide whose
-/// top left is the x cell's bottom left, over the hero's plot.
+/// **AC1.** `e x` with the rail shut hangs the list as a card of the designed
+/// width, 320 points, whose top left is the x cell's bottom left, over the
+/// hero's plot.
 #[test]
-fn with_the_rail_shut_e_x_hangs_the_list_as_a_card_320_wide_from_the_x_cell_over_the_plot() {
+fn with_the_rail_shut_e_x_hangs_the_list_from_the_x_cell_over_the_plot_as_a_card_of_the_designed_width(
+) {
     let mut win = Window::rail_shut(Mode::Light);
     assert!(
         win.app.shelf_card_drawn().is_none(),
