@@ -482,7 +482,7 @@ mod tests {
         assert_eq!(band_width(&Composed::empty()), 0.0);
     }
 
-    /// A sequential ramp derives the gradient form with its domain ends.
+    /// A sequential scale derives a ramp legend with its domain ends.
     #[test]
     fn a_sequential_scale_derives_a_ramp_legend() {
         let mut scales = ScaleSet::new();
