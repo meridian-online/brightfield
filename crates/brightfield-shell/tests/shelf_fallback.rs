@@ -576,6 +576,10 @@ fn the_pointer_moves_the_cards_cursor_and_a_click_on_a_row_keeps_the_column() {
         win.app.shelf_card_drawn().is_some(),
         "moving over a row closed the card"
     );
+    assert!(
+        !win.app.chart_doc().has_unsaved_edit(),
+        "moving over a row kept it: a column under the pointer is a preview"
+    );
 
     win.click(row.name_rect.center());
     assert!(
@@ -586,6 +590,11 @@ fn the_pointer_moves_the_cards_cursor_and_a_click_on_a_row_keeps_the_column() {
         win.app.shelf_band().expect("band").channels().x,
         Binding::Column(row.column.clone()),
         "a click on {} did not keep it on x",
+        row.column
+    );
+    assert!(
+        win.app.chart_doc().has_unsaved_edit(),
+        "a click on {} left no edit for Save to write: it is still a preview",
         row.column
     );
 }
