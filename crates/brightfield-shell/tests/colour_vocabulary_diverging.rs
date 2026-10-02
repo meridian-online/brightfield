@@ -377,14 +377,16 @@ fn a_scale_brightfield_does_not_draw_draws_the_linear_ramp_and_the_page_names_it
 fn a_param_is_read_for_the_scale_and_the_pivot_and_a_pivot_that_is_no_number_is_named() {
     let values = [0.0, 1.0, 2.0, 3.0, 9.0];
     let source = format!(
-        "params:\n  s: diverging\n  p: 2\n{}",
+        "params:\n  s: diverging\n  p: 3\n{}",
         spec(&values, "colorScale: $s\ncolorPivot: $p\n")
     );
     let composed = compose(&source);
+    // The rows' median is 2, so a pivot of 3 is the param's and not chosen; it
+    // reaches 6 above and 3 below, so the domain reaches 6 either side.
     assert_eq!(
         diverging_of(&composed),
-        Some((-5.0, 9.0, 2.0)),
-        "the params hold diverging and a pivot of 2"
+        Some((-3.0, 9.0, 3.0)),
+        "the params hold diverging and a pivot of 3"
     );
     assert!(about(&composed, "colorScale").is_empty() && about(&composed, "colorPivot").is_empty());
 
