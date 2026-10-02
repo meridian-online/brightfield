@@ -187,8 +187,8 @@ pub struct PlotHandle {
     /// no `for:` when this is the one plot of the file whose scales call for a
     /// legend. A fact about the spec this composition read, and the one thing
     /// about a plot's legend the scales cannot say: whether the page draws a
-    /// legend at all is this, and what it draws is [`Self::scales`]. Set by
-    /// the crate-private `legend::declare_legends` once every plot is placed,
+    /// legend is this, and what it draws is [`Self::scales`]. Set by the
+    /// crate-private `legend::declare_legends` after the plots are placed,
     /// because the no-`for:` case counts the plots beside this one; `false`
     /// until then.
     pub legend_declared: bool,

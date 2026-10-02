@@ -167,12 +167,12 @@ pub fn block_width() -> f32 {
 /// colour legend names it by `for:` (both read by
 /// [`colour_legend_covers`]), or a standalone colour legend with no `for:`
 /// stands in a file with exactly one plot whose scales call for a legend — the
-/// plot such a legend can only mean. A `for:` that is a `$param` names no plot,
-/// as it does for the shelf's writer. The test for "calls for a legend" is the
+/// plot such a legend can mean. A `for:` that is a `$param` names no plot, as
+/// it does for the shelf's writer. The test for "calls for a legend" is the
 /// scales' own ([`LegendSpec::from_scales`]), so a legend item over a plot with
 /// no colour scale marks nothing and reserves no band.
 ///
-/// Called once by the composition, after every plot is placed: the no-`for:`
+/// Called once by the composition, after the plots are placed: the no-`for:`
 /// case counts the plots beside the one it marks.
 pub(crate) fn declare_legends(spec: &Spec, plots: &mut [PlotHandle]) {
     let unnamed_standalone = collect_legend_nodes(spec).iter().any(|(_, legend)| {
