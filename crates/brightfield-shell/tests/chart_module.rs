@@ -88,6 +88,7 @@ plot:
     x: 'region'
     y: 'amount'
     fill: { count: }
+  - legend: color
 ";
 
 /// The document a chart kind chose, composed: the block over [`ROWS`], and the
@@ -212,8 +213,9 @@ fn the_pane_draws_a_registry_authored_picture() {
 /// cells.
 ///
 /// `count-grid` is the fixture because its `fill: { count: }` yields the
-/// sequential fill scale a legend is drawn for; a histogram's block calls for
-/// no band at all, so it could not fail this.
+/// sequential fill scale a legend is drawn for and its block holds the
+/// `legend: color` item that puts one on the page; a histogram's block calls
+/// for no band at all, so it could not fail this.
 ///
 /// The repo owns this law once already —
 /// `examples_exercise.rs::no_legend_overlaps_data_in_any_example` — but it
@@ -225,7 +227,7 @@ fn the_legend_band_stays_out_of_the_data_on_the_module_route() {
     let (raster, legend) = laid_out(composed, Some(authored));
     let raster = raster.expect("the module drew no raster");
     let legend = legend.expect(
-        "the fixture's premise is a picture whose scales call for a legend band; \
+        "the fixture's premise is a picture that draws a legend band; \
          with none reserved this test could not see the overlap it exists for",
     );
     assert!(

@@ -8,6 +8,9 @@
 //! paint itself is held in `brightfield-render`'s `tests/dot_number_fill.rs`,
 //! over the renderer; this file holds the other half through the real pipeline:
 //! spec text → DuckDB → per-plot scales → the legend and the band it reserves.
+//! The page draws that legend where the file puts a `legend: color` item on the
+//! plot, so each spec here that expects a legend holds one; the file's own
+//! tests for the item are `legend_declared.rs`.
 //!
 //! The specs carry their data inline, so the run needs no file beside it.
 
@@ -43,6 +46,11 @@ fn dot(fill: &str) -> String {
     format!("  - mark: dot\n    data: {{ from: t }}\n    x: x\n    y: y\n    fill: {fill}\n")
 }
 
+/// `layers` with the item that puts the colour legend on the plot.
+fn with_legend(layers: &str) -> String {
+    format!("{layers}  - legend: color\n")
+}
+
 fn compose(layers: &str) -> Composed {
     compose_spec_str(&spec(layers), None).unwrap_or_else(|e| panic!("the spec must compose: {e}"))
 }
@@ -76,7 +84,7 @@ fn laid_out(composed: Composed) -> ChartDoc {
 /// column's values — in a band beside the raster, not on it.
 #[test]
 fn a_number_fill_on_a_dot_draws_a_sequential_legend_beside_the_plot() {
-    let composed = compose(&dot("v"));
+    let composed = compose(&with_legend(&dot("v")));
     assert_eq!(composed.plots.len(), 1, "one plot");
     let scales = &composed.plots[0].scales;
 

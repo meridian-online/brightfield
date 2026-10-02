@@ -13,6 +13,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use brightfield_engine::{ColumnProfile, ProfileOutcome, RowsAudience, SqlPredicate};
+use brightfield_protocol::write_chart_edit;
 use brightfield_render::layout::Margins;
 use brightfield_render::title::TITLE_BAND;
 use brightfield_render::VelloRenderer;
@@ -29,7 +30,7 @@ use brightfield_spec::ast::{Component, LegendNode, PlotNode, Spec, SpecValue, Va
 use brightfield_spec::edit::{self, plot_at_path, plot_at_path_mut, ChartEdit, RefuseReason};
 use brightfield_spec::layout::{resolve_axis_titles, AxisTitle, PlotAxis};
 use brightfield_spec::vocab::LegendChannel;
-use brightfield_spec::MarkKind;
+use brightfield_spec::{parse_spec, Format, MarkKind};
 use brightfield_sql::ir::ScalarValue;
 
 // ---------------------------------------------------------------------------
@@ -948,12 +949,13 @@ fn a_colour_the_table_does_not_have_is_refused_by_name() {
 // Colour — the page: the legend follows the column, and the points wear it
 // ---------------------------------------------------------------------------
 
-/// The legend the shell derives from the hero's scales, which is what it draws
-/// and what it reserves a band for. Read here and not the scale's domain: a
-/// page whose fill scale is a `Linear` over the column has a domain and draws
-/// no legend, and a test that read the domain passed on it.
+/// The legend the page draws for the hero: the one its scales call for, when
+/// the hero's file puts a legend on it, which is what the page reserves a band
+/// for. Read here and not the scale's domain: a page whose fill scale is a
+/// `Linear` over the column has a domain and draws no legend, and a test that
+/// read the domain passed on it.
 fn hero_legend(app: &MeridianApp) -> Option<LegendSpec> {
-    LegendSpec::from_scales(&app.chart_doc().composed.plots[0].scales)
+    LegendSpec::of_plot(&app.chart_doc().composed.plots[0])
 }
 
 /// **A page loaded from the edited spec draws a sequential legend for the colour
@@ -1028,11 +1030,13 @@ fn a_column_put_on_the_maps_colour_draws_a_legend_beside_the_plot_and_a_replaced
     beside_the_plot(&by_income);
 }
 
-/// **A page loaded from a chart that holds the legend item draws the legend it
-/// draws without the item**: the same legend over the same range, in the same
-/// band, clear of the same raster.
+/// **A page loaded from a chart that holds the legend item draws the legend,
+/// and the same chart with the item taken out draws none**: the legend over the
+/// column's range in a band clear of the raster with the item, and with it
+/// gone no legend and no band, the raster wider by the band's width.
 #[test]
-fn a_page_loaded_from_a_chart_holding_the_legend_item_draws_the_legend_it_drew_without_it() {
+fn a_page_loaded_from_a_chart_holding_the_legend_item_draws_it_and_one_without_the_item_draws_none()
+{
     let o = open("colour-legend-page");
     let ctx = egui::Context::default();
     let base = o.file.live.base_dir().map(Path::to_path_buf);
@@ -1056,18 +1060,105 @@ fn a_page_loaded_from_a_chart_holding_the_legend_item_draws_the_legend_it_drew_w
         "the chart holding the item drew no sequential legend: {:?}",
         hero_legend(&with)
     );
-    assert_eq!(hero_legend(&with), hero_legend(&without));
+    let band = band_width(&with.chart_doc().composed);
+    assert!(band > 0.0, "the chart holding the item reserved no band");
+    assert!(
+        with.chart_doc().legend_rect.is_some(),
+        "the chart holding the item recorded no legend band"
+    );
+
     assert_eq!(
-        with.chart_doc().legend_rect,
-        without.chart_doc().legend_rect
+        hero_legend(&without),
+        None,
+        "the chart with the item taken out drew a legend"
     );
     assert_eq!(
-        with.chart_doc().raster_rect,
-        without.chart_doc().raster_rect
+        band_width(&without.chart_doc().composed),
+        0.0,
+        "the chart with the item taken out reserved a band"
     );
     assert_eq!(
-        band_width(&with.chart_doc().composed),
-        band_width(&without.chart_doc().composed)
+        without.chart_doc().legend_rect,
+        None,
+        "the chart with the item taken out recorded a legend band"
+    );
+    // The colour is still on the plot: it is the legend that went, not the
+    // scale, so the page is the same picture with the room the band held.
+    assert!(
+        LegendSpec::from_scales(&without.chart_doc().composed.plots[0].scales).is_some(),
+        "taking the item out took the colour scale with it"
+    );
+    let (r_with, r_without) = (
+        with.chart_doc().raster_rect.expect("a raster"),
+        without.chart_doc().raster_rect.expect("a raster"),
+    );
+    assert!(
+        r_without.width() >= r_with.width() + band - 1.0,
+        "the plot did not take the width the band held: {} with the item, {} without, \
+         band {band}",
+        r_with.width(),
+        r_without.width()
+    );
+}
+
+/// **A chart coloured from the shelf draws its legend after the edit, and again
+/// after the edit is written into the chart's text and the text read back.** The
+/// edit is the shelf's, the text is the one the generator wrote with each edit
+/// written into it the way Save writes it, and the page the text reads back as
+/// is loaded the way a reopened file is.
+#[test]
+fn a_chart_coloured_from_the_shelf_draws_its_legend_after_the_edit_and_after_the_text_is_read_back()
+{
+    let o = open("colour-legend-text");
+    let ctx = egui::Context::default();
+    let base = o.file.live.base_dir().map(Path::to_path_buf);
+
+    let mut edited = o.generated.clone();
+    let edits =
+        put_colour(&mut edited, &o.hero, VALUE, &o.table).expect("the table has the column");
+    let after_the_edit = window_over(edited, base.as_deref(), &ctx);
+
+    let generated_text = std::fs::read_to_string(
+        o.file
+            .spec_file
+            .as_ref()
+            .expect("the generator wrote its text to a scratch file"),
+    )
+    .expect("the generated text reads");
+    let written = edits.iter().fold(generated_text, |text, edit| {
+        write_chart_edit(&text, edit).unwrap_or_else(|e| panic!("{edit:?} is written: {e}"))
+    });
+    assert!(
+        written.lines().any(|l| l.trim() == "- legend: color"),
+        "the text holds no legend item after the edit:\n{written}"
+    );
+    let read_back = parse_spec(&written, Format::Yaml)
+        .expect("the written text parses")
+        .spec;
+    let after_the_text = window_over(read_back, base.as_deref(), &ctx);
+
+    for (when, page) in [
+        ("after the edit", &after_the_edit),
+        ("after the text is read back", &after_the_text),
+    ] {
+        assert!(
+            matches!(hero_legend(page), Some(LegendSpec::Sequential { .. })),
+            "{when}: the chart coloured by {VALUE} drew no sequential legend: {:?}",
+            hero_legend(page)
+        );
+        assert!(
+            band_width(&page.chart_doc().composed) > 0.0,
+            "{when}: no band was reserved for the legend"
+        );
+        assert!(
+            page.chart_doc().legend_rect.is_some(),
+            "{when}: no legend band was recorded"
+        );
+    }
+    assert_eq!(
+        hero_legend(&after_the_edit),
+        hero_legend(&after_the_text),
+        "the legend moved when the chart was written and read back"
     );
 }
 

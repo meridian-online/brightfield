@@ -16,7 +16,8 @@
 //!   is outside the data by layout, not by hope;
 //! - both sit inside the pane's content box — the window budgeted for the
 //!   band rather than letting it bite the raster;
-//! - a spec whose scales call for no legend reserves **no** band at all.
+//! - a spec whose scales call for no legend, or whose file puts none on the
+//!   plot, reserves **no** band at all.
 //!
 //! Accuracy rides the same pass: each plot's legend derivation is compared
 //! against the scale set that plot was composed with — entries exactly the
@@ -28,7 +29,7 @@ use brightfield_render::channel::Channel;
 use brightfield_render::scale::Scale;
 use brightfield_shell::app::ChartDoc;
 use brightfield_shell::design::Mode;
-use brightfield_shell::legend::{band_width, LegendSpec};
+use brightfield_shell::legend::{band_width, blocks, LegendSpec};
 use brightfield_shell::pipeline::{compose_spec, Composed};
 use brightfield_shell::window::{chart_window_size, Boot, MeridianApp};
 
@@ -123,7 +124,7 @@ fn no_legend_overlaps_data_in_any_example() {
 
         match doc.legend_rect {
             Some(legend) => {
-                assert!(banded, "{name}: a band was drawn that no scale called for");
+                assert!(banded, "{name}: a band was drawn though no plot holds a legend that its scales call for");
                 with_legend += 1;
                 assert!(
                     !legend.intersects(raster),
@@ -139,7 +140,7 @@ fn no_legend_overlaps_data_in_any_example() {
             None => {
                 assert!(
                     !banded,
-                    "{name}: scales call for a legend but no band was reserved"
+                    "{name}: a legend was drawn but no band was reserved for it"
                 );
             }
         }
@@ -203,5 +204,63 @@ fn every_margin_legend_is_accurate_to_its_plots_displayed_scale() {
         categorical >= 2,
         "only {categorical} categorical legends were checked — the accuracy \
          law was held over almost nothing"
+    );
+}
+
+/// **The file decides, over the corpus.** An example whose text holds no
+/// `legend: color` line draws no legend, though its scales may call for one; an
+/// example that holds one over a plot with a colour scale draws that plot's
+/// legend, at the right of the raster and clear of it, whether the item stands
+/// in the plot or beside it as a standalone legend.
+#[test]
+fn an_example_draws_a_legend_when_its_file_holds_a_colour_legend_node() {
+    let mut with_node = 0usize;
+    for path in example_specs() {
+        let name = path
+            .file_name()
+            .expect("a file has a name")
+            .to_string_lossy()
+            .into_owned();
+        let text = std::fs::read_to_string(&path).expect("an example reads");
+        let holds_node = text.lines().any(|l| {
+            l.trim_start()
+                .trim_start_matches("- ")
+                .starts_with("legend: color")
+        });
+        let Ok(composed) = compose_spec(path.to_str().expect("utf-8 path")) else {
+            continue;
+        };
+        let scaled = composed
+            .plots
+            .iter()
+            .any(|p| LegendSpec::from_scales(&p.scales).is_some());
+        if !holds_node {
+            assert!(
+                blocks(&composed).is_empty(),
+                "{name}: a legend was drawn though the file holds no legend node"
+            );
+            continue;
+        }
+        if !scaled {
+            continue;
+        }
+        with_node += 1;
+        assert!(
+            !blocks(&composed).is_empty(),
+            "{name}: the file holds a legend node over a plot with a colour scale, \
+             and no legend was drawn"
+        );
+        let doc = laid_out(composed);
+        let raster = doc.raster_rect.expect("recorded");
+        let legend = doc.legend_rect.expect("a legend band was recorded");
+        assert!(
+            legend.min.x >= raster.max.x,
+            "{name}: the legend band {legend:?} is not at the right of the raster {raster:?}"
+        );
+    }
+    assert!(
+        with_node >= 3,
+        "only {with_node} examples hold a legend node over a colour scale — the \
+         rule was held over almost nothing"
     );
 }
