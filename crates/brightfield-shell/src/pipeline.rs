@@ -29,7 +29,9 @@ use brightfield_engine::nearest::{NearestProbe, NearestRead};
 use brightfield_engine::{
     assemble_batches, DeclinedMark, Engine, NavigationExtent, RowsAudience, ScanTally, Session,
 };
-use brightfield_render::axis::{axis_kind, tick_format_crosses_axis, AxisKind};
+use brightfield_render::axis::{
+    axis_kind, axis_scale_word, tick_count_applies, tick_format_crosses_axis, AxisKind,
+};
 use brightfield_render::canvas_host::SurfaceRect;
 use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::ink::ChartInk;
@@ -42,8 +44,8 @@ use brightfield_render::scale::{
     ColourScale, PinnedDomains, Scale, ScaleSet, SequentialScheme, ViewExtent,
 };
 use brightfield_render::scene::{
-    build_multi_mark_scene_pinned, compose_dashboard, unrestorable_under_sampling, ChartData,
-    UnsampledDomains,
+    axis_ends_apply, axis_reverse_applies, build_multi_mark_scene_pinned, compose_dashboard,
+    unrestorable_under_sampling, ChartData, UnsampledDomains,
 };
 use brightfield_render::selection::{
     committed_selection_rect, render_committed_selection, CommittedSelection, Selected,
@@ -54,11 +56,11 @@ use brightfield_spec::analysis::{
 };
 use brightfield_spec::ast::{Component, MarkData, ParamNode, PlotNode, SpaceNode, SpecValue};
 use brightfield_spec::layout::{
-    collect_plot_nodes, placed_plots, resolve_axis_ends, resolve_axis_reverse,
+    collect_plot_nodes, placed_plots, plot_label, resolve_axis_ends, resolve_axis_reverse,
     resolve_colour_pivot, resolve_colour_scale_diverging, resolve_colour_scheme_name,
     resolve_fixed_domains, resolve_grid_lines, resolve_plot_insets, resolve_plot_margins,
-    resolve_plot_stack_offset, resolve_tick_counts, resolve_tick_formats, AxisFormat, Rect,
-    StackOffset, TickFormats,
+    resolve_plot_stack_offset, resolve_tick_counts, resolve_tick_formats, AxisEnds, AxisFormat,
+    AxisReverse, Rect, StackOffset, TickCounts, TickFormats,
 };
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, ParseWarning, Spec};
@@ -2007,9 +2009,11 @@ fn compose_from_results(
     let mut channel_maps: Vec<ChannelMap> = Vec::with_capacity(marks.len());
     let mut kinds = Vec::with_capacity(marks.len());
     let mut mark_faults: Vec<MarkFault> = Vec::new();
-    // Tick formats that sit on an axis of the other kind, found per plot once
-    // its scales exist. See [`crossed_tick_formats`].
-    let mut crossed_formats: Vec<ParseWarning> = Vec::new();
+    // What each plot's axis instructions meet once its scales exist: tick formats
+    // that sit on an axis of the other kind ([`crossed_tick_formats`]), and axis
+    // instructions that change nothing on the axis they meet
+    // ([`inert_axis_instructions`]).
+    let mut composed_warnings: Vec<ParseWarning> = Vec::new();
     for (i, result) in results.into_iter().enumerate() {
         // Assemble EVERY materialised chunk into the one batch this mark draws,
         // not just the first ~2048-row chunk. A row-per-mark chart wider than one
@@ -2406,11 +2410,21 @@ fn compose_from_results(
         for warning in plot_nodes
             .iter()
             .find(|(p, _)| *p == plot.path)
-            .map(|(_, node)| crossed_tick_formats(node, &tick_formats, &scales))
+            .map(|(_, node)| {
+                let mut found = crossed_tick_formats(node, &tick_formats, &scales);
+                found.extend(inert_axis_instructions(
+                    &plot_label(&plot.path, node),
+                    axis_ends,
+                    tick_counts,
+                    axis_reverse,
+                    &scales,
+                ));
+                found
+            })
             .unwrap_or_default()
         {
-            if !crossed_formats.contains(&warning) {
-                crossed_formats.push(warning);
+            if !composed_warnings.contains(&warning) {
+                composed_warnings.push(warning);
             }
         }
 
@@ -2540,7 +2554,7 @@ fn compose_from_results(
         // the spec alone would silently lose the parse warnings. What is set here
         // is what this composition found itself, which `with_diagnostics` keeps
         // when the load's are put beside it (`a_repaint_says_a_crossed_format_once`).
-        diagnostics: LoadDiagnostics::from_composition(&crossed_formats),
+        diagnostics: LoadDiagnostics::from_composition(&composed_warnings),
         // Live-queried this very composition — no materialised run output is
         // being previewed, so no currency claim is made (or owed). A caller
         // previewing run output annotates with `with_run_state`, ingesting
@@ -2595,6 +2609,70 @@ fn crossed_tick_formats(
                 .map_or("positional", AxisKind::word)
                 .to_string(),
         });
+    }
+    out
+}
+
+/// The warnings for a plot's axis instructions that change nothing on the axis
+/// they meet: `xZero`, `xNice` or `xTicks` (and the `y` of each) on an axis that
+/// does not follow it, and `xReverse` or `yReverse` on a plot with a map
+/// projection.
+///
+/// Known here, where the data has typed the scales, and asked of the judges the
+/// draw goes through ([`axis_ends_apply`], [`tick_count_applies`],
+/// [`axis_reverse_applies`]), so an instruction the draw drops is an instruction
+/// that was named
+/// (`an_instruction_an_axis_takes_none_of_is_named_and_the_plot_draws_without_it`).
+/// A key set to `false`, or to a value the resolvers read as no request, is no
+/// instruction and says nothing.
+fn inert_axis_instructions(
+    plot: &str,
+    ends: AxisEnds,
+    counts: TickCounts,
+    reverse: AxisReverse,
+    scales: &ScaleSet,
+) -> Vec<ParseWarning> {
+    let mut out = Vec::new();
+    for (channel, zero, nice, ticks, reversed) in [
+        (
+            Channel::X,
+            ("xZero", ends.x.zero),
+            ("xNice", ends.x.nice),
+            ("xTicks", counts.x.is_some()),
+            ("xReverse", reverse.x),
+        ),
+        (
+            Channel::Y,
+            ("yZero", ends.y.zero),
+            ("yNice", ends.y.nice),
+            ("yTicks", counts.y.is_some()),
+            ("yReverse", reverse.y),
+        ),
+    ] {
+        if let Some((scale, axis)) = scales
+            .get(channel)
+            .and_then(|scale| Some((scale, axis_scale_word(scale)?)))
+        {
+            for (key, set, applies) in [
+                (zero.0, zero.1, axis_ends_apply(scale)),
+                (nice.0, nice.1, axis_ends_apply(scale)),
+                (ticks.0, ticks.1, tick_count_applies(scale)),
+            ] {
+                if set && !applies {
+                    out.push(ParseWarning::AxisAttributeOnWrongAxis {
+                        attribute: key.to_string(),
+                        plot: plot.to_string(),
+                        axis: axis.to_string(),
+                    });
+                }
+            }
+        }
+        if reversed.1 && !axis_reverse_applies(scales) {
+            out.push(ParseWarning::AxisReverseUnderProjection {
+                attribute: reversed.0.to_string(),
+                plot: plot.to_string(),
+            });
+        }
     }
     out
 }
