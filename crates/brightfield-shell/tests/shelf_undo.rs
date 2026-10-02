@@ -410,7 +410,7 @@ fn u_acts_with_the_list_open_and_takes_back_the_kept_column_not_the_preview() {
     win.keep_income_on_x();
     win.type_letter(egui::Key::X, "x");
     assert_eq!(win.cursor().as_deref(), Some(INCOME));
-    win.walk_to("avg_occupancy", egui::Key::K, "k");
+    win.walk_to("avg_occupancy", egui::Key::J, "j");
     assert_eq!(
         win.hero_column(Channel::X).as_deref(),
         Some("avg_occupancy"),
@@ -472,14 +472,22 @@ fn cmd_z_acts_from_the_query_line_where_a_u_is_typed() {
         Some("u"),
         "a u in the query is not typed"
     );
+    // The query's `u` moved the cursor to a column that has one, which the hero
+    // draws as a preview over the kept column: the kept edit is what `u` would
+    // have taken back.
     assert_eq!(
-        win.hero_column(Channel::X).as_deref(),
-        Some(INCOME),
+        win.app.chart_doc().last_shelf_edit(),
+        Some(X_WORDS),
         "a u typed in the query took the column back"
     );
 
     win.cmd_z();
     assert_the_map(&win, "after cmd-Z from the query");
+    assert!(
+        win.app.chart_doc().shelf_preview().is_none(),
+        "the preview the query's cursor drew was left standing"
+    );
+    assert_eq!(win.app.chart_doc().last_shelf_edit(), None);
     assert!(win.list_is_open(), "cmd-Z closed the list");
     assert!(!win.marked_unsaved());
 }
@@ -677,9 +685,9 @@ fn u_takes_back_nothing_across_a_tiles_switch() {
 
     win.type_letter(egui::Key::U, "u");
     assert_eq!(
-        win.hero_column(Channel::X).as_deref(),
-        Some(INCOME),
-        "u took the column back across a switch"
+        win.app.chart_doc().last_shelf_edit(),
+        None,
+        "the band names an edit that u cannot take back across a switch"
     );
     assert_eq!(
         win.app
