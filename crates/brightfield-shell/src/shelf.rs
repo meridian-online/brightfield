@@ -1431,7 +1431,6 @@ const CARD_MARGIN: f32 = spacing::SPACE_4;
 /// Read off the design system rather than typed here, so a change to what an
 /// overlay looks like moves the card with the rest of the chrome. It carries no
 /// inner margin: the card's contents are the list's, which pads its own rows.
-#[must_use]
 pub fn floating_card_frame(mode: Mode) -> egui::Frame {
     let dark = mode.is_dark();
     let mut frame = chrome::overlay_frame(mode)
