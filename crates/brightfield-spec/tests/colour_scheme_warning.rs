@@ -93,8 +93,8 @@ fn a_scheme_brightfield_draws_raises_no_warning() {
     }
     assert_eq!(
         DRAWN_COLOUR_SCHEMES,
-        ["viridis", "blues", "turbo", "meridian"],
-        "the four names this build draws"
+        ["viridis", "blues", "turbo", "meridian", "rdbu"],
+        "the five names this build draws"
     );
 }
 
@@ -164,7 +164,7 @@ fn corpus() -> Vec<PathBuf> {
 }
 
 /// **AC4.** Of the vendored Mosaic examples, the ones that name a scheme outside
-/// the four brightfield draws raise the warning, one per such value; the ones
+/// the five brightfield draws raise the warning, one per such value; the ones
 /// that give theirs as a `$param`, and the ones that name a drawn scheme, raise
 /// none.
 ///
@@ -174,7 +174,7 @@ fn corpus() -> Vec<PathBuf> {
 /// that dropped one, or a walk that read no plot, fails here and does not pass
 /// over nothing.
 #[test]
-fn the_vendored_examples_that_name_a_scheme_outside_the_four_are_warned_and_a_param_is_not() {
+fn the_vendored_examples_that_name_a_scheme_outside_the_five_are_warned_and_a_param_is_not() {
     let mut warned_files: Vec<(String, String)> = Vec::new();
     let mut param_files: Vec<String> = Vec::new();
 
@@ -198,18 +198,17 @@ fn the_vendored_examples_that_name_a_scheme_outside_the_four_are_warned_and_a_pa
         expected.sort();
         expected.dedup();
 
+        // `colorScale` and `colorPivot` are judged too; their own test reads them.
         let mut found: Vec<String> = colour_warnings(&parsed.warnings)
             .into_iter()
-            .map(|(key, value)| {
-                assert_eq!(key, "colorScheme", "{name}: the only colour key judged");
-                value
-            })
+            .filter(|(key, _)| key == "colorScheme")
+            .map(|(_, value)| value)
             .collect();
         found.sort();
         found.dedup();
         assert_eq!(
             found, expected,
-            "{name}: the parse warns of each scheme outside the four, and of no other"
+            "{name}: the parse warns of each scheme outside the five, and of no other"
         );
 
         for value in found {
@@ -234,7 +233,7 @@ fn the_vendored_examples_that_name_a_scheme_outside_the_four_are_warned_and_a_pa
             ("population-arrows.yaml", "BuRd"),
             ("wnba-shots.yaml", "YlOrRd"),
         ],
-        "the six vendored examples that name a scheme outside the four, each warned"
+        "the six vendored examples that name a scheme outside the five, each warned"
     );
     assert_eq!(
         param_files,

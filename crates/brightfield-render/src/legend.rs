@@ -53,7 +53,7 @@ const BAR_SAMPLES: usize = 48;
 pub fn colour_legend_size(colour_scale: &Scale) -> Option<(f64, f64)> {
     match colour_scale {
         Scale::Colour { .. } => swatch_legend_size(colour_scale),
-        Scale::Sequential { .. } => sequential_legend_size(colour_scale),
+        Scale::Sequential { .. } | Scale::Diverging { .. } => sequential_legend_size(colour_scale),
         _ => None,
     }
 }
@@ -114,6 +114,11 @@ pub fn swatch_entry_rects(box_x: f64, box_y: f64, colour_scale: &Scale) -> Vec<R
 pub fn sequential_legend_size(scale: &Scale) -> Option<(f64, f64)> {
     let (dmin, dmax) = match scale {
         Scale::Sequential {
+            domain_min,
+            domain_max,
+            ..
+        }
+        | Scale::Diverging {
             domain_min,
             domain_max,
             ..
@@ -219,7 +224,7 @@ pub fn render_colour_legend_at_selected(
         Scale::Colour { .. } => {
             render_swatch_legend_at(scene, box_x, box_y, colour_scale, selected, hovered, ink)
         }
-        Scale::Sequential { .. } => {
+        Scale::Sequential { .. } | Scale::Diverging { .. } => {
             render_sequential_legend_at(scene, box_x, box_y, colour_scale, ink)
         }
         _ => {}
@@ -326,11 +331,13 @@ fn render_swatch_legend_at(
     }
 }
 
-/// Render a continuous gradient-bar legend for a [`Scale::Sequential`], panel
+/// Render a continuous gradient-bar legend for a [`Scale::Sequential`] or a
+/// [`Scale::Diverging`] (whose domain is even about its pivot, so the mid tick
+/// label reads the pivot), panel
 /// top-left at `(box_x, box_y)`. The bar is a vertical ramp — high value at the
 /// top — drawn as `BAR_SAMPLES` stacked sampled quads (no gradient-brush
 /// dependency), with min / mid / max numeric tick labels beside it read from the
-/// scale's domain extent. No-op for any non-Sequential scale.
+/// scale's domain extent. No-op for any other scale.
 pub fn render_sequential_legend_at(
     scene: &mut Scene,
     box_x: f64,
@@ -340,6 +347,11 @@ pub fn render_sequential_legend_at(
 ) {
     let (dmin, dmax) = match scale {
         Scale::Sequential {
+            domain_min,
+            domain_max,
+            ..
+        }
+        | Scale::Diverging {
             domain_min,
             domain_max,
             ..

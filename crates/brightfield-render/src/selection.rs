@@ -112,7 +112,10 @@ fn spans(scale: &Scale, selected: &Selected) -> Vec<(f64, f64)> {
                 let (a, b) = (scale.map_f64(*lo), scale.map_f64(*hi));
                 vec![(a.min(b), a.max(b))]
             }
-            Scale::Band { .. } | Scale::Colour { .. } | Scale::Sequential { .. } => Vec::new(),
+            Scale::Band { .. }
+            | Scale::Colour { .. }
+            | Scale::Sequential { .. }
+            | Scale::Diverging { .. } => Vec::new(),
         },
         Selected::Categories(names) => {
             let Some(width) = scale.band_width() else {

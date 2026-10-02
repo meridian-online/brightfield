@@ -191,6 +191,10 @@ pub struct ChartInk {
     /// this field existed the dark basemap drew the LIGHT literal on the dark
     /// surface at 1.21:1 — painted and invisible.
     pub geo_stroke: Color,
+    /// The midpoint of the design system's diverging ramp, which differs by
+    /// mode: warm gray step 2 in light and step 4 in dark. Its two arms are
+    /// the same in both modes, so only this one colour lives here.
+    pub diverging_mid: Color,
     /// The "Harbour" categorical order for this mode, as the raw component
     /// arrays [`crate::scale::Scale::Colour`] stores. The ORDER is the
     /// colourblind-safety mechanism and is therefore data, never cosmetic; both
@@ -281,6 +285,11 @@ impl ChartInk {
             } else {
                 GEO_STROKE_LIGHT
             },
+            diverging_mid: ink(if dark {
+                meridian_design::viz::DIVERGING_MID_DARK
+            } else {
+                meridian_design::viz::DIVERGING_MID_LIGHT
+            }),
             categorical: if dark {
                 &CATEGORICAL_DARK
             } else {

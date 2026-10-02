@@ -1072,11 +1072,13 @@ pub fn resolve_colour_scheme_name<'a>(
 /// renderer cycles them, default first.
 ///
 /// This is the list the parser's warning judges against
-/// ([`read_colour_scheme`]), and `brightfield_render::scale::SequentialScheme`
-/// draws exactly these: a render-side test walks the renderer's own cycle and
-/// holds the two lists equal in both directions, so a scheme added to one and
-/// not the other fails there.
-pub const DRAWN_COLOUR_SCHEMES: [&str; 4] = ["viridis", "blues", "turbo", "meridian"];
+/// ([`read_colour_scheme`]). `brightfield_render::scale::SequentialScheme` holds
+/// its own list of every scheme it draws, and a render-side test holds the two
+/// equal in both directions, so a name on one list and not the other fails
+/// there. That holds for a name written as a string; a `$param` is read when
+/// the plot is drawn, and a param that holds a name on neither list draws the
+/// default with no warning.
+pub const DRAWN_COLOUR_SCHEMES: [&str; 5] = ["viridis", "blues", "turbo", "meridian", "rdbu"];
 
 /// What a plot's `colorScheme` value is, to the parser that warns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1106,6 +1108,84 @@ pub fn read_colour_scheme(value: &SpecValue) -> ColourSchemeReading {
             ColourSchemeReading::Drawn
         }
         _ => ColourSchemeReading::Unknown,
+    }
+}
+
+/// The names a plot's `colorScale` can give and be drawn in: the straight ramp
+/// and the one that diverges about a pivot. Any other Mosaic scale type
+/// (`quantile`, `symlog`, `diverging-log`) is drawn as `linear`, and the parser
+/// names it.
+pub const DRAWN_COLOUR_SCALES: [&str; 2] = ["linear", "diverging"];
+
+/// What a plot's `colorScale` value is, to the parser that warns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColourScaleReading {
+    /// A name in [`DRAWN_COLOUR_SCALES`].
+    Drawn,
+    /// `null` or a lifted `$param`: a recorded deferral, not a typo.
+    Deferred,
+    /// A scale type no renderer draws here, or a value that is no name. The
+    /// plot draws the linear ramp and the parser names the value.
+    Unknown,
+}
+
+/// The one judge of a plot's `colorScale` value, for the parser that warns.
+/// Case-exact, as Mosaic's own names are.
+#[must_use]
+pub fn read_colour_scale(value: &SpecValue) -> ColourScaleReading {
+    match value {
+        SpecValue::Param(_) | SpecValue::Null => ColourScaleReading::Deferred,
+        SpecValue::String(name) if DRAWN_COLOUR_SCALES.contains(&name.as_str()) => {
+            ColourScaleReading::Drawn
+        }
+        _ => ColourScaleReading::Unknown,
+    }
+}
+
+/// Whether a plot's `colorScale` draws about a pivot: the literal `diverging`,
+/// or a `$param` that holds it *now*, as [`resolve_colour_scheme_name`] reads
+/// its own key. A plot with no `colorScale`, a name no renderer draws, and a
+/// param that holds anything else is not diverging and draws the linear ramp.
+#[must_use]
+pub fn resolve_colour_scale_diverging(
+    plot: &PlotNode,
+    params: &IndexMap<String, ParamNode>,
+) -> bool {
+    let name = match plot.attributes.get("colorScale") {
+        Some(SpecValue::String(name)) => Some(name.as_str()),
+        Some(SpecValue::Param(param)) => match params.get(&param.0) {
+            Some(ParamNode::Value(SpecValue::String(name))) => Some(name.as_str()),
+            _ => None,
+        },
+        _ => None,
+    };
+    name == Some("diverging")
+}
+
+/// The pivot a plot's `colorPivot` gives, if it gives one: a number, or a
+/// `$param` whose value param holds a number *now*. `None` is the plot asking
+/// for the pivot to be chosen from its rows; whether a written value is a number
+/// at all is [`colour_pivot`]'s to judge at parse time.
+#[must_use]
+pub fn resolve_colour_pivot(plot: &PlotNode, params: &IndexMap<String, ParamNode>) -> Option<f64> {
+    match plot.attributes.get("colorPivot")? {
+        SpecValue::Param(param) => match params.get(&param.0) {
+            Some(ParamNode::Value(value)) => colour_pivot(value),
+            _ => None,
+        },
+        value => colour_pivot(value),
+    }
+}
+
+/// A `colorPivot` value read as a number: an integer or a finite float. The
+/// parser asks this same function which written values are no pivot, so the
+/// resolver and the warning cannot disagree about what a pivot is.
+#[must_use]
+pub fn colour_pivot(value: &SpecValue) -> Option<f64> {
+    match value {
+        SpecValue::Integer(n) => Some(*n as f64),
+        SpecValue::Float(f) if f.is_finite() => Some(*f),
+        _ => None,
     }
 }
 
