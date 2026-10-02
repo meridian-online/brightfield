@@ -62,7 +62,8 @@ fn row_plot(fill: &str, name: Option<&str>, extra: &str) -> String {
 }
 
 fn compose(source: &str) -> Composed {
-    compose_spec_str(source, None).unwrap_or_else(|e| panic!("the spec must compose: {e}\n{source}"))
+    compose_spec_str(source, None)
+        .unwrap_or_else(|e| panic!("the spec must compose: {e}\n{source}"))
 }
 
 /// What each plot of the page draws, in plot order: `None` for no legend.
@@ -214,19 +215,28 @@ fn an_item_over_a_plot_with_no_colour_scale_draws_nothing() {
     let none = compose(&one_plot(
         "  - mark: dot\n    data: { from: t }\n    x: x\n    y: y\n  - legend: color\n",
     ));
-    assert_eq!(drawn(&none), vec![None], "a plot with no fill drew a legend");
-    assert_eq!(band_width(&none), 0.0, "a plot with no fill reserved a band");
+    assert_eq!(
+        drawn(&none),
+        vec![None],
+        "a plot with no fill drew a legend"
+    );
+    assert_eq!(
+        band_width(&none),
+        0.0,
+        "a plot with no fill reserved a band"
+    );
 
-    let opacity = compose(&one_plot(&format!(
-        "{}  - legend: opacity\n",
-        dot("v", 2)
-    )));
+    let opacity = compose(&one_plot(&format!("{}  - legend: opacity\n", dot("v", 2))));
     assert_eq!(
         drawn(&opacity),
         vec![None],
         "an opacity legend put a colour legend on the plot"
     );
-    assert_eq!(band_width(&opacity), 0.0, "an opacity legend reserved a band");
+    assert_eq!(
+        band_width(&opacity),
+        0.0,
+        "an opacity legend reserved a band"
+    );
 }
 
 /// **AC4, by `for:`.** A standalone colour legend that names the plot keeps the
@@ -243,7 +253,10 @@ fn a_standalone_legend_that_names_its_plot_by_for_keeps_the_legend_at_its_right(
         [Some(LegendSpec::Categorical { entries })] => assert_eq!(entries.len(), 2),
         other => panic!("the named plot drew {other:?}"),
     }
-    assert!(band_width(&composed) > 0.0, "the named plot reserved no band");
+    assert!(
+        band_width(&composed) > 0.0,
+        "the named plot reserved no band"
+    );
     at_the_right(&laid_out(&source), "named by for:");
 }
 

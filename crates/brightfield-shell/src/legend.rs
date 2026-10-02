@@ -188,8 +188,8 @@ pub(crate) fn declare_legends(spec: &Spec, plots: &mut [PlotHandle]) {
         _ => None,
     };
     for (i, plot) in plots.iter_mut().enumerate() {
-        plot.legend_declared = colour_legend_covers(spec, &plot.path)
-            || (unnamed_standalone && sole == Some(i));
+        plot.legend_declared =
+            colour_legend_covers(spec, &plot.path) || (unnamed_standalone && sole == Some(i));
     }
 }
 
