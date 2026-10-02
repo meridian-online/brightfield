@@ -1871,6 +1871,13 @@ impl ProtocolModel {
         self.column_pick.take()
     }
 
+    /// The column the Outline highlights — the one the window's inspector is
+    /// showing — whether or not the Outline's cursor is on its row.
+    #[must_use]
+    pub fn selected_column(&self) -> Option<&str> {
+        self.selected_column.as_deref()
+    }
+
     /// **The column whose row the Outline's cursor is on**, or `None` with the
     /// cursor on a spine row or on no row. What `z` and a channel put on the
     /// channel, and what the palette's `put-column-on-*` rows are offered for.
@@ -3628,10 +3635,13 @@ fn outline_row(
     // The trailing end's own ui, made on every row whether it draws the chips
     // or not: a child takes one of its parent's automatic ids, so a row that
     // made one only under the pointer would move the ids of every row after it
-    // and lose their pointer state for a frame.
+    // and lose their pointer state for a frame. It is a little taller than the
+    // row so the chips are centred on the row's line: the design system's key
+    // chip is a point taller than a dense row, and a ui no taller than the row
+    // would hang it from the row's top instead.
     let mut trail = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(content)
+            .max_rect(content.expand2(egui::vec2(0.0, spacing::SPACE_2)))
             .layout(egui::Layout::right_to_left(egui::Align::Center)),
     );
     let chips = if verbs && row.depth > 0 && ui.rect_contains_pointer(rect) {
