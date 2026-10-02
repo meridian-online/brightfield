@@ -449,3 +449,164 @@ fn each_unread_axis_attribute_in_the_corpus_is_named_and_no_read_one_is() {
     let found: Vec<&str> = table.keys().map(String::as_str).collect();
     assert_eq!(found, UNREAD_IN_CORPUS);
 }
+
+// ---------------------------------------------------------------------------
+// The corpus's axis instructions that an axis may drop
+// ---------------------------------------------------------------------------
+
+/// The axis instructions an axis may take none of, as a composition names them
+/// when it lands on the wrong kind of axis: the ends of an axis, a tick count,
+/// and a reversal.
+const WATCHED: &[&str] = &[
+    "xZero", "xNice", "xTicks", "xReverse", "yZero", "yNice", "yTicks", "yReverse",
+];
+
+/// Each plot in a raw document with its component path and every key it sets
+/// itself, value and all: `raw_plots` with the values kept.
+fn raw_plot_attributes(
+    component: &serde_yaml::Mapping,
+    path: &str,
+    out: &mut Vec<(String, BTreeMap<String, serde_yaml::Value>)>,
+) {
+    let key = |k: &str| component.get(serde_yaml::Value::String(k.into()));
+    if key("plot").is_some() {
+        let attrs = component
+            .iter()
+            .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.clone())))
+            .filter(|(k, _)| k != "plot")
+            .collect();
+        out.push((path.to_string(), attrs));
+        return;
+    }
+    for kind in ["vconcat", "hconcat"] {
+        if let Some(serde_yaml::Value::Sequence(items)) = key(kind) {
+            for (i, item) in items.iter().enumerate() {
+                if let serde_yaml::Value::Mapping(m) = item {
+                    raw_plot_attributes(m, &format!("{path}/{kind}[{i}]"), out);
+                }
+            }
+            return;
+        }
+    }
+}
+
+/// Whether what the plot writes of itself makes `key` land where it does
+/// nothing whatever the data is: a reversal on a plot with a projection, or an
+/// end or a tick count on an axis whose `xScale` / `yScale` the spec writes as
+/// a log, a symlog or a band, or, for an end, a time. What a column's type makes
+/// of an axis is a composition's to say, and not decidable here.
+fn inert_by_what_the_plot_writes(key: &str, attrs: &BTreeMap<String, serde_yaml::Value>) -> bool {
+    let (axis, instruction) = key.split_at(1);
+    if instruction == "Reverse" {
+        return attrs.contains_key("projectionType");
+    }
+    let scale = attrs
+        .get(&format!("{axis}Scale"))
+        .and_then(serde_yaml::Value::as_str);
+    match (instruction, scale) {
+        ("Ticks", Some("log" | "symlog" | "band" | "ordinal" | "point")) => true,
+        (
+            "Zero" | "Nice",
+            Some("log" | "symlog" | "band" | "ordinal" | "point" | "time" | "utc"),
+        ) => true,
+        _ => false,
+    }
+}
+
+/// The plots of the vendored and the curated corpus that set one of
+/// [`WATCHED`], as `spec  plot  key`, as they stood when this was written; a key
+/// a plot inherits is named once, under `plotDefaults`. A vendor bump changes
+/// this list in the same edit.
+///
+/// What each lands on is a column's type, and the corpus's data is not in the
+/// repository, so a composition's verdict on these is not tested here. Two are
+/// worth reading: `line-multi-series` and `region-tests` set `xTicks` on a
+/// `date` read from a Parquet file. A `TIMESTAMP` column takes a time axis,
+/// which follows the count, and a `DATE` column takes a band, which does not
+/// and which the banner would then name. The rest sit on numeric columns.
+const WATCHED_IN_CORPUS: &[(&str, &str, &str)] = &[
+    ("flights-density.yaml", "root/vconcat[1]", "xZero"),
+    ("gaia.yaml", "root/hconcat[2]", "yReverse"),
+    ("line-density.yaml", "root/vconcat[2]", "yNice"),
+    ("line-density.yaml", "root/vconcat[3]", "yNice"),
+    ("line-multi-series.yaml", "root", "xTicks"),
+    ("population-arrows.yaml", "root/vconcat[1]", "yTicks"),
+    ("region-tests.yaml", "root/vconcat[0]", "xTicks"),
+    ("splom.yaml", "plotDefaults", "xTicks"),
+    ("splom.yaml", "plotDefaults", "yTicks"),
+];
+
+/// **Across the vendored corpus and the curated corpus, no plot sets a watched
+/// key on an axis its own text makes drop it, so each warning a composition
+/// raises over them is one the data's column types decide.** The curated corpus
+/// sets none. Prints each plot that sets one, by spec, plot and key.
+#[test]
+fn each_watched_axis_instruction_in_the_corpus_is_listed_and_none_is_inert_by_its_own_text() {
+    let curated = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../brightfield-conformance/vendor/curated/yaml");
+    let mut files = corpus();
+    files.extend(
+        std::fs::read_dir(&curated)
+            .unwrap_or_else(|e| panic!("read {curated:?}: {e}"))
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension().and_then(|e| e.to_str()) == Some("yaml")
+                    && !path.to_string_lossy().ends_with(".expected.yaml")
+            }),
+    );
+
+    let mut found: Vec<(String, String, String)> = Vec::new();
+    for path in files {
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let raw: serde_yaml::Value =
+            serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let serde_yaml::Value::Mapping(root) = raw else {
+            panic!("{name}: the document is not a mapping");
+        };
+        let mut component = root.clone();
+        for block in ROOT_BLOCKS {
+            component.remove(serde_yaml::Value::String((*block).into()));
+        }
+        let defaults: BTreeMap<String, serde_yaml::Value> =
+            match root.get(serde_yaml::Value::String("plotDefaults".into())) {
+                Some(serde_yaml::Value::Mapping(m)) => m
+                    .iter()
+                    .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.clone())))
+                    .collect(),
+                _ => BTreeMap::new(),
+            };
+        let mut plots = Vec::new();
+        raw_plot_attributes(&component, "root", &mut plots);
+        for (at, mut attrs) in plots {
+            let own: Vec<String> = attrs.keys().cloned().collect();
+            for (key, value) in &defaults {
+                attrs.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+            for key in WATCHED.iter().filter(|k| attrs.contains_key(**k)) {
+                assert!(
+                    !inert_by_what_the_plot_writes(key, &attrs),
+                    "{name} {at}: `{key}` is set where the spec's own text makes it do nothing"
+                );
+                // A key a plot inherits is named once, under `plotDefaults`.
+                if own.iter().any(|k| k == key) {
+                    found.push((name.clone(), at.clone(), (*key).to_string()));
+                }
+            }
+        }
+        for key in WATCHED.iter().filter(|k| defaults.contains_key(**k)) {
+            found.push((name.clone(), "plotDefaults".to_string(), (*key).to_string()));
+        }
+    }
+
+    println!("watched axis instructions the corpora set, by spec, plot and key:");
+    for (spec, plot, key) in &found {
+        println!("  {spec}  {plot}  {key}");
+    }
+    let found: Vec<(&str, &str, &str)> = found
+        .iter()
+        .map(|(a, b, c)| (a.as_str(), b.as_str(), c.as_str()))
+        .collect();
+    assert_eq!(found, WATCHED_IN_CORPUS);
+}
