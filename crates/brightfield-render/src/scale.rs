@@ -190,6 +190,11 @@ pub fn ramp_at(stops: &[[f32; 4]], t: f64) -> [f32; 4] {
     let frac = (scaled - i as f64) as f32;
     let a = stops[i];
     let b = stops[i + 1];
+    // `a + (b - a) * 1.0` is not always `b` in floating point, so the last stop
+    // is returned as it is rather than reached by arithmetic.
+    if frac >= 1.0 {
+        return b;
+    }
     [
         a[0] + (b[0] - a[0]) * frac,
         a[1] + (b[1] - a[1]) * frac,
