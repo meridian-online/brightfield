@@ -582,6 +582,7 @@ fn key_token(key: egui::Key) -> Option<&'static str> {
         Key::J => "j",
         Key::K => "k",
         Key::L => "l",
+        Key::U => "u",
         Key::Slash => "/",
         Key::ArrowLeft => "left",
         Key::ArrowRight => "right",
@@ -592,6 +593,33 @@ fn key_token(key: egui::Key) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+/// The registry's keystroke for a key with the command held, which the Shelf
+/// context binds where a bare letter would be typed: `cmd-z`.
+fn chord_token(key: egui::Key, modifiers: egui::Modifiers) -> Option<&'static str> {
+    (key == egui::Key::Z && modifiers.command && !modifiers.shift && !modifiers.alt)
+        .then_some("cmd-z")
+}
+
+/// Whether `key`, with `modifiers` held, is the registry's `undo` in the Shelf
+/// context: `u`, or `⌘Z`. The band's keys and the list's both resolve it, so a
+/// key moved in the registry moves here.
+#[must_use]
+pub fn undoes(key: egui::Key, modifiers: egui::Modifiers) -> bool {
+    let token = if modifiers.is_none() {
+        key_token(key)
+    } else {
+        chord_token(key, modifiers)
+    };
+    token.is_some_and(|t| {
+        shelf_keys()
+            .resolves(t, DispatchContext::ShelfFocused)
+            .contains(&UNDO)
+    })
+}
+
+/// The registry's verb that takes back the last kept column.
+pub const UNDO: &str = "undo";
 
 // ---------------------------------------------------------------------------
 // The column list.
@@ -642,6 +670,9 @@ pub enum ListReport {
     /// `h` or `l` named the channel beside, and the list stays open. The list is
     /// on it when it lists columns.
     Beside(ShelfChannel),
+    /// `u`, or `⌘Z` from the query: take back the last kept column, which is
+    /// the window's to do, as the kept columns are the window's.
+    Undo,
 }
 
 /// The list of a channel's columns, with a query line.
@@ -706,6 +737,19 @@ impl ColumnList {
     #[must_use]
     pub fn querying(&self) -> bool {
         self.querying
+    }
+
+    /// The channels the plot now binds, after an edit the list did not make
+    /// — a column kept taken back. With nothing typed the cursor goes to the
+    /// column its channel holds now; a query typed keeps the cursor where the
+    /// query put it. Reports nothing: the page is already drawn from the
+    /// channels the list was handed.
+    pub fn rebind(&mut self, channels: ShelfChannels) {
+        self.channels = channels;
+        if self.query.is_empty() {
+            self.cursor = self.held();
+            self.scroll = true;
+        }
     }
 
     /// The column under the cursor.
@@ -868,6 +912,7 @@ impl ColumnList {
             "go-to-x-cell" => self.go_to(ShelfChannel::X, false, out),
             "go-to-y-cell" => self.go_to(ShelfChannel::Y, false, out),
             "go-to-colour-cell" => self.go_to(ShelfChannel::Colour, false, out),
+            UNDO => out.push(ListReport::Undo),
             _ => return false,
         }
         true
@@ -876,9 +921,14 @@ impl ColumnList {
     /// Resolve `key` through the registry's Shelf context and answer the first
     /// verb the list takes.
     fn resolve(&mut self, key: egui::Key, out: &mut Vec<ListReport>) {
-        let Some(token) = key_token(key) else {
-            return;
-        };
+        if let Some(token) = key_token(key) {
+            self.resolve_token(token, out);
+        }
+    }
+
+    /// Answer the first verb the list takes that the registry's Shelf context
+    /// binds to `token`.
+    fn resolve_token(&mut self, token: &str, out: &mut Vec<ListReport>) {
         for verb in shelf_keys().resolves(token, DispatchContext::ShelfFocused) {
             if self.dispatch(verb, out) {
                 return;
@@ -886,9 +936,15 @@ impl ColumnList {
         }
     }
 
-    /// A key press, with no modifier held. While the query has the keys a letter
-    /// is text, so the registry is asked only about the keys that are not one.
+    /// A key press. With the command held it is a chord the registry binds
+    /// where a bare letter would be typed, and acts from the query too; with no
+    /// modifier, while the query has the keys, a letter is text, so the registry
+    /// is asked only about the keys that are not one.
     fn press(&mut self, key: egui::Key, modifiers: egui::Modifiers, out: &mut Vec<ListReport>) {
+        if let Some(token) = chord_token(key, modifiers) {
+            self.resolve_token(token, out);
+            return;
+        }
         if !modifiers.is_none() {
             return;
         }

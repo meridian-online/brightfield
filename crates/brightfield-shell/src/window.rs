@@ -1789,6 +1789,7 @@ fn consume_token(ctx: &egui::Context, token: &str) -> bool {
         }),
         "-" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Minus)),
         "x" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::X)),
+        "u" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::U)),
         "0" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Num0)),
         _ => false,
     }
@@ -2274,6 +2275,10 @@ pub struct MeridianApp {
     /// The `run-protocol` keystroke token, read off the registry at boot — same
     /// rule as [`Self::home_binding`].
     run_binding: Option<&'static str>,
+    /// The `undo` keystroke token, read off the registry at boot — same rule as
+    /// [`Self::home_binding`]. The Workspace's: the shelf's own `u` and `⌘Z`
+    /// are resolved by [`crate::shelf::undoes`] and the list.
+    undo_binding: Option<&'static str>,
     /// The navigation family's keystroke tokens paired with their verb
     /// longnames, read off the registry at boot — same rule as
     /// [`Self::home_binding`]: the shell wires the binding the registry
@@ -2628,6 +2633,10 @@ impl MeridianApp {
             run_binding: brightfield_keys::registry()
                 .iter()
                 .find(|v| v.longname == RUN_PROTOCOL)
+                .and_then(brightfield_keys::VerbEntry::primary_key),
+            undo_binding: brightfield_keys::registry()
+                .iter()
+                .find(|v| v.longname == crate::shelf::UNDO)
                 .and_then(brightfield_keys::VerbEntry::primary_key),
             nav_bindings: navigation_bindings(),
             grid_bindings: grid_bindings(),
@@ -4011,6 +4020,9 @@ impl MeridianApp {
         // canvas: they are bare keys, so an overlay or a text field must own
         // the keyboard first.
         self.navigation_keys(&ctx, graph_on_canvas);
+        // Undo, on the same gate: a bare key the shelf has already taken while
+        // the band or its list holds the keys.
+        self.undo_key(&ctx, graph_on_canvas);
 
         // Whether this frame is the front door. Decided once, **after**
         // `home_key`, because three branches below have to agree which frame
@@ -5173,6 +5185,49 @@ impl MeridianApp {
         ctx.request_repaint();
     }
 
+    /// Take back the last column kept from the shelf if the registry's `undo`
+    /// keystroke is down this frame.
+    ///
+    /// Gated as [`Self::navigation_keys`] is: no overlay open, no widget
+    /// holding the keyboard, the chart on the canvas and not the grid focused.
+    /// With the band or its list holding the keys the shelf has taken the key
+    /// already ([`Self::shelf_keys`]) and none is left here, so this is the
+    /// `u` of a pane that holds the keys with the band at rest.
+    fn undo_key(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
+        if graph_on_canvas
+            || self.overlay.is_some()
+            || ctx.egui_wants_keyboard_input()
+            || self.grid_has_focus()
+        {
+            return;
+        }
+        if self.undo_binding.is_some_and(|t| consume_token(ctx, t)) && self.shelf_undo() {
+            ctx.request_repaint();
+        }
+    }
+
+    /// **Take back the last column kept from the shelf**, from whichever way
+    /// `undo` was asked: the key with the pane or the band holding the keys,
+    /// the list's `u` or `⌘Z`, or a click on the status band.
+    ///
+    /// The page is redrawn by [`ChartDoc::undo_shelf_edit`]; what it leaves for
+    /// the window is the band, whose cells read the channels the spec binds
+    /// and so name the column taken back to, and an open list, whose cursor
+    /// goes to the column its channel holds again. Returns whether an edit was
+    /// taken back.
+    fn shelf_undo(&mut self) -> bool {
+        if self.charts.doc.undo_shelf_edit().is_none() {
+            return false;
+        }
+        if let Some(channels) = hero_shelf_channels(&self.charts.doc) {
+            if let Some(band) = self.charts.shelf.band.as_mut() {
+                band.set_channels(channels.clone());
+            }
+            self.protocol.doc.model.rebind_column_list(channels);
+        }
+        true
+    }
+
     /// Perform whichever navigation verb's key is down this frame.
     ///
     /// Gated exactly as [`Self::home_key`] is — no overlay open, no widget
@@ -5273,6 +5328,13 @@ impl MeridianApp {
             else {
                 continue;
             };
+            // `u` and `⌘Z` take back the last kept column from the band at any
+            // level, with a cell open or none.
+            if self.charts.shelf.holds && crate::shelf::undoes(*key, *modifiers) {
+                owned = true;
+                self.shelf_undo();
+                continue;
+            }
             if !modifiers.is_none() {
                 continue;
             }
@@ -5358,6 +5420,9 @@ impl MeridianApp {
     /// - Another channel named, by letter or by `h` `l`: the preview, which
     ///   belongs to the cell it was made in, is backed out of, and that cell
     ///   opens.
+    /// - `u`, or `⌘Z` from the query: the preview is backed out of and the last
+    ///   kept column is taken back ([`Self::shelf_undo`]); the list stays open
+    ///   with its cursor on the column the channel holds again.
     fn shelf_apply(&mut self, reports: Vec<ListReport>) {
         let Some(band) = self.charts.shelf.band.as_mut() else {
             return;
@@ -5373,6 +5438,9 @@ impl MeridianApp {
         // decides it wins. Closed once the batch is read, because the profile
         // the columns are checked against is borrowed from the same model.
         let mut close = false;
+        // Whether the batch asked to take back the last kept column, done once
+        // the batch is read for the reason `close` is.
+        let mut undo = false;
         for report in reports {
             match report {
                 ListReport::Moved(column) => {
@@ -5400,12 +5468,19 @@ impl MeridianApp {
                     band.activate(channel);
                     close = channel == ShelfChannel::Mark;
                 }
+                ListReport::Undo => {
+                    moved = None;
+                    undo = true;
+                }
             }
         }
         if let Some((channel, column)) = moved {
             self.charts
                 .doc
                 .preview_shelf_column(HERO_PLOT, channel, &column, table);
+        }
+        if undo {
+            self.shelf_undo();
         }
         if close {
             self.protocol.doc.model.close_column_list();
@@ -5997,6 +6072,14 @@ impl MeridianApp {
                 entries.push(idle);
             }
         }
+        // The last kept column is named after the idle line, which keeps the
+        // row count at the head of what the band says, and a click on it takes
+        // the column back.
+        if !graph_on_canvas {
+            if let Some(edit) = last_shelf_edit_status_entry(&self.charts.doc) {
+                entries.push(edit);
+            }
+        }
         // The cursor's address leads the band, after the idle line is decided
         // so that line still stands beside it: where the reader is in the
         // table is not news the idle line gives way to.
@@ -6139,6 +6222,15 @@ impl MeridianApp {
                 // which either document's model can do to itself.
                 Request::Verb(verb) if verb.as_str() == RUN_PROTOCOL => {
                     self.run_protocol(ctx);
+                }
+                // undo is the window's: the kept columns it takes back are the
+                // chart document's, and the band and an open list that follow
+                // the page are the window's. The graph has none, so there the
+                // verb goes where every other graph verb goes.
+                Request::Verb(verb) if verb.as_str() == crate::shelf::UNDO && !graph_on_canvas => {
+                    if self.shelf_undo() {
+                        ctx.request_repaint();
+                    }
                 }
                 Request::Verb(verb) if graph_on_canvas => {
                     let canvas_node = self.protocol.doc.canvas_holds.node().cloned();
@@ -7726,6 +7818,32 @@ fn grid_cursor_status_entry(doc: &ChartDoc) -> Option<StatusEntry> {
         hide: HideAffordance::WithRail,
     })
 }
+
+/// The status band's line naming the last column kept from the shelf, in the
+/// shelf's words, with the key that takes it back —
+/// `x axis: longitude → median_income · u undo`. Clicking it sends the verb the
+/// key is bound to ([`HideAffordance::Verb`]), the band's one way of taking a
+/// click. The key is read off the registry, so a rebinding cannot leave the
+/// band naming a key that does nothing.
+fn last_shelf_edit_status_entry(doc: &ChartDoc) -> Option<StatusEntry> {
+    let words = doc.last_shelf_edit()?;
+    let verb = Verb::new(crate::shelf::UNDO);
+    let text = match verb.keys() {
+        Some(key) => format!("{words} \u{b7} {key} undo"),
+        None => words.to_string(),
+    };
+    Some(StatusEntry {
+        id: SHELF_EDIT_STATUS_ID,
+        side: StatusSide::Trailing,
+        text,
+        tone: Tone::Neutral,
+        hide: HideAffordance::Verb(verb),
+    })
+}
+
+/// The stable id [`last_shelf_edit_status_entry`] writes — the handle a test
+/// reads the line by.
+pub const SHELF_EDIT_STATUS_ID: &str = "shelf-last-edit";
 
 /// The stable id `grid_cursor_status_entry` writes — the handle a test reads
 /// the cursor's address by.
