@@ -140,6 +140,24 @@ pub fn chart_palette_verbs(saveable: bool) -> Vec<&'static str> {
         .collect()
 }
 
+/// **The verbs the Protocol palette offers**, in the registry's order: the
+/// verbs the registry scopes to [`Altitude::Protocol`], with the three that put
+/// the Outline's column on a channel where `puts_column` says choosing one
+/// would put it — a column under the Outline's cursor and the hero drawn to put
+/// it on. A row that confirms and does nothing is the row this keeps out, as
+/// [`chart_palette_verbs`] keeps one out of the chart palette;
+/// `every_row_the_protocol_palette_offers_as_enabled_does_something_when_chosen`
+/// chooses each row it leaves in.
+#[must_use]
+pub fn protocol_palette_verbs(puts_column: bool) -> Vec<&'static str> {
+    registry()
+        .iter()
+        .filter(|v| v.applies_at(Altitude::Protocol))
+        .map(|v| v.longname)
+        .filter(|v| puts_column || crate::protocol::put_column_channel(v).is_none())
+        .collect()
+}
+
 /// The command palette: every verb applicable at one altitude, fuzzy-matched
 /// over longname + help, ranked by score (non-empty query) or frequency then
 /// per-session recency (empty query). Reserved verbs are included, flagged,

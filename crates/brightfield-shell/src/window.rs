@@ -1938,6 +1938,12 @@ struct ShelfHold {
     /// is authoring chrome, and a picture of the dashboard derives from the spec
     /// alone.
     enabled: bool,
+    /// The column and channel of the Outline chip the pointer is on, while the
+    /// hero is drawn with it as a preview. The preview is the chart document's
+    /// one record; this says it is the chip's, so the band's list does not
+    /// back out of it as its own and the chip's does not back out of the
+    /// list's.
+    chip_preview: Option<(ShelfChannel, String)>,
 }
 
 impl ShelfHold {
@@ -3991,6 +3997,9 @@ impl MeridianApp {
         self.protocol.doc.spine_body = None;
         // …and the canvas's record of the chips it drew, for the same reason.
         self.protocol.doc.canvas_chips.clear();
+        // …and the Outline's column verbs, which a frame that draws its list,
+        // or no Outline, does not draw.
+        self.protocol.doc.outline_chips.clear();
         // …and the chart pane's record of its controls and the grid pane's two
         // switches, which a frame with the graph or the front door on the
         // canvas does not draw.
@@ -4000,6 +4009,10 @@ impl MeridianApp {
         // its list holds them, they are not the frame verbs' or an overlay
         // opener's.
         self.shelf_keys(&ctx, graph_on_canvas);
+        // The Outline's `z` and a channel, on the shelf's side of every other
+        // bare key: `x` and `c` after a `z` are the chord's, not the axis
+        // lock's or the colour scheme's.
+        self.outline_keys(&ctx, graph_on_canvas);
         // The overlay-opening keys, before the grammar feed so the frame that
         // opens an overlay is already under it.
         self.overlay_open_keys(&ctx, graph_on_canvas);
@@ -5068,9 +5081,10 @@ impl MeridianApp {
     /// Open an overlay if its registry-declared key was pressed this frame.
     ///
     /// The palette opens either way, but the candidate list differs: with the
-    /// graph on the canvas, `Altitude::Protocol`'s raw registry scope already
-    /// dispatches through the model, so the raw scope IS the candidate list.
-    /// With a chart there, most `Altitude::View` verbs have no handler in this
+    /// graph on the canvas, `Altitude::Protocol`'s registry scope dispatches
+    /// through the model, less the rows that would put the Outline's column on
+    /// a chart the graph hides — [`Self::open_protocol_palette`]. With a chart
+    /// there, most `Altitude::View` verbs have no handler in this
     /// shell yet — the editing bridge that would let `add-mark`,
     /// `set-channel` and the rest apply a `ChartEdit` is not landed — so
     /// [`Self::open_chart_palette`] restricts the list to
@@ -5085,7 +5099,7 @@ impl MeridianApp {
         }
         let pressed = |token: Option<&'static str>| token.is_some_and(|t| consume_token(ctx, t));
         if graph_on_canvas && pressed(self.overlay_keys.palette) {
-            self.open_palette(Altitude::Protocol);
+            self.open_protocol_palette();
         } else if !graph_on_canvas && pressed(self.overlay_keys.palette) {
             self.open_chart_palette();
         } else if graph_on_canvas && pressed(self.overlay_keys.jump) {
@@ -5494,12 +5508,157 @@ impl MeridianApp {
         if let Some(band) = self.charts.shelf.band.as_mut() {
             band.leave();
         }
-        // A column the list drew and nobody kept goes with the list.
-        self.charts.doc.drop_shelf_preview();
+        // A column the list drew and nobody kept goes with the list. A column
+        // an Outline chip is drawing is the chip's, and goes with the pointer.
+        if !self.chip_preview_is_up() {
+            self.charts.doc.drop_shelf_preview();
+        }
         if self.charts.shelf.holds {
             self.charts.shelf.holds = false;
             self.protocol.doc.model.close_column_list();
         }
+    }
+
+    /// **Give the Outline its `z` and a channel while a dashboard holds the
+    /// canvas.**
+    ///
+    /// The Protocol grammar is fed while the graph is on the canvas (see the
+    /// comment over that feed in [`Self::draw`]), and the Outline's rows answer
+    /// in the Protocol context. So with the dashboard there, the Outline
+    /// holding the keys — its pane focused, no list of the shelf's drawn in it,
+    /// no overlay open and no widget typing — is fed the chord: `z`, then `x`,
+    /// `y` or `c`, through [`ProtocolModel::feed_column_chord`]. The rest of
+    /// the grammar drives the graph, which is not on the canvas to be driven.
+    ///
+    /// The keys the chord takes are taken out of the frame's input, so the
+    /// `x` after a `z` does not also cycle the axis lock. A `z` left pending
+    /// when the Outline lets go of the keys is let go with them: the next
+    /// letter typed elsewhere is not the chord's.
+    fn outline_keys(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
+        if graph_on_canvas {
+            return;
+        }
+        if self.overlay.is_some()
+            || ctx.egui_wants_keyboard_input()
+            || self.front_door_is_live()
+            || self.ws().focus() != Some(PaneKey::new(OUTLINE))
+            || self.protocol.doc.model.column_list().is_some()
+        {
+            self.protocol.doc.model.drop_chord();
+            return;
+        }
+        let events = ctx.input(|i| i.events.clone());
+        let taken: Vec<bool> = events
+            .iter()
+            .map(|event| match event {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => self.protocol.doc.model.feed_column_chord(*key, *modifiers),
+                _ => false,
+            })
+            .collect();
+        if taken.contains(&true) {
+            let mut at = 0;
+            ctx.input_mut(|i| {
+                i.events.retain(|_| {
+                    let keep = !taken.get(at).copied().unwrap_or(false);
+                    at += 1;
+                    keep
+                });
+            });
+            ctx.request_repaint();
+        }
+    }
+
+    /// Whether the chart document's preview is the one an Outline chip put up.
+    fn chip_preview_is_up(&self) -> bool {
+        match (
+            &self.charts.shelf.chip_preview,
+            self.charts.doc.shelf_preview(),
+        ) {
+            (Some((channel, column)), Some((up, shown))) => *channel == up && column == shown,
+            _ => false,
+        }
+    }
+
+    /// **Keep a column put on a channel from the Outline** — by `z` and the
+    /// channel, by a chip on its row, or by the palette — on the hero, as the
+    /// band's list keeps one: [`ChartDoc::keep_shelf_column`] on the hero's
+    /// plot, which draws it, joins its edits to the edits Save writes and marks
+    /// the window unsaved. One route for the list's keep and this one, so the
+    /// two leave the same spec for the same column.
+    ///
+    /// Only while the hero is drawn with its band, which is the dashboard on
+    /// the canvas: a column put while the graph holds it is dropped, because a
+    /// chart edit nobody can see, and that `u` there would not take back, is
+    /// not one the window makes.
+    fn outline_put(&mut self, graph_on_canvas: bool) {
+        let Some((channel, column)) = self.protocol.doc.model.take_column_put() else {
+            return;
+        };
+        if graph_on_canvas || self.charts.shelf.drawn.is_none() {
+            return;
+        }
+        let table: &[brightfield_engine::ColumnProfile] = self
+            .protocol
+            .doc
+            .model
+            .source()
+            .map_or(&[], |s| s.profiles.as_slice());
+        self.charts.shelf.chip_preview = None;
+        self.charts
+            .doc
+            .keep_shelf_column(HERO_PLOT, channel, &column, table);
+    }
+
+    /// **Draw the hero with the column of the Outline chip the pointer is on**,
+    /// on the chip's channel, as a preview: [`ChartDoc::preview_shelf_column`],
+    /// the route the band's list previews by, so the band's cell for that
+    /// channel says *preview* and names the column, and Save's edits are left
+    /// as they were. The pointer leaving the chip backs out of it
+    /// ([`ChartDoc::drop_shelf_preview`]) and the kept chart is drawn again.
+    fn outline_chip_preview(&mut self, graph_on_canvas: bool) {
+        let on = self
+            .protocol
+            .doc
+            .outline_chips
+            .iter()
+            .find(|c| c.hovered)
+            .map(|c| (c.channel, c.column.clone()))
+            .filter(|_| !graph_on_canvas && self.charts.shelf.drawn.is_some());
+        match on {
+            Some((channel, column)) => {
+                if self.charts.shelf.chip_preview.as_ref() == Some(&(channel, column.clone())) {
+                    return;
+                }
+                let table: &[brightfield_engine::ColumnProfile] = self
+                    .protocol
+                    .doc
+                    .model
+                    .source()
+                    .map_or(&[], |s| s.profiles.as_slice());
+                self.charts
+                    .doc
+                    .preview_shelf_column(HERO_PLOT, channel, &column, table);
+                self.charts.shelf.chip_preview = Some((channel, column));
+            }
+            None => {
+                if self.chip_preview_is_up() {
+                    self.charts.doc.drop_shelf_preview();
+                }
+                self.charts.shelf.chip_preview = None;
+            }
+        }
+    }
+
+    /// The column verbs the Outline drew on the last frame — the chips on the
+    /// column row under the pointer, and which the pointer was on.
+    #[must_use]
+    pub fn outline_chips(&self) -> &[crate::protocol::OutlineChipDrawn] {
+        &self.protocol.doc.outline_chips
     }
 
     /// The band under the hero's header, as the last frame drew it. `None` on a
@@ -5570,18 +5729,27 @@ impl MeridianApp {
         }
     }
 
-    /// Open the command palette at `altitude`, over a snapshot of the
-    /// session's recency.
-    fn open_palette(&mut self, altitude: Altitude) {
-        self.overlay = Some(Overlay::Palette(Picker::new(CommandPalette::new(
-            altitude,
-            self.recency.clone(),
-        ))));
+    /// Open the command palette at the Protocol altitude, over a snapshot of
+    /// the session's recency, restricted to what choosing a row does here —
+    /// [`crate::overlays::protocol_palette_verbs`].
+    ///
+    /// It opens over the graph, and over the graph a column put on a channel is
+    /// dropped ([`Self::outline_put`]), so the three `put-column-on-*` rows are
+    /// not offered: each would confirm and put no column —
+    /// `the_protocol_palette_offers_no_put_row_where_choosing_one_would_put_nothing`.
+    fn open_protocol_palette(&mut self) {
+        let puts_column = !self.graph_on_canvas()
+            && self.protocol.doc.model.outline_column().is_some()
+            && self.charts.shelf.band.is_some();
+        let allow = crate::overlays::protocol_palette_verbs(puts_column);
+        self.overlay = Some(Overlay::Palette(Picker::new(
+            CommandPalette::new_restricted(Altitude::Protocol, self.recency.clone(), &allow),
+        )));
     }
 
     /// Open the command palette at the chart altitude, restricted to what a
     /// window in **this** state offers — see [`Self::overlay_open_keys`] for
-    /// why the chart view cannot simply reuse [`Self::open_palette`] with
+    /// why the chart view cannot simply reuse [`Self::open_protocol_palette`] with
     /// [`Altitude::View`].
     ///
     /// The list is [`crate::overlays::chart_palette_verbs`] over
@@ -6233,6 +6401,15 @@ impl MeridianApp {
                         ctx.request_repaint();
                     }
                 }
+                // A column put on a channel is the Outline's verb whatever the
+                // canvas holds: the model records the column under the
+                // Outline's cursor, and `outline_put` below keeps it on the
+                // hero where the hero is drawn.
+                Request::Verb(verb)
+                    if crate::protocol::put_column_channel(verb.as_str()).is_some() =>
+                {
+                    self.protocol.doc.model.dispatch(verb.as_str(), None);
+                }
                 Request::Verb(verb) if graph_on_canvas => {
                     let canvas_node = self.protocol.doc.canvas_holds.node().cloned();
                     self.protocol
@@ -6276,6 +6453,11 @@ impl MeridianApp {
             self.charts.doc.select_column(&column);
             ctx.request_repaint();
         }
+        // …and a column the Outline put on a channel, by its keys, a chip or
+        // the palette, then the chip the pointer is on: kept first, so a click
+        // on the chip previewed keeps the column it was previewing.
+        self.outline_put(graph_on_canvas);
+        self.outline_chip_preview(graph_on_canvas);
         // …and the same shape for a view row: the rail reports the gesture, the
         // window decides what the canvas holds. It is applied unconditionally
         // rather than while a chart is on the canvas, because the next frame's

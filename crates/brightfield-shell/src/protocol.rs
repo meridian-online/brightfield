@@ -829,9 +829,42 @@ fn protocol_key_table() -> BTreeMap<String, &'static str> {
     table
 }
 
+/// The verbs that put the Outline's column on a channel of the hero's shelf,
+/// each with its channel. Their keys are the registry's (`z x`, `z y`, `z c`),
+/// read through `protocol_key_table` as the other Protocol bindings are; what
+/// is declared here is which channel each verb names.
+pub const PUT_COLUMN_VERBS: [(ShelfChannel, &str); 3] = [
+    (ShelfChannel::X, "put-column-on-x"),
+    (ShelfChannel::Y, "put-column-on-y"),
+    (ShelfChannel::Colour, "put-column-on-colour"),
+];
+
+/// The channel `verb` puts the Outline's column on, or `None` for a verb that
+/// is not one of [`PUT_COLUMN_VERBS`].
+#[must_use]
+pub fn put_column_channel(verb: &str) -> Option<ShelfChannel> {
+    PUT_COLUMN_VERBS
+        .iter()
+        .find(|(_, v)| *v == verb)
+        .map(|(channel, _)| *channel)
+}
+
+/// The second key of a `z` chord as the registry spells it — `Key::A` → `"a"`
+/// in `"z a"`. Only the letters a `z` chord in the registry ends in.
+fn chord_letter(key: egui::Key) -> Option<&'static str> {
+    use egui::Key;
+    Some(match key {
+        Key::A => "a",
+        Key::X => "x",
+        Key::Y => "y",
+        Key::C => "c",
+        _ => return None,
+    })
+}
+
 /// Map an egui key press to the registry keystroke token it stands for in the
 /// Protocol context (`Key::H` → `"h"`, shift+`S` → `"shift-s"`). `z` is handled
-/// as the `z a` chord prefix by the caller, not here.
+/// as the prefix of its chords by the caller, not here.
 fn key_token(key: egui::Key, mods: egui::Modifiers) -> Option<&'static str> {
     use egui::Key;
     Some(match key {
@@ -905,7 +938,8 @@ pub struct ProtocolModel {
     /// The drill scope: when a node is drilled into (`Enter`), the canvas shows
     /// this induced local slice instead of the whole graph; `Esc` pops it.
     scope_graph: Option<AssetGraph>,
-    /// `za` chord: a pending `z` awaiting `a`.
+    /// A pending `z` awaiting the second key of its chord: `a`, or a channel's
+    /// letter.
     pending_z: bool,
     /// The last yanked address, shown as a transient confirmation.
     yank_flash: Option<AssetId>,
@@ -934,6 +968,20 @@ pub struct ProtocolModel {
     /// — an item is handed its own document and no other — so the pick is
     /// recorded here and carried across after the frame.
     column_pick: Option<String>,
+    /// **Whether the Outline's cursor is on a column's row** rather than on a
+    /// spine row: a click on a column's row, or a column selected on the
+    /// dashboard, puts it there, and a spine row selected by any gesture —
+    /// a click, the jump, `h j k l`, a drill or a fold — takes it off. The
+    /// column it is on is [`Self::selected_column`]. A column is put on a
+    /// channel from here ([`Self::outline_column`]), so `z c` on a spine row
+    /// puts no column, with or without one selected before it —
+    /// `z_c_on_a_spine_row_changes_nothing`.
+    on_column_row: bool,
+    /// A column put on a channel from the Outline this frame — by `z` and the
+    /// channel, by the palette or by a chip on its row — drained by the window,
+    /// which keeps it on the hero's shelf. Recorded here for the reason
+    /// [`Self::column_pick`] is: the outline cannot write the chart document.
+    column_put: Option<(ShelfChannel, String)>,
     /// The list of a channel's columns, while a shelf cell is active. The
     /// Outline draws it in place of the plain column rows.
     column_list: Option<ColumnList>,
@@ -1002,6 +1050,8 @@ impl ProtocolModel {
             source: inputs.source,
             selected_column: None,
             column_pick: None,
+            on_column_row: false,
+            column_put: None,
             column_list: None,
             list_reports: Vec::new(),
             nav,
@@ -1804,8 +1854,15 @@ impl ProtocolModel {
 
     /// Mirror in which column the window's inspector is showing, so the
     /// outline's highlight follows it.
+    ///
+    /// A column selected anew on the dashboard moves the Outline's cursor to
+    /// its row, as the highlight moves: the mirror runs every frame, so only a
+    /// change of column is a move.
     pub fn set_selected_column(&mut self, column: Option<&str>) {
         let next = column.map(str::to_string);
+        if next.is_some() && next != self.selected_column {
+            self.on_column_row = true;
+        }
         self.selected_column = next;
     }
 
@@ -1813,6 +1870,79 @@ impl ProtocolModel {
     /// this frame.
     pub fn take_column_pick(&mut self) -> Option<String> {
         self.column_pick.take()
+    }
+
+    /// The column the Outline highlights — the one the window's inspector is
+    /// showing — whether or not the Outline's cursor is on its row.
+    #[must_use]
+    pub fn selected_column(&self) -> Option<&str> {
+        self.selected_column.as_deref()
+    }
+
+    /// **The column whose row the Outline's cursor is on**, or `None` with the
+    /// cursor on a spine row or on no row. What `z` and a channel put on the
+    /// channel, and what the palette's `put-column-on-*` rows are offered for.
+    #[must_use]
+    pub fn outline_column(&self) -> Option<&str> {
+        self.selected_column
+            .as_deref()
+            .filter(|_| self.on_column_row)
+    }
+
+    /// Take the column put on a channel from the Outline this frame, if one
+    /// was: `z` and the channel, the palette, or a chip on its row.
+    pub fn take_column_put(&mut self) -> Option<(ShelfChannel, String)> {
+        self.column_put.take()
+    }
+
+    /// Put the Outline's column on `channel`: recorded for the window, which
+    /// keeps it on the hero's shelf. Nothing is recorded with the cursor on a
+    /// spine row. Returns whether a column was put.
+    fn put_outline_column(&mut self, channel: ShelfChannel) -> bool {
+        let Some(column) = self.outline_column().map(str::to_string) else {
+            return false;
+        };
+        self.column_put = Some((channel, column));
+        true
+    }
+
+    /// **The Outline's `z` and a channel**: what the window feeds the model
+    /// while a dashboard holds the canvas and the Outline holds the keys. The
+    /// rest of the Protocol grammar drives the graph, and is fed while the
+    /// graph is on the canvas ([`Self::feed_events`]).
+    ///
+    /// Returns whether the key was the chord's: a `z`, or the channel's letter
+    /// after one. Any other key after a `z` lets the chord go and is not taken.
+    pub fn feed_column_chord(&mut self, key: egui::Key, mods: egui::Modifiers) -> bool {
+        if self.pending_z {
+            self.pending_z = false;
+            let verb = self
+                .chord_verb(key)
+                .filter(|v| put_column_channel(v).is_some() && mods.is_none());
+            return match verb {
+                Some(verb) => {
+                    self.dispatch(verb, None);
+                    true
+                }
+                None => false,
+            };
+        }
+        if key == egui::Key::Z && mods.is_none() {
+            self.pending_z = true;
+            return true;
+        }
+        false
+    }
+
+    /// Let a pending `z` go: the keys it was waiting for went elsewhere.
+    pub fn drop_chord(&mut self) {
+        self.pending_z = false;
+    }
+
+    /// The verb the registry binds to `z` then `key` in the Protocol context.
+    fn chord_verb(&self, key: egui::Key) -> Option<&'static str> {
+        let letter = chord_letter(key)?;
+        self.key_table.get(&format!("z {letter}")).copied()
     }
 
     /// Open the Outline's list of `channel`'s columns, headed with `tile`, the
@@ -1872,6 +2002,15 @@ impl ProtocolModel {
     fn pick_column(&mut self, column: &str) {
         self.column_pick = Some(column.to_string());
         self.selected_column = Some(column.to_string());
+        self.on_column_row = true;
+    }
+
+    /// Select `id` on the spine, the cursor with it: the click, the jump,
+    /// `h j k l`, a drill and a fold each end here, so the Outline's cursor
+    /// leaves a column's row for a spine row ([`Self::on_column_row`]).
+    fn select_on_spine(&mut self, id: Option<AssetId>) {
+        self.selected = id;
+        self.on_column_row = false;
     }
 
     /// The inspector facts for the current selection, or for `canvas_node`
@@ -1974,7 +2113,7 @@ impl ProtocolModel {
     /// click and an outline-row click both route through.
     pub fn select_id(&mut self, id: AssetId) {
         self.nav.focus(&id);
-        self.selected = Some(id);
+        self.select_on_spine(Some(id));
         self.yank_flash = None;
     }
 
@@ -2021,22 +2160,20 @@ impl ProtocolModel {
         changed
     }
 
-    /// Dispatch a single key press. Handles the `z a` fold chord.
+    /// Dispatch a single key press. Handles the `z` chords: `z a` folds, and
+    /// `z` then a channel's letter puts the Outline's column on that channel.
     fn feed_key(
         &mut self,
         key: egui::Key,
         mods: egui::Modifiers,
         canvas_node: Option<&AssetId>,
     ) -> bool {
-        // Resolve the `z a` chord: a pending `z` + `a` fires toggle-fold.
+        // Resolve a pending `z` and the key after it to the verb the registry
+        // binds to the pair.
         if self.pending_z {
             self.pending_z = false;
-            if key == egui::Key::A {
-                // Resolve the `z a` chord to its verb through the registry table.
-                return match self.key_table.get("z a").copied() {
-                    Some(verb) => self.dispatch(verb, canvas_node),
-                    None => false,
-                };
+            if let Some(verb) = self.chord_verb(key) {
+                return self.dispatch(verb, canvas_node);
             }
             // Otherwise fall through and treat this key normally.
         }
@@ -2110,7 +2247,10 @@ impl ProtocolModel {
                 true
             }
             "yank-address" => self.yank(canvas_node),
-            _ => false,
+            other => match put_column_channel(other) {
+                Some(channel) => self.put_outline_column(channel),
+                None => false,
+            },
         }
     }
 
@@ -2119,7 +2259,7 @@ impl ProtocolModel {
     /// the selection from the cursor.
     fn move_dir(&mut self, dir: Dir) -> bool {
         if self.nav.move_dir(dir) {
-            self.selected = self.nav.cursor().cloned();
+            self.select_on_spine(self.nav.cursor().cloned());
             self.yank_flash = None;
             self.request_frame();
             true
@@ -2169,7 +2309,7 @@ impl ProtocolModel {
                 &self.graph_collapsed,
                 &keep,
             ));
-            self.selected = Some(focus);
+            self.select_on_spine(Some(focus));
             self.yank_flash = None;
         }
         self.request_frame();
@@ -2195,11 +2335,11 @@ impl ProtocolModel {
                     &self.graph_collapsed,
                     &keep,
                 ));
-                self.selected = Some(parent);
+                self.select_on_spine(Some(parent));
             }
             None => {
                 self.scope_graph = None;
-                self.selected = self.nav.cursor().cloned();
+                self.select_on_spine(self.nav.cursor().cloned());
             }
         }
         self.yank_flash = None;
@@ -2228,10 +2368,10 @@ impl ProtocolModel {
     /// All are the same verb, deliberately. `protocol_key_table` is a
     /// `BTreeMap` keyed by keystroke string, so a second Protocol-context verb
     /// bound to `z a` would silently overwrite the first and which one survived
-    /// would depend on the order the registry happens to list them in. `z a` is
-    /// also the only `z`-prefixed binding in the registry — there is no
-    /// `zo`/`zc`/`zR`/`zM` family to extend, and the chord is resolved by hand
-    /// through [`ProtocolModel::feed_key`]'s pending flag. So the verb is
+    /// would depend on the order the registry happens to list them in. Of the
+    /// registry's `z` chords `z a` is the fold: `z x`, `z y` and `z c` put the
+    /// Outline's column on a channel, and there is no `zo`/`zR`/`zM` family to
+    /// extend. So the verb is
     /// broadened, not duplicated.
     ///
     /// **Every path that reports no change leaves the model untouched**, and
@@ -2267,7 +2407,7 @@ impl ProtocolModel {
         self.display_expanded = self.family_ids.iter().any(|id| self.nav.is_expanded(id));
         self.cte_expanded = false;
         self.chain_contracted = false;
-        self.selected = self.nav.cursor().cloned();
+        self.select_on_spine(self.nav.cursor().cloned());
         self.recompute_layout();
         true
     }
@@ -2486,6 +2626,12 @@ pub struct ProtocolDoc {
     /// again would be comparing the arithmetic with itself and would stay green
     /// through a canvas that drew none of it. Cleared per frame by the window.
     pub canvas_chips: Vec<CanvasChipDrawn>,
+    /// **The column verbs the Outline drew in the last frame** — the chips on
+    /// the column row under the pointer — with which one the pointer was on.
+    /// Read by the window, which draws the hero with that column as a preview,
+    /// and cleared per frame by it for the reason
+    /// [`ProtocolDoc::canvas_chips`] is.
+    pub outline_chips: Vec<OutlineChipDrawn>,
 }
 
 /// One **view chip on the graph** as it was drawn — which view of which node,
@@ -2509,8 +2655,9 @@ pub struct SpineRowDrawn {
     /// What the row said at its leading end.
     pub label: String,
     /// What it said at its trailing end — empty on a caption row, which is one
-    /// string across the row, and on a column row of the open list that drew a
-    /// rug there in its place ([`Self::rug`]).
+    /// string across the row, on a column row of the open list that drew a
+    /// rug there in its place ([`Self::rug`]), and on a column row that drew
+    /// the column verbs there ([`ProtocolDoc::outline_chips`]).
     pub kind: String,
     /// How far it was indented.
     pub depth: u8,
@@ -2547,6 +2694,25 @@ pub struct SpineRowDrawn {
     /// is its name — rather than a readout. Read off the same sense the row
     /// was allocated with, so the record cannot call a readout a control.
     pub control: bool,
+}
+
+/// One of the **column verbs** on an Outline row as it was drawn: the chip that
+/// puts the row's column on a channel of the hero's shelf, and where it is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutlineChipDrawn {
+    /// The column the row lists.
+    pub column: String,
+    /// The channel the chip puts it on.
+    pub channel: ShelfChannel,
+    /// The verb a click on the chip dispatches — one of [`PUT_COLUMN_VERBS`].
+    pub verb: &'static str,
+    /// The chip's box, in screen coordinates.
+    pub rect: egui::Rect,
+    /// Whether the pointer was on the chip: the hero is drawn with the column
+    /// on the chip's channel, as a preview, while it is.
+    pub hovered: bool,
+    /// Whether the chip was clicked on this frame.
+    pub clicked: bool,
 }
 
 /// The graph chip in the spine's head **as it was drawn**.
@@ -2633,6 +2799,7 @@ impl ProtocolDoc {
             graph_pick: false,
             returns_to: None,
             canvas_chips: Vec::new(),
+            outline_chips: Vec::new(),
         }
     }
 
@@ -2650,6 +2817,7 @@ impl ProtocolDoc {
             graph_pick: false,
             returns_to: None,
             canvas_chips: Vec::new(),
+            outline_chips: Vec::new(),
         }
     }
 
@@ -2926,6 +3094,13 @@ impl Item<ProtocolDoc> for OutlinePane {
         let spine_caption = doc.model.spine_caption();
         let outline_caption = doc.model.outline_caption();
         let holds = doc.canvas_holds.clone();
+        // A column's row offers the column verbs only while the dashboard holds
+        // the canvas: the hero they put a column on is drawn there and nowhere
+        // else, and a chip that put a column on a chart nobody can see would be
+        // a control that does nothing visible.
+        let verbs = matches!(holds, crate::window::CanvasHolds::Dashboard { .. });
+        let mut outline_chips: Vec<OutlineChipDrawn> = Vec::new();
+        let mut put: Option<(String, &'static str)> = None;
         let mut drawn: Vec<SpineRowDrawn> = Vec::with_capacity(spine.len() + columns.len() + 2);
         let mut clicked: Option<AssetId> = None;
         let mut column: Option<String> = None;
@@ -3000,17 +3175,21 @@ impl Item<ProtocolDoc> for OutlinePane {
                 }
                 drawn.push(caption_row(ui, &outline_caption, cx.mode));
                 for row in &columns {
-                    let (record, response) = outline_row(ui, row, cx.mode);
+                    let (record, response, chips) = outline_row(ui, row, verbs, cx.mode);
                     drawn.push(record);
-                    if response.clicked() {
+                    if let Some(chip) = chips.iter().find(|c| c.clicked) {
+                        put = Some((chip.column.clone(), chip.verb));
+                    } else if response.clicked() {
                         // A column row addresses no node, so it cannot go
                         // through `select_id` — the nav would be asked to
                         // focus an id absent from its graph.
                         column = Some(row.label.clone());
                     }
+                    outline_chips.extend(chips);
                 }
             });
         doc.model.column_list = list;
+        doc.outline_chips = outline_chips;
         if !list_reports.is_empty() {
             doc.model.list_reports.extend(list_reports);
             cx.request_repaint();
@@ -3021,6 +3200,14 @@ impl Item<ProtocolDoc> for OutlinePane {
         }
         if let Some(column) = column {
             doc.model.pick_column(&column);
+            cx.request_repaint();
+        }
+        // A click on a chip does what `z` and its channel do, on the chip's
+        // row: the row is picked, which puts the Outline's cursor on it, and
+        // the verb is dispatched as the chord dispatches it.
+        if let Some((column, verb)) = put {
+            doc.model.pick_column(&column);
+            doc.model.dispatch(verb, None);
             cx.request_repaint();
         }
         if let Some(pick) = pick {
@@ -3405,14 +3592,25 @@ fn spine_row(
 /// status dot because it has no producing step of its own, and its right edge
 /// carries [`OutlineRow::note`] — the leaf of its type — where an asset row
 /// carries its kind.
-fn outline_row(ui: &mut egui::Ui, row: &OutlineRow, mode: Mode) -> (SpineRowDrawn, egui::Response) {
+///
+/// **Under the pointer, a column's row gives up its type for the column
+/// verbs** where `verbs` allows them: three chips, x, y and c, that put the
+/// column on that channel of the hero's shelf ([`column_verb_chips`]). The
+/// name is then fitted to the room the chips leave, as a list row's name is
+/// fitted to the room its rug leaves.
+fn outline_row(
+    ui: &mut egui::Ui,
+    row: &OutlineRow,
+    verbs: bool,
+    mode: Mode,
+) -> (SpineRowDrawn, egui::Response, Vec<OutlineChipDrawn>) {
     let sem = semantic(mode.is_dark());
     let b = control::binding(spacing::ROW_DENSE);
     let sense = egui::Sense::click();
     let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), b.row), sense);
-    let painter = ui.painter();
+    let painter = ui.painter().clone();
     paint_row_marks(
-        painter,
+        &painter,
         rect,
         RowMarks {
             picked: row.selected,
@@ -3431,36 +3629,70 @@ fn outline_row(ui: &mut egui::Ui, row: &OutlineRow, mode: Mode) -> (SpineRowDraw
         );
     }
     x += b.icon + spacing::ICON_LABEL_GAP;
-    let right = row.note.as_deref().unwrap_or_else(|| kind_label(row.kind));
-    // The type is laid out first and the name fitted to what is left — the
-    // shape [`spine_row`] above already uses, and the shape this row did not.
-    // It budgeted characters at both ends (`truncate(.., 26)` and
-    // `truncate(.., 20)`) and drew them at opposite anchors, so `updated` and
-    // `TIMESTAMP WITH TIME ZONE` arrived on top of one another in a rail this
-    // width: `no_two_texts_are_drawn_into_one_place` measured 18 points of
-    // shared ink. A character budget is a guess at a width, and twenty
-    // characters of that type name is wider than the room this rail leaves.
-    let ends = text_ink::row_ends(
-        painter,
-        egui::Rect::from_min_max(
-            egui::pos2(x, rect.top()),
-            egui::pos2(rect.right() - b.pad_x, rect.bottom()),
-        ),
-        &text_ink::TwoEndedRow {
-            leading: &row.label,
-            trailing: right,
-            font: ui_font(),
-            gap: spacing::SPACE_3,
-            leading_ink: chrome::colour(sem.text.primary),
-            trailing_ink: chrome::colour(sem.text.muted),
-        },
+    let content = egui::Rect::from_min_max(
+        egui::pos2(x, rect.top()),
+        egui::pos2(rect.right() - b.pad_x, rect.bottom()),
     );
-    let name_rect = ends.leading;
-    let kind_rect = ends.trailing;
+    // The trailing end's own ui, made on every row whether it draws the chips
+    // or not: a child takes one of its parent's automatic ids, so a row that
+    // made one only under the pointer would move the ids of every row after it
+    // and lose their pointer state for a frame. It is a little taller than the
+    // row so the chips are centred on the row's line: the design system's key
+    // chip is a point taller than a dense row, and a ui no taller than the row
+    // would hang it from the row's top instead.
+    let mut trail = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(content.expand2(egui::vec2(0.0, spacing::SPACE_2)))
+            .layout(egui::Layout::right_to_left(egui::Align::Center)),
+    );
+    let chips = if verbs && row.depth > 0 && ui.rect_contains_pointer(rect) {
+        column_verb_chips(&mut trail, &row.label)
+    } else {
+        Vec::new()
+    };
+    let primary = chrome::colour(sem.text.primary);
+    let right = row.note.as_deref().unwrap_or_else(|| kind_label(row.kind));
+    let (name_rect, kind, kind_rect) = match chips.iter().map(|c| c.rect.left()).reduce(f32::min) {
+        Some(left) => {
+            let room = left - spacing::SPACE_3 - content.left();
+            let galley = text_ink::fit(&painter, &row.label, ui_font(), room, primary);
+            let at = egui::Rect::from_min_size(
+                egui::pos2(content.left(), content.center().y - galley.size().y / 2.0),
+                galley.size(),
+            );
+            painter.galley(at.min, galley, primary);
+            (at, String::new(), None)
+        }
+        None => {
+            // The type is laid out first and the name fitted to what is left —
+            // the shape [`spine_row`] above already uses, and the shape this
+            // row did not. It budgeted characters at both ends
+            // (`truncate(.., 26)` and `truncate(.., 20)`) and drew them at
+            // opposite anchors, so `updated` and `TIMESTAMP WITH TIME ZONE`
+            // arrived on top of one another in a rail this width:
+            // `no_two_texts_are_drawn_into_one_place` measured 18 points of
+            // shared ink. A character budget is a guess at a width, and twenty
+            // characters of that type name is wider than the room this rail
+            // leaves.
+            let ends = text_ink::row_ends(
+                &painter,
+                content,
+                &text_ink::TwoEndedRow {
+                    leading: &row.label,
+                    trailing: right,
+                    font: ui_font(),
+                    gap: spacing::SPACE_3,
+                    leading_ink: primary,
+                    trailing_ink: chrome::colour(sem.text.muted),
+                },
+            );
+            (ends.leading, right.to_string(), Some(ends.trailing))
+        }
+    };
     (
         SpineRowDrawn {
             label: row.label.clone(),
-            kind: right.to_string(),
+            kind,
             depth: row.depth,
             marker: if row.depth == 0 {
                 SpineMarker::Filled
@@ -3470,7 +3702,7 @@ fn outline_row(ui: &mut egui::Ui, row: &OutlineRow, mode: Mode) -> (SpineRowDraw
             role: SpineRole::Column,
             rect,
             name_rect,
-            kind_rect: Some(kind_rect),
+            kind_rect,
             rug: None,
             on_canvas: None,
             washed: row.selected,
@@ -3478,7 +3710,57 @@ fn outline_row(ui: &mut egui::Ui, row: &OutlineRow, mode: Mode) -> (SpineRowDraw
             control: sense.senses_click(),
         },
         response,
+        chips,
     )
+}
+
+/// [`PUT_COLUMN_VERBS`] with the keys the registry binds each to, in the
+/// order the chips read: x, y, colour. Read once, off the registry, so a key
+/// moved there moves on the chip and in its tooltip.
+fn put_column_bindings() -> &'static [(ShelfChannel, &'static str, &'static str)] {
+    static BINDINGS: std::sync::OnceLock<Vec<(ShelfChannel, &'static str, &'static str)>> =
+        std::sync::OnceLock::new();
+    BINDINGS.get_or_init(|| {
+        let reg = brightfield_keys::registry::registry();
+        PUT_COLUMN_VERBS
+            .iter()
+            .filter_map(|(channel, verb)| {
+                let keys = reg.iter().find(|v| v.longname == *verb)?.primary_key()?;
+                Some((*channel, *verb, keys))
+            })
+            .collect()
+    })
+}
+
+/// **The column verbs on `column`'s row**: a key chip per channel, x, y and c,
+/// laid right to left from the row's trailing end in `ui` so they read x, y, c.
+///
+/// Each chip is the design system's [`meridian_egui::key_chip()`] with the
+/// channel's letter — the second key of its chord — and its tooltip the design
+/// system's action tooltip, naming the verb and its keys. A chip senses a
+/// click of its own over the chip's box; the row under it does not see that
+/// click.
+fn column_verb_chips(ui: &mut egui::Ui, column: &str) -> Vec<OutlineChipDrawn> {
+    let mut chips = Vec::new();
+    for (channel, verb, keys) in put_column_bindings().iter().rev() {
+        let letter = keys.rsplit(' ').next().unwrap_or(keys);
+        let chip = meridian_egui::key_chip(ui, letter);
+        let hovered = ui.rect_contains_pointer(chip.rect);
+        let id = egui::Id::new(("outline-column-verb", column, *verb));
+        let click = ui.interact(chip.rect, id, egui::Sense::click());
+        let click = meridian_egui::tooltip_for_action(click, verb, Some(keys));
+        chips.push(OutlineChipDrawn {
+            column: column.to_string(),
+            channel: *channel,
+            verb,
+            rect: chip.rect,
+            hovered,
+            clicked: click.clicked(),
+        });
+        ui.add_space(spacing::SPACE_2);
+    }
+    chips.reverse();
+    chips
 }
 
 /// What a row of the spine or the Outline is, as far as its paint goes.
