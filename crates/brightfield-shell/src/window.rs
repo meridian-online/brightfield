@@ -7842,7 +7842,7 @@ fn last_shelf_edit_status_entry(doc: &ChartDoc) -> Option<StatusEntry> {
     })
 }
 
-/// The stable id [`last_shelf_edit_status_entry`] writes — the handle a test
+/// The stable id `last_shelf_edit_status_entry` writes — the handle a test
 /// reads the line by.
 pub const SHELF_EDIT_STATUS_ID: &str = "shelf-last-edit";
 
