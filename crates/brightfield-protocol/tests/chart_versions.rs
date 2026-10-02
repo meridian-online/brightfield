@@ -113,7 +113,7 @@ impl Chart<'_> {
 
 const SECOND_PLOT: &str = "root/vconcat[1]";
 
-/// The only change of the newest version of `list`.
+/// The changes of the newest version of `list`, which has a version before it.
 fn newest_changes(list: &VersionList) -> Vec<ChartChange> {
     match &list.versions[0].change {
         VersionChange::Changes(changes) => changes.clone(),
