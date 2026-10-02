@@ -503,14 +503,16 @@ fn inert_by_what_the_plot_writes(key: &str, attrs: &BTreeMap<String, serde_yaml:
     let scale = attrs
         .get(&format!("{axis}Scale"))
         .and_then(serde_yaml::Value::as_str);
-    match (instruction, scale) {
-        ("Ticks", Some("log" | "symlog" | "band" | "ordinal" | "point")) => true,
+    matches!(
+        (instruction, scale),
         (
+            "Ticks",
+            Some("log" | "symlog" | "band" | "ordinal" | "point")
+        ) | (
             "Zero" | "Nice",
-            Some("log" | "symlog" | "band" | "ordinal" | "point" | "time" | "utc"),
-        ) => true,
-        _ => false,
-    }
+            Some("log" | "symlog" | "band" | "ordinal" | "point" | "time" | "utc")
+        )
+    )
 }
 
 /// The plots of the vendored and the curated corpus that set one of
