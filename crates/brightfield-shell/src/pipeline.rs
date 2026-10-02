@@ -182,6 +182,13 @@ pub struct PlotHandle {
     /// reader: the plot's axes still say where the navigated extent is, and
     /// this says that nothing is there.
     pub navigated_empty: bool,
+    /// **The column on this plot's fill channel**, from the first mark drawn
+    /// that names one — the name the legend at the plot's right carries over its
+    /// ramp or its swatches. Read off the drawn mark's channel map, on the same
+    /// standing as [`Self::x_column`], so it is the column the fill scale was
+    /// built from. `None` for a plot whose fill is a colour literal or is not
+    /// set, which is also a plot whose scales call for no legend.
+    pub fill_column: Option<String>,
     /// **The file puts a colour legend on this plot** — its own `legend: color`
     /// item, a standalone one that names it by `for:`, or a standalone one with
     /// no `for:` when this is the one plot of the file whose scales call for a
@@ -2131,6 +2138,7 @@ fn compose_from_results(
         let mut plot_x_column: Option<String> = None;
         let mut plot_y_column: Option<String> = None;
         let mut plot_group_column: Option<String> = None;
+        let mut plot_fill_column: Option<String> = None;
         // The marks this plot DREW, in draw order — the candidates a hover can
         // read. A mark the engine refused is not on screen, so a pointer
         // cannot be resting on it, and offering it here would hand a reader a
@@ -2157,6 +2165,9 @@ fn compose_from_results(
             }
             if plot_group_column.is_none() {
                 plot_group_column = channel_maps[mi].stacked_group().map(str::to_string);
+            }
+            if plot_fill_column.is_none() {
+                plot_fill_column = channel_maps[mi].get(Channel::Fill).map(str::to_string);
             }
             // A mark is sampled exactly when the session produced unsampled
             // facts for it; `drawn` is what actually arrived, `of` is what the
@@ -2258,6 +2269,10 @@ fn compose_from_results(
                             if plot_y_column.is_none() {
                                 plot_y_column =
                                     channel_maps[mi].get(Channel::Y).map(str::to_string);
+                            }
+                            if plot_fill_column.is_none() {
+                                plot_fill_column =
+                                    channel_maps[mi].get(Channel::Fill).map(str::to_string);
                             }
                             chart_data.push(ChartData {
                                 batch: &synthetic_batches[k],
@@ -2500,6 +2515,7 @@ fn compose_from_results(
             x_column: plot_x_column,
             y_column: plot_y_column,
             group_column: plot_group_column,
+            fill_column: plot_fill_column,
             stack_offset: plot_nodes
                 .iter()
                 .find(|(p, _)| *p == plot.path)

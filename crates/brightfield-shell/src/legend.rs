@@ -33,6 +33,7 @@ use meridian_design::{control, semantic, spacing, typography};
 use meridian_egui::Mode;
 
 use crate::pipeline::{Composed, PlotHandle};
+use crate::text_ink;
 
 /// What one chart's legend says: the derivation from its displayed scales,
 /// with no egui type in it, so accuracy can be asserted in a unit test.
@@ -43,7 +44,8 @@ pub enum LegendSpec {
         /// The entries, in the scale's own order.
         entries: Vec<LegendEntry>,
     },
-    /// A continuous colour ramp: a gradient bar with its domain ends.
+    /// A continuous colour ramp: a vertical ramp with its domain ends, the
+    /// maximum at the top.
     Sequential {
         /// Domain minimum.
         min: f64,
@@ -52,8 +54,9 @@ pub enum LegendSpec {
         /// The ramp's control points, low → high, straight-alpha RGBA.
         stops: Vec<[f32; 4]>,
     },
-    /// A colour ramp about a pivot: a gradient bar from one pole through the
-    /// midpoint colour to the other, with the pivot named at the middle.
+    /// A colour ramp about a pivot: a vertical ramp from the high pole at the
+    /// top through the midpoint colour to the low pole, with the pivot named at
+    /// the middle.
     Diverging {
         /// Domain minimum — the same distance below the pivot as `max` is above.
         min: f64,
@@ -243,19 +246,47 @@ pub fn draw_band(
     let painter = ui.painter_at(band);
     for (i, legend) in blocks(composed) {
         let y = raster_top + composed.plots[i].rect.y as f32;
-        draw_block(&painter, egui::pos2(band.left(), y), &legend, mode);
+        draw_block(
+            &painter,
+            egui::pos2(band.left(), y),
+            &legend,
+            composed.plots[i].fill_column.as_deref(),
+            mode,
+        );
     }
 }
 
-/// One legend block at `origin`: swatch + label rows for a categorical scale,
-/// a gradient bar with its domain ends for a sequential one, and a bar from
-/// pole to pole with the pivot at its middle for a diverging one.
-fn draw_block(painter: &egui::Painter, origin: egui::Pos2, legend: &LegendSpec, mode: Mode) {
+/// One legend block at `origin`: the column's name over the block, then a
+/// swatch and its label for each category of a categorical scale, or a ramp
+/// running top to bottom with its values beside it for a continuous one — the
+/// domain's maximum level with the ramp's top, its minimum with the ramp's
+/// foot, and for a diverging scale the pivot at the middle.
+///
+/// The name is cut short inside [`block_width`], the width the band was sized
+/// to, so a long name leaves the block and the band as wide as they were
+/// (`a_long_name_is_cut_short_inside_the_column_and_the_band_stays_as_wide`).
+/// `name` is `None` for a plot whose fill names no column, which draws no
+/// legend through [`LegendSpec::of_plot`].
+fn draw_block(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    legend: &LegendSpec,
+    name: Option<&str>,
+    mode: Mode,
+) {
     let sem = semantic(mode.is_dark());
     let ink = crate::design::to_color32(sem.text.secondary);
     let font = egui::FontId::proportional(typography::UI_SIZE);
     let swatch = control::ICON_XS;
     let row = swatch + spacing::SPACE_2;
+    let mut origin = origin;
+    if let Some(name) = name {
+        let name_ink = crate::design::to_color32(sem.text.primary);
+        let galley = text_ink::fit(painter, name, font.clone(), block_width(), name_ink);
+        let height = galley.size().y;
+        painter.galley(origin, galley, name_ink);
+        origin.y += height + spacing::SPACE_2;
+    }
     match legend {
         LegendSpec::Categorical { entries } => {
             for (i, entry) in entries.iter().enumerate() {
@@ -277,34 +308,9 @@ fn draw_block(painter: &egui::Painter, origin: egui::Pos2, legend: &LegendSpec, 
             }
         }
         LegendSpec::Sequential { min, max, stops } => {
-            // The ramp as adjacent solid strips: visually continuous at strip
-            // widths this small, and free of any gradient-mesh dependency.
-            let bar = egui::Rect::from_min_size(origin, egui::vec2(block_width(), swatch));
-            let n = stops.len().max(2);
-            let strip = bar.width() / (n as f32 - 1.0).max(1.0);
-            for (i, stop) in stops.iter().enumerate() {
-                let left = bar.left() + i as f32 * strip;
-                let rect = egui::Rect::from_min_max(
-                    egui::pos2(left, bar.top()),
-                    egui::pos2((left + strip).min(bar.right()), bar.bottom()),
-                );
-                painter.rect_filled(rect, 0.0, chart_ink(*stop));
-            }
-            let label_y = bar.bottom() + spacing::SPACE_1;
-            painter.text(
-                egui::pos2(bar.left(), label_y),
-                egui::Align2::LEFT_TOP,
-                format_domain(*min),
-                font.clone(),
-                ink,
-            );
-            painter.text(
-                egui::pos2(bar.right(), label_y),
-                egui::Align2::RIGHT_TOP,
-                format_domain(*max),
-                font,
-                ink,
-            );
+            let ramp = draw_ramp(painter, origin, stops);
+            ramp_value(painter, ramp, egui::Align::Min, *max, &font, ink);
+            ramp_value(painter, ramp, egui::Align::Max, *min, &font, ink);
         }
         LegendSpec::Diverging {
             min,
@@ -312,53 +318,98 @@ fn draw_block(painter: &egui::Painter, origin: egui::Pos2, legend: &LegendSpec, 
             pivot,
             stops,
         } => {
-            let bar = egui::Rect::from_min_size(origin, egui::vec2(block_width(), swatch));
-            let colours = diverging_strip_colours(stops);
-            let strip = bar.width() / colours.len() as f32;
-            for (i, colour) in colours.iter().enumerate() {
-                let left = bar.left() + i as f32 * strip;
-                let rect = egui::Rect::from_min_max(
-                    egui::pos2(left, bar.top()),
-                    egui::pos2((left + strip).min(bar.right()), bar.bottom()),
-                );
-                painter.rect_filled(rect, 0.0, chart_ink(*colour));
-            }
-            let label_y = bar.bottom() + spacing::SPACE_1;
-            for (x, align, value) in [
-                (bar.left(), egui::Align2::LEFT_TOP, *min),
-                (bar.center().x, egui::Align2::CENTER_TOP, *pivot),
-                (bar.right(), egui::Align2::RIGHT_TOP, *max),
-            ] {
-                painter.text(
-                    egui::pos2(x, label_y),
-                    align,
-                    format_domain(value),
-                    font.clone(),
-                    ink,
-                );
-            }
+            let ramp = draw_ramp(painter, origin, stops);
+            ramp_value(painter, ramp, egui::Align::Min, *max, &font, ink);
+            ramp_value(painter, ramp, egui::Align::Center, *pivot, &font, ink);
+            ramp_value(painter, ramp, egui::Align::Max, *min, &font, ink);
         }
     }
 }
 
-/// How many strips a diverging legend's bar is drawn in. Odd, so the middle
-/// strip is the ramp's midpoint colour and stands at the bar's centre, where the
-/// pivot's label is.
-const DIVERGING_STRIPS: usize = 61;
-
-/// The colour of each strip of a diverging legend's bar, left (low pole) to
-/// right (high pole): strip `i` samples the ramp at `i / (n - 1)`, so the first
-/// strip is the low pole's colour, the last is the high pole's, and the middle
-/// one is the midpoint colour.
+/// The ramp as [`RAMP_STRIPS`] adjacent solid strips, the ramp's high end at
+/// the top and its low end at the foot, and the rect it fills.
 ///
-/// The sequential bar draws one strip per stop and leaves the last stop's
-/// without a width; sampling the ramp instead is what puts both poles on a
-/// bar that has to show both.
+/// Each strip is [`STRIP_HEIGHT`] tall, whole points, so no two strips share a
+/// fractional edge for the rasteriser to blend into a seam.
+fn draw_ramp(painter: &egui::Painter, origin: egui::Pos2, stops: &[[f32; 4]]) -> egui::Rect {
+    let ramp = egui::Rect::from_min_size(origin, egui::vec2(control::ICON_XS, RAMP_HEIGHT));
+    for (j, colour) in ramp_strip_colours(stops).iter().rev().enumerate() {
+        let top = ramp.top() + j as f32 * STRIP_HEIGHT;
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(ramp.left(), top),
+            egui::vec2(ramp.width(), STRIP_HEIGHT),
+        );
+        painter.rect_filled(rect, 0.0, chart_ink(*colour));
+    }
+    ramp
+}
+
+/// A domain value beside `ramp`, in the label column and cut short inside it:
+/// level with the ramp's top for [`egui::Align::Min`], its middle for
+/// [`egui::Align::Center`], its foot for [`egui::Align::Max`].
+fn ramp_value(
+    painter: &egui::Painter,
+    ramp: egui::Rect,
+    at: egui::Align,
+    value: f64,
+    font: &egui::FontId,
+    ink: egui::Color32,
+) {
+    let galley = text_ink::fit(
+        painter,
+        &format_domain(value),
+        font.clone(),
+        LABEL_COLUMN,
+        ink,
+    );
+    let top = match at {
+        egui::Align::Min => ramp.top(),
+        egui::Align::Center => ramp.center().y - galley.size().y / 2.0,
+        egui::Align::Max => ramp.bottom() - galley.size().y,
+    };
+    painter.galley(
+        egui::pos2(ramp.right() + spacing::ICON_LABEL_GAP, top),
+        galley,
+        ink,
+    );
+}
+
+/// How many strips a ramp is drawn in. Odd, so the middle strip is the ramp's
+/// midpoint colour and stands at the ramp's centre, where a diverging ramp's
+/// pivot is labelled.
+const RAMP_STRIPS: usize = 71;
+
+/// The height of one strip of a ramp, in logical points. Whole, so strips meet
+/// on pixel edges at a scale of one.
+const STRIP_HEIGHT: f32 = 2.0;
+
+/// The height of a number column's ramp, in logical points: `RAMP_STRIPS`
+/// strips of `STRIP_HEIGHT` each. The design gives the legend column a vertical
+/// ramp and no figure for its height; this is read off the accepted frame of the
+/// legend at the plot's right, where the ramp runs about this far.
+pub const RAMP_HEIGHT: f32 = RAMP_STRIPS as f32 * STRIP_HEIGHT;
+
+/// The colour of each strip of a ramp, **low end first**: strip `i` samples the
+/// ramp at `i / (n - 1)`, so the first strip is the low end's colour, the last
+/// is the high end's, and for an odd count the middle one is the midpoint. The
+/// drawing runs them from the foot of the ramp to its top.
+///
+/// Sampling the ramp rather than painting one strip per stop is what puts both
+/// ends on a ramp that has to show both: a strip per stop leaves the last
+/// stop's without a height.
+#[must_use]
+pub fn ramp_strip_colours(stops: &[[f32; 4]]) -> Vec<[f32; 4]> {
+    (0..RAMP_STRIPS)
+        .map(|i| ramp_at(stops, i as f64 / (RAMP_STRIPS - 1) as f64))
+        .collect()
+}
+
+/// The colour of each strip of a diverging legend's ramp, low pole first —
+/// [`ramp_strip_colours`], under the name the diverging legend's tests read it
+/// by. The middle strip is the midpoint colour, level with the pivot's label.
 #[must_use]
 pub fn diverging_strip_colours(stops: &[[f32; 4]]) -> Vec<[f32; 4]> {
-    (0..DIVERGING_STRIPS)
-        .map(|i| ramp_at(stops, i as f64 / (DIVERGING_STRIPS - 1) as f64))
-        .collect()
+    ramp_strip_colours(stops)
 }
 
 /// A domain end, spelled the short way: integers bare, fractions to two
@@ -431,7 +482,7 @@ mod tests {
         assert_eq!(band_width(&Composed::empty()), 0.0);
     }
 
-    /// A sequential ramp derives the gradient form with its domain ends.
+    /// A sequential scale derives a ramp legend with its domain ends.
     #[test]
     fn a_sequential_scale_derives_a_ramp_legend() {
         let mut scales = ScaleSet::new();
@@ -473,7 +524,7 @@ mod tests {
         };
         let out = ctx.run_ui(raw, |ui| {
             let painter = ui.painter().clone();
-            draw_block(&painter, egui::pos2(10.0, 10.0), &spec, Mode::Light);
+            draw_block(&painter, egui::pos2(10.0, 10.0), &spec, None, Mode::Light);
         });
         let mut swatches = Vec::new();
         for clipped in &out.shapes {
