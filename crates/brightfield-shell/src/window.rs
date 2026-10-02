@@ -101,7 +101,7 @@ use crate::protocol::{
     ProtocolInputs, ProtocolModel, SpineRole, SpineRow, CANVAS as PROTOCOL_CANVAS,
     INSPECTOR as PROTOCOL_INSPECTOR, LOG, OUTLINE, QUALITY, STEPS,
 };
-use crate::shelf::{BandDrawn, ListReport, ShelfBand, ShelfChannels};
+use crate::shelf::{BandDrawn, Binding, ListReport, ShelfBand, ShelfChannels};
 
 // ---------------------------------------------------------------------------
 // The window's own chrome budget.
@@ -5221,7 +5221,15 @@ impl MeridianApp {
     /// text and not a palette or a help sheet.
     ///
     /// The shelf lets go where the pane does: another pane takes focus, the
-    /// graph takes the canvas, or the frame before drew no band.
+    /// graph takes the canvas, or the frame before drew no band. **A press in
+    /// the Outline while it draws the shelf's list is not another pane taking
+    /// focus**: the list is the shelf's, so the press is the shelf's and the
+    /// hero's pane keeps the focus, which is how a click on a row reaches the
+    /// list and keeps its column.
+    ///
+    /// What the list reported — a key's, or the pointer's on the frame before —
+    /// is acted on here, on a frame with a key in it and on one without:
+    /// [`Self::shelf_apply`].
     fn shelf_keys(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
         let last = self.charts.shelf.drawn.take();
         // A click on a cell opened it on the band, which is the same way in as
@@ -5230,6 +5238,11 @@ impl MeridianApp {
             self.ws_mut().set_focus(PaneKey::new(CHART));
             self.charts.shelf.holds = true;
             self.shelf_sync_list();
+        }
+        if self.ws().focus() == Some(PaneKey::new(OUTLINE))
+            && self.protocol.doc.model.column_list().is_some()
+        {
+            self.ws_mut().set_focus(PaneKey::new(CHART));
         }
         if graph_on_canvas || last.is_none() || !self.hero_has_focus() {
             self.shelf_release();
@@ -5241,10 +5254,12 @@ impl MeridianApp {
         let events = ctx.input(|i| i.events.clone());
         let mut owned = self.charts.shelf.holds;
         let mut at = 0;
+        let mut fed = false;
         while at < events.len() {
             if self.protocol.doc.model.column_list().is_some() {
                 let reports = self.protocol.doc.model.feed_column_list(&events[at..]);
                 self.shelf_apply(reports);
+                fed = true;
                 break;
             }
             let event = &events[at];
@@ -5267,6 +5282,15 @@ impl MeridianApp {
             } else if shelf_entry_key() == Some(*key) {
                 self.charts.shelf.holds = true;
                 owned = true;
+            }
+        }
+        // A frame with no key for the list still carries what the pointer
+        // did to it on the frame before: a row moved over, a row clicked.
+        if !fed && self.protocol.doc.model.column_list().is_some() {
+            let reports = self.protocol.doc.model.feed_column_list(&[]);
+            if !reports.is_empty() {
+                self.shelf_apply(reports);
+                ctx.request_repaint();
             }
         }
         if owned {
@@ -5318,37 +5342,84 @@ impl MeridianApp {
         }
     }
 
-    /// Act on what the list's keys decided: `Esc` closes it and the band's cell
-    /// with it, and a channel named by letter or by `h` `l` opens that cell. A
-    /// cursor move and a kept column are not acted on here: the chart is not
-    /// drawn with a previewed or a kept column yet.
+    /// **Act on what the list decided**, by its keys or by the pointer.
+    ///
+    /// - The cursor moved to a column: the hero is drawn with it on the open
+    ///   cell's channel, as a preview ([`ChartDoc::preview_shelf_column`]),
+    ///   and the window is not marked unsaved. Of the moves in one batch only
+    ///   the last is drawn, so a key held down loads the page once a frame and
+    ///   not once a row.
+    /// - A column kept, by `Enter` or a click: it is kept
+    ///   ([`ChartDoc::keep_shelf_column`]), which joins its edits to the edits
+    ///   Save writes; the list closes and the band keeps the keys, as the cell
+    ///   is left with its column chosen.
+    /// - `Esc` out of the list: the preview is backed out of, and the hero is
+    ///   drawn as it was kept; the list closes and the band's cell with it.
+    /// - Another channel named, by letter or by `h` `l`: the preview, which
+    ///   belongs to the cell it was made in, is backed out of, and that cell
+    ///   opens.
     fn shelf_apply(&mut self, reports: Vec<ListReport>) {
         let Some(band) = self.charts.shelf.band.as_mut() else {
             return;
         };
+        let table: &[brightfield_engine::ColumnProfile] = self
+            .protocol
+            .doc
+            .model
+            .source()
+            .map_or(&[], |s| s.profiles.as_slice());
+        let mut moved: Option<(ShelfChannel, String)> = None;
+        // Whether the batch leaves the list closed — the last report that
+        // decides it wins. Closed once the batch is read, because the profile
+        // the columns are checked against is borrowed from the same model.
+        let mut close = false;
         for report in reports {
             match report {
-                ListReport::BackedOut => {
+                ListReport::Moved(column) => {
+                    moved = band.active().map(|channel| (channel, column));
+                }
+                ListReport::Kept(column) => {
+                    moved = None;
+                    if let Some(channel) = band.active() {
+                        self.charts
+                            .doc
+                            .keep_shelf_column(HERO_PLOT, channel, &column, table);
+                    }
                     band.leave();
-                    self.protocol.doc.model.close_column_list();
+                    close = true;
+                }
+                ListReport::BackedOut => {
+                    moved = None;
+                    self.charts.doc.drop_shelf_preview();
+                    band.leave();
+                    close = true;
                 }
                 ListReport::GoTo(channel) | ListReport::Beside(channel) => {
+                    moved = None;
+                    self.charts.doc.drop_shelf_preview();
                     band.activate(channel);
-                    if channel == ShelfChannel::Mark {
-                        self.protocol.doc.model.close_column_list();
-                    }
+                    close = channel == ShelfChannel::Mark;
                 }
-                ListReport::Moved(_) | ListReport::Kept(_) => {}
             }
+        }
+        if let Some((channel, column)) = moved {
+            self.charts
+                .doc
+                .preview_shelf_column(HERO_PLOT, channel, &column, table);
+        }
+        if close {
+            self.protocol.doc.model.close_column_list();
         }
     }
 
-    /// Hand every key back to the pane: the band's cell closes, its list closes
-    /// and the band lets go.
+    /// Hand every key back to the pane: the band's cell closes, its list closes,
+    /// a column it was previewing is backed out of, and the band lets go.
     fn shelf_release(&mut self) {
         if let Some(band) = self.charts.shelf.band.as_mut() {
             band.leave();
         }
+        // A column the list drew and nobody kept goes with the list.
+        self.charts.doc.drop_shelf_preview();
         if self.charts.shelf.holds {
             self.charts.shelf.holds = false;
             self.protocol.doc.model.close_column_list();
@@ -8582,18 +8653,52 @@ pub fn canvas_pane_rects(body: egui::Rect, split: f32) -> CanvasPaneRects {
 /// names, and the row count the chip also said is the status band's.
 /// `no_chrome_ink_is_drawn_inside_the_heros_data_area` reads the drawn frame
 /// for it.
-pub(crate) fn map_pane_title(hero: Option<&crate::one_step::ColumnFacts>) -> String {
+///
+/// **The title follows the mapping, not the tile the generator drew.**
+/// `mapping` is what the hero's plot binds to x and y now, as the shelf band
+/// reads it. While x holds the pair's longitude and y its latitude the pane is
+/// the map; when a column the shelf put on either takes it off the pair, the
+/// picture is a dot plot of the two columns, and the title says so: `Dot plot ·
+/// latitude × median_income`, y before x as the map's title has them. With no
+/// mapping read — no live spec — the title is the generator's tile's.
+pub(crate) fn map_pane_title(
+    hero: Option<&crate::one_step::ColumnFacts>,
+    mapping: Option<&ShelfChannels>,
+) -> String {
     match hero {
         Some(facts) => match &facts.paired {
-            Some(other) => format!(
-                "Map \u{b7} {other} \u{d7} {} \u{b7} {}",
-                facts.column,
-                crate::chart_kinds::POINT_MAP_PROJECTION
-            ),
+            Some(other) => match mapping.and_then(|m| off_the_pair(m, &facts.column, other)) {
+                Some((y, x)) => format!("{DOT_PLOT} \u{b7} {y} \u{d7} {x}"),
+                None => format!(
+                    "Map \u{b7} {other} \u{d7} {} \u{b7} {}",
+                    facts.column,
+                    crate::chart_kinds::POINT_MAP_PROJECTION
+                ),
+            },
             None => facts.column.clone(),
         },
         None => "Map".to_string(),
     }
+}
+
+/// What a hero whose x and y are no longer the coordinate pair is called.
+const DOT_PLOT: &str = "Dot plot";
+
+/// What `mapping` puts on y and on x, as the pane names them, when it does not
+/// hold the pair — `lon` on x and `lat` on y — and `None` while it does.
+fn off_the_pair<'a>(
+    mapping: &'a ShelfChannels,
+    lon: &str,
+    lat: &str,
+) -> Option<(&'a str, &'a str)> {
+    let named = |binding: &'a Binding| match binding {
+        Binding::Column(name) => name.as_str(),
+        Binding::Expression => crate::shelf::AN_EXPRESSION,
+        Binding::Unset => "none",
+    };
+    let on_pair = matches!(&mapping.x, Binding::Column(x) if x == lon)
+        && matches!(&mapping.y, Binding::Column(y) if y == lat);
+    (!on_pair).then(|| (named(&mapping.y), named(&mapping.x)))
 }
 
 /// Draw the canvas as a **pane group**: the hero pane, and the grid pane
@@ -8671,7 +8776,7 @@ fn draw_canvas_pane_group(
     let (map_rect, grid_rect) = (rects.hero, rects.grid);
     let hero = charts.doc.tile_columns().first().cloned();
     let map_subject = Subject::new(
-        map_pane_title(hero.as_ref()),
+        map_pane_title(hero.as_ref(), hero_shelf_channels(&charts.doc).as_ref()),
         subject_icon(hero.as_ref()),
         brightfield_keys::BindingContext::Workspace,
     );
@@ -8886,7 +8991,7 @@ fn draw_transposed_pane_group(
     let (map_rect, grid_rect) = (rects.hero, rects.grid);
     let hero = charts.doc.tile_columns().first().cloned();
     let map_subject = Subject::new(
-        map_pane_title(hero.as_ref()),
+        map_pane_title(hero.as_ref(), hero_shelf_channels(&charts.doc).as_ref()),
         subject_icon(hero.as_ref()),
         brightfield_keys::BindingContext::Workspace,
     );
@@ -9080,6 +9185,12 @@ fn carve_shelf_band(
         .band
         .get_or_insert_with(|| ShelfBand::new(channels.clone()));
     band.set_channels(channels);
+    // The cell says *preview* while the chart document draws a column it has
+    // not kept, and only then: the document's preview is the one record of it.
+    match charts.doc.shelf_preview() {
+        Some((channel, column)) => band.set_preview(channel, column),
+        None => band.clear_preview(),
+    }
     charts.shelf.drawn = Some(band.show(&mut child, mode));
     charts.shelf.tile = title.to_string();
     egui::Rect::from_min_max(egui::pos2(body.left(), body.top() + height), body.max)
@@ -9087,8 +9198,13 @@ fn carve_shelf_band(
 
 /// What the hero's plot takes on the shelf's channels, read from the live spec
 /// at the path the composition placed the hero at.
+/// The hero's plot, as an index into the page's plots: the first the page
+/// composes, which is the plot the band reads its channels from and the plot a
+/// column the shelf's list previews or keeps is put on.
+const HERO_PLOT: usize = 0;
+
 fn hero_shelf_channels(doc: &ChartDoc) -> Option<ShelfChannels> {
-    let path = &doc.composed.plots.first()?.path;
+    let path = &doc.composed.plots.get(HERO_PLOT)?.path;
     let spec = doc.live_dashboard()?.spec();
     let plot = brightfield_spec::edit::plot_at_path(spec, path)?;
     ShelfChannels::of_plot(plot)

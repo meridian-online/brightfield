@@ -2931,7 +2931,7 @@ impl Item<ProtocolDoc> for OutlinePane {
         let mut graph_picked = false;
         // The list a shelf cell opens takes the columns' place while it is open.
         // It is taken out of the model for the frame, because drawing it moves
-        // its cursor on a click.
+        // its cursor under a pointer moving over a row and on a click.
         let mut list = doc.model.column_list.take();
         let mut list_reports: Vec<ListReport> = Vec::new();
         // Whether the chip is a control here. A Protocol with no node that has

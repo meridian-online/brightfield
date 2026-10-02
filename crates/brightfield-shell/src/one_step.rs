@@ -180,6 +180,13 @@ pub struct OneStepProtocol {
     /// plot *n* names. Not [`Self::columns`] filtered: see the private
     /// `tiles_in_plot_order` for the point map that separates them.
     pub tiles: Vec<ColumnFacts>,
+    /// The profile the engine took of the table, which [`Self::columns`] and
+    /// the dashboard were both read from — kept whole, because a column put on
+    /// a chart's channel ([`crate::shelf_edit::put_column`]) is checked against
+    /// it, and the coordinate pair that decides map or dot plot is found in it.
+    /// Kept rather than profiled again, so the pair the shelf finds is the one
+    /// the generator drew the map from.
+    pub profiles: Vec<ColumnProfile>,
 }
 
 impl OneStepProtocol {
@@ -202,6 +209,7 @@ impl OneStepProtocol {
             manifest: manifest_yaml(&name, &spelled),
             columns: facts(columns, dashboard),
             tiles: tiles_in_plot_order(columns, dashboard),
+            profiles: columns.to_vec(),
             name,
             data: path.to_path_buf(),
             dir,
@@ -869,7 +877,7 @@ mod tests {
             let hero = spec.tiles.first().expect("a pair stands the map as hero");
             assert_eq!(hero.tile.as_deref(), Some("point-map"));
             assert_eq!(
-                crate::window::map_pane_title(Some(hero)),
+                crate::window::map_pane_title(Some(hero), None),
                 "Map \u{b7} latitude \u{d7} longitude \u{b7} equirectangular",
                 "the map pane's title moved with the tile order"
             );

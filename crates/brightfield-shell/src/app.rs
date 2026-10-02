@@ -58,7 +58,7 @@ use std::collections::BTreeSet;
 
 use brightfield_engine::coordinator::{Coordinator, Interaction};
 use brightfield_engine::nearest::{NearestProbe, NearestRead};
-use brightfield_engine::{AxisExtent, NavigationExtent};
+use brightfield_engine::{AxisExtent, ColumnProfile, NavigationExtent};
 use brightfield_keys::BindingContext;
 use brightfield_model::panel_capture::{panel_file, write_panel_text};
 use brightfield_protocol::{write_chart_edit, ChartVersions, HistoryStore, NotRecorded};
@@ -70,6 +70,7 @@ use brightfield_spec::layout::{
     plot_scale_key, PlotAxis, ScaleType, StackOffset, STACK_OFFSET_KEY,
 };
 use brightfield_spec::vocab::MarkKind;
+use brightfield_workbench::channel::ShelfChannel;
 use brightfield_workbench::item::ModuleHost;
 use brightfield_workbench::registry::{ChartKindId, ChartKindRegistry, DockSide, Field, Slot};
 use brightfield_workbench::{
@@ -98,6 +99,10 @@ use brightfield_spec::layout::Rect as SpecRect;
 /// run, or a re-composite that produced nothing and left the previous picture
 /// standing.
 const ENGINE_REFUSED: &str = "The chart is missing data the engine refused to query";
+
+/// The headline over a column the shelf could not put on a channel, the chart
+/// left as it was kept.
+const SHELF_REFUSED: &str = "The column could not be put on the chart";
 
 /// The smallest box [`ChartDoc::reflow_to`] will compose a dashboard into, on
 /// either axis, in logical points.
@@ -614,6 +619,29 @@ impl NormaliseSwitchDrawn {
     }
 }
 
+/// **A column the shelf's list is drawing on a channel and has not kept.**
+///
+/// The page is drawn from the previewed spec while the cursor is on the
+/// column, and [`ChartDoc::live_dashboard`] is that page. What this holds is
+/// what the preview replaced — the live session and the composition of the
+/// kept spec — so backing out puts that page back as it stood, without a load,
+/// and a cursor moved on to another column is put on the kept spec and not on
+/// the column before it. A preview abandoned leaves the kept spec as it was,
+/// because the kept spec was never edited: the preview's edits went onto a
+/// copy.
+struct ShelfPreview {
+    /// The channel the column is drawn on.
+    channel: ShelfChannel,
+    /// The column under the list's cursor.
+    column: String,
+    /// The edits that put it there, onto the kept spec, in the order
+    /// [`crate::shelf_edit`] made them: what keeping it adds to the edits Save
+    /// writes.
+    edits: Vec<ChartEdit>,
+    /// The page of the kept spec: its live session and its composition.
+    kept: (LiveDashboard, Composed),
+}
+
 /// The chart view's **document**: the composited dashboard, the canvas it
 /// rasters into, and the chart state the panes read.
 ///
@@ -892,9 +920,15 @@ pub struct ChartDoc {
     /// text instead, as a change to one line.
     ///
     /// Pushed by [`Self::set_plot_attribute`] when a tile's switch rewrote the
-    /// spec, and emptied by [`Self::open`], which replaces the document the
-    /// edits were made to, and by a Save that wrote them.
+    /// spec, and by [`Self::keep_shelf_column`] when the shelf's list kept a
+    /// column; emptied by [`Self::open`], which replaces the document the
+    /// edits were made to, and by a Save that wrote them. A column the shelf
+    /// has previewed and not kept is not here: its edits are [`Self::shelf_preview`]'s
+    /// until it is kept, and gone when it is backed out of.
     pending_edits: Vec<ChartEdit>,
+    /// The column the shelf's list is drawing on a channel and has not kept,
+    /// and the page it replaced. See [`ShelfPreview`].
+    shelf_preview: Option<ShelfPreview>,
     /// The pan/zoom gesture in progress and the settle rule that decides when
     /// it becomes a query. Public because a headless test drives it through the
     /// same entry points the chart pane uses.
@@ -1058,6 +1092,7 @@ impl ChartDoc {
             interval_drags: IntervalDrags::new(),
             interaction_fault: None,
             pending_edits: Vec::new(),
+            shelf_preview: None,
             nav: NavGesture::new(),
             axis_lock: AxisLock::default(),
             nav_plot: 0,
@@ -1109,6 +1144,7 @@ impl ChartDoc {
             interval_drags: IntervalDrags::new(),
             interaction_fault: None,
             pending_edits: Vec::new(),
+            shelf_preview: None,
             nav: NavGesture::new(),
             axis_lock: AxisLock::default(),
             nav_plot: 0,
@@ -1157,8 +1193,10 @@ impl ChartDoc {
         // spec's chart — the defect `open_chart` exists to prevent, re-made
         // one field down.
         self.interaction_fault = None;
-        // …and an edit made to the replaced document is not this one's.
+        // …and an edit made to the replaced document is not this one's, nor
+        // a column previewed on it.
         self.pending_edits.clear();
+        self.shelf_preview = None;
         // …and the extent described the replaced document's plots.
         self.nav.clear();
         self.nav_notice = None;
@@ -1237,14 +1275,16 @@ impl ChartDoc {
         self.live.is_some()
     }
 
-    /// Whether a tile's switch has changed this document's live spec since it
-    /// was opened or last saved — a change the chart file does not carry, and
-    /// one the window says is unsaved.
+    /// Whether a tile's switch or a column kept on the shelf has changed this
+    /// document's live spec since it was opened or last saved — a change the
+    /// chart file does not carry, and one the window says is unsaved.
     ///
     /// A switch the chart refused is not one: the spec it left standing is the
     /// file's. Neither is a pick of the state the control already showed,
-    /// which writes the value the spec holds. A Save that wrote the edits
-    /// clears it ([`Self::save_chart_beside`]); one that could not leaves it.
+    /// which writes the value the spec holds, nor a column the shelf's list is
+    /// previewing and has not kept ([`Self::preview_shelf_column`]). A Save that wrote the
+    /// edits clears it ([`Self::save_chart_beside`]); one that could not
+    /// leaves it.
     #[must_use]
     pub const fn has_unsaved_edit(&self) -> bool {
         !self.pending_edits.is_empty()
@@ -1497,6 +1537,10 @@ impl ChartDoc {
     /// standing, and a page rebuilt over the spec it already had is not an
     /// edit.
     fn set_plot_attribute(&mut self, plot: usize, key: &str, value: &str, refused: &str) -> bool {
+        // A switch thrown while the shelf's list draws a column it has not
+        // kept is made to the kept page: the preview is put back first, so the
+        // switch's edit is not made on a spec whose other edit is never saved.
+        self.drop_shelf_preview();
         let Some(handle) = self.composed.plots.get(plot) else {
             return false;
         };
@@ -1521,7 +1565,38 @@ impl ChartDoc {
         // and that is not an edit: it rebuilds the page and leaves the file
         // exactly as it was.
         let changed = spec != *live.spec();
+        match self.rebuild(spec) {
+            Ok((live, composed)) => {
+                self.live = Some(live);
+                self.composed = composed;
+                if changed {
+                    self.pending_edits.push(edit);
+                }
+                self.canvas.invalidate();
+                true
+            }
+            Err(e) => {
+                self.interaction_fault = Some(ChartFault {
+                    title: ENGINE_REFUSED.to_string(),
+                    detail: e,
+                });
+                false
+            }
+        }
+    }
 
+    /// **Load the page again from `spec`**, with what the window decided about
+    /// the page it replaces put back onto it: the viewport and the ink mode.
+    /// The engine session is the new load's, so a committed selection is not
+    /// carried. `Err` with the engine's words for a spec it would not load or
+    /// present. The one rebuild the tile switches and the shelf both take.
+    fn rebuild(
+        &mut self,
+        spec: brightfield_spec::ast::Spec,
+    ) -> Result<(LiveDashboard, Composed), String> {
+        let Some(live) = self.live.as_ref() else {
+            return Err("no live session is behind this chart".to_string());
+        };
         let viewport = live.viewport();
         let mode = live.mode();
         // The base the FIRST load resolved this spec's relative `file:` sources
@@ -1539,24 +1614,173 @@ impl ChartDoc {
             live.present().map(|composed| (live, composed))
         });
         self.activity.end(Activity::EngineQuery);
-        match rebuilt {
+        rebuilt.map_err(|e| e.to_string())
+    }
+
+    /// **Draw the plot at `plot` with `column` on `channel`, as a preview**: the
+    /// page is loaded from the kept spec with the column put on the channel,
+    /// and nothing is added to the edits Save writes, so the window is not
+    /// marked unsaved by it.
+    ///
+    /// The column is put on the **kept** spec, not on the one drawn: a cursor
+    /// moved from one column to the next previews the next one alone. A column
+    /// the kept spec already has on the channel puts the kept page back, which
+    /// is how a cursor moved back to the channel's own column draws the chart
+    /// as it was. x and y are put by [`crate::shelf_edit::put_column`] and
+    /// colour by [`crate::shelf_edit::put_colour`], against `table`, the
+    /// profile of the table the chart reads; the mark's cell takes no column.
+    ///
+    /// Returns whether the page drawn changed. A refusal — a column the table
+    /// does not have, a plot with no mark, a spec the engine will not load —
+    /// puts the kept page back and says why in [`Self::chart_fault`], so the
+    /// chart is not left drawn with a column the cursor is not on.
+    pub fn preview_shelf_column(
+        &mut self,
+        plot: usize,
+        channel: ShelfChannel,
+        column: &str,
+        table: &[ColumnProfile],
+    ) -> bool {
+        if self
+            .shelf_preview
+            .as_ref()
+            .is_some_and(|p| p.channel == channel && p.column == column)
+        {
+            return false;
+        }
+        let Some(path) = self
+            .composed
+            .plots
+            .get(plot)
+            .map(|h| ComponentPath(h.path.clone()))
+        else {
+            return false;
+        };
+        let kept_spec = match (&self.shelf_preview, &self.live) {
+            (Some(preview), _) => preview.kept.0.spec().clone(),
+            (None, Some(live)) => live.spec().clone(),
+            (None, None) => return false,
+        };
+        let mut spec = kept_spec;
+        let put = match channel {
+            ShelfChannel::X => {
+                crate::shelf_edit::put_column(&mut spec, &path, PlotAxis::X, column, table)
+            }
+            ShelfChannel::Y => {
+                crate::shelf_edit::put_column(&mut spec, &path, PlotAxis::Y, column, table)
+            }
+            ShelfChannel::Colour => crate::shelf_edit::put_colour(&mut spec, &path, column, table),
+            ShelfChannel::Mark => return false,
+        };
+        let edits = match put {
+            Ok(edits) => edits,
+            Err(refusal) => {
+                self.drop_shelf_preview();
+                self.interaction_fault = Some(ChartFault {
+                    title: SHELF_REFUSED.to_string(),
+                    detail: refusal.to_string(),
+                });
+                return false;
+            }
+        };
+        if edits.is_empty() {
+            // The kept spec already has the column there.
+            return self.drop_shelf_preview();
+        }
+        match self.rebuild(spec) {
             Ok((live, composed)) => {
-                self.live = Some(live);
-                self.composed = composed;
-                if changed {
-                    self.pending_edits.push(edit);
-                }
+                let shown_live = self.live.replace(live);
+                let shown_composed = std::mem::replace(&mut self.composed, composed);
+                // The page before this one is the kept page when no preview
+                // was up, and the previous preview's — dropped — when one was.
+                let kept = match self.shelf_preview.take() {
+                    Some(previous) => previous.kept,
+                    None => match shown_live {
+                        Some(live) => (live, shown_composed),
+                        None => return false,
+                    },
+                };
+                self.shelf_preview = Some(ShelfPreview {
+                    channel,
+                    column: column.to_string(),
+                    edits,
+                    kept,
+                });
                 self.canvas.invalidate();
                 true
             }
             Err(e) => {
+                self.drop_shelf_preview();
                 self.interaction_fault = Some(ChartFault {
                     title: ENGINE_REFUSED.to_string(),
-                    detail: e.to_string(),
+                    detail: e,
                 });
                 false
             }
         }
+    }
+
+    /// **Keep `column` on `channel`**: the page is drawn with it, as
+    /// [`Self::preview_shelf_column`] draws it, and its edits join the edits
+    /// Save writes, which marks the window [`Self::has_unsaved_edit`].
+    ///
+    /// A column already previewed there is kept without loading the page
+    /// again. A column the kept spec already has on the channel is no edit, and
+    /// keeping it adds nothing. Returns whether an edit was kept.
+    pub fn keep_shelf_column(
+        &mut self,
+        plot: usize,
+        channel: ShelfChannel,
+        column: &str,
+        table: &[ColumnProfile],
+    ) -> bool {
+        self.preview_shelf_column(plot, channel, column, table);
+        let Some(preview) = self.shelf_preview.take() else {
+            return false;
+        };
+        if preview.channel != channel || preview.column != column {
+            // The preview standing is another column's: put it back.
+            self.shelf_preview = Some(preview);
+            self.drop_shelf_preview();
+            return false;
+        }
+        self.pending_edits.extend(preview.edits);
+        true
+    }
+
+    /// **Back out of the column previewed**: the kept page is put back as it
+    /// stood, the viewport and ink mode the window has now carried onto it,
+    /// and nothing is added to the edits Save writes. Returns whether a
+    /// preview was up to back out of.
+    pub fn drop_shelf_preview(&mut self) -> bool {
+        let Some(preview) = self.shelf_preview.take() else {
+            return false;
+        };
+        let (mut live, mut composed) = preview.kept;
+        if let Some(shown) = self.live.as_ref() {
+            let moved = live.set_viewport(shown.viewport());
+            let inked = live.set_mode(shown.mode());
+            if moved || inked {
+                self.activity.begin(Activity::EngineQuery);
+                if let Ok(again) = live.present() {
+                    composed = again;
+                }
+                self.activity.end(Activity::EngineQuery);
+            }
+        }
+        self.live = Some(live);
+        self.composed = composed;
+        self.canvas.invalidate();
+        true
+    }
+
+    /// The column the shelf's list is drawing and has not kept, and the
+    /// channel it is drawn on.
+    #[must_use]
+    pub fn shelf_preview(&self) -> Option<(ShelfChannel, &str)> {
+        self.shelf_preview
+            .as_ref()
+            .map(|p| (p.channel, p.column.as_str()))
     }
 
     /// What the grid laid out on this frame, if it drew — the read half of
