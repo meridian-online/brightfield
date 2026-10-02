@@ -82,7 +82,7 @@ fn channels(projection: Option<Projection>) -> ChannelMap {
 /// are the ones a real plot would carry.
 fn scales(batch: &RecordBatch, cm: &ChannelMap) -> ScaleSet {
     let mut set = infer_scales(batch, cm, X_RANGE, Y_RANGE);
-    DotRenderer.augment_scales(&mut set, batch, cm, X_RANGE, Y_RANGE);
+    DotRenderer::default().augment_scales(&mut set, batch, cm, X_RANGE, Y_RANGE);
     set
 }
 
@@ -103,7 +103,7 @@ fn drawn_points(scene: &Scene) -> Vec<(f64, f64)> {
 
 fn render(batch: &RecordBatch, cm: &ChannelMap, set: &ScaleSet) -> Scene {
     let mut scene = Scene::new();
-    DotRenderer.render(&mut scene, batch, cm, set, None);
+    DotRenderer::default().render(&mut scene, batch, cm, set, None);
     scene
 }
 
@@ -351,7 +351,7 @@ fn narrowing_the_extent_changes_the_graticule_rather_than_redrawing_it() {
 fn the_drawn_scene_carries_a_meridian_at_each_projected_longitude() {
     let batch = batch(FIXTURE);
     let cm = channels(Some(Projection::Mercator));
-    let (scene, set) = plot(&[&batch], &cm, &DotRenderer, ChartLayout::new(640.0, 480.0));
+    let (scene, set) = plot(&[&batch], &cm, &DotRenderer::default(), ChartLayout::new(640.0, 480.0));
     let (Some(x_scale), Some(y_scale)) = (set.get(Channel::X), set.get(Channel::Y)) else {
         panic!("a projected dot mark must have both positional scales");
     };
@@ -393,14 +393,14 @@ fn an_unprojected_dot_mark_draws_no_graticule() {
     let batch = batch(FIXTURE);
     let layout = ChartLayout::new(640.0, 480.0);
     let plain = channels(None);
-    let (plain_scene, plain_set) = plot(&[&batch], &plain, &DotRenderer, layout);
+    let (plain_scene, plain_set) = plot(&[&batch], &plain, &DotRenderer::default(), layout);
     assert!(
         PlotGraticule::of(&plain_set).is_none(),
         "an unprojected plot has no graticule"
     );
 
     let projected = channels(Some(Projection::Mercator));
-    let (projected_scene, projected_set) = plot(&[&batch], &projected, &DotRenderer, layout);
+    let (projected_scene, projected_set) = plot(&[&batch], &projected, &DotRenderer::default(), layout);
     let lines = PlotGraticule::of(&projected_set)
         .expect("control: a projected plot has one")
         .lines;
@@ -969,7 +969,8 @@ fn a_mark_that_cannot_project_contributes_no_geometry() {
                 beyond_frame: false,
             }
         }
-        let dot = entry(&batch, &dot_cm, &DotRenderer, layout);
+        let dot_renderer = DotRenderer::default();
+        let dot = entry(&batch, &dot_cm, &dot_renderer, layout);
         let line = entry(&batch, &line_cm, &LineRenderer, layout);
         let both = build_multi_mark_scene(&[&dot, &line], false, &ResolvedTitles::default())
             .0
@@ -1026,7 +1027,7 @@ fn a_projected_dot_mark_draws_no_axis_labels() {
     let batch = batch(FIXTURE);
     let layout = ChartLayout::new(640.0, 480.0);
     let texts = |cm: &ChannelMap| {
-        let (scene, _) = plot(&[&batch], cm, &DotRenderer, layout);
+        let (scene, _) = plot(&[&batch], cm, &DotRenderer::default(), layout);
         drawn_texts(&scene)
             .into_iter()
             .map(|(text, _)| text)
@@ -1053,11 +1054,11 @@ fn a_projected_dot_mark_draws_no_axis_labels() {
     // The renderer's own answer, at the seam the scene builders read, so the
     // count above cannot pass for some other reason.
     assert!(
-        DotRenderer.suppresses_frame(&channels(Some(Projection::Mercator))),
+        DotRenderer::default().suppresses_frame(&channels(Some(Projection::Mercator))),
         "a projected dot mark suppresses the frame"
     );
     assert!(
-        !DotRenderer.suppresses_frame(&channels(None)),
+        !DotRenderer::default().suppresses_frame(&channels(None)),
         "control: an unprojected dot mark keeps it"
     );
 }
@@ -1191,7 +1192,7 @@ fn the_graticule_is_labelled_at_the_plot_areas_edges_in_the_axes_ink() {
     let (plain_scene, _) = plot(
         &[&batch(&[(0.0, 0.0), (10.0, 5.0)])],
         &channels(None),
-        &DotRenderer,
+        &DotRenderer::default(),
         layout,
     );
     let plain = drawn_texts(&plain_scene);
@@ -1210,7 +1211,7 @@ fn the_graticule_is_labelled_at_the_plot_areas_edges_in_the_axes_ink() {
         (vec![(0.0, 0.0), (40.0, 20.0)], 5.0),
     ] {
         let cm = channels(Some(Projection::Equirectangular));
-        let (scene, set) = plot(&[&batch(&points)], &cm, &DotRenderer, layout);
+        let (scene, set) = plot(&[&batch(&points)], &cm, &DotRenderer::default(), layout);
         let graticule = PlotGraticule::of(&set).expect("a projected plot has a graticule");
         assert_eq!(graticule.step, step, "the data's step for {points:?}");
         let (
@@ -1336,7 +1337,7 @@ fn the_graticule_reaches_the_plot_areas_fitted_extent_over_the_california_fixtur
         ChartLayout::new(1000.0, 400.0),
         ChartLayout::new(400.0, 700.0),
     ] {
-        let (scene, set) = plot(&[&batch], &cm, &DotRenderer, layout);
+        let (scene, set) = plot(&[&batch], &cm, &DotRenderer::default(), layout);
         let graticule = PlotGraticule::of(&set).expect("a projected plot has a graticule");
         assert_eq!(
             graticule.step, 1.0,
@@ -1452,7 +1453,7 @@ fn a_plot_strokes_its_graticule_once_whatever_its_layer_count() {
         vec![&ghost, &subset],
         vec![&ghost, &subset, &subset],
     ] {
-        let (scene, set) = plot(&layers, &cm, &DotRenderer, layout);
+        let (scene, set) = plot(&layers, &cm, &DotRenderer::default(), layout);
         let graticule = PlotGraticule::of(&set).expect("a projected plot has a graticule");
         let rect = plot_rect(&set);
         let points = drawn_points(&scene);
@@ -1498,13 +1499,14 @@ fn the_graticule_survives_a_brush() {
     let subset = batch(&FIXTURE[1..2]);
     let cm = channels(Some(Projection::Mercator));
     let layout = ChartLayout::new(640.0, 480.0);
-    let (_, launch) = plot(&[&ghost, &ghost], &cm, &DotRenderer, layout);
+    let (_, launch) = plot(&[&ghost, &ghost], &cm, &DotRenderer::default(), layout);
     let before = PlotGraticule::of(&launch).expect("the plot opens with a graticule");
 
+    let dot = DotRenderer::default();
     let entry = |b| ChartData {
         batch: b,
         channel_map: &cm,
-        renderer: &DotRenderer,
+        renderer: &dot,
         layout,
         view_extent: None,
         highlight: None,
@@ -1549,7 +1551,7 @@ fn a_transition_lands_its_dots_at_their_projected_positions() {
     let (x, y) = (set.get(Channel::X).unwrap(), set.get(Channel::Y).unwrap());
     let prev = vec![(0.0, 0.0); FIXTURE.len()];
     let mut scene = Scene::new();
-    DotRenderer.render_interpolated(&mut scene, &batch, &cm, &set, &prev, 1.0, None);
+    DotRenderer::default().render_interpolated(&mut scene, &batch, &cm, &set, &prev, 1.0, None);
     let points = drawn_points(&scene);
 
     let projected = (
@@ -1579,7 +1581,7 @@ fn a_colour_override_keeps_a_projected_plots_frame_suppressed() {
     use brightfield_render::scale::ColourOverride;
 
     let wrapped = ColourOverrideRenderer {
-        inner: Box::new(DotRenderer),
+        inner: Box::new(DotRenderer::default()),
         override_: ColourOverride::default(),
     };
     let projected = channels(Some(Projection::Mercator));
@@ -1614,7 +1616,7 @@ fn the_graticule_is_clipped_to_the_plot_area() {
 
     let batch = batch(&[(-120.0, 30.0), (-75.0, 45.0), (-100.0, 48.0), (-80.0, 26.0)]);
     let cm = channels(Some(Projection::Albers));
-    let (_, set) = plot(&[&batch], &cm, &DotRenderer, ChartLayout::new(640.0, 480.0));
+    let (_, set) = plot(&[&batch], &cm, &DotRenderer::default(), ChartLayout::new(640.0, 480.0));
     let graticule = PlotGraticule::of(&set).expect("a projected plot has a graticule");
     let rect = plot_rect(&set);
     let outside = |p: &(f64, f64)| {
@@ -1656,7 +1658,7 @@ fn zooming_out_coarsens_the_graticule_step_rather_than_hatching_the_plot() {
     let batch = batch(&[(0.0, 0.0), (10.0, 5.0)]);
     let cm = channels(Some(Projection::Equirectangular));
     let layout = ChartLayout::new(640.0, 480.0);
-    let (_, set) = plot(&[&batch], &cm, &DotRenderer, layout);
+    let (_, set) = plot(&[&batch], &cm, &DotRenderer::default(), layout);
     assert_eq!(
         PlotGraticule::of(&set).unwrap().step,
         1.0,
@@ -1670,7 +1672,7 @@ fn zooming_out_coarsens_the_graticule_step_rather_than_hatching_the_plot() {
     let entry = ChartData {
         batch: &batch,
         channel_map: &cm,
-        renderer: &DotRenderer,
+        renderer: &DotRenderer::default(),
         layout,
         view_extent: Some(&zoomed),
         highlight: None,

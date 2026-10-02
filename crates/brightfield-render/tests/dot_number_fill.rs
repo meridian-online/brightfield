@@ -105,14 +105,14 @@ fn literal_channels(colour: Color) -> ChannelMap {
 /// Infer and augment exactly as the scene builders do for one layer.
 fn scales_of(batch: &RecordBatch, cm: &ChannelMap) -> ScaleSet {
     let mut set = infer_scales(batch, cm, X_RANGE, Y_RANGE);
-    DotRenderer.augment_scales(&mut set, batch, cm, X_RANGE, Y_RANGE);
+    DotRenderer::default().augment_scales(&mut set, batch, cm, X_RANGE, Y_RANGE);
     set
 }
 
 /// What `DotRenderer` drew: the colour word of each filled circle, in row order.
 fn drawn(batch: &RecordBatch, cm: &ChannelMap, scales: &ScaleSet) -> Vec<u32> {
     let mut scene = Scene::new();
-    DotRenderer.render(&mut scene, batch, cm, scales, None);
+    DotRenderer::default().render(&mut scene, batch, cm, scales, None);
     scene.encoding().draw_data.to_vec()
 }
 
@@ -205,12 +205,13 @@ fn a_number_fill_paints_each_point_along_the_ramp_and_a_null_in_the_null_ink() {
 /// the plot's scales — where the layers' `augment_scales` calls run against one
 /// shared set.
 fn plot_scales(layers: &[(&RecordBatch, &ChannelMap)]) -> ScaleSet {
+    let dot = DotRenderer::default();
     let entries: Vec<ChartData<'_>> = layers
         .iter()
         .map(|(batch, cm)| ChartData {
             batch,
             channel_map: cm,
-            renderer: &DotRenderer,
+            renderer: &dot,
             layout: ChartLayout::new(640.0, 480.0),
             view_extent: None,
             highlight: None,
@@ -351,7 +352,7 @@ fn the_interpolated_draw_paints_the_same_ramp_as_the_still_one() {
     let scales = scales_of(&batch, &cm);
 
     let mut scene = Scene::new();
-    DotRenderer.render_interpolated(&mut scene, &batch, &cm, &scales, &[], 1.0, None);
+    DotRenderer::default().render_interpolated(&mut scene, &batch, &cm, &scales, &[], 1.0, None);
     let interpolated: Vec<u32> = scene.encoding().draw_data.to_vec();
 
     let still = drawn(&batch, &cm, &scales);

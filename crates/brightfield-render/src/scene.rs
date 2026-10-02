@@ -1688,7 +1688,7 @@ mod tests {
         let mut cm = ChannelMap::new();
         cm.insert(Channel::X, "x".to_string());
         cm.insert(Channel::Y, "y".to_string());
-        let dot = DotRenderer;
+        let dot = DotRenderer::default();
         let data = ChartData {
             batch: &batch,
             channel_map: &cm,
@@ -1767,7 +1767,7 @@ mod tests {
         cm.insert(Channel::X, "x".to_string());
         cm.insert(Channel::Y, "y".to_string());
         cm.insert(Channel::Fill, "grp".to_string());
-        let dot = DotRenderer;
+        let dot = DotRenderer::default();
         let data = ChartData {
             batch: &batch,
             channel_map: &cm,
@@ -1835,7 +1835,7 @@ mod tests {
         let mut xy_cm = ChannelMap::new();
         xy_cm.insert(Channel::X, "x".to_string());
         xy_cm.insert(Channel::Y, "y".to_string());
-        let dot = DotRenderer;
+        let dot = DotRenderer::default();
         let dot_data = ChartData {
             batch: &xy_batch,
             channel_map: &xy_cm,
@@ -1872,7 +1872,7 @@ mod tests {
         let mut cm = ChannelMap::new();
         cm.insert(Channel::X, "x".to_string());
         cm.insert(Channel::Y, "y".to_string());
-        let dot = DotRenderer;
+        let dot = DotRenderer::default();
         let d0 = ChartData {
             batch: &batch,
             channel_map: &cm,
@@ -1941,7 +1941,7 @@ mod tests {
         cm.insert(Channel::Fill, "colour".to_string());
 
         let layout = ChartLayout::new(640.0, 480.0);
-        let renderer = DotRenderer;
+        let renderer = DotRenderer::default();
 
         let data = ChartData {
             batch: &batch,
@@ -2117,7 +2117,7 @@ mod tests {
         let data = ChartData {
             batch: &batch,
             channel_map: &cm,
-            renderer: &DotRenderer,
+            renderer: &DotRenderer::default(),
             layout: ChartLayout::new(640.0, 480.0),
             view_extent: None,
             highlight: None,
@@ -2200,7 +2200,7 @@ mod tests {
         cm.insert(Channel::Y, "y".to_string());
 
         let layout = ChartLayout::new(640.0, 480.0);
-        let renderer = DotRenderer;
+        let renderer = DotRenderer::default();
 
         // Without view extent — full data domain.
         let data_full = ChartData {
@@ -2278,7 +2278,7 @@ mod tests {
         cm2.insert(Channel::Y, "y".to_string());
 
         let layout = ChartLayout::new(640.0, 480.0);
-        let dot_renderer = DotRenderer;
+        let dot_renderer = DotRenderer::default();
         let line_renderer = LineRenderer;
 
         let data1 = ChartData {
@@ -2359,7 +2359,7 @@ mod tests {
         let mut cm = ChannelMap::new();
         cm.insert(Channel::X, "x".to_string());
         cm.insert(Channel::Y, "y".to_string());
-        let dot = DotRenderer;
+        let dot = DotRenderer::default();
         let data = ChartData {
             batch: &batch,
             channel_map: &cm,
@@ -2423,7 +2423,7 @@ mod tests {
         let mut cm = ChannelMap::new();
         cm.insert(Channel::X, "x".to_string());
         cm.insert(Channel::Y, "y".to_string());
-        let dot = DotRenderer;
+        let dot = DotRenderer::default();
         let data = ChartData {
             batch: &batch,
             channel_map: &cm,
@@ -2534,7 +2534,7 @@ mod tests {
         let mut cm = ChannelMap::new();
         cm.insert(Channel::X, "x".to_string());
         cm.insert(Channel::Y, "y".to_string());
-        let dot = DotRenderer;
+        let dot = DotRenderer::default();
         let data = ChartData {
             batch: &batch,
             channel_map: &cm,
@@ -2726,7 +2726,7 @@ mod tests {
         cm.insert(Channel::Y, "y".to_string());
 
         let layout = ChartLayout::new(640.0, 480.0);
-        let renderer = DotRenderer;
+        let renderer = DotRenderer::default();
 
         let hs = crate::mark::HighlightState {
             predicate: Box::new(|row| row == 1),

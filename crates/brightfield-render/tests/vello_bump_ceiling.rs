@@ -143,7 +143,7 @@ fn scatter_scene(rows: usize) -> vello::Scene {
     let mut cm = ChannelMap::new();
     cm.insert(Channel::X, "x".to_string());
     cm.insert(Channel::Y, "y".to_string());
-    let dot = DotRenderer;
+    let dot = DotRenderer::default();
     let data = ChartData {
         batch: &batch,
         channel_map: &cm,

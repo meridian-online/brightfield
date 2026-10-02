@@ -13,7 +13,8 @@
 //! proportion to their intrinsic sizes.
 
 use crate::ast::{
-    Component, ConcatNode, Input, Mark, PlotNode, SpaceNode, Spec, SpecValue, ValueOrParamRef,
+    Component, ConcatNode, Input, Mark, ParamNode, PlotNode, SpaceNode, Spec, SpecValue,
+    ValueOrParamRef,
 };
 use crate::date_format::DateFormat;
 use crate::error::{FrameFault, FrameSide};
@@ -1041,6 +1042,29 @@ pub fn resolve_grid_lines(plot: &PlotNode) -> GridLines {
     GridLines {
         x: read("xGrid").or(both).unwrap_or(default.x),
         y: read("yGrid").or(both).unwrap_or(default.y),
+    }
+}
+
+/// The name a plot's `colorScheme` gives, as the spec wrote it.
+///
+/// A string is the name. A `$param` is the name its value param holds *now*, so
+/// a plot redrawn after the param is written draws in the scheme the param
+/// then names; a param that holds anything but a string, a selection, and a
+/// param nobody declared are no name. `None` is not a warning here: whether the
+/// name is one a renderer draws is the renderer's to judge, and a plot that
+/// names none draws its default.
+#[must_use]
+pub fn resolve_colour_scheme_name<'a>(
+    plot: &'a PlotNode,
+    params: &'a IndexMap<String, ParamNode>,
+) -> Option<&'a str> {
+    match plot.attributes.get("colorScheme")? {
+        SpecValue::String(name) => Some(name),
+        SpecValue::Param(param) => match params.get(&param.0) {
+            Some(ParamNode::Value(SpecValue::String(name))) => Some(name),
+            _ => None,
+        },
+        _ => None,
     }
 }
 

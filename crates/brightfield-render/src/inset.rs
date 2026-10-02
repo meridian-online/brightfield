@@ -379,7 +379,7 @@ mod tests {
         fn scatter_fixture_insets_all_four_ends() {
             let batch = dot_batch();
             let cm = dot_channels();
-            let dot = DotRenderer;
+            let dot = DotRenderer::default();
             let entries: Vec<MarkInsetEntry> = vec![(&batch, &cm, &dot)];
             let insets = resolve_insets_for_marks(SideInsets::default(), &entries, D);
             assert_eq!(
@@ -448,7 +448,7 @@ mod tests {
             let dotb = dot_batch();
             let dcm = dot_channels();
             let barr = BarRenderer { axis: BarAxis::Y };
-            let dot = DotRenderer;
+            let dot = DotRenderer::default();
             let entries: Vec<MarkInsetEntry> = vec![(&bar, &bcm, &barr), (&dotb, &dcm, &dot)];
             let insets = resolve_insets_for_marks(SideInsets::default(), &entries, D);
             assert_eq!(
@@ -500,7 +500,7 @@ mod tests {
             const DOT_RADIUS: f64 = 4.0; // mark.rs
             let batch = dot_batch();
             let cm = dot_channels();
-            let dot = DotRenderer;
+            let dot = DotRenderer::default();
             let entries: Vec<MarkInsetEntry> = vec![(&batch, &cm, &dot)];
             let insets = resolve_insets_for_marks(SideInsets::default(), &entries, D);
 
