@@ -126,7 +126,7 @@ pub fn axis_kind(scale: &Scale) -> Option<AxisKind> {
 }
 
 /// The word the warning banner uses for the axis a scale draws, finer than
-/// [`AxisKind::word`]: a linear, a log and a symlog axis are all a number axis
+/// [`AxisKind::word`]: a linear, a log and a symlog axis read as a number axis
 /// there, and an instruction that one takes and another does not has to name
 /// which it met. `None` for a colour ramp, which draws no positional axis.
 #[must_use]

@@ -490,8 +490,8 @@ fn raw_plot_attributes(
     }
 }
 
-/// Whether what the plot writes of itself makes `key` land where it does
-/// nothing whatever the data is: a reversal on a plot with a projection, or an
+/// Whether what the plot writes of itself makes `key` land where the axis drops
+/// it whatever the data is: a reversal on a plot with a projection, or an
 /// end or a tick count on an axis whose `xScale` / `yScale` the spec writes as
 /// a log, a symlog or a band, or, for an end, a time. What a column's type makes
 /// of an axis is a composition's to say, and not decidable here.

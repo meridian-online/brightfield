@@ -555,9 +555,10 @@ pub enum ParseWarning {
         axis: String,
     },
 
-    /// A plot sets an x or y axis instruction the axis it meets takes none of:
-    /// `yNice` or `yZero` on a log, symlog, date or category axis, which only a
-    /// linear axis's ends follow, or `xTicks` on a log, symlog or category axis,
+    /// A plot sets an x or y axis instruction that the axis it meets does not
+    /// act on: `yNice` or `yZero` on a log, symlog, date or category axis, since
+    /// a linear axis's ends follow them and no other kind's, or `xTicks` on a
+    /// log, symlog or category axis,
     /// whose ticks are decades and names and not a count's. The plot draws as it
     /// does without the key. Known only once the data has typed the axis, so it
     /// is raised where the composition finds the scales, not at parse time; it

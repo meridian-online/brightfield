@@ -12,7 +12,7 @@
 //! - `xReverse`, `yReverse` turn an axis, but not on a plot with a map
 //!   projection, whose x and y are the projection's planar units.
 //!
-//! Which axis a key meets is known only once the data has typed it, so each arm
+//! Which axis a key meets is known once the data has typed it, not at parse time, so each arm
 //! composes a spec through the same load the window runs and reads
 //! `Composed::diagnostics`, which is what the banner draws. "Draws as it does
 //! without the key" is read off the painted scene: the spec that sets the key

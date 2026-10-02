@@ -626,8 +626,9 @@ pub fn build_multi_mark_scene_pinned(
 /// Whether a plot's `xReverse` / `yReverse` can turn its axes: not when the
 /// plot has a map projection, whose x and y are the projection's planar units.
 ///
-/// It is the one judge [`apply_axis_reverse`] draws through and the composition
-/// warns through, so a reversal the plot drops is a reversal that was named.
+/// It is the judge `apply_axis_reverse` draws through (a private function) and
+/// the composition warns through, so a reversal the plot drops is a reversal
+/// that was named.
 #[must_use]
 pub fn axis_reverse_applies(scales: &ScaleSet) -> bool {
     scales.projection().is_none()
@@ -637,8 +638,8 @@ pub fn axis_reverse_applies(scales: &ScaleSet) -> bool {
 /// the axis `scale` draws: a linear axis's alone, since a log, symlog, time or
 /// band axis's ends are not a linear step's to round or a zero's to reach.
 ///
-/// It is the one judge [`apply_axis_ends`] draws through and the composition
-/// warns through.
+/// It is the judge `apply_axis_ends` draws through (a private function) and the
+/// composition warns through.
 #[must_use]
 pub fn axis_ends_apply(scale: &Scale) -> bool {
     matches!(scale, Scale::Linear { .. })

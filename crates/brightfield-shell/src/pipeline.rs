@@ -2011,7 +2011,7 @@ fn compose_from_results(
     let mut mark_faults: Vec<MarkFault> = Vec::new();
     // What each plot's axis instructions meet once its scales exist: tick formats
     // that sit on an axis of the other kind ([`crossed_tick_formats`]), and axis
-    // instructions that change nothing on the axis they meet
+    // instructions the axis they meet does not act on
     // ([`inert_axis_instructions`]).
     let mut composed_warnings: Vec<ParseWarning> = Vec::new();
     for (i, result) in results.into_iter().enumerate() {
@@ -2613,8 +2613,8 @@ fn crossed_tick_formats(
     out
 }
 
-/// The warnings for a plot's axis instructions that change nothing on the axis
-/// they meet: `xZero`, `xNice` or `xTicks` (and the `y` of each) on an axis that
+/// The warnings for a plot's axis instructions that the axis they meet does not
+/// act on: `xZero`, `xNice` or `xTicks` (and the `y` of each) on an axis that
 /// does not follow it, and `xReverse` or `yReverse` on a plot with a map
 /// projection.
 ///
