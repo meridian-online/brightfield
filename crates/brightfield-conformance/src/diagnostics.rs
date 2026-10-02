@@ -278,6 +278,7 @@ fn warning_wire_name(warning: &ParseWarning) -> String {
         | ParseWarning::InvalidTickFormat { attribute, .. }
         | ParseWarning::UnreadDateDirective { attribute, .. }
         | ParseWarning::TickFormatOnWrongAxis { attribute, .. }
+        | ParseWarning::UnreadColourKey { attribute, .. }
         | ParseWarning::UnreadAxisAttribute { attribute, .. } => attribute.clone(),
         ParseWarning::UnknownProjection { value } => value.clone(),
         ParseWarning::AspectRatioWithProjection { mark }
@@ -326,6 +327,7 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         | ParseWarning::InvalidTickFormat { .. }
         | ParseWarning::UnreadDateDirective { .. }
         | ParseWarning::TickFormatOnWrongAxis { .. }
+        | ParseWarning::UnreadColourKey { .. }
         | ParseWarning::UnreadAxisAttribute { .. } => "plot",
         ParseWarning::UnknownAggregate { .. }
         | ParseWarning::UnconsumedChannelTransform { .. }

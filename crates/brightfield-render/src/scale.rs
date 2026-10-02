@@ -1102,8 +1102,12 @@ impl SequentialScheme {
         }
     }
 
-    /// Parse a wire name (case-exact). `None` for an unrecognised scheme — the
-    /// caller warns and falls back to the default.
+    /// Parse a wire name (case-exact). `None` for an unrecognised scheme, which
+    /// the plot draws as the default: the parser has already named it
+    /// (`ParseWarning::UnreadColourKey`), judging against
+    /// [`brightfield_spec::layout::DRAWN_COLOUR_SCHEMES`], the list this
+    /// reads — `a_scheme_is_drawn_exactly_when_the_parser_does_not_warn_of_it`
+    /// holds the two equal.
     #[must_use]
     pub fn from_wire(name: &str) -> Option<Self> {
         match name {
@@ -2681,6 +2685,36 @@ mod tests {
         assert_eq!(SequentialScheme::from_wire("Viridis"), None);
         // The default scheme is viridis.
         assert_eq!(SequentialScheme::default(), SequentialScheme::Viridis);
+    }
+
+    /// The schemes this renderer draws, walked off its own cycle (`next`) so a
+    /// variant added to the enum and not to a list here is still found, are the
+    /// names the parser's warning accepts, in the same order, and each is read
+    /// back by `from_wire`. Nothing the parser accepts is undrawn, and nothing
+    /// drawn is warned of.
+    #[test]
+    fn a_scheme_is_drawn_exactly_when_the_parser_does_not_warn_of_it() {
+        let mut cycle = vec![SequentialScheme::default()];
+        loop {
+            let next = cycle.last().copied().unwrap().next();
+            if next == cycle[0] {
+                break;
+            }
+            assert!(cycle.len() < 64, "the colour-cycle never returned to its start");
+            cycle.push(next);
+        }
+        let drawn: Vec<&str> = cycle.iter().map(|s| s.wire_name()).collect();
+        assert_eq!(
+            drawn,
+            brightfield_spec::layout::DRAWN_COLOUR_SCHEMES,
+            "the renderer's schemes and the parser's list are one list"
+        );
+        for name in brightfield_spec::layout::DRAWN_COLOUR_SCHEMES {
+            assert!(
+                SequentialScheme::from_wire(name).is_some(),
+                "`{name}` is in the parser's list and the renderer must draw it"
+            );
+        }
     }
 
     #[test]

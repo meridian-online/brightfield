@@ -1051,8 +1051,8 @@ pub fn resolve_grid_lines(plot: &PlotNode) -> GridLines {
 /// a plot redrawn after the param is written draws in the scheme the param
 /// then names; a param that holds anything but a string, a selection, and a
 /// param nobody declared are no name. Having no name is not a warning here:
-/// whether the name is one a renderer draws is the renderer's to judge, and a
-/// plot with no `colorScheme` draws its default.
+/// whether a written name is one a renderer draws is [`read_colour_scheme`]'s
+/// to judge, at parse time, and a plot with no `colorScheme` draws its default.
 #[must_use]
 pub fn resolve_colour_scheme_name<'a>(
     plot: &'a PlotNode,
@@ -1065,6 +1065,47 @@ pub fn resolve_colour_scheme_name<'a>(
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// The names a plot's `colorScheme` can give and be drawn in, in the order the
+/// renderer cycles them, default first.
+///
+/// This is the list the parser's warning judges against
+/// ([`read_colour_scheme`]), and `brightfield_render::scale::SequentialScheme`
+/// draws exactly these: a render-side test walks the renderer's own cycle and
+/// holds the two lists equal in both directions, so a scheme added to one and
+/// not the other fails there.
+pub const DRAWN_COLOUR_SCHEMES: [&str; 4] = ["viridis", "blues", "turbo", "meridian"];
+
+/// What a plot's `colorScheme` value is, to the parser that warns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColourSchemeReading {
+    /// A name in [`DRAWN_COLOUR_SCHEMES`]: the plot draws along that ramp.
+    Drawn,
+    /// `null` or a lifted `$param`: a recorded deferral, not a typo. The name is
+    /// read when the spec is drawn, and nothing is said here.
+    Deferred,
+    /// A name no renderer draws (`magma`, `Viridis`), or a value that is no name
+    /// (a number, a list). The plot draws its default ramp and the parser names
+    /// the value.
+    Unknown,
+}
+
+/// The one judge of a plot's `colorScheme` value, for the parser that warns.
+///
+/// The names it accepts are [`DRAWN_COLOUR_SCHEMES`], case-exact as the
+/// renderer's reading is. A `$param` is judged by the parser as a deferral
+/// whatever it holds, because the parser has not yet seen the value the param
+/// will hold; [`resolve_colour_scheme_name`] reads it when the plot is drawn.
+#[must_use]
+pub fn read_colour_scheme(value: &SpecValue) -> ColourSchemeReading {
+    match value {
+        SpecValue::Param(_) | SpecValue::Null => ColourSchemeReading::Deferred,
+        SpecValue::String(name) if DRAWN_COLOUR_SCHEMES.contains(&name.as_str()) => {
+            ColourSchemeReading::Drawn
+        }
+        _ => ColourSchemeReading::Unknown,
     }
 }
 
