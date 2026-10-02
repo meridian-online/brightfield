@@ -256,16 +256,17 @@ pub fn draw_band(
     }
 }
 
-/// One legend block at `origin`: the column's name over the block, then swatch
-/// + label rows for a categorical scale, or a ramp running top to bottom with
-/// its values beside it for a continuous one — the domain's maximum level with
-/// the ramp's top, its minimum with the ramp's foot, and for a diverging scale
-/// the pivot at the middle.
+/// One legend block at `origin`: the column's name over the block, then a
+/// swatch and its label for each category of a categorical scale, or a ramp
+/// running top to bottom with its values beside it for a continuous one — the
+/// domain's maximum level with the ramp's top, its minimum with the ramp's
+/// foot, and for a diverging scale the pivot at the middle.
 ///
 /// The name is cut short inside [`block_width`], the width the band was sized
-/// to, so a long name never widens the block or the band. `name` is `None` only
-/// for a plot whose fill names no column, which draws no legend through
-/// [`LegendSpec::of_plot`].
+/// to, so a long name leaves the block and the band as wide as they were
+/// (`a_long_name_is_cut_short_inside_the_column_and_the_band_stays_as_wide`).
+/// `name` is `None` for a plot whose fill names no column, which draws no
+/// legend through [`LegendSpec::of_plot`].
 fn draw_block(
     painter: &egui::Painter,
     origin: egui::Pos2,
@@ -382,8 +383,8 @@ const RAMP_STRIPS: usize = 71;
 /// on pixel edges at a scale of one.
 const STRIP_HEIGHT: f32 = 2.0;
 
-/// The height of a number column's ramp, in logical points: [`RAMP_STRIPS`]
-/// strips of [`STRIP_HEIGHT`]. The design gives the legend column a vertical
+/// The height of a number column's ramp, in logical points: `RAMP_STRIPS`
+/// strips of `STRIP_HEIGHT` each. The design gives the legend column a vertical
 /// ramp and no figure for its height; this is read off the accepted frame of the
 /// legend at the plot's right, where the ramp runs about this far.
 pub const RAMP_HEIGHT: f32 = RAMP_STRIPS as f32 * STRIP_HEIGHT;
