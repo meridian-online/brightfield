@@ -555,6 +555,26 @@ pub enum ParseWarning {
         axis: String,
     },
 
+    /// A plot-level colour attribute (`colorScheme`) carried a value brightfield
+    /// cannot draw: a scheme name it has no ramp for (`magma`, `ylgnbu`, a
+    /// misspelt `viridis`), or a value that is no name. The plot draws
+    /// its default ramp as if the key were absent, and this names the key and
+    /// the value so an author sees why the colours are not the file's.
+    ///
+    /// A `null` and a lifted `$param` are deferrals and say nothing.
+    /// [`crate::layout::read_colour_scheme`] is the sole judge, and the renderer
+    /// draws exactly [`crate::layout::DRAWN_COLOUR_SCHEMES`], so the warning and
+    /// the drawing cannot disagree. A later colour key a build cannot read
+    /// (`colorScale`, `colorReverse`, `colorN`) is another value of this one
+    /// warning rather than a new variant.
+    UnreadColourKey {
+        /// The offending attribute key.
+        attribute: String,
+        /// What the attribute held, as written: the string itself, a number's
+        /// digits, or `<non-string>` for a list or map.
+        value: String,
+    },
+
     /// A plot's `projectionType` carried a value outside Mosaic's
     /// `ProjectionName` vocabulary, or a non-string value. The plot then names
     /// no projection at all — it draws as a cartesian plot — and this names the
@@ -859,6 +879,10 @@ impl fmt::Display for ParseWarning {
                 f,
                 "plot attribute `{attribute}` is `{value}`, a {format} format on a {axis} axis — ticks draw their default text"
             ),
+            Self::UnreadColourKey { attribute, value } => write!(
+                f,
+                "plot attribute `{attribute}` is `{value}`, which this build does not draw — the plot draws its default colours"
+            ),
             Self::UnknownProjection { value } => write!(
                 f,
                 "projection `{value}` is not supported — the plot draws unprojected"
@@ -1111,6 +1135,11 @@ impl Walker {
                     for key in PLOT_TICK_FORMAT_KEYS {
                         if let Some(v) = defaults.get(key) {
                             self.warn_tick_format(key, v);
+                        }
+                    }
+                    for key in PLOT_COLOUR_KEYS {
+                        if let Some(v) = defaults.get(key) {
+                            self.warn_colour_key(key, v);
                         }
                     }
                     for key in PLOT_GRID_KEYS {
@@ -1575,6 +1604,12 @@ impl Walker {
             if PLOT_TICK_FORMAT_KEYS.contains(&key.as_str()) {
                 self.warn_tick_format(&key, &value);
             }
+            // A plot-level colour attribute (`colorScheme`) this build cannot
+            // draw is drawn as if it were absent; name it, with what was
+            // written. A `$param` and `null` are deferrals, not typos.
+            if PLOT_COLOUR_KEYS.contains(&key.as_str()) {
+                self.warn_colour_key(&key, &value);
+            }
             // A plot-level gridline attribute (`grid`, `xGrid`, `yGrid`) that is
             // no literal `true` or `false` is ignored and the plot draws its
             // default gridlines; name it so the author sees the typo. A lifted
@@ -2005,15 +2040,36 @@ impl Walker {
             TickFormatReading::Format(_) | TickFormatReading::Deferred => {}
             TickFormatReading::Invalid => self.warnings.push(ParseWarning::InvalidTickFormat {
                 attribute: key.to_string(),
-                value: tick_format_text(value),
+                value: written_value_text(value),
             }),
             TickFormatReading::UnreadDirective(directive) => {
                 self.warnings.push(ParseWarning::UnreadDateDirective {
                     attribute: key.to_string(),
-                    value: tick_format_text(value),
+                    value: written_value_text(value),
                     directive,
                 });
             }
+        }
+    }
+
+    /// Raise [`ParseWarning::UnreadColourKey`] when a plot's colour attribute
+    /// holds a value this build cannot draw.
+    ///
+    /// ONE function for the plot attribute and `plotDefaults`, asking
+    /// [`crate::layout::read_colour_scheme`] — the same list the renderer draws
+    /// from — so a value the plot draws as absent is a value that was named. A
+    /// scheme this build draws, `null` and a lifted `$param` say nothing.
+    fn warn_colour_key(&mut self, key: &str, value: &SpecValue) {
+        use crate::layout::{read_colour_scheme, ColourSchemeReading};
+        let unread = match key {
+            "colorScheme" => read_colour_scheme(value) == ColourSchemeReading::Unknown,
+            _ => false,
+        };
+        if unread {
+            self.warnings.push(ParseWarning::UnreadColourKey {
+                attribute: key.to_string(),
+                value: written_value_text(value),
+            });
         }
     }
 
@@ -2601,6 +2657,10 @@ const PLOT_TICK_COUNT_KEYS: [&str; 2] = ["xTicks", "yTicks"];
 /// The plot attributes that set an axis's tick format.
 const PLOT_TICK_FORMAT_KEYS: [&str; 2] = ["xTickFormat", "yTickFormat"];
 
+/// The plot attributes that set a colour, whose values
+/// [`ParseWarning::UnreadColourKey`] judges.
+const PLOT_COLOUR_KEYS: [&str; 1] = ["colorScheme"];
+
 /// The plot attributes that switch gridlines on or off: the bare `grid` for
 /// both axes, and each axis's own key.
 const PLOT_GRID_KEYS: [&str; 3] = ["grid", "xGrid", "yGrid"];
@@ -2613,9 +2673,10 @@ const PLOT_AXIS_END_KEYS: [&str; 4] = ["xZero", "xNice", "yZero", "yNice"];
 /// `Reverse` key.
 const PLOT_AXIS_REVERSE_KEYS: [&str; 2] = ["xReverse", "yReverse"];
 
-/// A tick-format value as [`ParseWarning::InvalidTickFormat`] shows it: what
-/// the author wrote, where it can be written on one line.
-fn tick_format_text(value: &SpecValue) -> String {
+/// An attribute value as [`ParseWarning::InvalidTickFormat`] and
+/// [`ParseWarning::UnreadColourKey`] show it: what the author wrote, where it
+/// can be written on one line.
+fn written_value_text(value: &SpecValue) -> String {
     match value {
         SpecValue::String(s) => s.clone(),
         SpecValue::Integer(n) => n.to_string(),
