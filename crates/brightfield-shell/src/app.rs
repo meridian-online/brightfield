@@ -923,7 +923,7 @@ pub struct ChartDoc {
     /// spec, and by [`Self::keep_shelf_column`] when the shelf's list kept a
     /// column; emptied by [`Self::open`], which replaces the document the
     /// edits were made to, and by a Save that wrote them. A column the shelf
-    /// only previewed is not here: its edits are [`Self::shelf_preview`]'s
+    /// has previewed and not kept is not here: its edits are [`Self::shelf_preview`]'s
     /// until it is kept, and gone when it is backed out of.
     pending_edits: Vec<ChartEdit>,
     /// The column the shelf's list is drawing on a channel and has not kept,
@@ -1282,7 +1282,7 @@ impl ChartDoc {
     /// A switch the chart refused is not one: the spec it left standing is the
     /// file's. Neither is a pick of the state the control already showed,
     /// which writes the value the spec holds, nor a column the shelf's list is
-    /// only previewing ([`Self::preview_shelf_column`]). A Save that wrote the
+    /// previewing and has not kept ([`Self::preview_shelf_column`]). A Save that wrote the
     /// edits clears it ([`Self::save_chart_beside`]); one that could not
     /// leaves it.
     #[must_use]
@@ -1633,7 +1633,7 @@ impl ChartDoc {
     /// Returns whether the page drawn changed. A refusal — a column the table
     /// does not have, a plot with no mark, a spec the engine will not load —
     /// puts the kept page back and says why in [`Self::chart_fault`], so the
-    /// chart never stands drawn with a column the cursor is not on.
+    /// chart is not left drawn with a column the cursor is not on.
     pub fn preview_shelf_column(
         &mut self,
         plot: usize,
@@ -1689,7 +1689,7 @@ impl ChartDoc {
         }
         match self.rebuild(spec) {
             Ok((live, composed)) => {
-                let shown_live = std::mem::replace(&mut self.live, Some(live));
+                let shown_live = self.live.replace(live);
                 let shown_composed = std::mem::replace(&mut self.composed, composed);
                 // The page before this one is the kept page when no preview
                 // was up, and the previous preview's — dropped — when one was.

@@ -653,7 +653,7 @@ fn save_writes_the_kept_column_and_not_the_one_backed_out_of() {
 }
 
 /// **AC5, the edits a kept column carries are the kept spec's.** The cursor of
-/// colour's list passes through every column above `median_house_value`, each
+/// colour's list passes through the columns above `median_house_value`, each
 /// drawn as a preview, before `Enter` keeps it. The chart file Save writes is
 /// the generator's text with the edits `put_colour` makes for that column on
 /// the generated spec — its `fill`, its scheme and its legend — written into

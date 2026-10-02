@@ -5228,8 +5228,8 @@ impl MeridianApp {
     /// list and keeps its column.
     ///
     /// What the list reported — a key's, or the pointer's on the frame before —
-    /// is acted on here on every frame the list is open, with or without a key
-    /// in it: [`Self::shelf_apply`].
+    /// is acted on here, on a frame with a key in it and on one without:
+    /// [`Self::shelf_apply`].
     fn shelf_keys(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
         let last = self.charts.shelf.drawn.take();
         // A click on a cell opened it on the band, which is the same way in as
