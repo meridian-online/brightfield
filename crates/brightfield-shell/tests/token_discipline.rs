@@ -36,10 +36,11 @@ type Allow = (&'static str, &'static str, &'static str);
 const COLOUR_ALLOW: &[Allow] = &[];
 const HEX_ALLOW: &[Allow] = &[];
 const FLOAT_ALLOW: &[Allow] = &[];
-const OVERLAY_ALLOW: &[Allow] = &[(
-    "src/chart_item.rs",
-    r#"egui::Area::new(egui::Id::new("chart-hover-readout"))"#,
-    "The hover readout is a panel that follows the pointer, and meridian-egui \
+const OVERLAY_ALLOW: &[Allow] = &[
+    (
+        "src/chart_item.rs",
+        r#"egui::Area::new(egui::Id::new("chart-hover-readout"))"#,
+        "The hover readout is a panel that follows the pointer, and meridian-egui \
      offers no layer for one: ModalLayer is a blocking dialog, NotificationLayer \
      a persistent banner, ToastLayer a transient message that places itself. \
      None of the three can be anchored to a pixel, which is the whole \
@@ -52,7 +53,26 @@ const OVERLAY_ALLOW: &[Allow] = &[(
      (a_second_hand_rolled_overlay_in_the_chart_pane_is_still_a_violation). \
      The standing fix is a pointer-anchored layer in meridian-egui, which is a \
      different repository and a different lane.",
-)];
+    ),
+    (
+        "src/shelf.rs",
+        r#"egui::Area::new(egui::Id::new("shelf-column-card"))"#,
+        "The shelf's column list is a card hung from a band cell when the \
+         navigator rail that would draw it is shut, and meridian-egui offers no \
+         layer anchored to a rect: ModalLayer is a centred blocking dialog under \
+         a scrim, NotificationLayer a banner at a corner, ToastLayer a message \
+         that places itself. This is the second caller of the one want the hover \
+         readout's entry names, a layer placed at a point, and it takes its \
+         frame from the same two sources, chrome::overlay_frame and \
+         Elevation::Overlay (shelf::floating_card_frame), rather than inventing \
+         either. The entry is anchored to this Area's id salt, so a second \
+         hand-rolled overlay in this file is still a violation \
+         (a_second_hand_rolled_overlay_in_the_shelf_is_still_a_violation). The \
+         standing fix is the same point-anchored layer in meridian-egui, which \
+         is a different repository and a different lane, and when it lands both \
+         entries go.",
+    ),
+];
 
 /// Call fragments that construct a floating layer by hand. `egui::Modal` has
 /// no paren anchor because `Modal::new(egui::Id…)` is exactly the call the
@@ -185,6 +205,34 @@ fn a_second_hand_rolled_overlay_in_the_chart_pane_is_still_a_violation() {
     assert!(
         !allowed(OVERLAY_ALLOW, "src/inspector.rs", sanctioned),
         "the allowlist admits the readout's line in another file"
+    );
+}
+
+/// **The shelf's card is sanctioned by its id, as the hover readout is.**
+///
+/// The second entry's justification claims it is as narrow as the first: this
+/// asks the matcher directly, so the claim is checked and not only written.
+#[test]
+fn a_second_hand_rolled_overlay_in_the_shelf_is_still_a_violation() {
+    let sanctioned = r#"        egui::Area::new(egui::Id::new("shelf-column-card"))"#;
+    assert!(
+        allowed(OVERLAY_ALLOW, "src/shelf.rs", sanctioned),
+        "the shelf card's own Area is not matched by the entry that exists for it"
+    );
+    for other in [
+        r#"        egui::Area::new(egui::Id::new("shelf-second-card"))"#,
+        r#"        egui::Window::new("shelf-column-card")"#,
+        r#"        let m = egui::Modal::new(egui::Id::new("shelf-column-card"));"#,
+    ] {
+        assert!(
+            !allowed(OVERLAY_ALLOW, "src/shelf.rs", other),
+            "the allowlist admits `{other}` in the shelf — the entry is wider \
+             than the one call it was written for"
+        );
+    }
+    assert!(
+        !allowed(OVERLAY_ALLOW, "src/window.rs", sanctioned),
+        "the allowlist admits the card's line in another file"
     );
 }
 

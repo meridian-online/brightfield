@@ -101,7 +101,7 @@ use crate::protocol::{
     ProtocolInputs, ProtocolModel, SpineRole, SpineRow, CANVAS as PROTOCOL_CANVAS,
     INSPECTOR as PROTOCOL_INSPECTOR, LOG, OUTLINE, QUALITY, STEPS,
 };
-use crate::shelf::{BandDrawn, Binding, ListReport, ShelfBand, ShelfChannels};
+use crate::shelf::{BandDrawn, Binding, CardDrawn, ListReport, ShelfBand, ShelfChannels};
 
 // ---------------------------------------------------------------------------
 // The window's own chrome budget.
@@ -1944,6 +1944,11 @@ struct ShelfHold {
     /// back out of it as its own and the chip's does not back out of the
     /// list's.
     chip_preview: Option<(ShelfChannel, String)>,
+    /// The card the list was drawn as on the last frame, with the navigator rail
+    /// shut. `None` on a frame that drew the list in the Outline, or none:
+    /// cleared with the frame's other records and written by
+    /// [`MeridianApp::shelf_card`].
+    card: Option<CardDrawn>,
 }
 
 impl ShelfHold {
@@ -5067,6 +5072,7 @@ impl MeridianApp {
         // notification layers over that. All three draw nothing when empty,
         // so a frame with no overlay, no banner and no toast is
         // pixel-identical to one drawn before they existed.
+        self.shelf_card(&ctx, graph_on_canvas);
         self.overlay_ui(&ctx, graph_on_canvas);
         self.notifications.show(&ctx);
         self.toasts.show(&ctx);
@@ -5517,6 +5523,43 @@ impl MeridianApp {
             self.charts.shelf.holds = false;
             self.protocol.doc.model.close_column_list();
         }
+    }
+
+    /// **Hang the shelf's list from its cell as a card, while the navigator rail
+    /// is shut.**
+    ///
+    /// The list is the Outline's, and the Outline lives in the navigator rail:
+    /// with the rail shut nothing draws it, and a cell opened onto it would open
+    /// onto nothing. So the list is drawn as a card, [`crate::shelf::CARD_WIDTH`]
+    /// wide, from the open cell down over the plot
+    /// ([`ProtocolModel::show_column_list_card`]). With the rail open the
+    /// Outline draws the list and this draws nothing, so the list is on screen
+    /// once whichever way the rail is set.
+    ///
+    /// Drawn after the panes, over them, with the band's cells as this frame
+    /// drew them. What the card decides is acted on with the keys', on the
+    /// next frame: [`Self::shelf_apply`].
+    fn shelf_card(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
+        self.charts.shelf.card = None;
+        if graph_on_canvas || !self.collapsed.contains(&arrangement::NAVIGATOR_RAIL) {
+            return;
+        }
+        let Some(band) = self.charts.shelf.drawn.as_ref() else {
+            return;
+        };
+        self.charts.shelf.card =
+            self.protocol
+                .doc
+                .model
+                .show_column_list_card(ctx, &band.cells, self.mode);
+    }
+
+    /// The card the shelf's list was drawn as on the last frame, with the
+    /// navigator rail shut. `None` with the rail open, where the Outline draws
+    /// the list, and on a frame with no list open.
+    #[must_use]
+    pub fn shelf_card_drawn(&self) -> Option<&CardDrawn> {
+        self.charts.shelf.card.as_ref()
     }
 
     /// **Give the Outline its `z` and a channel while a dashboard holds the
