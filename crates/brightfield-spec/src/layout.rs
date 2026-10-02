@@ -1050,9 +1050,9 @@ pub fn resolve_grid_lines(plot: &PlotNode) -> GridLines {
 /// A string is the name. A `$param` is the name its value param holds *now*, so
 /// a plot redrawn after the param is written draws in the scheme the param
 /// then names; a param that holds anything but a string, a selection, and a
-/// param nobody declared are no name. `None` is not a warning here: whether the
-/// name is one a renderer draws is the renderer's to judge, and a plot that
-/// names none draws its default.
+/// param nobody declared are no name. Having no name is not a warning here:
+/// whether the name is one a renderer draws is the renderer's to judge, and a
+/// plot with no `colorScheme` draws its default.
 #[must_use]
 pub fn resolve_colour_scheme_name<'a>(
     plot: &'a PlotNode,

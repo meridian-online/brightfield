@@ -36,7 +36,7 @@ fn a_string_is_the_name_it_spells() {
 }
 
 /// A plot that writes no `colorScheme`, and one that writes something that is
-/// no name, give none.
+/// no name, give no name.
 #[test]
 fn no_scheme_and_a_value_that_is_no_string_give_no_name() {
     assert_eq!(name_of(&spec("", "")), None, "no key");
