@@ -188,8 +188,9 @@ pub struct PlotHandle {
     /// legend. A fact about the spec this composition read, and the one thing
     /// about a plot's legend the scales cannot say: whether the page draws a
     /// legend at all is this, and what it draws is [`Self::scales`]. Set by
-    /// [`crate::legend::declare_legends`] once every plot is placed, because
-    /// the no-`for:` case counts the plots beside this one; `false` until then.
+    /// the crate-private `legend::declare_legends` once every plot is placed,
+    /// because the no-`for:` case counts the plots beside this one; `false`
+    /// until then.
     pub legend_declared: bool,
 }
 
