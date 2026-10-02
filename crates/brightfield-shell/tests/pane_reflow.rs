@@ -299,8 +299,9 @@ fn resizing_the_window_relays_out_the_chart_without_a_restart() {
 // The legend band, and the offer it comes off
 // ---------------------------------------------------------------------------
 
-/// The same scatter with a `fill:` channel, so its scales call for a legend
-/// band and `band_width` is non-zero.
+/// The same scatter with a `fill:` channel and the `legend: color` item that
+/// puts a legend on it, so its scales call for a legend band and `band_width`
+/// is non-zero.
 const LEGEND_640_400: &str = "data:
   t:
     - { x: 1, y: 3, g: A }
@@ -314,6 +315,7 @@ plot:
     x: x
     y: y
     fill: g
+  - legend: color
 width: 640
 height: 400
 ";
