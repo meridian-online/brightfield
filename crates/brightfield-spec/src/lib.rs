@@ -10,6 +10,7 @@
 
 pub mod analysis;
 pub mod ast;
+pub mod axis_vocabulary;
 pub mod date_format;
 pub mod edit;
 pub mod error;
