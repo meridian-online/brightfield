@@ -5595,7 +5595,7 @@ pub fn configured_renderer(
 
 /// [`default_renderers`], with the marks [`configured_renderer`] names built at
 /// `scheme` — the registry a plot draws through when its `colorScheme` names
-/// one of the four built-in schemes.
+/// one of the built-in schemes ([`SequentialScheme::ALL`]).
 ///
 /// A kind [`configured_renderer`] builds is built there, with no `bandwidth`,
 /// `thresholds` or `binWidth`: the shell does not read those attributes, and
