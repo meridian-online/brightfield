@@ -241,7 +241,7 @@ impl Window {
     }
 
     /// The band's cell for `channel`, as the last frame drew it.
-    fn cell(&self, channel: ShelfChannel) -> egui::Rect {
+    fn band_cell(&self, channel: ShelfChannel) -> egui::Rect {
         self.app.shelf_drawn().expect("the band drew").cells[channel.index()]
     }
 
@@ -338,7 +338,7 @@ fn with_the_rail_shut_e_x_hangs_the_list_from_the_x_cell_over_the_plot_as_a_card
     assert_eq!(win.list_channel(), Some(ShelfChannel::X));
 
     let card = win.card();
-    let cell = win.cell(ShelfChannel::X);
+    let cell = win.band_cell(ShelfChannel::X);
     assert_eq!(card.cell, cell, "the card says which cell it hangs from");
     assert!(
         near(card.rect.width(), CARD_WIDTH),
@@ -373,22 +373,22 @@ fn the_card_hangs_from_whichever_cell_is_open_and_stays_inside_the_window() {
     win.open_cell(egui::Key::X, "x");
     assert!(near(
         win.card().rect.left(),
-        win.cell(ShelfChannel::X).left()
+        win.band_cell(ShelfChannel::X).left()
     ));
 
     win.type_letter(egui::Key::L, "l");
     assert_eq!(win.list_channel(), Some(ShelfChannel::Y), "`l` goes to y");
     let card = win.card();
-    assert_eq!(card.cell, win.cell(ShelfChannel::Y));
+    assert_eq!(card.cell, win.band_cell(ShelfChannel::Y));
     assert!(
-        near(card.rect.left(), win.cell(ShelfChannel::Y).left()),
+        near(card.rect.left(), win.band_cell(ShelfChannel::Y).left()),
         "the card did not follow the list to the y cell"
     );
 
     let mut narrow = Window::rail_shut_sized(Mode::Light, NARROW, 900.0);
     narrow.open_cell(egui::Key::C, "c");
     assert_eq!(narrow.list_channel(), Some(ShelfChannel::Colour));
-    let colour = narrow.cell(ShelfChannel::Colour);
+    let colour = narrow.band_cell(ShelfChannel::Colour);
     assert!(
         colour.left() + CARD_WIDTH > narrow.screen.right(),
         "the colour cell at {colour:?} leaves room for the card in a window {NARROW} across, so \
@@ -781,16 +781,16 @@ fn a_click_on_the_open_cell_backs_out_and_a_click_on_another_cell_moves_the_card
     let mut win = Window::rail_shut(Mode::Light);
     win.open_cell(egui::Key::X, "x");
 
-    let y = win.cell(ShelfChannel::Y).center();
+    let y = win.band_cell(ShelfChannel::Y).center();
     win.click(y);
     assert_eq!(win.list_channel(), Some(ShelfChannel::Y), "the click on y");
     let card = win.card();
     assert!(
-        near(card.rect.left(), win.cell(ShelfChannel::Y).left()),
+        near(card.rect.left(), win.band_cell(ShelfChannel::Y).left()),
         "the card did not move to the y cell"
     );
 
-    let y = win.cell(ShelfChannel::Y).center();
+    let y = win.band_cell(ShelfChannel::Y).center();
     win.click(y);
     assert!(
         win.app.shelf_card_drawn().is_none(),
