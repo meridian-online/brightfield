@@ -3362,8 +3362,10 @@ mod tests {
     /// on the other.
     #[test]
     fn anchoring_a_diverging_scale_widens_it_about_the_launch_pivot() {
+        // A rebuilt scale is not even about the pivot when its rows reach 22
+        // below it and only 8 above; the anchored one is, at the greater reach.
         let launch = diverging(-3.0, 7.0, 2.0);
-        let fresh = diverging(-20.0, 24.0, 2.0);
+        let fresh = diverging(-20.0, 10.0, 2.0);
         let Scale::Diverging {
             domain_min,
             domain_max,
@@ -3390,11 +3392,13 @@ mod tests {
     /// between them is a lerp.
     #[test]
     fn a_ramp_returns_its_end_stops_exactly() {
-        let stops = [A, M, B];
-        assert_eq!(ramp_at(&stops, 0.0), A);
-        assert_eq!(ramp_at(&stops, 1.0), B);
-        assert_eq!(ramp_at(&stops, 0.5), M);
-        assert_eq!(ramp_at(&stops, 1.5), B, "clamped");
+        // The design pair's own ramp: a lerp up to its last stop is one ulp short
+        // of it, so exactness is a property of the code and not of the numbers.
+        let stops = diverging_stops(None, &ChartInk::LIGHT);
+        assert_eq!(ramp_at(&stops, 0.0), stops[0]);
+        assert_eq!(ramp_at(&stops, 1.0), *stops.last().unwrap());
+        assert_eq!(ramp_at(&stops, 0.5), stops[5]);
+        assert_eq!(ramp_at(&stops, 1.5), *stops.last().unwrap(), "clamped");
         assert_eq!(ramp_at(&[], 0.5), [0.0, 0.0, 0.0, 1.0]);
     }
 
