@@ -14,6 +14,7 @@
 //! screen, the band's cells and the window title — or, for Save, the chart
 //! file on disk.
 
+use brightfield_protocol::write_chart_edit;
 use brightfield_render::channel::Channel;
 use brightfield_shell::app::CHART;
 use brightfield_shell::design::Mode;
@@ -21,9 +22,11 @@ use brightfield_shell::legend::LegendSpec;
 use brightfield_shell::pipeline::PlotHandle;
 use brightfield_shell::protocol::SpineRole;
 use brightfield_shell::shelf::Binding;
+use brightfield_shell::shelf_edit::put_colour;
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::text_ink;
 use brightfield_shell::window::{Boot, MeridianApp, UNSAVED_MARK};
+use brightfield_spec::analysis::ComponentPath;
 use brightfield_spec::ast::Spec;
 use brightfield_spec::MarkKind;
 use brightfield_workbench::channel::ShelfChannel;
@@ -646,5 +649,57 @@ fn save_writes_the_kept_column_and_not_the_one_backed_out_of() {
     assert_eq!(
         written, expected,
         "the chart file is not the generated text with the kept x edit alone"
+    );
+}
+
+/// **AC5, the edits a kept column carries are the kept spec's.** The cursor of
+/// colour's list passes through every column above `median_house_value`, each
+/// drawn as a preview, before `Enter` keeps it. The chart file Save writes is
+/// the generator's text with the edits `put_colour` makes for that column on
+/// the generated spec — its `fill`, its scheme and its legend — written into
+/// it by the writer Save calls, and not the one `fill` a put onto the last
+/// preview's spec would make, which already had a scheme and a legend.
+#[test]
+fn a_column_kept_after_the_cursor_passed_others_saves_the_edits_the_kept_spec_needs() {
+    let mut win = Window::housing("passed");
+    let generated = win.generated_text();
+    let mut spec = win.spec();
+    let table = win
+        .app
+        .protocol_model()
+        .source()
+        .expect("a data file's window has its one-step Protocol")
+        .profiles
+        .clone();
+    let hero = ComponentPath(win.hero().path.clone());
+    let edits = put_colour(&mut spec, &hero, VALUE, &table).expect("the table has the column");
+    assert!(
+        edits.len() > 1,
+        "put_colour made {edits:?}: the scheme and legend this test pins are not among them"
+    );
+    let expected = edits.iter().fold(generated, |text, edit| {
+        write_chart_edit(&text, edit).expect("the writer places the shelf's edit")
+    });
+
+    win.type_letter(egui::Key::E, "e");
+    win.type_letter(egui::Key::C, "c");
+    win.walk_to(VALUE, egui::Key::J, "j");
+    win.press(egui::Key::Enter);
+    let ctx = win.ctx.clone();
+    win.app
+        .save_protocol(&ctx)
+        .expect("a data file's window has a Protocol to save")
+        .expect("the Protocol saves");
+
+    let chart = std::fs::read_dir(win.folder.join("panels"))
+        .expect("Save wrote a panels folder")
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .find(|p| p.extension().is_some_and(|e| e == "yaml"))
+        .expect("Save wrote a chart file");
+    let written = std::fs::read_to_string(&chart).expect("the chart file reads");
+    assert_eq!(
+        written, expected,
+        "the chart file is not the generated text with the kept colour's edits"
     );
 }
