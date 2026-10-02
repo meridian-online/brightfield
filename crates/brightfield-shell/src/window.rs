@@ -5522,14 +5522,13 @@ impl MeridianApp {
     /// **Give the Outline its `z` and a channel while a dashboard holds the
     /// canvas.**
     ///
-    /// The Protocol grammar is fed only while the graph is on the canvas (see
-    /// the comment over that feed in [`Self::draw`]), and the Outline's rows
-    /// answer in the Protocol context. So with the dashboard there, the
-    /// Outline holding the keys — its pane focused, no list of the shelf's
-    /// drawn in it, no overlay open and no widget typing — is fed the chord
-    /// and nothing else: `z`, then `x`, `y` or `c`, through
-    /// [`ProtocolModel::feed_column_chord`]. The rest of the grammar drives the
-    /// graph, which is not on the canvas to be driven.
+    /// The Protocol grammar is fed while the graph is on the canvas (see the
+    /// comment over that feed in [`Self::draw`]), and the Outline's rows answer
+    /// in the Protocol context. So with the dashboard there, the Outline
+    /// holding the keys — its pane focused, no list of the shelf's drawn in it,
+    /// no overlay open and no widget typing — is fed the chord: `z`, then `x`,
+    /// `y` or `c`, through [`ProtocolModel::feed_column_chord`]. The rest of
+    /// the grammar drives the graph, which is not on the canvas to be driven.
     ///
     /// The keys the chord takes are taken out of the frame's input, so the
     /// `x` after a `z` does not also cycle the axis lock. A `z` left pending
@@ -5618,8 +5617,8 @@ impl MeridianApp {
     /// **Draw the hero with the column of the Outline chip the pointer is on**,
     /// on the chip's channel, as a preview: [`ChartDoc::preview_shelf_column`],
     /// the route the band's list previews by, so the band's cell for that
-    /// channel says *preview* and names the column, and nothing is added to
-    /// what Save writes. The pointer leaving the chip backs out of it
+    /// channel says *preview* and names the column, and Save's edits are left
+    /// as they were. The pointer leaving the chip backs out of it
     /// ([`ChartDoc::drop_shelf_preview`]) and the kept chart is drawn again.
     fn outline_chip_preview(&mut self, graph_on_canvas: bool) {
         let on = self
@@ -5736,7 +5735,8 @@ impl MeridianApp {
     ///
     /// It opens over the graph, and over the graph a column put on a channel is
     /// dropped ([`Self::outline_put`]), so the three `put-column-on-*` rows are
-    /// not offered: each would confirm and do nothing.
+    /// not offered: each would confirm and put no column —
+    /// `the_protocol_palette_offers_no_put_row_where_choosing_one_would_put_nothing`.
     fn open_protocol_palette(&mut self) {
         let puts_column = !self.graph_on_canvas()
             && self.protocol.doc.model.outline_column().is_some()
@@ -5749,7 +5749,7 @@ impl MeridianApp {
 
     /// Open the command palette at the chart altitude, restricted to what a
     /// window in **this** state offers — see [`Self::overlay_open_keys`] for
-    /// why the chart view cannot simply reuse [`Self::open_palette`] with
+    /// why the chart view cannot simply reuse [`Self::open_protocol_palette`] with
     /// [`Altitude::View`].
     ///
     /// The list is [`crate::overlays::chart_palette_verbs`] over

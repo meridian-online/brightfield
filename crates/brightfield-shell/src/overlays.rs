@@ -140,12 +140,14 @@ pub fn chart_palette_verbs(saveable: bool) -> Vec<&'static str> {
         .collect()
 }
 
-/// **Every verb the Protocol palette offers**, in the registry's order: the
+/// **The verbs the Protocol palette offers**, in the registry's order: the
 /// verbs the registry scopes to [`Altitude::Protocol`], with the three that put
-/// the Outline's column on a channel only where `puts_column` says choosing one
+/// the Outline's column on a channel where `puts_column` says choosing one
 /// would put it — a column under the Outline's cursor and the hero drawn to put
 /// it on. A row that confirms and does nothing is the row this keeps out, as
-/// [`chart_palette_verbs`] keeps one out of the chart palette.
+/// [`chart_palette_verbs`] keeps one out of the chart palette;
+/// `every_row_the_protocol_palette_offers_as_enabled_does_something_when_chosen`
+/// chooses each row it leaves in.
 #[must_use]
 pub fn protocol_palette_verbs(puts_column: bool) -> Vec<&'static str> {
     registry()

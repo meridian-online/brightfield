@@ -831,8 +831,8 @@ fn protocol_key_table() -> BTreeMap<String, &'static str> {
 
 /// The verbs that put the Outline's column on a channel of the hero's shelf,
 /// each with its channel. Their keys are the registry's (`z x`, `z y`, `z c`),
-/// read through [`protocol_key_table`] like every other Protocol binding; what
-/// is declared here is only which channel each verb names.
+/// read through `protocol_key_table` as the other Protocol bindings are; what
+/// is declared here is which channel each verb names.
 pub const PUT_COLUMN_VERBS: [(ShelfChannel, &str); 3] = [
     (ShelfChannel::X, "put-column-on-x"),
     (ShelfChannel::Y, "put-column-on-y"),
@@ -973,8 +973,9 @@ pub struct ProtocolModel {
     /// dashboard, puts it there, and a spine row selected by any gesture —
     /// a click, the jump, `h j k l`, a drill or a fold — takes it off. The
     /// column it is on is [`Self::selected_column`]. A column is put on a
-    /// channel only from here ([`Self::outline_column`]), so `z c` on a spine
-    /// row puts nothing, with or without a column selected before it.
+    /// channel from here ([`Self::outline_column`]), so `z c` on a spine row
+    /// puts no column, with or without one selected before it —
+    /// `z_c_on_a_spine_row_changes_nothing`.
     on_column_row: bool,
     /// A column put on a channel from the Outline this frame — by `z` and the
     /// channel, by the palette or by a chip on its row — drained by the window,
@@ -1905,10 +1906,10 @@ impl ProtocolModel {
         true
     }
 
-    /// **The Outline's `z` and a channel, and nothing else**: what the window
-    /// feeds the model while a dashboard holds the canvas and the Outline holds
-    /// the keys. The rest of the Protocol grammar drives the graph, and is fed
-    /// only while the graph is on the canvas ([`Self::feed_events`]).
+    /// **The Outline's `z` and a channel**: what the window feeds the model
+    /// while a dashboard holds the canvas and the Outline holds the keys. The
+    /// rest of the Protocol grammar drives the graph, and is fed while the
+    /// graph is on the canvas ([`Self::feed_events`]).
     ///
     /// Returns whether the key was the chord's: a `z`, or the channel's letter
     /// after one. Any other key after a `z` lets the chord go and is not taken.
@@ -2004,9 +2005,9 @@ impl ProtocolModel {
         self.on_column_row = true;
     }
 
-    /// Select `id` on the spine, the cursor with it: every gesture that moves
-    /// the selection along the graph ends here, so the Outline's cursor leaves
-    /// a column's row for a spine row ([`Self::on_column_row`]).
+    /// Select `id` on the spine, the cursor with it: the click, the jump,
+    /// `h j k l`, a drill and a fold each end here, so the Outline's cursor
+    /// leaves a column's row for a spine row ([`Self::on_column_row`]).
     fn select_on_spine(&mut self, id: Option<AssetId>) {
         self.selected = id;
         self.on_column_row = false;
@@ -2367,10 +2368,10 @@ impl ProtocolModel {
     /// All are the same verb, deliberately. `protocol_key_table` is a
     /// `BTreeMap` keyed by keystroke string, so a second Protocol-context verb
     /// bound to `z a` would silently overwrite the first and which one survived
-    /// would depend on the order the registry happens to list them in. `z a` is
-    /// also the only fold among the registry's `z` chords — there is no
-    /// `zo`/`zR`/`zM` family to extend, and `z x`, `z y` and `z c` put the
-    /// Outline's column on a channel rather than fold anything. So the verb is
+    /// would depend on the order the registry happens to list them in. Of the
+    /// registry's `z` chords `z a` is the fold: `z x`, `z y` and `z c` put the
+    /// Outline's column on a channel, and there is no `zo`/`zR`/`zM` family to
+    /// extend. So the verb is
     /// broadened, not duplicated.
     ///
     /// **Every path that reports no change leaves the model untouched**, and
@@ -3734,7 +3735,7 @@ fn put_column_bindings() -> &'static [(ShelfChannel, &'static str, &'static str)
 /// **The column verbs on `column`'s row**: a key chip per channel, x, y and c,
 /// laid right to left from the row's trailing end in `ui` so they read x, y, c.
 ///
-/// Each chip is the design system's [`meridian_egui::key_chip`] with the
+/// Each chip is the design system's [`meridian_egui::key_chip()`] with the
 /// channel's letter — the second key of its chord — and its tooltip the design
 /// system's action tooltip, naming the verb and its keys. A chip senses a
 /// click of its own over the chip's box; the row under it does not see that
