@@ -1145,7 +1145,7 @@ pub fn read_colour_scale(value: &SpecValue) -> ColourScaleReading {
 /// Whether a plot's `colorScale` draws about a pivot: the literal `diverging`,
 /// or a `$param` that holds it *now*, as [`resolve_colour_scheme_name`] reads
 /// its own key. A plot with no `colorScale`, a name no renderer draws, and a
-/// param that holds anything else is not diverging and draws the linear ramp.
+/// param that holds some other value is not diverging and draws the linear ramp.
 #[must_use]
 pub fn resolve_colour_scale_diverging(
     plot: &PlotNode,
@@ -1165,7 +1165,7 @@ pub fn resolve_colour_scale_diverging(
 /// The pivot a plot's `colorPivot` gives, if it gives one: a number, or a
 /// `$param` whose value param holds a number *now*. `None` is the plot asking
 /// for the pivot to be chosen from its rows; whether a written value is a number
-/// at all is [`colour_pivot`]'s to judge at parse time.
+/// is [`colour_pivot`]'s to judge at parse time.
 #[must_use]
 pub fn resolve_colour_pivot(plot: &PlotNode, params: &IndexMap<String, ParamNode>) -> Option<f64> {
     match plot.attributes.get("colorPivot")? {

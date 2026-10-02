@@ -887,7 +887,7 @@ impl PinnedDomain {
     /// domain to pin.
     ///
     /// [`Scale::Colour`], [`Scale::Sequential`] and [`Scale::Diverging`] answer
-    /// `None` here because they are the COLOUR channels' scales; a positional axis never resolves
+    /// `None` here because they are the COLOUR channels' scales; a positional axis does not resolve
     /// to one, and the explicit `colorDomain` instruction is a separate
     /// mechanism ([`ColourOverride`]).
     #[must_use]
@@ -1313,7 +1313,7 @@ const DIVERGING_RED_ARM: [[f32; 4]; 5] =
 /// carried to the mark that paints a number column by the same route its
 /// `colorScheme` takes.
 ///
-/// `Linear` is what every plot drew before the key was read, and is the
+/// `Linear` is what a plot drew before the key was read, and is the
 /// [`Default`]. A key that names no scale brightfield draws is `Linear` too, as
 /// the parser's warning says.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -1327,7 +1327,7 @@ pub enum ColourScale {
         /// The pivot the plot wrote as `colorPivot`, or `None` to have it chosen
         /// from the rows drawn by [`diverging_scale`].
         pivot: Option<f64>,
-        /// The plot's own `colorScheme`, or `None` when it wrote none, which is
+        /// The plot's own `colorScheme`, or `None` when it wrote no scheme, which is
         /// the design system's blue-red pair rather than the sequential default.
         scheme: Option<SequentialScheme>,
     },
@@ -1381,7 +1381,7 @@ pub fn diverging_pivot(values: &[f64], written: Option<f64>) -> Option<f64> {
     })
 }
 
-/// A diverging fill scale over `values`, the rows drawn, or `None` for none.
+/// A diverging fill scale over `values`, the rows drawn, or `None` when there are no rows.
 ///
 /// The pivot is [`diverging_pivot`]'s. The domain is even about it: both ends
 /// the same distance from the pivot, the greater of the two distances the rows

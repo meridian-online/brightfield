@@ -375,7 +375,7 @@ fn the_interpolated_draw_paints_the_same_ramp_as_the_still_one() {
     );
 }
 
-/// Every scheme a plot's `colorScheme` can name.
+/// The schemes a plot's `colorScheme` can name, as the renderer lists them.
 const SCHEMES: [SequentialScheme; 5] = SequentialScheme::ALL;
 
 /// The dot kinds the registry builds a `DotRenderer` for.
