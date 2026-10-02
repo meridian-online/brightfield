@@ -116,6 +116,90 @@ fn a_plot_setting_every_schema_axis_attribute_is_told_about_each_unread_one() {
     );
 }
 
+/// **A facet axis's attribute is an axis attribute when the schema declares it:
+/// every `fx…` and `fy…` name the vendored schema carries is on the list, and a
+/// name that only starts as one does is not.**
+#[test]
+fn a_facet_axis_attribute_the_schema_declares_is_an_axis_attribute() {
+    let schema = vendored_schema();
+    let declared: Vec<String> = schema["definitions"]["PlotAttributes"]["properties"]
+        .as_object()
+        .expect("the schema declares plot attributes")
+        .keys()
+        .filter(|name| {
+            let mut chars = name.chars();
+            chars.next() == Some('f')
+                && matches!(chars.next(), Some('x' | 'y'))
+                && chars.next().is_some_and(|c| c.is_ascii_uppercase())
+        })
+        .cloned()
+        .collect();
+    assert!(
+        declared.iter().any(|n| n == "fxLabel") && declared.iter().any(|n| n == "fyTickFormat"),
+        "the schema declares the two facet names this test relies on: {declared:?}"
+    );
+    for name in &declared {
+        assert!(
+            SCHEMA_AXIS_ATTRIBUTES.contains(&name.as_str()),
+            "the schema declares `{name}`, a facet axis's, and the list leaves it out"
+        );
+        assert!(
+            !READ_AXIS_ATTRIBUTES.contains(&name.as_str()),
+            "no resolver reads `{name}`"
+        );
+    }
+    // The names that only start the way a facet axis's does, and the ones that
+    // are no axis's at all.
+    for name in [
+        "facetGrid",
+        "facetLabel",
+        "facetMargin",
+        "fxyDomain",
+        "xyDomain",
+        "fx",
+        "fxlabel",
+        "ffxLabel",
+        "fooBar",
+    ] {
+        assert!(
+            !SCHEMA_AXIS_ATTRIBUTES.contains(&name),
+            "`{name}` is no axis attribute"
+        );
+    }
+}
+
+/// **A plot that sets a facet-axis attribute the schema declares is told about
+/// it, a `null` included, as an `x` or `y` name set to `null` is; a name that
+/// starts as a facet axis's does and is not in the schema is not.**
+#[test]
+fn a_facet_axis_attribute_is_named_whatever_it_is_set_to_and_an_undeclared_name_is_not() {
+    let warned = |attrs: &str| -> Vec<String> {
+        let out = parse_spec(&probe_spec(attrs), Format::Yaml).expect("the spec parses");
+        out.warnings
+            .iter()
+            .filter_map(|w| match w {
+                ParseWarning::UnreadAxisAttribute { attribute, plot } => {
+                    assert_eq!(plot.as_deref(), Some("root"), "the one plot is the root");
+                    Some(attribute.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(warned("fxLabel: Region\n"), ["fxLabel"]);
+    assert_eq!(warned("fyTickFormat: '%b'\n"), ["fyTickFormat"]);
+    assert_eq!(
+        warned("fxLabel: null\n"),
+        ["fxLabel"],
+        "a `null` is named, as `yAxis: null` is"
+    );
+    assert_eq!(warned("yAxis: null\n"), ["yAxis"]);
+    assert!(
+        warned("fxFlavour: 1\nfyBogus: 1\nfacetLabel: x\n").is_empty(),
+        "a name the schema does not declare is not an axis attribute, however it starts"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // What the layout reads
 // ---------------------------------------------------------------------------
@@ -248,6 +332,10 @@ fn raw_plots(component: &serde_yaml::Mapping, path: &str, out: &mut Vec<(String,
 /// or a resolver that learns one of them changes this list in the same edit; a
 /// walk that read no plot at all fails on it rather than passing over nothing.
 const UNREAD_IN_CORPUS: &[&str] = &[
+    "fxDomain",
+    "fxLabel",
+    "fyDomain",
+    "fyLabel",
     "xAxis",
     "xLabelAnchor",
     "xLine",
