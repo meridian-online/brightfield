@@ -802,21 +802,12 @@ impl ColumnList {
         self.land(to, out);
     }
 
-    /// `Enter`, or a click on a row: keep the row under the cursor. The
-    /// column kept is the channel's own from here, so a query cleared later
-    /// brings the cursor back to it and not to the column it replaced.
+    /// `Enter`, or a click on a row: keep the row under the cursor.
     fn keep(&mut self, out: &mut Vec<ListReport>) {
-        let Some(name) = self.cursor().map(str::to_string) else {
-            return;
-        };
-        match self.channel {
-            ShelfChannel::X => self.channels.x = Binding::Column(name.clone()),
-            ShelfChannel::Y => self.channels.y = Binding::Column(name.clone()),
-            ShelfChannel::Colour => self.channels.colour = Binding::Column(name.clone()),
-            ShelfChannel::Mark => {}
+        if let Some(name) = self.cursor() {
+            out.push(ListReport::Kept(name.to_string()));
+            self.querying = false;
         }
-        out.push(ListReport::Kept(name));
-        self.querying = false;
     }
 
     /// `Esc`: clear the query first, and with the query empty, back out of the
