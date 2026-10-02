@@ -5191,8 +5191,9 @@ impl MeridianApp {
     /// Gated as [`Self::navigation_keys`] is: no overlay open, no widget
     /// holding the keyboard, the chart on the canvas and not the grid focused.
     /// With the band or its list holding the keys the shelf has taken the key
-    /// already ([`Self::shelf_keys`]) and none is left here, so this is the
-    /// `u` of a pane that holds the keys with the band at rest.
+    /// already ([`Self::shelf_keys`]) and no `u` reaches here, so this is the
+    /// `u` of a pane that holds the keys with the band at rest
+    /// (`u_acts_with_the_band_at_rest`).
     fn undo_key(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
         if graph_on_canvas
             || self.overlay.is_some()

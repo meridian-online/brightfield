@@ -658,14 +658,17 @@ struct KeptShelfEdit {
 /// The spec crate's [`UndoStack`] holds the specs and the barrier a Save sets;
 /// what it cannot hold is what the shell says about an edit and how many of the
 /// document's pending edits it made, so those are kept beside it, one for one.
-/// Every method that changes one changes the other, which is what keeps
-/// [`Self::words`] naming the edit [`Self::take`] would hand back.
+/// [`Self::push`], [`Self::take`] and [`Self::seal`] each change both, which is
+/// what keeps [`Self::words`] naming the edit [`Self::take`] would hand back
+/// (`u_takes_back_the_colour_and_a_second_u_takes_back_x`).
 ///
 /// A Save seals the stack ([`Self::seal`]): the edits before it are in the
-/// file, and a `u` after it takes back nothing the file holds. A tile's switch
-/// seals it too, because the specs here are whole snapshots: restoring one
-/// older than a switch would take the switch back as well, and the pending edit
-/// it made would stay on the list Save writes.
+/// file, and a `u` after it takes back none of them
+/// (`after_a_save_u_takes_back_nothing_made_before_it`). A tile's switch seals
+/// it too, because the specs here are whole snapshots: restoring one older than
+/// a switch would take the switch back as well, and the pending edit it made
+/// would stay on the list Save writes
+/// (`u_takes_back_nothing_across_a_tiles_switch`).
 #[derive(Default)]
 struct ShelfUndo {
     stack: UndoStack,
@@ -679,7 +682,7 @@ impl ShelfUndo {
         self.kept.push(edit);
     }
 
-    /// The last kept edit's words, or `None` where there is nothing to take
+    /// The last kept edit's words, or `None` where no kept edit is left to take
     /// back.
     fn words(&self) -> Option<&str> {
         self.kept.last().map(|k| k.words.as_str())
@@ -1860,14 +1863,15 @@ impl ChartDoc {
     /// **Take back the last column kept from the shelf**: the page is drawn
     /// from the spec the column was kept onto, and the edits it added come off
     /// the edits Save writes, so a window with no other edit is no longer marked
-    /// [`Self::has_unsaved_edit`] and a Save writes no trace of it.
+    /// [`Self::has_unsaved_edit`] and a Save writes no trace of it
+    /// (`after_the_only_edit_is_taken_back_the_title_is_clean_and_save_writes_no_trace`).
     ///
     /// A column the list is previewing and has not kept is backed out of first,
-    /// so what `u` takes back is always a kept edit and never the preview. Where
-    /// the shelf has nothing kept since the last Save — or the engine would not
-    /// load the page it began from, which leaves the edit kept and says why in
-    /// [`Self::chart_fault`] — nothing changes. Returns the words of the edit
-    /// taken back.
+    /// so what `u` takes back is a kept edit and not the preview. Where the shelf
+    /// has no column kept since the last Save, the document is as it was; so it
+    /// is where the engine would not load the page the edit began from, which
+    /// leaves the edit kept and says why in [`Self::chart_fault`]. Returns
+    /// the words of the edit taken back.
     pub fn undo_shelf_edit(&mut self) -> Option<String> {
         self.drop_shelf_preview();
         let (before, edit) = self.shelf_undo.take()?;
