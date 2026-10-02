@@ -611,6 +611,7 @@ fn count_grid() -> ChartKind<String> {
             let _ = writeln!(out, "    x: {}", yaml_quoted(x));
             let _ = writeln!(out, "    y: {}", yaml_quoted(y));
             let _ = writeln!(out, "    fill: {{ count: }}");
+            let _ = writeln!(out, "  - legend: color");
             out
         },
     }

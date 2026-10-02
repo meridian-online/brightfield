@@ -24,6 +24,7 @@ data:
 hconcat:
   - plot:
       - { mark: dot, data: { from: points }, x: x, y: y, fill: g }
+      - legend: color
     title: Body measurements
     width: 360
     height: 300

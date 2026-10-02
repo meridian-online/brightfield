@@ -25,10 +25,14 @@
 
 use brightfield_render::channel::Channel;
 use brightfield_render::scale::{ramp_at, Scale, ScaleSet};
+use brightfield_spec::edit::colour_legend_covers;
+use brightfield_spec::layout::collect_legend_nodes;
+use brightfield_spec::vocab::LegendChannel;
+use brightfield_spec::Spec;
 use meridian_design::{control, semantic, spacing, typography};
 use meridian_egui::Mode;
 
-use crate::pipeline::Composed;
+use crate::pipeline::{Composed, PlotHandle};
 
 /// What one chart's legend says: the derivation from its displayed scales,
 /// with no egui type in it, so accuracy can be asserted in a unit test.
@@ -118,6 +122,20 @@ impl LegendSpec {
         }
     }
 
+    /// The legend `plot` draws: the one its scales call for, when its file
+    /// puts a legend on it ([`PlotHandle::legend_declared`]), and `None`
+    /// otherwise. [`Self::from_scales`] says what a legend would show; this
+    /// says whether the page draws one, and is what the band and its blocks
+    /// read.
+    #[must_use]
+    pub fn of_plot(plot: &PlotHandle) -> Option<Self> {
+        if plot.legend_declared {
+            Self::from_scales(&plot.scales)
+        } else {
+            None
+        }
+    }
+
     /// The labels this legend shows, in order — the test hook behind
     /// "accurate to the series actually shown".
     #[must_use]
@@ -143,10 +161,44 @@ pub fn block_width() -> f32 {
     control::ICON_XS + spacing::ICON_LABEL_GAP + LABEL_COLUMN
 }
 
+/// Mark each plot of `plots` that the file puts a colour legend on.
+///
+/// A plot has one when its own items hold a `legend: color`, or a standalone
+/// colour legend names it by `for:` (both read by
+/// [`colour_legend_covers`]), or a standalone colour legend with no `for:`
+/// stands in a file with exactly one plot whose scales call for a legend — the
+/// plot such a legend can only mean. A `for:` that is a `$param` names no plot,
+/// as it does for the shelf's writer. The test for "calls for a legend" is the
+/// scales' own ([`LegendSpec::from_scales`]), so a legend item over a plot with
+/// no colour scale marks nothing and reserves no band.
+///
+/// Called once by the composition, after every plot is placed: the no-`for:`
+/// case counts the plots beside the one it marks.
+pub(crate) fn declare_legends(spec: &Spec, plots: &mut [PlotHandle]) {
+    let unnamed_standalone = collect_legend_nodes(spec).iter().any(|(_, legend)| {
+        legend.channel == LegendChannel::Color && !legend.options.contains_key("for")
+    });
+    let mut coloured = plots
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| LegendSpec::from_scales(&p.scales).is_some())
+        .map(|(i, _)| i);
+    let sole = match (coloured.next(), coloured.next()) {
+        (Some(only), None) => Some(only),
+        _ => None,
+    };
+    for (i, plot) in plots.iter_mut().enumerate() {
+        plot.legend_declared = colour_legend_covers(spec, &plot.path)
+            || (unnamed_standalone && sole == Some(i));
+    }
+}
+
 /// The width the chart pane's legend band consumes, in logical points — `0.0`
-/// when no plot of `composed` calls for a legend, which is what keeps a
-/// legendless dashboard's window byte-identical to what it was before the
-/// band existed. Includes the gap between the raster and the band.
+/// when the file puts no legend on any plot of `composed` whose scales call
+/// for one, which is what keeps a legendless dashboard's window byte-identical
+/// to what it was before the band existed, and gives a plot with no legend item
+/// the width the band would have held. Includes the gap between the raster and
+/// the band.
 ///
 /// Read by [`crate::window::chart_window_size`], so the band is a term of the
 /// window arithmetic rather than a bite out of the raster's budget.
@@ -155,7 +207,7 @@ pub fn band_width(composed: &Composed) -> f32 {
     if composed
         .plots
         .iter()
-        .any(|p| LegendSpec::from_scales(&p.scales).is_some())
+        .any(|p| LegendSpec::of_plot(p).is_some())
     {
         spacing::CONTROL_GAP + block_width()
     } else {
@@ -179,7 +231,7 @@ pub fn draw_band(
 ) {
     let painter = ui.painter_at(band);
     for plot in &composed.plots {
-        let Some(legend) = LegendSpec::from_scales(&plot.scales) else {
+        let Some(legend) = LegendSpec::of_plot(plot) else {
             continue;
         };
         let y = raster_top + plot.rect.y as f32;

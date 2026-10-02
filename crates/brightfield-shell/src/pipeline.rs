@@ -182,6 +182,15 @@ pub struct PlotHandle {
     /// reader: the plot's axes still say where the navigated extent is, and
     /// this says that nothing is there.
     pub navigated_empty: bool,
+    /// **The file puts a colour legend on this plot** — its own `legend: color`
+    /// item, a standalone one that names it by `for:`, or a standalone one with
+    /// no `for:` when this is the one plot of the file whose scales call for a
+    /// legend. A fact about the spec this composition read, and the one thing
+    /// about a plot's legend the scales cannot say: whether the page draws a
+    /// legend at all is this, and what it draws is [`Self::scales`]. Set by
+    /// [`crate::legend::declare_legends`] once every plot is placed, because
+    /// the no-`for:` case counts the plots beside this one; `false` until then.
+    pub legend_declared: bool,
 }
 
 impl PlotHandle {
@@ -2502,8 +2511,10 @@ fn compose_from_results(
             // composition has no session to hold a selection and does not
             // call it, so it stays `None` here.
             committed_rect: None,
+            legend_declared: false,
         });
     }
+    crate::legend::declare_legends(spec, &mut plots);
 
     if placements.is_empty() {
         // Carry the reasons out with the failure. When EVERY mark is refused

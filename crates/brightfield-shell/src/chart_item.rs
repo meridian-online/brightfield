@@ -2237,6 +2237,7 @@ mod tests {
             }),
             navigated_empty: false,
             committed_rect: None,
+            legend_declared: false,
         }
     }
 
