@@ -343,7 +343,7 @@ fn a_legend_bearing_chart_and_its_band_together_fill_the_pane() {
     let composed = compose_spec_str(LEGEND_640_400, None).expect("the fixture composes");
     assert!(
         band_width(&composed) > 0.0,
-        "the fixture's scales call for no legend, so this measures nothing"
+        "the fixture's file puts no legend on its plot, so this measures nothing"
     );
 
     let (app, _ctx) = settled_at(LEGEND_640_400, egui::vec2(1400.0, 900.0));

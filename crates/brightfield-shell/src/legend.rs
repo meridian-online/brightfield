@@ -79,9 +79,9 @@ pub struct LegendEntry {
 
 impl LegendSpec {
     /// The legend `scales` calls for, or `None` when nothing on the plot maps
-    /// colour. Reads the **fill** channel — the same trigger the retired
-    /// in-scene legend keyed on, so suppressing that one and drawing this one
-    /// changes where the legend is, never whether there is one.
+    /// colour. Reads the **fill** channel — what a legend over the plot would
+    /// show. Whether the page draws it is the file's to say, and
+    /// [`Self::of_plot`] is the one that answers for it.
     #[must_use]
     pub fn from_scales(scales: &ScaleSet) -> Option<Self> {
         match scales.get(Channel::Fill)? {
@@ -196,9 +196,9 @@ pub(crate) fn declare_legends(spec: &Spec, plots: &mut [PlotHandle]) {
 /// The legend blocks the page draws, as `(plot index, legend)`, in plot order:
 /// one for each plot the file puts a legend on whose scales call for one.
 ///
-/// [`band_width`] and [`draw_band`] both read this list and nothing else, so
-/// the band is reserved exactly when a block is drawn into it, and a block is
-/// drawn for exactly the plots that reserved it.
+/// [`band_width`] and [`draw_band`] both read this list, so the band is
+/// reserved when a block is drawn into it, and a block is drawn for the plots
+/// that reserved it; `legend_declared.rs` reads the same list.
 #[must_use]
 pub fn blocks(composed: &Composed) -> Vec<(usize, LegendSpec)> {
     composed
@@ -210,10 +210,10 @@ pub fn blocks(composed: &Composed) -> Vec<(usize, LegendSpec)> {
 }
 
 /// The width the chart pane's legend band consumes, in logical points — `0.0`
-/// when [`blocks`] holds none, which is what keeps a legendless dashboard's
-/// window byte-identical to what it was before the band existed, and gives a
-/// plot with no legend item the width the band would have held. Includes the
-/// gap between the raster and the band.
+/// when [`blocks`] is empty, which keeps a legendless dashboard's window
+/// byte-identical to what it was before the band existed, and gives a plot with
+/// no legend item the width the band would have held. Includes the gap between
+/// the raster and the band.
 ///
 /// Read by [`crate::window::chart_window_size`], so the band is a term of the
 /// window arithmetic rather than a bite out of the raster's budget.

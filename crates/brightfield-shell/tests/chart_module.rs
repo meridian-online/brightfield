@@ -227,7 +227,7 @@ fn the_legend_band_stays_out_of_the_data_on_the_module_route() {
     let (raster, legend) = laid_out(composed, Some(authored));
     let raster = raster.expect("the module drew no raster");
     let legend = legend.expect(
-        "the fixture's premise is a picture whose scales call for a legend band; \
+        "the fixture's premise is a picture that draws a legend band; \
          with none reserved this test could not see the overlap it exists for",
     );
     assert!(
