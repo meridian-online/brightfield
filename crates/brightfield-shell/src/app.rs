@@ -65,7 +65,7 @@ use brightfield_protocol::{write_chart_edit, ChartVersions, HistoryStore, NotRec
 use brightfield_render::canvas_host::{ChartSurface, Color, PixelSize};
 use brightfield_spec::analysis::ComponentPath;
 use brightfield_spec::ast::SpecValue;
-use brightfield_spec::edit::{self, ChartEdit};
+use brightfield_spec::edit::{self, ChartEdit, UndoOutcome, UndoStack};
 use brightfield_spec::layout::{
     plot_scale_key, PlotAxis, ScaleType, StackOffset, STACK_OFFSET_KEY,
 };
@@ -88,6 +88,7 @@ use crate::interval_drag::IntervalDrags;
 use crate::navigation::{AxisLock, NavGesture, NavOutcome};
 use crate::one_step::ColumnFacts;
 use crate::pipeline::{Composed, IntervalControl, LiveDashboard};
+use crate::shelf::{Binding, ShelfChannels};
 use crate::watch::FileWatcher;
 use brightfield_spec::layout::Rect as SpecRect;
 
@@ -642,6 +643,66 @@ struct ShelfPreview {
     kept: (LiveDashboard, Composed),
 }
 
+/// One column kept from the shelf's list, as undo takes it back.
+struct KeptShelfEdit {
+    /// What the edit did, in the shelf's words: `x axis: longitude →
+    /// median_income`. What the status band names.
+    words: String,
+    /// How many of [`ChartDoc::pending_edits`] keeping it added, which undo
+    /// takes off the end again.
+    added: usize,
+}
+
+/// **The kept shelf edits since the last Save, and the page each began from.**
+///
+/// The spec crate's [`UndoStack`] holds the specs and the barrier a Save sets;
+/// what it cannot hold is what the shell says about an edit and how many of the
+/// document's pending edits it made, so those are kept beside it, one for one.
+/// [`Self::push`], [`Self::take`] and [`Self::seal`] each change both, which is
+/// what keeps [`Self::words`] naming the edit [`Self::take`] would hand back
+/// (`u_takes_back_the_colour_and_a_second_u_takes_back_x`).
+///
+/// A Save seals the stack ([`Self::seal`]): the edits before it are in the
+/// file, and a `u` after it takes back none of them
+/// (`after_a_save_u_takes_back_nothing_made_before_it`). A tile's switch seals
+/// it too, because the specs here are whole snapshots: restoring one older than
+/// a switch would take the switch back as well, and the pending edit it made
+/// would stay on the list Save writes
+/// (`u_takes_back_nothing_across_a_tiles_switch`).
+#[derive(Default)]
+struct ShelfUndo {
+    stack: UndoStack,
+    kept: Vec<KeptShelfEdit>,
+}
+
+impl ShelfUndo {
+    /// Record a kept edit: `before` is the spec it was made to.
+    fn push(&mut self, before: brightfield_spec::ast::Spec, edit: KeptShelfEdit) {
+        self.stack.push(before);
+        self.kept.push(edit);
+    }
+
+    /// The last kept edit's words, or `None` where no kept edit is left to take
+    /// back.
+    fn words(&self) -> Option<&str> {
+        self.kept.last().map(|k| k.words.as_str())
+    }
+
+    /// Take back the last kept edit: the spec it was made to, and the edit.
+    fn take(&mut self) -> Option<(brightfield_spec::ast::Spec, KeptShelfEdit)> {
+        match self.stack.undo() {
+            UndoOutcome::Restored(spec) => self.kept.pop().map(|edit| (*spec, edit)),
+            UndoOutcome::NothingToUndo | UndoOutcome::PastCommitBarrier => None,
+        }
+    }
+
+    /// Seal what is kept: nothing before this can be taken back.
+    fn seal(&mut self) {
+        self.stack.commit_barrier();
+        self.kept.clear();
+    }
+}
+
 /// The chart view's **document**: the composited dashboard, the canvas it
 /// rasters into, and the chart state the panes read.
 ///
@@ -929,6 +990,9 @@ pub struct ChartDoc {
     /// The column the shelf's list is drawing on a channel and has not kept,
     /// and the page it replaced. See [`ShelfPreview`].
     shelf_preview: Option<ShelfPreview>,
+    /// The columns the shelf kept since the last Save, which `u` takes back one
+    /// at a time. See [`ShelfUndo`].
+    shelf_undo: ShelfUndo,
     /// The pan/zoom gesture in progress and the settle rule that decides when
     /// it becomes a query. Public because a headless test drives it through the
     /// same entry points the chart pane uses.
@@ -1093,6 +1157,7 @@ impl ChartDoc {
             interaction_fault: None,
             pending_edits: Vec::new(),
             shelf_preview: None,
+            shelf_undo: ShelfUndo::default(),
             nav: NavGesture::new(),
             axis_lock: AxisLock::default(),
             nav_plot: 0,
@@ -1145,6 +1210,7 @@ impl ChartDoc {
             interaction_fault: None,
             pending_edits: Vec::new(),
             shelf_preview: None,
+            shelf_undo: ShelfUndo::default(),
             nav: NavGesture::new(),
             axis_lock: AxisLock::default(),
             nav_plot: 0,
@@ -1197,6 +1263,7 @@ impl ChartDoc {
         // a column previewed on it.
         self.pending_edits.clear();
         self.shelf_preview = None;
+        self.shelf_undo = ShelfUndo::default();
         // …and the extent described the replaced document's plots.
         self.nav.clear();
         self.nav_notice = None;
@@ -1382,6 +1449,8 @@ impl ChartDoc {
         let not_recorded = versions.and_then(|versions| versions.finish(&placed).err());
         let path = std::path::absolute(&written).unwrap_or(written);
         self.pending_edits.clear();
+        // What the Save wrote is in the file: `u` takes back no edit before it.
+        self.shelf_undo.seal();
         if self.spec_path.as_deref() == Some(path.as_path()) {
             // The watch already holds this file; the write was ours.
             self.watch.note_own_write(&path);
@@ -1571,6 +1640,9 @@ impl ChartDoc {
                 self.composed = composed;
                 if changed {
                     self.pending_edits.push(edit);
+                    // The shelf's snapshots are whole specs, so one older than
+                    // this switch would take the switch back with it.
+                    self.shelf_undo.seal();
                 }
                 self.canvas.invalidate();
                 true
@@ -1744,8 +1816,90 @@ impl ChartDoc {
             self.drop_shelf_preview();
             return false;
         }
+        let before = preview.kept.0.spec();
+        let words = self.shelf_words(plot, channel, before, column);
+        self.shelf_undo.push(
+            before.clone(),
+            KeptShelfEdit {
+                words,
+                added: preview.edits.len(),
+            },
+        );
         self.pending_edits.extend(preview.edits);
         true
+    }
+
+    /// **The shelf's words for putting `column` on `channel`**, from the spec
+    /// `before` the edit: `x axis: longitude → median_income`. A channel that
+    /// held no column reads `none` and one that held an expression reads
+    /// [`crate::shelf::AN_EXPRESSION`].
+    fn shelf_words(
+        &self,
+        plot: usize,
+        channel: ShelfChannel,
+        before: &brightfield_spec::ast::Spec,
+        column: &str,
+    ) -> String {
+        let held = self
+            .composed
+            .plots
+            .get(plot)
+            .and_then(|h| edit::plot_at_path(before, &h.path))
+            .and_then(ShelfChannels::of_plot)
+            .map(|c| match channel {
+                ShelfChannel::X => c.x,
+                ShelfChannel::Y => c.y,
+                ShelfChannel::Colour => c.colour,
+                ShelfChannel::Mark => Binding::Unset,
+            });
+        let was = match held {
+            Some(Binding::Column(name)) => name,
+            Some(Binding::Expression) => crate::shelf::AN_EXPRESSION.to_string(),
+            Some(Binding::Unset) | None => "none".to_string(),
+        };
+        format!("{}: {was} \u{2192} {column}", channel.word())
+    }
+
+    /// **Take back the last column kept from the shelf**: the page is drawn
+    /// from the spec the column was kept onto, and the edits it added come off
+    /// the edits Save writes, so a window with no other edit is no longer marked
+    /// [`Self::has_unsaved_edit`] and a Save writes no trace of it
+    /// (`after_the_only_edit_is_taken_back_the_title_is_clean_and_save_writes_no_trace`).
+    ///
+    /// A column the list is previewing and has not kept is backed out of first,
+    /// so what `u` takes back is a kept edit and not the preview. Where the shelf
+    /// has no column kept since the last Save, the document is as it was; so it
+    /// is where the engine would not load the page the edit began from, which
+    /// leaves the edit kept and says why in [`Self::chart_fault`]. Returns
+    /// the words of the edit taken back.
+    pub fn undo_shelf_edit(&mut self) -> Option<String> {
+        self.drop_shelf_preview();
+        let (before, edit) = self.shelf_undo.take()?;
+        match self.rebuild(before.clone()) {
+            Ok((live, composed)) => {
+                self.live = Some(live);
+                self.composed = composed;
+                let kept = self.pending_edits.len().saturating_sub(edit.added);
+                self.pending_edits.truncate(kept);
+                self.canvas.invalidate();
+                Some(edit.words)
+            }
+            Err(e) => {
+                self.shelf_undo.push(before, edit);
+                self.interaction_fault = Some(ChartFault {
+                    title: ENGINE_REFUSED.to_string(),
+                    detail: e,
+                });
+                None
+            }
+        }
+    }
+
+    /// The last column kept from the shelf since the last Save, in the shelf's
+    /// words — what `u` would take back, which the status band names.
+    #[must_use]
+    pub fn last_shelf_edit(&self) -> Option<&str> {
+        self.shelf_undo.words()
     }
 
     /// **Back out of the column previewed**: the kept page is put back as it

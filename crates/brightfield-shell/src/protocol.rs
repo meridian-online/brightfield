@@ -1836,6 +1836,15 @@ impl ProtocolModel {
         self.list_reports.clear();
     }
 
+    /// Tell the open list what the plot binds now, after a kept column was taken
+    /// back: its cursor goes to the column its channel holds again
+    /// ([`ColumnList::rebind`]). Nothing when no list is open.
+    pub fn rebind_column_list(&mut self, channels: ShelfChannels) {
+        if let Some(list) = self.column_list.as_mut() {
+            list.rebind(channels);
+        }
+    }
+
     /// Close the list: the Outline draws its plain column rows again.
     pub fn close_column_list(&mut self) {
         self.column_list = None;

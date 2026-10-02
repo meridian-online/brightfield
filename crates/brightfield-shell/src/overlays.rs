@@ -59,13 +59,16 @@ use meridian_egui::{PickerDelegate, PickerHint, PickerOutcome, PickerRow};
 ///
 /// `Altitude::View` in the registry is deliberately broader than this: it
 /// also names verbs the chart view's editing bridge will wire later
-/// (`add-mark`, `set-channel`, `undo`, ...) and meta verbs this shell handles
+/// (`add-mark`, `set-channel`, ...) and meta verbs this shell handles
 /// elsewhere rather than through `MeridianApp::apply`
 /// (`open-help`, `toggle-focus`, `reload-spec`, `toggle-presentation`,
 /// `cycle-colour-scheme`, ...) — see `window.rs:2074`'s reasoning. Listing
 /// the raw altitude scope on the chart view would put rows in the palette
 /// that confirm and silently do nothing; this curated list is what keeps
-/// that from happening. `overlay_wiring.rs`'s dispatchability test walks
+/// that from happening. `undo` takes back a column kept from the shelf, by key
+/// and by the status band, and is left off this list: the palette would offer it
+/// on a page with no column kept, where confirming it changes no state.
+/// `overlay_wiring.rs`'s dispatchability test walks
 /// [`chart_palette_candidates`] (the SAME list the palette actually shows,
 /// not a hand-copied mirror of it) and proves each of these longnames
 /// changes real state when confirmed.

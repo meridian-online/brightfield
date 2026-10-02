@@ -1675,6 +1675,9 @@ pub fn status_rail(ui: &mut egui::Ui, entries: &[StatusEntry], mode: Mode) -> St
     out
 }
 
+/// The registry's verb a status entry can carry to take back what it names.
+const UNDO_VERB: &str = "undo";
+
 fn draw_status_entry(ui: &mut egui::Ui, entry: &StatusEntry, mode: Mode, out: &mut StatusDrawn) {
     out.drawn.push(entry.id);
     let label = ui.label(
@@ -1684,10 +1687,16 @@ fn draw_status_entry(ui: &mut egui::Ui, entry: &StatusEntry, mode: Mode, out: &m
     );
     if let HideAffordance::Verb(verb) = entry.hide {
         // A dismissable entry says so by being clickable, and the keystroke
-        // that also clears it comes from the registry.
+        // that also clears it comes from the registry. The word is what a
+        // click does: an entry that names an edit takes the edit back.
+        let word = if verb.as_str() == UNDO_VERB {
+            "undo"
+        } else {
+            "dismiss"
+        };
         let hint = verb
             .keys()
-            .map_or_else(|| "dismiss".to_string(), |k| format!("dismiss  ({k})"));
+            .map_or_else(|| word.to_string(), |k| format!("{word}  ({k})"));
         out.controls
             .push(NamedControl::hovered(label.rect, hint.clone()));
         if label
