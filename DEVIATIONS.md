@@ -249,3 +249,50 @@ the mark that happens to be stacked.
 
 **Conformance layers suppressed:** 2, 3
 
+## DEV-0008 — colour — a diverging scale's pivot (`colorScale: diverging`, `colorPivot`)
+
+**Mosaic behaviour.** Mosaic's diverging colour scale takes its pivot from `colorPivot` and,
+with none written, uses 0, whatever the data holds.
+
+
+**Brightfield behaviour.** With no `colorPivot` the pivot is 0 when the rows drawn hold a negative
+value and a positive value, and the median of those rows otherwise. A
+`colorPivot` that is written is used as it is. The domain is drawn even
+about the pivot, the two ends the same distance from it, the greater of
+the two distances the rows reach.
+
+
+**Rationale.** A change, or a distance from a norm, is read as above or below a value.
+Where a column crosses zero, zero is that value; where it does not, a
+pivot of 0 puts every point on one arm and the scale reads as a
+sequential ramp with a midpoint nobody can see, so the column's median is
+the value that splits what is drawn. A spec that writes `colorPivot`
+draws as Mosaic would, and only the default differs.
+
+
+**Conformance layers suppressed:** 3
+
+## DEV-0009 — colour — a diverging scale's default arms (`colorScale: diverging`, no `colorScheme`)
+
+**Mosaic behaviour.** Mosaic's diverging colour scale defaults its scheme to `rdbu`:
+ColorBrewer's red at the low end and blue at the high end.
+
+
+**Brightfield behaviour.** With no `colorScheme` the arms are the Meridian design system's blue arm
+at the low end and its brick-red arm at the high end, about the
+design system's midpoint for the theme drawn (warm gray step 2 in light,
+step 4 in dark). `colorScheme: rdbu` draws ColorBrewer's, red at the low
+end and blue at the high end, as Mosaic does. A scheme that is named,
+`viridis` or `blues` say, is drawn about the pivot with its middle colour
+at the pivot.
+
+
+**Rationale.** The design system's pair has a neutral midpoint so that "nothing" reads
+as nothing, and its arms are tuned to the chart surface in both themes.
+Blue sits at the low end, where rdbu puts red, so a spec that wants
+Mosaic's colours writes `colorScheme: rdbu`, and only the default
+differs.
+
+
+**Conformance layers suppressed:** 3
+

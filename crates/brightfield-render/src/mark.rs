@@ -16,7 +16,8 @@ use crate::channel::{Channel, ChannelMap, LabelForm};
 use crate::ink::ChartInk;
 use crate::kde::{kde_1d_weighted, kde_2d, silverman_1d_weighted, silverman_2d_per_axis};
 use crate::scale::{
-    apply_colour_override, merge_linear_scale, ColourOverride, Scale, ScaleSet, SequentialScheme,
+    anchor_scale, apply_colour_override, diverging_scale, diverging_stops, merge_linear_scale,
+    ColourOverride, ColourScale, Scale, ScaleSet, SequentialScheme,
 };
 use crate::text::{draw_text, TextAnchor};
 
@@ -627,8 +628,8 @@ fn resolve_position(scale: &Scale, value_f64: Option<f64>, value_str: Option<&st
             value_f64.map(|v| scale.map_f64(v))
         }
         Scale::Band { .. } => value_str.and_then(|s| scale.map_category(s)),
-        // Colour ramps (categorical or sequential) don't position on an axis.
-        Scale::Colour { .. } | Scale::Sequential { .. } => None,
+        // Colour ramps (categorical, sequential or diverging) don't position on an axis.
+        Scale::Colour { .. } | Scale::Sequential { .. } | Scale::Diverging { .. } => None,
     }
 }
 
@@ -783,7 +784,7 @@ fn dot_position(
 }
 
 /// A dot's number fill, read once per draw: the column's values beside the
-/// [`Scale::Sequential`] they map through.
+/// [`Scale::Sequential`] or [`Scale::Diverging`] they map through.
 ///
 /// `None` from [`NumberFill::of`] answers a fill that is not a number column on a
 /// ramp — a colour literal, a string column, no fill channel — and those
@@ -807,7 +808,7 @@ impl<'a> NumberFill<'a> {
         let column = channel_map.get(Channel::Fill)?;
         let ramp = scales
             .get(Channel::Fill)
-            .filter(|scale| matches!(scale, Scale::Sequential { .. }))?;
+            .filter(|scale| matches!(scale, Scale::Sequential { .. } | Scale::Diverging { .. }))?;
         Some(Self {
             ramp,
             values: column_as_f64(batch, column)?,
@@ -846,6 +847,7 @@ impl DotRenderer {
     /// viridis for a dot built without one.
     fn augment_fill_ramp(
         scheme: SequentialScheme,
+        colour_scale: ColourScale,
         scales: &mut ScaleSet,
         batch: &RecordBatch,
         channel_map: &ChannelMap,
@@ -871,6 +873,26 @@ impl DotRenderer {
             .cloned()
             .fold(f64::NEG_INFINITY, f64::max);
         if !(lo.is_finite() && hi.is_finite()) {
+            return;
+        }
+        if let ColourScale::Diverging {
+            pivot,
+            scheme: written,
+        } = colour_scale
+        {
+            let drawn: Vec<f64> = values.iter().flatten().copied().collect();
+            let stops = diverging_stops(written, &scales.ink());
+            let Some(fresh) = diverging_scale(&drawn, pivot, stops) else {
+                return;
+            };
+            // Another layer's ramp, or this mark's own earlier call, keeps its
+            // pivot and stops and has its domain widened about that pivot.
+            let ramp = match scales.get(Channel::Fill) {
+                Some(existing @ Scale::Diverging { .. }) => anchor_scale(existing, &fresh),
+                Some(Scale::Linear { .. }) | None => fresh,
+                Some(_) => return,
+            };
+            scales.insert(Channel::Fill, ramp);
             return;
         }
         let (d0, d1) = if lo >= 0.0 { (0.0, hi) } else { (lo, hi) };
@@ -908,6 +930,10 @@ pub struct DotRenderer {
     /// (default viridis): the plot's `colorScheme`, carried by
     /// [`configured_renderer`] as a cell's is.
     pub scheme: SequentialScheme,
+    /// How the ramp is scaled: the plot's `colorScale`. A diverging dot paints a
+    /// number column about a pivot, as [`crate::scale::diverging_scale`] builds
+    /// it, and the other mark kinds keep the ramp they draw whatever this says.
+    pub colour_scale: ColourScale,
 }
 
 impl MarkRenderer for DotRenderer {
@@ -936,7 +962,7 @@ impl MarkRenderer for DotRenderer {
         x_range: (f64, f64),
         y_range: (f64, f64),
     ) {
-        Self::augment_fill_ramp(self.scheme, scales, batch, channel_map);
+        Self::augment_fill_ramp(self.scheme, self.colour_scale, scales, batch, channel_map);
         // A projected mark aspect-fits for the same reason an equal-aspect one
         // does, and by the same arithmetic: the difference is the UNITS its
         // domains are already in, which `infer_scales` decided — degrees for an
@@ -5546,7 +5572,10 @@ pub fn configured_renderer(
 ) -> Option<Box<dyn MarkRenderer + Send + Sync>> {
     match kind {
         MarkKind::Dot | MarkKind::DotX | MarkKind::DotY | MarkKind::Circle => {
-            Some(Box::new(DotRenderer { scheme }))
+            Some(Box::new(DotRenderer {
+                scheme,
+                colour_scale: ColourScale::default(),
+            }))
         }
         MarkKind::Raster => Some(Box::new(RasterRenderer { scheme })),
         MarkKind::Heatmap => Some(Box::new(HeatmapRenderer { scheme, bandwidth })),
@@ -5566,7 +5595,7 @@ pub fn configured_renderer(
 
 /// [`default_renderers`], with the marks [`configured_renderer`] names built at
 /// `scheme` — the registry a plot draws through when its `colorScheme` names
-/// one of the four built-in schemes.
+/// one of the built-in schemes ([`SequentialScheme::ALL`]).
 ///
 /// A kind [`configured_renderer`] builds is built there, with no `bandwidth`,
 /// `thresholds` or `binWidth`: the shell does not read those attributes, and
@@ -5581,6 +5610,35 @@ pub fn default_renderers_at(
         .into_iter()
         .map(|(kind, default)| {
             let renderer = configured_renderer(kind, scheme, None, None, None).unwrap_or(default);
+            (kind, renderer)
+        })
+        .collect()
+}
+
+/// [`default_renderers_at`], with the dot family also told how the plot scales
+/// its colour — the plot's `colorScale`, and with it the pivot and the scheme the
+/// plot wrote, which [`ColourScale::Diverging`] carries.
+///
+/// A plot that draws `Linear` gets what [`default_renderers_at`] gives, byte for
+/// byte. Only the dot kinds read the scale: a raster, a heatmap, a cell and a
+/// hexbin keep the ramp they draw today under a diverging scale.
+#[must_use]
+pub fn default_renderers_scaled(
+    scheme: SequentialScheme,
+    colour_scale: ColourScale,
+) -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>)> {
+    default_renderers()
+        .into_iter()
+        .map(|(kind, default)| {
+            let renderer: Box<dyn MarkRenderer + Send + Sync> = match kind {
+                MarkKind::Dot | MarkKind::DotX | MarkKind::DotY | MarkKind::Circle => {
+                    Box::new(DotRenderer {
+                        scheme,
+                        colour_scale,
+                    })
+                }
+                _ => configured_renderer(kind, scheme, None, None, None).unwrap_or(default),
+            };
             (kind, renderer)
         })
         .collect()

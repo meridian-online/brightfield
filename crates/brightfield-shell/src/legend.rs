@@ -24,7 +24,7 @@
 //! every example spec rather than a hope about pixel placement.
 
 use brightfield_render::channel::Channel;
-use brightfield_render::scale::{Scale, ScaleSet};
+use brightfield_render::scale::{ramp_at, Scale, ScaleSet};
 use meridian_design::{control, semantic, spacing, typography};
 use meridian_egui::Mode;
 
@@ -46,6 +46,19 @@ pub enum LegendSpec {
         /// Domain maximum.
         max: f64,
         /// The ramp's control points, low → high, straight-alpha RGBA.
+        stops: Vec<[f32; 4]>,
+    },
+    /// A colour ramp about a pivot: a gradient bar from one pole through the
+    /// midpoint colour to the other, with the pivot named at the middle.
+    Diverging {
+        /// Domain minimum — the same distance below the pivot as `max` is above.
+        min: f64,
+        /// Domain maximum.
+        max: f64,
+        /// The value the middle of the bar stands for.
+        pivot: f64,
+        /// The ramp's control points, low pole → midpoint → high pole,
+        /// straight-alpha RGBA.
         stops: Vec<[f32; 4]>,
     },
 }
@@ -90,6 +103,17 @@ impl LegendSpec {
                 max: *domain_max,
                 stops: stops.clone(),
             }),
+            Scale::Diverging {
+                domain_min,
+                domain_max,
+                pivot,
+                stops,
+            } => Some(Self::Diverging {
+                min: *domain_min,
+                max: *domain_max,
+                pivot: *pivot,
+                stops: stops.clone(),
+            }),
             _ => None,
         }
     }
@@ -100,7 +124,7 @@ impl LegendSpec {
     pub fn labels(&self) -> Vec<&str> {
         match self {
             Self::Categorical { entries } => entries.iter().map(|e| e.label.as_str()).collect(),
-            Self::Sequential { .. } => Vec::new(),
+            Self::Sequential { .. } | Self::Diverging { .. } => Vec::new(),
         }
     }
 }
@@ -164,7 +188,8 @@ pub fn draw_band(
 }
 
 /// One legend block at `origin`: swatch + label rows for a categorical scale,
-/// a gradient bar with its domain ends for a sequential one.
+/// a gradient bar with its domain ends for a sequential one, and a bar from
+/// pole to pole with the pivot at its middle for a diverging one.
 fn draw_block(painter: &egui::Painter, origin: egui::Pos2, legend: &LegendSpec, mode: Mode) {
     let sem = semantic(mode.is_dark());
     let ink = crate::design::to_color32(sem.text.secondary);
@@ -221,7 +246,59 @@ fn draw_block(painter: &egui::Painter, origin: egui::Pos2, legend: &LegendSpec, 
                 ink,
             );
         }
+        LegendSpec::Diverging {
+            min,
+            max,
+            pivot,
+            stops,
+        } => {
+            let bar = egui::Rect::from_min_size(origin, egui::vec2(block_width(), swatch));
+            let colours = diverging_strip_colours(stops);
+            let strip = bar.width() / colours.len() as f32;
+            for (i, colour) in colours.iter().enumerate() {
+                let left = bar.left() + i as f32 * strip;
+                let rect = egui::Rect::from_min_max(
+                    egui::pos2(left, bar.top()),
+                    egui::pos2((left + strip).min(bar.right()), bar.bottom()),
+                );
+                painter.rect_filled(rect, 0.0, chart_ink(*colour));
+            }
+            let label_y = bar.bottom() + spacing::SPACE_1;
+            for (x, align, value) in [
+                (bar.left(), egui::Align2::LEFT_TOP, *min),
+                (bar.center().x, egui::Align2::CENTER_TOP, *pivot),
+                (bar.right(), egui::Align2::RIGHT_TOP, *max),
+            ] {
+                painter.text(
+                    egui::pos2(x, label_y),
+                    align,
+                    format_domain(value),
+                    font.clone(),
+                    ink,
+                );
+            }
+        }
     }
+}
+
+/// How many strips a diverging legend's bar is drawn in. Odd, so the middle
+/// strip is the ramp's midpoint colour and stands at the bar's centre, where the
+/// pivot's label is.
+const DIVERGING_STRIPS: usize = 61;
+
+/// The colour of each strip of a diverging legend's bar, left (low pole) to
+/// right (high pole): strip `i` samples the ramp at `i / (n - 1)`, so the first
+/// strip is the low pole's colour, the last is the high pole's, and the middle
+/// one is the midpoint colour.
+///
+/// The sequential bar draws one strip per stop and leaves the last stop's
+/// without a width; sampling the ramp instead is what puts both poles on a
+/// bar that has to show both.
+#[must_use]
+pub fn diverging_strip_colours(stops: &[[f32; 4]]) -> Vec<[f32; 4]> {
+    (0..DIVERGING_STRIPS)
+        .map(|i| ramp_at(stops, i as f64 / (DIVERGING_STRIPS - 1) as f64))
+        .collect()
 }
 
 /// A domain end, spelled the short way: integers bare, fractions to two

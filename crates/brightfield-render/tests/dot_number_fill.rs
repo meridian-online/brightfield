@@ -375,13 +375,8 @@ fn the_interpolated_draw_paints_the_same_ramp_as_the_still_one() {
     );
 }
 
-/// The four schemes a plot's `colorScheme` can name, by their wire names.
-const SCHEMES: [SequentialScheme; 4] = [
-    SequentialScheme::Viridis,
-    SequentialScheme::Blues,
-    SequentialScheme::Turbo,
-    SequentialScheme::Meridian,
-];
+/// The schemes a plot's `colorScheme` can name, as the renderer lists them.
+const SCHEMES: [SequentialScheme; 5] = SequentialScheme::ALL;
 
 /// The dot kinds the registry builds a `DotRenderer` for.
 const DOT_KINDS: [MarkKind; 4] = [
@@ -421,7 +416,13 @@ fn a_dot_built_at_a_scheme_paints_along_that_schemes_ramp() {
         "a dot built with no scheme paints viridis, as it did"
     );
     for scheme in SCHEMES {
-        let (stops, colours) = painted_by(&DotRenderer { scheme }, &values);
+        let (stops, colours) = painted_by(
+            &DotRenderer {
+                scheme,
+                ..DotRenderer::default()
+            },
+            &values,
+        );
         let name = scheme.wire_name();
         assert_eq!(
             stops,

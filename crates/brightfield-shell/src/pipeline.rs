@@ -35,10 +35,12 @@ use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::ink::ChartInk;
 use brightfield_render::inset::{resolve_insets_for_marks, DEFAULT_SCALE_INSET};
 use brightfield_render::layout::{ChartLayout, Margins};
-use brightfield_render::mark::{default_renderers_at, find_renderer, MarkRenderer};
+use brightfield_render::mark::{default_renderers_scaled, find_renderer, MarkRenderer};
 use brightfield_render::sample_notice::{sample_band_margins, SampleFact};
 use brightfield_render::sample_policy;
-use brightfield_render::scale::{PinnedDomains, Scale, ScaleSet, SequentialScheme, ViewExtent};
+use brightfield_render::scale::{
+    ColourScale, PinnedDomains, Scale, ScaleSet, SequentialScheme, ViewExtent,
+};
 use brightfield_render::scene::{
     build_multi_mark_scene_pinned, compose_dashboard, unrestorable_under_sampling, ChartData,
     UnsampledDomains,
@@ -53,9 +55,10 @@ use brightfield_spec::analysis::{
 use brightfield_spec::ast::{Component, MarkData, ParamNode, PlotNode, SpaceNode, SpecValue};
 use brightfield_spec::layout::{
     collect_plot_nodes, placed_plots, resolve_axis_ends, resolve_axis_reverse,
-    resolve_colour_scheme_name, resolve_fixed_domains, resolve_grid_lines, resolve_plot_insets,
-    resolve_plot_margins, resolve_plot_stack_offset, resolve_tick_counts, resolve_tick_formats,
-    AxisFormat, Rect, StackOffset, TickFormats,
+    resolve_colour_pivot, resolve_colour_scale_diverging, resolve_colour_scheme_name,
+    resolve_fixed_domains, resolve_grid_lines, resolve_plot_insets, resolve_plot_margins,
+    resolve_plot_stack_offset, resolve_tick_counts, resolve_tick_formats, AxisFormat, Rect,
+    StackOffset, TickFormats,
 };
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, ParseWarning, Spec};
@@ -2071,13 +2074,32 @@ fn compose_from_results(
         // it names now. A name no renderer draws, and no name, draw the
         // default ramp. Both lookups below read this one registry, the
         // empty-under-navigation fallback included.
-        let scheme = plot_nodes
+        //
+        // A plot's `colorScale` and `colorPivot` ride the same route: read from
+        // the spec this composition draws, so a param that holds either is read
+        // as it stands now, and handed to the dot renderers beside the scheme.
+        // `diverging` is the one scale named here; any other draws the linear
+        // ramp, and the parser has said so. The scheme the plot WROTE is kept
+        // apart from the one it draws, because a diverging scale with no scheme
+        // is the design system's blue-red pair and not the sequential default.
+        let plot_node = plot_nodes
             .iter()
             .find(|(p, _)| *p == plot.path)
-            .and_then(|(_, node)| resolve_colour_scheme_name(node, &spec.params))
-            .and_then(SequentialScheme::from_wire)
-            .unwrap_or_default();
-        let registry = default_renderers_at(scheme);
+            .map(|(_, node)| node);
+        let written_scheme = plot_node
+            .and_then(|node| resolve_colour_scheme_name(node, &spec.params))
+            .and_then(SequentialScheme::from_wire);
+        let scheme = written_scheme.unwrap_or_default();
+        let colour_scale = match plot_node {
+            Some(node) if resolve_colour_scale_diverging(node, &spec.params) => {
+                ColourScale::Diverging {
+                    pivot: resolve_colour_pivot(node, &spec.params),
+                    scheme: written_scheme,
+                }
+            }
+            _ => ColourScale::Linear,
+        };
+        let registry = default_renderers_scaled(scheme, colour_scale);
 
         // Backs `chart_data` in the empty-under-navigation fallback below —
         // declared here, ahead of `chart_data`, so it outlives the borrows

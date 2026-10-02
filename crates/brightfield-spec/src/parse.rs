@@ -555,18 +555,23 @@ pub enum ParseWarning {
         axis: String,
     },
 
-    /// A plot-level colour attribute (`colorScheme`) carried a value brightfield
-    /// cannot draw: a scheme name it has no ramp for (`magma`, `ylgnbu`, a
-    /// misspelt `viridis`), or a value that is no name. The plot draws
-    /// its default ramp as if the key were absent, and this names the key and
-    /// the value so an author sees why the colours are not the file's.
+    /// A plot-level colour attribute (`colorScheme`, `colorScale`, `colorPivot`)
+    /// carried a value brightfield cannot draw: a scheme name it has no ramp for
+    /// (`magma`, `ylgnbu`, a misspelt `viridis`), a scale type it does not draw
+    /// (`quantile`, `symlog`), a pivot that is no number, or a value that is no
+    /// name. The plot draws its default ramp as if the key were absent, and this
+    /// names the key and the value so an author sees why the colours are not the
+    /// file's.
     ///
     /// A `null` and a lifted `$param` are deferrals and say nothing.
-    /// [`crate::layout::read_colour_scheme`] is the sole judge, and the renderer
-    /// draws exactly [`crate::layout::DRAWN_COLOUR_SCHEMES`], so the warning and
-    /// the drawing cannot disagree. A later colour key a build cannot read
-    /// (`colorScale`, `colorReverse`, `colorN`) is another value of this one
-    /// warning rather than a new variant.
+    /// [`crate::layout::read_colour_scheme`], [`crate::layout::read_colour_scale`]
+    /// and [`crate::layout::colour_pivot`] are the judges, and for a value
+    /// written as a literal the renderer draws exactly what they accept. A
+    /// `$param` is read when the plot is drawn, so a param holding a value no
+    /// judge accepts draws the default and raises nothing: the one case where the
+    /// warning and the drawing differ. A later colour key a build cannot read
+    /// (`colorReverse`, `colorN`) is another value of this one warning rather
+    /// than a new variant.
     UnreadColourKey {
         /// The offending attribute key.
         attribute: String,
@@ -1604,9 +1609,9 @@ impl Walker {
             if PLOT_TICK_FORMAT_KEYS.contains(&key.as_str()) {
                 self.warn_tick_format(&key, &value);
             }
-            // A plot-level colour attribute (`colorScheme`) this build cannot
-            // draw is drawn as if it were absent; name it, with what was
-            // written. A `$param` and `null` are deferrals, not typos.
+            // A plot-level colour attribute (`colorScheme`, `colorScale`,
+            // `colorPivot`) this build cannot draw is drawn as if it were
+            // absent; name it, with what was written. A `$param` and `null` are deferrals, not typos.
             if PLOT_COLOUR_KEYS.contains(&key.as_str()) {
                 self.warn_colour_key(&key, &value);
             }
@@ -2060,9 +2065,18 @@ impl Walker {
     /// from — so a value the plot draws as absent is a value that was named. A
     /// scheme this build draws, `null` and a lifted `$param` say nothing.
     fn warn_colour_key(&mut self, key: &str, value: &SpecValue) {
-        use crate::layout::{read_colour_scheme, ColourSchemeReading};
+        use crate::layout::{
+            colour_pivot, read_colour_scale, read_colour_scheme, ColourScaleReading,
+            ColourSchemeReading,
+        };
         let unread = match key {
             "colorScheme" => read_colour_scheme(value) == ColourSchemeReading::Unknown,
+            "colorScale" => read_colour_scale(value) == ColourScaleReading::Unknown,
+            // A pivot is a number; `null` and a `$param` are deferrals.
+            "colorPivot" => {
+                colour_pivot(value).is_none()
+                    && !matches!(value, SpecValue::Param(_) | SpecValue::Null)
+            }
             _ => false,
         };
         if unread {
@@ -2659,7 +2673,7 @@ const PLOT_TICK_FORMAT_KEYS: [&str; 2] = ["xTickFormat", "yTickFormat"];
 
 /// The plot attributes that set a colour, whose values
 /// [`ParseWarning::UnreadColourKey`] judges.
-const PLOT_COLOUR_KEYS: [&str; 1] = ["colorScheme"];
+const PLOT_COLOUR_KEYS: [&str; 3] = ["colorScheme", "colorScale", "colorPivot"];
 
 /// The plot attributes that switch gridlines on or off: the bare `grid` for
 /// both axes, and each axis's own key.

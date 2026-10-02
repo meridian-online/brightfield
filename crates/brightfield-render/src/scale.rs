@@ -110,6 +110,24 @@ pub enum Scale {
         domain_max: f64,
         stops: Vec<[f32; 4]>,
     },
+    /// Diverging colour scale: a ramp with a midpoint, mapped about a `pivot`.
+    ///
+    /// `stops` run from the low pole through the midpoint colour to the high pole,
+    /// evenly spaced, so the middle of the ramp is `t = 0.5`. A value at `pivot`
+    /// takes that middle colour whatever the domain's ends are; the arm below
+    /// maps `[domain_min, pivot]` onto the lower half of the ramp and the arm
+    /// above maps `[pivot, domain_max]` onto the upper half, each over its own
+    /// span. That is what distinguishes it from a [`Scale::Sequential`] given the
+    /// same stops, which puts the middle colour at the middle of the domain and
+    /// so cannot hold the pivot there once a fixed domain is uneven about it.
+    ///
+    /// Built by [`diverging_scale`], whose domain is even about the pivot.
+    Diverging {
+        domain_min: f64,
+        domain_max: f64,
+        pivot: f64,
+        stops: Vec<[f32; 4]>,
+    },
 }
 
 /// d3's `scaleSymlog().constant()` default, and the one Mosaic inherits by
@@ -154,6 +172,35 @@ fn interpolate(t: f64, lo: f64, hi: f64, range_start: f64, range_end: f64) -> f6
         return (range_start + range_end) / 2.0;
     }
     range_start + (t - lo) / (hi - lo) * (range_end - range_start)
+}
+
+/// The colour at `t ∈ [0, 1]` along `stops`, evenly spaced and lerped
+/// per-channel between the two bracketing the position `t·(n-1)`. `t = 0` is the
+/// first stop and `t = 1` the last, exactly. Opaque black for no stops.
+#[must_use]
+pub fn ramp_at(stops: &[[f32; 4]], t: f64) -> [f32; 4] {
+    let n = stops.len();
+    match n {
+        0 => return [0.0, 0.0, 0.0, 1.0],
+        1 => return stops[0],
+        _ => {}
+    }
+    let scaled = t.clamp(0.0, 1.0) * (n - 1) as f64;
+    let i = (scaled.floor() as usize).min(n - 2);
+    let frac = (scaled - i as f64) as f32;
+    let a = stops[i];
+    let b = stops[i + 1];
+    // `a + (b - a) * 1.0` is not always `b` in floating point, so the last stop
+    // is returned as it is rather than reached by arithmetic.
+    if frac >= 1.0 {
+        return b;
+    }
+    [
+        a[0] + (b[0] - a[0]) * frac,
+        a[1] + (b[1] - a[1]) * frac,
+        a[2] + (b[2] - a[2]) * frac,
+        a[3] + (b[3] - a[3]) * frac,
+    ]
 }
 
 impl Scale {
@@ -213,46 +260,62 @@ impl Scale {
         }
     }
 
-    /// Map a numeric value to an interpolated ramp colour (Sequential scales).
+    /// Map a numeric value to an interpolated ramp colour (Sequential and
+    /// Diverging scales).
     ///
-    /// Clamps `value` into the domain, normalises to `t ∈ [0, 1]`, and lerps
-    /// per-channel between the two `stops` bracketing `t·(n-1)`. Endpoints return
-    /// the first/last stop exactly; a degenerate (`domain_min == domain_max`)
-    /// domain returns the top stop (mirroring how `map_f64` collapses a zero-span
-    /// linear domain). Returns opaque black for a non-Sequential scale — callers
-    /// only invoke this on the Fill Sequential scale.
+    /// A Sequential clamps `value` into the domain, normalises to `t ∈ [0, 1]`,
+    /// and lerps per-channel between the two `stops` bracketing `t·(n-1)`.
+    /// Endpoints return the first/last stop exactly; a degenerate
+    /// (`domain_min == domain_max`) domain returns the top stop (mirroring how
+    /// `map_f64` collapses a zero-span linear domain).
+    ///
+    /// A Diverging puts `pivot` at `t = 0.5` and each arm over its own span, so a
+    /// value at the pivot is the ramp's middle colour; an arm with no span (the
+    /// domain stops at the pivot on that side) maps to the middle colour too.
+    ///
+    /// Returns opaque black for any other scale — callers only invoke this on
+    /// the Fill ramp.
     pub fn map_continuous(&self, value: f64) -> [f32; 4] {
-        let Self::Sequential {
-            domain_min,
-            domain_max,
-            stops,
-        } = self
-        else {
-            return [0.0, 0.0, 0.0, 1.0];
-        };
-        let Some(&top) = stops.last() else {
-            return [0.0, 0.0, 0.0, 1.0];
-        };
-        let span = domain_max - domain_min;
-        if span.abs() < f64::EPSILON {
-            return top;
+        match self {
+            Self::Sequential {
+                domain_min,
+                domain_max,
+                stops,
+            } => {
+                let Some(&top) = stops.last() else {
+                    return [0.0, 0.0, 0.0, 1.0];
+                };
+                let span = domain_max - domain_min;
+                if span.abs() < f64::EPSILON {
+                    return top;
+                }
+                ramp_at(stops, ((value - domain_min) / span).clamp(0.0, 1.0))
+            }
+            Self::Diverging {
+                domain_min,
+                domain_max,
+                pivot,
+                stops,
+            } => {
+                let t = if value <= *pivot {
+                    let reach = pivot - domain_min;
+                    if reach < f64::EPSILON {
+                        0.5
+                    } else {
+                        0.5 * ((value - domain_min) / reach).clamp(0.0, 1.0)
+                    }
+                } else {
+                    let reach = domain_max - pivot;
+                    if reach < f64::EPSILON {
+                        0.5
+                    } else {
+                        0.5 + 0.5 * ((value - pivot) / reach).clamp(0.0, 1.0)
+                    }
+                };
+                ramp_at(stops, t)
+            }
+            _ => [0.0, 0.0, 0.0, 1.0],
         }
-        let t = ((value - domain_min) / span).clamp(0.0, 1.0);
-        let n = stops.len();
-        if n == 1 {
-            return stops[0];
-        }
-        let scaled = t * (n - 1) as f64;
-        let i = (scaled.floor() as usize).min(n - 2);
-        let frac = (scaled - i as f64) as f32;
-        let a = stops[i];
-        let b = stops[i + 1];
-        [
-            a[0] + (b[0] - a[0]) * frac,
-            a[1] + (b[1] - a[1]) * frac,
-            a[2] + (b[2] - a[2]) * frac,
-            a[3] + (b[3] - a[3]) * frac,
-        ]
     }
 
     /// Map a pixel position back to a data value (inverse of `map_f64`).
@@ -315,7 +378,10 @@ impl Scale {
                     hi,
                 )))
             }
-            Self::Band { .. } | Self::Colour { .. } | Self::Sequential { .. } => None,
+            Self::Band { .. }
+            | Self::Colour { .. }
+            | Self::Sequential { .. }
+            | Self::Diverging { .. } => None,
         }
     }
 
@@ -382,7 +448,9 @@ impl Scale {
             | Self::Log { domain_min, .. }
             | Self::Symlog { domain_min, .. } => Some(*domain_min),
             Self::Time { domain_min_us, .. } => Some(*domain_min_us as f64),
-            Self::Sequential { domain_min, .. } => Some(*domain_min),
+            Self::Sequential { domain_min, .. } | Self::Diverging { domain_min, .. } => {
+                Some(*domain_min)
+            }
             _ => None,
         }
     }
@@ -395,7 +463,9 @@ impl Scale {
             | Self::Log { domain_max, .. }
             | Self::Symlog { domain_max, .. } => Some(*domain_max),
             Self::Time { domain_max_us, .. } => Some(*domain_max_us as f64),
-            Self::Sequential { domain_max, .. } => Some(*domain_max),
+            Self::Sequential { domain_max, .. } | Self::Diverging { domain_max, .. } => {
+                Some(*domain_max)
+            }
             _ => None,
         }
     }
@@ -409,7 +479,7 @@ impl Scale {
             | Self::Band { range_start, .. }
             | Self::Time { range_start, .. } => *range_start,
             // Colour ramps carry no positional pixel range.
-            Self::Colour { .. } | Self::Sequential { .. } => 0.0,
+            Self::Colour { .. } | Self::Sequential { .. } | Self::Diverging { .. } => 0.0,
         }
     }
 
@@ -422,7 +492,7 @@ impl Scale {
             | Self::Band { range_end, .. }
             | Self::Time { range_end, .. } => *range_end,
             // Colour ramps carry no positional pixel range.
-            Self::Colour { .. } | Self::Sequential { .. } => 0.0,
+            Self::Colour { .. } | Self::Sequential { .. } | Self::Diverging { .. } => 0.0,
         }
     }
 
@@ -439,8 +509,8 @@ impl Scale {
     /// them. The shell's `tests/axis_vocabulary_reverse.rs` holds that for dots,
     /// bars, tick marks and the brush.
     ///
-    /// A colour or sequential scale has no pixel range and is returned as it
-    /// is.
+    /// A colour, sequential or diverging scale has no pixel range and is returned
+    /// as it is.
     #[must_use]
     pub fn reversed(&self) -> Self {
         match self.clone() {
@@ -499,7 +569,9 @@ impl Scale {
                 range_start: range_end,
                 range_end: range_start,
             },
-            other @ (Self::Colour { .. } | Self::Sequential { .. }) => other,
+            other @ (Self::Colour { .. } | Self::Sequential { .. } | Self::Diverging { .. }) => {
+                other
+            }
         }
     }
 }
@@ -623,7 +695,7 @@ impl ScaleSet {
 /// invisibility, so the anchor widens rather than pins.
 ///
 /// Per channel:
-/// - present in BOTH, continuous (Linear / Time / Sequential): the launch
+/// - present in BOTH, continuous (Linear / Time / Sequential / Diverging): the launch
 ///   domain UNIONed with the fresh domain (`min` of mins, `max` of maxes), on
 ///   the launch range/stops. A subset batch (`fresh ⊆ launch`) yields exactly
 ///   `launch`, so an ordinary filter gesture stays pixel-identical to a hard
@@ -667,7 +739,7 @@ pub fn anchor_scales(launch: &ScaleSet, fresh: ScaleSet) -> ScaleSet {
 /// Fold one channel's `fresh` scale into its `launch` scale per the widen-only
 /// rule (see [`anchor_scales`]). Continuous scales widen the launch domain to
 /// include fresh; categorical scales and any kind mismatch keep launch.
-fn anchor_scale(launch: &Scale, fresh: &Scale) -> Scale {
+pub(crate) fn anchor_scale(launch: &Scale, fresh: &Scale) -> Scale {
     match (launch, fresh) {
         (
             Scale::Linear {
@@ -761,6 +833,29 @@ fn anchor_scale(launch: &Scale, fresh: &Scale) -> Scale {
             domain_max: lmax.max(*fmax),
             stops: stops.clone(),
         },
+        // A diverging ramp keeps the launch pivot and stops and widens about
+        // that pivot, so the two ends stay the same distance from it.
+        (
+            Scale::Diverging {
+                domain_min: lmin,
+                domain_max: lmax,
+                pivot,
+                stops,
+            },
+            Scale::Diverging {
+                domain_min: fmin,
+                domain_max: fmax,
+                ..
+            },
+        ) => {
+            let reach = (pivot - lmin.min(*fmin)).max(lmax.max(*fmax) - pivot);
+            Scale::Diverging {
+                domain_min: pivot - reach,
+                domain_max: pivot + reach,
+                pivot: *pivot,
+                stops: stops.clone(),
+            }
+        }
         // Categorical (Band / Colour) or a scale-kind mismatch: launch wins.
         (l, _) => l.clone(),
     }
@@ -791,8 +886,8 @@ impl PinnedDomain {
     /// The pin `scale` hands back, or `None` for a scale carrying no positional
     /// domain to pin.
     ///
-    /// [`Scale::Colour`] and [`Scale::Sequential`] answer `None` here because
-    /// they are the COLOUR channels' scales; a positional axis never resolves
+    /// [`Scale::Colour`], [`Scale::Sequential`] and [`Scale::Diverging`] answer
+    /// `None` here because they are the COLOUR channels' scales; a positional axis does not resolve
     /// to one, and the explicit `colorDomain` instruction is a separate
     /// mechanism ([`ColourOverride`]).
     #[must_use]
@@ -819,7 +914,7 @@ impl PinnedDomain {
                 ..
             } => Some(Self::Time(*domain_min_us, *domain_max_us)),
             Scale::Band { categories, .. } => Some(Self::Band(categories.clone())),
-            Scale::Colour { .. } | Scale::Sequential { .. } => None,
+            Scale::Colour { .. } | Scale::Sequential { .. } | Scale::Diverging { .. } => None,
         }
     }
 
@@ -1075,9 +1170,27 @@ pub enum SequentialScheme {
     /// Non-portable: `serialise_spec` expands it to explicit `colorRange`
     /// stops on export (see deviations.yaml DEV-0004).
     Meridian,
+    /// ColorBrewer RdBu, eleven classes: dark red at the low end, white in the
+    /// middle, dark blue at the high end. Mosaic's `rdbu`. It is the one scheme
+    /// here with a midpoint of its own, so on a linear scale it reads as a red
+    /// to blue ramp and about a pivot as the colours Mosaic would draw.
+    Rdbu,
 }
 
 impl SequentialScheme {
+    /// Every scheme the renderer draws, in the order the transient colour-cycle
+    /// visits them, default first. [`Self::next`] and [`Self::from_wire`] read
+    /// this list, so a scheme on it is cycled and nameable by construction, and
+    /// one left off it is neither; `a_scheme_is_drawn_exactly_when_the_parser_does_not_warn_of_it`
+    /// holds it equal to [`brightfield_spec::layout::DRAWN_COLOUR_SCHEMES`].
+    pub const ALL: [Self; 5] = [
+        Self::Viridis,
+        Self::Blues,
+        Self::Turbo,
+        Self::Meridian,
+        Self::Rdbu,
+    ];
+
     /// The lowercase, Mosaic-aligned wire name.
     #[must_use]
     pub fn wire_name(self) -> &'static str {
@@ -1086,20 +1199,17 @@ impl SequentialScheme {
             Self::Blues => "blues",
             Self::Turbo => "turbo",
             Self::Meridian => "meridian",
+            Self::Rdbu => "rdbu",
         }
     }
 
-    /// The next scheme in the transient colour-cycle:
-    /// Viridis → Blues → Turbo → Meridian → Viridis. The single source of
-    /// truth for the cycle order.
+    /// The next scheme in the transient colour-cycle, the one after the last
+    /// being the first: the order of [`Self::ALL`], which is the single source
+    /// of truth for the cycle order.
     #[must_use]
     pub fn next(self) -> Self {
-        match self {
-            Self::Viridis => Self::Blues,
-            Self::Blues => Self::Turbo,
-            Self::Turbo => Self::Meridian,
-            Self::Meridian => Self::Viridis,
-        }
+        let i = Self::ALL.iter().position(|s| *s == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
     }
 
     /// Parse a wire name (case-exact). `None` for an unrecognised scheme, which
@@ -1110,19 +1220,14 @@ impl SequentialScheme {
     /// holds the two equal.
     #[must_use]
     pub fn from_wire(name: &str) -> Option<Self> {
-        match name {
-            "viridis" => Some(Self::Viridis),
-            "blues" => Some(Self::Blues),
-            "turbo" => Some(Self::Turbo),
-            "meridian" => Some(Self::Meridian),
-            _ => None,
-        }
+        Self::ALL.into_iter().find(|s| s.wire_name() == name)
     }
 
     /// Evenly-spaced RGBA control points (low → high), interpolated by
     /// [`Scale::map_continuous`]. Nine hand-transcribed points per classic
     /// scheme (a full 256-entry LUT is a later refinement); meridian carries
-    /// the design crate's thirteen published steps verbatim.
+    /// the design crate's thirteen published steps verbatim, and rdbu
+    /// ColorBrewer's eleven.
     #[must_use]
     pub fn stops(self) -> Vec<[f32; 4]> {
         match self {
@@ -1130,9 +1235,26 @@ impl SequentialScheme {
             Self::Blues => BLUES_STOPS.to_vec(),
             Self::Turbo => TURBO_STOPS.to_vec(),
             Self::Meridian => MERIDIAN_STOPS.to_vec(),
+            Self::Rdbu => RDBU_STOPS.to_vec(),
         }
     }
 }
+
+/// RdBu control points (ColorBrewer diverging, 11-class), dark red → white →
+/// dark blue. Odd, so the middle colour sits at `t = 0.5`.
+const RDBU_STOPS: &[[f32; 4]] = &[
+    [0.4039, 0.0000, 0.1216, 1.0], // #67001f
+    [0.6980, 0.0941, 0.1686, 1.0], // #b2182b
+    [0.8392, 0.3765, 0.3020, 1.0], // #d6604d
+    [0.9569, 0.6471, 0.5098, 1.0], // #f4a582
+    [0.9922, 0.8588, 0.7804, 1.0], // #fddbc7
+    [0.9686, 0.9686, 0.9686, 1.0], // #f7f7f7
+    [0.8196, 0.8980, 0.9412, 1.0], // #d1e5f0
+    [0.5725, 0.7725, 0.8706, 1.0], // #92c5de
+    [0.2627, 0.5765, 0.7647, 1.0], // #4393c3
+    [0.1294, 0.4000, 0.6745, 1.0], // #2166ac
+    [0.0196, 0.1882, 0.3804, 1.0], // #053061
+];
 
 /// Viridis control points (matplotlib, 9-class), dark purple → bright yellow.
 const VIRIDIS_STOPS: &[[f32; 4]] = &[
@@ -1178,6 +1300,112 @@ const TURBO_STOPS: &[[f32; 4]] = &[
 /// crate's thirteen published control points, converted once at compile time.
 const MERIDIAN_STOPS: &[[f32; 4]] =
     &crate::ink::components(meridian_design::viz::SEQUENTIAL_MERIDIAN);
+
+/// The design system's diverging blue arm, pole → lightest, as components.
+const DIVERGING_BLUE_ARM: [[f32; 4]; 5] =
+    crate::ink::components(meridian_design::viz::DIVERGING_BLUE_ARM);
+
+/// The design system's diverging red arm, lightest → pole, as components.
+const DIVERGING_RED_ARM: [[f32; 4]; 5] =
+    crate::ink::components(meridian_design::viz::DIVERGING_RED_ARM);
+
+/// How a plot's fill colour is scaled along its ramp: the plot's `colorScale`,
+/// carried to the mark that paints a number column by the same route its
+/// `colorScheme` takes.
+///
+/// `Linear` is what a plot drew before the key was read, and is the
+/// [`Default`]. A key that names no scale brightfield draws is `Linear` too, as
+/// the parser's warning says.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum ColourScale {
+    /// The ramp runs from the domain's low end to its high end.
+    #[default]
+    Linear,
+    /// The ramp runs from a pole through a midpoint to the other pole, about a
+    /// pivot.
+    Diverging {
+        /// The pivot the plot wrote as `colorPivot`, or `None` to have it chosen
+        /// from the rows drawn by [`diverging_scale`].
+        pivot: Option<f64>,
+        /// The plot's own `colorScheme`, or `None` when it wrote no scheme, which is
+        /// the design system's blue-red pair rather than the sequential default.
+        scheme: Option<SequentialScheme>,
+    },
+}
+
+/// The ramp a diverging scale maps through, low pole → midpoint → high pole.
+///
+/// With no scheme written it is the design system's blue arm, the midpoint for
+/// the mode `ink` is resolved for, and its red arm. A scheme written is that
+/// scheme's own ramp, its middle colour at the pivot: viridis and blues are
+/// drawn about the pivot as they stand, and rdbu is ColorBrewer's, red low and
+/// blue high.
+#[must_use]
+pub fn diverging_stops(scheme: Option<SequentialScheme>, ink: &ChartInk) -> Vec<[f32; 4]> {
+    match scheme {
+        Some(scheme) => scheme.stops(),
+        None => DIVERGING_BLUE_ARM
+            .iter()
+            .copied()
+            .chain(std::iter::once(ink.diverging_mid.components))
+            .chain(DIVERGING_RED_ARM.iter().copied())
+            .collect(),
+    }
+}
+
+/// The pivot of a diverging scale over `values`, the rows drawn.
+///
+/// The one the plot wrote, if it wrote one. Otherwise zero when the rows hold a
+/// negative value and a positive one, because the column then crosses the
+/// origin and zero is the value above and below which it is read, and the
+/// median of the rows when it does not. `None` for no rows.
+#[must_use]
+pub fn diverging_pivot(values: &[f64], written: Option<f64>) -> Option<f64> {
+    if let Some(pivot) = written {
+        return Some(pivot);
+    }
+    let mut sorted: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
+    if sorted.is_empty() {
+        return None;
+    }
+    sorted.sort_by(f64::total_cmp);
+    let (lo, hi) = (sorted[0], sorted[sorted.len() - 1]);
+    if lo < 0.0 && hi > 0.0 {
+        return Some(0.0);
+    }
+    let mid = sorted.len() / 2;
+    Some(if sorted.len() % 2 == 1 {
+        sorted[mid]
+    } else {
+        (sorted[mid - 1] + sorted[mid]) / 2.0
+    })
+}
+
+/// A diverging fill scale over `values`, the rows drawn, or `None` when there are no rows.
+///
+/// The pivot is [`diverging_pivot`]'s. The domain is even about it: both ends
+/// the same distance from the pivot, the greater of the two distances the rows
+/// reach, so each arm of the ramp is drawn at the same rate and the legend's
+/// ends are as far from the pivot on one side as on the other. The arm on the
+/// side the rows reach less far uses part of its colours.
+#[must_use]
+pub fn diverging_scale(
+    values: &[f64],
+    written_pivot: Option<f64>,
+    stops: Vec<[f32; 4]>,
+) -> Option<Scale> {
+    let pivot = diverging_pivot(values, written_pivot)?;
+    let finite = || values.iter().copied().filter(|v| v.is_finite());
+    let lo = finite().fold(f64::INFINITY, f64::min);
+    let hi = finite().fold(f64::NEG_INFINITY, f64::max);
+    let reach = (pivot - lo).max(hi - pivot).max(0.0);
+    Some(Scale::Diverging {
+        domain_min: pivot - reach,
+        domain_max: pivot + reach,
+        pivot,
+        stops,
+    })
+}
 
 // The default colour palette — the Meridian "Harbour" categorical order (blue,
 // gold, teal, red, violet, orange, plum, green), replacing Observable Plot's
@@ -1763,6 +1991,12 @@ fn union_scales(scales: &[Scale], range_start: f64, range_end: f64) -> Option<Sc
                 })
             }
         }
+        // The first ramp's pivot and stops, widened about that pivot by the rest.
+        Scale::Diverging { .. } => Some(
+            scales[1..]
+                .iter()
+                .fold(scales[0].clone(), |acc, s| anchor_scale(&acc, s)),
+        ),
     }
 }
 
@@ -2658,12 +2892,7 @@ mod tests {
 
     #[test]
     fn scheme_stops_and_wire_roundtrip() {
-        for scheme in [
-            SequentialScheme::Viridis,
-            SequentialScheme::Blues,
-            SequentialScheme::Turbo,
-            SequentialScheme::Meridian,
-        ] {
+        for scheme in SequentialScheme::ALL {
             let stops = scheme.stops();
             assert!(stops.len() >= 5, "{scheme:?} has >= 5 stops");
             for s in &stops {
@@ -2688,26 +2917,19 @@ mod tests {
         assert_eq!(SequentialScheme::default(), SequentialScheme::Viridis);
     }
 
-    /// The schemes this renderer draws, walked off its own cycle (`next`) so a
-    /// variant added to the enum and not to a list here is still found, are the
-    /// names the parser's warning accepts, in the same order, and each is read
-    /// back by `from_wire`. Nothing the parser accepts is undrawn, and nothing
-    /// drawn is warned of.
+    /// The schemes this renderer draws — `SequentialScheme::ALL`, which `next`
+    /// and `from_wire` both read — are the names the parser's warning accepts,
+    /// in the same order, each is read back by `from_wire`, and the colour-cycle
+    /// visits each once. A name on the parser's list and not on `ALL`, or on
+    /// `ALL` and not on the parser's list, fails here. (A variant left off both
+    /// is named by no file and cycled by no key, so nothing draws it and nothing
+    /// warns of it: the two lists still agree.)
     #[test]
     fn a_scheme_is_drawn_exactly_when_the_parser_does_not_warn_of_it() {
-        let mut cycle = vec![SequentialScheme::default()];
-        loop {
-            let next = cycle.last().copied().unwrap().next();
-            if next == cycle[0] {
-                break;
-            }
-            assert!(
-                cycle.len() < 64,
-                "the colour-cycle never returned to its start"
-            );
-            cycle.push(next);
-        }
-        let drawn: Vec<&str> = cycle.iter().map(|s| s.wire_name()).collect();
+        let drawn: Vec<&str> = SequentialScheme::ALL
+            .iter()
+            .map(|s| s.wire_name())
+            .collect();
         assert_eq!(
             drawn,
             brightfield_spec::layout::DRAWN_COLOUR_SCHEMES,
@@ -2719,28 +2941,37 @@ mod tests {
                 "`{name}` is in the parser's list and the renderer must draw it"
             );
         }
+        let mut walked = vec![SequentialScheme::default()];
+        for _ in 1..SequentialScheme::ALL.len() {
+            walked.push(walked.last().copied().unwrap().next());
+        }
+        assert_eq!(
+            walked,
+            SequentialScheme::ALL,
+            "the cycle visits each scheme in order"
+        );
+        assert_eq!(
+            walked.last().copied().unwrap().next(),
+            SequentialScheme::default(),
+            "and returns to its start"
+        );
     }
 
     #[test]
-    fn next_cycles_viridis_blues_turbo_meridian() {
-        // The transient colour-cycle order (meridian added
-        // by design phase 4 PR B), wrapping back to the start after four
-        // presses.
+    fn next_cycles_viridis_blues_turbo_meridian_rdbu() {
+        // The transient colour-cycle order (meridian added by design phase 4
+        // PR B, rdbu after it), wrapping back to the start after five presses.
         assert_eq!(SequentialScheme::Viridis.next(), SequentialScheme::Blues);
         assert_eq!(SequentialScheme::Blues.next(), SequentialScheme::Turbo);
         assert_eq!(SequentialScheme::Turbo.next(), SequentialScheme::Meridian);
-        assert_eq!(SequentialScheme::Meridian.next(), SequentialScheme::Viridis);
-        // Four cycles from any start return to it.
-        for start in [
-            SequentialScheme::Viridis,
-            SequentialScheme::Blues,
-            SequentialScheme::Turbo,
-            SequentialScheme::Meridian,
-        ] {
+        assert_eq!(SequentialScheme::Meridian.next(), SequentialScheme::Rdbu);
+        assert_eq!(SequentialScheme::Rdbu.next(), SequentialScheme::Viridis);
+        // Five cycles from any start return to it.
+        for start in SequentialScheme::ALL {
             assert_eq!(
-                start.next().next().next().next(),
+                start.next().next().next().next().next(),
                 start,
-                "{start:?} cycles in 4"
+                "{start:?} cycles in 5"
             );
         }
     }
@@ -2946,6 +3177,229 @@ mod tests {
         assert_eq!(a.range_start(), 0.0);
         assert_eq!(a.range_end(), 0.0);
         assert!(a.inverse_f64(5.0).is_none());
+    }
+
+    // ---- diverging ----
+
+    const A: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+    const M: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
+    const B: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+
+    fn diverging(domain_min: f64, domain_max: f64, pivot: f64) -> Scale {
+        Scale::Diverging {
+            domain_min,
+            domain_max,
+            pivot,
+            stops: vec![A, M, B],
+        }
+    }
+
+    /// Each arm is mapped over its OWN span, so the pivot is the middle colour
+    /// and the poles sit at the domain's ends, even when the domain is uneven
+    /// about the pivot. A sequential scale over the same stops would put the
+    /// middle colour at the domain's middle, 5, not at the pivot, 2.
+    #[test]
+    fn a_diverging_scale_maps_each_arm_over_its_own_span() {
+        let scale = diverging(0.0, 10.0, 2.0);
+        assert_eq!(scale.map_continuous(0.0), A, "the low end is the low pole");
+        assert_eq!(
+            scale.map_continuous(2.0),
+            M,
+            "the pivot is the middle colour"
+        );
+        assert_eq!(
+            scale.map_continuous(10.0),
+            B,
+            "the high end is the high pole"
+        );
+        assert_eq!(
+            scale.map_continuous(1.0),
+            [0.25, 0.25, 0.25, 1.0],
+            "halfway down the lower arm is halfway from the pole to the middle"
+        );
+        assert_eq!(
+            scale.map_continuous(6.0),
+            [0.75, 0.75, 0.75, 1.0],
+            "halfway up the upper arm is halfway from the middle to the pole"
+        );
+        assert_eq!(
+            scale.map_continuous(-5.0),
+            A,
+            "below the domain clamps to the pole"
+        );
+        assert_eq!(
+            scale.map_continuous(99.0),
+            B,
+            "above the domain clamps to the pole"
+        );
+    }
+
+    /// A domain that stops at the pivot on one side has no span there; a value
+    /// at the pivot is still the middle colour and does not divide by zero.
+    #[test]
+    fn a_diverging_arm_with_no_span_maps_to_the_middle_colour() {
+        let scale = diverging(2.0, 10.0, 2.0);
+        assert_eq!(scale.map_continuous(2.0), M);
+        assert_eq!(scale.map_continuous(1.0), M);
+        assert_eq!(scale.map_continuous(10.0), B);
+        let scale = diverging(0.0, 2.0, 2.0);
+        assert_eq!(scale.map_continuous(2.0), M);
+        assert_eq!(scale.map_continuous(5.0), M);
+        assert_eq!(scale.map_continuous(0.0), A);
+    }
+
+    /// The pivot is the one written; else 0 where the rows hold a negative and a
+    /// positive value; else the median.
+    #[test]
+    fn the_pivot_is_written_or_zero_across_the_origin_or_the_median() {
+        assert_eq!(diverging_pivot(&[1.0, 2.0, 3.0], Some(7.5)), Some(7.5));
+        assert_eq!(diverging_pivot(&[-3.0, 1.0, 1.0, 10.0], None), Some(0.0));
+        assert_eq!(diverging_pivot(&[1.0, 2.0, 9.0], None), Some(2.0));
+        assert_eq!(diverging_pivot(&[5.0, 6.0, 7.0, 8.0], None), Some(6.5));
+        assert_eq!(diverging_pivot(&[0.0, 4.0, 8.0], None), Some(4.0));
+        assert_eq!(diverging_pivot(&[-5.0, -3.0, -1.0], None), Some(-3.0));
+        assert_eq!(diverging_pivot(&[f64::NAN, 3.0], None), Some(3.0));
+        assert_eq!(diverging_pivot(&[], None), None);
+    }
+
+    /// The domain is even about the pivot, the greater of the two reaches.
+    #[test]
+    fn a_diverging_domain_is_even_about_its_pivot() {
+        let stops = vec![A, M, B];
+        for (values, written, ends) in [
+            (vec![0.0, 1.0, 2.0, 3.0, 9.0], Some(2.0), (-5.0, 9.0)),
+            (vec![-5.0, -1.0, 0.0, 1.0], Some(0.0), (-5.0, 5.0)),
+            (vec![-2.0, 7.0], None, (-7.0, 7.0)),
+        ] {
+            let Some(Scale::Diverging {
+                domain_min,
+                domain_max,
+                pivot,
+                ..
+            }) = diverging_scale(&values, written, stops.clone())
+            else {
+                panic!("{values:?}: no diverging scale");
+            };
+            assert_eq!((domain_min, domain_max), ends, "{values:?}");
+            assert_eq!(pivot - domain_min, domain_max - pivot, "{values:?}");
+        }
+        assert!(diverging_scale(&[], None, stops).is_none());
+    }
+
+    /// With no scheme the ramp is the design system's blue arm, the midpoint for
+    /// the mode, and its red arm; the arms are the same in both modes and the
+    /// midpoint is the one colour that moves. A scheme written is its own ramp.
+    #[test]
+    fn the_default_ramp_is_the_designs_arms_about_the_midpoint_for_the_mode() {
+        use meridian_design::viz::{
+            DIVERGING_BLUE_ARM, DIVERGING_MID_DARK, DIVERGING_MID_LIGHT, DIVERGING_RED_ARM,
+        };
+        let comps = |c: meridian_design::colour::Rgba| [c.r, c.g, c.b, c.a];
+        let light = diverging_stops(None, &ChartInk::LIGHT);
+        let dark = diverging_stops(None, &ChartInk::DARK);
+        assert_eq!(light.len(), 11);
+        assert_eq!(
+            light[0],
+            comps(DIVERGING_BLUE_ARM[0]),
+            "the blue pole is first"
+        );
+        assert_eq!(
+            light[4],
+            comps(DIVERGING_BLUE_ARM[4]),
+            "the blue arm ends lightest"
+        );
+        assert_eq!(light[5], comps(DIVERGING_MID_LIGHT), "the light midpoint");
+        assert_eq!(dark[5], comps(DIVERGING_MID_DARK), "the dark midpoint");
+        assert_eq!(
+            light[6],
+            comps(DIVERGING_RED_ARM[0]),
+            "the red arm starts lightest"
+        );
+        assert_eq!(
+            light[10],
+            comps(DIVERGING_RED_ARM[4]),
+            "the red pole is last"
+        );
+        assert_eq!(
+            light[..5],
+            dark[..5],
+            "the blue arm does not move with the mode"
+        );
+        assert_eq!(
+            light[6..],
+            dark[6..],
+            "the red arm does not move with the mode"
+        );
+        assert_ne!(light[5], dark[5]);
+        for scheme in SequentialScheme::ALL {
+            assert_eq!(
+                diverging_stops(Some(scheme), &ChartInk::DARK),
+                scheme.stops(),
+                "{scheme:?}: a written scheme is its own ramp, whatever the mode"
+            );
+        }
+    }
+
+    /// `rdbu` is ColorBrewer's: red at the low end, white in the middle, blue at
+    /// the high end — the reverse of the design pair.
+    #[test]
+    fn rdbu_runs_red_to_blue_through_white() {
+        let stops = SequentialScheme::Rdbu.stops();
+        let [lr, _, lb, _] = stops[0];
+        let [hr, _, hb, _] = stops[stops.len() - 1];
+        assert!(lr > lb, "the low end is red");
+        assert!(hb > hr, "the high end is blue");
+        assert_eq!(
+            stops.len() % 2,
+            1,
+            "odd, so the middle stop sits at the pivot"
+        );
+        assert_eq!(stops[stops.len() / 2][..3], [0.9686, 0.9686, 0.9686]);
+    }
+
+    /// A diverging scale rebuilt after a gesture keeps the launch pivot and
+    /// widens about it, so the ends stay as far from the pivot on one side as
+    /// on the other.
+    #[test]
+    fn anchoring_a_diverging_scale_widens_it_about_the_launch_pivot() {
+        // A rebuilt scale is not even about the pivot when its rows reach 22
+        // below it and only 8 above; the anchored one is, at the greater reach.
+        let launch = diverging(-3.0, 7.0, 2.0);
+        let fresh = diverging(-20.0, 10.0, 2.0);
+        let Scale::Diverging {
+            domain_min,
+            domain_max,
+            pivot,
+            ..
+        } = anchor_scale(&launch, &fresh)
+        else {
+            panic!("a diverging scale anchors to a diverging scale");
+        };
+        assert_eq!((domain_min, domain_max, pivot), (-20.0, 24.0, 2.0));
+        // A subset of the launch domain leaves it as it was.
+        let Scale::Diverging {
+            domain_min,
+            domain_max,
+            ..
+        } = anchor_scale(&launch, &diverging(0.0, 4.0, 2.0))
+        else {
+            panic!("diverging");
+        };
+        assert_eq!((domain_min, domain_max), (-3.0, 7.0));
+    }
+
+    /// A ramp's two ends are its first and last stops exactly, and the position
+    /// between them is a lerp.
+    #[test]
+    fn a_ramp_returns_its_end_stops_exactly() {
+        // The design pair's own ramp: a lerp up to its last stop is one ulp short
+        // of it, so exactness is a property of the code and not of the numbers.
+        let stops = diverging_stops(None, &ChartInk::LIGHT);
+        assert_eq!(ramp_at(&stops, 0.0), stops[0]);
+        assert_eq!(ramp_at(&stops, 1.0), *stops.last().unwrap());
+        assert_eq!(ramp_at(&stops, 0.5), stops[5]);
+        assert_eq!(ramp_at(&stops, 1.5), *stops.last().unwrap(), "clamped");
+        assert_eq!(ramp_at(&[], 0.5), [0.0, 0.0, 0.0, 1.0]);
     }
 
     // --- F1: anchor_scales widen-only matrix ---

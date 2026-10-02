@@ -121,7 +121,7 @@ pub fn axis_kind(scale: &Scale) -> Option<AxisKind> {
         } else {
             AxisKind::Category
         }),
-        Scale::Colour { .. } | Scale::Sequential { .. } => None,
+        Scale::Colour { .. } | Scale::Sequential { .. } | Scale::Diverging { .. } => None,
     }
 }
 
@@ -232,7 +232,7 @@ pub fn compute_ticks_formatted(
             number.map(NumberFormat::decade_format),
         ),
         // Colour ramps (categorical or sequential) have no positional axis ticks.
-        Scale::Colour { .. } | Scale::Sequential { .. } => Vec::new(),
+        Scale::Colour { .. } | Scale::Sequential { .. } | Scale::Diverging { .. } => Vec::new(),
     }
 }
 

@@ -275,7 +275,7 @@ fn a_cell_with_a_counted_fill_paints_along_the_scheme_its_plot_names() {
 }
 
 /// **AC4.** A `colorScheme` given as a `$param` draws as the param's value
-/// would when the param holds one of the four names, and as a plot with no
+/// would when the param holds one of the names it draws, and as a plot with no
 /// `colorScheme` when it does not — and a redraw after the param is written
 /// draws in the scheme the param then holds.
 #[test]
