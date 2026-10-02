@@ -7,9 +7,11 @@
 //! and axis insets resolved via the same public helpers the app uses), and
 //! composites them into a single dashboard scene the egui host presents.
 //!
-//! Scope for the loop-first phase: colour-scheme / projection / highlight /
-//! explicit colorDomain and standalone-legend relocation are NOT ported (the
-//! golden `dashboard.yaml` and the simple examples use none of them). Each mark
+//! Scope for the loop-first phase: projection / highlight / explicit colorDomain
+//! and standalone-legend relocation are NOT ported (the golden `dashboard.yaml`
+//! and the simple examples use none of them). A plot's `colorScheme` is ported:
+//! it reaches the ramps of its dot, raster, heatmap, cell, hexbin and geo marks,
+//! and so their legend. Each mark
 //! draws EVERY materialised chunk — its result batches are assembled into one
 //! drawable batch via [`assemble_batches`], so a row-per-mark chart wider than a
 //! single ~2048-row chunk draws all its rows, and an assembly that cannot
@@ -33,10 +35,10 @@ use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::ink::ChartInk;
 use brightfield_render::inset::{resolve_insets_for_marks, DEFAULT_SCALE_INSET};
 use brightfield_render::layout::{ChartLayout, Margins};
-use brightfield_render::mark::{default_renderers, find_renderer, MarkRenderer};
+use brightfield_render::mark::{default_renderers_at, find_renderer, MarkRenderer};
 use brightfield_render::sample_notice::{sample_band_margins, SampleFact};
 use brightfield_render::sample_policy;
-use brightfield_render::scale::{PinnedDomains, Scale, ScaleSet, ViewExtent};
+use brightfield_render::scale::{PinnedDomains, Scale, ScaleSet, SequentialScheme, ViewExtent};
 use brightfield_render::scene::{
     build_multi_mark_scene_pinned, compose_dashboard, unrestorable_under_sampling, ChartData,
     UnsampledDomains,
@@ -51,9 +53,9 @@ use brightfield_spec::analysis::{
 use brightfield_spec::ast::{Component, MarkData, ParamNode, PlotNode, SpaceNode, SpecValue};
 use brightfield_spec::layout::{
     collect_plot_nodes, placed_plots, resolve_axis_ends, resolve_axis_reverse,
-    resolve_fixed_domains, resolve_grid_lines, resolve_plot_insets, resolve_plot_margins,
-    resolve_plot_stack_offset, resolve_tick_counts, resolve_tick_formats, AxisFormat, Rect,
-    StackOffset, TickFormats,
+    resolve_colour_scheme_name, resolve_fixed_domains, resolve_grid_lines, resolve_plot_insets,
+    resolve_plot_margins, resolve_plot_stack_offset, resolve_tick_counts, resolve_tick_formats,
+    AxisFormat, Rect, StackOffset, TickFormats,
 };
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, ParseWarning, Spec};
@@ -2047,7 +2049,6 @@ fn compose_from_results(
     let placed = placed_plots(spec, viewport);
     let groups = collect_plot_groups(spec);
     let plot_nodes = collect_plot_nodes(spec);
-    let registry = default_renderers();
     let brushable = build_brushable_bindings(spec);
 
     // Own each plot's scene; place them below.
@@ -2062,6 +2063,21 @@ fn compose_from_results(
         // store the engine also filters on, so the axes and the numbers cannot
         // describe different ranges.
         let plot_extent = extents.get(&plot.path);
+
+        // The renderers this plot draws through: the marks `configured_renderer`
+        // names take the plot's `colorScheme`. The name is read from the spec
+        // this composition draws, so a plot redrawn after a gesture, or after
+        // the param its `colorScheme` names was written, draws in the scheme
+        // it names now. A name no renderer draws, and no name, draw the
+        // default ramp. Both lookups below read this one registry, the
+        // empty-under-navigation fallback included.
+        let scheme = plot_nodes
+            .iter()
+            .find(|(p, _)| *p == plot.path)
+            .and_then(|(_, node)| resolve_colour_scheme_name(node, &spec.params))
+            .and_then(SequentialScheme::from_wire)
+            .unwrap_or_default();
+        let registry = default_renderers_at(scheme);
 
         // Backs `chart_data` in the empty-under-navigation fallback below —
         // declared here, ahead of `chart_data`, so it outlives the borrows

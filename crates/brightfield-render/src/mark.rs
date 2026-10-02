@@ -841,10 +841,15 @@ impl DotRenderer {
     /// two-layer tile — so that layer's call cannot undo the ramp another
     /// layer's column built.
     ///
-    /// The ramp is [`SequentialScheme::default`]: a dot is built by
-    /// [`crate::mark::configured_renderer`]'s fallthrough, which carries no
-    /// scheme, so a plot's `colorScheme` does not reach a dot's ramp.
-    fn augment_fill_ramp(scales: &mut ScaleSet, batch: &RecordBatch, channel_map: &ChannelMap) {
+    /// The ramp's stops are `scheme`'s: the plot's `colorScheme` as
+    /// [`crate::mark::configured_renderer`] carried it into the renderer, and
+    /// viridis for a dot built without one.
+    fn augment_fill_ramp(
+        scheme: SequentialScheme,
+        scales: &mut ScaleSet,
+        batch: &RecordBatch,
+        channel_map: &ChannelMap,
+    ) {
         if channel_map.colour(Channel::Fill).is_some() {
             return;
         }
@@ -883,7 +888,7 @@ impl DotRenderer {
             Some(Scale::Linear { .. }) | None => Scale::Sequential {
                 domain_min: d0,
                 domain_max: d1,
-                stops: SequentialScheme::default().stops(),
+                stops: scheme.stops(),
             },
             Some(_) => return,
         };
@@ -897,7 +902,13 @@ impl DotRenderer {
 /// [`crate::scale::Scale::Sequential`] under the fill channel is what the shell's
 /// legend reads, so the ramp and its legend are one scale. A string column
 /// paints by category and a colour literal is that colour, as before.
-pub struct DotRenderer;
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DotRenderer {
+    /// The continuous colour scheme a number-column fill is painted along
+    /// (default viridis): the plot's `colorScheme`, carried by
+    /// [`configured_renderer`] as a cell's is.
+    pub scheme: SequentialScheme,
+}
 
 impl MarkRenderer for DotRenderer {
     /// Build the fill ramp a number-column fill paints along
@@ -925,7 +936,7 @@ impl MarkRenderer for DotRenderer {
         x_range: (f64, f64),
         y_range: (f64, f64),
     ) {
-        Self::augment_fill_ramp(scales, batch, channel_map);
+        Self::augment_fill_ramp(self.scheme, scales, batch, channel_map);
         // A projected mark aspect-fits for the same reason an equal-aspect one
         // does, and by the same arithmetic: the difference is the UNITS its
         // domains are already in, which `infer_scales` decided — degrees for an
@@ -5432,10 +5443,10 @@ fn collect_polygon_rings(coords: &serde_json::Value, out: &mut Vec<Vec<(f64, f64
 /// lifecycle and re-render policy; for now this is a stateless lookup.
 pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>)> {
     vec![
-        (MarkKind::Dot, Box::new(DotRenderer)),
-        (MarkKind::DotX, Box::new(DotRenderer)),
-        (MarkKind::DotY, Box::new(DotRenderer)),
-        (MarkKind::Circle, Box::new(DotRenderer)),
+        (MarkKind::Dot, Box::new(DotRenderer::default())),
+        (MarkKind::DotX, Box::new(DotRenderer::default())),
+        (MarkKind::DotY, Box::new(DotRenderer::default())),
+        (MarkKind::Circle, Box::new(DotRenderer::default())),
         (MarkKind::BarX, Box::new(BarRenderer { axis: BarAxis::X })),
         (MarkKind::BarY, Box::new(BarRenderer { axis: BarAxis::Y })),
         (MarkKind::Line, Box::new(LineRenderer)),
@@ -5510,7 +5521,8 @@ pub fn default_renderers() -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>
 ///
 /// The ONE construction site both the app's first render and the cross-filter
 /// coordinator's live rebuild dispatch through (renderer seam):
-/// raster/heatmap/cell/hexbin carry the plot's `colorScheme`, heatmap/contour
+/// raster/heatmap/cell/hexbin and the dot family carry the plot's
+/// `colorScheme`, heatmap/contour
 /// carry the mark's `bandwidth`, contour carries its iso-level `thresholds`,
 /// hexgrid carries its `binWidth`, and geo carries the `colorScheme` for a
 /// choropleth ramp. A mark rebuilt through the same configured renderer its
@@ -5533,6 +5545,9 @@ pub fn configured_renderer(
     bin_width: Option<f64>,
 ) -> Option<Box<dyn MarkRenderer + Send + Sync>> {
     match kind {
+        MarkKind::Dot | MarkKind::DotX | MarkKind::DotY | MarkKind::Circle => {
+            Some(Box::new(DotRenderer { scheme }))
+        }
         MarkKind::Raster => Some(Box::new(RasterRenderer { scheme })),
         MarkKind::Heatmap => Some(Box::new(HeatmapRenderer { scheme, bandwidth })),
         MarkKind::Cell => Some(Box::new(CellRenderer { scheme })),
@@ -5547,6 +5562,28 @@ pub fn configured_renderer(
         MarkKind::Geo => Some(Box::new(GeoRenderer { scheme })),
         _ => None,
     }
+}
+
+/// [`default_renderers`], with the marks [`configured_renderer`] names built at
+/// `scheme` — the registry a plot draws through when its `colorScheme` names
+/// one of the four built-in schemes.
+///
+/// A kind [`configured_renderer`] builds is built there, with no `bandwidth`,
+/// `thresholds` or `binWidth`: the shell does not read those attributes, and
+/// each such renderer is what the registry's default is when they are absent.
+/// Every other kind keeps its registry renderer. At [`SequentialScheme::default`]
+/// the result draws what [`default_renderers`] draws.
+#[must_use]
+pub fn default_renderers_at(
+    scheme: SequentialScheme,
+) -> Vec<(MarkKind, Box<dyn MarkRenderer + Send + Sync>)> {
+    default_renderers()
+        .into_iter()
+        .map(|(kind, default)| {
+            let renderer = configured_renderer(kind, scheme, None, None, None).unwrap_or(default);
+            (kind, renderer)
+        })
+        .collect()
 }
 
 /// Wrap a mark's renderer to apply a plot-level explicit
@@ -5716,7 +5753,7 @@ mod tests {
         let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
 
         let mut scene = Scene::new();
-        let renderer = DotRenderer;
+        let renderer = DotRenderer::default();
         renderer.render(&mut scene, &batch, &cm, &scales, None);
 
         // Scene should be non-empty after rendering 3 dots.
@@ -5753,7 +5790,7 @@ mod tests {
         let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
 
         let mut scene = Scene::new();
-        let renderer = DotRenderer;
+        let renderer = DotRenderer::default();
         renderer.render(&mut scene, &batch, &cm, &scales, None);
 
         let encoding = scene.encoding();
@@ -5794,7 +5831,7 @@ mod tests {
 
         let (x_range, y_range) = ((0.0, 500.0), (500.0, 0.0));
         let mut scales = infer_scales(&batch, &cm, x_range, y_range);
-        DotRenderer.augment_scales(&mut scales, &batch, &cm, x_range, y_range);
+        DotRenderer::default().augment_scales(&mut scales, &batch, &cm, x_range, y_range);
 
         let (
             Some(Scale::Linear {
@@ -5854,7 +5891,7 @@ mod tests {
         let (x_range, y_range) = ((0.0, 500.0), (500.0, 0.0));
         let before = infer_scales(&batch, &cm, x_range, y_range);
         let mut after = infer_scales(&batch, &cm, x_range, y_range);
-        DotRenderer.augment_scales(&mut after, &batch, &cm, x_range, y_range);
+        DotRenderer::default().augment_scales(&mut after, &batch, &cm, x_range, y_range);
         assert_eq!(
             (
                 before.get(Channel::X).unwrap().domain_min(),
@@ -6208,7 +6245,7 @@ mod tests {
         };
 
         let mut scene = Scene::new();
-        let renderer = DotRenderer;
+        let renderer = DotRenderer::default();
         renderer.render(&mut scene, &batch, &cm, &scales, Some(&hs));
 
         let encoding = scene.encoding();
@@ -6586,7 +6623,7 @@ mod tests {
 
         let draw_of = |highlight: Option<&HighlightState>| {
             let mut scene = Scene::new();
-            DotRenderer.render(&mut scene, &batch, &cm, &scales, highlight);
+            DotRenderer::default().render(&mut scene, &batch, &cm, &scales, highlight);
             scene.encoding().draw_data.clone()
         };
         // The dimmed scene's paint data must differ from the undimmed one.
@@ -6642,7 +6679,7 @@ mod tests {
         let prev_positions = vec![(100.0, 100.0), (200.0, 200.0), (300.0, 300.0)];
 
         let mut scene = Scene::new();
-        let renderer = DotRenderer;
+        let renderer = DotRenderer::default();
         renderer.render_interpolated(&mut scene, &batch, &cm, &scales, &prev_positions, 0.0, None);
 
         let encoding = scene.encoding();
@@ -6676,7 +6713,7 @@ mod tests {
         let prev_positions = vec![(100.0, 100.0), (200.0, 200.0), (300.0, 300.0)];
 
         let mut scene = Scene::new();
-        let renderer = DotRenderer;
+        let renderer = DotRenderer::default();
         renderer.render_interpolated(&mut scene, &batch, &cm, &scales, &prev_positions, 1.0, None);
 
         let encoding = scene.encoding();
@@ -9499,7 +9536,7 @@ mod tests {
             .expect("categorical fill scale built");
 
         let mut scene = Scene::new();
-        DotRenderer.render(&mut scene, &batch, &cm, &scales, None);
+        DotRenderer::default().render(&mut scene, &batch, &cm, &scales, None);
         let drawn: std::collections::HashSet<u32> =
             scene.encoding().draw_data.iter().copied().collect();
         assert_eq!(
@@ -9578,7 +9615,7 @@ mod tests {
         cm.insert(Channel::Y, "y".to_string());
         let scales = infer_scales(&batch, &cm, (40.0, 600.0), (450.0, 20.0));
         let mut scene = Scene::new();
-        DotRenderer.render(&mut scene, &batch, &cm, &scales, None);
+        DotRenderer::default().render(&mut scene, &batch, &cm, &scales, None);
         let drawn: std::collections::HashSet<u32> =
             scene.encoding().draw_data.iter().copied().collect();
         assert_eq!(

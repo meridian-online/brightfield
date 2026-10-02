@@ -117,7 +117,7 @@ fn plot_scene(ink: ChartInk) -> Scene {
     channels.insert(Channel::X, "x".to_string());
     channels.insert(Channel::Y, "y".to_string());
     channels.insert(Channel::Fill, "region".to_string());
-    let dot = DotRenderer;
+    let dot = DotRenderer::default();
     let data = ChartData {
         batch: &batch,
         channel_map: &channels,
@@ -144,7 +144,7 @@ fn undyed_plot_scene(ink: ChartInk) -> Scene {
     let mut channels = ChannelMap::new();
     channels.insert(Channel::X, "x".to_string());
     channels.insert(Channel::Y, "y".to_string());
-    let dot = DotRenderer;
+    let dot = DotRenderer::default();
     let data = ChartData {
         batch: &batch,
         channel_map: &channels,

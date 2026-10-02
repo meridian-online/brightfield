@@ -27,10 +27,13 @@ use vello::Scene;
 use brightfield_render::channel::{Channel, ChannelMap};
 use brightfield_render::ink::ChartInk;
 use brightfield_render::layout::ChartLayout;
-use brightfield_render::mark::{DotRenderer, MarkRenderer};
+use brightfield_render::mark::{
+    configured_renderer, default_renderers_at, DotRenderer, MarkRenderer,
+};
 use brightfield_render::scale::{infer_scales, Scale, ScaleSet, SequentialScheme};
 use brightfield_render::scene::{build_multi_mark_scene, ChartData};
 use brightfield_render::ResolvedTitles;
+use brightfield_spec::vocab::MarkKind;
 
 const X_RANGE: (f64, f64) = (40.0, 600.0);
 const Y_RANGE: (f64, f64) = (440.0, 40.0);
@@ -105,14 +108,14 @@ fn literal_channels(colour: Color) -> ChannelMap {
 /// Infer and augment exactly as the scene builders do for one layer.
 fn scales_of(batch: &RecordBatch, cm: &ChannelMap) -> ScaleSet {
     let mut set = infer_scales(batch, cm, X_RANGE, Y_RANGE);
-    DotRenderer.augment_scales(&mut set, batch, cm, X_RANGE, Y_RANGE);
+    DotRenderer::default().augment_scales(&mut set, batch, cm, X_RANGE, Y_RANGE);
     set
 }
 
 /// What `DotRenderer` drew: the colour word of each filled circle, in row order.
 fn drawn(batch: &RecordBatch, cm: &ChannelMap, scales: &ScaleSet) -> Vec<u32> {
     let mut scene = Scene::new();
-    DotRenderer.render(&mut scene, batch, cm, scales, None);
+    DotRenderer::default().render(&mut scene, batch, cm, scales, None);
     scene.encoding().draw_data.to_vec()
 }
 
@@ -205,12 +208,13 @@ fn a_number_fill_paints_each_point_along_the_ramp_and_a_null_in_the_null_ink() {
 /// the plot's scales — where the layers' `augment_scales` calls run against one
 /// shared set.
 fn plot_scales(layers: &[(&RecordBatch, &ChannelMap)]) -> ScaleSet {
+    let dot = DotRenderer::default();
     let entries: Vec<ChartData<'_>> = layers
         .iter()
         .map(|(batch, cm)| ChartData {
             batch,
             channel_map: cm,
-            renderer: &DotRenderer,
+            renderer: &dot,
             layout: ChartLayout::new(640.0, 480.0),
             view_extent: None,
             highlight: None,
@@ -351,7 +355,7 @@ fn the_interpolated_draw_paints_the_same_ramp_as_the_still_one() {
     let scales = scales_of(&batch, &cm);
 
     let mut scene = Scene::new();
-    DotRenderer.render_interpolated(&mut scene, &batch, &cm, &scales, &[], 1.0, None);
+    DotRenderer::default().render_interpolated(&mut scene, &batch, &cm, &scales, &[], 1.0, None);
     let interpolated: Vec<u32> = scene.encoding().draw_data.to_vec();
 
     let still = drawn(&batch, &cm, &scales);
@@ -369,4 +373,107 @@ fn the_interpolated_draw_paints_the_same_ramp_as_the_still_one() {
         packed(ChartInk::LIGHT.null),
         "a null draws null ink"
     );
+}
+
+/// The four schemes a plot's `colorScheme` can name, by their wire names.
+const SCHEMES: [SequentialScheme; 4] = [
+    SequentialScheme::Viridis,
+    SequentialScheme::Blues,
+    SequentialScheme::Turbo,
+    SequentialScheme::Meridian,
+];
+
+/// The dot kinds the registry builds a `DotRenderer` for.
+const DOT_KINDS: [MarkKind; 4] = [
+    MarkKind::Dot,
+    MarkKind::DotX,
+    MarkKind::DotY,
+    MarkKind::Circle,
+];
+
+/// What `renderer` made of a number-column fill: the fill scale's stops and the
+/// colour word of each circle, for `values` on the fixture diagonal.
+fn painted_by(renderer: &dyn MarkRenderer, values: &[Option<f64>]) -> (Vec<[f32; 4]>, Vec<u32>) {
+    let batch = number_batch(values);
+    let cm = column_channels(Some("v"));
+    let mut set = infer_scales(&batch, &cm, X_RANGE, Y_RANGE);
+    renderer.augment_scales(&mut set, &batch, &cm, X_RANGE, Y_RANGE);
+    let stops = match set.get(Channel::Fill) {
+        Some(Scale::Sequential { stops, .. }) => stops.clone(),
+        other => panic!("a number fill must build a Sequential fill scale, got {other:?}"),
+    };
+    let mut scene = Scene::new();
+    renderer.render(&mut scene, &batch, &cm, &set, None);
+    (stops, scene.encoding().draw_data.to_vec())
+}
+
+/// **AC1, the paint, at each scheme.** A dot built at a scheme builds its fill
+/// ramp from that scheme's stops and paints the column's minimum and maximum in
+/// the scheme's first and last stop, so the legend, which reads that ramp, is
+/// the same stops. The default and viridis draw what a dot drew before.
+#[test]
+fn a_dot_built_at_a_scheme_paints_along_that_schemes_ramp() {
+    let values = [Some(0.0), Some(50.0), Some(100.0)];
+    let (default_stops, default_colours) = painted_by(&DotRenderer::default(), &values);
+    assert_eq!(
+        default_stops,
+        SequentialScheme::Viridis.stops(),
+        "a dot built with no scheme paints viridis, as it did"
+    );
+    for scheme in SCHEMES {
+        let (stops, colours) = painted_by(&DotRenderer { scheme }, &values);
+        let name = scheme.wire_name();
+        assert_eq!(
+            stops,
+            scheme.stops(),
+            "{name}: the ramp is the scheme's stops"
+        );
+        assert_eq!(
+            colours[0],
+            packed(Color::new(*scheme.stops().first().expect("stops"))),
+            "{name}: the column's minimum is the scheme's first stop"
+        );
+        assert_eq!(
+            colours[2],
+            packed(Color::new(*scheme.stops().last().expect("stops"))),
+            "{name}: the column's maximum is the scheme's last stop"
+        );
+        if scheme == SequentialScheme::Viridis {
+            assert_eq!(
+                colours, default_colours,
+                "viridis draws what the default drew"
+            );
+        } else {
+            assert_ne!(colours, default_colours, "{name} drew viridis");
+        }
+    }
+}
+
+/// **AC1, the seam.** `configured_renderer` builds a scheme-carrying dot for
+/// each of the four dot kinds, and `default_renderers_at` hands the scheme to
+/// the registry's dot entries — the registry the shell draws a plot through.
+#[test]
+fn the_seams_carry_a_scheme_to_each_dot_kind() {
+    let values = [Some(0.0), Some(100.0)];
+    let registry = default_renderers_at(SequentialScheme::Blues);
+    for kind in DOT_KINDS {
+        let configured = configured_renderer(kind, SequentialScheme::Blues, None, None, None)
+            .unwrap_or_else(|| panic!("{kind:?}: configured_renderer built no renderer"));
+        let (stops, _) = painted_by(configured.as_ref(), &values);
+        assert_eq!(
+            stops,
+            SequentialScheme::Blues.stops(),
+            "{kind:?}: configured_renderer's dot is not at the scheme"
+        );
+        let entry = registry
+            .iter()
+            .find(|(k, _)| *k == kind)
+            .unwrap_or_else(|| panic!("{kind:?}: no registry entry"));
+        let (stops, _) = painted_by(entry.1.as_ref(), &values);
+        assert_eq!(
+            stops,
+            SequentialScheme::Blues.stops(),
+            "{kind:?}: default_renderers_at's dot is not at the scheme"
+        );
+    }
 }
