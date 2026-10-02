@@ -2700,7 +2700,10 @@ mod tests {
             if next == cycle[0] {
                 break;
             }
-            assert!(cycle.len() < 64, "the colour-cycle never returned to its start");
+            assert!(
+                cycle.len() < 64,
+                "the colour-cycle never returned to its start"
+            );
             cycle.push(next);
         }
         let drawn: Vec<&str> = cycle.iter().map(|s| s.wire_name()).collect();
