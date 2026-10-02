@@ -37,6 +37,10 @@ use meridian_design::{semantic, Elevation};
 /// How wide the design puts the card, in points.
 const CARD_WIDTH: f32 = 320.0;
 
+/// A window narrow enough that the colour cell, the band's last, has less than a
+/// card's width to its right.
+const NARROW: f32 = 450.0;
+
 /// How near two edges must be to be the same edge: egui lays a card out on the
 /// pixel grid, so an edge can sit half a point off the cell it hangs from.
 const EDGE: f32 = 0.51;
@@ -103,12 +107,17 @@ impl Window {
 
     /// [`Self::open`] in a window `height` points high.
     fn open_at(mode: Mode, height: f32) -> Self {
+        Self::open_sized(mode, 1440.0, height)
+    }
+
+    /// [`Self::open`] in a window `width` across and `height` high.
+    fn open_sized(mode: Mode, width: f32, height: f32) -> Self {
         let path = housing();
         let boot = Boot::data_file(path.to_str().expect("utf-8 path")).expect("the sample opens");
         let mut win = Self {
             app: MeridianApp::headless_with_layout(boot, default_layout(), mode),
             ctx: egui::Context::default(),
-            screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, height)),
+            screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height)),
             texts: Vec::new(),
             shapes: Vec::new(),
         };
@@ -125,6 +134,13 @@ impl Window {
     /// control shuts it.
     fn rail_shut(mode: Mode) -> Self {
         let mut win = Self::open(mode);
+        win.shut_the_rail();
+        win
+    }
+
+    /// [`Self::rail_shut`] in a window `width` across and `height` high.
+    fn rail_shut_sized(mode: Mode, width: f32, height: f32) -> Self {
+        let mut win = Self::open_sized(mode, width, height);
         win.shut_the_rail();
         win
     }
@@ -346,8 +362,9 @@ fn with_the_rail_shut_e_x_hangs_the_list_as_a_card_320_wide_from_the_x_cell_over
 }
 
 /// **AC1, each cell.** The card hangs from the cell that is open: `l` carries
-/// the list to y and the card with it, and the colour cell, which is the
-/// band's last, keeps the whole card inside the window.
+/// the list to y and the card with it. In a window narrow enough that a card
+/// 320 wide hung from the colour cell, the band's last, would run off the right
+/// edge, the card is kept inside the window.
 #[test]
 fn the_card_hangs_from_whichever_cell_is_open_and_stays_inside_the_window() {
     let mut win = Window::rail_shut(Mode::Light);
@@ -366,13 +383,20 @@ fn the_card_hangs_from_whichever_cell_is_open_and_stays_inside_the_window() {
         "the card did not follow the list to the y cell"
     );
 
-    win.type_letter(egui::Key::C, "c");
-    assert_eq!(win.list_channel(), Some(ShelfChannel::Colour));
-    let card = win.card();
+    let mut narrow = Window::rail_shut_sized(Mode::Light, NARROW, 900.0);
+    narrow.open_cell(egui::Key::C, "c");
+    assert_eq!(narrow.list_channel(), Some(ShelfChannel::Colour));
+    let colour = narrow.cell(ShelfChannel::Colour);
+    assert!(
+        colour.left() + CARD_WIDTH > narrow.screen.right(),
+        "the colour cell at {colour:?} leaves room for the card in a window {NARROW} across, so \
+         this window does not test the card staying inside it"
+    );
+    let card = narrow.card();
     assert!(near(card.rect.width(), CARD_WIDTH));
     assert!(
-        win.screen.contains_rect(card.rect),
-        "the card hung from the colour cell runs off the window: {:?}",
+        narrow.screen.contains_rect(card.rect),
+        "the card hung from the colour cell runs off a window {NARROW} across: {:?}",
         card.rect
     );
 }
