@@ -1200,6 +1200,38 @@ pub fn colour_pivot(value: &SpecValue) -> Option<f64> {
     }
 }
 
+/// A `colorReverse` value read as the switch it sets: a literal `true` or
+/// `false`. A string, a number, a list and `null` are no switch.
+///
+/// The parser asks this same function which written values to name, and the
+/// resolver reads the key through it, so a value the parser accepts is a value
+/// the plot draws and a value it names is one the plot draws as absent.
+#[must_use]
+pub fn colour_reverse_switch(value: &SpecValue) -> Option<bool> {
+    match value {
+        SpecValue::Bool(on) => Some(*on),
+        _ => None,
+    }
+}
+
+/// Whether a plot's `colorReverse` runs its colour ramp or its category list the
+/// other way: the literal `true`, or a `$param` whose value param holds `true`
+/// *now*, as [`resolve_colour_pivot`] reads its own key. A plot with no
+/// `colorReverse`, a value that is no switch, and a param that holds something
+/// else or that nobody declared draws as a file without the key draws.
+#[must_use]
+pub fn resolve_colour_reverse(plot: &PlotNode, params: &IndexMap<String, ParamNode>) -> bool {
+    let switch = match plot.attributes.get("colorReverse") {
+        Some(SpecValue::Param(param)) => match params.get(&param.0) {
+            Some(ParamNode::Value(value)) => colour_reverse_switch(value),
+            _ => None,
+        },
+        Some(value) => colour_reverse_switch(value),
+        None => None,
+    };
+    switch.unwrap_or(false)
+}
+
 /// What one positional axis asks of where it starts and ends: `xZero` and
 /// `xNice`, or `yZero` and `yNice`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

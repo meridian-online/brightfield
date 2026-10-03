@@ -47,8 +47,8 @@ use brightfield_render::scale::{
     ColourScale, PinnedDomains, Scale, ScaleSet, SequentialScheme, ViewExtent,
 };
 use brightfield_render::scene::{
-    axis_ends_apply, axis_reverse_applies, build_multi_mark_scene_pinned, compose_dashboard,
-    unrestorable_under_sampling, ChartData, UnsampledDomains,
+    axis_ends_apply, axis_reverse_applies, build_multi_mark_scene_pinned, colour_reverse_applies,
+    compose_dashboard, unrestorable_under_sampling, ChartData, UnsampledDomains,
 };
 use brightfield_render::selection::{
     committed_selection_rect, render_committed_selection, CommittedSelection, Selected,
@@ -60,10 +60,10 @@ use brightfield_spec::analysis::{
 use brightfield_spec::ast::{Component, MarkData, ParamNode, PlotNode, SpaceNode, SpecValue};
 use brightfield_spec::layout::{
     collect_plot_nodes, placed_plots, plot_label, resolve_axis_ends, resolve_axis_reverse,
-    resolve_colour_pivot, resolve_colour_scale_diverging, resolve_colour_scheme_name,
-    resolve_fixed_domains, resolve_grid_lines, resolve_plot_insets, resolve_plot_margins,
-    resolve_plot_stack_offset, resolve_tick_counts, resolve_tick_formats, AxisEnds, AxisFormat,
-    AxisReverse, Rect, StackOffset, TickCounts, TickFormats,
+    resolve_colour_pivot, resolve_colour_reverse, resolve_colour_scale_diverging,
+    resolve_colour_scheme_name, resolve_fixed_domains, resolve_grid_lines, resolve_plot_insets,
+    resolve_plot_margins, resolve_plot_stack_offset, resolve_tick_counts, resolve_tick_formats,
+    AxisEnds, AxisFormat, AxisReverse, Rect, StackOffset, TickCounts, TickFormats,
 };
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, ParseWarning, Spec};
@@ -2422,6 +2422,14 @@ fn compose_from_results(
             .map(|(_, node)| resolve_axis_reverse(node))
             .unwrap_or_default();
 
+        // Whether this plot's spec asked its colour to run the other way —
+        // `colorReverse`, read from the spec this composition draws so a param
+        // that holds it is read as it stands now. The dots are the marks that
+        // turn it: a plot that draws none keeps the ramp it draws today.
+        let colour_reverse = plot_node
+            .is_some_and(|node| resolve_colour_reverse(node, &spec.params))
+            && colour_reverse_applies(&plot_marks);
+
         let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
         // `draw_inline_legend = false`: the legend is NOT baked into the data
         // scene. The shell draws it as a native margin panel outside the plot
@@ -2439,6 +2447,7 @@ fn compose_from_results(
             grid,
             axis_ends,
             axis_reverse,
+            colour_reverse,
             ink,
         );
         drop(refs);
