@@ -1381,6 +1381,22 @@ impl Item<ChartDoc> for ChartItem {
         });
         doc.legend_rect = legend_rect;
 
+        // **The legend under its plot**, when the file puts it there. The layout
+        // reserved the band out of the height this pane offered it, so the
+        // raster above is already the height that is left; what this adds is
+        // the room under the raster that the band stands in, and the legend
+        // drawn into the layout's own rect. `legend_rect` stays the band at the
+        // right, which this placement does not reserve.
+        if let Some(raster) = doc.raster_rect {
+            let overhang = legend::below_overhang(&doc.composed);
+            if overhang > 0.0 {
+                ui.allocate_exact_size(egui::vec2(raster.width(), overhang), egui::Sense::hover());
+            }
+            if textured {
+                legend::draw_below(ui, raster.min, &doc.composed, mode);
+            }
+        }
+
         // The readout, outside the horizontal so its own layer is placed
         // against the window rather than against the raster's row. Drawn
         // whether or not there is a device behind the document: it is egui
@@ -2239,6 +2255,7 @@ mod tests {
             navigated_empty: false,
             committed_rect: None,
             legend_declared: false,
+            legend_below: None,
         }
     }
 

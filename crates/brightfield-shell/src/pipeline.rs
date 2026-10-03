@@ -8,8 +8,11 @@
 //! composites them into a single dashboard scene the egui host presents.
 //!
 //! Scope for the loop-first phase: projection / highlight / explicit colorDomain
-//! and standalone-legend relocation are NOT ported (the golden `dashboard.yaml`
-//! and the simple examples use none of them). A plot's `colorScheme` is ported:
+//! are NOT ported (the golden `dashboard.yaml` and the simple examples do not
+//! exercise them). Standalone-legend relocation is ported for one placement: a colour
+//! legend under the plot it is for in a `vconcat` is drawn in the band the layout
+//! reserved for it ([`PlotHandle::legend_below`]). A standalone legend placed
+//! any other way is drawn at the plot's right. A plot's `colorScheme` is ported:
 //! it reaches the ramps of its dot, raster, heatmap, cell, hexbin and geo marks,
 //! and so their legend. Each mark
 //! draws EVERY materialised chunk — its result batches are assembled into one
@@ -199,6 +202,15 @@ pub struct PlotHandle {
     /// because the no-`for:` case counts the plots beside this one; `false`
     /// until then.
     pub legend_declared: bool,
+    /// **The band under this plot that its legend is drawn in**, on the same
+    /// plane as [`Self::rect`], when the file puts the legend there: a `vconcat`
+    /// holding this plot and a standalone colour legend `for` it
+    /// ([`brightfield_spec::layout::below_legends`]). `None` for a plot whose
+    /// legend is drawn at its right, and for one with no legend. The layout
+    /// reserved the band, so this plot was laid out in the height above it; the
+    /// pane draws the legend into the rect and reserves nothing beside the plot.
+    /// Set by the crate-private `legend::declare_legends`, `None` until then.
+    pub legend_below: Option<Rect>,
 }
 
 impl PlotHandle {
@@ -2529,9 +2541,10 @@ fn compose_from_results(
             // call it, so it stays `None` here.
             committed_rect: None,
             legend_declared: false,
+            legend_below: None,
         });
     }
-    crate::legend::declare_legends(spec, &mut plots);
+    crate::legend::declare_legends(spec, viewport, &mut plots);
 
     if placements.is_empty() {
         // Carry the reasons out with the failure. When EVERY mark is refused
