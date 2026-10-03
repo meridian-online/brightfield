@@ -26,7 +26,7 @@ use brightfield_shell::text_ink;
 use brightfield_shell::window::{Boot, MeridianApp, UNSAVED_MARK};
 use brightfield_spec::ast::Spec;
 use brightfield_workbench::channel::ShelfChannel;
-use brightfield_workbench::PaneKey;
+use brightfield_workbench::{ItemId, PaneKey};
 
 const HOUSING_FILE: &str = "california_housing_sample.csv";
 const INCOME: &str = "median_income";
@@ -48,6 +48,17 @@ fn key_down(key: egui::Key) -> egui::Event {
         pressed: true,
         repeat: false,
         modifiers: egui::Modifiers::NONE,
+    }
+}
+
+/// A key pressed with `modifiers` held, as a keyboard brings it.
+fn key_down_with(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+    egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
     }
 }
 
@@ -212,6 +223,20 @@ impl Window {
             self.app.focused_pane(),
             Some(PaneKey::new(OUTLINE)),
             "a click on {column}'s row did not give the Outline the keys"
+        );
+    }
+
+    /// Give the keys to `pane` and let the frames after it settle.
+    fn focus(&mut self, pane: ItemId) {
+        assert!(
+            self.app.focus_pane(PaneKey::new(pane)),
+            "{pane:?} did not take focus"
+        );
+        self.settle();
+        assert_eq!(
+            self.app.focused_pane(),
+            Some(PaneKey::new(pane)),
+            "the keys are not with {pane:?} after it took focus"
         );
     }
 
@@ -976,4 +1001,205 @@ fn every_row_the_protocol_palette_offers_as_enabled_does_something_when_chosen()
             ),
         }
     }
+}
+
+/// **A `z` the Outline was holding goes when the Outline loses the keys.** `z`
+/// is typed in the Outline, the keys go to the chart's pane and come back, and
+/// a `c` typed then is a letter on its own: it does not finish a chord begun
+/// before the keys left, so the hero is not painted and nothing is kept.
+#[test]
+fn a_z_typed_in_the_outline_is_gone_when_the_keys_come_back() {
+    let mut win = Window::fixture();
+    win.select_in_outline(VALUE);
+    let kept = win.spec();
+
+    win.type_letter(egui::Key::Z, "z");
+    win.focus(CHART);
+    win.focus(OUTLINE);
+    win.type_letter(egui::Key::C, "c");
+
+    assert_unpainted(&win, "after a z, the keys leaving and returning, and a c");
+    assert_eq!(
+        win.spec(),
+        kept,
+        "the c finished a chord the z began before the keys left"
+    );
+    assert!(
+        !win.marked_unsaved(),
+        "the c finished a chord the z began before the keys left, and marked the window unsaved"
+    );
+}
+
+/// **The chord's second key takes no modifier.** After `z`, shift-`c` (the key
+/// with shift down and the capital the keystroke types), and `c` with alt or
+/// ctrl down, put nothing: the chord goes, and the hero is not painted and the
+/// window is not marked unsaved.
+#[test]
+fn a_modified_c_after_a_z_puts_nothing() {
+    let modified = [
+        ("shift", egui::Modifiers::SHIFT, Some("C")),
+        ("alt", egui::Modifiers::ALT, None),
+        ("ctrl", egui::Modifiers::CTRL, None),
+    ];
+    // Every modifier is tried before the test fails, so a second key that takes
+    // one modifier and not another reports which.
+    let mut put = Vec::new();
+    for (held, modifiers, text) in modified {
+        let mut win = Window::fixture();
+        win.select_in_outline(VALUE);
+        let kept = win.spec();
+
+        win.type_letter(egui::Key::Z, "z");
+        let mut events = vec![key_down_with(egui::Key::C, modifiers)];
+        events.extend(text.map(|t| egui::Event::Text(t.to_owned())));
+        win.run(events);
+        win.run(Vec::new());
+
+        if win.hero_column(Channel::Fill).is_some() || win.spec() != kept || win.marked_unsaved() {
+            put.push(held);
+        }
+    }
+    assert!(
+        put.is_empty(),
+        "z then c with {put:?} held kept a column: the chord's second key took a modifier"
+    );
+}
+
+/// **A column selected on the dashboard is the one under the Outline's
+/// cursor.** With the cursor on a spine row, selecting `median_income` on the
+/// dashboard (the chart document's own selection, which a press on its tile
+/// ends in) puts the cursor on `median_income`'s row, and a `z c` from the
+/// Outline then keeps that column on colour: the chord acts on the column the
+/// dashboard chose, not on the one the cursor held before. A press on a row in
+/// the Outline selects the same column on the dashboard, the mirror's other way.
+#[test]
+fn a_column_selected_on_the_dashboard_moves_the_outlines_cursor_to_its_row() {
+    let mut win = Window::fixture();
+    win.select_in_outline(VALUE);
+    assert_eq!(
+        win.app
+            .chart_doc()
+            .selected_column()
+            .map(|c| c.column.as_str()),
+        Some(VALUE),
+        "a click on {VALUE}'s row left the dashboard's selection elsewhere"
+    );
+    let table = win
+        .app
+        .protocol_model()
+        .table()
+        .cloned()
+        .expect("the sample's Protocol holds a table");
+    let label = win
+        .app
+        .protocol_model()
+        .outline()
+        .into_iter()
+        .find(|r| r.id == table)
+        .expect("the outline lists the table")
+        .label;
+    let row = win.spine_row(&label);
+    win.click(row.name_rect.center());
+    assert_eq!(
+        win.app.protocol_model().outline_column(),
+        None,
+        "the cursor is still on a column's row after a click on the table's spine row"
+    );
+
+    win.app.chart_doc_mut().select_column(INCOME);
+    win.settle();
+
+    assert_eq!(
+        win.app
+            .chart_doc()
+            .selected_column()
+            .map(|c| c.column.as_str()),
+        Some(INCOME),
+        "the dashboard did not select {INCOME}, so this proves nothing about the mirror"
+    );
+    assert_eq!(
+        win.app.protocol_model().outline_column(),
+        Some(INCOME),
+        "a column selected on the dashboard left the Outline's cursor off its row"
+    );
+
+    win.focus(OUTLINE);
+    win.chord(egui::Key::C, "c");
+    assert_eq!(
+        win.hero_column(Channel::Fill).as_deref(),
+        Some(INCOME),
+        "z c put {:?} on colour, not the column the dashboard selected",
+        win.hero_column(Channel::Fill)
+    );
+}
+
+/// **Over the graph a column's row draws no chips.** With the dashboard on the
+/// canvas the pointer on a column's row brings its three chips; with the graph
+/// on the canvas the same pointer on the same row brings none and the row keeps
+/// its type, because a column put on a chart nobody can see is dropped and a
+/// chip whose click puts nothing is a control that does nothing.
+#[test]
+fn over_the_graph_a_columns_row_draws_no_chips() {
+    let mut win = Window::fixture();
+    let row = win.column_row(VALUE);
+    win.point(row.name_rect.center());
+    assert_eq!(
+        win.chips(VALUE).len(),
+        PUT_VERBS.len(),
+        "over the dashboard the pointer on the row drew {:?}, so this proves nothing about the graph",
+        win.chips(VALUE)
+    );
+
+    win.graph_to_canvas();
+    let row = win.column_row(VALUE);
+    win.point(row.name_rect.center());
+
+    assert!(
+        win.app.outline_chips().is_empty(),
+        "over the graph the Outline drew chips whose click puts nothing: {:?}",
+        win.app.outline_chips()
+    );
+    let row = win.column_row(VALUE);
+    assert!(
+        !row.kind.is_empty(),
+        "over the graph the row under the pointer drew no type in the chips' place"
+    );
+}
+
+/// **`u` takes a put back from the Outline.** `z c` on `median_house_value`
+/// paints the hero's colour; `u` with the Outline still holding the keys takes
+/// it back, the hero is drawn as it was and the band's colour cell no longer
+/// names the column.
+#[test]
+fn u_after_z_c_from_the_outline_takes_the_put_back() {
+    let mut win = Window::fixture();
+    win.select_in_outline(VALUE);
+    assert_unpainted(&win, "before z c");
+    let before = win.spec();
+
+    win.chord(egui::Key::C, "c");
+    assert_eq!(
+        win.hero_column(Channel::Fill).as_deref(),
+        Some(VALUE),
+        "z c did not paint the hero, so there is no put for u to take back"
+    );
+    assert_eq!(
+        win.app.focused_pane(),
+        Some(PaneKey::new(OUTLINE)),
+        "the keys left the Outline with the put"
+    );
+
+    win.type_letter(egui::Key::U, "u");
+
+    assert_unpainted(&win, "after u");
+    assert_eq!(
+        win.spec(),
+        before,
+        "u left a spec other than the one before z c"
+    );
+    assert!(
+        !win.cell_names(ShelfChannel::Colour, VALUE),
+        "the band's colour cell still names {VALUE} after u: {:?}",
+        win.cell_text(ShelfChannel::Colour)
+    );
 }
