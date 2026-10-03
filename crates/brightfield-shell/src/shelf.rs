@@ -52,7 +52,7 @@ use brightfield_spec::ast::{Mark, PlotNode, SpecValue, ValueOrParamRef};
 use brightfield_spec::vocab::is_colour_literal;
 use brightfield_workbench::channel::{self, ShelfChannel, BAND_HEIGHT};
 use brightfield_workbench::chrome;
-use meridian_design::{control, semantic, spacing, typography};
+use meridian_design::{control, radius, semantic, spacing, typography, Elevation};
 use meridian_egui::{icons, key_chip};
 
 use brightfield_engine::ColumnMoments;
@@ -1408,4 +1408,108 @@ fn hint_width(ui: &mut egui::Ui, key: &str, word: &str, ink: egui::Color32) -> f
     unseen.spacing_mut().item_spacing.x = spacing::SPACE_3;
     hint(&mut unseen, key, word, ink);
     unseen.min_rect().width()
+}
+
+// ---------------------------------------------------------------------------
+// The list as a card, for a window whose navigator rail is shut
+// ---------------------------------------------------------------------------
+
+/// How wide the card is, rule to rule.
+pub const CARD_WIDTH: f32 = 320.0;
+
+/// The card's rule, one pixel in the default border ink.
+const CARD_RULE: f32 = 1.0;
+
+/// What the card leaves between its foot and the window's, when the list is
+/// longer than the room under the cell.
+const CARD_MARGIN: f32 = spacing::SPACE_4;
+
+/// The frame of a floating card: the workbench's overlay fill, a one-pixel rule
+/// in the default border ink, the corner the control radius names, and the
+/// shadow [`Elevation::Overlay`] declares, which has no blur.
+///
+/// Read off the design system rather than typed here, so a change to what an
+/// overlay looks like moves the card with the rest of the chrome. It carries no
+/// inner margin: the card's contents are the list's, which pads its own rows.
+pub fn floating_card_frame(mode: Mode) -> egui::Frame {
+    let dark = mode.is_dark();
+    let mut frame = chrome::overlay_frame(mode)
+        .inner_margin(egui::Margin::ZERO)
+        .stroke(egui::Stroke::new(
+            CARD_RULE,
+            chrome::colour(semantic(dark).borders.default_),
+        ))
+        .corner_radius(radius::CONTROL);
+    if let Some(shadow) = Elevation::Overlay.shadow(dark) {
+        frame = frame.shadow(egui::epaint::Shadow {
+            offset: [shadow.x as i8, shadow.y as i8],
+            blur: shadow.blur as u8,
+            spread: 0,
+            color: chrome::colour(shadow.colour),
+        });
+    }
+    frame
+}
+
+/// What the card drew in one frame.
+#[derive(Clone, Debug)]
+pub struct CardDrawn {
+    /// The whole card, its rule included and its shadow not.
+    pub rect: egui::Rect,
+    /// The cell the card hangs from, as the band drew it.
+    pub cell: egui::Rect,
+    /// The list inside it, as the Outline would have drawn it. Its
+    /// [`ListDrawn::reports`] are empty: the card hands them on, as the Outline
+    /// does, to be acted on with the keys' on the next frame.
+    pub list: ListDrawn,
+}
+
+impl ColumnList {
+    /// **Draw the list as a card hung from `cell`**, the band's cell for the
+    /// list's channel: the list the Outline draws, with its heading, query line,
+    /// rows and keys, in [`CARD_WIDTH`], over whatever is under it. It takes no
+    /// layout space, and its height is the list's up to the room the window has
+    /// under the cell, where the rows scroll.
+    ///
+    /// This is for a window whose navigator rail is shut, where the Outline that
+    /// would draw the list is not drawn. The keys are the list's own either way
+    /// ([`Self::feed_events`]); what the card adds is the place they act on.
+    ///
+    /// **A press and release outside the card back out of the list**, as `Esc`
+    /// does with the query empty: [`ListReport::BackedOut`] is among the
+    /// reports. That is a press anywhere but on the card, the cell it hangs
+    /// from included; a click on another cell is the band's, which opens that
+    /// cell's list in its place.
+    pub fn show_card(&mut self, ctx: &egui::Context, cell: egui::Rect, mode: Mode) -> CardDrawn {
+        let frame = floating_card_frame(mode);
+        let room = (ctx.content_rect().bottom() - cell.bottom() - CARD_MARGIN).max(0.0);
+        let shown = egui::Area::new(egui::Id::new("shelf-column-card"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(cell.left_bottom())
+            .constrain(true)
+            .fade_in(false)
+            .show(ctx, |ui| {
+                frame.show(ui, |ui| {
+                    ui.set_width(CARD_WIDTH - 2.0 * CARD_RULE);
+                    egui::ScrollArea::vertical()
+                        .max_height(room)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| self.show(ui, mode))
+                        .inner
+                })
+            });
+        let card = shown.inner;
+        let mut list = card.inner;
+        let rect = card.response.rect;
+        let outside = ctx.input(|i| {
+            i.pointer.primary_clicked()
+                && i.pointer
+                    .interact_pos()
+                    .is_some_and(|at| !rect.contains(at))
+        });
+        if outside {
+            list.reports.push(ListReport::BackedOut);
+        }
+        CardDrawn { rect, cell, list }
+    }
 }

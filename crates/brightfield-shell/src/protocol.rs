@@ -76,7 +76,9 @@ use crate::canvas::{CanvasSlot, EguiCanvasHost};
 use crate::column_header::RugDrawn;
 use crate::design::Mode;
 use crate::one_step::{ColumnFacts, OneStepProtocol};
-use crate::shelf::{ColumnList, ColumnListRequest, ListColumn, ListReport, ShelfChannels};
+use crate::shelf::{
+    CardDrawn, ColumnList, ColumnListRequest, ListColumn, ListReport, ShelfChannels,
+};
 use crate::starts;
 use crate::text_ink;
 
@@ -1985,6 +1987,30 @@ impl ProtocolModel {
     #[must_use]
     pub fn column_list(&self) -> Option<&ColumnList> {
         self.column_list.as_ref()
+    }
+
+    /// Draw the open list as a card hung from the band's cell for its channel,
+    /// where the Outline that would draw it is not drawn. `cells` are the
+    /// band's, as it drew them. Nothing when no list is open.
+    ///
+    /// What the card decides — the pointer over a row, a click on one, a click
+    /// outside it — is held for the next [`Self::feed_column_list`] exactly as
+    /// what the Outline's drawing of the list decides is, so the two places the
+    /// list can be drawn end on the same reports.
+    pub fn show_column_list_card(
+        &mut self,
+        ctx: &egui::Context,
+        cells: &[egui::Rect; 4],
+        mode: Mode,
+    ) -> Option<CardDrawn> {
+        let list = self.column_list.as_mut()?;
+        let cell = cells[list.channel().index()];
+        let mut card = list.show_card(ctx, cell, mode);
+        if !card.list.reports.is_empty() {
+            ctx.request_repaint();
+        }
+        self.list_reports.append(&mut card.list.reports);
+        Some(card)
     }
 
     /// Hand the open list `events`, and take what it reports, with what a click
