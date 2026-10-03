@@ -3,6 +3,7 @@
 
 use arrow::record_batch::RecordBatch;
 use brightfield_spec::layout::{AxisEnds, AxisReverse, GridLines, TickCounts, TickFormats};
+use brightfield_spec::vocab::MarkKind;
 use kurbo::{Affine, BezPath, Circle, Rect, RoundedRect, Stroke};
 use peniko::Fill;
 use vello::Scene;
@@ -537,6 +538,7 @@ pub fn build_multi_mark_scene_with_domains(
         GridLines::default(),
         AxisEnds::default(),
         AxisReverse::default(),
+        false,
         ink,
     )
 }
@@ -572,6 +574,11 @@ pub fn build_multi_mark_scene_with_domains(
 /// whichever way the axis runs, and a plot composed again starts from a fresh
 /// inference and reverses it again.
 ///
+/// `colour_reverse` lands after [`apply_unsampled_domains`], and that order is
+/// the point: a sampled plot has its categories put back in their own order
+/// there, so a reversal made any earlier would be undone. The caller passes the
+/// plot's `colorReverse` already judged by [`colour_reverse_applies`].
+///
 /// An empty `pins` reproduces [`build_multi_mark_scene_with_domains`] scale for
 /// scale — [`apply_pinned_domains`] writes nothing without a pin to write.
 ///
@@ -579,11 +586,12 @@ pub fn build_multi_mark_scene_with_domains(
 /// parameter existed — see [`brightfield_spec::layout::DEFAULT_TICK_COUNT`] —
 /// a default `tick_formats` draws the text they drew, and a default `grid`
 /// draws the gridlines on both axes, as they drew.
-// Eleven, because the static composition takes eleven independent inputs: the
+// Twelve, because the static composition takes twelve independent inputs: the
 // entries, whether the legend is drawn inline, the resolved titles, the two
 // ways a domain is held still (unsampled and pinned), the tick count and tick
 // format the axes asked for, whether each axis draws gridlines, where each axis
-// starts and ends, which way each axis runs, and the ink.
+// starts and ends, which way each axis runs, whether the colour runs the other
+// way, and the ink.
 // Each is resolved elsewhere and read here once, so a struct would be a name
 // for the argument list rather than for a thing.
 #[allow(clippy::too_many_arguments)]
@@ -598,6 +606,7 @@ pub fn build_multi_mark_scene_pinned(
     grid: GridLines,
     axis_ends: AxisEnds,
     axis_reverse: AxisReverse,
+    colour_reverse: bool,
     ink: ChartInk,
 ) -> (Scene, ScaleSet) {
     if entries.is_empty() {
@@ -611,6 +620,7 @@ pub fn build_multi_mark_scene_pinned(
     apply_pinned_domains(&mut scales, &pins_yielding_to_navigation(pins, entries[0]));
     apply_axis_ends(&mut scales, axis_ends, tick_counts, entries[0]);
     apply_axis_reverse(&mut scales, axis_reverse);
+    apply_colour_reverse(&mut scales, colour_reverse);
     let scene = draw_multi_mark_scene(
         entries,
         draw_inline_legend,
@@ -632,6 +642,53 @@ pub fn build_multi_mark_scene_pinned(
 #[must_use]
 pub fn axis_reverse_applies(scales: &ScaleSet) -> bool {
     scales.projection().is_none()
+}
+
+/// Whether a plot's `colorReverse` runs its colour the other way: when a dot is
+/// among the marks the plot drew.
+///
+/// A dot builds its fill ramp and its categories from the scheme the plot names,
+/// and the key reverses what it built. A raster, a heatmap, a cell and a hexbin
+/// keep the ramp they draw today under this key, so a plot with none of the dot
+/// kinds draws as a file without the key draws. A plot that mixes a dot with one
+/// of those shares one colour scale between them, and the dot's request turns
+/// the shared scale, since a legend cannot show the ramp both ways.
+///
+/// It is the judge `apply_colour_reverse` draws through (a private function) and
+/// the composition asks, so what the plot reverses is what was asked of it.
+#[must_use]
+pub fn colour_reverse_applies(marks: &[MarkKind]) -> bool {
+    marks.iter().any(|kind| {
+        matches!(
+            kind,
+            MarkKind::Dot | MarkKind::DotX | MarkKind::DotY | MarkKind::Circle
+        )
+    })
+}
+
+/// Run each colour scale the other way, as the plot's `colorReverse: true`
+/// asked: a ramp's stops from the far end, a category list from the last.
+///
+/// [`Scale::colour_reversed`] does the turn and the domain is left alone, so a
+/// legend's ramp is flipped and its two ends read the values they read before.
+/// It runs after [`apply_unsampled_domains`], which puts a sampled plot's
+/// categories back in their own order, so a reversal made before it would be
+/// undone on a sampled plot and held on a complete one.
+///
+/// Fill and stroke are the channels that map colour (`infer_scales_in` builds a
+/// colour scale for each), and both are turned, so a mark that strokes by a
+/// column wears the order a mark that fills by it wears.
+fn apply_colour_reverse(scales: &mut ScaleSet, reverse: bool) {
+    if !reverse {
+        return;
+    }
+    for &channel in Channel::all() {
+        let Some(scale) = scales.get(channel) else {
+            continue;
+        };
+        let turned = scale.colour_reversed();
+        scales.insert(channel, turned);
+    }
 }
 
 /// Whether a plot's `xZero` / `xNice` / `yZero` / `yNice` can move the ends of
@@ -1200,15 +1257,16 @@ fn draw_multi_mark_scene(
 /// Draws at [`brightfield_spec::layout::DEFAULT_TICK_COUNT`], in the axis's own
 /// tick text, with gridlines on both axes — like [`PinnedDomains`], a plot's
 /// `xTicks`/`yTicks`, `xTickFormat`/`yTickFormat`, `grid`/`xGrid`/`yGrid` and
-/// `xZero`/`xNice`/`yZero`/`yNice` and `xReverse`/`yReverse` requests reach the
-/// static composition [`build_multi_mark_scene_pinned`] draws
+/// `xZero`/`xNice`/`yZero`/`yNice` and `xReverse`/`yReverse` and `colorReverse`
+/// requests reach the static composition [`build_multi_mark_scene_pinned`] draws
 /// (`crates/brightfield-shell/src/pipeline.rs`), not this live rebuild path;
 /// the caller does not carry the request to hand in. The launch set it folds
 /// against is the live coordinator's own, inferred by
 /// [`build_multi_mark_scene`] without the request
 /// (`crates/brightfield-ui/src/crossfilter.rs`), so after a gesture an axis that
-/// asked for zero or round ends is drawn at the data's own, and one that asked
-/// to run from high to low runs the default way.
+/// asked for zero or round ends is drawn at the data's own, one that asked
+/// to run from high to low runs the default way, and a colour that asked to run
+/// the other way runs as it does without the key.
 pub fn build_multi_mark_scene_anchored(
     entries: &[&ChartData<'_>],
     draw_inline_legend: bool,
@@ -2469,6 +2527,7 @@ mod tests {
                 GridLines::default(),
                 AxisEnds::default(),
                 AxisReverse::default(),
+                false,
                 ChartInk::LIGHT,
             );
             for channel in [Channel::X, Channel::Y] {
@@ -2584,6 +2643,7 @@ mod tests {
                 grid,
                 AxisEnds::default(),
                 AxisReverse::default(),
+                false,
                 ChartInk::LIGHT,
             )
         };

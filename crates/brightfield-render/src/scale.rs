@@ -574,6 +574,66 @@ impl Scale {
             }
         }
     }
+
+    /// This colour scale run the other way, as a plot's `colorReverse: true`
+    /// asks. A scale that maps no colour is returned as it is.
+    ///
+    /// A sequential or a diverging scale keeps its domain and its pivot and has
+    /// its stops reversed, so the value that wore the low pole wears the high
+    /// one and the legend's two ends read the values they read before. A
+    /// diverging ramp's stops run pole to pole through the midpoint, evenly
+    /// spaced, so reversing them puts the two arms on each other's sides and
+    /// leaves the midpoint colour at the pivot.
+    ///
+    /// A colour scale keeps its palette and has its categories reversed: the
+    /// category in the first slot takes the slot the last one had, and a legend
+    /// that lists categories in scale order lists them from the other end.
+    #[must_use]
+    pub fn colour_reversed(&self) -> Self {
+        match self.clone() {
+            Self::Colour {
+                mut categories,
+                palette,
+            } => {
+                categories.reverse();
+                Self::Colour {
+                    categories,
+                    palette,
+                }
+            }
+            Self::Sequential {
+                domain_min,
+                domain_max,
+                mut stops,
+            } => {
+                stops.reverse();
+                Self::Sequential {
+                    domain_min,
+                    domain_max,
+                    stops,
+                }
+            }
+            Self::Diverging {
+                domain_min,
+                domain_max,
+                pivot,
+                mut stops,
+            } => {
+                stops.reverse();
+                Self::Diverging {
+                    domain_min,
+                    domain_max,
+                    pivot,
+                    stops,
+                }
+            }
+            other @ (Self::Linear { .. }
+            | Self::Log { .. }
+            | Self::Symlog { .. }
+            | Self::Band { .. }
+            | Self::Time { .. }) => other,
+        }
+    }
 }
 
 /// Optional override of data-inferred scale domains per axis.
