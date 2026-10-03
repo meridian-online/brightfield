@@ -19,7 +19,7 @@ use crate::ast::{
 use crate::date_format::DateFormat;
 use crate::error::{FrameFault, FrameSide};
 use crate::number_format::NumberFormat;
-use crate::vocab::InputKind;
+use crate::vocab::{InputKind, LegendChannel};
 use indexmap::IndexMap;
 
 // ---------------------------------------------------------------------------
@@ -83,6 +83,11 @@ pub const RADIO_CHROME_PAD: f64 = 10.0;
 pub const DEFAULT_LEGEND_WIDTH: f64 = 120.0;
 /// Default legend height (pixels).
 pub const DEFAULT_LEGEND_HEIGHT: f64 = 24.0;
+/// The height of the band a colour legend takes under the plot it is for, in a
+/// `vconcat` (pixels): the name and the ramp in one row and the ramp's values in
+/// the row under it, or the swatches in a row. The band is as wide as the plot
+/// above it, and the plot takes the height that is left.
+pub const BELOW_LEGEND_HEIGHT: f64 = 44.0;
 /// Default base font size for `em` unit conversion (pixels).
 pub const DEFAULT_BASE_FONT_SIZE: f64 = 16.0;
 
@@ -279,7 +284,13 @@ fn intrinsic_size(component: &Component) -> (f64, f64) {
         Component::VConcat(concat) => concat
             .items
             .iter()
-            .map(intrinsic_size)
+            .enumerate()
+            .map(|(i, item)| match plot_above_legend(concat, i) {
+                // A legend under its plot is as wide as that plot, so it adds
+                // no width of its own to the column.
+                Some(_) => (0.0, BELOW_LEGEND_HEIGHT),
+                None => intrinsic_size(item),
+            })
             .fold((0.0_f64, 0.0_f64), |(w, h), (cw, ch)| (w.max(cw), h + ch)),
         Component::HSpace(space) => (
             resolve_space_value(&space.value, DEFAULT_BASE_FONT_SIZE),
@@ -1805,28 +1816,69 @@ fn layout_hconcat(concat: &ConcatNode, x: f64, y: f64, avail: Avail) -> LayoutNo
     }
 }
 
+/// The plot a colour legend sits under in a `vconcat`: the index of the nearest
+/// earlier sibling plot whose `name:` the legend at `index` names by `for:`, or
+/// `None` when the item at `index` is not such a legend.
+///
+/// The one place the arrangement is decided. A legend that names a plot it is
+/// not beside in this `vconcat`, one that names none, one whose `for:` is a
+/// `$param`, one that is not a colour legend, and one that comes before the plot
+/// it names are all not under a plot, and keep the standalone legend's own rect.
+fn plot_above_legend(concat: &ConcatNode, index: usize) -> Option<usize> {
+    let Component::Legend(legend) = concat.items.get(index)? else {
+        return None;
+    };
+    if legend.channel != LegendChannel::Color {
+        return None;
+    }
+    let Some(ValueOrParamRef::Value(SpecValue::String(named))) = legend.options.get("for") else {
+        return None;
+    };
+    concat.items[..index].iter().rposition(|item| {
+        matches!(
+            item,
+            Component::Plot(plot)
+                if matches!(plot.attributes.get("name"), Some(SpecValue::String(n)) if n == named)
+        )
+    })
+}
+
 fn layout_vconcat(concat: &ConcatNode, x: f64, y: f64, avail: Avail) -> LayoutNode {
+    let under: Vec<Option<usize>> = (0..concat.items.len())
+        .map(|i| plot_above_legend(concat, i))
+        .collect();
     let measured: Vec<(f64, bool)> = concat
         .items
         .iter()
-        .map(|item| (intrinsic_size(item).1, component_flexes(item)))
+        .zip(&under)
+        .map(|(item, under)| match under {
+            Some(_) => (BELOW_LEGEND_HEIGHT, false),
+            None => (intrinsic_size(item).1, component_flexes(item)),
+        })
         .collect();
     let shares = distribute(avail.height, &measured);
 
-    let mut children = Vec::with_capacity(concat.items.len());
+    let mut children: Vec<LayoutNode> = Vec::with_capacity(concat.items.len());
     let mut cursor_y = y;
     let mut max_width: f64 = 0.0;
 
-    for (item, share) in concat.items.iter().zip(shares) {
-        let child = layout_component(
-            item,
-            x,
-            cursor_y,
-            Avail {
-                width: component_flexes(item).then_some(avail.width).flatten(),
-                height: share,
+    for ((item, share), under) in concat.items.iter().zip(shares).zip(under) {
+        let child = match under {
+            // The band under a plot: as wide as the plot above it, and
+            // [`BELOW_LEGEND_HEIGHT`] high whatever the column is offered.
+            Some(plot) => LayoutNode::Legend {
+                rect: Rect::new(x, cursor_y, children[plot].rect().width, BELOW_LEGEND_HEIGHT),
             },
-        );
+            None => layout_component(
+                item,
+                x,
+                cursor_y,
+                Avail {
+                    width: component_flexes(item).then_some(avail.width).flatten(),
+                    height: share,
+                },
+            ),
+        };
         let r = child.rect();
         cursor_y += r.height;
         max_width = max_width.max(r.width);
@@ -2163,6 +2215,71 @@ pub fn placed_legend_nodes(spec: &Spec, viewport: Rect) -> Vec<(Rect, &crate::as
                 .map(|(_, node)| (p.rect, *node))
         })
         .collect()
+}
+
+/// A standalone colour legend placed in the band under the plot it is for: the
+/// plot, the legend and the band's rect.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BelowLegend {
+    /// Component path of the plot the legend is for — the join key
+    /// [`PlacedPlot::path`] carries.
+    pub plot_path: String,
+    /// Component path of the legend node.
+    pub legend_path: String,
+    /// The band, on the same plane as [`PlacedPlot::rect`]: [`BELOW_LEGEND_HEIGHT`]
+    /// high, as wide as the plot, directly under it.
+    pub rect: Rect,
+}
+
+/// The standalone colour legends of a spec that sit under the plot they are
+/// for: a legend in a `vconcat` after a sibling plot whose `name:` its `for:`
+/// names. A standalone legend placed any other way — in an `hconcat`, for a plot
+/// that is not its sibling, with no `for:` — is not here, and the shell draws the
+/// plot's legend at its right.
+///
+/// The rect is [`placed_legends`]'s, so it is the one the layout reserved: the
+/// plot above it was laid out in the height that was left.
+#[must_use]
+pub fn below_legends(spec: &Spec, viewport: Rect) -> Vec<BelowLegend> {
+    let placed = placed_legends(spec, viewport);
+    let mut out = Vec::new();
+    if let Some(root) = &spec.root {
+        collect_below_legends(root, "root", &placed, &mut out);
+    }
+    out
+}
+
+fn collect_below_legends(
+    component: &Component,
+    path: &str,
+    placed: &[PlacedLegend],
+    out: &mut Vec<BelowLegend>,
+) {
+    match component {
+        Component::HConcat(concat) => {
+            for (i, item) in concat.items.iter().enumerate() {
+                collect_below_legends(item, &format!("{path}/hconcat[{i}]"), placed, out);
+            }
+        }
+        Component::VConcat(concat) => {
+            for (i, item) in concat.items.iter().enumerate() {
+                let item_path = format!("{path}/vconcat[{i}]");
+                match plot_above_legend(concat, i) {
+                    Some(plot) => {
+                        if let Some(legend) = placed.iter().find(|p| p.path == item_path) {
+                            out.push(BelowLegend {
+                                plot_path: format!("{path}/vconcat[{plot}]"),
+                                legend_path: item_path,
+                                rect: legend.rect,
+                            });
+                        }
+                    }
+                    None => collect_below_legends(item, &item_path, placed, out),
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 // ---------------------------------------------------------------------------

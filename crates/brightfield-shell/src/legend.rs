@@ -22,11 +22,24 @@
 //! The band is outside the presented raster by construction, which is what
 //! makes "no legend overlaps data" a property a headless test can hold over
 //! every example spec rather than a hope about pixel placement.
+//!
+//! # The second placement: under the plot
+//!
+//! A file can put the legend under its plot instead: a `vconcat` of the named
+//! plot and a standalone `legend: color` whose `for:` names it. The layout owns
+//! that arrangement ([`brightfield_spec::layout::below_legends`]): it gives the
+//! legend a band [`brightfield_spec::layout::BELOW_LEGEND_HEIGHT`] high, as wide
+//! as the plot, and lays the plot out in the height above it, so the band is
+//! carved from the pane's height and the window the shell asks for is the one it
+//! asks for with no legend. [`below_blocks`] lists those legends, [`blocks`] and
+//! [`band_width`] leave them out — a plot's legend is drawn once, in one place —
+//! and [`draw_below`] draws each into its rect, the ramp running left to right
+//! with its values under it, or the swatches in a row.
 
 use brightfield_render::channel::Channel;
 use brightfield_render::scale::{ramp_at, Scale, ScaleSet};
 use brightfield_spec::edit::colour_legend_covers;
-use brightfield_spec::layout::collect_legend_nodes;
+use brightfield_spec::layout::{below_legends, collect_legend_nodes, Rect};
 use brightfield_spec::vocab::LegendChannel;
 use brightfield_spec::Spec;
 use meridian_design::{control, semantic, spacing, typography};
@@ -175,9 +188,14 @@ pub fn block_width() -> f32 {
 /// scales' own ([`LegendSpec::from_scales`]), so a legend item over a plot with
 /// no colour scale marks nothing and reserves no band.
 ///
+/// Also records, for each plot, the band its legend is drawn in when the file
+/// puts the legend under it ([`PlotHandle::legend_below`]): the layout's own
+/// answer for `viewport`, the box the composition was laid out in.
+///
 /// Called once by the composition, after the plots are placed: the no-`for:`
 /// case counts the plots beside the one it marks.
-pub(crate) fn declare_legends(spec: &Spec, plots: &mut [PlotHandle]) {
+pub(crate) fn declare_legends(spec: &Spec, viewport: Rect, plots: &mut [PlotHandle]) {
+    let below = below_legends(spec, viewport);
     let unnamed_standalone = collect_legend_nodes(spec).iter().any(|(_, legend)| {
         legend.channel == LegendChannel::Color && !legend.options.contains_key("for")
     });
@@ -193,11 +211,14 @@ pub(crate) fn declare_legends(spec: &Spec, plots: &mut [PlotHandle]) {
     for (i, plot) in plots.iter_mut().enumerate() {
         plot.legend_declared =
             colour_legend_covers(spec, &plot.path) || (unnamed_standalone && sole == Some(i));
+        plot.legend_below = below.iter().find(|b| b.plot_path == plot.path).map(|b| b.rect);
     }
 }
 
-/// The legend blocks the page draws, as `(plot index, legend)`, in plot order:
-/// one for each plot the file puts a legend on whose scales call for one.
+/// The legend blocks the page draws at the plot's right, as `(plot index,
+/// legend)`, in plot order: one for each plot the file puts a legend on whose
+/// scales call for one, and whose legend the file does not put under it
+/// ([`below_blocks`] lists those).
 ///
 /// [`band_width`] and [`draw_band`] both read this list, so the band is
 /// reserved when a block is drawn into it, and a block is drawn for the plots
@@ -208,8 +229,47 @@ pub fn blocks(composed: &Composed) -> Vec<(usize, LegendSpec)> {
         .plots
         .iter()
         .enumerate()
+        .filter(|(_, plot)| plot.legend_below.is_none())
         .filter_map(|(i, plot)| LegendSpec::of_plot(plot).map(|legend| (i, legend)))
         .collect()
+}
+
+/// The legend blocks the page draws in a band under their plot, as `(plot
+/// index, legend, band)`, in plot order: one for each plot whose file puts its
+/// legend there ([`PlotHandle::legend_below`]) and whose scales call for one.
+/// The band is on the page plane, the layout's own rect.
+#[must_use]
+pub fn below_blocks(composed: &Composed) -> Vec<(usize, LegendSpec, Rect)> {
+    composed
+        .plots
+        .iter()
+        .enumerate()
+        .filter_map(|(i, plot)| {
+            let band = plot.legend_below?;
+            LegendSpec::of_plot(plot).map(|legend| (i, legend, band))
+        })
+        .collect()
+}
+
+/// How far the bands under the plots reach below the raster, in logical points:
+/// `0.0` when no plot has one, or when each stands inside the page because
+/// something else extends past it.
+///
+/// The raster is the plots' bounding box and a legend is not a plot, so a band
+/// under the lowest plot is outside the raster, in room the pane has to leave
+/// for it. It is already part of the height the layout was offered, so this is
+/// what the pane allocates under the raster and not a bite out of the offer.
+/// It is deliberately not a term of the window's size
+/// ([`crate::window::chart_window_size`] reads the raster alone), which is why
+/// a legend under its plot asks for the window the plot asks for alone.
+#[must_use]
+pub fn below_overhang(composed: &Composed) -> f32 {
+    composed
+        .plots
+        .iter()
+        .filter_map(|plot| plot.legend_below)
+        .map(|band| (band.y + band.height) as f32 - composed.height as f32)
+        .fold(0.0, f32::max)
 }
 
 /// The width the chart pane's legend band consumes, in logical points — `0.0`
@@ -254,6 +314,185 @@ pub fn draw_band(
             mode,
         );
     }
+}
+
+/// Draw every plot's legend that sits in a band under it, each into the rect
+/// the layout reserved for it.
+///
+/// `origin` is the raster rect's top-left in window-space coordinates, so a band
+/// on the page plane lands where the layout put it. The painter is clipped to
+/// the band, so a long list of categories is cut at the band's right edge and
+/// never drawn over the plot or past the tile.
+pub fn draw_below(ui: &egui::Ui, origin: egui::Pos2, composed: &Composed, mode: Mode) {
+    for (i, legend, rect) in below_blocks(composed) {
+        let band = egui::Rect::from_min_size(
+            origin + egui::vec2(rect.x as f32, rect.y as f32),
+            egui::vec2(rect.width as f32, rect.height as f32),
+        );
+        draw_below_block(
+            &ui.painter_at(band),
+            band,
+            &legend,
+            composed.plots[i].fill_column.as_deref(),
+            mode,
+        );
+    }
+}
+
+/// The widest the ramp under a plot runs, in logical points. The ramp is
+/// [`RAMP_STRIPS`] strips, each a whole number of points wide, so it runs a
+/// little short of this where the strips do not divide it.
+pub const BELOW_RAMP_MAX_WIDTH: f32 = 240.0;
+
+/// The height of the ramp under a plot, in logical points: a swatch's height, so
+/// the ramp and the categorical swatches share a row's weight.
+pub const BELOW_RAMP_HEIGHT: f32 = control::ICON_XS;
+
+/// One legend block in the `band` under its plot: the column's name at the left,
+/// then for a continuous scale a ramp running left to right — the low end at its
+/// left — with the domain's two ends under it (and a diverging scale's pivot
+/// under its middle), or for a categorical scale a swatch and its label for each
+/// category, in a row. The block is centred on the band's height.
+///
+/// The name is cut short inside [`LABEL_COLUMN`], as it is at the plot's right,
+/// and the ramp starts after what is drawn of it. `name` is `None` for a plot
+/// whose fill names no column, which draws no legend through
+/// [`LegendSpec::of_plot`].
+pub fn draw_below_block(
+    painter: &egui::Painter,
+    band: egui::Rect,
+    legend: &LegendSpec,
+    name: Option<&str>,
+    mode: Mode,
+) {
+    let sem = semantic(mode.is_dark());
+    let ink = crate::design::to_color32(sem.text.secondary);
+    let name_ink = crate::design::to_color32(sem.text.primary);
+    let font = egui::FontId::proportional(typography::UI_SIZE);
+    let name = name.map(|name| text_ink::fit(painter, name, font.clone(), LABEL_COLUMN, name_ink));
+    // Where the name's row is centred: the band's middle for swatches, the
+    // ramp's for a ramp, whose values hang under it.
+    let name_at = |painter: &egui::Painter, left: f32, centre: f32| -> f32 {
+        let Some(galley) = &name else {
+            return left;
+        };
+        let size = galley.size();
+        painter.galley(
+            egui::pos2(left, centre - size.y / 2.0),
+            galley.clone(),
+            name_ink,
+        );
+        left + size.x + spacing::CONTROL_GAP
+    };
+    match legend {
+        LegendSpec::Categorical { entries } => {
+            let centre = band.center().y;
+            let mut x = name_at(painter, band.left(), centre);
+            let swatch = control::ICON_XS;
+            for entry in entries {
+                if x >= band.right() {
+                    break;
+                }
+                let rect = egui::Rect::from_center_size(
+                    egui::pos2(x + swatch / 2.0, centre),
+                    egui::vec2(swatch, swatch),
+                );
+                painter.rect_filled(rect, 0.0, chart_ink(entry.colour));
+                let galley = painter.layout_no_wrap(entry.label.clone(), font.clone(), ink);
+                let label_x = rect.right() + spacing::ICON_LABEL_GAP;
+                painter.galley(
+                    egui::pos2(label_x, centre - galley.size().y / 2.0),
+                    galley.clone(),
+                    ink,
+                );
+                x = label_x + galley.size().x + spacing::CONTROL_GAP;
+            }
+        }
+        LegendSpec::Sequential { min, max, stops } => {
+            let ramp = below_ramp(painter, band, stops, &font, &name_at);
+            below_value(painter, ramp, egui::Align::Min, *min, &font, ink);
+            below_value(painter, ramp, egui::Align::Max, *max, &font, ink);
+        }
+        LegendSpec::Diverging {
+            min,
+            max,
+            pivot,
+            stops,
+        } => {
+            let ramp = below_ramp(painter, band, stops, &font, &name_at);
+            below_value(painter, ramp, egui::Align::Min, *min, &font, ink);
+            below_value(painter, ramp, egui::Align::Center, *pivot, &font, ink);
+            below_value(painter, ramp, egui::Align::Max, *max, &font, ink);
+        }
+    }
+}
+
+/// The ramp under a plot, as [`RAMP_STRIPS`] adjacent solid strips, the low end
+/// at the left, and the rect it fills. The name is drawn first, level with the
+/// ramp, and the ramp starts after it; the ramp and the row of values under it
+/// are centred together on the band's height.
+///
+/// Each strip is whole points wide, so no two share a fractional edge for the
+/// rasteriser to blend into a seam, and the ramp is at most
+/// [`BELOW_RAMP_MAX_WIDTH`] wide.
+fn below_ramp(
+    painter: &egui::Painter,
+    band: egui::Rect,
+    stops: &[[f32; 4]],
+    font: &egui::FontId,
+    name_at: &dyn Fn(&egui::Painter, f32, f32) -> f32,
+) -> egui::Rect {
+    let value_height = painter
+        .layout_no_wrap(String::from("0"), font.clone(), egui::Color32::WHITE)
+        .size()
+        .y;
+    let rows = BELOW_RAMP_HEIGHT + spacing::SPACE_2 + value_height;
+    let top = band.center().y - rows / 2.0;
+    let left = name_at(painter, band.left(), top + BELOW_RAMP_HEIGHT / 2.0);
+    let room = (band.right() - left).clamp(0.0, BELOW_RAMP_MAX_WIDTH);
+    let strip = (room / RAMP_STRIPS as f32).floor().max(1.0);
+    let ramp = egui::Rect::from_min_size(
+        egui::pos2(left, top),
+        egui::vec2(strip * RAMP_STRIPS as f32, BELOW_RAMP_HEIGHT),
+    );
+    for (j, colour) in ramp_strip_colours(stops).iter().enumerate() {
+        let strip_rect = egui::Rect::from_min_size(
+            egui::pos2(ramp.left() + j as f32 * strip, ramp.top()),
+            egui::vec2(strip, ramp.height()),
+        );
+        painter.rect_filled(strip_rect, 0.0, chart_ink(*colour));
+    }
+    ramp
+}
+
+/// A domain value under `ramp`: its left end for [`egui::Align::Min`], its middle
+/// for [`egui::Align::Center`], its right end for [`egui::Align::Max`], each
+/// kept inside the ramp's own extent so no value hangs past the end it names.
+fn below_value(
+    painter: &egui::Painter,
+    ramp: egui::Rect,
+    at: egui::Align,
+    value: f64,
+    font: &egui::FontId,
+    ink: egui::Color32,
+) {
+    let galley = text_ink::fit(
+        painter,
+        &format_domain(value),
+        font.clone(),
+        ramp.width(),
+        ink,
+    );
+    let left = match at {
+        egui::Align::Min => ramp.left(),
+        egui::Align::Center => ramp.center().x - galley.size().x / 2.0,
+        egui::Align::Max => ramp.right() - galley.size().x,
+    };
+    painter.galley(
+        egui::pos2(left, ramp.bottom() + spacing::SPACE_2),
+        galley,
+        ink,
+    );
 }
 
 /// One legend block at `origin`: the column's name over the block, then a
