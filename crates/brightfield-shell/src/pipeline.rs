@@ -8,11 +8,11 @@
 //! composites them into a single dashboard scene the egui host presents.
 //!
 //! Scope for the loop-first phase: projection / highlight / explicit colorDomain
-//! are NOT ported (the golden `dashboard.yaml` and the simple examples use none
-//! of them), and neither is standalone-legend relocation, with one placement
-//! ported: a colour legend under the plot it is for in a `vconcat` is drawn in
-//! the band the layout reserved for it ([`PlotHandle::legend_below`]); any other
-//! standalone legend is drawn at the plot's right. A plot's `colorScheme` is ported:
+//! are NOT ported (the golden `dashboard.yaml` and the simple examples do not
+//! exercise them). Standalone-legend relocation is ported for one placement: a colour
+//! legend under the plot it is for in a `vconcat` is drawn in the band the layout
+//! reserved for it ([`PlotHandle::legend_below`]). A standalone legend placed
+//! any other way is drawn at the plot's right. A plot's `colorScheme` is ported:
 //! it reaches the ramps of its dot, raster, heatmap, cell, hexbin and geo marks,
 //! and so their legend. Each mark
 //! draws EVERY materialised chunk — its result batches are assembled into one

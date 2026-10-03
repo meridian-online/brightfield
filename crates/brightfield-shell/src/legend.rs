@@ -211,7 +211,10 @@ pub(crate) fn declare_legends(spec: &Spec, viewport: Rect, plots: &mut [PlotHand
     for (i, plot) in plots.iter_mut().enumerate() {
         plot.legend_declared =
             colour_legend_covers(spec, &plot.path) || (unnamed_standalone && sole == Some(i));
-        plot.legend_below = below.iter().find(|b| b.plot_path == plot.path).map(|b| b.rect);
+        plot.legend_below = below
+            .iter()
+            .find(|b| b.plot_path == plot.path)
+            .map(|b| b.rect);
     }
 }
 

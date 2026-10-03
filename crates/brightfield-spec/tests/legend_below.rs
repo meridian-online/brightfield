@@ -59,7 +59,10 @@ fn a_legend_under_its_plot_is_a_band_as_wide_as_the_plot_and_44_high() {
         Rect::new(0.0, 200.0, 300.0, 44.0),
         "directly under the 300 by 200 plot, as wide as it"
     );
-    assert_eq!(BELOW_LEGEND_HEIGHT, 44.0, "the band's height is the design's");
+    assert_eq!(
+        BELOW_LEGEND_HEIGHT, 44.0,
+        "the band's height is the design's"
+    );
     // And it is the rect the layout reserved, not a second answer.
     let placed = placed_legends(&spec, Rect::zero());
     assert_eq!(placed.len(), 1);
@@ -100,7 +103,10 @@ fn a_legend_placed_any_other_way_keeps_the_rect_it_always_had() {
     let cases: [(&str, String); 6] = [
         (
             "in an hconcat",
-            format!("{DATA}hconcat:\n{}  - legend: color\n    for: scatter\n", plot(2)),
+            format!(
+                "{DATA}hconcat:\n{}  - legend: color\n    for: scatter\n",
+                plot(2)
+            ),
         ),
         (
             "naming a plot that is not its sibling",
@@ -111,11 +117,17 @@ fn a_legend_placed_any_other_way_keeps_the_rect_it_always_had() {
         ),
         (
             "before the plot it names",
-            format!("{DATA}vconcat:\n  - legend: color\n    for: scatter\n{}", plot(2)),
+            format!(
+                "{DATA}vconcat:\n  - legend: color\n    for: scatter\n{}",
+                plot(2)
+            ),
         ),
         (
             "for another channel",
-            format!("{DATA}vconcat:\n{}  - legend: opacity\n    for: scatter\n", plot(2)),
+            format!(
+                "{DATA}vconcat:\n{}  - legend: opacity\n    for: scatter\n",
+                plot(2)
+            ),
         ),
         (
             "with a $param for:",

@@ -211,7 +211,9 @@ fn every_margin_legend_is_accurate_to_its_plots_displayed_scale() {
 /// `legend: color` line draws no legend, though its scales may call for one; an
 /// example that holds one over a plot with a colour scale draws that plot's
 /// legend, at the right of the raster and clear of it, whether the item stands
-/// in the plot or beside it as a standalone legend.
+/// in the plot or beside it as a standalone legend in an `hconcat`. A
+/// standalone legend under its plot in a `vconcat` draws under it instead, which
+/// `legend_below.rs` holds.
 #[test]
 fn an_example_draws_a_legend_when_its_file_holds_a_colour_legend_node() {
     let mut with_node = 0usize;

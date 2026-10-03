@@ -1867,7 +1867,12 @@ fn layout_vconcat(concat: &ConcatNode, x: f64, y: f64, avail: Avail) -> LayoutNo
             // The band under a plot: as wide as the plot above it, and
             // [`BELOW_LEGEND_HEIGHT`] high whatever the column is offered.
             Some(plot) => LayoutNode::Legend {
-                rect: Rect::new(x, cursor_y, children[plot].rect().width, BELOW_LEGEND_HEIGHT),
+                rect: Rect::new(
+                    x,
+                    cursor_y,
+                    children[plot].rect().width,
+                    BELOW_LEGEND_HEIGHT,
+                ),
             },
             None => layout_component(
                 item,
