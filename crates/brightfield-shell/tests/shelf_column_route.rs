@@ -1041,6 +1041,9 @@ fn a_modified_c_after_a_z_puts_nothing() {
         ("alt", egui::Modifiers::ALT, None),
         ("ctrl", egui::Modifiers::CTRL, None),
     ];
+    // Every modifier is tried before the test fails, so a second key that takes
+    // one modifier and not another reports which.
+    let mut put = Vec::new();
     for (held, modifiers, text) in modified {
         let mut win = Window::fixture();
         win.select_in_outline(VALUE);
@@ -1052,13 +1055,14 @@ fn a_modified_c_after_a_z_puts_nothing() {
         win.run(events);
         win.run(Vec::new());
 
-        assert_unpainted(&win, &format!("after z and {held}-c"));
-        assert_eq!(win.spec(), kept, "z then {held}-c changed the spec");
-        assert!(
-            !win.marked_unsaved(),
-            "z then {held}-c kept a column and marked the window unsaved"
-        );
+        if win.hero_column(Channel::Fill).is_some() || win.spec() != kept || win.marked_unsaved() {
+            put.push(held);
+        }
     }
+    assert!(
+        put.is_empty(),
+        "z then c with {put:?} held kept a column: the chord's second key took a modifier"
+    );
 }
 
 /// **A column selected on the dashboard is the one under the Outline's
