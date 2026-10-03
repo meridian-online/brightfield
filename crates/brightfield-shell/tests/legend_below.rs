@@ -163,7 +163,7 @@ fn texts(ink: &[Ink]) -> Vec<(&str, egui::Rect)> {
         .collect()
 }
 
-fn text_of<'a>(ink: &'a [Ink], text: &str) -> egui::Rect {
+fn text_of(ink: &[Ink], text: &str) -> egui::Rect {
     texts(ink)
         .into_iter()
         .find(|(t, _)| *t == text)

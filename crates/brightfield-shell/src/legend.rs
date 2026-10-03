@@ -342,9 +342,9 @@ pub fn draw_below(ui: &egui::Ui, origin: egui::Pos2, composed: &Composed, mode: 
     }
 }
 
-/// The widest the ramp under a plot runs, in logical points. The ramp is
-/// [`RAMP_STRIPS`] strips, each a whole number of points wide, so it runs a
-/// little short of this where the strips do not divide it.
+/// The widest the ramp under a plot runs, in logical points. The ramp is one
+/// strip for each colour [`ramp_strip_colours`] samples, each a whole number of
+/// points wide, so it runs a little short of this where the strips do not divide it.
 pub const BELOW_RAMP_MAX_WIDTH: f32 = 240.0;
 
 /// The height of the ramp under a plot, in logical points: a swatch's height, so
