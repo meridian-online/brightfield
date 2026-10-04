@@ -43,7 +43,7 @@ out.push("");
 
 // tickFormat(count, spec) on a linear scale — d3-scale 4.0.2 — for specs
 // where it and d3.format agree on the treatment of a precision.
-const TICK_SPECS = ["s", "~s", "%", "+f", "f", ",f", "d", "g", "", "r", "p", "e", ".1%", "+.1f", ",.0f"];
+const TICK_SPECS = ["s", "~s", ".2s", "%", "+f", "f", ",f", "d", "g", "", "r", "p", "e", ".1%", "+.1f", ",.0f"];
 const DOMAINS = [
   [0, 2000, 5], [0, 1, 5], [0, 2e6, 5], [-1, 1, 5], [0, 100, 5], [0.001, 0.005, 5], [1000, 2000, 10], [-50, 50, 5],
   [0, 0.1, 5], [0, 25000, 5],

@@ -191,15 +191,16 @@ fn a_spec_that_sets_no_tick_format_draws_the_text_it_always_drew() {
 // ---------------------------------------------------------------------------
 
 /// **With a precision in the format, tick text reads as d3-format prints it.**
-/// Under `.2s` the ticks of a 0 to 2000000 axis read `0.0`, `500k`, `1.0M`,
-/// `1.5M` and `2.0M`: each value takes its own SI prefix, which is the
-/// difference between `.2s` and the `s` of AC2.
+/// Under `.2s` the ticks of a 0 to 2000000 axis read `0.00M`, `0.50M`, `1.00M`,
+/// `1.50M` and `2.00M`: the analyst's two decimals, and the one prefix the
+/// largest tick takes, as d3-scale shares it. The `s` of AC2 differs only in
+/// where the decimals come from.
 #[test]
 fn a_precision_in_the_format_prints_each_tick_as_d3_format_does() {
     let composed = compose_to(2_000_000.0, "xTickFormat: '.2s'");
     assert_eq!(
         painted_x(&composed),
-        strs(&["0.0", "500k", "1.0M", "1.5M", "2.0M"])
+        strs(&["0.00M", "0.50M", "1.00M", "1.50M", "2.00M"])
     );
     // The y axis names no format and is left as it was.
     assert_eq!(
