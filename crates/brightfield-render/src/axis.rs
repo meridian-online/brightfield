@@ -1067,12 +1067,13 @@ mod tests {
     }
 
     /// AC1: a format that names its precision prints each value as d3-format
-    /// does, whatever the step.
+    /// does, whatever the step. The one exception is an SI axis, which keeps
+    /// the analyst's decimals and still shares the prefix of its largest tick.
     #[test]
     fn a_format_with_a_precision_prints_each_tick_as_written() {
         assert_eq!(
             labels_under(&linear(0.0, 2_000_000.0), Some(".2s")),
-            ["0.0", "500k", "1.0M", "1.5M", "2.0M"]
+            ["0.00M", "0.50M", "1.00M", "1.50M", "2.00M"]
         );
         assert_eq!(
             labels_under(&linear(0.0, 2_000_000.0), Some(",d")),

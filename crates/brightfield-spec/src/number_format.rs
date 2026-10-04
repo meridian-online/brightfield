@@ -236,13 +236,16 @@ impl NumberFormat {
     /// with `step` between ticks, as d3-scale's `tickFormat` builds it.
     ///
     /// A specifier that names a precision is the analyst's own and prints each
-    /// value as d3-format does. One that does not gets its precision from the
-    /// step, so no two ticks read alike and none carries digits the step does
-    /// not need:
+    /// value as d3-format does, except under `s`. One that does not gets its
+    /// precision from the step, so no two ticks read alike and none carries
+    /// digits the step does not need:
     ///
     /// * `s` takes one SI prefix for the whole axis, from the larger end of the
     ///   domain, and the decimals the step needs: ticks 0 to 2000 by 500 read
-    ///   `0.0k`, `0.5k`, `1.0k`, `1.5k` and `2.0k`;
+    ///   `0.0k`, `0.5k`, `1.0k`, `1.5k` and `2.0k`. A precision the specifier
+    ///   names replaces the decimals and leaves the shared prefix, as
+    ///   d3-scale's `tickFormat` does: `.2s` over 0 to 2000 by 500 reads
+    ///   `0.00k`, `0.50k`, `1.00k`, `1.50k` and `2.00k`;
     /// * `f` and `%` take the decimals the step needs: 0 to 1 by 0.2 under `%`
     ///   reads `0%`, `20%` … `100%`;
     /// * the empty type, `e`, `g`, `p` and `r` take the significant digits the
@@ -250,14 +253,16 @@ impl NumberFormat {
     /// * any other type has no precision to infer.
     #[must_use]
     pub fn tick_format(self, start: f64, stop: f64, step: f64) -> TickFormat {
-        if self.precision.is_some() {
+        if self.precision.is_some() && self.ty != Some('s') {
             return TickFormat::plain(self);
         }
         let biggest = start.abs().max(stop.abs());
         let mut format = self;
         match self.ty {
             Some('s') => {
-                format.precision = precision_prefix(step, biggest);
+                if self.precision.is_none() {
+                    format.precision = precision_prefix(step, biggest);
+                }
                 // A domain whose larger end is zero has no prefix to choose,
                 // and no ticks to draw a prefix on.
                 let Some(exponent) = exponent10(biggest) else {

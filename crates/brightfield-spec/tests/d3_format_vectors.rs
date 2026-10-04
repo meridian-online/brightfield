@@ -84,8 +84,9 @@ fn tick_text_is_what_d3_scale_tick_format_gives() {
 }
 
 /// The card's own figures, read straight off the table rather than restated:
-/// the axis under `s` from 0 to 2000 and under `%` from 0 to 1 are in it, so a
-/// reader who doubts a figure in the card can see which d3 line it came from.
+/// the axis under `s` from 0 to 2000, under `%` from 0 to 1, and under `~s` and
+/// `.2s` from 0 to 2000000 are in it, so a reader who doubts a figure in the
+/// card can see which d3 line it came from.
 #[test]
 fn the_tick_text_the_card_names_is_in_the_table() {
     let text = |spec: &str, start: f64, stop: f64| -> Vec<&'static str> {
@@ -103,5 +104,15 @@ fn the_tick_text_the_card_names_is_in_the_table() {
     assert_eq!(
         text("%", 0.0, 1.0),
         ["0%", "20%", "40%", "60%", "80%", "100%"]
+    );
+    // An SI axis shares the prefix of its largest tick whether the specifier
+    // names a precision (`.2s`) or leaves it to the step (`~s`).
+    assert_eq!(
+        text("~s", 0.0, 2_000_000.0),
+        ["0M", "0.5M", "1M", "1.5M", "2M"]
+    );
+    assert_eq!(
+        text(".2s", 0.0, 2_000_000.0),
+        ["0.00M", "0.50M", "1.00M", "1.50M", "2.00M"]
     );
 }
