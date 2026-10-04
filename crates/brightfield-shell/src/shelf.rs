@@ -1515,6 +1515,9 @@ const TURN_HINT: (&str, &str) = ("Tab", "settings");
 /// The radius of the marker at a settings row's trailing end.
 const MARKER_RADIUS: f32 = 3.0;
 
+/// The width and height of the box the marker sits in.
+const MARKER_BOX: f32 = 2.0 * MARKER_RADIUS;
+
 /// The height of the bar under the open tab.
 const TAB_BAR: f32 = 2.0;
 
@@ -1812,7 +1815,10 @@ impl ColumnList {
         let muted = chrome::colour(sem.text.muted);
         let mut x = strip.left() + spacing::SPACE_4;
         let mut tabs = Vec::new();
-        for (n, tab) in [ListTab::Columns, ListTab::Settings].into_iter().enumerate() {
+        for (n, tab) in [ListTab::Columns, ListTab::Settings]
+            .into_iter()
+            .enumerate()
+        {
             if n > 0 {
                 let dot = painter.layout_no_wrap(TAB_SEPARATOR.to_string(), ui_font(), muted);
                 x += spacing::SPACE_3;
@@ -1938,10 +1944,7 @@ impl ColumnList {
 
             // The marker at the trailing end.
             let centre = egui::pos2(content.right() - MARKER_RADIUS, rect.center().y);
-            let marker = egui::Rect::from_center_size(
-                centre,
-                egui::Vec2::splat(2.0 * MARKER_RADIUS),
-            );
+            let marker = egui::Rect::from_center_size(centre, egui::Vec2::splat(MARKER_BOX));
             if row.set {
                 painter.circle_filled(centre, MARKER_RADIUS, primary);
             } else {
@@ -1971,10 +1974,7 @@ impl ColumnList {
             // The name, then the value in what room is left.
             let name_galley = painter.layout_no_wrap(row.name.to_string(), ui_font(), primary);
             let name_rect = egui::Rect::from_min_size(
-                egui::pos2(
-                    content.left(),
-                    rect.center().y - name_galley.size().y / 2.0,
-                ),
+                egui::pos2(content.left(), rect.center().y - name_galley.size().y / 2.0),
                 name_galley.size(),
             );
             painter.galley(name_rect.min, name_galley, primary);
