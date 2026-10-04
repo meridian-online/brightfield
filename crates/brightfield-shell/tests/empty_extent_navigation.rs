@@ -21,9 +21,15 @@
 //! `a_secondary_button_drag_pans_and_queries_on_release` already drives), and
 //! a real primary-button click for the tile-select assertion.
 
+use brightfield_engine::ProfileOutcome;
 use brightfield_shell::app::GridLayout;
+use brightfield_shell::data_file;
 use brightfield_shell::design::Mode;
+use brightfield_shell::legend::{band_width, blocks, LegendSpec};
+use brightfield_shell::pipeline::LiveDashboard;
+use brightfield_shell::shelf_edit::put_colour;
 use brightfield_shell::window::{Boot, MeridianApp};
+use brightfield_spec::analysis::ComponentPath;
 
 /// The window this card's own evidence was measured at.
 const SCREEN: egui::Rect = egui::Rect {
@@ -42,6 +48,11 @@ fn settled() -> (MeridianApp, egui::Context) {
     let path = fixture();
     let chosen = path.to_str().expect("utf-8 fixture path");
     let boot = Boot::data_file(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    settle(boot)
+}
+
+/// `boot` as a settled window.
+fn settle(boot: Boot) -> (MeridianApp, egui::Context) {
     let mut app = MeridianApp::headless(boot, Mode::Light);
     let ctx = egui::Context::default();
     let raw = egui::RawInput {
@@ -285,5 +296,105 @@ fn a_navigated_map_with_no_data_beneath_it_stays_placed() {
         "panning back over the data left the hero reading empty — no reset \
          was pressed, so this has to be the pan-back putting rows under it \
          again"
+    );
+}
+
+/// The number column the hero is coloured by.
+const COLOUR: &str = "median_house_value";
+
+/// The fixture's hero map coloured by [`COLOUR`] through the shelf's own
+/// `put_colour`, which writes the legend item beside the scheme, as a live
+/// window settled over it.
+fn settled_coloured() -> (MeridianApp, egui::Context) {
+    let path = fixture();
+    let chosen = path.to_str().expect("utf-8 fixture path");
+    let mut file =
+        data_file::open(chosen).unwrap_or_else(|e| panic!("open {}: {e}", path.display()));
+    let table = file
+        .live
+        .coordinator()
+        .session()
+        .profile_sources()
+        .into_iter()
+        .find(|p| p.name == data_file::SOURCE)
+        .map(|p| match p.outcome {
+            ProfileOutcome::Profiled { columns, .. } => columns,
+            other => panic!("the table did not profile: {other:?}"),
+        })
+        .expect("the opened file has a source to profile");
+    let hero = ComponentPath(file.composed.plots[0].path.clone());
+    let mut spec = file.live.spec().clone();
+    put_colour(&mut spec, &hero, COLOUR, &table).expect("the table has the column");
+    let base = file.live.base_dir().map(std::path::Path::to_path_buf);
+    let mut live = LiveDashboard::load(spec, base.as_deref()).expect("the coloured spec loads");
+    let composed = live.present().expect("the coloured page presents");
+    let mut boot = Boot::charts(composed);
+    boot.live = Some(live);
+    settle(boot)
+}
+
+/// **A coloured map navigated to an empty extent draws no legend, and the plot
+/// keeps the name of the column it is coloured by.** Measured at `505c0fd` and
+/// again at the head this lands on: the pans leave the hero placed with its
+/// axes (`navigated_empty`) and no colour scale to read a legend from, so
+/// [`LegendSpec::of_plot`] answers `None` and the page reserves no band for one.
+/// The fill column is still recorded on that path (`compose_from_results`'s
+/// synthetic-batch fallback), so a colour scale that ever reaches it draws its
+/// legend with its name rather than without.
+///
+/// Fails when the lines that record the fill column on that path are removed
+/// (the handle names none), and when a legend starts to draw on it (a block, or
+/// a band reserved for one).
+#[test]
+fn a_coloured_map_with_no_data_beneath_it_draws_no_legend_and_keeps_its_fill_column() {
+    let (mut app, ctx) = settled_coloured();
+
+    // Before the pans the legend is drawn and names the column, so the colouring
+    // took and an empty answer after them is a change and not an absence.
+    let composed = &app.chart_doc().composed;
+    assert_eq!(
+        composed.plots[0].fill_column.as_deref(),
+        Some(COLOUR),
+        "the coloured hero's handle names its fill column"
+    );
+    assert!(
+        matches!(
+            LegendSpec::of_plot(&composed.plots[0]),
+            Some(LegendSpec::Sequential { .. })
+        ),
+        "the coloured hero draws no legend before it is panned"
+    );
+    assert_eq!(blocks(composed).len(), 1, "the legend's block");
+    assert!(band_width(composed) > 0.0, "the legend's band");
+
+    // The reproduction the first test in this file names: two settled pans, each
+    // carrying the map further off the data.
+    pan_the_map(&mut app, &ctx);
+    pan_the_map(&mut app, &ctx);
+
+    let composed = &app.chart_doc().composed;
+    let hero = &composed.plots[0];
+    assert!(
+        hero.navigated_empty,
+        "the hero drew real marks after two pans meant to carry it past every row"
+    );
+    assert_eq!(
+        hero.fill_column.as_deref(),
+        Some(COLOUR),
+        "the navigated-empty hero lost the name of its fill column"
+    );
+    assert_eq!(
+        LegendSpec::of_plot(hero),
+        None,
+        "a legend started to draw for a plot navigated to an empty extent"
+    );
+    assert!(
+        blocks(composed).is_empty(),
+        "a legend block is drawn for a plot navigated to an empty extent"
+    );
+    assert_eq!(
+        band_width(composed),
+        0.0,
+        "a band is reserved for a legend a plot navigated to an empty extent does not draw"
     );
 }
