@@ -966,7 +966,12 @@ fn the_card_draws_over_the_hover_readout() {
     // it is drawn in: the order is what is read, so it is not typed here.
     let (card_layer, readout_layer) = win.ctx.memory(|m| {
         let on_screen = m.areas().visible_layer_ids();
-        let layer = |id: &str| on_screen.iter().copied().find(|l| l.id == egui::Id::new(id));
+        let layer = |id: &str| {
+            on_screen
+                .iter()
+                .copied()
+                .find(|l| l.id == egui::Id::new(id))
+        };
         (layer("shelf-column-card"), layer("chart-hover-readout"))
     });
     let card_layer = card_layer.expect("the card's layer is on screen");
@@ -1009,7 +1014,9 @@ fn a_click_off_the_card_asks_the_context_for_a_repaint() {
     win.run(vec![button(away, true)]);
     win.run(Vec::new());
     assert!(
-        !repaint_files(&win).iter().any(|f| f.ends_with("protocol.rs")),
+        !repaint_files(&win)
+            .iter()
+            .any(|f| f.ends_with("protocol.rs")),
         "a press off the card, which is not yet a click, asked for a repaint from the column \
          list's file: {:?}",
         win.ctx.repaint_causes()
@@ -1018,7 +1025,9 @@ fn a_click_off_the_card_asks_the_context_for_a_repaint() {
     win.run(vec![button(away, false)]);
     win.run(Vec::new());
     assert!(
-        repaint_files(&win).iter().any(|f| f.ends_with("protocol.rs")),
+        repaint_files(&win)
+            .iter()
+            .any(|f| f.ends_with("protocol.rs")),
         "a click off the card asked for no repaint from the column list's file: {:?}",
         win.ctx.repaint_causes()
     );
@@ -1039,8 +1048,16 @@ fn a_click_on_x_with_the_rail_shut_and_no_cell_open_hangs_x_as_a_card() {
 
     let x = win.band_cell(ShelfChannel::X);
     win.click(x.center());
-    assert_eq!(win.active(), Some(ShelfChannel::X), "the click opened no cell");
-    assert_eq!(win.list_channel(), Some(ShelfChannel::X), "the click opened no list");
+    assert_eq!(
+        win.active(),
+        Some(ShelfChannel::X),
+        "the click opened no cell"
+    );
+    assert_eq!(
+        win.list_channel(),
+        Some(ShelfChannel::X),
+        "the click opened no list"
+    );
     let card = win.card();
     assert_eq!(card.cell, x, "the card says which cell it hangs from");
     assert!(
