@@ -707,7 +707,7 @@ const STRIP_HEIGHT: f32 = 2.0;
 /// gives the legend column a vertical ramp and no figure for its height; this is
 /// read off the accepted frame of the legend at the plot's right, where the ramp
 /// runs about this far. A chart shorter than the name's row, a gap and this
-/// draws a shorter ramp ([`number_fit`]).
+/// draws a shorter ramp, down to [`ramp_floor`].
 pub const RAMP_HEIGHT: f32 = RAMP_STRIPS as f32 * STRIP_HEIGHT;
 
 /// The least space between two value labels beside a ramp, in logical points.
@@ -749,7 +749,7 @@ pub fn ramp_floor(label: f32) -> f32 {
 /// go when they cannot; the labels at its ends stay at the font's size.
 fn number_fit(room: f32, label: f32, has_pivot: bool) -> NumberFit {
     let whole = ((room / STRIP_HEIGHT).floor() as usize).min(RAMP_STRIPS);
-    let strips = if whole % 2 == 0 {
+    let strips = if whole.is_multiple_of(2) {
         whole.saturating_sub(1)
     } else {
         whole
