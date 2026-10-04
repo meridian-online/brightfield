@@ -75,7 +75,7 @@ pub enum LegendSpec {
         min: f64,
         /// Domain maximum.
         max: f64,
-        /// The value the middle of the bar stands for.
+        /// The value the middle of the ramp stands for.
         pivot: f64,
         /// The ramp's control points, low pole → midpoint → high pole,
         /// straight-alpha RGBA.
@@ -299,6 +299,10 @@ pub fn band_width(composed: &Composed) -> f32 {
 /// (window-space) coordinates, so each block can sit level with the plot it
 /// describes: one legend per chart, at its chart's height, scoped to what
 /// that chart shows.
+///
+/// The band is as tall as its chart, so a block's room is what is left of the
+/// band under its plot's top. A number legend's ramp gives way to that room, and
+/// its value labels do not (`draw_block` says how).
 pub fn draw_band(
     ui: &egui::Ui,
     band: egui::Rect,
@@ -312,6 +316,7 @@ pub fn draw_band(
         draw_block(
             &painter,
             egui::pos2(band.left(), y),
+            band.bottom(),
             &legend,
             composed.plots[i].fill_column.as_deref(),
             mode,
@@ -509,9 +514,14 @@ fn below_value(
 /// (`a_long_name_is_cut_short_inside_the_column_and_the_band_stays_as_wide`).
 /// `name` is `None` for a plot whose fill names no column, which draws no
 /// legend through [`LegendSpec::of_plot`].
+///
+/// `bottom` is the foot of the room the block draws in, in the same
+/// coordinates as `origin`: the band's. A number column's ramp is drawn as tall
+/// as the room under the name allows, up to [`RAMP_HEIGHT`] ([`number_fit`]).
 fn draw_block(
     painter: &egui::Painter,
     origin: egui::Pos2,
+    bottom: f32,
     legend: &LegendSpec,
     name: Option<&str>,
     mode: Mode,
@@ -550,9 +560,13 @@ fn draw_block(
             }
         }
         LegendSpec::Sequential { min, max, stops } => {
-            let ramp = draw_ramp(painter, origin, stops);
-            ramp_value(painter, ramp, egui::Align::Min, *max, &font, ink);
-            ramp_value(painter, ramp, egui::Align::Max, *min, &font, ink);
+            let values = RampValues {
+                stops,
+                max: *max,
+                pivot: None,
+                min: *min,
+            };
+            number_legend(painter, origin, bottom, &values, &font, ink);
         }
         LegendSpec::Diverging {
             min,
@@ -560,22 +574,92 @@ fn draw_block(
             pivot,
             stops,
         } => {
-            let ramp = draw_ramp(painter, origin, stops);
-            ramp_value(painter, ramp, egui::Align::Min, *max, &font, ink);
-            ramp_value(painter, ramp, egui::Align::Center, *pivot, &font, ink);
-            ramp_value(painter, ramp, egui::Align::Max, *min, &font, ink);
+            let values = RampValues {
+                stops,
+                max: *max,
+                pivot: Some(*pivot),
+                min: *min,
+            };
+            number_legend(painter, origin, bottom, &values, &font, ink);
         }
     }
 }
 
-/// The ramp as [`RAMP_STRIPS`] adjacent solid strips, the ramp's high end at
-/// the top and its low end at the foot, and the rect it fills.
+/// What a number column's legend says beside its ramp: the ramp's stops and the
+/// domain's ends, with the pivot of a diverging scale.
+struct RampValues<'a> {
+    stops: &'a [[f32; 4]],
+    max: f64,
+    pivot: Option<f64>,
+    min: f64,
+}
+
+/// A number column's legend under its name, at `origin`, in the room down to
+/// `bottom`: the ramp with its values beside it, or as much of that as the room
+/// holds ([`number_fit`]).
+///
+/// The labels keep the font's size whatever the room; it is the ramp that
+/// gives way, down to the height that stands the two end labels one over the
+/// other, and then it is not drawn. Below that the labels stand in the label
+/// column on their own, the maximum over the minimum from `origin` down, and a
+/// label the room cannot hold whole is not drawn (a band no taller than the
+/// name and one label's row draws the name alone).
+fn number_legend(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    bottom: f32,
+    values: &RampValues,
+    font: &egui::FontId,
+    ink: egui::Color32,
+) {
+    let label = |value: f64| {
+        text_ink::fit(
+            painter,
+            &format_domain(value),
+            font.clone(),
+            LABEL_COLUMN,
+            ink,
+        )
+    };
+    let (high, low) = (label(values.max), label(values.min));
+    let label_height = high.size().y;
+    match number_fit(bottom - origin.y, label_height, values.pivot.is_some()) {
+        NumberFit::Ramp { strips, pivot } => {
+            let ramp = draw_ramp(painter, origin, values.stops, strips);
+            ramp_value(painter, ramp, egui::Align::Min, high, ink);
+            if let Some(pivot) = values.pivot.filter(|_| pivot) {
+                ramp_value(painter, ramp, egui::Align::Center, label(pivot), ink);
+            }
+            ramp_value(painter, ramp, egui::Align::Max, low, ink);
+        }
+        NumberFit::Labels => {
+            let column = origin.x + control::ICON_XS + spacing::ICON_LABEL_GAP;
+            for (i, galley) in [high, low].into_iter().enumerate() {
+                let top = origin.y + i as f32 * (label_height + LABEL_GAP);
+                if top + label_height <= bottom {
+                    painter.galley(egui::pos2(column, top), galley, ink);
+                }
+            }
+        }
+    }
+}
+
+/// The ramp as `strips` adjacent solid strips, the ramp's high end at the top
+/// and its low end at the foot, and the rect it fills.
 ///
 /// Each strip is [`STRIP_HEIGHT`] tall, whole points, so no two strips share a
 /// fractional edge for the rasteriser to blend into a seam.
-fn draw_ramp(painter: &egui::Painter, origin: egui::Pos2, stops: &[[f32; 4]]) -> egui::Rect {
-    let ramp = egui::Rect::from_min_size(origin, egui::vec2(control::ICON_XS, RAMP_HEIGHT));
-    for (j, colour) in ramp_strip_colours(stops).iter().rev().enumerate() {
+fn draw_ramp(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    stops: &[[f32; 4]],
+    strips: usize,
+) -> egui::Rect {
+    let ramp = egui::Rect::from_min_size(
+        origin,
+        egui::vec2(control::ICON_XS, strips as f32 * STRIP_HEIGHT),
+    );
+    for (j, colour) in strip_colours(stops, strips).iter().rev().enumerate() {
         let top = ramp.top() + j as f32 * STRIP_HEIGHT;
         let rect = egui::Rect::from_min_size(
             egui::pos2(ramp.left(), top),
@@ -586,24 +670,17 @@ fn draw_ramp(painter: &egui::Painter, origin: egui::Pos2, stops: &[[f32; 4]]) ->
     ramp
 }
 
-/// A domain value beside `ramp`, in the label column and cut short inside it:
-/// level with the ramp's top for [`egui::Align::Min`], its middle for
-/// [`egui::Align::Center`], its foot for [`egui::Align::Max`].
+/// A domain value beside `ramp`, in the label column: level with the ramp's top
+/// for [`egui::Align::Min`], its middle for [`egui::Align::Center`], its foot
+/// for [`egui::Align::Max`]. `galley` is the value laid out and cut short inside
+/// [`LABEL_COLUMN`].
 fn ramp_value(
     painter: &egui::Painter,
     ramp: egui::Rect,
     at: egui::Align,
-    value: f64,
-    font: &egui::FontId,
+    galley: std::sync::Arc<egui::Galley>,
     ink: egui::Color32,
 ) {
-    let galley = text_ink::fit(
-        painter,
-        &format_domain(value),
-        font.clone(),
-        LABEL_COLUMN,
-        ink,
-    );
     let top = match at {
         egui::Align::Min => ramp.top(),
         egui::Align::Center => ramp.center().y - galley.size().y / 2.0,
@@ -625,11 +702,64 @@ const RAMP_STRIPS: usize = 71;
 /// on pixel edges at a scale of one.
 const STRIP_HEIGHT: f32 = 2.0;
 
-/// The height of a number column's ramp, in logical points: `RAMP_STRIPS`
-/// strips of `STRIP_HEIGHT` each. The design gives the legend column a vertical
-/// ramp and no figure for its height; this is read off the accepted frame of the
-/// legend at the plot's right, where the ramp runs about this far.
+/// The height of a number column's ramp, in logical points, when the room under
+/// its name holds it: `RAMP_STRIPS` strips of `STRIP_HEIGHT` each. The design
+/// gives the legend column a vertical ramp and no figure for its height; this is
+/// read off the accepted frame of the legend at the plot's right, where the ramp
+/// runs about this far. A chart shorter than the name's row, a gap and this
+/// draws a shorter ramp, down to [`ramp_floor`].
 pub const RAMP_HEIGHT: f32 = RAMP_STRIPS as f32 * STRIP_HEIGHT;
+
+/// The least space between two value labels beside a ramp, in logical points.
+const LABEL_GAP: f32 = spacing::SPACE_1;
+
+/// What a number legend draws in the room under its name.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum NumberFit {
+    /// The ramp in `strips` strips, with the pivot's label at its middle when
+    /// `pivot`: a diverging legend's, kept while it stands clear of both ends.
+    Ramp { strips: usize, pivot: bool },
+    /// No ramp; the two end labels alone.
+    Labels,
+}
+
+/// The fewest strips a ramp is drawn in for value labels `label` points tall:
+/// odd, so the middle strip is still the midpoint colour, and tall enough that
+/// the maximum's label and the minimum's stand one over the other with
+/// [`LABEL_GAP`] between them.
+fn floor_strips(label: f32) -> usize {
+    (((2.0 * label + LABEL_GAP) / STRIP_HEIGHT).ceil() as usize) | 1
+}
+
+/// The shortest a number legend's ramp is drawn, in logical points, for value
+/// labels `label` points tall; a legend with less room than this draws the
+/// labels alone. A ramp is drawn in whole strips, so this is a little over the
+/// two labels' height and the gap between them.
+#[must_use]
+pub fn ramp_floor(label: f32) -> f32 {
+    floor_strips(label) as f32 * STRIP_HEIGHT
+}
+
+/// What a number legend draws in `room` points under its name, for value labels
+/// `label` points tall, with a pivot's label to place when `has_pivot`.
+///
+/// The ramp is as tall as the room allows up to [`RAMP_HEIGHT`], in whole odd
+/// strips; under [`ramp_floor`] it is not drawn. The pivot's label stays while
+/// the three labels stand [`LABEL_GAP`] apart along the ramp and is the first to
+/// go when they cannot; the labels at its ends stay at the font's size.
+fn number_fit(room: f32, label: f32, has_pivot: bool) -> NumberFit {
+    let whole = ((room / STRIP_HEIGHT).floor() as usize).min(RAMP_STRIPS);
+    let strips = if whole.is_multiple_of(2) {
+        whole.saturating_sub(1)
+    } else {
+        whole
+    };
+    if strips < floor_strips(label) {
+        return NumberFit::Labels;
+    }
+    let pivot = has_pivot && strips as f32 * STRIP_HEIGHT >= 3.0 * label + 2.0 * LABEL_GAP;
+    NumberFit::Ramp { strips, pivot }
+}
 
 /// The colour of each strip of a ramp, **low end first**: strip `i` samples the
 /// ramp at `i / (n - 1)`, so the first strip is the low end's colour, the last
@@ -641,8 +771,14 @@ pub const RAMP_HEIGHT: f32 = RAMP_STRIPS as f32 * STRIP_HEIGHT;
 /// stop's without a height.
 #[must_use]
 pub fn ramp_strip_colours(stops: &[[f32; 4]]) -> Vec<[f32; 4]> {
-    (0..RAMP_STRIPS)
-        .map(|i| ramp_at(stops, i as f64 / (RAMP_STRIPS - 1) as f64))
+    strip_colours(stops, RAMP_STRIPS)
+}
+
+/// [`ramp_strip_colours`] for a ramp drawn in `strips` strips, `strips` at
+/// least two.
+fn strip_colours(stops: &[[f32; 4]], strips: usize) -> Vec<[f32; 4]> {
+    (0..strips)
+        .map(|i| ramp_at(stops, i as f64 / (strips - 1) as f64))
         .collect()
 }
 
@@ -766,7 +902,14 @@ mod tests {
         };
         let out = ctx.run_ui(raw, |ui| {
             let painter = ui.painter().clone();
-            draw_block(&painter, egui::pos2(10.0, 10.0), &spec, None, Mode::Light);
+            draw_block(
+                &painter,
+                egui::pos2(10.0, 10.0),
+                200.0,
+                &spec,
+                None,
+                Mode::Light,
+            );
         });
         let mut swatches = Vec::new();
         for clipped in &out.shapes {
@@ -789,5 +932,110 @@ mod tests {
                 swatch.rect
             );
         }
+    }
+
+    /// A label height near the font's: the fit is a function of it, and the
+    /// rooms below sweep it at half a point.
+    const LABEL: f32 = 15.0;
+
+    fn rooms() -> impl Iterator<Item = f32> {
+        (0..=320).map(|i| i as f32 * 0.5)
+    }
+
+    /// **A room that holds the ramp draws it whole**, the pivot's label with it
+    /// when there is one, so a chart taller than the block draws as it did.
+    #[test]
+    fn a_room_that_holds_the_ramp_draws_it_whole() {
+        for room in [RAMP_HEIGHT, RAMP_HEIGHT + 0.5, 400.0] {
+            assert_eq!(
+                number_fit(room, LABEL, false),
+                NumberFit::Ramp {
+                    strips: RAMP_STRIPS,
+                    pivot: false
+                },
+                "a sequential legend in {room}"
+            );
+            assert_eq!(
+                number_fit(room, LABEL, true),
+                NumberFit::Ramp {
+                    strips: RAMP_STRIPS,
+                    pivot: true
+                },
+                "a diverging legend in {room}"
+            );
+        }
+    }
+
+    /// **The ramp is never taller than its room, is always odd, and stands the
+    /// labels apart.** A ramp of an odd count keeps its middle strip the
+    /// midpoint; one no taller than its room is inside the band; and the two end
+    /// labels, and the pivot's when it stays, do not meet.
+    #[test]
+    fn a_ramp_in_a_short_room_fits_it_and_clears_its_labels() {
+        for room in rooms() {
+            for has_pivot in [false, true] {
+                let NumberFit::Ramp { strips, pivot } = number_fit(room, LABEL, has_pivot) else {
+                    continue;
+                };
+                let height = strips as f32 * STRIP_HEIGHT;
+                assert_eq!(strips % 2, 1, "{strips} strips in {room} is not odd");
+                assert!(height <= room, "a ramp {height} tall in a room of {room}");
+                assert!(
+                    height >= 2.0 * LABEL + LABEL_GAP,
+                    "the end labels meet on a ramp {height} tall"
+                );
+                assert!(
+                    !pivot || height >= 3.0 * LABEL + 2.0 * LABEL_GAP,
+                    "the pivot's label meets an end's on a ramp {height} tall"
+                );
+                assert!(has_pivot || !pivot, "a pivot's label for a sequential ramp");
+            }
+        }
+    }
+
+    /// **The pivot's label is the first to go, and the ramp the second.** Taking
+    /// the room down from the block's height, the pivot leaves while the ramp is
+    /// still drawn, and the ramp leaves at [`ramp_floor`] and not before; a room
+    /// that has lost the ramp has not kept the pivot.
+    #[test]
+    fn the_pivot_goes_first_and_the_ramp_goes_at_its_floor() {
+        let floor = ramp_floor(LABEL);
+        let mut pivot_gone_at = None;
+        for room in rooms().collect::<Vec<_>>().into_iter().rev() {
+            match number_fit(room, LABEL, true) {
+                NumberFit::Ramp { pivot: true, .. } => {
+                    assert!(pivot_gone_at.is_none(), "the pivot is back at {room}");
+                }
+                NumberFit::Ramp { pivot: false, .. } => {
+                    pivot_gone_at.get_or_insert(room);
+                    assert!(room >= floor, "a ramp in {room}, under its floor {floor}");
+                }
+                NumberFit::Labels => {
+                    assert!(
+                        pivot_gone_at.is_some(),
+                        "the ramp went at {room} with the pivot still on it"
+                    );
+                    assert!(room < floor, "labels alone in {room}, the floor is {floor}");
+                }
+            }
+        }
+        let gone = pivot_gone_at.expect("a room too short for the pivot, with a ramp");
+        assert!(
+            gone > floor,
+            "the pivot went at {gone}, with the ramp at {floor}"
+        );
+        assert_eq!(
+            number_fit(floor, LABEL, false),
+            NumberFit::Ramp {
+                strips: floor_strips(LABEL),
+                pivot: false
+            },
+            "the floor itself draws the ramp"
+        );
+        assert_eq!(
+            number_fit(floor - 0.5, LABEL, false),
+            NumberFit::Labels,
+            "under the floor draws the labels alone"
+        );
     }
 }
