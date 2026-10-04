@@ -166,17 +166,17 @@ fn a_number_fill_paints_two_arms_about_the_pivot_and_the_legend_shows_both() {
     assert_eq!(
         strips[0],
         rgba(DIVERGING_BLUE_ARM[0]),
-        "the bar starts at the blue pole"
+        "the ramp starts at the blue pole"
     );
     assert_eq!(
         strips[strips.len() - 1],
         rgba(DIVERGING_RED_ARM[4]),
-        "the bar ends at the red pole"
+        "the ramp ends at the red pole"
     );
     assert_eq!(
         strips[strips.len() / 2],
         rgba(DIVERGING_MID_LIGHT),
-        "the middle of the bar, where the pivot is labelled, is the midpoint colour"
+        "the middle of the ramp, where the pivot is labelled, is the midpoint colour"
     );
 }
 

@@ -14,9 +14,11 @@
 
 use brightfield_shell::design::Mode;
 use brightfield_shell::legend::{
-    band_width, block_width, draw_band, ramp_strip_colours, LegendSpec, RAMP_HEIGHT,
+    band_width, block_width, draw_band, draw_below_block, ramp_strip_colours, LegendSpec,
+    RAMP_HEIGHT,
 };
 use brightfield_shell::pipeline::{compose_spec_str, Composed};
+use brightfield_spec::layout::BELOW_LEGEND_HEIGHT;
 
 /// The band's left edge in the headless context — well clear of the origin, so a
 /// block drawn left of where it was told to go lands at a visibly different x.
@@ -31,7 +33,12 @@ const RASTER_TOP: f32 = 20.0;
 const VALUES: [f64; 7] = [1.5, 2.0, 3.5, 9.0, 4.0, 6.5, 5.0];
 
 fn page(column: &str, fill: &str, attrs: &str) -> String {
-    let rows: String = VALUES
+    page_of(&VALUES, column, fill, attrs)
+}
+
+/// [`page`] over `values` in place of [`VALUES`].
+fn page_of(values: &[f64], column: &str, fill: &str, attrs: &str) -> String {
+    let rows: String = values
         .iter()
         .enumerate()
         .map(|(i, v)| {
@@ -87,6 +94,11 @@ fn painted(composed: &Composed) -> (egui::Rect, Vec<Ink>) {
     let out = ctx.run_ui(raw, |ui| {
         draw_band(ui, band, RASTER_TOP, composed, Mode::Light);
     });
+    (band, ink_of(&out))
+}
+
+/// The text and the solid rects `out` painted, in paint order.
+fn ink_of(out: &egui::FullOutput) -> Vec<Ink> {
     let mut ink = Vec::new();
     for clipped in &out.shapes {
         match &clipped.shape {
@@ -100,7 +112,7 @@ fn painted(composed: &Composed) -> (egui::Rect, Vec<Ink>) {
             _ => {}
         }
     }
-    (band, ink)
+    ink
 }
 
 fn texts(ink: &[Ink]) -> Vec<(&str, egui::Rect)> {
@@ -315,6 +327,148 @@ fn a_long_name_is_cut_short_inside_the_column_and_the_band_stays_as_wide() {
         BAND_LEFT + block_width()
     );
     assert!(band.max.x >= rect.max.x, "the name leaves the band");
+}
+
+/// Whole numbers of sixteen digits, each below 2^53 so that an `f64` holds it
+/// exactly, at the ends of the domain: spelled out they outrun any room a legend
+/// gives a label.
+const SIXTEEN_DIGITS: [f64; 4] = [
+    1_234_567_890_123_456.0,
+    5_000_000_000_000_000.0,
+    7_000_000_000_000_000.0,
+    8_765_432_109_876_543.0,
+];
+
+/// The scales a sixteen-digit domain is drawn on, with how many of the legend's
+/// values are then of sixteen digits: a sequential scale starts at zero, so only
+/// its maximum is; a diverging one about a pivot of sixteen digits has all three.
+const SIXTEEN_DIGIT_SCALES: [(&str, usize); 2] = [
+    ("", 1),
+    ("colorScale: diverging\ncolorPivot: 5000000000000000\n", 3),
+];
+
+/// The values `legend` labels, in the order a ramp is read from its top: the
+/// maximum, the pivot of a diverging scale, the minimum.
+fn values_top_down(legend: &LegendSpec) -> Vec<f64> {
+    match legend {
+        LegendSpec::Sequential { min, max, .. } => vec![*max, *min],
+        LegendSpec::Diverging {
+            min, max, pivot, ..
+        } => vec![*max, *pivot, *min],
+        LegendSpec::Categorical { .. } => panic!("a number fill draws a ramp"),
+    }
+}
+
+/// The value as the legend spells it: a whole number to no decimals.
+fn spelled(value: f64) -> String {
+    format!("{value:.0}")
+}
+
+/// **AC1.** A domain end of sixteen digits at a plot's right is cut short inside
+/// the label column: its text ends in an ellipsis and its right edge is inside
+/// the column, which ends where the block does. A value of one digit beside it
+/// is spelled whole.
+#[test]
+fn a_domain_end_of_sixteen_digits_is_cut_short_inside_the_label_column() {
+    for (attrs, long) in SIXTEEN_DIGIT_SCALES {
+        let composed = compose(&page_of(&SIXTEEN_DIGITS, "reading", "reading", attrs));
+        let legend = LegendSpec::of_plot(&composed.plots[0]).expect("a number fill draws a legend");
+        let values = values_top_down(&legend);
+        let (_, ink) = painted(&composed);
+        let words = texts(&ink);
+        assert_eq!(
+            words.len(),
+            1 + values.len(),
+            "{attrs:?}: the name, then each value: {words:?}"
+        );
+        let mut cut_short = 0;
+        for ((text, rect), value) in words[1..].iter().zip(&values) {
+            let whole = spelled(*value);
+            if whole.chars().count() < 16 {
+                assert_eq!(*text, whole, "{attrs:?}: a short value was changed");
+                continue;
+            }
+            cut_short += 1;
+            assert!(
+                text.ends_with('\u{2026}') && text.chars().count() < whole.chars().count(),
+                "{attrs:?}: {whole:?} was not cut short: {text:?}"
+            );
+            assert!(
+                rect.max.x <= BAND_LEFT + block_width(),
+                "{attrs:?}: {text:?} {rect:?} runs past the label column, which ends at {}",
+                BAND_LEFT + block_width()
+            );
+        }
+        assert_eq!(cut_short, long, "{attrs:?}: values of sixteen digits");
+    }
+}
+
+/// How wide the band under a plot is for the next test: narrow enough that the
+/// ramp is the least it is drawn, so sixteen digits are wider than the ramp.
+const BELOW_BAND_WIDTH: f32 = 190.0;
+
+/// **AC1.** A domain end of sixteen digits under a plot is cut short inside the
+/// ramp's width: its text ends in an ellipsis and lies between the ramp's two
+/// ends, so none hangs past the end it names.
+#[test]
+fn a_domain_end_of_sixteen_digits_under_a_plot_is_cut_short_inside_the_ramp() {
+    for (attrs, long) in SIXTEEN_DIGIT_SCALES {
+        let composed = compose(&page_of(&SIXTEEN_DIGITS, "reading", "reading", attrs));
+        let legend = LegendSpec::of_plot(&composed.plots[0]).expect("a number fill draws a legend");
+        // Read from the left, as the band draws them.
+        let mut values = values_top_down(&legend);
+        values.reverse();
+        let band = egui::Rect::from_min_size(
+            egui::pos2(BAND_LEFT, RASTER_TOP),
+            egui::vec2(BELOW_BAND_WIDTH, BELOW_LEGEND_HEIGHT as f32),
+        );
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(900.0, 700.0),
+            )),
+            ..Default::default()
+        };
+        let out = ctx.run_ui(raw, |ui| {
+            draw_below_block(
+                &ui.painter_at(band),
+                band,
+                &legend,
+                composed.plots[0].fill_column.as_deref(),
+                Mode::Light,
+            );
+        });
+        let ink = ink_of(&out);
+        let words = texts(&ink);
+        let strips = fills(&ink);
+        assert!(!strips.is_empty(), "{attrs:?}: the ramp painted no strip");
+        let left = strips.iter().map(|(r, _)| r.min.x).fold(f32::MAX, f32::min);
+        let right = strips.iter().map(|(r, _)| r.max.x).fold(f32::MIN, f32::max);
+        assert_eq!(
+            words.len(),
+            1 + values.len(),
+            "{attrs:?}: the name, then each value: {words:?}"
+        );
+        let mut cut_short = 0;
+        for ((text, rect), value) in words[1..].iter().zip(&values) {
+            let whole = spelled(*value);
+            if whole.chars().count() < 16 {
+                assert_eq!(*text, whole, "{attrs:?}: a short value was changed");
+                continue;
+            }
+            cut_short += 1;
+            assert!(
+                text.ends_with('\u{2026}') && text.chars().count() < whole.chars().count(),
+                "{attrs:?}: {whole:?} was not cut short: {text:?}"
+            );
+            assert!(
+                rect.min.x >= left - 0.01 && rect.max.x <= right + 0.01,
+                "{attrs:?}: {text:?} {rect:?} is outside the ramp, which spans {left} to {right}"
+            );
+        }
+        assert_eq!(cut_short, long, "{attrs:?}: values of sixteen digits");
+    }
 }
 
 /// **AC4.** No part of the legend is inside the plot's data area: everything the
