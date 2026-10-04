@@ -74,14 +74,6 @@ enum Ink {
     Fill(egui::Rect, egui::Color32),
 }
 
-impl Ink {
-    fn rect(&self) -> egui::Rect {
-        match self {
-            Self::Text(_, r) | Self::Fill(r, _) => *r,
-        }
-    }
-}
-
 /// The band the chart pane reserves for `composed`: level with the raster and as
 /// tall as the chart.
 fn band_of(composed: &Composed) -> egui::Rect {
