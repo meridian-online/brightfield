@@ -254,11 +254,12 @@ enum Kept {
 }
 
 /// **As a chart shortens, the pivot's label goes first and the ramp second, and
-/// what is drawn stays inside the band at every height.** Each height from 400
+/// what is drawn stays inside the band as the height falls.** Each height from 400
 /// points down to 20, the shortest a chart with its margins declared away
-/// composes at, composes the chart and reads its legend: nothing is outside the
-/// band, no two labels meet, a label is the font's size, the pivot's label stays
-/// on every ramp that holds all three and is gone from every ramp that does not,
+/// composes at, composes the chart and reads its legend: no part of it is outside
+/// the band, no two labels meet, a label is the font's size, the pivot's label
+/// stays on a ramp that holds the three labels clear of one another and is gone
+/// from a ramp that does not,
 /// and the ramp is drawn exactly where the room under the name holds
 /// [`ramp_floor`] — below it no strip is drawn and the labels that fit are, the
 /// maximum first.
