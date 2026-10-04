@@ -77,7 +77,8 @@ use crate::column_header::RugDrawn;
 use crate::design::Mode;
 use crate::one_step::{ColumnFacts, OneStepProtocol};
 use crate::shelf::{
-    CardDrawn, ColumnList, ColumnListRequest, ListColumn, ListReport, ShelfChannels,
+    CardDrawn, ChannelSettings, ColumnList, ColumnListRequest, ListColumn, ListReport,
+    ShelfChannels,
 };
 use crate::starts;
 use crate::text_ink;
@@ -1974,6 +1975,15 @@ impl ProtocolModel {
     pub fn rebind_column_list(&mut self, channels: ShelfChannels) {
         if let Some(list) = self.column_list.as_mut() {
             list.rebind(channels);
+        }
+    }
+
+    /// Hand the open list what the axes' settings read, which the window reads
+    /// from the plot the list belongs to ([`ColumnList::set_settings`]). Nothing
+    /// when no list is open.
+    pub fn set_column_list_settings(&mut self, settings: ChannelSettings) {
+        if let Some(list) = self.column_list.as_mut() {
+            list.set_settings(settings);
         }
     }
 

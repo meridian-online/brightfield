@@ -102,10 +102,12 @@ A chart's shelf is a band of one cell per channel (mark, x, y, colour) at the he
 open list of columns or settings under a cell. It takes the Protocol panel's precedent: a key context of
 its own (`Shelf`), so its `h`, `l`, `m`, `x`, `y` and `c` never collide with the Workspace's pop-out,
 dive-in, mark, axis-lock and colour bindings, or with the Protocol panel's producer, consumer and yank.
-An open list takes letters as verbs (lazygit, Linear, Gmail), and `/` gives the query the keys.
+An open list takes letters as verbs (lazygit, Linear, Gmail), and `/` gives the query the keys. `Tab` turns an
+axis's list between its columns and its settings; on colour's and the mark's list it leaves the columns as they are.
 Motion and back-out are **View**-tier; keeping a choice sets a channel, so it is **Data**-tier, as
-`set-channel` is. `h` and `l` are the cell or the value beside as drawn, left and right, and stop at the
-mark's cell rather than popping out, because Esc is the way out.
+`set-channel` is. `h` and `l` are the cell beside as drawn, left and right, and stop at the
+mark's cell rather than popping out, because Esc is the way out. On a settings row they do nothing until a row
+can be set, and the registry's help for each says so.
 
 | longname | key(s) | freq / mnem / conv | motor note |
 |----------|--------|--------------------|------------|
@@ -118,6 +120,7 @@ mark's cell rather than popping out, because Esc is the way out.
 | `move-shelf-left` | `h` · `left` | 5 / 4 / 5 | home-row `h` = left (vim), as drawn: mark, x, y, colour run left to right; stops at the mark |
 | `move-shelf-right` | `l` · `right` | 5 / 4 / 5 | home-row `l` = right (vim), as drawn; the Protocol panel's `l` is likewise the node drawn to the right |
 | `narrow-shelf-list` | `/` | 4 / 4 / 5 | `/` = search/narrow (vim, less, lazygit); the query takes letters as text until Esc; the Workspace's `/` is `focus-jump` |
+| `turn-shelf-list` | `tab` | 4 / 4 / 4 | `Tab` = the next tab of the open list (browser tabs, IDE panes, lazygit's panels); the Shelf context keeps it apart from the Workspace's `focus-next-sibling`, and the list's tab strip prints the word it turns to |
 | `keep-shelf-choice` | `enter` | 5 / 4 / 5 | enter = keep the row under the cursor, in the list and in the query (telescope, fzf); a Data verb |
 | `back-out-of-shelf` | `escape` | 5 / 4 / 5 | esc = back out one level (the Esc ladder): a value not kept, the query, the list, the shelf |
 

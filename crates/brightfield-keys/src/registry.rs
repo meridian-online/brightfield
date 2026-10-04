@@ -821,7 +821,7 @@ pub fn registry() -> Vec<VerbEntry> {
             drives: D::Navigation,
             status: VerbStatus::Built,
             reserved_reason: None,
-            help: "On the band, the cell to the left; on a settings row, the value to the left; stops at the mark's cell",
+            help: "On the band and on the columns, the cell to the left, stopping at the mark's cell; on a settings row it does nothing until a row can be set",
             scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "home-row h = left (vim), as drawn: mark, x, y, colour run left to right; stops at the mark rather than popping out, because Esc is the way out" }),
         },
         VerbEntry {
@@ -832,7 +832,7 @@ pub fn registry() -> Vec<VerbEntry> {
             drives: D::Navigation,
             status: VerbStatus::Built,
             reserved_reason: None,
-            help: "On the band, the cell to the right; on a settings row, the value to the right",
+            help: "On the band and on the columns, the cell to the right, stopping at colour; on a settings row it does nothing until a row can be set",
             scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "home-row l = right (vim), as drawn: mark, x, y, colour run left to right; the Protocol panel's l is likewise the node drawn to the right" }),
         },
         VerbEntry {
@@ -845,6 +845,17 @@ pub fn registry() -> Vec<VerbEntry> {
             reserved_reason: None,
             help: "Narrow the shelf's open list to the rows matching what is typed; Esc clears",
             scores: Some(Scores { frequency: 4, mnemonic: 4, convention: 5, motor_note: "/ = search/narrow (vim, less, lazygit); the query takes letters as text until Esc, and the Workspace's / is focus-jump, a search by name" }),
+        },
+        VerbEntry {
+            longname: "turn-shelf-list",
+            tier: CommandTier::View,
+            binding_specs: vec![shelf("tab")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Turn an axis's open list between its columns and its settings; on colour's and the mark's list it stays on the columns",
+            scores: Some(Scores { frequency: 4, mnemonic: 4, convention: 4, motor_note: "Tab = the next tab of the open list (browser tabs, IDE panes, lazygit's panels); the Shelf context keeps it apart from the Workspace's focus-next-sibling, and the list's tab strip prints the word it turns to" }),
         },
         VerbEntry {
             longname: "keep-shelf-choice",
@@ -1317,6 +1328,7 @@ mod tests {
             "move-shelf-left",
             "move-shelf-right",
             "narrow-shelf-list",
+            "turn-shelf-list",
             "keep-shelf-choice",
             "back-out-of-shelf",
             "move-cursor-down",
@@ -1507,6 +1519,8 @@ mod tests {
             ("right", "move-shelf-right"),
             // Narrowing, keeping, and backing out one level.
             ("/", "narrow-shelf-list"),
+            // The list turned: columns, settings.
+            ("tab", "turn-shelf-list"),
             ("enter", "keep-shelf-choice"),
             ("escape", "back-out-of-shelf"),
         ];

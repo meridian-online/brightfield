@@ -101,7 +101,9 @@ use crate::protocol::{
     ProtocolInputs, ProtocolModel, SpineRole, SpineRow, CANVAS as PROTOCOL_CANVAS,
     INSPECTOR as PROTOCOL_INSPECTOR, LOG, OUTLINE, QUALITY, STEPS,
 };
-use crate::shelf::{BandDrawn, Binding, CardDrawn, ListReport, ShelfBand, ShelfChannels};
+use crate::shelf::{
+    BandDrawn, Binding, CardDrawn, ChannelSettings, ListReport, ListTab, ShelfBand, ShelfChannels,
+};
 
 // ---------------------------------------------------------------------------
 // The window's own chrome budget.
@@ -1813,6 +1815,20 @@ fn shelf_entry_key() -> Option<egui::Key> {
         "e" => Some(egui::Key::E),
         _ => None,
     }
+}
+
+/// Whether `event` is a press of `Tab` with no modifier held, which egui reads
+/// as a request to move focus.
+fn is_bare_tab(event: &egui::Event) -> bool {
+    matches!(
+        event,
+        egui::Event::Key {
+            key: egui::Key::Tab,
+            pressed: true,
+            modifiers,
+            ..
+        } if modifiers.is_none()
+    )
 }
 
 /// Whether the shelf takes `event` out of the frame's input when it holds the
@@ -5244,6 +5260,9 @@ impl MeridianApp {
             if let Some(band) = self.charts.shelf.band.as_mut() {
                 band.set_channels(channels.clone());
             }
+            if let Some(settings) = hero_axis_settings(&self.charts.doc, &channels) {
+                self.protocol.doc.model.set_column_list_settings(settings);
+            }
             self.protocol.doc.model.rebind_column_list(channels);
         }
         true
@@ -5383,6 +5402,15 @@ impl MeridianApp {
                 .model
                 .column_list()
                 .is_some_and(crate::shelf::ColumnList::querying);
+            // egui reads `Tab` at the head of a pass, before any code of ours
+            // runs, as a request to move focus to the next widget that takes
+            // it. A key the shelf owns must not also be that: the widget that
+            // took focus would hold the keyboard, `egui_wants_keyboard_input`
+            // would answer for it, and the next `j` would reach no list. The
+            // request is withdrawn here, ahead of the pass's widgets.
+            if events.iter().any(is_bare_tab) {
+                ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+            }
             ctx.input_mut(|i| i.events.retain(|e| !shelf_owns(e, querying)));
         }
     }
@@ -5419,6 +5447,9 @@ impl MeridianApp {
                         channel,
                         band.channels().clone(),
                     );
+                    if let Some(settings) = hero_axis_settings(&self.charts.doc, band.channels()) {
+                        self.protocol.doc.model.set_column_list_settings(settings);
+                    }
                 }
             }
             _ => self.protocol.doc.model.close_column_list(),
@@ -5444,6 +5475,8 @@ impl MeridianApp {
     /// - `u`, or `⌘Z` from the query: the preview is backed out of and the last
     ///   kept column is taken back ([`Self::shelf_undo`]); the list stays open
     ///   with its cursor on the column the channel holds again.
+    /// - `Tab` turned the list to the axis's settings: the preview is backed out
+    ///   of, and the rows read the chart as it was kept.
     fn shelf_apply(&mut self, reports: Vec<ListReport>) {
         let Some(band) = self.charts.shelf.band.as_mut() else {
             return;
@@ -5493,6 +5526,15 @@ impl MeridianApp {
                     moved = None;
                     undo = true;
                 }
+                // A preview belongs to the columns: turned to the settings, the
+                // chart is drawn as it was kept, and the settings read that
+                // chart. Turned back, the list reports the column its cursor
+                // lands on, which is drawn as a preview as any move is.
+                ListReport::Turned(ListTab::Settings) => {
+                    moved = None;
+                    self.charts.doc.drop_shelf_preview();
+                }
+                ListReport::Turned(ListTab::Columns) => {}
             }
         }
         if let Some((channel, column)) = moved {
@@ -9552,6 +9594,16 @@ fn hero_shelf_channels(doc: &ChartDoc) -> Option<ShelfChannels> {
     let spec = doc.live_dashboard()?.spec();
     let plot = brightfield_spec::edit::plot_at_path(spec, path)?;
     ShelfChannels::of_plot(plot)
+}
+
+/// What the hero's axes read on their settings lists, from the live spec at the
+/// hero's path: the values the plot resolves to, with `channels` saying what
+/// each axis holds, so a title can be told from the column's own name.
+fn hero_axis_settings(doc: &ChartDoc, channels: &ShelfChannels) -> Option<ChannelSettings> {
+    let path = &doc.composed.plots.get(HERO_PLOT)?.path;
+    let spec = doc.live_dashboard()?.spec();
+    let plot = brightfield_spec::edit::plot_at_path(spec, path)?;
+    Some(ChannelSettings::of_plot(spec, plot, channels))
 }
 
 /// Draw the grid pane's layout switch on `band`, record it on the document and
