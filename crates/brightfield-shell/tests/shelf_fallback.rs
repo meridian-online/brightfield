@@ -962,28 +962,27 @@ fn the_card_draws_over_the_hover_readout() {
         "hanging the card took the readout down, so the two are not on screen together"
     );
 
-    let card_layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("shelf-column-card"));
-    let readout_layer =
-        egui::LayerId::new(egui::Order::Foreground, egui::Id::new("chart-hover-readout"));
+    // Each layer is found by the id its `Area` is drawn under, in whatever order
+    // it is drawn in: the order is what is read, so it is not typed here.
+    let (card_layer, readout_layer) = win.ctx.memory(|m| {
+        let on_screen = m.areas().visible_layer_ids();
+        let layer = |id: &str| on_screen.iter().copied().find(|l| l.id == egui::Id::new(id));
+        (layer("shelf-column-card"), layer("chart-hover-readout"))
+    });
+    let card_layer = card_layer.expect("the card's layer is on screen");
+    let readout_layer = readout_layer.expect("the readout's layer is on screen");
+    assert!(
+        card_layer.order >= readout_layer.order,
+        "the card is drawn in the {:?} order, under the hover readout's {:?}",
+        card_layer.order,
+        readout_layer.order
+    );
     win.ctx.memory(|m| {
-        let areas = m.areas();
-        assert!(
-            areas.is_visible(&readout_layer),
-            "the readout's layer is not on screen, so its place in the order says nothing"
-        );
-        assert!(
-            areas.is_visible(&card_layer),
-            "the card's layer is not on screen"
-        );
         assert_eq!(
-            areas.top_layer_id(card_layer.order),
+            m.areas().top_layer_id(card_layer.order),
             Some(card_layer),
             "the top layer of the card's order is not the card's, so the hover readout draws \
              over it"
-        );
-        assert!(
-            card_layer.order >= readout_layer.order,
-            "the card's layer is in a lower order than the hover readout's"
         );
     });
 }
