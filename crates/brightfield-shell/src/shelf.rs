@@ -708,8 +708,8 @@ pub struct SettingRow {
 }
 
 /// The settings rows of the channels that have any: x and y. Colour's and the
-/// mark's are not built, so they have none, and `Tab` leaves their list on its
-/// columns.
+/// mark's are not built, so they have no rows, and `Tab` leaves their list on
+/// its columns.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChannelSettings {
     x: Vec<SettingRow>,
@@ -1189,8 +1189,8 @@ impl ColumnList {
 
     /// `Enter`, or a click on a row: keep the row under the cursor.
     fn keep(&mut self, out: &mut Vec<ListReport>) {
-        // A settings row is read and not yet set: `Enter` keeps nothing there
-        // until the cards that edit a row land.
+        // A settings row is read and not yet set: `Enter` has no value to keep
+        // there until the cards that edit a row land.
         if self.tab == ListTab::Settings {
             return;
         }
@@ -1794,7 +1794,7 @@ impl ColumnList {
 
     /// The tab strip: *columns · settings*, the open tab's word in the text ink
     /// over a bar in the channel's hue, the other in a quieter ink, all over one
-    /// rule. It senses nothing: `Tab` turns the list, and a strip that took the
+    /// rule. It takes no pointer: `Tab` turns the list, and a strip that took the
     /// pointer would be a control that took the keyboard with it.
     fn show_tabs(&self, ui: &mut egui::Ui, mode: Mode) -> TabsDrawn {
         let sem = semantic(mode.is_dark());
@@ -2068,7 +2068,7 @@ impl ColumnList {
         let muted = chrome::colour(sem.text.muted);
         let mut columns_pairs = ROW_HINTS.to_vec();
         if self.has_settings() {
-            // Before `Esc`, which is the last key of the foot in every state.
+            // Before `Esc`, the last key of the columns' foot.
             columns_pairs.insert(columns_pairs.len() - 1, TURN_HINT);
         }
         let pairs: &[(&str, &str)] = if self.querying {
