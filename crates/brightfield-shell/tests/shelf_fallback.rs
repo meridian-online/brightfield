@@ -16,6 +16,7 @@
 //! +1.95.0 test -p brightfield-shell --test shelf_fallback`, and read what
 //! moved before committing it.
 
+use brightfield_render::channel::Channel;
 use brightfield_shell::app::CHART;
 use brightfield_shell::design::{self, Mode};
 use brightfield_shell::one_step::ColumnFacts;
@@ -32,7 +33,7 @@ use brightfield_workbench::chrome;
 use brightfield_workbench::PaneKey;
 use egui::epaint::{ClippedShape, RectShape, Shape};
 use egui_kittest::{Harness, SnapshotOptions};
-use meridian_design::{semantic, Elevation};
+use meridian_design::{semantic, spacing, Elevation};
 
 /// How wide the design puts the card, in points.
 const CARD_WIDTH: f32 = 320.0;
@@ -797,6 +798,274 @@ fn a_click_on_the_open_cell_backs_out_and_a_click_on_another_cell_moves_the_card
         "a click on the cell the card hangs from left it hung"
     );
     assert_eq!(win.list_channel(), None);
+}
+
+// ---------------------------------------------------------------------------
+// The card, against the pointer, the window's foot, the hover readout and the
+// repaint it asks for.
+// ---------------------------------------------------------------------------
+
+/// **A press on the card that is let go off it is not a click outside.** The
+/// pointer pressed on a row, moved off the card and released over the plot: the
+/// press and the release are not one click, so the list stays open and the
+/// cursor stays where the press found it. A card that backed out on any
+/// release outside it would close here.
+#[test]
+fn a_press_on_the_card_let_go_off_it_leaves_the_list_open() {
+    let mut win = Window::rail_shut(Mode::Light);
+    win.open_cell(egui::Key::X, "x");
+    let held = win.cursor().expect("the list opens on a column");
+    let row = win
+        .card()
+        .list
+        .rows
+        .iter()
+        .find(|r| r.column != held)
+        .expect("the table has a second column")
+        .clone();
+    let on = row.name_rect.center();
+
+    win.point(on);
+    let pressed_on = win.cursor();
+    assert_eq!(
+        pressed_on.as_deref(),
+        Some(row.column.as_str()),
+        "the pointer over {} did not take the cursor there, so the press below is not on its row",
+        row.column
+    );
+
+    win.run(vec![button(on, true)]);
+    let away = win.far_from_the_card();
+    win.run(vec![egui::Event::PointerMoved(away)]);
+    win.run(vec![button(away, false)]);
+    win.settle();
+
+    assert!(
+        win.app.shelf_card_drawn().is_some(),
+        "a press on a row let go off the card closed it"
+    );
+    assert_eq!(
+        win.list_channel(),
+        Some(ShelfChannel::X),
+        "a press on a row let go off the card left x's list"
+    );
+    assert_eq!(
+        win.cursor(),
+        pressed_on,
+        "a press on a row let go off the card moved the cursor"
+    );
+}
+
+/// The card's rule, in points: the frame adds it to the scroll area's height on
+/// the card's top and again on its foot.
+const RULE: f32 = 1.0;
+
+/// **The card's foot keeps the design system's gap from the window's.** A window
+/// too short for the list leaves the card the room under its cell less
+/// `SPACE_4`, and the frame's rule on top of that room is two points more, so
+/// the foot stands `SPACE_4` less the rule's two sides off the window's. With no
+/// gap the card would run to the window's edge.
+#[test]
+fn a_card_taller_than_the_room_keeps_a_space_4_gap_from_the_windows_foot() {
+    let tall = {
+        let mut win = Window::rail_shut(Mode::Light);
+        win.open_cell(egui::Key::X, "x");
+        win.card().rect.height()
+    };
+    let mut win = Window::open_at(Mode::Light, 420.0);
+    win.shut_the_rail();
+    win.open_cell(egui::Key::X, "x");
+    let card = win.card();
+    assert!(
+        card.rect.height() < tall,
+        "the list fits the room in a window 420 high ({}), so no gap is being asked of the card",
+        card.rect.height()
+    );
+    let gap = win.screen.bottom() - card.rect.bottom();
+    let designed = spacing::SPACE_4 - 2.0 * RULE;
+    assert!(
+        near(gap, designed),
+        "the card's foot stands {gap} from the window's, not the {designed} the design \
+         system's `SPACE_4` ({}) less the rule's two sides leaves",
+        spacing::SPACE_4
+    );
+}
+
+/// The `(longitude, latitude)` of every row of the sample.
+fn sample_marks() -> Vec<(f64, f64)> {
+    let text = std::fs::read_to_string(housing()).expect("the sample reads");
+    let mut lines = text.lines();
+    let header: Vec<&str> = lines.next().expect("a header row").split(',').collect();
+    let column = |name: &str| {
+        header
+            .iter()
+            .position(|c| *c == name)
+            .unwrap_or_else(|| panic!("the sample has no {name} column"))
+    };
+    let (lon, lat) = (column("longitude"), column("latitude"));
+    lines
+        .map(|line| {
+            let cells: Vec<f64> = line
+                .split(',')
+                .map(|c| c.parse().expect("a numeric cell"))
+                .collect();
+            (cells[lon], cells[lat])
+        })
+        .collect()
+}
+
+/// Where the hero's plot draws the mark farthest to its right, in window space:
+/// a point the card hung from the band's left does not cover, with a mark under
+/// it for the pointer to come to rest on.
+fn rightmost_mark(win: &Window) -> egui::Pos2 {
+    let plot = win.hero_plot();
+    let scales = &win.app.chart_doc().composed.plots[0].scales;
+    let x = scales.get(Channel::X).expect("an x scale");
+    let y = scales.get(Channel::Y).expect("a y scale");
+    #[allow(clippy::cast_possible_truncation)]
+    sample_marks()
+        .into_iter()
+        .map(|(lon, lat)| {
+            egui::pos2(
+                plot.min.x + x.map_f64(lon) as f32,
+                plot.min.y + y.map_f64(lat) as f32,
+            )
+        })
+        .max_by(|a, b| a.x.total_cmp(&b.x))
+        .expect("the sample has rows")
+}
+
+/// **The card is drawn over the hover readout.** The pointer rests on a mark
+/// and the hero's readout is up; `e x` then hangs the card. The card's layer is
+/// the top one of the order the readout's is in, read from egui's layer order,
+/// so the readout does not draw over a list the analyst is choosing from.
+#[test]
+fn the_card_draws_over_the_hover_readout() {
+    let mut win = Window::rail_shut(Mode::Light);
+    let mark = rightmost_mark(&win);
+    win.point(mark);
+    assert!(
+        win.app.chart_doc().hover_readout.is_some(),
+        "the pointer at rest on the mark at {mark:?} raised no readout, so there is nothing for \
+         the card to be drawn over"
+    );
+
+    win.open_cell(egui::Key::X, "x");
+    let card = win.card();
+    assert!(
+        !card.rect.contains(mark),
+        "the card {:?} covers the pointer at {mark:?}",
+        card.rect
+    );
+    assert!(
+        win.app.chart_doc().hover_readout.is_some(),
+        "hanging the card took the readout down, so the two are not on screen together"
+    );
+
+    // Each layer is found by the id its `Area` is drawn under, in whatever order
+    // it is drawn in: the order is what is read, so it is not typed here.
+    let (card_layer, readout_layer) = win.ctx.memory(|m| {
+        let on_screen = m.areas().visible_layer_ids();
+        let layer = |id: &str| {
+            on_screen
+                .iter()
+                .copied()
+                .find(|l| l.id == egui::Id::new(id))
+        };
+        (layer("shelf-column-card"), layer("chart-hover-readout"))
+    });
+    let card_layer = card_layer.expect("the card's layer is on screen");
+    let readout_layer = readout_layer.expect("the readout's layer is on screen");
+    assert!(
+        card_layer.order >= readout_layer.order,
+        "the card is drawn in the {:?} order, under the hover readout's {:?}",
+        card_layer.order,
+        readout_layer.order
+    );
+    win.ctx.memory(|m| {
+        assert_eq!(
+            m.areas().top_layer_id(card_layer.order),
+            Some(card_layer),
+            "the top layer of the card's order is not the card's, so the hover readout draws \
+             over it"
+        );
+    });
+}
+
+/// The files that asked for a repaint in the pass before the last: egui
+/// records each request with the file it was made from.
+fn repaint_files(win: &Window) -> Vec<&'static str> {
+    win.ctx.repaint_causes().iter().map(|c| c.file).collect()
+}
+
+/// **A click off the card asks for a repaint.** Backing out is held for the next
+/// frame's feed, and the card is gone only on that frame; with no request the
+/// window waits on the next input event with the card still up. egui records
+/// each request with the file that made it, and other code asks on the same
+/// frame, so the read is the request the column list's own file makes: it is
+/// absent from the frame the press landed in and present in the frame the
+/// release made the click.
+#[test]
+fn a_click_off_the_card_asks_the_context_for_a_repaint() {
+    let mut win = Window::rail_shut(Mode::Light);
+    win.open_cell(egui::Key::X, "x");
+    let away = win.far_from_the_card();
+    win.point(away);
+    win.run(vec![button(away, true)]);
+    win.run(Vec::new());
+    assert!(
+        !repaint_files(&win)
+            .iter()
+            .any(|f| f.ends_with("protocol.rs")),
+        "a press off the card, which is not yet a click, asked for a repaint from the column \
+         list's file: {:?}",
+        win.ctx.repaint_causes()
+    );
+
+    win.run(vec![button(away, false)]);
+    win.run(Vec::new());
+    assert!(
+        repaint_files(&win)
+            .iter()
+            .any(|f| f.ends_with("protocol.rs")),
+        "a click off the card asked for no repaint from the column list's file: {:?}",
+        win.ctx.repaint_causes()
+    );
+}
+
+/// **A cold click on x's cell hangs x's list.** The rail is shut and no cell is
+/// open, no key has been pressed: the click alone opens the cell, opens its
+/// list and hangs the card from it.
+#[test]
+fn a_click_on_x_with_the_rail_shut_and_no_cell_open_hangs_x_as_a_card() {
+    let mut win = Window::rail_shut(Mode::Light);
+    assert_eq!(win.active(), None, "a cell is open before the click");
+    assert_eq!(win.list_channel(), None, "a list is open before the click");
+    assert!(
+        win.app.shelf_card_drawn().is_none(),
+        "a card is hung before the click"
+    );
+
+    let x = win.band_cell(ShelfChannel::X);
+    win.click(x.center());
+    assert_eq!(
+        win.active(),
+        Some(ShelfChannel::X),
+        "the click opened no cell"
+    );
+    assert_eq!(
+        win.list_channel(),
+        Some(ShelfChannel::X),
+        "the click opened no list"
+    );
+    let card = win.card();
+    assert_eq!(card.cell, x, "the card says which cell it hangs from");
+    assert!(
+        near(card.rect.left(), x.left()) && near(card.rect.top(), x.bottom()),
+        "the card's top left is {:?}, not the x cell's bottom left {:?}",
+        card.rect.left_top(),
+        x.left_bottom()
+    );
 }
 
 // ---------------------------------------------------------------------------
