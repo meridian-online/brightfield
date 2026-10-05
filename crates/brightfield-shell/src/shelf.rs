@@ -1870,11 +1870,7 @@ impl ColumnList {
 
         if order.is_empty() {
             let (note, _) = ui.allocate_exact_size(egui::vec2(width, b.row), egui::Sense::hover());
-            let text = format!(
-                "no setting of {} has \"{}\" in its name",
-                self.channel.word(),
-                self.query
-            );
+            let text = format!("no setting has \"{}\" in its name", self.query);
             let galley = text_ink::fit(
                 &painter,
                 &text,

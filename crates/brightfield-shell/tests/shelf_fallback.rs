@@ -22,11 +22,14 @@ use brightfield_shell::design::{self, Mode};
 use brightfield_shell::one_step::ColumnFacts;
 use brightfield_shell::protocol::SpineRole;
 use brightfield_shell::shelf::{
-    Binding, CardDrawn, ColumnList, ColumnListRequest, ListColumn, ShelfChannels, QUERY_PLACEHOLDER,
+    Binding, CardDrawn, ChannelSettings, ColumnList, ColumnListRequest, ListColumn, ListTab,
+    ShelfChannels, QUERY_PLACEHOLDER,
 };
 use brightfield_shell::startup::default_layout;
 use brightfield_shell::text_ink::{self, DrawnText};
 use brightfield_shell::window::{Boot, MeridianApp};
+use brightfield_spec::edit::plot_at_path;
+use brightfield_spec::parse::{parse_spec, Format};
 use brightfield_workbench::arrangement;
 use brightfield_workbench::channel::{self, ShelfChannel};
 use brightfield_workbench::chrome;
@@ -1091,21 +1094,48 @@ fn columns() -> Vec<ListColumn> {
         .collect()
 }
 
-/// Draw the card over a stand-in for the band through the wgpu renderer and
-/// compare it with the committed baseline `name`.
-fn baseline(name: &str, mode: Mode) {
+/// What the hero's axes read when the plot's attributes are `attrs`, a block of
+/// top-level lines of the spec, as the window reads them off the live plot and
+/// hands them to the list.
+fn settings_of(attrs: &str, channels: &ShelfChannels) -> ChannelSettings {
+    let source = format!(
+        "data:\n  t:\n    - {{ a: 1 }}\nplot:\n  - mark: dot\n    data: {{ from: t }}\n    x: a\n    y: a\nwidth: 600\nheight: 300\n{attrs}\n"
+    );
+    let spec = parse_spec(&source, Format::Yaml)
+        .expect("the spec parses")
+        .spec;
+    let plot = plot_at_path(&spec, "root").expect("the spec's root is its plot");
+    ChannelSettings::of_plot(&spec, plot, channels)
+}
+
+/// The card's list over the housing columns, as the window hands it: x's, with
+/// `attrs` the plot's attributes the axes' settings read.
+fn card_list(attrs: &str) -> ColumnList {
     let channels = ShelfChannels {
         mark: "dot".to_string(),
         x: Binding::Column("population".to_string()),
         y: Binding::Column("latitude".to_string()),
         colour: Binding::Column("median_income".to_string()),
     };
+    let settings = settings_of(attrs, &channels);
     let mut list = ColumnList::new(ColumnListRequest {
         tile: "hero".to_string(),
         channel: ShelfChannel::X,
         channels,
         columns: columns(),
     });
+    list.set_settings(settings);
+    list
+}
+
+/// Draw the card over a stand-in for the band through the wgpu renderer and
+/// compare it with the committed baseline `name`.
+fn baseline(name: &str, mode: Mode) {
+    baseline_of(name, mode, card_list(""));
+}
+
+/// [`baseline`] over `list`, which a test opens on the tab it names.
+fn baseline_of(name: &str, mode: Mode, mut list: ColumnList) {
     let size = egui::vec2(420.0, 520.0);
     let cell = egui::Rect::from_min_size(egui::pos2(40.0, 24.0), egui::vec2(120.0, 44.0));
     let mut harness = Harness::builder()
@@ -1141,4 +1171,32 @@ fn the_card_light_matches_its_baseline() {
 #[test]
 fn the_card_dark_matches_its_baseline() {
     baseline("shelf_fallback_card_dark", Mode::Dark);
+}
+
+/// The card's list turned to x's settings, with a scale and a format the file
+/// sets and a title it leaves to the column's name, so the card draws a row of
+/// each state.
+fn settings_card() -> ColumnList {
+    let mut list = card_list("xScale: log\nxTickFormat: ',d'");
+    list.feed_events(&[key_down(egui::Key::Tab)]);
+    assert_eq!(list.tab(), ListTab::Settings, "Tab turned the card's list");
+    list
+}
+
+#[test]
+fn the_settings_card_light_matches_its_baseline() {
+    baseline_of(
+        "shelf_fallback_settings_card_light",
+        Mode::Light,
+        settings_card(),
+    );
+}
+
+#[test]
+fn the_settings_card_dark_matches_its_baseline() {
+    baseline_of(
+        "shelf_fallback_settings_card_dark",
+        Mode::Dark,
+        settings_card(),
+    );
 }
