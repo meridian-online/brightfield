@@ -1122,11 +1122,11 @@ pub fn read_colour_scheme(value: &SpecValue) -> ColourSchemeReading {
     }
 }
 
-/// The names a plot's `colorScale` can give and be drawn in: the straight ramp
-/// and the one that diverges about a pivot. Any other Mosaic scale type
-/// (`quantile`, `symlog`, `diverging-log`) is drawn as `linear`, and the parser
-/// names it.
-pub const DRAWN_COLOUR_SCALES: [&str; 2] = ["linear", "diverging"];
+/// The names a plot's `colorScale` can give and be drawn in: the straight ramp,
+/// the one that diverges about a pivot, and the one that steps in a count
+/// (`quantize`, with `colorN`). Any other Mosaic scale type (`quantile`,
+/// `symlog`, `diverging-log`) is drawn as `linear`, and the parser names it.
+pub const DRAWN_COLOUR_SCALES: [&str; 3] = ["linear", "diverging", "quantize"];
 
 /// What a plot's `colorScale` value is, to the parser that warns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1153,6 +1153,24 @@ pub fn read_colour_scale(value: &SpecValue) -> ColourScaleReading {
     }
 }
 
+/// The name a plot's `colorScale` gives: the literal, or a `$param` that holds a
+/// string *now*, as [`resolve_colour_scheme_name`] reads its own key. A plot with
+/// no `colorScale`, and a param that holds a value other than a string, give no
+/// name.
+fn resolve_colour_scale_name<'a>(
+    plot: &'a PlotNode,
+    params: &'a IndexMap<String, ParamNode>,
+) -> Option<&'a str> {
+    match plot.attributes.get("colorScale") {
+        Some(SpecValue::String(name)) => Some(name.as_str()),
+        Some(SpecValue::Param(param)) => match params.get(&param.0) {
+            Some(ParamNode::Value(SpecValue::String(name))) => Some(name.as_str()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Whether a plot's `colorScale` draws about a pivot: the literal `diverging`,
 /// or a `$param` that holds it *now*, as [`resolve_colour_scheme_name`] reads
 /// its own key. A plot with no `colorScale`, a name no renderer draws, and a
@@ -1162,15 +1180,82 @@ pub fn resolve_colour_scale_diverging(
     plot: &PlotNode,
     params: &IndexMap<String, ParamNode>,
 ) -> bool {
-    let name = match plot.attributes.get("colorScale") {
-        Some(SpecValue::String(name)) => Some(name.as_str()),
-        Some(SpecValue::Param(param)) => match params.get(&param.0) {
-            Some(ParamNode::Value(SpecValue::String(name))) => Some(name.as_str()),
-            _ => None,
+    resolve_colour_scale_name(plot, params) == Some("diverging")
+}
+
+/// Whether a plot's `colorScale` draws in steps: the literal `quantize`, or a
+/// `$param` that holds it *now*. A plot with no `colorScale`, a name no renderer
+/// draws, and a param that holds some other value does not step and draws the
+/// ramp it drew before the key was read.
+#[must_use]
+pub fn resolve_colour_scale_quantize(
+    plot: &PlotNode,
+    params: &IndexMap<String, ParamNode>,
+) -> bool {
+    resolve_colour_scale_name(plot, params) == Some("quantize")
+}
+
+/// How many steps a `quantize` scale draws when the plot gives no count, which is
+/// the count Mosaic's renderer draws when `colorN` is absent.
+pub const DEFAULT_COLOUR_STEPS: usize = 5;
+
+/// The most steps a plot's `colorN` can ask for. A count past it is no count the
+/// legend could draw a block for in the room a number legend has, and a file
+/// cannot make the colour scale as long as it likes.
+pub const MAX_COLOUR_STEPS: usize = 256;
+
+/// What a plot's `colorN` value is, to the parser that warns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColourStepsReading {
+    /// A whole number from one to [`MAX_COLOUR_STEPS`]: the plot draws that many
+    /// steps under `colorScale: quantize`.
+    Steps(usize),
+    /// `null` or a lifted `$param`: a recorded deferral, not a typo.
+    Deferred,
+    /// A value that is no count (zero, a negative, a fraction, a string, a list,
+    /// a count past [`MAX_COLOUR_STEPS`]). The plot draws
+    /// [`DEFAULT_COLOUR_STEPS`] and the parser names the value.
+    Unknown,
+}
+
+/// The one judge of a plot's `colorN` value, for the parser that warns and the
+/// resolver that draws. An integer, or a float that is a whole number, from one
+/// to [`MAX_COLOUR_STEPS`].
+#[must_use]
+pub fn read_colour_steps(value: &SpecValue) -> ColourStepsReading {
+    let most = MAX_COLOUR_STEPS as i64;
+    match value {
+        SpecValue::Param(_) | SpecValue::Null => ColourStepsReading::Deferred,
+        SpecValue::Integer(n) if (1..=most).contains(n) => ColourStepsReading::Steps(*n as usize),
+        SpecValue::Float(f)
+            if f.is_finite() && f.fract() == 0.0 && (1.0..=most as f64).contains(f) =>
+        {
+            ColourStepsReading::Steps(*f as usize)
+        }
+        _ => ColourStepsReading::Unknown,
+    }
+}
+
+/// The count of steps a plot's `colorN` gives, if it gives one: a count
+/// [`read_colour_steps`] accepts, or a `$param` whose value param holds one
+/// *now*. `None` is the plot asking for [`DEFAULT_COLOUR_STEPS`], which is what
+/// a missing key, a value that is no count and a param that holds no count draw.
+#[must_use]
+pub fn resolve_colour_steps(
+    plot: &PlotNode,
+    params: &IndexMap<String, ParamNode>,
+) -> Option<usize> {
+    let value = match plot.attributes.get("colorN")? {
+        SpecValue::Param(param) => match params.get(&param.0) {
+            Some(ParamNode::Value(value)) => value,
+            _ => return None,
         },
-        _ => None,
+        value => value,
     };
-    name == Some("diverging")
+    match read_colour_steps(value) {
+        ColourStepsReading::Steps(n) => Some(n),
+        ColourStepsReading::Deferred | ColourStepsReading::Unknown => None,
+    }
 }
 
 /// The pivot a plot's `colorPivot` gives, if it gives one: a number, or a
@@ -1236,7 +1321,8 @@ pub fn resolve_colour_reverse(plot: &PlotNode, params: &IndexMap<String, ParamNo
 /// categories of a string column in the order the legend lists them.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ColourDomain {
-    /// Two numbers, low then high: a linear or diverging ramp's ends.
+    /// Two numbers, low then high: a linear or diverging ramp's ends, and the ends a
+    /// stepped scale is cut between.
     Ends(f64, f64),
     /// One or more categories, first to last.
     Categories(Vec<String>),

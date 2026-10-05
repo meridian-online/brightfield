@@ -651,12 +651,12 @@ pub fn axis_reverse_applies(scales: &ScaleSet) -> bool {
     scales.projection().is_none()
 }
 
-/// Whether a plot's `colorDomain` and `colorRange` set its colour scale: when a
-/// dot is among the marks the plot drew.
+/// Whether a plot's `colorDomain`, `colorRange` and `colorScale: quantize` with
+/// `colorN` set its colour scale: when a dot is among the marks the plot drew.
 ///
 /// A dot builds its fill ramp and its categories, and the keys set the ends and
-/// the colours of what it built. A raster, a heatmap, a cell and a hexbin keep the
-/// ramp they draw today under these keys, so a plot with none of the dot kinds
+/// the colours of what it built, and cut the ramp into steps. A raster, a heatmap,
+/// a cell and a hexbin keep the ramp they draw today under these keys, so a plot with none of the dot kinds
 /// draws as a file without them. A plot that mixes a dot with one of those shares
 /// one colour scale between them, and the dot's request sets the shared scale,
 /// as [`colour_reverse_applies`] says of `colorReverse`.

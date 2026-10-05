@@ -1,7 +1,7 @@
 //! **A plot's `colorScale` that brightfield does not draw, and a `colorPivot`
 //! that is no number, are named by the parser with the key and the value as
-//! written; `linear`, `diverging`, a number, `null` and a lifted `$param` are
-//! not.**
+//! written; `linear`, `diverging`, `quantize`, a number, `null` and a lifted
+//! `$param` are not.**
 //!
 //! `read_colour_scale` and `colour_pivot` are the judges, and the same ones run
 //! for a plot's own attribute and for `plotDefaults`. The resolvers the
@@ -77,7 +77,7 @@ fn a_drawn_scale_null_and_a_param_raise_no_warning() {
             "{name}"
         );
     }
-    assert_eq!(DRAWN_COLOUR_SCALES, ["linear", "diverging"]);
+    assert_eq!(DRAWN_COLOUR_SCALES, ["linear", "diverging", "quantize"]);
     for (params, attrs, what) in [
         (
             "params:\n  s: quantile\n",
@@ -227,7 +227,7 @@ fn corpus() -> Vec<PathBuf> {
 /// held when this was written, so a vendor bump that dropped one, or a walk that
 /// read no plot, fails here and does not pass over nothing.
 #[test]
-fn the_vendored_examples_that_write_a_scale_outside_the_two_are_warned() {
+fn the_vendored_examples_that_write_a_scale_outside_the_drawn_names_are_warned() {
     let mut warned_files: Vec<(String, String)> = Vec::new();
     let mut diverging_files: Vec<String> = Vec::new();
     for path in corpus() {
@@ -257,7 +257,7 @@ fn the_vendored_examples_that_write_a_scale_outside_the_two_are_warned() {
         found.dedup();
         assert_eq!(
             found, expected,
-            "{name}: the parse warns of each scale outside the two, and of no other"
+            "{name}: the parse warns of each scale outside the drawn names, and of no other"
         );
         for value in found {
             warned_files.push((name.clone(), value));

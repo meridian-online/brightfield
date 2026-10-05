@@ -11,7 +11,8 @@ use arrow::datatypes::{DataType, TimeUnit};
 use arrow::record_batch::RecordBatch;
 use brightfield_spec::ast::{ParamNode, PlotNode};
 use brightfield_spec::layout::{
-    resolve_colour_domain, resolve_colour_range, ColourDomain, FixedDomains, ScaleType,
+    resolve_colour_domain, resolve_colour_range, resolve_colour_scale_quantize,
+    resolve_colour_steps, ColourDomain, FixedDomains, ScaleType, DEFAULT_COLOUR_STEPS,
 };
 use indexmap::IndexMap;
 
@@ -132,6 +133,20 @@ pub enum Scale {
         pivot: f64,
         stops: Vec<[f32; 4]>,
     },
+    /// Stepped colour scale (`colorScale: quantize`): the domain cut into as many
+    /// steps of equal width as there are `colours`, each step one flat colour.
+    ///
+    /// `colours` run from the step that holds the domain's low end to the one that
+    /// holds its high end, one colour for each step, so their count is the count
+    /// of steps. A value takes the colour of the step it falls in
+    /// ([`Scale::step_of`]); a step holds its low edge and not its high one, and
+    /// the last holds its high edge too. A value past either end of the domain
+    /// takes the end step. Built by [`Scale::quantized`] from a ramp.
+    Quantized {
+        domain_min: f64,
+        domain_max: f64,
+        colours: Vec<[f32; 4]>,
+    },
 }
 
 /// d3's `scaleSymlog().constant()` default, and the one Mosaic inherits by
@@ -205,6 +220,18 @@ pub fn ramp_at(stops: &[[f32; 4]], t: f64) -> [f32; 4] {
         a[2] + (b[2] - a[2]) * frac,
         a[3] + (b[3] - a[3]) * frac,
     ]
+}
+
+/// The value at edge `k` of `n` equal steps over `[min, max]`: edge zero is `min`
+/// and edge `n` is `max` exactly, and the others are `min + span·k/n`, taken as
+/// the span times `k` over `n` so a whole span cuts into whole edges without a
+/// rounding step between.
+fn step_edge(min: f64, max: f64, k: usize, n: usize) -> f64 {
+    if k >= n {
+        max
+    } else {
+        min + (max - min) * k as f64 / n as f64
+    }
 }
 
 impl Scale {
@@ -318,8 +345,93 @@ impl Scale {
                 };
                 ramp_at(stops, t)
             }
+            Self::Quantized { colours, .. } => match self.step_of(value) {
+                Some(step) => colours[step],
+                None => [0.0, 0.0, 0.0, 1.0],
+            },
             _ => [0.0, 0.0, 0.0, 1.0],
         }
+    }
+
+    /// A stepped scale of `steps` steps over `[domain_min, domain_max]`, wearing
+    /// `ramp` sampled at even spacing: the first step the ramp's low end, the last
+    /// its high end, and the steps between at equal distances along it. `steps` is
+    /// at least one; one step wears the ramp's low end.
+    #[must_use]
+    pub fn quantized(domain_min: f64, domain_max: f64, ramp: &[[f32; 4]], steps: usize) -> Self {
+        let steps = steps.max(1);
+        let colours = (0..steps)
+            .map(|i| {
+                let t = if steps == 1 {
+                    0.0
+                } else {
+                    i as f64 / (steps - 1) as f64
+                };
+                ramp_at(ramp, t)
+            })
+            .collect();
+        Self::Quantized {
+            domain_min,
+            domain_max,
+            colours,
+        }
+    }
+
+    /// The values that bound the steps of a [`Scale::Quantized`], low first: one
+    /// more than there are steps, the first the domain's low end and the last its
+    /// high end. `None` for any other scale.
+    ///
+    /// The marks are coloured and the legend is labelled from these, so a point
+    /// that wears the colour of a block is a point the block's labels bound.
+    #[must_use]
+    pub fn step_edges(&self) -> Option<Vec<f64>> {
+        let Self::Quantized {
+            domain_min,
+            domain_max,
+            colours,
+        } = self
+        else {
+            return None;
+        };
+        let n = colours.len();
+        Some(
+            (0..=n)
+                .map(|k| step_edge(*domain_min, *domain_max, k, n))
+                .collect(),
+        )
+    }
+
+    /// The step of a [`Scale::Quantized`] that `value` falls in, counted from the
+    /// low end: a step holds its low edge and not its high one, the last holds its
+    /// high edge as well, and a value outside the domain is in the nearest end
+    /// step. `None` for any other scale, and for a scale with no colours.
+    #[must_use]
+    pub fn step_of(&self, value: f64) -> Option<usize> {
+        let Self::Quantized {
+            domain_min,
+            domain_max,
+            colours,
+        } = self
+        else {
+            return None;
+        };
+        let n = colours.len();
+        if n == 0 {
+            return None;
+        }
+        // The highest step whose low edge `value` has reached; edges only rise
+        // with the step, so the search halves its range. A NaN reaches no edge
+        // and is in the first step.
+        let (mut lo, mut hi) = (0, n - 1);
+        while lo < hi {
+            let mid = (lo + hi).div_ceil(2);
+            if value >= step_edge(*domain_min, *domain_max, mid, n) {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        Some(lo)
     }
 
     /// Map a pixel position back to a data value (inverse of `map_f64`).
@@ -385,7 +497,8 @@ impl Scale {
             Self::Band { .. }
             | Self::Colour { .. }
             | Self::Sequential { .. }
-            | Self::Diverging { .. } => None,
+            | Self::Diverging { .. }
+            | Self::Quantized { .. } => None,
         }
     }
 
@@ -452,9 +565,9 @@ impl Scale {
             | Self::Log { domain_min, .. }
             | Self::Symlog { domain_min, .. } => Some(*domain_min),
             Self::Time { domain_min_us, .. } => Some(*domain_min_us as f64),
-            Self::Sequential { domain_min, .. } | Self::Diverging { domain_min, .. } => {
-                Some(*domain_min)
-            }
+            Self::Sequential { domain_min, .. }
+            | Self::Diverging { domain_min, .. }
+            | Self::Quantized { domain_min, .. } => Some(*domain_min),
             _ => None,
         }
     }
@@ -467,9 +580,9 @@ impl Scale {
             | Self::Log { domain_max, .. }
             | Self::Symlog { domain_max, .. } => Some(*domain_max),
             Self::Time { domain_max_us, .. } => Some(*domain_max_us as f64),
-            Self::Sequential { domain_max, .. } | Self::Diverging { domain_max, .. } => {
-                Some(*domain_max)
-            }
+            Self::Sequential { domain_max, .. }
+            | Self::Diverging { domain_max, .. }
+            | Self::Quantized { domain_max, .. } => Some(*domain_max),
             _ => None,
         }
     }
@@ -483,7 +596,10 @@ impl Scale {
             | Self::Band { range_start, .. }
             | Self::Time { range_start, .. } => *range_start,
             // Colour ramps carry no positional pixel range.
-            Self::Colour { .. } | Self::Sequential { .. } | Self::Diverging { .. } => 0.0,
+            Self::Colour { .. }
+            | Self::Sequential { .. }
+            | Self::Diverging { .. }
+            | Self::Quantized { .. } => 0.0,
         }
     }
 
@@ -496,7 +612,10 @@ impl Scale {
             | Self::Band { range_end, .. }
             | Self::Time { range_end, .. } => *range_end,
             // Colour ramps carry no positional pixel range.
-            Self::Colour { .. } | Self::Sequential { .. } | Self::Diverging { .. } => 0.0,
+            Self::Colour { .. }
+            | Self::Sequential { .. }
+            | Self::Diverging { .. }
+            | Self::Quantized { .. } => 0.0,
         }
     }
 
@@ -573,9 +692,10 @@ impl Scale {
                 range_start: range_end,
                 range_end: range_start,
             },
-            other @ (Self::Colour { .. } | Self::Sequential { .. } | Self::Diverging { .. }) => {
-                other
-            }
+            other @ (Self::Colour { .. }
+            | Self::Sequential { .. }
+            | Self::Diverging { .. }
+            | Self::Quantized { .. }) => other,
         }
     }
 
@@ -629,6 +749,18 @@ impl Scale {
                     domain_max,
                     pivot,
                     stops,
+                }
+            }
+            Self::Quantized {
+                domain_min,
+                domain_max,
+                mut colours,
+            } => {
+                colours.reverse();
+                Self::Quantized {
+                    domain_min,
+                    domain_max,
+                    colours,
                 }
             }
             other @ (Self::Linear { .. }
@@ -978,7 +1110,10 @@ impl PinnedDomain {
                 ..
             } => Some(Self::Time(*domain_min_us, *domain_max_us)),
             Scale::Band { categories, .. } => Some(Self::Band(categories.clone())),
-            Scale::Colour { .. } | Scale::Sequential { .. } | Scale::Diverging { .. } => None,
+            Scale::Colour { .. }
+            | Scale::Sequential { .. }
+            | Scale::Diverging { .. }
+            | Scale::Quantized { .. } => None,
         }
     }
 
@@ -1150,6 +1285,12 @@ pub struct ColourOverride {
     /// evenly-spaced sequential ramp stops (2 endpoints interpolate as a
     /// two-stop ramp; k stops as a k-stop ramp).
     pub range: Option<Vec<[f32; 4]>>,
+    /// The count of steps a plot's `colorScale: quantize` cuts a number column
+    /// into: `colorN` when the plot gives a count, the default five when it does
+    /// not. `None` for a plot that does not step, which keeps its continuous
+    /// ramp. A `colorRange` of two or more colours gives the steps their colours
+    /// and their count, whatever this says.
+    pub steps: Option<usize>,
 }
 
 impl ColourOverride {
@@ -1173,17 +1314,23 @@ impl ColourOverride {
                 .map(|name| crate::mark::parse_colour_literal(name).map(|c| c.components))
                 .collect::<Option<Vec<[f32; 4]>>>()
         });
+        let steps = resolve_colour_scale_quantize(plot, params)
+            .then(|| resolve_colour_steps(plot, params).unwrap_or(DEFAULT_COLOUR_STEPS));
         Self {
             categories,
             domain,
             range,
+            steps,
         }
     }
 
     /// Whether the override carries nothing to apply.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.categories.is_none() && self.domain.is_none() && self.range.is_none()
+        self.categories.is_none()
+            && self.domain.is_none()
+            && self.range.is_none()
+            && self.steps.is_none()
     }
 }
 
@@ -1226,15 +1373,25 @@ pub fn apply_colour_override(set: &mut ScaleSet, ov: &ColourOverride) {
                 stops,
             } => {
                 let (domain_min, domain_max) = ov.domain.unwrap_or((*domain_min, *domain_max));
-                let stops = match &ov.range {
-                    // A ramp needs at least two stops to interpolate.
-                    Some(r) if r.len() >= 2 => r.clone(),
-                    _ => stops.clone(),
-                };
-                Scale::Sequential {
-                    domain_min,
-                    domain_max,
-                    stops,
+                let given = ov.range.as_ref().filter(|r| r.len() >= 2);
+                match ov.steps {
+                    // Cut after the domain is fixed, so the steps divide the
+                    // domain the plot draws. A `colorRange` gives the steps their
+                    // colours, one each, and so their count.
+                    Some(steps) => match given {
+                        Some(colours) => Scale::Quantized {
+                            domain_min,
+                            domain_max,
+                            colours: colours.clone(),
+                        },
+                        None => Scale::quantized(domain_min, domain_max, stops, steps),
+                    },
+                    None => Scale::Sequential {
+                        domain_min,
+                        domain_max,
+                        // A ramp needs at least two stops to interpolate.
+                        stops: given.cloned().unwrap_or_else(|| stops.clone()),
+                    },
                 }
             }
             Scale::Diverging {
@@ -2111,6 +2268,10 @@ fn union_scales(scales: &[Scale], range_start: f64, range_end: f64) -> Option<Sc
                 .iter()
                 .fold(scales[0].clone(), |acc, s| anchor_scale(&acc, s)),
         ),
+        // A stepped scale is cut from the ramp the marks built, after their scales
+        // are united ([`apply_colour_override`]), so the list does not hold one;
+        // were one there, the first stands.
+        Scale::Quantized { .. } => Some(scales[0].clone()),
     }
 }
 
@@ -3180,6 +3341,7 @@ mod tests {
             categories: Some(vec!["a".into(), "b".into()]),
             domain: None,
             range: Some(vec![[c1[0], c1[1], c1[2], 1.0], [c2[0], c2[1], c2[2], 1.0]]),
+            steps: None,
         };
         apply_colour_override(&mut set, &ov);
         let scale = set.get(Channel::Fill).expect("fill scale kept");
@@ -3206,6 +3368,7 @@ mod tests {
             categories: None,
             domain: Some((0.0, 100.0)),
             range: Some(vec![lo, hi]),
+            steps: None,
         };
         apply_colour_override(&mut set, &ov);
         let scale = set.get(Channel::Fill).expect("fill scale kept");

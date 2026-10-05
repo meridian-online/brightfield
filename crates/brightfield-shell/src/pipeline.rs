@@ -11,7 +11,9 @@
 //! golden `dashboard.yaml` and the simple examples do not exercise them). A
 //! plot's `colorDomain` and `colorRange` are ported for its dot marks: the ends
 //! of a number ramp, the order of a string column's categories and the colours
-//! both draw in. Mosaic's `colorDomain: Fixed` is not read. Standalone-legend relocation is ported for one placement: a colour
+//! both draw in. Mosaic's `colorDomain: Fixed` is not read. A plot's
+//! `colorScale: quantize` with `colorN` cuts a dot's number ramp into steps.
+//! Standalone-legend relocation is ported for one placement: a colour
 //! legend under the plot it is for in a `vconcat` is drawn in the band the layout
 //! reserved for it ([`PlotHandle::legend_below`]). A standalone legend placed
 //! any other way is drawn at the plot's right. A plot's `colorScheme` is ported:
@@ -2434,11 +2436,12 @@ fn compose_from_results(
             && colour_reverse_applies(&plot_marks);
 
         // The ends and colours the plot's spec wrote for its colour —
-        // `colorDomain` and `colorRange`, read from the spec this composition
-        // draws so a param that holds either is read as it stands now. The dots
-        // are the marks that take them, as they are `colorReverse`'s: a plot with no
-        // dot among its marks keeps the ramp it draws today
-        // (`a_cell_a_heatmap_and_a_raster_keep_their_ramp`).
+        // `colorDomain` and `colorRange` — and the steps it cuts the ramp into,
+        // `colorScale: quantize` with `colorN`, read from the spec this
+        // composition draws so a param that holds any of them is read as it
+        // stands now. The dots are the marks that take them, as they are
+        // `colorReverse`'s: a plot with no dot among its marks keeps the ramp it
+        // draws today (`a_cell_a_heatmap_and_a_raster_keep_their_ramp`).
         let colour_override = plot_node
             .filter(|_| colour_override_applies(&plot_marks))
             .map(|node| ColourOverride::of_plot(node, &spec.params))

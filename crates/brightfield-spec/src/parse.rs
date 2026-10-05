@@ -593,22 +593,23 @@ pub enum ParseWarning {
     },
 
     /// A plot-level colour attribute (`colorScheme`, `colorScale`, `colorPivot`,
-    /// `colorReverse`) carried a value brightfield cannot draw: a scheme name it
-    /// has no ramp for (`magma`, `ylgnbu`, a misspelt `viridis`), a scale type it
-    /// does not draw (`quantile`, `symlog`), a pivot that is no number, a
-    /// `colorReverse` that is neither `true` nor `false`, or a value that is no
-    /// name. The plot draws as if the key were absent, and this names the key and
+    /// `colorReverse`, `colorN`) carried a value brightfield cannot draw: a scheme
+    /// name it has no ramp for (`magma`, `ylgnbu`, a misspelt `viridis`), a scale
+    /// type it does not draw (`quantile`, `symlog`), a pivot that is no number, a
+    /// `colorReverse` that is neither `true` nor `false`, a `colorN` that is no
+    /// whole number from one up to the most steps a plot can draw, or a value that
+    /// is no name. The plot draws as if the key were absent, and this names the key and
     /// the value so an author sees why the colours are not the file's.
     ///
     /// A `null` and a lifted `$param` are deferrals and say nothing.
     /// [`crate::layout::read_colour_scheme`], [`crate::layout::read_colour_scale`],
-    /// [`crate::layout::colour_pivot`] and [`crate::layout::colour_reverse_switch`]
-    /// are the judges, and for a value written as a literal the renderer draws
+    /// [`crate::layout::colour_pivot`], [`crate::layout::colour_reverse_switch`]
+    /// and [`crate::layout::read_colour_steps`] are the judges, and for a value written as a literal the renderer draws
     /// exactly what they accept. A `$param` is read when the plot is drawn, so a
     /// param holding a value no judge accepts draws the default and raises
     /// nothing: the one case where the warning and the drawing differ. A later
-    /// colour key a build cannot read (`colorN`) is another value of this one
-    /// warning rather than a new variant.
+    /// colour key a build cannot read is another value of this one warning rather
+    /// than a new variant.
     UnreadColourKey {
         /// The offending attribute key.
         attribute: String,
@@ -1659,9 +1660,9 @@ impl Walker {
                 self.warn_tick_format(&key, &value);
             }
             // A plot-level colour attribute (`colorScheme`, `colorScale`,
-            // `colorPivot`, `colorReverse`) this build cannot draw is drawn as if
-            // it were absent; name it, with what was written. A `$param` and
-            // `null` are deferrals, not typos.
+            // `colorPivot`, `colorReverse`, `colorN`) this build cannot draw is
+            // drawn as if it were absent; name it, with what was written. A
+            // `$param` and `null` are deferrals, not typos.
             if PLOT_COLOUR_KEYS.contains(&key.as_str()) {
                 self.warn_colour_key(&key, &value);
             }
@@ -2117,7 +2118,7 @@ impl Walker {
     fn warn_colour_key(&mut self, key: &str, value: &SpecValue) {
         use crate::layout::{
             colour_pivot, colour_reverse_switch, read_colour_scale, read_colour_scheme,
-            ColourScaleReading, ColourSchemeReading,
+            read_colour_steps, ColourScaleReading, ColourSchemeReading, ColourStepsReading,
         };
         let unread = match key {
             "colorScheme" => read_colour_scheme(value) == ColourSchemeReading::Unknown,
@@ -2127,6 +2128,10 @@ impl Walker {
                 colour_pivot(value).is_none()
                     && !matches!(value, SpecValue::Param(_) | SpecValue::Null)
             }
+            // A step count is a whole number from one up; `null` and a `$param`
+            // are deferrals. A count no `quantize` scale reads is named whether
+            // or not the plot writes `colorScale: quantize`, as a pivot is.
+            "colorN" => read_colour_steps(value) == ColourStepsReading::Unknown,
             // A reverse is a literal `true` or `false`; `null` and a `$param`
             // are deferrals.
             "colorReverse" => {
@@ -2729,7 +2734,13 @@ const PLOT_TICK_FORMAT_KEYS: [&str; 2] = ["xTickFormat", "yTickFormat"];
 
 /// The plot attributes that set a colour, whose values
 /// [`ParseWarning::UnreadColourKey`] judges.
-const PLOT_COLOUR_KEYS: [&str; 4] = ["colorScheme", "colorScale", "colorPivot", "colorReverse"];
+const PLOT_COLOUR_KEYS: [&str; 5] = [
+    "colorScheme",
+    "colorScale",
+    "colorPivot",
+    "colorReverse",
+    "colorN",
+];
 
 /// The plot attributes that switch gridlines on or off: the bare `grid` for
 /// both axes, and each axis's own key.

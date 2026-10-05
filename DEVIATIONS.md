@@ -325,3 +325,35 @@ one differs.
 
 **Conformance layers suppressed:** 3
 
+## DEV-0011 — colour — the count of steps of a stepped scale (`colorScale: quantize`, `colorN`)
+
+**Mosaic behaviour.** Mosaic's renderer takes the thresholds of a `quantize` scale from tidy ticks
+of the domain, so `colorN` is a target for the count and not the count: a
+plot with `colorN: 5` over a column running 0 to 500001 comes out as six
+steps there, their edges at round values. With no `colorN` it draws five
+steps, and with a `colorRange` it draws as many steps as the range has
+colours.
+
+
+**Brightfield behaviour.** The count asked for is the count drawn. `colorN: 5` over a column running 0
+to 500001 is five steps of equal width, each a fifth of the domain, the
+domain being the `colorDomain` when the file writes one and the rows' own
+otherwise (so `colorDomain: [0, 50]` gives five steps each 10 wide). A
+point at an edge is in the step above it, and a point past either end is in
+the end step. With no `colorN` it draws five steps, and a `colorRange` of
+two or more colours gives the steps their colours and their count, whatever
+`colorN` says. A `colorN` that is not a whole number from one to 256 draws
+five steps, and the page's warning names the key and the value.
+
+
+**Rationale.** The scale row of the settings list reads *steps · 5*, written as `colorN`,
+and a count the analyst types is a count they expect to see: five colours
+they can tell apart and name the band of, with a legend of five blocks.
+Rounding the edges to tidy values gives a different count from the one in
+the file and edges that are not the equal fifths the legend's labels say.
+A spec that wants Mosaic's tidy edges writes a `colorDomain` with round
+ends, and only a domain that does not divide into round steps differs.
+
+
+**Conformance layers suppressed:** 3
+
