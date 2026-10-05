@@ -3796,6 +3796,12 @@ impl MeridianApp {
         self
     }
 
+    /// [`Self::keeping_history`] for a window already built, which is what a
+    /// capture's `prepare` step holds.
+    pub fn set_history(&mut self, history: Option<brightfield_protocol::HistoryStore>) {
+        self.history = history;
+    }
+
     /// Give the Versions panel a clock and a home folder of its own in place of
     /// the machine's, so `today 14:02` and `~/.arcform/history` read the same on
     /// every run: what a baseline of the panel is drawn under.

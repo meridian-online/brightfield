@@ -146,6 +146,30 @@ pub fn capture_png_at_with_layout(
     out: &Path,
     script: Vec<Vec<egui::Event>>,
 ) -> Result<(u32, u32), String> {
+    capture_png_prepared(boot, layout, mode, scale, size, out, script, |_| {})
+}
+
+/// [`capture_png_at_with_layout`] over a window `prepare` has been handed before
+/// its first frame.
+///
+/// For a capture whose picture depends on something a [`Boot`] does not carry,
+/// such as the store the Versions panel lists and the clock it words its times
+/// by: a baseline of that panel is drawn under a store and a clock the test
+/// owns, so it reads the same on every machine and on every day.
+///
+/// # Errors
+/// As [`capture_png`].
+#[allow(clippy::too_many_arguments)]
+pub fn capture_png_prepared(
+    boot: Boot,
+    layout: brightfield_workbench::SavedLayout,
+    mode: Mode,
+    scale: f32,
+    size: (f32, f32),
+    out: &Path,
+    script: Vec<Vec<egui::Event>>,
+    prepare: impl FnOnce(&mut MeridianApp),
+) -> Result<(u32, u32), String> {
     let (device, queue) = headless_device()?;
     let target_format = wgpu::TextureFormat::Rgba8Unorm;
     let egui_renderer = new_egui_renderer(&device, target_format);
@@ -159,6 +183,7 @@ pub fn capture_png_at_with_layout(
     // The shelf band is authoring chrome: a picture of the dashboard derives
     // from the spec alone, so the capture draws none.
     app.set_shelf_band_drawn(false);
+    prepare(&mut app);
 
     let ctx = egui::Context::default();
     let screen = egui::vec2(win_w, win_h);

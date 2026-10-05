@@ -347,7 +347,10 @@ fn the_list_names_the_first_screens_controls_by_name() {
         );
     }
 
-    for (i, name) in ["Log", "Quality", "Rows", "Editor"].into_iter().enumerate() {
+    for (i, name) in ["Log", "Quality", "Rows", "Editor", "Versions"]
+        .into_iter()
+        .enumerate()
+    {
         let entry = live.named(name);
         assert_eq!(entry.by, NamedBy::Label);
         assert_eq!(
