@@ -1321,7 +1321,8 @@ pub fn resolve_colour_reverse(plot: &PlotNode, params: &IndexMap<String, ParamNo
 /// categories of a string column in the order the legend lists them.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ColourDomain {
-    /// Two numbers, low then high: a linear or diverging ramp's ends.
+    /// Two numbers, low then high: a linear or diverging ramp's ends, and the ends a
+    /// stepped scale is cut between.
     Ends(f64, f64),
     /// One or more categories, first to last.
     Categories(Vec<String>),
