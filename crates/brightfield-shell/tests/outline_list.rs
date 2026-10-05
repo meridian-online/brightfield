@@ -160,7 +160,7 @@ fn settings_of(attrs: &str, channels: &ShelfChannels) -> ChannelSettings {
 }
 
 /// The list the window hands the Outline: opened on `request`, and given what
-/// the axes read, which here is brightfield's own on every row, so a column list
+/// the axes read, which here is brightfield's own on its three rows, so a column list
 /// is drawn as it is with a settings tab behind it.
 fn list(channel: ShelfChannel) -> ColumnList {
     let mut list = ColumnList::new(request(channel));

@@ -2,7 +2,7 @@
 //! settings, from the Outline or, with the rail shut, from the card hung from the
 //! cell, and no widget takes the keyboard with it.**
 //!
-//! `shelf_settings.rs` drives the list alone. What only the window can say is
+//! `shelf_settings.rs` drives the list alone. What the list cannot say by itself is
 //! this file's: that the key reaches the list at all, that the chart is drawn as
 //! it was kept once the list is on its settings, that the settings read the chart
 //! the list was opened on, and that `Tab`, which `egui` reads at the head of a

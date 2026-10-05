@@ -18,7 +18,7 @@
 //!   draws, because a row that read right and drew wrong, or the other way, is
 //!   a different defect from either.
 //!
-//! The window's own claims, that `Tab` reaches the list at all and takes no
+//! The window's own claims, that `Tab` reaches the list and takes no
 //! widget's focus with it, are `shelf_settings_window.rs`. The settings list's
 //! pixels are baselines in `outline_list.rs` and `shelf_fallback.rs`, beside the
 //! columns state they sit behind.
@@ -245,7 +245,7 @@ fn ink_at(frame: &Frame, at: egui::Rect) -> egui::Color32 {
 }
 
 /// What the marker at `marker`'s centre is: `Some(true)` a filled dot,
-/// `Some(false)` a hollow ring, `None` where nothing round was painted.
+/// `Some(false)` a hollow ring, `None` where no circle was painted.
 fn marker_filled(frame: &Frame, marker: egui::Rect) -> Option<(bool, egui::Color32)> {
     leaves(frame).into_iter().find_map(|s| match s {
         Shape::Circle(c) if (c.center - marker.center()).length() < 0.5 => {
@@ -454,7 +454,7 @@ fn the_head_rows_are_title_scale_and_format_in_that_order_and_a_rule_follows_the
 }
 
 /// **Text typed before `Tab` still narrows the rows**, the rows whose name
-/// begins with it first and those that only hold it after, and a rule no longer
+/// begins with it first and those that merely hold it after, and a rule no longer
 /// follows what is left.
 #[test]
 fn text_typed_before_tab_narrows_the_settings_rows_and_the_rule_goes() {
@@ -501,7 +501,7 @@ fn text_typed_before_tab_narrows_the_settings_rows_and_the_rule_goes() {
 }
 
 /// **`Esc` leaves the settings as it leaves the columns**: it clears a query
-/// first, and with none typed reports backing out, which the window answers by
+/// first, and with an empty query reports backing out, which the window answers by
 /// returning to the band's cell.
 #[test]
 fn esc_clears_the_query_and_then_backs_out_of_the_settings_as_of_the_columns() {
@@ -590,7 +590,7 @@ fn tab_on_colours_or_the_marks_list_leaves_it_on_its_columns() {
     }
 }
 
-/// **`h`, `l`, the arrows beside them and `Enter` do nothing on a settings row**,
+/// **`h`, `l`, the arrows beside them and `Enter` are inert on a settings row**,
 /// until the card that edits a row lands; `j` and `k` move the cursor and report
 /// nothing, because a settings row has no column to preview.
 #[test]
