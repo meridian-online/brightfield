@@ -769,9 +769,9 @@ fn end_labels(
 /// with the value at each boundary beside the stack.
 ///
 /// The stack is as tall as the ramp a number column would draw in the same room
-/// ([`number_fit`]), to within the rounding: every block is the same whole number
-/// of points ([`step_block_size`]), so none shares a fractional edge with the
-/// next. A boundary's label is level with the line between its two blocks, the
+/// ([`number_fit`]), to within the rounding: the blocks are the same whole number
+/// of points ([`step_block_size`]), so a block does not share a fractional edge
+/// with the next. A boundary's label is level with the line between its two blocks, the
 /// highest level with the stack's top and the lowest with its foot, and one that
 /// would stand within [`LABEL_GAP`] of the one above it is not drawn
 /// ([`kept_labels`]); the two at the ends always are. In a room that holds no

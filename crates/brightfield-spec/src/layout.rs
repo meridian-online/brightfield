@@ -1155,7 +1155,8 @@ pub fn read_colour_scale(value: &SpecValue) -> ColourScaleReading {
 
 /// The name a plot's `colorScale` gives: the literal, or a `$param` that holds a
 /// string *now*, as [`resolve_colour_scheme_name`] reads its own key. A plot with
-/// no `colorScale`, and a param that holds anything but a string, give no name.
+/// no `colorScale`, and a param that holds a value other than a string, give no
+/// name.
 fn resolve_colour_scale_name<'a>(
     plot: &'a PlotNode,
     params: &'a IndexMap<String, ParamNode>,
@@ -1238,7 +1239,7 @@ pub fn read_colour_steps(value: &SpecValue) -> ColourStepsReading {
 /// The count of steps a plot's `colorN` gives, if it gives one: a count
 /// [`read_colour_steps`] accepts, or a `$param` whose value param holds one
 /// *now*. `None` is the plot asking for [`DEFAULT_COLOUR_STEPS`], which is what
-/// a missing key, a value that is no count and a param that holds none all draw.
+/// a missing key, a value that is no count and a param that holds no count draw.
 #[must_use]
 pub fn resolve_colour_steps(
     plot: &PlotNode,

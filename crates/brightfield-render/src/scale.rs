@@ -2269,8 +2269,8 @@ fn union_scales(scales: &[Scale], range_start: f64, range_end: f64) -> Option<Sc
                 .fold(scales[0].clone(), |acc, s| anchor_scale(&acc, s)),
         ),
         // A stepped scale is cut from the ramp the marks built, after their scales
-        // are united ([`apply_colour_override`]), so none is in the list; were one
-        // there, the first stands.
+        // are united ([`apply_colour_override`]), so the list does not hold one;
+        // were one there, the first stands.
         Scale::Quantized { .. } => Some(scales[0].clone()),
     }
 }
