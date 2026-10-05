@@ -110,8 +110,9 @@ pub enum ChartTextRefusal {
         /// The reducer's reason.
         reason: RefuseReason,
     },
-    /// The value spells over more than one line, and the edit is written as
-    /// one line.
+    /// The value has no one-line spelling, and the edit is written as one
+    /// line: an array that holds a mapping or a nested array, or a value YAML
+    /// spells over several lines.
     ValueNotOneLine {
         /// The attribute or channel key.
         key: String,
@@ -393,16 +394,47 @@ fn set_key(text: &str, route: Vec<PathPart>, key: &str, spelled: String) -> Spec
     }
 }
 
-/// `value` spelled as YAML on one line, the way the whole-spec serialiser
-/// spells it.
+/// `value` spelled as YAML on one line.
+///
+/// A scalar is spelled the way the whole-spec serialiser spells it. An array of
+/// scalars is spelled in flow style, `[0, 100]`, with each string
+/// double-quoted, `["#005389", "#f4f3f2"]`: the serialiser's block style spans
+/// a line to an item, which is what a line-for-line splice cannot place. An
+/// array that holds a mapping, a nested array or any other non-scalar value is
+/// refused, because its flow spelling is not one the reader checks.
 fn one_line(key: &str, value: &SpecValue) -> Result<String, ChartTextRefusal> {
     let not_one_line = || ChartTextRefusal::ValueNotOneLine {
         key: key.to_string(),
     };
+    if let SpecValue::Array(items) = value {
+        let spelled = items
+            .iter()
+            .map(|item| flow_scalar(item).ok_or_else(not_one_line))
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(format!("[{}]", spelled.join(", ")));
+    }
     let spelled = serialise_value(value).map_err(|_| not_one_line())?;
     match spelled.strip_suffix('\n') {
         Some(line) if !line.contains('\n') => Ok(line.to_string()),
         _ => Err(not_one_line()),
+    }
+}
+
+/// One item of a flow-style array, or `None` when the item is not a scalar.
+///
+/// A string is written double-quoted with JSON's escapes, which YAML reads the
+/// same way, so a hex colour keeps the `#` that would otherwise start a
+/// comment. The other scalars are spelled as the whole-spec serialiser spells
+/// them.
+fn flow_scalar(item: &SpecValue) -> Option<String> {
+    match item {
+        SpecValue::String(s) => serde_json::to_string(s).ok(),
+        SpecValue::Null | SpecValue::Bool(_) | SpecValue::Integer(_) | SpecValue::Float(_) => {
+            let spelled = serialise_value(item).ok()?;
+            let line = spelled.strip_suffix('\n')?;
+            (!line.contains('\n')).then(|| line.to_string())
+        }
+        _ => None,
     }
 }
 

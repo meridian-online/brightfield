@@ -38,6 +38,18 @@ fn set(plot: &str, key: &str, value: &str) -> ChartEdit {
     }
 }
 
+fn set_value(plot: &str, key: &str, value: SpecValue) -> ChartEdit {
+    ChartEdit::SetPlotAttribute {
+        plot: ComponentPath(plot.to_string()),
+        key: key.to_string(),
+        value,
+    }
+}
+
+fn ints(values: &[i64]) -> SpecValue {
+    SpecValue::Array(values.iter().map(|v| SpecValue::Integer(*v)).collect())
+}
+
 fn channel(plot: &str, mark_ordinal: usize, channel: &str, column: &str) -> ChartEdit {
     ChartEdit::SetChannel {
         plot: ComponentPath(plot.to_string()),
@@ -175,6 +187,29 @@ vconcat:
         x: a
         y: b
     yScale: linear   # linear until the outliers are gone
+    width: 300
+  # the second tile
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        y: c
+    width: 300
+";
+
+/// [`WITH_SCALE`] with the first tile's axis ends fixed, a comment after them.
+const WITH_DOMAIN: &str = "\
+# A hand-kept chart.
+meta:
+  title: readings
+vconcat:
+  # the first tile
+  - plot:
+      - mark: dot
+        data: { from: t }
+        x: a
+        y: b
+    xDomain: [0, 10]   # the ends the analyst fixed
     width: 300
   # the second tile
   - plot:
@@ -434,20 +469,168 @@ fn an_edit_that_changes_an_axis_title_is_written() {
     );
 }
 
-/// A value that YAML spells over several lines is not placed as one line.
+/// An array that holds a mapping or a nested array has no one-line spelling and
+/// is refused with the same reason as before arrays were written.
 #[test]
-fn a_value_that_spans_lines_is_refused() {
-    let edit = ChartEdit::SetPlotAttribute {
-        plot: ComponentPath("root/vconcat[1]".to_string()),
-        key: "xDomain".to_string(),
-        value: SpecValue::Array(vec![SpecValue::Integer(0), SpecValue::Integer(10)]),
-    };
+fn a_value_with_no_one_line_spelling_is_refused() {
+    let mapping =
+        || SpecValue::Object(std::iter::once(("min".to_string(), SpecValue::Integer(0))).collect());
+    let cases = [
+        ("an array of mappings", SpecValue::Array(vec![mapping()])),
+        (
+            "a scalar before a mapping",
+            SpecValue::Array(vec![SpecValue::Integer(0), mapping()]),
+        ),
+        (
+            "an array of arrays",
+            SpecValue::Array(vec![SpecValue::Array(vec![
+                SpecValue::Integer(0),
+                SpecValue::Integer(10),
+            ])]),
+        ),
+        (
+            "an array after a scalar",
+            SpecValue::Array(vec![
+                SpecValue::Integer(0),
+                SpecValue::Array(vec![SpecValue::Integer(10)]),
+            ]),
+        ),
+    ];
+    for (name, value) in cases {
+        let edit = set_value("root/vconcat[1]", "xDomain", value);
+        assert_eq!(
+            write_chart_edit(WITH_SCALE, &edit),
+            Err(ChartTextRefusal::ValueNotOneLine {
+                key: "xDomain".to_string()
+            }),
+            "{name} is refused as not one line"
+        );
+    }
+}
+
+/// An array of numbers goes on one line in flow style, on a plot that lacks the
+/// key and on one that carries it, and no other byte of the file changes: the
+/// comment after the old value stays, and so does every other line.
+#[test]
+fn a_short_array_of_numbers_is_written_on_one_line() {
+    let added = write_chart_edit(
+        WITH_SCALE,
+        &set_value("root/vconcat[1]", "xDomain", ints(&[0, 100])),
+    )
+    .expect("the edit is written");
+    // The second tile is the last in the file, so its line lands at the end.
+    assert_eq!(added, format!("{WITH_SCALE}    xDomain: [0, 100]\n"));
     assert_eq!(
-        write_chart_edit(WITH_SCALE, &edit),
-        Err(ChartTextRefusal::ValueNotOneLine {
-            key: "xDomain".to_string()
-        })
+        changed_lines(WITH_SCALE, &added),
+        vec![(None, Some("    xDomain: [0, 100]".to_string()))]
     );
+
+    let replaced = write_chart_edit(
+        WITH_DOMAIN,
+        &set_value("root/vconcat[0]", "xDomain", ints(&[-5, 100])),
+    )
+    .expect("the edit is written");
+    assert_eq!(
+        replaced,
+        WITH_DOMAIN.replace(
+            "    xDomain: [0, 10]   # the ends the analyst fixed\n",
+            "    xDomain: [-5, 100]   # the ends the analyst fixed\n",
+        )
+    );
+    assert_eq!(
+        changed_lines(WITH_DOMAIN, &replaced),
+        vec![(
+            Some("    xDomain: [0, 10]   # the ends the analyst fixed".to_string()),
+            Some("    xDomain: [-5, 100]   # the ends the analyst fixed".to_string()),
+        )]
+    );
+}
+
+/// An array of strings keeps each string quoted, so a hex colour keeps the `#`
+/// that would start a comment if it were bare.
+#[test]
+fn an_array_of_strings_is_written_with_each_string_quoted() {
+    let colours = SpecValue::Array(
+        ["#005389", "#f4f3f2", "#8d1a1e"]
+            .into_iter()
+            .map(|c| SpecValue::String(c.to_string()))
+            .collect(),
+    );
+    let written = write_chart_edit(
+        WITH_DOMAIN,
+        &set_value("root/vconcat[1]", "colorRange", colours),
+    )
+    .expect("the edit is written");
+    assert_eq!(
+        changed_lines(WITH_DOMAIN, &written),
+        vec![(
+            None,
+            Some("    colorRange: [\"#005389\", \"#f4f3f2\", \"#8d1a1e\"]".to_string())
+        )]
+    );
+    assert!(
+        written.contains("  # the second tile\n"),
+        "the comment between the tiles stays"
+    );
+}
+
+/// The written file parses back to the value the edit carried: numbers of each
+/// kind, strings YAML would read as another type, a string with a quote and a
+/// backslash in it, booleans, a null and an empty array.
+#[test]
+fn a_written_array_parses_back_to_the_same_value() {
+    let strings = |items: &[&str]| {
+        SpecValue::Array(
+            items
+                .iter()
+                .map(|s| SpecValue::String((*s).to_string()))
+                .collect(),
+        )
+    };
+    let cases = [
+        ("xDomain", ints(&[0, 100])),
+        (
+            "yDomain",
+            SpecValue::Array(vec![SpecValue::Float(0.5), SpecValue::Float(-1.25)]),
+        ),
+        (
+            "xDomain",
+            SpecValue::Array(vec![SpecValue::Integer(0), SpecValue::Float(2.0)]),
+        ),
+        ("colorDomain", strings(&["low", "high"])),
+        (
+            "colorDomain",
+            strings(&["yes", "null", "12", "a, b", "x: y"]),
+        ),
+        (
+            "colorDomain",
+            strings(&["say \"hi\"", "back\\slash", "tab\there"]),
+        ),
+        (
+            "colorDomain",
+            SpecValue::Array(vec![
+                SpecValue::Bool(true),
+                SpecValue::Null,
+                SpecValue::Integer(3),
+            ]),
+        ),
+        ("colorRange", SpecValue::Array(vec![])),
+    ];
+    for (key, value) in cases {
+        for text in [WITH_SCALE, WITH_DOMAIN] {
+            let edit = set_value("root/vconcat[1]", key, value.clone());
+            let written = write_chart_edit(text, &edit)
+                .unwrap_or_else(|e| panic!("{key}: {value:?} is written: {e}"));
+            let read_back = parse(&written);
+            assert_eq!(read_back, applied_fresh(text, &edit), "{key}: {value:?}");
+            let plot = edit::plot_at_path(&read_back, "root/vconcat[1]").expect("the plot");
+            assert_eq!(
+                plot.attributes.get(key),
+                Some(&value),
+                "{key} holds the value the edit carried"
+            );
+        }
+    }
 }
 
 /// Text the parser would read back as some other chart is refused rather than
