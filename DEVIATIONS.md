@@ -296,3 +296,32 @@ differs.
 
 **Conformance layers suppressed:** 3
 
+## DEV-0010 — colour — a fixed domain on a diverging scale (`colorScale: diverging`, `colorDomain` as two numbers)
+
+**Mosaic behaviour.** Mosaic's renderer keeps a diverging scale symmetric about its pivot, and
+does so for a domain the file wrote as well as one inferred from the rows:
+a `colorDomain` that is uneven about the pivot is widened on its short
+side until both ends are the same distance from the pivot, so the ends
+its legend reads are not the ends the file wrote.
+
+
+**Brightfield behaviour.** A `colorDomain` of two numbers is drawn as written. With `colorPivot: 2`
+and `colorDomain: [0, 10]` the legend's ends read 0 and 10, a point at 0
+wears the low pole and a point at 10 the high pole, and each arm of the
+ramp runs over its own span: from 0 to 2 below the pivot and from 2 to 10
+above it. A diverging scale with no `colorDomain` is drawn even about the
+pivot as before (DEV-0008), and so is one whose `colorDomain` is no pair of
+numbers, `Fixed` among them.
+
+
+**Rationale.** A domain is fixed in a file so that a colour means the same value in two
+charts, and a renderer that widens it moves the colour of every value on
+one side of the pivot by an amount nobody wrote. Drawing the ends as
+written keeps the legend true to the file, and the arms' unequal rates are
+the cost of an uneven domain that the author chose. A spec that wants
+Mosaic's picture writes a domain even about its pivot, and only the uneven
+one differs.
+
+
+**Conformance layers suppressed:** 3
+

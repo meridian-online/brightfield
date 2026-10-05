@@ -7,9 +7,11 @@
 //! and axis insets resolved via the same public helpers the app uses), and
 //! composites them into a single dashboard scene the egui host presents.
 //!
-//! Scope for the loop-first phase: projection / highlight / explicit colorDomain
-//! are NOT ported (the golden `dashboard.yaml` and the simple examples do not
-//! exercise them). Standalone-legend relocation is ported for one placement: a colour
+//! Scope for the loop-first phase: projection / highlight are NOT ported (the
+//! golden `dashboard.yaml` and the simple examples do not exercise them). A
+//! plot's `colorDomain` and `colorRange` are ported for its dot marks: the ends
+//! of a number ramp, the order of a string column's categories and the colours
+//! both draw in. Mosaic's `colorDomain: Fixed` is not read. Standalone-legend relocation is ported for one placement: a colour
 //! legend under the plot it is for in a `vconcat` is drawn in the band the layout
 //! reserved for it ([`PlotHandle::legend_below`]). A standalone legend placed
 //! any other way is drawn at the plot's right. A plot's `colorScheme` is ported:
@@ -44,11 +46,12 @@ use brightfield_render::mark::{default_renderers_scaled, find_renderer, MarkRend
 use brightfield_render::sample_notice::{sample_band_margins, SampleFact};
 use brightfield_render::sample_policy;
 use brightfield_render::scale::{
-    ColourScale, PinnedDomains, Scale, ScaleSet, SequentialScheme, ViewExtent,
+    ColourOverride, ColourScale, PinnedDomains, Scale, ScaleSet, SequentialScheme, ViewExtent,
 };
 use brightfield_render::scene::{
-    axis_ends_apply, axis_reverse_applies, build_multi_mark_scene_pinned, colour_reverse_applies,
-    compose_dashboard, unrestorable_under_sampling, ChartData, UnsampledDomains,
+    axis_ends_apply, axis_reverse_applies, build_multi_mark_scene_pinned, colour_override_applies,
+    colour_reverse_applies, compose_dashboard, unrestorable_under_sampling, ChartData,
+    UnsampledDomains,
 };
 use brightfield_render::selection::{
     committed_selection_rect, render_committed_selection, CommittedSelection, Selected,
@@ -2430,6 +2433,17 @@ fn compose_from_results(
             .is_some_and(|node| resolve_colour_reverse(node, &spec.params))
             && colour_reverse_applies(&plot_marks);
 
+        // The ends and colours the plot's spec wrote for its colour —
+        // `colorDomain` and `colorRange`, read from the spec this composition
+        // draws so a param that holds either is read as it stands now. The dots
+        // are the marks that take them, as they are `colorReverse`'s: a plot with no
+        // dot among its marks keeps the ramp it draws today
+        // (`a_cell_a_heatmap_and_a_raster_keep_their_ramp`).
+        let colour_override = plot_node
+            .filter(|_| colour_override_applies(&plot_marks))
+            .map(|node| ColourOverride::of_plot(node, &spec.params))
+            .unwrap_or_default();
+
         let refs: Vec<&ChartData<'_>> = chart_data.iter().collect();
         // `draw_inline_legend = false`: the legend is NOT baked into the data
         // scene. The shell draws it as a native margin panel outside the plot
@@ -2447,6 +2461,7 @@ fn compose_from_results(
             grid,
             axis_ends,
             axis_reverse,
+            &colour_override,
             colour_reverse,
             ink,
         );

@@ -1232,6 +1232,110 @@ pub fn resolve_colour_reverse(plot: &PlotNode, params: &IndexMap<String, ParamNo
     switch.unwrap_or(false)
 }
 
+/// What a plot's `colorDomain` fixes: the two ends of a number ramp, or the
+/// categories of a string column in the order the legend lists them.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ColourDomain {
+    /// Two numbers, low then high: a linear or diverging ramp's ends.
+    Ends(f64, f64),
+    /// One or more categories, first to last.
+    Categories(Vec<String>),
+}
+
+/// A `colorDomain` value read as the domain it fixes: a list of two finite
+/// numbers with the low end first, or a non-empty list of strings.
+///
+/// A string (Mosaic's `Fixed`, which asks for the data's own domain held still
+/// and which this build leaves unread), a list of any other shape, a pair of
+/// numbers with the high end first or equal, and a list that mixes strings
+/// with numbers are no domain, and a plot that writes one draws as a file
+/// without the key does.
+#[must_use]
+pub fn colour_domain(value: &SpecValue) -> Option<ColourDomain> {
+    let SpecValue::Array(items) = value else {
+        return None;
+    };
+    let number = |item: &SpecValue| match item {
+        SpecValue::Integer(n) => Some(*n as f64),
+        SpecValue::Float(f) if f.is_finite() => Some(*f),
+        _ => None,
+    };
+    if let [lo, hi] = items.as_slice() {
+        if let (Some(lo), Some(hi)) = (number(lo), number(hi)) {
+            return (lo < hi).then_some(ColourDomain::Ends(lo, hi));
+        }
+    }
+    let categories: Option<Vec<String>> = items
+        .iter()
+        .map(|item| match item {
+            SpecValue::String(name) => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    categories
+        .filter(|names| !names.is_empty())
+        .map(ColourDomain::Categories)
+}
+
+/// A `colorRange` value read as the colours it lists, as written: a non-empty
+/// list of strings. Whether each string is a colour is the renderer's to judge,
+/// which has the parser for one.
+#[must_use]
+pub fn colour_range(value: &SpecValue) -> Option<Vec<&str>> {
+    let SpecValue::Array(items) = value else {
+        return None;
+    };
+    let names: Option<Vec<&str>> = items
+        .iter()
+        .map(|item| match item {
+            SpecValue::String(name) => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    names.filter(|names| !names.is_empty())
+}
+
+/// The value a plot's attribute `key` holds: what it wrote, or what the value
+/// param it names holds *now*, so a plot redrawn after the param is written draws
+/// from the value the param then holds. A selection and a param nobody declared
+/// hold no value.
+fn literal_attribute<'a>(
+    plot: &'a PlotNode,
+    params: &'a IndexMap<String, ParamNode>,
+    key: &str,
+) -> Option<&'a SpecValue> {
+    match plot.attributes.get(key)? {
+        SpecValue::Param(param) => match params.get(&param.0) {
+            Some(ParamNode::Value(value)) => Some(value),
+            _ => None,
+        },
+        value => Some(value),
+    }
+}
+
+/// The domain a plot's `colorDomain` fixes, if it fixes one: a literal list, or a
+/// `$param` whose value param holds a list *now*. `None` is a plot that draws the
+/// domain its rows give, whether it wrote no key, wrote `Fixed`, or wrote a value
+/// [`colour_domain`] reads as no domain.
+#[must_use]
+pub fn resolve_colour_domain(
+    plot: &PlotNode,
+    params: &IndexMap<String, ParamNode>,
+) -> Option<ColourDomain> {
+    colour_domain(literal_attribute(plot, params, "colorDomain")?)
+}
+
+/// The colours a plot's `colorRange` lists, if it lists any: a literal list, or a
+/// `$param` whose value param holds a list *now*, as [`resolve_colour_domain`]
+/// reads its own key.
+#[must_use]
+pub fn resolve_colour_range<'a>(
+    plot: &'a PlotNode,
+    params: &'a IndexMap<String, ParamNode>,
+) -> Option<Vec<&'a str>> {
+    colour_range(literal_attribute(plot, params, "colorRange")?)
+}
+
 /// What one positional axis asks of where it starts and ends: `xZero` and
 /// `xNice`, or `yZero` and `yNice`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
