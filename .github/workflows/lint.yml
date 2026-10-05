@@ -11,7 +11,7 @@ env:
 # A workflow of its own, alongside `public-hygiene` rather than a job inside
 # `test`:
 #
-# * `test` runs the whole suite behind a 60-minute ceiling, including the
+# * `test` runs the whole suite behind a long ceiling, including the
 #   egui_kittest pixel tier. These three gates run no tests and render nothing,
 #   so a formatting slip, a lint regression or a dead doc link should report in
 #   minutes without waiting on it — and should still report when the suite is
