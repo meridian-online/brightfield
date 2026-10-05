@@ -437,7 +437,12 @@ impl HistoryStore {
 }
 
 /// What changed from `before` to `after`, as [`HistoryStore::versions`] says.
-fn changes_between(before: &str, after: &str) -> Vec<ChartChange> {
+///
+/// Public so a surface that holds a text no version records yet, the chart as
+/// an unsaved edit would write it, names its change by the same rule a listed
+/// version does.
+#[must_use]
+pub fn changes_between(before: &str, after: &str) -> Vec<ChartChange> {
     let parsed = (
         parse_spec(before, Format::Yaml),
         parse_spec(after, Format::Yaml),

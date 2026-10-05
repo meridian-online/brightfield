@@ -157,7 +157,7 @@ pub const INSPECTOR_RAIL_WIDTH: f32 = 280.0;
 pub const INSPECTOR_RAIL_MIN_WIDTH: f32 = 200.0;
 
 /// The ledger rail's default height, outer, in logical points: what it opens
-/// at over the run record — *Log*, *Quality* and the *Editor* — and what the
+/// at over the run record — *Log*, *Quality*, the *Editor* and *Versions* — and what the
 /// window's own size budgets for it.
 pub const LEDGER_RAIL_HEIGHT: f32 = 180.0;
 /// The ledger rail's floor, outer, in logical points.
@@ -548,10 +548,10 @@ static INSPECTOR_PANES: &[ItemId] = &[
     ItemId::new("chart-controls"),
 ];
 
-/// The ledger rail's panes — the run record, and the document that declares
-/// the Protocol the run came off.
+/// The ledger rail's panes — the run record, the document that declares the
+/// Protocol the run came off, and the versions kept of the chart.
 ///
-/// *Log*, *Quality*, *Rows*, *Editor*, in that order, so the rail opens on
+/// *Log*, *Quality*, *Rows*, *Editor*, *Versions*, in that order, so the rail opens on
 /// *Log*: the selector's live index starts at zero and the strip's names are
 /// these panes' own `Subject` titles in declaration order. The step list is
 /// deliberately not here — the navigator spine lists the steps, and a rail
@@ -561,6 +561,7 @@ static LEDGER_PANES: &[ItemId] = &[
     ItemId::new("protocol-quality"),
     ItemId::new("chart-rows"),
     ItemId::new("spec-editor"),
+    ItemId::new("chart-versions"),
 ];
 
 /// The canvas's projections: the drawn reading of a step's output, one entry,

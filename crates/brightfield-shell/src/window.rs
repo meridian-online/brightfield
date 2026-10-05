@@ -3796,6 +3796,42 @@ impl MeridianApp {
         self
     }
 
+    /// Give the Versions panel a clock and a home folder of its own in place of
+    /// the machine's, so `today 14:02` and `~/.arcform/history` read the same on
+    /// every run: what a baseline of the panel is drawn under.
+    pub fn set_versions_env(&mut self, clock: crate::versions::Clock, home: Option<PathBuf>) {
+        self.charts.doc.versions_mut().set_env(clock, home);
+    }
+
+    /// Bring the Versions panel's listing up to date for a frame in which it is,
+    /// or is not, the panel the ledger rail shows.
+    fn sync_versions(&mut self, shown: bool) {
+        let source = self.history.as_ref().and_then(|store| {
+            let protocol = self.protocol.doc.model.source()?;
+            Some(crate::versions::Source {
+                store: store.clone(),
+                file: brightfield_model::panel_capture::panel_file(&protocol.dir, &protocol.name),
+                dir: protocol.dir.clone(),
+            })
+        });
+        let tiles = self.charts.doc.tile_names();
+        let tile_of = |plot: &str| {
+            tiles
+                .iter()
+                .find(|(path, _)| path == plot)
+                .map_or_else(|| plot.to_string(), |(_, name)| name.clone())
+        };
+        let key = self.charts.doc.unsaved_edit_count();
+        let target = source.as_ref().map(|s| s.file.clone());
+        let mut versions = std::mem::take(self.charts.doc.versions_mut());
+        versions.sync(source, shown, &tile_of, key, || {
+            target
+                .as_deref()
+                .map_or_else(Vec::new, |file| self.charts.doc.unsaved_changes(file))
+        });
+        *self.charts.doc.versions_mut() = versions;
+    }
+
     /// The protocol view's interaction model, read-only.
     ///
     /// The window is the only thing that feeds it keys, and it feeds it keys
@@ -4299,6 +4335,13 @@ impl MeridianApp {
             let ledger_collapsed = self.collapsed.contains(&ledger.id);
             let navigator_collapsed = self.collapsed.contains(&navigator.id);
             let inspector_collapsed = self.collapsed.contains(&inspector.id);
+
+            // The Versions panel reads the store when it is shown after not
+            // being shown, and after a Save; the rest of the time this is a
+            // comparison and no read.
+            self.sync_versions(
+                !ledger_collapsed && ledger_panes[ledger_panel] == crate::versions::VERSIONS,
+            );
 
             // Each strip's words are the panes' own `Subject` titles, read
             // before the closures below take their borrows of the documents.
@@ -7123,11 +7166,13 @@ impl MeridianApp {
     fn save_chart_beside_protocol(&mut self, source: &crate::one_step::OneStepProtocol) {
         let banner = NotificationId::new("save-chart");
         let history_banner = NotificationId::new("save-history");
-        match self
-            .charts
-            .doc
-            .save_chart_beside(&source.dir, &source.name, self.history.as_ref())
-        {
+        let saved =
+            self.charts
+                .doc
+                .save_chart_beside(&source.dir, &source.name, self.history.as_ref());
+        // A Save may have recorded a version; the panel reads the store again.
+        self.charts.doc.versions_mut().invalidate();
+        match saved {
             Ok(not_recorded) => {
                 self.notifications.dismiss(banner);
                 // The chart was written either way; the history is the part
