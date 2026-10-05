@@ -9,7 +9,11 @@ use std::collections::HashMap;
 use arrow::array::{Array, Decimal128Array, Float64Array, StringArray, TimestampMicrosecondArray};
 use arrow::datatypes::{DataType, TimeUnit};
 use arrow::record_batch::RecordBatch;
-use brightfield_spec::layout::{FixedDomains, ScaleType};
+use brightfield_spec::ast::{ParamNode, PlotNode};
+use brightfield_spec::layout::{
+    resolve_colour_domain, resolve_colour_range, ColourDomain, FixedDomains, ScaleType,
+};
+use indexmap::IndexMap;
 
 use crate::channel::{Channel, ChannelMap};
 use crate::ink::ChartInk;
@@ -1128,12 +1132,13 @@ pub fn apply_pinned_domains(scales: &mut ScaleSet, pins: &PinnedDomains) {
     }
 }
 
-/// A plot-level explicit colour-scale override — Mosaic's `colorDomain` /
-/// `colorRange` attributes, resolved once at app assembly (literal arrays, or
-/// `$param` references into literal-value params — the weather.yaml shape) and
-/// applied AFTER scale inference and every mark's `augment_scales`, so the
-/// author's explicit domain/range wins over both column inference and the
-/// density-family ramp builders.
+/// A plot's explicit colour-scale override — Mosaic's `colorDomain` /
+/// `colorRange` attributes, read from the plot by [`ColourOverride::of_plot`]
+/// (literal arrays, or `$param` references into literal-value params — the
+/// weather.yaml shape) and applied by [`apply_colour_override`] AFTER scale
+/// inference, every mark's `augment_scales` and a sampled plot's restoration, so
+/// the author's explicit domain/range wins over column inference, the
+/// density-family ramp builders and the categories a sample put back.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ColourOverride {
     /// Explicit categorical domain (the category ORDER, which fixes each
@@ -1148,6 +1153,32 @@ pub struct ColourOverride {
 }
 
 impl ColourOverride {
+    /// The override `plot` writes, as its params hold their values now.
+    ///
+    /// `colorDomain` is two numbers, low then high, or a list of categories;
+    /// `colorRange` is a list of colours. A value that is neither, `Fixed`
+    /// among them, and a `colorRange` with an entry that is no colour, give
+    /// nothing, and a plot that wrote only those draws as a file without the keys.
+    #[must_use]
+    pub fn of_plot(plot: &PlotNode, params: &IndexMap<String, ParamNode>) -> Self {
+        let (categories, domain) = match resolve_colour_domain(plot, params) {
+            Some(ColourDomain::Categories(names)) => (Some(names), None),
+            Some(ColourDomain::Ends(lo, hi)) => (None, Some((lo, hi))),
+            None => (None, None),
+        };
+        let range = resolve_colour_range(plot, params).and_then(|names| {
+            names
+                .into_iter()
+                .map(|name| crate::mark::parse_colour_literal(name).map(|c| c.components))
+                .collect::<Option<Vec<[f32; 4]>>>()
+        });
+        Self {
+            categories,
+            domain,
+            range,
+        }
+    }
+
     /// Whether the override carries nothing to apply.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -1163,6 +1194,10 @@ impl ColourOverride {
 ///   `b → c2` regardless of data order).
 /// - A continuous [`Scale::Sequential`] takes the override's `[lo, hi]` domain
 ///   and/or its colours as the evenly-spaced ramp stops.
+/// - A [`Scale::Diverging`] takes the same two, and keeps its pivot: the domain
+///   is drawn as written, so a fixed domain uneven about the pivot gives each
+///   arm its own span and not an even one (deviations.yaml DEV-0010). With an odd
+///   count of colours the middle one is at the pivot.
 /// - Positional scales and absent channels are untouched; an override facet
 ///   that does not fit the scale kind (e.g. `categories` against a Sequential)
 ///   is ignored.
@@ -1198,6 +1233,24 @@ pub fn apply_colour_override(set: &mut ScaleSet, ov: &ColourOverride) {
                 Scale::Sequential {
                     domain_min,
                     domain_max,
+                    stops,
+                }
+            }
+            Scale::Diverging {
+                domain_min,
+                domain_max,
+                pivot,
+                stops,
+            } => {
+                let (domain_min, domain_max) = ov.domain.unwrap_or((*domain_min, *domain_max));
+                let stops = match &ov.range {
+                    Some(r) if r.len() >= 2 => r.clone(),
+                    _ => stops.clone(),
+                };
+                Scale::Diverging {
+                    domain_min,
+                    domain_max,
+                    pivot: *pivot,
                     stops,
                 }
             }
