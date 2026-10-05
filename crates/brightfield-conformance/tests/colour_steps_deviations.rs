@@ -37,19 +37,25 @@ fn entry() -> Deviation {
     found.into_iter().next().unwrap()
 }
 
+/// A record's prose on one line, since the register wraps it where it likes.
+fn flat(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 #[test]
 fn the_count_of_steps_is_recorded_against_mosaics_tidy_thresholds() {
     let entry = entry();
-    assert!(
-        entry.mosaic_behaviour.contains("tidy") && entry.mosaic_behaviour.contains("six steps"),
-        "Mosaic rounds the thresholds, and `colorN: 5` over 0 to 500001 is six steps there: {}",
-        entry.mosaic_behaviour
+    let (mosaic, ours) = (
+        flat(&entry.mosaic_behaviour),
+        flat(&entry.brightfield_behaviour),
     );
     assert!(
-        entry.brightfield_behaviour.contains("count asked for")
-            && entry.brightfield_behaviour.contains("equal width"),
-        "brightfield draws the count asked for, in steps of equal width: {}",
-        entry.brightfield_behaviour
+        mosaic.contains("tidy") && mosaic.contains("six steps"),
+        "Mosaic rounds the thresholds, and `colorN: 5` over 0 to 500001 is six steps there: {mosaic}"
+    );
+    assert!(
+        ours.contains("count asked for") && ours.contains("equal width"),
+        "brightfield draws the count asked for, in steps of equal width: {ours}"
     );
     assert!(
         entry.surface.contains("`colorN`") && entry.surface.contains("`colorScale: quantize`"),
