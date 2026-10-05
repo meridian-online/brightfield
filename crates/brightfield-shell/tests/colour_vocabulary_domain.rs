@@ -566,6 +566,9 @@ fn fixed_and_values_that_are_no_domain_draw_as_a_file_without_the_key() {
         "colorRange: viridis\n",
         "colorRange: [red]\n",
         "colorRange: ['#ff0000', 'not-a-colour']\n",
+        // One entry that is no colour makes the key no range: dropping it would
+        // leave a two-colour ramp the file did not write.
+        "colorRange: ['#ff0000', 'not-a-colour', '#0000ff']\n",
         "colorRange: []\n",
         "colorDomain: Fixed\ncolorRange: [red]\n",
     ] {

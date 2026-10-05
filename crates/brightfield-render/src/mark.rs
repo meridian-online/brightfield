@@ -5653,6 +5653,11 @@ pub fn default_renderers_scaled(
 /// AND on every live rebuild (the wrapper rides `MarkInput.renderer_override`
 /// like `configured_renderer`'s output).
 ///
+/// The shell's composition does not wrap its renderers in this. It applies the
+/// plot's override in the scene build ([`crate::scene::build_multi_mark_scene_pinned`]),
+/// after a sampled plot's categories are put back, which this wrapper's
+/// `augment_scales` runs before and so cannot win over.
+///
 /// KNOWN in-session limitation (documented, matches the cycled-scheme
 /// precedent): the verbs that REBUILD a renderer override from scratch — the
 /// transient `c` colour-cycle and a command-log mark retype — reconstruct
