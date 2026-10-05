@@ -10,11 +10,18 @@ env:
 
 # A push to a PR branch supersedes the run already in flight for that ref.
 # Worth having here specifically: every run is a cold-ish `macos-15` build of a
-# large graph (wgpu/vello/egui/duckdb) with a 60-minute ceiling, so stacked
-# pushes otherwise burn expensive minutes on results nobody will read.
+# large graph (wgpu/vello/egui/duckdb) behind a long `timeout-minutes` ceiling,
+# so stacked pushes otherwise burn expensive minutes on results nobody will read.
+#
+# A push to `main` supersedes nothing. A merge used to cancel the `main` run
+# still in flight for the merge before it, which ended that run with no verdict
+# on a commit that had already landed. The group is per commit on `main` for
+# the same reason: one group shared by every `main` run lets a third merge
+# replace a second run still queued behind the first, which is also a run with
+# no verdict.
 concurrency:
-  group: test-${{ github.ref }}
-  cancel-in-progress: true
+  group: test-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -40,7 +47,13 @@ jobs:
     # kittest.toml — do NOT blanket-loosen the floor to make it green.
     # ---------------------------------------------------------------------
     runs-on: macos-15
-    timeout-minutes: 60
+    # 1.25 times the slowest of the last ten `main` runs of this job that ran
+    # to a verdict or to the ceiling, read from each run's job list on
+    # 2026-10-05: the slowest, 60.4 minutes, is a run stopped at the previous
+    # 60-minute ceiling, so its true length is longer and the margin is a floor.
+    # The ceiling is a stopgap until the GPU-sharing targets run apart from the
+    # rest; raise it from the job list again, not from this comment.
+    timeout-minutes: 80
 
     steps:
       - uses: actions/checkout@v4
@@ -322,8 +335,8 @@ jobs:
   # a separate way to ship an application with no type source in it.
   #
   # Its own job rather than a step inside `test` because it needs no cache and
-  # no build: it should report in a couple of minutes rather than behind a
-  # 60-minute suite.
+  # no build: it should report in a couple of minutes rather than behind the
+  # full suite.
   #
   # It does need a toolchain, which is new and is not free.
   # scripts/check-artifact-type-source.sh refuses to guess the host triple from
@@ -361,7 +374,7 @@ jobs:
   # the disk image are darwin-only paths in scripts/package.sh and because
   # hdiutil, codesign and plutil are macOS tools; its own job because it runs
   # packaging four times — once intact and once per mutation it drives — and
-  # should not queue behind the 60-minute suite. No cache and no real compile:
+  # should not queue behind the full suite. No cache and no real compile:
   # `cargo` is stubbed with a short C program, which is a genuine Mach-O for the
   # linkage audit, the version floor and codesign, and which answers
   # `--check-type-source` so the read-back's run leg is actually reached.

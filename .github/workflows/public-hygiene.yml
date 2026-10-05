@@ -7,7 +7,7 @@ on:
 
 # Deliberately a workflow of its own rather than a job inside `test`:
 #
-# * `test` runs on `macos-15` with a 60-minute ceiling and a cold-ish build.
+# * `test` runs on `macos-15` with a long ceiling and a cold-ish build.
 #   The `planning-identifiers` job below needs no toolchain, no cache and no
 #   build — it is `git grep` over tracked files and finishes in seconds. It
 #   should be the first thing to go red, and it should still report when the
