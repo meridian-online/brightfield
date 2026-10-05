@@ -115,7 +115,8 @@ fn spans(scale: &Scale, selected: &Selected) -> Vec<(f64, f64)> {
             Scale::Band { .. }
             | Scale::Colour { .. }
             | Scale::Sequential { .. }
-            | Scale::Diverging { .. } => Vec::new(),
+            | Scale::Diverging { .. }
+            | Scale::Quantized { .. } => Vec::new(),
         },
         Selected::Categories(names) => {
             let Some(width) = scale.band_width() else {

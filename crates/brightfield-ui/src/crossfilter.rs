@@ -1644,6 +1644,15 @@ pub fn clause_meta_for_scale(scale: &Scale) -> ClauseMeta {
             domain: Some((*domain_min, *domain_max)),
             range: None,
         },
+        Scale::Quantized {
+            domain_min,
+            domain_max,
+            ..
+        } => ScaleDescriptor {
+            kind: "quantized".to_string(),
+            domain: Some((*domain_min, *domain_max)),
+            range: None,
+        },
     };
     ClauseMeta {
         scale: Some(descriptor),

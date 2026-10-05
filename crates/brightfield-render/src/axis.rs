@@ -121,7 +121,10 @@ pub fn axis_kind(scale: &Scale) -> Option<AxisKind> {
         } else {
             AxisKind::Category
         }),
-        Scale::Colour { .. } | Scale::Sequential { .. } | Scale::Diverging { .. } => None,
+        Scale::Colour { .. }
+        | Scale::Sequential { .. }
+        | Scale::Diverging { .. }
+        | Scale::Quantized { .. } => None,
     }
 }
 
@@ -139,7 +142,8 @@ pub fn axis_scale_word(scale: &Scale) -> Option<&'static str> {
         | Scale::Band { .. }
         | Scale::Colour { .. }
         | Scale::Sequential { .. }
-        | Scale::Diverging { .. } => axis_kind(scale).map(AxisKind::word),
+        | Scale::Diverging { .. }
+        | Scale::Quantized { .. } => axis_kind(scale).map(AxisKind::word),
     }
 }
 
@@ -262,8 +266,11 @@ pub fn compute_ticks_formatted(
             &symlog_tick_values(*domain_min, *domain_max),
             number.map(NumberFormat::decade_format),
         ),
-        // Colour ramps (categorical or sequential) have no positional axis ticks.
-        Scale::Colour { .. } | Scale::Sequential { .. } | Scale::Diverging { .. } => Vec::new(),
+        // Colour ramps (categorical, sequential or stepped) have no positional axis ticks.
+        Scale::Colour { .. }
+        | Scale::Sequential { .. }
+        | Scale::Diverging { .. }
+        | Scale::Quantized { .. } => Vec::new(),
     }
 }
 

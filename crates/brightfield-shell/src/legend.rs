@@ -81,6 +81,17 @@ pub enum LegendSpec {
         /// straight-alpha RGBA.
         stops: Vec<[f32; 4]>,
     },
+    /// A stepped colour scale (`colorScale: quantize`): one flat block for each
+    /// step, the highest step at the top, with the value each block begins and
+    /// ends at beside it.
+    Steps {
+        /// The colour of each step, lowest step first, straight-alpha RGBA.
+        colours: Vec<[f32; 4]>,
+        /// The values that bound the steps, lowest first: one more than there are
+        /// steps. The scale's own [`Scale::step_edges`], so a block's labels
+        /// bound the points that wear its colour.
+        edges: Vec<f64>,
+    },
 }
 
 /// One categorical legend entry: the category and the ink its marks wear.
@@ -134,6 +145,10 @@ impl LegendSpec {
                 pivot: *pivot,
                 stops: stops.clone(),
             }),
+            quantized @ Scale::Quantized { colours, .. } => Some(Self::Steps {
+                colours: colours.clone(),
+                edges: quantized.step_edges()?,
+            }),
             _ => None,
         }
     }
@@ -158,7 +173,7 @@ impl LegendSpec {
     pub fn labels(&self) -> Vec<&str> {
         match self {
             Self::Categorical { entries } => entries.iter().map(|e| e.label.as_str()).collect(),
-            Self::Sequential { .. } | Self::Diverging { .. } => Vec::new(),
+            Self::Sequential { .. } | Self::Diverging { .. } | Self::Steps { .. } => Vec::new(),
         }
     }
 }
@@ -432,6 +447,103 @@ pub fn draw_below_block(
             below_value(painter, ramp, egui::Align::Center, *pivot, &font, ink);
             below_value(painter, ramp, egui::Align::Max, *max, &font, ink);
         }
+        LegendSpec::Steps { colours, edges } => {
+            below_steps(painter, band, colours, edges, &font, &name_at, ink);
+        }
+    }
+}
+
+/// Where the ramp under a plot starts: the left edge after the name, the top of
+/// the ramp's row, and the width the ramp has to run in. The ramp and the row of
+/// values under it are centred together on the band's height, and the name is
+/// drawn first, level with the ramp.
+fn below_origin(
+    painter: &egui::Painter,
+    band: egui::Rect,
+    font: &egui::FontId,
+    name_at: &dyn Fn(&egui::Painter, f32, f32) -> f32,
+) -> (f32, f32, f32) {
+    let value_height = painter
+        .layout_no_wrap(String::from("0"), font.clone(), egui::Color32::WHITE)
+        .size()
+        .y;
+    let rows = BELOW_RAMP_HEIGHT + spacing::SPACE_2 + value_height;
+    let top = band.center().y - rows / 2.0;
+    let left = name_at(painter, band.left(), top + BELOW_RAMP_HEIGHT / 2.0);
+    let room = (band.right() - left).clamp(0.0, BELOW_RAMP_MAX_WIDTH);
+    (left, top, room)
+}
+
+/// The steps under a plot: one flat block for each, equal in width, the lowest at
+/// the left, with the value each begins at under its left edge and the highest
+/// step's upper bound under the right end of the last.
+///
+/// Each block is whole points wide, so no two share a fractional edge for the
+/// rasteriser to blend into a seam, and the row is at most
+/// [`BELOW_RAMP_MAX_WIDTH`] wide. A value is drawn when it stands clear of the
+/// one before it; the two at the ends are always drawn, and each is kept inside
+/// the row's own extent, as the ramp's are. A band with less width than a point
+/// for each step draws the name alone.
+fn below_steps(
+    painter: &egui::Painter,
+    band: egui::Rect,
+    colours: &[[f32; 4]],
+    edges: &[f64],
+    font: &egui::FontId,
+    name_at: &dyn Fn(&egui::Painter, f32, f32) -> f32,
+    ink: egui::Color32,
+) {
+    let (left, top, room) = below_origin(painter, band, font, name_at);
+    let Some(block) = step_block_size(room, colours.len()) else {
+        return;
+    };
+    let steps = colours.len();
+    let row = egui::Rect::from_min_size(
+        egui::pos2(left, top),
+        egui::vec2(block * steps as f32, BELOW_RAMP_HEIGHT),
+    );
+    for (i, colour) in colours.iter().enumerate() {
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(row.left() + i as f32 * block, row.top()),
+            egui::vec2(block, row.height()),
+        );
+        painter.rect_filled(rect, 0.0, chart_ink(*colour));
+    }
+    let galleys: Vec<_> = edges
+        .iter()
+        .map(|value| {
+            text_ink::fit(
+                painter,
+                &format_domain(*value),
+                font.clone(),
+                row.width(),
+                ink,
+            )
+        })
+        .collect();
+    // Each value's extent along the row, the ends kept inside the row.
+    let spans: Vec<(f32, f32)> = galleys
+        .iter()
+        .enumerate()
+        .map(|(i, galley)| {
+            let width = galley.size().x;
+            let at = row.left() + i as f32 * block;
+            let start = if i == 0 {
+                row.left()
+            } else if i == steps {
+                row.right() - width
+            } else {
+                at - width / 2.0
+            };
+            (start, start + width)
+        })
+        .collect();
+    for i in kept_labels(&spans, spacing::CONTROL_GAP) {
+        painter.galley(
+            egui::pos2(spans[i].0, row.bottom() + spacing::SPACE_2),
+            galleys[i].clone(),
+            ink,
+        );
     }
 }
 
@@ -450,14 +562,7 @@ fn below_ramp(
     font: &egui::FontId,
     name_at: &dyn Fn(&egui::Painter, f32, f32) -> f32,
 ) -> egui::Rect {
-    let value_height = painter
-        .layout_no_wrap(String::from("0"), font.clone(), egui::Color32::WHITE)
-        .size()
-        .y;
-    let rows = BELOW_RAMP_HEIGHT + spacing::SPACE_2 + value_height;
-    let top = band.center().y - rows / 2.0;
-    let left = name_at(painter, band.left(), top + BELOW_RAMP_HEIGHT / 2.0);
-    let room = (band.right() - left).clamp(0.0, BELOW_RAMP_MAX_WIDTH);
+    let (left, top, room) = below_origin(painter, band, font, name_at);
     let strip = (room / RAMP_STRIPS as f32).floor().max(1.0);
     let ramp = egui::Rect::from_min_size(
         egui::pos2(left, top),
@@ -582,6 +687,9 @@ fn draw_block(
             };
             number_legend(painter, origin, bottom, &values, &font, ink);
         }
+        LegendSpec::Steps { colours, edges } => {
+            steps_legend(painter, origin, bottom, colours, edges, &font, ink);
+        }
     }
 }
 
@@ -632,16 +740,142 @@ fn number_legend(
             }
             ramp_value(painter, ramp, egui::Align::Max, low, ink);
         }
-        NumberFit::Labels => {
-            let column = origin.x + control::ICON_XS + spacing::ICON_LABEL_GAP;
-            for (i, galley) in [high, low].into_iter().enumerate() {
-                let top = origin.y + i as f32 * (label_height + LABEL_GAP);
-                if top + label_height <= bottom {
-                    painter.galley(egui::pos2(column, top), galley, ink);
-                }
-            }
+        NumberFit::Labels => end_labels(painter, origin, bottom, [high, low], ink),
+    }
+}
+
+/// The two end labels alone, the maximum over the minimum from `origin` down, in
+/// the label column; a label the room down to `bottom` cannot hold whole is not
+/// drawn.
+fn end_labels(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    bottom: f32,
+    labels: [std::sync::Arc<egui::Galley>; 2],
+    ink: egui::Color32,
+) {
+    let column = origin.x + control::ICON_XS + spacing::ICON_LABEL_GAP;
+    let label_height = labels[0].size().y;
+    for (i, galley) in labels.into_iter().enumerate() {
+        let top = origin.y + i as f32 * (label_height + LABEL_GAP);
+        if top + label_height <= bottom {
+            painter.galley(egui::pos2(column, top), galley, ink);
         }
     }
+}
+
+/// A stepped scale's legend under its name, at `origin`, in the room down to
+/// `bottom`: a stack of flat blocks, one for each step, the highest at the top,
+/// with the value at each boundary beside the stack.
+///
+/// The stack is as tall as the ramp a number column would draw in the same room
+/// ([`number_fit`]), to within the rounding: every block is the same whole number
+/// of points ([`step_block_size`]), so none shares a fractional edge with the
+/// next. A boundary's label is level with the line between its two blocks, the
+/// highest level with the stack's top and the lowest with its foot, and one that
+/// would stand within [`LABEL_GAP`] of the one above it is not drawn
+/// ([`kept_labels`]); the two at the ends always are. In a room that holds no
+/// stack, or one a point high for each step cannot fill, the end labels stand
+/// alone, as a ramp's do.
+fn steps_legend(
+    painter: &egui::Painter,
+    origin: egui::Pos2,
+    bottom: f32,
+    colours: &[[f32; 4]],
+    edges: &[f64],
+    font: &egui::FontId,
+    ink: egui::Color32,
+) {
+    let steps = colours.len();
+    let label = |value: f64| {
+        text_ink::fit(
+            painter,
+            &format_domain(value),
+            font.clone(),
+            LABEL_COLUMN,
+            ink,
+        )
+    };
+    let (Some(&high), Some(&low)) = (edges.last(), edges.first()) else {
+        return;
+    };
+    let label_height = label(high).size().y;
+    let block = match number_fit(bottom - origin.y, label_height, false) {
+        NumberFit::Ramp { strips, .. } => step_block_size(strips as f32 * STRIP_HEIGHT, steps),
+        NumberFit::Labels => None,
+    };
+    let Some(block) = block else {
+        end_labels(painter, origin, bottom, [label(high), label(low)], ink);
+        return;
+    };
+    for (i, colour) in colours.iter().rev().enumerate() {
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(origin.x, origin.y + i as f32 * block),
+            egui::vec2(control::ICON_XS, block),
+        );
+        painter.rect_filled(rect, 0.0, chart_ink(*colour));
+    }
+    // The boundaries from the top: boundary `i` is `i` blocks down the stack.
+    let galleys: Vec<_> = edges.iter().rev().map(|value| label(*value)).collect();
+    let spans: Vec<(f32, f32)> = (0..=steps)
+        .map(|i| {
+            let line = origin.y + i as f32 * block;
+            let start = if i == 0 {
+                line
+            } else if i == steps {
+                line - label_height
+            } else {
+                line - label_height / 2.0
+            };
+            (start, start + label_height)
+        })
+        .collect();
+    let column = origin.x + control::ICON_XS + spacing::ICON_LABEL_GAP;
+    for i in kept_labels(&spans, LABEL_GAP) {
+        painter.galley(egui::pos2(column, spans[i].0), galleys[i].clone(), ink);
+    }
+}
+
+/// How many whole points each of `steps` blocks is across `extent` points, or
+/// `None` when a block would be under a point: the stack gives way to the end
+/// labels rather than draw blocks that share a fractional edge.
+///
+/// Every block is the same, so the stack is `steps` times this: as long as
+/// `extent` to within `steps - 1` points.
+#[must_use]
+pub fn step_block_size(extent: f32, steps: usize) -> Option<f32> {
+    if steps == 0 {
+        return None;
+    }
+    let block = (extent / steps as f32).floor();
+    (block >= 1.0).then_some(block)
+}
+
+/// Which of a legend's value labels are drawn, as indices into `spans`: each
+/// label's extent along the legend, `(start, end)`, in reading order.
+///
+/// The first and the last are always drawn, since they name the ends the legend
+/// runs between. One between them is drawn when it stands `gap` clear of the one
+/// drawn before it and of the last, so a legend with many steps and little room
+/// draws the labels that fit and none that overlap.
+#[must_use]
+pub fn kept_labels(spans: &[(f32, f32)], gap: f32) -> Vec<usize> {
+    let Some(last) = spans.len().checked_sub(1) else {
+        return Vec::new();
+    };
+    if last == 0 {
+        return vec![0];
+    }
+    let mut kept = vec![0];
+    let mut edge = spans[0].1;
+    for (i, &(start, end)) in spans.iter().enumerate().take(last).skip(1) {
+        if start >= edge + gap && end + gap <= spans[last].0 {
+            kept.push(i);
+            edge = end;
+        }
+    }
+    kept.push(last);
+    kept
 }
 
 /// The ramp as `strips` adjacent solid strips, the ramp's high end at the top
