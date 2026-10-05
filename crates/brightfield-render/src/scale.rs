@@ -1136,7 +1136,7 @@ pub fn apply_pinned_domains(scales: &mut ScaleSet, pins: &PinnedDomains) {
 /// `colorRange` attributes, read from the plot by [`ColourOverride::of_plot`]
 /// (literal arrays, or `$param` references into literal-value params — the
 /// weather.yaml shape) and applied by [`apply_colour_override`] AFTER scale
-/// inference, every mark's `augment_scales` and a sampled plot's restoration, so
+/// inference, the marks' `augment_scales` and a sampled plot's restoration, so
 /// the author's explicit domain/range wins over column inference, the
 /// density-family ramp builders and the categories a sample put back.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -1157,8 +1157,9 @@ impl ColourOverride {
     ///
     /// `colorDomain` is two numbers, low then high, or a list of categories;
     /// `colorRange` is a list of colours. A value that is neither, `Fixed`
-    /// among them, and a `colorRange` with an entry that is no colour, give
-    /// nothing, and a plot that wrote only those draws as a file without the keys.
+    /// among them, and a `colorRange` with an entry that is no colour, are read
+    /// as no override, so a plot that wrote only those draws as a file without
+    /// the keys (`fixed_and_values_that_are_no_domain_draw_as_a_file_without_the_key`).
     #[must_use]
     pub fn of_plot(plot: &PlotNode, params: &IndexMap<String, ParamNode>) -> Self {
         let (categories, domain) = match resolve_colour_domain(plot, params) {

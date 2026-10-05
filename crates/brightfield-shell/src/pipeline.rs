@@ -2436,8 +2436,9 @@ fn compose_from_results(
         // The ends and colours the plot's spec wrote for its colour —
         // `colorDomain` and `colorRange`, read from the spec this composition
         // draws so a param that holds either is read as it stands now. The dots
-        // are the marks that take them, as they are `colorReverse`'s: a plot that
-        // draws none keeps the ramp it draws today.
+        // are the marks that take them, as they are `colorReverse`'s: a plot with no
+        // dot among its marks keeps the ramp it draws today
+        // (`a_cell_a_heatmap_and_a_raster_keep_their_ramp`).
         let colour_override = plot_node
             .filter(|_| colour_override_applies(&plot_marks))
             .map(|node| ColourOverride::of_plot(node, &spec.params))

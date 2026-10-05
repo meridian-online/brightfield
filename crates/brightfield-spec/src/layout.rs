@@ -1246,7 +1246,7 @@ pub enum ColourDomain {
 /// numbers with the low end first, or a non-empty list of strings.
 ///
 /// A string (Mosaic's `Fixed`, which asks for the data's own domain held still
-/// and is read elsewhere or not at all), a list of any other shape, a pair of
+/// and which this build leaves unread), a list of any other shape, a pair of
 /// numbers with the high end first or equal, and a list that mixes strings
 /// with numbers are no domain, and a plot that writes one draws as a file
 /// without the key does.
