@@ -3,7 +3,7 @@
 //! cell, and no widget takes the keyboard with it.**
 //!
 //! `shelf_settings.rs` drives the list alone. What the list cannot say by itself is
-//! this file's: that the key reaches the list at all, that the chart is drawn as
+//! this file's: that the key reaches the list, that the chart is drawn as
 //! it was kept once the list is on its settings, that the settings read the chart
 //! the list was opened on, and that `Tab`, which `egui` reads at the head of a
 //! pass as a request to move focus to the next widget that takes it, does not
