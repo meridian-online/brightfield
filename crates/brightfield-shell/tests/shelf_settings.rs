@@ -651,6 +651,7 @@ fn a_row_is_set_by_value_so_a_written_linear_reads_auto_and_a_log_reads_set() {
             false,
         ),
         ("yScale: log", ShelfChannel::Y, SCALE_ROW, "log", true),
+        ("yScale: symlog", ShelfChannel::Y, SCALE_ROW, "symlog", true),
         ("yScale: sqrt", ShelfChannel::Y, SCALE_ROW, "linear", false),
         // The scale of the other axis is its own.
         ("yScale: log", ShelfChannel::X, SCALE_ROW, "linear", false),
