@@ -126,6 +126,11 @@ fn the_edges_are_equal_apart_and_are_the_ones_the_cut_uses() {
     assert_eq!(edges[0], 0.15);
     assert_eq!(edges[5], 5.0);
     assert!(edges.windows(2).all(|p| p[0] < p[1]), "{edges:?}");
+    // A domain whose width is not exact in floating point: the span times the step
+    // count over the step count is 0.9000000000000001 here, and the last edge is
+    // still the domain's end to the bit.
+    let inexact = Scale::quantized(0.3, 0.9, &[BLACK, WHITE], 5);
+    assert_eq!(inexact.step_edges().unwrap()[5], 0.9);
     assert_eq!(ramp(0.0, 1.0).step_edges(), None);
 }
 
