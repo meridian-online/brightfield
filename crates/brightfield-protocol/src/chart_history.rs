@@ -6,10 +6,13 @@
 //! versions, keyed by the file's path ([`LocalHistory::record_save_for_file`]
 //! and its siblings), and this module is the one place brightfield calls it.
 //!
-//! **Two kinds of entry, both for the chart file only.** The text a Save
+//! **Three kinds of entry, all for the chart file only.** The text a Save
 //! replaces is recorded as a checkpoint before the write, and the text it
-//! writes is recorded as a save after. The Protocol's own `arcform.yaml` is not
-//! recorded here, so its history lists what it listed before.
+//! writes is recorded as a save after. The text a Save would have written,
+//! when a window closes without saving, is recorded as arcform's unsaved kind
+//! ([`record_unsaved`]), which leaves the chart file as it was. The Protocol's
+//! own `arcform.yaml` is not recorded here, so its history lists what it listed
+//! before.
 //!
 //! **A Save is not blocked by the history.** A store that cannot be opened, or
 //! an entry that cannot be written, leaves the chart written and is returned as
@@ -21,12 +24,14 @@
 //! root, `$ARCFORM_HISTORY_DIR` when set and `~/.arcform/history` otherwise,
 //! and outside the Protocol's folder. [`HistoryStore::At`] names a root,
 //! which is how a test keeps its entries out of the home directory.
+//! Opening the store makes its root when the root is missing.
 //!
 //! **Listing and reading back.** [`HistoryStore::versions`] lists a chart
 //! file's versions newest first, each with what changed since the version
 //! before it, and [`HistoryStore::read_version`] returns one version's text.
-//! Neither writes: a listing reads the store and the chart file's folder is
-//! not touched. The change is data, a [`ChartChange`], and the words for it are
+//! Neither writes under the chart file's folder: a listing reads the store,
+//! whose root opening it makes when that is missing, and the chart file's
+//! folder is not touched. The change is data, a [`ChartChange`], and the words for it are
 //! the window's.
 //!
 //! # The debounce, and why a Save can be recorded as a checkpoint
@@ -248,6 +253,47 @@ impl ChartVersions {
     }
 }
 
+/// **Record `text`, the chart as a Save would have written it, as a version of
+/// the chart file at `file` that was never written to it**: arcform's unsaved
+/// kind, recorded when a window closes without saving.
+///
+/// The chart file keeps its bytes, and a chart file that is not there is not
+/// made. arcform keys a file's versions by its folder's canonical path, so a
+/// folder that is not there yet, as `panels/` is before a Protocol's first
+/// Save, is made empty to key the version by, and taken away again when the
+/// version could not be recorded. A text the newest version already holds is
+/// not recorded again, and that is not a failure: the store holds it.
+///
+/// # Errors
+///
+/// [`NotRecorded`] with the reason, for a store that cannot be opened, a
+/// folder that cannot be made, and an entry that cannot be written.
+pub fn record_unsaved(store: &HistoryStore, file: &Path, text: &str) -> Result<(), NotRecorded> {
+    let history = store.open()?;
+    let folder = file
+        .parent()
+        .filter(|folder| !folder.as_os_str().is_empty());
+    let made = match folder {
+        Some(folder) if !folder.exists() => {
+            std::fs::create_dir(folder).map_err(|e| {
+                NotRecorded::new(format!("the folder {} cannot be made: {e}", folder.display()))
+            })?;
+            Some(folder)
+        }
+        _ => None,
+    };
+    match history.record_unsaved_for_file(file, text) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            if let Some(folder) = made {
+                // Only the folder made here, and only while it is empty.
+                let _ = std::fs::remove_dir(folder);
+            }
+            Err(NotRecorded::new(e.to_string()))
+        }
+    }
+}
+
 /// Whether a save recorded now would merge into an entry of `kind` recorded at
 /// `at`: arcform's rule, which merges a save into a save no older than its
 /// window.
@@ -271,7 +317,9 @@ pub struct VersionList {
     /// The most versions the store keeps for one file; recording past it
     /// drops the file's oldest.
     pub bound: usize,
-    /// The store's folder, which is outside the chart file's own.
+    /// The store's folder. arcform's store is outside the chart file's own
+    /// folder; a store rooted at a chosen folder ([`HistoryStore::At`]) is
+    /// wherever that folder is, inside the chart file's own or not.
     pub folder: PathBuf,
 }
 
