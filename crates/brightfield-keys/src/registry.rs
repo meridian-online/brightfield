@@ -1031,9 +1031,9 @@ pub fn registry() -> Vec<VerbEntry> {
             scores: None,
         },
         // The ledger rail's Versions panel: a centre tab in the chart view's item
-        // registry, so it carries a show verb the item audit requires, unbound
-        // until the card that steps a chart back to a version binds a key. It
-        // sits at Protocol, where the other ledger panes' verbs do, because the
+        // registry, so it carries a show verb the item audit requires, reserved
+        // and unbound as the Log's and the Quality panel's are; the panel's own
+        // keys are the Versions context's, below the grid's. It sits at Protocol, where the other ledger panes' verbs do, because the
         // chart file it lists is the Protocol's.
         VerbEntry {
             longname: "open-chart-versions",

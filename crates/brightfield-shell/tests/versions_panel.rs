@@ -35,7 +35,7 @@
 //! elsewhere, and a row longer than the panel; the unsaved row; the head line;
 //! the empty states; and the panel as pixels, in light and in dark, over four
 //! versions with the rail dragged to 236 high. Not covered: the cursor, the redraw of the chart for a
-//! version, Enter and the Step back control, which are another card's.
+//! version, Enter and the Step back control, which `versions_step_back.rs` covers.
 
 use std::path::PathBuf;
 use std::time::{Duration, UNIX_EPOCH};
