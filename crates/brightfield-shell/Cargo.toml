@@ -79,7 +79,7 @@ brightfield-protocol = { version = "0.1.0", path = "../brightfield-protocol" }
 # What `cli` adds to the build is clap; `http-fetch`, the other half of it, was
 # already on. BUMPING moves this rev with `brightfield-protocol`'s, in lockstep —
 # README §"The arcform dependency".
-arc = { git = "https://github.com/meridian-online/arcform", rev = "2090b485491b734ad77c716ce0d01c938e43efa1", default-features = false, features = ["cli", "http-fetch"] }
+arc = { git = "https://github.com/meridian-online/arcform", rev = "f0561cd255e010e12a6ae82edc0b70785c3d19fc", default-features = false, features = ["cli", "http-fetch"] }
 brightfield-keys = { version = "0.1.0", path = "../brightfield-keys" }
 # The framework-free argument collector the argument-prompt overlay drives —
 # consumed read-only, like the keys registry above.
