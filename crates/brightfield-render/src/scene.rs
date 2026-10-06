@@ -640,15 +640,28 @@ pub fn build_multi_mark_scene_pinned(
     (scene, scales)
 }
 
+/// Whether a plot's x and y axis instructions have an axis to act on: not when
+/// the plot has a map projection, whose x and y are the projection's planar
+/// units and no axis. `xZero` and `xNice` would move the map's extent were they
+/// not guarded by this judge, and `xTicks`, `xTickFormat` and `xGrid` (the bare `grid`, and the
+/// `y` of each) have no frame to act on, because a plot with a projection draws
+/// a graticule where the frame would be.
+///
+/// It is the judge `apply_axis_ends` and `apply_axis_reverse` (private
+/// functions) draw through and the composition warns through, so an instruction
+/// the plot drops is an instruction that was named.
+#[must_use]
+pub fn axis_keys_apply(scales: &ScaleSet) -> bool {
+    scales.projection().is_none()
+}
+
 /// Whether a plot's `xReverse` / `yReverse` can turn its axes: not when the
 /// plot has a map projection, whose x and y are the projection's planar units.
-///
-/// It is the judge `apply_axis_reverse` draws through (a private function) and
-/// the composition warns through, so a reversal the plot drops is a reversal
-/// that was named.
+/// [`axis_keys_apply`] is that judgement, and `apply_axis_reverse` draws
+/// through this name for it.
 #[must_use]
 pub fn axis_reverse_applies(scales: &ScaleSet) -> bool {
-    scales.projection().is_none()
+    axis_keys_apply(scales)
 }
 
 /// Whether a plot's `colorDomain`, `colorRange` and `colorScale: quantize` with
@@ -770,12 +783,20 @@ fn apply_axis_reverse(scales: &mut ScaleSet, reverse: AxisReverse) {
 /// reason [`pins_yielding_to_navigation`] drops a pin: rounding a zoomed frame
 /// outward would undo the zoom. Log, symlog, time and band scales are left as
 /// they are; their ends are not a linear step's to round.
+///
+/// A plot with a map projection is left as it is: its x and y are the
+/// projection's planar units, so rounding or zeroing one widens the map's extent
+/// and draws the map smaller than the same file draws it without the key.
+/// [`axis_keys_apply`] is that judgement, and the composition warns through it.
 fn apply_axis_ends(
     scales: &mut ScaleSet,
     ends: AxisEnds,
     tick_counts: TickCounts,
     entry: &ChartData<'_>,
 ) {
+    if !axis_keys_apply(scales) {
+        return;
+    }
     let navigated = entry.view_extent;
     for (channel, end, target, reader_moved) in [
         (
