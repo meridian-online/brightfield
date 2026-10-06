@@ -161,8 +161,10 @@ fn a_facet_axis_attribute_draws_and_the_banner_names_it_and_its_plot() {
 
 /// **A bare axis attribute draws, and the banner names it and its plot: the
 /// schema declares `axis`, `facetGrid`, `facetLabel`, `padding`, `align` and
-/// `xyDomain`, none is spelled `x` or `y` and then a capital letter, and no
-/// resolver reads any.** `xyDomain: Fixed` is what the vendored specs write.
+/// `xyDomain`, a rule counting a name by an `x` or `y` and a capital letter left
+/// them out, and the layout resolvers read the six as they read an unset plot
+/// (`the_read_list_is_what_the_layout_resolvers_read`).** `xyDomain: Fixed` is
+/// what the vendored specs write.
 #[test]
 fn a_bare_axis_attribute_draws_and_the_banner_names_it_and_its_plot() {
     let unset = compose("");

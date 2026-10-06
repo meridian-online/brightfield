@@ -191,7 +191,7 @@ pub fn tick_format_applies(scale: &Scale) -> bool {
 /// drops is a format that was named. An axis of names takes a format of neither
 /// kind and is named through [`tick_format_applies`] instead, which says the
 /// format changes nothing there rather than that it is the other kind; a colour
-/// ramp draws no positional axis and crosses nothing.
+/// ramp draws no positional axis, so the question is not asked of it.
 #[must_use]
 pub fn tick_format_crosses_axis(scale: &Scale, format: &AxisFormat) -> bool {
     matches!(

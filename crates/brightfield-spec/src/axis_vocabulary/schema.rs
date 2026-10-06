@@ -21,9 +21,10 @@ const BARE_AXIS_ATTRIBUTES: &[&str] = &[
     "xyDomain",
 ];
 
-/// Whether a plot attribute name is an axis attribute: one of
-/// [`BARE_AXIS_ATTRIBUTES`], or `x` or `y` followed by a capital letter, or a
-/// facet axis's name, which is that behind an `f` (`fxLabel`, `fyTickFormat`).
+/// Whether a plot attribute name is an axis attribute: one of the bare names
+/// `grid`, `axis`, `align`, `padding`, `xyDomain`, `facetGrid` and `facetLabel`,
+/// or `x` or `y` followed by a capital letter, or a facet axis's name, which is
+/// that behind an `f` (`fxLabel`, `fyTickFormat`).
 /// The letter rule alone left the bare names out, since `xyDomain` has a
 /// lower-case second letter and `facetGrid` has no `x` or `y` after its `f`.
 #[must_use]
