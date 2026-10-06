@@ -2326,6 +2326,9 @@ pub struct MeridianApp {
     /// bindings the registry declares in its Grid context, read at boot — same
     /// rule as [`Self::nav_bindings`].
     grid_bindings: Vec<(&'static str, &'static str)>,
+    /// Whether the ledger's Versions panel holds the keys: a press in it gave
+    /// them to it, and no press elsewhere has taken them since.
+    versions_hold: bool,
     /// The per-session palette recency: verbs run from the palette rank
     /// higher on its next empty-query open. Session-scoped by design (the
     /// sanctioned v1 simplification); it resets each launch.
@@ -2678,6 +2681,7 @@ impl MeridianApp {
                 .and_then(brightfield_keys::VerbEntry::primary_key),
             nav_bindings: navigation_bindings(),
             grid_bindings: grid_bindings(),
+            versions_hold: false,
             recency: RecencyCounter::new(),
             notifications: NotificationLayer::new(),
             last_chart_fault: None,
@@ -5325,13 +5329,20 @@ impl MeridianApp {
         if self.charts.doc.undo_shelf_edit().is_none() {
             return false;
         }
+        self.rebind_shelf();
+        true
+    }
+
+    /// Set the shelf band's cells, and an open list's cursor, to the channels
+    /// the page drawn binds: what a page loaded by `u` or by the Versions panel
+    /// leaves for the window, since the band reads what it was last given.
+    fn rebind_shelf(&mut self) {
         if let Some(channels) = hero_shelf_channels(&self.charts.doc) {
             if let Some(band) = self.charts.shelf.band.as_mut() {
                 band.set_channels(channels.clone());
             }
             self.protocol.doc.model.rebind_column_list(channels);
         }
-        true
     }
 
     /// Perform whichever navigation verb's key is down this frame.
@@ -5857,10 +5868,18 @@ impl MeridianApp {
         }
     }
 
-    /// Whether the ledger's Versions panel is the focused pane and is drawn —
-    /// the situation its key context, the registry's Versions, resolves in.
-    fn versions_has_focus(&self) -> bool {
-        if self.ws().focus() != Some(PaneKey::new(crate::versions::VERSIONS)) {
+    /// Whether the ledger's Versions panel holds the keys and is drawn — the
+    /// situation its key context, the registry's Versions, resolves in.
+    ///
+    /// A press in the panel gives it the keys and a press anywhere else takes
+    /// them away ([`crate::versions::Versions::take_press`]), as a press does
+    /// for the shelf. The rail's panes are not the dock's, so the workspace's
+    /// focus record does not reach them.
+    fn versions_has_focus(&mut self) -> bool {
+        if let Some(inside) = self.charts.doc.versions_mut().take_press() {
+            self.versions_hold = inside;
+        }
+        if !self.versions_hold {
             return false;
         }
         let ledger = arrangement::default_arrangement().expect_region(arrangement::LEDGER_RAIL);
@@ -5898,12 +5917,15 @@ impl MeridianApp {
     fn versions_keys(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
         let clicked = self.charts.doc.versions_mut().take_step_back_click();
         if graph_on_canvas || !self.versions_has_focus() {
+            self.versions_hold = false;
             if self.charts.doc.return_to_now() {
+                self.rebind_shelf();
                 ctx.request_repaint();
             }
             return;
         }
         if clicked && self.charts.doc.step_back_to_cursor() {
+            self.rebind_shelf();
             ctx.request_repaint();
         }
         if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
@@ -5930,6 +5952,7 @@ impl MeridianApp {
                 _ => false,
             };
             if acted {
+                self.rebind_shelf();
                 ctx.request_repaint();
             }
         }

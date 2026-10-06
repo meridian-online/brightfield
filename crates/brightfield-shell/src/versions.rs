@@ -519,6 +519,11 @@ pub struct Versions {
     /// Whether the Step back control was clicked in the last frame: read and
     /// cleared by the window's next frame, which steps the chart back.
     step_back_clicked: bool,
+    /// Whether a press last frame landed in the panel (`Some(true)`) or
+    /// elsewhere (`Some(false)`), or no press was made (`None`): read and
+    /// cleared by the window's next frame, which gives the panel the keys or
+    /// takes them away.
+    pressed_in: Option<bool>,
 }
 
 impl Default for Versions {
@@ -535,6 +540,7 @@ impl Default for Versions {
             cursor: None,
             step_back_drawn: None,
             step_back_clicked: false,
+            pressed_in: None,
         }
     }
 }
@@ -645,6 +651,12 @@ impl Versions {
     /// and forget that it was.
     pub fn take_step_back_click(&mut self) -> bool {
         std::mem::take(&mut self.step_back_clicked)
+    }
+
+    /// Where the last frame's press landed, in the panel or elsewhere, and
+    /// forget it: `None` for a frame with no press, or with the panel not drawn.
+    pub fn take_press(&mut self) -> Option<bool> {
+        self.pressed_in.take()
     }
 
     /// Where each row drew in the last frame, the row for edits not yet saved
@@ -830,6 +842,12 @@ impl Item<ChartDoc> for VersionsPane {
     }
 
     fn ui(&mut self, doc: &mut ChartDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
+        // A press in the panel gives it the keys, and one elsewhere takes them
+        // away: what the window reads the next frame.
+        let panel = ui.max_rect();
+        if ui.input(|i| i.pointer.any_pressed()) {
+            doc.versions_mut().pressed_in = Some(ui.rect_contains_pointer(panel));
+        }
         let Listing::Listed { head, rows } = doc.versions().listing().clone() else {
             doc.versions_mut().step_back_drawn = None;
             return;

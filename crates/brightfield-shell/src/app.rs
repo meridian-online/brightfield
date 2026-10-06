@@ -1561,6 +1561,16 @@ impl ChartDoc {
         &self.pending_edits
     }
 
+    /// The spec the page drawn was loaded from, when a live session is behind
+    /// it: the chart as it is, a version the Versions panel's cursor draws, or a
+    /// column the shelf previews. A test hook, for the reason
+    /// [`Self::live_coordinator`] is public: what the page is drawn from has one
+    /// honest answer, and it is this.
+    #[must_use]
+    pub fn live_spec(&self) -> Option<&brightfield_spec::ast::Spec> {
+        self.live.as_ref().map(LiveDashboard::spec)
+    }
+
     /// The saved version the chart was stepped back to and has not saved, by
     /// its id in the store.
     #[must_use]
