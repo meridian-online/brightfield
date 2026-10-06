@@ -190,8 +190,8 @@ pub fn tick_format_applies(scale: &Scale) -> bool {
 /// the axis draws through and the composition warns through, so a format the axis
 /// drops is a format that was named. An axis of names takes a format of neither
 /// kind and is named through [`tick_format_applies`] instead, which says the
-/// format changes nothing there rather than that it is the other kind; a colour
-/// ramp draws no positional axis, so the question is not asked of it.
+/// format has no text to set there rather than that it is the other kind; a
+/// colour ramp draws no positional axis, so the question is not asked of it.
 #[must_use]
 pub fn tick_format_crosses_axis(scale: &Scale, format: &AxisFormat) -> bool {
     matches!(
