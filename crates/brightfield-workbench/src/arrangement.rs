@@ -166,7 +166,7 @@ pub const LEDGER_RAIL_MIN_HEIGHT: f32 = 120.0;
 /// grid is what its *Rows* spot holds.
 ///
 /// **The rail opens at the height of what it holds**, not at one height for
-/// its four panes. At [`LEDGER_RAIL_HEIGHT`] the grid's tab strip, pane
+/// its five panes. At [`LEDGER_RAIL_HEIGHT`] the grid's tab strip, pane
 /// header and compact column band leave room for one data row, and one record
 /// is not a run of them. A count of rows rather than a number of points,
 /// because a row's height is the grid's measure and not this module's: the
@@ -174,7 +174,7 @@ pub const LEDGER_RAIL_MIN_HEIGHT: f32 = 120.0;
 /// so the count holds when one of those measures moves. The shell holds the
 /// grid's height at or above [`LEDGER_RAIL_HEIGHT`], so the grid's spot opens
 /// no shorter than the record panes do; the shell's
-/// `no_ledger_pane_opens_shorter_than_it_did` reads all four panes' heights.
+/// `no_ledger_pane_opens_shorter_than_it_did` reads all five panes' heights.
 pub const LEDGER_GRID_ROWS: u16 = 5;
 
 // ---------------------------------------------------------------------------

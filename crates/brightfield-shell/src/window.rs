@@ -8403,12 +8403,13 @@ fn rail_default(region: &Region) -> f32 {
 }
 
 /// What the open ledger rail holds, as far as its height is concerned: the
-/// grid in its *Rows* spot, or one of the run-record panes. The key its open
+/// grid in its *Rows* spot, or one of the other panes. The key its open
 /// panel's id is derived with, so each keeps the height it was dragged to.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum LedgerHolds {
-    /// *Log*, *Quality*, the *Editor*, or the *Rows* spot saying where the grid
-    /// went — the panes that open at the rail's declared default.
+    /// *Log*, *Quality*, the *Editor*, *Versions*, or the *Rows* spot saying
+    /// where the grid went — the panes that open at the rail's declared
+    /// default.
     Record,
     /// The grid, drawn in the *Rows* spot.
     Grid,
