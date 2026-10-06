@@ -40,7 +40,7 @@ use brightfield_render::channel::Channel;
 use brightfield_render::scale::{ramp_at, Scale, ScaleSet};
 use brightfield_spec::edit::colour_legend_covers;
 use brightfield_spec::layout::{below_legends, collect_legend_nodes, Rect};
-use brightfield_spec::vocab::LegendChannel;
+use brightfield_spec::vocab::{LegendChannel, MarkKind};
 use brightfield_spec::Spec;
 use meridian_design::{control, semantic, spacing, typography};
 use meridian_egui::Mode;
@@ -307,6 +307,46 @@ pub fn band_width(composed: &Composed) -> f32 {
     }
 }
 
+/// The reserved column a counting aggregate lands in. `fill: { count: }` binds
+/// a fill channel to it, since no column of the author's holds a count, so a
+/// plot whose fill is this column is a fill the transform produced. Matched as a
+/// literal because the constant is private to `brightfield-render` (its title
+/// code matches the same literal); the legend tests over a hexbin go red if the
+/// alias is renamed.
+const COUNT_COLUMN: &str = "__bf_count";
+
+/// What a legend over a count is named: the word vgplot gives a counting
+/// aggregate, which `exprLabel` in its `plot-renderer.js` makes of `count(*)`.
+const COUNT_NAME: &str = "count";
+
+/// What a legend over a heatmap is named: the name vgplot gives the grid a
+/// heatmap smooths, `DENSITY` in its `Grid2DMark.js`.
+const DENSITY_NAME: &str = "density";
+
+/// The name the legend over `plot`'s fill carries over its ramp or its swatches.
+///
+/// A fill that is a column is named for the column. A fill the transform
+/// produced has no column of the author's to name, so it is named for the
+/// transform: `density` for a heatmap, and `count` for a hexbin coloured by
+/// `fill: { count: }`, a raster, or any other mark whose fill is the count.
+/// A raster and a heatmap set no fill channel and colour by their bins all the
+/// same, so a plot with none is named for them. The first such mark in draw order
+/// gives the word. `None` when neither a column nor a transform names it, which
+/// is a plot whose scales call for no legend.
+#[must_use]
+pub fn legend_name(plot: &PlotHandle) -> Option<&str> {
+    let column = plot.fill_column.as_deref();
+    if let Some(column) = column.filter(|column| *column != COUNT_COLUMN) {
+        return Some(column);
+    }
+    let transform = plot.marks.iter().find_map(|kind| match kind {
+        MarkKind::Heatmap => Some(DENSITY_NAME),
+        MarkKind::Hexbin | MarkKind::Raster => Some(COUNT_NAME),
+        _ => None,
+    });
+    transform.or(column.map(|_| COUNT_NAME))
+}
+
 /// Draw every plot's legend into the reserved band beside the raster.
 ///
 /// `band` is the rect the chart pane reserved — entirely outside the
@@ -333,7 +373,7 @@ pub fn draw_band(
             egui::pos2(band.left(), y),
             band.bottom(),
             &legend,
-            composed.plots[i].fill_column.as_deref(),
+            legend_name(&composed.plots[i]),
             mode,
         );
     }
@@ -356,7 +396,7 @@ pub fn draw_below(ui: &egui::Ui, origin: egui::Pos2, composed: &Composed, mode: 
             &ui.painter_at(band),
             band,
             &legend,
-            composed.plots[i].fill_column.as_deref(),
+            legend_name(&composed.plots[i]),
             mode,
         );
     }
@@ -371,16 +411,16 @@ pub const BELOW_RAMP_MAX_WIDTH: f32 = 240.0;
 /// the ramp and the categorical swatches share a row's weight.
 pub const BELOW_RAMP_HEIGHT: f32 = control::ICON_XS;
 
-/// One legend block in the `band` under its plot: the column's name at the left,
+/// One legend block in the `band` under its plot: the legend's name at the left,
 /// then for a continuous scale a ramp running left to right — the low end at its
 /// left — with the domain's two ends under it (and a diverging scale's pivot
 /// under its middle), or for a categorical scale a swatch and its label for each
 /// category, in a row. The block is centred on the band's height.
 ///
 /// The name is cut short inside [`LABEL_COLUMN`], as it is at the plot's right,
-/// and the ramp starts after what is drawn of it. `name` is `None` for a plot
-/// whose fill names no column, which draws no legend through
-/// [`LegendSpec::of_plot`].
+/// and the ramp starts after what is drawn of it. `name` is [`legend_name`]'s,
+/// and `None` for a plot whose fill is neither a column nor a transform's
+/// output, which draws no legend through [`LegendSpec::of_plot`].
 pub fn draw_below_block(
     painter: &egui::Painter,
     band: egui::Rect,
@@ -608,7 +648,7 @@ fn below_value(
     );
 }
 
-/// One legend block at `origin`: the column's name over the block, then a
+/// One legend block at `origin`: the legend's name over the block, then a
 /// swatch and its label for each category of a categorical scale, or a ramp
 /// running top to bottom with its values beside it for a continuous one — the
 /// domain's maximum level with the ramp's top, its minimum with the ramp's
@@ -617,8 +657,9 @@ fn below_value(
 /// The name is cut short inside [`block_width`], the width the band was sized
 /// to, so a long name leaves the block and the band as wide as they were
 /// (`a_long_name_is_cut_short_inside_the_column_and_the_band_stays_as_wide`).
-/// `name` is `None` for a plot whose fill names no column, which draws no
-/// legend through [`LegendSpec::of_plot`].
+/// `name` is [`legend_name`]'s, and `None` for a plot whose fill is neither a
+/// column nor a transform's output, which draws no legend through
+/// [`LegendSpec::of_plot`].
 ///
 /// `bottom` is the foot of the room the block draws in, in the same
 /// coordinates as `origin`: the band's. A number column's ramp is drawn as tall
