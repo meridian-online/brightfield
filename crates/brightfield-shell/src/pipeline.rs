@@ -193,11 +193,14 @@ pub struct PlotHandle {
     /// this says that nothing is there.
     pub navigated_empty: bool,
     /// **The column on this plot's fill channel**, from the first mark drawn
-    /// that names one — the name the legend at the plot's right carries over its
-    /// ramp or its swatches. Read off the drawn mark's channel map, on the same
+    /// that names one. Read off the drawn mark's channel map, on the same
     /// standing as [`Self::x_column`], so it is the column the fill scale was
-    /// built from. `None` for a plot whose fill is a colour literal or is not
-    /// set, which is also a plot whose scales call for no legend.
+    /// built from. It is the name the legend carries over its ramp or its
+    /// swatches only when the fill is a column of the author's: a fill the
+    /// transform produced is the reserved count column (`fill: { count: }`), and
+    /// a raster's or a heatmap's sets none, so [`crate::legend::legend_name`] is
+    /// what names the legend. `None` for a plot whose fill is a colour literal or
+    /// is not set.
     pub fill_column: Option<String>,
     /// **The file puts a colour legend on this plot** — its own `legend: color`
     /// item, a standalone one that names it by `for:`, or a standalone one with
