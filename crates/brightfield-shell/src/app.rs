@@ -1532,8 +1532,8 @@ impl ChartDoc {
 
     /// **What a Save of this document beside the Protocol in `dir` would
     /// write**, and the text on disk it would replace, read and placed as
-    /// [`Self::save_chart_beside`] reads and places them, writing nothing.
-    /// `None` when a Save would write nothing: no chart file, no text to place
+    /// [`Self::save_chart_beside`] reads and places them; this writes no file.
+    /// `None` when a Save would write no file: no chart file, no text to place
     /// into, and no edit.
     fn save_text(
         &self,

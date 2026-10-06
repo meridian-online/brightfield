@@ -788,7 +788,7 @@ impl CloseQuestion {
         }
     }
 
-    /// The rows of the list: every edit when they fit in
+    /// The rows of the list: the edits themselves when they fit in
     /// [`CLOSE_LIST_ROWS`], and otherwise the first edits and a last row that
     /// counts the rest, so the edits listed and the count add up to
     /// [`Self::edits`].
