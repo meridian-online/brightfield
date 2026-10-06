@@ -33,7 +33,8 @@
 //! change, including an oldest version, a text edited outside, a version that
 //! differs in line endings alone, a version carrying a named change and a change
 //! elsewhere, and a row longer than the panel; the unsaved row; the head line;
-//! the empty states. Not covered: the cursor, the redraw of the chart for a
+//! the empty states; and the panel as pixels, in light and in dark, over four
+//! versions with the rail dragged to 236 high. Not covered: the cursor, the redraw of the chart for a
 //! version, Enter and the Step back control, which are another card's.
 
 use std::path::PathBuf;
@@ -126,6 +127,9 @@ struct Session {
     history_root: PathBuf,
     /// The text the frame before drew.
     texts: Vec<text_ink::DrawnText>,
+    /// The events of every frame the window has run, in order, so a capture can
+    /// replay what a probe window was driven through.
+    frames: Vec<Vec<egui::Event>>,
     /// Held last so the folders outlive the window.
     root: TempDir,
 }
@@ -136,6 +140,16 @@ impl Session {
     }
 
     fn open_as(name: &str, store: Store, size: (f32, f32)) -> Self {
+        Self::build(name, store, size, false)
+    }
+
+    /// A window as a capture draws it: no shelf band, which is authoring chrome
+    /// a picture of the dashboard leaves out.
+    fn open_for_capture(name: &str, size: (f32, f32)) -> Self {
+        Self::build(name, Store::Kept, size, true)
+    }
+
+    fn build(name: &str, store: Store, size: (f32, f32), for_capture: bool) -> Self {
         let root = TempDir::new(name);
         let folder = root.0.join("data");
         std::fs::create_dir_all(&folder).expect("the data file's folder");
@@ -151,7 +165,10 @@ impl Session {
             }
             Store::Kept | Store::None => root.0.join(".arcform").join("history"),
         };
-        let app = MeridianApp::headless(boot, Mode::Light);
+        let mut app = MeridianApp::headless(boot, Mode::Light);
+        if for_capture {
+            app.set_shelf_band_drawn(false);
+        }
         let app = match store {
             Store::None => app,
             Store::Kept | Store::Unopenable => {
@@ -165,6 +182,7 @@ impl Session {
             folder,
             history_root,
             texts: Vec::new(),
+            frames: Vec::new(),
             root,
         };
         session
@@ -193,6 +211,7 @@ impl Session {
     }
 
     fn run(&mut self, events: Vec<egui::Event>) {
+        self.frames.push(events.clone());
         let raw = egui::RawInput {
             screen_rect: Some(self.screen),
             events,
@@ -357,10 +376,10 @@ impl Session {
         }
     }
 
-    /// Carry the clock to where `NEWEST_READS` and `now_reads` say it reads: an
-    /// offset that makes the newest version's local time `NEWEST_READS`, and a
-    /// *now* `now_reads - NEWEST_READS` seconds after it.
-    fn pin_clock(&mut self, now_reads: i64) {
+    /// The clock that reads where `NEWEST_READS` and `now_reads` say: an offset
+    /// that makes the newest version's local time `NEWEST_READS`, and a *now*
+    /// `now_reads - NEWEST_READS` seconds after it.
+    fn clock_reading(&self, now_reads: i64) -> Clock {
         let newest = self
             .history()
             .entries_for_file(&self.chart_file())
@@ -377,13 +396,17 @@ impl Session {
         .expect("a count of seconds");
         let offset = i32::try_from(NEWEST_READS - at).expect("an offset in range");
         let now = newest + Duration::from_secs(u64::try_from(now_reads - NEWEST_READS).unwrap());
-        self.app.set_versions_env(
-            Clock::Fixed {
-                now,
-                offset_secs: offset,
-            },
-            Some(self.root.0.clone()),
-        );
+        Clock::Fixed {
+            now,
+            offset_secs: offset,
+        }
+    }
+
+    /// Carry the clock to where [`Self::clock_reading`] says it reads.
+    fn pin_clock(&mut self, now_reads: i64) {
+        let clock = self.clock_reading(now_reads);
+        self.app
+            .set_versions_env(clock, Some(self.root.0.clone()));
         self.app.chart_doc_mut().versions_mut().invalidate();
     }
 
@@ -407,6 +430,31 @@ impl Session {
         self.app
             .region_rect(LEDGER_RAIL)
             .expect("the ledger rail drew")
+    }
+
+    /// Drag the ledger rail's top edge until the rail is `height` high, as a
+    /// person does: a press on the edge, a move and a release.
+    fn drag_ledger_to(&mut self, height: f32) {
+        let rail = self.rail();
+        let grab = egui::pos2(rail.center().x, rail.top());
+        let to = egui::pos2(grab.x, grab.y - (height - rail.height()));
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        self.run(vec![egui::Event::PointerMoved(grab)]);
+        self.run(vec![egui::Event::PointerMoved(grab), button(grab, true)]);
+        self.run(vec![egui::Event::PointerMoved(to)]);
+        self.run(vec![egui::Event::PointerMoved(to)]);
+        self.run(vec![egui::Event::PointerMoved(to), button(to, false)]);
+        self.settle();
+        assert!(
+            (self.rail().height() - height).abs() < 0.5,
+            "a drag of the rail's top edge from {grab:?} to {to:?} left the rail {}pt high, not {height}",
+            self.rail().height()
+        );
     }
 
     /// The galleys the ledger rail drew, each with its box, in paint order.
@@ -478,9 +526,16 @@ struct Texts {
     y_moved: String,
 }
 
+/// The four texts, written once for the whole suite: each test reads them and
+/// none changes them.
+fn recorded_texts() -> &'static Texts {
+    static TEXTS: std::sync::OnceLock<Texts> = std::sync::OnceLock::new();
+    TEXTS.get_or_init(record_texts)
+}
+
 /// Write the four texts the way a person does: Save, then an edit and a Save,
 /// three times over.
-fn recorded_texts() -> Texts {
+fn record_texts() -> Texts {
     let mut s = Session::open("recording");
     s.save();
     let base = s.chart_text();
@@ -1000,4 +1055,110 @@ fn a_save_lists_its_version_and_a_show_after_a_hide_reads_the_store_again() {
         "the panel shown again did not read the version recorded while it was hidden: {:?}",
         s.cells()
     );
+}
+
+// ---------------------------------------------------------------------------
+// AC8 — the panel, as pixels
+// ---------------------------------------------------------------------------
+
+/// The window the baselines are drawn in, the size the dashboard baselines use.
+const BASELINE_WINDOW: (f32, f32) = (1440.0, 900.0);
+
+/// The height the baselines draw the rail at: the frame's. The rail opens at
+/// 180, so the baseline's window is dragged to it.
+const BASELINE_RAIL: f32 = 236.0;
+
+/// The words the four versions of the baseline's history read, newest first:
+/// a text edited outside, a scale switch, a column put on x, and the first
+/// version kept.
+const BASELINE_CHANGES: [&str; 4] = [
+    "edited outside brightfield \u{b7} 3 lines",
+    "population \u{b7} x scale: linear \u{2192} log",
+    "Map \u{b7} projection type: equirectangular removed \u{b7} \
+     x axis: longitude \u{2192} median_income",
+    "the first version kept",
+];
+
+/// **The panel over a history of four versions, as pixels at 236 high.** The
+/// history holds a save, a scale switch, a column put on x and a version
+/// edited outside.
+///
+/// A probe window is driven through the gestures that open the panel and drag
+/// the rail to its height, and every frame it ran is replayed in the capture's
+/// window over the same files, so the picture is of what the probe was read to
+/// hold. The probe is read first: `UPDATE_SNAPSHOTS=1` writes whatever it is
+/// handed, so a regeneration over a click that missed would commit a picture
+/// of some other pane under this one's name.
+fn capture_the_versions_panel(mode: Mode, name: &str) -> image::RgbaImage {
+    let t = recorded_texts();
+    let outside = format!("{}# a note\n# another\n# a third\n", t.scale_switched);
+    let mut probe = Session::open_for_capture("baseline", BASELINE_WINDOW);
+    probe.seed(&[
+        (true, &t.base),
+        (false, &t.x_moved),
+        (false, &t.scale_switched),
+        (true, &outside),
+    ]);
+    probe.pin_clock(SAME_DAY);
+    probe.show_versions();
+    probe.drag_ledger_to(BASELINE_RAIL);
+
+    let cells = probe.cells();
+    assert_eq!(
+        cells.iter().map(|r| r[2].as_str()).collect::<Vec<_>>(),
+        BASELINE_CHANGES,
+        "the probe's panel does not list the history the baseline is of"
+    );
+    assert_eq!(
+        cells.iter().map(|r| r[1].as_str()).collect::<Vec<_>>(),
+        ["saved", "before a write", "before a write", "saved"],
+        "the probe's rows are not the kinds the baseline is of"
+    );
+    assert!(
+        cells.iter().all(|r| r[0] == "today 14:02"),
+        "a row's time does not read the pinned clock: {cells:?}"
+    );
+    assert_eq!(probe.app.rail_pane_title(LEDGER_RAIL).as_deref(), Some("Versions"));
+
+    let clock = probe.clock_reading(SAME_DAY);
+    let home = probe.root.0.clone();
+    let store = HistoryStore::At(probe.history_root.clone());
+    let data = probe.folder.join(HOUSING_FILE);
+    let boot = Boot::data_file(data.to_str().expect("utf-8 path"))
+        .unwrap_or_else(|e| panic!("open {}: {e}", data.display()));
+    let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("{name}.capture.png"));
+    std::fs::create_dir_all(out.parent().expect("a parent")).expect("the capture's folder");
+    let (w, h) = brightfield_shell::capture::capture_png_prepared(
+        boot,
+        brightfield_shell::startup::default_layout(),
+        mode,
+        1.0,
+        BASELINE_WINDOW,
+        &out,
+        probe.frames.clone(),
+        |app| {
+            app.set_history(Some(store));
+            app.set_versions_env(clock, Some(home));
+        },
+    )
+    .unwrap_or_else(|e| panic!("capture {name}: {e}"));
+    assert!(w > 0 && h > 0, "{name}: empty capture");
+    image::open(&out)
+        .unwrap_or_else(|e| panic!("read capture {}: {e}", out.display()))
+        .to_rgba8()
+}
+
+/// **AC8, light.** The Versions panel over four versions matches its baseline
+/// with the rail 236 high.
+#[test]
+fn the_versions_panel_light_baseline() {
+    let image = capture_the_versions_panel(Mode::Light, "versions_panel_light");
+    egui_kittest::image_snapshot(&image, "versions_panel_light");
+}
+
+/// **AC8, dark:** the same frame and the same script, the ink moved.
+#[test]
+fn the_versions_panel_dark_baseline() {
+    let image = capture_the_versions_panel(Mode::Dark, "versions_panel_dark");
+    egui_kittest::image_snapshot(&image, "versions_panel_dark");
 }
