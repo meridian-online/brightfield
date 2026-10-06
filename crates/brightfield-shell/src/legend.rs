@@ -411,7 +411,7 @@ pub const BELOW_RAMP_MAX_WIDTH: f32 = 240.0;
 /// the ramp and the categorical swatches share a row's weight.
 pub const BELOW_RAMP_HEIGHT: f32 = control::ICON_XS;
 
-/// One legend block in the `band` under its plot: the column's name at the left,
+/// One legend block in the `band` under its plot: the legend's name at the left,
 /// then for a continuous scale a ramp running left to right — the low end at its
 /// left — with the domain's two ends under it (and a diverging scale's pivot
 /// under its middle), or for a categorical scale a swatch and its label for each
@@ -648,7 +648,7 @@ fn below_value(
     );
 }
 
-/// One legend block at `origin`: the column's name over the block, then a
+/// One legend block at `origin`: the legend's name over the block, then a
 /// swatch and its label for each category of a categorical scale, or a ramp
 /// running top to bottom with its values beside it for a continuous one — the
 /// domain's maximum level with the ramp's top, its minimum with the ramp's
