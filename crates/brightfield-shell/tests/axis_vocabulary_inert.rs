@@ -11,6 +11,9 @@
 //!   band has a tick per category and a log or symlog axis a tick per decade.
 //! - `xReverse`, `yReverse` turn an axis, but not on a plot with a map
 //!   projection, whose x and y are the projection's planar units.
+//! - On that same plot no axis is drawn, so `xTicks`, `xTickFormat` and `xGrid`
+//!   have nothing to act on, and `xZero` and `xNice` would move the map's
+//!   extent: each is named and the map draws as it does without the key.
 //!
 //! Which axis a key meets is known once the data has typed it, not at parse time, so each arm
 //! composes a spec through the same load the window runs and reads
@@ -302,6 +305,137 @@ fn a_reversal_that_lands_where_it_acts_says_nothing() {
         "projectionType: equirectangular\n",
         "xReverse: false",
     );
+}
+
+// ---------------------------------------------------------------------------
+// A plot with a map projection — the keys that act on an axis it does not draw
+// ---------------------------------------------------------------------------
+
+/// The plot attribute that gives a plot a projection.
+const PROJECTED: &str = "projectionType: equirectangular\n";
+
+/// Each x and y axis key, beyond the reversal, with a value that asks for
+/// something: a request to zero or round the ends, a count, a format, and a
+/// switch that draws gridlines.
+const PROJECTED_KEYS: [&str; 11] = [
+    "xZero: true",
+    "yZero: true",
+    "xNice: true",
+    "yNice: true",
+    "xTicks: 4",
+    "yTicks: 4",
+    "xTickFormat: \",d\"",
+    "yTickFormat: \".2s\"",
+    "xGrid: true",
+    "yGrid: true",
+    "grid: true",
+];
+
+/// **On a plot with a map projection a tick count, a number tick format, a
+/// gridline switch and a request to zero or round the ends draw as the plot
+/// draws without the key, and the banner names each as changing nothing there.**
+///
+/// A projected plot draws no axis, so the count, the format and the switch have
+/// no frame to act on; `xZero` and `xNice` would have moved the map's extent,
+/// and the painted path stream holds that the map stays where it is.
+#[test]
+fn a_projected_plots_axis_keys_are_named_and_the_map_draws_without_them() {
+    let unset = compose("lon", "lat", PROJECTED);
+    assert!(
+        said(&unset).is_empty(),
+        "the projected plot says nothing; got {:?}",
+        said(&unset)
+    );
+    assert!(!points(&unset).is_empty(), "the projected plot paints");
+
+    for key in PROJECTED_KEYS {
+        let name = key.split(':').next().expect("a key").trim();
+        let asked = compose("lon", "lat", &format!("{PROJECTED}{key}\n"));
+        assert_eq!(
+            points(&asked),
+            points(&unset),
+            "`{key}` changes what a projected plot paints"
+        );
+        let lines = said(&asked);
+        assert_eq!(lines.len(), 1, "`{key}`: {lines:?}");
+        assert!(
+            lines[0].contains(&format!("`{name}`"))
+                && lines[0].contains("root (`probe`)")
+                && lines[0].contains("a plot with a map projection"),
+            "the line names the key and the plot; got {:?}",
+            lines[0]
+        );
+    }
+
+    let all = compose(
+        "lon",
+        "lat",
+        &format!("{PROJECTED}{}\n", PROJECTED_KEYS.join("\n")),
+    );
+    assert_eq!(
+        points(&all),
+        points(&unset),
+        "every key at once changes what a projected plot paints"
+    );
+    assert_eq!(
+        said(&all).len(),
+        PROJECTED_KEYS.len(),
+        "one line for each key: {:?}",
+        said(&all)
+    );
+}
+
+/// **A date format on a plot with a map projection is named once, as changing
+/// nothing there, and not also as a date format on a number axis.**
+#[test]
+fn a_date_format_on_a_projected_plot_is_named_once_and_as_no_axis_at_all() {
+    let lines = said(&compose(
+        "lon",
+        "lat",
+        &format!("{PROJECTED}xTickFormat: \"%Y\"\n"),
+    ));
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].contains("`xTickFormat`")
+            && lines[0].contains("a plot with a map projection")
+            && !lines[0].contains("number axis"),
+        "the line says the key changes nothing on the map: {}",
+        lines[0]
+    );
+}
+
+/// **A switch set to `false` asks for nothing, so it says nothing on a plot with
+/// a map projection, as `xReverse: false` does.**
+#[test]
+fn a_projected_plots_axis_switch_set_to_false_says_nothing() {
+    for key in [
+        "xZero: false",
+        "yNice: false",
+        "xGrid: false",
+        "yGrid: false",
+        "grid: false",
+    ] {
+        assert_silent("lon", "lat", PROJECTED, key);
+    }
+}
+
+/// **The same keys on a plot with no projection draw as they do today: the
+/// banner says nothing of them on a linear axis, and a request to zero or round
+/// the ends still moves the axis.**
+#[test]
+fn the_same_keys_on_an_unprojected_plot_still_act() {
+    for key in PROJECTED_KEYS {
+        assert_silent("n", "n", "", key);
+    }
+    let unset = compose("n", "n", "");
+    for key in ["xZero: true", "xNice: true", "yZero: true", "yNice: true"] {
+        let asked = compose("n", "n", &format!("{key}\n"));
+        assert_ne!(
+            points(&asked),
+            points(&unset),
+            "`{key}` moves the ends of a plot with no projection"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

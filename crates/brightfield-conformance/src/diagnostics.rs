@@ -279,7 +279,7 @@ fn warning_wire_name(warning: &ParseWarning) -> String {
         | ParseWarning::UnreadDateDirective { attribute, .. }
         | ParseWarning::TickFormatOnWrongAxis { attribute, .. }
         | ParseWarning::AxisAttributeOnWrongAxis { attribute, .. }
-        | ParseWarning::AxisReverseUnderProjection { attribute, .. }
+        | ParseWarning::AxisAttributeUnderProjection { attribute, .. }
         | ParseWarning::UnreadColourKey { attribute, .. }
         | ParseWarning::UndrawnScale { attribute, .. }
         | ParseWarning::UnreadAxisAttribute { attribute, .. } => attribute.clone(),
@@ -331,7 +331,7 @@ fn warning_surface(warning: &ParseWarning) -> &'static str {
         | ParseWarning::UnreadDateDirective { .. }
         | ParseWarning::TickFormatOnWrongAxis { .. }
         | ParseWarning::AxisAttributeOnWrongAxis { .. }
-        | ParseWarning::AxisReverseUnderProjection { .. }
+        | ParseWarning::AxisAttributeUnderProjection { .. }
         | ParseWarning::UnreadColourKey { .. }
         | ParseWarning::UndrawnScale { .. }
         | ParseWarning::UnreadAxisAttribute { .. } => "plot",
@@ -740,7 +740,7 @@ mod tests {
             plot: "root (`sales`)".to_string(),
             axis: "log".to_string(),
         };
-        let under_a_projection = ParseWarning::AxisReverseUnderProjection {
+        let under_a_projection = ParseWarning::AxisAttributeUnderProjection {
             attribute: "xReverse".to_string(),
             plot: "root/vconcat[1]".to_string(),
         };

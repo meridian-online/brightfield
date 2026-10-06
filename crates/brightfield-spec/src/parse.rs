@@ -578,15 +578,21 @@ pub enum ParseWarning {
         axis: String,
     },
 
-    /// A plot with a map projection sets `xReverse` or `yReverse`. A projection
-    /// replaces the plot's x and y with planar units, and the plot draws as it
+    /// A plot with a map projection sets an x or y axis instruction: `xReverse`,
+    /// `xZero` or `xNice` with a request, `xTicks` with a count, `xTickFormat`
+    /// with a format this build reads, or `xGrid` or the bare `grid` with
+    /// `true`, and the `y` of each. A projection replaces the plot's x and y
+    /// with planar units, which are no axis: the map draws no axis, the
+    /// graticule stands where its gridlines would, and the plot draws as it
     /// does without the key. Known once the composition has built the scales;
     /// it names the key and the plot.
     ///
-    /// `brightfield_render::scene::axis_reverse_applies` is the judge, and the
-    /// draw goes through it.
-    AxisReverseUnderProjection {
-        /// The attribute key: `xReverse` or `yReverse`.
+    /// `brightfield_render::scene::axis_keys_apply` is the judge. The draw asks
+    /// it before it moves the ends or turns the axis; the tick, format and grid
+    /// keys act only on a frame, which a plot with a projection does not draw,
+    /// so it is the draw's missing frame that leaves them without an effect.
+    AxisAttributeUnderProjection {
+        /// The attribute key: any of the keys above.
         attribute: String,
         /// The plot that sets it, as [`crate::layout::plot_label`] names one.
         plot: String,
@@ -952,7 +958,7 @@ impl fmt::Display for ParseWarning {
                 f,
                 "plot {plot} sets `{attribute}`, which changes nothing on a {axis} axis — the plot draws as it does without it"
             ),
-            Self::AxisReverseUnderProjection { attribute, plot } => write!(
+            Self::AxisAttributeUnderProjection { attribute, plot } => write!(
                 f,
                 "plot {plot} sets `{attribute}`, which changes nothing on a plot with a map projection — the plot draws as it does without it"
             ),

@@ -51,7 +51,7 @@ use brightfield_render::scale::{
     ColourOverride, ColourScale, PinnedDomains, Scale, ScaleSet, SequentialScheme, ViewExtent,
 };
 use brightfield_render::scene::{
-    axis_ends_apply, axis_reverse_applies, build_multi_mark_scene_pinned, colour_override_applies,
+    axis_ends_apply, axis_keys_apply, build_multi_mark_scene_pinned, colour_override_applies,
     colour_reverse_applies, compose_dashboard, unrestorable_under_sampling, ChartData,
     UnsampledDomains,
 };
@@ -64,7 +64,7 @@ use brightfield_spec::analysis::{
 };
 use brightfield_spec::ast::{Component, MarkData, ParamNode, PlotNode, SpaceNode, SpecValue};
 use brightfield_spec::layout::{
-    collect_plot_nodes, placed_plots, plot_label, resolve_axis_ends, resolve_axis_reverse,
+    collect_plot_nodes, grid_switch, placed_plots, plot_label, resolve_axis_ends, resolve_axis_reverse,
     resolve_colour_pivot, resolve_colour_reverse, resolve_colour_scale_diverging,
     resolve_colour_scheme_name, resolve_fixed_domains, resolve_grid_lines, resolve_plot_insets,
     resolve_plot_margins, resolve_plot_stack_offset, resolve_tick_counts, resolve_tick_formats,
@@ -2478,8 +2478,10 @@ fn compose_from_results(
                 let mut found = crossed_tick_formats(node, &tick_formats, &scales);
                 found.extend(inert_axis_instructions(
                     &plot_label(&plot.path, node),
+                    node,
                     axis_ends,
                     tick_counts,
+                    &tick_formats,
                     axis_reverse,
                     &scales,
                 ));
@@ -2651,6 +2653,12 @@ fn crossed_tick_formats(
     formats: &TickFormats,
     scales: &ScaleSet,
 ) -> Vec<ParseWarning> {
+    // A plot with a map projection has no axis to cross: its x and y are planar
+    // units, and a tick format on it is named once, by
+    // [`inert_axis_instructions`], as changing nothing there.
+    if !axis_keys_apply(scales) {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     for (key, channel, format) in [
         ("xTickFormat", Channel::X, &formats.x),
@@ -2683,30 +2691,41 @@ fn crossed_tick_formats(
 
 /// The warnings for a plot's axis instructions that the axis they meet does not
 /// act on: `xZero`, `xNice` or `xTicks` (and the `y` of each) on an axis that
-/// does not follow it, and `xReverse` or `yReverse` on a plot with a map
-/// projection.
+/// does not follow it, and any x or y axis instruction (`xZero`, `xNice`,
+/// `xTicks`, `xTickFormat`, `xGrid`, `xReverse`, the bare `grid`) on a plot with
+/// a map projection, whose x and y are no axis.
 ///
 /// Known here, where the data has typed the scales, and asked of the judges the
 /// draw goes through ([`axis_ends_apply`], [`tick_count_applies`],
-/// [`axis_reverse_applies`]), so an instruction the draw drops is an instruction
+/// [`axis_keys_apply`]), so an instruction the draw drops is an instruction
 /// that was named
-/// (`an_instruction_an_axis_takes_none_of_is_named_and_the_plot_draws_without_it`).
+/// (`an_instruction_an_axis_takes_none_of_is_named_and_the_plot_draws_without_it`,
+/// `a_projected_plots_axis_keys_are_named_and_the_map_draws_without_them`).
 /// A key set to `false`, or to a value the resolvers read as no request, is no
-/// instruction and says nothing.
+/// instruction and says nothing. A plot with a projection says each key once,
+/// as changing nothing on a plot with a map projection, and says nothing of the
+/// kind of axis the key landed on, since there is none.
 fn inert_axis_instructions(
     plot: &str,
+    node: &PlotNode,
     ends: AxisEnds,
     counts: TickCounts,
+    formats: &TickFormats,
     reverse: AxisReverse,
     scales: &ScaleSet,
 ) -> Vec<ParseWarning> {
+    let projected = !axis_keys_apply(scales);
+    // `grid` and `xGrid` are no instruction unless they ask for gridlines.
+    let grid_asked = |key: &str| node.attributes.get(key).and_then(grid_switch) == Some(true);
     let mut out = Vec::new();
-    for (channel, zero, nice, ticks, reversed) in [
+    for (channel, zero, nice, ticks, format, grid, reversed) in [
         (
             Channel::X,
             ("xZero", ends.x.zero),
             ("xNice", ends.x.nice),
             ("xTicks", counts.x.is_some()),
+            ("xTickFormat", formats.x.is_some()),
+            ("xGrid", grid_asked("xGrid")),
             ("xReverse", reverse.x),
         ),
         (
@@ -2714,10 +2733,21 @@ fn inert_axis_instructions(
             ("yZero", ends.y.zero),
             ("yNice", ends.y.nice),
             ("yTicks", counts.y.is_some()),
+            ("yTickFormat", formats.y.is_some()),
+            ("yGrid", grid_asked("yGrid")),
             ("yReverse", reverse.y),
         ),
     ] {
-        if let Some((scale, axis)) = scales
+        if projected {
+            for (key, set) in [zero, nice, ticks, format, grid, reversed] {
+                if set {
+                    out.push(ParseWarning::AxisAttributeUnderProjection {
+                        attribute: key.to_string(),
+                        plot: plot.to_string(),
+                    });
+                }
+            }
+        } else if let Some((scale, axis)) = scales
             .get(channel)
             .and_then(|scale| Some((scale, axis_scale_word(scale)?)))
         {
@@ -2735,12 +2765,12 @@ fn inert_axis_instructions(
                 }
             }
         }
-        if reversed.1 && !axis_reverse_applies(scales) {
-            out.push(ParseWarning::AxisReverseUnderProjection {
-                attribute: reversed.0.to_string(),
-                plot: plot.to_string(),
-            });
-        }
+    }
+    if projected && grid_asked("grid") {
+        out.push(ParseWarning::AxisAttributeUnderProjection {
+            attribute: "grid".to_string(),
+            plot: plot.to_string(),
+        });
     }
     out
 }
