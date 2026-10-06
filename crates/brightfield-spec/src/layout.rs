@@ -1751,7 +1751,7 @@ pub fn plot_scale_key(axis: PlotAxis) -> Option<&'static str> {
 
 /// **What a plot's file said of one axis's scale** — the part of the reading
 /// [`PlotScales`] cannot keep, because the resolved scale is the same
-/// [`ScaleType::Linear`] whether the file named nothing, named `linear`, or
+/// [`ScaleType::Linear`] whether the file left the key out, named `linear`, or
 /// named a scale this build does not draw.
 ///
 /// A value is the analyst's when it differs from brightfield's own default, not
@@ -1767,8 +1767,8 @@ pub enum ScaleReading {
     #[default]
     Default,
     /// The file sets a transform this build draws and that differs from the
-    /// default: `log` or `symlog`. Never [`ScaleType::Linear`], which is
-    /// [`ScaleReading::Default`].
+    /// default: `log` or `symlog`. A file that names `linear` reads as
+    /// [`ScaleReading::Default`] instead.
     Set(ScaleType),
     /// The file names a scale this build does not draw — `sqrt`, `pow`,
     /// `band`, a wrong-case `LOG` — as written. The axis draws as
@@ -1794,7 +1794,7 @@ impl ScaleReading {
     }
 
     /// The scale name the file asked for and this build does not draw, as
-    /// written; `None` for every other reading.
+    /// written; `None` for the other two readings.
     #[must_use]
     pub fn undrawn(&self) -> Option<&str> {
         match self {
@@ -4114,7 +4114,7 @@ vconcat:
         );
     }
 
-    /// The word is kept as written, for every name `from_wire` refuses: the
+    /// The word is kept as written, for each name `from_wire` refuses: the
     /// near-misses the degradation test lists, and a wrong-case `LOG`.
     #[test]
     fn every_name_from_wire_refuses_is_carried_as_written() {

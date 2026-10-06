@@ -272,7 +272,7 @@ fn a_scale_brightfield_does_not_draw_is_named_and_the_plot_draws_linear() {
         );
     }
 
-    // The y axis only: the template's `xTicks` already draws its own line on a
+    // The y axis alone: the template's `xTicks` already draws its own line on a
     // non-linear x axis, which is no scale's.
     for asked in ["yScale: log", "yScale: symlog", "yScale: linear"] {
         let lines = said(&compose(asked));
