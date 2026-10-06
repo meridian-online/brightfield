@@ -3,7 +3,9 @@
 //! The shell read no close request, so a window with a chart edit its file
 //! did not hold closed on the first click of its close button and the edit went
 //! with it. The window now reads the request in its frame, cancels the close,
-//! and asks in its one modal slot: save, discard or cancel.
+//! and asks in its one modal slot: save and close, close without saving, or
+//! keep editing. What the question says and what a close without saving keeps
+//! are `close_question_keeps_unsaved.rs`'s.
 //!
 //! A close request is raised the way the operating system raises it: a
 //! `ViewportEvent::Close` in the root viewport's input for one frame, which is
@@ -147,7 +149,11 @@ impl Session {
         let boot = Boot::data_file(data.to_str().expect("utf-8 path"))
             .unwrap_or_else(|e| panic!("open {}: {e}", data.display()));
         let mut session = Self {
-            app: MeridianApp::headless(boot, Mode::Light),
+            // The store is outside the data folder, as arcform's is, so a
+            // close without saving records into it and leaves the folder be.
+            app: MeridianApp::headless(boot, Mode::Light).keeping_history(Some(
+                brightfield_protocol::HistoryStore::At(root.0.join("history")),
+            )),
             ctx: egui::Context::default(),
             screen: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 820.0)),
             folder,
@@ -410,8 +416,8 @@ fn collect_text(shape: &egui::epaint::Shape, into: &mut Vec<(egui::Rect, String)
 // ---------------------------------------------------------------------------
 
 /// **AC1.** A close request on a window that carries the mark leaves the window
-/// open — `CancelClose` sent, no `Close` — and shows the question with save,
-/// discard and cancel.
+/// open — `CancelClose` sent, no `Close` — and shows the question with its
+/// three answers.
 #[test]
 fn a_close_request_over_the_mark_leaves_the_window_open_and_asks() {
     let mut session = Session::marked("ac1");
@@ -429,9 +435,9 @@ fn a_close_request_over_the_mark_leaves_the_window_open_and_asks() {
     let text = session.frame(Vec::new(), false);
     for expected in [
         brightfield_shell::overlays::CLOSE_QUESTION_TITLE,
-        "Save",
-        "Discard",
-        "Cancel",
+        "Save and close",
+        "Close without saving",
+        "Keep editing",
     ] {
         assert!(
             text.iter().any(|t| t == expected),
@@ -463,7 +469,7 @@ fn save_writes_the_chart_as_the_save_verb_does_and_closes() {
     let mut session = Session::marked("ac2-question");
     session.take_sent();
     session.request_close();
-    session.answer("Save");
+    session.answer("Save and close");
 
     assert_eq!(
         session.written(&session.chart_file()),
@@ -491,15 +497,15 @@ fn save_writes_the_chart_as_the_save_verb_does_and_closes() {
 }
 
 // ---------------------------------------------------------------------------
-// AC3 — discard
+// AC3 — close without saving
 // ---------------------------------------------------------------------------
 
-/// **AC3.** Discard closes the window and touches nothing on disk: the chart
+/// **AC3.** Close without saving closes the window and writes nothing in the data folder: the chart
 /// file and `arcform.yaml`, both there from an earlier Save, are byte-identical,
 /// and no file was added. The close it sends is not asked about again, though
 /// the edit is still pending when it comes back.
 #[test]
-fn discard_closes_and_leaves_the_files_byte_identical() {
+fn close_without_saving_closes_and_leaves_the_files_byte_identical() {
     let mut session = Session::marked("ac3");
     session.save_verb();
     assert!(session.chart_file().exists() && session.arcform_file().exists());
@@ -510,13 +516,16 @@ fn discard_closes_and_leaves_the_files_byte_identical() {
 
     session.request_close();
     assert_eq!(session.app.open_overlay(), Some(QUESTION));
-    session.answer("Discard");
+    session.answer("Close without saving");
 
-    assert!(session.sent.close, "discard did not close the window");
+    assert!(
+        session.sent.close,
+        "closing without saving did not close the window"
+    );
     assert_eq!(
         snapshot(&session.folder),
         before,
-        "discard changed what is on disk"
+        "closing without saving changed what is on disk"
     );
     assert!(
         session.carries_mark(),
@@ -525,21 +534,21 @@ fn discard_closes_and_leaves_the_files_byte_identical() {
     let back = session.feed_the_close_back();
     assert!(
         !back.cancel_close && session.app.open_overlay().is_none(),
-        "the close discard asked for was asked about again: {back:?}"
+        "the close it asked for was asked about again: {back:?}"
     );
     assert_eq!(snapshot(&session.folder), before);
 }
 
 /// **AC3, before any Save.** With no chart file and no `arcform.yaml` yet,
-/// discard leaves the folder as it was: neither is created on the way out.
+/// closing without saving leaves the folder as it was: neither is created on the way out.
 #[test]
-fn discard_before_any_save_writes_no_file() {
+fn close_without_saving_before_any_save_writes_no_file() {
     let mut session = Session::marked("ac3-first");
     assert!(!session.chart_file().exists() && !session.arcform_file().exists());
     let before = snapshot(&session.folder);
 
     session.request_close();
-    session.answer("Discard");
+    session.answer("Close without saving");
 
     assert!(session.sent.close);
     assert_eq!(snapshot(&session.folder), before);
@@ -549,11 +558,11 @@ fn discard_before_any_save_writes_no_file() {
 // AC4 — cancel
 // ---------------------------------------------------------------------------
 
-/// **AC4.** Cancel returns to the window with the edit still drawn and the
+/// **AC4.** Keep editing returns to the window with the edit still drawn and the
 /// mark still in the title, and the next close request asks again. Escape and a
 /// click outside the card are cancel too.
 #[test]
-fn cancel_returns_to_the_window_with_the_edit_and_the_mark() {
+fn keep_editing_returns_to_the_window_with_the_edit_and_the_mark() {
     for how in ["button", "escape", "backdrop"] {
         let mut session = Session::marked(&format!("ac4-{how}"));
         let title = session.app.title();
@@ -563,7 +572,7 @@ fn cancel_returns_to_the_window_with_the_edit_and_the_mark() {
         assert_eq!(session.app.open_overlay(), Some(QUESTION));
         session.take_sent();
         match how {
-            "button" => session.answer("Cancel"),
+            "button" => session.answer("Keep editing"),
             "escape" => session.key(egui::Key::Escape),
             _ => session.click(egui::pos2(4.0, 4.0)),
         }
@@ -653,7 +662,7 @@ fn a_save_whose_chart_write_fails_keeps_the_window_open_and_says_why() {
     session.take_sent();
 
     session.request_close();
-    session.answer("Save");
+    session.answer("Save and close");
 
     assert!(
         !session.sent.close,
@@ -683,7 +692,7 @@ fn a_save_whose_chart_write_fails_keeps_the_window_open_and_says_why() {
         Some(QUESTION),
         "the window did not ask again"
     );
-    session.answer("Save");
+    session.answer("Save and close");
     assert!(session.sent.close, "the mended save did not close");
     assert!(session.chart_file().exists());
 }
@@ -707,7 +716,7 @@ fn a_save_whose_protocol_write_fails_keeps_the_window_open_and_says_why() {
     session.take_sent();
 
     session.request_close();
-    session.answer("Save");
+    session.answer("Save and close");
 
     assert!(
         !session.sent.close,
@@ -751,7 +760,7 @@ fn a_save_in_a_window_with_no_protocol_keeps_it_open_and_says_why() {
 
     session.request_close();
     assert_eq!(session.app.open_overlay(), Some(QUESTION));
-    session.answer("Save");
+    session.answer("Save and close");
 
     assert!(
         !session.sent.close,

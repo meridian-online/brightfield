@@ -772,6 +772,9 @@ pub struct CloseQuestion {
     /// Why a close without saving could not keep the chart, once one has been
     /// tried: the next one closes with nothing kept.
     pub not_kept: Option<String>,
+    /// The answer that held the keyboard focus when the card last drew, which
+    /// Enter gives: `None` before the card has drawn.
+    pub focused: Option<CloseAnswer>,
 }
 
 impl CloseQuestion {
@@ -825,11 +828,15 @@ impl CloseQuestion {
 }
 
 /// **The answer typed this frame**, read before the card draws: D, with or
-/// without shift, is *Close without saving*, and Enter with nothing focused is
-/// *Save and close*. Enter on a focused answer is that answer's, which the
-/// button reports itself; Esc is the card's own dismissal, which the host
-/// reads as *Keep editing*.
-pub fn close_question_keys(ctx: &egui::Context) -> Option<CloseAnswer> {
+/// without shift, is *Close without saving*, and Enter is *Save and close*
+/// unless another answer holds the focus, whose button then takes the Enter
+/// itself. Esc is the card's own dismissal, which the host reads as *Keep
+/// editing*.
+///
+/// Enter is read here and not left to the focused button, because on the frame
+/// the question opens no answer holds the focus yet, and a widget under the
+/// card may.
+pub fn close_question_keys(ctx: &egui::Context, question: &CloseQuestion) -> Option<CloseAnswer> {
     let d = ctx.input_mut(|i| {
         i.consume_key(egui::Modifiers::NONE, egui::Key::D)
             || i.consume_key(egui::Modifiers::SHIFT, egui::Key::D)
@@ -837,8 +844,8 @@ pub fn close_question_keys(ctx: &egui::Context) -> Option<CloseAnswer> {
     if d {
         return Some(CloseAnswer::CloseWithoutSaving);
     }
-    let unfocused = ctx.memory(|m| m.focused().is_none());
-    (unfocused && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)))
+    let enter_saves = matches!(question.focused, None | Some(CloseAnswer::SaveAndClose));
+    (enter_saves && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)))
         .then_some(CloseAnswer::SaveAndClose)
 }
 
@@ -849,9 +856,10 @@ pub fn close_question_keys(ctx: &egui::Context) -> Option<CloseAnswer> {
 /// chip beside it, and the host owns what an answer does. The card has no
 /// footer, because each answer carries its key.
 ///
-/// *Save and close* takes the keyboard focus while nothing else holds it, so
+/// *Save and close* takes the keyboard focus while no answer holds it, so
 /// Enter saves; a tab to another answer moves it and Enter then gives that one.
-pub fn close_question_body(ui: &mut egui::Ui, question: &CloseQuestion) -> Option<CloseAnswer> {
+/// Which answer holds it is written to [`CloseQuestion::focused`].
+pub fn close_question_body(ui: &mut egui::Ui, question: &mut CloseQuestion) -> Option<CloseAnswer> {
     use meridian_egui::MeridianUi as _;
     let gap = ui.tokens().section_gap;
     let control_gap = ui.tokens().control_gap;
@@ -880,6 +888,8 @@ pub fn close_question_body(ui: &mut egui::Ui, question: &CloseQuestion) -> Optio
     });
     ui.add_space(gap);
     let mut answer = None;
+    let mut focused = None;
+    let mut save = None;
     ui.horizontal(|ui| {
         for (i, (which, label, key)) in CLOSE_ANSWERS.into_iter().enumerate() {
             if i > 0 {
@@ -896,8 +906,11 @@ pub fn close_question_body(ui: &mut egui::Ui, question: &CloseQuestion) -> Optio
             } else {
                 ui.button(label)
             };
-            if which == CloseAnswer::SaveAndClose && ui.memory(|m| m.focused().is_none()) {
-                button.request_focus();
+            if button.has_focus() {
+                focused = Some(which);
+            }
+            if which == CloseAnswer::SaveAndClose {
+                save = Some(button.clone());
             }
             ui.add_space(chip_gap);
             meridian_egui::key_chip(ui, key);
@@ -906,6 +919,13 @@ pub fn close_question_body(ui: &mut egui::Ui, question: &CloseQuestion) -> Optio
             }
         }
     });
+    if focused.is_none() {
+        if let Some(save) = save {
+            save.request_focus();
+            focused = Some(CloseAnswer::SaveAndClose);
+        }
+    }
+    question.focused = focused;
     answer
 }
 

@@ -6087,7 +6087,7 @@ impl MeridianApp {
                 // backdrop are the third of them, keep editing. The keys are
                 // read before the card draws, so a D is not also typed into
                 // whatever the card holds.
-                let typed = close_question_keys(ctx);
+                let typed = close_question_keys(ctx, question);
                 let chrome = ModalChrome::new()
                     .title(CLOSE_QUESTION_TITLE)
                     .without_esc_hint();
@@ -6131,14 +6131,30 @@ impl MeridianApp {
         if !ctx.input(|i| i.viewport().close_requested()) {
             return;
         }
-        if self.closing || !self.carries_unsaved_mark() {
-            return;
+        if self.ask_before_closing() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.request_repaint();
         }
-        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+    }
+
+    /// **Open the close question, as a close request over the unsaved mark
+    /// does**, and answer whether the window is asking: `false` for a window
+    /// without the mark and for one whose close was already decided
+    /// ([`Self::allow_close`]), which a close request lets through.
+    ///
+    /// The question replaces whatever overlay was open; one already up is left
+    /// as it is, with what it says. Public because a close request is raised
+    /// in the viewport's input and not as an event, so a capture that
+    /// photographs the question opens it here, the entry the request reaches
+    /// ([`crate::capture::capture_png_staged`]).
+    pub fn ask_before_closing(&mut self) -> bool {
+        if self.closing || !self.carries_unsaved_mark() {
+            return false;
+        }
         if !matches!(self.overlay, Some(Overlay::CloseQuestion(_))) {
             self.overlay = Some(Overlay::CloseQuestion(self.close_question_for_now()));
         }
-        ctx.request_repaint();
+        true
     }
 
     /// **What the close question says about this window now**: the chart
@@ -6180,6 +6196,7 @@ impl MeridianApp {
             file,
             edits: crate::versions::change_lines(&changes, &tile_of),
             not_kept: None,
+            focused: None,
         }
     }
 
@@ -6223,10 +6240,14 @@ impl MeridianApp {
             CloseAnswer::CloseWithoutSaving => {
                 let told = self.close_question().is_some_and(|q| q.not_kept.is_some());
                 if told {
+                    self.put_the_question_down();
                     self.close_window(ctx);
                 } else {
                     match self.keep_unsaved() {
-                        Ok(()) => self.close_window(ctx),
+                        Ok(()) => {
+                            self.put_the_question_down();
+                            self.close_window(ctx);
+                        }
                         Err(why) => {
                             eprintln!("the unsaved chart could not be kept: {why}");
                             let mut question = match self.overlay.take() {
