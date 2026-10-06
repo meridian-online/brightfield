@@ -1366,6 +1366,41 @@ fn validate_interactor_bindings_in(
 }
 
 // ---------------------------------------------------------------------------
+// Undrawn scales
+// ---------------------------------------------------------------------------
+
+/// Name each plot axis whose file asks for a scale this build does not draw.
+///
+/// Asks [`crate::layout::read_plot_scales_in`] — the reading the drawn scale is
+/// taken from — over each plot as built, so a `$param` is read through its
+/// declared value and a `plotDefaults:` scale is named at each plot that
+/// inherits it and so draws linear. An axis the file leaves on the default, or
+/// sets to a scale this build draws, says nothing.
+#[must_use]
+pub fn check_undrawn_scales(spec: &Spec) -> Vec<ParseWarning> {
+    use crate::layout::{collect_plot_nodes, plot_label, plot_scale_key, read_plot_scales_in};
+    use crate::layout::PlotAxis;
+
+    let mut warnings = Vec::new();
+    for (path, plot) in collect_plot_nodes(spec) {
+        let readings = read_plot_scales_in(plot, &spec.params);
+        for axis in [PlotAxis::X, PlotAxis::Y] {
+            let (Some(attribute), Some(value)) =
+                (plot_scale_key(axis), readings.axis(axis).undrawn())
+            else {
+                continue;
+            };
+            warnings.push(ParseWarning::UndrawnScale {
+                attribute: attribute.to_string(),
+                value: value.to_string(),
+                plot: plot_label(&path, plot),
+            });
+        }
+    }
+    warnings
+}
+
+// ---------------------------------------------------------------------------
 // Selection subscriber graph
 // ---------------------------------------------------------------------------
 
@@ -2372,6 +2407,9 @@ pub fn analyse_spec(spec: &Spec) -> Result<SpecAnalysis, ParseError> {
 
     // Type mismatch warnings.
     warnings.extend(check_param_type_mismatches(spec));
+
+    // A plot whose file asks for a scale this build does not draw.
+    warnings.extend(check_undrawn_scales(spec));
 
     // filterBy validation — hard error on missing or non-selection refs.
     validate_filter_by_refs(spec)?;
