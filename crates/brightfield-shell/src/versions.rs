@@ -975,7 +975,7 @@ impl Item<ChartDoc> for VersionsPane {
                         end,
                     ));
                     if let Some(g) = geometry {
-                        step_back = Some(step_back_controls(ui, &g, &font, &sem));
+                        step_back = Some(step_back_controls(ui, &g, &font, sem));
                     }
                     n += 1;
                 }

@@ -49,8 +49,9 @@ pub enum DispatchContext {
 ///   `protocol-producer` and `protocol-consumer` under the protocol panel;
 /// - a Grid binding resolves only when the grid is focused, so `h` and `l`
 ///   move its cursor there and the arrows pan the chart only elsewhere;
-/// - a Versions binding resolves only when the Versions panel is focused, so
-///   `Enter` steps the chart back there and dives in only elsewhere.
+/// - a Versions binding resolves when the Versions panel is focused, so
+///   `Enter` steps the chart back there and dives in on the canvas
+///   (`the_versions_panel_steps_back_and_returns_on_the_keys_that_dive_and_clear_elsewhere`).
 #[must_use]
 pub fn fires(binding: BindingContext, dispatch: DispatchContext) -> bool {
     matches!(

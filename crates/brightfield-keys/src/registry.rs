@@ -44,11 +44,12 @@ pub enum BindingContext {
     /// (the cell beside the cursor) never collide with the chart grammar's
     /// pop-out, dive-in and pan bindings.
     Grid,
-    /// Versions-scoped: fires only while the ledger's Versions panel holds
-    /// focus. A distinct context, as the grid's is, so the panel's `j`/`k`,
-    /// arrows, `Enter` and `Esc` (the cursor's row, the step back and the way
-    /// back to now) never reach the chart grammar's sibling-focus, dive-in and
-    /// clear-selection bindings on the same keys.
+    /// Versions-scoped: fires while the ledger's Versions panel holds focus. A
+    /// distinct context, as the grid's is, so the panel's `j`/`k`, arrows,
+    /// `Enter` and `Esc` (the cursor's row, the step back and the way back to
+    /// now) are kept apart from the chart grammar's sibling-focus, dive-in and
+    /// clear-selection bindings on the same keys
+    /// (`the_versions_context_moves_the_cursor_steps_back_and_returns_to_now`).
     Versions,
     /// Global (`context = None`): fires from any focus (palette twin, focus
     /// toggle, save/reload-from-anywhere).

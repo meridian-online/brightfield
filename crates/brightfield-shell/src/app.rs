@@ -2148,9 +2148,10 @@ impl ChartDoc {
     ///
     /// The version is drawn as a preview, as the shelf draws a column under its
     /// cursor: the page is loaded from the version's text, the page it replaced
-    /// is kept for [`Self::return_to_now`], and nothing is added to what Save
+    /// is kept for [`Self::return_to_now`], and no edit is added to what Save
     /// writes, so the window's unsaved mark is as it was. A move past the
-    /// oldest or the newest row moves nothing.
+    /// oldest or the newest row leaves the cursor where it is
+    /// (`j_and_k_move_the_cursor_and_draw_the_chart_as_the_version_under_it`).
     ///
     /// A version the store will not give up, whose text does not read as a
     /// chart, or that the engine will not load is not drawn: the chart stays as
@@ -2240,9 +2241,10 @@ impl ChartDoc {
     /// **Step the chart back to the version under the Versions panel's
     /// cursor, as an unsaved edit**, which Save writes.
     ///
-    /// The version is left drawn, the window is marked unsaved, and nothing is
-    /// written: the chart file is as it was until Save, which writes the
-    /// version's text ([`Self::save_chart_beside`]). The change it steps over —
+    /// The version is left drawn, the window is marked unsaved, and the chart
+    /// file is as it was until Save, which writes the version's text
+    /// ([`Self::save_chart_beside`];
+    /// `enter_steps_back_as_an_unsaved_edit_and_save_writes_the_versions_bytes`). The change it steps over —
     /// the edits held and any step back before it — is put on the undo stack
     /// as one edit, so `u` draws the chart with it again and holds it as it
     /// stood. A version that cannot be drawn is not stepped back to, and says

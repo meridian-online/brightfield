@@ -5908,8 +5908,8 @@ impl MeridianApp {
     /// - `Esc` draws the chart as it was before the cursor moved
     ///   ([`ChartDoc::return_to_now`]).
     ///
-    /// `Enter` and `Esc` are taken only with the cursor on a row, so with none
-    /// they mean what they mean elsewhere. **The panel letting go of the keys
+    /// `Enter` and `Esc` are taken with the cursor on a row and left to the
+    /// window's other handlers when the cursor is off the rows. **The panel letting go of the keys
     /// is the way back to now too**: the version drawn under the cursor is a
     /// preview of the panel's, and a chart left drawn as it with the keys gone
     /// elsewhere would take a shelf edit or a switch made to a spec Save does
