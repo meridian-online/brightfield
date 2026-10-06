@@ -343,9 +343,9 @@ pub fn change_words(changes: &[ChartChange], tile_of: &dyn Fn(&str) -> String) -
             } => {
                 let default = attribute_default(key);
                 let (before, after) = (before.as_deref(), after.as_deref());
-                // The default fills an absent side only where the other side
-                // is a different value: `None` to `linear` is a key written, not
-                // a move.
+                // The default fills an absent side where the other side is a
+                // different value. A key written at `linear` is not a move
+                // (`a_scale_key_written_or_taken_out_at_linear_is_not_a_move`).
                 let (before, after) = match (before, after, default) {
                     (None, Some(a), Some(d)) if a != d => (Some(d), Some(a)),
                     (Some(b), None, Some(d)) if b != d => (Some(b), Some(d)),
@@ -511,8 +511,8 @@ impl Versions {
         &self.listing
     }
 
-    /// The row for the edits not yet saved, as the panel drew it: `None` where
-    /// none is held.
+    /// The row for the edits not yet saved, as the panel drew it: `None` when
+    /// the chart is saved.
     #[must_use]
     pub fn unsaved_words(&self) -> Option<&str> {
         self.unsaved.as_ref().map(|(_, words)| words.as_str())

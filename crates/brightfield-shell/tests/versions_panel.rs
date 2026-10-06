@@ -20,7 +20,7 @@
 //! recorded, so a test cannot choose when a version was made. It chooses what
 //! the clock reads instead ([`Session::pin_clock`]): an offset that carries the
 //! newest version to a chosen local time, and a *now* a chosen distance after
-//! it, so `today 14:02` is the same text on every day and in every time zone.
+//! it, so `today 14:02` is the same text on a later day and in another time zone.
 //!
 //! The versions a test reads are seeded into the store from chart texts the
 //! window itself wrote ([`recorded_texts`]), so the changes between them are
@@ -816,8 +816,8 @@ fn a_version_edited_outside_reads_its_lines_and_line_endings_alone_read_none() {
 
 /// **AC4, both kinds.** A version carrying a named change and a change the
 /// chart does not name reads both, the second as a count of lines. The count is
-/// of every line that differs, the lines of the named changes included: here
-/// the two `x` lines, the `projectionType` line and the title.
+/// of the lines that differ, the lines of the named changes included: here the
+/// two `x` lines, the line that drops the projection type, and the title.
 #[test]
 fn a_version_carrying_a_named_change_and_one_elsewhere_reads_both() {
     let t = recorded_texts();
