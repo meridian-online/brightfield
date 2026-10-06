@@ -144,7 +144,9 @@ deviations:
       both-axes shorthand, the facet axes `fxDomain` / `fyDomain`, and any
       spelling other than the exact string `Fixed`. An explicit two-element
       domain (`xDomain: [0, 100]`) is a different instruction and is
-      likewise not read here.
+      likewise not read here. The warning banner names `xyDomain` and
+      `fxDomain` / `fyDomain` as keys this build does not read (DEV-0014 for
+      `xyDomain`).
 
       One brightfield-local rule sits on top: pan and zoom are offered on
       any plot with a continuous positional scale, and an axis the reader
@@ -363,5 +365,55 @@ deviations:
       Observable Plot has no scale to receive, and say nothing; leaving it
       unread and unnamed would be the silence the axis vocabulary exists to
       end. The picture is the one Mosaic draws, and the banner is what differs.
+    affected_specs: []
+    conformance_layers_suppressed: [3]
+  - id: DEV-0013
+    surface: "axes — a tick format (`xTickFormat`, `yTickFormat`) of either kind on an axis of names"
+    mosaic_behaviour: |
+      Mosaic's schema describes a tick format as a d3-format string for a
+      numeric scale and a d3-time-format string for a temporal one. An axis of
+      names is neither: Mosaic's band axis prints the names, so a format set on
+      one has nothing to format.
+    brightfield_behaviour: |
+      A band axis of names prints its names as they are, and the warning banner
+      names `xTickFormat` or `yTickFormat` as changing nothing on a category
+      axis, with the key first and then the plot. A number format and a date
+      format are named alike, and whether or not the names read as numbers: an
+      axis is an axis of names when its column is text that is not a calendar
+      day, whatever the text spells. A band of calendar days is a date axis and
+      takes a date format; a number format on it is named as the other kind of
+      format, as it was. A format that is no format at all is named once, as
+      such. A plot with no format on an axis of names says nothing.
+    rationale: |
+      An analyst who opens a Mosaic chart that sets a format on an axis of names
+      sees the names and was told nothing, so a format that looked like it
+      should change the labels reads as a fault in brightfield. The picture is
+      the one Mosaic draws, because formatting names as numbers or dates would
+      draw text Mosaic does not; the banner is what differs, and says the key
+      had nothing to act on.
+    affected_specs: []
+    conformance_layers_suppressed: [3]
+  - id: DEV-0014
+    surface: "plot attributes — `axis`, `facetGrid`, `facetLabel`, `padding`, `align` and `xyDomain`, named rather than read"
+    mosaic_behaviour: |
+      Mosaic hands these plot attributes to Observable Plot. `axis` places the
+      implicit axis on a side of the frame or on both sides, and `null`
+      suppresses it. `padding` and `align` space the bands of an ordinal axis.
+      `xyDomain` sets the x and y scale domains, and `Fixed` there fixes both
+      after the first render. `facetGrid` and `facetLabel` set the default
+      gridlines and label of the facet axes.
+    brightfield_behaviour: |
+      The plot is drawn as the same file draws it without the key, and the
+      warning banner names the key as one this build does not read, with the
+      key first and then the plot, whatever it is set to. A key set under
+      `plotDefaults` is named once, there, and not at each plot that inherits
+      it. `xDomain: Fixed` and `yDomain: Fixed` are read (DEV-0005), and
+      `xyDomain: Fixed` is not.
+    rationale: |
+      The schema rule that decides which plot attributes are axis attributes
+      counted a name by an `x` or `y` before a capital letter, so these six were
+      neither read nor named: a chart that set one differed from its file and
+      the analyst was told nothing. They are named until a chart needs one
+      read, which is a change of its own.
     affected_specs: []
     conformance_layers_suppressed: [3]
