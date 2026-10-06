@@ -2656,7 +2656,7 @@ fn crossed_tick_formats(
 ) -> Vec<ParseWarning> {
     // A plot with a map projection has no axis to cross: its x and y are planar
     // units, and a tick format on it is named once, by
-    // [`inert_axis_instructions`], as changing nothing there.
+    // [`inert_axis_instructions`], as an instruction the map drops.
     if !axis_keys_apply(scales) {
         return Vec::new();
     }

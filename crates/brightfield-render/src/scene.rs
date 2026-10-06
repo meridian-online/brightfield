@@ -642,8 +642,8 @@ pub fn build_multi_mark_scene_pinned(
 
 /// Whether a plot's x and y axis instructions have an axis to act on: not when
 /// the plot has a map projection, whose x and y are the projection's planar
-/// units and no axis. `xZero` and `xNice` move the map's extent where nothing
-/// guards them, and `xTicks`, `xTickFormat` and `xGrid` (the bare `grid`, and the
+/// units and no axis. `xZero` and `xNice` would move the map's extent were they
+/// not guarded by this judge, and `xTicks`, `xTickFormat` and `xGrid` (the bare `grid`, and the
 /// `y` of each) have no frame to act on, because a plot with a projection draws
 /// a graticule where the frame would be.
 ///

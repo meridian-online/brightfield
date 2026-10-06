@@ -12,7 +12,7 @@
 //! - `xReverse`, `yReverse` turn an axis, but not on a plot with a map
 //!   projection, whose x and y are the projection's planar units.
 //! - On that same plot no axis is drawn, so `xTicks`, `xTickFormat` and `xGrid`
-//!   have nothing to act on, and `xZero` and `xNice` would move the map's
+//!   have no frame to act on, and `xZero` and `xNice` would move the map's
 //!   extent: each is named and the map draws as it does without the key.
 //!
 //! Which axis a key meets is known once the data has typed it, not at parse time, so each arm
