@@ -337,6 +337,22 @@ impl Session {
         );
     }
 
+    /// Take back the last column kept, by the click on the status band's line
+    /// for it: the control the band offers, named for the key that does the same.
+    fn undo(&mut self) {
+        let at = self
+            .app
+            .rail()
+            .controls
+            .iter()
+            .find(|c| c.name.starts_with("undo"))
+            .unwrap_or_else(|| panic!("the band offers no undo: {:?}", self.app.rail().controls))
+            .rect
+            .center();
+        self.click(at);
+        self.settle();
+    }
+
     /// **Save, through the gesture a person has**: the chart palette on `space`,
     /// the verb typed, confirmed with enter.
     fn save(&mut self) {
@@ -935,7 +951,38 @@ fn an_unsaved_edit_is_the_first_row_and_none_held_draws_no_such_row() {
         "the first row does not name both edits not yet saved"
     );
 
-    // The Save writes them: the row goes, and the version it recorded is listed.
+    // Taking the edits back leaves none held, and the row goes with them
+    // without a Save: the count of edits not yet saved falls to nothing by an
+    // undo as well as by a Save.
+    s.undo();
+    s.settle();
+    assert_eq!(
+        s.cells()[0],
+        [
+            "now",
+            "unsaved",
+            "Map \u{b7} projection type: equirectangular removed \u{b7} \
+             x axis: longitude \u{2192} median_income"
+        ],
+        "after the last edit was taken back the first row does not name the one left"
+    );
+    s.undo();
+    s.settle();
+    let cells = s.cells();
+    assert_eq!(
+        cells.len(),
+        1,
+        "a row is still drawn after every edit was taken back: {cells:?}"
+    );
+    assert!(
+        cells.iter().all(|r| r[0] != "now"),
+        "a row still reads *now* after every edit was taken back: {cells:?}"
+    );
+
+    // An edit again, and the Save writes it: the row goes, and the version it
+    // recorded is listed.
+    s.put("median_income", ShelfChannel::X);
+    s.settle();
     s.save();
     s.settle();
     let cells = s.cells();
