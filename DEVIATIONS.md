@@ -357,3 +357,34 @@ ends, and only a domain that does not divide into round steps differs.
 
 **Conformance layers suppressed:** 3
 
+## DEV-0012 — axes — the x and y axis keys on a plot with a map projection (`xTicks`, `xTickFormat`, `xGrid`, `grid`, `xZero`, `xNice`, `xReverse` and the `y` of each)
+
+**Mosaic behaviour.** Mosaic hands a plot's axis attributes to Observable Plot, which has no x or
+y scale on a plot with a projection: the projection takes their place, so
+the planar units a projected point lands on are no axis, and none of these
+keys sets a scale option. Mosaic web draws the map and does not report a
+key it had no use for.
+
+
+**Brightfield behaviour.** The map is drawn as the same file draws it without the key, and the
+warning banner names each key as changing nothing on a plot with a map
+projection, with the key first and then the plot. A tick count, a number
+or date tick format and a gridline switch that asks for gridlines have no
+frame to act on, because a plot with a projection draws a graticule where
+the frame would be. `xZero` and `xNice`, and `yZero` and `yNice`, leave the
+map's extent where it is, as `xReverse` and `yReverse` leave its
+direction. A key that asks for nothing (a switch set to `false`) is not
+named. A plot with no projection reads each of these keys as it did.
+
+
+**Rationale.** An analyst who opens a Mosaic map that sets one of these keys is looking at
+a map that differs from what they wrote only if brightfield acted on the
+key, and is owed a line saying the key was not used if it did not. Reading
+the key on a projected plot would move the map's extent for a request
+Observable Plot has no scale to receive, and say nothing; leaving it
+unread and unnamed would be the silence the axis vocabulary exists to
+end. The picture is the one Mosaic draws, and the banner is what differs.
+
+
+**Conformance layers suppressed:** 3
+
