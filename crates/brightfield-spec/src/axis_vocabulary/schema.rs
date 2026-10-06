@@ -7,13 +7,28 @@
 //! derived two different ways. It uses `serde_json` and `std` alone, because
 //! those are what the build script is compiled with.
 
-/// Whether a plot attribute name is an axis attribute: the bare `grid`, or `x`
-/// or `y` followed by a capital letter, or a facet axis's name, which is that
-/// behind an `f` (`fxLabel`, `fyTickFormat`). `xyDomain` has a lower-case second
-/// letter and `facetGrid` has no `x` or `y` after its `f`, so neither counts.
+/// The plot attributes that act on the axes and are not spelled `x` or `y` and
+/// then a capital letter: `grid` and `axis` and `xyDomain` set both axes at
+/// once, `padding` and `align` set a band axis's spacing, and `facetGrid` and
+/// `facetLabel` are the facet axes' gridlines and label.
+const BARE_AXIS_ATTRIBUTES: &[&str] = &[
+    "align",
+    "axis",
+    "facetGrid",
+    "facetLabel",
+    "grid",
+    "padding",
+    "xyDomain",
+];
+
+/// Whether a plot attribute name is an axis attribute: one of
+/// [`BARE_AXIS_ATTRIBUTES`], or `x` or `y` followed by a capital letter, or a
+/// facet axis's name, which is that behind an `f` (`fxLabel`, `fyTickFormat`).
+/// The letter rule alone left the bare names out, since `xyDomain` has a
+/// lower-case second letter and `facetGrid` has no `x` or `y` after its `f`.
 #[must_use]
 pub fn is_axis_attribute_name(name: &str) -> bool {
-    if name == "grid" {
+    if BARE_AXIS_ATTRIBUTES.contains(&name) {
         return true;
     }
     let position = name.strip_prefix('f').unwrap_or(name);

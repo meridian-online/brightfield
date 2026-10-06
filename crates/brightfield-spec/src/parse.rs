@@ -486,9 +486,11 @@ pub enum ParseWarning {
 
     /// A plot, or `plotDefaults:`, set an axis attribute Mosaic's schema
     /// declares and this build does not read: `xTickRotate`, `yAxis`,
-    /// `xLabelAnchor`. The plot draws as it does without the key. This names the
-    /// key and the plot that carries it, so an author can tell a gap in
-    /// brightfield from a typing mistake and trust the rest of the chart.
+    /// `xLabelAnchor`, or one of the bare names that carry no `x` or `y` of their
+    /// own (`axis`, `align`, `padding`, `xyDomain`, `facetGrid`, `facetLabel`).
+    /// The plot draws as it does without the key. This names the key and the
+    /// plot that carries it, so an author can tell a gap in brightfield from a
+    /// typing mistake and trust the rest of the chart.
     ///
     /// [`crate::axis_vocabulary::unread_axis_attributes`] is the sole judge, so
     /// a resolver that learns a name narrows this warning in the same edit.
@@ -557,18 +559,21 @@ pub enum ParseWarning {
 
     /// A plot sets an x or y axis instruction that the axis it meets does not
     /// act on: `yNice` or `yZero` on a log, symlog, date or category axis, since
-    /// a linear axis's ends follow them and no other kind's, or `xTicks` on a
+    /// a linear axis's ends follow them and no other kind's, `xTicks` on a
     /// log, symlog or category axis,
-    /// whose ticks are decades and names and not a count's. The plot draws as it
-    /// does without the key. Known only once the data has typed the axis, so it
+    /// whose ticks are decades and names and not a count's, or `xTickFormat` of
+    /// either kind on a category axis, which prints its names. The plot draws as
+    /// it does without the key. Known only once the data has typed the axis, so it
     /// is raised where the composition finds the scales, not at parse time; it
     /// names the key, the plot that carries it and the kind of axis.
     ///
-    /// `brightfield_render::scene::axis_ends_apply` and
-    /// `brightfield_render::axis::tick_count_applies` are the judges, and the
+    /// `brightfield_render::scene::axis_ends_apply`,
+    /// `brightfield_render::axis::tick_count_applies` and
+    /// `brightfield_render::axis::tick_format_applies` are the judges, and the
     /// axis draws through them, so the warning and the drawing cannot disagree.
     AxisAttributeOnWrongAxis {
-        /// The attribute key: `xZero`, `xNice`, `xTicks` or the `y` of each.
+        /// The attribute key: `xZero`, `xNice`, `xTicks`, `xTickFormat` or the
+        /// `y` of each.
         attribute: String,
         /// The plot that sets it, as [`crate::layout::plot_label`] names one.
         plot: String,

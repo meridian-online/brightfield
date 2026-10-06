@@ -149,13 +149,11 @@ fn a_facet_axis_attribute_the_schema_declares_is_an_axis_attribute() {
         );
     }
     // The names that only start the way a facet axis's does, and the ones that
-    // are no axis's at all.
+    // are no axis's at all. (`facetGrid` and `facetLabel` are axis attributes
+    // all the same, and are the bare names' test below.)
     for name in [
-        "facetGrid",
-        "facetLabel",
         "facetMargin",
         "fxyDomain",
-        "xyDomain",
         "fx",
         "fxlabel",
         "ffxLabel",
@@ -195,8 +193,96 @@ fn a_facet_axis_attribute_is_named_whatever_it_is_set_to_and_an_undeclared_name_
     );
     assert_eq!(warned("yAxis: null\n"), ["yAxis"]);
     assert!(
-        warned("fxFlavour: 1\nfyBogus: 1\nfacetLabel: x\n").is_empty(),
+        warned("fxFlavour: 1\nfyBogus: 1\nfxyDomain: Fixed\n").is_empty(),
         "a name the schema does not declare is not an axis attribute, however it starts"
+    );
+}
+
+/// The schema's axis attributes that carry no `x` or `y` before a capital
+/// letter, so that a rule counting a name by those letters leaves them out: the
+/// pair of axes at once (`axis`, `xyDomain`), a band axis's spacing (`padding`,
+/// `align`), and the facet axes' gridlines and label (`facetGrid`, `facetLabel`).
+const BARE_AXIS_ATTRIBUTES: [&str; 6] = [
+    "axis",
+    "align",
+    "padding",
+    "xyDomain",
+    "facetGrid",
+    "facetLabel",
+];
+
+/// **A bare axis attribute the schema declares is an axis attribute no resolver
+/// reads, and a plot that sets one is told about it, whatever it is set to.**
+/// `xyDomain: Fixed`, which the vendored specs write, is told, as is a `null`, an
+/// array and a lifted `$param`; a name that only resembles one, and is not in
+/// the schema, is not.
+#[test]
+fn a_bare_axis_attribute_the_schema_declares_is_named_whatever_it_is_set_to() {
+    let schema = vendored_schema();
+    let declared = schema["definitions"]["PlotAttributes"]["properties"]
+        .as_object()
+        .expect("the schema declares plot attributes");
+    for name in BARE_AXIS_ATTRIBUTES {
+        assert!(declared.contains_key(name), "the schema declares `{name}`");
+        assert!(
+            SCHEMA_AXIS_ATTRIBUTES.contains(&name),
+            "the list leaves out `{name}`, which the schema declares"
+        );
+        assert!(
+            !READ_AXIS_ATTRIBUTES.contains(&name),
+            "no resolver reads `{name}`"
+        );
+    }
+
+    let warned = |attrs: &str| -> Vec<String> {
+        let out = parse_spec(&probe_spec(attrs), Format::Yaml).expect("the spec parses");
+        out.warnings
+            .iter()
+            .filter_map(|w| match w {
+                ParseWarning::UnreadAxisAttribute { attribute, plot } => {
+                    assert_eq!(plot.as_deref(), Some("root"), "the one plot is the root");
+                    Some(attribute.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    for name in BARE_AXIS_ATTRIBUTES {
+        for value in ["Fixed", "null", "[0, 10]", "0.2", "$p", "both"] {
+            assert_eq!(
+                warned(&format!("{name}: {value}\n")),
+                [name],
+                "`{name}: {value}` is named once"
+            );
+        }
+    }
+    assert!(
+        warned("fxyDomain: Fixed\nxyDomains: Fixed\npaddings: 0.2\n").is_empty(),
+        "a name the schema does not declare is not named, however it resembles one"
+    );
+}
+
+/// **Under `plotDefaults:` a bare axis attribute is named once, for the block,
+/// and not again at each plot that inherits it.**
+#[test]
+fn a_bare_axis_attribute_under_plot_defaults_is_named_once_for_the_block() {
+    let spec = "plotDefaults:\n  xyDomain: Fixed\n  padding: 0.2\nparams:\n  p: 1\ndata:\n  t:\n    - { a: 1, b: 2 }\nvconcat:\n  - plot:\n      - { mark: dot, data: { from: t }, x: a, y: b }\n  - plot:\n      - { mark: dot, data: { from: t }, x: a, y: b }\n";
+    let out = parse_spec(spec, Format::Yaml).expect("the spec parses");
+    let mut named: Vec<(Option<String>, String)> = out
+        .warnings
+        .iter()
+        .filter_map(|w| match w {
+            ParseWarning::UnreadAxisAttribute { attribute, plot } => {
+                Some((plot.clone(), attribute.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    named.sort();
+    assert_eq!(
+        named,
+        [(None, "padding".to_string()), (None, "xyDomain".to_string())],
+        "each is named once, under `plotDefaults`, and by no plot that inherits it"
     );
 }
 
@@ -340,6 +426,7 @@ const UNREAD_IN_CORPUS: &[&str] = &[
     "xLabelAnchor",
     "xLine",
     "xTickSize",
+    "xyDomain",
     "yAxis",
     "yLabelAnchor",
     "yLine",
