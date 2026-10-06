@@ -987,6 +987,9 @@ pub struct ChartDoc {
     /// has previewed and not kept is not here: its edits are [`Self::shelf_preview`]'s
     /// until it is kept, and gone when it is backed out of.
     pending_edits: Vec<ChartEdit>,
+    /// The ledger's Versions panel: what the store keeps of this chart file and
+    /// what is not yet saved to it. See [`crate::versions`].
+    versions: crate::versions::Versions,
     /// The column the shelf's list is drawing on a channel and has not kept,
     /// and the page it replaced. See [`ShelfPreview`].
     shelf_preview: Option<ShelfPreview>,
@@ -1156,6 +1159,7 @@ impl ChartDoc {
             interval_drags: IntervalDrags::new(),
             interaction_fault: None,
             pending_edits: Vec::new(),
+            versions: crate::versions::Versions::default(),
             shelf_preview: None,
             shelf_undo: ShelfUndo::default(),
             nav: NavGesture::new(),
@@ -1209,6 +1213,7 @@ impl ChartDoc {
             interval_drags: IntervalDrags::new(),
             interaction_fault: None,
             pending_edits: Vec::new(),
+            versions: crate::versions::Versions::default(),
             shelf_preview: None,
             shelf_undo: ShelfUndo::default(),
             nav: NavGesture::new(),
@@ -1262,6 +1267,7 @@ impl ChartDoc {
         // …and an edit made to the replaced document is not this one's, nor
         // a column previewed on it.
         self.pending_edits.clear();
+        self.versions.invalidate();
         self.shelf_preview = None;
         self.shelf_undo = ShelfUndo::default();
         // …and the extent described the replaced document's plots.
@@ -1459,6 +1465,75 @@ impl ChartDoc {
             self.wire_watch();
         }
         Ok(not_recorded)
+    }
+
+    /// The ledger's Versions panel's state.
+    #[must_use]
+    pub fn versions(&self) -> &crate::versions::Versions {
+        &self.versions
+    }
+
+    /// The ledger's Versions panel's state, to bring it up to date.
+    pub fn versions_mut(&mut self) -> &mut crate::versions::Versions {
+        &mut self.versions
+    }
+
+    /// The edits held that the chart file does not carry yet, in the order they
+    /// were made. What the Versions panel reads its row for the unsaved edits
+    /// from, and compares to know it has read these.
+    #[must_use]
+    pub fn unsaved_edits(&self) -> &[ChartEdit] {
+        &self.pending_edits
+    }
+
+    /// **What each tile is called, by the path of the plot it draws**: the
+    /// column a tile bins, and `Map` for the hero that draws a coordinate pair.
+    /// What the Versions panel leads a change with.
+    #[must_use]
+    pub fn tile_names(&self) -> Vec<(String, String)> {
+        self.composed
+            .plots
+            .iter()
+            .enumerate()
+            .filter_map(|(i, plot)| {
+                let facts = self.tile_columns.get(i)?;
+                let name = if facts.paired.is_some() {
+                    "Map".to_string()
+                } else {
+                    facts.column.clone()
+                };
+                Some((plot.path.clone(), name))
+            })
+            .collect()
+    }
+
+    /// **What a Save would change in the chart file**, as the changes between
+    /// the text on disk and the text the held edits would write: the Versions
+    /// panel's row for the edits not yet saved, worded as a listed version is.
+    ///
+    /// Reads the text a Save reads and places the edits as a Save places them,
+    /// and writes nothing. An edit the text cannot take, or a text that cannot
+    /// be read, leaves the list empty: the Save's own refusal says why.
+    #[must_use]
+    pub fn unsaved_changes(
+        &self,
+        target: &std::path::Path,
+    ) -> Vec<brightfield_protocol::ChartChange> {
+        let Some(text) = std::fs::read_to_string(target).ok().or_else(|| {
+            self.spec_path
+                .as_ref()
+                .and_then(|from| std::fs::read_to_string(from).ok())
+        }) else {
+            return Vec::new();
+        };
+        let mut placed = text.clone();
+        for edit in &self.pending_edits {
+            match write_chart_edit(&placed, edit) {
+                Ok(next) => placed = next,
+                Err(_) => return Vec::new(),
+            }
+        }
+        brightfield_protocol::chart_history::changes_between(&text, &placed)
     }
 
     /// What `edit` is about, in words a reader who never saw a plot path can
@@ -2980,6 +3055,7 @@ pub fn chart_registry_with(gallery: bool) -> ItemRegistry<ChartDoc> {
             make: || Box::new(ControlsPane),
         },
         crate::editor::editor_spec(),
+        crate::versions::versions_spec(),
     ];
     if gallery {
         specs.push(crate::gallery::gallery_spec());

@@ -970,6 +970,22 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Show or hide the chart controls rail",
             scores: None,
         },
+        // The ledger rail's Versions panel: a centre tab in the chart view's item
+        // registry, so it carries a show verb the item audit requires, unbound
+        // until the card that steps a chart back to a version binds a key. It
+        // sits at Protocol, where the other ledger panes' verbs do, because the
+        // chart file it lists is the Protocol's.
+        VerbEntry {
+            longname: "open-chart-versions",
+            tier: CommandTier::View,
+            binding_specs: Vec::new(),
+            scope_applicability: vec![Protocol],
+            drives: D::Reserved,
+            status: VerbStatus::Reserved,
+            reserved_reason: Some(ReservedReason::NeedsWorkspaceShell),
+            help: "Open the chart's versions — what the store keeps of it, in the ledger rail",
+            scores: None,
+        },
         // The ledger rail's two run panes. Each is a centre tab in its view's
         // item registry, which requires a show/hide verb the shell may not
         // invent (the item-registry audit enforces it), and each is unbound
@@ -1224,6 +1240,7 @@ mod tests {
         assert_eq!(
             needs_shell,
             [
+                "open-chart-versions",
                 "open-run-log",
                 "open-run-quality",
                 "toggle-controls-rail",
@@ -1326,6 +1343,7 @@ mod tests {
             "toggle-outline-rail",
             "toggle-inspector-rail",
             "toggle-controls-rail",
+            "open-chart-versions",
             "open-run-log",
             "open-run-quality",
             "move-grid",

@@ -2123,7 +2123,7 @@ fn rows_name_centre() -> egui::Pos2 {
     for _ in 0..3 {
         let _ = ctx.run_ui(raw.clone(), |ui| app.draw(ui));
     }
-    // Log, Quality, Rows, Editor.
+    // Log, Quality, Rows, Editor, Versions.
     app.rail_name_rect(brightfield_workbench::arrangement::LEDGER_RAIL, 2)
         .expect("the ledger strip drew its Rows name")
         .center()

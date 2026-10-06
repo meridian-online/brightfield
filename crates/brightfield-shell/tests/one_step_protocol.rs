@@ -1996,18 +1996,18 @@ fn the_ledger_strips_summary_reads_the_runs_state_and_not_a_literal() {
     }
 }
 
-/// **The ledger strip's names are Log, Quality, Rows and Editor, in that
-/// order, and Steps is not among them.**
+/// **The ledger strip's names are Log, Quality, Rows, Editor and Versions, in
+/// that order, and Steps is not among them.**
 ///
 /// AC1, read off geometry rather than off a bag of strings: each name is
 /// looked up by the rect the strip recorded for it, at its index, so a rail
-/// that drew the right four words in the wrong order fails. The negative is
-/// the whole strip's galleys, so a fifth name saying *Steps* fails it wherever
+/// that drew the right five words in the wrong order fails. The negative is
+/// the whole strip's galleys, so a sixth name saying *Steps* fails it wherever
 /// it drew.
 ///
 /// The strip's words are each pane's own `Subject` title, read through
-/// `pane_title_of`, so this is also the assertion that the four ids
-/// `LEDGER_PANES` declares resolve to the four panes intended — an id no
+/// `pane_title_of`, so this is also the assertion that the five ids
+/// `LEDGER_PANES` declares resolve to the five panes intended — an id no
 /// registry has would draw the id itself.
 #[test]
 fn the_ledger_strip_names_the_run_record_and_not_the_steps() {
@@ -2018,7 +2018,10 @@ fn the_ledger_strip_names_the_run_record_and_not_the_steps() {
     let mut win =
         Window::over(Boot::data_file(&path.to_string_lossy()).expect("the file opens as a boot"));
 
-    for (index, want) in ["Log", "Quality", "Rows", "Editor"].iter().enumerate() {
+    for (index, want) in ["Log", "Quality", "Rows", "Editor", "Versions"]
+        .iter()
+        .enumerate()
+    {
         let rect = win
             .app
             .rail_name_rect(LEDGER_RAIL, index)
@@ -2032,10 +2035,10 @@ fn the_ledger_strip_names_the_run_record_and_not_the_steps() {
         );
     }
     assert_eq!(
-        win.app.rail_name_rect(LEDGER_RAIL, 4),
+        win.app.rail_name_rect(LEDGER_RAIL, 5),
         None,
-        "the ledger strip drew a fifth name, so its panes are not the four \
-         the run record declares"
+        "the ledger strip drew a sixth name, so its panes are not the five \
+         the ledger declares"
     );
 
     let rail = win
@@ -2063,7 +2066,7 @@ fn the_ledger_strip_names_the_run_record_and_not_the_steps() {
 /// to the wrong document's draw path, where no item answers to its key, fails
 /// on the empty state it then does not draw.
 ///
-/// The subject cannot be read off the galleys: the strip draws all four names
+/// The subject cannot be read off the galleys: the strip draws all five names
 /// whichever pane is open, and a pane's own header band is suppressed under
 /// that strip. `MeridianApp::rail_pane_title` is the hook, and the body is the
 /// independent half beside it.

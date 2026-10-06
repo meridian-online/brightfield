@@ -29,12 +29,12 @@ fn housing() -> std::path::PathBuf {
         .join("tests/data/california_housing_sample.csv")
 }
 
-/// The ledger strip's Rows name: Log, Quality, Rows, Editor.
+/// The ledger strip's Rows name: Log, Quality, Rows, Editor, Versions.
 const ROWS_NAME: usize = 2;
 
 /// The ledger strip's names in the order it draws them, and so the index each
 /// is clicked at.
-const LEDGER_NAMES: [&str; 4] = ["Log", "Quality", "Rows", "Editor"];
+const LEDGER_NAMES: [&str; 5] = ["Log", "Quality", "Rows", "Editor", "Versions"];
 
 /// The height the ledger rail opened at over every pane before the Rows spot
 /// asked for its rows. A number and not the constant it came from: what is

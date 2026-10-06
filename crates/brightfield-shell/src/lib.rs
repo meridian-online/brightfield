@@ -110,6 +110,7 @@ mod sql_ident;
 pub mod starts;
 pub mod startup;
 pub mod text_ink;
+pub mod versions;
 pub mod watch;
 pub mod window;
 
