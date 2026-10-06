@@ -44,6 +44,12 @@ pub enum BindingContext {
     /// (the cell beside the cursor) never collide with the chart grammar's
     /// pop-out, dive-in and pan bindings.
     Grid,
+    /// Versions-scoped: fires only while the ledger's Versions panel holds
+    /// focus. A distinct context, as the grid's is, so the panel's `j`/`k`,
+    /// arrows, `Enter` and `Esc` (the cursor's row, the step back and the way
+    /// back to now) never reach the chart grammar's sibling-focus, dive-in and
+    /// clear-selection bindings on the same keys.
+    Versions,
     /// Global (`context = None`): fires from any focus (palette twin, focus
     /// toggle, save/reload-from-anywhere).
     Global,
@@ -253,6 +259,10 @@ pub fn registry() -> Vec<VerbEntry> {
     let grid = |k: &'static str| BindingSpec {
         keystrokes: k,
         context: BindingContext::Grid,
+    };
+    let versions = |k: &'static str| BindingSpec {
+        keystrokes: k,
+        context: BindingContext::Versions,
     };
 
     vec![
@@ -917,6 +927,56 @@ pub fn registry() -> Vec<VerbEntry> {
             help: "Move the grid's cursor to the cell on the right; stops at the last column",
             scores: Some(Scores { frequency: 5, mnemonic: 4, convention: 5, motor_note: "home-row l = right (vim, VisiData); the arrow is its twin; the Grid context keeps it apart from the Workspace's dive-in and pan-right" }),
         },
+        // ---- the Versions panel's cursor: one row of the ledger's list of a
+        //      chart's saved versions. The chart is drawn as the version under
+        //      the cursor; Enter steps the chart back to it as an unsaved edit,
+        //      and Esc draws the chart as it was. These resolve in the Versions
+        //      context, apart from the Workspace's sibling focus, dive-in and
+        //      clear-selection on the same keys. ----
+        VerbEntry {
+            longname: "move-version-cursor-down",
+            tier: CommandTier::View,
+            binding_specs: vec![versions("j"), versions("down")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Draw the chart as the next older version in the Versions panel; stops at the oldest",
+            scores: Some(Scores { frequency: 4, mnemonic: 4, convention: 5, motor_note: "home-row j = down (vim, lazygit's commit list); the arrow is its twin; agrees with the grid's, the shelf's and the Protocol panel's j" }),
+        },
+        VerbEntry {
+            longname: "move-version-cursor-up",
+            tier: CommandTier::View,
+            binding_specs: vec![versions("k"), versions("up")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Draw the chart as the next newer version in the Versions panel; stops at the newest",
+            scores: Some(Scores { frequency: 4, mnemonic: 4, convention: 5, motor_note: "home-row k = up (vim, lazygit's commit list); the arrow is its twin; agrees with the grid's, the shelf's and the Protocol panel's k" }),
+        },
+        VerbEntry {
+            longname: "step-back-to-version",
+            tier: CommandTier::Data,
+            binding_specs: vec![versions("enter")],
+            scope_applicability: vec![View],
+            drives: D::SpecEdit,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Step the chart back to the version under the cursor, as an unsaved edit that Save writes",
+            scores: Some(Scores { frequency: 3, mnemonic: 4, convention: 5, motor_note: "enter = take the row under the cursor (the shelf's keep, telescope, fzf); a Data verb, since Save writes it; u takes it back" }),
+        },
+        VerbEntry {
+            longname: "return-to-now",
+            tier: CommandTier::View,
+            binding_specs: vec![versions("escape")],
+            scope_applicability: vec![View],
+            drives: D::Navigation,
+            status: VerbStatus::Built,
+            reserved_reason: None,
+            help: "Draw the chart as it was before the Versions panel's cursor moved",
+            scores: Some(Scores { frequency: 4, mnemonic: 4, convention: 5, motor_note: "esc = back out one level (the Esc ladder), as the shelf's back-out-of-shelf; writes nothing" }),
+        },
         // ---- pane toggles: the show/hide verbs the item registries name.
         //      Reserved rather than bound: the pane toggles cannot be performed
         //      until the workspace shell owns the window and its layout, and a
@@ -1340,6 +1400,10 @@ mod tests {
             "move-cursor-up",
             "move-cursor-left",
             "move-cursor-right",
+            "move-version-cursor-down",
+            "move-version-cursor-up",
+            "step-back-to-version",
+            "return-to-now",
             "toggle-outline-rail",
             "toggle-inspector-rail",
             "toggle-controls-rail",
@@ -1366,7 +1430,8 @@ mod tests {
             .map(|v| v.longname)
             .collect();
         // The Data-tier set is exactly the addressed spec-edit verbs plus undo,
-        // the Outline's put-a-column-on-a-channel verbs, and the shelf's keep.
+        // the Outline's put-a-column-on-a-channel verbs, the shelf's keep, and the
+        // Versions panel's step back, which Save writes.
         let mut got = durable.clone();
         got.sort_unstable();
         let mut expected = vec![
@@ -1384,6 +1449,7 @@ mod tests {
             "put-column-on-y",
             "put-column-on-colour",
             "keep-shelf-choice",
+            "step-back-to-version",
         ];
         expected.sort_unstable();
         assert_eq!(got, expected, "only durable-writing (Data) verbs write");
@@ -1593,6 +1659,59 @@ mod tests {
             .filter(|b| b.context == BindingContext::Grid)
             .count();
         assert_eq!(in_grid_count, expected.len(), "Grid bindings");
+    }
+
+    #[test]
+    fn the_versions_context_moves_the_cursor_steps_back_and_returns_to_now() {
+        let reg = registry();
+        let bound = keymap_bindings(&reg);
+        let in_versions = |keys: &str| -> Vec<&'static str> {
+            bound
+                .iter()
+                .filter(|b| b.context == BindingContext::Versions && b.keystrokes == keys)
+                .map(|b| b.longname)
+                .collect()
+        };
+        let expected = [
+            ("j", "move-version-cursor-down"),
+            ("down", "move-version-cursor-down"),
+            ("k", "move-version-cursor-up"),
+            ("up", "move-version-cursor-up"),
+            ("enter", "step-back-to-version"),
+            ("escape", "return-to-now"),
+        ];
+        for (keys, longname) in expected {
+            assert_eq!(
+                in_versions(keys),
+                vec![longname],
+                "Versions context, `{keys}`"
+            );
+            let verb = reg.iter().find(|v| v.longname == longname).unwrap();
+            assert!(!verb.help.is_empty(), "{longname} has no help line");
+            let scores = verb
+                .scores
+                .as_ref()
+                .unwrap_or_else(|| panic!("{longname} has no scores"));
+            for score in [scores.frequency, scores.mnemonic, scores.convention] {
+                assert!((1..=5).contains(&score), "{longname} score {score}");
+            }
+        }
+        // The step back is written by Save, so it is a Data verb; the cursor and
+        // the way back to now write nothing.
+        for (longname, tier) in [
+            ("move-version-cursor-down", CommandTier::View),
+            ("move-version-cursor-up", CommandTier::View),
+            ("step-back-to-version", CommandTier::Data),
+            ("return-to-now", CommandTier::View),
+        ] {
+            let verb = reg.iter().find(|v| v.longname == longname).unwrap();
+            assert_eq!(verb.tier, tier, "{longname}'s tier");
+        }
+        let in_versions_count = bound
+            .iter()
+            .filter(|b| b.context == BindingContext::Versions)
+            .count();
+        assert_eq!(in_versions_count, expected.len(), "Versions bindings");
     }
 
     #[test]
