@@ -952,8 +952,8 @@ fn an_unsaved_edit_is_the_first_row_and_none_held_draws_no_such_row() {
     );
 
     // Taking the edits back leaves none held, and the row goes with them
-    // without a Save: the count of edits not yet saved falls to nothing by an
-    // undo as well as by a Save.
+    // without a Save: the edits not yet saved are none after an undo as well
+    // as after a Save.
     s.undo();
     s.settle();
     assert_eq!(
