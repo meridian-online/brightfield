@@ -1863,6 +1863,33 @@ fn grid_bindings() -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 
+/// The Versions panel's `(keystroke token, longname)` pairs: every binding the
+/// registry declares in its Versions context, the arrow twins included.
+fn versions_bindings() -> Vec<(&'static str, &'static str)> {
+    brightfield_keys::registry()
+        .iter()
+        .flat_map(|verb| {
+            verb.binding_specs
+                .iter()
+                .filter(|spec| spec.context == brightfield_keys::BindingContext::Versions)
+                .map(move |spec| (spec.keystrokes, verb.longname))
+        })
+        .collect()
+}
+
+/// [`consume_token`] with the Versions panel's two keys no other caller
+/// consumes as a bare token, `enter` and `escape`. They are spelled here rather
+/// than in [`consume_token`] so a verb elsewhere whose primary key is one of
+/// them does not start consuming it.
+fn consume_versions_token(ctx: &egui::Context, token: &str) -> bool {
+    use egui::{Key, Modifiers};
+    match token {
+        "enter" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)),
+        "escape" => ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)),
+        other => consume_token(ctx, other),
+    }
+}
+
 /// Perform a navigation verb on the chart document, or report that this is not
 /// one. The one place a longname becomes a frame movement.
 fn navigation_verb(doc: &mut crate::app::ChartDoc, longname: &str) -> bool {
@@ -2299,6 +2326,9 @@ pub struct MeridianApp {
     /// bindings the registry declares in its Grid context, read at boot — same
     /// rule as [`Self::nav_bindings`].
     grid_bindings: Vec<(&'static str, &'static str)>,
+    /// Whether the ledger's Versions panel holds the keys: a press in it gave
+    /// them to it, and no press elsewhere has taken them since.
+    versions_hold: bool,
     /// The per-session palette recency: verbs run from the palette rank
     /// higher on its next empty-query open. Session-scoped by design (the
     /// sanctioned v1 simplification); it resets each launch.
@@ -2651,6 +2681,7 @@ impl MeridianApp {
                 .and_then(brightfield_keys::VerbEntry::primary_key),
             nav_bindings: navigation_bindings(),
             grid_bindings: grid_bindings(),
+            versions_hold: false,
             recency: RecencyCounter::new(),
             notifications: NotificationLayer::new(),
             last_chart_fault: None,
@@ -3834,6 +3865,7 @@ impl MeridianApp {
             shown,
             &tile_of,
             self.charts.doc.unsaved_edits(),
+            self.charts.doc.stepped_back_to(),
             || {
                 target
                     .as_deref()
@@ -4081,6 +4113,9 @@ impl MeridianApp {
         // The grid's cursor keys, ahead of the frame verbs: with the grid
         // focused its keys are the cursor's, and the frame verbs stand down.
         self.grid_cursor_keys(&ctx, graph_on_canvas);
+        // The Versions panel's keys, on the same terms: with the panel focused
+        // its keys are the cursor's, the step back's and the way back to now.
+        self.versions_keys(&ctx, graph_on_canvas);
         // The frame verbs, on the same gate and only where the chart holds the
         // canvas: they are bare keys, so an overlay or a text field must own
         // the keyboard first.
@@ -5294,13 +5329,20 @@ impl MeridianApp {
         if self.charts.doc.undo_shelf_edit().is_none() {
             return false;
         }
+        self.rebind_shelf();
+        true
+    }
+
+    /// Set the shelf band's cells, and an open list's cursor, to the channels
+    /// the page drawn binds: what a page loaded by `u` or by the Versions panel
+    /// leaves for the window, since the band reads what it was last given.
+    fn rebind_shelf(&mut self) {
         if let Some(channels) = hero_shelf_channels(&self.charts.doc) {
             if let Some(band) = self.charts.shelf.band.as_mut() {
                 band.set_channels(channels.clone());
             }
             self.protocol.doc.model.rebind_column_list(channels);
         }
-        true
     }
 
     /// Perform whichever navigation verb's key is down this frame.
@@ -5821,6 +5863,96 @@ impl MeridianApp {
                 continue;
             };
             if consume_token(ctx, token) && self.charts.doc.move_grid_cursor(step) {
+                ctx.request_repaint();
+            }
+        }
+    }
+
+    /// Whether the ledger's Versions panel holds the keys and is drawn — the
+    /// situation its key context, the registry's Versions, resolves in.
+    ///
+    /// A press in the panel gives it the keys and a press anywhere else takes
+    /// them away ([`crate::versions::Versions::take_press`]), as a press does
+    /// for the shelf. The rail's panes are not the dock's, so the workspace's
+    /// focus record does not reach them.
+    fn versions_has_focus(&mut self) -> bool {
+        if let Some(inside) = self.charts.doc.versions_mut().take_press() {
+            self.versions_hold = inside;
+        }
+        if !self.versions_hold {
+            return false;
+        }
+        let ledger = arrangement::default_arrangement().expect_region(arrangement::LEDGER_RAIL);
+        let panes = region_panes(ledger);
+        !self.collapsed.contains(&ledger.id)
+            && panes.get(self.ledger_panel.min(panes.len().saturating_sub(1)))
+                == Some(&crate::versions::VERSIONS)
+    }
+
+    /// **Give the Versions panel its keys**: the cursor's row, the step back,
+    /// and the way back to now.
+    ///
+    /// Gated as [`Self::grid_cursor_keys`] is — the chart on the canvas, no
+    /// overlay open, no widget holding the keyboard — and on the panel holding
+    /// focus, which a press in it gives it. Each binding comes off the
+    /// registry's Versions context, so the keys the help sheet lists for the
+    /// panel are the keys that act.
+    ///
+    /// - `j` and `k`, and the arrows, move the cursor a row and draw the chart
+    ///   as the version it is on ([`ChartDoc::move_version_cursor`]). They are
+    ///   consumed whether or not the cursor could move, so a move off the
+    ///   list's end does not fall through to a Workspace verb.
+    /// - `Enter`, and a click on the Step back control the cursor's row drew,
+    ///   step the chart back to that version as an unsaved edit
+    ///   ([`ChartDoc::step_back_to_cursor`]).
+    /// - `Esc` draws the chart as it was before the cursor moved
+    ///   ([`ChartDoc::return_to_now`]).
+    ///
+    /// `Enter` and `Esc` are taken with the cursor on a row and left to the
+    /// window's other handlers when the cursor is off the rows. **The panel letting go of the keys
+    /// is the way back to now too**: the version drawn under the cursor is a
+    /// preview of the panel's, and a chart left drawn as it with the keys gone
+    /// elsewhere would take a shelf edit or a switch made to a spec Save does
+    /// not write.
+    fn versions_keys(&mut self, ctx: &egui::Context, graph_on_canvas: bool) {
+        let clicked = self.charts.doc.versions_mut().take_step_back_click();
+        if graph_on_canvas || !self.versions_has_focus() {
+            self.versions_hold = false;
+            if self.charts.doc.return_to_now() {
+                self.rebind_shelf();
+                ctx.request_repaint();
+            }
+            return;
+        }
+        if clicked && self.charts.doc.step_back_to_cursor() {
+            self.rebind_shelf();
+            ctx.request_repaint();
+        }
+        if self.overlay.is_some() || ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        for (token, longname) in versions_bindings() {
+            let on_row = self.charts.doc.versions().cursor().is_some();
+            let acted = match longname {
+                "move-version-cursor-down" | "move-version-cursor-up" => {
+                    consume_token(ctx, token)
+                        && self
+                            .charts
+                            .doc
+                            .move_version_cursor(longname == "move-version-cursor-down")
+                }
+                "step-back-to-version" => {
+                    on_row
+                        && consume_versions_token(ctx, token)
+                        && self.charts.doc.step_back_to_cursor()
+                }
+                "return-to-now" => {
+                    on_row && consume_versions_token(ctx, token) && self.charts.doc.return_to_now()
+                }
+                _ => false,
+            };
+            if acted {
+                self.rebind_shelf();
                 ctx.request_repaint();
             }
         }
@@ -6352,6 +6484,13 @@ impl MeridianApp {
         if !graph_on_canvas {
             if let Some(address) = grid_cursor_status_entry(&self.charts.doc) {
                 entries.insert(0, address);
+            }
+        }
+        // A saved version drawn in place of the chart leads it: the picture is
+        // not the chart's own, and the band says so and names the two keys.
+        if !graph_on_canvas {
+            if let Some(shown) = version_shown_status_entry(&self.charts.doc) {
+                entries.insert(0, shown);
             }
         }
 
@@ -8127,6 +8266,40 @@ fn last_shelf_edit_status_entry(doc: &ChartDoc) -> Option<StatusEntry> {
 /// reads the line by.
 pub const SHELF_EDIT_STATUS_ID: &str = "shelf-last-edit";
 
+/// **The status band's line while the Versions panel's cursor draws a saved
+/// version**: which version is shown, and the keys that step back to it and
+/// return to now — `showing the version saved at 14:02 · Enter steps back to it
+/// as an unsaved edit · Esc returns to now`. The keys are read off the
+/// registry, so a rebinding cannot leave the band naming a key that does
+/// nothing.
+fn version_shown_status_entry(doc: &ChartDoc) -> Option<StatusEntry> {
+    let (_, at) = doc.shown_version()?;
+    let key = |verb: &'static str| Verb::new(verb).keys().map(crate::versions::key_word);
+    let mut text = format!(
+        "showing the version saved at {}",
+        doc.versions().time_words(at)
+    );
+    if let Some(enter) = key(crate::versions::STEP_BACK_VERB) {
+        text.push_str(&format!(
+            " \u{b7} {enter} steps back to it as an unsaved edit"
+        ));
+    }
+    if let Some(esc) = key("return-to-now") {
+        text.push_str(&format!(" \u{b7} {esc} returns to now"));
+    }
+    Some(StatusEntry {
+        id: VERSION_SHOWN_STATUS_ID,
+        side: StatusSide::Leading,
+        text,
+        tone: Tone::Neutral,
+        hide: HideAffordance::WithRail,
+    })
+}
+
+/// The stable id `version_shown_status_entry` writes — the handle a test reads
+/// the line by.
+pub const VERSION_SHOWN_STATUS_ID: &str = "version-shown";
+
 /// The stable id `grid_cursor_status_entry` writes — the handle a test reads
 /// the cursor's address by.
 pub const GRID_CURSOR_STATUS_ID: &str = "grid-cursor";
@@ -9085,6 +9258,28 @@ pub(crate) fn map_pane_title(
 /// What a hero whose x and y are no longer the coordinate pair is called.
 const DOT_PLOT: &str = "Dot plot";
 
+/// **The hero pane's header**: [`map_pane_title`] over the spec drawn, ending
+/// `as saved 14:02` while the Versions panel's cursor draws a saved version in
+/// place of the chart, so the header does not name the picture as the chart's
+/// own.
+pub(crate) fn hero_pane_title(
+    doc: &ChartDoc,
+    hero: Option<&crate::one_step::ColumnFacts>,
+) -> String {
+    let title = map_pane_title(hero, hero_shelf_channels(doc).as_ref());
+    match doc.shown_version() {
+        Some((_, at)) => format!(
+            "{title} \u{b7} {AS_SAVED} {}",
+            doc.versions().time_words(at)
+        ),
+        None => title,
+    }
+}
+
+/// What the hero pane's header says before a saved version's time while the
+/// chart is drawn as that version.
+pub const AS_SAVED: &str = "as saved";
+
 /// What `mapping` puts on y and on x, as the pane names them, when it does not
 /// hold the pair — `lon` on x and `lat` on y — and `None` while it does.
 fn off_the_pair<'a>(
@@ -9177,7 +9372,7 @@ fn draw_canvas_pane_group(
     let (map_rect, grid_rect) = (rects.hero, rects.grid);
     let hero = charts.doc.tile_columns().first().cloned();
     let map_subject = Subject::new(
-        map_pane_title(hero.as_ref(), hero_shelf_channels(&charts.doc).as_ref()),
+        hero_pane_title(&charts.doc, hero.as_ref()),
         subject_icon(hero.as_ref()),
         brightfield_keys::BindingContext::Workspace,
     );
@@ -9392,7 +9587,7 @@ fn draw_transposed_pane_group(
     let (map_rect, grid_rect) = (rects.hero, rects.grid);
     let hero = charts.doc.tile_columns().first().cloned();
     let map_subject = Subject::new(
-        map_pane_title(hero.as_ref(), hero_shelf_channels(&charts.doc).as_ref()),
+        hero_pane_title(&charts.doc, hero.as_ref()),
         subject_icon(hero.as_ref()),
         brightfield_keys::BindingContext::Workspace,
     );

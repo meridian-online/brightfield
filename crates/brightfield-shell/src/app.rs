@@ -105,6 +105,11 @@ const ENGINE_REFUSED: &str = "The chart is missing data the engine refused to qu
 /// left as it was kept.
 const SHELF_REFUSED: &str = "The column could not be put on the chart";
 
+/// The headline over a saved version the Versions panel could not draw: a text
+/// that does not read as a chart, or one the engine would not load. The chart
+/// is left as it was.
+pub const VERSION_REFUSED: &str = "The version could not be drawn";
+
 /// The smallest box [`ChartDoc::reflow_to`] will compose a dashboard into, on
 /// either axis, in logical points.
 ///
@@ -643,7 +648,8 @@ struct ShelfPreview {
     kept: (LiveDashboard, Composed),
 }
 
-/// One column kept from the shelf's list, as undo takes it back.
+/// One column kept from the shelf's list, or one step back to a saved version,
+/// as undo takes it back.
 struct KeptShelfEdit {
     /// What the edit did, in the shelf's words: `x axis: longitude →
     /// median_income`. What the status band names.
@@ -651,6 +657,45 @@ struct KeptShelfEdit {
     /// How many of [`ChartDoc::pending_edits`] keeping it added, which undo
     /// takes off the end again.
     added: usize,
+    /// For a step back, the unsaved change it went over, which undo puts back
+    /// whole; `None` for a column kept.
+    unstep: Option<Unstep>,
+}
+
+/// **What a step back went over**: the edits held and the version stepped back
+/// to before it, put back by `u` as they stood
+/// (`enter_on_an_earlier_version_then_u_draws_the_unsaved_edit_again`).
+struct Unstep {
+    pending: Vec<ChartEdit>,
+    stepped: Option<SteppedBack>,
+}
+
+/// **The saved version the chart was stepped back to, as an unsaved edit.**
+///
+/// Its text is what Save writes, with the edits held since placed into it as
+/// they would be placed into the file's own, so a step back writes the
+/// version's recorded bytes and an edit made after it changes its own line and
+/// no other (`an_edit_after_a_step_back_is_written_into_the_versions_text_on_its_own_line`).
+struct SteppedBack {
+    /// The version's id in the store.
+    id: String,
+    /// The text the store recorded for it.
+    text: String,
+}
+
+/// **A saved version drawn while the Versions panel's cursor is on it**, and
+/// the page it replaced, which `Esc` puts back.
+///
+/// It is a preview, as the shelf's column under the cursor is: nothing is
+/// added to what Save writes, so the window's unsaved mark is as it was.
+struct VersionShown {
+    /// The version's id in the store.
+    id: String,
+    /// When the store recorded it: what the pane header's `as saved` names.
+    at: std::time::SystemTime,
+    /// The page drawn before the cursor moved: its live session and its
+    /// composition.
+    kept: (LiveDashboard, Composed),
 }
 
 /// **The kept shelf edits since the last Save, and the page each began from.**
@@ -990,6 +1035,12 @@ pub struct ChartDoc {
     /// The ledger's Versions panel: what the store keeps of this chart file and
     /// what is not yet saved to it. See [`crate::versions`].
     versions: crate::versions::Versions,
+    /// The saved version drawn while the Versions panel's cursor is on it, and
+    /// the page it replaced. See [`VersionShown`].
+    version_shown: Option<VersionShown>,
+    /// The saved version the chart was stepped back to, whose text Save writes
+    /// in place of the file's. See [`SteppedBack`].
+    stepped_back: Option<SteppedBack>,
     /// The column the shelf's list is drawing on a channel and has not kept,
     /// and the page it replaced. See [`ShelfPreview`].
     shelf_preview: Option<ShelfPreview>,
@@ -1160,6 +1211,8 @@ impl ChartDoc {
             interaction_fault: None,
             pending_edits: Vec::new(),
             versions: crate::versions::Versions::default(),
+            version_shown: None,
+            stepped_back: None,
             shelf_preview: None,
             shelf_undo: ShelfUndo::default(),
             nav: NavGesture::new(),
@@ -1214,6 +1267,8 @@ impl ChartDoc {
             interaction_fault: None,
             pending_edits: Vec::new(),
             versions: crate::versions::Versions::default(),
+            version_shown: None,
+            stepped_back: None,
             shelf_preview: None,
             shelf_undo: ShelfUndo::default(),
             nav: NavGesture::new(),
@@ -1268,6 +1323,9 @@ impl ChartDoc {
         // a column previewed on it.
         self.pending_edits.clear();
         self.versions.invalidate();
+        self.versions.clear_cursor();
+        self.version_shown = None;
+        self.stepped_back = None;
         self.shelf_preview = None;
         self.shelf_undo = ShelfUndo::default();
         // …and the extent described the replaced document's plots.
@@ -1348,19 +1406,21 @@ impl ChartDoc {
         self.live.is_some()
     }
 
-    /// Whether a tile's switch or a column kept on the shelf has changed this
-    /// document's live spec since it was opened or last saved — a change the
-    /// chart file does not carry, and one the window says is unsaved.
+    /// Whether a tile's switch, a column kept on the shelf or a step back to a
+    /// saved version has changed this document's live spec since it was opened
+    /// or last saved — a change the chart file does not carry, and one the
+    /// window says is unsaved.
     ///
     /// A switch the chart refused is not one: the spec it left standing is the
     /// file's. Neither is a pick of the state the control already showed,
     /// which writes the value the spec holds, nor a column the shelf's list is
-    /// previewing and has not kept ([`Self::preview_shelf_column`]). A Save that wrote the
-    /// edits clears it ([`Self::save_chart_beside`]); one that could not
-    /// leaves it.
+    /// previewing and has not kept ([`Self::preview_shelf_column`]), nor a
+    /// version the Versions panel's cursor is drawing
+    /// ([`Self::move_version_cursor`]). A Save that wrote the edits clears it
+    /// ([`Self::save_chart_beside`]); one that could not leaves it.
     #[must_use]
     pub const fn has_unsaved_edit(&self) -> bool {
-        !self.pending_edits.is_empty()
+        !self.pending_edits.is_empty() || self.stepped_back.is_some()
     }
 
     /// **Save the chart beside the Protocol: write the edits made since the
@@ -1393,6 +1453,12 @@ impl ChartDoc {
     /// editor pane shows what was saved, and watches it in place of the
     /// scratch file.
     ///
+    /// **After a step back the edits go into the version's text.** The chart
+    /// stepped back to a saved version ([`Self::step_back_to_cursor`]) is
+    /// written as the text the store recorded for it, with each edit held since
+    /// placed into it as above; the text recorded as replaced is still the
+    /// file's, so a file changed on disk since the last Save stays listed.
+    ///
     /// **Each Save records a version.** With a `history` store the text the
     /// write replaces is recorded in the chart file's own local history before
     /// the write, and the text written after it
@@ -1414,18 +1480,23 @@ impl ChartDoc {
         let (text, on_disk) = match std::fs::read_to_string(&target) {
             Ok(text) => (text, true),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let Some(from) = self.spec_path.clone() else {
-                    // Nothing to write when nothing was edited; an edit with
-                    // no text to go into is one the window cannot keep.
-                    return if self.pending_edits.is_empty() {
-                        Ok(None)
-                    } else {
-                        Err(ChartSaveError::NoText)
+                if let Some(stepped) = &self.stepped_back {
+                    (stepped.text.clone(), false)
+                } else {
+                    let Some(from) = self.spec_path.clone() else {
+                        // Nothing to write when nothing was edited; an edit
+                        // with no text to go into is one the window cannot
+                        // keep.
+                        return if self.pending_edits.is_empty() {
+                            Ok(None)
+                        } else {
+                            Err(ChartSaveError::NoText)
+                        };
                     };
-                };
-                let text = std::fs::read_to_string(&from)
-                    .map_err(|error| ChartSaveError::Read { path: from, error })?;
-                (text, false)
+                    let text = std::fs::read_to_string(&from)
+                        .map_err(|error| ChartSaveError::Read { path: from, error })?;
+                    (text, false)
+                }
             }
             Err(error) => {
                 return Err(ChartSaveError::Read {
@@ -1434,7 +1505,10 @@ impl ChartDoc {
                 })
             }
         };
-        let mut placed = text.clone();
+        let mut placed = self
+            .stepped_back
+            .as_ref()
+            .map_or_else(|| text.clone(), |stepped| stepped.text.clone());
         for edit in &self.pending_edits {
             placed =
                 write_chart_edit(&placed, edit).map_err(|refusal| ChartSaveError::Unplaced {
@@ -1455,6 +1529,7 @@ impl ChartDoc {
         let not_recorded = versions.and_then(|versions| versions.finish(&placed).err());
         let path = std::path::absolute(&written).unwrap_or(written);
         self.pending_edits.clear();
+        self.stepped_back = None;
         // What the Save wrote is in the file: `u` takes back no edit before it.
         self.shelf_undo.seal();
         if self.spec_path.as_deref() == Some(path.as_path()) {
@@ -1486,6 +1561,31 @@ impl ChartDoc {
         &self.pending_edits
     }
 
+    /// The spec the page drawn was loaded from, when a live session is behind
+    /// it: the chart as it is, a version the Versions panel's cursor draws, or a
+    /// column the shelf previews. A test hook, for the reason
+    /// [`Self::live_coordinator`] is public: what the page is drawn from has one
+    /// honest answer, and it is this.
+    #[must_use]
+    pub fn live_spec(&self) -> Option<&brightfield_spec::ast::Spec> {
+        self.live.as_ref().map(LiveDashboard::spec)
+    }
+
+    /// The saved version the chart was stepped back to and has not saved, by
+    /// its id in the store.
+    #[must_use]
+    pub fn stepped_back_to(&self) -> Option<&str> {
+        self.stepped_back.as_ref().map(|s| s.id.as_str())
+    }
+
+    /// The saved version the Versions panel's cursor has drawn in place of the
+    /// chart, by its id, and when the store recorded it: `None` with the chart
+    /// drawn as it is.
+    #[must_use]
+    pub fn shown_version(&self) -> Option<(&str, std::time::SystemTime)> {
+        self.version_shown.as_ref().map(|v| (v.id.as_str(), v.at))
+    }
+
     /// **What each tile is called, by the path of the plot it draws**: the
     /// column a tile bins, and `Map` for the hero that draws a coordinate pair.
     /// What the Versions panel leads a change with.
@@ -1508,8 +1608,9 @@ impl ChartDoc {
     }
 
     /// **What a Save would change in the chart file**, as the changes between
-    /// the text on disk and the text the held edits would write: the Versions
-    /// panel's row for the edits not yet saved, worded as a listed version is.
+    /// the text on disk and the text the held edits would write, into the
+    /// version stepped back to where there is one: the Versions panel's row for
+    /// the change not yet saved, worded as a listed version is.
     ///
     /// Reads the text a Save reads and places the edits as a Save places them,
     /// and writes nothing. An edit the text cannot take, or a text that cannot
@@ -1526,7 +1627,10 @@ impl ChartDoc {
         }) else {
             return Vec::new();
         };
-        let mut placed = text.clone();
+        let mut placed = self
+            .stepped_back
+            .as_ref()
+            .map_or_else(|| text.clone(), |stepped| stepped.text.clone());
         for edit in &self.pending_edits {
             match write_chart_edit(&placed, edit) {
                 Ok(next) => placed = next,
@@ -1684,7 +1788,10 @@ impl ChartDoc {
         // A switch thrown while the shelf's list draws a column it has not
         // kept is made to the kept page: the preview is put back first, so the
         // switch's edit is not made on a spec whose other edit is never saved.
+        // A version the Versions panel's cursor draws is put back for the same
+        // reason.
         self.drop_shelf_preview();
+        self.return_to_now();
         let Some(handle) = self.composed.plots.get(plot) else {
             return false;
         };
@@ -1788,6 +1895,9 @@ impl ChartDoc {
         column: &str,
         table: &[ColumnProfile],
     ) -> bool {
+        // A version the Versions panel's cursor draws is not the chart the
+        // shelf edits: the chart as it is now is put back first.
+        self.return_to_now();
         if self
             .shelf_preview
             .as_ref()
@@ -1898,6 +2008,7 @@ impl ChartDoc {
             KeptShelfEdit {
                 words,
                 added: preview.edits.len(),
+                unstep: None,
             },
         );
         self.pending_edits.extend(preview.edits);
@@ -1949,15 +2060,28 @@ impl ChartDoc {
     /// the words of the edit taken back.
     pub fn undo_shelf_edit(&mut self) -> Option<String> {
         self.drop_shelf_preview();
+        self.return_to_now();
         let (before, edit) = self.shelf_undo.take()?;
         match self.rebuild(before.clone()) {
             Ok((live, composed)) => {
                 self.live = Some(live);
                 self.composed = composed;
-                let kept = self.pending_edits.len().saturating_sub(edit.added);
-                self.pending_edits.truncate(kept);
+                let KeptShelfEdit {
+                    words,
+                    added,
+                    unstep,
+                } = edit;
+                if let Some(unstep) = unstep {
+                    // A step back taken back: the change it went over is held
+                    // again, as it stood.
+                    self.pending_edits = unstep.pending;
+                    self.stepped_back = unstep.stepped;
+                } else {
+                    let kept = self.pending_edits.len().saturating_sub(added);
+                    self.pending_edits.truncate(kept);
+                }
                 self.canvas.invalidate();
-                Some(edit.words)
+                Some(words)
             }
             Err(e) => {
                 self.shelf_undo.push(before, edit);
@@ -1985,7 +2109,15 @@ impl ChartDoc {
         let Some(preview) = self.shelf_preview.take() else {
             return false;
         };
-        let (mut live, mut composed) = preview.kept;
+        self.put_back(preview.kept);
+        true
+    }
+
+    /// Put `kept` back as the page drawn, the viewport and ink mode the window
+    /// has now carried onto it: what backing out of a preview does, the
+    /// shelf's column or the Versions panel's version.
+    fn put_back(&mut self, kept: (LiveDashboard, Composed)) {
+        let (mut live, mut composed) = kept;
         if let Some(shown) = self.live.as_ref() {
             let moved = live.set_viewport(shown.viewport());
             let inked = live.set_mode(shown.mode());
@@ -2000,7 +2132,6 @@ impl ChartDoc {
         self.live = Some(live);
         self.composed = composed;
         self.canvas.invalidate();
-        true
     }
 
     /// The column the shelf's list is drawing and has not kept, and the
@@ -2010,6 +2141,156 @@ impl ChartDoc {
         self.shelf_preview
             .as_ref()
             .map(|p| (p.channel, p.column.as_str()))
+    }
+
+    /// **Move the Versions panel's cursor a row and draw the chart as the
+    /// version it moves to**, older for `down` and newer for not.
+    ///
+    /// The version is drawn as a preview, as the shelf draws a column under its
+    /// cursor: the page is loaded from the version's text, the page it replaced
+    /// is kept for [`Self::return_to_now`], and no edit is added to what Save
+    /// writes, so the window's unsaved mark is as it was. A move past the
+    /// oldest or the newest row leaves the cursor where it is
+    /// (`j_and_k_move_the_cursor_and_draw_the_chart_as_the_version_under_it`).
+    ///
+    /// A version the store will not give up, whose text does not read as a
+    /// chart, or that the engine will not load is not drawn: the chart stays as
+    /// it was and [`Self::chart_fault`] says why under [`VERSION_REFUSED`]. The
+    /// cursor stays on its row, so the next move goes past it. Returns whether
+    /// the chart was drawn as the version.
+    pub fn move_version_cursor(&mut self, down: bool) -> bool {
+        let Some(row) = self.versions.move_cursor(down) else {
+            return false;
+        };
+        match self.versions.read_version(&row.id) {
+            Ok(text) => self.show_version(&row.id, row.at, &text),
+            Err(why) => {
+                self.refuse_version(why);
+                false
+            }
+        }
+    }
+
+    /// Draw the chart as the version `id`, recorded `at` with `text`, keeping
+    /// the page drawn before the cursor first moved. See
+    /// [`Self::move_version_cursor`].
+    fn show_version(&mut self, id: &str, at: std::time::SystemTime, text: &str) -> bool {
+        self.drop_shelf_preview();
+        if self.version_shown.as_ref().is_some_and(|v| v.id == id) {
+            return true;
+        }
+        let spec = match brightfield_spec::parse_spec(text, brightfield_spec::Format::Yaml) {
+            Ok(parsed) => parsed.spec,
+            Err(e) => {
+                self.refuse_version(format!("the version's text does not read as a chart: {e}"));
+                return false;
+            }
+        };
+        match self.rebuild(spec) {
+            Ok((live, composed)) => {
+                let shown_live = self.live.replace(live);
+                let shown_composed = std::mem::replace(&mut self.composed, composed);
+                // The page kept is the one drawn before the cursor first
+                // moved, not the version drawn before this one.
+                let kept = match self.version_shown.take() {
+                    Some(previous) => previous.kept,
+                    None => match shown_live {
+                        Some(live) => (live, shown_composed),
+                        None => return false,
+                    },
+                };
+                self.version_shown = Some(VersionShown {
+                    id: id.to_string(),
+                    at,
+                    kept,
+                });
+                // A refusal named the version drawn before this one.
+                self.interaction_fault = None;
+                self.canvas.invalidate();
+                true
+            }
+            Err(e) => {
+                self.refuse_version(e);
+                false
+            }
+        }
+    }
+
+    /// Leave the chart as it is drawn and say why a version was not drawn.
+    fn refuse_version(&mut self, why: String) {
+        self.interaction_fault = Some(ChartFault {
+            title: VERSION_REFUSED.to_string(),
+            detail: why,
+        });
+    }
+
+    /// **Draw the chart as it was before the Versions panel's cursor moved**:
+    /// the page kept when it first moved is put back, with the viewport and ink
+    /// mode the window has now carried onto it, and the cursor leaves the rows.
+    /// The edits held and the unsaved mark are as they were, because drawing a
+    /// version changed neither. Returns whether a version was drawn to leave.
+    pub fn return_to_now(&mut self) -> bool {
+        self.versions.clear_cursor();
+        let Some(shown) = self.version_shown.take() else {
+            return false;
+        };
+        self.put_back(shown.kept);
+        true
+    }
+
+    /// **Step the chart back to the version under the Versions panel's
+    /// cursor, as an unsaved edit**, which Save writes.
+    ///
+    /// The version is left drawn, the window is marked unsaved, and the chart
+    /// file is as it was until Save, which writes the version's text
+    /// ([`Self::save_chart_beside`];
+    /// `enter_steps_back_as_an_unsaved_edit_and_save_writes_the_versions_bytes`). The change it steps over —
+    /// the edits held and any step back before it — is put on the undo stack
+    /// as one edit, so `u` draws the chart with it again and holds it as it
+    /// stood. A version that cannot be drawn is not stepped back to, and says
+    /// why as [`Self::move_version_cursor`] does. Returns whether it stepped
+    /// back.
+    pub fn step_back_to_cursor(&mut self) -> bool {
+        let Some((id, at)) = self
+            .versions
+            .cursor_row()
+            .map(|(_, row)| (row.id.clone(), row.at))
+        else {
+            return false;
+        };
+        let text = match self.versions.read_version(&id) {
+            Ok(text) => text,
+            Err(why) => {
+                self.refuse_version(why);
+                return false;
+            }
+        };
+        if !self.show_version(&id, at, &text) {
+            return false;
+        }
+        let Some(shown) = self.version_shown.take() else {
+            return false;
+        };
+        let before = shown.kept.0.spec().clone();
+        let words = format!(
+            "stepped back to the version saved at {}",
+            self.versions.time_words(at)
+        );
+        let unstep = Unstep {
+            pending: std::mem::take(&mut self.pending_edits),
+            stepped: self.stepped_back.take(),
+        };
+        self.shelf_undo.push(
+            before,
+            KeptShelfEdit {
+                words,
+                added: 0,
+                unstep: Some(unstep),
+            },
+        );
+        self.stepped_back = Some(SteppedBack { id, text });
+        self.versions.clear_cursor();
+        true
     }
 
     /// What the grid laid out on this frame, if it drew — the read half of

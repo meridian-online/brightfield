@@ -29,6 +29,11 @@ pub enum DispatchContext {
     /// grammar resolves here, isolated from the chart canvas's bare verbs, so
     /// the arrows move the cursor rather than pan the chart.
     GridFocused,
+    /// The ledger's Versions panel holds focus — its cursor is on a version's
+    /// row, and its grammar resolves here, isolated from the chart canvas's
+    /// bare verbs, so `Enter` steps the chart back rather than dives in and
+    /// `Esc` returns to now rather than clears a selection.
+    VersionsFocused,
 }
 
 /// Whether a binding in `binding` context resolves in the `dispatch` situation.
@@ -43,7 +48,10 @@ pub enum DispatchContext {
 ///   the cell beside there, `pop-out` and `dive-in` under the canvas, and
 ///   `protocol-producer` and `protocol-consumer` under the protocol panel;
 /// - a Grid binding resolves only when the grid is focused, so `h` and `l`
-///   move its cursor there and the arrows pan the chart only elsewhere.
+///   move its cursor there and the arrows pan the chart only elsewhere;
+/// - a Versions binding resolves when the Versions panel is focused, so
+///   `Enter` steps the chart back there and dives in on the canvas
+///   (`the_versions_panel_steps_back_and_returns_on_the_keys_that_dive_and_clear_elsewhere`).
 #[must_use]
 pub fn fires(binding: BindingContext, dispatch: DispatchContext) -> bool {
     matches!(
@@ -54,6 +62,7 @@ pub fn fires(binding: BindingContext, dispatch: DispatchContext) -> bool {
             | (BindingContext::Protocol, DispatchContext::ProtocolFocused)
             | (BindingContext::Shelf, DispatchContext::ShelfFocused)
             | (BindingContext::Grid, DispatchContext::GridFocused)
+            | (BindingContext::Versions, DispatchContext::VersionsFocused)
     )
 }
 
@@ -247,10 +256,38 @@ mod tests {
     }
 
     #[test]
+    fn the_versions_panel_steps_back_and_returns_on_the_keys_that_dive_and_clear_elsewhere() {
+        let t = table();
+        // Exact vectors: a Workspace binding leaking into the panel's dispatch
+        // context would add a second verb, and Enter would both step the chart
+        // back and dive into the focused container.
+        for (keys, verb) in [
+            ("j", "move-version-cursor-down"),
+            ("down", "move-version-cursor-down"),
+            ("k", "move-version-cursor-up"),
+            ("up", "move-version-cursor-up"),
+            ("enter", "step-back-to-version"),
+            ("escape", "return-to-now"),
+        ] {
+            assert_eq!(
+                t.resolves(keys, DispatchContext::VersionsFocused),
+                vec![verb],
+                "`{keys}` with the Versions panel focused"
+            );
+        }
+        assert_eq!(
+            t.resolves("enter", DispatchContext::CanvasFocused),
+            vec!["dive-in"]
+        );
+        assert!(t.resolves("enter", DispatchContext::GridFocused).is_empty());
+    }
+
+    #[test]
     fn each_binding_context_fires_in_its_own_dispatch_context_and_global_in_all() {
-        use BindingContext::{Editor, Global, Grid, Protocol, Shelf, Workspace};
+        use BindingContext::{Editor, Global, Grid, Protocol, Shelf, Versions, Workspace};
         use DispatchContext::{
             CanvasFocused, EditorFocused, GridFocused, OverlayOpen, ProtocolFocused, ShelfFocused,
+            VersionsFocused,
         };
         // Written as a `match`, so a new binding context does not compile until
         // this test says which dispatch context it fires in.
@@ -260,9 +297,10 @@ mod tests {
             Protocol => Some(ProtocolFocused),
             Shelf => Some(ShelfFocused),
             Grid => Some(GridFocused),
+            Versions => Some(VersionsFocused),
             Global => None,
         };
-        for binding in [Workspace, Editor, Protocol, Shelf, Grid, Global] {
+        for binding in [Workspace, Editor, Protocol, Shelf, Grid, Versions, Global] {
             for dispatch in [
                 CanvasFocused,
                 EditorFocused,
@@ -270,6 +308,7 @@ mod tests {
                 ProtocolFocused,
                 ShelfFocused,
                 GridFocused,
+                VersionsFocused,
             ] {
                 let expected = own(binding).is_none_or(|own| own == dispatch);
                 assert_eq!(
