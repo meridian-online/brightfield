@@ -421,7 +421,13 @@ impl Session {
     /// Every row the panel drew, the row for edits not yet saved first: its
     /// rectangle, and the three cells read off the galleys inside it, left to
     /// right.
+    ///
+    /// A cell is a galley that begins at one of the panel's three column
+    /// origins. A confirmation toast is drawn over the foot of the window, and
+    /// a galley of its own can sit inside a row's rectangle without being one of
+    /// the row's cells.
     fn rows(&self) -> Vec<(egui::Rect, Vec<String>)> {
+        const COLUMNS: [f32; 3] = [12.0, 162.0, 312.0];
         self.app
             .chart_doc()
             .versions()
@@ -432,6 +438,11 @@ impl Session {
                     .texts
                     .iter()
                     .filter(|t| rect.contains(t.ink.center()))
+                    .filter(|t| {
+                        COLUMNS
+                            .iter()
+                            .any(|x| (t.ink.min.x - (rect.min.x + x)).abs() < 3.0)
+                    })
                     .collect();
                 cells.sort_by(|a, b| a.ink.min.x.total_cmp(&b.ink.min.x));
                 (*rect, cells.iter().map(|t| t.text.clone()).collect())
@@ -591,15 +602,18 @@ fn after_two_saves_with_an_edit_between_the_panel_lists_two_rows_newest_first_un
     let changed = s
         .rail_text_reading("what changed")
         .expect("a *what changed* header");
+    // One line is what fits in one row's height. The ink boxes are compared as
+    // a group and not centre to centre, because a box is the glyphs' own and
+    // `kind` and `what changed` reach above and below where `when` does.
+    let line = when.ink.union(kind.ink).union(changed.ink);
     assert!(
-        (when.ink.center().y - kind.ink.center().y).abs() < 1.0
-            && (kind.ink.center().y - changed.ink.center().y).abs() < 1.0
+        line.height() < ROW_HEIGHT
             && when.ink.min.x < kind.ink.min.x
             && kind.ink.min.x < changed.ink.min.x,
-        "the header's three words are not one line, left to right"
+        "the header's three words are not one line, left to right: {line:?}"
     );
     assert!(
-        changed.ink.max.y < rows[0].0.top() + 1.0,
+        line.max.y < rows[0].0.top() + 1.0,
         "the header row is not above the first row"
     );
 }
@@ -681,45 +695,89 @@ fn a_rows_change_leads_with_its_tile_and_is_said_in_the_shelfs_words() {
         changed,
         [
             "Map \u{b7} y axis: latitude \u{2192} median_house_value",
-            "population \u{b7} y scale: linear \u{2192} log",
-            "Map \u{b7} x axis: longitude \u{2192} median_income",
+            "population \u{b7} x scale: linear \u{2192} log",
+            "Map \u{b7} projection type: equirectangular removed \u{b7} \
+             x axis: longitude \u{2192} median_income",
             "the first version kept",
         ],
         "the rows do not say each change in the shelf's words"
     );
 }
 
-/// **AC4, an edit outside.** A version edited outside reads `edited outside
-/// brightfield` with its count of lines. A version that differs from the one
-/// before it in line endings alone reads that count as `0 lines`, and a version
-/// carrying a named change and a change elsewhere reads both, the second as a
-/// count of lines.
+/// **AC4, the shelf's word for the other axis.** The population tile's scale is
+/// on x, so the recording above reads `x scale`; the same switch on y reads
+/// `y scale`, and a scale taken back to the default reads as `linear`.
 #[test]
-fn a_version_edited_outside_reads_its_lines_and_one_carrying_both_kinds_reads_both() {
+fn a_scale_on_y_reads_y_scale_and_a_scale_taken_out_reads_linear() {
     let t = recorded_texts();
-    let noted = format!("{}# a note\n# another\n# a third\n", t.base);
-    let crlf = noted.replace('\n', "\r\n");
-    let both = format!("{}# a fourth\n", t.x_moved);
-    let mut s = Session::open("ac4-outside");
-    s.seed(&[
-        (false, &t.base),
-        (false, &noted),
-        (false, &crlf),
-        (false, &both),
-    ]);
+    let on_y = t.scale_switched.replace("xScale: log", "yScale: log");
+    assert_ne!(on_y, t.scale_switched, "the recording carries no xScale: log");
+    let mut s = Session::open("ac4-y-scale");
+    s.seed(&[(true, &t.x_moved), (false, &t.scale_switched), (true, &on_y)]);
     s.pin_clock(SAME_DAY);
     s.show_versions();
     let changed: Vec<String> = s.cells().into_iter().map(|mut r| r.remove(2)).collect();
     assert_eq!(
         changed,
         [
-            "Map \u{b7} x axis: longitude \u{2192} median_income \u{b7} \
-             edited outside brightfield \u{b7} 4 lines",
+            "population \u{b7} x scale: log \u{2192} linear \u{b7} \
+             y scale: linear \u{2192} log",
+            "population \u{b7} x scale: linear \u{2192} log",
+            "the first version kept",
+        ],
+        "a scale does not read in the shelf's words"
+    );
+}
+
+/// **AC4, an edit outside.** A version edited outside reads `edited outside
+/// brightfield` with its count of lines. A version that differs from the one
+/// before it in line endings alone reads that count as `0 lines`.
+#[test]
+fn a_version_edited_outside_reads_its_lines_and_line_endings_alone_read_none() {
+    let t = recorded_texts();
+    let noted = format!("{}# a note\n# another\n# a third\n", t.base);
+    let crlf = noted.replace('\n', "\r\n");
+    let mut s = Session::open("ac4-outside");
+    s.seed(&[(false, &t.base), (false, &noted), (false, &crlf)]);
+    s.pin_clock(SAME_DAY);
+    s.show_versions();
+    let changed: Vec<String> = s.cells().into_iter().map(|mut r| r.remove(2)).collect();
+    assert_eq!(
+        changed,
+        [
             "edited outside brightfield \u{b7} 0 lines",
             "edited outside brightfield \u{b7} 3 lines",
             "the first version kept",
         ],
         "a text edited outside does not read as one"
+    );
+}
+
+/// **AC4, both kinds.** A version carrying a named change and a change the
+/// chart does not name reads both, the second as a count of lines. The count is
+/// of every line that differs, the lines of the named changes included: here
+/// the two `x` lines, the `projectionType` line and the title.
+#[test]
+fn a_version_carrying_a_named_change_and_one_elsewhere_reads_both() {
+    let t = recorded_texts();
+    let retitled = t
+        .x_moved
+        .replace("title: \"california_housing_sample.csv\"", "title: \"housing\"");
+    assert_ne!(retitled, t.x_moved, "the recording carries no title to change");
+    let mut s = Session::open("ac4-both");
+    s.seed(&[(false, &t.base), (false, &retitled)]);
+    s.pin_clock(SAME_DAY);
+    s.show_versions();
+    let changed: Vec<String> = s.cells().into_iter().map(|mut r| r.remove(2)).collect();
+    assert_eq!(
+        changed,
+        [
+            "Map \u{b7} projection type: equirectangular removed \u{b7} \
+             x axis: longitude \u{2192} median_income \u{b7} \
+             edited outside brightfield \u{b7} 4 lines",
+            "the first version kept",
+        ],
+        "a version carrying both kinds does not read both"
     );
 }
 
@@ -795,7 +853,8 @@ fn an_unsaved_edit_is_the_first_row_and_none_held_draws_no_such_row() {
         [
             "now",
             "unsaved",
-            "Map \u{b7} x axis: longitude \u{2192} median_income"
+            "Map \u{b7} projection type: equirectangular removed \u{b7} \
+             x axis: longitude \u{2192} median_income"
         ],
         "the first row does not name the edit not yet saved"
     );
@@ -805,7 +864,8 @@ fn an_unsaved_edit_is_the_first_row_and_none_held_draws_no_such_row() {
     s.settle();
     assert_eq!(
         s.cells()[0][2],
-        "Map \u{b7} x axis: longitude \u{2192} median_income \u{b7} \
+        "Map \u{b7} projection type: equirectangular removed \u{b7} \
+         x axis: longitude \u{2192} median_income \u{b7} \
          y axis: latitude \u{2192} median_house_value",
         "the first row does not name both edits not yet saved"
     );
