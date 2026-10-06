@@ -182,10 +182,7 @@ fn day_categories(categories: &[String]) -> Option<Vec<i64>> {
 /// format and a date format.
 #[must_use]
 pub fn tick_format_applies(scale: &Scale) -> bool {
-    matches!(
-        axis_kind(scale),
-        Some(AxisKind::Number | AxisKind::Date)
-    )
+    matches!(axis_kind(scale), Some(AxisKind::Number | AxisKind::Date))
 }
 
 /// Whether `format` is a kind the axis `scale` draws cannot take: a number

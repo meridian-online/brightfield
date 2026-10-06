@@ -213,7 +213,11 @@ fn a_tick_format_on_an_axis_of_names_is_named_and_the_names_are_drawn() {
             "`{key}: {value}` draws the names"
         );
         let lines = said(&asked);
-        assert_eq!(lines.len(), 1, "one line for `{key}: {value}`; got {lines:?}");
+        assert_eq!(
+            lines.len(),
+            1,
+            "one line for `{key}: {value}`; got {lines:?}"
+        );
         assert!(
             lines[0].contains(&format!("`{key}`"))
                 && lines[0].contains("root (`probe`)")
@@ -230,7 +234,11 @@ fn a_tick_format_on_an_axis_of_names_is_named_and_the_names_are_drawn() {
             "`yTickFormat: {value}` draws the names"
         );
         let lines = said(&asked);
-        assert_eq!(lines.len(), 1, "one line for `yTickFormat: {value}`; {lines:?}");
+        assert_eq!(
+            lines.len(),
+            1,
+            "one line for `yTickFormat: {value}`; {lines:?}"
+        );
         assert!(
             lines[0].contains("`yTickFormat`") && lines[0].contains(INERT),
             "{:?}",
@@ -321,11 +329,9 @@ fn a_format_that_is_no_format_is_named_once_as_such_on_an_axis_of_names() {
 /// to each: the line must be said once, on the first paint and on the repaint.
 #[test]
 fn a_repaint_says_a_format_on_names_once() {
-    let mut live = LiveDashboard::load_str(
-        &REGIONS_ON_X.replace("ATTRS", "xTickFormat: '.2f'"),
-        None,
-    )
-    .expect("the spec loads");
+    let mut live =
+        LiveDashboard::load_str(&REGIONS_ON_X.replace("ATTRS", "xTickFormat: '.2f'"), None)
+            .expect("the spec loads");
     let first = live.present().expect("composes");
     let second = live.present().expect("composes again");
     assert_eq!(said(&first).len(), 1, "{:?}", said(&first));

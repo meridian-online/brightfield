@@ -281,7 +281,10 @@ fn a_bare_axis_attribute_under_plot_defaults_is_named_once_for_the_block() {
     named.sort();
     assert_eq!(
         named,
-        [(None, "padding".to_string()), (None, "xyDomain".to_string())],
+        [
+            (None, "padding".to_string()),
+            (None, "xyDomain".to_string())
+        ],
         "each is named once, under `plotDefaults`, and by no plot that inherits it"
     );
 }
