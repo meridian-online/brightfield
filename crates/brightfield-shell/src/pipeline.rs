@@ -37,7 +37,8 @@ use brightfield_engine::{
     assemble_batches, DeclinedMark, Engine, NavigationExtent, RowsAudience, ScanTally, Session,
 };
 use brightfield_render::axis::{
-    axis_kind, axis_scale_word, tick_count_applies, tick_format_crosses_axis, AxisKind,
+    axis_kind, axis_scale_word, tick_count_applies, tick_format_applies, tick_format_crosses_axis,
+    AxisKind,
 };
 use brightfield_render::canvas_host::SurfaceRect;
 use brightfield_render::channel::{Channel, ChannelMap};
@@ -2642,7 +2643,9 @@ fn compose_from_results(
 }
 
 /// The warnings for a plot's tick formats that sit on an axis of the other kind:
-/// a number format on a date axis, a date format on a number axis.
+/// a number format on a date axis, a date format on a number axis. A format of
+/// either kind on an axis of names is no kind's to cross and is named by
+/// [`inert_axis_instructions`], through [`tick_format_applies`].
 ///
 /// Known here, where the data has typed the scales, and asked of
 /// [`tick_format_crosses_axis`], the same judge the axis draws through, so a
@@ -2692,15 +2695,17 @@ fn crossed_tick_formats(
 
 /// The warnings for a plot's axis instructions that the axis they meet does not
 /// act on: `xZero`, `xNice` or `xTicks` (and the `y` of each) on an axis that
-/// does not follow it, and any x or y axis instruction (`xZero`, `xNice`,
-/// `xTicks`, `xTickFormat`, `xGrid`, `xReverse`, the bare `grid`) on a plot with
-/// a map projection, whose x and y are no axis.
+/// does not follow it, `xTickFormat` (and `yTickFormat`) of either kind on an
+/// axis of names, and any x or y axis instruction (`xZero`, `xNice`, `xTicks`,
+/// `xTickFormat`, `xGrid`, `xReverse`, the bare `grid`) on a plot with a map
+/// projection, whose x and y are no axis.
 ///
 /// Known here, where the data has typed the scales, and asked of the judges the
 /// draw goes through ([`axis_ends_apply`], [`tick_count_applies`],
-/// [`axis_keys_apply`]), so an instruction the draw drops is an instruction
-/// that was named
+/// [`tick_format_applies`], [`axis_keys_apply`]), so an instruction the draw
+/// drops is an instruction that was named
 /// (`an_instruction_an_axis_takes_none_of_is_named_and_the_plot_draws_without_it`,
+/// `a_tick_format_on_an_axis_of_names_is_named_and_the_names_are_drawn`,
 /// `a_projected_plots_axis_keys_are_named_and_the_map_draws_without_them`).
 /// A key set to `false`, or to a value the resolvers read as no request, is no
 /// instruction and says nothing. A plot with a projection says each key once,
@@ -2756,6 +2761,7 @@ fn inert_axis_instructions(
                 (zero.0, zero.1, axis_ends_apply(scale)),
                 (nice.0, nice.1, axis_ends_apply(scale)),
                 (ticks.0, ticks.1, tick_count_applies(scale)),
+                (format.0, format.1, tick_format_applies(scale)),
             ] {
                 if set && !applies {
                     out.push(ParseWarning::AxisAttributeOnWrongAxis {

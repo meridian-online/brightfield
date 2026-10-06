@@ -87,7 +87,8 @@ pub enum AxisKind {
     /// A timestamp axis, or a band of calendar days: dates, and a
     /// d3-time-format specifier.
     Date,
-    /// A band of names. It takes no format, as it never has.
+    /// A band of names. It takes no format, and a plot that sets one is told so
+    /// ([`tick_format_applies`]).
     Category,
 }
 
@@ -168,11 +169,32 @@ fn day_categories(categories: &[String]) -> Option<Vec<i64>> {
     categories.iter().map(|c| iso_date_micros(c)).collect()
 }
 
+/// Whether the axis `scale` draws has text a plot's `xTickFormat` /
+/// `yTickFormat` can set: a number axis (linear, log or symlog) and a date axis
+/// (a time scale, or a band of calendar days). A band of names prints its names,
+/// whatever format is asked of it and whether or not the names read as numbers,
+/// so a format on one changes nothing, and Mosaic's own band axis prints the
+/// names too.
+///
+/// The composition warns through it, as through [`tick_count_applies`], and
+/// `tick_format_applies_where_the_ticks_follow_a_format` holds it to
+/// [`compute_ticks_formatted`] by drawing each kind of scale under a number
+/// format and a date format.
+#[must_use]
+pub fn tick_format_applies(scale: &Scale) -> bool {
+    matches!(
+        axis_kind(scale),
+        Some(AxisKind::Number | AxisKind::Date)
+    )
+}
+
 /// Whether `format` is a kind the axis `scale` draws cannot take: a number
 /// format on a date axis, or a date format on a number axis. It is the one judge
 /// the axis draws through and the composition warns through, so a format the axis
-/// drops is a format that was named. An axis of names, and a colour ramp, cross
-/// nothing: neither has ever taken a format, and neither says so.
+/// drops is a format that was named. An axis of names takes a format of neither
+/// kind and is named through [`tick_format_applies`] instead, which says the
+/// format changes nothing there rather than that it is the other kind; a colour
+/// ramp draws no positional axis and crosses nothing.
 #[must_use]
 pub fn tick_format_crosses_axis(scale: &Scale, format: &AxisFormat) -> bool {
     matches!(
@@ -1153,7 +1175,8 @@ mod tests {
 
     /// A band axis prints its categories and a time axis its seconds, whatever
     /// number format the plot names: neither is a number axis. (The plot is told
-    /// so: [`tick_format_crosses_axis`] names a number format on a time axis.)
+    /// so: [`tick_format_crosses_axis`] names a number format on a time axis, and
+    /// [`tick_format_applies`] a format of either kind on a band of names.)
     #[test]
     fn a_band_or_time_axis_ignores_a_number_format() {
         let band = Scale::Band {
@@ -1387,6 +1410,83 @@ mod tests {
                 .count()
                 == 2,
             "the linear and the time axis take the count"
+        );
+    }
+
+    /// The judge the composition warns through is the axis's own behaviour: a
+    /// scale takes a tick format exactly when drawing it under a number format
+    /// or a date format puts different words on its ticks than drawing it under
+    /// none. Each kind of positional scale is drawn all three ways, and a band of
+    /// names is one whose labels read as numbers as well as one whose do not, so
+    /// a scale that learns to take a format, or stops, fails here rather than
+    /// drifting from the warning.
+    #[test]
+    fn tick_format_applies_where_the_ticks_follow_a_format() {
+        let scales = [
+            ("linear", linear(0.0, 1000.0)),
+            (
+                "time",
+                Scale::Time {
+                    domain_min_us: 1_709_301_600_000_000,
+                    domain_max_us: 1_709_301_600_000_000 + 600_000_000,
+                    range_start: 40.0,
+                    range_end: 600.0,
+                },
+            ),
+            (
+                "log",
+                Scale::Log {
+                    domain_min: 1.0,
+                    domain_max: 1_000_000.0,
+                    range_start: 40.0,
+                    range_end: 600.0,
+                },
+            ),
+            (
+                "symlog",
+                Scale::Symlog {
+                    domain_min: -1000.0,
+                    domain_max: 1000.0,
+                    range_start: 40.0,
+                    range_end: 600.0,
+                },
+            ),
+            ("band of names", band(&["north", "south", "east", "west"])),
+            (
+                "band of names that read as numbers",
+                band(&["1", "2", "3", "4"]),
+            ),
+            (
+                "band of days",
+                band(&["2024-03-01", "2024-04-01", "2024-05-01"]),
+            ),
+        ];
+        let number = AxisFormat::Number(NumberFormat::parse(".2f").expect("number"));
+        let month = date("%b");
+        for (name, scale) in &scales {
+            let words = |format: Option<&AxisFormat>| -> Vec<String> {
+                compute_ticks_formatted(scale, 5, format)
+                    .into_iter()
+                    .map(|tick| tick.label)
+                    .collect()
+            };
+            let plain = words(None);
+            let follows_a_format = words(Some(&number)) != plain || words(Some(&month)) != plain;
+            assert_eq!(
+                tick_format_applies(scale),
+                follows_a_format,
+                "{name}: the judge says a format applies = {}, the ticks say {follows_a_format}",
+                tick_format_applies(scale)
+            );
+        }
+        assert_eq!(
+            scales
+                .iter()
+                .filter(|(_, scale)| !tick_format_applies(scale))
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>(),
+            ["band of names", "band of names that read as numbers"],
+            "only a band of names takes no format"
         );
     }
 
