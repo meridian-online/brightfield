@@ -953,12 +953,18 @@ impl Item<ChartDoc> for VersionsPane {
                     } else if n % 2 == 1 {
                         ui.painter().rect_filled(whole, 0.0, stripe);
                     }
-                    let controls = if on {
-                        step_back_controls(ui, whole, &font, &sem)
+                    // The controls are measured before the row's words draw,
+                    // which stop short of them, and placed after, inside the
+                    // row's own box, so placing them does not move the rows
+                    // below.
+                    let geometry = if on {
+                        step_back_geometry(ui, whole, &font)
                     } else {
                         None
                     };
-                    let end = controls.as_ref().map_or(width, |c| c.left - whole.left());
+                    let end = geometry
+                        .as_ref()
+                        .map_or(width, |g| g.button.left() - whole.left());
                     drawn.push(line(
                         ui,
                         [
@@ -968,8 +974,8 @@ impl Item<ChartDoc> for VersionsPane {
                         ],
                         end,
                     ));
-                    if let Some(c) = controls {
-                        step_back = Some((c.button, c.clicked));
+                    if let Some(g) = geometry {
+                        step_back = Some(step_back_controls(ui, &g, &font, &sem));
                     }
                     n += 1;
                 }
@@ -987,78 +993,79 @@ impl Item<ChartDoc> for VersionsPane {
     }
 }
 
-/// What [`step_back_controls`] drew at the end of the cursor's row.
-struct StepBackControls {
+/// Where the Step back control and its key chip go at the end of a row.
+struct StepBackGeometry {
     /// The Step back control's box.
     button: egui::Rect,
-    /// Whether it was clicked this frame.
-    clicked: bool,
-    /// The left edge of the two controls, which the row's text stops short of.
-    left: f32,
+    /// The key chip's box.
+    chip: egui::Rect,
+    /// The key the registry binds `step-back-to-version` to, as a sentence
+    /// says it.
+    key: &'static str,
 }
 
-/// **The Step back control and the key that does the same**, at the trailing
-/// end of the cursor's row `row`: a button reading [`STEP_BACK`] and, after
-/// it, a chip with the key the registry binds `step-back-to-version` to.
-fn step_back_controls(
-    ui: &mut egui::Ui,
+/// **Where the Step back control and the key that does the same go**, at the
+/// trailing end of the cursor's row `row`: a button reading [`STEP_BACK`] and,
+/// after it, a chip with the key the registry binds `step-back-to-version` to.
+/// `None` where the verb has no key, so the row prints no chip naming one.
+fn step_back_geometry(
+    ui: &egui::Ui,
     row: egui::Rect,
     font: &egui::FontId,
-    sem: &meridian_design::Semantic,
-) -> Option<StepBackControls> {
+) -> Option<StepBackGeometry> {
     let key = Verb::new(STEP_BACK_VERB).keys().map(key_word)?;
-    let galley = |ui: &egui::Ui, text: &str| {
+    let galley = |text: &str| {
         ui.painter()
             .layout_no_wrap(text.to_string(), font.clone(), egui::Color32::WHITE)
             .size()
     };
     let height = ROW_HEIGHT - 4.0;
-    let chip_size = egui::vec2(galley(ui, key).x + 2.0 * CONTROL_PAD, height);
-    let button_size = egui::vec2(galley(ui, STEP_BACK).x + 2.0 * CONTROL_PAD, height);
+    let top = row.center().y - height / 2.0;
+    let chip_size = egui::vec2(galley(key).x + 2.0 * CONTROL_PAD, height);
+    let button_size = egui::vec2(galley(STEP_BACK).x + 2.0 * CONTROL_PAD, height);
     let chip = egui::Rect::from_min_size(
-        egui::pos2(
-            row.right() - RIGHT_PAD - chip_size.x,
-            row.center().y - height / 2.0,
-        ),
+        egui::pos2(row.right() - RIGHT_PAD - chip_size.x, top),
         chip_size,
     );
     let button = egui::Rect::from_min_size(
-        egui::pos2(
-            chip.left() - CONTROL_GAP - button_size.x,
-            row.center().y - height / 2.0,
-        ),
+        egui::pos2(chip.left() - CONTROL_GAP - button_size.x, top),
         button_size,
     );
+    Some(StepBackGeometry { button, chip, key })
+}
+
+/// Draw the Step back control and its key chip where `g` puts them, and answer
+/// the control's box and whether it was clicked this frame.
+fn step_back_controls(
+    ui: &mut egui::Ui,
+    g: &StepBackGeometry,
+    font: &egui::FontId,
+    sem: &meridian_design::Semantic,
+) -> (egui::Rect, bool) {
     let response = ui.put(
-        button,
+        g.button,
         egui::Button::new(
             egui::RichText::new(STEP_BACK)
                 .font(font.clone())
                 .color(chrome::colour(sem.text.primary)),
         )
         .corner_radius(0.0)
-        .min_size(button_size),
+        .min_size(g.button.size()),
     );
-    let clicked = response.clicked();
-    let button = response.rect;
     ui.painter().rect_stroke(
-        chip,
+        g.chip,
         0.0,
         egui::Stroke::new(1.0, chrome::colour(sem.borders.subtle)),
         egui::StrokeKind::Inside,
     );
     ui.painter().text(
-        chip.center(),
+        g.chip.center(),
         egui::Align2::CENTER_CENTER,
-        key,
+        g.key,
         font.clone(),
         chrome::colour(sem.text.secondary),
     );
-    Some(StepBackControls {
-        button,
-        clicked,
-        left: button.left(),
-    })
+    (response.rect, response.clicked())
 }
 
 /// The registry's verb for a step back, whose key the cursor's row prints.

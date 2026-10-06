@@ -107,16 +107,6 @@ struct Session {
 
 impl Session {
     fn open(name: &str) -> Self {
-        Self::build(name, false)
-    }
-
-    /// A window as a capture draws it: no shelf band, which is authoring chrome
-    /// a picture of the dashboard leaves out.
-    fn open_for_capture(name: &str) -> Self {
-        Self::build(name, true)
-    }
-
-    fn build(name: &str, for_capture: bool) -> Self {
         let root = TempDir::new(name);
         let folder = root.0.join("data");
         std::fs::create_dir_all(&folder).expect("the data file's folder");
@@ -125,11 +115,8 @@ impl Session {
         let boot = Boot::data_file(data.to_str().expect("utf-8 path"))
             .unwrap_or_else(|e| panic!("open {}: {e}", data.display()));
         let history_root = root.0.join(".arcform").join("history");
-        let mut app = MeridianApp::headless(boot, Mode::Light);
-        if for_capture {
-            app.set_shelf_band_drawn(false);
-        }
-        let app = app.keeping_history(Some(HistoryStore::At(history_root.clone())));
+        let app = MeridianApp::headless(boot, Mode::Light)
+            .keeping_history(Some(HistoryStore::At(history_root.clone())));
         let mut session = Self {
             app,
             ctx: egui::Context::default(),
@@ -784,7 +771,10 @@ fn a_version_that_does_not_load_is_not_drawn_and_the_window_says_why() {
 /// the same files and store, so the picture is of what the probe was read to
 /// hold.
 fn capture_the_cursor(mode: Mode, name: &str) -> image::RgbaImage {
-    let mut probe = Session::open_for_capture("baseline");
+    // The probe draws the shelf band, whose Outline chips put the column its
+    // second Save writes; the frames replayed after the Saves touch only the
+    // ledger rail, which the band does not move.
+    let mut probe = Session::open("baseline");
     probe.save();
     probe.put("median_income", ShelfChannel::X);
     probe.save();
