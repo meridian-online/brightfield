@@ -208,6 +208,29 @@ fn attribute_word(key: &str) -> String {
     out
 }
 
+/// What a plot draws for an attribute it carries no key for, where that is
+/// worth saying: a positional scale with no `xScale` or `yScale` is linear, so
+/// switching it to log reads `linear → log` and not `log added`.
+fn attribute_default(key: &str) -> Option<&'static str> {
+    matches!(key, "xScale" | "yScale").then_some("linear")
+}
+
+/// Which marks a channel change was on, as the words that follow the channel:
+/// nothing for the marks from the first up (one change made to a plot's channel
+/// reaches its marks, so it is said once), and the places of the marks
+/// otherwise, `on mark 2`, `on marks 1 and 3`.
+fn marks_words(marks: &[usize]) -> String {
+    if marks.iter().copied().eq(0..marks.len()) {
+        return String::new();
+    }
+    let places: Vec<String> = marks.iter().map(|m| (m + 1).to_string()).collect();
+    match places.as_slice() {
+        [] => String::new(),
+        [one] => format!(" on mark {one}"),
+        [init @ .., last] => format!(" on marks {} and {last}", init.join(", ")),
+    }
+}
+
 /// One value's move: `a → b`, `b added` where the chart carried none before,
 /// and `a removed` where it carries none after.
 fn move_words(word: &str, before: Option<&str>, after: Option<&str>) -> String {
@@ -228,15 +251,38 @@ fn lines_words(lines: usize) -> String {
     }
 }
 
+/// One change as it is said: where it was made and the words for it.
+enum Said<'a> {
+    /// A channel's change, held with the marks it was made on until the run is
+    /// read through, because the same move on a plot's marks is one change.
+    Channel {
+        plot: &'a str,
+        channel: &'a str,
+        before: Option<&'a str>,
+        after: Option<&'a str>,
+        marks: Vec<usize>,
+    },
+    /// Anything else, already in words.
+    Words { plot: Option<&'a str>, words: String },
+}
+
 /// **What changed, in the shelf's words**, led by the tile each change was made
 /// on: `Map · colour: median_house_value added`, `median_income · y scale:
 /// linear → log`.
 ///
 /// `tile_of` names the tile a plot path draws, from the document the panel
 /// belongs to. The tile is said once for a run of changes on it and again where
-/// the next change is on another tile. A change on a mark past the first names
-/// the mark, `x axis on mark 2`, so two marks' channels are not one row's
-/// words.
+/// the next change is on another tile.
+///
+/// **One gesture is one change.** A column put on x reaches every mark of the
+/// plot, and the store lists the move once per mark; the same move on several
+/// marks of one plot is said once, as the shelf says it. A change on a mark
+/// the others did not share names the mark, `x axis on mark 2`, so two marks'
+/// channels are not one row's words. What the fold cannot see is a plot's marks
+/// that did not change: marks 1 and 2 of a plot of three read as the plot's.
+///
+/// A positional scale with no key reads as linear, so a switch to log reads
+/// `y scale: linear → log` whether or not the chart carried `linear` before.
 ///
 /// A change outside the channels reads [`EDITED_OUTSIDE`] and its count of
 /// lines, and follows the named changes: a version carrying both says both.
@@ -245,10 +291,9 @@ pub fn change_words(changes: &[ChartChange], tile_of: &dyn Fn(&str) -> String) -
     if changes.is_empty() {
         return NOTHING_CHANGED.to_string();
     }
-    let mut parts: Vec<String> = Vec::new();
-    let mut tile: Option<&str> = None;
+    let mut said: Vec<Said<'_>> = Vec::new();
     for change in changes {
-        let (plot, words) = match change {
+        match change {
             ChartChange::Channel {
                 plot,
                 mark,
@@ -256,28 +301,81 @@ pub fn change_words(changes: &[ChartChange], tile_of: &dyn Fn(&str) -> String) -
                 before,
                 after,
             } => {
-                let mut word = channel_word(channel);
-                if *mark > 0 {
-                    word = format!("{word} on mark {}", mark + 1);
+                let same = said.iter_mut().find_map(|s| match s {
+                    Said::Channel {
+                        plot: p,
+                        channel: c,
+                        before: b,
+                        after: a,
+                        marks,
+                    } if *p == plot.as_str()
+                        && *c == channel.as_str()
+                        && *b == before.as_deref()
+                        && *a == after.as_deref() =>
+                    {
+                        Some(marks)
+                    }
+                    _ => None,
+                });
+                match same {
+                    Some(marks) => {
+                        if !marks.contains(mark) {
+                            marks.push(*mark);
+                        }
+                    }
+                    None => said.push(Said::Channel {
+                        plot,
+                        channel,
+                        before: before.as_deref(),
+                        after: after.as_deref(),
+                        marks: vec![*mark],
+                    }),
                 }
-                (
-                    Some(plot.as_str()),
-                    move_words(&word, before.as_deref(), after.as_deref()),
-                )
             }
             ChartChange::PlotAttribute {
                 plot,
                 key,
                 before,
                 after,
-            } => (
-                Some(plot.as_str()),
-                move_words(&attribute_word(key), before.as_deref(), after.as_deref()),
-            ),
-            ChartChange::EditedOutsideChannels { lines } => (
-                None,
-                format!("{EDITED_OUTSIDE} \u{b7} {}", lines_words(*lines)),
-            ),
+            } => {
+                let default = attribute_default(key);
+                let (before, after) = (before.as_deref(), after.as_deref());
+                // The default fills an absent side only where the other side
+                // is a different value: `None` to `linear` is a key written, not
+                // a move.
+                let (before, after) = match (before, after, default) {
+                    (None, Some(a), Some(d)) if a != d => (Some(d), Some(a)),
+                    (Some(b), None, Some(d)) if b != d => (Some(b), Some(d)),
+                    _ => (before, after),
+                };
+                said.push(Said::Words {
+                    plot: Some(plot.as_str()),
+                    words: move_words(&attribute_word(key), before, after),
+                });
+            }
+            ChartChange::EditedOutsideChannels { lines } => said.push(Said::Words {
+                plot: None,
+                words: format!("{EDITED_OUTSIDE} \u{b7} {}", lines_words(*lines)),
+            }),
+        }
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    let mut tile: Option<&str> = None;
+    for one in said {
+        let (plot, words) = match one {
+            Said::Channel {
+                plot,
+                channel,
+                before,
+                after,
+                mut marks,
+            } => {
+                marks.sort_unstable();
+                let word = format!("{}{}", channel_word(channel), marks_words(&marks));
+                (Some(plot), move_words(&word, before, after))
+            }
+            Said::Words { plot, words } => (plot, words),
         };
         if let Some(plot) = plot {
             if tile != Some(plot) {
@@ -462,7 +560,20 @@ impl Versions {
         };
         let list = match source.store.versions(&source.file) {
             Ok(list) => list,
-            Err(e) => return Listing::Failed(e.reason().to_string()),
+            Err(e) => {
+                // The chart file's folder is made by its first Save, so before
+                // one the store cannot read the file's versions for want of the
+                // folder. That is an empty history and not a failure. A store
+                // that cannot be opened is a failure still, and says why.
+                let unmade = source
+                    .file
+                    .parent()
+                    .is_some_and(|folder| !folder.as_os_str().is_empty() && !folder.exists());
+                if unmade && source.store.open().is_ok() {
+                    return Listing::Empty;
+                }
+                return Listing::Failed(e.reason().to_string());
+            }
         };
         if list.versions.is_empty() {
             return Listing::Empty;
@@ -801,6 +912,134 @@ mod tests {
         assert_eq!(
             change_words(&changes, &tile),
             "Map \u{b7} y axis on mark 2: a \u{2192} b"
+        );
+    }
+
+    #[test]
+    fn the_same_move_on_every_mark_of_a_plot_is_one_change() {
+        let changes = [
+            channel("root/hconcat[0]", 0, "x", Some("a"), Some("b")),
+            channel("root/hconcat[0]", 1, "x", Some("a"), Some("b")),
+        ];
+        assert_eq!(
+            change_words(&changes, &tile),
+            "Map \u{b7} x axis: a \u{2192} b"
+        );
+    }
+
+    #[test]
+    fn a_fold_sits_where_its_first_change_was_and_leaves_the_others_in_order() {
+        let changes = [
+            channel("root/hconcat[0]", 0, "x", Some("a"), Some("b")),
+            channel("root/hconcat[0]", 0, "y", Some("c"), Some("d")),
+            channel("root/hconcat[0]", 1, "x", Some("a"), Some("b")),
+            channel("root/hconcat[0]", 1, "y", Some("c"), Some("d")),
+        ];
+        assert_eq!(
+            change_words(&changes, &tile),
+            "Map \u{b7} x axis: a \u{2192} b \u{b7} y axis: c \u{2192} d"
+        );
+    }
+
+    #[test]
+    fn moves_that_differ_between_marks_stay_two_changes_and_name_the_later_mark() {
+        let differ_in_the_value = [
+            channel("root/hconcat[0]", 0, "x", Some("a"), Some("b")),
+            channel("root/hconcat[0]", 1, "x", Some("a"), Some("c")),
+        ];
+        assert_eq!(
+            change_words(&differ_in_the_value, &tile),
+            "Map \u{b7} x axis: a \u{2192} b \u{b7} x axis on mark 2: a \u{2192} c"
+        );
+        let differ_in_the_channel = [
+            channel("root/hconcat[0]", 0, "x", Some("a"), Some("b")),
+            channel("root/hconcat[0]", 1, "y", Some("a"), Some("b")),
+        ];
+        assert_eq!(
+            change_words(&differ_in_the_channel, &tile),
+            "Map \u{b7} x axis: a \u{2192} b \u{b7} y axis on mark 2: a \u{2192} b"
+        );
+    }
+
+    #[test]
+    fn the_same_move_on_two_plots_is_not_folded() {
+        let changes = [
+            channel("root/hconcat[0]", 0, "x", Some("a"), Some("b")),
+            channel("root/hconcat[1]", 0, "x", Some("a"), Some("b")),
+        ];
+        assert_eq!(
+            change_words(&changes, &tile),
+            "Map \u{b7} x axis: a \u{2192} b \u{b7} root/hconcat[1] \u{b7} x axis: a \u{2192} b"
+        );
+    }
+
+    #[test]
+    fn a_fold_over_marks_that_skip_the_first_names_them() {
+        let from_the_second = [
+            channel("root/hconcat[0]", 1, "x", Some("a"), Some("b")),
+            channel("root/hconcat[0]", 2, "x", Some("a"), Some("b")),
+        ];
+        assert_eq!(
+            change_words(&from_the_second, &tile),
+            "Map \u{b7} x axis on marks 2 and 3: a \u{2192} b"
+        );
+        let with_a_gap = [
+            channel("root/hconcat[0]", 0, "x", Some("a"), Some("b")),
+            channel("root/hconcat[0]", 2, "x", Some("a"), Some("b")),
+            channel("root/hconcat[0]", 3, "x", Some("a"), Some("b")),
+        ];
+        assert_eq!(
+            change_words(&with_a_gap, &tile),
+            "Map \u{b7} x axis on marks 1, 3 and 4: a \u{2192} b"
+        );
+    }
+
+    fn attribute(key: &str, before: Option<&str>, after: Option<&str>) -> ChartChange {
+        ChartChange::PlotAttribute {
+            plot: "root/hconcat[0]".to_string(),
+            key: key.to_string(),
+            before: before.map(str::to_string),
+            after: after.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_positional_scale_with_no_key_reads_as_linear() {
+        assert_eq!(
+            change_words(&[attribute("yScale", None, Some("log"))], &tile),
+            "Map \u{b7} y scale: linear \u{2192} log"
+        );
+        assert_eq!(
+            change_words(&[attribute("xScale", None, Some("sqrt"))], &tile),
+            "Map \u{b7} x scale: linear \u{2192} sqrt"
+        );
+        assert_eq!(
+            change_words(&[attribute("yScale", Some("log"), None)], &tile),
+            "Map \u{b7} y scale: log \u{2192} linear"
+        );
+    }
+
+    #[test]
+    fn a_scale_key_written_or_taken_out_at_linear_is_not_a_move() {
+        assert_eq!(
+            change_words(&[attribute("yScale", None, Some("linear"))], &tile),
+            "Map \u{b7} y scale: linear added"
+        );
+        assert_eq!(
+            change_words(&[attribute("yScale", Some("linear"), None)], &tile),
+            "Map \u{b7} y scale: linear removed"
+        );
+    }
+
+    #[test]
+    fn an_attribute_with_no_default_worth_saying_reads_added_and_removed() {
+        assert_eq!(
+            change_words(&[attribute("yGrid", None, Some("true"))], &tile),
+            "Map \u{b7} y grid: true added"
+        );
+        assert_eq!(
+            change_words(&[attribute("projectionType", Some("mercator"), None)], &tile),
+            "Map \u{b7} projection type: mercator removed"
         );
     }
 
