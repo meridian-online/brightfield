@@ -64,11 +64,12 @@ use brightfield_spec::analysis::{
 };
 use brightfield_spec::ast::{Component, MarkData, ParamNode, PlotNode, SpaceNode, SpecValue};
 use brightfield_spec::layout::{
-    collect_plot_nodes, grid_switch, placed_plots, plot_label, resolve_axis_ends, resolve_axis_reverse,
-    resolve_colour_pivot, resolve_colour_reverse, resolve_colour_scale_diverging,
-    resolve_colour_scheme_name, resolve_fixed_domains, resolve_grid_lines, resolve_plot_insets,
-    resolve_plot_margins, resolve_plot_stack_offset, resolve_tick_counts, resolve_tick_formats,
-    AxisEnds, AxisFormat, AxisReverse, Rect, StackOffset, TickCounts, TickFormats,
+    collect_plot_nodes, grid_switch, placed_plots, plot_label, resolve_axis_ends,
+    resolve_axis_reverse, resolve_colour_pivot, resolve_colour_reverse,
+    resolve_colour_scale_diverging, resolve_colour_scheme_name, resolve_fixed_domains,
+    resolve_grid_lines, resolve_plot_insets, resolve_plot_margins, resolve_plot_stack_offset,
+    resolve_tick_counts, resolve_tick_formats, AxisEnds, AxisFormat, AxisReverse, Rect,
+    StackOffset, TickCounts, TickFormats,
 };
 use brightfield_spec::vocab::MarkKind;
 use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseOutput, ParseWarning, Spec};
