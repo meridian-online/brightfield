@@ -239,3 +239,46 @@ fn an_axis_attribute_brightfield_reads_says_nothing() {
         );
     }
 }
+
+/// **A scale brightfield does not draw is named in the banner with its key, its
+/// word and the plot that carries it, and the plot draws linear; a scale it
+/// draws raises none.**
+///
+/// `yScale: sqrt` was read as linear in silence, so an analyst saw a picture
+/// that differed from their file and nothing said so. "Draws linear" is read off
+/// the painted scene: the plot paints the same points as the plot without the
+/// key.
+#[test]
+fn a_scale_brightfield_does_not_draw_is_named_and_the_plot_draws_linear() {
+    let unset = compose("");
+    for (attrs, key, word) in [
+        ("yScale: sqrt", "yScale", "sqrt"),
+        ("xScale: pow", "xScale", "pow"),
+    ] {
+        let asked = compose(attrs);
+        assert_eq!(
+            points(&asked),
+            points(&unset),
+            "`{attrs}`: the plot draws linear, as it does without the key"
+        );
+        let lines = said(&asked);
+        assert_eq!(lines.len(), 1, "one line for one scale; got {lines:?}");
+        assert!(
+            lines[0].contains(&format!("`{key}: {word}`"))
+                && lines[0].contains("linear")
+                && lines[0].contains("root (`rotated`)"),
+            "the line names the key, the word, linear and the plot; got {:?}",
+            lines[0]
+        );
+    }
+
+    // The y axis only: the template's `xTicks` already draws its own line on a
+    // non-linear x axis, which is no scale's.
+    for asked in ["yScale: log", "yScale: symlog", "yScale: linear"] {
+        let lines = said(&compose(asked));
+        assert!(
+            lines.is_empty(),
+            "`{asked}` is a scale brightfield draws and raises nothing; got {lines:?}"
+        );
+    }
+}

@@ -405,6 +405,27 @@ mod tests {
         );
     }
 
+    /// A scale the build does not draw is one advisory, headlined by the key the
+    /// author wrote and filed under the plot; it does not block, because the
+    /// plot still draws.
+    #[test]
+    fn dfconf_an_undrawn_scale_is_an_advisory_headlined_by_its_key() {
+        let d = diagnose(
+            "data:\n  t: { file: t.parquet }\nplot:\n  - mark: dot\n    data: { from: t }\n    \
+             x: a\n    y: b\nyScale: sqrt\n",
+        );
+        assert!(d.blocking().is_empty(), "{:?}", d.lines());
+        let advisory = d.advisory();
+        assert_eq!(advisory.len(), 1, "{:?}", d.lines());
+        assert_eq!(advisory[0].wire_name, "yScale");
+        assert_eq!(advisory[0].surface, "plot");
+        assert!(
+            advisory[0].message.contains("`yScale: sqrt`"),
+            "{}",
+            advisory[0].message
+        );
+    }
+
     /// Nine copies of one unrenderable mark are one problem, not nine.
     #[test]
     fn dfconf_repeated_blocker_is_named_once() {

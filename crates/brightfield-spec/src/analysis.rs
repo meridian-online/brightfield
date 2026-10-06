@@ -1378,8 +1378,8 @@ fn validate_interactor_bindings_in(
 /// sets to a scale this build draws, says nothing.
 #[must_use]
 pub fn check_undrawn_scales(spec: &Spec) -> Vec<ParseWarning> {
-    use crate::layout::{collect_plot_nodes, plot_label, plot_scale_key, read_plot_scales_in};
     use crate::layout::PlotAxis;
+    use crate::layout::{collect_plot_nodes, plot_label, plot_scale_key, read_plot_scales_in};
 
     let mut warnings = Vec::new();
     for (path, plot) in collect_plot_nodes(spec) {

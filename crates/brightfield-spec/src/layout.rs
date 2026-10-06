@@ -4041,6 +4041,104 @@ vconcat:
         assert!(resolve_plot_scales_in(&p, &IndexMap::new()).is_linear());
     }
 
+    fn read_scales(attrs: &[(&str, SpecValue)]) -> PlotScaleReadings {
+        read_plot_scales_in(&plot_with(attrs), &IndexMap::new())
+    }
+
+    fn scale_word(word: &str) -> SpecValue {
+        SpecValue::String(word.to_string())
+    }
+
+    /// `yScale: log` reads y as set and log; no `yScale`, and `yScale: linear`,
+    /// both read y as the default linear; and x does not move with y's key.
+    #[test]
+    fn a_y_scale_is_read_as_set_only_when_it_differs_from_the_default() {
+        let log = read_scales(&[("yScale", scale_word("log"))]);
+        assert_eq!(log.y, ScaleReading::Set(ScaleType::Log));
+        assert!(log.y.is_set());
+        assert_eq!(log.y.scale(), ScaleType::Log);
+        assert_eq!(log.x, ScaleReading::Default, "x is unaffected by y's key");
+
+        let none = read_scales(&[]);
+        let linear = read_scales(&[("yScale", scale_word("linear"))]);
+        for (what, reading) in [("no yScale", none), ("yScale: linear", linear)] {
+            assert_eq!(reading.y, ScaleReading::Default, "{what}");
+            assert!(!reading.y.is_set(), "{what} is not the analyst's choice");
+            assert_eq!(reading.y.scale(), ScaleType::Linear, "{what}");
+            assert_eq!(reading.y.undrawn(), None, "{what} carries no word");
+            assert_eq!(reading.x, ScaleReading::Default, "{what}: x is unaffected");
+        }
+    }
+
+    /// A file that sets `xScale: log` and no `yScale` reads x as set and y as
+    /// the default.
+    #[test]
+    fn an_x_scale_set_alone_leaves_y_on_the_default() {
+        let read = read_scales(&[("xScale", scale_word("log"))]);
+        assert_eq!(read.x, ScaleReading::Set(ScaleType::Log));
+        assert!(read.x.is_set());
+        assert_eq!(read.y, ScaleReading::Default);
+        assert!(!read.y.is_set());
+        assert_eq!(read.scales().x, ScaleType::Log);
+        assert_eq!(read.scales().y, ScaleType::Linear);
+    }
+
+    /// `yScale: sqrt`, written literally or through a `$param` holding it,
+    /// reads as the default linear and carries the word `sqrt`; a `$param`
+    /// nobody declared carries no word.
+    #[test]
+    fn an_undrawn_scale_name_reads_as_default_and_carries_the_word() {
+        let literal = read_scales(&[("yScale", scale_word("sqrt"))]);
+        assert_eq!(literal.y.scale(), ScaleType::Linear, "drawn linear");
+        assert!(!literal.y.is_set(), "it reads as the default");
+        assert_eq!(literal.y.undrawn(), Some("sqrt"));
+        assert_eq!(literal.x.undrawn(), None, "x is unaffected by y's key");
+
+        let p = plot_with(&[("yScale", SpecValue::Param(ParamRef::new("s")))]);
+        let mut params = IndexMap::new();
+        params.insert(
+            "s".to_string(),
+            ParamNode::Value(SpecValue::String("sqrt".to_string())),
+        );
+        let through = read_plot_scales_in(&p, &params);
+        assert_eq!(through.y.scale(), ScaleType::Linear);
+        assert!(!through.y.is_set());
+        assert_eq!(through.y.undrawn(), Some("sqrt"));
+
+        let undeclared = read_plot_scales_in(&p, &IndexMap::new());
+        assert_eq!(undeclared.y, ScaleReading::Default);
+        assert_eq!(
+            undeclared.y.undrawn(),
+            None,
+            "no word for a param nobody set"
+        );
+    }
+
+    /// The word is kept as written, for every name `from_wire` refuses: the
+    /// near-misses the degradation test lists, and a wrong-case `LOG`.
+    #[test]
+    fn every_name_from_wire_refuses_is_carried_as_written() {
+        for name in ["band", "sqrt", "LOG", "", "pow"] {
+            let read = read_scales(&[("xScale", scale_word(name))]);
+            assert_eq!(read.x.undrawn(), Some(name), "xScale: {name:?}");
+            assert_eq!(read.x.scale(), ScaleType::Linear, "xScale: {name:?}");
+        }
+    }
+
+    /// The drawn scale is the record's `scales()`: one judge, so a plot cannot
+    /// draw a scale the record did not read.
+    #[test]
+    fn the_resolved_scales_are_the_records_scales() {
+        for (x, y) in [("log", "sqrt"), ("symlog", "linear"), ("pow", "log")] {
+            let p = plot_with(&[("xScale", scale_word(x)), ("yScale", scale_word(y))]);
+            assert_eq!(
+                resolve_plot_scales_in(&p, &IndexMap::new()),
+                read_plot_scales_in(&p, &IndexMap::new()).scales(),
+                "xScale: {x}, yScale: {y}"
+            );
+        }
+    }
+
     /// The resolver reads the axis's key out of the consumed list, so a key
     /// dropped from that list is a key nothing reads.
     #[test]
