@@ -618,6 +618,28 @@ pub enum ParseWarning {
         value: String,
     },
 
+    /// A plot's `xScale` or `yScale` named a scale this build does not draw:
+    /// `sqrt`, `pow`, `band`, a wrong-case `LOG`. The axis draws linear, so the
+    /// picture differs from the file, and this names the key, the word and the
+    /// plot so an author sees why. A lifted `$param` is read through its
+    /// declared value, so a param holding `sqrt` is named as a literal is; a
+    /// `$param` that declares no value names no scale and says nothing.
+    ///
+    /// Raised by analysis, after the whole spec is built, because a `$param`
+    /// cannot be read before `params:` has been parsed and a plot inherits
+    /// `plotDefaults:` only once it is built.
+    /// [`crate::layout::read_plot_scales_in`] is the sole judge, and it is the
+    /// reading the drawn scale is taken from, so a name a later build draws
+    /// narrows this warning in the same edit.
+    UndrawnScale {
+        /// The attribute key, `xScale` or `yScale`.
+        attribute: String,
+        /// The scale name the file asked for, as written.
+        value: String,
+        /// The plot, as [`crate::layout::plot_label`] names one.
+        plot: String,
+    },
+
     /// A plot's `projectionType` carried a value outside Mosaic's
     /// `ProjectionName` vocabulary, or a non-string value. The plot then names
     /// no projection at all — it draws as a cartesian plot — and this names the
@@ -937,6 +959,14 @@ impl fmt::Display for ParseWarning {
             Self::UnreadColourKey { attribute, value } => write!(
                 f,
                 "plot attribute `{attribute}` is `{value}`, which this build does not draw — the plot draws its default colours"
+            ),
+            Self::UndrawnScale {
+                attribute,
+                value,
+                plot,
+            } => write!(
+                f,
+                "plot {plot} sets `{attribute}: {value}`, a scale this build does not draw — the axis draws linear"
             ),
             Self::UnknownProjection { value } => write!(
                 f,
