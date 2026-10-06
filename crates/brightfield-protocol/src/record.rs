@@ -127,6 +127,7 @@ pub fn record_grid_filter(
         name: step_name.to_string(),
         sql: filter.to_pushdown_sql(step_name),
         provenance: filter.provenance(),
+        description: None,
     };
     let (model_path, _validated) = record_step(dir, &step)?;
     Ok(Promotion {

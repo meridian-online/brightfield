@@ -520,3 +520,74 @@ fn a_listing_writes_no_file_under_the_chart_files_folder() {
         "the folder holds the chart file and nothing else"
     );
 }
+
+// ------------------------------------------------------------ a close without saving
+
+/// The unsaved chart is recorded as arcform's unsaved kind, the newest version,
+/// and reads back as the text given; the chart file keeps its bytes.
+#[test]
+fn an_unsaved_chart_is_the_newest_version_of_the_unsaved_kind_and_the_file_keeps_its_bytes() {
+    let scratch = Scratch::new("unsaved_kept");
+    scratch.save("a: 1\n");
+    let on_disk = fs::read(scratch.file()).expect("the chart file");
+
+    brightfield_protocol::record_unsaved(&scratch.store(), &scratch.file(), "a: 2\n")
+        .expect("the unsaved chart is recorded");
+
+    assert_eq!(fs::read(scratch.file()).expect("the chart file"), on_disk);
+    let list = scratch.list();
+    assert_eq!(
+        list.versions.iter().map(|v| v.kind).collect::<Vec<_>>(),
+        [HistoryKind::Unsaved, HistoryKind::Save]
+    );
+    assert_eq!(
+        scratch
+            .store()
+            .read_version(&scratch.file(), &list.versions[0].id)
+            .expect("reads back"),
+        "a: 2\n"
+    );
+}
+
+/// Before a chart file's folder is there, the folder is made empty to key the
+/// version by, and the chart file is not made.
+#[test]
+fn an_unsaved_chart_with_no_folder_yet_makes_the_folder_and_no_file() {
+    let scratch = Scratch::new("unsaved_unmade");
+    let file = scratch.0.join("panels").join("chart.yaml");
+
+    brightfield_protocol::record_unsaved(&scratch.store(), &file, "a: 1\n")
+        .expect("the unsaved chart is recorded");
+
+    assert!(file.parent().expect("a folder").is_dir());
+    assert!(!file.exists(), "the chart file was made");
+    let list = scratch.store().versions(&file).expect("versions list");
+    assert_eq!(list.versions.len(), 1);
+    assert_eq!(list.versions[0].kind, HistoryKind::Unsaved);
+}
+
+/// A record that fails takes away the folder it made, so the data folder is
+/// left as it was.
+#[cfg(unix)]
+#[test]
+fn an_unsaved_chart_that_cannot_be_recorded_takes_away_the_folder_it_made() {
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = Scratch::new("unsaved_refused");
+    let root = scratch.root();
+    fs::create_dir_all(&root).expect("the store's root");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o555)).expect("read-only root");
+    if fs::create_dir(root.join("probe")).is_ok() {
+        eprintln!("this process ignores directory permissions; the record cannot be refused");
+        return;
+    }
+    let file = scratch.0.join("panels").join("chart.yaml");
+
+    let refused = brightfield_protocol::record_unsaved(&scratch.store(), &file, "a: 1\n");
+
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).expect("writable again");
+    assert!(refused.is_err(), "a read-only store took the version");
+    assert!(
+        !file.parent().expect("a folder").exists(),
+        "the folder made to key the version by was left behind"
+    );
+}

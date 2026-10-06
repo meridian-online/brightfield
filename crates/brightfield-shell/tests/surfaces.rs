@@ -1230,12 +1230,13 @@ const UNCHECKED_MODALS: &[(&str, &str)] = &[
         "bf-overlay-close-question",
         "the question a close request raises over a window that carries an \
          unsaved chart edit. It opens from a close request, not a keystroke, \
-         and an OverlayCase opens its overlay with its `key` field and has no \
-         field for a close request, so this harness cannot drive it. It has no \
-         frame either: a design pass for this surface may redraw it, so a \
-         baseline is not committed ahead of that pass. What it has is the \
-         tests that open it by a close request and read its title and its \
-         three answers, not a picture of its own",
+         and an OverlayCase opens its overlay with its `key` field over a \
+         window with no edit to ask about, so this harness cannot drive it. \
+         Its baseline pair, light and dark, is close_question_baseline.rs's: \
+         a window driven by clicks, with the question opened after the script \
+         by capture_png_staged, since no input event carries a close request. \
+         What this harness checks of the others and that pair does not is the \
+         scrim composited over the window and the card's width rung",
     ),
 ];
 

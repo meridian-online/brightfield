@@ -670,6 +670,22 @@ struct Unstep {
     stepped: Option<SteppedBack>,
 }
 
+/// **What a Save writes and what it replaces**: [`ChartDoc::save_text`]'s
+/// answer, which a Save writes and a close without saving records.
+struct SaveText {
+    /// The chart file.
+    target: std::path::PathBuf,
+    /// The text on disk the write replaces: `None` for a chart file not there
+    /// yet.
+    replaced: Option<String>,
+    /// The text the write puts there.
+    text: String,
+}
+
+/// Why a close without saving keeps nothing in a window given no store to keep
+/// versions in, as the close question says it.
+pub const NO_STORE: &str = "this window keeps no versions of its chart";
+
 /// **The saved version the chart was stepped back to, as an unsaved edit.**
 ///
 /// Its text is what Save writes, with the edits held since placed into it as
@@ -693,6 +709,10 @@ struct VersionShown {
     id: String,
     /// When the store recorded it: what the pane header's `as saved` names.
     at: std::time::SystemTime,
+    /// The kind the store recorded it as, which the pane header's `as` names:
+    /// `as saved`, or `as closed unsaved` for the chart a window closed
+    /// without saving.
+    kind: brightfield_protocol::chart_history::HistoryKind,
     /// The page drawn before the cursor moved: its live session and its
     /// composition.
     kept: (LiveDashboard, Composed),
@@ -1476,6 +1496,50 @@ impl ChartDoc {
         name: &str,
         history: Option<&HistoryStore>,
     ) -> Result<Option<NotRecorded>, ChartSaveError> {
+        let Some(SaveText {
+            target,
+            replaced,
+            text: placed,
+        }) = self.save_text(dir, name)?
+        else {
+            return Ok(None);
+        };
+        // Begun after every edit has gone in, so a Save that places nothing
+        // records nothing; the text recorded as replaced is the file's, and a
+        // chart file that is not there yet replaces none.
+        let versions =
+            history.map(|store| ChartVersions::begin(store, &target, replaced.as_deref()));
+        let written =
+            write_panel_text(dir, name, &placed).map_err(|error| ChartSaveError::Write {
+                path: target,
+                error,
+            })?;
+        let not_recorded = versions.and_then(|versions| versions.finish(&placed).err());
+        let path = std::path::absolute(&written).unwrap_or(written);
+        self.pending_edits.clear();
+        self.stepped_back = None;
+        // What the Save wrote is in the file: `u` takes back no edit before it.
+        self.shelf_undo.seal();
+        if self.spec_path.as_deref() == Some(path.as_path()) {
+            // The watch already holds this file; the write was ours.
+            self.watch.note_own_write(&path);
+        } else {
+            self.spec_path = Some(path);
+            self.wire_watch();
+        }
+        Ok(not_recorded)
+    }
+
+    /// **What a Save of this document beside the Protocol in `dir` would
+    /// write**, and the text on disk it would replace, read and placed as
+    /// [`Self::save_chart_beside`] reads and places them; this writes no file.
+    /// `None` when a Save would write no file: no chart file, no text to place
+    /// into, and no edit.
+    fn save_text(
+        &self,
+        dir: &std::path::Path,
+        name: &str,
+    ) -> Result<Option<SaveText>, ChartSaveError> {
         let target = panel_file(dir, name);
         let (text, on_disk) = match std::fs::read_to_string(&target) {
             Ok(text) => (text, true),
@@ -1516,30 +1580,40 @@ impl ChartDoc {
                     refusal,
                 })?;
         }
-        // Begun after every edit has gone in, so a Save that places nothing
-        // records nothing; the text recorded as replaced is the file's, and a
-        // chart file that is not there yet replaces none.
-        let versions = history
-            .map(|store| ChartVersions::begin(store, &target, on_disk.then_some(text.as_str())));
-        let written =
-            write_panel_text(dir, name, &placed).map_err(|error| ChartSaveError::Write {
-                path: target,
-                error,
-            })?;
-        let not_recorded = versions.and_then(|versions| versions.finish(&placed).err());
-        let path = std::path::absolute(&written).unwrap_or(written);
-        self.pending_edits.clear();
-        self.stepped_back = None;
-        // What the Save wrote is in the file: `u` takes back no edit before it.
-        self.shelf_undo.seal();
-        if self.spec_path.as_deref() == Some(path.as_path()) {
-            // The watch already holds this file; the write was ours.
-            self.watch.note_own_write(&path);
-        } else {
-            self.spec_path = Some(path);
-            self.wire_watch();
-        }
-        Ok(not_recorded)
+        Ok(Some(SaveText {
+            target,
+            replaced: on_disk.then_some(text),
+            text: placed,
+        }))
+    }
+
+    /// **Keep the chart as a Save would write it, as a version of the chart
+    /// file beside the Protocol in `dir`, and write no chart file**: what a
+    /// close without saving records.
+    ///
+    /// The text is [`Self::save_chart_beside`]'s, read and placed as a Save
+    /// reads and places it, and it is recorded as arcform's unsaved kind
+    /// ([`record_unsaved`](brightfield_protocol::record_unsaved)). The chart
+    /// file and `arcform.yaml` are left as they were, and the document too:
+    /// the edits stay held, for the window that closes over them.
+    ///
+    /// # Errors
+    ///
+    /// Why the chart could not be kept, in the words the close question says
+    /// it in: a window given no store, an edit the text cannot take, a file
+    /// that cannot be read, and a store that does not take the version.
+    pub fn keep_unsaved_beside(
+        &self,
+        dir: &std::path::Path,
+        name: &str,
+        history: Option<&HistoryStore>,
+    ) -> Result<(), String> {
+        let store = history.ok_or_else(|| NO_STORE.to_string())?;
+        let Some(save) = self.save_text(dir, name).map_err(|e| e.to_string())? else {
+            return Ok(());
+        };
+        brightfield_protocol::record_unsaved(store, &save.target, &save.text)
+            .map_err(|e| e.reason().to_string())
     }
 
     /// The ledger's Versions panel's state.
@@ -1579,11 +1653,19 @@ impl ChartDoc {
     }
 
     /// The saved version the Versions panel's cursor has drawn in place of the
-    /// chart, by its id, and when the store recorded it: `None` with the chart
-    /// drawn as it is.
+    /// chart, by its id, when the store recorded it, and the kind it recorded
+    /// it as: `None` with the chart drawn as it is.
     #[must_use]
-    pub fn shown_version(&self) -> Option<(&str, std::time::SystemTime)> {
-        self.version_shown.as_ref().map(|v| (v.id.as_str(), v.at))
+    pub fn shown_version(
+        &self,
+    ) -> Option<(
+        &str,
+        std::time::SystemTime,
+        brightfield_protocol::chart_history::HistoryKind,
+    )> {
+        self.version_shown
+            .as_ref()
+            .map(|v| (v.id.as_str(), v.at, v.kind))
     }
 
     /// **What each tile is called, by the path of the plot it draws**: the
@@ -2163,7 +2245,7 @@ impl ChartDoc {
             return false;
         };
         match self.versions.read_version(&row.id) {
-            Ok(text) => self.show_version(&row.id, row.at, &text),
+            Ok(text) => self.show_version(&row.id, row.at, row.recorded, &text),
             Err(why) => {
                 self.refuse_version(why);
                 false
@@ -2171,10 +2253,16 @@ impl ChartDoc {
         }
     }
 
-    /// Draw the chart as the version `id`, recorded `at` with `text`, keeping
-    /// the page drawn before the cursor first moved. See
+    /// Draw the chart as the version `id`, recorded `at` as `kind` with `text`,
+    /// keeping the page drawn before the cursor first moved. See
     /// [`Self::move_version_cursor`].
-    fn show_version(&mut self, id: &str, at: std::time::SystemTime, text: &str) -> bool {
+    fn show_version(
+        &mut self,
+        id: &str,
+        at: std::time::SystemTime,
+        kind: brightfield_protocol::chart_history::HistoryKind,
+        text: &str,
+    ) -> bool {
         self.drop_shelf_preview();
         if self.version_shown.as_ref().is_some_and(|v| v.id == id) {
             return true;
@@ -2202,6 +2290,7 @@ impl ChartDoc {
                 self.version_shown = Some(VersionShown {
                     id: id.to_string(),
                     at,
+                    kind,
                     kept,
                 });
                 // A refusal named the version drawn before this one.
@@ -2251,10 +2340,10 @@ impl ChartDoc {
     /// why as [`Self::move_version_cursor`] does. Returns whether it stepped
     /// back.
     pub fn step_back_to_cursor(&mut self) -> bool {
-        let Some((id, at)) = self
+        let Some((id, at, kind)) = self
             .versions
             .cursor_row()
-            .map(|(_, row)| (row.id.clone(), row.at))
+            .map(|(_, row)| (row.id.clone(), row.at, row.recorded))
         else {
             return false;
         };
@@ -2265,7 +2354,7 @@ impl ChartDoc {
                 return false;
             }
         };
-        if !self.show_version(&id, at, &text) {
+        if !self.show_version(&id, at, kind, &text) {
             return false;
         }
         let Some(shown) = self.version_shown.take() else {
@@ -2273,7 +2362,8 @@ impl ChartDoc {
         };
         let before = shown.kept.0.spec().clone();
         let words = format!(
-            "stepped back to the version saved at {}",
+            "stepped back to the version {} at {}",
+            crate::versions::as_words(kind),
             self.versions.time_words(at)
         );
         let unstep = Unstep {

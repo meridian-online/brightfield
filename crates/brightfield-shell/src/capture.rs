@@ -170,6 +170,42 @@ pub fn capture_png_prepared(
     script: Vec<Vec<egui::Event>>,
     prepare: impl FnOnce(&mut MeridianApp),
 ) -> Result<(u32, u32), String> {
+    capture_png_staged(
+        boot,
+        layout,
+        mode,
+        scale,
+        size,
+        out,
+        script,
+        prepare,
+        |_| {},
+    )
+}
+
+/// [`capture_png_prepared`] with `after` handed the window once its script has
+/// run, before the frames that settle it and the one photographed.
+///
+/// For a capture whose picture is reached by something a script of input
+/// events cannot carry: a close request is the operating system's, raised in
+/// the viewport's input and not as an event, so a baseline of the question it
+/// opens drives the window's edits by the script and opens the question here,
+/// through [`MeridianApp::ask_before_closing`], the entry the request reaches.
+///
+/// # Errors
+/// As [`capture_png`].
+#[allow(clippy::too_many_arguments)]
+pub fn capture_png_staged(
+    boot: Boot,
+    layout: brightfield_workbench::SavedLayout,
+    mode: Mode,
+    scale: f32,
+    size: (f32, f32),
+    out: &Path,
+    script: Vec<Vec<egui::Event>>,
+    prepare: impl FnOnce(&mut MeridianApp),
+    after: impl FnOnce(&mut MeridianApp),
+) -> Result<(u32, u32), String> {
     let (device, queue) = headless_device()?;
     let target_format = wgpu::TextureFormat::Rgba8Unorm;
     let egui_renderer = new_egui_renderer(&device, target_format);
@@ -188,6 +224,11 @@ pub fn capture_png_prepared(
     let ctx = egui::Context::default();
     let screen = egui::vec2(win_w, win_h);
 
+    // The warm-up frame and the script's run first; `after` comes before the
+    // frame that follows them, the first of the settle frames.
+    let scripted = script.len() + 1;
+    let mut drawn = 0usize;
+    let mut after = Some(after);
     let full = run_ui_frames(
         &ctx,
         &egui_renderer,
@@ -197,6 +238,12 @@ pub fn capture_png_prepared(
         scale,
         script,
         |ui| {
+            if drawn == scripted {
+                if let Some(after) = after.take() {
+                    after(&mut app);
+                }
+            }
+            drawn += 1;
             app.draw(ui);
         },
     );

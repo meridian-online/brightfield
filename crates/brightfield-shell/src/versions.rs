@@ -324,11 +324,47 @@ enum Said<'a> {
 ///
 /// A change outside the channels reads [`EDITED_OUTSIDE`] and its count of
 /// lines, and follows the named changes: a version carrying both says both.
+///
+/// The changes one at a time are [`change_lines`], which this joins.
 #[must_use]
 pub fn change_words(changes: &[ChartChange], tile_of: &dyn Fn(&str) -> String) -> String {
     if changes.is_empty() {
         return NOTHING_CHANGED.to_string();
     }
+    let mut parts: Vec<String> = Vec::new();
+    let mut tile: Option<&str> = None;
+    for (plot, words) in said_changes(changes) {
+        if let Some(plot) = plot {
+            if tile != Some(plot) {
+                parts.push(tile_of(plot));
+                tile = Some(plot);
+            }
+        }
+        parts.push(words);
+    }
+    parts.join(" \u{b7} ")
+}
+
+/// **Each change on a line of its own, in the shelf's words**, led by the tile
+/// it was made on: `Map · x axis: longitude → median_income`. The changes are
+/// the ones [`change_words`] says and in its order, folded the same way, so a
+/// column put on x reads as one line whatever the marks it reached; a change
+/// outside the channels is a line with no tile. What the close question lists
+/// the unsaved edits by. No change is no line.
+#[must_use]
+pub fn change_lines(changes: &[ChartChange], tile_of: &dyn Fn(&str) -> String) -> Vec<String> {
+    said_changes(changes)
+        .into_iter()
+        .map(|(plot, words)| match plot {
+            Some(plot) => format!("{} \u{b7} {words}", tile_of(plot)),
+            None => words,
+        })
+        .collect()
+}
+
+/// The changes as they are said, one entry per gesture: the plot each was made
+/// on, where it was made on one, and its words.
+fn said_changes(changes: &[ChartChange]) -> Vec<(Option<&str>, String)> {
     let mut said: Vec<Said<'_>> = Vec::new();
     for change in changes {
         match change {
@@ -398,10 +434,8 @@ pub fn change_words(changes: &[ChartChange], tile_of: &dyn Fn(&str) -> String) -
         }
     }
 
-    let mut parts: Vec<String> = Vec::new();
-    let mut tile: Option<&str> = None;
-    for one in said {
-        let (plot, words) = match one {
+    said.into_iter()
+        .map(|one| match one {
             Said::Channel {
                 plot,
                 channel,
@@ -414,16 +448,8 @@ pub fn change_words(changes: &[ChartChange], tile_of: &dyn Fn(&str) -> String) -
                 (Some(plot), move_words(&word, before, after))
             }
             Said::Words { plot, words } => (plot, words),
-        };
-        if let Some(plot) = plot {
-            if tile != Some(plot) {
-                parts.push(tile_of(plot));
-                tile = Some(plot);
-            }
-        }
-        parts.push(words);
-    }
-    parts.join(" \u{b7} ")
+        })
+        .collect()
 }
 
 /// A version's *what changed*: [`FIRST_KEPT`] for the oldest, and
@@ -436,12 +462,31 @@ pub fn version_words(change: &VersionChange, tile_of: &dyn Fn(&str) -> String) -
     }
 }
 
-/// A version's *kind*: `saved` for a save, and `before a write` for the text
-/// the store recorded before a write replaced it.
+/// A version's *kind*: `saved` for a save, `before a write` for the text the
+/// store recorded before a write replaced it, and [`CLOSED_UNSAVED`] for the
+/// chart a window closed without saving.
 fn kind_words(kind: HistoryKind) -> &'static str {
     match kind {
         HistoryKind::Save => "saved",
         HistoryKind::Checkpoint => "before a write",
+        HistoryKind::Unsaved => CLOSED_UNSAVED,
+    }
+}
+
+/// What the *kind* column reads for the chart a window closed without saving,
+/// arcform's unsaved kind: the text Save would have written, never written to
+/// the chart file.
+pub const CLOSED_UNSAVED: &str = "closed unsaved";
+
+/// **How a version drawn in place of the chart is named after `as`**, in the
+/// pane header and the status band: [`CLOSED_UNSAVED`] for the chart a window
+/// closed without saving, and `saved` for any other, which is a text the chart
+/// file held.
+#[must_use]
+pub fn as_words(kind: HistoryKind) -> &'static str {
+    match kind {
+        HistoryKind::Unsaved => CLOSED_UNSAVED,
+        HistoryKind::Save | HistoryKind::Checkpoint => "saved",
     }
 }
 
@@ -456,6 +501,8 @@ pub struct Row {
     pub id: String,
     /// When the store recorded the version.
     pub at: SystemTime,
+    /// The kind the store recorded it as.
+    pub recorded: HistoryKind,
     /// The *when* column.
     pub when: String,
     /// The *kind* column.
@@ -728,9 +775,9 @@ impl Versions {
         let list = match source.store.versions(&source.file) {
             Ok(list) => list,
             Err(e) => {
-                // The chart file's folder is made by its first Save, so before
-                // one the store cannot read the file's versions for want of the
-                // folder. That is an empty history and not a failure. A store
+                // The chart file's folder is made by its first Save, or by a
+                // close without saving, so before either the store cannot read
+                // the file's versions for want of the folder. That is an empty history and not a failure. A store
                 // that cannot be opened is a failure still, and says why.
                 let unmade = source
                     .file
@@ -751,6 +798,7 @@ impl Versions {
             .map(|v| Row {
                 id: v.id.clone(),
                 at: v.at,
+                recorded: v.kind,
                 when: when_words(v.at, &self.clock),
                 kind: kind_words(v.kind).to_string(),
                 changed: version_words(&v.change, tile_of),

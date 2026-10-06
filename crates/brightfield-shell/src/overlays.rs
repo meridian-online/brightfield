@@ -727,56 +727,205 @@ impl PickerDelegate for ArgPrompt {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CloseAnswer {
     /// Write the chart as the Save verb does, then close.
-    Save,
-    /// Close without writing anything.
-    Discard,
+    SaveAndClose,
+    /// Close without writing the chart file, keeping the chart as a Save would
+    /// have written it as a version of the file, which the Versions panel
+    /// lists as `closed unsaved`. When it cannot be kept the window stays and
+    /// says why, and the same answer given again closes with nothing kept.
+    CloseWithoutSaving,
     /// Stay: the window as it was, the edit still drawn and the mark still
     /// in the title.
-    Cancel,
+    KeepEditing,
 }
 
 /// The headline of the question, the title row of its card.
-pub const CLOSE_QUESTION_TITLE: &str = "Close with an unsaved chart edit?";
+pub const CLOSE_QUESTION_TITLE: &str = "Save the chart before closing?";
 
-/// The one line of the question's body.
-pub const CLOSE_QUESTION_BODY: &str = "This window holds a chart edit that has not been saved.";
-
-/// The label of each answer, in the order they are drawn.
-pub const CLOSE_ANSWERS: [(CloseAnswer, &str); 3] = [
-    (CloseAnswer::Save, "Save"),
-    (CloseAnswer::Discard, "Discard"),
-    (CloseAnswer::Cancel, "Cancel"),
+/// Each answer, its label and the key beside it, in the order they are drawn:
+/// Enter, D and Esc. The keys are the accepted design's and provisional.
+pub const CLOSE_ANSWERS: [(CloseAnswer, &str, &str); 3] = [
+    (CloseAnswer::SaveAndClose, "Save and close", "Enter"),
+    (CloseAnswer::CloseWithoutSaving, "Close without saving", "D"),
+    (CloseAnswer::KeepEditing, "Keep editing", "Esc"),
 ];
+
+/// How many rows the list of unsaved edits takes at most: the two the accepted
+/// frame draws, so the card is no taller with more edits than it is there.
+/// Past them, the last row counts the edits not listed.
+pub const CLOSE_LIST_ROWS: usize = 2;
+
+/// **What the close question says**: the chart file it is about, the unsaved
+/// edits in the shelf's words, and, once a close without saving could not keep
+/// the chart, why.
+///
+/// Built once when the question opens, because reading the edits reads the
+/// chart file; the question is modal, so they cannot change while it is up.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CloseQuestion {
+    /// The chart file, as the window names it: relative to the Protocol's
+    /// folder, `panels/california_housing.yaml`.
+    pub file: String,
+    /// Each unsaved edit in the shelf's words, led by its tile, as the
+    /// Versions panel words a change: `Map · x axis: longitude →
+    /// median_income`.
+    pub edits: Vec<String>,
+    /// Why a close without saving could not keep the chart, once one has been
+    /// tried: the next one closes with nothing kept.
+    pub not_kept: Option<String>,
+    /// The answer that held the keyboard focus when the card last drew, which
+    /// Enter gives: `None` before the card has drawn.
+    pub focused: Option<CloseAnswer>,
+}
+
+impl CloseQuestion {
+    /// The line under the title: the file and how many edits are not saved.
+    #[must_use]
+    pub fn headline(&self) -> String {
+        match self.edits.len() {
+            0 => format!("{} holds a chart edit that is not saved.", self.file),
+            1 => format!("{} has 1 chart edit that is not saved.", self.file),
+            n => format!("{} has {n} chart edits that are not saved.", self.file),
+        }
+    }
+
+    /// The rows of the list: the edits themselves when they fit in
+    /// [`CLOSE_LIST_ROWS`], and otherwise the first edits and a last row that
+    /// counts the rest, so the edits listed and the count add up to
+    /// [`Self::edits`].
+    #[must_use]
+    pub fn listed(&self) -> Vec<String> {
+        let n = self.edits.len();
+        if n <= CLOSE_LIST_ROWS {
+            return self.edits.clone();
+        }
+        let shown = CLOSE_LIST_ROWS - 1;
+        let rest = n - shown;
+        let mut rows = self.edits[..shown].to_vec();
+        rows.push(format!(
+            "and {rest} more {}",
+            if rest == 1 { "edit" } else { "edits" }
+        ));
+        rows
+    }
+
+    /// What closing without saving keeps, or, once it could not keep the
+    /// chart, that it could not and why.
+    #[must_use]
+    pub fn keeps(&self) -> String {
+        match &self.not_kept {
+            Some(why) => format!(
+                "The chart could not be kept as a version: {why}. \
+                 Close without saving again to close with nothing kept."
+            ),
+            None if self.edits.len() > 1 => {
+                "Closing without saving keeps these as a version you can step back to.".to_string()
+            }
+            None => {
+                "Closing without saving keeps it as a version you can step back to.".to_string()
+            }
+        }
+    }
+}
+
+/// **The answer typed this frame**, read before the card draws: D, with or
+/// without shift, is *Close without saving*, and Enter is *Save and close*
+/// unless another answer holds the focus, whose button then takes the Enter
+/// itself. Esc is the card's own dismissal, which the host reads as *Keep
+/// editing*.
+///
+/// Enter is read here and not left to the focused button, because on the frame
+/// the question opens no answer holds the focus yet, and a widget under the
+/// card may.
+pub fn close_question_keys(ctx: &egui::Context, question: &CloseQuestion) -> Option<CloseAnswer> {
+    let d = ctx.input_mut(|i| {
+        i.consume_key(egui::Modifiers::NONE, egui::Key::D)
+            || i.consume_key(egui::Modifiers::SHIFT, egui::Key::D)
+    });
+    if d {
+        return Some(CloseAnswer::CloseWithoutSaving);
+    }
+    let enter_saves = matches!(question.focused, None | Some(CloseAnswer::SaveAndClose));
+    (enter_saves && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)))
+        .then_some(CloseAnswer::SaveAndClose)
+}
 
 /// Draw the body of the close question and report the answer clicked, if any.
 ///
 /// The body of a [`ModalLayer`](meridian_egui::ModalLayer) card the host
-/// draws: this owns the words and the three buttons, and the host owns what an
-/// answer does. Escape and a click on the backdrop are the layer's own
-/// dismissal, which the host reads as [`CloseAnswer::Cancel`].
+/// draws: this owns the words and the three answers, each with its key in a
+/// chip beside it, and the host owns what an answer does. The card has no
+/// footer, because each answer carries its key.
 ///
-/// Save takes the keyboard focus while nothing else holds it, so enter
-/// answers the question the way the least destructive button does; a tab to
-/// another button moves it and enter then answers that one.
-pub fn close_question_body(ui: &mut egui::Ui) -> Option<CloseAnswer> {
+/// *Save and close* takes the keyboard focus while no answer holds it, so
+/// Enter saves; a tab to another answer moves it and Enter then gives that one.
+/// Which answer holds it is written to [`CloseQuestion::focused`].
+pub fn close_question_body(ui: &mut egui::Ui, question: &mut CloseQuestion) -> Option<CloseAnswer> {
     use meridian_egui::MeridianUi as _;
     let gap = ui.tokens().section_gap;
     let control_gap = ui.tokens().control_gap;
-    ui.label(CLOSE_QUESTION_BODY);
+    let chip_gap = ui.tokens().space[1];
+    let sem = meridian_design::semantic(ui.visuals().dark_mode);
+    let ink = |rgba| brightfield_workbench::chrome::colour(rgba);
+    ui.label(question.headline());
+    let listed = question.listed();
+    if !listed.is_empty() {
+        ui.add_space(gap);
+        for row in listed {
+            ui.label(
+                egui::RichText::new(format!("\u{2022}  {row}"))
+                    .monospace()
+                    .small()
+                    .color(ink(sem.text.secondary)),
+            );
+        }
+    }
+    ui.add_space(gap);
+    let keeps = egui::RichText::new(question.keeps()).small();
+    ui.label(match question.not_kept {
+        // The danger role's solid, as ink on the card.
+        Some(_) => keeps.color(ink(sem.role(meridian_design::Role::Danger).background.base)),
+        None => keeps.color(ink(sem.text.muted)),
+    });
     ui.add_space(gap);
     let mut answer = None;
+    let mut focused = None;
+    let mut save = None;
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = control_gap;
-        for (which, label) in CLOSE_ANSWERS {
-            let button = ui.button(label);
-            if which == CloseAnswer::Save && ui.memory(|m| m.focused().is_none()) {
-                button.request_focus();
+        for (i, (which, label, key)) in CLOSE_ANSWERS.into_iter().enumerate() {
+            if i > 0 {
+                ui.add_space(control_gap);
             }
+            let button = if which == CloseAnswer::SaveAndClose {
+                let accent = sem.role(meridian_design::Role::Accent);
+                ui.add(
+                    egui::Button::new(
+                        egui::RichText::new(label).color(ink(accent.foreground.base)),
+                    )
+                    .fill(ink(accent.background.base)),
+                )
+            } else {
+                ui.button(label)
+            };
+            if button.has_focus() {
+                focused = Some(which);
+            }
+            if which == CloseAnswer::SaveAndClose {
+                save = Some(button.clone());
+            }
+            ui.add_space(chip_gap);
+            meridian_egui::key_chip(ui, key);
             if button.clicked() {
                 answer = Some(which);
             }
         }
     });
+    if focused.is_none() {
+        if let Some(save) = save {
+            save.request_focus();
+            focused = Some(CloseAnswer::SaveAndClose);
+        }
+    }
+    question.focused = focused;
     answer
 }
 
