@@ -491,14 +491,18 @@ fn raw_plot_attributes(
 }
 
 /// Whether what the plot writes of itself makes `key` land where the axis drops
-/// it whatever the data is: a reversal on a plot with a projection, or an
-/// end or a tick count on an axis whose `xScale` / `yScale` the spec writes as
-/// a log, a symlog or a band, or, for an end, a time. What a column's type makes
-/// of an axis is a composition's to say, and not decidable here.
+/// it whatever the data is: any watched key on a plot with a projection, whose x
+/// and y are no axis, or an end or a tick count on an axis whose `xScale` /
+/// `yScale` the spec writes as a log, a symlog or a band, or, for an end, a
+/// time. What a column's type makes of an axis is a composition's to say, and
+/// not decidable here.
 fn inert_by_what_the_plot_writes(key: &str, attrs: &BTreeMap<String, serde_yaml::Value>) -> bool {
+    if attrs.contains_key("projectionType") {
+        return true;
+    }
     let (axis, instruction) = key.split_at(1);
     if instruction == "Reverse" {
-        return attrs.contains_key("projectionType");
+        return false;
     }
     let scale = attrs
         .get(&format!("{axis}Scale"))
@@ -513,6 +517,29 @@ fn inert_by_what_the_plot_writes(key: &str, attrs: &BTreeMap<String, serde_yaml:
             Some("log" | "symlog" | "band" | "ordinal" | "point" | "time" | "utc")
         )
     )
+}
+
+/// **A plot that writes a projection drops each watched key by its own text, and
+/// a plot that writes none keeps the reversal and a linear axis's ends.** The
+/// corpus below holds no plot that pairs the two, so it cannot tell this
+/// judgement from one that forgot the projection.
+#[test]
+fn a_plot_with_a_projection_drops_each_watched_key_by_its_own_text() {
+    let projected: BTreeMap<String, serde_yaml::Value> = BTreeMap::from([(
+        "projectionType".to_string(),
+        serde_yaml::Value::String("equirectangular".to_string()),
+    )]);
+    let plain: BTreeMap<String, serde_yaml::Value> = BTreeMap::new();
+    for key in WATCHED {
+        assert!(
+            inert_by_what_the_plot_writes(key, &projected),
+            "`{key}` on a plot with a projection is dropped by what the plot writes"
+        );
+        assert!(
+            !inert_by_what_the_plot_writes(key, &plain),
+            "`{key}` on a plot with no projection and no scale type is not"
+        );
+    }
 }
 
 /// The plots of the vendored and the curated corpus that set one of
