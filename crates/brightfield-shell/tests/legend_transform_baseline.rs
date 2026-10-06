@@ -52,7 +52,10 @@ fn baseline(name: &str, mode: Mode, block: &str, word: &str) {
         Some(word),
         "{name}: the legend's name"
     );
-    assert!(band_width(&composed) > 0.0, "{name}: no band for the legend");
+    assert!(
+        band_width(&composed) > 0.0,
+        "{name}: no band for the legend"
+    );
 
     let out = scratch(name);
     let (w, h) = capture_png(Boot::charts(composed), mode, 1.0, &out, Vec::new())
