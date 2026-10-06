@@ -997,6 +997,149 @@ fn an_unsaved_edit_is_the_first_row_and_none_held_draws_no_such_row() {
     );
 }
 
+/// The rows of a panel that was not on screen while an edit was taken back and
+/// another of the same size made, as a person leaves the panel and returns to
+/// it: `hide` takes the panel off the screen and `show` brings it back.
+///
+/// The panel reads the edits held on the frames it is shown and returns before
+/// reading them on the others. A put on x and a put on y add the same number of
+/// edits, so a reading kept by that number names the edit that is gone.
+fn the_rows_after_a_hidden_retake(
+    name: &str,
+    hide: fn(&mut Session),
+    show: fn(&mut Session),
+) -> Vec<Vec<String>> {
+    let mut s = Session::open(name);
+    s.save();
+    s.show_versions();
+    s.put("median_income", ShelfChannel::X);
+    s.settle();
+    let read_shown = s.cells()[0].clone();
+    assert_eq!(
+        read_shown[..2],
+        ["now", "unsaved"],
+        "the panel on screen drew no row for the edit held: {read_shown:?}"
+    );
+    assert!(
+        read_shown[2].ends_with("x axis: longitude \u{2192} median_income"),
+        "the row read while the panel was on screen does not name the put on x: {read_shown:?}"
+    );
+    let held = s.app.chart_doc().unsaved_edits().to_vec();
+
+    hide(&mut s);
+    s.key(egui::Key::U);
+    assert!(
+        s.app.chart_doc().unsaved_edits().is_empty(),
+        "a keypress on u did not take the put on x back while the panel was not on screen"
+    );
+    s.put("median_house_value", ShelfChannel::Y);
+    s.settle();
+    let now_held = s.app.chart_doc().unsaved_edits().to_vec();
+    assert_eq!(
+        now_held.len(),
+        held.len(),
+        "a put on y does not add as many edits as the put on x, so this does not drive an \
+         edit of the same size"
+    );
+    assert_ne!(
+        now_held, held,
+        "the edit held is the one that was taken back"
+    );
+
+    show(&mut s);
+    assert_eq!(
+        s.app.rail_pane_title(LEDGER_RAIL).as_deref(),
+        Some("Versions"),
+        "the panel was not brought back on screen"
+    );
+    s.cells()
+}
+
+/// What the first row reads for a put on y alone over the housing start: the
+/// put changes the hero's marks and drops its projection type, as a put on x
+/// does.
+const Y_PUT_READS: &str = "Map \u{b7} projection type: equirectangular removed \u{b7} \
+                           y axis: latitude \u{2192} median_house_value";
+
+/// **AC5, on the path where the strip showed another panel.** The row for the
+/// edits not yet saved names the edit held when the panel is shown again, not
+/// the one that was held when it was left.
+#[test]
+fn the_unsaved_row_after_the_strip_showed_another_panel_names_the_edit_held_now() {
+    let rows = the_rows_after_a_hidden_retake(
+        "ac5-strip",
+        |s| {
+            let log = s
+                .app
+                .rail_name_rect(LEDGER_RAIL, 0)
+                .expect("the strip's Log name")
+                .center();
+            s.click(log);
+            s.settle();
+            assert_eq!(
+                s.app.rail_pane_title(LEDGER_RAIL).as_deref(),
+                Some("Log"),
+                "a click on the strip's Log name did not show the Log"
+            );
+        },
+        Session::show_versions,
+    );
+    assert_eq!(
+        rows[0],
+        ["now", "unsaved", Y_PUT_READS],
+        "the panel shown again names an edit it no longer holds, or omits the one it does"
+    );
+}
+
+/// **AC5, on the path where the rail was collapsed.** A collapsed rail shows no
+/// panel, so it takes the same path, and a version recorded beside the window
+/// while it was collapsed is listed when the rail opens again: the collapsed
+/// rail counts as the panel not being shown, for the listing as for the row.
+#[test]
+fn the_unsaved_row_after_the_rail_was_collapsed_names_the_edit_held_now() {
+    let rows = the_rows_after_a_hidden_retake(
+        "ac5-collapsed",
+        |s| {
+            let at = s
+                .app
+                .rail_collapse_rect(LEDGER_RAIL)
+                .expect("the ledger rail drew a collapse control")
+                .center();
+            s.click(at);
+            s.settle();
+            assert!(
+                s.app.rail_is_collapsed(LEDGER_RAIL),
+                "a click on the ledger rail's collapse control did not collapse it"
+            );
+            s.seed(&[(false, &recorded_texts().x_moved)]);
+        },
+        |s| {
+            let at = s
+                .app
+                .rail_collapse_rect(LEDGER_RAIL)
+                .expect("the collapsed ledger rail drew an expand control")
+                .center();
+            s.click(at);
+            s.settle();
+            assert!(
+                !s.app.rail_is_collapsed(LEDGER_RAIL),
+                "a click on the collapsed ledger rail's control did not open it"
+            );
+        },
+    );
+    assert_eq!(
+        rows[0],
+        ["now", "unsaved", Y_PUT_READS],
+        "the rail opened again names an edit it no longer holds, or omits the one it does"
+    );
+    assert_eq!(
+        rows.len(),
+        3,
+        "the rail opened again did not list the version recorded while it was collapsed, \
+         beside the Save's and the row for the edit held: {rows:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // AC6 — the head line
 // ---------------------------------------------------------------------------
