@@ -278,9 +278,7 @@ mod tests {
             t.resolves("enter", DispatchContext::CanvasFocused),
             vec!["dive-in"]
         );
-        assert!(t
-            .resolves("enter", DispatchContext::GridFocused)
-            .is_empty());
+        assert!(t.resolves("enter", DispatchContext::GridFocused).is_empty());
     }
 
     #[test]

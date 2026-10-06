@@ -17,6 +17,14 @@
 //! compares each with the one before, so it is not done per frame. It is done
 //! when the panel is shown after not being shown, when a Save has recorded a
 //! version, and when the chart file or the store the window points at moves.
+//!
+//! **The cursor.** With the panel holding the keys a cursor moves over the
+//! rows, and the chart is drawn as the version under it
+//! ([`ChartDoc::move_version_cursor`]). The cursor is a version's id, not a
+//! row's place, so a Save that lists a newer row above it leaves it on the
+//! version it was on. Its row is drawn on the cursor's ground with the Step
+//! back control at its end, which steps the chart back to that version as an
+//! unsaved edit ([`ChartDoc::step_back_to_cursor`]).
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -29,7 +37,7 @@ use brightfield_workbench::channel::ShelfChannel;
 use brightfield_workbench::{
     chrome, EmptyState, Icon, Item, ItemCtx, ItemId, ItemSpec, Slot, Subject, Verb,
 };
-use meridian_design::semantic;
+use meridian_design::{control, semantic};
 
 use crate::app::ChartDoc;
 use crate::protocol::mono_font;
@@ -71,8 +79,7 @@ pub const EDITED_OUTSIDE: &str = "edited outside brightfield";
 /// ([`crate::app::chart_registry`]).
 ///
 /// The show verb is the registry's requirement of every pane (the item audit),
-/// reserved and unbound as *Log* and *Quality* are; a key for it waits on the
-/// card that steps a chart back to a version.
+/// reserved and unbound as *Log* and *Quality* are.
 #[must_use]
 pub fn versions_spec() -> ItemSpec<ChartDoc> {
     ItemSpec {
@@ -179,6 +186,33 @@ pub fn when_words(at: SystemTime, clock: &Clock) -> String {
         MONTHS[month % 12]
     )
 }
+
+/// **A version's time as the chart's pane header and the status band say it:**
+/// `14:02` for one recorded on the current day, and [`when_words`]' weekday,
+/// day, month and time for an earlier one. `as saved 14:02` reads as a time
+/// without the word *today*, which the header has no room to spend.
+#[must_use]
+pub fn time_words(at: SystemTime, clock: &Clock) -> String {
+    let when = when_words(at, clock);
+    match when.strip_prefix("today ") {
+        Some(time) => time.to_string(),
+        None => when,
+    }
+}
+
+/// How a key token the registry binds reads in a sentence: `Enter` and `Esc`
+/// for `enter` and `escape`, and any other token as it is spelled.
+#[must_use]
+pub fn key_word(token: &str) -> &str {
+    match token {
+        "enter" => "Enter",
+        "escape" => "Esc",
+        other => other,
+    }
+}
+
+/// The words the Step back control on the cursor's row reads.
+pub const STEP_BACK: &str = "Step back";
 
 // ---------------------------------------------------------------------------
 // What changed, in words
@@ -418,6 +452,10 @@ fn kind_words(kind: HistoryKind) -> &'static str {
 /// One row of the panel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
+    /// The id the store reads the version's text by.
+    pub id: String,
+    /// When the store recorded the version.
+    pub at: SystemTime,
     /// The *when* column.
     pub when: String,
     /// The *kind* column.
@@ -467,11 +505,20 @@ pub struct Versions {
     shown_last: bool,
     stale: bool,
     listing: Listing,
-    /// What the edits not yet saved read, and the edits it was read from.
-    unsaved: Option<(Vec<ChartEdit>, String)>,
+    /// What the change not yet saved reads, and what it was read from: the
+    /// version the chart was stepped back to, by its id, and the edits held.
+    unsaved: Option<(Option<String>, Vec<ChartEdit>, String)>,
     /// Where each row drew in the last frame, the unsaved row first when it
     /// drew.
     drawn: Vec<egui::Rect>,
+    /// The version the cursor is on, by its id, or `None` before a key has put
+    /// it on a row and after it has gone back to now.
+    cursor: Option<String>,
+    /// Where the Step back control on the cursor's row drew in the last frame.
+    step_back_drawn: Option<egui::Rect>,
+    /// Whether the Step back control was clicked in the last frame: read and
+    /// cleared by the window's next frame, which steps the chart back.
+    step_back_clicked: bool,
 }
 
 impl Default for Versions {
@@ -485,6 +532,9 @@ impl Default for Versions {
             listing: Listing::NoSource,
             unsaved: None,
             drawn: Vec::new(),
+            cursor: None,
+            step_back_drawn: None,
+            step_back_clicked: false,
         }
     }
 }
@@ -512,11 +562,89 @@ impl Versions {
         &self.listing
     }
 
-    /// The row for the edits not yet saved, as the panel drew it: `None` when
+    /// The row for the change not yet saved, as the panel drew it: `None` when
     /// the chart is saved.
     #[must_use]
     pub fn unsaved_words(&self) -> Option<&str> {
-        self.unsaved.as_ref().map(|(_, words)| words.as_str())
+        self.unsaved.as_ref().map(|(_, _, words)| words.as_str())
+    }
+
+    /// The version the cursor is on, by its id: `None` with the chart drawn as
+    /// it is now.
+    #[must_use]
+    pub fn cursor(&self) -> Option<&str> {
+        self.cursor.as_deref()
+    }
+
+    /// The listed row the cursor is on, and its place among the rows.
+    #[must_use]
+    pub fn cursor_row(&self) -> Option<(usize, &Row)> {
+        let id = self.cursor.as_deref()?;
+        let Listing::Listed { rows, .. } = &self.listing else {
+            return None;
+        };
+        rows.iter().enumerate().find(|(_, row)| row.id == id)
+    }
+
+    /// **Move the cursor a row**, older for `down` and newer for not, and
+    /// answer the row it moved to. With no cursor, either way puts it on the
+    /// newest row. A move past the oldest or the newest row leaves it where it
+    /// is and answers `None`, as does a panel with no row listed.
+    pub fn move_cursor(&mut self, down: bool) -> Option<Row> {
+        let Listing::Listed { rows, .. } = &self.listing else {
+            return None;
+        };
+        let to = match self.cursor_row() {
+            None => 0,
+            Some((at, _)) if down => at + 1,
+            Some((at, _)) => at.checked_sub(1)?,
+        };
+        let row = rows.get(to)?.clone();
+        self.cursor = Some(row.id.clone());
+        Some(row)
+    }
+
+    /// Take the cursor off the rows: the chart is drawn as it is now.
+    pub fn clear_cursor(&mut self) {
+        self.cursor = None;
+    }
+
+    /// The text the store recorded for the version `id` of the panel's chart
+    /// file, or why it cannot be read.
+    ///
+    /// # Errors
+    ///
+    /// The reason, for a panel with no store to read and for a store that does
+    /// not give the version up.
+    pub fn read_version(&self, id: &str) -> Result<String, String> {
+        let source = self
+            .source
+            .as_ref()
+            .ok_or_else(|| "no store holds this chart's versions".to_string())?;
+        source
+            .store
+            .read_version(&source.file, id)
+            .map_err(|e| e.reason().to_string())
+    }
+
+    /// `at` as the pane header and the status band say a version's time, by
+    /// this panel's clock: [`time_words`].
+    #[must_use]
+    pub fn time_words(&self, at: SystemTime) -> String {
+        time_words(at, &self.clock)
+    }
+
+    /// Where the Step back control drew in the last frame: `None` on a frame
+    /// with no cursor on a row, or with the panel not drawn.
+    #[must_use]
+    pub fn step_back_drawn(&self) -> Option<egui::Rect> {
+        self.step_back_drawn
+    }
+
+    /// Whether the Step back control was clicked since this was last asked,
+    /// and forget that it was.
+    pub fn take_step_back_click(&mut self) -> bool {
+        std::mem::take(&mut self.step_back_clicked)
     }
 
     /// Where each row drew in the last frame, the row for edits not yet saved
@@ -529,9 +657,10 @@ impl Versions {
     /// Bring the listing up to date for a frame in which the panel is, or is
     /// not, `shown`.
     ///
-    /// `held` is the edits not yet saved and `unsaved` reads them as changes;
-    /// it is asked where `held` is not the edits last read, so a frame that
-    /// changed nothing reads no file.
+    /// `held` is the edits not yet saved, `stepped` the version the chart was
+    /// stepped back to, and `unsaved` reads the two as changes; it is asked
+    /// where they are not what was last read, so a frame that changed nothing
+    /// reads no file.
     ///
     /// The reading is keyed on the edits and not on how many there are. A put
     /// on x and a put on y add the same number of edits, so a count cannot tell
@@ -546,22 +675,36 @@ impl Versions {
         shown: bool,
         tile_of: &dyn Fn(&str) -> String,
         held: &[ChartEdit],
+        stepped: Option<&str>,
         unsaved: impl FnOnce() -> Vec<ChartChange>,
     ) {
         let rising = shown && !self.shown_last;
         self.shown_last = shown;
         if !shown {
+            self.step_back_drawn = None;
             return;
         }
         if rising || self.stale || self.source != source {
             self.source = source;
             self.listing = self.list(tile_of);
             self.stale = false;
+            // A cursor on a version the store no longer lists is on no row.
+            if self.cursor_row().is_none() {
+                self.cursor = None;
+            }
         }
-        if held.is_empty() {
+        let read = self
+            .unsaved
+            .as_ref()
+            .map(|(was, edits, _)| (was.as_deref(), edits.as_slice()));
+        if held.is_empty() && stepped.is_none() {
             self.unsaved = None;
-        } else if self.unsaved.as_ref().map(|(edits, _)| edits.as_slice()) != Some(held) {
-            self.unsaved = Some((held.to_vec(), change_words(&unsaved(), tile_of)));
+        } else if read != Some((stepped, held)) {
+            self.unsaved = Some((
+                stepped.map(str::to_string),
+                held.to_vec(),
+                change_words(&unsaved(), tile_of),
+            ));
         }
     }
 
@@ -594,6 +737,8 @@ impl Versions {
             .versions
             .iter()
             .map(|v| Row {
+                id: v.id.clone(),
+                at: v.at,
                 when: when_words(v.at, &self.clock),
                 kind: kind_words(v.kind).to_string(),
                 changed: version_words(&v.change, tile_of),
@@ -681,14 +826,16 @@ impl Item<ChartDoc> for VersionsPane {
     }
 
     fn describe(&self, _doc: &ChartDoc) -> Subject {
-        Subject::new("Versions", ICON_VERSIONS, BindingContext::Workspace)
+        Subject::new("Versions", ICON_VERSIONS, BindingContext::Versions)
     }
 
     fn ui(&mut self, doc: &mut ChartDoc, ui: &mut egui::Ui, cx: &mut ItemCtx<'_>) {
         let Listing::Listed { head, rows } = doc.versions().listing().clone() else {
+            doc.versions_mut().step_back_drawn = None;
             return;
         };
         let unsaved = doc.versions().unsaved_words().map(str::to_string);
+        let cursor = doc.versions().cursor().map(str::to_string);
         let sem = semantic(cx.mode.is_dark());
         let font = mono_font();
         let (primary, secondary, muted) = (
@@ -698,12 +845,16 @@ impl Item<ChartDoc> for VersionsPane {
         );
         let width = ui.available_width();
         let mut drawn: Vec<egui::Rect> = Vec::with_capacity(rows.len() + 1);
+        let mut step_back: Option<(egui::Rect, bool)> = None;
 
-        let line = |ui: &mut egui::Ui, columns: [(f32, &str, egui::Color32); 3]| {
+        // A row's three columns, the last ending `end` points from the row's
+        // left edge: the panel's width, or short of the controls on the
+        // cursor's row.
+        let line = |ui: &mut egui::Ui, columns: [(f32, &str, egui::Color32); 3], end: f32| {
             let (rect, _) =
                 ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), egui::Sense::hover());
             for (i, (x, text, colour)) in columns.iter().enumerate() {
-                let right = columns.get(i + 1).map_or(width, |next| next.0) - RIGHT_PAD;
+                let right = columns.get(i + 1).map_or(end, |next| next.0) - RIGHT_PAD;
                 let shown = fit(ui, text, &font, right - x);
                 ui.painter().text(
                     rect.left_center() + egui::vec2(*x, 0.0),
@@ -734,6 +885,7 @@ impl Item<ChartDoc> for VersionsPane {
                 (KIND_X, "kind", secondary),
                 (CHANGED_X, "what changed", secondary),
             ],
+            width,
         );
         ui.painter().hline(
             header.x_range(),
@@ -755,19 +907,40 @@ impl Item<ChartDoc> for VersionsPane {
                             (KIND_X, "unsaved", primary),
                             (CHANGED_X, words, primary),
                         ],
+                        width,
                     );
                     drawn.push(rect);
                     n += 1;
                 }
                 for row in &rows {
-                    let rect = ui.cursor();
-                    if n % 2 == 1 {
+                    let at = ui.cursor();
+                    let whole = egui::Rect::from_min_size(at.min, egui::vec2(width, ROW_HEIGHT));
+                    let on = cursor.as_deref() == Some(row.id.as_str());
+                    if on {
+                        // The cursor's row: the ground and the bar the
+                        // Protocol panel's picked row has.
                         ui.painter().rect_filled(
-                            egui::Rect::from_min_size(rect.min, egui::vec2(width, ROW_HEIGHT)),
+                            whole,
                             0.0,
-                            stripe,
+                            chrome::colour(sem.rows.cursor_background),
                         );
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_max(
+                                whole.left_top(),
+                                egui::pos2(whole.left() + control::ROW_BAR_WIDTH, whole.bottom()),
+                            ),
+                            0.0,
+                            chrome::colour(sem.rows.cursor_bar),
+                        );
+                    } else if n % 2 == 1 {
+                        ui.painter().rect_filled(whole, 0.0, stripe);
                     }
+                    let controls = if on {
+                        step_back_controls(ui, whole, &font, &sem)
+                    } else {
+                        None
+                    };
+                    let end = controls.as_ref().map_or(width, |c| c.left - whole.left());
                     drawn.push(line(
                         ui,
                         [
@@ -775,13 +948,110 @@ impl Item<ChartDoc> for VersionsPane {
                             (KIND_X, &row.kind, secondary),
                             (CHANGED_X, &row.changed, primary),
                         ],
+                        end,
                     ));
+                    if let Some(c) = controls {
+                        step_back = Some((c.button, c.clicked));
+                    }
                     n += 1;
                 }
             });
-        doc.versions_mut().drawn = drawn;
+        let versions = doc.versions_mut();
+        versions.drawn = drawn;
+        versions.step_back_drawn = step_back.map(|(rect, _)| rect);
+        if step_back.is_some_and(|(_, clicked)| clicked) {
+            versions.step_back_clicked = true;
+        }
+        if let Some((rect, _)) = step_back {
+            doc.controls
+                .push(chrome::NamedControl::labelled(rect, STEP_BACK));
+        }
     }
 }
+
+/// What [`step_back_controls`] drew at the end of the cursor's row.
+struct StepBackControls {
+    /// The Step back control's box.
+    button: egui::Rect,
+    /// Whether it was clicked this frame.
+    clicked: bool,
+    /// The left edge of the two controls, which the row's text stops short of.
+    left: f32,
+}
+
+/// **The Step back control and the key that does the same**, at the trailing
+/// end of the cursor's row `row`: a button reading [`STEP_BACK`] and, after
+/// it, a chip with the key the registry binds `step-back-to-version` to.
+fn step_back_controls(
+    ui: &mut egui::Ui,
+    row: egui::Rect,
+    font: &egui::FontId,
+    sem: &meridian_design::Semantic,
+) -> Option<StepBackControls> {
+    let key = Verb::new(STEP_BACK_VERB).keys().map(key_word)?;
+    let galley = |ui: &egui::Ui, text: &str| {
+        ui.painter()
+            .layout_no_wrap(text.to_string(), font.clone(), egui::Color32::WHITE)
+            .size()
+    };
+    let height = ROW_HEIGHT - 4.0;
+    let chip_size = egui::vec2(galley(ui, key).x + 2.0 * CONTROL_PAD, height);
+    let button_size = egui::vec2(galley(ui, STEP_BACK).x + 2.0 * CONTROL_PAD, height);
+    let chip = egui::Rect::from_min_size(
+        egui::pos2(
+            row.right() - RIGHT_PAD - chip_size.x,
+            row.center().y - height / 2.0,
+        ),
+        chip_size,
+    );
+    let button = egui::Rect::from_min_size(
+        egui::pos2(
+            chip.left() - CONTROL_GAP - button_size.x,
+            row.center().y - height / 2.0,
+        ),
+        button_size,
+    );
+    let response = ui.put(
+        button,
+        egui::Button::new(
+            egui::RichText::new(STEP_BACK)
+                .font(font.clone())
+                .color(chrome::colour(sem.text.primary)),
+        )
+        .corner_radius(0.0)
+        .min_size(button_size),
+    );
+    let clicked = response.clicked();
+    let button = response.rect;
+    ui.painter().rect_stroke(
+        chip,
+        0.0,
+        egui::Stroke::new(1.0, chrome::colour(sem.borders.subtle)),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        chip.center(),
+        egui::Align2::CENTER_CENTER,
+        key,
+        font.clone(),
+        chrome::colour(sem.text.secondary),
+    );
+    Some(StepBackControls {
+        button,
+        clicked,
+        left: button.left(),
+    })
+}
+
+/// The registry's verb for a step back, whose key the cursor's row prints.
+pub const STEP_BACK_VERB: &str = "step-back-to-version";
+
+/// The space inside the Step back control and the key chip, either side of
+/// their words.
+const CONTROL_PAD: f32 = 8.0;
+
+/// The space between the Step back control and the key chip.
+const CONTROL_GAP: f32 = 4.0;
 
 #[cfg(test)]
 mod tests {

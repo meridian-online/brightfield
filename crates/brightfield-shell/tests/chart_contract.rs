@@ -161,6 +161,8 @@ fn each_pane_names_itself_once_and_binds_in_its_own_context() {
                 brightfield_keys::BindingContext::Editor
             } else if id == DATA {
                 brightfield_keys::BindingContext::Grid
+            } else if id == brightfield_shell::versions::VERSIONS {
+                brightfield_keys::BindingContext::Versions
             } else {
                 brightfield_keys::BindingContext::Workspace
             };
