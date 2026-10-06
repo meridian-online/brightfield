@@ -89,7 +89,7 @@ pub fn versions_spec() -> ItemSpec<ChartDoc> {
 /// Where *now* and the local offset come from.
 ///
 /// A baseline of the panel cannot hold `today 14:02` while the day moves, so a
-/// window can be given a fixed clock ([`crate::window::MeridianApp::versions_env`]).
+/// window can be given a fixed clock ([`crate::window::MeridianApp::set_versions_env`]).
 #[derive(Clone, Copy, Debug)]
 pub enum Clock {
     /// The machine's clock and the offset its time zone has at that instant.

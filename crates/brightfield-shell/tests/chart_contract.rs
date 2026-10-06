@@ -20,6 +20,7 @@ use brightfield_shell::data_grid::DATA;
 use brightfield_shell::design::Mode;
 use brightfield_shell::editor::EDITOR;
 use brightfield_shell::pipeline::{compose_spec, Composed};
+use brightfield_shell::versions::VERSIONS;
 use brightfield_shell::window::{chart_toolbar_band, chart_window_size, Boot, MeridianApp};
 use brightfield_workbench::arrangement;
 use brightfield_workbench::registry::{DockSide, ItemRegistry, Slot};
@@ -99,6 +100,16 @@ fn the_empty_document_has_nothing_in_it() {
 /// the whole window — the shell draws the empty state *instead of* the pane's
 /// own body, so `doc.is_empty()` written without the `!` on the other branch
 /// would ship two panes with two apologies in them and no chart at all.
+///
+/// **The Versions pane is the one exemption**, because it is empty over this
+/// fixture for a reason the fixture cannot remove: it lists what a store holds
+/// of a chart file, and [`ChartDoc::headless`] is a document with no store and
+/// no Protocol, where the pane says *No version is recorded* by design. Saving
+/// the fixture once would need a window, a Protocol folder and a store on disk,
+/// which is the pixel tier's cost and not this file's. So the exemption is
+/// checked from the other side: over this fixture the pane must be empty and
+/// say so, and the half this test exists for, the pane not being empty when a
+/// version is listed, is pinned where a store is held, in `versions_panel.rs`.
 #[test]
 fn no_pane_is_empty_over_a_real_dashboard() {
     let doc = loaded();
@@ -107,6 +118,17 @@ fn no_pane_is_empty_over_a_real_dashboard() {
         "the fixture composed nothing, so this test proves nothing"
     );
     for (id, subject) in subjects(&doc) {
+        if id == VERSIONS {
+            let empty = subject
+                .empty_state
+                .as_ref()
+                .expect("a document with no store lists no version, so the Versions pane says so");
+            assert_eq!(
+                empty.headline, "No version is recorded",
+                "the Versions pane is empty over a document with no store, and says so"
+            );
+            continue;
+        }
         assert!(
             subject.empty_state.is_none(),
             "{id} claims to be empty over examples/dashboard.yaml: {:?}",
