@@ -263,7 +263,10 @@ enum Said<'a> {
         marks: Vec<usize>,
     },
     /// Anything else, already in words.
-    Words { plot: Option<&'a str>, words: String },
+    Words {
+        plot: Option<&'a str>,
+        words: String,
+    },
 }
 
 /// **What changed, in the shelf's words**, led by the tile each change was made
@@ -1038,7 +1041,10 @@ mod tests {
             "Map \u{b7} y grid: true added"
         );
         assert_eq!(
-            change_words(&[attribute("projectionType", Some("mercator"), None)], &tile),
+            change_words(
+                &[attribute("projectionType", Some("mercator"), None)],
+                &tile
+            ),
             "Map \u{b7} projection type: mercator removed"
         );
     }

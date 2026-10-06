@@ -405,8 +405,7 @@ impl Session {
     /// Carry the clock to where [`Self::clock_reading`] says it reads.
     fn pin_clock(&mut self, now_reads: i64) {
         let clock = self.clock_reading(now_reads);
-        self.app
-            .set_versions_env(clock, Some(self.root.0.clone()));
+        self.app.set_versions_env(clock, Some(self.root.0.clone()));
         self.app.chart_doc_mut().versions_mut().invalidate();
     }
 
@@ -766,9 +765,16 @@ fn a_rows_change_leads_with_its_tile_and_is_said_in_the_shelfs_words() {
 fn a_scale_on_y_reads_y_scale_and_a_scale_taken_out_reads_linear() {
     let t = recorded_texts();
     let on_y = t.scale_switched.replace("xScale: log", "yScale: log");
-    assert_ne!(on_y, t.scale_switched, "the recording carries no xScale: log");
+    assert_ne!(
+        on_y, t.scale_switched,
+        "the recording carries no xScale: log"
+    );
     let mut s = Session::open("ac4-y-scale");
-    s.seed(&[(true, &t.x_moved), (false, &t.scale_switched), (true, &on_y)]);
+    s.seed(&[
+        (true, &t.x_moved),
+        (false, &t.scale_switched),
+        (true, &on_y),
+    ]);
     s.pin_clock(SAME_DAY);
     s.show_versions();
     let changed: Vec<String> = s.cells().into_iter().map(|mut r| r.remove(2)).collect();
@@ -815,10 +821,14 @@ fn a_version_edited_outside_reads_its_lines_and_line_endings_alone_read_none() {
 #[test]
 fn a_version_carrying_a_named_change_and_one_elsewhere_reads_both() {
     let t = recorded_texts();
-    let retitled = t
-        .x_moved
-        .replace("title: \"california_housing_sample.csv\"", "title: \"housing\"");
-    assert_ne!(retitled, t.x_moved, "the recording carries no title to change");
+    let retitled = t.x_moved.replace(
+        "title: \"california_housing_sample.csv\"",
+        "title: \"housing\"",
+    );
+    assert_ne!(
+        retitled, t.x_moved,
+        "the recording carries no title to change"
+    );
     let mut s = Session::open("ac4-both");
     s.seed(&[(false, &t.base), (false, &retitled)]);
     s.pin_clock(SAME_DAY);
@@ -1118,7 +1128,10 @@ fn capture_the_versions_panel(mode: Mode, name: &str) -> image::RgbaImage {
         cells.iter().all(|r| r[0] == "today 14:02"),
         "a row's time does not read the pinned clock: {cells:?}"
     );
-    assert_eq!(probe.app.rail_pane_title(LEDGER_RAIL).as_deref(), Some("Versions"));
+    assert_eq!(
+        probe.app.rail_pane_title(LEDGER_RAIL).as_deref(),
+        Some("Versions")
+    );
 
     let clock = probe.clock_reading(SAME_DAY);
     let home = probe.root.0.clone();
