@@ -12,7 +12,7 @@ Mosaic's published JSON Schema for its declarative spec, copied byte for byte. I
 
 ## What reads it
 
-`crates/brightfield-spec/build.rs` reads `definitions.PlotAttributes.properties` and keeps each axis attribute name: `grid`, every name that is `x` or `y` followed by a capital letter, and every name that is `fx` or `fy` followed by a capital letter, a facet axis's. `xyDomain` and the `facet…` names are not axis attributes by that rule. The names become `brightfield_spec::axis_vocabulary::SCHEMA_AXIS_ATTRIBUTES`, and a plot that sets one of them which brightfield does not read is named in a `ParseWarning::UnreadAxisAttribute`. Removing a name from this file stops that warning for it, because the list is read from here at build time and nowhere else.
+`crates/brightfield-spec/build.rs` reads `definitions.PlotAttributes.properties` and keeps each axis attribute name: `grid` and `axis` and `align` and `padding` and `xyDomain` and `facetGrid` and `facetLabel`, which carry no `x` or `y` before a capital letter and are listed by name in `crates/brightfield-spec/src/axis_vocabulary/schema.rs`; every name that is `x` or `y` followed by a capital letter; and every name that is `fx` or `fy` followed by a capital letter, a facet axis's. `facetMargin` and the other `facet…` names are not axis attributes by that rule. The names become `brightfield_spec::axis_vocabulary::SCHEMA_AXIS_ATTRIBUTES`, and a plot that sets one of them which brightfield does not read is named in a `ParseWarning::UnreadAxisAttribute`. Removing a name from this file stops that warning for it, because the list is read from here at build time and nowhere else.
 
 ## Refresh procedure
 

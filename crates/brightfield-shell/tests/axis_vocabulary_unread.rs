@@ -152,7 +152,49 @@ fn a_facet_axis_attribute_draws_and_the_banner_names_it_and_its_plot() {
         lines.len() == 1 && lines[0].contains("`yAxis`"),
         "an `x` or `y` name set to `null` is named today; got {lines:?}"
     );
-    let lines = said(&compose("fxFlavour: 1\nfacetLabel: x"));
+    let lines = said(&compose("fxFlavour: 1\nfxyDomain: Fixed"));
+    assert!(
+        lines.is_empty(),
+        "a name the schema does not declare says nothing; got {lines:?}"
+    );
+}
+
+/// **A bare axis attribute draws, and the banner names it and its plot: the
+/// schema declares `axis`, `facetGrid`, `facetLabel`, `padding`, `align` and
+/// `xyDomain`, a rule counting a name by an `x` or `y` and a capital letter left
+/// them out, and the layout resolvers read the six as they read an unset plot
+/// (`the_read_list_is_what_the_layout_resolvers_read`).** `xyDomain: Fixed` is
+/// what the vendored specs write.
+#[test]
+fn a_bare_axis_attribute_draws_and_the_banner_names_it_and_its_plot() {
+    let unset = compose("");
+    for attrs in [
+        "axis: both",
+        "axis: null",
+        "facetGrid: true",
+        "facetLabel: Region",
+        "padding: 0.5",
+        "align: 0.5",
+        "xyDomain: Fixed",
+    ] {
+        let key = attrs.split(':').next().expect("a key");
+        let asked = compose(attrs);
+        assert_eq!(
+            points(&asked),
+            points(&unset),
+            "`{attrs}`: the plot draws as it does without the key"
+        );
+        let lines = said(&asked);
+        assert_eq!(lines.len(), 1, "one line for `{attrs}`; got {lines:?}");
+        assert!(
+            lines[0].contains(&format!("`{key}`"))
+                && lines[0].contains("root (`rotated`)")
+                && lines[0].contains("does not read"),
+            "the line names the key and the plot; got {:?}",
+            lines[0]
+        );
+    }
+    let lines = said(&compose("xyDomains: Fixed\npaddings: 0.5"));
     assert!(
         lines.is_empty(),
         "a name the schema does not declare says nothing; got {lines:?}"
