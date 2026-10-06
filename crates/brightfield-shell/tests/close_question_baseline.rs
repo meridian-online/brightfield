@@ -145,7 +145,7 @@ fn capture_the_question(mode: Mode, name: &str) -> image::RgbaImage {
             .unwrap_or_else(|e| panic!("open {}: {e}", data.display()))
     };
 
-    let mut app = MeridianApp::headless(boot(), Mode::Light).keeping_history(Some(store.clone()));
+    let app = MeridianApp::headless(boot(), Mode::Light).keeping_history(Some(store.clone()));
     let mut probe = Probe {
         app,
         ctx: egui::Context::default(),
