@@ -92,8 +92,8 @@ use crate::design::Mode;
 use crate::editor::EDITOR;
 use crate::inspector::{ColumnTable, InspectorPane, Selection, TableHandle};
 use crate::overlays::{
-    close_question_body, CloseAnswer, CommandPalette, HelpSheet, JumpTarget, JumpToNode,
-    CLOSE_QUESTION_TITLE,
+    close_question_body, close_question_keys, CloseAnswer, CloseQuestion, CommandPalette,
+    HelpSheet, JumpTarget, JumpToNode, CLOSE_QUESTION_TITLE,
 };
 use crate::pipeline::Composed;
 use crate::protocol::{
@@ -1711,10 +1711,11 @@ enum Overlay {
     /// The node jump (`/`): fuzzy finder over the graph in view.
     Jump(Picker<JumpToNode>),
     /// The question a close request raises over a window that carries the
-    /// unsaved mark: save, discard or cancel. It holds no state of its own —
-    /// what it asks about is the chart document's pending edits — and it is
-    /// drawn from [`crate::overlays::close_question_body`].
-    CloseQuestion,
+    /// unsaved mark: save and close, close without saving, or keep editing. It
+    /// holds what it says — the chart file, the unsaved edits in the shelf's
+    /// words, and why a close without saving could not keep the chart — and it
+    /// is drawn from [`crate::overlays::close_question_body`].
+    CloseQuestion(CloseQuestion),
 }
 
 /// The registry-bound keystrokes that open overlays, resolved once at boot.
@@ -6041,6 +6042,7 @@ impl MeridianApp {
             return;
         };
         let close;
+        let mut answered = None;
         match &mut overlay {
             Overlay::Palette(picker) => {
                 let chrome = ModalChrome::new().title("Commands").enter_hint("run");
@@ -6079,29 +6081,34 @@ impl MeridianApp {
                     None => close = shown.dismissed,
                 }
             }
-            Overlay::CloseQuestion => {
-                // The card's own exits are its answers: escape and a click on
-                // the backdrop are the third of them, cancel.
+            Overlay::CloseQuestion(question) => {
+                // The card's own exits are its answers, each with its key
+                // beside it, so it has no footer: escape and a click on the
+                // backdrop are the third of them, keep editing. The keys are
+                // read before the card draws, so a D is not also typed into
+                // whatever the card holds.
+                let typed = close_question_keys(ctx);
                 let chrome = ModalChrome::new()
                     .title(CLOSE_QUESTION_TITLE)
-                    .narrow()
-                    .esc_hint("cancel");
+                    .without_esc_hint();
                 let shown = ModalLayer::show(ctx, "bf-overlay-close-question", &chrome, |ui| {
-                    close_question_body(ui)
+                    close_question_body(ui, question)
                 });
-                let answer = shown
-                    .inner
-                    .or(shown.dismissed.then_some(CloseAnswer::Cancel));
-                close = answer.is_some();
-                if let Some(answer) = answer {
-                    self.answer_close_question(ctx, answer);
-                }
+                answered = typed
+                    .or(shown.inner)
+                    .or(shown.dismissed.then_some(CloseAnswer::KeepEditing));
+                // The answer decides whether the question stays: a close
+                // without saving that could not keep the chart leaves it up.
+                close = false;
             }
         }
         if close {
             ctx.request_repaint();
         } else {
             self.overlay = Some(overlay);
+        }
+        if let Some(answer) = answered {
+            self.answer_close_question(ctx, answer);
         }
     }
 
@@ -6115,7 +6122,7 @@ impl MeridianApp {
     /// closed and took its edit with it. This sends the cancel and opens
     /// [`Overlay::CloseQuestion`] in the window's one modal slot, replacing
     /// whatever overlay was open; a second request while the question is up
-    /// is cancelled again and leaves it as it is.
+    /// is cancelled again and leaves it as it is, with what it says.
     ///
     /// A window without the mark, and one whose close was already decided
     /// ([`Self::allow_close`]), is not touched: the request goes through
@@ -6128,8 +6135,62 @@ impl MeridianApp {
             return;
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        self.overlay = Some(Overlay::CloseQuestion);
+        if !matches!(self.overlay, Some(Overlay::CloseQuestion(_))) {
+            self.overlay = Some(Overlay::CloseQuestion(self.close_question_for_now()));
+        }
         ctx.request_repaint();
+    }
+
+    /// **What the close question says about this window now**: the chart
+    /// file, named relative to the Protocol's folder, and each unsaved edit in
+    /// the shelf's words, as the Versions panel words the change not yet saved
+    /// ([`crate::versions::change_lines`]). A window with no Protocol names the
+    /// file its chart was read from.
+    fn close_question_for_now(&self) -> CloseQuestion {
+        let protocol = self.protocol.doc.model.source();
+        let target = match protocol {
+            Some(p) => Some(brightfield_model::panel_capture::panel_file(
+                &p.dir, &p.name,
+            )),
+            None => self.charts.doc.spec_path.clone(),
+        };
+        let file = match (&target, protocol) {
+            (Some(file), Some(p)) => file
+                .strip_prefix(&p.dir)
+                .unwrap_or(file)
+                .display()
+                .to_string(),
+            (Some(file), None) => file.file_name().map_or_else(
+                || file.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            ),
+            (None, _) => "This chart".to_string(),
+        };
+        let tiles = self.charts.doc.tile_names();
+        let tile_of = |plot: &str| {
+            tiles
+                .iter()
+                .find(|(path, _)| path == plot)
+                .map_or_else(|| plot.to_string(), |(_, name)| name.clone())
+        };
+        let changes = target
+            .as_deref()
+            .map_or_else(Vec::new, |file| self.charts.doc.unsaved_changes(file));
+        CloseQuestion {
+            file,
+            edits: crate::versions::change_lines(&changes, &tile_of),
+            not_kept: None,
+        }
+    }
+
+    /// The close question while it is up, with what it says: a test hook, read
+    /// beside the text the card paints.
+    #[must_use]
+    pub fn close_question(&self) -> Option<&CloseQuestion> {
+        match &self.overlay {
+            Some(Overlay::CloseQuestion(question)) => Some(question),
+            _ => None,
+        }
     }
 
     /// Let the next close request through without a question — for a close the
@@ -6140,29 +6201,79 @@ impl MeridianApp {
     }
 
     /// **What each answer of the close question does** — the entry point the
-    /// question's buttons reach through, and one a test may drive.
+    /// question's buttons and keys reach through, and one a test may drive.
     ///
-    /// - [`CloseAnswer::Save`] writes as the Save verb does
+    /// - [`CloseAnswer::SaveAndClose`] writes as the Save verb does
     ///   ([`Self::save_protocol`]: `arcform.yaml`, its model and the chart
     ///   beside them) and closes the window when the chart is in, which is
     ///   when the mark is gone. A write that failed leaves the window open,
     ///   with the banner the write raised saying why; the question is closed
     ///   so the banner can be read, and the next close request asks again.
-    /// - [`CloseAnswer::Discard`] closes without a write: the files on disk
-    ///   are not touched, and the pending edits are dropped with the window.
-    /// - [`CloseAnswer::Cancel`] leaves the window as it was: the edit stays
-    ///   drawn, the mark stays in the title.
+    /// - [`CloseAnswer::CloseWithoutSaving`] keeps the chart as a Save would
+    ///   write it as a version of the chart file, which the Versions panel
+    ///   lists as `closed unsaved` ([`ChartDoc::keep_unsaved_beside`]), and
+    ///   closes. Neither the chart file nor `arcform.yaml` is written. When the
+    ///   chart cannot be kept the window stays open and the question says
+    ///   why, and the same answer given again closes with nothing kept.
+    /// - [`CloseAnswer::KeepEditing`] leaves the window as it was: the edit
+    ///   stays drawn, the mark stays in the title.
     pub fn answer_close_question(&mut self, ctx: &egui::Context, answer: CloseAnswer) {
         match answer {
-            CloseAnswer::Cancel => {}
-            CloseAnswer::Discard => self.close_window(ctx),
-            CloseAnswer::Save => {
+            CloseAnswer::KeepEditing => self.put_the_question_down(),
+            CloseAnswer::CloseWithoutSaving => {
+                let told = self.close_question().is_some_and(|q| q.not_kept.is_some());
+                if told {
+                    self.close_window(ctx);
+                } else {
+                    match self.keep_unsaved() {
+                        Ok(()) => self.close_window(ctx),
+                        Err(why) => {
+                            eprintln!("the unsaved chart could not be kept: {why}");
+                            let mut question = match self.overlay.take() {
+                                Some(Overlay::CloseQuestion(question)) => question,
+                                _ => self.close_question_for_now(),
+                            };
+                            question.not_kept = Some(why);
+                            self.overlay = Some(Overlay::CloseQuestion(question));
+                        }
+                    }
+                }
+            }
+            CloseAnswer::SaveAndClose => {
+                self.put_the_question_down();
                 if self.save_for_close(ctx) {
                     self.close_window(ctx);
                 }
             }
         }
         ctx.request_repaint();
+    }
+
+    /// Take the close question down, leaving any other overlay as it is.
+    fn put_the_question_down(&mut self) {
+        if matches!(self.overlay, Some(Overlay::CloseQuestion(_))) {
+            self.overlay = None;
+        }
+    }
+
+    /// Keep the chart as a Save would write it as a version of its chart file,
+    /// writing no file: the first half of a close without saving.
+    ///
+    /// # Errors
+    ///
+    /// Why it could not be kept: a window with no Protocol to keep the
+    /// chart's versions beside, and [`ChartDoc::keep_unsaved_beside`]'s.
+    fn keep_unsaved(&mut self) -> Result<(), String> {
+        let Some(source) = self.protocol.doc.model.source() else {
+            return Err(NO_PROTOCOL_TO_KEEP_BESIDE.to_string());
+        };
+        let kept =
+            self.charts
+                .doc
+                .keep_unsaved_beside(&source.dir, &source.name, self.history.as_ref());
+        // A version may have been recorded; the panel reads the store again.
+        self.charts.doc.versions_mut().invalidate();
+        kept
     }
 
     /// Close this window: let the request through and raise it.
@@ -6205,7 +6316,7 @@ impl MeridianApp {
             Overlay::Palette(_) => "palette",
             Overlay::Help(_) => "help",
             Overlay::Jump(_) => "jump",
-            Overlay::CloseQuestion => "close-question",
+            Overlay::CloseQuestion(_) => "close-question",
         })
     }
 
@@ -8273,10 +8384,11 @@ pub const SHELF_EDIT_STATUS_ID: &str = "shelf-last-edit";
 /// registry, so a rebinding cannot leave the band naming a key that does
 /// nothing.
 fn version_shown_status_entry(doc: &ChartDoc) -> Option<StatusEntry> {
-    let (_, at) = doc.shown_version()?;
+    let (_, at, kind) = doc.shown_version()?;
     let key = |verb: &'static str| Verb::new(verb).keys().map(crate::versions::key_word);
     let mut text = format!(
-        "showing the version saved at {}",
+        "showing the version {} at {}",
+        crate::versions::as_words(kind),
         doc.versions().time_words(at)
     );
     if let Some(enter) = key(crate::versions::STEP_BACK_VERB) {
@@ -9260,25 +9372,29 @@ const DOT_PLOT: &str = "Dot plot";
 
 /// **The hero pane's header**: [`map_pane_title`] over the spec drawn, ending
 /// `as saved 14:02` while the Versions panel's cursor draws a saved version in
-/// place of the chart, so the header does not name the picture as the chart's
-/// own.
+/// place of the chart, and `as closed unsaved 14:02` while it draws the chart a
+/// window closed without saving, so the header does not name the picture as
+/// the chart's own.
 pub(crate) fn hero_pane_title(
     doc: &ChartDoc,
     hero: Option<&crate::one_step::ColumnFacts>,
 ) -> String {
     let title = map_pane_title(hero, hero_shelf_channels(doc).as_ref());
     match doc.shown_version() {
-        Some((_, at)) => format!(
-            "{title} \u{b7} {AS_SAVED} {}",
+        Some((_, at, kind)) => format!(
+            "{title} \u{b7} as {} {}",
+            crate::versions::as_words(kind),
             doc.versions().time_words(at)
         ),
         None => title,
     }
 }
 
-/// What the hero pane's header says before a saved version's time while the
-/// chart is drawn as that version.
-pub const AS_SAVED: &str = "as saved";
+/// What a close without saving says, and keeps nothing, in a window with no
+/// Protocol behind it: the chart file whose versions it would key is beside a
+/// Protocol.
+pub const NO_PROTOCOL_TO_KEEP_BESIDE: &str =
+    "this window has no Protocol to keep the chart's versions beside";
 
 /// What `mapping` puts on y and on x, as the pane names them, when it does not
 /// hold the pair — `lon` on x and `lat` on y — and `None` while it does.

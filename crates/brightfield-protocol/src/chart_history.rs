@@ -276,7 +276,10 @@ pub fn record_unsaved(store: &HistoryStore, file: &Path, text: &str) -> Result<(
     let made = match folder {
         Some(folder) if !folder.exists() => {
             std::fs::create_dir(folder).map_err(|e| {
-                NotRecorded::new(format!("the folder {} cannot be made: {e}", folder.display()))
+                NotRecorded::new(format!(
+                    "the folder {} cannot be made: {e}",
+                    folder.display()
+                ))
             })?;
             Some(folder)
         }
