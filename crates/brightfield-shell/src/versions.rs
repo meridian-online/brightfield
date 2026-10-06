@@ -24,6 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use brightfield_keys::BindingContext;
 use brightfield_protocol::chart_history::HistoryKind;
 use brightfield_protocol::{ChartChange, HistoryStore, VersionChange};
+use brightfield_spec::edit::ChartEdit;
 use brightfield_workbench::channel::ShelfChannel;
 use brightfield_workbench::{
     chrome, EmptyState, Icon, Item, ItemCtx, ItemId, ItemSpec, Slot, Subject, Verb,
@@ -466,8 +467,8 @@ pub struct Versions {
     shown_last: bool,
     stale: bool,
     listing: Listing,
-    /// What the edits not yet saved read, and the count of edits it was read at.
-    unsaved: Option<(usize, String)>,
+    /// What the edits not yet saved read, and the edits it was read from.
+    unsaved: Option<(Vec<ChartEdit>, String)>,
     /// Where each row drew in the last frame, the unsaved row first when it
     /// drew.
     drawn: Vec<egui::Rect>,
@@ -528,15 +529,23 @@ impl Versions {
     /// Bring the listing up to date for a frame in which the panel is, or is
     /// not, `shown`.
     ///
-    /// `unsaved_key` counts the edits not yet saved and `unsaved` reads them
-    /// as changes; it is asked only where the count has moved since it was last
-    /// read, so a frame that changed nothing reads no file.
+    /// `held` is the edits not yet saved and `unsaved` reads them as changes;
+    /// it is asked where `held` is not the edits last read, so a frame that
+    /// changed nothing reads no file.
+    ///
+    /// The reading is keyed on the edits and not on how many there are. A put
+    /// on x and a put on y add the same number of edits, so a count cannot tell
+    /// a reading of one from a reading of the other, and a panel that was not
+    /// shown while one was taken back and the other made would return naming
+    /// the edit the chart no longer holds. A frame in which the panel is not
+    /// shown reads no edits, so on the next shown frame `held` is compared with
+    /// what the panel last drew, whenever that was.
     pub fn sync(
         &mut self,
         source: Option<Source>,
         shown: bool,
         tile_of: &dyn Fn(&str) -> String,
-        unsaved_key: usize,
+        held: &[ChartEdit],
         unsaved: impl FnOnce() -> Vec<ChartChange>,
     ) {
         let rising = shown && !self.shown_last;
@@ -549,10 +558,10 @@ impl Versions {
             self.listing = self.list(tile_of);
             self.stale = false;
         }
-        if unsaved_key == 0 {
+        if held.is_empty() {
             self.unsaved = None;
-        } else if self.unsaved.as_ref().map(|(key, _)| *key) != Some(unsaved_key) {
-            self.unsaved = Some((unsaved_key, change_words(&unsaved(), tile_of)));
+        } else if self.unsaved.as_ref().map(|(edits, _)| edits.as_slice()) != Some(held) {
+            self.unsaved = Some((held.to_vec(), change_words(&unsaved(), tile_of)));
         }
     }
 

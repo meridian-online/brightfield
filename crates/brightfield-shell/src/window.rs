@@ -3827,14 +3827,19 @@ impl MeridianApp {
                 .find(|(path, _)| path == plot)
                 .map_or_else(|| plot.to_string(), |(_, name)| name.clone())
         };
-        let key = self.charts.doc.unsaved_edit_count();
         let target = source.as_ref().map(|s| s.file.clone());
         let mut versions = std::mem::take(self.charts.doc.versions_mut());
-        versions.sync(source, shown, &tile_of, key, || {
-            target
-                .as_deref()
-                .map_or_else(Vec::new, |file| self.charts.doc.unsaved_changes(file))
-        });
+        versions.sync(
+            source,
+            shown,
+            &tile_of,
+            self.charts.doc.unsaved_edits(),
+            || {
+                target
+                    .as_deref()
+                    .map_or_else(Vec::new, |file| self.charts.doc.unsaved_changes(file))
+            },
+        );
         *self.charts.doc.versions_mut() = versions;
     }
 

@@ -1478,10 +1478,12 @@ impl ChartDoc {
         &mut self.versions
     }
 
-    /// How many edits are held that the chart file does not carry yet.
+    /// The edits held that the chart file does not carry yet, in the order they
+    /// were made. What the Versions panel reads its row for the unsaved edits
+    /// from, and compares to know it has read these.
     #[must_use]
-    pub fn unsaved_edit_count(&self) -> usize {
-        self.pending_edits.len()
+    pub fn unsaved_edits(&self) -> &[ChartEdit] {
+        &self.pending_edits
     }
 
     /// **What each tile is called, by the path of the plot it draws**: the
