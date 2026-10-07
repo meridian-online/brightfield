@@ -493,7 +493,7 @@ pub enum ParseWarning {
     /// plot that carries it, so an author can tell a gap in brightfield from a
     /// typing mistake and trust the rest of the chart.
     ///
-    /// [`crate::axis_vocabulary::unread_axis_attributes`] is the sole judge, so
+    /// [`crate::axis_vocabulary::unread_axis_entries`] is the sole judge, so
     /// a resolver that learns a name narrows this warning in the same edit.
     UnreadAxisAttribute {
         /// The attribute key, as written.

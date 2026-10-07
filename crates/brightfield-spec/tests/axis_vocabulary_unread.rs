@@ -24,8 +24,8 @@ use brightfield_spec::axis_vocabulary::{
 };
 use brightfield_spec::layout::{
     collect_plot_nodes, plot_label, resolve_axis_ends, resolve_axis_reverse, resolve_axis_titles,
-    resolve_fixed_domains, resolve_grid_lines, resolve_plot_insets, resolve_plot_scales,
-    resolve_tick_counts, resolve_tick_formats,
+    resolve_domains, resolve_fixed_domains, resolve_grid_lines, resolve_plot_insets,
+    resolve_plot_scales, resolve_tick_counts, resolve_tick_formats,
 };
 use brightfield_spec::{parse_spec, parse_spec_path, Format, ParseWarning, PlotNode, Spec};
 
@@ -211,13 +211,14 @@ const BARE_AXIS_ATTRIBUTES: [&str; 6] = [
     "facetLabel",
 ];
 
-/// **A bare axis attribute the schema declares is an axis attribute no resolver
-/// reads, and a plot that sets one is told about it, whatever it is set to.**
-/// `xyDomain: Fixed`, which the vendored specs write, is told, as is a `null`, an
-/// array and a lifted `$param`; a name that only resembles one, and is not in
-/// the schema, is not.
+/// **Five of the six bare axis attributes the schema declares are attributes no
+/// resolver reads, and a plot that sets one is told about it, whatever it is set
+/// to.** `padding: 0.2` is told, as is a `null`, an array and a lifted `$param`;
+/// a name that only resembles one, and is not in the schema, is not. The sixth,
+/// `xyDomain`, is read as two numbers, and is told about as Mosaic's `Fixed`,
+/// which the vendored specs write, and as nothing else.
 #[test]
-fn a_bare_axis_attribute_the_schema_declares_is_named_whatever_it_is_set_to() {
+fn a_bare_axis_attribute_no_resolver_reads_is_named_whatever_it_is_set_to() {
     let schema = vendored_schema();
     let declared = schema["definitions"]["PlotAttributes"]["properties"]
         .as_object()
@@ -228,9 +229,10 @@ fn a_bare_axis_attribute_the_schema_declares_is_named_whatever_it_is_set_to() {
             SCHEMA_AXIS_ATTRIBUTES.contains(&name),
             "the list leaves out `{name}`, which the schema declares"
         );
-        assert!(
-            !READ_AXIS_ATTRIBUTES.contains(&name),
-            "no resolver reads `{name}`"
+        assert_eq!(
+            READ_AXIS_ATTRIBUTES.contains(&name),
+            name == "xyDomain",
+            "`{name}` is read when it is `xyDomain` and by no resolver otherwise"
         );
     }
 
@@ -247,7 +249,10 @@ fn a_bare_axis_attribute_the_schema_declares_is_named_whatever_it_is_set_to() {
             })
             .collect()
     };
-    for name in BARE_AXIS_ATTRIBUTES {
+    for name in BARE_AXIS_ATTRIBUTES
+        .into_iter()
+        .filter(|n| *n != "xyDomain")
+    {
         for value in ["Fixed", "null", "[0, 10]", "0.2", "$p", "both"] {
             assert_eq!(
                 warned(&format!("{name}: {value}\n")),
@@ -255,6 +260,17 @@ fn a_bare_axis_attribute_the_schema_declares_is_named_whatever_it_is_set_to() {
                 "`{name}: {value}` is named once"
             );
         }
+    }
+    assert_eq!(
+        warned("xyDomain: Fixed\n"),
+        ["xyDomain"],
+        "`xyDomain: Fixed` is a request no resolver reads, and is named once"
+    );
+    for value in ["[0, 10]", "null", "[100, 0]"] {
+        assert!(
+            warned(&format!("xyDomain: {value}\n")).is_empty(),
+            "`xyDomain: {value}` is read, or refused by a warning of its own, and not named as unread"
+        );
     }
     assert!(
         warned("fxyDomain: Fixed\nxyDomains: Fixed\npaddings: 0.2\n").is_empty(),
@@ -308,6 +324,7 @@ fn resolved(plot: &PlotNode) -> String {
             resolve_plot_insets(plot),
             resolve_axis_titles(plot),
             resolve_fixed_domains(plot),
+            resolve_domains(plot),
             resolve_tick_counts(plot),
             resolve_tick_formats(plot),
             resolve_grid_lines(plot),
@@ -389,31 +406,12 @@ fn corpus() -> Vec<PathBuf> {
 /// The root keys that are not a component: the walker reads them as blocks.
 const ROOT_BLOCKS: &[&str] = &["meta", "data", "params", "config", "plotDefaults"];
 
-/// Each plot in a raw document, with its component path and the keys it sets
-/// itself, walked in the walker's discriminator order: `plot`, then `vconcat`,
-/// then `hconcat`.
-fn raw_plots(component: &serde_yaml::Mapping, path: &str, out: &mut Vec<(String, Vec<String>)>) {
-    let key = |k: &str| component.get(serde_yaml::Value::String(k.into()));
-    if key("plot").is_some() {
-        let keys = component
-            .keys()
-            .filter_map(serde_yaml::Value::as_str)
-            .filter(|k| *k != "plot")
-            .map(str::to_string)
-            .collect();
-        out.push((path.to_string(), keys));
-        return;
-    }
-    for kind in ["vconcat", "hconcat"] {
-        if let Some(serde_yaml::Value::Sequence(items)) = key(kind) {
-            for (i, item) in items.iter().enumerate() {
-                if let serde_yaml::Value::Mapping(m) = item {
-                    raw_plots(m, &format!("{path}/{kind}[{i}]"), out);
-                }
-            }
-            return;
-        }
-    }
+/// Whether what a spec wrote makes `key` an axis attribute brightfield reads: a
+/// name on `READ_AXIS_ATTRIBUTES`, except `xyDomain` set to Mosaic's `Fixed`,
+/// which no resolver reads and the parser names. The value is the author's,
+/// taken from the raw document and not from the parser being tested.
+fn read_as_written(key: &str, value: &serde_yaml::Value) -> bool {
+    READ_AXIS_ATTRIBUTES.contains(&key) && !(key == "xyDomain" && value.as_str() == Some("Fixed"))
 }
 
 /// The distinct axis attributes the vendored corpus sets that brightfield does
@@ -462,37 +460,36 @@ fn each_unread_axis_attribute_in_the_corpus_is_named_and_no_read_one_is() {
             component.remove(serde_yaml::Value::String((*block).into()));
         }
         let mut plots = Vec::new();
-        raw_plots(&component, "root", &mut plots);
+        raw_plot_attributes(&component, "root", &mut plots);
         let labels: BTreeMap<String, String> = collect_plot_nodes(&parsed.spec)
             .into_iter()
             .map(|(at, plot)| (at.clone(), plot_label(&at, plot)))
             .collect();
-        let mut carriers: Vec<(Option<String>, Vec<String>)> = plots
+        let mut carriers: Vec<(Option<String>, Vec<(String, serde_yaml::Value)>)> = plots
             .into_iter()
-            .map(|(at, keys)| {
+            .map(|(at, attrs)| {
                 let label = labels
                     .get(&at)
                     .unwrap_or_else(|| panic!("{name}: the parser placed no plot at {at}"));
-                (Some(label.clone()), keys)
+                (Some(label.clone()), attrs.into_iter().collect())
             })
             .collect();
         if let Some(serde_yaml::Value::Mapping(defaults)) =
             root.get(serde_yaml::Value::String("plotDefaults".into()))
         {
-            let keys = defaults
-                .keys()
-                .filter_map(serde_yaml::Value::as_str)
-                .map(str::to_string);
-            carriers.push((None, keys.collect()));
+            let attrs = defaults
+                .iter()
+                .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.clone())));
+            carriers.push((None, attrs.collect()));
         }
 
         let mut expected: Vec<(Option<String>, String)> = Vec::new();
-        for (plot, keys) in &carriers {
-            for key in keys
+        for (plot, attrs) in &carriers {
+            for (key, value) in attrs
                 .iter()
-                .filter(|k| SCHEMA_AXIS_ATTRIBUTES.contains(&k.as_str()))
+                .filter(|(k, _)| SCHEMA_AXIS_ATTRIBUTES.contains(&k.as_str()))
             {
-                if READ_AXIS_ATTRIBUTES.contains(&key.as_str()) {
+                if read_as_written(key, value) {
                     carried_read += 1;
                 } else {
                     expected.push((plot.clone(), key.clone()));
@@ -516,7 +513,7 @@ fn each_unread_axis_attribute_in_the_corpus_is_named_and_no_read_one_is() {
             .collect();
         for (_, attribute) in &warned {
             assert!(
-                !READ_AXIS_ATTRIBUTES.contains(&attribute.as_str()),
+                !READ_AXIS_ATTRIBUTES.contains(&attribute.as_str()) || attribute == "xyDomain",
                 "{name}: `{attribute}` is read, and was warned about"
             );
         }
