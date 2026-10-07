@@ -42,6 +42,7 @@ plot:
     x: x
     y: y
     fill: group
+  - legend: color
   - select: intervalXY
     as: $range
   - select: highlight

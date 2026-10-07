@@ -520,6 +520,7 @@ plot:
     x: x
     y: y
     fill: { count: }
+  - legend: color
 colorScheme: blues
 width: 520
 height: 420

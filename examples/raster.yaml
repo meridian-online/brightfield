@@ -515,5 +515,6 @@ plot:
     x: x
     y: y
     bins: 20
+  - legend: color
 width: 520
 height: 420
