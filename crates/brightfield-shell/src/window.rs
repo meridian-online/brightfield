@@ -6917,7 +6917,7 @@ impl MeridianApp {
             }
             ctx.request_repaint();
         }
-        let shown = self.charts.doc.selected_column().map(|c| c.column.clone());
+        let shown = self.charts.doc.selected_column_name().map(str::to_owned);
         self.protocol
             .doc
             .model

@@ -31,6 +31,9 @@ use brightfield_workbench::{ItemId, PaneKey};
 const HOUSING_FILE: &str = "california_housing_sample.csv";
 const INCOME: &str = "median_income";
 const VALUE: &str = "median_house_value";
+/// A file whose `sensor` column the generated dashboard draws no tile for.
+const BASELINE_FILE: &str = "dashboard_baseline.csv";
+const SENSOR: &str = "sensor";
 
 /// The three verbs, as the registry names them.
 const PUT_VERBS: [&str; 3] = ["put-column-on-x", "put-column-on-y", "put-column-on-colour"];
@@ -39,6 +42,12 @@ fn housing() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/data")
         .join(HOUSING_FILE)
+}
+
+fn baseline() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/data")
+        .join(BASELINE_FILE)
 }
 
 fn key_down(key: egui::Key) -> egui::Event {
@@ -106,6 +115,27 @@ impl Window {
         assert!(
             !win.app.graph_on_canvas(),
             "the housing sample opened with the graph on the canvas"
+        );
+        win
+    }
+
+    /// A window over the baseline file, the dashboard on the canvas: a table
+    /// with a column, `sensor`, that the generated dashboard does not tile.
+    fn baseline() -> Self {
+        let boot =
+            Boot::data_file(baseline().to_str().expect("utf-8 path")).expect("the file opens");
+        let win = Self::over(boot);
+        assert!(
+            !win.app.graph_on_canvas(),
+            "the baseline file opened with the graph on the canvas"
+        );
+        assert!(
+            win.app
+                .chart_doc()
+                .tile_columns()
+                .iter()
+                .all(|c| c.column != SENSOR),
+            "the dashboard drew a tile for {SENSOR}, so these tests prove nothing about a column with none"
         );
         win
     }
@@ -1201,5 +1231,113 @@ fn u_after_z_c_from_the_outline_takes_the_put_back() {
         !win.cell_names(ShelfChannel::Colour, VALUE),
         "the band's colour cell still names {VALUE} after u: {:?}",
         win.cell_text(ShelfChannel::Colour)
+    );
+}
+
+/// **A column with no tile: the Outline's cursor stays on its row.** A click on
+/// the row of `sensor` in the baseline file, a column the generated dashboard
+/// drew no tile for, puts the Outline's cursor on that row, and the next frames
+/// leave it there: the window mirrors the chart document's selection back every
+/// frame, so a selection the document could not hold came back as none.
+#[test]
+fn a_click_on_the_row_of_a_column_with_no_tile_keeps_the_outlines_cursor_there() {
+    let mut win = Window::baseline();
+    let row = win.column_row(SENSOR);
+
+    win.click(row.name_rect.center());
+    assert_eq!(
+        win.app.protocol_model().outline_column(),
+        Some(SENSOR),
+        "a click on {SENSOR}'s row left the Outline's cursor elsewhere"
+    );
+    assert_eq!(
+        win.app.focused_pane(),
+        Some(PaneKey::new(OUTLINE)),
+        "a click on {SENSOR}'s row did not give the Outline the keys"
+    );
+
+    for frame in 1..=3 {
+        win.run(Vec::new());
+        assert_eq!(
+            win.app.protocol_model().outline_column(),
+            Some(SENSOR),
+            "the Outline's cursor left {SENSOR}'s row on frame {frame} after the click"
+        );
+    }
+}
+
+/// **A column with no tile: `z` puts it as a chip click does.** `z x`, `z y`
+/// and `z c` on the row of `sensor` leave the spec the chip of the same channel
+/// on that row leaves, the band's cell for the channel names the column, and
+/// the title is marked unsaved.
+///
+/// The spec is what the page is drawn from, so the same spec is the same
+/// chart. The hero's own layer is not read: this file's hero has no hover
+/// layer to read a channel's column from.
+#[test]
+fn z_on_the_row_of_a_column_with_no_tile_puts_it_as_a_chip_click_does() {
+    for (key, letter, channel) in [
+        (egui::Key::X, "x", ShelfChannel::X),
+        (egui::Key::Y, "y", ShelfChannel::Y),
+        (egui::Key::C, "c", ShelfChannel::Colour),
+    ] {
+        let before = Window::baseline().spec();
+
+        let mut by_chip = Window::baseline();
+        let chip = by_chip.chip(SENSOR, channel);
+        by_chip.click(chip.rect.center());
+        // The pointer goes away, so nothing the chip is still previewing can
+        // pass for what the click kept.
+        by_chip.point(egui::pos2(1.0, 1.0));
+        assert!(
+            by_chip.spec() != before && by_chip.cell_names(channel, SENSOR),
+            "the {letter} chip on {SENSOR}'s row put nothing on {channel:?}, so the comparison proves nothing"
+        );
+
+        let mut by_keys = Window::baseline();
+        by_keys.select_in_outline(SENSOR);
+        by_keys.chord(key, letter);
+
+        assert!(
+            by_keys.cell_names(channel, SENSOR),
+            "z {letter} on {SENSOR}'s row left the band's {channel:?} cell reading {:?}",
+            by_keys.cell_text(channel)
+        );
+        assert_eq!(by_keys.app.chart_doc().shelf_preview(), None);
+        assert!(
+            by_keys.marked_unsaved(),
+            "z {letter} kept a column and left the title unmarked"
+        );
+        assert!(
+            by_keys.spec() == by_chip.spec(),
+            "z {letter} on {SENSOR}'s row left a different spec from the {letter} chip"
+        );
+    }
+}
+
+/// **A name the table does not have still selects nothing, and a tile press
+/// ends a column's selection.** Selecting a column the chart document has no
+/// tile for holds only a column of the table, and a press on a tile (which
+/// reaches the document as `select_tile`) replaces it: with a press on no tile
+/// the selection is empty, and the Outline's cursor is off every column's row.
+#[test]
+fn a_selection_with_no_tile_holds_only_a_column_of_the_table_and_a_tile_press_ends_it() {
+    let mut win = Window::baseline();
+
+    win.app.chart_doc_mut().select_column("no_such_column");
+    win.settle();
+    assert_eq!(
+        win.app.protocol_model().outline_column(),
+        None,
+        "a name the table does not have put the Outline's cursor on a row"
+    );
+
+    win.select_in_outline(SENSOR);
+    win.app.chart_doc_mut().select_tile(usize::MAX);
+    win.settle();
+    assert_eq!(
+        win.app.protocol_model().outline_column(),
+        None,
+        "a press on no tile left the Outline's cursor on {SENSOR}'s row"
     );
 }
