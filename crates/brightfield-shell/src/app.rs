@@ -1113,9 +1113,10 @@ pub struct ChartDoc {
     /// **The column picked by name that the dashboard draws no tile for**, so
     /// no index into [`Self::tile_columns`] can hold it: a free-text column or
     /// a key the generated dashboard declined. Held beside
-    /// [`Self::selected_tile`] and never with it — a tile selected takes the
-    /// place of this one, and this one takes the place of a tile. Only a column
-    /// of the table is held, which [`Self::column_facts`] answers.
+    /// [`Self::selected_tile`], not with it: a tile selected takes the place of
+    /// this one, and this one takes the place of a tile. A name that is a column
+    /// of the table is held, which [`Self::column_facts`] answers, and a name
+    /// the table has no column of is not.
     selected_untiled: Option<String>,
     canvas: CanvasSlot<CanvasKey>,
 }

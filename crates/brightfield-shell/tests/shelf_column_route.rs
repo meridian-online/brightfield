@@ -1315,11 +1315,11 @@ fn z_on_the_row_of_a_column_with_no_tile_puts_it_as_a_chip_click_does() {
     }
 }
 
-/// **A name the table does not have still selects nothing, and a tile press
-/// ends a column's selection.** Selecting a column the chart document has no
-/// tile for holds only a column of the table, and a press on a tile (which
-/// reaches the document as `select_tile`) replaces it: with a press on no tile
-/// the selection is empty, and the Outline's cursor is off every column's row.
+/// **A name the table does not have is not selected, and a press on no tile
+/// ends a selection held by name.** Selecting a name the table has no column of
+/// leaves the Outline's cursor off the rows, and a press that reaches the
+/// document as `select_tile` with no tile under it ends the selection of
+/// `sensor`, so the cursor leaves its row.
 #[test]
 fn a_selection_with_no_tile_holds_only_a_column_of_the_table_and_a_tile_press_ends_it() {
     let mut win = Window::baseline();
