@@ -2172,6 +2172,48 @@ plot:
 
     /// an aggregate mark (heatmap) is guarded — no membership
     /// projection is appended even with an active selection, so the query can't
+    /// A plan returns rows when it neither aggregates nor bins: a dot over
+    /// columns does, and a binned rectY, a heatmap and a density do not. A
+    /// sample and a filter keep the answer.
+    #[test]
+    fn plan_returns_rows_only_for_a_plan_that_neither_aggregates_nor_bins() {
+        let plan = |marks: &str| {
+            let yaml = format!("plot:\n{marks}");
+            let spec = parse_spec(&yaml, Format::Yaml).unwrap().spec;
+            plan_for_mark(&spec, 0, None, None).expect("plan")
+        };
+        let dot = plan("  - mark: dot\n    data: { from: t }\n    x: a\n    y: b\n");
+        assert!(plan_returns_rows(&dot), "a dot over columns: {dot:?}");
+        let sampled = QueryPlan::Sample {
+            input: Box::new(dot.clone()),
+            modulus: 4,
+        };
+        assert!(
+            plan_returns_rows(&sampled),
+            "a sampled dot still returns rows"
+        );
+        let filtered =
+            plan("  - mark: dot\n    data: { from: t, filter: \"a > 1\" }\n    x: a\n    y: b\n");
+        assert!(plan_returns_rows(&filtered), "a filtered dot: {filtered:?}");
+        for (what, marks) in [
+            (
+                "a binned rectY",
+                "  - mark: rectY\n    data: { from: t }\n    x: { bin: a }\n    y: { count: null }\n",
+            ),
+            (
+                "a heatmap",
+                "  - mark: heatmap\n    data: { from: t }\n    x: a\n    y: b\n",
+            ),
+            (
+                "a densityX",
+                "  - mark: densityX\n    data: { from: t }\n    x: a\n",
+            ),
+        ] {
+            let p = plan(marks);
+            assert!(!plan_returns_rows(&p), "{what} returns rows: {p:?}");
+        }
+    }
+
     /// reference a grouped-away column and SQL-error.
     #[test]
     fn emit_skips_projection_for_aggregate() {
