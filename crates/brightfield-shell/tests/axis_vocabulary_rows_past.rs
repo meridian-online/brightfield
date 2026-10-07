@@ -22,6 +22,7 @@ use brightfield_engine::coordinator::Interaction;
 use brightfield_engine::SqlPredicate;
 use brightfield_render::ink::ChartInk;
 use brightfield_render::past_ends::{mark_counts_rows_past, EndCounts, PastEnds};
+use brightfield_render::scale::ViewExtent;
 use brightfield_render::VelloRenderer;
 use brightfield_shell::design::Mode;
 use brightfield_shell::pipeline::{compose_spec_in_mode, Composed, LiveDashboard};
@@ -296,16 +297,31 @@ fn a_row_past_the_high_end_of_x_is_counted_at_that_end() {
     assert_eq!(inside, 0, "the count draws no ink inside the data area");
 }
 
-/// **`yDomain: [10, 90]` counts the row at 3 at y's low end and the row at 97
-/// at its high end**, in the y title's column, and x, whose ends the file left
-/// alone, counts nothing.
+/// **A row past y's low end is counted at the bottom of the y title's column,
+/// and one past its high end at the top**, and x, whose ends the file left
+/// alone, counts nothing. Each arm puts a row past one end only, so a count
+/// drawn at the other end fails it.
 #[test]
-fn rows_past_both_ends_of_y_are_counted_at_each() {
-    let asked = dots("yDomain: [10, 90]");
-    assert_eq!(asked.plots[0].rows_past, counts((0, 0), (1, 1)));
-    let (ends, inside) = ends_inked(&asked, 0, Mode::Light);
-    assert_eq!(ends, [false, false, true, true]);
+fn a_row_past_each_end_of_y_is_counted_at_that_end() {
+    let low = dots("yDomain: [10, 100]");
+    assert_eq!(
+        low.plots[0].rows_past,
+        counts((0, 0), (1, 0)),
+        "the row at 3"
+    );
+    let (ends, inside) = ends_inked(&low, 0, Mode::Light);
+    assert_eq!(ends, [false, false, true, false], "at the bottom only");
     assert_eq!(inside, 0, "the count draws no ink inside the data area");
+
+    let high = dots("yDomain: [0, 90]");
+    assert_eq!(
+        high.plots[0].rows_past,
+        counts((0, 0), (0, 1)),
+        "the row at 97"
+    );
+    let (ends, inside) = ends_inked(&high, 0, Mode::Light);
+    assert_eq!(ends, [false, false, false, true], "at the top only");
+    assert_eq!(inside, 0);
 }
 
 /// **With no row past an end, nothing is drawn there**: the same fixed ends
@@ -569,6 +585,43 @@ fn the_count_follows_the_rows_a_brush_on_another_tile_leaves() {
     assert_eq!(
         low.plots[1].layout.margins.bottom, first.plots[1].layout.margins.bottom,
         "the brush moved the frame"
+    );
+}
+
+/// **An axis the reader has zoomed counts nothing**: the frame is theirs, and
+/// rows off it are off because they moved it, not because the file fixed it.
+/// The other axis keeps its count, and a zoom put back counts again.
+#[test]
+fn a_zoomed_axis_counts_nothing_and_the_other_keeps_its_count() {
+    let source = DOTS.replace("ATTRS", "xDomain: [0, 100]\nyDomain: [10, 100]");
+    let mut live = LiveDashboard::load_str(&source, None).expect("the spec loads live");
+    let before = live.present().expect("first composite");
+    assert_eq!(
+        before.plots[0].rows_past,
+        counts((0, 1), (1, 0)),
+        "fixture check"
+    );
+
+    let path = before.plots[0].path.clone();
+    live.set_view_extent(
+        &path,
+        ViewExtent {
+            x: Some((20.0, 60.0)),
+            y: None,
+        },
+    );
+    let zoomed = live.present().expect("the zoom re-composites");
+    assert_eq!(
+        zoomed.plots[0].rows_past,
+        counts((0, 0), (1, 0)),
+        "x is the reader's now; y still counts the row at 3"
+    );
+
+    live.set_view_extent(&path, ViewExtent { x: None, y: None });
+    let reset = live.present().expect("the reset re-composites");
+    assert_eq!(
+        reset.plots[0].rows_past, before.plots[0].rows_past,
+        "the reset counts again"
     );
 }
 
