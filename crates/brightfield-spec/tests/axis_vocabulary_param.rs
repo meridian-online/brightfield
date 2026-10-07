@@ -4,7 +4,7 @@
 //! The six groups — `xTicks`/`yTicks`, `xTickFormat`/`yTickFormat`,
 //! `grid`/`xGrid`/`yGrid`, `xZero`/`yZero`, `xNice`/`yNice`, `xReverse`/`yReverse`
 //! — were read from the plot's own attributes, so a `$param` on any of them drew
-//! brightfield's default and nothing said why. The five resolvers each have an
+//! brightfield's default with no line to say why. The five resolvers each have an
 //! `_in` form that takes the spec's params, and
 //! [`param_held_axis_warnings`] names a param that holds what the key's judge
 //! refuses.

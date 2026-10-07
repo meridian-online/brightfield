@@ -1088,8 +1088,9 @@ pub enum AxisFormat {
 /// and holds no opinion about what a scale then does with it — whether the axis
 /// is one the format is for is settled where the scale is known, by
 /// `brightfield_render::axis::tick_format_crosses_axis`. `None` covers the key
-/// being absent or `null`, being a `$param` that holds no format (a selection and
-/// a param nobody declared hold none), and being a value that is no format or
+/// being absent or `null`, being a `$param` that holds no format (a selection
+/// holds no value, and neither does a param nobody declared), and being a value
+/// that is no format or
 /// names a directive this build does not read, which
 /// [`crate::parse::ParseWarning`] has named at parse time, or
 /// [`param_held_axis_warnings`] names when the value is a param's.
