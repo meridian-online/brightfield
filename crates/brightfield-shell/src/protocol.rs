@@ -962,9 +962,11 @@ pub struct ProtocolModel {
     /// The spec brightfield wrote when a data file was opened, and where it
     /// would be written. `None` for a Protocol read off disk.
     source: Option<OneStepProtocol>,
-    /// Which column the window's inspector is showing — mirrored in from the
-    /// chart document each frame so the rail's highlight and the inspector's
-    /// heading cannot name two different columns.
+    /// Which column the chart document has selected — a tile's, or a column
+    /// of the table the dashboard draws no tile for — mirrored in from it each
+    /// frame so the rail's highlight and the inspector's heading cannot name
+    /// two different columns. The inspector's heading is a tile's, so a
+    /// selected column with no tile is highlighted and has no heading.
     selected_column: Option<String>,
     /// A column row the reader clicked, drained by the window and handed to
     /// the chart document. The outline cannot write the chart document itself
@@ -1855,8 +1857,8 @@ impl ProtocolModel {
         self.source.as_ref()
     }
 
-    /// Mirror in which column the window's inspector is showing, so the
-    /// outline's highlight follows it.
+    /// Mirror in which column the chart document has selected, so the
+    /// outline's highlight follows it — a column with a tile and one without.
     ///
     /// A column selected anew on the dashboard moves the Outline's cursor to
     /// its row, as the highlight moves: the mirror runs every frame, so only a
@@ -1875,8 +1877,8 @@ impl ProtocolModel {
         self.column_pick.take()
     }
 
-    /// The column the Outline highlights — the one the window's inspector is
-    /// showing — whether or not the Outline's cursor is on its row.
+    /// The column the Outline highlights — the one the chart document has
+    /// selected — whether or not the Outline's cursor is on its row.
     #[must_use]
     pub fn selected_column(&self) -> Option<&str> {
         self.selected_column.as_deref()
